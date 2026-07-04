@@ -1,6 +1,7 @@
 import type {
   ArtifactPayload,
   CompactionPayload,
+  EnsembleProgressPayload,
   RouterDecisionPayload,
   SessionEventPayload,
   TextDeltaPayload,
@@ -33,6 +34,7 @@ export type ChatRpcSubscriptionHandlers = {
   onTaskGroupDone: (payload: SessionEventPayload) => void
   onTaskGroupFailed: (payload: SessionEventPayload) => void
   onRouterDecision: (payload: RouterDecisionPayload) => void
+  onEnsembleProgress: (payload: EnsembleProgressPayload) => void
   onRouterControlReplay: (payload: SessionEventPayload) => void
   onAny: (rawEvent: string, rawPayload: unknown) => void
   onConnectionState: (state: string) => void
@@ -65,6 +67,7 @@ export function useChatRpcSubscriptions(
       rpc.on('session.event.task_group.done', handlers.onTaskGroupDone),
       rpc.on('session.event.task_group.failed', handlers.onTaskGroupFailed),
       rpc.on('session.event.router_decision', handlers.onRouterDecision),
+      rpc.on('session.event.ensemble_progress', handlers.onEnsembleProgress),
       rpc.on('session.event.router_control_replay', handlers.onRouterControlReplay),
       rpc.on('*', handlers.onAny),
       rpc.on('_state', handlers.onConnectionState),

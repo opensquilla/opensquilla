@@ -183,20 +183,18 @@ class SessionUsage:
         to the local pricing-table estimate. This is what lets the WebUI show
         per-model values that actually sum to the row total without prorating.
         """
-        billed = float(getattr(mu_or_self, "billed_cost", 0.0) or 0.0)
-        estimate = float(mu_or_self.cost or 0.0)
-        if billed > 0:
-            return {
-                "costUsd": round(billed, 6),
-                "billedCostUsd": round(billed, 6),
-                "estimatedCostUsd": round(estimate, 6),
-                "costSource": "provider_billed",
-            }
+        fields = model_usage_cost_fields(
+            model_id=getattr(mu_or_self, "model_id", ""),
+            input_tokens=int(getattr(mu_or_self, "input_tokens", 0) or 0),
+            output_tokens=int(getattr(mu_or_self, "output_tokens", 0) or 0),
+            billed_cost=float(getattr(mu_or_self, "billed_cost", 0.0) or 0.0),
+            provider=str(getattr(mu_or_self, "provider", "") or ""),
+        )
         return {
-            "costUsd": round(estimate, 6),
-            "billedCostUsd": 0.0,
-            "estimatedCostUsd": round(estimate, 6),
-            "costSource": "opensquilla_estimate" if estimate > 0 else "unavailable",
+            "costUsd": fields["costUsd"],
+            "billedCostUsd": fields["billedCostUsd"],
+            "estimatedCostUsd": fields["estimatedCostUsd"],
+            "costSource": fields["costSource"],
         }
 
     @property
@@ -274,6 +272,50 @@ def _model_delta_cost(
     return (input_tokens * price.input_per_m + output_tokens * price.output_per_m) / 1_000_000
 
 
+def model_usage_cost_fields(
+    *,
+    model_id: str,
+    input_tokens: int,
+    output_tokens: int,
+    billed_cost: float,
+    provider: str = "",
+) -> dict[str, float | str]:
+    """Return canonical cost fields for a per-model usage row.
+
+    Provider-billed cost remains the source of truth when present. When a
+    provider returns token counts but no billed cost for an individual call, use
+    the same local pricing estimate that powers session totals so model-level
+    breakdowns do not look like free requests.
+    """
+
+    billed = max(0.0, float(billed_cost or 0.0))
+    price = lookup_price(model_id, provider)
+    estimate = (
+        max(0, int(input_tokens or 0)) * price.input_per_m
+        + max(0, int(output_tokens or 0)) * price.output_per_m
+    ) / 1_000_000
+    if billed > 0.0:
+        cost = billed
+        source = "provider_billed"
+    else:
+        cost = estimate
+        source = "opensquilla_estimate" if estimate > 0.0 else "unavailable"
+
+    rounded_cost = round(cost, 6)
+    rounded_billed = round(billed, 6)
+    rounded_estimate = round(estimate, 6)
+    return {
+        "costUsd": rounded_cost,
+        "cost_usd": rounded_cost,
+        "billedCostUsd": rounded_billed,
+        "billed_cost_usd": rounded_billed,
+        "estimatedCostUsd": rounded_estimate,
+        "estimated_cost_usd": rounded_estimate,
+        "costSource": source,
+        "cost_source": source,
+    }
+
+
 @dataclass
 class SessionTotalsSnapshot:
     """Point-in-time aggregate of a session's token usage and cost.
@@ -328,6 +370,10 @@ class UsageTracker:
         the per-model breakdown can report real provider-billed figures
         instead of the cache-blind pricing-table estimate. ``provider`` lets
         local runtimes (Ollama, …) estimate as free.
+
+        Invariant: keep this method synchronous (no await/yield). On the
+        single event loop a sync ``add`` is atomic, so concurrent turns in
+        one session accumulate without interleaving or a lock.
         """
         usage = self._sessions.get(session_key)
         if usage is None:

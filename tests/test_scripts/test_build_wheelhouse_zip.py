@@ -718,6 +718,8 @@ def test_prepare_windows_portable_release_tree_includes_double_click_launcher(
     assert "safe router fallback" in start_ps1
     assert "If automatic installation fails, install it manually" in start_ps1
     assert "After installing, reopen PowerShell and restart OpenSquilla" in start_ps1
+    assert "$env:PYTHONUTF8 = '1'" in start_ps1
+    assert "$env:PYTHONIOENCODING = 'utf-8:replace'" in start_ps1
 
 
 def test_install_portable_wheelhouse_preinstalls_into_bundled_python(
@@ -829,7 +831,7 @@ def test_write_sha256s_records_all_release_zips(tmp_path: Path) -> None:
     assert checksum_path.read_text(encoding="utf-8").splitlines() == expected
 
 
-def test_release_workflow_publishes_windows_portable_zip_and_wheel() -> None:
+def test_release_workflow_publishes_wheel_and_electron_assets_without_portable() -> None:
     workflow = WORKFLOW_PATH.read_text(encoding="utf-8")
 
     assert "concurrency:" in workflow
@@ -841,26 +843,28 @@ def test_release_workflow_publishes_windows_portable_zip_and_wheel() -> None:
     assert "build-desktop-macos:" in workflow
     assert "build-desktop-windows:" in workflow
     assert "Validate workflow inputs" in workflow
-    assert "python_runtime_release must be a YYYYMMDD" in workflow
-    assert "python_runtime_version must be a CPython 3.12 patch version" in workflow
+    assert "python_runtime_release" not in workflow
+    assert "python_runtime_version" not in workflow
     assert "persist-credentials: false" in workflow
     assert "bundle_python_runtime:" not in workflow
-    assert "--platform-tag windows-x64" in workflow
+    assert "--platform-tag windows-x64" not in workflow
     assert "platform_tag: macos-arm64" not in workflow
     assert "platform_tag: linux-x64" not in workflow
     assert "for mode in portable wheelhouse" not in workflow
-    assert "--bundle-python-runtime" in workflow
-    assert "expected one versioned portable zip" in workflow
+    assert "--bundle-python-runtime" not in workflow
+    assert "uv build --wheel --out-dir dist" in workflow
+    assert "expected one versioned portable zip" not in workflow
     assert "expected one versioned wheel" in workflow
-    assert "manifest[\"portable\"] is True" in workflow
+    assert "manifest[\"portable\"] is True" not in workflow
     assert "SHA256SUMS" in workflow
-    assert "manifest.version" in workflow
+    assert "manifest.version" not in workflow
     assert "GH_REPO: ${{ github.repository }}" in workflow
-    assert "is_prerelease = bool(re.search" in workflow
-    assert "if not is_prerelease:" in workflow
-    assert "OpenSquilla-windows-x64-portable.zip" in workflow
-    assert "OpenSquilla-{version}-mac-arm64.dmg" in workflow
-    assert "OpenSquilla-{version}-win-x64.exe" in workflow
+    assert "0.5+ release assets must not include Windows portable zips" in workflow
+    assert "if not is_prerelease:" not in workflow
+    assert "OpenSquilla-windows-x64-portable.zip" not in workflow
+    assert "desktop_asset_version" in workflow
+    assert "OpenSquilla-{desktop_version}-mac-arm64.dmg" in workflow
+    assert "OpenSquilla-{desktop_version}-win-x64.exe" in workflow
     assert "opensquilla-latest-py3-none-any.whl" not in workflow
     assert "gh release upload \"${TAG}\" dist/* --clobber" in workflow
     assert "dist/*.zip dist/*.zip.sha256 dist/SHA256SUMS" not in workflow
@@ -872,8 +876,8 @@ def test_release_workflow_publishes_windows_portable_zip_and_wheel() -> None:
     assert "Unexpected GitHub Release assets" in workflow
     assert "\"unexpected\": unexpected" in workflow
     assert "zip_path.stem" not in workflow
-    assert "archive_roots =" in workflow
-    assert "root = archive_roots[0] + \"/\"" in workflow
+    assert "archive_roots =" not in workflow
+    assert "root = archive_roots[0] + \"/\"" not in workflow
 
 
 def test_release_workflow_publishes_from_version_tags() -> None:

@@ -22,6 +22,8 @@ export type {
   ArtifactOpenRequest,
   DesktopSettings,
   DesktopSettingsPayload,
+  DesktopUpdateState,
+  DesktopUpdateStatus,
   GatewayStatus,
   Platform,
   PlatformCapabilities,
@@ -29,6 +31,7 @@ export type {
   PlatformGatewayApi,
   PlatformId,
   PlatformOnboardingApi,
+  PlatformUpdatesApi,
   PlatformSettingsApi,
   SearchProviderOption,
 } from './types'

@@ -48,30 +48,70 @@
             <button class="btn btn--icon btn--ghost chat-plus-btn" :title="t('chat.attachFilesTitle')" :aria-label="t('chat.attachFiles')" @click="fileInputEl?.click()">
               <Icon name="plus" :size="18" />
             </button>
-            <div class="chat-settings-anchor">
+            <div ref="settingsAnchorEl" class="chat-settings-anchor">
               <button
                 class="btn btn--icon btn--ghost"
                 :title="t('chat.composerSettings')"
                 :aria-label="t('chat.composerSettings')"
                 :aria-expanded="settingsOpen ? 'true' : 'false'"
-                @click="settingsOpen = !settingsOpen"
+                @click="toggleSettings"
               >
                 <Icon name="settings" :size="17" />
               </button>
               <ChatComposerSettings
                 v-if="settingsOpen"
-                :elevated-mode="elevatedMode"
-                :elevated-unavailable="elevatedUnavailable"
-                :router-enabled="routerEnabled"
-                :router-settings-busy="routerSettingsBusy"
                 :visual-effects-enabled="routerVisualEffectsEnabled"
                 :coding-mode-enabled="codingModeEnabled"
                 :coding-mode-settings-busy="codingModeSettingsBusy"
                 @close="settingsOpen = false"
-                @set-elevated-mode="emit('setElevatedMode', $event)"
-                @set-router-enabled="emit('setRouterEnabled', $event)"
                 @set-visual-effects-enabled="emit('setVisualEffectsEnabled', $event)"
                 @set-coding-mode-enabled="emit('setCodingModeEnabled', $event)"
+              />
+            </div>
+            <div ref="modelRoutingAnchorEl" class="chat-settings-anchor">
+              <button
+                class="btn btn--icon btn--ghost chat-model-routing-btn"
+                :class="[
+                  `chat-model-routing-btn--${modelRoutingMode}`,
+                  { 'is-active': modelRoutingOpen || modelRoutingMode !== 'off' },
+                ]"
+                :title="t('chat.composer.modelRouting')"
+                :aria-label="t('chat.composer.modelRouting')"
+                :aria-expanded="modelRoutingOpen ? 'true' : 'false'"
+                @click="toggleModelRouting"
+              >
+                <Icon name="router" :size="17" />
+                <span
+                  v-if="showRouterNewBadge"
+                  class="chat-model-routing-btn__new"
+                  aria-hidden="true"
+                >{{ t('chat.composer.badgeNew') }}</span>
+              </button>
+              <ChatComposerModelRouting
+                v-if="modelRoutingOpen"
+                :model-routing-mode="modelRoutingMode"
+                :busy="modelRoutingSettingsBusy"
+                @close="modelRoutingOpen = false"
+                @set-model-routing-mode="emit('setModelRoutingMode', $event)"
+              />
+            </div>
+            <div ref="runModeAnchorEl" class="chat-settings-anchor">
+              <button
+                class="btn btn--icon btn--ghost chat-run-mode-btn"
+                :class="[`chat-run-mode-btn--${runMode}`, { 'is-active': runModeOpen }]"
+                :title="t('chat.composer.runMode')"
+                :aria-label="t('chat.composer.runMode')"
+                :aria-expanded="runModeOpen ? 'true' : 'false'"
+                @click="toggleRunMode"
+              >
+                <Icon name="shield" :size="17" />
+              </button>
+              <ChatComposerRunMode
+                v-if="runModeOpen"
+                :run-mode="runMode"
+                :allowed-run-modes="allowedRunModes"
+                @close="runModeOpen = false"
+                @set-run-mode="emit('setRunMode', $event)"
               />
             </div>
             <button
@@ -135,12 +175,16 @@
 </template>
 
 <script setup lang="ts">
-import { nextTick, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import Icon from '@/components/Icon.vue'
 import type { IconName } from '@/utils/icons'
+import ChatComposerModelRouting from '@/components/chat/ChatComposerModelRouting.vue'
 import ChatComposerSettings from '@/components/chat/ChatComposerSettings.vue'
+import ChatComposerRunMode from '@/components/chat/ChatComposerRunMode.vue'
 import type { Attachment } from '@/types/chat'
+import type { ModelRoutingMode } from '@/types/modelRouting'
+import type { SandboxRunMode } from '@/types/sandbox'
 import { isAttachmentBusy, isImageDisplayAttachment } from '@/utils/chat/attachments'
 
 interface ChatComposerExpose {
@@ -158,11 +202,11 @@ defineProps<{
   isNewLanding: boolean
   placeholder: string
   sendButtonTitle: string
-  elevatedMode: string
-  elevatedUnavailable: boolean
-  routerEnabled: boolean
+  runMode: SandboxRunMode
+  allowedRunModes: SandboxRunMode[]
+  modelRoutingMode: ModelRoutingMode
+  modelRoutingSettingsBusy: boolean
   routerVisualEffectsEnabled: boolean
-  routerSettingsBusy: boolean
   codingModeEnabled: boolean
   codingModeSettingsBusy: boolean
   voiceBusy: boolean
@@ -179,8 +223,8 @@ const emit = defineEmits<{
   retryAttachment: [index: number]
   send: []
   setBusySendMode: [mode: 'queue' | 'steer']
-  setElevatedMode: [mode: string]
-  setRouterEnabled: [enabled: boolean]
+  setRunMode: [mode: 'standard' | 'trusted' | 'full']
+  setModelRoutingMode: [mode: ModelRoutingMode]
   setVisualEffectsEnabled: [enabled: boolean]
   setCodingModeEnabled: [enabled: boolean]
   voiceInput: []
@@ -195,6 +239,85 @@ const composerEl = ref<HTMLElement | null>(null)
 const textareaEl = ref<HTMLTextAreaElement | null>(null)
 const fileInputEl = ref<HTMLInputElement | null>(null)
 const settingsOpen = ref(false)
+const modelRoutingOpen = ref(false)
+
+// "NEW" badge on the routing control — the single-model AI router is now the
+// default, so flag it until the user first opens the control, then never again.
+const ROUTER_NEW_BADGE_KEY = 'opensquilla.composer.routerNewBadgeSeen'
+const routerNewBadgeSeen = ref(false)
+try {
+  routerNewBadgeSeen.value = localStorage.getItem(ROUTER_NEW_BADGE_KEY) === '1'
+} catch { /* localStorage unavailable */ }
+const showRouterNewBadge = computed(() => !routerNewBadgeSeen.value)
+function dismissRouterNewBadge() {
+  if (routerNewBadgeSeen.value) return
+  routerNewBadgeSeen.value = true
+  try {
+    localStorage.setItem(ROUTER_NEW_BADGE_KEY, '1')
+  } catch { /* localStorage unavailable */ }
+}
+const runModeOpen = ref(false)
+const settingsAnchorEl = ref<HTMLElement | null>(null)
+const modelRoutingAnchorEl = ref<HTMLElement | null>(null)
+const runModeAnchorEl = ref<HTMLElement | null>(null)
+
+const anyPopoverOpen = computed(() => settingsOpen.value || modelRoutingOpen.value || runModeOpen.value)
+
+function eventInsideRoot(event: PointerEvent, root: HTMLElement | null): boolean {
+  if (!root) return false
+  const path = typeof event.composedPath === 'function' ? event.composedPath() : []
+  if (path.includes(root)) return true
+  return event.target instanceof Node && root.contains(event.target)
+}
+
+function closeOpenPopoversFromOutside(event: PointerEvent) {
+  if (settingsOpen.value && !eventInsideRoot(event, settingsAnchorEl.value)) {
+    settingsOpen.value = false
+  }
+  if (modelRoutingOpen.value && !eventInsideRoot(event, modelRoutingAnchorEl.value)) {
+    modelRoutingOpen.value = false
+  }
+  if (runModeOpen.value && !eventInsideRoot(event, runModeAnchorEl.value)) {
+    runModeOpen.value = false
+  }
+}
+
+watch(anyPopoverOpen, (open) => {
+  if (open) {
+    document.addEventListener('pointerdown', closeOpenPopoversFromOutside, true)
+  } else {
+    document.removeEventListener('pointerdown', closeOpenPopoversFromOutside, true)
+  }
+}, { immediate: true })
+
+onBeforeUnmount(() => {
+  document.removeEventListener('pointerdown', closeOpenPopoversFromOutside, true)
+})
+
+function toggleSettings() {
+  settingsOpen.value = !settingsOpen.value
+  if (settingsOpen.value) {
+    modelRoutingOpen.value = false
+    runModeOpen.value = false
+  }
+}
+
+function toggleModelRouting() {
+  modelRoutingOpen.value = !modelRoutingOpen.value
+  if (modelRoutingOpen.value) {
+    dismissRouterNewBadge()
+    settingsOpen.value = false
+    runModeOpen.value = false
+  }
+}
+
+function toggleRunMode() {
+  runModeOpen.value = !runModeOpen.value
+  if (runModeOpen.value) {
+    settingsOpen.value = false
+    modelRoutingOpen.value = false
+  }
+}
 
 function attachmentIcon(att: Attachment): IconName {
   return isImageDisplayAttachment(att) ? 'image' : 'fileText'
@@ -290,7 +413,7 @@ defineExpose<ChatComposerExpose>({
   max-width: min(100%, 360px);
   background: var(--bg-elevated);
   border: 1px solid var(--border);
-  border-radius: 0.375rem;
+  border-radius: var(--radius-md);
   font-size: 0.8125rem;
 }
 
@@ -320,7 +443,7 @@ defineExpose<ChatComposerExpose>({
 .attachment-chip__thumb {
   width: 16px;
   height: 16px;
-  border-radius: 3px;
+  border-radius: var(--radius-sm);
   object-fit: cover;
 }
 
@@ -376,7 +499,7 @@ defineExpose<ChatComposerExpose>({
   flex-direction: column;
   min-height: 128px;
   border: 1px solid var(--border-strong);
-  border-radius: 22px;
+  border-radius: var(--radius-modal);
   background: var(--bg-surface);
   box-shadow: var(--shadow-xs);
   position: relative;
@@ -385,7 +508,7 @@ defineExpose<ChatComposerExpose>({
 .chat-composer--new-landing .chat-input-panel {
   min-height: 148px;
   border-color: var(--border);
-  border-radius: 24px;
+  border-radius: var(--radius-modal);
   box-shadow: var(--shadow-lg);
 }
 
@@ -424,7 +547,7 @@ defineExpose<ChatComposerExpose>({
   display: inline-flex;
   align-items: center;
   border: 1px solid var(--border);
-  border-radius: 999px;
+  border-radius: var(--radius-full);
   padding: 2px;
   gap: 2px;
   margin-right: var(--sp-1);
@@ -433,7 +556,7 @@ defineExpose<ChatComposerExpose>({
 .chat-busy-mode__btn {
   border: 0;
   background: none;
-  border-radius: 999px;
+  border-radius: var(--radius-full);
   padding: 0.125rem 0.5rem;
   font-size: var(--fs-xs);
   font-weight: 600;
@@ -494,7 +617,7 @@ defineExpose<ChatComposerExpose>({
   height: 34px;
   min-width: 34px;
   min-height: 34px;
-  border-radius: 999px;
+  border-radius: var(--radius-full);
   padding: 0;
 }
 
@@ -506,6 +629,132 @@ defineExpose<ChatComposerExpose>({
 .btn--ghost.is-active {
   background: color-mix(in srgb, var(--ok) 12%, var(--bg-surface));
   color: var(--ok);
+}
+
+.chat-model-routing-btn {
+  position: relative;
+  border-color: transparent;
+  background: transparent;
+  color: var(--text-muted);
+}
+
+.chat-model-routing-btn__new {
+  position: absolute;
+  top: -3px;
+  right: -5px;
+  padding: 1px 4px;
+  border-radius: 999px;
+  background: var(--accent);
+  color: var(--bg-surface);
+  font-size: 8px;
+  font-weight: 600;
+  line-height: 1.25;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  pointer-events: none;
+}
+
+.chat-model-routing-btn.btn--ghost:not(:disabled):hover {
+  border-color: color-mix(in srgb, var(--accent) 18%, transparent);
+  background: color-mix(in srgb, var(--accent) 6%, var(--bg-surface));
+  color: var(--accent);
+}
+
+.chat-model-routing-btn--off.btn--ghost:not(:disabled):hover {
+  border-color: color-mix(in srgb, var(--text-dim) 14%, transparent);
+  background: color-mix(in srgb, var(--text-dim) 6%, var(--bg-surface));
+  color: var(--text-muted);
+}
+
+.chat-model-routing-btn.btn--ghost.is-active {
+  border-color: color-mix(in srgb, var(--accent) 24%, transparent);
+  background: color-mix(in srgb, var(--accent) 9%, var(--bg-surface));
+  color: var(--accent);
+}
+
+.chat-model-routing-btn--off.btn--ghost.is-active {
+  border-color: color-mix(in srgb, var(--text-dim) 18%, transparent);
+  background: color-mix(in srgb, var(--text-dim) 8%, var(--bg-surface));
+  color: var(--text-muted);
+}
+
+.chat-model-routing-btn--squilla_router.btn--ghost.is-active::after {
+  content: "";
+  position: absolute;
+  left: 12px;
+  right: 12px;
+  bottom: 6px;
+  height: 2px;
+  border-radius: var(--radius-full);
+  background: color-mix(in srgb, var(--accent) 62%, transparent);
+}
+
+.chat-model-routing-btn--llm_ensemble.btn--ghost.is-active {
+  border-color: color-mix(in srgb, var(--accent) 30%, transparent);
+  background: color-mix(in srgb, var(--accent) 11%, var(--bg-surface));
+}
+
+.chat-model-routing-btn--llm_ensemble.btn--ghost.is-active::before,
+.chat-model-routing-btn--llm_ensemble.btn--ghost.is-active::after {
+  content: "";
+  position: absolute;
+  bottom: 6px;
+  width: 6px;
+  height: 2px;
+  border-radius: var(--radius-full);
+  background: color-mix(in srgb, var(--accent) 62%, transparent);
+}
+
+.chat-model-routing-btn--llm_ensemble.btn--ghost.is-active::before {
+  left: 10px;
+}
+
+.chat-model-routing-btn--llm_ensemble.btn--ghost.is-active::after {
+  right: 10px;
+}
+
+.chat-run-mode-btn {
+  --run-mode-tone: var(--text-muted);
+  --run-mode-tint: transparent;
+  --run-mode-border: transparent;
+  --run-mode-marker: var(--text-dim);
+  position: relative;
+  border-color: var(--run-mode-border);
+  background: var(--run-mode-tint);
+  color: var(--run-mode-tone);
+}
+
+.chat-run-mode-btn::after {
+  content: "";
+  position: absolute;
+  right: 7px;
+  bottom: 7px;
+  width: 6px;
+  height: 6px;
+  border-radius: var(--radius-full);
+  background: var(--run-mode-marker);
+  box-shadow: 0 0 0 2px var(--bg-surface);
+}
+
+.chat-run-mode-btn--trusted {
+  --run-mode-tone: var(--ok);
+  --run-mode-tint: color-mix(in srgb, var(--ok) 12%, var(--bg-surface));
+  --run-mode-border: color-mix(in srgb, var(--ok) 34%, transparent);
+  --run-mode-marker: var(--ok);
+}
+
+.chat-run-mode-btn--full {
+  --run-mode-tone: color-mix(in srgb, var(--warn) 72%, var(--text-muted));
+  --run-mode-tint: color-mix(in srgb, var(--warn) 5%, var(--bg-surface));
+  --run-mode-border: color-mix(in srgb, var(--warn) 18%, transparent);
+  --run-mode-marker: color-mix(in srgb, var(--warn-fill) 70%, var(--text-dim));
+}
+
+.chat-run-mode-btn.btn--ghost:not(:disabled):hover,
+.chat-run-mode-btn.btn--ghost.is-active {
+  border-color: var(--run-mode-border);
+  background: color-mix(in srgb, var(--run-mode-marker) 16%, var(--bg-surface));
+  color: var(--run-mode-tone);
 }
 
 .chat-send-btn.btn--primary {

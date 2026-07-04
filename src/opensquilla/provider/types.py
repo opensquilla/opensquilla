@@ -84,6 +84,8 @@ class DoneEvent:
     # tests does not silently shift earlier args.
     cache_write_tokens: int = 0
     cost_source: str = "none"
+    model_usage_breakdown: list[dict[str, Any]] = field(default_factory=list)
+    ensemble_trace: dict[str, Any] | None = None
 
     @property
     def upstream_cost_usd(self) -> float:
@@ -107,6 +109,26 @@ class ProviderHeartbeatEvent:
     kind: Literal["provider_heartbeat"] = field(default="provider_heartbeat", init=False)
     phase: str = "provider"
     message: str = ""
+
+
+@dataclass
+class EnsembleProgressEvent:
+    """Mid-turn LLM-ensemble lifecycle signal — one proposer/aggregator started
+    or finished. Lets the UI reveal ensemble members incrementally before the
+    terminal ``DoneEvent`` lands with the full breakdown."""
+
+    kind: Literal["ensemble_progress"] = field(default="ensemble_progress", init=False)
+    event_type: str = "proposer_start"
+    proposer_index: int = -1
+    proposer_label: str = ""
+    proposer_model: str = ""
+    proposer_provider: str = ""
+    sample_index: int = 0
+    elapsed_ms: int = 0
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cost_usd: float = 0.0
+    error: str = ""
 
 
 @dataclass
@@ -144,6 +166,7 @@ StreamEvent = (
     | DoneEvent
     | ErrorEvent
     | ProviderHeartbeatEvent
+    | EnsembleProgressEvent
 )
 
 

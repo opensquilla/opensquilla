@@ -56,7 +56,7 @@ the project would be unacceptable.
 ## Interactive Approvals
 
 Interactive chat surfaces can pause sensitive tool calls for a human decision.
-The terminal chat supports:
+Gateway-backed terminal chat supports:
 
 ```text
 /approvals

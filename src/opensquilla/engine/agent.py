@@ -46,6 +46,7 @@ from opensquilla.engine.tool_result_store import (
 )
 from opensquilla.engine.tool_text_compat import strip_synthetic_tool_call_suffix
 from opensquilla.engine.tool_token_estimate import estimate_tokens as get_approx_tokens
+from opensquilla.engine.usage import model_usage_cost_fields
 from opensquilla.execution_status import (
     mark_execution_status_truncated,
     runtime_execution_status,
@@ -80,6 +81,9 @@ from opensquilla.provider import (
 )
 from opensquilla.provider.failures import ProviderFailureKind, classify_provider_error
 from opensquilla.provider.types import ContentBlockImage
+from opensquilla.provider.types import (
+    EnsembleProgressEvent as ProviderEnsembleProgressEvent,
+)
 from opensquilla.result_budget import (
     ToolResultBudgetClass,
     compact_tool_result_content,
@@ -120,6 +124,7 @@ from .types import (
     CompactionEvent,
     CompactionOutcome,
     DoneEvent,
+    EnsembleProgressEvent,
     ErrorEvent,
     RunHeartbeatEvent,
     StateChangeEvent,
@@ -135,6 +140,8 @@ from .types import (
 )
 
 logger = structlog.get_logger("opensquilla.engine.agent")
+
+_TURN_OBJECTIVE_REMINDER_MAX_CHARS = 2000
 
 _PROVIDER_OUTPUT_TRUNCATED_REPLY = build_terminal_reply(
     {
@@ -167,6 +174,134 @@ def _cost_source_for_usage(cost_usd: float, billed_cost: float) -> str:
     if cost_usd > 0.0:
         return "opensquilla_estimate"
     return "unavailable"
+
+
+def _usage_int(value: Any) -> int:
+    try:
+        return max(0, int(value or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _usage_float(value: Any) -> float:
+    try:
+        return max(0.0, float(value or 0.0))
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _model_usage_row_cost_source(sources: list[str], *, cost_usd: float) -> str:
+    meaningful = [source for source in sources if source not in {"", "none"}]
+    if not meaningful:
+        return "unavailable" if cost_usd <= 0.0 else "opensquilla_estimate"
+    unique = set(meaningful)
+    if unique == {"provider_billed"}:
+        return "provider_billed"
+    if unique <= {"opensquilla_estimate", "unavailable"}:
+        return "opensquilla_estimate" if cost_usd > 0.0 else "unavailable"
+    return "mixed"
+
+
+def _with_model_usage_cost_fields(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    enriched: list[dict[str, Any]] = []
+    for row in rows:
+        item = dict(row)
+        model_id = str(item.get("model") or "")
+        if model_id:
+            item.update(
+                model_usage_cost_fields(
+                    model_id=model_id,
+                    input_tokens=_usage_int(item.get("input_tokens") or item.get("inputTokens")),
+                    output_tokens=_usage_int(
+                        item.get("output_tokens") or item.get("outputTokens")
+                    ),
+                    billed_cost=_usage_float(
+                        item.get("billed_cost")
+                        or item.get("billedCost")
+                        or item.get("billed_cost_usd")
+                        or item.get("billedCostUsd")
+                    ),
+                )
+            )
+        enriched.append(item)
+    return enriched
+
+
+def _summarize_model_usage_breakdown(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    aggregated: dict[tuple[str, str, str, str], dict[str, Any]] = {}
+    sources_by_key: dict[tuple[str, str, str, str], list[str]] = {}
+    for row in _with_model_usage_cost_fields(rows):
+        model_id = str(row.get("model") or "").strip()
+        if not model_id:
+            continue
+        role = str(row.get("role") or "").strip() or "member"
+        label = str(row.get("label") or role).strip() or role
+        provider = str(row.get("provider") or "").strip()
+        key = (role, label, provider, model_id)
+        if key not in aggregated:
+            aggregated[key] = {
+                "role": role,
+                "profile": row.get("profile"),
+                "label": label,
+                "provider": provider,
+                "model": model_id,
+                "sample_index": row.get("sample_index", 0),
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "reasoning_tokens": 0,
+                "cached_tokens": 0,
+                "cache_write_tokens": 0,
+                "billed_cost": 0.0,
+                "cost_usd": 0.0,
+                "billed_cost_usd": 0.0,
+                "estimated_cost_usd": 0.0,
+                "request_count": 0,
+            }
+            sources_by_key[key] = []
+        target = aggregated[key]
+        for usage_field in (
+            "input_tokens",
+            "output_tokens",
+            "reasoning_tokens",
+            "cached_tokens",
+            "cache_write_tokens",
+        ):
+            target[usage_field] += _usage_int(
+                row.get(usage_field) or row.get(_camel_usage_key(usage_field))
+            )
+        target["billed_cost"] += _usage_float(row.get("billed_cost") or row.get("billedCost"))
+        target["cost_usd"] += _usage_float(row.get("cost_usd") or row.get("costUsd"))
+        target["billed_cost_usd"] += _usage_float(
+            row.get("billed_cost_usd") or row.get("billedCostUsd")
+        )
+        target["estimated_cost_usd"] += _usage_float(
+            row.get("estimated_cost_usd") or row.get("estimatedCostUsd")
+        )
+        target["request_count"] += max(1, _usage_int(row.get("request_count") or 1))
+        sources_by_key[key].append(str(row.get("cost_source") or row.get("costSource") or "none"))
+
+    summarized: list[dict[str, Any]] = []
+    for key, row in aggregated.items():
+        row["cost_usd"] = round(float(row["cost_usd"] or 0.0), 6)
+        row["billed_cost"] = round(float(row["billed_cost"] or 0.0), 6)
+        row["billed_cost_usd"] = round(float(row["billed_cost_usd"] or 0.0), 6)
+        row["estimated_cost_usd"] = round(float(row["estimated_cost_usd"] or 0.0), 6)
+        row["cost_source"] = _model_usage_row_cost_source(
+            sources_by_key.get(key, []),
+            cost_usd=float(row["cost_usd"] or 0.0),
+        )
+        row["costUsd"] = row["cost_usd"]
+        row["billedCostUsd"] = row["billed_cost_usd"]
+        row["estimatedCostUsd"] = row["estimated_cost_usd"]
+        row["costSource"] = row["cost_source"]
+        summarized.append(row)
+    return summarized
+
+
+def _camel_usage_key(field: str) -> str:
+    parts = field.split("_")
+    return parts[0] + "".join(part.capitalize() for part in parts[1:])
+
 
 MAX_META_INVOKE_DEPTH = 3
 MAX_META_INVOKE_PER_TURN = 8
@@ -381,6 +516,12 @@ def _message_has_tool_result(message: Message | None) -> bool:
     if message is None or not isinstance(message.content, list):
         return False
     return any(getattr(block, "type", None) == "tool_result" for block in message.content)
+
+
+def _tail_has_tool_result(messages: list[Message], *, lookback: int = 2) -> bool:
+    if not messages:
+        return False
+    return any(_message_has_tool_result(message) for message in messages[-lookback:])
 
 
 def _append_length_capped_continuation(
@@ -1737,6 +1878,10 @@ class Agent:
         Explicit state machine — no recursion. Tool loop iterates until
         the model finishes, unless config.max_iterations is a positive cap.
         """
+        if self._session_key:
+            from opensquilla.sandbox.escalation import clear_sandbox_approval_denials
+
+            clear_sandbox_approval_denials(self._session_key)
         async for event in self._turn_generator(
             message,
             extra_messages,
@@ -1892,6 +2037,9 @@ class Agent:
         runtime_context = self._runtime_context_block()
         runtime_context_message = self._runtime_context_message(runtime_context)
         request_context_message = self._request_context_message(self.config.request_context_prompt)
+        turn_objective_message = self._turn_objective_message(
+            semantic_message if semantic_message is not None else message
+        )
         runtime_context_hash = hashlib.sha256(runtime_context.encode("utf-8")).hexdigest()[:16]
 
         chat_cfg = ChatConfig(
@@ -1935,6 +2083,9 @@ class Agent:
         turn_llm_calls = 0
         turn_tool_errors = 0
         last_actual_model = ""
+        turn_model_usage_breakdown: list[dict[str, Any]] = []
+        last_ensemble_trace: dict[str, Any] | None = None
+        turn_ensemble_request_count = 0
         terminal_error: ErrorEvent | None = None
         final_text_parts: list[str] = []
         final_reasoning_parts: list[str] = []
@@ -2228,6 +2379,7 @@ class Agent:
                         request_context_insert_index=request_context_insert_index,
                         runtime_context_message=runtime_context_message,
                         runtime_context_insert_index=runtime_context_insert_index,
+                        turn_objective_message=turn_objective_message,
                     )
                     self._write_context_stage(
                         "stream:context",
@@ -2271,7 +2423,7 @@ class Agent:
                         forced_tool_choice is not None
                         and provider_tools_for_call
                         and request_messages
-                        and not _message_has_tool_result(request_messages[-1])
+                        and not _tail_has_tool_result(request_messages)
                     ):
                         call_chat_cfg = chat_cfg.model_copy(
                             update={"tool_choice": forced_tool_choice}
@@ -2448,6 +2600,22 @@ class Agent:
                                 # invalid responses still consumed provider tokens, but
                                 # they must not be appended to conversation history or the
                                 # live context-window gauge below.
+                                usage_breakdown = getattr(
+                                    raw_ev,
+                                    "model_usage_breakdown",
+                                    None,
+                                )
+                                valid_usage_breakdown = (
+                                    [
+                                        dict(usage_row)
+                                        for usage_row in usage_breakdown
+                                        if isinstance(usage_row, dict)
+                                    ]
+                                    if isinstance(usage_breakdown, list)
+                                    else []
+                                )
+                                if valid_usage_breakdown:
+                                    turn_model_usage_breakdown.extend(valid_usage_breakdown)
                                 if self._usage_tracker and self._session_key:
                                     # Forward the provider's real per-call billed_cost so
                                     # the per-model breakdown can show actual numbers
@@ -2456,15 +2624,55 @@ class Agent:
                                     # gateway/rpc_usage.py:_reconcile_breakdown_to_row
                                     # (the pro-rate fallback now skips when items
                                     # already carry real billed totals).
-                                    self._usage_tracker.add(
-                                        self._session_key,
-                                        input_tokens=raw_ev.input_tokens,
-                                        output_tokens=raw_ev.output_tokens,
-                                        model_id=raw_ev.model or self.config.model_id or "",
-                                        cache_read_tokens=raw_ev.cached_tokens,
-                                        cache_write_tokens=raw_ev.cache_write_tokens,
-                                        billed_cost=raw_ev.billed_cost,
-                                        provider=getattr(self.provider, "provider_name", ""),
+                                    if valid_usage_breakdown:
+                                        for usage_row in valid_usage_breakdown:
+                                            cache_read = (
+                                                usage_row.get("cache_read_tokens")
+                                                if "cache_read_tokens" in usage_row
+                                                else usage_row.get("cached_tokens")
+                                            )
+                                            self._usage_tracker.add(
+                                                self._session_key,
+                                                input_tokens=_usage_int(
+                                                    usage_row.get("input_tokens") or 0
+                                                ),
+                                                output_tokens=_usage_int(
+                                                    usage_row.get("output_tokens") or 0
+                                                ),
+                                                model_id=str(
+                                                    usage_row.get("model")
+                                                    or self.config.model_id
+                                                    or ""
+                                                ),
+                                                cache_read_tokens=_usage_int(cache_read or 0),
+                                                cache_write_tokens=_usage_int(
+                                                    usage_row.get("cache_write_tokens") or 0
+                                                ),
+                                                billed_cost=_usage_float(
+                                                    usage_row.get("billed_cost") or 0.0
+                                                ),
+                                                provider=str(
+                                                    usage_row.get("provider")
+                                                    or getattr(self.provider, "provider_name", "")
+                                                    or ""
+                                                ),
+                                            )
+                                    else:
+                                        self._usage_tracker.add(
+                                            self._session_key,
+                                            input_tokens=raw_ev.input_tokens,
+                                            output_tokens=raw_ev.output_tokens,
+                                            model_id=raw_ev.model or self.config.model_id or "",
+                                            cache_read_tokens=raw_ev.cached_tokens,
+                                            cache_write_tokens=raw_ev.cache_write_tokens,
+                                            billed_cost=raw_ev.billed_cost,
+                                            provider=getattr(self.provider, "provider_name", ""),
+                                        )
+                                ensemble_trace = getattr(raw_ev, "ensemble_trace", None)
+                                if isinstance(ensemble_trace, dict):
+                                    last_ensemble_trace = dict(ensemble_trace)
+                                    turn_ensemble_request_count += _usage_int(
+                                        ensemble_trace.get("llm_request_count") or 0
                                     )
 
                             elif isinstance(raw_ev, ProviderErrorEvent):
@@ -2491,6 +2699,20 @@ class Agent:
                                 yield RunHeartbeatEvent(
                                     phase=raw_ev.phase,
                                     message=raw_ev.message,
+                                )
+                            elif isinstance(raw_ev, ProviderEnsembleProgressEvent):
+                                yield EnsembleProgressEvent(
+                                    event_type=raw_ev.event_type,
+                                    proposer_index=raw_ev.proposer_index,
+                                    proposer_label=raw_ev.proposer_label,
+                                    proposer_model=raw_ev.proposer_model,
+                                    proposer_provider=raw_ev.proposer_provider,
+                                    sample_index=raw_ev.sample_index,
+                                    elapsed_ms=raw_ev.elapsed_ms,
+                                    input_tokens=raw_ev.input_tokens,
+                                    output_tokens=raw_ev.output_tokens,
+                                    cost_usd=raw_ev.cost_usd,
+                                    error=raw_ev.error,
                                 )
                     except _IterationStreamTimeoutError:
                         if artifact_delivery_final_response_pending:
@@ -2532,7 +2754,7 @@ class Agent:
                         "got_done_event": _got_done_event,
                     }
                     if provider_done_for_log is not None:
-                        response_payload["usage"] = {
+                        usage_payload: dict[str, Any] = {
                             "stop_reason": provider_done_for_log.stop_reason,
                             "input_tokens": provider_done_for_log.input_tokens,
                             "output_tokens": provider_done_for_log.output_tokens,
@@ -2543,6 +2765,17 @@ class Agent:
                             "cost_source": getattr(provider_done_for_log, "cost_source", "none"),
                             "model": provider_done_for_log.model,
                         }
+                        response_payload["usage"] = usage_payload
+                        model_usage_breakdown = getattr(
+                            provider_done_for_log,
+                            "model_usage_breakdown",
+                            None,
+                        )
+                        if model_usage_breakdown:
+                            usage_payload["model_usage_breakdown"] = model_usage_breakdown
+                        ensemble_trace = getattr(provider_done_for_log, "ensemble_trace", None)
+                        if ensemble_trace:
+                            response_payload["ensemble_trace"] = ensemble_trace
                     if provider_error_for_log is not None:
                         response_payload["error"] = {
                             "message": provider_error_for_log.message,
@@ -2579,9 +2812,8 @@ class Agent:
                         if response_text:
                             assistant_text_parts.append(response_text)
                             attempt_user_visible_emitted = True
-                            yield TextDeltaEvent(text=response_text, presentation="answer")
-                    last_request_msg = request_messages[-1] if request_messages else None
-                    post_tool_turn = _message_has_tool_result(last_request_msg)
+                            yield TextDeltaEvent(text=response_text)
+                    post_tool_turn = _tail_has_tool_result(request_messages)
                     stop_reason = (
                         getattr(provider_done_for_log, "stop_reason", None)
                         if provider_done_for_log is not None
@@ -3073,6 +3305,7 @@ class Agent:
                                 request_context_insert_index=next_request_context_insert_index,
                                 runtime_context_message=runtime_context_message,
                                 runtime_context_insert_index=next_runtime_context_insert_index,
+                                turn_objective_message=turn_objective_message,
                             )
                             if not self._provider_request_is_smaller(
                                 request_messages,
@@ -3666,6 +3899,8 @@ class Agent:
                         replay_event = router_control_replay_event_from_payload(result.content)
                         if replay_event is not None:
                             yield replay_event
+                        if _pending_approval_payload(result.content) is not None:
+                            turn_yielded = True
                     executed_results.append(result)
                     while self._pending_warnings:
                         yield self._pending_warnings.pop(0)
@@ -3871,6 +4106,14 @@ class Agent:
             or done_cache_write_tokens
             or done_billed_cost
         )
+        summarized_model_usage_breakdown = _summarize_model_usage_breakdown(
+            turn_model_usage_breakdown
+        )
+        final_ensemble_trace = (
+            dict(last_ensemble_trace) if isinstance(last_ensemble_trace, dict) else None
+        )
+        if final_ensemble_trace is not None and turn_ensemble_request_count > 0:
+            final_ensemble_trace["llm_request_count"] = turn_ensemble_request_count
         if terminal_error is None or has_usage:
             if terminal_error is None:
                 yield self._transition(AgentState.DONE)
@@ -3892,6 +4135,8 @@ class Agent:
                     "\n".join(final_reasoning_parts) if final_reasoning_parts else None
                 ),
                 session_totals=session_totals,
+                model_usage_breakdown=summarized_model_usage_breakdown,
+                ensemble_trace=final_ensemble_trace,
             )
         # Reset for next turn
         self._state = AgentState.IDLE
@@ -3918,7 +4163,13 @@ class Agent:
                 wait_budget = min(wait_budget, remaining_total)
 
             next_event: asyncio.Future[Any] = asyncio.ensure_future(stream_iter.__anext__())
-            done, _ = await asyncio.wait({next_event}, timeout=wait_budget)
+            try:
+                done, _ = await asyncio.wait({next_event}, timeout=wait_budget)
+            except (asyncio.CancelledError, GeneratorExit):
+                next_event.cancel()
+                with contextlib.suppress(asyncio.CancelledError, StopAsyncIteration):
+                    await next_event
+                raise
             if not done:
                 next_event.cancel()
                 with contextlib.suppress(asyncio.CancelledError, StopAsyncIteration):
@@ -3949,6 +4200,7 @@ class Agent:
         request_context_insert_index: int,
         runtime_context_message: Message,
         runtime_context_insert_index: int,
+        turn_objective_message: Message | None = None,
     ) -> list[Message]:
         request_messages, _ = self._provider_request_messages_with_sanitize(
             messages,
@@ -3956,6 +4208,7 @@ class Agent:
             request_context_insert_index=request_context_insert_index,
             runtime_context_message=runtime_context_message,
             runtime_context_insert_index=runtime_context_insert_index,
+            turn_objective_message=turn_objective_message,
         )
         return request_messages
 
@@ -3967,6 +4220,7 @@ class Agent:
         request_context_insert_index: int,
         runtime_context_message: Message,
         runtime_context_insert_index: int,
+        turn_objective_message: Message | None = None,
     ) -> tuple[list[Message], SessionSanitizeResult]:
         source_messages = self._with_request_context_messages(
             messages,
@@ -3974,6 +4228,7 @@ class Agent:
             request_context_insert_index,
             runtime_context_message,
             runtime_context_insert_index,
+            turn_objective_message=turn_objective_message,
         )
         source_messages = self._apply_provider_tool_result_overrides(source_messages)
         source_messages = self._strip_provider_context_marker_replay_for_provider(source_messages)
@@ -4051,12 +4306,29 @@ class Agent:
         return Message(role="user", content="\n".join(lines))
 
     @staticmethod
+    def _turn_objective_message(turn_objective: str | None) -> Message | None:
+        if not turn_objective or not turn_objective.strip():
+            return None
+        objective = turn_objective.strip()
+        if len(objective) > _TURN_OBJECTIVE_REMINDER_MAX_CHARS:
+            objective = objective[:_TURN_OBJECTIVE_REMINDER_MAX_CHARS].rstrip() + "..."
+        lines = [
+            "[Current user request reminder]",
+            "This is the active user request for this same turn, not a new request.",
+            "Continue using the tool results above to make progress on:",
+            objective,
+        ]
+        return Message(role="user", content="\n".join(lines))
+
+    @staticmethod
     def _with_request_context_messages(
         messages: list[Message],
         request_context_message: Message | None,
         request_context_insert_index: int,
         runtime_context_message: Message,
         runtime_context_insert_index: int,
+        *,
+        turn_objective_message: Message | None = None,
     ) -> list[Message]:
         result = list(messages)
         runtime_idx = max(0, min(runtime_context_insert_index, len(result)))
@@ -4073,7 +4345,26 @@ class Agent:
             )
         else:
             result.insert(runtime_idx, runtime_context_message)
+        if (
+            turn_objective_message is not None
+            and _message_has_tool_result(result[-1] if result else None)
+            and not Agent._has_provider_context_marker_replay(result)
+        ):
+            result.append(turn_objective_message)
         return result
+
+    @staticmethod
+    def _has_provider_context_marker_replay(messages: list[Message]) -> bool:
+        for message in messages:
+            if not isinstance(message.content, list):
+                continue
+            for block in message.content:
+                if (
+                    isinstance(block, ContentBlockToolUse)
+                    and Agent._has_provider_context_replay_marker(block.input)
+                ):
+                    return True
+        return False
 
     @staticmethod
     def _append_runtime_context_to_user_message(
@@ -5205,14 +5496,8 @@ class Agent:
     ) -> tuple[Any, Any, Any]:
         """Construct a MetaOrchestrator wired to this agent's provider/tools.
 
-        Shared by the model-tool path (``_run_one_streaming``), resume
-        (``_run_meta_resume``), and the manual ``/meta`` path
-        (``_run_meta_launch``). Only ``triggered_by`` differs between callers.
-
-        Returns ``(orchestrator, llm_chat, tool_invoker)``. The latter two are
-        returned (not just consumed internally) because ``_run_one_streaming``
-        and ``_run_meta_launch`` reuse them to build the runtime-e2e context
-        around ``iter_events``. Callers that don't need them unpack into ``_``.
+        Shared by meta launch paths that need the orchestrator plus its runtime
+        context dependencies. Only ``triggered_by`` differs between callers.
         """
         from opensquilla.skills.meta.orchestrator import (
             MetaOrchestrator,
@@ -5277,6 +5562,12 @@ class Agent:
         from opensquilla.skills.meta.inputs import (
             make_meta_inputs,
             meta_input_overrides_from_metadata,
+        )
+        from opensquilla.skills.meta.orchestrator import (
+            MetaOrchestrator,
+            make_agent_runner_from_parent,
+            make_llm_chat_from_provider,
+            make_tool_invoker_from_handler,
         )
         from opensquilla.skills.meta.parser import MetaPlanError, parse_meta_plan
         from opensquilla.skills.meta.types import MetaMatch, MetaResult
@@ -5449,10 +5740,48 @@ class Agent:
                 )
                 return
 
-            orch, llm_chat, tool_invoker = self._build_meta_orchestrator(
-                workspace_dir=workspace_dir,
-                triggered_by="soft_meta_invoke",
+            runner = make_agent_runner_from_parent(
+                provider=self.provider,
+                base_config=self.config,
+                tool_definitions=self.tool_definitions,
+                tool_handler=self.tool_handler,
+                agent_factory=type(self),
+                workspace_dir=str(workspace_dir) if workspace_dir else None,
+                usage_tracker=self._usage_tracker,
+                session_key=self._session_key,
+            )
+            llm_chat = (
+                getattr(self, "_test_llm_chat_override", None)
+                or (
+                    make_llm_chat_from_provider(
+                        provider=self.provider,
+                        base_config=self.config,
+                        usage_tracker=self._usage_tracker,
+                        session_key=self._session_key,
+                    )
+                    if self.provider is not None
+                    else None
+                )
+            )
+            tool_invoker = (
+                make_tool_invoker_from_handler(tool_handler=self.tool_handler)
+                if self.tool_handler is not None
+                else None
+            )
+
+            memory_persist_enabled = True
+            orch = MetaOrchestrator(
+                agent_runner=runner,
                 skill_loader=skill_loader,
+                llm_chat=llm_chat,
+                tool_invoker=tool_invoker,
+                workspace_dir=str(workspace_dir) if workspace_dir else None,
+                run_writer=self._meta_run_writer,
+                triggered_by="soft_meta_invoke",
+                session_key=getattr(self, "_session_key", None),
+                turn_id=getattr(self, "_turn_id", None),
+                memory_persist_enabled=memory_persist_enabled,
+                usage_tracker=self._usage_tracker,
             )
 
             system_prompt = (
@@ -5606,6 +5935,12 @@ class Agent:
         outer stream pipeline can finalize the turn.
         """
         from opensquilla.engine.types import DoneEvent
+        from opensquilla.skills.meta.orchestrator import (
+            MetaOrchestrator,
+            make_agent_runner_from_parent,
+            make_llm_chat_from_provider,
+            make_tool_invoker_from_handler,
+        )
         from opensquilla.skills.meta.types import MetaResult
         from opensquilla.tools.types import current_tool_context
 
@@ -5638,10 +5973,47 @@ class Agent:
             or getattr(self.config, "workspace_dir", None)
         )
 
-        orch, _llm_chat, _tool_invoker = self._build_meta_orchestrator(
-            workspace_dir=workspace_dir,
-            triggered_by="resume",
+        runner = make_agent_runner_from_parent(
+            provider=self.provider,
+            base_config=self.config,
+            tool_definitions=self.tool_definitions,
+            tool_handler=self.tool_handler,
+            agent_factory=type(self),
+            workspace_dir=str(workspace_dir) if workspace_dir else None,
+            usage_tracker=self._usage_tracker,
+            session_key=self._session_key,
+        )
+        llm_chat = (
+            getattr(self, "_test_llm_chat_override", None)
+            or (
+                make_llm_chat_from_provider(
+                    provider=self.provider,
+                    base_config=self.config,
+                    usage_tracker=self._usage_tracker,
+                    session_key=self._session_key,
+                )
+                if self.provider is not None
+                else None
+            )
+        )
+        tool_invoker = (
+            make_tool_invoker_from_handler(tool_handler=self.tool_handler)
+            if self.tool_handler is not None
+            else None
+        )
+
+        orch = MetaOrchestrator(
+            agent_runner=runner,
             skill_loader=skill_loader,
+            llm_chat=llm_chat,
+            tool_invoker=tool_invoker,
+            workspace_dir=str(workspace_dir) if workspace_dir else None,
+            run_writer=self._meta_run_writer,
+            triggered_by="resume",
+            session_key=getattr(self, "_session_key", None),
+            turn_id=getattr(self, "_turn_id", None),
+            memory_persist_enabled=True,
+            usage_tracker=self._usage_tracker,
         )
 
         result: Any = None

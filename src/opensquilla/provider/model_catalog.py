@@ -8,6 +8,8 @@ import structlog
 from opensquilla.env import trust_env as _trust_env
 from opensquilla.secrets import clean_header_secret
 
+from .models_dev import lookup_limits as _models_dev_limits
+from .models_dev import lookup_model as _models_dev_model
 from .ollama import _OLLAMA_DEFAULT_NUM_CTX
 from .openrouter_attribution import openrouter_app_headers
 from .registry import UnknownProviderError, get_provider_spec
@@ -27,43 +29,71 @@ _LOCAL_CONTEXT_WINDOW = _OLLAMA_DEFAULT_NUM_CTX
 _LOCAL_PROVIDERS = frozenset({"ollama", "lm_studio", "ovms", "vllm", "local"})
 
 # Static fallback for squilla-router tier models + default model.
-# Used when OpenRouter API is unreachable at boot.
+# Used when the OpenRouter API is unreachable at boot.
 # Format: model_id → (max_output_tokens, context_window)
+#
+# Keys are provider-agnostic basenames (no "vendor/" prefix); a model that
+# was previously listed under both spellings is merged to ONE conservative
+# (per-dimension min) tuple. Conservative because over-estimating the
+# context window causes silent server-side truncation, while
+# under-estimating only triggers compaction earlier. Lookups normalize the
+# requested id via ``_static_fallback_entry`` so either spelling resolves
+# to the same entry. When offline, the live catalog still overrides this.
 _STATIC_FALLBACK: dict[str, tuple[int, int]] = {
-    "anthropic/claude-opus-4.8": (128_000, 1_000_000),
-    "anthropic/claude-sonnet-4.6": (128_000, 1_000_000),
-    "google/gemini-3.5-flash": (65_536, 1_048_576),
-    "moonshotai/kimi-k2.6": (262_144, 262_144),
-    "openai/gpt-5.4-mini": (128_000, 400_000),
-    "openai/gpt-5.5": (128_000, 1_050_000),
-    "qwen/qwen3-coder-plus": (65_536, 1_000_000),
-    "x-ai/grok-4.3": (DEFAULT_MAX_TOKENS, 1_000_000),
-    "z-ai/glm-4.6": (131_072, 202_752),
+    "claude-opus-4.8": (128_000, 1_000_000),
+    "claude-sonnet-4.6": (128_000, 1_000_000),
+    "gemini-3.5-flash": (65_536, 1_048_576),
     "gpt-5.4-nano": (128_000, 400_000),
     "gpt-5.4-mini": (128_000, 400_000),
     "gpt-5.5": (128_000, 1_000_000),
-    "minimax/minimax-m2.7": (8192, 196_608),
-    "stepfun/step-3.5-flash": (16_384, 256_000),
-    "z-ai/glm-4.5-air": (98_304, 131_072),
-    "minimax/minimax-m2.5": (65_536, 196_608),
-    "deepseek/deepseek-v4-flash": (16_384, 1_048_576),
-    "deepseek/deepseek-v4-pro": (16_384, 1_048_576),
-    "deepseek-v4-flash": (393_216, 1_048_576),
-    "deepseek-v4-pro": (393_216, 1_048_576),
-    "deepseek/deepseek-v3.2": (16_384, 163_840),
+    "qwen3-coder-plus": (65_536, 1_000_000),
+    "grok-4.3": (DEFAULT_MAX_TOKENS, 1_000_000),
+    "glm-4.5-air": (98_304, 131_072),
+    "glm-4.6": (131_072, 202_752),
     "glm-4.7-flashx": (128_000, 200_000),
-    "glm-5": (128_000, 200_000),
+    "glm-5": (80_000, 80_000),
     "glm-5.1": (128_000, 200_000),
-    "z-ai/glm-5": (80_000, 80_000),
-    "z-ai/glm-5.1": (202_752, 202_752),
-    "z-ai/glm-5.2": (262_144, 1_048_576),
+    "glm-5.2": (262_144, 1_048_576),
+    "minimax-m2.5": (65_536, 196_608),
+    "minimax-m2.7": (8192, 196_608),
+    "step-3.5-flash": (16_384, 256_000),
+    "deepseek-v4-flash": (16_384, 1_048_576),
+    "deepseek-v4-pro": (16_384, 1_048_576),
+    "deepseek-v3.2": (16_384, 163_840),
     "moonshot-v1-8k": (8192, 8192),
     "moonshot-v1-32k": (32_768, 32_768),
     "moonshot-v1-128k": (131_072, 131_072),
     "kimi-k2.5": (32_768, 262_144),
     "kimi-k2.6": (32_768, 262_144),
-    "moonshotai/kimi-k2.5": (65_535, 262_144),
 }
+
+
+def _static_fallback_entry(model_id: str) -> tuple[int, int] | None:
+    """Return the static ``(max_output, context_window)`` for a model.
+
+    Tries the id verbatim, then the basename after the final ``/`` so the
+    same physical model resolves identically whether referenced as a bare
+    id (``glm-5``) or a provider-qualified id (``z-ai/glm-5``).
+    """
+    entry = _STATIC_FALLBACK.get(model_id)
+    if entry is not None:
+        return entry
+    if "/" in model_id:
+        return _STATIC_FALLBACK.get(model_id.rsplit("/", 1)[-1])
+    return None
+
+
+def _price_per_1k(value: object) -> float:
+    """Convert an OpenRouter per-token price string to a per-1k-token float.
+
+    OpenRouter reports prices as per-token USD strings; downstream cost
+    accounting expects per-1k-token floats. Missing or non-numeric values
+    fall back to 0.0 (free / unknown).
+    """
+    try:
+        return float(value) * 1000.0  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return 0.0
 
 
 class ModelCatalog:
@@ -96,6 +126,7 @@ class ModelCatalog:
             input_modalities = {
                 str(item).lower() for item in architecture.get("input_modalities", [])
             }
+            pricing = m.get("pricing") or {}
             self._models[model_id] = ModelInfo(
                 provider="openrouter",
                 model_id=model_id,
@@ -105,6 +136,8 @@ class ModelCatalog:
                 supports_reasoning="reasoning" in supported or "reasoning_effort" in supported,
                 supports_tools="tools" in supported or "tool_choice" in supported,
                 supports_vision="image" in input_modalities,
+                input_cost_per_1k=_price_per_1k(pricing.get("prompt")),
+                output_cost_per_1k=_price_per_1k(pricing.get("completion")),
             )
 
     def get_capabilities(
@@ -196,15 +229,22 @@ class ModelCatalog:
                 reasoning_format="moonshot" if supports_reasoning else "none",
             )
         if provider_id == "volcengine":
+            # doubao-seed-1-6 and -1-8 and the seed-2 line are reasoning
+            # models; without 1-6 here the stream path emits no thinking
+            # toggle, so reasoning leaks into thinking-disabled requests
+            # (verified live 2026-07-02 against doubao-seed-1-6-251015).
             supports_reasoning = (
                 "thinking" in model_l
                 or model_l.startswith("doubao-seed-2")
                 or model_l.startswith("doubao-seed-1-8")
+                or model_l.startswith("doubao-seed-1-6")
             )
             return ModelCapabilities(
                 supports_reasoning=supports_reasoning,
                 supports_tools=True,
-                supports_vision=model_l.startswith(("doubao-seed-1-8", "doubao-seed-2")),
+                supports_vision=model_l.startswith(
+                    ("doubao-seed-1-6", "doubao-seed-1-8", "doubao-seed-2")
+                ),
                 reasoning_format="volcengine" if supports_reasoning else "none",
             )
         if provider_id == "byteplus":
@@ -212,16 +252,29 @@ class ModelCatalog:
                 "thinking" in model_l
                 or model_l.startswith("seed-2")
                 or model_l.startswith("seed-1-8")
+                or model_l.startswith("seed-1-6")
                 or model_l.startswith(("kimi-k2-", "kimi-k2."))
             )
             return ModelCapabilities(
                 supports_reasoning=supports_reasoning,
                 supports_tools=True,
                 supports_vision=model_l.startswith(
-                    ("seed-1-8", "seed-2", "kimi-k2-", "kimi-k2.")
+                    ("seed-1-6", "seed-1-8", "seed-2", "kimi-k2-", "kimi-k2.")
                 ),
                 reasoning_format="volcengine" if supports_reasoning else "none",
             )
+        # Unknown to every provider-specific branch: fill tools/vision from
+        # the vendored models.dev snapshot when the live catalog has nothing.
+        # Reasoning stays off here on purpose — enabling it requires knowing
+        # the provider's reasoning *format*, which is dialect knowledge the
+        # snapshot does not carry.
+        if info is None:
+            snapshot_entry = _models_dev_model(provider_id, model_id)
+            if snapshot_entry is not None:
+                return ModelCapabilities(
+                    supports_tools=bool(snapshot_entry.get("tools", True)),
+                    supports_vision=bool(snapshot_entry.get("vision", False)),
+                )
         return ModelCapabilities(
             supports_tools=info.supports_tools if info else True,
             supports_vision=info.supports_vision if info else False,
@@ -260,12 +313,15 @@ class ModelCatalog:
         info = self._models.get(model_id)
 
         using_user_override = user_override > 0
+        snapshot_limits = _models_dev_limits(provider, model_id)
         if using_user_override:
             effective = user_override
         elif info and info.max_output_tokens > 0:
             effective = info.max_output_tokens
-        elif model_id in _STATIC_FALLBACK:
-            effective = _STATIC_FALLBACK[model_id][0]
+        elif snapshot_limits is not None and snapshot_limits[0] > 0:
+            effective = snapshot_limits[0]
+        elif (static := _static_fallback_entry(model_id)) is not None:
+            effective = static[0]
         else:
             effective = DEFAULT_MAX_TOKENS
 
@@ -285,12 +341,16 @@ class ModelCatalog:
         return effective
 
     def resolve_context_window(self, model_id: str, provider: str = "") -> int:
-        """Resolve context window: catalog > static fallback > local/default."""
+        """Resolve context window: catalog > models.dev > static fallback > local/default."""
         info = self._models.get(model_id)
         if info and info.context_window > 0:
             return info.context_window
-        if model_id in _STATIC_FALLBACK:
-            return _STATIC_FALLBACK[model_id][1]
+        snapshot_limits = _models_dev_limits(provider, model_id)
+        if snapshot_limits is not None and snapshot_limits[1] > 0:
+            return snapshot_limits[1]
+        static = _static_fallback_entry(model_id)
+        if static is not None:
+            return static[1]
         if provider and provider.strip().lower() in _LOCAL_PROVIDERS:
             return _LOCAL_CONTEXT_WINDOW
         return DEFAULT_CONTEXT_WINDOW

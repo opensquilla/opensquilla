@@ -199,7 +199,7 @@ onUnmounted(() => {
 .share-modal {
   background: var(--bg-surface);
   border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
+  border-radius: var(--radius-modal);
   width: min(640px, 100%);
   max-height: calc(100dvh - var(--sp-8));
   display: flex;
@@ -283,7 +283,7 @@ onUnmounted(() => {
 .share-modal__spinner {
   width: 24px;
   height: 24px;
-  border-radius: 999px;
+  border-radius: var(--radius-full);
   border: 2px solid color-mix(in srgb, var(--accent) 28%, transparent);
   border-top-color: var(--accent);
   animation: shareModalSpin 0.7s linear infinite;
@@ -347,7 +347,7 @@ onUnmounted(() => {
 
 .share-modal__seg-btn:focus-visible {
   outline: none;
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent);
+  box-shadow: var(--focus-ring);
 }
 
 .share-modal__actions {

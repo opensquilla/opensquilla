@@ -232,6 +232,67 @@ def test_legacy_agent_token_saving_migration_keeps_runtime_schema_strict(
     assert "agent_token_saving.typo_field" in str(exc_info.value)
 
 
+@pytest.mark.parametrize("legacy_timeout", [120.0, 300.0])
+def test_load_migrates_legacy_llm_ensemble_timeout_defaults(
+    tmp_path: Path, legacy_timeout: float
+) -> None:
+    toml_path = tmp_path / "config.toml"
+    toml_path.write_text(
+        "\n".join(
+            [
+                "[llm_ensemble]",
+                "enabled = true",
+                f"proposer_timeout_seconds = {legacy_timeout:.1f}",
+                f"aggregator_timeout_seconds = {legacy_timeout:.1f}",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    cfg = GatewayConfig.load(toml_path)
+
+    assert cfg.llm_ensemble.proposer_timeout_seconds == 3600.0
+    assert cfg.llm_ensemble.aggregator_timeout_seconds == 3600.0
+    backups = sorted(tmp_path.glob("config.toml.backup.*"))
+    assert backups
+    migrated = toml_path.read_text(encoding="utf-8")
+    assert "proposer_timeout_seconds = 3600.0" in migrated
+    assert "aggregator_timeout_seconds = 3600.0" in migrated
+
+
+def test_llm_ensemble_timeout_migration_preserves_custom_values() -> None:
+    result = migration_module.migrate_config_payload(
+        {
+            "llm_ensemble": {
+                "enabled": True,
+                "proposer_timeout_seconds": 180.0,
+                "aggregator_timeout_seconds": 240.0,
+            }
+        }
+    )
+
+    assert result.changed is False
+    assert result.payload["llm_ensemble"]["proposer_timeout_seconds"] == 180.0
+    assert result.payload["llm_ensemble"]["aggregator_timeout_seconds"] == 240.0
+
+
+def test_llm_ensemble_timeout_migration_preserves_mixed_legacy_and_custom_values() -> None:
+    result = migration_module.migrate_config_payload(
+        {
+            "llm_ensemble": {
+                "enabled": True,
+                "proposer_timeout_seconds": 120.0,
+                "aggregator_timeout_seconds": 900.0,
+            }
+        }
+    )
+
+    assert result.changed is False
+    assert result.payload["llm_ensemble"]["proposer_timeout_seconds"] == 120.0
+    assert result.payload["llm_ensemble"]["aggregator_timeout_seconds"] == 900.0
+
+
 # ---------------------------------------------------------------------------
 # AC#5: aggregate DeprecationWarning emitted once per process
 # ---------------------------------------------------------------------------

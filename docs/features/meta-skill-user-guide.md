@@ -63,9 +63,9 @@ MetaSkill provides four main advantages:
 
 ## Default Launch Model
 
-MetaSkills are manual-only by default. Use `/meta` to list available workflows
-and `/meta <name>` to run one. This keeps workflow launches deliberate,
-reviewable, and easier to explain.
+MetaSkills are manual-only by default. On supported chat surfaces, use `/meta`
+to list available workflows and `/meta <name>` to run one. This keeps workflow
+launches deliberate, reviewable, and easier to explain.
 
 Web chat and the CLI gateway TUI support both list and run:
 
@@ -74,7 +74,8 @@ Web chat and the CLI gateway TUI support both list and run:
 /meta meta-kid-project-planner
 ```
 
-Channel and standalone CLI surfaces support `/meta` listing only.
+Channel surfaces support `/meta` listing only. Standalone CLI chat requires
+gateway mode for `/meta`.
 
 To restore the older automatic behavior, set:
 

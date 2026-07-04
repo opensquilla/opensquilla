@@ -1,8 +1,9 @@
-"""Canonical router tier identifiers and legacy aliases."""
+"""Canonical router tier identifiers, legacy aliases, and the typed tier view."""
 
 from __future__ import annotations
 
 from collections.abc import Mapping
+from dataclasses import dataclass
 from typing import Any
 
 TEXT_TIERS: tuple[str, str, str, str] = ("c0", "c1", "c2", "c3")
@@ -89,3 +90,40 @@ def tier_index(value: object) -> int:
         return TEXT_TIERS.index(tier)
     except ValueError:
         return -1
+
+
+@dataclass(frozen=True)
+class TierConfig:
+    """Typed view over one router tier entry.
+
+    Tier entries travel as plain dicts through config/TOML/RPC (and some
+    tests pass objects); this is the one place that knows the field names
+    and their normalization, so consumers stop re-implementing
+    ``.get("model")``-style plumbing with divergent defaults.
+    """
+
+    provider: str = ""
+    model: str = ""
+    description: str = ""
+    thinking_level: str | None = None
+    supports_image: bool = False
+    image_only: bool = False
+
+    @classmethod
+    def from_value(cls, value: object) -> TierConfig:
+        """Build from a tier dict or attribute-style object; tolerant of None."""
+
+        def _get(key: str, default: object = None) -> object:
+            if isinstance(value, Mapping):
+                return value.get(key, default)
+            return getattr(value, key, default)
+
+        thinking = _get("thinking_level")
+        return cls(
+            provider=str(_get("provider") or "").strip(),
+            model=str(_get("model") or "").strip(),
+            description=str(_get("description") or ""),
+            thinking_level=(str(thinking).strip() if thinking not in (None, "") else None),
+            supports_image=bool(_get("supports_image", False)),
+            image_only=bool(_get("image_only", False)),
+        )

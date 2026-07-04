@@ -114,6 +114,40 @@ def test_system_prompt_only_documents_canonical_tool_names() -> None:
     assert "send_message" not in prompt
 
 
+def test_system_prompt_requires_tool_preambles_and_conversation_language() -> None:
+    prompt = assemble_system_prompt(
+        AgentProfile(agent_id="main", prompt_mode="full"),
+        tools=["exec_command", "apply_patch"],
+    )
+
+    assert "Before invoking a tool, send a brief user-visible note" in prompt
+    assert "same language as the user's current conversation" in prompt
+    assert "Use the conversation's language for all user-visible replies" in prompt
+    assert "If the user writes in Chinese, keep replying in Chinese" in prompt
+
+
+def test_system_prompt_describes_managed_execution_run_mode() -> None:
+    prompt = assemble_system_prompt(
+        AgentProfile(agent_id="main", prompt_mode="full"),
+        tools=["exec_command"],
+        runtime_info={
+            "os": "Windows",
+            "shell": "powershell",
+            "workspace_dir": r"C:\OpenSquilla\workspace",
+            "run_mode": "trusted",
+            "run_mode_label": "Managed Execution",
+        },
+    )
+
+    assert "Run mode: Managed Execution" in prompt
+    assert "explicit host-affecting actions can run on the host when policy allows" in prompt
+    install_guidance = (
+        "Do not refuse a user-requested installation merely because the default path "
+        "starts sandboxed"
+    )
+    assert install_guidance in prompt
+
+
 def test_system_prompt_disambiguates_session_send_from_channel_message() -> None:
     prompt = assemble_system_prompt(
         AgentProfile(agent_id="main", prompt_mode="full"),

@@ -1,4 +1,46 @@
 {
+  "updates": {
+    "available": "OpenSquilla {version} is available",
+    "viewRelease": "View release",
+    "dismiss": "Dismiss",
+    "desktop": {
+      "indicatorAvailable": "Update {version}",
+      "indicatorDownloaded": "Update ready",
+      "indicatorDownloading": "Downloading",
+      "indicatorDownloadingProgress": "Downloading {progress}%",
+      "indicatorError": "Update issue",
+      "availableTitle": "OpenSquilla {version} is available",
+      "availableDesc": "Download it when you're ready. OpenSquilla will install it only after you relaunch.",
+      "downloadedTitle": "Ready to install",
+      "downloadedDesc": "Relaunch OpenSquilla to finish updating to {version}.",
+      "downloadingTitle": "Downloading update",
+      "downloadingDesc": "Keep OpenSquilla open while the update downloads.",
+      "checkingDesc": "Checking the desktop release feed.",
+      "applyingDesc": "OpenSquilla is preparing to relaunch and install the update.",
+      "errorTitle": "Update check failed",
+      "errorFallback": "Try checking again from Settings.",
+      "idleDesc": "Check for a new desktop release.",
+      "upToDateDesc": "Version {version} is the latest available.",
+      "settingsTitle": "Desktop updates",
+      "currentVersion": "Current",
+      "latestVersion": "Latest",
+      "unknownVersion": "Unknown",
+      "availableStatus": "Available",
+      "downloadedStatus": "Ready to install",
+      "downloadingStatus": "Downloading",
+      "checkingStatus": "Checking",
+      "upToDateStatus": "Up to date",
+      "errorStatus": "Needs attention",
+      "applyingStatus": "Relaunching",
+      "idleStatus": "Idle",
+      "unavailableStatus": "Unavailable",
+      "unsupported": "Native desktop updates are unavailable on this platform. Use the release link when a new version is announced.",
+      "check": "Check",
+      "download": "Download",
+      "relaunch": "Relaunch",
+      "later": "Later"
+    }
+  },
   "common": {
     "close": "Close",
     "save": "Save",
@@ -75,12 +117,19 @@
       "runtime": "Runtime",
       "provider": "Provider",
       "behavior": "Behavior",
+      "privacy": "Privacy",
       "router": "Router",
       "channels": "Channels",
       "capabilities": "Capabilities",
       "appearance": "Appearance",
       "keyboard": "Keyboard",
-      "advanced": "Advanced"
+      "advanced": "Advanced",
+      "groups": {
+        "gateway": "Gateway",
+        "ai": "AI configuration",
+        "delivery": "Delivery",
+        "preferences": "Preferences"
+      }
     }
   },
   "errorBoundary": {
@@ -121,7 +170,8 @@
       "live": "Live",
       "providerFirst": "Provider first",
       "review": "Review",
-      "envNotVisible": "{capability} is selected, but ${envKey} is not visible to the gateway."
+      "envNotVisible": "{capability} is selected, but ${envKey} is not visible to the gateway.",
+      "appliesOnSave": "Applies on save"
     },
     "summary": {
       "notConfigured": "not configured",
@@ -165,7 +215,8 @@
       "envMissing": "{envKey} is not visible to this gateway process. Set it before starting or restarting the gateway, or paste an API key instead.",
       "envKeyFallback": "the selected API key environment variable",
       "copyKeyCommand": "Copy set provider key command",
-      "save": "Save Provider"
+      "save": "Save Provider",
+      "configureRouter": "Configure the router →"
     },
     "behavior": {
       "title": "Session behavior",
@@ -178,8 +229,12 @@
     "router": {
       "title": "Router Tiers",
       "mode": "Mode",
+      "modeModelRouting": "Model routing",
+      "modeSingleModel": "Single model",
       "modeRecommended": "Follow current provider tiers",
       "modeDisabled": "Direct single model",
+      "routingDisabledHint": "Enable model routing to edit tier configuration.",
+      "routingEnsembleReadOnlyHint": "AI model ensemble routing is active. Standard model routing settings are temporarily inactive.",
       "defaultTextModel": "Default text tier",
       "panelLabel": "Router panel",
       "panelDesc": "Tier models are sent through the current request entry; OpenRouter aggregated tiers use OpenRouter to reach different upstream models.",
@@ -196,6 +251,9 @@
       "save": "Save Router",
       "chooseProviderFirst": "choose a provider first",
       "summaryDisabled": "direct single model",
+      "summaryEnsemble": "LLM ensemble routing profile",
+      "ensembleProfileTitle": "LLM ensemble routing profile",
+      "ensembleProfileDesc": "The tier table supplies candidate models for the ensemble router.",
       "visualMode": {
         "real_candidates": "Real routing candidates",
         "legacy_grid": "Three-tier visual panel"
@@ -390,6 +448,15 @@
       "runTraceDesc": "Make log lines interactive and open a per-line node-step detail drawer in the Logs view.",
       "runTraceAria": "Run-trace drawer in Logs (takes effect after reload)"
     },
+    "privacy": {
+      "title": "Privacy",
+      "statusEnabled": "Network observability is enabled.",
+      "statusDisabled": "Network observability is disabled.",
+      "statusDisabledByEnv": "Network observability is disabled by environment.",
+      "disableNetworkObservabilityLabel": "Disable network observability",
+      "disableNetworkObservabilityDesc": "Stop gateway network observability calls such as install telemetry and update checks.",
+      "save": "Save privacy"
+    },
     "toast": {
       "loadFailed": "Failed to load settings: {error}",
       "chooseProvider": "Choose a provider before saving.",
@@ -398,6 +465,8 @@
       "providerSavedRestart": "Provider saved. Restart required.",
       "behaviorSaved": "Behavior saved.",
       "behaviorSavedRestart": "Behavior saved. Restart required.",
+      "privacySaved": "Privacy saved.",
+      "privacySavedRestart": "Privacy saved. Restart required.",
       "chooseProviderRouter": "Choose a provider before saving router tiers.",
       "routerSaved": "Router saved.",
       "routerSavedRestart": "Router saved. Restart required.",
@@ -806,12 +875,10 @@
       "details": "Details",
       "unknownTool": "Unknown",
       "approveOnce": "Approve once",
-      "alwaysAllow": "Always allow this type",
-      "bypassHint": "Bypass approval prompts while keeping sensitive-path checks",
-      "bypass": "Bypass approvals",
+      "alwaysAllow": "Always allow this",
+      "allowSameType": "Allow same type",
       "deny": "Deny",
       "loadFailed": "Failed to load approvals: {msg}",
-      "bypassEnabled": "Approval bypass enabled",
       "approved": "Approved",
       "denied": "Denied",
       "toastFailed": "Failed: {msg}",
@@ -1464,6 +1531,8 @@
     "download": "Download",
     "previewOf": "Preview: {title}",
     "closePreview": "Close preview",
+    "previousImage": "Previous image",
+    "nextImage": "Next image",
     "loadingPreview": "Loading preview",
     "previewDownload": "Preview download",
     "previewTimedOut": "Preview timed out.",
@@ -1497,6 +1566,24 @@
     "addToShare": "Add to share image",
     "removeFromShare": "Remove from share image",
     "aiModelRouter": "AI model router",
+    "aiModelEnsembleRouter": "AI model ensemble router",
+    "routerFx": {
+      "ensembleSelecting": "AI model ensemble router · selecting candidates",
+      "ensembleRunning": "AI model ensemble router · {count} candidates synthesizing",
+      "ensembleDone": "{count} candidates synthesized",
+      "ensembleMode": "ensemble",
+      "ensembleViewTrace": "view trace",
+      "ensembleToggleTrace": "Show ensemble route trace",
+      "ensembleTraceTitle": "Candidate trace",
+      "ensemblePlanMeta": "ensemble plan · pool {count}",
+      "ensembleFallbackNone": "fallback none",
+      "ensembleFallbackUsed": "fallback used",
+      "ensembleFallbackReason": "fallback · {reason}",
+      "ensembleRouterPoolHidden": "router pool hidden",
+      "ensembleTokens": "{count} tok",
+      "ensembleUsed": "used",
+      "ensembleDetailUnavailable": "{count} candidates · detail unavailable"
+    },
     "sources": "Sources",
     "activitySteps": "Activity · {count} step | Activity · {count} steps",
     "suggestedTasks": "Suggested tasks",
@@ -1533,6 +1620,7 @@
       "denyReasonLabel": "Deny reason, optional, sent to the agent",
       "allowOnce": "Allow once",
       "allowAlways": "Always allow this",
+      "allowSameType": "Allow same type",
       "deny": "Deny",
       "expiresIn": "Expires in {time}",
       "outcomeExpired": "Expired — not run",
@@ -1562,10 +1650,22 @@
       "disabled": "Disabled",
       "routerAnimationOn": "Router animation on",
       "routerAnimationOff": "Router animation off",
-      "execOff": "Off",
-      "execPrompt": "Prompt for approvals",
-      "execBypass": "Bypass approvals",
-      "execFull": "Full access"
+      "modelRouting": "Model routing",
+      "modelRoutingOff": "Off",
+      "modelRoutingOffDesc": "Send every turn to the selected model.",
+      "modelRoutingSquillaRouter": "AI-powered single-model router",
+      "modelRoutingSquillaRouterDesc": "AI selects one suitable model per turn to lower cost.",
+      "modelRoutingEnsemble": "AI-powered ensemble router",
+      "modelRoutingEnsembleDesc": "AI coordinates multiple models to improve capability on complex tasks.",
+      "runMode": "Execution mode",
+      "runModeStandard": "Standard-Sandbox",
+      "runModeStandardDesc": "Ask before risky tool actions.",
+      "runModeTrusted": "Managed Execution",
+      "runModeTrustedDesc": "Use the sandbox by default; explicit host-affecting actions can run on the host when policy allows.",
+      "runModeFull": "Full Host Access",
+      "runModeFullDesc": "Run without sandbox isolation.",
+      "runModeFullUnavailable": "Full Host Access requires an owner session.",
+      "badgeNew": "NEW"
     },
     "pending": {
       "label": "Pending {count}/{max}",
@@ -1660,6 +1760,21 @@
       "preparingOutput": "Preparing output",
       "stillWaiting": "Still waiting for model",
       "stillWorking": "Still working — last signal {seconds}s ago"
+    },
+    "msgMeta": {
+      "ensembleModels": "Ensemble · {count} models",
+      "tokens": "tokens",
+      "cache": "cache",
+      "think": "think",
+      "ensemble": "ensemble",
+      "cost": "cost",
+      "saved": "saved",
+      "fallback": "fallback",
+      "fallbackUsed": "used",
+      "ensembleModelsAria": "Ensemble models"
+    },
+    "modelRouting": {
+      "updateFailed": "Couldn't switch model routing — reverted. Check the gateway connection and try again."
     }
   },
   "shared": {
@@ -1711,7 +1826,23 @@
       "filterByAgent": "Filter by {name}",
       "deleteSessionTitle": "Delete session",
       "deleteSessionBody": "Delete session \"{title}\"? This cannot be undone.",
-      "deleteSessionConfirm": "Delete"
+      "deleteSessionConfirm": "Delete",
+      "selectVisible": "Select visible conversations",
+      "clearVisibleSelection": "Clear visible selection",
+      "selectAllShort": "All",
+      "clearAllShort": "Clear",
+      "selectionModeLabel": "Select sessions",
+      "selectedCountLabel": "{count} selected",
+      "enterSelectionMode": "Manage sessions",
+      "exitSelectionMode": "Exit selection",
+      "selectSession": "Select {title}",
+      "deleteSelectedAria": "Delete {count} selected",
+      "bulkDeleteTitle": "Delete selected sessions",
+      "bulkDeleteBody": "Delete {count} selected sessions? This cannot be undone.",
+      "bulkDeleteConfirm": "Delete selected",
+      "bulkDeleteDone": "Deleted {count} sessions",
+      "bulkDeletePartial": "{count} sessions failed to delete",
+      "bulkDeleteFailed": "Failed to delete selected sessions"
     },
     "setupBanner": {
       "ariaLabel": "Gateway setup needed",

@@ -56,7 +56,7 @@ const visible = computed(() => props.state.hasMore || Boolean(scopeText.value))
   min-height: 30px;
   padding: 0.25rem 0.75rem;
   border: 1px solid var(--border-strong);
-  border-radius: 999px;
+  border-radius: var(--radius-full);
   background: var(--bg-surface);
   color: var(--text);
   cursor: pointer;

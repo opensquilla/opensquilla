@@ -36,6 +36,20 @@ def test_web_chat_source_metadata_preserves_allowed_elevation_hint() -> None:
     assert source["elevated"] == "bypass"
 
 
+def test_web_chat_source_metadata_preserves_run_mode_hint() -> None:
+    source = chat_source_metadata(
+        caller_kind="web",
+        channel_kind="webchat",
+        channel_id="webchat:webchat:main",
+        sender_id="operator",
+        source_kind="webui",
+        source_name="WebChat",
+        run_mode="full",
+    )
+
+    assert source["runMode"] == "full"
+
+
 def test_chat_send_request_preserves_message_attachments_and_intent() -> None:
     request = ChatSendRequest(
         session_key="webchat:main",

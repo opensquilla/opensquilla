@@ -12,6 +12,39 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Fixed
 
+## [0.5.0rc1] - 2026-07-04
+
+### Added
+
+- Added dynamic Model Ensemble routing, OpenAI/Codex-oriented provider support,
+  direct single-model routing defaults, and progressive reveal behavior so
+  preview users can test the new routing line before the next stable release.
+- Added managed execution host-routing paths and sandbox/approval alignment for
+  safer terminal, desktop, and host-execution workflows.
+- Added Control UI and desktop affordances for router/provider settings,
+  drag-and-drop attachments, history materialization, and image preview
+  navigation.
+- Added OpenTUI preview improvements for terminal and gateway workflows.
+
+### Changed
+
+- Preview release assets now publish Electron desktop installers, updater
+  metadata, a versioned Python wheel, and `SHA256SUMS`; new 0.5 preview releases
+  no longer publish Windows portable zips or portable latest aliases.
+- Sandbox run modes, approval boundaries, and managed host execution now share
+  clearer authorization and diagnostics across Windows, Linux, and desktop
+  sessions.
+- Desktop update, privacy, code-signing, and release documentation now describe
+  the preview asset set and portable retirement path.
+
+### Fixed
+
+- Improved Windows subprocess encoding, process cleanup, gateway lifecycle
+  diagnostics, router timeout handling, and packaged desktop runtime checks.
+- Fixed desktop/Web UI recovery cases around settings restore, refreshed
+  sessions, image preview movement, attachment handling, and provider/router
+  visibility.
+
 ## [0.4.1] - 2026-06-30
 
 ### Added

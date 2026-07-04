@@ -187,6 +187,7 @@
           :messages="renderedMessages"
           :session-key="sessionKey"
           :auth-token="readAuthToken()"
+          :artifact-navigation-items="sessionArtifacts"
           :share-mode="shareMode"
           :selected-message-ids="selectedShareMessageIds"
           :strip-time-prefix="stripTimePrefix"
@@ -216,13 +217,13 @@
           @clarify-dismiss="dismissClarify"
         >
           <template #router-strip="{ message: msg }">
-            <RouterFxStrip :message="msg" />
+            <RouterFxStrip v-if="shouldRenderRouterStrip(msg)" :message="msg" />
           </template>
         </ChatMessageList>
 
-        <!-- Invisible router-strip twin: holds the strip's slot in the layout
-             from turn start until the routing decision arrives, so the real
-             strip cannot shift the content below it. -->
+        <!-- Pre-reveal router phase: shown only before the live work-card owns
+             the turn. Once the work-card is visible, execution status becomes
+             the single primary progress surface. -->
         <RouterFxStrip
           v-if="routerStripReserve"
           class="router-fx-reserve"
@@ -260,9 +261,9 @@
             >
               <header v-if="streamActivityVisible" class="work-card__head stream-activity">
                 <span class="work-card__dot" aria-hidden="true" />
-                <span class="work-card__phase" :class="{ 'activity-shimmer': !streamActivityStale }">{{ streamPhaseLabel }}</span>
+                <span class="work-card__phase" :class="{ 'activity-shimmer': !streamActivityStale }">{{ liveWorkCardPhaseLabel }}</span>
                 <span v-if="streamPhaseElapsed" class="work-card__elapsed">{{ streamPhaseElapsed }}</span>
-                <span class="work-card__step">{{ streamStepLabel }}</span>
+                <span class="work-card__step">{{ liveWorkCardStepLabel }}</span>
               </header>
 
               <!-- Live model reasoning: collapsed by default, expandable mid-turn -->
@@ -311,6 +312,7 @@
 
             <ChatArtifactList
               :artifacts="liveArtifacts"
+              :navigation-artifacts="sessionArtifacts"
               :session-key="sessionKey"
               :auth-token="readAuthToken()"
               @download="downloadArtifact"
@@ -439,11 +441,11 @@
       :is-new-landing="isNewChatLanding"
       :placeholder="composerPlaceholder"
       :send-button-title="sendButtonTitle"
-      :elevated-mode="elevatedMode"
-      :elevated-unavailable="elevatedUnavailable"
-      :router-enabled="routerEnabled"
+      :run-mode="runMode"
+      :allowed-run-modes="allowedRunModes"
+      :model-routing-mode="modelRoutingMode"
+      :model-routing-settings-busy="modelRoutingSettingsBusy"
       :router-visual-effects-enabled="routerVisualEffectsEnabled"
-      :router-settings-busy="routerSettingsBusy"
       :coding-mode-enabled="codingModeEnabled"
       :coding-mode-settings-busy="codingModeSettingsBusy"
       :voice-busy="voiceBusy"
@@ -456,8 +458,8 @@
       @remove-attachment="removeAttachment"
       @retry-attachment="retryAttachment"
       @set-busy-send-mode="busySendMode = $event"
-      @set-elevated-mode="setComposerElevatedMode"
-      @set-router-enabled="setComposerRouterEnabled"
+      @set-run-mode="setComposerRunMode"
+      @set-model-routing-mode="setComposerModelRoutingMode"
       @set-visual-effects-enabled="setComposerVisualEffectsEnabled"
       @set-coding-mode-enabled="setComposerCodingModeEnabled"
       @voice-input="onVoiceInput"
@@ -556,6 +558,7 @@ import { useChatSend } from '@/composables/chat/useChatSend'
 import { useMetaRuns } from '@/composables/chat/useMetaRuns'
 import { useAgentOptions } from '@/composables/useAgentOptions'
 import { useChatSessionRoute } from '@/composables/chat/useChatSessionRoute'
+import { useChatRunModePreference, type RunModePolicy } from '@/composables/chat/useChatRunModePreference'
 import { useChatSessionRuntime } from '@/composables/chat/useChatSessionRuntime'
 import { useChatSessionSubscription } from '@/composables/chat/useChatSessionSubscription'
 import { useChatSlashCommands } from '@/composables/chat/useChatSlashCommands'
@@ -575,6 +578,8 @@ import type {
 import type {
   ArtifactPayload,
 } from '@/types/rpc'
+import type { ModelRoutingMode } from '@/types/modelRouting'
+import type { SandboxRunMode } from '@/types/sandbox'
 import type { InterruptViewState } from '@/types/parts'
 import { artifactDownloadUrl } from '@/utils/chat/artifacts'
 import { copyTextWithFallback, copyImageToClipboard, downloadBlob, shareCopyImageSupported } from '@/utils/browser'
@@ -600,6 +605,10 @@ interface ChatComposerHandle {
 }
 
 type Message = ChatMessage
+
+interface RpcAuthPayload {
+  runModePolicy?: RunModePolicy
+}
 
 /* ── Constants ─────────────────────────────────────────────────────── */
 
@@ -670,12 +679,21 @@ const chatElevatedMode = useChatElevatedMode({
 })
 const {
   elevatedMode,
-  elevatedUnavailable,
   loadElevatedMode,
-  setElevatedMode,
   setGlobalElevatedMode,
   normalizeElevatedMode,
 } = chatElevatedMode
+
+const {
+  runMode,
+  allowedRunModes,
+  setRunMode: setPersistedRunMode,
+} = useChatRunModePreference({
+  runModePolicy: () => {
+    const auth = rpc.auth as RpcAuthPayload | null
+    return auth?.runModePolicy
+  },
+})
 
 // Run status
 const runStatus = ref<ChatRunStatus>({ status: 'idle', label: t('chat.status.idle'), task: null })
@@ -687,9 +705,11 @@ const activeTaskGroups = ref<Set<string>>(new Set())
 // Task id whose output the live stream renders; binds late events to the
 // current turn so a prior task can't leak into it (issue 344).
 const activeStreamTaskId = ref<string>('')
+const activeStreamSessionKey = ref<string>('')
 
 // Pending session intent
 const pendingSessionIntent = ref<string | null>(null)
+const pendingForkBeforeMessageId = ref<string | null>(null)
 let applySessionRunState: (source: ChatRunStatusSource | null | undefined) => void = () => {}
 let resetComposerInputHistory: () => void = () => {}
 
@@ -769,6 +789,7 @@ const {
   pendingDecision,
   handleRouterControlReplay,
   queueRouterDecision,
+  appendEnsembleProgress,
   flushPendingRouterDecision,
   clearPendingRouterDecision,
 } = chatRouterDecisionRuntime
@@ -861,14 +882,15 @@ const {
   routerSlots,
   routerModels,
   routerEnabled,
+  modelRoutingMode,
+  modelRoutingSettingsBusy,
   routerVisualEffectsEnabled,
   routerVisualMode,
-  routerSettingsBusy,
   codingModeEnabled,
   codingModeSettingsBusy,
   routerTierConfigs,
   loadFeatureToggles,
-  setRouterEnabled,
+  setModelRoutingMode,
   setCodingModeEnabled,
   setRouterVisualEffectsEnabled,
   bindFeatureRefresh,
@@ -985,6 +1007,8 @@ const chatRenderedMessages = useChatRenderedMessages({
   routerTierConfigs,
   routerVisualEffectsEnabled,
   routerVisualMode,
+  modelRoutingMode,
+  isStreaming,
   renderMarkdown,
   stripGeneratedArtifactMarkers,
   stripTimePrefix,
@@ -992,11 +1016,23 @@ const chatRenderedMessages = useChatRenderedMessages({
 })
 const { renderedMessages, routerDecisionCells } = chatRenderedMessages
 
+// The live ensemble strip owns the synthesizing narrative — it reveals members
+// as they run and settles in place — so the work-card runs its normal execution
+// phase alongside it. The two are independent progress surfaces on purpose: the
+// strip answers "which models are synthesizing", the work-card "what step now".
+const liveWorkCardPhaseLabel = streamPhaseLabel
+const liveWorkCardStepLabel = streamStepLabel
+
+function shouldRenderRouterStrip(_message: ChatRenderedMessage): boolean {
+  // Always surface the router strip — the live ensemble strip is the primary
+  // surface for the synthesizing process and no longer defers to the work-card.
+  return true
+}
+
 /**
- * Reserves the AI model router strip's space as soon as a turn starts
- * streaming, so the real strip landing ~1s later (when the router decision
- * push arrives) replaces an equally sized invisible twin instead of pushing
- * the live activity area down (cumulative layout shift).
+ * Pre-decision router-strip placeholder. It holds the strip's slot for the short
+ * window before the first router_decision / ensemble_progress lands, so the live
+ * ensemble strip appears from the very start of the turn rather than popping in.
  */
 const routerStripReserve = computed<ChatRenderedMessage | null>(() => {
   if (!isStreaming.value || !routerEnabled.value || !routerVisualEffectsEnabled.value) return null
@@ -1006,6 +1042,26 @@ const routerStripReserve = computed<ChatRenderedMessage | null>(() => {
     if (msg.isRouterStrip) return null
     if (msg.displayRole === 'user') break
   }
+  if (modelRoutingMode.value === 'llm_ensemble') {
+    return {
+      id: 'router-strip-reserve',
+      role: 'router',
+      displayRole: 'router',
+      roleLabel: 'Router',
+      text: '',
+      timeStr: '',
+      showHeader: false,
+      isRouterStrip: true,
+      routerState: 'pending',
+      routerSource: 'llm_ensemble',
+      routerStatic: false,
+      routerPanel: 'llm-ensemble',
+      routerMode: 'llm_ensemble',
+      gridCells: [],
+      winnerIdx: -1,
+    }
+  }
+
   const cells = routerDecisionCells({ tier: '', model: '' })
   if (cells.length <= 1) return null
   return {
@@ -1066,6 +1122,7 @@ const chatMessageActions = useChatMessageActions({
   autoResizeTextarea,
   sendCurrentInput: () => sendCurrentInput(),
   focusComposer: () => composerRef.value?.focusTextarea(),
+  pendingForkBeforeMessageId,
 })
 const {
   copyMessage,
@@ -1178,10 +1235,13 @@ const chatSend = useChatSend({
   sessionKey,
   busySendMode,
   elevatedMode,
+  runMode,
   pendingAttachments,
   pendingSessionIntent,
+  pendingForkBeforeMessageId,
   aborted,
   activeStreamTaskId,
+  activeStreamSessionKey,
   autoScroll,
   stream: chatStream,
   normalizeElevatedMode,
@@ -1256,6 +1316,7 @@ const rpcEventHandlers = useChatRpcEventHandlers({
   sessionRunStatus,
   applySessionRunState,
   queueRouterDecision,
+  appendEnsembleProgress,
   flushPendingRouterDecision,
   clearPendingRouterDecision,
   handleRouterControlReplay,
@@ -1454,12 +1515,12 @@ function readAuthToken(): string {
   }
 }
 
-function setComposerElevatedMode(mode: string) {
-  setElevatedMode(mode, { persist: true, sync: true })
+function setComposerRunMode(mode: SandboxRunMode) {
+  setPersistedRunMode(mode)
 }
 
-async function setComposerRouterEnabled(enabled: boolean) {
-  await setRouterEnabled(enabled)
+async function setComposerModelRoutingMode(mode: ModelRoutingMode) {
+  await setModelRoutingMode(mode)
   scheduleHistorySync()
 }
 
@@ -2078,6 +2139,7 @@ watch(pendingSessionIntent, (intent, previous) => {
 })
 
 watch(sessionKey, () => {
+  pendingForkBeforeMessageId.value = null
   if (shareMode.value) endShareMode()
   deliverablesOpen.value = false
 })

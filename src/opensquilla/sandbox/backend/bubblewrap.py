@@ -1,15 +1,16 @@
 """Linux bubblewrap backend.
 
-Executes the caller's argv inside a fresh ``bwrap`` child per request. The
-argv construction follows the bubblewrap manpage (``bwrap(1)``).
+Materializes helper payloads and supervises a helper subprocess for Linux
+process and filesystem operations. The helper's outer stage plans and invokes
+``bwrap``; the inner stage runs the requested process or filesystem worker.
 
 Design notes:
 
 * The sandbox layout is a minimal root view: ``/`` starts as tmpfs, host
   runtime directories such as ``/usr`` and ``/lib`` are mounted read-only,
   ``/dev`` receives a curated dev node set, ``/proc`` is a fresh proc mount,
-  ``/tmp`` is a tmpfs when the policy allows it, and the user's workspace
-  gets an explicit ``--bind`` or ``--ro-bind`` at ``/workspace``.
+  ``/tmp`` is a tmpfs when the policy allows it, and policy mounts are
+  canonicalized before they reach the Linux planner.
 * Network namespaces are unshared whenever the policy selects
   ``NetworkMode.NONE``. For ``NetworkMode.HOST`` we deliberately keep the
   host network visible (no ``--unshare-net``) — this is only reached when
@@ -17,9 +18,9 @@ Design notes:
   action).
 * Capabilities are dropped via ``--cap-drop ALL`` and ``--new-session``
   detaches the controlling terminal to prevent ``TIOCSTI`` style escapes.
-* Output is captured in memory with an upper bound; excess bytes are
+* Process output is captured in memory with an upper bound; excess bytes are
   truncated and the ``truncated_*`` flags are set on the result.
-* Wall timeouts are enforced with :func:`asyncio.wait_for`; on expiry we
+* Wall timeouts are enforced inside the helper; on expiry we
   terminate the process group so dangling grandchildren do not outlive the
   sandbox. If SIGTERM isn't observed within a small grace window we follow
   with SIGKILL.
@@ -32,23 +33,60 @@ non-zero exit which we translate into a :class:`SandboxBackendError`.
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import json
 import logging
 import os
-import shutil
 import signal
 import sys
+import tempfile
 import time
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, cast
 
 from opensquilla.sandbox.backend.base import Backend
+from opensquilla.sandbox.backend.linux_bwrap import (
+    BwrapOptions,
+    BwrapPlan,
+)
+from opensquilla.sandbox.backend.linux_bwrap import (
+    build_bwrap_plan as build_linux_bwrap_plan,
+)
+from opensquilla.sandbox.backend.linux_paths import canonical_linux_policy
+from opensquilla.sandbox.backend.linux_payload import (
+    HelperPayload,
+    build_filesystem_helper_payload,
+    build_process_helper_payload,
+    encode_payload,
+    encode_policy_b64,
+)
+from opensquilla.sandbox.backend.linux_permissions import compile_linux_permissions
+from opensquilla.sandbox.backend.linux_proxy_bridge import (
+    ENV_EXEC_WRAPPER,
+    ENV_POLICY_B64,
+    ENV_PROXY_PORT,
+    ENV_PROXY_UDS,
+    LinuxProxyBridgeHost,
+)
+from opensquilla.sandbox.backend.linux_proxy_routing import proxy_env_for_inner_port
+from opensquilla.sandbox.backend.linux_readiness import probe_bwrap
+from opensquilla.sandbox.operation_runtime import (
+    SANDBOX_FILESYSTEM_WRITE_KINDS,
+    FilesystemOperationRequest,
+    SandboxOperation,
+    SandboxOperationDomain,
+    SandboxOperationResult,
+)
 from opensquilla.sandbox.types import (
     MountSpec,
     NetworkMode,
+    ResourceLimits,
     SandboxBackendError,
     SandboxPolicy,
     SandboxRequest,
     SandboxResult,
+    SecurityLevel,
 )
 
 log = logging.getLogger(__name__)
@@ -56,142 +94,194 @@ log = logging.getLogger(__name__)
 _BWRAP_BINARY = "bwrap"
 _OUTPUT_BYTE_CAP = 1_048_576  # 1 MiB per stream
 _TERMINATE_GRACE_S = 2.0
-_HOST_RO_PATHS: tuple[Path, ...] = (
-    Path("/usr"),
-    Path("/bin"),
-    Path("/lib"),
-    Path("/lib64"),
-    Path("/etc"),
+_HELPER_TIMEOUT_GRACE_S = _TERMINATE_GRACE_S + 1.0
+_DEFAULT_BRIDGE_UDS_PATH = Path("/tmp/opensquilla-sandbox-proxy.sock")
+_DEFAULT_BRIDGE_SCRIPT_NAME = "inner_bridge.py"
+_BWRAP_PYTHON_CANDIDATES: tuple[Path, ...] = (
+    Path("/usr/bin/python3"),
+    Path("/bin/python3"),
+    Path("/usr/bin/python"),
+    Path("/bin/python"),
 )
+def _bridge_python_path() -> Path:
+    for candidate in _BWRAP_PYTHON_CANDIDATES:
+        if candidate.exists():
+            return candidate
+    raise SandboxBackendError(
+        "NetworkMode.PROXY_ALLOWLIST requires a system Python mounted "
+        "inside the bubblewrap sandbox"
+    )
 
 
-def _validate_mount_path(path: Path, *, kind: str) -> None:
-    """Reject non-absolute, traversal, or obviously unsafe paths.
-
-    Symlink targets are *not* resolved here — the sandbox invariant is that
-    the host side is whatever the caller passed in; if they handed us a
-    symlink, that's fine as long as it's absolute and doesn't obviously
-    escape. We do refuse ``..`` components so a typo cannot slide into a
-    parent directory.
-    """
-    if not path.is_absolute():
-        raise SandboxBackendError(f"{kind} mount path must be absolute: {path!r}")
-    parts = path.parts
-    if any(part == ".." for part in parts):
-        raise SandboxBackendError(f"{kind} mount path contains '..': {path!r}")
+def _default_bridge_script_path(uds_path: Path) -> Path:
+    return uds_path.parent / _DEFAULT_BRIDGE_SCRIPT_NAME
 
 
-def _mount_args(spec: MountSpec) -> list[str]:
-    _validate_mount_path(spec.host_path, kind="host")
-    _validate_mount_path(spec.sandbox_path, kind="sandbox")
-    flag = "--bind" if spec.mode == "rw" else "--ro-bind"
-    return [flag, str(spec.host_path), str(spec.sandbox_path)]
+def _proxy_bridge_child_argv(
+    request: SandboxRequest,
+    *,
+    bridge_script_path: Path,
+) -> list[str]:
+    return [
+        str(_bridge_python_path()),
+        str(bridge_script_path),
+        "--",
+        *request.argv,
+    ]
 
 
-def _env_args(policy: SandboxPolicy, override_env: dict[str, str]) -> list[str]:
-    """Produce ``--setenv`` pairs for the allowlisted environment.
+def materialize_linux_exec_wrapper(path: Path) -> None:
+    source = Path(__file__).with_name("linux_exec_wrapper.py")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
+    with contextlib.suppress(OSError):
+        os.chmod(path, 0o600)
 
-    Both inherited host values and caller-provided ``override_env`` keys are
-    filtered through ``policy.env_allowlist``. Previously overrides bypassed
-    the allowlist, which let callers reintroduce disallowed variables such as
-    ``SSH_AUTH_SOCK`` / ``AWS_SECRET_ACCESS_KEY`` / proxy settings — the
-    stated env-scrubbing guarantee depends on the override path being gated
-    too.
-    """
+
+def build_bwrap_argv(
+    request: SandboxRequest,
+    *,
+    binary: str = _BWRAP_BINARY,
+    bridge_uds_path: Path | None = None,
+    bridge_script_path: Path | None = None,
+    bridge_port: int | None = None,
+    exec_wrapper_path: Path | None = None,
+    mount_proc: bool = True,
+) -> list[str]:
+    return build_bwrap_plan(
+        request,
+        binary=binary,
+        bridge_uds_path=bridge_uds_path,
+        bridge_script_path=bridge_script_path,
+        bridge_port=bridge_port,
+        exec_wrapper_path=exec_wrapper_path,
+        mount_proc=mount_proc,
+    ).argv
+
+
+def build_bwrap_plan(
+    request: SandboxRequest,
+    *,
+    binary: str = _BWRAP_BINARY,
+    bridge_uds_path: Path | None = None,
+    bridge_script_path: Path | None = None,
+    bridge_port: int | None = None,
+    exec_wrapper_path: Path | None = None,
+    mount_proc: bool = True,
+) -> BwrapPlan:
+    """Return the ``bwrap`` argv for direct/background process execution."""
+    policy = canonical_linux_policy(request.policy)
+    env = _direct_bwrap_env(policy, request.env)
+    command = list(request.argv)
+    if policy.network == NetworkMode.PROXY_ALLOWLIST:
+        if policy.network_proxy is None:
+            raise SandboxBackendError(
+                "NetworkMode.PROXY_ALLOWLIST requires a network proxy "
+                "for the bubblewrap backend"
+            )
+        bridge_uds_path = bridge_uds_path or _DEFAULT_BRIDGE_UDS_PATH
+        bridge_script_path = bridge_script_path or _default_bridge_script_path(
+            bridge_uds_path,
+        )
+        bridge_port = bridge_port or policy.network_proxy.port
+        if bridge_port <= 0 or bridge_port > 65535:
+            raise SandboxBackendError(
+                "NetworkMode.PROXY_ALLOWLIST requires a valid proxy port "
+                "for the bubblewrap backend"
+            )
+        if bridge_script_path.parent != bridge_uds_path.parent:
+            raise SandboxBackendError(
+                "linux proxy bridge script must be in the mounted bridge directory"
+            )
+        policy = _policy_with_bridge_mount(policy, bridge_uds_path.parent)
+        env.update(
+            proxy_env_for_inner_port(
+                base_env={
+                    ENV_PROXY_UDS: str(bridge_uds_path),
+                    ENV_PROXY_PORT: str(bridge_port),
+                    ENV_POLICY_B64: encode_policy_b64(policy),
+                    **({ENV_EXEC_WRAPPER: str(exec_wrapper_path)} if exec_wrapper_path else {}),
+                },
+                port=bridge_port,
+            )
+        )
+        command = _proxy_bridge_child_argv(
+            request,
+            bridge_script_path=bridge_script_path,
+        )
+    elif exec_wrapper_path is not None:
+        policy = _policy_with_exec_wrapper_mount(policy, exec_wrapper_path)
+        command = _exec_wrapper_child_argv(
+            request,
+            exec_wrapper_path=exec_wrapper_path,
+            policy=policy,
+        )
+
+    return build_linux_bwrap_plan(
+        command=command,
+        command_cwd=request.cwd,
+        permissions=compile_linux_permissions(policy),
+        options=BwrapOptions(
+            bwrap_path=binary,
+            mount_proc=mount_proc,
+            env=env,
+        ),
+    )
+
+
+def _direct_bwrap_env(
+    policy: SandboxPolicy,
+    override_env: dict[str, str],
+) -> dict[str, str]:
     allowlist = set(policy.env_allowlist)
-    resolved: dict[str, str] = {}
+    env: dict[str, str] = {}
     for key in policy.env_allowlist:
         value = os.environ.get(key)
         if value is not None:
-            resolved[key] = value
+            env[key] = value
     for key, value in override_env.items():
-        if key not in allowlist:
-            log.debug(
-                "sandbox.env_override_rejected: key=%s (not in allowlist)",
-                key,
-            )
-            continue
-        resolved[key] = value
-    args: list[str] = []
-    for key, value in resolved.items():
-        args.extend(["--setenv", key, value])
-    return args
+        if key in allowlist:
+            env[key] = value
+    return env
 
 
-def build_bwrap_argv(request: SandboxRequest, *, binary: str = _BWRAP_BINARY) -> list[str]:
-    """Return the ``bwrap`` argv for ``request``.
+def _policy_with_bridge_mount(policy: SandboxPolicy, bridge_dir: Path) -> SandboxPolicy:
+    bridge_mount = MountSpec(
+        host_path=bridge_dir,
+        sandbox_path=bridge_dir,
+        mode="rw",
+        required=True,
+    )
+    return replace(policy, mounts=(*policy.mounts, bridge_mount))
 
-    Factored out so unit tests can assert argv shape without running bwrap.
-    Ordering matters for ``bwrap``: the flag stream describes the sandbox
-    construction step-by-step, then ``--`` separates our flags from the
-    child argv.
-    """
-    policy = request.policy
-    argv: list[str] = [binary]
 
-    # Structural flags first — these describe the process and namespace
-    # posture and are safe to accumulate before any mount flags.
-    argv += [
-        "--die-with-parent",
-        "--new-session",
-        "--unshare-pid",
-        "--unshare-uts",
-        "--unshare-ipc",
-        "--unshare-cgroup-try",
-        "--unshare-user-try",
-        "--cap-drop",
-        "ALL",
+def _policy_with_exec_wrapper_mount(
+    policy: SandboxPolicy,
+    exec_wrapper_path: Path,
+) -> SandboxPolicy:
+    wrapper_mount = MountSpec(
+        host_path=exec_wrapper_path.parent,
+        sandbox_path=exec_wrapper_path.parent,
+        mode="ro",
+        required=True,
+    )
+    return replace(policy, mounts=(*policy.mounts, wrapper_mount))
+
+
+def _exec_wrapper_child_argv(
+    request: SandboxRequest,
+    *,
+    exec_wrapper_path: Path,
+    policy: SandboxPolicy,
+) -> list[str]:
+    return [
+        str(_bridge_python_path()),
+        str(exec_wrapper_path),
+        "--policy-b64",
+        encode_policy_b64(policy),
+        "--",
+        *request.argv,
     ]
-    if policy.network == NetworkMode.NONE:
-        argv.append("--unshare-net")
-    elif policy.network == NetworkMode.PROXY_ALLOWLIST:
-        # Reserved — the proxy path is not implemented in this pass; fail
-        # loudly rather than silently widen network scope.
-        raise SandboxBackendError(
-            "NetworkMode.PROXY_ALLOWLIST is reserved and not yet supported "
-            "by the bubblewrap backend"
-        )
-
-    # Base filesystem skeleton. Use tmpfs as root so synthetic mount points
-    # such as /workspace can be created even when the host root lacks them.
-    # Runtime directories needed to execute normal host binaries are mounted
-    # read-only afterwards.
-    argv += ["--tmpfs", "/"]
-    for host_path in _HOST_RO_PATHS:
-        if host_path.exists():
-            argv += ["--ro-bind", str(host_path), str(host_path)]
-    argv += ["--proc", "/proc", "--dev", "/dev"]
-    if policy.tmp_writable:
-        argv += ["--tmpfs", "/tmp"]
-
-    for spec in policy.mounts:
-        if spec.required and not spec.host_path.exists():
-            raise SandboxBackendError(f"required mount missing on host: {spec.host_path!r}")
-        if not spec.host_path.exists():
-            log.debug("sandbox.mount_skipped: %s (not present)", spec.host_path)
-            continue
-        argv += ["--dir", str(spec.sandbox_path)]
-        argv += _mount_args(spec)
-
-    argv += _env_args(policy, request.env)
-
-    # Working directory inside the sandbox — default to the workspace mount
-    # point when one exists, otherwise the host cwd mapped through.
-    workspace_mount = next((m for m in policy.mounts if m.sandbox_path == Path("/workspace")), None)
-    if workspace_mount is not None:
-        try:
-            rel = request.cwd.relative_to(workspace_mount.host_path)
-        except ValueError:
-            argv += ["--chdir", str(request.cwd)]
-        else:
-            sandbox_cwd = workspace_mount.sandbox_path / rel
-            argv += ["--chdir", str(sandbox_cwd)]
-    else:
-        argv += ["--chdir", str(request.cwd)]
-
-    argv.append("--")
-    argv.extend(request.argv)
-    return argv
 
 
 class BubblewrapBackend(Backend):
@@ -205,63 +295,75 @@ class BubblewrapBackend(Backend):
     def available(self) -> bool:
         if not sys.platform.startswith("linux"):
             return False
-        return shutil.which(self._binary) is not None
+        return probe_bwrap().available
 
-    async def run(self, request: SandboxRequest) -> SandboxResult:  # noqa: C901 — linear orchestration
-        if not self.available():
+    def operation_domains_supported(self) -> frozenset[SandboxOperationDomain]:
+        return frozenset({"filesystem"})
+
+    async def run_operation(self, operation: SandboxOperation) -> SandboxOperationResult:
+        if operation.domain != "filesystem":
             raise SandboxBackendError(
-                "bubblewrap backend unavailable: missing 'bwrap' binary on PATH"
+                f"bubblewrap backend does not implement {operation.domain} operations"
             )
-
-        argv = build_bwrap_argv(request, binary=self._binary)
-        log.info(
-            "sandbox.bwrap_spawn: action=%s level=%s network=%s argv_len=%d",
-            request.action_kind,
-            request.policy.level.label,
-            request.policy.network.value,
-            len(argv),
+        if not isinstance(operation.request, FilesystemOperationRequest):
+            raise SandboxBackendError("filesystem operation is missing filesystem request")
+        if operation.workspace is None:
+            raise SandboxBackendError("filesystem operation is missing workspace")
+        worker_root = operation.workspace / ".opensquilla-cache" / "fs-worker"
+        worker_root.mkdir(parents=True, exist_ok=True)
+        payload_path = worker_root / f"{time.monotonic_ns()}.json"
+        policy = _filesystem_operation_policy(operation, payload_path)
+        helper_payload = build_filesystem_helper_payload(
+            operation,
+            policy=policy,
+            session_id="",
+            worker_payload_path=payload_path,
+        )
+        result = await _run_linux_helper_payload(helper_payload)
+        message = result.get("message")
+        if not isinstance(message, str):
+            raise SandboxBackendError("linux filesystem worker returned invalid result")
+        return SandboxOperationResult(
+            message=message,
+            created=bool(result.get("created", False)),
         )
 
-        wall = request.policy.limits.wall_timeout_s
-        started = time.monotonic()
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                *argv,
-                stdin=asyncio.subprocess.PIPE if request.stdin is not None else None,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                start_new_session=True,
-            )
-        except FileNotFoundError as exc:
-            raise SandboxBackendError(f"bwrap launch failed: {exc}") from exc
-        except OSError as exc:
-            raise SandboxBackendError(f"bwrap launch failed: {exc}") from exc
-
-        timed_out = False
-        try:
-            stdout_bytes, stderr_bytes = await asyncio.wait_for(
-                proc.communicate(input=request.stdin), timeout=wall
-            )
-        except TimeoutError:
-            timed_out = True
-            stdout_bytes, stderr_bytes = await _terminate_process_group(proc)
-
-        elapsed = time.monotonic() - started
-
-        stdout, trunc_out = _decode_capped(stdout_bytes)
-        stderr, trunc_err = _decode_capped(stderr_bytes)
-
-        returncode = proc.returncode if proc.returncode is not None else -1
+    async def run(self, request: SandboxRequest) -> SandboxResult:
+        probe = probe_bwrap()
+        if not probe.available:
+            raise SandboxBackendError(f"bubblewrap backend unavailable: {probe.message}")
+        helper_payload = build_process_helper_payload(request)
+        if request.policy.network == NetworkMode.PROXY_ALLOWLIST:
+            if request.policy.network_proxy is None:
+                raise SandboxBackendError(
+                    "NetworkMode.PROXY_ALLOWLIST requires a network proxy "
+                    "for the bubblewrap backend"
+                )
+            with tempfile.TemporaryDirectory(prefix="opensquilla-linux-proxy-") as temp_dir:
+                bridge = LinuxProxyBridgeHost(
+                    Path(temp_dir) / "proxy.sock",
+                    request.policy.network_proxy.host,
+                    request.policy.network_proxy.port,
+                )
+                await bridge.start()
+                try:
+                    result = await _run_linux_helper_payload(
+                        _with_linux_proxy_bridge(helper_payload, bridge)
+                    )
+                finally:
+                    await bridge.stop()
+        else:
+            result = await _run_linux_helper_payload(helper_payload)
         return SandboxResult(
-            returncode=returncode,
-            stdout=stdout,
-            stderr=stderr,
-            wall_time_s=elapsed,
+            returncode=_int_result(result.get("returncode"), default=-1),
+            stdout=str(result.get("stdout", "")),
+            stderr=str(result.get("stderr", "")),
+            wall_time_s=_float_result(result.get("wallTimeS"), default=0.0),
             backend_used=self.name,
             policy_used=request.policy.summary(),
-            truncated_stdout=trunc_out,
-            truncated_stderr=trunc_err,
-            timed_out=timed_out,
+            truncated_stdout=bool(result.get("truncatedStdout", False)),
+            truncated_stderr=bool(result.get("truncatedStderr", False)),
+            timed_out=bool(result.get("timedOut", False)),
         )
 
 
@@ -271,6 +373,18 @@ def _decode_capped(raw: bytes | None) -> tuple[str, bool]:
     if len(raw) <= _OUTPUT_BYTE_CAP:
         return raw.decode("utf-8", errors="replace"), False
     return raw[:_OUTPUT_BYTE_CAP].decode("utf-8", errors="replace"), True
+
+
+def _int_result(value: object, *, default: int) -> int:
+    if isinstance(value, (str, bytes, int, float)):
+        return int(value)
+    return default
+
+
+def _float_result(value: object, *, default: float) -> float:
+    if isinstance(value, (str, bytes, int, float)):
+        return float(value)
+    return default
 
 
 async def _terminate_process_group(
@@ -316,4 +430,105 @@ async def _terminate_process_group(
     return stdout, stderr
 
 
-__all__ = ["BubblewrapBackend", "build_bwrap_argv"]
+async def _run_linux_helper_payload(payload: HelperPayload) -> dict[str, object]:
+    with tempfile.TemporaryDirectory(prefix="opensquilla-linux-helper-") as temp_dir:
+        payload_path = Path(temp_dir) / "payload.json"
+        payload_path.write_text(encode_payload(payload), encoding="utf-8")
+        proc = await asyncio.create_subprocess_exec(
+            sys.executable,
+            "-m",
+            "opensquilla.sandbox.backend.linux_helper",
+            "--payload",
+            str(payload_path),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            start_new_session=True,
+        )
+        try:
+            stdout_raw, stderr_raw = await asyncio.wait_for(
+                proc.communicate(),
+                timeout=_outer_helper_timeout_s(payload),
+            )
+        except TimeoutError as exc:
+            await _terminate_process_group(proc)
+            raise SandboxBackendError("linux helper timed out") from exc
+    stdout = stdout_raw.decode("utf-8", errors="replace")
+    stderr = stderr_raw.decode("utf-8", errors="replace")
+    if proc.returncode != 0:
+        raise SandboxBackendError(stderr.strip() or stdout.strip() or "linux helper failed")
+    result = json.loads(stdout)
+    if not isinstance(result, dict):
+        raise SandboxBackendError("linux helper returned invalid result")
+    return result
+
+
+def _outer_helper_timeout_s(payload: HelperPayload) -> float:
+    try:
+        wall_timeout = float(payload.policy.get("wallTimeoutS", 60.0))
+    except (TypeError, ValueError):
+        wall_timeout = 60.0
+    return max(0.01, wall_timeout) + _HELPER_TIMEOUT_GRACE_S
+
+
+def _with_linux_proxy_bridge(
+    payload: HelperPayload,
+    bridge: LinuxProxyBridgeHost,
+) -> HelperPayload:
+    policy = dict(payload.policy)
+    policy["linuxProxyBridge"] = {
+        "udsPath": str(bridge.uds_path),
+        "scriptPath": str(bridge.script_path),
+        "port": bridge.upstream_port,
+    }
+    return replace(payload, policy=policy)
+
+
+def _filesystem_operation_policy(
+    operation: SandboxOperation,
+    payload_path: Path,
+) -> SandboxPolicy:
+    request = operation.request
+    if not isinstance(request, FilesystemOperationRequest):
+        raise SandboxBackendError("filesystem operation is missing filesystem request")
+    roots = []
+    for path in request.paths:
+        root = path.parent if operation.kind in SANDBOX_FILESYSTEM_WRITE_KINDS else path
+        while not root.exists() and root.parent != root:
+            root = root.parent
+        roots.append(root)
+    mounts = [
+        MountSpec(
+            host_path=root,
+            sandbox_path=root,
+            mode="rw" if operation.kind in SANDBOX_FILESYSTEM_WRITE_KINDS else "ro",
+            required=True,
+        )
+        for root in tuple(dict.fromkeys(roots))
+    ]
+    mounts.append(
+        MountSpec(
+            host_path=payload_path.parent,
+            sandbox_path=payload_path.parent,
+            mode="rw",
+            required=True,
+        )
+    )
+    return SandboxPolicy(
+        level=SecurityLevel.STANDARD,
+        network=NetworkMode.NONE,
+        mounts=tuple(mounts),
+        workspace_rw=False,
+        tmp_writable=True,
+        limits=ResourceLimits(cpu_seconds=30, memory_mb=1024, pids=64, wall_timeout_s=30),
+        env_allowlist=("PATH", "PYTHONPATH", "HOME", "TMP", "TEMP"),
+        require_approval=False,
+        description=f"Linux filesystem worker policy for {operation.kind}",
+    )
+
+
+__all__ = [
+    "BubblewrapBackend",
+    "LinuxProxyBridgeHost",
+    "build_bwrap_argv",
+    "build_bwrap_plan",
+]

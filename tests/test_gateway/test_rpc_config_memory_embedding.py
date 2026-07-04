@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import tomllib
+
 import pytest
 
 import opensquilla.gateway.rpc_config  # noqa: F401  ensures registration
@@ -119,8 +121,8 @@ async def test_config_patch_same_permissions_default_does_not_report_restart_req
 async def test_config_apply_sandbox_posture_reports_restart_required(tmp_path):
     cfg = GatewayConfig(config_path=str(tmp_path / "c.toml"))
     payload = cfg.model_dump(mode="python")
-    payload["sandbox"]["sandbox"] = True
-    payload["sandbox"]["security_grading"] = True
+    payload["sandbox"]["sandbox"] = False
+    payload["sandbox"]["security_grading"] = False
     payload["permissions"]["default_mode"] = "off"
 
     res = await get_dispatcher().dispatch(
@@ -231,6 +233,8 @@ async def test_config_apply_preserves_redacted_memory_remote_secrets(tmp_path):
 
     assert apply_res.error is None, apply_res.error
     _assert_memory_remote_secrets_preserved(cfg, config_path)
+    persisted = tomllib.loads(config_path.read_text(encoding="utf-8"))
+    assert "network_observability_disabled_effective" not in persisted.get("privacy", {})
 
 
 @pytest.mark.asyncio

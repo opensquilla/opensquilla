@@ -39,7 +39,7 @@ const summary = computed(() => {
 .thinking-fold__summary:hover { color: var(--text-muted); }
 .thinking-fold__summary:focus-visible {
   outline: none;
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent);
+  box-shadow: var(--focus-ring);
 }
 .thinking-fold__chevron { flex-shrink: 0; transition: transform var(--dur-fast) var(--ease-standard); }
 .thinking-fold[open] > .thinking-fold__summary .thinking-fold__chevron { transform: rotate(90deg); }

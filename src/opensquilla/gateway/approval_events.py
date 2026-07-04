@@ -47,17 +47,13 @@ def build_approval_event_payload(info: dict[str, Any]) -> dict[str, Any]:
         "session_key": str(params.get("sessionKey") or ""),
         "tool_name": str(tool_name),
         "command": command,
+        "approval_kind": str(params.get("approvalKind") or ""),
         "agent": str(params.get("agent") or ""),
         "created_at": info.get("created_at"),
-        # Wall-clock expiry deadline so the UI can render a countdown / Extend
-        # affordance straight from the push, without a snapshot round-trip.
         "deadline": info.get("deadline"),
     }
     if info.get("resolved"):
         payload["approved"] = bool(info.get("approved"))
-        # Distinguish an expiry (deadline lapse) from an explicit deny so the UI
-        # can render "Expired — not run" apart from "Denied". Resolved approvals
-        # carry "approved"; denied carry "denied"; lapsed carry "expired".
         resolution = info.get("resolution")
         if resolution:
             payload["resolution"] = str(resolution)

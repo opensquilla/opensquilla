@@ -96,7 +96,7 @@ def build_provider_compaction_context(
     if not valid_states:
         return ProviderCompactionContext(messages=messages, covered_through_ids=covered_through_ids)
 
-    state = latest_context_state(valid_states)
+    state = latest_context_state(valid_states, provider="anthropic")
     if state is None:
         return ProviderCompactionContext(messages=messages, covered_through_ids=covered_through_ids)
     payload = state.payload

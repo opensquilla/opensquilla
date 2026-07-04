@@ -1,4 +1,46 @@
 {
+  "updates": {
+    "available": "OpenSquilla {version} 已发布",
+    "viewRelease": "查看发布说明",
+    "dismiss": "忽略",
+    "desktop": {
+      "indicatorAvailable": "更新 {version}",
+      "indicatorDownloaded": "更新已就绪",
+      "indicatorDownloading": "正在下载",
+      "indicatorDownloadingProgress": "正在下载 {progress}%",
+      "indicatorError": "更新异常",
+      "availableTitle": "OpenSquilla {version} 已发布",
+      "availableDesc": "你准备好时再下载。OpenSquilla 只会在你重新启动后安装更新。",
+      "downloadedTitle": "可以安装了",
+      "downloadedDesc": "重新启动 OpenSquilla 以完成更新到 {version}。",
+      "downloadingTitle": "正在下载更新",
+      "downloadingDesc": "下载更新时请保持 OpenSquilla 打开。",
+      "checkingDesc": "正在检查桌面版本发布源。",
+      "applyingDesc": "OpenSquilla 正在准备重新启动并安装更新。",
+      "errorTitle": "检查更新失败",
+      "errorFallback": "请在设置中重新检查。",
+      "idleDesc": "检查新的桌面版本。",
+      "upToDateDesc": "版本 {version} 已是最新。",
+      "settingsTitle": "桌面更新",
+      "currentVersion": "当前版本",
+      "latestVersion": "最新版本",
+      "unknownVersion": "未知",
+      "availableStatus": "可下载",
+      "downloadedStatus": "可以安装",
+      "downloadingStatus": "下载中",
+      "checkingStatus": "检查中",
+      "upToDateStatus": "已是最新",
+      "errorStatus": "需要处理",
+      "applyingStatus": "重启中",
+      "idleStatus": "空闲",
+      "unavailableStatus": "不可用",
+      "unsupported": "此平台暂不支持原生桌面更新。新版本发布时请使用发布链接更新。",
+      "check": "检查",
+      "download": "下载",
+      "relaunch": "重新启动",
+      "later": "稍后"
+    }
+  },
   "common": {
     "close": "关闭",
     "save": "保存",
@@ -75,12 +117,19 @@
       "runtime": "运行时",
       "provider": "服务商",
       "behavior": "行为",
+      "privacy": "隐私",
       "router": "路由",
       "channels": "频道",
       "capabilities": "能力",
       "appearance": "外观",
       "keyboard": "键盘",
-      "advanced": "高级"
+      "advanced": "高级",
+      "groups": {
+        "gateway": "网关",
+        "ai": "AI 配置",
+        "delivery": "分发",
+        "preferences": "偏好设置"
+      }
     }
   },
   "errorBoundary": {
@@ -121,7 +170,8 @@
       "live": "已生效",
       "providerFirst": "请先配置服务商",
       "review": "待查看",
-      "envNotVisible": "已选择{capability}，但网关无法读取 ${envKey}。"
+      "envNotVisible": "已选择{capability}，但网关无法读取 ${envKey}。",
+      "appliesOnSave": "保存后生效"
     },
     "summary": {
       "notConfigured": "未配置",
@@ -165,7 +215,8 @@
       "envMissing": "此网关进程无法读取 {envKey}。请在启动或重启网关前设置它，或改为粘贴 API 密钥。",
       "envKeyFallback": "所选的 API 密钥环境变量",
       "copyKeyCommand": "复制设置服务商密钥的命令",
-      "save": "保存服务商"
+      "save": "保存服务商",
+      "configureRouter": "配置路由 →"
     },
     "behavior": {
       "title": "会话行为",
@@ -178,8 +229,12 @@
     "router": {
       "title": "路由分层",
       "mode": "模式",
+      "modeModelRouting": "模型路由",
+      "modeSingleModel": "单模型",
       "modeRecommended": "跟随当前服务商分层",
       "modeDisabled": "直连单模型",
+      "routingDisabledHint": "启用模型路由后可编辑分层配置。",
+      "routingEnsembleReadOnlyHint": "当前已启用 AI 模型聚合路由，普通模型路由配置暂不生效。",
       "defaultTextModel": "默认文本分层",
       "panelLabel": "路由面板",
       "panelDesc": "分层表中的模型会通过当前请求入口发送；OpenRouter 聚合分层会通过 OpenRouter 访问不同上游模型。",
@@ -196,6 +251,9 @@
       "save": "保存路由",
       "chooseProviderFirst": "请先选择服务商",
       "summaryDisabled": "直连单模型",
+      "summaryEnsemble": "AI 模型聚合路由档案",
+      "ensembleProfileTitle": "AI 模型聚合路由档案",
+      "ensembleProfileDesc": "分层表会为聚合路由提供候选模型。",
       "visualMode": {
         "real_candidates": "真实路由候选",
         "legacy_grid": "三层可视化面板"
@@ -390,6 +448,15 @@
       "runTraceDesc": "使日志行可交互，并在日志视图中为每行打开节点步骤详情抽屉。",
       "runTraceAria": "日志中的运行追踪抽屉（重新加载后生效）"
     },
+    "privacy": {
+      "title": "隐私",
+      "statusEnabled": "网络可观测性已启用。",
+      "statusDisabled": "网络可观测性已禁用。",
+      "statusDisabledByEnv": "网络可观测性已被环境变量禁用。",
+      "disableNetworkObservabilityLabel": "禁用网络可观测性",
+      "disableNetworkObservabilityDesc": "停止网关网络可观测性调用，例如安装遥测和更新检查。",
+      "save": "保存隐私设置"
+    },
     "toast": {
       "loadFailed": "加载设置失败：{error}",
       "chooseProvider": "保存前请先选择服务商。",
@@ -398,6 +465,8 @@
       "providerSavedRestart": "服务商已保存。需要重启。",
       "behaviorSaved": "行为已保存。",
       "behaviorSavedRestart": "行为已保存。需要重启。",
+      "privacySaved": "隐私设置已保存。",
+      "privacySavedRestart": "隐私设置已保存。需要重启。",
       "chooseProviderRouter": "保存路由分层前请先选择服务商。",
       "routerSaved": "路由已保存。",
       "routerSavedRestart": "路由已保存。需要重启。",
@@ -806,12 +875,10 @@
       "details": "详情",
       "unknownTool": "未知",
       "approveOnce": "批准一次",
-      "alwaysAllow": "始终允许此类型",
-      "bypassHint": "绕过审批提示，同时保留敏感路径检查",
-      "bypass": "绕过审批",
+      "alwaysAllow": "始终允许此项",
+      "allowSameType": "允许同类型",
       "deny": "拒绝",
       "loadFailed": "加载审批失败：{msg}",
-      "bypassEnabled": "已启用审批绕过",
       "approved": "已批准",
       "denied": "已拒绝",
       "toastFailed": "失败：{msg}",
@@ -1464,6 +1531,8 @@
     "download": "下载",
     "previewOf": "预览：{title}",
     "closePreview": "关闭预览",
+    "previousImage": "上一张图片",
+    "nextImage": "下一张图片",
     "loadingPreview": "正在加载预览",
     "previewDownload": "预览下载",
     "previewTimedOut": "预览超时。",
@@ -1497,6 +1566,24 @@
     "addToShare": "添加到分享图片",
     "removeFromShare": "从分享图片中移除",
     "aiModelRouter": "AI 模型路由",
+    "aiModelEnsembleRouter": "AI 模型聚合路由",
+    "routerFx": {
+      "ensembleSelecting": "AI 模型聚合路由 · 正在选择候选",
+      "ensembleRunning": "AI 模型聚合路由 · {count} 个候选正在合成",
+      "ensembleDone": "{count} 个候选已合成",
+      "ensembleMode": "聚合",
+      "ensembleViewTrace": "查看 trace",
+      "ensembleToggleTrace": "查看聚合路由 trace",
+      "ensembleTraceTitle": "候选 trace",
+      "ensemblePlanMeta": "聚合档案 · 候选池 {count}",
+      "ensembleFallbackNone": "未使用降级",
+      "ensembleFallbackUsed": "已使用 fallback",
+      "ensembleFallbackReason": "降级 · {reason}",
+      "ensembleRouterPoolHidden": "普通 router 池已隐藏",
+      "ensembleTokens": "{count} 令牌",
+      "ensembleUsed": "已使用",
+      "ensembleDetailUnavailable": "{count} 个候选 · 明细不可用"
+    },
     "sources": "来源",
     "activitySteps": "活动 · {count} 步",
     "suggestedTasks": "推荐任务",
@@ -1533,6 +1620,7 @@
       "denyReasonLabel": "拒绝原因，可选，将发送给智能体",
       "allowOnce": "允许一次",
       "allowAlways": "始终允许此项",
+      "allowSameType": "允许同类型",
       "deny": "拒绝",
       "expiresIn": "{time} 后过期",
       "outcomeExpired": "已过期 — 未运行",
@@ -1562,10 +1650,22 @@
       "disabled": "已禁用",
       "routerAnimationOn": "路由动画已开启",
       "routerAnimationOff": "路由动画已关闭",
-      "execOff": "关闭",
-      "execPrompt": "提示审批",
-      "execBypass": "跳过审批",
-      "execFull": "完全访问"
+      "modelRouting": "模型路由",
+      "modelRoutingOff": "关",
+      "modelRoutingOffDesc": "每轮都发送到当前选定模型。",
+      "modelRoutingSquillaRouter": "AI 智能单模型路由",
+      "modelRoutingSquillaRouterDesc": "由 AI 为每轮智能选择一个合适模型，优先降低成本。",
+      "modelRoutingEnsemble": "AI 智能聚合路由",
+      "modelRoutingEnsembleDesc": "由 AI 协调多个模型协同生成，优先提升复杂任务能力。",
+      "runMode": "执行模式",
+      "runModeStandard": "标准沙箱",
+      "runModeStandardDesc": "高风险工具操作前请求确认。",
+      "runModeTrusted": "托管执行",
+      "runModeTrustedDesc": "默认使用沙箱；明确需要主机的操作会在策略允许时自动放行。",
+      "runModeFull": "完全主机访问",
+      "runModeFullDesc": "不使用沙箱隔离运行。",
+      "runModeFullUnavailable": "完全主机访问需要 owner 会话。",
+      "badgeNew": "新"
     },
     "pending": {
       "label": "待发送 {count}/{max}",
@@ -1660,6 +1760,21 @@
       "preparingOutput": "准备输出",
       "stillWaiting": "仍在等待模型",
       "stillWorking": "仍在处理 — 上次信号 {seconds} 秒前"
+    },
+    "msgMeta": {
+      "ensembleModels": "聚合 · {count} 个模型",
+      "tokens": "令牌",
+      "cache": "缓存",
+      "think": "思考",
+      "ensemble": "聚合",
+      "cost": "成本",
+      "saved": "节省",
+      "fallback": "降级",
+      "fallbackUsed": "已使用",
+      "ensembleModelsAria": "聚合模型"
+    },
+    "modelRouting": {
+      "updateFailed": "切换模型路由失败，已恢复原设置。请检查网关连接后重试。"
     }
   },
   "shared": {
@@ -1711,7 +1826,23 @@
       "filterByAgent": "按 {name} 筛选",
       "deleteSessionTitle": "删除会话",
       "deleteSessionBody": "删除会话“{title}”？此操作无法撤销。",
-      "deleteSessionConfirm": "删除"
+      "deleteSessionConfirm": "删除",
+      "selectVisible": "选择可见会话",
+      "clearVisibleSelection": "取消选择可见会话",
+      "selectAllShort": "全选",
+      "clearAllShort": "清空",
+      "selectionModeLabel": "选择会话",
+      "selectedCountLabel": "已选择 {count} 个",
+      "enterSelectionMode": "批量管理会话",
+      "exitSelectionMode": "退出选择",
+      "selectSession": "选择 {title}",
+      "deleteSelectedAria": "删除已选 {count} 个会话",
+      "bulkDeleteTitle": "删除已选会话",
+      "bulkDeleteBody": "删除已选的 {count} 个会话？此操作无法撤销。",
+      "bulkDeleteConfirm": "删除已选",
+      "bulkDeleteDone": "已删除 {count} 个会话",
+      "bulkDeletePartial": "{count} 个会话删除失败",
+      "bulkDeleteFailed": "删除已选会话失败"
     },
     "setupBanner": {
       "ariaLabel": "需要设置网关",

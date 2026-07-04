@@ -32,6 +32,15 @@ trailers for every human contributor whose work is included. Preserve pull
 request author attribution and commit author attribution separately when they
 differ.
 
+If an older squash, replay, or follow-up pull request dropped contributor
+attribution, do not rewrite protected branch history only to repair it. Open a
+focused attribution repair pull request instead: update `CONTRIBUTORS.md` or the
+release notes with affected pull requests and evidence, and include
+`Co-authored-by:` trailers on the repair commit for missing human contributors
+when GitHub can associate those emails. Do not treat "already appears in GitHub
+contributors" as complete repair; that confirms global account representation,
+not attribution for the specific squashed or replayed work.
+
 ## Default Checks
 
 Install development dependencies:

@@ -1,2 +1,0 @@
-import{B as e,T as t,at as n,i as r,k as i,n as a}from"./Icon-DKDRgtKU.js";var o=[`aria-label`],s=a(i({__name:`LoadingSpinner`,setup(i){let{t:a}=r();return(r,i)=>(e(),t(`span`,{class:`loading-spinner`,"aria-label":n(a)(`shared.loading`),role:`status`},null,8,o))}}),[[`__scopeId`,`data-v-204fcd9b`]]);export{s as t};
-//# sourceMappingURL=LoadingSpinner-BS1PFGmC.js.map

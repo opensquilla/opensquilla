@@ -144,13 +144,29 @@ def test_upsert_memory_embedding_auto_without_changes_does_not_require_restart()
 def test_unsupported_provider_rejected():
     cfg = GatewayConfig()
     with pytest.raises(ValueError, match="not runtime-supported"):
-        upsert_llm_provider(cfg, provider_id="openai_codex", model="x")
+        upsert_llm_provider(cfg, provider_id="github_copilot", model="x")
 
 
-def test_unverified_base_url_provider_rejected_before_configuration():
+def test_experimental_provider_configurable_with_required_fields():
+    # azure is experimental (registry-runnable, unverified) — configurable,
+    # but its base_url requirement still validates.
+    cfg = GatewayConfig()
+    with pytest.raises(ValueError, match="base_url"):
+        upsert_llm_provider(cfg, provider_id="azure", model="x", api_key="k")
+    res = upsert_llm_provider(
+        cfg,
+        provider_id="azure",
+        model="x",
+        api_key="k",
+        base_url="https://example.openai.azure.com/v1",
+    )
+    assert res.config.llm.provider == "azure"
+
+
+def test_coding_plan_provider_still_rejected():
     cfg = GatewayConfig()
     with pytest.raises(ValueError, match="not runtime-supported"):
-        upsert_llm_provider(cfg, provider_id="azure", model="x", api_key="k")
+        upsert_llm_provider(cfg, provider_id="volcengine_coding_plan", model="x", api_key="k")
 
 
 def test_ollama_does_not_require_api_key():

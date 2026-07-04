@@ -139,6 +139,17 @@
           </button>
         </header>
         <div class="deliv-preview__body">
+          <button
+            v-if="canNavigateImages"
+            type="button"
+            class="deliv-preview__nav deliv-preview__nav--prev"
+            :aria-label="t('chat.previousImage')"
+            :title="t('chat.previousImage')"
+            :disabled="!canGoPreviousImage"
+            @click="showPreviousImage"
+          >
+            <Icon name="chevronRight" :size="22" />
+          </button>
           <img
             v-if="fullState === 'loaded' && fullUrl"
             class="deliv-preview__image"
@@ -178,6 +189,17 @@
             </div>
             <span v-else class="deliv-preview__progress-shimmer" aria-hidden="true" />
           </div>
+          <button
+            v-if="canNavigateImages"
+            type="button"
+            class="deliv-preview__nav deliv-preview__nav--next"
+            :aria-label="t('chat.nextImage')"
+            :title="t('chat.nextImage')"
+            :disabled="!canGoNextImage"
+            @click="showNextImage"
+          >
+            <Icon name="chevronRight" :size="22" />
+          </button>
         </div>
         <footer class="deliv-preview__actions">
           <button type="button" class="btn btn--primary" @click="$emit('download', active)">
@@ -222,6 +244,7 @@ import {
 
 const props = defineProps<{
   artifacts: ArtifactPayload[]
+  navigationArtifacts?: ArtifactPayload[]
   sessionKey?: string
   authToken?: string
 }>()
@@ -235,6 +258,10 @@ const { pushToast } = useToasts()
 const platform = usePlatform()
 
 const visualArtifacts = computed(() => props.artifacts.filter(artifact => artifactCategory(artifact) === 'visual'))
+const navigationVisualArtifacts = computed(() => {
+  const source = props.navigationArtifacts?.length ? props.navigationArtifacts : props.artifacts
+  return source.filter(artifact => artifactCategory(artifact) === 'visual')
+})
 const fileArtifacts = computed(() => props.artifacts.filter(artifact => artifactCategory(artifact) !== 'visual'))
 
 function artifactKey(artifact: ArtifactPayload): string {
@@ -361,6 +388,17 @@ const lightboxCloseBtn = ref<HTMLButtonElement | null>(null)
 const lightboxPanel = ref<HTMLElement | null>(null)
 let lightboxInvoker: HTMLElement | null = null
 
+const activeImageIndex = computed(() => {
+  const current = active.value
+  if (!current) return -1
+  const currentKey = artifactKey(current)
+  return navigationVisualArtifacts.value.findIndex(artifact => artifactKey(artifact) === currentKey)
+})
+const canNavigateImages = computed(() => navigationVisualArtifacts.value.length > 1)
+const canGoPreviousImage = computed(() => activeImageIndex.value > 0)
+const canGoNextImage = computed(() =>
+  activeImageIndex.value >= 0 && activeImageIndex.value < navigationVisualArtifacts.value.length - 1)
+
 let fullController: ArtifactPreviewController | null = null
 const fullState = ref<ArtifactPreviewState>('idle')
 const fullProgress = ref<number | null>(null)
@@ -408,6 +446,23 @@ function retryFull() {
   fullController?.retry()
 }
 
+function showImageAt(index: number) {
+  const artifact = navigationVisualArtifacts.value[index]
+  if (!artifact) return
+  active.value = artifact
+  loadFull(artifact)
+}
+
+function showPreviousImage() {
+  if (!canGoPreviousImage.value) return
+  showImageAt(activeImageIndex.value - 1)
+}
+
+function showNextImage() {
+  if (!canGoNextImage.value) return
+  showImageAt(activeImageIndex.value + 1)
+}
+
 function closePreview() {
   if (!active.value) return
   active.value = null
@@ -444,6 +499,20 @@ function onLightboxKeydown(event: KeyboardEvent) {
   if (event.key === 'Escape') {
     event.preventDefault()
     closePreview()
+    return
+  }
+  if (event.key === 'ArrowLeft') {
+    if (canGoPreviousImage.value) {
+      event.preventDefault()
+      showPreviousImage()
+    }
+    return
+  }
+  if (event.key === 'ArrowRight') {
+    if (canGoNextImage.value) {
+      event.preventDefault()
+      showNextImage()
+    }
     return
   }
   if (event.key === 'Tab') trapLightboxFocus(event)
@@ -551,14 +620,14 @@ onUnmounted(() => {
   width: 64%;
   height: var(--sp-1);
   overflow: hidden;
-  border-radius: 999px;
+  border-radius: var(--radius-full);
   background: var(--bg-hover);
 }
 
 .msg-media-card__progress-bar {
   display: block;
   height: 100%;
-  border-radius: 999px;
+  border-radius: var(--radius-full);
   background: var(--accent);
   transition: width var(--dur-base) var(--ease-standard);
 }
@@ -598,7 +667,7 @@ onUnmounted(() => {
 .msg-media-card__retry:focus-visible {
   outline: none;
   border-color: var(--accent);
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent);
+  box-shadow: var(--focus-ring);
 }
 
 .msg-media-card__zoom {
@@ -625,7 +694,7 @@ onUnmounted(() => {
 
 .msg-media-card__img:focus-visible {
   outline: none;
-  box-shadow: inset 0 0 0 3px color-mix(in srgb, var(--accent) 35%, transparent);
+  box-shadow: var(--focus-ring-inset);
 }
 
 .msg-media-card__cap {
@@ -682,7 +751,7 @@ onUnmounted(() => {
 .msg-media-card__download:focus-visible {
   outline: none;
   border-color: var(--accent);
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent);
+  box-shadow: var(--focus-ring);
 }
 
 @keyframes mediaSkeleton {

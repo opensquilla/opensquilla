@@ -416,6 +416,58 @@ async def test_forked_compacted_archive_stays_out_of_provider_messages(
 
 
 @pytest.mark.asyncio
+async def test_branch_before_message_does_not_copy_future_summary_context(
+    session_manager: SessionManager,
+) -> None:
+    parent_key = "agent:main:future-parent"
+    child_key = "agent:main:future-child"
+    parent = await session_manager.create(parent_key)
+    await session_manager.append_message(parent_key, "user", "A marker")
+    before_entry = await session_manager.append_message(parent_key, "user", "B marker")
+    await session_manager.append_message(parent_key, "assistant", "C marker must not leak")
+    await session_manager._storage.save_summary(
+        SessionSummary(
+            session_id=parent.session_id,
+            session_key=parent_key,
+            summary_text="future summary mentions C marker must not leak",
+            summary_format="structured_v1",
+            covered_through_id=999,
+        )
+    )
+    await session_manager.save_context_state(
+        SessionContextState(
+            session_id=parent.session_id,
+            session_key=parent_key,
+            provider="portable",
+            state_kind="structured_summary_v1",
+            payload={"future": "C marker must not leak"},
+            covered_through_id=999,
+            portable=True,
+            cacheable=True,
+        )
+    )
+
+    await session_manager.branch(
+        parent_key,
+        child_key,
+        fork_transcript=True,
+        fork_before_message_id=before_entry.message_id,
+    )
+
+    runner = TurnRunner(provider_selector=MagicMock(), session_manager=session_manager)
+    agent = Agent(provider=_CapturingProvider(), config=AgentConfig(system_prompt="stable base"))
+
+    summary_context = await runner._load_history(agent, child_key, trim_last_user=False)
+
+    assert [message.content for message in agent._history] == ["A marker"]
+    assert summary_context is None or "C marker must not leak" not in summary_context
+    assert "C marker must not leak" not in json.dumps(
+        [message.model_dump(mode="json", exclude_none=True) for message in agent._history],
+        ensure_ascii=False,
+    )
+
+
+@pytest.mark.asyncio
 async def test_summary_context_is_request_only_and_keeps_system_cache_anchor(
     session_manager: SessionManager,
 ) -> None:

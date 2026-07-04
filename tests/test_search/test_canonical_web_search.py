@@ -367,7 +367,12 @@ async def test_canonical_web_search_primary_auth_failure_does_not_silent_fallbac
 async def test_canonical_web_search_no_key_auto_skips_known_missing_key_providers(
     monkeypatch,
 ) -> None:
-    for key in ("BRAVE_SEARCH_API_KEY", "TAVILY_API_KEY", "EXA_API_KEY"):
+    for key in (
+        "BRAVE_SEARCH_API_KEY",
+        "TAVILY_API_KEY",
+        "EXA_API_KEY",
+        "BOCHA_SEARCH_API_KEY",
+    ):
         monkeypatch.delenv(key, raising=False)
 
     def provider_factory(name: str) -> MissingKeyAuthProvider | FallbackProvider:
@@ -389,7 +394,12 @@ async def test_canonical_web_search_no_key_auto_skips_known_missing_key_provider
 
 @pytest.mark.asyncio
 async def test_canonical_web_search_no_key_default_uses_duckduckgo_directly(monkeypatch) -> None:
-    for key in ("BRAVE_SEARCH_API_KEY", "TAVILY_API_KEY", "EXA_API_KEY"):
+    for key in (
+        "BRAVE_SEARCH_API_KEY",
+        "TAVILY_API_KEY",
+        "EXA_API_KEY",
+        "BOCHA_SEARCH_API_KEY",
+    ):
         monkeypatch.delenv(key, raising=False)
     attempted: list[str] = []
 
@@ -732,7 +742,12 @@ async def test_canonical_web_search_soft_degrades_explicit_duckduckgo_recency() 
 async def test_canonical_web_search_no_key_auto_recency_uses_duckduckgo_soft_degrade(
     monkeypatch,
 ) -> None:
-    for key in ("BRAVE_SEARCH_API_KEY", "TAVILY_API_KEY", "EXA_API_KEY"):
+    for key in (
+        "BRAVE_SEARCH_API_KEY",
+        "TAVILY_API_KEY",
+        "EXA_API_KEY",
+        "BOCHA_SEARCH_API_KEY",
+    ):
         monkeypatch.delenv(key, raising=False)
     calls: list[tuple[str, str, int]] = []
 
@@ -758,6 +773,9 @@ async def test_canonical_web_search_technical_mode_prefers_exa_then_brave(monkey
     monkeypatch.setenv("EXA_API_KEY", "exa-key")
     monkeypatch.setenv("BRAVE_SEARCH_API_KEY", "brave-key")
     monkeypatch.setenv("TAVILY_API_KEY", "tavily-key")
+    # A real Bocha key in the developer's environment would outrank brave in
+    # the technical-mode fallback order; keep the ordering assertion hermetic.
+    monkeypatch.delenv("BOCHA_SEARCH_API_KEY", raising=False)
     attempted: list[str] = []
 
     def provider_factory(name: str) -> MissingKeyAuthProvider | FallbackProvider:

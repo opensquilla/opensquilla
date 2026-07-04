@@ -134,6 +134,12 @@ class ControlUiConfig(BaseSettings):
         return v
 
 
+class PrivacyConfig(BaseSettings):
+    model_config = SettingsConfigDict(env_prefix="OPENSQUILLA_PRIVACY_")
+
+    disable_network_observability: bool = False
+
+
 class SkillsConfig(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="OPENSQUILLA_SKILLS_")
 
@@ -188,7 +194,7 @@ class PermissionsConfig(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    default_mode: Literal["off", "on", "bypass", "full"] = "bypass"
+    default_mode: Literal["off", "on", "bypass", "full"] = "off"
 
 
 class TaskRuntimeConfig(BaseModel):
@@ -286,6 +292,60 @@ class LlmProviderConfig(BaseSettings):
         model = str(self.model or "").strip()
         if model in aliases:
             self.model = aliases[model]
+        return self
+
+
+DEFAULT_LLM_ENSEMBLE_MODEL_OPTIONS = [
+    "deepseek/deepseek-v4-pro",
+    "z-ai/glm-5.2",
+    "qwen/qwen3.7-plus",
+    "deepseek/deepseek-v4-flash",
+    "qwen/qwen3.7-max",
+    "moonshotai/kimi-k2.6",
+    "moonshotai/kimi-k2.7-code",
+    "minimax/minimax-m3",
+]
+
+
+def _default_llm_ensemble_model_options() -> list[str]:
+    """Models operators may select for the router_dynamic ensemble candidate pool."""
+    return list(DEFAULT_LLM_ENSEMBLE_MODEL_OPTIONS)
+
+
+class LlmEnsembleConfig(BaseSettings):
+    model_config = SettingsConfigDict(
+        env_prefix="OPENSQUILLA_LLM_ENSEMBLE_",
+        env_nested_delimiter="__",
+        extra="ignore",
+    )
+
+    # Off by default so a fresh install lands on the single-model AI router
+    # (squilla_router). Ensemble is opt-in via the composer's routing control.
+    enabled: bool = False
+    mode: Literal["b5_fusion"] = "b5_fusion"
+    proposer_tools: bool = False
+    min_successful_proposers: int = Field(default=1, ge=1)
+    all_failed_policy: Literal["fallback_single", "error"] = "fallback_single"
+    model_options: list[str] = Field(default_factory=_default_llm_ensemble_model_options)
+    candidate_max_chars: int = Field(default=24_000, ge=0)
+    proposer_timeout_seconds: float = Field(default=3600.0, gt=0.0)
+    aggregator_timeout_seconds: float = Field(default=3600.0, gt=0.0)
+    shuffle_candidates: bool = True
+    record_candidates: bool = False
+
+    @model_validator(mode="after")
+    def _validate_model_options(self) -> LlmEnsembleConfig:
+        model_options: list[str] = []
+        seen_options: set[str] = set()
+        for model in self.model_options:
+            normalized = str(model or "").strip()
+            if not normalized or normalized in seen_options:
+                continue
+            seen_options.add(normalized)
+            model_options.append(normalized)
+        if not model_options:
+            raise ValueError("llm_ensemble.model_options must define at least one model")
+        self.model_options = model_options
         return self
 
 
@@ -619,10 +679,10 @@ def _default_tiers() -> dict:
         },
         "c3": {
             "provider": "openrouter",
-            "model": "anthropic/claude-opus-4.8",
+            "model": "z-ai/glm-5.2",
             "description": (
-                "Highest-quality text reasoning model for difficult planning, "
-                "deep review, complex debugging, and high-stakes synthesis"
+                "Highest-tier GLM 5.2 route for difficult planning, deep review, "
+                "complex debugging, and high-stakes synthesis"
             ),
             "supports_image": False,
             "thinking_level": "high",
@@ -1000,6 +1060,11 @@ class SquillaRouterConfig(BaseSettings):
     strategy: str = "v4_phase3"
     tier_profile: str | None = None
     visual_mode: str = "real_candidates"
+    # Preview: execute router tiers whose provider differs from llm.provider,
+    # resolving credentials from [llm_profiles.<id>] or the provider's env
+    # key. Off: such tiers run on the active provider (with a logged
+    # mismatch warning), preserving the historical behavior.
+    cross_provider_tiers: bool = False
     tiers: dict = Field(default_factory=_default_tiers)
     default_tier: str = DEFAULT_TEXT_TIER
     confidence_threshold: float = 0.5
@@ -1341,16 +1406,56 @@ class DingTalkChannelEntry(ConfiguredChannelEntry):
 
 
 class WeComChannelEntry(ConfiguredChannelEntry):
-    """Gateway config entry for a WeCom corp-app channel."""
+    """Gateway config entry for WeCom AI Bot or corp-app callback."""
 
     type: Literal["wecom"] = "wecom"
-    corp_id: str
-    corp_secret: str
-    agent_id_int: int
-    token: str
-    encoding_aes_key: str
+    connection_mode: Literal["webhook", "websocket"] = "webhook"
+    bot_id: str = ""
+    bot_secret: str = ""
+    websocket_url: str = "wss://openws.work.weixin.qq.com"
+    corp_id: str = ""
+    corp_secret: str = ""
+    agent_id_int: int = 0
+    token: str = ""
+    encoding_aes_key: str = ""
     webhook_path: str = "/wecom/events"
     api_base: str = "https://qyapi.weixin.qq.com"
+
+    @model_validator(mode="after")
+    def validate_wecom_mode(self) -> WeComChannelEntry:
+        if self.connection_mode == "websocket":
+            missing = [
+                field
+                for field in ("bot_id", "bot_secret")
+                if not str(getattr(self, field)).strip()
+            ]
+            if missing:
+                raise ValueError(
+                    "wecom websocket mode requires bot_id and bot_secret; "
+                    "corp_id/corp_secret/access_token are for webhook mode"
+                )
+            if not self.websocket_url.strip():
+                raise ValueError("wecom websocket mode requires websocket_url")
+            return self
+
+        missing = [
+            field
+            for field in (
+                "corp_id",
+                "corp_secret",
+                "token",
+                "encoding_aes_key",
+            )
+            if not str(getattr(self, field)).strip()
+        ]
+        if self.agent_id_int <= 0:
+            missing.append("agent_id_int")
+        if missing:
+            raise ValueError(
+                "wecom webhook mode requires corp_id, corp_secret, agent_id_int, "
+                "token, and encoding_aes_key"
+            )
+        return self
 
 
 class QQChannelEntry(ConfiguredChannelEntry):
@@ -1618,6 +1723,24 @@ class TlsConfig(BaseSettings):
     certfile: str = ""
 
 
+class LlmProviderProfile(BaseSettings):
+    """Named credential profile for a non-primary LLM provider.
+
+    Written as ``[llm_profiles.<provider_id>]`` in the config TOML and
+    referenced by router tiers through their existing ``provider`` field.
+    Resolution order per field matches the primary provider: explicit value,
+    then ``api_key_env`` (or the registry env key), then the registry
+    default base URL.
+    """
+
+    model_config = SettingsConfigDict(extra="ignore")
+
+    api_key: str = ""
+    api_key_env: str = ""
+    base_url: str = ""
+    proxy: str = ""
+
+
 class GatewayConfig(BaseSettings):
     model_config = SettingsConfigDict(
         env_prefix="OPENSQUILLA_GATEWAY_",
@@ -1659,6 +1782,10 @@ class GatewayConfig(BaseSettings):
     task_runtime: TaskRuntimeConfig = Field(default_factory=TaskRuntimeConfig)
     skills: SkillsConfig = Field(default_factory=SkillsConfig)
     llm: LlmProviderConfig = Field(default_factory=LlmProviderConfig)
+    # Credential profiles for non-primary providers, keyed by registry
+    # provider id; consumed by cross-provider router tiers.
+    llm_profiles: dict[str, LlmProviderProfile] = Field(default_factory=dict)
+    llm_ensemble: LlmEnsembleConfig = Field(default_factory=LlmEnsembleConfig)
     prompt_cache: PromptCacheConfig = Field(default_factory=PromptCacheConfig)
     safety: SafetyConfig = Field(default_factory=SafetyConfig)
     prompt: PromptConfig = Field(default_factory=PromptConfig)
@@ -1680,6 +1807,7 @@ class GatewayConfig(BaseSettings):
 
     # Component enable flags
     control_ui: ControlUiConfig = Field(default_factory=ControlUiConfig)
+    privacy: PrivacyConfig = Field(default_factory=PrivacyConfig)
     diagnostics_enabled: bool = False
     channel_admin_senders: dict[str, list[str]] = Field(default_factory=dict)
 
@@ -1950,7 +2078,17 @@ class GatewayConfig(BaseSettings):
 
     def to_public_dict(self) -> dict[str, Any]:
         """Return a redacted config view safe for public control surfaces."""
-        return cast(dict[str, Any], redact_public_config(self.model_dump()))
+        data = cast(dict[str, Any], redact_public_config(self.model_dump()))
+        privacy = data.get("privacy")
+        if isinstance(privacy, dict):
+            from opensquilla.observability.network_policy import (
+                network_observability_disabled,
+            )
+
+            privacy["network_observability_disabled_effective"] = (
+                network_observability_disabled(config=self)
+            )
+        return data
 
     def mark_runtime_secret(self, path: str) -> None:
         self._runtime_secret_paths.add(path)

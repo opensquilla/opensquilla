@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 from opensquilla.observability import install_telemetry as telemetry
+from opensquilla.observability import network_policy
 
 TEST_ENDPOINT = "https://telemetry.example.test/v1/install"
 PRODUCTION_ENDPOINT = "https://telemetry.opensquilla.ai/v1/install"
@@ -15,7 +17,15 @@ def _load(path: Path) -> dict[str, Any]:
 
 
 def _enable_telemetry_for_test(monkeypatch):
+    monkeypatch.delenv(
+        network_policy.NETWORK_OBSERVABILITY_DISABLED_ENV,
+        raising=False,
+    )
     monkeypatch.delenv(telemetry.TELEMETRY_DISABLED_ENV, raising=False)
+    monkeypatch.delenv(
+        network_policy.LEGACY_UPDATE_CHECK_DISABLED_ENV,
+        raising=False,
+    )
     monkeypatch.delenv("GITHUB_ACTIONS", raising=False)
     monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
     monkeypatch.delenv(telemetry.TELEMETRY_TESTING_ENV, raising=False)
@@ -175,6 +185,26 @@ def test_disabled_env_skips_without_creating_state(tmp_path, monkeypatch):
     state_path = tmp_path / "install_telemetry.json"
 
     result = telemetry.collect_install_telemetry(state_path=state_path, version="1.0.0")
+
+    assert result.disabled is True
+    assert result.sent is False
+    assert result.skipped_reason == "disabled"
+    assert not state_path.exists()
+
+
+def test_privacy_config_disable_skips_without_creating_state(tmp_path, monkeypatch):
+    _enable_telemetry_for_test(monkeypatch)
+    monkeypatch.setenv(telemetry.TELEMETRY_ENDPOINT_ENV, TEST_ENDPOINT)
+    state_path = tmp_path / "install_telemetry.json"
+    config = SimpleNamespace(
+        privacy=SimpleNamespace(disable_network_observability=True),
+    )
+
+    result = telemetry.collect_install_telemetry(
+        config=config,
+        state_path=state_path,
+        version="1.0.0",
+    )
 
     assert result.disabled is True
     assert result.sent is False

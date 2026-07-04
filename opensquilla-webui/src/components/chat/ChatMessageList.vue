@@ -34,6 +34,7 @@
       :tool-secondary-text="toolSecondaryText"
       :session-key="sessionKey"
       :auth-token="authToken"
+      :artifact-navigation-items="artifactNavigationItems"
       :copy-message="copyMessage"
       :is-tip="index === lastAssistantIndex"
       :fork-busy="forkBusy"
@@ -88,6 +89,7 @@ const props = defineProps<{
   toolStatusText: (call: ChatToolCallRenderItem) => string
   toolSecondaryText: (call: ChatToolCallRenderItem) => string
   copyMessage: (message: ChatRenderedMessage) => Promise<boolean>
+  artifactNavigationItems?: ArtifactPayload[]
   sessionKey?: string
   authToken?: string
   forkBusy?: boolean

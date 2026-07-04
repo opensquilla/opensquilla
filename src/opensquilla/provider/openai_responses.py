@@ -19,6 +19,7 @@ from opensquilla.secrets import clean_header_secret
 
 from .openai import _http_error_body_text, _resolve_llm_proxy
 from .protocol import ProviderConnectionConfig, ProviderMetadata
+from .stream_assembly import ToolStreamAccumulator
 from .types import (
     ChatConfig,
     ContentBlockText,
@@ -31,9 +32,6 @@ from .types import (
     StreamEvent,
     TextDeltaEvent,
     ToolDefinition,
-    ToolUseDeltaEvent,
-    ToolUseEndEvent,
-    ToolUseStartEvent,
 )
 
 _OPENAI_RESPONSES_BASE = "https://api.openai.com/v1"
@@ -257,6 +255,7 @@ class OpenAIResponsesProvider:
             return
 
         emitted_tool = False
+        tools_acc = ToolStreamAccumulator()
         for item in data.get("output") or []:
             if not isinstance(item, dict):
                 continue
@@ -269,20 +268,21 @@ class OpenAIResponsesProvider:
             elif item.get("type") == "function_call":
                 emitted_tool = True
                 call_id = item.get("call_id") or item.get("id") or f"call_{uuid4().hex[:12]}"
-                tool_name = item.get("name") or ""
-                arguments_text = item.get("arguments") or ""
-                yield ToolUseStartEvent(tool_use_id=call_id, tool_name=tool_name)
-                if arguments_text:
-                    yield ToolUseDeltaEvent(tool_use_id=call_id, json_fragment=arguments_text)
-                try:
-                    arguments = json.loads(arguments_text) if arguments_text else {}
-                except json.JSONDecodeError:
-                    arguments = {"_raw": arguments_text}
-                yield ToolUseEndEvent(
+                # Responses output items are keyed by their item id, the
+                # stream-local key the streaming variant of this API uses.
+                key = item.get("id") or call_id
+                for tool_event in tools_acc.start(
+                    key,
                     tool_use_id=call_id,
-                    tool_name=tool_name,
-                    arguments=arguments,
-                )
+                    tool_name=item.get("name") or "",
+                ):
+                    yield tool_event
+                arguments_text = item.get("arguments") or ""
+                if arguments_text:
+                    for tool_event in tools_acc.append(key, arguments_text):
+                        yield tool_event
+                for tool_event in tools_acc.finish(key):
+                    yield tool_event
 
         input_tokens, output_tokens, reasoning_tokens, cached_tokens = _usage_fields(
             data.get("usage")

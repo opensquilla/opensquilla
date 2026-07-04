@@ -375,6 +375,59 @@ async def test_branch_fork_transcript(manager):
 
 
 @pytest.mark.asyncio
+async def test_branch_before_message_copies_only_prefix(manager):
+    await manager.create("agent:main:main")
+    await manager.append_message("agent:main:main", "user", "A marker", token_count=5)
+    await manager.append_message("agent:main:main", "assistant", "ack A", token_count=5)
+    before_entry = await manager.append_message(
+        "agent:main:main", "user", "B marker", token_count=5
+    )
+    await manager.append_message("agent:main:main", "assistant", "ack B", token_count=5)
+    await manager.append_message("agent:main:main", "user", "C marker must not leak", token_count=5)
+
+    child = await manager.branch(
+        "agent:main:main",
+        "agent:main:direct:edited",
+        fork_transcript=True,
+        fork_before_message_id=before_entry.message_id,
+    )
+
+    assert child.forked_from_parent is True
+    child_contents = [
+        entry.content for entry in await manager.get_transcript("agent:main:direct:edited")
+    ]
+    assert child_contents == [
+        "A marker",
+        "ack A",
+    ]
+    assert [entry.content for entry in await manager.get_transcript("agent:main:main")] == [
+        "A marker",
+        "ack A",
+        "B marker",
+        "ack B",
+        "C marker must not leak",
+    ]
+    assert await manager.get_summaries("agent:main:direct:edited") == []
+    assert await manager.get_context_states("agent:main:direct:edited") == []
+
+
+@pytest.mark.asyncio
+async def test_branch_before_message_missing_id_does_not_create_child(manager):
+    await manager.create("agent:main:main")
+    await manager.append_message("agent:main:main", "user", "A marker")
+
+    with pytest.raises(KeyError, match="Transcript message not found"):
+        await manager.branch(
+            "agent:main:main",
+            "agent:main:direct:missing",
+            fork_transcript=True,
+            fork_before_message_id="missing-message-id",
+        )
+
+    assert await manager.get_session("agent:main:direct:missing") is None
+
+
+@pytest.mark.asyncio
 async def test_branch_fork_transcript_copies_compaction_summaries(manager):
     parent = await manager.create("agent:main:main")
     await manager.append_message("agent:main:main", "user", "kept tail", token_count=5)

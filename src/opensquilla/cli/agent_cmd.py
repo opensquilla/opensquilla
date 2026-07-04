@@ -124,6 +124,8 @@ async def run_agent_once(
     from opensquilla.gateway.config import GatewayConfig
     from opensquilla.gateway.routing import build_cli_route_envelope, tool_context_from_envelope
     from opensquilla.paths import media_root_from_config
+    from opensquilla.permissions import configured_default_run_mode
+    from opensquilla.sandbox.run_mode import normalize_run_mode
     from opensquilla.session.keys import canonicalize_session_key, normalize_agent_id
     from opensquilla.tools.types import InteractionMode
 
@@ -133,6 +135,17 @@ async def run_agent_once(
     cfg = config or GatewayConfig.load(os.environ.get("OPENSQUILLA_GATEWAY_CONFIG_PATH"))
     permissions_profile = _resolve_permissions_profile(permissions, cfg)
     elevated = permissions_profile if permissions_profile in {"on", "bypass", "full"} else None
+    permissions_override = (
+        permissions is not None or os.environ.get("OPENSQUILLA_AGENT_PERMISSIONS") is not None
+    )
+    sandbox_settings = getattr(cfg, "sandbox", None)
+    explicit_run_mode = getattr(sandbox_settings, "run_mode", None)
+    run_mode = None
+    if not permissions_override:
+        if explicit_run_mode:
+            run_mode = normalize_run_mode(explicit_run_mode).value
+        elif permissions_profile == "restricted":
+            run_mode = configured_default_run_mode(cfg).value
     run_attachments: list[dict[str, Any]] = list(attachments or [])
     if attachment_paths:
         run_attachments.extend(attachments_from_paths(tuple(attachment_paths)))
@@ -243,6 +256,7 @@ async def run_agent_once(
                 InteractionMode.UNATTENDED if unattended else InteractionMode.INTERACTIVE
             ),
             elevated=elevated,
+            run_mode=run_mode,
         )
         tool_ctx = tool_context_from_envelope(
             route_envelope,
@@ -463,7 +477,7 @@ def _parse_bool(value: str | None) -> bool | None:
 
 
 def _usage_from_done(done: Any | None, model: str | None) -> dict[str, Any]:
-    return {
+    usage = {
         "input_tokens": done.input_tokens if done else 0,
         "output_tokens": done.output_tokens if done else 0,
         "total_tokens": (done.input_tokens + done.output_tokens) if done else 0,
@@ -474,6 +488,16 @@ def _usage_from_done(done: Any | None, model: str | None) -> dict[str, Any]:
         "model": (done.model or model or "") if done else (model or ""),
         "request_count": done.iterations if done else 0,
     }
+    if done is not None:
+        model_usage_breakdown = getattr(done, "model_usage_breakdown", None)
+        if isinstance(model_usage_breakdown, list) and model_usage_breakdown:
+            usage["model_usage_breakdown"] = [
+                dict(row) for row in model_usage_breakdown if isinstance(row, dict)
+            ]
+        ensemble_trace = getattr(done, "ensemble_trace", None)
+        if isinstance(ensemble_trace, dict) and ensemble_trace:
+            usage["ensemble_trace"] = dict(ensemble_trace)
+    return usage
 
 
 def _to_benchmark_transcript(

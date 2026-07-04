@@ -1,5 +1,9 @@
 import { computed, type Ref } from 'vue'
 import type {
+  ChatEnsembleMeta,
+  ChatEnsembleMetaModel,
+  ChatEnsembleTrace,
+  ChatEnsembleUsageRow,
   ChatMessage,
   ChatMessageMeta,
   ChatRenderedMessage,
@@ -30,6 +34,7 @@ import {
   sortRouterTiers,
 } from '@/utils/chat/routerTiers'
 import type { RouterVisualMode } from '@/utils/chat/routerVisualMode'
+import type { ModelRoutingMode } from '@/types/modelRouting'
 import type { InterruptViewState } from '@/types/parts'
 import { toParts, toolState, type ToPartsInterrupt } from '@/utils/chat/toParts'
 import { toSources } from '@/utils/chat/toSources'
@@ -58,6 +63,8 @@ export interface UseChatRenderedMessagesOptions {
   routerTierConfigs: Ref<Record<string, ChatRouterTierConfig>>
   routerVisualEffectsEnabled: Ref<boolean>
   routerVisualMode: Ref<RouterVisualMode>
+  modelRoutingMode?: Ref<ModelRoutingMode>
+  isStreaming?: Ref<boolean>
   renderMarkdown: (text: string) => string
   stripGeneratedArtifactMarkers: (text: string) => string
   stripTimePrefix: (text: string) => string
@@ -162,6 +169,16 @@ export function useChatRenderedMessages(options: UseChatRenderedMessagesOptions)
     let turnIdx = 0
     let turnRequestKind: ChatRouterRequestKind = 'text'
 
+    // Index of the last user turn — anything after it belongs to the in-flight
+    // turn, whose live ensemble strip must survive its own mid-turn done event.
+    let lastUserIdx = -1
+    for (let k = options.messages.value.length - 1; k >= 0; k--) {
+      if (options.messages.value[k].role === 'user') {
+        lastUserIdx = k
+        break
+      }
+    }
+
     for (let i = 0; i < options.messages.value.length; i++) {
       const msg = options.messages.value[i]
       const day = dayKey(msg.ts)
@@ -185,11 +202,25 @@ export function useChatRenderedMessages(options: UseChatRenderedMessagesOptions)
         continue
       }
 
-      const usageRouterDecision = routerDecisionFromUsage(msg)
-      if (usageRouterDecision) {
-        const stripItem = renderedRouterStrip(msg, usageRouterDecision, turnIdx, i, `${msg.messageId || i}-router`, turnRequestKind)
-        if (stripItem) turnRouterIdx = upsertRouterStrip(result, stripItem, turnRouterIdx)
+      const usageEnsemble = ensembleMetaFromMessage(msg)
+      if (usageEnsemble) {
+        // A tool-using ensemble turn emits its breakdown MID-turn (the ensemble
+        // is the first LLM call). Keep the live strip + its open trace inspector
+        // until the whole turn settles; only then hand off to the bubble popover.
+        // Older/settled turns splice on every recompute exactly as before.
+        const inLiveTurn = options.isStreaming?.value === true && i > lastUserIdx
+        if (turnRouterIdx >= 0 && !inLiveTurn) {
+          result.splice(turnRouterIdx, 1)
+          turnRouterIdx = -1
+        }
         prevRole = ''
+      } else {
+        const usageRouterDecision = routerDecisionFromUsage(msg)
+        if (usageRouterDecision) {
+          const stripItem = renderedRouterStrip(msg, usageRouterDecision, turnIdx, i, `${msg.messageId || i}-router`, turnRequestKind)
+          if (stripItem) turnRouterIdx = upsertRouterStrip(result, stripItem, turnRouterIdx)
+          prevRole = ''
+        }
       }
 
       const isSubagent = options.isSubagentCompletionMessage(msg.role, msg.text, msg)
@@ -260,6 +291,9 @@ export function useChatRenderedMessages(options: UseChatRenderedMessagesOptions)
     requestKind: ChatRouterRequestKind = 'text',
   ): ChatRenderedMessage | null {
     if (!options.routerVisualEffectsEnabled.value) return null
+    if (isEnsembleRouterDecision(decision, msg.restoredFromHistory === true) || msg.ensemble) {
+      return renderedEnsembleRouterStrip(msg, msg.ensemble, turnIdx, index, messageId)
+    }
     const cells = routerDecisionCellsForRequest(decision, requestKind)
     if (cells.length <= 1) return null
     return {
@@ -279,9 +313,45 @@ export function useChatRenderedMessages(options: UseChatRenderedMessagesOptions)
       routerStatic: msg.restoredFromHistory === true,
       routerSettled: msg.routerSettled === true,
       routerPanel: routerPanelDataset(options.routerVisualMode.value),
+      routerMode: 'squilla_router',
       gridCells: cells,
       winnerIdx: routerWinnerCellIndex(cells, decision.tier),
       messageId: messageId || `${index}-router`,
+    }
+  }
+
+  function renderedEnsembleRouterStrip(
+    msg: ChatMessage,
+    ensemble: ChatEnsembleMeta | undefined,
+    turnIdx: number,
+    index: number,
+    messageId = msg.messageId,
+  ): ChatRenderedMessage | null {
+    if (!options.routerVisualEffectsEnabled.value) return null
+    return {
+      id: `router-turn-${turnIdx}`,
+      role: 'router',
+      displayRole: 'router',
+      roleLabel: 'Router',
+      text: '',
+      timeStr: relativeTime(msg.ts),
+      ts: msg.ts ?? null,
+      showHeader: false,
+      sourceIndex: index,
+      isRouterStrip: true,
+      routerState: msg.routerSettled === true ? 'settled' : 'pending',
+      routerSource: 'llm_ensemble',
+      routerObserve: false,
+      routerStatic: msg.restoredFromHistory === true,
+      // Live strips stay unsettled (animating) while members stream in; a member
+      // list alone no longer forces 'settled'. History strips are frozen instead.
+      routerSettled: msg.routerSettled === true || msg.restoredFromHistory === true,
+      routerPanel: 'llm-ensemble',
+      routerMode: 'llm_ensemble',
+      ensemble,
+      gridCells: [],
+      winnerIdx: -1,
+      messageId: messageId || `${index}-ensemble-router`,
     }
   }
 
@@ -297,6 +367,7 @@ export function useChatRenderedMessages(options: UseChatRenderedMessagesOptions)
     const hasTier = !!(u.routed_tier && u.routing_source && u.routing_source !== 'none')
     const turnSavedPct = typeof u.total_savings_pct === 'number' && u.total_savings_pct > 0 ? u.total_savings_pct : 0
     const hasSaved = hasTier && turnSavedPct > 0 && !u.__savings_ui_suppressed
+    const ensemble = ensembleMeta(u)
     return {
       model,
       modelShort: model.includes('/') ? (model.split('/').pop() || model) : model,
@@ -309,7 +380,91 @@ export function useChatRenderedMessages(options: UseChatRenderedMessagesOptions)
       hasSaved,
       turnSavedPct,
       savedLabel: turnSavedPct > 0 ? `Saved ~${Math.round(turnSavedPct)}%` : 'Cost optimized',
+      ensemble,
     }
+  }
+
+  function ensembleMeta(usage: Record<string, unknown>): ChatEnsembleMeta | undefined {
+    const breakdown = normalizeEnsembleUsageRows(
+      usage.model_usage_breakdown || usage.modelUsageBreakdown,
+    )
+    const trace = normalizeEnsembleTrace(usage.ensemble_trace || usage.ensembleTrace)
+    const hasTrace = Boolean(trace?.profile || trace?.mode)
+    if (!breakdown.length && !hasTrace) return undefined
+
+    const models = breakdown
+      .map(rowToEnsembleModel)
+      .filter((row): row is ChatEnsembleMetaModel => row !== null)
+    const uniqueModels = new Set(models.map(row => `${row.role}:${row.provider}:${row.model}`))
+    const rowCost = models.reduce((sum, row) => sum + row.costUsd, 0)
+    const explicitCost = numeric(usage.cost_usd ?? usage.costUsd)
+    const savedUsd = Math.max(0, numeric(usage.total_savings_usd ?? usage.totalSavingsUsd ?? usage.savings_usd ?? usage.savingsUsd))
+    const savedPct = Math.max(0, numeric(usage.total_savings_pct ?? usage.totalSavingsPct ?? usage.savings_pct ?? usage.savingsPct))
+
+    return {
+      profile: String(trace?.profile || breakdown[0]?.profile || 'llm_ensemble'),
+      modelCount: uniqueModels.size || models.length || numeric(trace?.selected_candidate_count) || numeric(trace?.total_candidates),
+      totalCandidates: numeric(trace?.total_candidates),
+      requestCount: Math.max(0, numeric(trace?.llm_request_count), models.length),
+      fallbackUsed: trace?.fallback_used === true || trace?.fallbackUsed === true,
+      fallbackReason: String(trace?.fallback_reason || trace?.fallbackReason || ''),
+      costUsd: explicitCost > 0 ? explicitCost : rowCost,
+      savedUsd,
+      savedPct,
+      models,
+    }
+  }
+
+  function ensembleMetaFromMessage(msg: ChatMessage): ChatEnsembleMeta | undefined {
+    const usage = msg.usage || msg.turn_usage
+    return usage ? ensembleMeta(usage) : undefined
+  }
+
+  function isEnsembleRouterDecision(
+    decision: NormalizedRouterDecision,
+    restoredFromHistory: boolean,
+  ): boolean {
+    const source = String(decision.source || decision.routing_source || '').toLowerCase()
+    if (source.includes('ensemble')) return true
+    // The active mode is authoritative for the LIVE turn — ensemble mode shows
+    // the ensemble panel immediately instead of the tier grid, even before the
+    // first ensemble_progress lands. It is NEVER applied to restored history, so
+    // a past single-model turn is not re-tagged while the toggle happens to be on.
+    return !restoredFromHistory && options.modelRoutingMode?.value === 'llm_ensemble'
+  }
+
+  function normalizeEnsembleUsageRows(value: unknown): ChatEnsembleUsageRow[] {
+    if (!Array.isArray(value)) return []
+    return value.filter((row): row is ChatEnsembleUsageRow => !!row && typeof row === 'object' && !Array.isArray(row))
+  }
+
+  function normalizeEnsembleTrace(value: unknown): ChatEnsembleTrace | null {
+    return value && typeof value === 'object' && !Array.isArray(value)
+      ? value as ChatEnsembleTrace
+      : null
+  }
+
+  function rowToEnsembleModel(row: ChatEnsembleUsageRow): ChatEnsembleMetaModel | null {
+    const model = String(row.model || '').trim()
+    if (!model) return null
+    const provider = String(row.provider || '').trim()
+    const role = String(row.role || '').trim() || 'member'
+    const label = String(row.label || role).trim() || role
+    return {
+      role,
+      label,
+      provider,
+      model,
+      modelShort: shortModelName(model),
+      input: numeric(row.input_tokens ?? row.inputTokens),
+      output: numeric(row.output_tokens ?? row.outputTokens),
+      costUsd: numeric(row.cost_usd ?? row.costUsd ?? row.billed_cost ?? row.billedCost),
+    }
+  }
+
+  function numeric(value: unknown): number {
+    const n = Number(value)
+    return Number.isFinite(n) ? n : 0
   }
 
   function routerDecisionCells(decision: NormalizedRouterDecision): ChatRouterCell[] {

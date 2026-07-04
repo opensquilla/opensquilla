@@ -15,6 +15,7 @@ export interface UseChatMessageActionsOptions {
   autoResizeTextarea: () => void
   sendCurrentInput: () => void
   focusComposer: () => void
+  pendingForkBeforeMessageId: Ref<string | null>
 }
 
 export function useChatMessageActions(options: UseChatMessageActionsOptions) {
@@ -77,6 +78,7 @@ export function useChatMessageActions(options: UseChatMessageActionsOptions) {
     }
 
     const userText = options.messages.value[userMsgIndex]?.text || ''
+    options.pendingForkBeforeMessageId.value = options.messages.value[userMsgIndex]?.messageId || null
     options.messages.value = options.messages.value.slice(0, userMsgIndex)
     options.inputText.value = userText
     options.autoResizeTextarea()
@@ -92,6 +94,7 @@ export function useChatMessageActions(options: UseChatMessageActionsOptions) {
     if (msgIndex < 0) return
     if (options.messages.value[msgIndex]?.role !== 'user') return
     const text = options.messages.value[msgIndex].text || ''
+    options.pendingForkBeforeMessageId.value = options.messages.value[msgIndex]?.messageId || null
     options.messages.value = options.messages.value.slice(0, msgIndex)
     options.inputText.value = text
     options.autoResizeTextarea()

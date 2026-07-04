@@ -276,7 +276,7 @@ function onSubmit() {
 
 .clarify-field__input:focus-visible {
   border-color: var(--border-focus);
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent);
+  box-shadow: var(--focus-ring);
   outline: none;
 }
 
@@ -307,7 +307,7 @@ function onSubmit() {
 
 .clarify-choice:focus-visible {
   border-color: var(--border-focus);
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent);
+  box-shadow: var(--focus-ring);
   outline: none;
 }
 
@@ -355,7 +355,7 @@ function onSubmit() {
 }
 
 .clarify-card__status {
-  color: var(--muted);
+  color: var(--text-muted);
   font-size: var(--fs-sm);
   margin: 0;
 }
@@ -385,7 +385,7 @@ function onSubmit() {
 .clarify-outcome__icon {
   width: 30px;
   height: 30px;
-  border-radius: 999px;
+  border-radius: var(--radius-full);
   background: color-mix(in srgb, currentColor 13%, transparent);
   display: inline-flex;
   align-items: center;

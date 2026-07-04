@@ -2,6 +2,11 @@
 
 from .anthropic import AnthropicProvider
 from .credentials import Credential, CredentialPool, NoCredentialsAvailable
+from .ensemble import (
+    EnsembleMemberConfig,
+    EnsembleProvider,
+    build_ensemble_provider_from_config,
+)
 from .failures import (
     ProviderFailureKind,
     ProviderRecoveryAction,
@@ -23,7 +28,6 @@ from .protocol import (
 )
 from .registry import (
     ProviderSpec,
-    ProviderSupportLevel,
     UnknownProviderError,
     get_provider_spec,
     list_provider_names,
@@ -81,9 +85,11 @@ __all__ = [
     "OpenAIProvider",
     "OpenAIResponsesProvider",
     "OllamaProvider",
+    "EnsembleProvider",
+    "EnsembleMemberConfig",
+    "build_ensemble_provider_from_config",
     # Registry
     "ProviderSpec",
-    "ProviderSupportLevel",
     "UnknownProviderError",
     "get_provider_spec",
     "list_provider_names",

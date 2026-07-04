@@ -46,7 +46,7 @@ def build_openai_responses_input_items(
     if not valid_states:
         return deepcopy(current_items)
 
-    latest_state = latest_context_state(valid_states)
+    latest_state = latest_context_state(valid_states, provider="openai_responses")
     if latest_state is None:
         return deepcopy(current_items)
     compacted_output = latest_state.payload["output"]

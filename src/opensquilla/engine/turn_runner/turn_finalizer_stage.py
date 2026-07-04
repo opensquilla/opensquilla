@@ -337,6 +337,16 @@ def _turn_usage_payload(
     for key, value in optional_fields.items():
         if value is not None:
             payload[key] = value
+    model_usage_breakdown = getattr(done_event, "model_usage_breakdown", None)
+    if isinstance(model_usage_breakdown, list) and model_usage_breakdown:
+        payload["model_usage_breakdown"] = [
+            dict(row)
+            for row in model_usage_breakdown
+            if isinstance(row, dict)
+        ]
+    ensemble_trace = getattr(done_event, "ensemble_trace", None)
+    if isinstance(ensemble_trace, dict) and ensemble_trace:
+        payload["ensemble_trace"] = dict(ensemble_trace)
     return payload
 
 @runtime_checkable

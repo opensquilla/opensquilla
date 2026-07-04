@@ -1,4 +1,46 @@
 {
+  "updates": {
+    "available": "OpenSquilla {version} ya está disponible",
+    "viewRelease": "Ver versión",
+    "dismiss": "Descartar",
+    "desktop": {
+      "indicatorAvailable": "Actualizar {version}",
+      "indicatorDownloaded": "Actualización lista",
+      "indicatorDownloading": "Descargando",
+      "indicatorDownloadingProgress": "Descargando {progress}%",
+      "indicatorError": "Problema de actualización",
+      "availableTitle": "OpenSquilla {version} ya está disponible",
+      "availableDesc": "Descárgala cuando estés listo. OpenSquilla la instalará solo después de reiniciar.",
+      "downloadedTitle": "Lista para instalar",
+      "downloadedDesc": "Reinicia OpenSquilla para terminar la actualización a {version}.",
+      "downloadingTitle": "Descargando actualización",
+      "downloadingDesc": "Mantén OpenSquilla abierto mientras se descarga la actualización.",
+      "checkingDesc": "Comprobando el canal de versiones de escritorio.",
+      "applyingDesc": "OpenSquilla se prepara para reiniciar e instalar la actualización.",
+      "errorTitle": "Error al buscar actualizaciones",
+      "errorFallback": "Vuelve a intentarlo desde Ajustes.",
+      "idleDesc": "Busca una nueva versión de escritorio.",
+      "upToDateDesc": "La versión {version} es la más reciente disponible.",
+      "settingsTitle": "Actualizaciones de escritorio",
+      "currentVersion": "Actual",
+      "latestVersion": "Última",
+      "unknownVersion": "Desconocida",
+      "availableStatus": "Disponible",
+      "downloadedStatus": "Lista para instalar",
+      "downloadingStatus": "Descargando",
+      "checkingStatus": "Comprobando",
+      "upToDateStatus": "Al día",
+      "errorStatus": "Requiere atención",
+      "applyingStatus": "Reiniciando",
+      "idleStatus": "Inactiva",
+      "unavailableStatus": "No disponible",
+      "unsupported": "Las actualizaciones nativas de escritorio no están disponibles en esta plataforma. Usa el enlace de la versión cuando se anuncie una nueva.",
+      "check": "Comprobar",
+      "download": "Descargar",
+      "relaunch": "Reiniciar",
+      "later": "Más tarde"
+    }
+  },
   "common": {
     "close": "Cerrar",
     "save": "Guardar",
@@ -75,12 +117,19 @@
       "runtime": "Tiempo de ejecución",
       "provider": "Proveedor",
       "behavior": "Comportamiento",
+      "privacy": "Privacidad",
       "router": "Enrutador",
       "channels": "Canales",
       "capabilities": "Capacidades",
       "appearance": "Apariencia",
       "keyboard": "Teclado",
-      "advanced": "Avanzado"
+      "advanced": "Avanzado",
+      "groups": {
+        "gateway": "Puerta de enlace",
+        "ai": "Configuración de IA",
+        "delivery": "Entrega",
+        "preferences": "Preferencias"
+      }
     }
   },
   "errorBoundary": {
@@ -121,7 +170,8 @@
       "live": "En vivo",
       "providerFirst": "Primero el proveedor",
       "review": "Revisar",
-      "envNotVisible": "{capability} está seleccionado, pero ${envKey} no es visible para la puerta de enlace."
+      "envNotVisible": "{capability} está seleccionado, pero ${envKey} no es visible para la puerta de enlace.",
+      "appliesOnSave": "Se aplica al guardar"
     },
     "summary": {
       "notConfigured": "no configurado",
@@ -165,7 +215,8 @@
       "envMissing": "{envKey} no es visible para este proceso de la puerta de enlace. Establécela antes de iniciar o reiniciar la puerta de enlace, o pega una clave de API en su lugar.",
       "envKeyFallback": "la variable de entorno de la clave de API seleccionada",
       "copyKeyCommand": "Copiar comando para establecer la clave del proveedor",
-      "save": "Guardar proveedor"
+      "save": "Guardar proveedor",
+      "configureRouter": "Configurar el router →"
     },
     "behavior": {
       "title": "Comportamiento de la sesión",
@@ -178,8 +229,12 @@
     "router": {
       "title": "Niveles del enrutador",
       "mode": "Modo",
+      "modeModelRouting": "Enrutamiento de modelos",
+      "modeSingleModel": "Modelo único",
       "modeRecommended": "Seguir niveles del proveedor actual",
       "modeDisabled": "Modelo único directo",
+      "routingDisabledHint": "Activa el enrutamiento de modelos para editar la configuración de niveles.",
+      "routingEnsembleReadOnlyHint": "El enrutamiento de conjunto de modelos de IA está activo. La configuración estándar de enrutamiento de modelos está temporalmente inactiva.",
       "defaultTextModel": "Nivel de texto predeterminado",
       "panelLabel": "Panel del enrutador",
       "panelDesc": "Los modelos de la tabla de niveles se envían por la entrada de solicitud actual; los niveles agregados de OpenRouter usan OpenRouter para llegar a distintos modelos ascendentes.",
@@ -196,6 +251,9 @@
       "save": "Guardar enrutador",
       "chooseProviderFirst": "elige primero un proveedor",
       "summaryDisabled": "modelo único directo",
+      "summaryEnsemble": "Perfil de enrutamiento de conjunto LLM",
+      "ensembleProfileTitle": "Perfil de enrutamiento de conjunto LLM",
+      "ensembleProfileDesc": "La tabla de niveles aporta modelos candidatos para el enrutador de conjunto.",
       "visualMode": {
         "real_candidates": "Candidatos de enrutamiento reales",
         "legacy_grid": "Panel visual de tres niveles"
@@ -390,6 +448,15 @@
       "runTraceDesc": "Hace que las líneas de registro sean interactivas y abre un panel de detalle de pasos por nodo para cada línea en la vista de Registros.",
       "runTraceAria": "Panel de traza de ejecución en Registros (surte efecto tras recargar)"
     },
+    "privacy": {
+      "title": "Privacidad",
+      "statusEnabled": "La observabilidad de red está activada.",
+      "statusDisabled": "La observabilidad de red está desactivada.",
+      "statusDisabledByEnv": "La observabilidad de red está desactivada por el entorno.",
+      "disableNetworkObservabilityLabel": "Desactivar observabilidad de red",
+      "disableNetworkObservabilityDesc": "Detiene las llamadas de observabilidad de red de la puerta de enlace, como la telemetría de instalación y las comprobaciones de actualización.",
+      "save": "Guardar privacidad"
+    },
     "toast": {
       "loadFailed": "No se pudieron cargar los ajustes: {error}",
       "chooseProvider": "Elige un proveedor antes de guardar.",
@@ -398,6 +465,8 @@
       "providerSavedRestart": "Proveedor guardado. Se requiere reiniciar.",
       "behaviorSaved": "Comportamiento guardado.",
       "behaviorSavedRestart": "Comportamiento guardado. Se requiere reiniciar.",
+      "privacySaved": "Privacidad guardada.",
+      "privacySavedRestart": "Privacidad guardada. Se requiere reiniciar.",
       "chooseProviderRouter": "Elige un proveedor antes de guardar los niveles del enrutador.",
       "routerSaved": "Enrutador guardado.",
       "routerSavedRestart": "Enrutador guardado. Se requiere reiniciar.",
@@ -806,12 +875,10 @@
       "details": "Detalles",
       "unknownTool": "Desconocida",
       "approveOnce": "Aprobar una vez",
-      "alwaysAllow": "Permitir siempre este tipo",
-      "bypassHint": "Omite las solicitudes de aprobación manteniendo las comprobaciones de rutas sensibles",
-      "bypass": "Omitir aprobaciones",
+      "alwaysAllow": "Permitir esto siempre",
+      "allowSameType": "Permitir el mismo tipo",
       "deny": "Denegar",
       "loadFailed": "No se pudieron cargar las aprobaciones: {msg}",
-      "bypassEnabled": "Omisión de aprobaciones activada",
       "approved": "Aprobada",
       "denied": "Denegada",
       "toastFailed": "Error: {msg}",
@@ -1464,6 +1531,8 @@
     "download": "Descargar",
     "previewOf": "Vista previa: {title}",
     "closePreview": "Cerrar vista previa",
+    "previousImage": "Imagen anterior",
+    "nextImage": "Imagen siguiente",
     "loadingPreview": "Cargando vista previa",
     "previewDownload": "Descargar vista previa",
     "previewTimedOut": "Se agotó el tiempo de la vista previa.",
@@ -1497,6 +1566,24 @@
     "addToShare": "Añadir a la imagen para compartir",
     "removeFromShare": "Quitar de la imagen para compartir",
     "aiModelRouter": "Enrutador de modelos de IA",
+    "aiModelEnsembleRouter": "Enrutador agregado de modelos de IA",
+    "routerFx": {
+      "ensembleSelecting": "Enrutador agregado de modelos de IA · seleccionando candidatos",
+      "ensembleRunning": "Enrutador agregado de modelos de IA · {count} candidatos sintetizando",
+      "ensembleDone": "{count} candidatos sintetizados",
+      "ensembleMode": "conjunto",
+      "ensembleViewTrace": "ver traza",
+      "ensembleToggleTrace": "Mostrar traza del enrutamiento agregado",
+      "ensembleTraceTitle": "Traza de candidatos",
+      "ensemblePlanMeta": "plan de conjunto · pool {count}",
+      "ensembleFallbackNone": "sin fallback",
+      "ensembleFallbackUsed": "fallback usado",
+      "ensembleFallbackReason": "fallback · {reason}",
+      "ensembleRouterPoolHidden": "pool del router oculto",
+      "ensembleTokens": "{count} tok",
+      "ensembleUsed": "usado",
+      "ensembleDetailUnavailable": "{count} candidatos · detalle no disponible"
+    },
     "sources": "Fuentes",
     "activitySteps": "Actividad · {count} paso | Actividad · {count} pasos",
     "suggestedTasks": "Tareas sugeridas",
@@ -1533,6 +1620,7 @@
       "denyReasonLabel": "Motivo de la denegación, opcional, se envía al agente",
       "allowOnce": "Permitir una vez",
       "allowAlways": "Permitir esto siempre",
+      "allowSameType": "Permitir el mismo tipo",
       "deny": "Denegar",
       "expiresIn": "Caduca en {time}",
       "outcomeExpired": "Caducada — no ejecutada",
@@ -1562,10 +1650,22 @@
       "disabled": "Desactivado",
       "routerAnimationOn": "Animación del enrutador activada",
       "routerAnimationOff": "Animación del enrutador desactivada",
-      "execOff": "Desactivado",
-      "execPrompt": "Solicitar aprobaciones",
-      "execBypass": "Omitir aprobaciones",
-      "execFull": "Acceso completo"
+      "modelRouting": "Enrutamiento de modelos",
+      "modelRoutingOff": "Desactivado",
+      "modelRoutingOffDesc": "Envía cada turno al modelo seleccionado.",
+      "modelRoutingSquillaRouter": "Enrutador monomodelo con IA",
+      "modelRoutingSquillaRouterDesc": "La IA elige un modelo adecuado por turno para reducir costos.",
+      "modelRoutingEnsemble": "Enrutador de conjunto con IA",
+      "modelRoutingEnsembleDesc": "La IA coordina varios modelos para mejorar la capacidad en tareas complejas.",
+      "runMode": "Modo de ejecución",
+      "runModeStandard": "Sandbox estándar",
+      "runModeStandardDesc": "Pide confirmación antes de acciones de herramientas riesgosas.",
+      "runModeTrusted": "Ejecución gestionada",
+      "runModeTrustedDesc": "Usa la sandbox por defecto; las acciones explícitas sobre el host pueden ejecutarse en el host si la política lo permite.",
+      "runModeFull": "Acceso completo al host",
+      "runModeFullDesc": "Ejecuta sin aislamiento de sandbox.",
+      "runModeFullUnavailable": "El acceso completo al host requiere una sesión owner.",
+      "badgeNew": "NEW"
     },
     "pending": {
       "label": "Pendientes {count}/{max}",
@@ -1660,6 +1760,21 @@
       "preparingOutput": "Preparando la salida",
       "stillWaiting": "Aún esperando al modelo",
       "stillWorking": "Aún trabajando — última señal hace {seconds} s"
+    },
+    "msgMeta": {
+      "ensembleModels": "Conjunto · {count} modelos",
+      "tokens": "tokens",
+      "cache": "caché",
+      "think": "razonamiento",
+      "ensemble": "conjunto",
+      "cost": "coste",
+      "saved": "ahorro",
+      "fallback": "reserva",
+      "fallbackUsed": "usado",
+      "ensembleModelsAria": "Modelos del conjunto"
+    },
+    "modelRouting": {
+      "updateFailed": "No se pudo cambiar el enrutamiento de modelos — revertido. Comprueba la conexión con la pasarela e inténtalo de nuevo."
     }
   },
   "shared": {
@@ -1711,7 +1826,23 @@
       "filterByAgent": "Filtrar por {name}",
       "deleteSessionTitle": "Eliminar sesión",
       "deleteSessionBody": "¿Eliminar la sesión «{title}»? Esto no se puede deshacer.",
-      "deleteSessionConfirm": "Eliminar"
+      "deleteSessionConfirm": "Eliminar",
+      "selectVisible": "Seleccionar conversaciones visibles",
+      "clearVisibleSelection": "Borrar selección visible",
+      "selectAllShort": "Todo",
+      "clearAllShort": "Limpiar",
+      "selectionModeLabel": "Seleccionar sesiones",
+      "selectedCountLabel": "{count} seleccionadas",
+      "enterSelectionMode": "Gestionar sesiones",
+      "exitSelectionMode": "Salir de selección",
+      "selectSession": "Seleccionar {title}",
+      "deleteSelectedAria": "Eliminar {count} seleccionadas",
+      "bulkDeleteTitle": "Eliminar sesiones seleccionadas",
+      "bulkDeleteBody": "¿Eliminar {count} sesiones seleccionadas? Esto no se puede deshacer.",
+      "bulkDeleteConfirm": "Eliminar seleccionadas",
+      "bulkDeleteDone": "{count} sesiones eliminadas",
+      "bulkDeletePartial": "No se pudieron eliminar {count} sesiones",
+      "bulkDeleteFailed": "No se pudieron eliminar las sesiones seleccionadas"
     },
     "setupBanner": {
       "ariaLabel": "Es necesaria la configuración de la puerta de enlace",

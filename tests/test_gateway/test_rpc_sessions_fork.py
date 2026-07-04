@@ -54,6 +54,14 @@ async def _seed_parent(manager, *, display_name: str | None = None) -> None:
     await manager.append_message(PARENT_KEY, "assistant", "original answer", token_count=5)
 
 
+async def _seed_parent_with_markers(manager) -> tuple[Any, Any, Any]:
+    await manager.create(PARENT_KEY, agent_id="main")
+    first = await manager.append_message(PARENT_KEY, "user", "A marker", token_count=1)
+    middle = await manager.append_message(PARENT_KEY, "user", "B marker", token_count=1)
+    final = await manager.append_message(PARENT_KEY, "user", "C marker", token_count=1)
+    return first, middle, final
+
+
 def _list_row(list_res: Any, key: str) -> dict[str, Any]:
     rows = [row for row in list_res.payload["sessions"] if row["key"] == key]
     assert rows, f"session {key} missing from sessions.list"
@@ -91,6 +99,32 @@ async def test_fork_copies_transcript_and_marks_fork(dispatcher, ctx, manager):
     parent_row = _list_row(list_res, PARENT_KEY)
     assert parent_row["forkedFromParent"] is False
     assert parent_row["spawnDepth"] == 0
+
+
+@pytest.mark.asyncio
+async def test_fork_before_message_copies_only_prefix(dispatcher, ctx, manager):
+    _first, middle, _final = await _seed_parent_with_markers(manager)
+
+    res = await dispatcher.dispatch(
+        "r1",
+        "sessions.fork",
+        {"key": PARENT_KEY, "beforeMessageId": middle.message_id},
+        ctx,
+    )
+
+    assert res.ok is True
+    child_key = res.payload["key"]
+    assert child_key != PARENT_KEY
+
+    child_entries = await manager.get_transcript(child_key)
+    assert [entry.content for entry in child_entries] == ["A marker"]
+
+    parent_entries = await manager.get_transcript(PARENT_KEY)
+    assert [entry.content for entry in parent_entries] == [
+        "A marker",
+        "B marker",
+        "C marker",
+    ]
 
 
 @pytest.mark.asyncio

@@ -28,6 +28,12 @@
 
 ---
 
+## Actualités
+
+- 📢 **2026-07-03** — Notre rapport technique **[Agentic Routing: The Harness-Native Data Flywheel](docs/releases/agentic_routing_v0.pdf)** (préversion) est disponible, publié en même temps qu'OpenSquilla **0.5.0 Preview 1**. Il détaille comment le routeur natif du harness transforme le trafic quotidien des agents en un volant d'inertie de données qui s'améliore de lui-même.
+
+---
+
 ## Présentation
 
 OpenSquilla est un Agent IA à micro-noyau, économe en Token. Un routeur de modèles
@@ -43,7 +49,7 @@ enfichable dialogue avec OpenRouter, OpenAI, Anthropic, Ollama, DeepSeek, Gemini
 Qwen/DashScope et plus de 20 autres fournisseurs de LLM, sans aucun changement dans
 votre code ni dans votre schéma de configuration.
 
-OpenSquilla 0.4.1 est la version actuelle.
+OpenSquilla 0.5.0 Preview 1 est la préversion actuelle.
 
 Pour une documentation produit orientée tâches, commencez par le
 [Guide produit OpenSquilla](README.product.md) ou par l'[index de la
@@ -56,38 +62,34 @@ documentation](docs/README.md).
 OpenSquilla fonctionne sous Windows, macOS et Linux. Choisissez la voie qui
 correspond à votre cas d'usage.
 
-Les installateurs de bureau, la version portable Windows et l'installation rapide en
-terminal vous fournissent une **version** préconstruite — aucun Git requis. Les deux
+Les installateurs de bureau et l'installation rapide en terminal vous fournissent
+une **version** préconstruite — aucun Git requis. Les deux
 autres — Installation depuis les sources et Développement depuis les sources —
 construisent **à partir d'un dépôt Git** (`git clone` + Git LFS).
 
 Les commandes d'installation de la version publiée utilisent les ressources de release
-GitHub publiées. Le zip portable Windows dispose aussi d'un alias
-`/releases/latest/download/` pointant vers la version actuelle. Les installations de
-wheel Python utilisent des noms de fichier de wheel versionnés, car les installateurs
-valident la version intégrée au nom de fichier du wheel.
+GitHub publiées. Les installations de wheel Python utilisent des noms de fichier de
+wheel versionnés, car les installateurs valident la version intégrée au nom de
+fichier du wheel.
 
-Pour un usage bureau en 0.4.1, préférez les installateurs de bureau signés issus de la
-Release GitHub : `OpenSquilla-0.4.1-mac-arm64.dmg` sous macOS et
-`OpenSquilla-0.4.1-win-x64.exe` sous Windows. Le zip portable Windows reste disponible
-en tant que paquet de compatibilité héritée pour les scripts et les workflows en
-dossier portable.
+Pour un usage bureau en 0.5.0 Preview 1, préférez les installateurs de bureau empaquetés issus de la
+Release GitHub : `OpenSquilla-0.5.0-rc1-mac-arm64.dmg` sous macOS et
+`OpenSquilla-0.5.0-rc1-win-x64.exe` sous Windows.
 
 | Voie | Public | Quand l'utiliser |
 | --- | --- | --- |
-| [Installateurs de bureau](#desktop-installers) **(recommandé pour le bureau)** | Utilisateurs macOS et Windows | Application de bureau empaquetée et signée |
-| [Version portable Windows](#windows-portable-no-python) | Utilisateurs Windows | Compatibilité héritée ; pas de chaîne d'outils Python ; lancement en un seul zip |
+| [Installateurs de bureau](#desktop-installers) **(recommandé pour le bureau)** | Utilisateurs macOS et Windows | Application de bureau empaquetée |
 | [Installation rapide en terminal](#quick-terminal-install) **(recommandé)** | Utilisateurs finaux sur tout OS | Wheel de la version publiée depuis un terminal |
 | [Installation depuis les sources](#install-from-source) | Utilisateurs suivant `main` | Exécuter depuis un dépôt, sans le modifier |
 | [Développement depuis les sources](#develop-from-source) | Contributeurs | Modifier, tester ou déboguer les sources |
 
 ### Prérequis
 
-| Exigence | Version portable Windows | Installation rapide en terminal | Installation depuis les sources | Développement depuis les sources |
-| --- | :---: | :---: | :---: | :---: |
-| Python 3.12+ | inclus | via `uv` | via `uv` ou le système | via `uv` |
-| Git + Git LFS | — | — | requis | requis |
-| `uv` | — | installé s'il manque | recommandé | requis |
+| Exigence | Installation rapide en terminal | Installation depuis les sources | Développement depuis les sources |
+| --- | :---: | :---: | :---: |
+| Python 3.12+ | via `uv` | via `uv` ou le système | via `uv` |
+| Git + Git LFS | — | requis | requis |
+| `uv` | installé s'il manque | recommandé | requis |
 
 Le profil `recommended` par défaut installe **SquillaRouter** — le routeur de modèles
 exécuté sur l'appareil d'OpenSquilla — ainsi que ses ressources de modèle ;
@@ -96,16 +98,15 @@ distinct `--router disabled` conserve les dépendances installées mais désacti
 routeur à l'exécution.
 
 Sous Windows, l'environnement d'exécution ONNX intégré à SquillaRouter a aussi besoin
-de l'environnement d'exécution Visual C++. Le lanceur portable Windows et
-l'installateur PowerShell depuis les sources l'installent automatiquement via
-`winget` ; la voie **Installation rapide en terminal** (`uv tool install`) ne le fait
+de l'environnement d'exécution Visual C++. L'installateur PowerShell depuis les
+sources l'installe automatiquement via `winget` ; la voie **Installation rapide en terminal** (`uv tool install`) ne le fait
 pas — si le démarrage journalise une erreur `DLL load failed`, installez-le
 manuellement (voir [Dépannage](#troubleshooting)). OpenSquilla continue de fonctionner
 avec un routage direct vers un modèle unique jusqu'à ce qu'il soit installé.
 
 Lors des installations en terminal sous macOS, l'environnement d'exécution LightGBM de
 SquillaRouter peut aussi avoir besoin de la bibliothèque OpenMP du système.
-L'application de bureau signée embarque l'environnement d'exécution dont elle a besoin,
+L'application de bureau embarque l'environnement d'exécution dont elle a besoin,
 mais l'**Installation rapide en terminal** n'installe pas les bibliothèques
 Homebrew/système. Si le démarrage journalise `Library not loaded:
 @rpath/libomp.dylib`, exécutez `brew install libomp`, puis redémarrez la passerelle.
@@ -120,63 +121,15 @@ Liens d'installation : [Git](https://git-scm.com/downloads) ·
 
 ### Installateurs de bureau
 
-Les installateurs de bureau 0.4.1 empaquettent la console de contrôle Vue et
+Les installateurs de bureau 0.5.0 Preview 1 empaquettent la console de contrôle Vue et
 l'environnement d'exécution de la passerelle dans une enveloppe Electron.
 
-- macOS Apple Silicon : <https://github.com/opensquilla/opensquilla/releases/download/v0.4.1/OpenSquilla-0.4.1-mac-arm64.dmg>
-- Windows x64 : <https://github.com/opensquilla/opensquilla/releases/download/v0.4.1/OpenSquilla-0.4.1-win-x64.exe>
+- macOS Apple Silicon : <https://github.com/opensquilla/opensquilla/releases/download/v0.5.0rc1/OpenSquilla-0.5.0-rc1-mac-arm64.dmg>
+- Windows x64 : <https://github.com/opensquilla/opensquilla/releases/download/v0.5.0rc1/OpenSquilla-0.5.0-rc1-win-x64.exe>
 
 Quittez toute application de bureau OpenSquilla en cours d'exécution avant la mise à
 niveau. Les fichiers `~/.opensquilla/config.toml` et les données de session existants
 sont réutilisés.
-
-<a id="windows-portable-no-python"></a>
-
-### Version portable Windows (sans Python)
-
-La voie de compatibilité héritée sous Windows — le zip embarque un environnement
-d'exécution CPython, si bien qu'aucune installation Python distincte n'est requise.
-
-1. Téléchargez le zip portable actuel :
-   <https://github.com/opensquilla/opensquilla/releases/latest/download/OpenSquilla-windows-x64-portable.zip>
-2. Extrayez-le dans un dossier accessible en écriture tel que Téléchargements ou
-   Documents, puis faites un clic droit sur `Start OpenSquilla.cmd` et choisissez
-   **Exécuter en tant qu'administrateur**.
-3. Terminez la configuration de premier démarrage, puis ouvrez
-   <http://127.0.0.1:18791/control/>.
-
-> [!NOTE]
-> Les builds de préversion ne sont pas signés ; le lancement en administrateur est la
-> voie prise en charge. Si SmartScreen apparaît, choisissez **Informations
-> complémentaires** → **Exécuter quand même**. Si Smart App Control ou une stratégie
-> d'entreprise bloque l'application non signée, utilisez plutôt l'[Installation rapide
-> en terminal](#quick-terminal-install).
-
-<details>
-<summary>Usage avancé de la version portable</summary>
-
-Fournissez une clé OpenRouter avant le premier démarrage :
-
-```powershell
-$env:OPENROUTER_API_KEY="sk-..."
-Set-ExecutionPolicy -Scope Process Bypass
-.\start.ps1
-```
-
-Si `OPENROUTER_API_KEY` est défini et qu'aucune configuration locale n'existe, le
-lanceur écrit une configuration référençant la variable d'environnement et démarre la
-passerelle sans rien demander. S'il n'est pas défini, l'assistant d'onboarding vous
-laisse choisir n'importe quel fournisseur pris en charge.
-
-Le zip portable n'installe pas de commande globale `opensquilla`. Pour disposer d'un
-terminal où `opensquilla …` fonctionne, exécutez `OpenSquilla Shell.cmd`, ou appelez
-directement le lanceur intégré :
-
-```powershell
-.\opensquilla.cmd onboard --provider openrouter --api-key-env OPENROUTER_API_KEY
-```
-
-</details>
 
 <a id="quick-terminal-install"></a>
 
@@ -207,7 +160,7 @@ $env:Path = "$env:USERPROFILE\.local\bin;" + $env:Path
 **2. Installer OpenSquilla** — la même commande sur toutes les plateformes.
 
 ```sh
-uv tool install --python 3.12 "opensquilla[recommended] @ https://github.com/opensquilla/opensquilla/releases/download/v0.4.1/opensquilla-0.4.1-py3-none-any.whl"
+uv tool install --python 3.12 "opensquilla[recommended] @ https://github.com/opensquilla/opensquilla/releases/download/v0.5.0rc1/opensquilla-0.5.0rc1-py3-none-any.whl"
 ```
 
 Cela installe le wheel OpenSquilla depuis l'URL de release, puis laisse `uv`
@@ -232,7 +185,7 @@ opensquilla gateway run
 > nouveau terminal, ou réexécutez la ligne PATH de l'étape 1.
 
 Pour une installation entièrement épinglée, utilisez l'URL de wheel versionnée :
-`https://github.com/opensquilla/opensquilla/releases/download/v0.4.1/opensquilla-0.4.1-py3-none-any.whl`.
+`https://github.com/opensquilla/opensquilla/releases/download/v0.5.0rc1/opensquilla-0.5.0rc1-py3-none-any.whl`.
 
 <a id="install-from-source"></a>
 
@@ -734,7 +687,7 @@ Si le démarrage journalise `Library not loaded: @rpath/libomp.dylib` depuis
 direct vers un modèle unique, mais l'environnement d'exécution `SquillaRouter` intégré
 reste inactif jusqu'à ce que l'environnement d'exécution OpenMP de macOS soit installé.
 
-L'application de bureau signée embarque l'environnement d'exécution natif dont elle a
+L'application de bureau embarque l'environnement d'exécution natif dont elle a
 besoin. Si vous avez utilisé l'installation rapide en terminal ou l'installation depuis
 les sources via un shell, installez `libomp` avec Homebrew et redémarrez la passerelle :
 
@@ -754,9 +707,9 @@ vers un modèle unique, mais l'environnement d'exécution `SquillaRouter` intég
 inactif jusqu'à ce que le Visual C++ Redistributable pour Visual Studio 2015–2022 (x64)
 soit installé.
 
-Le lanceur portable Windows et l'installateur PowerShell depuis les sources tentent
-d'installer le redistributable via `winget`. Si vous avez utilisé l'installation rapide
-en terminal, ou si `winget` n'est pas disponible, installez-le manuellement et
+L'installateur PowerShell depuis les sources tente d'installer le redistributable via
+`winget`. Si vous avez utilisé l'installation rapide en terminal, ou si `winget`
+n'est pas disponible, installez-le manuellement et
 redémarrez PowerShell : <https://aka.ms/vs/17/release/vc_redist.x64.exe>. Puis rétablissez
 le routeur recommandé :
 
@@ -778,6 +731,18 @@ tiers intégré est attribué dans
 Les contributeurs de la communauté sont remerciés dans
 [`CONTRIBUTORS.md`](CONTRIBUTORS.md), avec notamment des notes d'attribution propres à
 chaque release pour les travaux fusionnés par squash ou rejoués.
+
+---
+
+## Contributeurs
+
+Merci à toutes les personnes qui contribuent à OpenSquilla.
+
+<p align="center">
+  <a href="https://github.com/opensquilla/opensquilla/graphs/contributors">
+    <img src="https://contrib.rocks/image?repo=opensquilla/opensquilla&max=100&columns=10" alt="OpenSquilla contributors" />
+  </a>
+</p>
 
 ---
 

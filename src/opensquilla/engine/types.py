@@ -196,6 +196,8 @@ class DoneEvent:
     vision_followup_gate_model: str | None = None
     vision_followup_needs_image: bool | None = None
     vision_followup_fallback: str | None = None
+    model_usage_breakdown: list[dict[str, Any]] = field(default_factory=list)
+    ensemble_trace: dict[str, Any] | None = None
 
     @property
     def upstream_cost_usd(self) -> float:
@@ -229,6 +231,26 @@ class RouterDecisionEvent:
     routing_applied: bool = True
     rollout_phase: str = "full"
     context_window: int | None = None
+
+
+@dataclass
+class EnsembleProgressEvent:
+    """One LLM-ensemble member started or finished mid-turn. Emitted from the
+    ensemble provider and forwarded so the frontend can reveal ensemble members
+    incrementally ahead of the terminal DoneEvent breakdown."""
+
+    kind: Literal["ensemble_progress"] = field(default="ensemble_progress", init=False)
+    event_type: str = "proposer_start"
+    proposer_index: int = -1
+    proposer_label: str = ""
+    proposer_model: str = ""
+    proposer_provider: str = ""
+    sample_index: int = 0
+    elapsed_ms: int = 0
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cost_usd: float = 0.0
+    error: str = ""
 
 
 @dataclass
@@ -362,6 +384,7 @@ AgentEvent = (
     | CompactionEvent
     | WarningEvent
     | RouterDecisionEvent
+    | EnsembleProgressEvent
     | MetaPreflightEvent
     | MetaRunAnnouncedEvent
     | MetaStepStateEvent
@@ -423,6 +446,7 @@ class AgentConfig:
     max_overflow_retries: int = 2
     max_history_turns: int = 0  # 0 = unlimited; compaction handles oversized history
     preserve_historical_images: bool = False
+    materialize_historical_attachments: bool = True
     # Retry policy for transient LLM errors (429, 500, 503)
     max_provider_retries: int = 3
     length_capped_continuations: int = 3

@@ -47,6 +47,7 @@ _MODEL_ENV = {
     "bailian_coding": "BAILIAN_CODING_MODEL",
     "moonshot": "MOONSHOT_MODEL",
     "zhipu": "ZAI_MODEL",
+    "qianfan": "QIANFAN_MODEL",
     "minimax": "MINIMAX_MODEL",
     "minimax_openai": "MINIMAX_MODEL",
     "minimax_cn": "MINIMAX_CN_MODEL",
@@ -63,6 +64,7 @@ _BASE_ENV = {
     "bailian_coding": "BAILIAN_CODING_BASE_URL",
     "moonshot": "MOONSHOT_BASE_URL",
     "zhipu": "ZAI_BASE_URL",
+    "qianfan": "QIANFAN_BASE_URL",
     "minimax": "MINIMAX_BASE_URL",
     "minimax_openai": "MINIMAX_OPENAI_BASE_URL",
     "minimax_cn": "MINIMAX_CN_BASE_URL",
@@ -79,6 +81,7 @@ _DEFAULT_MODELS = {
     "bailian_coding": "kimi-k2.5",
     "moonshot": "kimi-k2.6",
     "zhipu": "glm-4.5",
+    "qianfan": "ernie-4.0-turbo-8k",
     "minimax": "MiniMax-M2.7",
     "minimax_openai": "MiniMax-M2.7",
     "minimax_cn": "MiniMax-M2.7",
@@ -107,10 +110,12 @@ def _load_env_quietly(path: Path = Path(".env")) -> None:
 
 
 def _headers_for_openai(api_key: str) -> dict[str, str]:
-    return {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json",
-    }
+    # Keyless local providers must not send an empty Bearer value (httpx
+    # rejects it as an illegal header).
+    headers = {"Content-Type": "application/json"}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+    return headers
 
 
 def _headers_for_anthropic(api_key: str) -> dict[str, str]:
@@ -250,6 +255,8 @@ async def _stream_opensquilla(
             "cache_write_tokens": done.cache_write_tokens,
             "reasoning_tokens": done.reasoning_tokens,
             "model": done.model,
+            "billed_cost": done.billed_cost,
+            "cost_source": done.cost_source,
         }
         status = "passed" if expected in content else "content_mismatch"
         return status, content, usage, latency
@@ -284,16 +291,23 @@ def _cost_estimate(model: str, usage: dict[str, Any]) -> dict[str, Any]:
     estimate = (
         prompt_tokens * price.input_per_m + completion_tokens * price.output_per_m
     ) / 1_000_000
+    # The stream DoneEvent carries the provider-billed cost when the upstream
+    # reports one (OpenRouter usage.cost); surface it instead of pretending
+    # only static estimates exist.
+    billed = stream_usage.get("billed_cost") or 0.0
+    billed_source = str(stream_usage.get("cost_source") or "")
+    provider_billed = billed if billed > 0 and billed_source == "provider_billed" else None
+    cost_source = billed_source if provider_billed is not None else "opensquilla_static_estimate"
     return {
-        "provider_billed_cost_usd": None,
+        "provider_billed_cost_usd": provider_billed,
         "opensquilla_estimated_cost_usd": estimate,
-        "cost_source": "opensquilla_static_estimate",
-        "billing_scope": "static_estimate",
-        "provider_billed": None,
+        "cost_source": cost_source,
+        "billing_scope": "provider_billed" if provider_billed is not None else "static_estimate",
+        "provider_billed": provider_billed,
         "opensquilla_estimate": estimate,
         "input_per_m": price.input_per_m,
         "output_per_m": price.output_per_m,
-        "source": "opensquilla_static_estimate",
+        "source": cost_source,
     }
 
 
@@ -319,8 +333,13 @@ async def smoke_provider(
     model = (
         model_override
         or os.environ.get(_MODEL_ENV.get(provider, ""), "").strip()
-        or _DEFAULT_MODELS[provider]
+        or _DEFAULT_MODELS.get(provider, "")
     )
+    if not model:
+        raise SystemExit(
+            f"no model configured for provider {provider!r}: pass --model or set "
+            f"{_MODEL_ENV.get(provider) or 'a model env override'}"
+        )
     base_url = (
         base_url_override
         or os.environ.get(_BASE_ENV.get(provider, ""), "").strip()
@@ -328,7 +347,9 @@ async def smoke_provider(
     )
     expected = f"opensquilla {provider} smoke ok"
 
-    if not api_key:
+    # Local providers (ollama, lm_studio, ovms) declare their key optional in
+    # the registry; only skip when the spec actually requires one.
+    if not api_key and spec.requires_api_key():
         return SmokeResult(
             provider=provider,
             model=model,
@@ -392,7 +413,7 @@ async def smoke_provider(
         model=model,
         base_url=base_url,
         env_key=env_key,
-        key_present=True,
+        key_present=bool(api_key),
         direct_status=direct_status,
         stream_status=stream_status,
         response_model=response_model,

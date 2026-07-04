@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { useChatFeatureToggles } from './useChatFeatureToggles'
 import source from './useChatFeatureToggles.ts?raw'
+import type { ModelRoutingMode } from '@/types/modelRouting'
 
 type RpcResult = Record<string, unknown> | Error | Promise<unknown>
 
@@ -212,6 +213,149 @@ describe('useChatFeatureToggles coding mode', () => {
     const setterSource = source.slice(setterStart, setterEnd)
 
     expect(setterSource).toContain('skills.coding_mode')
+    expect(setterSource).not.toMatch(/localStorage|sessionStorage/)
+  })
+})
+
+describe('useChatFeatureToggles model routing mode', () => {
+  it.each([
+    [{}, 'off', false, false],
+    [{ squilla_router: { enabled: true, rollout_phase: 'observe' } }, 'off', false, false],
+    [{ squilla_router: { enabled: true, rollout_phase: 'full' } }, 'squilla_router', true, false],
+    [{ squilla_router: { enabled: false }, llm_ensemble: { enabled: true } }, 'llm_ensemble', true, true],
+    [{ squilla_router: { enabled: true, rollout_phase: 'full' }, llm_ensemble: { enabled: true } }, 'llm_ensemble', true, true],
+  ])('maps backend config %j to mode %s', async (config, mode, routerActive, ensembleActive) => {
+    const { api } = createHarness({
+      configGetResults: [config],
+    })
+
+    await api.loadFeatureToggles()
+
+    expect(api.modelRoutingMode.value).toBe(mode)
+    expect(api.routerEnabled.value).toBe(routerActive)
+    expect(api.llmEnsembleEnabled.value).toBe(ensembleActive)
+  })
+
+  const writeCases: Array<[ModelRoutingMode, Record<string, unknown>]> = [
+    ['off', {
+      'llm_ensemble.enabled': false,
+      'squilla_router.enabled': false,
+      'squilla_router.rollout_phase': 'observe',
+    }],
+    ['squilla_router', {
+      'llm_ensemble.enabled': false,
+      'squilla_router.enabled': true,
+      'squilla_router.rollout_phase': 'full',
+    }],
+    ['llm_ensemble', {
+      'llm_ensemble.enabled': true,
+      'squilla_router.enabled': true,
+      'squilla_router.rollout_phase': 'full',
+    }],
+  ]
+
+  it.each(writeCases)('writes %s through one safe backend patch', async (mode, patches) => {
+    const { api, rpc } = createHarness({
+      configGetResults: [{}],
+    })
+
+    await api.setModelRoutingMode(mode)
+
+    expect(rpc.call).toHaveBeenCalledWith('config.patch.safe', { patches })
+  })
+
+  it('keeps the three modes mutually exclusive when switching to Squilla Router', async () => {
+    const { api, rpc } = createHarness({
+      configGetResults: [{ squilla_router: { enabled: true, rollout_phase: 'full' } }],
+    })
+
+    await api.setModelRoutingMode('squilla_router')
+
+    expect(rpc.call).toHaveBeenCalledWith('config.patch.safe', {
+      patches: {
+        'llm_ensemble.enabled': false,
+        'squilla_router.enabled': true,
+        'squilla_router.rollout_phase': 'full',
+      },
+    })
+    expect(api.modelRoutingMode.value).toBe('squilla_router')
+  })
+
+  it('optimistically reflects the selected routing mode while a write is pending', async () => {
+    const pendingPatch = deferred<void>()
+    const { api } = createHarness({
+      patchResults: [pendingPatch.promise],
+      configGetResults: [{ squilla_router: { enabled: true, rollout_phase: 'full' }, llm_ensemble: { enabled: true } }],
+    })
+
+    const write = api.setModelRoutingMode('llm_ensemble')
+    await Promise.resolve()
+
+    expect(api.modelRoutingSettingsBusy.value).toBe(true)
+    expect(api.modelRoutingMode.value).toBe('llm_ensemble')
+    expect(api.routerEnabled.value).toBe(true)
+    expect(api.llmEnsembleEnabled.value).toBe(true)
+
+    pendingPatch.resolve(undefined)
+    await write
+    expect(api.modelRoutingMode.value).toBe('llm_ensemble')
+  })
+
+  it('rolls back model routing when the backend patch fails', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const { api } = createHarness({
+      configGetResults: [{ squilla_router: { enabled: true, rollout_phase: 'full' } }],
+      patchResults: [new Error('patch failed')],
+    })
+
+    await api.loadFeatureToggles()
+    await api.setModelRoutingMode('off')
+
+    expect(api.modelRoutingMode.value).toBe('squilla_router')
+    expect(warn).toHaveBeenCalledWith('Failed to update model routing:', 'patch failed')
+  })
+
+  it('uses the post-patch backend value as authoritative', async () => {
+    const { api } = createHarness({
+      configGetResults: [{ squilla_router: { enabled: false }, llm_ensemble: { enabled: false } }],
+    })
+
+    await api.setModelRoutingMode('llm_ensemble')
+
+    expect(api.modelRoutingMode.value).toBe('off')
+  })
+
+  it('prevents overlapping model-routing writes while busy', async () => {
+    const pendingPatch = deferred<void>()
+    const { api, rpc } = createHarness({
+      patchResults: [pendingPatch.promise],
+      configGetResults: [{ squilla_router: { enabled: true, rollout_phase: 'full' }, llm_ensemble: { enabled: true } }],
+    })
+
+    const firstWrite = api.setModelRoutingMode('llm_ensemble')
+    await api.setModelRoutingMode('off')
+    await Promise.resolve()
+
+    expect(patchCalls(rpc)).toHaveLength(1)
+    expect(rpc.call).toHaveBeenCalledWith('config.patch.safe', {
+      patches: {
+        'llm_ensemble.enabled': true,
+        'squilla_router.enabled': true,
+        'squilla_router.rollout_phase': 'full',
+      },
+    })
+
+    pendingPatch.resolve(undefined)
+    await firstWrite
+  })
+
+  it('does not persist model routing through browser storage APIs', () => {
+    const setterStart = source.indexOf('async function setModelRoutingMode')
+    const setterEnd = source.indexOf('function bindFeatureRefresh', setterStart)
+    const setterSource = source.slice(setterStart, setterEnd)
+
+    expect(setterSource).toContain('llm_ensemble.enabled')
+    expect(setterSource).toContain('squilla_router.enabled')
     expect(setterSource).not.toMatch(/localStorage|sessionStorage/)
   })
 })

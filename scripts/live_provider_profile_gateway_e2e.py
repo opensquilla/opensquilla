@@ -365,7 +365,7 @@ def _failure_kind(
             return "auth_failed"
         if "429" in lowered or "quota" in lowered or "billing" in lowered:
             return "quota_or_billing_blocked"
-        if "timeout" in lowered:
+        if "timeout" in lowered or "timed out" in lowered:
             return "gateway_turn_timeout"
         if "model" in lowered and ("not" in lowered or "invalid" in lowered):
             return "model_unavailable"

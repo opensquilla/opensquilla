@@ -7,14 +7,21 @@ import hashlib
 import json
 import os
 import re
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, cast
 from urllib.parse import parse_qsl, urlparse
 
 import httpx
 
-from opensquilla.env import trust_env as _trust_env
-from opensquilla.sandbox.integration import sandboxed
+from opensquilla.sandbox.integration import (
+    current_managed_network_proxy_url,
+    managed_network_httpx_kwargs,
+)
+from opensquilla.sandbox.operation_runtime import (
+    NetworkOperationRequest,
+    SandboxToolDescriptor,
+)
 from opensquilla.search.canonical import run_canonical_web_search
 from opensquilla.search.normalize import canonicalize_url, extract_domain
 from opensquilla.search.types import (
@@ -59,11 +66,152 @@ _SENSITIVE_HTTP_METHODS = {"POST", "PUT", "PATCH"}
 _TEXT_BODY_LIMIT = 10_000
 _BINARY_BODY_LIMIT = 1_000_000
 _FETCH_DIR_NAME = ".fetch"
+_SEARCH_BENCHMARK_BLOCKLIST_ENV = "OPENSQUILLA_SEARCH_BENCHMARK_BLOCKLIST"
+_SEARCH_BENCHMARK_BLOCKLIST_TERMS_ENV = "OPENSQUILLA_SEARCH_BENCHMARK_BLOCKLIST_TERMS"
+_SEARCH_BENCHMARK_BLOCKLIST_DEFAULT_TERMS = (
+    "huggingface.co/datasets/perplexity-ai/draco",
+    "hf.co/datasets/perplexity-ai/draco",
+    "datasets/perplexity-ai/draco",
+    "perplexity-ai/draco",
+    "perplexity-ai draco",
+    "draco benchmark",
+    "draco dataset",
+    "draco rubric",
+    "draco ground truth",
+    "draco mini_test",
+    "draco test.jsonl",
+)
 _VALID_SEARCH_MODES: frozenset[str] = frozenset({"auto", "news", "technical", "broad"})
 _VALID_SEARCH_RECENCIES: frozenset[str] = frozenset({"day", "week", "month", "year"})
 _VALID_SEARCH_PROVIDERS: frozenset[str] = frozenset(
     {"auto", "bocha", "tavily", "brave", "duckduckgo", "exa"}
 )
+
+def _network_http_request(args: Mapping[str, Any]) -> NetworkOperationRequest:
+    url = str(args.get("url", "") or "")
+    parsed = urlparse(url)
+    raw_headers = args.get("headers")
+    headers = (
+        {str(key): str(value) for key, value in raw_headers.items()}
+        if isinstance(raw_headers, Mapping)
+        else {}
+    )
+    return NetworkOperationRequest(
+        url=url,
+        method=str(args.get("method", "GET") or "GET").upper(),
+        host=parsed.hostname or "",
+        headers=headers,
+        body=str(args.get("body")) if args.get("body") is not None else None,
+        output_path=Path(str(args["output_path"]))
+        if args.get("output_path") is not None
+        else None,
+    )
+
+
+def _network_search_request(args: Mapping[str, Any]) -> NetworkOperationRequest:
+    return NetworkOperationRequest(
+        method="SEARCH",
+        host="",
+        body=str(args.get("query", "") or ""),
+    )
+
+
+def _search_benchmark_blocklist_enabled() -> bool:
+    value = os.environ.get(_SEARCH_BENCHMARK_BLOCKLIST_ENV, "")
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _search_benchmark_blocklist_terms() -> list[str]:
+    if not _search_benchmark_blocklist_enabled():
+        return []
+    terms = list(_SEARCH_BENCHMARK_BLOCKLIST_DEFAULT_TERMS)
+    raw = os.environ.get(_SEARCH_BENCHMARK_BLOCKLIST_TERMS_ENV, "")
+    for chunk in re.split(r"[\n,]", raw):
+        term = chunk.strip().strip('"').strip("'")
+        if len(term) >= 3:
+            terms.append(term)
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for term in terms:
+        normalized = term.lower()
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        deduped.append(term)
+    return deduped
+
+
+def _search_benchmark_blocklist_matches(text: str, terms: list[str]) -> list[str]:
+    normalized = text.lower()
+    return [term for term in terms if term.lower() in normalized]
+
+
+def _search_benchmark_result_text(result: SearchResult) -> str:
+    return "\n".join([result.title or "", result.url or "", result.snippet or ""])
+
+
+def _search_benchmark_blocked_query_payload(
+    query: str,
+    provider_name: str,
+    *,
+    attempts: list[dict[str, str]] | None = None,
+) -> dict:
+    payload = _search_payload(query, provider_name, [], attempts=attempts)
+    payload["benchmark_blocklist_enabled"] = True
+    payload["blocked_query"] = True
+    payload["blocked_count"] = 0
+    return payload
+
+
+def _filter_search_benchmark_results(
+    results: list[SearchResult],
+    *,
+    terms: list[str],
+) -> tuple[list[SearchResult], dict[str, Any]]:
+    if not terms:
+        return results, {}
+    filtered: list[SearchResult] = []
+    blocked_count = 0
+    for result in results:
+        if _search_benchmark_blocklist_matches(_search_benchmark_result_text(result), terms):
+            blocked_count += 1
+            continue
+        filtered.append(result)
+    if blocked_count == 0:
+        return filtered, {"benchmark_blocklist_enabled": True, "blocked_count": 0}
+    return filtered, {
+        "benchmark_blocklist_enabled": True,
+        "blocked_count": blocked_count,
+    }
+
+
+class _BenchmarkBlocklistSearchProvider:
+    def __init__(
+        self,
+        wrapped: Any,
+        *,
+        terms: list[str],
+        meta: dict[str, Any],
+    ) -> None:
+        self._wrapped = wrapped
+        self._terms = terms
+        self._meta = meta
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._wrapped, name)
+
+    async def search(self, *args: Any, **kwargs: Any) -> list[SearchResult]:
+        results = await self._wrapped.search(*args, **kwargs)
+        filtered, blocklist_meta = _filter_search_benchmark_results(
+            results,
+            terms=self._terms,
+        )
+        if blocklist_meta:
+            self._meta["benchmark_blocklist_enabled"] = True
+            self._meta["blocked_count"] = int(self._meta.get("blocked_count") or 0) + int(
+                blocklist_meta.get("blocked_count") or 0
+            )
+        return filtered
 
 
 def _sensitive_body_marker(body: str | None) -> str | None:
@@ -206,16 +354,17 @@ def _save_http_response_body(raw_body: bytes, output_path: str | None) -> tuple[
     required=["url"],
     owner_only=True,
     result_budget_class="external",
-)
-@sandboxed(
-    kind="network.http",
-    argv_factory=lambda a: (
-        "http_request",
-        str(a.get("method", "GET")).upper(),
-        str(a.get("url", "")),
-        str(a.get("output_path", "")),
+    sandbox=SandboxToolDescriptor.network(
+        kind="network.http",
+        argv_factory=lambda a: (
+            "http_request",
+            str(a.get("method", "GET")).upper(),
+            str(a.get("url", "")),
+            str(a.get("output_path", "")),
+        ),
+        request_factory=_network_http_request,
+        record_payload=False,
     ),
-    record_payload=False,
 )
 async def http_request(
     url: str,
@@ -245,7 +394,10 @@ async def http_request(
 
     content: bytes | None = body.encode() if body else None
 
-    async with httpx.AsyncClient(timeout=timeout, trust_env=_trust_env()) as client:
+    async with httpx.AsyncClient(
+        timeout=timeout,
+        **managed_network_httpx_kwargs(),
+    ) as client:
         response = await client.request(
             method=method_upper,
             url=url,
@@ -407,7 +559,12 @@ def _format_search_error(provider_name: str, exc: Exception) -> tuple[str, str]:
 def _search_provider_kwargs(provider_name: str) -> dict[str, object]:
     from opensquilla.search.runtime_config import get_resolved_search_runtime
 
-    return get_resolved_search_runtime().provider_kwargs(provider_name)
+    kwargs = dict(get_resolved_search_runtime().provider_kwargs(provider_name))
+    managed_proxy = current_managed_network_proxy_url()
+    if managed_proxy:
+        kwargs["proxy"] = managed_proxy
+        kwargs["use_env_proxy"] = False
+    return kwargs
 
 
 def _ensure_builtin_search_providers() -> None:
@@ -508,6 +665,11 @@ async def run_web_discover_payload(
             },
             retryable=False,
         )
+    blocklist_terms = _search_benchmark_blocklist_terms()
+    if _search_benchmark_blocklist_matches(query, blocklist_terms):
+        return _search_success_payload(
+            _search_benchmark_blocked_query_payload(query, display_provider)
+        )
 
     # Defence in depth: clamp to the shared ceiling before hitting the provider so
     # an out-of-range configured/active value cannot ask an uncapped provider
@@ -531,6 +693,10 @@ async def run_web_discover_payload(
                 **_search_provider_kwargs(candidate_provider),
             )
             results = await provider.search(query, max_results=limit)
+            results, blocklist_meta = _filter_search_benchmark_results(
+                results,
+                terms=blocklist_terms,
+            )
             if attempts is not None:
                 attempts.append({"provider": candidate_provider, "status": "success"})
             return _search_success_payload(
@@ -540,7 +706,7 @@ async def run_web_discover_payload(
                     fallback_from=fallback_from,
                     attempts=attempts,
                     results=results,
-                )
+                ) | blocklist_meta
             )
         except Exception as exc:  # noqa: BLE001 - converted to structured payload below
             terminal_provider = candidate_provider
@@ -678,7 +844,55 @@ async def run_web_search_payload(
         recency=cast(Recency | None, recency),
         provider=None if provider in (None, "auto") else provider,
     )
-    return await run_canonical_web_search(options, fetcher=_web_search_fetcher)
+    blocklist_terms = _search_benchmark_blocklist_terms()
+    if _search_benchmark_blocklist_matches(query, blocklist_terms):
+        provider_name = provider or _active_provider
+        payload = _search_benchmark_blocked_query_payload(query, provider_name)
+        payload.update(
+            {
+                "ok": True,
+                "mode": mode,
+                "provider_attempts": [],
+                "diagnostics": {
+                    "selected_provider": provider_name,
+                    "benchmark_blocklist_enabled": True,
+                    "blocked_query": True,
+                    "blocked_count": 0,
+                },
+                "sources": [],
+            }
+        )
+        return payload
+    if not blocklist_terms:
+        return await run_canonical_web_search(options, fetcher=_web_search_fetcher)
+
+    from opensquilla.search.runtime_config import get_resolved_search_runtime
+
+    runtime = get_resolved_search_runtime()
+    blocklist_meta: dict[str, Any] = {
+        "benchmark_blocklist_enabled": True,
+        "blocked_count": 0,
+    }
+
+    def provider_factory(provider_name: str) -> _BenchmarkBlocklistSearchProvider:
+        return _BenchmarkBlocklistSearchProvider(
+            runtime.build_provider(provider_name),
+            terms=blocklist_terms,
+            meta=blocklist_meta,
+        )
+
+    payload = await run_canonical_web_search(
+        options,
+        runtime=runtime,
+        provider_factory=provider_factory,
+        fetcher=_web_search_fetcher,
+    )
+    payload.update(blocklist_meta)
+    diagnostics = payload.get("diagnostics")
+    if isinstance(diagnostics, dict):
+        diagnostics["benchmark_blocklist_enabled"] = True
+        diagnostics["blocked_count"] = blocklist_meta["blocked_count"]
+    return payload
 
 
 def _invalid_search_request_payload(message: str) -> dict[str, object]:
@@ -847,15 +1061,16 @@ def _search_error_payload(
     },
     required=["query"],
     result_budget_class="external",
-)
-@sandboxed(
-    kind="web.search",
-    argv_factory=lambda a: (
-        "web_search",
-        str(a.get("query", "")),
-        str(a.get("fetch_top_k", "")),
+    sandbox=SandboxToolDescriptor.network(
+        kind="web.fetch",
+        argv_factory=lambda a: (
+            "web_search",
+            str(a.get("query", "")),
+            str(a.get("fetch_top_k", "")),
+        ),
+        request_factory=_network_search_request,
+        record_payload=False,
     ),
-    record_payload=False,
 )
 async def web_search(
     query: str,
@@ -894,15 +1109,16 @@ async def web_search(
     },
     required=["query"],
     result_budget_class="external",
-)
-@sandboxed(
-    kind="web.discover",
-    argv_factory=lambda a: (
-        "web_discover",
-        str(a.get("query", "")),
-        str(a.get("max_results", "")),
+    sandbox=SandboxToolDescriptor.network(
+        kind="web.fetch",
+        argv_factory=lambda a: (
+            "web_discover",
+            str(a.get("query", "")),
+            str(a.get("max_results", "")),
+        ),
+        request_factory=_network_search_request,
+        record_payload=False,
     ),
-    record_payload=False,
 )
 async def web_discover(query: str, max_results: int | None = None) -> str:
     payload = await run_web_discover_payload(query, max_results)

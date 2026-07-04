@@ -3,6 +3,7 @@ import { computed, onMounted, ref, shallowRef } from 'vue'
 import { useI18n } from 'vue-i18n'
 import Icon from '@/components/Icon.vue'
 import GatewayStatusBlock from '@/components/settings/GatewayStatusBlock.vue'
+import SettingsUpdatePanel from '@/components/settings/SettingsUpdatePanel.vue'
 import { usePlatform, type GatewayStatus } from '@/platform'
 import { useConfirm } from '@/composables/useConfirm'
 import { useToasts } from '@/composables/useToasts'
@@ -180,6 +181,8 @@ onMounted(loadStatus)
         <span>{{ t('setup.runtime.restartRuntime') }}</span>
       </button>
     </div>
+
+    <SettingsUpdatePanel />
 
     <div v-if="canReset" class="control-row">
       <div class="control-row__label-block">

@@ -32,6 +32,15 @@ from opensquilla.gateway.session_services import (
 from opensquilla.gateway.session_streams import get_session_streams
 from opensquilla.gateway.session_view import build_session_view_item, derive_transcript_title
 from opensquilla.paths import media_root_from_config
+from opensquilla.sandbox.run_context import (
+    get_run_context,
+    run_context_from_origin_payload,
+)
+from opensquilla.sandbox.run_mode import RunMode, normalize_run_mode
+from opensquilla.sandbox.run_mode_policy import (
+    coerce_run_mode_for_principal,
+    run_mode_allowed_for_principal,
+)
 from opensquilla.session.compaction import (
     build_compaction_config_from_provider,
     call_compact_with_optional_config,
@@ -64,7 +73,8 @@ from opensquilla.session.terminal_reply import build_terminal_reply, sanitize_ag
 
 _d = get_dispatcher()
 log = structlog.get_logger(__name__)
-_ELEVATED_MODES = frozenset({"on", "bypass", "full"})
+_ELEVATED_MODES = frozenset({"full"})
+_TRUSTED_ELEVATED_ALIASES = frozenset({"on", "bypass"})
 
 _ALLOWED_MEDIA_TYPES = _attachment_ingest.ALLOWED_MEDIA_TYPES
 _MAX_ATTACHMENT_BYTES = _attachment_ingest.MAX_ATTACHMENT_BYTES
@@ -103,11 +113,16 @@ async def _cancel_task_runtime(
     task_runtime: Any,
     *,
     session_key: str,
+    task_id: str | None = None,
     source: str,
     reason: str,
 ) -> int:
     cancel = getattr(task_runtime, "cancel")
-    kwargs: dict[str, Any] = {"session_key": session_key}
+    kwargs: dict[str, Any] = {}
+    if task_id and _accepts_keyword_arg(cancel, "task_id"):
+        kwargs["task_id"] = task_id
+    else:
+        kwargs["session_key"] = session_key
     if _accepts_keyword_arg(cancel, "source"):
         kwargs["source"] = source
     if _accepts_keyword_arg(cancel, "reason"):
@@ -176,6 +191,55 @@ def _trusted_elevated_hint(ctx: RpcContext, source_hint: dict[str, Any]) -> str 
     return None
 
 
+def _trusted_run_mode_hint(ctx: RpcContext, source_hint: dict[str, Any]) -> Any | None:
+    value = source_hint.get("runMode") or source_hint.get("run_mode")
+    if isinstance(value, str):
+        try:
+            run_mode = normalize_run_mode(value)
+        except ValueError:
+            return None
+        if run_mode_allowed_for_principal(run_mode, ctx.principal):
+            return run_mode
+        if run_mode == RunMode.FULL and not ctx.principal.is_owner:
+            return RunMode.TRUSTED
+        return None
+
+    elevated = source_hint.get("elevated")
+    if not isinstance(elevated, str):
+        return None
+    if not ctx.principal.is_owner:
+        return None
+    if elevated in _TRUSTED_ELEVATED_ALIASES:
+        return RunMode.TRUSTED
+    if elevated == "full":
+        return RunMode.FULL
+    return None
+
+
+def _apply_run_context_route_metadata(
+    route_envelope: Any,
+    run_context: Any,
+    *,
+    principal_is_owner: bool,
+) -> None:
+    run_context_payload = run_context.to_origin_payload()
+    filtered_run_context = run_context_from_origin_payload(
+        run_context_payload,
+        source="route_metadata",
+        preserve_materialized_user_grants=True,
+    )
+    route_envelope.metadata["run_mode"] = run_context.run_mode.value
+    route_envelope.metadata["sandbox_mounts"] = (
+        filtered_run_context.to_origin_payload()["mounts"]
+        if filtered_run_context is not None
+        else []
+    )
+    route_envelope.metadata["sandbox_run_context"] = run_context_payload
+    object.__setattr__(route_envelope, "sandbox_run_context_fresh", True)
+    if run_context.run_mode.value == "full" and principal_is_owner:
+        route_envelope.metadata["elevated"] = "full"
+
+
 def _normalize_session_send_source_hint(params: dict[str, Any]) -> dict[str, Any]:
     raw_hint = params.get("_source")
     source_hint = dict(raw_hint) if isinstance(raw_hint, dict) else {}
@@ -200,11 +264,58 @@ _STREAM_IDLE_TIMEOUT_CODE = "stream_idle_timeout"
 _STREAM_IDLE_TIMEOUT_MESSAGE = "Session event stream idle before terminal event"
 _RESET_RUNTIME_SETTLE_SECONDS = 0.25
 _RESET_RUNTIME_CANCEL_DRAIN_SECONDS = 2.0
+_ABORT_RUNTIME_CANCEL_DRAIN_SECONDS = 2.0
 _ACTIVE_TASK_STATUSES = frozenset({"queued", "running"})
 
 
 def _task_status_value(status: Any) -> str:
     return str(getattr(status, "value", status) or "")
+
+
+async def _active_task_runtime_ids(task_runtime: Any, session_key: str) -> tuple[str, ...]:
+    if not hasattr(task_runtime, "list"):
+        return ()
+    try:
+        rows = await task_runtime.list(session_key=session_key)
+    except Exception:
+        log.warning("sessions.abort.task_runtime_list_failed", session_key=session_key)
+        return ()
+    task_ids: list[str] = []
+    for row in rows:
+        if _task_status_value(getattr(row, "status", None)) not in _ACTIVE_TASK_STATUSES:
+            continue
+        task_id = getattr(row, "task_id", "")
+        if isinstance(task_id, str) and task_id and task_id not in task_ids:
+            task_ids.append(task_id)
+    return tuple(task_ids)
+
+
+async def _drain_cancelled_task_runtime(
+    task_runtime: Any,
+    *,
+    session_key: str,
+    task_ids: tuple[str, ...],
+) -> None:
+    if not task_ids or not hasattr(task_runtime, "wait"):
+        return
+    for task_id in task_ids:
+        try:
+            await asyncio.wait_for(
+                task_runtime.wait(task_id),
+                timeout=_ABORT_RUNTIME_CANCEL_DRAIN_SECONDS,
+            )
+        except TimeoutError:
+            log.warning(
+                "sessions.abort.task_runtime_drain_timeout",
+                session_key=session_key,
+                task_id=task_id,
+            )
+        except Exception:
+            log.warning(
+                "sessions.abort.task_runtime_drain_failed",
+                session_key=session_key,
+                task_id=task_id,
+            )
 
 
 async def _drain_task_runtime_for_reset(task_runtime: Any, session_key: str) -> None:
@@ -389,6 +500,22 @@ def _require_key(params: dict | None) -> str:
     if not isinstance(key, str):
         raise ValueError("params.key must be a string")
     return canonicalize_session_key(key)
+
+
+def _optional_string_param(params: dict | None, *names: str) -> str | None:
+    if not isinstance(params, dict):
+        return None
+    for name in names:
+        if name not in params:
+            continue
+        value = params.get(name)
+        if value is None:
+            return None
+        if not isinstance(value, str):
+            raise ValueError(f"params.{name} must be a string")
+        value = value.strip()
+        return value or None
+    return None
 
 
 def _effective_agent_id_for_session(session: Any | None, session_key: str) -> str:
@@ -943,7 +1070,7 @@ async def _handle_sessions_search(params: dict | None, ctx: RpcContext) -> dict:
     if storage is None:
         return empty
 
-    # ── Title hits ───────────────────────────────────────────────────────────
+    # Title hits.
     # Prefer the dedicated global query (matches every session, builds view rows
     # only for the matches). Fall back to a bounded recent scan for storage
     # doubles that don't implement it.
@@ -990,9 +1117,9 @@ async def _handle_sessions_search(params: dict | None, ctx: RpcContext) -> dict:
             }
         )
 
-    # ── Content hits ─────────────────────────────────────────────────────────
+    # Content hits.
     # ASCII queries use the ranked, indexed FTS path. Non-ASCII queries (CJK and
-    # other scripts the FTS tokenizer can't segment) use a substring LIKE scan —
+    # other scripts the FTS tokenizer can't segment) use a substring LIKE scan,
     # the only option for them. ASCII deliberately has NO LIKE fallback so a
     # common keystroke can never trigger an unbounded full-table content scan.
     has_like = hasattr(storage, "search_transcript_like")
@@ -1094,6 +1221,11 @@ async def _handle_sessions_fork(params: dict | None, ctx: RpcContext) -> dict:
     title = params.get("title")
     if title is not None and not isinstance(title, str):
         raise ValueError("params.title must be a string")
+    before_message_id = _optional_string_param(
+        params,
+        "beforeMessageId",
+        "before_message_id",
+    )
 
     if ctx.session_manager is None:
         raise KeyError("No session manager available")
@@ -1112,6 +1244,7 @@ async def _handle_sessions_fork(params: dict | None, ctx: RpcContext) -> dict:
         child_key,
         fork_transcript=True,
         status=SessionStatus.DONE,
+        fork_before_message_id=before_message_id,
     )
 
     display_name = title or getattr(parent, "display_name", None)
@@ -1135,12 +1268,6 @@ async def _should_auto_title(
     key: str,
     session_id: str,
 ) -> bool:
-    """Whether to spawn LLM auto-naming for this send (first user message only).
-
-    Cheap checks first; the transcript-count query only runs for sessions that
-    are eligible and still lack a title, so titled/established sessions cost
-    nothing. Best-effort: any failure disables naming for this turn.
-    """
     try:
         naming_cfg = getattr(getattr(ctx, "config", None), "naming", None)
         if naming_cfg is None or not getattr(naming_cfg, "enabled", False):
@@ -1155,8 +1282,6 @@ async def _should_auto_title(
         session_kind = _session_kind(session, key, surface, origin_map)
         if not is_naming_eligible(naming_cfg, surface, session_kind):
             return False
-        # First user message: the session had no transcript entries before this
-        # send (the current message is persisted by the TurnRunner afterwards).
         return bool(await storage.count_transcript_entries(session_id) == 0)
     except Exception:  # noqa: BLE001 - naming is best-effort
         return False
@@ -1206,6 +1331,13 @@ async def _handle_sessions_send(params: dict | None, ctx: RpcContext) -> dict:
         session_intent = SessionIntent(params.get("intent", SessionIntent.CONTINUE.value))
     except ValueError as exc:
         raise ValueError(f"Invalid session intent: {params.get('intent')}") from exc
+    fork_before_message_id = _optional_string_param(
+        params,
+        "forkBeforeMessageId",
+        "fork_before_message_id",
+    )
+    if fork_before_message_id is not None and session_intent is not SessionIntent.CONTINUE:
+        raise ValueError("forkBeforeMessageId cannot be combined with non-continue intent")
 
     if ctx.session_manager is None:
         raise KeyError("No session manager available")
@@ -1227,15 +1359,35 @@ async def _handle_sessions_send(params: dict | None, ctx: RpcContext) -> dict:
     elif session_intent is not SessionIntent.CONTINUE:
         raise RuntimeError("Session intent handling requires SessionManager.apply_intent")
 
+    if fork_before_message_id is not None:
+        parent_key = key
+        parent_display_name = getattr(session, "display_name", None)
+        agent_id = _effective_agent_id_for_session(session, parent_key)
+        child_key = _create_session_key(agent_id, "webchat")
+        session = await ctx.session_manager.branch(
+            parent_key,
+            child_key,
+            fork_transcript=True,
+            status=SessionStatus.DONE,
+            fork_before_message_id=fork_before_message_id,
+        )
+        key = child_key
+        if parent_display_name:
+            session = await ctx.session_manager.update(key, display_name=parent_display_name)
+        await _emit_to_subscribers(
+            ctx,
+            key,
+            "sessions.changed",
+            build_sessions_changed_payload(key, "forked", run_status="idle"),
+        )
+
     canonical_session_id = getattr(session, "session_id", None)
     session_id = (
         canonical_session_id
         if isinstance(canonical_session_id, str) and canonical_session_id
         else key.split(":")[-1] or key
     )
-    # Capture the auto-naming decision before the turn task runs, so the
-    # first-message check reflects pre-turn transcript state.
-    _generate_title = await _should_auto_title(ctx, storage, session, key, session_id)
+    generate_title = await _should_auto_title(ctx, storage, session, key, session_id)
     disk_budget = getattr(attachments_cfg, "transcript_disk_budget_bytes", None)
     ingested_attachments = await _attachment_ingest.ingest_attachments(
         message_text,
@@ -1303,12 +1455,32 @@ async def _handle_sessions_send(params: dict | None, ctx: RpcContext) -> dict:
         if stripped_message is not None:
             provider_message_text = stripped_message.strip()
 
+    from opensquilla.agents.scope import resolve_agent_workspace_dir
     from opensquilla.gateway.routing import (
         build_cli_route_envelope,
         build_web_route_envelope,
     )
 
     agent_id = _effective_agent_id_for_session(session, key)
+    workspace_path = resolve_agent_workspace_dir(agent_id, ctx.config)
+    workspace_dir = str(workspace_path) if workspace_path is not None else None
+    run_mode_hint = _trusted_run_mode_hint(ctx, source_hint)
+    run_context = await get_run_context(
+        ctx.session_manager,
+        key,
+        config=ctx.config,
+        workspace=workspace_dir,
+    )
+    run_context = replace(
+        run_context,
+        run_mode=coerce_run_mode_for_principal(run_context.run_mode, ctx.principal),
+    )
+    if run_mode_hint is not None:
+        run_context = replace(
+            run_context,
+            run_mode=run_mode_hint,
+            source="request",
+        )
     if source_hint.get("caller_kind") == "cli" or source_hint.get("channel_kind") == "cli":
         route_envelope = build_cli_route_envelope(
             session_key=key,
@@ -1318,6 +1490,7 @@ async def _handle_sessions_send(params: dict | None, ctx: RpcContext) -> dict:
             sender_id=source_hint.get("sender_id"),
             session_id=getattr(session, "session_id", None),
             principal_is_owner=ctx.principal.is_owner,
+            run_mode=run_context.run_mode.value,
         )
     else:
         route_envelope = build_web_route_envelope(
@@ -1331,6 +1504,11 @@ async def _handle_sessions_send(params: dict | None, ctx: RpcContext) -> dict:
             session_id=getattr(session, "session_id", None),
             principal_is_owner=ctx.principal.is_owner,
         )
+    _apply_run_context_route_metadata(
+        route_envelope,
+        run_context,
+        principal_is_owner=ctx.principal.is_owner,
+    )
     elevated_hint = _trusted_elevated_hint(ctx, source_hint)
     if elevated_hint is not None:
         route_envelope.metadata["elevated"] = elevated_hint
@@ -1506,7 +1684,7 @@ async def _handle_sessions_send(params: dict | None, ctx: RpcContext) -> dict:
             ctx,
             key,
             semantic_message_text or message_text,
-            enabled=_generate_title,
+            enabled=generate_title,
         )
         return {"status": "accepted", "key": key, "task_id": handle.task_id}
 
@@ -1538,15 +1716,6 @@ async def _handle_sessions_send(params: dict | None, ctx: RpcContext) -> dict:
 
         try:
             _mark_started()
-            # A new user turn invalidates any "once" intent approvals from the
-            # previous turn. "always" entries survive per IntentApprovalCache
-            # scope semantics.
-            try:
-                from opensquilla.sandbox.intent_cache import get_intent_cache
-
-                get_intent_cache().clear_scope("once")
-            except Exception:  # pragma: no cover — never block turn start
-                pass
             if ctx.turn_runner is None:
                 log.error("sessions.send.no_turn_runner", session_key=key)
                 await ctx.session_manager.append_message(
@@ -1558,19 +1727,17 @@ async def _handle_sessions_send(params: dict | None, ctx: RpcContext) -> dict:
                 )
                 return
 
-            from opensquilla.agents.scope import resolve_agent_workspace_dir
             from opensquilla.engine.stream_wrappers import wrap_stream
             from opensquilla.gateway.routing import tool_context_from_envelope
             from opensquilla.permissions import configured_default_elevated
 
-            workspace_dir = resolve_agent_workspace_dir(agent_id, ctx.config)
             workspace_strict = getattr(ctx.config, "workspace_strict", None)
             if not isinstance(workspace_strict, bool):
                 workspace_strict = bool(workspace_dir)
             tool_ctx = tool_context_from_envelope(
                 route_envelope,
                 is_owner=ctx.principal.is_owner,
-                workspace_dir=str(workspace_dir),
+                workspace_dir=workspace_dir,
                 workspace_strict=workspace_strict,
                 default_elevated=configured_default_elevated(ctx.config),
             )
@@ -1692,7 +1859,7 @@ async def _handle_sessions_send(params: dict | None, ctx: RpcContext) -> dict:
         ctx,
         key,
         semantic_message_text or message_text,
-        enabled=_generate_title,
+        enabled=generate_title,
     )
     return {"status": "accepted", "key": key}
 
@@ -1763,12 +1930,25 @@ async def _handle_sessions_abort(params: dict | None, ctx: RpcContext) -> dict:
 
     task_runtime = getattr(ctx, "task_runtime", None)
     if task_runtime is not None:
+        requested_task_id = _optional_string_param(params, "task_id", "taskId")
+        active_task_ids = await _active_task_runtime_ids(task_runtime, key)
+        if requested_task_id is not None:
+            if active_task_ids and requested_task_id not in active_task_ids:
+                return {"aborted": False, "key": key}
+            active_task_ids = (requested_task_id,)
         cancelled_count = await _cancel_task_runtime(
             task_runtime,
             session_key=key,
+            task_id=requested_task_id,
             source=_cancel_source_from_params(params, "sessions_abort"),
             reason="user_abort",
         )
+        if cancelled_count > 0:
+            await _drain_cancelled_task_runtime(
+                task_runtime,
+                session_key=key,
+                task_ids=active_task_ids,
+            )
         return {"aborted": cancelled_count > 0, "key": key}
 
     # Cancel running agent task via registry

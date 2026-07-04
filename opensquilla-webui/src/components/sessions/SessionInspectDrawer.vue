@@ -468,7 +468,7 @@ onUnmounted(() => {
 .inspect-meta__agent {
   background: var(--bg-elevated);
   border: 1px solid var(--border);
-  border-radius: 999px;
+  border-radius: var(--radius-full);
   color: var(--text-muted);
   font-size: var(--fs-xs);
   font-weight: 650;
@@ -481,7 +481,7 @@ onUnmounted(() => {
 
 .inspect-meta__status {
   border: 1px solid var(--border);
-  border-radius: 999px;
+  border-radius: var(--radius-full);
   font-size: var(--fs-xs);
   font-weight: 650;
   padding: 2px var(--sp-2);

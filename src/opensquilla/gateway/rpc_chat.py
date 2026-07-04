@@ -380,6 +380,7 @@ async def _handle_chat_send(params: dict | None, ctx: RpcContext) -> dict:
             incoming_source = {}
 
         elevated_hint = incoming_source.get("elevated")
+        run_mode_hint = incoming_source.get("runMode") or incoming_source.get("run_mode")
         attachments = params.get("attachments")
         extra: dict = {}
         for source_key, target_key in (
@@ -392,6 +393,8 @@ async def _handle_chat_send(params: dict | None, ctx: RpcContext) -> dict:
             ("provenance_kind", "provenance_kind"),
             ("runKind", "runKind"),
             ("run_kind", "run_kind"),
+            ("forkBeforeMessageId", "forkBeforeMessageId"),
+            ("fork_before_message_id", "fork_before_message_id"),
         ):
             if source_key in params:
                 extra[target_key] = params[source_key]
@@ -412,10 +415,12 @@ async def _handle_chat_send(params: dict | None, ctx: RpcContext) -> dict:
                 source_kind="webui",
                 source_name="WebChat",
                 elevated=elevated_hint if isinstance(elevated_hint, str) else None,
+                run_mode=run_mode_hint if isinstance(run_mode_hint, str) else None,
             ),
         )
         result = await _handle_sessions_send(send_params, ctx)
-        return {"ok": True, "sessionKey": session_key, **result}
+        result_session_key = result.get("sessionKey") or result.get("key") or session_key
+        return {"ok": True, "sessionKey": result_session_key, **result}
     except Exception:
         marker = getattr(ctx, "turn_runner", None)
         clear = getattr(marker, "clear_compacted_this_turn", None)
@@ -435,11 +440,15 @@ async def _handle_chat_abort(params: dict | None, ctx: RpcContext) -> dict:
     _require_chat_session_manager(ctx)
     from opensquilla.gateway.rpc_sessions import _handle_sessions_abort
 
+    abort_params = {
+        "key": session_key,
+        "source": raw_params.get("source") or "webui_abort",
+    }
+    task_id = raw_params.get("taskId") or raw_params.get("task_id")
+    if isinstance(task_id, str) and task_id.strip():
+        abort_params["task_id"] = task_id.strip()
     result = await _handle_sessions_abort(
-        {
-            "key": session_key,
-            "source": raw_params.get("source") or "webui_abort",
-        },
+        abort_params,
         ctx,
     )
     return {"sessionKey": session_key, **result}

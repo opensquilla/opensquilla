@@ -449,30 +449,28 @@ class PromptAssemblerStage:
         # 6. Effective runtime message + selector override / fallback wrap
         effective_runtime_message = getattr(turn, "message", inp.runtime_message)
         if inp.model and inp.cloned_selector is not None:
-            router_fallback_chain = (
-                turn.metadata.get("router_fallback_chain")
-                if turn.metadata.get("routing_applied") is True
-                else None
-            )
-            override_with_fallback_chain = getattr(
+            from opensquilla.engine.selector_override import apply_model_override
+
+            # An explicit model overrides the routed choice, so the turn
+            # actually runs inp.model; realign_routed_model keeps telemetry
+            # and billing on the model that ran, not the one routing
+            # recommended.
+            provider = apply_model_override(
                 inp.cloned_selector,
-                "override_model_with_fallback_chain",
-                None,
+                inp.model,
+                turn_metadata=turn.metadata,
+                realign_routed_model=True,
             )
-            if callable(override_with_fallback_chain) and isinstance(
-                router_fallback_chain,
-                list,
-            ):
-                override_with_fallback_chain(inp.model, router_fallback_chain)
-            else:
-                inp.cloned_selector.override_model(inp.model)
-            provider = inp.cloned_selector.resolve()
         if inp.cloned_selector is not None:
             # Local import to avoid pulling _SelectorFallbackProvider name
             # into the stage's module-top namespace.
             from opensquilla.engine.runtime import _SelectorFallbackProvider
 
-            provider = _SelectorFallbackProvider(provider, inp.cloned_selector)
+            provider = _SelectorFallbackProvider(
+                provider,
+                inp.cloned_selector,
+                turn_metadata=turn.metadata,
+            )
 
         # 7. Resolve final prompt + cache breakpoints
         (
@@ -496,7 +494,7 @@ class PromptAssemblerStage:
             tool_profile=turn.metadata.get("tool_profile"),
         )
 
-        # 9. Resolve model_id: explicit param > pipeline-routed > selector current
+        # 9. Resolve model_id: pipeline-routed > explicit param > selector current
         selector_model = ""
         if inp.cloned_selector is not None:
             try:
@@ -505,7 +503,7 @@ class PromptAssemblerStage:
                 )
             except Exception:  # noqa: BLE001 - defensive
                 selector_model = ""
-        resolved_model = inp.model or turn.model or selector_model
+        resolved_model = getattr(turn, "model", None) or inp.model or selector_model
         provider_name = (
             getattr(provider, "provider_name", "") or type(provider).__name__
         )

@@ -4,10 +4,12 @@ import type {
   ChatPendingItem,
   ChatRunStatus,
   ChatRunStatusSource,
+  ChatUsagePayload,
 } from '@/types/chat'
 import type {
   ArtifactPayload,
   CompactionPayload,
+  EnsembleProgressPayload,
   RouterDecisionPayload,
   SessionEventPayload,
   TextDeltaPayload,
@@ -19,6 +21,8 @@ import type { ChatRpcSubscriptionHandlers } from '@/composables/chat/useChatRpcS
 import type { FrameInput } from '@/types/turnlog'
 import type { FoldLiveTurnMode } from '@/composables/chat/useChatTurnLog'
 import {
+  PENDING_STREAM_TASK_ID,
+  STOPPED_STREAM_TASK_ID,
   acceptStreamSeq as decideStreamSeq,
   activeTaskGroupRunState as buildActiveTaskGroupRunState,
   isCurrentSessionPayload as payloadIsCurrentSession,
@@ -85,6 +89,7 @@ export interface UseChatRpcEventHandlersOptions {
   sessionRunStatus: (source: ChatRunStatusSource | null | undefined) => ChatRunStatus
   applySessionRunState: (source: ChatRunStatusSource | null | undefined) => void
   queueRouterDecision: (payload: RouterDecisionPayload) => void
+  appendEnsembleProgress: (payload: EnsembleProgressPayload) => void
   flushPendingRouterDecision: () => void
   clearPendingRouterDecision: () => void
   handleRouterControlReplay: () => void
@@ -106,6 +111,10 @@ type ChatDoneUsageFields = {
   cost_usd?: number
   model?: string
   text?: string
+  model_usage_breakdown?: unknown
+  modelUsageBreakdown?: unknown
+  ensemble_trace?: unknown
+  ensembleTrace?: unknown
 }
 
 type ChatDoneUsagePayload = SessionEventPayload & ChatDoneUsageFields & {
@@ -232,6 +241,26 @@ export function useChatRpcEventHandlers(options: UseChatRpcEventHandlersOptions)
     attachTurnReasoning()
   }
 
+  function doneUsagePayload(donePayload: ChatDoneUsagePayload): ChatUsagePayload | undefined {
+    const raw = (donePayload.usage || donePayload || {}) as Record<string, unknown>
+    if (!raw || typeof raw !== 'object') return undefined
+    const usage = { ...raw } as ChatUsagePayload
+    const direct = donePayload as Record<string, unknown>
+    if (direct.model_usage_breakdown != null && usage.model_usage_breakdown == null) {
+      usage.model_usage_breakdown = direct.model_usage_breakdown as never
+    }
+    if (direct.modelUsageBreakdown != null && usage.modelUsageBreakdown == null) {
+      usage.modelUsageBreakdown = direct.modelUsageBreakdown as never
+    }
+    if (direct.ensemble_trace != null && usage.ensemble_trace == null) {
+      usage.ensemble_trace = direct.ensemble_trace as never
+    }
+    if (direct.ensembleTrace != null && usage.ensembleTrace == null) {
+      usage.ensembleTrace = direct.ensembleTrace as never
+    }
+    return usage
+  }
+
   watch(sessionKey, () => {
     streamThinking.value = null
     turnReasoningLog.length = 0
@@ -286,6 +315,22 @@ export function useChatRpcEventHandlers(options: UseChatRpcEventHandlersOptions)
 
   function sessionChangeIsTerminal(payload: SessionEventPayload): boolean {
     return payloadSessionChangeIsTerminal(payload, options.normalizeRunStatus)
+  }
+
+  function isStoppedCancelledTerminalEvent(terminalStatus: string, payload: SessionEventPayload): boolean {
+    return (
+      activeStreamTaskId.value === STOPPED_STREAM_TASK_ID &&
+      isCurrentSessionPayload(payload) &&
+      terminalStatus === 'cancelled'
+    )
+  }
+
+  function isStoppedTerminalSessionChange(payload: SessionEventPayload): boolean {
+    if (activeStreamTaskId.value !== STOPPED_STREAM_TASK_ID) return false
+    if (!isCurrentSessionPayload(payload)) return false
+    if (!sessionChangeIsTerminal(payload)) return false
+    const state = options.sessionRunStatus(payload)
+    return state.status === 'cancelled' || state.status === 'interrupted'
   }
 
   function syncTerminalSessionChange(payload: SessionEventPayload = {}) {
@@ -408,6 +453,11 @@ export function useChatRpcEventHandlers(options: UseChatRpcEventHandlersOptions)
   function handleRpcSessionsChanged(payload: SessionEventPayload) {
     if (isStaleEpoch(payload)) return
     if (!isCurrentSessionPayload(payload)) return
+    if (isStoppedTerminalSessionChange(payload)) {
+      syncTerminalSessionChange(payload)
+      return
+    }
+    if (!isCurrentTaskPayload(payload)) return
     if (sessionChangeIsTerminal(payload)) {
       syncTerminalSessionChange(payload)
       return
@@ -417,6 +467,10 @@ export function useChatRpcEventHandlers(options: UseChatRpcEventHandlersOptions)
 
   function handleRpcTaskQueued(payload: SessionEventPayload) {
     if (!isCurrentSessionPayload(payload)) return
+    const taskId = payloadTaskId(payload)
+    if (stream.isStreaming.value && taskId && activeStreamTaskId.value === PENDING_STREAM_TASK_ID) {
+      activeStreamTaskId.value = taskId
+    }
     options.applySessionRunState({ run_status: 'queued', active_task: { ...(payload || {}), status: 'queued' } })
   }
 
@@ -459,6 +513,12 @@ export function useChatRpcEventHandlers(options: UseChatRpcEventHandlersOptions)
     options.queueRouterDecision(payload)
   }
 
+  function handleRpcEnsembleProgress(payload: EnsembleProgressPayload) {
+    if (isStaleEpoch(payload)) return
+    if (!acceptStreamSeq(payload)) return
+    options.appendEnsembleProgress(payload)
+  }
+
   function handleRpcRouterControlReplay(payload: SessionEventPayload) {
     if (isStaleEpoch(payload)) return
     if (aborted.value) return
@@ -468,6 +528,7 @@ export function useChatRpcEventHandlers(options: UseChatRpcEventHandlersOptions)
 
   function handleRpcAny(rawEvent: string, rawPayload: unknown) {
     const payloadObj = (rawPayload && typeof rawPayload === 'object' ? rawPayload : {}) as SessionEventPayload
+    const terminalStatus = eventTaskTerminalStatus(rawEvent)
     const rawStatus = payloadObj.run_status || payloadObj.runStatus || payloadObj.status || ''
     const normalizedStatus = options.normalizeRunStatus(String(rawStatus))
     if (
@@ -484,8 +545,7 @@ export function useChatRpcEventHandlers(options: UseChatRpcEventHandlersOptions)
     // A stale task's terminal/done/error must not end the current turn's stream
     // or push its "Turn failed" into the live transcript (issue #344). Approvals
     // above stay ungated; everything below mutates the current turn.
-    if (!isCurrentTaskPayload(payloadObj)) return
-    const terminalStatus = eventTaskTerminalStatus(rawEvent)
+    if (!isStoppedCancelledTerminalEvent(terminalStatus, payloadObj) && !isCurrentTaskPayload(payloadObj)) return
     if (terminalStatus) {
       if (!isCurrentSessionPayload(payloadObj)) return
       const terminalRunStatus = terminalStatus === 'succeeded' ? 'idle' : terminalStatus === 'abandoned' ? 'interrupted' : terminalStatus
@@ -551,15 +611,25 @@ export function useChatRpcEventHandlers(options: UseChatRpcEventHandlersOptions)
         ? Math.max(0, Math.floor((Date.now() - liveThinking.startedAt) / 1000))
         : 0
       clearLiveThinking()
+      const messageCountBeforeEnd = messages.value.length
       stream.endStreaming()
       // endStreaming pushes the assistant message only when the turn kept
       // visible output; sentinel/empty bubbles must not record reasoning.
       // Bind reasoning to that exact bubble, then keep a record so the
       // measured duration survives history replacements.
-      const lastMessage = messages.value[messages.value.length - 1]
-      if (reasoningText && payload?.reason !== 'aborted' && lastMessage?.role === 'assistant') {
-        lastMessage.reasoning = { text: reasoningText, seconds: reasoningSeconds }
-        recordTurnReasoning(reasoningText, reasoningSeconds, lastMessage.text.trim())
+      const completedMessage = messages.value[messageCountBeforeEnd]
+      const completedAssistant = completedMessage?.role === 'assistant'
+        ? completedMessage
+        : null
+      if (completedAssistant && payload?.reason !== 'aborted') {
+        completedAssistant.usage = doneUsagePayload(donePayload)
+        if (u.model) completedAssistant.model = u.model
+        if (u.input_tokens) completedAssistant.input_tokens = u.input_tokens
+        if (u.output_tokens) completedAssistant.output_tokens = u.output_tokens
+      }
+      if (reasoningText && payload?.reason !== 'aborted' && completedAssistant) {
+        completedAssistant.reasoning = { text: reasoningText, seconds: reasoningSeconds }
+        recordTurnReasoning(reasoningText, reasoningSeconds, completedAssistant.text.trim())
       }
       options.scheduleHistorySync()
 
@@ -629,6 +699,7 @@ export function useChatRpcEventHandlers(options: UseChatRpcEventHandlersOptions)
     onTaskGroupDone: handleRpcTaskGroupDone,
     onTaskGroupFailed: handleRpcTaskGroupFailed,
     onRouterDecision: handleRpcRouterDecision,
+    onEnsembleProgress: handleRpcEnsembleProgress,
     onRouterControlReplay: handleRpcRouterControlReplay,
     onAny: handleRpcAny,
     onConnectionState: handleRpcConnectionState,

@@ -44,10 +44,13 @@ function makeOptions(overrides: Partial<UseChatSendOptions> = {}) {
     sessionKey: ref('agent:main:webchat:test'),
     busySendMode: ref<BusySendMode>('queue'),
     elevatedMode: ref(''),
+    runMode: ref('trusted'),
     pendingAttachments: ref<Attachment[]>([]),
     pendingSessionIntent: ref(null),
+    pendingForkBeforeMessageId: ref(null),
     aborted: ref(false),
     activeStreamTaskId: ref(''),
+    activeStreamSessionKey: ref(''),
     autoScroll: ref(false),
     stream,
     normalizeElevatedMode: mode => mode,
@@ -66,6 +69,18 @@ function makeOptions(overrides: Partial<UseChatSendOptions> = {}) {
 }
 
 describe('useChatSend attachment payloads', () => {
+  it('sends the selected sandbox run mode as trusted source metadata', async () => {
+    const { api, rpc } = makeOptions({
+      runMode: ref('standard'),
+    } as Partial<UseChatSendOptions>)
+
+    await api.onSend()
+
+    expect(rpc.call).toHaveBeenCalledWith('chat.send', expect.objectContaining({
+      _source: { runMode: 'standard' },
+    }))
+  })
+
   it('serializes only sendable attachments and leaves failed attachments in the composer', async () => {
     const failed: Attachment = {
       kind: 'failed',
@@ -145,6 +160,114 @@ describe('useChatSend attachment payloads', () => {
     expect(options.messages.value[options.messages.value.length - 1]).toMatchObject({
       role: 'error',
       text: 'Send failed: network down',
+    })
+  })
+
+  it('sends pending fork target and clears it after chat.send is accepted', async () => {
+    const pendingForkBeforeMessageId = ref<string | null>('msg-B')
+    const { api, rpc } = makeOptions({ pendingForkBeforeMessageId })
+
+    await api.onSend()
+
+    expect(rpc.call).toHaveBeenCalledWith('chat.send', expect.objectContaining({
+      forkBeforeMessageId: 'msg-B',
+    }))
+    expect(pendingForkBeforeMessageId.value).toBeNull()
+  })
+
+  it('keeps pending fork target if chat.send fails so retry can fork', async () => {
+    const pendingForkBeforeMessageId = ref<string | null>('msg-B')
+    const rpc = {
+      call: vi.fn().mockRejectedValue(new Error('network down')),
+    }
+    const { api } = makeOptions({ rpc, pendingForkBeforeMessageId })
+
+    await api.onSend()
+
+    expect(pendingForkBeforeMessageId.value).toBe('msg-B')
+  })
+
+  it('invalidates the previous task id before a fresh send is accepted', async () => {
+    let resolveSend!: (value: unknown) => void
+    const call: UseChatSendOptions['rpc']['call'] = <T = unknown>() => new Promise<T>((resolve) => {
+      resolveSend = resolve as (value: unknown) => void
+    })
+    const rpc = {
+      call: vi.fn(call) as UseChatSendOptions['rpc']['call'],
+    }
+    const activeStreamTaskId = ref('task-old')
+    const activeStreamSessionKey = ref('')
+    const { api } = makeOptions({ rpc, activeStreamTaskId, activeStreamSessionKey })
+
+    const send = api.onSend()
+
+    expect(activeStreamTaskId.value).not.toBe('task-old')
+    expect(activeStreamTaskId.value).toBeTruthy()
+    expect(activeStreamSessionKey.value).toBe('agent:main:webchat:test')
+
+    resolveSend({
+      sessionKey: 'agent:main:webchat:test',
+      task_id: 'task-new',
+    })
+    await send
+
+    expect(activeStreamTaskId.value).toBe('task-new')
+  })
+
+  it('stops the session that owns the stream and poisons its stale task id', () => {
+    const activeStreamTaskId = ref('task-old')
+    const activeStreamSessionKey = ref('agent:main:webchat:old')
+    const { api, rpc, stream } = makeOptions({
+      sessionKey: ref('agent:main:webchat:new'),
+      activeStreamTaskId,
+      activeStreamSessionKey,
+    })
+    stream.isStreaming.value = true
+
+    api.onStop()
+
+    expect(rpc.call).toHaveBeenCalledWith('chat.abort', {
+      sessionKey: 'agent:main:webchat:old',
+      taskId: 'task-old',
+      source: 'webui_stop',
+    })
+    expect(activeStreamTaskId.value).not.toBe('task-old')
+  })
+
+  it('does not let a stopped send response rebind the next turn', async () => {
+    const pendingResponses: Array<(value: unknown) => void> = []
+    const rpc = {
+      call: vi.fn(<T = unknown>(method: string) => {
+        if (method === 'chat.abort') return Promise.resolve({ aborted: true }) as Promise<T>
+        return new Promise<T>((resolve) => {
+          pendingResponses.push(resolve as (value: unknown) => void)
+        })
+      }) as UseChatSendOptions['rpc']['call'],
+    }
+    const inputText = ref('first')
+    const activeStreamTaskId = ref('')
+    const { api, stream } = makeOptions({ rpc, inputText, activeStreamTaskId })
+    stream.startStreaming = vi.fn(() => { stream.isStreaming.value = true })
+    stream.endStreaming = vi.fn(() => { stream.isStreaming.value = false })
+
+    const firstSend = api.onSend()
+    api.onStop()
+
+    inputText.value = 'second'
+    const secondSend = api.onSend()
+
+    pendingResponses[1]({ sessionKey: 'agent:main:webchat:test', task_id: 'task-B' })
+    await secondSend
+    expect(activeStreamTaskId.value).toBe('task-B')
+
+    pendingResponses[0]({ sessionKey: 'agent:main:webchat:test', task_id: 'task-A' })
+    await firstSend
+
+    expect(activeStreamTaskId.value).toBe('task-B')
+    expect(rpc.call).toHaveBeenCalledWith('chat.abort', {
+      sessionKey: 'agent:main:webchat:test',
+      taskId: 'task-A',
+      source: 'webui_stale_send',
     })
   })
 })

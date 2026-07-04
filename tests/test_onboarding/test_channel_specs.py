@@ -39,8 +39,8 @@ ENTRY_MODELS = {
     "telegram": TelegramChannelEntry,
 }
 
-EXPECTED_PUBLIC_URL = {"wecom"}
-CONDITIONAL_PUBLIC_URL = {"feishu", "slack", "telegram"}
+EXPECTED_PUBLIC_URL: set[str] = set()
+CONDITIONAL_PUBLIC_URL = {"feishu", "slack", "telegram", "wecom"}
 
 
 def test_catalog_includes_all_channels():
@@ -136,6 +136,31 @@ def test_slack_connection_mode_choices():
     assert field.advanced is False
 
 
+def test_wecom_connection_mode_choices():
+    spec = get_channel_setup_spec("wecom")
+    field = next(f for f in spec.fields if f.name == "connection_mode")
+    assert spec.transport == "mixed"
+    assert spec.requires_public_url is False
+    assert field.field_type == "select"
+    assert field.default == "websocket"
+    assert field.choices == ("websocket", "webhook")
+
+
+def test_wecom_mode_specific_fields_are_conditional():
+    spec = get_channel_setup_spec("wecom")
+    fields = {f.name: f for f in spec.fields}
+
+    assert fields["bot_id"].show_when == {"connection_mode": "websocket"}
+    assert fields["bot_secret"].show_when == {"connection_mode": "websocket"}
+    assert fields["websocket_url"].show_when == {"connection_mode": "websocket"}
+    assert fields["corp_id"].show_when == {"connection_mode": "webhook"}
+    assert fields["corp_secret"].show_when == {"connection_mode": "webhook"}
+    assert fields["token"].show_when == {"connection_mode": "webhook"}
+    assert fields["encoding_aes_key"].show_when == {"connection_mode": "webhook"}
+    assert fields["bot_secret"].secret is True
+    assert fields["corp_secret"].secret is True
+
+
 def test_slack_mode_specific_fields_are_conditional():
     spec = get_channel_setup_spec("slack")
     fields = {f.name: f for f in spec.fields}
@@ -198,6 +223,11 @@ def test_channel_catalog_payload_exposes_ui_metadata():
     assert slack["requiresPublicUrl"] is False
     slack_fields = {f["name"]: f for f in slack["fields"]}
     assert slack_fields["app_token"]["showWhen"] == {"connection_mode": "socket"}
+    wecom = next(c for c in payload if c["type"] == "wecom")
+    assert "Bot ID." in wecom["whatYouNeed"]
+    assert "Bot secret." in wecom["whatYouNeed"]
+    assert "Corp id." not in wecom["whatYouNeed"]
+    assert "Encoding AES key." not in wecom["whatYouNeed"]
 
 
 def test_matrix_encryption_choices():

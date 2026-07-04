@@ -45,6 +45,7 @@ function toApprovalItem(data: InterruptApprovalData): ChatApprovalItem {
     namespace: data.namespace,
     toolName: data.toolName,
     command: data.command,
+    approvalKind: data.approvalKind,
     args: data.args,
     warning: data.warning,
     agent: data.agent,

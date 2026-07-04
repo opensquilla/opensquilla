@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import sys
+import types
 from pathlib import Path
 
 import pytest
 
+from opensquilla.gateway import pidlock
 from opensquilla.gateway.pidlock import GatewayPidLock
 
 
@@ -51,3 +54,47 @@ def test_pid_lock_release_is_idempotent(tmp_path: Path) -> None:
 
     assert not (state_dir / "gateway.pid").exists()
     assert not (state_dir / "gateway.pid.lock").exists()
+
+
+def test_windows_is_alive_rejects_opened_process_with_non_active_exit_code(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class Dword:
+        def __init__(self) -> None:
+            self.value = 0
+
+    class Kernel32:
+        def __init__(self) -> None:
+            self.closed_handles: list[int] = []
+
+        def open_process(self, access: int, inherit_handle: bool, process_id: int) -> int:
+            return 123
+
+        def get_exit_code_process(self, handle: int, exit_code: Dword) -> int:
+            exit_code.value = 0
+            return 1
+
+        def close_handle(self, handle: int) -> int:
+            self.closed_handles.append(handle)
+            return 1
+
+    def byref(value: Dword) -> Dword:
+        return value
+
+    kernel32 = Kernel32()
+    fake_ctypes = types.ModuleType("ctypes")
+    fake_ctypes.windll = types.SimpleNamespace(
+        kernel32=types.SimpleNamespace(
+            OpenProcess=kernel32.open_process,
+            GetExitCodeProcess=kernel32.get_exit_code_process,
+            CloseHandle=kernel32.close_handle,
+        )
+    )
+    fake_ctypes.wintypes = types.SimpleNamespace(DWORD=Dword)
+    fake_ctypes.byref = byref
+
+    monkeypatch.setattr(pidlock.os, "name", "nt")
+    monkeypatch.setitem(sys.modules, "ctypes", fake_ctypes)
+
+    assert pidlock._is_alive(456) is False
+    assert kernel32.closed_handles == [123]

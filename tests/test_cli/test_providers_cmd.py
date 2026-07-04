@@ -49,7 +49,7 @@ def test_providers_configure_writes_config(tmp_path, monkeypatch):
 def test_providers_configure_unsupported_fails(tmp_path, monkeypatch):
     monkeypatch.setenv("OPENSQUILLA_GATEWAY_CONFIG_PATH", str(tmp_path / "c.toml"))
     result = runner.invoke(
-        app, ["providers", "configure", "openai_codex", "--model", "x"]
+        app, ["providers", "configure", "github_copilot", "--model", "x"]
     )
     assert result.exit_code != 0
     assert (
@@ -68,7 +68,9 @@ def test_providers_configure_ollama_no_key_required(tmp_path, monkeypatch):
     assert "ollama" in target.read_text()
 
 
-def test_providers_configure_vllm_is_hidden_until_runtime_verified(tmp_path, monkeypatch):
+def test_providers_configure_vllm_requires_base_url(tmp_path, monkeypatch):
+    # vllm is experimental (registry-runnable, unverified): configurable, but
+    # its explicit base_url requirement still validates.
     monkeypatch.setenv("OPENSQUILLA_GATEWAY_CONFIG_PATH", str(tmp_path / "c.toml"))
     result = runner.invoke(
         app,
@@ -76,4 +78,20 @@ def test_providers_configure_vllm_is_hidden_until_runtime_verified(tmp_path, mon
     )
     assert result.exit_code != 0
     combined = (result.stdout + (result.stderr or "")).lower()
-    assert "not runtime-supported" in combined
+    assert "base_url" in combined
+
+    result = runner.invoke(
+        app,
+        [
+            "providers",
+            "configure",
+            "vllm",
+            "--model",
+            "x",
+            "--api-key",
+            "k",
+            "--base-url",
+            "http://localhost:8000/v1",
+        ],
+    )
+    assert result.exit_code == 0

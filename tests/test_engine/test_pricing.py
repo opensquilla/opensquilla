@@ -68,8 +68,7 @@ async def test_pricing_cache_refresh_adds_openrouter_app_attribution() -> None:
         "Authorization": "Bearer test-key",
         "Content-Type": "application/json",
         "HTTP-Referer": "https://opensquilla.ai",
-        "X-OpenRouter-Title": "OpenSquilla",
-        "X-OpenRouter-Categories": "cli-agent,personal-agent",
+        "X-Title": "OpenSquilla",
     }
     price = cache.get_price_sync("openai/gpt-4o")
     assert price is not None
@@ -125,6 +124,30 @@ def test_glm_5_static_price_matches_openrouter_native_provider(
 
     assert price.input_per_m == pytest.approx(1.40)
     assert price.output_per_m == pytest.approx(4.40)
+
+
+@pytest.mark.parametrize(
+    ("model", "input_per_m", "output_per_m"),
+    [
+        ("qwen/qwen3.7-plus-20260602", 0.40, 1.60),
+        ("qwen/qwen3.7-max", 1.25, 3.75),
+        ("google/gemini-3-flash-preview-20251217", 0.50, 3.0),
+        ("mistralai/mistral-large-2512", 0.50, 1.50),
+        ("meta-llama/llama-4-maverick", 0.15, 0.60),
+    ],
+)
+def test_g8_ensemble_static_fallback_prices_do_not_use_generic_default(
+    monkeypatch: pytest.MonkeyPatch,
+    model: str,
+    input_per_m: float,
+    output_per_m: float,
+) -> None:
+    monkeypatch.setenv("OPENSQUILLA_OPENROUTER_LIVE_PRICING", "0")
+
+    price = lookup_price(model)
+
+    assert price.input_per_m == pytest.approx(input_per_m)
+    assert price.output_per_m == pytest.approx(output_per_m)
 
 
 def test_claude_opus_4_8_static_price_matches_openrouter_model_catalog(

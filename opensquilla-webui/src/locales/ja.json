@@ -1,4 +1,46 @@
 {
+  "updates": {
+    "available": "OpenSquilla {version} が利用可能です",
+    "viewRelease": "リリースを表示",
+    "dismiss": "閉じる",
+    "desktop": {
+      "indicatorAvailable": "更新 {version}",
+      "indicatorDownloaded": "更新準備完了",
+      "indicatorDownloading": "ダウンロード中",
+      "indicatorDownloadingProgress": "ダウンロード中 {progress}%",
+      "indicatorError": "更新の問題",
+      "availableTitle": "OpenSquilla {version} が利用可能です",
+      "availableDesc": "準備ができたらダウンロードしてください。OpenSquilla は再起動後にだけインストールします。",
+      "downloadedTitle": "インストール準備完了",
+      "downloadedDesc": "OpenSquilla を再起動して {version} への更新を完了します。",
+      "downloadingTitle": "更新をダウンロード中",
+      "downloadingDesc": "更新のダウンロード中は OpenSquilla を開いたままにしてください。",
+      "checkingDesc": "デスクトップ版のリリースフィードを確認しています。",
+      "applyingDesc": "OpenSquilla は再起動と更新のインストールを準備しています。",
+      "errorTitle": "更新の確認に失敗しました",
+      "errorFallback": "設定からもう一度確認してください。",
+      "idleDesc": "新しいデスクトップ版を確認します。",
+      "upToDateDesc": "バージョン {version} が利用可能な最新です。",
+      "settingsTitle": "デスクトップ更新",
+      "currentVersion": "現在",
+      "latestVersion": "最新",
+      "unknownVersion": "不明",
+      "availableStatus": "利用可能",
+      "downloadedStatus": "インストール準備完了",
+      "downloadingStatus": "ダウンロード中",
+      "checkingStatus": "確認中",
+      "upToDateStatus": "最新",
+      "errorStatus": "確認が必要",
+      "applyingStatus": "再起動中",
+      "idleStatus": "待機中",
+      "unavailableStatus": "利用不可",
+      "unsupported": "このプラットフォームではネイティブのデスクトップ更新を利用できません。新しいバージョンが告知されたらリリースリンクを使用してください。",
+      "check": "確認",
+      "download": "ダウンロード",
+      "relaunch": "再起動",
+      "later": "後で"
+    }
+  },
   "common": {
     "close": "閉じる",
     "save": "保存",
@@ -75,12 +117,19 @@
       "runtime": "ランタイム",
       "provider": "プロバイダー",
       "behavior": "動作",
+      "privacy": "プライバシー",
       "router": "ルーター",
       "channels": "チャンネル",
       "capabilities": "機能",
       "appearance": "外観",
       "keyboard": "キーボード",
-      "advanced": "詳細設定"
+      "advanced": "詳細設定",
+      "groups": {
+        "gateway": "ゲートウェイ",
+        "ai": "AI 設定",
+        "delivery": "配信",
+        "preferences": "環境設定"
+      }
     }
   },
   "errorBoundary": {
@@ -121,7 +170,8 @@
       "live": "稼働中",
       "providerFirst": "まずプロバイダーを設定",
       "review": "確認",
-      "envNotVisible": "{capability} が選択されていますが、${envKey} はゲートウェイから参照できません。"
+      "envNotVisible": "{capability} が選択されていますが、${envKey} はゲートウェイから参照できません。",
+      "appliesOnSave": "保存時に適用"
     },
     "summary": {
       "notConfigured": "未設定",
@@ -165,7 +215,8 @@
       "envMissing": "{envKey} はこのゲートウェイプロセスから参照できません。ゲートウェイの起動または再起動前に設定するか、代わりに API キーを貼り付けてください。",
       "envKeyFallback": "選択した API キーの環境変数",
       "copyKeyCommand": "プロバイダーキー設定コマンドをコピー",
-      "save": "プロバイダーを保存"
+      "save": "プロバイダーを保存",
+      "configureRouter": "ルーターを設定 →"
     },
     "behavior": {
       "title": "セッションの動作",
@@ -178,8 +229,12 @@
     "router": {
       "title": "ルーターのティア",
       "mode": "モード",
+      "modeModelRouting": "モデルルーティング",
+      "modeSingleModel": "単一モデル",
       "modeRecommended": "現在のプロバイダー階層に従う",
       "modeDisabled": "単一モデルに直接接続",
+      "routingDisabledHint": "モデルルーティングを有効にすると階層設定を編集できます。",
+      "routingEnsembleReadOnlyHint": "AI モデルアンサンブルルーティングが有効です。通常のモデルルーティング設定は一時的に無効です。",
       "defaultTextModel": "既定のテキストティア",
       "panelLabel": "ルーターパネル",
       "panelDesc": "ティア表のモデルは現在のリクエスト入口から送信されます。OpenRouter 集約ティアは OpenRouter 経由で別々の上流モデルにアクセスします。",
@@ -196,6 +251,9 @@
       "save": "ルーターを保存",
       "chooseProviderFirst": "まずプロバイダーを選択してください",
       "summaryDisabled": "単一モデルに直接接続",
+      "summaryEnsemble": "LLM アンサンブルのルーティングプロファイル",
+      "ensembleProfileTitle": "LLM アンサンブルのルーティングプロファイル",
+      "ensembleProfileDesc": "ティア表はアンサンブルルーターの候補モデルを提供します。",
       "visualMode": {
         "real_candidates": "実際のルーティング候補",
         "legacy_grid": "3 ティアのビジュアルパネル"
@@ -390,6 +448,15 @@
       "runTraceDesc": "ログ行を操作可能にし、ログビューで行ごとのノードステップ詳細ドロワーを開きます。",
       "runTraceAria": "ログの実行トレースドロワー（再読み込み後に有効）"
     },
+    "privacy": {
+      "title": "プライバシー",
+      "statusEnabled": "ネットワーク可観測性は有効です。",
+      "statusDisabled": "ネットワーク可観測性は無効です。",
+      "statusDisabledByEnv": "ネットワーク可観測性は環境変数によって無効です。",
+      "disableNetworkObservabilityLabel": "ネットワーク可観測性を無効化",
+      "disableNetworkObservabilityDesc": "インストールテレメトリや更新確認などのゲートウェイのネットワーク可観測性呼び出しを停止します。",
+      "save": "プライバシーを保存"
+    },
     "toast": {
       "loadFailed": "設定の読み込みに失敗しました: {error}",
       "chooseProvider": "保存する前にプロバイダーを選択してください。",
@@ -398,6 +465,8 @@
       "providerSavedRestart": "プロバイダーを保存しました。再起動が必要です。",
       "behaviorSaved": "動作を保存しました。",
       "behaviorSavedRestart": "動作を保存しました。再起動が必要です。",
+      "privacySaved": "プライバシーを保存しました。",
+      "privacySavedRestart": "プライバシーを保存しました。再起動が必要です。",
       "chooseProviderRouter": "ルーターのティアを保存する前にプロバイダーを選択してください。",
       "routerSaved": "ルーターを保存しました。",
       "routerSavedRestart": "ルーターを保存しました。再起動が必要です。",
@@ -806,12 +875,10 @@
       "details": "詳細",
       "unknownTool": "不明",
       "approveOnce": "1 回だけ承認",
-      "alwaysAllow": "この種類を常に許可",
-      "bypassHint": "機微なパスのチェックは維持しつつ、承認プロンプトをバイパスします",
-      "bypass": "承認をバイパス",
+      "alwaysAllow": "これを常に許可",
+      "allowSameType": "同じ種類を許可",
       "deny": "拒否",
       "loadFailed": "承認の読み込みに失敗しました: {msg}",
-      "bypassEnabled": "承認のバイパスを有効にしました",
       "approved": "承認済み",
       "denied": "拒否済み",
       "toastFailed": "失敗しました: {msg}",
@@ -1464,6 +1531,8 @@
     "download": "ダウンロード",
     "previewOf": "プレビュー: {title}",
     "closePreview": "プレビューを閉じる",
+    "previousImage": "前の画像",
+    "nextImage": "次の画像",
     "loadingPreview": "プレビューを読み込み中",
     "previewDownload": "プレビューのダウンロード",
     "previewTimedOut": "プレビューがタイムアウトしました。",
@@ -1497,6 +1566,24 @@
     "addToShare": "共有画像に追加",
     "removeFromShare": "共有画像から削除",
     "aiModelRouter": "AI モデルルーター",
+    "aiModelEnsembleRouter": "AI モデル集約ルーター",
+    "routerFx": {
+      "ensembleSelecting": "AI モデル集約ルーター · 候補を選択中",
+      "ensembleRunning": "AI モデル集約ルーター · {count} 件の候補を統合中",
+      "ensembleDone": "{count} 件の候補を統合済み",
+      "ensembleMode": "アンサンブル",
+      "ensembleViewTrace": "trace を表示",
+      "ensembleToggleTrace": "集約ルートの trace を表示",
+      "ensembleTraceTitle": "候補 trace",
+      "ensemblePlanMeta": "ensemble plan · pool {count}",
+      "ensembleFallbackNone": "fallback なし",
+      "ensembleFallbackUsed": "fallback 使用",
+      "ensembleFallbackReason": "fallback · {reason}",
+      "ensembleRouterPoolHidden": "router pool 非表示",
+      "ensembleTokens": "{count} tok",
+      "ensembleUsed": "使用済み",
+      "ensembleDetailUnavailable": "{count} 個の候補 · 詳細は利用できません"
+    },
     "sources": "ソース",
     "activitySteps": "アクティビティ · {count} ステップ | アクティビティ · {count} ステップ",
     "suggestedTasks": "おすすめのタスク",
@@ -1533,6 +1620,7 @@
       "denyReasonLabel": "拒否の理由（任意、エージェントに送信）",
       "allowOnce": "1 回だけ許可",
       "allowAlways": "これを常に許可",
+      "allowSameType": "同じ種類を許可",
       "deny": "拒否",
       "expiresIn": "{time} で期限切れ",
       "outcomeExpired": "期限切れ — 未実行",
@@ -1562,10 +1650,22 @@
       "disabled": "無効",
       "routerAnimationOn": "ルーターアニメーション オン",
       "routerAnimationOff": "ルーターアニメーション オフ",
-      "execOff": "オフ",
-      "execPrompt": "承認を確認",
-      "execBypass": "承認をバイパス",
-      "execFull": "フルアクセス"
+      "modelRouting": "モデルルーティング",
+      "modelRoutingOff": "オフ",
+      "modelRoutingOffDesc": "各ターンを選択中のモデルへ送信します。",
+      "modelRoutingSquillaRouter": "AI搭載シングルモデルルーター",
+      "modelRoutingSquillaRouterDesc": "AI が各ターンで適したモデルを1つ選び、コストを優先的に抑えます。",
+      "modelRoutingEnsemble": "AI搭載アンサンブルルーター",
+      "modelRoutingEnsembleDesc": "AI が複数のモデルを連携させ、複雑なタスクでの能力向上を優先します。",
+      "runMode": "実行モード",
+      "runModeStandard": "標準サンドボックス",
+      "runModeStandardDesc": "リスクのあるツール操作の前に確認します。",
+      "runModeTrusted": "管理実行",
+      "runModeTrustedDesc": "既定ではサンドボックスを使い、明示的にホストへ影響する操作はポリシーが許可した場合にホストで実行できます。",
+      "runModeFull": "完全なホストアクセス",
+      "runModeFullDesc": "サンドボックス分離なしで実行します。",
+      "runModeFullUnavailable": "完全なホストアクセスには owner セッションが必要です。",
+      "badgeNew": "NEW"
     },
     "pending": {
       "label": "保留中 {count}/{max}",
@@ -1660,6 +1760,21 @@
       "preparingOutput": "出力を準備中",
       "stillWaiting": "まだモデルを待機中",
       "stillWorking": "まだ処理中 — 最後の信号は {seconds} 秒前"
+    },
+    "msgMeta": {
+      "ensembleModels": "アンサンブル · {count} モデル",
+      "tokens": "トークン",
+      "cache": "キャッシュ",
+      "think": "推論",
+      "ensemble": "アンサンブル",
+      "cost": "コスト",
+      "saved": "節約",
+      "fallback": "フォールバック",
+      "fallbackUsed": "使用",
+      "ensembleModelsAria": "アンサンブルモデル"
+    },
+    "modelRouting": {
+      "updateFailed": "モデルルーティングを切り替えられませんでした。元に戻しました。ゲートウェイ接続を確認して再試行してください。"
     }
   },
   "shared": {
@@ -1711,7 +1826,23 @@
       "filterByAgent": "{name} で絞り込む",
       "deleteSessionTitle": "セッションを削除",
       "deleteSessionBody": "セッション「{title}」を削除しますか？この操作は取り消せません。",
-      "deleteSessionConfirm": "削除"
+      "deleteSessionConfirm": "削除",
+      "selectVisible": "表示中の会話を選択",
+      "clearVisibleSelection": "表示中の選択を解除",
+      "selectAllShort": "すべて",
+      "clearAllShort": "クリア",
+      "selectionModeLabel": "セッションを選択",
+      "selectedCountLabel": "{count} 件選択中",
+      "enterSelectionMode": "セッションを管理",
+      "exitSelectionMode": "選択を終了",
+      "selectSession": "{title} を選択",
+      "deleteSelectedAria": "選択した {count} 件を削除",
+      "bulkDeleteTitle": "選択したセッションを削除",
+      "bulkDeleteBody": "選択した {count} 件のセッションを削除しますか？この操作は取り消せません。",
+      "bulkDeleteConfirm": "選択分を削除",
+      "bulkDeleteDone": "{count} 件のセッションを削除しました",
+      "bulkDeletePartial": "{count} 件のセッションを削除できませんでした",
+      "bulkDeleteFailed": "選択したセッションを削除できませんでした"
     },
     "setupBanner": {
       "ariaLabel": "ゲートウェイのセットアップが必要です",

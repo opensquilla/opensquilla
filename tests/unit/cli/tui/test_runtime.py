@@ -259,9 +259,7 @@ async def test_runtime_can_keep_bottom_input_live_during_turn() -> None:
     second_input_started = asyncio.Event()
     surface = _FakeSurface(
         inputs,
-        on_next_line=lambda: second_input_started.set()
-        if surface.next_line_calls >= 2
-        else None,
+        on_next_line=lambda: second_input_started.set() if surface.next_line_calls >= 2 else None,
     )
     first_started = asyncio.Event()
     finish_first = asyncio.Event()
@@ -527,6 +525,162 @@ async def test_runtime_cancel_drops_pending_inputs_from_active_turn() -> None:
 
 
 @pytest.mark.asyncio
+async def test_runtime_cancel_notifies_when_dropping_queued_inputs() -> None:
+    inputs: asyncio.Queue[str | None] = asyncio.Queue()
+    surface = _FakeSurface(inputs)
+    state = TuiRuntimeState()
+    notices: list[str] = []
+    first_started = asyncio.Event()
+
+    async def _dispatch(user_input: str) -> bool:
+        if user_input == "first":
+            first_started.set()
+            await asyncio.sleep(5)
+        return True
+
+    task = asyncio.create_task(
+        run_tui_runtime(
+            dispatch=_dispatch,
+            surface_factory=_surface_factory(surface),
+            config=_runtime_config(state=state),
+            hooks=_runtime_hooks(notice=notices.append),
+        )
+    )
+
+    await inputs.put("first")
+    await asyncio.wait_for(first_started.wait(), timeout=2.0)
+    await inputs.put("second")
+    await inputs.put("third")
+    await _wait_until(lambda: state.pending_items == ("second", "third"))
+    active_cb = next(cb for cb in reversed(surface.cancel_callbacks) if cb is not None)
+    active_cb()
+    await inputs.put(None)
+    await asyncio.wait_for(task, timeout=2.0)
+
+    # The two typed-ahead messages were dropped — the user is told, not left guessing.
+    assert any("Discarded 2 queued messages" in notice for notice in notices)
+
+
+@pytest.mark.asyncio
+async def test_runtime_cancel_without_queue_emits_no_discard_notice() -> None:
+    inputs: asyncio.Queue[str | None] = asyncio.Queue()
+    surface = _FakeSurface(inputs)
+    state = TuiRuntimeState()
+    notices: list[str] = []
+    first_started = asyncio.Event()
+
+    async def _dispatch(user_input: str) -> bool:
+        if user_input == "first":
+            first_started.set()
+            await asyncio.sleep(5)
+        return True
+
+    task = asyncio.create_task(
+        run_tui_runtime(
+            dispatch=_dispatch,
+            surface_factory=_surface_factory(surface),
+            config=_runtime_config(state=state),
+            hooks=_runtime_hooks(notice=notices.append),
+        )
+    )
+
+    await inputs.put("first")
+    await asyncio.wait_for(first_started.wait(), timeout=2.0)
+    active_cb = next(cb for cb in reversed(surface.cancel_callbacks) if cb is not None)
+    active_cb()  # cancel with an empty queue
+    await inputs.put(None)
+    await asyncio.wait_for(task, timeout=2.0)
+
+    assert not any("Discarded" in notice for notice in notices)
+
+
+@pytest.mark.asyncio
+async def test_runtime_notifies_when_input_is_queued_mid_turn() -> None:
+    inputs: asyncio.Queue[str | None] = asyncio.Queue()
+    surface = _FakeSurface(inputs)
+    state = TuiRuntimeState()
+    notices: list[str] = []
+    first_started = asyncio.Event()
+
+    async def _dispatch(user_input: str) -> bool:
+        if user_input == "first":
+            first_started.set()
+            await asyncio.sleep(5)
+        return True
+
+    task = asyncio.create_task(
+        run_tui_runtime(
+            dispatch=_dispatch,
+            surface_factory=_surface_factory(surface),
+            config=_runtime_config(state=state),
+            hooks=_runtime_hooks(notice=notices.append),
+        )
+    )
+
+    await inputs.put("first")
+    await asyncio.wait_for(first_started.wait(), timeout=2.0)
+    await inputs.put("second")
+    await _wait_until(lambda: state.pending_items == ("second",))
+    active_cb = next(cb for cb in reversed(surface.cancel_callbacks) if cb is not None)
+    active_cb()
+    await inputs.put(None)
+    await asyncio.wait_for(task, timeout=2.0)
+
+    # Typing mid-turn must surface a clear "queued" signal — the message was not
+    # silently dropped, nor did it start a turn.
+    assert any("Queued (#1) behind the running turn" in notice for notice in notices)
+
+
+@pytest.mark.asyncio
+async def test_runtime_full_queue_rejects_message_without_echoing_it() -> None:
+    inputs: asyncio.Queue[str | None] = asyncio.Queue()
+    surface = _FakeSurface(inputs)
+    state = TuiRuntimeState()
+    echoed: list[str] = []
+    notices: list[str] = []
+    first_started = asyncio.Event()
+
+    async def _record_echo(_surface: Any, text: str) -> None:
+        echoed.append(text)
+
+    async def _dispatch(user_input: str) -> bool:
+        if user_input == "first":
+            first_started.set()
+            await asyncio.sleep(5)
+        return True
+
+    task = asyncio.create_task(
+        run_tui_runtime(
+            dispatch=_dispatch,
+            surface_factory=_surface_factory(surface),
+            config=_runtime_config(state=state, queue_max_size=1),
+            hooks=TuiRuntimeHooks(
+                on_user_input_echo=_record_echo,
+                on_queued_turn_start=_queued_echo,
+                notice=notices.append,
+            ),
+        )
+    )
+
+    await inputs.put("first")
+    await asyncio.wait_for(first_started.wait(), timeout=2.0)
+    await inputs.put("second")  # fills the single queue slot
+    await _wait_until(lambda: state.pending_items == ("second",))
+    await inputs.put("third")  # queue is full -> must be rejected
+    await _wait_until(lambda: any("Queue full" in notice for notice in notices))
+    active_cb = next(cb for cb in reversed(surface.cancel_callbacks) if cb is not None)
+    active_cb()
+    await inputs.put(None)
+    await asyncio.wait_for(task, timeout=2.0)
+
+    # The rejected message must NOT appear accepted in the transcript; the one that
+    # fit was echoed normally.
+    assert "second" in echoed
+    assert "third" not in echoed
+    assert state.pending_items == ()
+
+
+@pytest.mark.asyncio
 async def test_runtime_cancel_suppresses_adapter_cancel_hook_errors() -> None:
     inputs: asyncio.Queue[str | None] = asyncio.Queue()
     surface = _FakeSurface(inputs)
@@ -599,3 +753,106 @@ async def test_runtime_installs_surface_redraw_callback_for_resize() -> None:
     await asyncio.wait_for(task, timeout=2.0)
 
     assert surface.redraw_count == 1
+
+
+class _RaisingSurface:
+    """Surface whose ``next_line`` fails, modelling an OpenTUI host read error."""
+
+    def __init__(self, error: Exception) -> None:
+        self._error = error
+        self.cancel_callbacks: list[Any] = []
+        self.shutdown_callbacks: list[Any] = []
+
+    async def next_line(self) -> str | None:
+        raise self._error
+
+    def set_cancel_callback(self, cb) -> None:  # noqa: ANN001
+        self.cancel_callbacks.append(cb)
+
+    def set_shutdown_callback(self, cb) -> None:  # noqa: ANN001
+        self.shutdown_callbacks.append(cb)
+
+    def emit_eof(self) -> None:
+        return None
+
+    async def write_through(self, payload: str) -> None:
+        return None
+
+    @property
+    def redraw_callback(self) -> Callable[[], None]:
+        return lambda: None
+
+
+@pytest.mark.asyncio
+async def test_runtime_degrades_gracefully_on_surface_read_error() -> None:
+    surface = _RaisingSurface(RuntimeError("OpenTUI host error: [boom]"))
+    notices: list[str] = []
+
+    async def _dispatch(_user_input: str) -> bool:
+        raise AssertionError("dispatch should not run when input never arrives")
+
+    result = await run_tui_runtime(
+        dispatch=_dispatch,
+        surface_factory=_surface_factory(surface),
+        config=_runtime_config(),
+        hooks=_runtime_hooks(notice=notices.append),
+    )
+
+    assert isinstance(result, TuiRuntimeState)
+    assert any("Input surface error" in notice for notice in notices)
+    # the dynamic error text is markup-escaped so the notice itself cannot crash.
+    assert any("\\[boom]" in notice for notice in notices)
+
+
+@pytest.mark.asyncio
+async def test_runtime_runs_local_command_inline_without_echo_or_queue() -> None:
+    # A LOCAL command (e.g. /theme) typed while a turn is streaming must run
+    # immediately, never echoed as a prompt and never queued behind the turn.
+    inputs: asyncio.Queue[str | None] = asyncio.Queue()
+    surface = _FakeSurface(inputs)
+    dispatched: list[str] = []
+    echoed: list[str] = []
+    queued_starts = 0
+    turn_running = asyncio.Event()
+    release_turn = asyncio.Event()
+
+    async def _dispatch(user_input: str) -> bool:
+        dispatched.append(user_input)
+        if user_input == "hi":
+            turn_running.set()
+            await release_turn.wait()  # hold the turn in flight
+        return True
+
+    async def _echo(_surface: Any, text: str) -> None:
+        echoed.append(text)
+
+    async def _queued_start(_surface: Any) -> None:
+        nonlocal queued_starts
+        queued_starts += 1
+
+    def _classify(text: str) -> TuiInputKind:
+        return TuiInputKind.LOCAL if text.startswith("/theme") else TuiInputKind.NORMAL
+
+    task = asyncio.ensure_future(
+        run_tui_runtime(
+            dispatch=_dispatch,
+            surface_factory=_surface_factory(surface),
+            config=_runtime_config(concurrent_input_during_turn=True, classify_input=_classify),
+            hooks=TuiRuntimeHooks(on_user_input_echo=_echo, on_queued_turn_start=_queued_start),
+        )
+    )
+
+    await inputs.put("hi")
+    await turn_running.wait()
+    await inputs.put("/theme")  # LOCAL command while "hi" streams
+    await _wait_until(lambda: "/theme" in dispatched)
+
+    # dispatched immediately, NOT echoed as a prompt, NOT queued, no queued marker
+    assert echoed == ["hi"]  # only the chat message was echoed
+    assert queued_starts == 0
+    assert surface.next_line_calls  # input was being read concurrently
+
+    release_turn.set()
+    await inputs.put(None)
+    await asyncio.wait_for(task, timeout=2.0)
+    assert dispatched == ["hi", "/theme"]

@@ -77,6 +77,7 @@
         <ChatArtifactList
           v-if="message.artifacts?.length"
           :artifacts="message.artifacts"
+          :navigation-artifacts="artifactNavigationItems"
           :session-key="sessionKey"
           :auth-token="authToken"
           @download="$emit('downloadArtifact', $event)"
@@ -88,6 +89,7 @@
           <div v-if="message.meta" class="msg-ai-meta">
             <span v-if="message.meta.model" class="msg-meta__model">{{ message.meta.modelShort }}</span>
             <span v-if="message.meta.costUsd" class="msg-meta__cost">${{ message.meta.costUsd.toFixed(6).replace(/\.?0+$/, '') }}</span>
+            <span v-if="message.meta.ensemble" class="msg-meta__ensemble">{{ t('chat.msgMeta.ensembleModels', { count: message.meta.ensemble.modelCount }) }}</span>
             <span v-if="message.meta.hasSaved" class="savings-indicator">{{ message.meta.savedLabel }}</span>
             <span
               v-if="hasMetaDetails"
@@ -117,17 +119,47 @@
                 :aria-label="t('chat.usageDetails')"
               >
                 <div v-if="message.meta.hasTokens" class="msg-meta-popover__row">
-                  <span class="msg-meta-popover__label">tokens</span>
+                  <span class="msg-meta-popover__label">{{ t('chat.msgMeta.tokens') }}</span>
                   <span class="msg-meta-popover__value">&#8593;{{ fmtTok(message.meta.input) }} &#8595;{{ fmtTok(message.meta.output) }}</span>
                 </div>
                 <div v-if="message.meta.cachedTokens" class="msg-meta-popover__row">
-                  <span class="msg-meta-popover__label">cache</span>
+                  <span class="msg-meta-popover__label">{{ t('chat.msgMeta.cache') }}</span>
                   <span class="msg-meta-popover__value">{{ fmtTok(message.meta.cachedTokens) }}</span>
                 </div>
                 <div v-if="message.meta.reasoningTokens" class="msg-meta-popover__row">
-                  <span class="msg-meta-popover__label">think</span>
+                  <span class="msg-meta-popover__label">{{ t('chat.msgMeta.think') }}</span>
                   <span class="msg-meta-popover__value">{{ fmtTok(message.meta.reasoningTokens) }}</span>
                 </div>
+                <template v-if="message.meta.ensemble">
+                  <div class="msg-meta-popover__divider"></div>
+                  <div class="msg-meta-popover__row">
+                    <span class="msg-meta-popover__label">{{ t('chat.msgMeta.ensemble') }}</span>
+                    <span class="msg-meta-popover__value">{{ ensembleSummary }}</span>
+                  </div>
+                  <div class="msg-meta-popover__row">
+                    <span class="msg-meta-popover__label">{{ t('chat.msgMeta.cost') }}</span>
+                    <span class="msg-meta-popover__value">{{ fmtUsd(message.meta.ensemble.costUsd || message.meta.costUsd) }}</span>
+                  </div>
+                  <div class="msg-meta-popover__row">
+                    <span class="msg-meta-popover__label">{{ t('chat.msgMeta.saved') }}</span>
+                    <span class="msg-meta-popover__value">{{ ensembleSavedText }}</span>
+                  </div>
+                  <div v-if="message.meta.ensemble.fallbackUsed" class="msg-meta-popover__row">
+                    <span class="msg-meta-popover__label">{{ t('chat.msgMeta.fallback') }}</span>
+                    <span class="msg-meta-popover__value">{{ t('chat.msgMeta.fallbackUsed') }}</span>
+                  </div>
+                  <div class="msg-meta-popover__models" :aria-label="t('chat.msgMeta.ensembleModelsAria')">
+                    <div
+                      v-for="member in message.meta.ensemble.models"
+                      :key="`${member.role}:${member.provider}:${member.model}`"
+                      class="msg-meta-popover__model"
+                    >
+                      <span class="msg-meta-popover__model-role">{{ ensembleRole(member.role, member.label) }}</span>
+                      <span class="msg-meta-popover__model-name" :title="member.model">{{ member.modelShort }}</span>
+                      <span class="msg-meta-popover__model-cost">{{ fmtUsd(member.costUsd) }}</span>
+                    </div>
+                  </div>
+                </template>
               </div>
             </span>
           </div>
@@ -209,6 +241,7 @@ const props = defineProps<{
   toolStatusText: (call: ChatToolCallRenderItem) => string
   toolSecondaryText: (call: ChatToolCallRenderItem) => string
   copyMessage: (message: ChatRenderedMessage) => Promise<boolean>
+  artifactNavigationItems?: ArtifactPayload[]
   sessionKey?: string
   authToken?: string
   /** True on the thread's last assistant message — the only place the whole-conversation fork action renders. */
@@ -297,7 +330,22 @@ const showDoneBlock = computed(() =>
 const hasMetaDetails = computed(() => {
   const meta = props.message.meta
   if (!meta) return false
-  return meta.hasTokens || meta.cachedTokens > 0 || meta.reasoningTokens > 0
+  return meta.hasTokens || meta.cachedTokens > 0 || meta.reasoningTokens > 0 || !!meta.ensemble
+})
+
+const ensembleSummary = computed(() => {
+  const ensemble = props.message.meta?.ensemble
+  if (!ensemble) return ''
+  const requests = ensemble.requestCount > 0 ? `${ensemble.requestCount} requests` : ''
+  const profile = ensemble.profile && ensemble.profile !== 'llm_ensemble' ? ensemble.profile : ''
+  return [profile, requests].filter(Boolean).join(' · ') || `${ensemble.modelCount} models`
+})
+
+const ensembleSavedText = computed(() => {
+  const ensemble = props.message.meta?.ensemble
+  if (!ensemble) return fmtUsd(0)
+  const suffix = ensemble.savedPct > 0 ? ` · ${Math.round(ensemble.savedPct)}%` : ''
+  return `${fmtUsd(ensemble.savedUsd)}${suffix}`
 })
 
 const metaDetailsId = computed(
@@ -354,6 +402,21 @@ function onMessageClick(event: MouseEvent) {
   if ((event.target as HTMLElement | null)?.closest('button,a,input,textarea,select')) return
   emit('toggleShare', props.shareMessageId)
 }
+
+function fmtUsd(value: number): string {
+  const n = Number.isFinite(value) ? Math.max(0, value) : 0
+  if (n === 0) return '$0'
+  if (n < 0.0001) return '<$0.0001'
+  return `$${n.toFixed(6).replace(/\.?0+$/, '')}`
+}
+
+function ensembleRole(role: string, label: string): string {
+  const normalized = String(role || '').replace(/_/g, ' ')
+  if (normalized === 'proposer') return 'proposer'
+  if (normalized === 'aggregator') return 'aggregator'
+  if (normalized === 'fallback single') return 'fallback'
+  return label || normalized || 'member'
+}
 </script>
 
 <style scoped>
@@ -374,7 +437,7 @@ function onMessageClick(event: MouseEvent) {
   max-width: calc(100% - 16px);
   box-sizing: border-box;
   padding: 0.5rem 1rem 0.5rem 2.5rem;
-  border-radius: 0.875rem;
+  border-radius: var(--radius-lg);
   transition: background var(--dur-base) var(--ease-standard), box-shadow var(--dur-base) var(--ease-standard);
 }
 
@@ -400,7 +463,7 @@ function onMessageClick(event: MouseEvent) {
   width: 1.5rem;
   height: 1.5rem;
   border: 2px solid var(--border-strong);
-  border-radius: 999px;
+  border-radius: var(--radius-full);
   background: var(--bg-surface);
   color: var(--text-muted);
   box-shadow: var(--shadow-md);
@@ -416,7 +479,7 @@ function onMessageClick(event: MouseEvent) {
 .chat-share-picker:focus-visible {
   outline: none;
   border-color: var(--accent);
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent);
+  box-shadow: var(--focus-ring);
 }
 
 .chat-share-picker.is-selected {
@@ -517,7 +580,7 @@ function onMessageClick(event: MouseEvent) {
   border: none;
   cursor: pointer;
   color: var(--text-dim);
-  border-radius: 3px;
+  border-radius: var(--radius-sm);
   font-size: 0.6875rem;
 }
 
@@ -528,7 +591,7 @@ function onMessageClick(event: MouseEvent) {
 
 .msg-action:focus-visible {
   outline: none;
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent);
+  box-shadow: var(--focus-ring);
 }
 
 /* Fork creates something new — its hover signal is the accent, not text-muted. */
@@ -580,9 +643,17 @@ function onMessageClick(event: MouseEvent) {
   opacity: 0.88;
 }
 
-.msg-meta__cost {
+.msg-meta__cost,
+.msg-meta__ensemble {
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
+}
+
+.msg-meta__ensemble {
+  color: color-mix(in srgb, var(--accent) 70%, var(--text-muted));
+  max-width: 10rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .msg-meta__more {
@@ -600,7 +671,7 @@ function onMessageClick(event: MouseEvent) {
   padding: 0;
   background: none;
   border: none;
-  border-radius: 999px;
+  border-radius: var(--radius-full);
   color: var(--text-dim);
   cursor: pointer;
   transition: color var(--transition), background var(--transition);
@@ -614,7 +685,7 @@ function onMessageClick(event: MouseEvent) {
 
 .msg-meta__more-btn:focus-visible {
   outline: none;
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent);
+  box-shadow: var(--focus-ring);
 }
 
 .msg-meta-popover {
@@ -627,7 +698,7 @@ function onMessageClick(event: MouseEvent) {
   flex-direction: column;
   gap: 0.25rem;
   min-width: 10rem;
-  max-width: min(18rem, calc(100vw - 2rem));
+  max-width: min(24rem, calc(100vw - 2rem));
   padding: 0.5rem 0.625rem;
   background: var(--bg-elevated);
   border: 1px solid var(--border-strong);
@@ -656,6 +727,46 @@ function onMessageClick(event: MouseEvent) {
   color: var(--text);
 }
 
+.msg-meta-popover__divider {
+  height: 1px;
+  margin: 0.125rem 0;
+  background: var(--hairline);
+}
+
+.msg-meta-popover__models {
+  display: flex;
+  flex-direction: column;
+  gap: 0.125rem;
+  min-width: 0;
+}
+
+.msg-meta-popover__model {
+  display: grid;
+  grid-template-columns: minmax(4.75rem, 0.8fr) minmax(7rem, 1fr) auto;
+  align-items: baseline;
+  gap: 0.5rem;
+  min-width: 0;
+}
+
+.msg-meta-popover__model-role {
+  color: var(--text-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.msg-meta-popover__model-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--text);
+}
+
+.msg-meta-popover__model-cost {
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
 .savings-indicator {
   position: relative;
   display: inline-flex;
@@ -664,7 +775,7 @@ function onMessageClick(event: MouseEvent) {
   padding: 0 0.45rem;
   overflow: hidden;
   border: 1px solid color-mix(in srgb, var(--accent) 18%, transparent);
-  border-radius: 999px;
+  border-radius: var(--radius-full);
   background:
     linear-gradient(135deg, color-mix(in srgb, var(--accent) 8%, var(--bg-surface)), var(--bg-surface) 48%, color-mix(in srgb, var(--ok) 8%, var(--bg-surface))),
     radial-gradient(circle at 18% 0%, color-mix(in srgb, var(--warn) 34%, transparent), transparent 42%);
@@ -727,6 +838,10 @@ function onMessageClick(event: MouseEvent) {
   .savings-indicator,
   .msg-meta__more {
     flex-shrink: 0;
+  }
+
+  .msg-meta__ensemble {
+    max-width: 7rem;
   }
 }
 

@@ -5,6 +5,8 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+$env:PYTHONUTF8 = '1'
+$env:PYTHONIOENCODING = 'utf-8:replace'
 
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $PackageDir = Join-Path $ScriptDir 'packages'

@@ -1,11 +1,10 @@
 from __future__ import annotations
 
-from pathlib import Path
-
 import pytest
 
 from opensquilla.application.approval_queue import ApprovalQueue
 from opensquilla.application.approval_rpc import (
+    approval_extend_rpc_payload,
     approval_forget_rpc_payload,
     approval_request_rpc_payload,
     approval_resolve_rpc_payload,
@@ -13,7 +12,6 @@ from opensquilla.application.approval_rpc import (
     approval_snapshot_rpc_payload,
     approval_wait_decision_rpc_payload,
 )
-from opensquilla.application.intent_cache import IntentApprovalCache
 
 
 def test_approval_settings_rpc_payload_includes_node_inheritance() -> None:
@@ -76,8 +74,6 @@ async def test_wait_and_resolve_rpc_payloads_preserve_status_shape() -> None:
         waited = await approval_wait_decision_rpc_payload(queue, approval_id)
 
         assert resolved == waited
-        # ``deadline`` is a wall-clock stamp; assert it is present and pin the
-        # rest of the stable wire shape, including the new ``resolution`` field.
         assert isinstance(waited.pop("deadline"), float)
         assert waited == {
             "id": approval_id,
@@ -92,35 +88,35 @@ async def test_wait_and_resolve_rpc_payloads_preserve_status_shape() -> None:
         queue.close()
 
 
+def test_approval_extend_rpc_payload_pushes_deadline() -> None:
+    queue = ApprovalQueue(db_path=":memory:", default_timeout=10.0)
+    try:
+        approval_id = queue.request(
+            "exec",
+            {"toolName": "exec_command", "command": "rm x", "sessionKey": "agent:main:demo"},
+        )
+        before = queue.get(approval_id).deadline
+
+        payload = approval_extend_rpc_payload(queue, approval_id, 120.0)
+
+        assert payload["pending"] is True
+        assert payload["resolution"] == ""
+        assert payload["deadline"] == before + 120.0
+        assert queue.get(approval_id).deadline == before + 120.0
+    finally:
+        queue.close()
+
+
 def test_approval_snapshot_and_forget_payloads_own_wire_shapes() -> None:
     queue = ApprovalQueue(db_path=":memory:")
-    intent_cache = IntentApprovalCache()
     try:
         queue.set_settings("prompt")
-        intent_cache.record_always("rm /tmp/approval-demo")
-        normalized_target = str(Path("/tmp/approval-demo").resolve(strict=False))
 
-        snapshot = approval_snapshot_rpc_payload(queue, intent_cache)
-        assert snapshot == {
-            "mode": "prompt",
-            "intent_cache_size": 1,
-            "intent_cache_entries": [
-                {
-                    "kind": "delete",
-                    "target": normalized_target,
-                    "scope": "always",
-                }
-            ],
-        }
-
-        assert approval_forget_rpc_payload(intent_cache, " /tmp/approval-demo ") == {
-            "scope": "target",
+        assert approval_snapshot_rpc_payload(queue) == {"mode": "prompt"}
+        assert approval_forget_rpc_payload(" /tmp/approval-demo ") == {
+            "scope": "noop",
             "target": "/tmp/approval-demo",
         }
-        assert intent_cache.check("rm /tmp/approval-demo") is False
-
-        intent_cache.record_always("rm /tmp/approval-demo")
-        assert approval_forget_rpc_payload(intent_cache) == {"scope": "all"}
-        assert intent_cache.check("rm /tmp/approval-demo") is False
+        assert approval_forget_rpc_payload() == {"scope": "noop"}
     finally:
         queue.close()

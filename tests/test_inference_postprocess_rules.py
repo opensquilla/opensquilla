@@ -4,13 +4,15 @@ from copy import deepcopy
 from types import SimpleNamespace
 from typing import Any
 
-import numpy as np
+import pytest
 import yaml
 
 from opensquilla.squilla_router.v4_phase3 import (
     default_bundle_dir,
     runtime_src_import_path,
 )
+
+np = pytest.importorskip("numpy", reason="router inference postprocess tests need numpy")
 
 BUNDLE_DIR = default_bundle_dir()
 
@@ -90,7 +92,7 @@ def test_optional_sticky_tier_blocks_downgrade_without_margin_gate():
 
     assert decision.route_class == "R3"
     assert decision.sticky_applied is True
-    assert decision.selected_model == "anthropic/claude-opus-4.8"
+    assert decision.selected_model == "z-ai/glm-5.2"
 
 
 def test_optional_sticky_tier_still_blocks_downgrade_after_margin_upgrade():
@@ -107,7 +109,7 @@ def test_optional_sticky_tier_still_blocks_downgrade_after_margin_upgrade():
 
     assert decision.route_class == "R3"
     assert decision.sticky_applied is True
-    assert decision.selected_model == "anthropic/claude-opus-4.8"
+    assert decision.selected_model == "z-ai/glm-5.2"
 
 
 def test_aux_downgrade_can_lower_high_route_when_enabled_and_not_margin_upgraded():

@@ -103,24 +103,33 @@
 
       <div class="settings-body">
         <nav ref="railRef" class="settings-rail" role="tablist" :aria-label="t('settings.dialog.sections')" :aria-orientation="railOrientation">
-          <button
-            v-for="s in visibleSections"
-            :id="'settings-rail-' + s.id"
-            :key="s.id"
-            type="button"
-            role="tab"
-            class="settings-rail__item"
-            :class="{ 'is-active': section === s.id }"
-            :aria-selected="section === s.id ? 'true' : 'false'"
-            :aria-controls="'settings-section-' + s.id"
-            :aria-label="s.client ? t('settings.rail.' + s.id) : `${t('settings.rail.' + s.id)}: ${sectionStatus(s.id).label}${sectionDirty(s.id) ? t('settings.dialog.unsavedSuffix') : ''}`"
-            @click="selectSection(s.id)"
-          >
-            <Icon :name="s.icon" :size="16" aria-hidden="true" />
-            <span class="settings-rail__label">{{ t('settings.rail.' + s.id) }}</span>
-            <span v-if="sectionDirty(s.id)" class="settings-rail__dirty" aria-hidden="true"></span>
-            <span v-if="!s.client" class="settings-rail__dot" :class="sectionStatus(s.id).tone" aria-hidden="true"></span>
-          </button>
+          <template v-for="(s, i) in visibleSections" :key="s.id">
+            <!-- Presentational group eyebrow: labels the rail without adding a
+                 tab stop. Rendered when the group changes so each bin is headed
+                 once. Hidden on the mobile horizontal strip. -->
+            <span
+              v-if="i === 0 || s.group !== visibleSections[i - 1].group"
+              class="settings-rail__group"
+              role="presentation"
+              aria-hidden="true"
+            >{{ t('settings.rail.groups.' + s.group) }}</span>
+            <button
+              :id="'settings-rail-' + s.id"
+              type="button"
+              role="tab"
+              class="settings-rail__item"
+              :class="{ 'is-active': section === s.id }"
+              :aria-selected="section === s.id ? 'true' : 'false'"
+              :aria-controls="'settings-section-' + s.id"
+              :aria-label="s.client ? t('settings.rail.' + s.id) : `${t('settings.rail.' + s.id)}: ${sectionStatus(s.id).label}${sectionDirty(s.id) ? t('settings.dialog.unsavedSuffix') : ''}`"
+              @click="selectSection(s.id)"
+            >
+              <Icon :name="s.icon" :size="16" aria-hidden="true" />
+              <span class="settings-rail__label">{{ t('settings.rail.' + s.id) }}</span>
+              <span v-if="sectionDirty(s.id)" class="settings-rail__dirty" aria-hidden="true"></span>
+              <span v-if="!s.client" class="settings-rail__dot" :class="sectionStatus(s.id).tone" aria-hidden="true"></span>
+            </button>
+          </template>
         </nav>
 
         <div
@@ -152,13 +161,17 @@
               @update-provider-field="updateProviderField"
               @update-llm-timeout="updateLlmTimeout"
               @copy="copyCommand"
-              @save="saveProvider"
+              @go-to-section="selectSection"
             />
             <SetupBehaviorPanel
               v-else-if="section === 'behavior'"
               :panel="behaviorPanel"
               @update-auto-session-titles="setAutoSessionTitles"
-              @save="saveBehavior"
+            />
+            <SettingsPrivacyPanel
+              v-else-if="section === 'privacy'"
+              :panel="privacyPanel"
+              @update-disable-network-observability="setDisableNetworkObservability"
             />
             <SetupRouterPanel
               v-else-if="section === 'router'"
@@ -167,7 +180,7 @@
               @update-router-default-tier="setRouterDefaultTier"
               @update-router-visual-mode="setRouterVisualMode"
               @update-tier-field="updateTierField"
-              @save="saveRouter"
+              @go-to-section="selectSection"
             />
             <SetupChannelsPanel
               v-else-if="section === 'channels'"
@@ -241,6 +254,7 @@ import SetupProviderPanel from '@/components/setup/SetupProviderPanel.vue'
 import SetupRouterPanel from '@/components/setup/SetupRouterPanel.vue'
 import SetupChannelsPanel from '@/components/setup/SetupChannelsPanel.vue'
 import SetupCapabilitiesPanel from '@/components/setup/SetupCapabilitiesPanel.vue'
+import SettingsPrivacyPanel from '@/components/settings/SettingsPrivacyPanel.vue'
 import SettingsAppearancePanel from '@/components/settings/SettingsAppearancePanel.vue'
 import SettingsKeyboardPanel from '@/components/settings/SettingsKeyboardPanel.vue'
 import SettingsAdvancedPanel from '@/components/settings/SettingsAdvancedPanel.vue'
@@ -267,6 +281,7 @@ const {
   loaded,
   providerPanel,
   behaviorPanel,
+  privacyPanel,
   routerPanel,
   channelsPanel,
   capabilitiesPanel,
@@ -286,6 +301,7 @@ const {
   discardChanges,
   selectProvider,
   setAutoSessionTitles,
+  setDisableNetworkObservability,
   setRouterMode,
   setRouterDefaultTier,
   setRouterVisualMode,
@@ -300,9 +316,6 @@ const {
   onSearchProviderChange,
   onMemoryProviderChange,
   onImageProviderChange,
-  saveProvider,
-  saveBehavior,
-  saveRouter,
   saveChannel,
   enableChannel,
   disableChannel,
@@ -544,7 +557,7 @@ onUnmounted(() => {
 .settings-modal {
   background: var(--bg-surface);
   border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
+  border-radius: var(--radius-modal);
   box-shadow: var(--shadow-xl);
   display: flex;
   flex-direction: column;
@@ -654,7 +667,7 @@ onUnmounted(() => {
 .settings-banner__item {
   background: transparent;
   border: 1px solid color-mix(in srgb, var(--warn) 30%, var(--border));
-  border-radius: 999px;
+  border-radius: var(--radius-full);
   color: var(--text-muted);
   cursor: pointer;
   font-size: var(--fs-xs);
@@ -777,6 +790,22 @@ onUnmounted(() => {
   width: 5px;
 }
 
+/* Quiet uppercase eyebrow that heads each rail group (see .control-nav-group__label).
+   Non-interactive, so it never enters the tab order. */
+.settings-rail__group {
+  color: var(--text-dim);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  margin: var(--sp-3) 0 var(--sp-1);
+  padding: 0 var(--sp-3);
+  text-transform: uppercase;
+}
+
+.settings-rail__group:first-child {
+  margin-top: 0;
+}
+
 .settings-panel {
   flex: 1;
   min-width: 0;
@@ -888,6 +917,11 @@ onUnmounted(() => {
     flex-shrink: 0;
     min-height: 44px;
     scroll-snap-align: start;
+  }
+
+  /* The horizontal chip strip stays flat — group eyebrows would break the row. */
+  .settings-rail__group {
+    display: none;
   }
 
   .settings-panel {

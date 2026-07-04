@@ -3,7 +3,7 @@ import i18n from '@/i18n'
 import { useSetupChannelsForm } from '@/composables/setup/useSetupChannelsForm'
 import { useSetupCapabilitiesForm } from '@/composables/setup/useSetupCapabilitiesForm'
 import { useSetupBehaviorForm } from '@/composables/setup/useSetupBehaviorForm'
-import { useSetupProviderForm } from '@/composables/setup/useSetupProviderForm'
+import { hasEffectiveProvider, useSetupProviderForm } from '@/composables/setup/useSetupProviderForm'
 import { useSetupRouterForm } from '@/composables/setup/useSetupRouterForm'
 import { useSettingsPromotedForm, DEFAULT_LLM_TIMEOUT_SECONDS } from '@/composables/setup/useSettingsPromotedForm'
 import { useSettingsSection } from '@/composables/setup/useSettingsSection'
@@ -102,6 +102,7 @@ interface SectionDetail {
 interface OnboardingStatus {
   needsOnboarding?: boolean
   hasConfig?: boolean
+  llmConfigured?: boolean
   llmSource?: string
   sectionDetails?: Record<string, SectionDetail>
   envRecoveryCommands?: Array<{ section?: string; command?: string; label?: string }>
@@ -151,6 +152,9 @@ interface ConfigData {
     visual_mode?: string
     tiers?: Record<string, TierConfig>
   }
+  llm_ensemble?: {
+    enabled?: boolean
+  }
   naming?: {
     enabled?: boolean
   }
@@ -183,6 +187,10 @@ interface ConfigData {
     enabled?: boolean
     providers?: Record<string, { api_key?: string; api_key_env?: string }>
   }
+  privacy?: {
+    disable_network_observability?: boolean
+    network_observability_disabled_effective?: boolean
+  }
 }
 
 export interface SettingsActionItem {
@@ -206,6 +214,7 @@ const config = ref<ConfigData>({})
 const channelStatus = ref<{ channels: ChannelStatusRow[] }>({ channels: [] })
 const loaded = ref(false)
 const { section, setSection } = useSettingsSection('provider')
+const disableNetworkObservability = ref(false)
 
 const providerForm = useSetupProviderForm()
 const behaviorForm = useSetupBehaviorForm()
@@ -257,6 +266,7 @@ async function loadData() {
     capabilitiesForm.initImageFromConfig(config.value, status.value, imageProviders.value)
     channelsForm.initFromCatalog(catalog.value.channels || [])
     promotedForm.initFromConfig(config.value)
+    disableNetworkObservability.value = currentDisableNetworkObservability.value
   } catch (err) {
     pushToast(t('setup.toast.loadFailed', { error: err instanceof Error ? err.message : String(err) }), { tone: 'danger' })
   }
@@ -284,7 +294,7 @@ function startChannelPolling() {
 
 const currentProvider = computed(() => (config.value.llm || {}).provider || '')
 const currentProviderConfig = computed(() => config.value.llm || {})
-const hasSavedProvider = computed(() => Boolean(currentProvider.value) && status.value.hasConfig !== false)
+const hasSavedProvider = computed(() => hasEffectiveProvider(currentProviderConfig.value, status.value))
 
 const runtimeProviders = computed(() => (catalog.value.providers || []).filter(p => p.runtimeSupported))
 const catalogChannels = computed(() => catalog.value.channels || [])
@@ -293,7 +303,6 @@ const imageProviders = computed(() => (catalog.value.imageGenerationProviders ||
 const memoryProviders = computed(() => catalog.value.memoryEmbeddingProviders || [])
 const routerProfiles = computed(() => catalog.value.routerProfiles?.profiles || [])
 const currentRouterProfile = computed(() => routerProfiles.value.find(p => p.providerId === currentProvider.value))
-
 const providerSpec = computed(() => runtimeProviders.value.find(p => p.providerId === providerForm.selectedProvider.value) || null)
 const providerFields = computed(() => providerSpec.value?.fields || [])
 const providerCoreFields = computed(() => providerFields.value.filter(f => !isProviderAdvancedField(f)))
@@ -314,6 +323,19 @@ const routerSupportTone = computed(() => {
   if (!providerSpec.value) return 'is-neutral'
   return providerSpec.value.routerSupported === true ? 'is-ready' : 'is-direct'
 })
+
+// The "Configure the router →" affordance must only appear when jumping to the
+// Router section shows a consistent, ready view. routerSupportTone tracks the
+// *selected* provider (so the pill updates live as you browse providers), but the
+// Router panel reflects the *saved* config — so gating the link on the tone alone
+// could land on the previously-saved provider's tiers or the "provider first"
+// empty state. Require a router-capable provider to actually be saved AND the
+// selection to be clean, so selected == saved and the Router view is not stale.
+const canConfigureRouter = computed(() =>
+  hasSavedProvider.value
+  && !providerForm.isDirty.value
+  && routerSupportTone.value === 'is-ready',
+)
 
 const providerNeeds = computed(() => {
   if (!providerSpec.value) return [t('setup.provider.chooseToSeeFields')]
@@ -340,15 +362,33 @@ const imageEnvCommand = computed(() => envRecoveryCommand('image_generation'))
 
 const routerSummary = computed(() => {
   if (!hasSavedProvider.value) return t('setup.router.chooseProviderFirst')
+  if (ensembleProfileActive.value) return t('setup.router.summaryEnsemble')
   if (routerForm.mode.value === 'disabled') return t('setup.router.summaryDisabled')
   if (routerForm.mode.value === 'openrouter-mix') return t('setup.router.modeOpenrouterMix')
   return t('setup.router.modeRecommended')
 })
+const ensembleProfileActive = computed(() => config.value.llm_ensemble?.enabled === true)
 
 const behaviorStatusText = computed(() => {
   return behaviorForm.autoSessionTitles.value
     ? t('setup.behavior.statusOn')
     : t('setup.behavior.statusOff')
+})
+const currentDisableNetworkObservability = computed(() => config.value.privacy?.disable_network_observability === true)
+const currentEffectiveNetworkObservabilityDisabled = computed(() => (
+  config.value.privacy?.network_observability_disabled_effective === true
+))
+const networkObservabilityDisabledByEnvironment = computed(() => (
+  currentEffectiveNetworkObservabilityDisabled.value && !currentDisableNetworkObservability.value
+))
+const privacyDirty = computed(() => disableNetworkObservability.value !== currentDisableNetworkObservability.value)
+const privacyStatusText = computed(() => {
+  if (networkObservabilityDisabledByEnvironment.value && !disableNetworkObservability.value) {
+    return t('setup.privacy.statusDisabledByEnv')
+  }
+  return disableNetworkObservability.value
+    ? t('setup.privacy.statusDisabled')
+    : t('setup.privacy.statusEnabled')
 })
 
 const channelSpec = computed(() => catalogChannels.value.find(c => c.type === channelsForm.selectedChannelType.value) || null)
@@ -408,6 +448,7 @@ const providerPanel = providerForm.createPanel({
   runtimeProviders,
   routerSupportTone,
   routerSupportText,
+  canConfigureRouter,
   providerNeeds,
   providerCoreFields,
   providerAdvancedFields,
@@ -422,9 +463,16 @@ const behaviorPanel = behaviorForm.createPanel({
   statusText: behaviorStatusText,
 })
 
+const privacyPanel = computed(() => ({
+  disableNetworkObservability: disableNetworkObservability.value,
+  disableNetworkObservabilityDirty: privacyDirty.value,
+  statusText: privacyStatusText.value,
+}))
+
 const isOpenrouterProvider = computed(() => currentProvider.value.toLowerCase() === 'openrouter')
 const routerPanel = routerForm.createPanel({
   routerSummary,
+  ensembleProfileActive,
   hasSavedProvider,
   isOpenrouter: isOpenrouterProvider,
   textTiers: TEXT_TIERS,
@@ -582,14 +630,17 @@ function selectInitialSection(target: string | null) {
 
 function firstActionSection(): SettingsSectionId {
   const details = status.value.sectionDetails || {}
+  // Kept in sync with the SETTINGS_SECTIONS rail order so `/settings/auto` lands
+  // on the first not-ready section in the same top-to-bottom order the rail reads
+  // (Provider → Router → Capabilities → Channels).
   const sectionOrder: Array<[string, SettingsSectionId]> = [
     ['llm', 'provider'],
     ['router', 'router'],
-    ['channels', 'channels'],
     ['search', 'capabilities'],
     ['image_generation', 'capabilities'],
     ['memory_embedding', 'capabilities'],
     ['audio', 'capabilities'],
+    ['channels', 'channels'],
   ]
   const entry = sectionOrder.find(([name]) => {
     const detail = details[name] || {}
@@ -610,7 +661,12 @@ function sectionStatus(sectionId: string): { label: string; tone: string } {
     if (providerEnvMissing.value) return { label: t('setup.readiness.needsAction'), tone: 'is-warn' }
     return detailStepStatus((status.value.sectionDetails || {}).llm || (status.value.sectionDetails || {}).provider)
   }
-  if (sectionId === 'behavior') return { label: t('setup.status.live'), tone: 'is-ok' }
+  // Behavior/Privacy are always-valid preference toggles, not readiness
+  // milestones — a neutral dot (rather than a green "Live" that overstates
+  // earned readiness) is honest; the dirty pip already signals unsaved edits.
+  if (sectionId === 'behavior' || sectionId === 'privacy') {
+    return { label: t('setup.status.appliesOnSave'), tone: 'is-muted' }
+  }
   if (sectionId === 'router' && !hasSavedProvider.value) {
     return { label: t('setup.status.providerFirst'), tone: 'is-muted' }
   }
@@ -669,6 +725,7 @@ function sectionForDetailName(name: string): SettingsSectionId | null {
 
 const providerDirty = computed(() => providerForm.isDirty.value || promotedForm.timeoutDirty.value)
 const behaviorDirty = computed(() => behaviorForm.isDirty.value)
+const privacySectionDirty = computed(() => privacyDirty.value)
 const routerDirty = computed(() => routerForm.isDirty.value)
 const channelsDirty = computed(() => channelsForm.isDirty.value)
 const capabilitiesDirty = computed(() => (
@@ -682,6 +739,7 @@ const capabilitiesDirty = computed(() => (
 function sectionDirty(sectionId: string): boolean {
   if (sectionId === 'provider') return providerDirty.value
   if (sectionId === 'behavior') return behaviorDirty.value
+  if (sectionId === 'privacy') return privacySectionDirty.value
   if (sectionId === 'router') return routerDirty.value
   if (sectionId === 'channels') return channelsDirty.value
   if (sectionId === 'capabilities') return capabilitiesDirty.value
@@ -692,6 +750,21 @@ const dirtySections = computed(() => SETTINGS_SECTIONS.filter(s => sectionDirty(
 const hasUnsavedChanges = computed(() => dirtySections.value.length > 0)
 
 async function saveDirtySections() {
+  const otherSectionsDirty = (
+    providerDirty.value
+    || behaviorDirty.value
+    || routerDirty.value
+    || channelsDirty.value
+    || capabilitiesForm.searchDirty.value
+    || capabilitiesForm.memoryDirty.value
+    || promotedForm.captureDirty.value
+    || capabilitiesForm.imageDirty.value
+    || promotedForm.audioDirty.value
+  )
+  if (privacySectionDirty.value) {
+    const saved = await savePrivacy(disableNetworkObservability.value, { reload: !otherSectionsDirty })
+    if (!saved) return
+  }
   if (providerDirty.value) await saveProvider()
   if (behaviorDirty.value) await saveBehavior()
   if (routerDirty.value) await saveRouter()
@@ -724,6 +797,10 @@ function selectProvider(value: string) {
 
 function setAutoSessionTitles(enabled: boolean) {
   behaviorForm.setAutoSessionTitles(enabled)
+}
+
+function setDisableNetworkObservability(enabled: boolean) {
+  disableNetworkObservability.value = enabled
 }
 
 function onProviderChange() {
@@ -967,6 +1044,35 @@ async function saveBehavior() {
   }
 }
 
+async function savePrivacy(
+  value = disableNetworkObservability.value,
+  options: { reload?: boolean } = {},
+): Promise<boolean> {
+  try {
+    const restart = await safePatchConfig({
+      'privacy.disable_network_observability': value,
+    })
+    if (options.reload === false) {
+      config.value = {
+        ...config.value,
+        privacy: {
+          ...(config.value.privacy || {}),
+          disable_network_observability: value,
+          network_observability_disabled_effective: value || networkObservabilityDisabledByEnvironment.value,
+        },
+      }
+      disableNetworkObservability.value = value
+    } else {
+      await loadData()
+    }
+    pushToast(restart ? t('setup.toast.privacySavedRestart') : t('setup.toast.privacySaved'))
+    return true
+  } catch (err) {
+    pushToast(saveFailedMessage(err), { tone: 'danger' })
+    return false
+  }
+}
+
 async function saveRouter() {
   if (!hasSavedProvider.value && routerForm.routingDirty.value) {
     pushToast(t('setup.toast.chooseProviderRouter'), { tone: 'danger' })
@@ -1154,6 +1260,7 @@ async function copyConfigPath() {
     loaded,
     providerPanel,
     behaviorPanel,
+    privacyPanel,
     routerPanel,
     channelsPanel,
     capabilitiesPanel,
@@ -1177,6 +1284,7 @@ async function copyConfigPath() {
     discardChanges,
     selectProvider,
     setAutoSessionTitles,
+    setDisableNetworkObservability,
     setRouterMode,
     setRouterDefaultTier,
     setRouterVisualMode,
@@ -1193,6 +1301,7 @@ async function copyConfigPath() {
     onImageProviderChange,
     saveProvider,
     saveBehavior,
+    savePrivacy,
     saveRouter,
     saveChannel,
     enableChannel,

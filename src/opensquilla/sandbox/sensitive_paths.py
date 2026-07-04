@@ -48,6 +48,37 @@ _SENSITIVE_PREFIXES: tuple[str, ...] = (
     "/dev",
     "/root",
     "/var/log",
+    "/var/run/docker.sock",
+    "/run/docker.sock",
+    "/private/var/run/docker.sock",
+    "/lib/systemd",
+    "/usr/lib/systemd",
+)
+
+_LINUX_RUNTIME_SENSITIVE_PREFIXES: tuple[str, ...] = (
+    "~/.ssh",
+    "~/.aws",
+    "~/.azure",
+    "~/.config/gcloud",
+    "~/.docker/config",
+    "~/.kube",
+    "~/.npmrc",
+    "~/.pypirc",
+    "~/.netrc",
+    "~/.gnupg",
+    "~/.password-store",
+    "/etc/shadow",
+    "/etc/gshadow",
+    "/etc/sudoers",
+    "/etc/sudoers.d",
+    "/etc/ssh",
+    "/boot",
+    "/sys",
+    "/proc",
+    "/root",
+    "/var/log",
+    "/var/run/docker.sock",
+    "/run/docker.sock",
     "/lib/systemd",
     "/usr/lib/systemd",
 )
@@ -362,3 +393,41 @@ def build_block_envelope(
         ),
         "retryable": False,
     }
+
+
+def linux_runtime_sensitive_deny_roots(
+    *,
+    workspace: str | Path | None = None,
+) -> tuple[Path, ...]:
+    if _DISABLED:
+        return ()
+    roots: list[Path] = []
+    for raw in _LINUX_RUNTIME_SENSITIVE_PREFIXES:
+        root = Path(raw).expanduser()
+        if workspace is not None and _path_contains(
+            _comparison_path(str(workspace)),
+            _comparison_path(str(root)),
+        ):
+            for child in _sensitive_children_for_workspace_parent(root):
+                roots.append(child)
+            continue
+        roots.append(root)
+    return tuple(dict.fromkeys(roots))
+
+
+def _sensitive_children_for_workspace_parent(root: Path) -> tuple[Path, ...]:
+    if root.as_posix() != "/root":
+        return ()
+    return (
+        root / ".ssh",
+        root / ".aws",
+        root / ".azure",
+        root / ".config" / "gcloud",
+        root / ".docker" / "config",
+        root / ".kube",
+        root / ".npmrc",
+        root / ".pypirc",
+        root / ".netrc",
+        root / ".gnupg",
+        root / ".password-store",
+    )

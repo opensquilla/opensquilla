@@ -211,7 +211,7 @@ function rowAccessibleName(verb: 'inspect' | 'delete', entry: SessionLedgerEntry
 }
 
 .hub-row__main:focus-visible {
-  box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--accent) 50%, transparent);
+  box-shadow: var(--focus-ring-inset);
   outline: none;
 }
 
@@ -285,7 +285,7 @@ function rowAccessibleName(verb: 'inspect' | 'delete', entry: SessionLedgerEntry
 .hub-row__agent {
   background: var(--bg-elevated);
   border: 1px solid var(--border);
-  border-radius: 999px;
+  border-radius: var(--radius-full);
   color: var(--text-muted);
   flex-shrink: 0;
   font-size: var(--fs-xs);
@@ -299,7 +299,7 @@ function rowAccessibleName(verb: 'inspect' | 'delete', entry: SessionLedgerEntry
 
 .hub-row__status {
   border: 1px solid var(--border);
-  border-radius: 999px;
+  border-radius: var(--radius-full);
   flex-shrink: 0;
   font-size: var(--fs-xs);
   font-weight: 650;
@@ -386,7 +386,7 @@ function rowAccessibleName(verb: 'inspect' | 'delete', entry: SessionLedgerEntry
 }
 
 .hub-row__delete:focus-visible {
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent);
+  box-shadow: var(--focus-ring);
   outline: none;
 }
 

@@ -95,6 +95,8 @@ function pythonPackageFile(packageName, relativePath) {
       env: {
         ...process.env,
         PYTHONUNBUFFERED: '1',
+        PYTHONUTF8: '1',
+        PYTHONIOENCODING: 'utf-8:replace',
       },
       encoding: 'utf8',
       windowsHide: true,
@@ -299,6 +301,8 @@ const result = spawnSync('uv', args, {
   env: {
     ...process.env,
     PYTHONUNBUFFERED: '1',
+    PYTHONUTF8: '1',
+    PYTHONIOENCODING: 'utf-8:replace',
   },
   stdio: 'inherit',
 })

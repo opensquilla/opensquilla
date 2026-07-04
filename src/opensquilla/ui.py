@@ -19,7 +19,10 @@ class _DynamicStream:
         return getattr(sys, self._name)
 
     def write(self, data: str) -> int:
-        written = self._stream.write(data)
+        try:
+            written = self._stream.write(data)
+        except UnicodeEncodeError:
+            written = self._stream.write(_replace_unencodable(data, self._stream))
         return len(data) if written is None else int(written)
 
     def flush(self) -> None:
@@ -27,6 +30,14 @@ class _DynamicStream:
 
     def __getattr__(self, name: str):
         return getattr(self._stream, name)
+
+
+def _replace_unencodable(data: str, stream: object) -> str:
+    encoding = getattr(stream, "encoding", None) or "utf-8"
+    try:
+        return data.encode(encoding, errors="replace").decode(encoding, errors="replace")
+    except LookupError:
+        return data.encode("utf-8", errors="replace").decode("utf-8", errors="replace")
 
 
 console = Console(file=cast(IO[str], _DynamicStream("stdout")), highlight=False)

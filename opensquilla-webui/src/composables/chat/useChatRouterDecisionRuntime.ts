@@ -1,6 +1,6 @@
 import { ref, type Ref } from 'vue'
-import type { ChatMessage } from '@/types/chat'
-import type { RouterDecisionPayload } from '@/types/rpc'
+import type { ChatEnsembleMeta, ChatEnsembleMetaModel, ChatMessage } from '@/types/chat'
+import type { EnsembleProgressPayload, RouterDecisionPayload } from '@/types/rpc'
 import {
   type NormalizedRouterDecision,
   normalizeRouterDecision,
@@ -87,11 +87,101 @@ export function useChatRouterDecisionRuntime(options: UseChatRouterDecisionRunti
     pendingRouterDecision.value = null
   }
 
+  function emptyEnsemble(): ChatEnsembleMeta {
+    return {
+      profile: 'llm_ensemble',
+      modelCount: 0,
+      totalCandidates: 0,
+      requestCount: 0,
+      fallbackUsed: false,
+      fallbackReason: '',
+      costUsd: 0,
+      savedUsd: 0,
+      savedPct: 0,
+      models: [],
+    }
+  }
+
+  function memberFromEnsembleProgress(payload: EnsembleProgressPayload): ChatEnsembleMetaModel | null {
+    const model = String(payload.proposer_model || '').trim()
+    const isAggregator = payload.event_type === 'aggregator_start' || payload.event_type === 'aggregator_finish'
+    if (!model && !isAggregator) return null
+    const role = String(payload.proposer_label || '').trim() || (isAggregator ? 'aggregator' : 'proposer')
+    const finished = payload.event_type === 'proposer_finish' || payload.event_type === 'aggregator_finish'
+    return {
+      role,
+      label: role,
+      provider: String(payload.proposer_provider || '').trim(),
+      model,
+      modelShort: shortModelName(model),
+      input: Number(payload.input_tokens || 0),
+      output: Number(payload.output_tokens || 0),
+      costUsd: Number(payload.cost_usd || 0),
+      status: finished ? 'done' : 'running',
+    }
+  }
+
+  function upsertEnsembleMember(ensemble: ChatEnsembleMeta, member: ChatEnsembleMetaModel) {
+    const key = `${member.role}:${member.provider}:${member.model}`
+    const idx = ensemble.models.findIndex(m => `${m.role}:${m.provider}:${m.model}` === key)
+    if (idx >= 0) {
+      // Merge so a later 'done' delta keeps the row identity while adding usage.
+      ensemble.models.splice(idx, 1, { ...ensemble.models[idx], ...member })
+    } else {
+      ensemble.models.push(member)
+    }
+    ensemble.modelCount = ensemble.models.length
+    ensemble.requestCount = ensemble.models.length
+    ensemble.totalCandidates = Math.max(ensemble.totalCandidates, ensemble.models.length)
+  }
+
+  // Accumulate an ensemble_progress delta onto the live turn's router message so
+  // the strip reveals members incrementally. Mirrors appendRouterDecision: find
+  // the in-flight router message, else synthesize one.
+  function appendEnsembleProgress(payload: EnsembleProgressPayload) {
+    const member = memberFromEnsembleProgress(payload)
+    if (!member) return
+
+    let target: ChatMessage | undefined
+    if (options.isStreaming.value) {
+      for (let i = options.messages.value.length - 1; i >= 0; i--) {
+        const message = options.messages.value[i]
+        if (message.role === 'user') break
+        if (message.role === 'router' && message.provenanceKind === 'router_decision') {
+          target = message
+          break
+        }
+      }
+    }
+
+    if (!target) {
+      options.messages.value.push({
+        role: 'router',
+        text: '',
+        ts: new Date().toISOString(),
+        routerDecision: { tier: 'c1', model: member.model, source: 'llm_ensemble' },
+        provenanceKind: 'router_decision',
+        messageId: `router-${options.sessionKey.value}-ensemble`,
+        ensemble: emptyEnsemble(),
+      })
+      // Re-read through the reactive array so nested mutations below trigger.
+      target = options.messages.value[options.messages.value.length - 1]
+    }
+
+    // Keep the strip on the ensemble branch even if a prior squilla-router
+    // decision stamped a non-ensemble source on this same turn's message.
+    if (target.routerDecision) target.routerDecision.source = 'llm_ensemble'
+    if (!target.ensemble) target.ensemble = emptyEnsemble()
+    upsertEnsembleMember(target.ensemble, member)
+    options.scrollToBottom()
+  }
+
   return {
     pendingDecision: pendingRouterDecision,
     handleRouterControlReplay,
     queueRouterDecision,
     flushPendingRouterDecision,
     clearPendingRouterDecision,
+    appendEnsembleProgress,
   }
 }

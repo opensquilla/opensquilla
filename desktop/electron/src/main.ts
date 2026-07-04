@@ -1,7 +1,8 @@
 import { app, BrowserWindow, dialog, Menu, ipcMain, nativeTheme, safeStorage, shell } from 'electron'
+import electronUpdater from 'electron-updater'
 import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
-import { createWriteStream, existsSync, mkdirSync } from 'node:fs'
+import { createWriteStream, existsSync, mkdirSync, readFileSync } from 'node:fs'
 import { access, constants, readFile, readdir, rm, stat, unlink, writeFile } from 'node:fs/promises'
 import net from 'node:net'
 import { basename, dirname, join, resolve } from 'node:path'
@@ -19,7 +20,7 @@ interface GatewayState {
 
 type SecretEncryption = 'safeStorage' | 'plain'
 type RouterMode = 'recommended' | 'openrouter-mix' | 'disabled'
-type TextRouterTier = 't0' | 't1' | 't2' | 't3'
+type TextRouterTier = 'c0' | 'c1' | 'c2' | 'c3'
 
 interface ProviderCatalogEntry {
   id: string
@@ -64,6 +65,7 @@ interface DesktopConnection {
   searchApiKeyEnv: string
   encryptedSearchApiKey?: string
   encryption: SecretEncryption
+  disableNetworkObservability: boolean
   createdAt: string
   updatedAt: string
 }
@@ -78,6 +80,7 @@ interface OnboardingPayload {
   routerTiers?: unknown
   searchProvider?: unknown
   searchApiKey?: unknown
+  disableNetworkObservability?: unknown
 }
 
 interface DesktopSettingsPayload extends OnboardingPayload {}
@@ -93,6 +96,7 @@ interface DesktopSettingsSnapshot {
   searchProvider: string
   searchApiKeyEnv: string
   searchApiKeyConfigured: boolean
+  disableNetworkObservability: boolean
   searchProviders: SearchProviderCatalogEntry[]
   providers?: { providerId: string; label: string; model: string; baseUrl: string }[]
   gateway: GatewayState
@@ -116,6 +120,13 @@ interface BootStatus {
 interface BootError {
   message: string
   at: string
+}
+
+interface MacInstallContext {
+  appBundlePath: string | null
+  translocated: boolean
+  inApplications: boolean
+  blocked: boolean
 }
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
@@ -177,6 +188,65 @@ function appIconPath(): string {
     : join(packageRoot, 'assets', 'icon.png')
 }
 
+const MAC_APP_TRANSLOCATION_SEGMENT = '/AppTranslocation/'
+const MAC_APP_RESOURCES_SUFFIX = '.app/Contents/Resources'
+
+function normalizedPosixPath(path: string): string {
+  return path.replace(/\\/g, '/').replace(/\/+$/, '')
+}
+
+function macAppBundlePath(resourcesPath = process.resourcesPath): string | null {
+  const normalized = normalizedPosixPath(resourcesPath)
+  const markerIndex = normalized.indexOf(MAC_APP_RESOURCES_SUFFIX)
+  if (markerIndex < 0) return null
+  return normalized.slice(0, markerIndex + '.app'.length)
+}
+
+function isMacApplicationsBundlePath(bundlePath: string | null): boolean {
+  if (!bundlePath) return false
+  const normalized = normalizedPosixPath(bundlePath)
+  return normalized === '/Applications/OpenSquilla.app' || normalized.startsWith('/Applications/')
+}
+
+function macDesktopInstallContext(): MacInstallContext {
+  if (process.platform !== 'darwin' || !app.isPackaged) {
+    return {
+      appBundlePath: null,
+      translocated: false,
+      inApplications: true,
+      blocked: false,
+    }
+  }
+
+  const resourcesPath = normalizedPosixPath(process.resourcesPath)
+  const appBundlePath = macAppBundlePath(resourcesPath)
+  const installPath = appBundlePath || resourcesPath
+  const translocated = installPath.includes(MAC_APP_TRANSLOCATION_SEGMENT)
+  const inApplications = isMacApplicationsBundlePath(appBundlePath)
+  return {
+    appBundlePath,
+    translocated,
+    inApplications,
+    blocked: translocated,
+  }
+}
+
+function macDesktopInstallBlockerMessage(context = macDesktopInstallContext()): string | null {
+  if (!context.blocked) return null
+  const currentLocation = context.appBundlePath ? ` Current location: ${context.appBundlePath}` : ''
+  return (
+    'OpenSquilla is running from a temporary macOS AppTranslocation location. ' +
+    'Quit OpenSquilla, drag OpenSquilla.app from the DMG into Applications if you are installing it, ' +
+    'eject the DMG, then open OpenSquilla again.' +
+    currentLocation
+  )
+}
+
+function assertSupportedMacInstallLocation(): void {
+  const message = macDesktopInstallBlockerMessage()
+  if (message) throw new Error(message)
+}
+
 function sendBootStatus(phaseId: BootPhaseId): void {
   bootStatus = { phaseId, label: desktopT('boot.' + phaseId), at: new Date().toISOString() }
   bootError = null
@@ -191,7 +261,20 @@ function sendBootError(error: unknown): void {
   mainWindow?.webContents.send('desktop:boot:error', bootError)
 }
 
-const TEXT_ROUTER_TIERS: TextRouterTier[] = ['t0', 't1', 't2', 't3']
+const TEXT_ROUTER_TIERS: TextRouterTier[] = ['c0', 'c1', 'c2', 'c3']
+// Legacy desktop builds (and any credential.json written before the c0-c3
+// rename) used t0-t3. Canonicalize those on read so upgrading users don't end
+// up with duplicate tier keys in their generated config.
+const LEGACY_TEXT_TIER_ALIASES: Record<string, TextRouterTier> = {
+  t0: 'c0',
+  t1: 'c1',
+  t2: 'c2',
+  t3: 'c3',
+}
+
+function canonicalTierKey(name: string): string {
+  return LEGACY_TEXT_TIER_ALIASES[name] ?? name
+}
 const ROUTER_PROFILE_IDS = new Set(['openrouter', 'dashscope', 'deepseek', 'gemini', 'volcengine', 'openai', 'zhipu', 'moonshot'])
 
 const PROVIDER_CATALOG: ProviderCatalogEntry[] = [
@@ -380,53 +463,53 @@ const SEARCH_PROVIDER_BY_ID = new Map(
 
 const ROUTER_PROFILES: Record<string, Record<string, RouterTier>> = {
   openrouter: {
-    t0: { provider: 'openrouter', model: 'deepseek/deepseek-v4-flash', description: 'Fast everyday work', thinkingLevel: 'high' },
-    t1: { provider: 'openrouter', model: 'deepseek/deepseek-v4-pro', description: 'Balanced agent work', thinkingLevel: 'high' },
-    t2: { provider: 'openrouter', model: 'z-ai/glm-5.2', description: 'Complex reasoning', thinkingLevel: 'high' },
-    t3: { provider: 'openrouter', model: 'anthropic/claude-opus-4.8', description: 'Highest quality review and planning', thinkingLevel: 'high' },
+    c0: { provider: 'openrouter', model: 'deepseek/deepseek-v4-flash', description: 'Fast everyday work', thinkingLevel: 'high' },
+    c1: { provider: 'openrouter', model: 'deepseek/deepseek-v4-pro', description: 'Balanced agent work', thinkingLevel: 'high' },
+    c2: { provider: 'openrouter', model: 'z-ai/glm-5.2', description: 'Complex reasoning', thinkingLevel: 'high' },
+    c3: { provider: 'openrouter', model: 'anthropic/claude-opus-4.8', description: 'Highest quality review and planning', thinkingLevel: 'high' },
     image_model: { provider: 'openrouter', model: 'moonshotai/kimi-k2.6', description: 'Vision route for image attachments', supportsImage: true, imageOnly: true, thinkingLevel: 'medium' },
   },
   openai: {
-    t0: { provider: 'openai', model: 'gpt-5.4-nano', description: 'Fast simple work', thinkingLevel: 'none' },
-    t1: { provider: 'openai', model: 'gpt-5.4-mini', description: 'Balanced agent work', thinkingLevel: 'low' },
-    t2: { provider: 'openai', model: 'gpt-5.5', description: 'Complex text tasks', thinkingLevel: 'medium' },
-    t3: { provider: 'openai', model: 'gpt-5.5', description: 'Deep reasoning', thinkingLevel: 'high' },
+    c0: { provider: 'openai', model: 'gpt-5.4-nano', description: 'Fast simple work', thinkingLevel: 'none' },
+    c1: { provider: 'openai', model: 'gpt-5.4-mini', description: 'Balanced agent work', thinkingLevel: 'low' },
+    c2: { provider: 'openai', model: 'gpt-5.5', description: 'Complex text tasks', thinkingLevel: 'medium' },
+    c3: { provider: 'openai', model: 'gpt-5.5', description: 'Deep reasoning', thinkingLevel: 'high' },
   },
   dashscope: {
-    t0: { provider: 'dashscope', model: 'qwen3.6-flash', description: 'Fast simple work' },
-    t1: { provider: 'dashscope', model: 'qwen3.6-plus', description: 'Balanced agent work' },
-    t2: { provider: 'dashscope', model: 'qwen3-max', description: 'Complex text tasks' },
-    t3: { provider: 'dashscope', model: 'qwen3-max', description: 'Deep reasoning' },
+    c0: { provider: 'dashscope', model: 'qwen3.6-flash', description: 'Fast simple work' },
+    c1: { provider: 'dashscope', model: 'qwen3.6-plus', description: 'Balanced agent work' },
+    c2: { provider: 'dashscope', model: 'qwen3-max', description: 'Complex text tasks' },
+    c3: { provider: 'dashscope', model: 'qwen3-max', description: 'Deep reasoning' },
   },
   deepseek: {
-    t0: { provider: 'deepseek', model: 'deepseek-v4-flash', description: 'Fast simple work' },
-    t1: { provider: 'deepseek', model: 'deepseek-v4-flash', description: 'Balanced agent work' },
-    t2: { provider: 'deepseek', model: 'deepseek-v4-pro', description: 'Complex text tasks' },
-    t3: { provider: 'deepseek', model: 'deepseek-v4-pro', description: 'Deep reasoning' },
+    c0: { provider: 'deepseek', model: 'deepseek-v4-flash', description: 'Fast simple work' },
+    c1: { provider: 'deepseek', model: 'deepseek-v4-flash', description: 'Balanced agent work' },
+    c2: { provider: 'deepseek', model: 'deepseek-v4-pro', description: 'Complex text tasks' },
+    c3: { provider: 'deepseek', model: 'deepseek-v4-pro', description: 'Deep reasoning' },
   },
   gemini: {
-    t0: { provider: 'gemini', model: 'gemini-2.5-flash-lite', description: 'Fast simple work' },
-    t1: { provider: 'gemini', model: 'gemini-2.5-flash', description: 'Balanced agent work' },
-    t2: { provider: 'gemini', model: 'gemini-2.5-pro', description: 'Complex text tasks' },
-    t3: { provider: 'gemini', model: 'gemini-2.5-pro', description: 'Deep reasoning' },
+    c0: { provider: 'gemini', model: 'gemini-2.5-flash-lite', description: 'Fast simple work' },
+    c1: { provider: 'gemini', model: 'gemini-2.5-flash', description: 'Balanced agent work' },
+    c2: { provider: 'gemini', model: 'gemini-2.5-pro', description: 'Complex text tasks' },
+    c3: { provider: 'gemini', model: 'gemini-2.5-pro', description: 'Deep reasoning' },
   },
   moonshot: {
-    t0: { provider: 'moonshot', model: 'kimi-k2.5', description: 'Fast simple work' },
-    t1: { provider: 'moonshot', model: 'kimi-k2.5', description: 'Balanced agent work' },
-    t2: { provider: 'moonshot', model: 'kimi-k2.6', description: 'Complex text and image work', supportsImage: true },
-    t3: { provider: 'moonshot', model: 'kimi-k2.6', description: 'Deep reasoning and image work', supportsImage: true },
+    c0: { provider: 'moonshot', model: 'kimi-k2.5', description: 'Fast simple work' },
+    c1: { provider: 'moonshot', model: 'kimi-k2.5', description: 'Balanced agent work' },
+    c2: { provider: 'moonshot', model: 'kimi-k2.6', description: 'Complex text and image work', supportsImage: true },
+    c3: { provider: 'moonshot', model: 'kimi-k2.6', description: 'Deep reasoning and image work', supportsImage: true },
   },
   volcengine: {
-    t0: { provider: 'volcengine', model: 'doubao-seed-2-0-mini-260215', description: 'Fast simple work' },
-    t1: { provider: 'volcengine', model: 'doubao-seed-2-0-lite-260215', description: 'Balanced agent work' },
-    t2: { provider: 'volcengine', model: 'doubao-seed-2-0-pro-260215', description: 'Complex text tasks' },
-    t3: { provider: 'volcengine', model: 'doubao-seed-2-0-code-preview-260215', description: 'Code-heavy deep reasoning' },
+    c0: { provider: 'volcengine', model: 'doubao-seed-2-0-mini-260215', description: 'Fast simple work' },
+    c1: { provider: 'volcengine', model: 'doubao-seed-2-0-lite-260215', description: 'Balanced agent work' },
+    c2: { provider: 'volcengine', model: 'doubao-seed-2-0-pro-260215', description: 'Complex text tasks' },
+    c3: { provider: 'volcengine', model: 'doubao-seed-2-0-code-preview-260215', description: 'Code-heavy deep reasoning' },
   },
   zhipu: {
-    t0: { provider: 'zhipu', model: 'glm-4.7-flashx', description: 'Fast simple work' },
-    t1: { provider: 'zhipu', model: 'glm-5', description: 'Balanced agent work' },
-    t2: { provider: 'zhipu', model: 'glm-5.1', description: 'Complex text tasks' },
-    t3: { provider: 'zhipu', model: 'glm-5.1', description: 'Deep reasoning' },
+    c0: { provider: 'zhipu', model: 'glm-4.7-flashx', description: 'Fast simple work' },
+    c1: { provider: 'zhipu', model: 'glm-5', description: 'Balanced agent work' },
+    c2: { provider: 'zhipu', model: 'glm-5.1', description: 'Complex text tasks' },
+    c3: { provider: 'zhipu', model: 'glm-5.1', description: 'Deep reasoning' },
   },
 }
 
@@ -454,7 +537,8 @@ function normalizeProvider(raw: unknown): string {
 
 function normalizeTextTier(raw: unknown): TextRouterTier {
   const value = String(raw || '').trim().toLowerCase()
-  return TEXT_ROUTER_TIERS.includes(value as TextRouterTier) ? value as TextRouterTier : 't1'
+  const canonical = canonicalTierKey(value)
+  return TEXT_ROUTER_TIERS.includes(canonical as TextRouterTier) ? canonical as TextRouterTier : 'c1'
 }
 
 function normalizeRouterMode(raw: unknown, provider: string): RouterMode {
@@ -475,8 +559,9 @@ function normalizeRouterTiers(raw: unknown, fallback: Record<string, RouterTier>
   if (!raw || typeof raw !== 'object') return cloneRouterTiers(fallback)
   const source = raw as Record<string, unknown>
   const out = cloneRouterTiers(fallback)
-  for (const [name, value] of Object.entries(source)) {
+  for (const [rawName, value] of Object.entries(source)) {
     if (!value || typeof value !== 'object') continue
+    const name = canonicalTierKey(rawName)
     const tier = value as Record<string, unknown>
     const provider = String(tier.provider || out[name]?.provider || '').trim()
     const model = String(tier.model || out[name]?.model || '').trim()
@@ -495,7 +580,7 @@ function normalizeRouterTiers(raw: unknown, fallback: Record<string, RouterTier>
 }
 
 function routerDefaultModel(tiers: Record<string, RouterTier>, defaultTier: TextRouterTier): string {
-  return tiers[defaultTier]?.model || tiers.t1?.model || tiers.t0?.model || ''
+  return tiers[defaultTier]?.model || tiers.c1?.model || tiers.c0?.model || ''
 }
 
 function searchProviderDefaults(provider: string): SearchProviderCatalogEntry {
@@ -505,6 +590,21 @@ function searchProviderDefaults(provider: string): SearchProviderCatalogEntry {
 function normalizeSearchProvider(raw: unknown): string {
   const provider = String(raw || '').trim().toLowerCase()
   return SEARCH_PROVIDER_BY_ID.has(provider) ? provider : 'duckduckgo'
+}
+
+function normalizeBooleanSetting(raw: unknown, fallback: boolean): boolean {
+  if (typeof raw === 'boolean') return raw
+  if (typeof raw === 'number') return raw !== 0
+  if (typeof raw === 'string') {
+    const value = raw.trim().toLowerCase()
+    if (['1', 'true', 'yes', 'on'].includes(value)) return true
+    if (['0', 'false', 'no', 'off', ''].includes(value)) return false
+  }
+  return fallback
+}
+
+function truthyEnv(raw: string | undefined): boolean {
+  return normalizeBooleanSetting(raw, false)
 }
 
 function tomlString(value: string): string {
@@ -541,6 +641,19 @@ function routerConfigTomlLines(credential: DesktopConnection): string[] {
     `default_tier = ${tomlString(credential.routerDefaultTier)}`,
     ...(credential.routerMode === 'recommended' ? [`tier_profile = ${tomlString(credential.provider)}`] : []),
     ...tierLines,
+  ]
+}
+
+function desktopConfigShouldWritePrivacySection(credential: DesktopConnection): boolean {
+  return credential.disableNetworkObservability || readDesktopConfigNetworkObservabilitySetting() !== null
+}
+
+function privacyConfigTomlLines(credential: DesktopConnection): string[] {
+  if (!desktopConfigShouldWritePrivacySection(credential)) return []
+  return [
+    '',
+    '[privacy]',
+    `disable_network_observability = ${credential.disableNetworkObservability ? 'true' : 'false'}`,
   ]
 }
 
@@ -626,34 +739,39 @@ function isConnectionReady(record: DesktopConnection): boolean {
   }
 }
 
+function normalizeDesktopCredential(parsed: Partial<DesktopConnection>): DesktopConnection {
+  const provider = normalizeProvider(parsed.provider)
+  const defaults = providerDefaults(provider)
+  const routerMode = normalizeRouterMode(parsed.routerMode, provider)
+  const routerDefaultTier = normalizeTextTier(parsed.routerDefaultTier)
+  const defaultTiers = defaultRouterTiers(provider, routerMode)
+  const routerTiers = normalizeRouterTiers(parsed.routerTiers, defaultTiers)
+  const searchProvider = normalizeSearchProvider(parsed.searchProvider)
+  const searchDefaults = searchProviderDefaults(searchProvider)
+  const now = new Date().toISOString()
+  return {
+    provider,
+    model: parsed.model || routerDefaultModel(routerTiers, routerDefaultTier) || defaults.model,
+    baseUrl: parsed.baseUrl || defaults.baseUrl,
+    apiKeyEnv: parsed.apiKeyEnv || defaults.apiKeyEnv,
+    encryptedApiKey: parsed.encryptedApiKey || '',
+    routerMode,
+    routerDefaultTier,
+    routerTiers,
+    searchProvider,
+    searchApiKeyEnv: parsed.searchApiKeyEnv || searchDefaults.envKey,
+    encryptedSearchApiKey: parsed.encryptedSearchApiKey || '',
+    encryption: parsed.encryption === 'safeStorage' ? 'safeStorage' : 'plain',
+    disableNetworkObservability: normalizeBooleanSetting(parsed.disableNetworkObservability, false),
+    createdAt: parsed.createdAt || now,
+    updatedAt: parsed.updatedAt || now,
+  }
+}
+
 async function loadDesktopCredential(): Promise<DesktopConnection | null> {
   try {
     const raw = await readFile(credentialPath(), 'utf8')
-    const parsed = JSON.parse(raw) as Partial<DesktopConnection>
-    const provider = normalizeProvider(parsed.provider)
-    const defaults = providerDefaults(provider)
-    const routerMode = normalizeRouterMode(parsed.routerMode, provider)
-    const routerDefaultTier = normalizeTextTier(parsed.routerDefaultTier)
-    const defaultTiers = defaultRouterTiers(provider, routerMode)
-    const routerTiers = normalizeRouterTiers(parsed.routerTiers, defaultTiers)
-    const searchProvider = normalizeSearchProvider(parsed.searchProvider)
-    const searchDefaults = searchProviderDefaults(searchProvider)
-    return {
-      provider,
-      model: parsed.model || routerDefaultModel(routerTiers, routerDefaultTier) || defaults.model,
-      baseUrl: parsed.baseUrl || defaults.baseUrl,
-      apiKeyEnv: parsed.apiKeyEnv || defaults.apiKeyEnv,
-      encryptedApiKey: parsed.encryptedApiKey || '',
-      routerMode,
-      routerDefaultTier,
-      routerTiers,
-      searchProvider,
-      searchApiKeyEnv: parsed.searchApiKeyEnv || searchDefaults.envKey,
-      encryptedSearchApiKey: parsed.encryptedSearchApiKey || '',
-      encryption: parsed.encryption === 'safeStorage' ? 'safeStorage' : 'plain',
-      createdAt: parsed.createdAt || new Date().toISOString(),
-      updatedAt: parsed.updatedAt || new Date().toISOString(),
-    }
+    return normalizeDesktopCredential(JSON.parse(raw) as Partial<DesktopConnection>)
   } catch {
     return null
   }
@@ -689,6 +807,10 @@ async function saveDesktopCredential(payload: OnboardingPayload): Promise<Deskto
   const encryptedApiKey = apiKeySecret?.value || ''
   const encryptedSearchApiKey = searchApiKeySecret?.value || ''
   const encryption = apiKeySecret?.encryption || searchApiKeySecret?.encryption || 'plain'
+  const configDisableNetworkObservability = readDesktopConfigNetworkObservabilitySetting()
+  const disableNetworkObservability = Object.prototype.hasOwnProperty.call(payload, 'disableNetworkObservability')
+    ? normalizeBooleanSetting(payload.disableNetworkObservability, existing?.disableNetworkObservability ?? false)
+    : configDisableNetworkObservability ?? existing?.disableNetworkObservability ?? false
 
   if (defaults.requiresApiKey && !encryptedApiKey) throw new Error('API key is required.')
   if (!routerModel && routerMode !== 'disabled') throw new Error('Router tiers require a default model.')
@@ -711,6 +833,7 @@ async function saveDesktopCredential(payload: OnboardingPayload): Promise<Deskto
     searchApiKeyEnv: searchDefaults.envKey,
     encryptedSearchApiKey,
     encryption,
+    disableNetworkObservability,
     createdAt: existing?.createdAt || now,
     updatedAt: now,
   }
@@ -741,6 +864,7 @@ async function writeDesktopConfig(credential: DesktopConnection): Promise<void> 
     `base_url = ${tomlString(credential.baseUrl)}`,
     '',
     ...routerConfigTomlLines(credential),
+    ...privacyConfigTomlLines(credential),
     '',
     '[control_ui]',
     'enabled = true',
@@ -769,6 +893,7 @@ function settingsSnapshot(connection: DesktopConnection | null): DesktopSettings
     searchProvider,
     searchApiKeyEnv: connection?.searchApiKeyEnv || searchDefaults.envKey,
     searchApiKeyConfigured: Boolean(connection?.encryptedSearchApiKey),
+    disableNetworkObservability: connection?.disableNetworkObservability ?? false,
     searchProviders: SEARCH_PROVIDER_CATALOG,
     providers: PROVIDER_CATALOG.map((entry) => ({
       providerId: entry.id,
@@ -907,6 +1032,22 @@ const DESKTOP_MESSAGES: Record<DesktopLocale, Record<string, string>> = {
     'menu.edit': 'Edit',
     'menu.view': 'View',
     'menu.window': 'Window',
+    'menu.checkForUpdates': 'Check for Updates…',
+    'menu.relaunchToUpdate': 'Relaunch to Update',
+    'update.newVersionTitle': 'A new version is available',
+    'update.newVersionDetail': 'OpenSquilla {version} is available. Download it now?',
+    'update.download': 'Download',
+    'update.later': 'Later',
+    'update.readyTitle': 'Update ready to install',
+    'update.readyDetail': 'OpenSquilla {version} has been downloaded. Restart to finish updating?',
+    'update.restartNow': 'Restart now',
+    'update.upToDateTitle': "You're up to date",
+    'update.upToDateDetail': 'OpenSquilla {version} is the latest version.',
+    'update.errorTitle': 'Update check failed',
+    'update.moveToApplications': 'Move OpenSquilla to your Applications folder to enable automatic updates, then try again.',
+    'update.gatewayShutdownTimeout': 'OpenSquilla could not stop the local runtime. Try relaunching to update again.',
+    'update.mockInstallTitle': 'Mock update restart',
+    'update.mockInstallDetail': 'Mock mode: OpenSquilla would restart now to install {version}. No files were changed.',
     'window.onboarding': 'Set up OpenSquilla',
     'boot.profile': 'Preparing desktop profile',
     'boot.gateway-start': 'Starting local runtime',
@@ -974,6 +1115,22 @@ const DESKTOP_MESSAGES: Record<DesktopLocale, Record<string, string>> = {
     'menu.edit': '编辑',
     'menu.view': '视图',
     'menu.window': '窗口',
+    'menu.checkForUpdates': '检查更新…',
+    'menu.relaunchToUpdate': '重启以更新',
+    'update.newVersionTitle': '有新版本可用',
+    'update.newVersionDetail': 'OpenSquilla {version} 已发布，现在下载吗？',
+    'update.download': '下载',
+    'update.later': '稍后',
+    'update.readyTitle': '更新已就绪',
+    'update.readyDetail': 'OpenSquilla {version} 已下载完成。是否重启以完成更新？',
+    'update.restartNow': '立即重启',
+    'update.upToDateTitle': '已是最新版本',
+    'update.upToDateDetail': 'OpenSquilla {version} 已是最新版本。',
+    'update.errorTitle': '检查更新失败',
+    'update.moveToApplications': '请先将 OpenSquilla 移动到"应用程序"文件夹以启用自动更新，然后重试。',
+    'update.gatewayShutdownTimeout': 'OpenSquilla 无法停止本地运行时。请再次尝试重启以更新。',
+    'update.mockInstallTitle': '模拟重启更新',
+    'update.mockInstallDetail': '模拟模式：OpenSquilla 现在会重启并安装 {version}。没有修改任何文件。',
     'window.onboarding': '设置 OpenSquilla',
     'boot.profile': '正在准备桌面配置',
     'boot.gateway-start': '正在启动本地运行时',
@@ -1023,7 +1180,7 @@ const DESKTOP_MESSAGES: Record<DesktopLocale, Record<string, string>> = {
     'onboarding.step3.back': '返回',
     'onboarding.step3.next': '下一步',
     'onboarding.step4.badge': '模型',
-    'onboarding.step4.heading': '查看层级模型',
+    'onboarding.step4.heading': '候选模型池',
     'onboarding.step4.subtitle': '选择默认文本层级并保留 CLI 默认值，或在启动前自定义模型 id。',
     'onboarding.step4.back': '返回',
     'onboarding.step4.next': '下一步',
@@ -1041,6 +1198,20 @@ const DESKTOP_MESSAGES: Record<DesktopLocale, Record<string, string>> = {
     'menu.edit': '編集',
     'menu.view': '表示',
     'menu.window': 'ウインドウ',
+    'menu.checkForUpdates': 'アップデートを確認…',
+    'menu.relaunchToUpdate': '再起動してアップデート',
+    'update.newVersionTitle': '新しいバージョンが利用可能です',
+    'update.newVersionDetail': 'OpenSquilla {version} が利用可能です。今すぐダウンロードしますか？',
+    'update.download': 'ダウンロード',
+    'update.later': '後で',
+    'update.readyTitle': 'アップデートの準備が完了しました',
+    'update.readyDetail': 'OpenSquilla {version} をダウンロードしました。再起動して更新を完了しますか？',
+    'update.restartNow': '今すぐ再起動',
+    'update.upToDateTitle': '最新の状態です',
+    'update.upToDateDetail': 'OpenSquilla {version} が最新バージョンです。',
+    'update.errorTitle': 'アップデートの確認に失敗しました',
+    'update.moveToApplications': '自動アップデートを有効にするには、OpenSquilla を「アプリケーション」フォルダに移動してから再試行してください。',
+    'update.gatewayShutdownTimeout': 'ローカルランタイムを停止できませんでした。もう一度、再起動してアップデートをお試しください。',
     'window.onboarding': 'OpenSquilla をセットアップ',
     'boot.profile': 'デスクトッププロファイルを準備しています',
     'boot.gateway-start': 'ローカルランタイムを起動しています',
@@ -1108,6 +1279,20 @@ const DESKTOP_MESSAGES: Record<DesktopLocale, Record<string, string>> = {
     'menu.edit': 'Édition',
     'menu.view': 'Affichage',
     'menu.window': 'Fenêtre',
+    'menu.checkForUpdates': 'Rechercher les mises à jour…',
+    'menu.relaunchToUpdate': 'Relancer pour mettre à jour',
+    'update.newVersionTitle': 'Une nouvelle version est disponible',
+    'update.newVersionDetail': 'OpenSquilla {version} est disponible. Télécharger maintenant ?',
+    'update.download': 'Télécharger',
+    'update.later': 'Plus tard',
+    'update.readyTitle': 'Mise à jour prête à installer',
+    'update.readyDetail': 'OpenSquilla {version} a été téléchargée. Redémarrer pour terminer la mise à jour ?',
+    'update.restartNow': 'Redémarrer maintenant',
+    'update.upToDateTitle': 'Vous êtes à jour',
+    'update.upToDateDetail': 'OpenSquilla {version} est la dernière version.',
+    'update.errorTitle': 'Échec de la recherche de mises à jour',
+    'update.moveToApplications': 'Déplacez OpenSquilla dans votre dossier Applications pour activer les mises à jour automatiques, puis réessayez.',
+    'update.gatewayShutdownTimeout': 'OpenSquilla n\'a pas pu arrêter le runtime local. Réessayez de relancer la mise à jour.',
     'window.onboarding': 'Configurer OpenSquilla',
     'boot.profile': 'Préparation du profil de bureau',
     'boot.gateway-start': 'Démarrage du runtime local',
@@ -1175,6 +1360,20 @@ const DESKTOP_MESSAGES: Record<DesktopLocale, Record<string, string>> = {
     'menu.edit': 'Bearbeiten',
     'menu.view': 'Ansicht',
     'menu.window': 'Fenster',
+    'menu.checkForUpdates': 'Nach Updates suchen…',
+    'menu.relaunchToUpdate': 'Zum Aktualisieren neu starten',
+    'update.newVersionTitle': 'Eine neue Version ist verfügbar',
+    'update.newVersionDetail': 'OpenSquilla {version} ist verfügbar. Jetzt herunterladen?',
+    'update.download': 'Herunterladen',
+    'update.later': 'Später',
+    'update.readyTitle': 'Update bereit zur Installation',
+    'update.readyDetail': 'OpenSquilla {version} wurde heruntergeladen. Neu starten, um das Update abzuschließen?',
+    'update.restartNow': 'Jetzt neu starten',
+    'update.upToDateTitle': 'Sie sind auf dem neuesten Stand',
+    'update.upToDateDetail': 'OpenSquilla {version} ist die neueste Version.',
+    'update.errorTitle': 'Update-Prüfung fehlgeschlagen',
+    'update.moveToApplications': 'Verschieben Sie OpenSquilla in Ihren Programme-Ordner, um automatische Updates zu aktivieren, und versuchen Sie es erneut.',
+    'update.gatewayShutdownTimeout': 'OpenSquilla konnte die lokale Laufzeitumgebung nicht stoppen. Versuchen Sie erneut, zum Aktualisieren neu zu starten.',
     'window.onboarding': 'OpenSquilla einrichten',
     'boot.profile': 'Desktop-Profil wird vorbereitet',
     'boot.gateway-start': 'Lokale Laufzeitumgebung wird gestartet',
@@ -1242,6 +1441,20 @@ const DESKTOP_MESSAGES: Record<DesktopLocale, Record<string, string>> = {
     'menu.edit': 'Edición',
     'menu.view': 'Ver',
     'menu.window': 'Ventana',
+    'menu.checkForUpdates': 'Buscar actualizaciones…',
+    'menu.relaunchToUpdate': 'Reiniciar para actualizar',
+    'update.newVersionTitle': 'Hay una nueva versión disponible',
+    'update.newVersionDetail': 'OpenSquilla {version} está disponible. ¿Descargar ahora?',
+    'update.download': 'Descargar',
+    'update.later': 'Más tarde',
+    'update.readyTitle': 'Actualización lista para instalar',
+    'update.readyDetail': 'OpenSquilla {version} se ha descargado. ¿Reiniciar para finalizar la actualización?',
+    'update.restartNow': 'Reiniciar ahora',
+    'update.upToDateTitle': 'Estás al día',
+    'update.upToDateDetail': 'OpenSquilla {version} es la última versión.',
+    'update.errorTitle': 'Error al buscar actualizaciones',
+    'update.moveToApplications': 'Mueve OpenSquilla a tu carpeta de Aplicaciones para habilitar las actualizaciones automáticas e inténtalo de nuevo.',
+    'update.gatewayShutdownTimeout': 'OpenSquilla no pudo detener el runtime local. Intenta reiniciar para actualizar de nuevo.',
     'window.onboarding': 'Configurar OpenSquilla',
     'boot.profile': 'Preparando el perfil de escritorio',
     'boot.gateway-start': 'Iniciando el runtime local',
@@ -1326,7 +1539,7 @@ const ONBOARDING_SCRIPT_MESSAGES: Record<DesktopLocale, Record<string, string>> 
     fixedTitle: 'Use one fixed model',
     fixedBody: 'Skip Smart Router and send every request to the direct model.',
     routerHintDisabled: 'Requests will use the direct model field from the provider step.',
-    routerHintActive: '{mode} is active. The next step shows the exact t0-t3 and image model ids before saving.',
+    routerHintActive: '{mode} is active. The next step shows the exact c0-c3 and image model ids before saving.',
     directModelLabel: 'Direct model',
     noModel: 'No model',
     directModelNote: 'Smart Router is off. Every request uses this model directly.',
@@ -1359,7 +1572,7 @@ const ONBOARDING_SCRIPT_MESSAGES: Record<DesktopLocale, Record<string, string>> 
     fixedTitle: '使用一个固定模型',
     fixedBody: '跳过 Smart Router，将每个请求都发送到直连模型。',
     routerHintDisabled: '请求将使用提供商步骤中的直连模型字段。',
-    routerHintActive: '{mode} 已启用。下一步将在保存前显示确切的 t0-t3 和图像模型 id。',
+    routerHintActive: '{mode} 已启用。下一步将在保存前显示确切的 c0-c3 和图像模型 id。',
     directModelLabel: '直连模型',
     noModel: '无模型',
     directModelNote: 'Smart Router 已关闭。每个请求都直接使用此模型。',
@@ -1392,7 +1605,7 @@ const ONBOARDING_SCRIPT_MESSAGES: Record<DesktopLocale, Record<string, string>> 
     fixedTitle: '固定モデルを 1 つ使用',
     fixedBody: 'Smart Router をスキップし、すべてのリクエストを直接モデルに送信します。',
     routerHintDisabled: 'リクエストはプロバイダー手順の直接モデルフィールドを使用します。',
-    routerHintActive: '{mode} が有効です。次の手順では保存前に正確な t0-t3 と画像モデルの id を表示します。',
+    routerHintActive: '{mode} が有効です。次の手順では保存前に正確な c0-c3 と画像モデルの id を表示します。',
     directModelLabel: '直接モデル',
     noModel: 'モデルなし',
     directModelNote: 'Smart Router はオフです。すべてのリクエストでこのモデルを直接使用します。',
@@ -1425,7 +1638,7 @@ const ONBOARDING_SCRIPT_MESSAGES: Record<DesktopLocale, Record<string, string>> 
     fixedTitle: 'Utiliser un seul modèle fixe',
     fixedBody: 'Ignorer Smart Router et envoyer chaque requête au modèle direct.',
     routerHintDisabled: 'Les requêtes utiliseront le champ de modèle direct de l\'étape fournisseur.',
-    routerHintActive: '{mode} est actif. L\'étape suivante affiche les id exacts t0-t3 et du modèle d\'image avant l\'enregistrement.',
+    routerHintActive: '{mode} est actif. L\'étape suivante affiche les id exacts c0-c3 et du modèle d\'image avant l\'enregistrement.',
     directModelLabel: 'Modèle direct',
     noModel: 'Aucun modèle',
     directModelNote: 'Smart Router est désactivé. Chaque requête utilise directement ce modèle.',
@@ -1458,7 +1671,7 @@ const ONBOARDING_SCRIPT_MESSAGES: Record<DesktopLocale, Record<string, string>> 
     fixedTitle: 'Ein festes Modell verwenden',
     fixedBody: 'Smart Router überspringen und jede Anfrage an das direkte Modell senden.',
     routerHintDisabled: 'Anfragen verwenden das Feld für das direkte Modell aus dem Anbieterschritt.',
-    routerHintActive: '{mode} ist aktiv. Der nächste Schritt zeigt vor dem Speichern die genauen t0-t3- und Bildmodell-ids.',
+    routerHintActive: '{mode} ist aktiv. Der nächste Schritt zeigt vor dem Speichern die genauen c0-c3- und Bildmodell-ids.',
     directModelLabel: 'Direktes Modell',
     noModel: 'Kein Modell',
     directModelNote: 'Smart Router ist aus. Jede Anfrage verwendet dieses Modell direkt.',
@@ -1491,7 +1704,7 @@ const ONBOARDING_SCRIPT_MESSAGES: Record<DesktopLocale, Record<string, string>> 
     fixedTitle: 'Usar un solo modelo fijo',
     fixedBody: 'Omitir Smart Router y enviar cada solicitud al modelo directo.',
     routerHintDisabled: 'Las solicitudes usarán el campo de modelo directo del paso del proveedor.',
-    routerHintActive: '{mode} está activo. El siguiente paso muestra los id exactos t0-t3 y del modelo de imagen antes de guardar.',
+    routerHintActive: '{mode} está activo. El siguiente paso muestra los id exactos c0-c3 y del modelo de imagen antes de guardar.',
     directModelLabel: 'Modelo directo',
     noModel: 'Sin modelo',
     directModelNote: 'Smart Router está desactivado. Cada solicitud usa este modelo directamente.',
@@ -1522,14 +1735,33 @@ function desktopT(key: string): string {
 }
 
 function createApplicationMenu(): void {
+  const appSubmenu: Electron.MenuItemConstructorOptions[] = [{ role: 'about' }]
+  if (desktopUpdateMenuEnabled()) {
+    appSubmenu.push({ type: 'separator' })
+    if (downloadedUpdateVersion !== null) {
+      appSubmenu.push(
+        {
+          label: desktopT('menu.relaunchToUpdate'),
+          click: () => {
+            void applyDownloadedUpdate()
+          },
+        },
+        { type: 'separator' },
+      )
+    }
+    appSubmenu.push({
+      label: desktopT('menu.checkForUpdates'),
+      click: () => {
+        void checkForUpdates(true)
+      },
+    })
+  }
+  appSubmenu.push({ type: 'separator' }, { role: 'quit' })
+
   const template: Electron.MenuItemConstructorOptions[] = [
     {
       label: app.name,
-      submenu: [
-        { role: 'about' },
-        { type: 'separator' },
-        { role: 'quit' },
-      ],
+      submenu: appSubmenu,
     },
     {
       label: desktopT('menu.edit'),
@@ -1570,7 +1802,21 @@ function createApplicationMenu(): void {
   Menu.setApplicationMenu(Menu.buildFromTemplate(template))
 }
 
+function currentOnboardingWindow(): BrowserWindow | null {
+  return onboardingWindow && !onboardingWindow.isDestroyed() ? onboardingWindow : null
+}
+
+function focusOnboardingWindow(): boolean {
+  const window = currentOnboardingWindow()
+  if (!window) return false
+  if (window.isMinimized()) window.restore()
+  window.show()
+  window.focus()
+  return true
+}
+
 function focusMainWindow(): boolean {
+  if (focusOnboardingWindow()) return true
   if (!mainWindow || mainWindow.isDestroyed()) return false
   if (mainWindow.isMinimized()) mainWindow.restore()
   mainWindow.show()
@@ -1622,9 +1868,9 @@ function onboardingHtml(): string {
       --muted: #646961;
       --dim: #8c9189;
       --line: rgba(32, 35, 31, 0.12);
-      --accent: #b84a12;
-      --accent-dark: #8f3305;
-      --accent-soft: rgba(184, 74, 18, 0.08);
+      --accent: #F26A1B;
+      --accent-dark: #D95A11;
+      --accent-soft: rgba(242, 106, 27, 0.08);
       --green: #25633a;
       color: var(--ink);
     }
@@ -1719,7 +1965,7 @@ function onboardingHtml(): string {
       border-color: var(--accent);
       background: var(--accent);
       color: #fff;
-      box-shadow: 0 9px 18px rgba(194, 65, 5, 0.2);
+      box-shadow: 0 9px 18px rgba(242, 106, 27, 0.2);
     }
     .step.done .step-index {
       border-color: rgba(35,106,58,0.32);
@@ -1879,7 +2125,7 @@ function onboardingHtml(): string {
       padding: 11px 13px;
     }
     .provider:hover, .choice:hover, .tier-button:hover {
-      border-color: rgba(184,74,18,0.3);
+      border-color: rgba(242,106,27,0.3);
       transform: translateY(-1px);
     }
     .provider.active, .choice.active, .tier-button.active {
@@ -1918,9 +2164,9 @@ function onboardingHtml(): string {
     }
     .provider-tag {
       width: fit-content;
-      border: 1px solid rgba(184,74,18,0.14);
+      border: 1px solid rgba(242,106,27,0.14);
       border-radius: 999px;
-      background: rgba(184,74,18,0.06);
+      background: rgba(242,106,27,0.06);
       color: var(--accent-dark);
       font-size: 9px;
       font-weight: 750;
@@ -1949,7 +2195,7 @@ function onboardingHtml(): string {
       text-align: left;
     }
     .provider-more-toggle:hover {
-      border-color: rgba(184,74,18,0.24);
+      border-color: rgba(242,106,27,0.24);
       color: var(--ink);
     }
     .provider-more-list {
@@ -2081,7 +2327,7 @@ function onboardingHtml(): string {
     }
     input:focus, select:focus {
       border-color: var(--accent);
-      box-shadow: 0 0 0 3px rgba(184, 68, 4, 0.12);
+      box-shadow: 0 0 0 3px rgba(242, 106, 27, 0.12);
     }
     details {
       border: 1px solid #e2e0da;
@@ -2136,9 +2382,9 @@ function onboardingHtml(): string {
     }
     .muted-line { color: var(--dim); font-size: 12px; }
     .note {
-      border: 1px solid rgba(194,65,5,0.13);
+      border: 1px solid rgba(242,106,27,0.13);
       border-radius: 8px;
-      background: rgba(194,65,5,0.055);
+      background: rgba(242,106,27,0.055);
       color: var(--muted);
       font-size: 12px;
       font-weight: 500;
@@ -2169,7 +2415,7 @@ function onboardingHtml(): string {
       background: linear-gradient(135deg, var(--accent), var(--accent-dark));
       border-radius: 8px;
       color: #fff;
-      box-shadow: 0 13px 28px rgba(194, 65, 5, 0.22);
+      box-shadow: 0 13px 28px rgba(242, 106, 27, 0.22);
       min-width: 150px;
     }
     .primary:hover {
@@ -2502,7 +2748,7 @@ function onboardingHtml(): string {
         });
         return;
       }
-      const defaultTier = document.getElementById('routerDefaultTier')?.value || 't1';
+      const defaultTier = document.getElementById('routerDefaultTier')?.value || 'c1';
       const tierButtons = textTiers.map((tier) => (
         '<button class="tier-button' + (tier === defaultTier ? ' active' : '') + '" type="button" data-default-tier="' + tier + '">' +
         '<strong>' + tier.toUpperCase() + '</strong><small title="' + escapeAttr(routerTiers[tier]?.model || t.noModel) + '">' + escapeHtml(shortModel(routerTiers[tier]?.model || t.noModel)) + '</small></button>'
@@ -2526,7 +2772,7 @@ function onboardingHtml(): string {
         '<details><summary>' + escapeHtml(t.customizeTiers) + '</summary><div class="editor-grid">' + editor + '</div></details>';
       tierBody.querySelectorAll('[data-default-tier]').forEach((button) => {
         button.addEventListener('click', () => {
-          document.getElementById('routerDefaultTier').value = button.dataset.defaultTier || 't1';
+          document.getElementById('routerDefaultTier').value = button.dataset.defaultTier || 'c1';
           renderTiers();
         });
       });
@@ -2663,7 +2909,7 @@ function onboardingHtml(): string {
       if (step === 1 && selected.requiresApiKey && !document.getElementById('apiKey').value.trim()) return fmt('apiKeyRequired', { label: selected.label });
       if (step === 3 && routerMode.value === 'disabled' && !model.value.trim()) return t.directModelRequiredDisabled;
       if (step === 3 && routerMode.value !== 'disabled') {
-        const defaultTier = document.getElementById('routerDefaultTier')?.value || 't1';
+        const defaultTier = document.getElementById('routerDefaultTier')?.value || 'c1';
         if (!routerTiers[defaultTier] || !routerTiers[defaultTier].model) return t.defaultTierRequiresModel;
       }
       if (step === 4 && selectedSearch.requiresApiKey && !document.getElementById('searchApiKey').value.trim()) return fmt('searchApiKeyRequired', { label: selectedSearch.label });
@@ -2703,7 +2949,7 @@ function onboardingHtml(): string {
           baseUrl: baseUrl.value,
           model: model.value,
           routerMode: routerMode.value,
-          routerDefaultTier: document.getElementById('routerDefaultTier')?.value || 't1',
+          routerDefaultTier: document.getElementById('routerDefaultTier')?.value || 'c1',
           routerTiers,
           searchProvider: searchProvider.value,
           searchApiKey: document.getElementById('searchApiKey').value,
@@ -2737,6 +2983,7 @@ async function runOnboarding(): Promise<DesktopConnection> {
   return new Promise((resolveCredential, rejectCredential) => {
     resolveOnboarding = resolveCredential
     rejectOnboarding = rejectCredential
+    const parentWindow = currentMainWindow()
     onboardingWindow = new BrowserWindow({
       width: 1040,
       height: 820,
@@ -2745,6 +2992,8 @@ async function runOnboarding(): Promise<DesktopConnection> {
       title: desktopT('window.onboarding'),
       icon: appIconPath(),
       resizable: true,
+      parent: parentWindow ?? undefined,
+      modal: Boolean(parentWindow),
       show: false,
       // Match the onboarding page's base so the first frame is not white.
       backgroundColor: '#f5f2eb',
@@ -2757,7 +3006,11 @@ async function runOnboarding(): Promise<DesktopConnection> {
     })
     installEditingContextMenu(onboardingWindow)
 
-    onboardingWindow.once('ready-to-show', () => onboardingWindow?.show())
+    onboardingWindow.once('ready-to-show', () => {
+      if (!onboardingWindow || onboardingWindow.isDestroyed()) return
+      onboardingWindow.show()
+      onboardingWindow?.focus()
+    })
     onboardingWindow.on('closed', () => {
       onboardingWindow = null
       if (rejectOnboarding) {
@@ -2915,12 +3168,49 @@ async function healthCheck(url: string): Promise<boolean> {
   }
 }
 
-async function waitForGateway(url: string): Promise<void> {
+const GATEWAY_OUTPUT_TAIL_MAX_CHARS = 12_000
+const NEWER_CONFIG_DIAGNOSTIC_FIELDS = [
+  'llm_ensemble',
+  'privacy',
+  'sandbox.auto_setup',
+  'llm_profiles',
+] as const
+
+function appendGatewayOutputTail(tail: string, chunk: Buffer | string): string {
+  const next = tail + String(chunk)
+  return next.length > GATEWAY_OUTPUT_TAIL_MAX_CHARS ? next.slice(-GATEWAY_OUTPUT_TAIL_MAX_CHARS) : next
+}
+
+function gatewayExitLooksLikeNewerConfig(output: string): boolean {
+  const normalized = output.toLowerCase()
+  const hasValidationSignal = (
+    normalized.includes('validationerror') ||
+    normalized.includes('extra_forbidden') ||
+    normalized.includes('extra inputs are not permitted')
+  )
+  return hasValidationSignal && NEWER_CONFIG_DIAGNOSTIC_FIELDS.some((field) => normalized.includes(field))
+}
+
+function classifyGatewayExitMessage(message: string, outputTail: string): string {
+  if (!gatewayExitLooksLikeNewerConfig(outputTail)) return message
+  return (
+    message +
+    '\n\nOpenSquilla could not read this config because it contains settings written by a newer OpenSquilla version. ' +
+    'Reopen OpenSquilla 0.5.0 Preview 1, or reset the desktop config before running an older version. ' +
+    'Use Reveal log for details.'
+  )
+}
+
+async function waitForGateway(url: string, earlyExitMessage?: () => string | null): Promise<void> {
   const startedAt = Date.now()
   while (Date.now() - startedAt < 45_000) {
+    const earlyExit = earlyExitMessage?.()
+    if (earlyExit) throw new Error(earlyExit)
     if (await healthCheck(url)) return
     await new Promise((resolveWait) => setTimeout(resolveWait, 500))
   }
+  const earlyExit = earlyExitMessage?.()
+  if (earlyExit) throw new Error(earlyExit)
   throw new Error(`Gateway did not become healthy at ${url}`)
 }
 
@@ -2964,6 +3254,8 @@ async function startGateway(): Promise<GatewayState> {
   const reusableGateway = await reuseHealthyGatewayState()
   if (reusableGateway) return reusableGateway
 
+  assertSupportedMacInstallLocation()
+
   if (gatewayProcess && gatewayState.owned) {
     if (hasGatewayProcessExited(gatewayProcess)) {
       gatewayProcess = null
@@ -2975,7 +3267,6 @@ async function startGateway(): Promise<GatewayState> {
   }
 
   const overrideUrl = process.env.OPENSQUILLA_DESKTOP_GATEWAY_URL
-  const explicitPort = process.env.OPENSQUILLA_DESKTOP_GATEWAY_PORT
   if (overrideUrl) {
     sendBootStatus('gateway-health')
     gatewayState.url = overrideUrl.replace(/\/$/, '')
@@ -2985,15 +3276,6 @@ async function startGateway(): Promise<GatewayState> {
     if (gatewayState.status !== 'ready') {
       throw new Error(`Configured gateway is not healthy: ${gatewayState.url}`)
     }
-    return gatewayState
-  }
-
-  if (!app.isPackaged && !explicitPort && await healthCheck('http://127.0.0.1:18791')) {
-    sendBootStatus('control')
-    gatewayState.url = 'http://127.0.0.1:18791'
-    gatewayState.port = 18791
-    gatewayState.owned = false
-    gatewayState.status = 'ready'
     return gatewayState
   }
 
@@ -3035,7 +3317,10 @@ async function startGateway(): Promise<GatewayState> {
     OPENSQUILLA_GATEWAY_CONFIG_PATH: desktopConfigPath(),
     OPENSQUILLA_NODE_BIN_DIR: nodeBinCandidates.join(pathDelimiter()),
     OPENSQUILLA_STATE_DIR: desktopStateDir(),
+    ...(connection.disableNetworkObservability ? { OPENSQUILLA_PRIVACY_DISABLE_NETWORK_OBSERVABILITY: '1' } : {}),
     PYTHONUNBUFFERED: '1',
+    PYTHONUTF8: '1',
+    PYTHONIOENCODING: 'utf-8:replace',
   }
 
   const child = spawn(
@@ -3048,10 +3333,18 @@ async function startGateway(): Promise<GatewayState> {
   )
   gatewayProcess = child
 
+  let gatewayOutputTail = ''
+  let childExitMessage: string | null = null
+  const rememberGatewayOutput = (chunk: Buffer | string) => {
+    gatewayOutputTail = appendGatewayOutputTail(gatewayOutputTail, chunk)
+  }
+  child.stdout.on('data', rememberGatewayOutput)
+  child.stderr.on('data', rememberGatewayOutput)
   child.stdout.pipe(logStream, { end: false })
   child.stderr.pipe(logStream, { end: false })
   child.once('exit', (code, signal) => {
     const message = `gateway exited code=${code ?? 'null'} signal=${signal ?? 'null'}`
+    const classifiedMessage = classifyGatewayExitMessage(message, gatewayOutputTail)
     const isCurrentGateway = gatewayProcess === child
     if (isCurrentGateway) gatewayProcess = null
     logStream.write(`\n[desktop] ${message}\n`)
@@ -3061,12 +3354,13 @@ async function startGateway(): Promise<GatewayState> {
       return
     }
     gatewayState.status = 'error'
-    gatewayState.error = message
+    gatewayState.error = classifiedMessage
+    childExitMessage = classifiedMessage
     sendBootError(gatewayState.error)
   })
 
   sendBootStatus('gateway-health')
-  await waitForGateway(url)
+  await waitForGateway(url, () => childExitMessage)
   await waitForControlUi(url)
   sendBootStatus('control')
   gatewayState.status = 'ready'
@@ -3211,6 +3505,7 @@ const GATEWAY_SHUTDOWN_KILL_AFTER_MS = 75_000
 // Short SIGKILL backstop after a hard terminate (TerminateProcess / SIGTERM)
 // when the graceful path was skipped or already overran its deadline.
 const GATEWAY_HARD_KILL_BACKSTOP_MS = 5_000
+const UPDATE_GATEWAY_EXIT_TIMEOUT_MS = GATEWAY_SHUTDOWN_KILL_AFTER_MS + GATEWAY_HARD_KILL_BACKSTOP_MS
 
 // Ask the gateway to shut down gracefully over its owner-only HTTP endpoint,
 // which runs the full GatewayServer.close() drain before exiting. The desktop
@@ -3238,10 +3533,10 @@ function stopGateway(): void {
   gatewayProcess = null
 
   const hardTerminate = () => {
-    if (child.killed) return
+    if (hasGatewayProcessExited(child)) return
     child.kill('SIGTERM')
     setTimeout(() => {
-      if (!child.killed) child.kill('SIGKILL')
+      if (!hasGatewayProcessExited(child)) child.kill('SIGKILL')
     }, GATEWAY_HARD_KILL_BACKSTOP_MS).unref()
   }
 
@@ -3275,10 +3570,675 @@ function stopGateway(): void {
   // child before the main process exits — no drain, but no orphan either.
   child.kill('SIGTERM')
   setTimeout(() => {
-    if (!child.killed) child.kill('SIGKILL')
+    if (!hasGatewayProcessExited(child)) child.kill('SIGKILL')
   }, GATEWAY_SHUTDOWN_KILL_AFTER_MS).unref()
 }
 
+// ── Auto-update (electron-updater) ──────────────────────────────────────────
+// Phase 1 scope is macOS only. macOS release builds are Developer-ID signed +
+// notarized and ship the zip + latest-mac.yml feed that Squirrel.Mac consumes,
+// so in-place auto-update is safe. Windows builds are currently UNSIGNED, which
+// would make silent NSIS updates trip SmartScreen/UAC — so Windows stays on the
+// manual-download path (the in-app web notice) until a code-signing certificate
+// is in place. OPENSQUILLA_DESKTOP_ENABLE_WIN_UPDATE=1 opts in for local testing
+// only; OPENSQUILLA_DESKTOP_DISABLE_AUTO_UPDATE=1 turns the feature off entirely.
+const { autoUpdater } = electronUpdater
+
+let autoUpdaterReady = false
+let manualUpdateCheck = false
+let updateDownloadInProgress = false
+let updateApplying = false
+let downloadedUpdateVersion: string | null = null
+let updateGatewayShutdownProcess: ChildProcessWithoutNullStreams | null = null
+let mockDownloadedUpdate = false
+let mockUpdatePromptActive = false
+let mockUpdateDialogResponses: number[] | null = null
+
+const MOCK_UPDATE_VERSION_ENV = 'OPENSQUILLA_DESKTOP_MOCK_UPDATE_VERSION'
+const MOCK_UPDATE_DIALOG_RESPONSES_ENV = 'OPENSQUILLA_DESKTOP_MOCK_UPDATE_DIALOG_RESPONSES'
+
+type DesktopUpdateStatus =
+  | 'idle'
+  | 'checking'
+  | 'available'
+  | 'downloading'
+  | 'downloaded'
+  | 'not-available'
+  | 'error'
+  | 'applying'
+
+interface DesktopUpdateState {
+  status: DesktopUpdateStatus
+  currentVersion: string
+  latestVersion: string | null
+  progress: number | null
+  checkedAt: string | null
+  error: string | null
+  snoozedUntil: string | null
+  canNativeInstall: boolean
+  releaseUrl: string | null
+}
+
+interface DesktopUpdatePersistedState {
+  snoozedVersion?: string
+  snoozedUntil?: string
+}
+
+const UPDATE_SNOOZE_MS = 24 * 60 * 60 * 1000
+
+let desktopUpdateStatus: DesktopUpdateStatus = 'idle'
+let desktopUpdateLatestVersion: string | null = null
+let desktopUpdateProgress: number | null = null
+let desktopUpdateCheckedAt: string | null = null
+let desktopUpdateError: string | null = null
+let desktopUpdateSnoozedVersion: string | null = null
+let desktopUpdateSnoozedUntil: string | null = null
+let desktopUpdatePersistenceLoaded = false
+
+const NETWORK_OBSERVABILITY_DISABLE_ENV_KEYS = [
+  'OPENSQUILLA_PRIVACY_DISABLE_NETWORK_OBSERVABILITY',
+  'OPENSQUILLA_TELEMETRY_DISABLED',
+  'OPENSQUILLA_UPDATE_CHECK_DISABLED',
+] as const
+
+function desktopPersistedNetworkObservabilityDisabled(): boolean {
+  try {
+    const path = credentialPath()
+    if (!existsSync(path)) return false
+    const raw = readFileSync(path, 'utf8')
+    return normalizeDesktopCredential(JSON.parse(raw) as Partial<DesktopConnection>).disableNetworkObservability
+  } catch {
+    return true
+  }
+}
+
+function parseDesktopNetworkObservabilityPrivacyConfig(raw: string): boolean | null {
+  let inPrivacySection = false
+  for (const rawLine of raw.split(/\r?\n/)) {
+    const line = rawLine.trim()
+    if (!line || line.startsWith('#')) continue
+    const section = line.match(/^\[([^\]]+)\]$/)
+    if (section) {
+      inPrivacySection = section[1]?.trim() === 'privacy'
+      continue
+    }
+    if (!inPrivacySection) continue
+    const setting = line.match(/^disable_network_observability\s*=\s*(.*)$/i)
+    if (!setting) continue
+    const value = String(setting[1] ?? '').split('#', 1)[0].trim().toLowerCase()
+    if (value === 'true') return true
+    if (value === 'false') return false
+    return true
+  }
+  return null
+}
+
+function readDesktopConfigNetworkObservabilitySetting(): boolean | null {
+  try {
+    const path = desktopConfigPath()
+    if (!existsSync(path)) return null
+    const raw = readFileSync(path, 'utf8')
+    return parseDesktopNetworkObservabilityPrivacyConfig(raw)
+  } catch {
+    return true
+  }
+}
+
+function desktopConfigNetworkObservabilityDisabled(): boolean {
+  return readDesktopConfigNetworkObservabilitySetting() ?? false
+}
+
+function desktopNetworkObservabilityDisabled(): boolean {
+  if (NETWORK_OBSERVABILITY_DISABLE_ENV_KEYS.some((key) => truthyEnv(process.env[key]))) return true
+  return desktopPersistedNetworkObservabilityDisabled() || desktopConfigNetworkObservabilityDisabled()
+}
+
+function mockUpdateVersion(): string | null {
+  if (app.isPackaged) return null
+  const version = (process.env[MOCK_UPDATE_VERSION_ENV] || '').trim()
+  return version || null
+}
+
+function desktopUpdateMenuEnabled(): boolean {
+  return autoUpdateSupported() || mockUpdateVersion() !== null
+}
+
+function autoUpdateSupported(): boolean {
+  if (!app.isPackaged) return false
+  if (desktopNetworkObservabilityDisabled()) return false
+  if (process.env.OPENSQUILLA_DESKTOP_DISABLE_AUTO_UPDATE === '1') return false
+  if (process.platform === 'darwin') return true
+  if (process.platform === 'win32' && process.env.OPENSQUILLA_DESKTOP_ENABLE_WIN_UPDATE === '1') {
+    return true
+  }
+  return false
+}
+
+function nativeAutoUpdateEnabled(): boolean {
+  return mockUpdateVersion() !== null || (autoUpdateSupported() && macUpdateLocationOk())
+}
+
+function desktopUpdateStatePath(): string {
+  return join(desktopStateDir(), 'desktop-update.json')
+}
+
+function loadDesktopUpdatePersistence(): void {
+  if (desktopUpdatePersistenceLoaded) return
+  desktopUpdatePersistenceLoaded = true
+  try {
+    const path = desktopUpdateStatePath()
+    if (!existsSync(path)) return
+    const parsed = JSON.parse(readFileSync(path, 'utf8')) as DesktopUpdatePersistedState
+    const snoozedVersion = String(parsed.snoozedVersion || '').trim()
+    const snoozedUntil = String(parsed.snoozedUntil || '').trim()
+    if (!snoozedVersion || !snoozedUntil) return
+    if (Number.isNaN(Date.parse(snoozedUntil)) || Date.parse(snoozedUntil) <= Date.now()) return
+    desktopUpdateSnoozedVersion = snoozedVersion
+    desktopUpdateSnoozedUntil = snoozedUntil
+  } catch {
+    desktopUpdateSnoozedVersion = null
+    desktopUpdateSnoozedUntil = null
+  }
+}
+
+async function persistDesktopUpdateSnooze(): Promise<void> {
+  try {
+    mkdirSync(desktopStateDir(), { recursive: true })
+    await writeFile(
+      desktopUpdateStatePath(),
+      JSON.stringify(
+        {
+          snoozedVersion: desktopUpdateSnoozedVersion || undefined,
+          snoozedUntil: desktopUpdateSnoozedUntil || undefined,
+        },
+        null,
+        2,
+      ),
+      { mode: 0o600 },
+    )
+  } catch (err) {
+    console.warn('[updater] failed to persist update snooze', err)
+  }
+}
+
+function activeDesktopUpdateSnoozeFor(version: string | null): string | null {
+  loadDesktopUpdatePersistence()
+  if (!version || !desktopUpdateSnoozedVersion || !desktopUpdateSnoozedUntil) return null
+  if (desktopUpdateSnoozedVersion !== version) return null
+  if (Date.parse(desktopUpdateSnoozedUntil) <= Date.now()) {
+    desktopUpdateSnoozedVersion = null
+    desktopUpdateSnoozedUntil = null
+    void persistDesktopUpdateSnooze()
+    return null
+  }
+  return desktopUpdateSnoozedUntil
+}
+
+function clearDesktopUpdateSnoozeIfVersionChanged(version: string | null): void {
+  loadDesktopUpdatePersistence()
+  if (!version || !desktopUpdateSnoozedVersion || desktopUpdateSnoozedVersion === version) return
+  desktopUpdateSnoozedVersion = null
+  desktopUpdateSnoozedUntil = null
+  void persistDesktopUpdateSnooze()
+}
+
+function desktopUpdateSnapshot(): DesktopUpdateState {
+  const latestVersion = desktopUpdateLatestVersion || downloadedUpdateVersion
+  return {
+    status: desktopUpdateStatus,
+    currentVersion: app.getVersion(),
+    latestVersion,
+    progress: desktopUpdateProgress,
+    checkedAt: desktopUpdateCheckedAt,
+    error: desktopUpdateError,
+    snoozedUntil: activeDesktopUpdateSnoozeFor(latestVersion),
+    canNativeInstall: nativeAutoUpdateEnabled(),
+    releaseUrl: null,
+  }
+}
+
+function publishDesktopUpdateState(): DesktopUpdateState {
+  const state = desktopUpdateSnapshot()
+  for (const window of BrowserWindow.getAllWindows()) {
+    if (!window.isDestroyed()) window.webContents.send('desktop:update:state-changed', state)
+  }
+  return state
+}
+
+function setDesktopUpdateState(patch: Partial<DesktopUpdateState>): DesktopUpdateState {
+  if (patch.status !== undefined) desktopUpdateStatus = patch.status
+  if ('latestVersion' in patch) desktopUpdateLatestVersion = patch.latestVersion ?? null
+  if ('progress' in patch) desktopUpdateProgress = patch.progress ?? null
+  if ('checkedAt' in patch) desktopUpdateCheckedAt = patch.checkedAt ?? null
+  if ('error' in patch) desktopUpdateError = patch.error ?? null
+  clearDesktopUpdateSnoozeIfVersionChanged(desktopUpdateLatestVersion || downloadedUpdateVersion)
+  return publishDesktopUpdateState()
+}
+
+async function dismissDesktopUpdate(): Promise<DesktopUpdateState> {
+  const latestVersion = desktopUpdateLatestVersion || downloadedUpdateVersion
+  if (latestVersion) {
+    desktopUpdateSnoozedVersion = latestVersion
+    desktopUpdateSnoozedUntil = new Date(Date.now() + UPDATE_SNOOZE_MS).toISOString()
+    await persistDesktopUpdateSnooze()
+  }
+  return publishDesktopUpdateState()
+}
+
+// macOS Squirrel cannot swap an app that runs from a read-only/translocated
+// location (a mounted DMG, ~/Downloads). The app must live in /Applications.
+function macUpdateLocationOk(): boolean {
+  if (process.platform !== 'darwin') return true
+  try {
+    return app.isInApplicationsFolder()
+  } catch {
+    return true
+  }
+}
+
+function desktopTv(key: string, version: string): string {
+  return desktopT(key).replace('{version}', version)
+}
+
+function nextMockUpdateDialogResponse(): number | null {
+  if (mockUpdateVersion() === null) return null
+  if (mockUpdateDialogResponses === null) {
+    const raw = (process.env[MOCK_UPDATE_DIALOG_RESPONSES_ENV] || '').trim()
+    mockUpdateDialogResponses = raw
+      ? raw.split(',').map((part) => Number(part.trim()))
+      : []
+  }
+  const response = mockUpdateDialogResponses.shift()
+  if (!Number.isInteger(response)) return null
+  return Number(response)
+}
+
+function showUpdateDialog(
+  options: Electron.MessageBoxOptions,
+): Promise<Electron.MessageBoxReturnValue> {
+  const mockResponse = nextMockUpdateDialogResponse()
+  if (mockResponse !== null) {
+    console.log(`[mock-updater] ${String(options.title || options.message || 'dialog')} response=${mockResponse}`)
+    return Promise.resolve({ response: mockResponse, checkboxChecked: false })
+  }
+  const win = currentMainWindow()
+  return win ? dialog.showMessageBox(win, options) : dialog.showMessageBox(options)
+}
+
+function showUpdateError(err: unknown): void {
+  const shouldNotify = manualUpdateCheck || updateDownloadInProgress
+  manualUpdateCheck = false
+  updateDownloadInProgress = false
+  if (!shouldNotify) {
+    setDesktopUpdateState({
+      status: downloadedUpdateVersion ? 'downloaded' : 'idle',
+      latestVersion: downloadedUpdateVersion,
+      progress: downloadedUpdateVersion ? 100 : null,
+      checkedAt: new Date().toISOString(),
+      error: null,
+    })
+    return
+  }
+  setDesktopUpdateState({
+    status: 'error',
+    progress: null,
+    checkedAt: new Date().toISOString(),
+    error: String(err instanceof Error ? err.message : err ?? ''),
+  })
+}
+
+async function runMockUpdateFlow(version: string): Promise<void> {
+  if (mockUpdatePromptActive) return
+  mockUpdatePromptActive = true
+  try {
+    if (downloadedUpdateVersion === version) {
+      setDesktopUpdateState({
+        status: 'downloaded',
+        latestVersion: version,
+        progress: 100,
+        checkedAt: new Date().toISOString(),
+        error: null,
+      })
+    } else {
+      setDesktopUpdateState({
+        status: 'available',
+        latestVersion: version,
+        progress: null,
+        checkedAt: new Date().toISOString(),
+        error: null,
+      })
+    }
+  } finally {
+    mockUpdatePromptActive = false
+    updateDownloadInProgress = false
+    manualUpdateCheck = false
+  }
+}
+
+async function downloadDesktopUpdate(): Promise<DesktopUpdateState> {
+  if (updateDownloadInProgress || updateApplying || desktopUpdateStatus === 'downloaded') {
+    return desktopUpdateSnapshot()
+  }
+
+  const mockVersion = mockUpdateVersion()
+  if (mockVersion !== null) {
+    const version = desktopUpdateLatestVersion || mockVersion
+    updateDownloadInProgress = true
+    setDesktopUpdateState({
+      status: 'downloading',
+      latestVersion: version,
+      progress: 0,
+      error: null,
+    })
+    await new Promise<void>((resolve) => {
+      setTimeout(resolve, 100)
+    })
+    updateDownloadInProgress = false
+    downloadedUpdateVersion = version
+    mockDownloadedUpdate = true
+    createApplicationMenu()
+    return setDesktopUpdateState({
+      status: 'downloaded',
+      latestVersion: version,
+      progress: 100,
+      error: null,
+    })
+  }
+
+  if (!autoUpdateSupported()) return desktopUpdateSnapshot()
+  if (!macUpdateLocationOk()) {
+    return setDesktopUpdateState({
+      status: 'error',
+      progress: null,
+      error: desktopT('update.moveToApplications'),
+    })
+  }
+
+  initAutoUpdater()
+  if (!desktopUpdateLatestVersion) await checkForUpdates(true)
+  if (!desktopUpdateLatestVersion) return desktopUpdateSnapshot()
+
+  updateDownloadInProgress = true
+  setDesktopUpdateState({
+    status: 'downloading',
+    progress: 0,
+    error: null,
+  })
+  try {
+    await autoUpdater.downloadUpdate()
+  } catch (err) {
+    console.error('[updater] download failed', err)
+    showUpdateError(err)
+  }
+  return desktopUpdateSnapshot()
+}
+
+function initAutoUpdater(): void {
+  if (autoUpdaterReady || !autoUpdateSupported()) return
+  autoUpdaterReady = true
+
+  // Consent-based: the bundled gateway + ML runtime make updates large, so we
+  // never download without asking. We also keep installation on the explicit
+  // restart path so applyDownloadedUpdate() can drain the owned gateway first.
+  autoUpdater.autoDownload = false
+  autoUpdater.autoInstallOnAppQuit = false
+  autoUpdater.logger = {
+    info: (m: unknown) => console.log('[updater]', m),
+    warn: (m: unknown) => console.warn('[updater]', m),
+    error: (m: unknown) => console.error('[updater]', m),
+    debug: () => {},
+  }
+
+  autoUpdater.on('update-available', (info) => {
+    const version = String(info?.version ?? '')
+    manualUpdateCheck = false
+    updateDownloadInProgress = false
+    setDesktopUpdateState({
+      status: 'available',
+      latestVersion: version || null,
+      progress: null,
+      checkedAt: new Date().toISOString(),
+      error: null,
+    })
+  })
+
+  autoUpdater.on('update-not-available', () => {
+    manualUpdateCheck = false
+    updateDownloadInProgress = false
+    setDesktopUpdateState({
+      status: 'not-available',
+      latestVersion: app.getVersion(),
+      progress: null,
+      checkedAt: new Date().toISOString(),
+      error: null,
+    })
+  })
+
+  autoUpdater.on('download-progress', (progress) => {
+    const percent = Number(progress?.percent)
+    setDesktopUpdateState({
+      status: 'downloading',
+      progress: Number.isFinite(percent) ? Math.max(0, Math.min(100, percent)) : null,
+      error: null,
+    })
+  })
+
+  autoUpdater.on('update-downloaded', (info) => {
+    manualUpdateCheck = false
+    updateDownloadInProgress = false
+    const version = String(info?.version ?? '')
+    downloadedUpdateVersion = version
+    mockDownloadedUpdate = false
+    createApplicationMenu()
+    setDesktopUpdateState({
+      status: 'downloaded',
+      latestVersion: version || null,
+      progress: 100,
+      checkedAt: new Date().toISOString(),
+      error: null,
+    })
+  })
+
+  autoUpdater.on('error', (err) => {
+    console.error('[updater] error', err)
+    showUpdateError(err)
+  })
+}
+
+async function checkForUpdates(manual: boolean): Promise<void> {
+  if (updateDownloadInProgress || updateApplying) return
+
+  const mockVersion = mockUpdateVersion()
+  if (mockVersion !== null) {
+    manualUpdateCheck = manual
+    setDesktopUpdateState({
+      status: 'checking',
+      latestVersion: desktopUpdateLatestVersion || mockVersion,
+      progress: null,
+      checkedAt: new Date().toISOString(),
+      error: null,
+    })
+    await runMockUpdateFlow(mockVersion)
+    return
+  }
+
+  if (!autoUpdateSupported()) {
+    if (manual) {
+      setDesktopUpdateState({
+        status: 'error',
+        progress: null,
+        checkedAt: new Date().toISOString(),
+        error: desktopT('update.errorTitle'),
+      })
+    }
+    return
+  }
+
+  // Guide the user to /Applications first, otherwise the in-place swap fails.
+  if (!macUpdateLocationOk()) {
+    setDesktopUpdateState({
+      status: 'error',
+      progress: null,
+      checkedAt: new Date().toISOString(),
+      error: desktopT('update.moveToApplications'),
+    })
+    return
+  }
+
+  initAutoUpdater()
+  manualUpdateCheck = manual
+  setDesktopUpdateState({
+    status: 'checking',
+    progress: null,
+    checkedAt: new Date().toISOString(),
+    error: null,
+  })
+  try {
+    await autoUpdater.checkForUpdates()
+  } catch (err) {
+    console.error('[updater] checkForUpdates failed', err)
+    showUpdateError(err)
+  }
+}
+
+function gatewayProcessForUpdateInstall(): ChildProcessWithoutNullStreams | null {
+  const child = gatewayProcess && gatewayState.owned ? gatewayProcess : updateGatewayShutdownProcess
+  if (!child) return null
+  if (!hasGatewayProcessExited(child)) return child
+  if (updateGatewayShutdownProcess === child) updateGatewayShutdownProcess = null
+  return null
+}
+
+async function waitForGatewayProcessExit(child: ChildProcessWithoutNullStreams): Promise<boolean> {
+  if (hasGatewayProcessExited(child)) return true
+  return new Promise<boolean>((resolve) => {
+    let settled = false
+    const finish = (exited: boolean) => {
+      if (settled) return
+      settled = true
+      resolve(exited)
+    }
+    child.once('exit', () => finish(true))
+    setTimeout(() => {
+      finish(hasGatewayProcessExited(child))
+    }, UPDATE_GATEWAY_EXIT_TIMEOUT_MS).unref()
+  })
+}
+
+function restoreDownloadedUpdateRetryState(pendingVersion: string | null): void {
+  downloadedUpdateVersion = pendingVersion
+  updateApplying = false
+  isQuitting = false
+  createApplicationMenu()
+  setDesktopUpdateState({
+    status: pendingVersion ? 'downloaded' : 'error',
+    latestVersion: pendingVersion,
+    progress: pendingVersion ? 100 : null,
+  })
+}
+
+// Stop the owned gateway child and WAIT for it to exit before handing control to
+// the installer. The gateway holds the listen port + a PID lock and (on Windows)
+// open file handles under resources/runtime that the installer must overwrite —
+// orphaning it breaks the next launch. Mirrors the uninstall quiesce path.
+async function applyDownloadedUpdate(): Promise<void> {
+  if (updateApplying) return
+  if (!mockDownloadedUpdate && !downloadedUpdateVersion) return
+
+  if (mockDownloadedUpdate) {
+    const version = downloadedUpdateVersion || mockUpdateVersion() || app.getVersion()
+    updateApplying = true
+    setDesktopUpdateState({
+      status: 'applying',
+      latestVersion: version,
+      progress: 100,
+      error: null,
+    })
+    try {
+      await showUpdateDialog({
+        type: 'info',
+        buttons: ['OK'],
+        title: desktopT('update.mockInstallTitle'),
+        message: desktopT('update.mockInstallTitle'),
+        detail: desktopTv('update.mockInstallDetail', version),
+      })
+    } finally {
+      downloadedUpdateVersion = version
+      updateApplying = false
+      createApplicationMenu()
+      setDesktopUpdateState({
+        status: 'downloaded',
+        latestVersion: version,
+        progress: 100,
+        error: null,
+      })
+    }
+    return
+  }
+  const pendingVersion = downloadedUpdateVersion
+  updateApplying = true
+  downloadedUpdateVersion = null
+  createApplicationMenu()
+  setDesktopUpdateState({
+    status: 'applying',
+    latestVersion: pendingVersion,
+    progress: 100,
+    error: null,
+  })
+  isQuitting = true
+  const child = gatewayProcessForUpdateInstall()
+  if (child) {
+    if (gatewayProcess === child && gatewayState.owned) {
+      updateGatewayShutdownProcess = child
+      stopGateway()
+    }
+    const exited = await waitForGatewayProcessExit(child)
+    if (!exited) {
+      restoreDownloadedUpdateRetryState(pendingVersion)
+      void showUpdateDialog({
+        type: 'error',
+        buttons: ['OK'],
+        title: desktopT('update.errorTitle'),
+        message: desktopT('update.errorTitle'),
+        detail: desktopT('update.gatewayShutdownTimeout'),
+      })
+      return
+    }
+    if (updateGatewayShutdownProcess === child) updateGatewayShutdownProcess = null
+  }
+  // isSilent=false (show the platform installer UI where applicable),
+  // isForceRunAfter=true (relaunch after install).
+  try {
+    autoUpdater.quitAndInstall(false, true)
+  } catch (err) {
+    restoreDownloadedUpdateRetryState(pendingVersion)
+    void showUpdateDialog({
+      type: 'error',
+      buttons: ['OK'],
+      title: desktopT('update.errorTitle'),
+      message: desktopT('update.errorTitle'),
+      detail: String(err instanceof Error ? err.message : err ?? ''),
+    })
+  }
+}
+
+// Lets the gateway-served Control UI know whether THIS desktop runtime can
+// apply updates natively right now. The web "a newer version is available"
+// banner suppresses itself only when this is true, so unsupported platforms
+// (e.g. unsigned Windows, or macOS running outside /Applications) still show
+// the passive notice.
+ipcMain.handle('desktop:update:supported', () => nativeAutoUpdateEnabled())
+ipcMain.handle('desktop:update:state', () => desktopUpdateSnapshot())
+ipcMain.handle('desktop:update:check', async () => {
+  await checkForUpdates(true)
+  return desktopUpdateSnapshot()
+})
+ipcMain.handle('desktop:update:download', async () => downloadDesktopUpdate())
+ipcMain.handle('desktop:update:relaunch', async () => {
+  await applyDownloadedUpdate()
+  return desktopUpdateSnapshot()
+})
+ipcMain.handle('desktop:update:dismiss', async () => dismissDesktopUpdate())
 ipcMain.handle('desktop:os-locale', () => desktopLocale)
 ipcMain.handle('gateway:status', () => ({ ...gatewayState }))
 ipcMain.handle('gateway:reveal-log', async () => {
@@ -3318,6 +4278,9 @@ async function runUninstallCli(
       OPENSQUILLA_INSTALL_METHOD: 'desktop',
       OPENSQUILLA_GATEWAY_CONFIG_PATH: desktopConfigPath(),
       OPENSQUILLA_STATE_DIR: desktopHome(),
+      PYTHONUNBUFFERED: '1',
+      PYTHONUTF8: '1',
+      PYTHONIOENCODING: 'utf-8:replace',
     },
   })
   let stdout = ''
@@ -3438,7 +4401,7 @@ ipcMain.handle('desktop:onboarding:defaults', () => ({
   searchProviders: SEARCH_PROVIDER_CATALOG,
   router: {
     modes: ['recommended', 'openrouter-mix', 'disabled'],
-    defaultTier: 't1',
+    defaultTier: 'c1',
     textTiers: TEXT_ROUTER_TIERS,
     profiles: ROUTER_PROFILES,
   },
@@ -3499,5 +4462,16 @@ if (!gotSingleInstanceLock) {
     desktopLocale = resolveDesktopLocale()
     createApplicationMenu()
     void openOrResumeDesktopApp()
+    initAutoUpdater()
+    if (mockUpdateVersion() !== null) {
+      setTimeout(() => {
+        void checkForUpdates(false)
+      }, 1_000).unref()
+    } else if (autoUpdateSupported()) {
+      // Delay the silent startup check so it doesn't compete with gateway boot.
+      setTimeout(() => {
+        void checkForUpdates(false)
+      }, 12_000).unref()
+    }
   })
 }

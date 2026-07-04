@@ -5,10 +5,11 @@ import re
 import tomllib
 from pathlib import Path
 
-CURRENT_VERSION = "0.4.1"
+CURRENT_VERSION = "0.5.0rc1"
+CURRENT_DESKTOP_VERSION = "0.5.0-rc1"
 CURRENT_TAG = f"v{CURRENT_VERSION}"
-PREVIEW_VERSION = "0.2.0rc1"
-PREVIEW_TAG = f"v{PREVIEW_VERSION}"
+HISTORICAL_PREVIEW_VERSION = "0.2.0rc1"
+HISTORICAL_PREVIEW_TAG = f"v{HISTORICAL_PREVIEW_VERSION}"
 
 
 def test_pyproject_version_matches_current_release() -> None:
@@ -28,9 +29,14 @@ def test_lockfile_version_matches_current_release() -> None:
 
 def test_desktop_electron_release_config_matches_current_release() -> None:
     package = json.loads(Path("desktop/electron/package.json").read_text(encoding="utf-8"))
+    lock = json.loads(Path("desktop/electron/package-lock.json").read_text(encoding="utf-8"))
     build = package["build"]
 
-    assert package["version"] == CURRENT_VERSION
+    assert package["version"] == CURRENT_DESKTOP_VERSION
+    assert lock["version"] == CURRENT_DESKTOP_VERSION
+    assert lock["packages"][""]["version"] == CURRENT_DESKTOP_VERSION
+    assert re.fullmatch(r"\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?", package["version"])
+    assert not re.search(r"(?<=\d)(?:a|b|rc)\d+$", package["version"])
     assert package["repository"] == {
         "type": "git",
         "url": "https://github.com/opensquilla/opensquilla.git",
@@ -51,8 +57,9 @@ def test_release_workflow_builds_desktop_installers() -> None:
     assert "build-desktop-windows:" in workflow
     assert "npx electron-builder --mac --publish never" in workflow
     assert "npx electron-builder --win --publish never" in workflow
-    assert "OpenSquilla-{version}-mac-arm64.dmg" in workflow
-    assert "OpenSquilla-{version}-win-x64.exe" in workflow
+    assert "desktop_asset_version" in workflow
+    assert "OpenSquilla-{desktop_version}-mac-arm64.dmg" in workflow
+    assert "OpenSquilla-{desktop_version}-win-x64.exe" in workflow
     assert "latest-mac.yml" in workflow
     assert "latest.yml" in workflow
     assert "NOTES_FILE=\"docs/releases/${TAG#v}.md\"" in workflow
@@ -91,6 +98,106 @@ def test_release_workflow_keeps_macos_signing_identity_auto_selected() -> None:
     assert "APPLE_ID: ${{ secrets.APPLE_ID }}" in mac_step
     assert "CSC_NAME" not in mac_step
     assert "GH_TOKEN" not in mac_step
+
+
+def test_release_workflow_keeps_windows_build_unsigned_until_signing_is_available() -> None:
+    workflow = Path(".github/workflows/wheelhouse-release.yml").read_text(encoding="utf-8")
+    windows_step = workflow.split("- name: Build unsigned Windows installer", 1)[1].split(
+        "- name: Verify Electron package", 1
+    )[0]
+
+    assert "npx electron-builder --win --publish never" in windows_step
+    assert 'CSC_IDENTITY_AUTO_DISCOVERY: "false"' in windows_step
+    assert not Path("desktop/electron/electron-builder.release.cjs").exists()
+
+    for env_name in [
+        "OPENSQUILLA_WINDOWS_AZURE_SIGNING",
+        "AZURE_TENANT_ID",
+        "AZURE_CLIENT_ID",
+        "AZURE_CLIENT_SECRET",
+        "AZURE_TRUSTED_SIGNING_PUBLISHER_NAME",
+        "AZURE_TRUSTED_SIGNING_ENDPOINT",
+        "AZURE_TRUSTED_SIGNING_ACCOUNT_NAME",
+        "AZURE_TRUSTED_SIGNING_CERTIFICATE_PROFILE_NAME",
+    ]:
+        assert env_name not in windows_step
+
+    assert "azureSignOptions" not in workflow
+    assert "forceCodeSigning: true" not in workflow
+    assert "timestampRfc3161: 'http://timestamp.acs.microsoft.com'" not in workflow
+
+
+def test_release_docs_describe_unsigned_windows_policy() -> None:
+    readme = Path("README.md").read_text(encoding="utf-8")
+    localized_readmes = {
+        "zh-Hans": Path("README.zh-Hans.md").read_text(encoding="utf-8"),
+        "ja": Path("README.ja.md").read_text(encoding="utf-8"),
+        "fr": Path("README.fr.md").read_text(encoding="utf-8"),
+        "de": Path("README.de.md").read_text(encoding="utf-8"),
+        "es": Path("README.es.md").read_text(encoding="utf-8"),
+    }
+    releases = Path("RELEASES.md").read_text(encoding="utf-8")
+    release_notes = Path(f"docs/releases/{CURRENT_VERSION}.md").read_text(encoding="utf-8")
+    signing_policy = Path("docs/code-signing-policy.md").read_text(encoding="utf-8")
+    privacy_policy = Path("PRIVACY.md").read_text(encoding="utf-8")
+
+    assert "Code signing policy:" in readme
+    assert "Windows builds are currently unsigned" in readme
+    assert "Windows desktop installer is currently unsigned" in releases
+    assert "Windows release builds are currently unsigned" in signing_policy
+    assert "claim Windows code signing" in signing_policy
+    assert "[`PRIVACY.md`](../PRIVACY.md)" in signing_policy
+    assert "[@Open-Squilla](https://github.com/Open-Squilla)" in signing_policy
+    assert "Initial SignPath approvers" in signing_policy
+    assert "network observability" in signing_policy
+
+    for text in [readme, releases, release_notes]:
+        assert "code-signing-policy.md" in text
+
+    assert "PRIVACY.md" in readme
+    assert "THIRD_PARTY_NOTICES.md" in readme
+    assert "Installation Telemetry" in privacy_policy
+    assert "OPENSQUILLA_TELEMETRY_DISABLED=true" in privacy_policy
+    assert "future signing plan" not in readme
+
+    for text in [readme, releases]:
+        assert "signed desktop installers" not in text
+
+    for locale, phrase in {
+        "zh-Hans": "已签名的桌面",
+        "ja": "署名済みのデスクトップ",
+        "fr": "installateurs de bureau signés",
+        "de": "signierten Desktop",
+        "es": "instaladores de escritorio firmados",
+    }.items():
+        assert phrase not in localized_readmes[locale]
+
+
+def test_privacy_docs_describe_network_observability_controls() -> None:
+    docs = {
+        "README.md": Path("README.md").read_text(encoding="utf-8"),
+        "README.zh-Hans.md": Path("README.zh-Hans.md").read_text(encoding="utf-8"),
+        "PRIVACY.md": Path("PRIVACY.md").read_text(encoding="utf-8"),
+        "RELEASES.md": Path("RELEASES.md").read_text(encoding="utf-8"),
+        f"docs/releases/{CURRENT_VERSION}.md": Path(
+            f"docs/releases/{CURRENT_VERSION}.md"
+        ).read_text(encoding="utf-8"),
+        "docs/code-signing-policy.md": Path("docs/code-signing-policy.md").read_text(
+            encoding="utf-8"
+        ),
+    }
+
+    for path, text in docs.items():
+        assert "OPENSQUILLA_PRIVACY_DISABLE_NETWORK_OBSERVABILITY=true" in text, path
+        assert "disable_network_observability = true" in text, path
+        assert "OPENSQUILLA_TELEMETRY_DISABLED=true" in text, path
+        assert "OPENSQUILLA_UPDATE_CHECK_DISABLED=true" in text, path
+
+    privacy = docs["PRIVACY.md"]
+    assert "automatic install telemetry" in privacy
+    assert "passive update checks" in privacy
+    assert "desktop startup auto-update checks" in privacy
+    assert "Manual user-initiated actions may still contact network services" in privacy
 
 
 def _dep_names(specs: list[str]) -> set[str]:
@@ -154,10 +261,13 @@ def test_releases_md_exists_and_references_current_and_preview_tags() -> None:
     assert releases.is_file(), "RELEASES.md must exist at the repository root"
     text = releases.read_text(encoding="utf-8")
     assert CURRENT_TAG in text, f"RELEASES.md must reference the tag '{CURRENT_TAG}'"
-    assert PREVIEW_TAG in text, f"RELEASES.md must reference the tag '{PREVIEW_TAG}'"
-    assert f"OpenSquilla-{CURRENT_VERSION}-mac-arm64.dmg" in text
-    assert f"OpenSquilla-{CURRENT_VERSION}-win-x64.exe" in text
-    assert "legacy Windows portable" in text
+    assert (
+        HISTORICAL_PREVIEW_TAG in text
+    ), f"RELEASES.md must retain the historical tag '{HISTORICAL_PREVIEW_TAG}'"
+    assert f"OpenSquilla-{CURRENT_DESKTOP_VERSION}-mac-arm64.dmg" in text
+    assert f"OpenSquilla-{CURRENT_DESKTOP_VERSION}-win-x64.exe" in text
+    assert "do not publish Windows portable zips" in text
+    assert "legacy Windows portable downloads" in text
 
 
 def test_changelog_has_current_release_section_and_unreleased() -> None:
@@ -173,13 +283,11 @@ def test_changelog_has_current_release_section_and_unreleased() -> None:
 def test_readme_release_install_uses_latest_assets_and_pinned_alternative() -> None:
     readme = Path("README.md").read_text(encoding="utf-8")
 
-    assert f"OpenSquilla-{CURRENT_VERSION}-mac-arm64.dmg" in readme
-    assert f"OpenSquilla-{CURRENT_VERSION}-win-x64.exe" in readme
-    assert "legacy compatibility package" in readme
-    assert (
-        "releases/latest/download/OpenSquilla-windows-x64-portable.zip"
-        in readme
-    )
+    assert f"OpenSquilla-{CURRENT_DESKTOP_VERSION}-mac-arm64.dmg" in readme
+    assert f"OpenSquilla-{CURRENT_DESKTOP_VERSION}-win-x64.exe" in readme
+    assert "Simplified release assets" in readme
+    assert "desktop installers and the Python wheel only" in readme
+    assert "releases/latest/download/OpenSquilla-windows-x64-portable.zip" not in readme
     assert (
         f"releases/download/{CURRENT_TAG}/opensquilla-{CURRENT_VERSION}-py3-none-any.whl"
         in readme
@@ -233,9 +341,8 @@ def test_release_workflow_marks_preview_tags_as_prereleases() -> None:
     assert "IS_PRERELEASE" in workflow
     assert "--prerelease" in workflow
     assert "OpenSquilla {match.group(1)} Preview {match.group(2)}" in workflow
-    assert "is_prerelease = bool(re.search" in workflow
-    assert "if not is_prerelease:" in workflow
-    assert "expected.add(\"OpenSquilla-windows-x64-portable.zip\")" in workflow
+    assert "0.5+ release assets must not include Windows portable zips" in workflow
+    assert "OpenSquilla-windows-x64-portable.zip" not in workflow
     assert "opensquilla-latest-py3-none-any.whl" not in workflow
 
 
@@ -246,19 +353,26 @@ def test_historical_040_release_notes_remain_available() -> None:
     assert "OpenSquilla-0.4.0-mac-arm64.dmg" in notes
 
 
-def test_current_release_notes_prioritize_desktop_and_legacy_portable() -> None:
+def test_current_release_notes_prioritize_model_ensemble_and_sandbox() -> None:
     notes = Path(f"docs/releases/{CURRENT_VERSION}.md").read_text(encoding="utf-8")
 
     assert "## Downloads" in notes
-    assert f"OpenSquilla-{CURRENT_VERSION}-mac-arm64.dmg" in notes
-    assert f"OpenSquilla-{CURRENT_VERSION}-mac-arm64.zip" in notes
-    assert f"OpenSquilla-{CURRENT_VERSION}-win-x64.exe" in notes
+    assert f"OpenSquilla-{CURRENT_DESKTOP_VERSION}-mac-arm64.dmg" in notes
+    assert f"OpenSquilla-{CURRENT_DESKTOP_VERSION}-mac-arm64.zip" in notes
+    assert f"OpenSquilla-{CURRENT_DESKTOP_VERSION}-win-x64.exe" in notes
     assert f"opensquilla-{CURRENT_VERSION}-py3-none-any.whl" in notes
-    assert "Legacy Windows portable" in notes
-    assert "legacy compatibility" in notes
-    assert "## Upgrading from 0.4.0" in notes
+    assert notes.index("### Model Ensemble") < notes.index(
+        "### Managed execution and sandbox alignment"
+    )
+    assert notes.index("### Managed execution and sandbox alignment") < notes.index(
+        "### Desktop and Control UI polish"
+    )
+    assert "No Windows portable assets are published for 0.5.0 preview releases" in notes
+    assert "0.5.0rc1 portable zip" in notes
+    assert "## Upgrading from 0.4.1" in notes
     assert "## Acknowledgements" in notes
     assert "@ab2ence" in notes
+    assert "first-time OpenSquilla release contributor" in notes
 
 
 def test_docs_index_links_current_release_notes() -> None:
@@ -268,13 +382,20 @@ def test_docs_index_links_current_release_notes() -> None:
     assert "releases/0.4.0.md" in index
 
 
-def test_current_contributor_ledger_records_041_attribution_without_repeating_040() -> None:
+def test_current_contributor_ledger_records_050rc1_attribution() -> None:
     ledger = Path("CONTRIBUTORS.md").read_text(encoding="utf-8")
-    section = ledger.split("## OpenSquilla 0.4.1", 1)[1].split("## OpenSquilla 0.4.0", 1)[0]
+    section = ledger.split("## OpenSquilla 0.5.0rc1", 1)[1].split("## OpenSquilla 0.4.1", 1)[0]
 
     assert "@ab2ence" in section
-    assert "#348" in section
-    assert "#355" in section
+    assert "@Liu-RK" in section
+    assert "@TUOXI293" in section
+    assert "#388" in section
+    assert "#412" in section
+    assert "#447" in section
+    assert "#450" in section
+    assert "#454" in section
+    assert "[@tqangxl](https://github.com/tqangxl)" in section
+    assert "[@HuaXiawithMoon](https://github.com/HuaXiawithMoon)" in section
     assert "@nice-code-la" not in section
     assert "Codex" not in section
     assert "Claude Code" not in section

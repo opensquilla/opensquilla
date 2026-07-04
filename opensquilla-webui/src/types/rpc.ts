@@ -54,6 +54,8 @@ export interface RawSessionItem {
   groupLabel?: string
   updatedAt?: number | string
   updated_at?: number | string
+  lastActivityAt?: number | string
+  last_activity_at?: number | string
   messageCount?: number
   message_count?: number
   entry_count?: number
@@ -237,8 +239,9 @@ export interface ChatSendAttachmentPayload {
 export interface ChatSendParams {
   message: string
   sessionKey: string
-  _source?: { elevated?: string }
+  _source?: { elevated?: string; runMode?: 'standard' | 'trusted' | 'full' }
   intent?: string
+  forkBeforeMessageId?: string
   displayText?: string
   attachments?: ChatSendAttachmentPayload[]
   [key: string]: unknown
@@ -314,6 +317,25 @@ export interface RouterDecisionPayload extends SessionEventPayload {
   source?: string
   routing_applied?: boolean
   decision?: unknown
+}
+
+/* ── LLM ensemble progress ─────────────────────────────────────────────
+ * Mid-turn `session.event.ensemble_progress` frames announce each ensemble
+ * proposer/aggregator starting and finishing, so the router strip can reveal
+ * members incrementally before the terminal `done` event lands.
+ */
+export interface EnsembleProgressPayload extends SessionEventPayload {
+  event_type?: 'proposer_start' | 'proposer_finish' | 'aggregator_start' | 'aggregator_finish'
+  proposer_index?: number
+  proposer_label?: string
+  proposer_model?: string
+  proposer_provider?: string
+  sample_index?: number
+  elapsed_ms?: number
+  input_tokens?: number
+  output_tokens?: number
+  cost_usd?: number
+  error?: string
 }
 
 export interface CompactionPayload extends SessionEventPayload {
@@ -418,6 +440,7 @@ export interface RpcEventMap {
   'session.event.tool_result': ToolResultPayload
   'session.event.artifact': ArtifactPayload
   'session.event.router_decision': RouterDecisionPayload
+  'session.event.ensemble_progress': EnsembleProgressPayload
   'session.event.router_control_replay': SessionEventPayload
   'session.event.state_change': SessionEventPayload
   'session.event.run_heartbeat': SessionEventPayload

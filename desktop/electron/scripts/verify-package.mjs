@@ -9,6 +9,7 @@ const scriptDir = dirname(fileURLToPath(import.meta.url))
 const packageRoot = resolve(scriptDir, '..')
 const repoRoot = resolve(packageRoot, '..', '..')
 const runtimeGatewayDir = join(packageRoot, 'runtime', 'gateway')
+const sourceMainPath = join(packageRoot, 'src', 'main.ts')
 const compiledMainPath = join(packageRoot, 'dist', 'main.js')
 const desktopOutputDir = join(repoRoot, 'dist', 'desktop-electron')
 
@@ -48,7 +49,11 @@ function verificationEnv() {
     'LANG',
     'LC_ALL',
   ]
-  const env = { PYTHONUNBUFFERED: '1' }
+  const env = {
+    PYTHONUNBUFFERED: '1',
+    PYTHONUTF8: '1',
+    PYTHONIOENCODING: 'utf-8:replace',
+  }
 
   for (const key of keys) {
     if (process.env[key] !== undefined) env[key] = process.env[key]
@@ -233,6 +238,47 @@ function verifyMainProcess(source, label) {
   ) {
     fail(`${label} main process reloads the Control UI before checking whether it is already loaded`)
   }
+
+  const onboardingIndex = source.indexOf('async function runOnboarding')
+  const onboardingWindowIndex = source.indexOf('onboardingWindow = new BrowserWindow', onboardingIndex)
+  const parentIndex = source.indexOf('const parentWindow = currentMainWindow()', onboardingIndex)
+  const parentOptionIndex = source.indexOf('parent: parentWindow ?? undefined', onboardingWindowIndex)
+  const modalOptionIndex = source.indexOf('modal: Boolean(parentWindow)', onboardingWindowIndex)
+  if (
+    onboardingIndex === -1
+    || onboardingWindowIndex === -1
+    || parentIndex === -1
+    || parentOptionIndex === -1
+    || modalOptionIndex === -1
+    || parentIndex > onboardingWindowIndex
+  ) {
+    fail(`${label} main process does not make first-run onboarding an owned modal child window`)
+  }
+
+  const focusIndex = source.indexOf('function focusMainWindow')
+  const focusSource = focusIndex === -1 ? '' : source.slice(focusIndex, focusIndex + 800)
+  const onboardingFocusMatch = /if\s*\(\s*focusOnboardingWindow\(\)\s*\)\s*(?:\{\s*)?return true\s*;?/.exec(focusSource)
+  const mainFocusMatch =
+    /if\s*\(\s*!mainWindow\s*\|\|\s*mainWindow\.isDestroyed\(\)\s*\)\s*(?:\{\s*)?return false\s*;?/.exec(
+      focusSource,
+    )
+  if (
+    focusIndex === -1
+    || !onboardingFocusMatch
+    || !mainFocusMatch
+    || onboardingFocusMatch.index > mainFocusMatch.index
+  ) {
+    fail(`${label} main process does not prefer the onboarding window when focusing`)
+  }
+}
+
+async function verifySourceMain() {
+  if (!existsSync(sourceMainPath)) {
+    fail(`source Electron main process is missing at ${sourceMainPath}`)
+    return
+  }
+
+  verifyMainProcess(await readFile(sourceMainPath, 'utf8'), 'source')
 }
 
 async function verifyCompiledMain() {
@@ -288,6 +334,25 @@ async function readAsarText(asarPath, innerPath) {
   return asar.extractFile(asarPath, innerPath).toString('utf8')
 }
 
+async function verifyAsarPackageVersion(asarPath, label) {
+  let packageJson
+  try {
+    packageJson = JSON.parse(await readAsarText(asarPath, 'package.json'))
+  } catch (error) {
+    fail(`${label} app.asar package.json could not be inspected: ${error instanceof Error ? error.message : String(error)}`)
+    return
+  }
+
+  const version = typeof packageJson.version === 'string' ? packageJson.version : ''
+  const semverPattern = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/
+  if (!semverPattern.test(version) || /\d(?:a|b|rc)\d+$/.test(version)) {
+    fail(
+      `${label} app.asar package.json version is not npm semver: ${JSON.stringify(version)}; ` +
+        'prereleases must use 0.5.0-rc1 style, not 0.5.0rc1'
+    )
+  }
+}
+
 async function verifyGeneratedBundle({ label, resourcesDir, platform }) {
   await verifyRuntime(join(resourcesDir, 'runtime', 'gateway'), label, {
     platform,
@@ -301,6 +366,7 @@ async function verifyGeneratedBundle({ label, resourcesDir, platform }) {
   }
 
   try {
+    await verifyAsarPackageVersion(asarPath, label)
     verifyMainProcess(await readAsarText(asarPath, 'dist/main.js'), label)
   } catch (error) {
     fail(`${label} app.asar could not be inspected: ${error instanceof Error ? error.message : String(error)}`)
@@ -308,6 +374,7 @@ async function verifyGeneratedBundle({ label, resourcesDir, platform }) {
 }
 
 await verifyRuntime(runtimeGatewayDir, 'source', { platform: process.platform, executeCommands: true })
+await verifySourceMain()
 await verifyCompiledMain()
 
 const generatedBundles = await findGeneratedBundles(desktopOutputDir)

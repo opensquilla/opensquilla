@@ -791,6 +791,26 @@ def _gateway_home(config: GatewayConfig) -> Path:
     return default_opensquilla_home()
 
 
+async def _ensure_sandbox_setup_on_boot(config: GatewayConfig) -> Any | None:
+    """Run automatic sandbox setup when enabled."""
+
+    if not config.sandbox.auto_setup:
+        log.info("boot.sandbox_setup_auto_disabled")
+        return None
+
+    from opensquilla.sandbox.setup_runtime import ensure_sandbox_setup_auto
+
+    result = await ensure_sandbox_setup_auto(config)
+    log.info(
+        "boot.sandbox_setup_auto_completed",
+        state=result.state.value,
+        platform=result.platform,
+        requires_admin=result.requires_admin,
+        detail=result.detail,
+    )
+    return result
+
+
 def _task_runtime_max_concurrency(config: GatewayConfig) -> int:
     return int(config.task_runtime.max_concurrency)
 
@@ -969,6 +989,8 @@ def build_cron_result_payload(
 
 def _task_run_status_for_session_change(event: TaskLifecycleEvent) -> str:
     status = getattr(event.task_status, "value", str(event.task_status))
+    if event.phase == "queued":
+        return "queued"
     if event.phase == "running":
         return "running"
     if status == "succeeded":
@@ -1014,10 +1036,16 @@ def _make_task_session_lifecycle_listener(
         )
         if not changed:
             return
-        reason = "task_running" if event.phase == "running" else "task_terminal"
+        reason = (
+            "task_queued"
+            if event.phase == "queued"
+            else "task_running"
+            if event.phase == "running"
+            else "task_terminal"
+        )
         session_status = session_status_for_task_status(event.task_status)
         task_state = _task_state_for_session_change(event)
-        state_field = "active_task" if event.phase == "running" else "last_task"
+        state_field = "active_task" if event.phase in {"queued", "running"} else "last_task"
         await event_emitter(
             event.session_key,
             "sessions.changed",
@@ -1702,6 +1730,8 @@ async def build_services(
             "build_services.sandbox_ready",
             **effective.effective.as_dict(),
         )
+        if config.sandbox.auto_setup:
+            create_background_task(_ensure_sandbox_setup_on_boot(config))
     except Exception as e:  # pragma: no cover - boot diagnostics only
         log.exception("build_services.sandbox_configure_failed", error=str(e))
         raise
@@ -2335,6 +2365,16 @@ async def start_gateway_server(
         )
     except Exception:
         log.debug("gateway.install_telemetry_skipped", exc_info=True)
+
+    # Passive update-availability check is best-effort and runs in a background
+    # daemon thread: it must never block startup. It powers the "a newer version
+    # is available" notice in the Control UI (and `opensquilla version --check`).
+    try:
+        from opensquilla.observability.update_check import start_background_update_check
+
+        start_background_update_check(config=config)
+    except Exception:
+        log.debug("gateway.update_check_skipped", exc_info=True)
 
     # ── Reusable service initialization via build_services ───────────
     try:

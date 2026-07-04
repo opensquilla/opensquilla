@@ -7,9 +7,10 @@ import { useSetupRouterForm } from './useSetupRouterForm'
 // and only valid for the openrouter provider — a default config for another
 // provider must NOT be mistaken for it.
 
-function makePanel(form: ReturnType<typeof useSetupRouterForm>, isOpenrouter: boolean) {
+function makePanel(form: ReturnType<typeof useSetupRouterForm>, isOpenrouter: boolean, ensembleProfileActive = false) {
   return form.createPanel({
     routerSummary: computed(() => ''),
+    ensembleProfileActive: computed(() => ensembleProfileActive),
     hasSavedProvider: computed(() => true),
     isOpenrouter: computed(() => isOpenrouter),
     textTiers: ['c0'],
@@ -50,6 +51,13 @@ describe('useSetupRouterForm — openrouter-mix round-trip', () => {
     expect(makePanel(f, true).value.canUseOpenrouterMix).toBe(true)
   })
 
+  it('passes the LLM ensemble profile state to the router panel', () => {
+    const f = useSetupRouterForm()
+    f.initFromConfig({ enabled: true, tier_profile: 'openai' }, {}, 'openai')
+
+    expect(makePanel(f, false, true).value.ensembleProfileActive).toBe(true)
+  })
+
   it('keeps tier provider values in the save payload even when the panel renders them read-only', () => {
     const f = useSetupRouterForm()
     f.initFromConfig({
@@ -76,5 +84,61 @@ describe('useSetupRouterForm — openrouter-mix round-trip', () => {
         },
       },
     })
+  })
+
+  it('maps openrouter-mix to the two-option model-routing UI choice without changing the payload', () => {
+    const f = useSetupRouterForm()
+    f.initFromConfig({ enabled: true, tier_profile: null }, {}, 'openrouter')
+
+    const panel = makePanel(f, true)
+    expect(panel.value.routerMode).toBe('openrouter-mix')
+    expect(panel.value.routerModeChoice).toBe('recommended')
+    expect(panel.value.routerConfigDisabled).toBe(false)
+    expect(f.payload().mode).toBe('openrouter-mix')
+  })
+
+  it('maps disabled router config to the single-model UI choice', () => {
+    const f = useSetupRouterForm()
+    f.initFromConfig({ enabled: false }, {}, 'openrouter')
+
+    const panel = makePanel(f, true)
+    expect(panel.value.routerMode).toBe('disabled')
+    expect(panel.value.routerModeChoice).toBe('disabled')
+    expect(panel.value.routerConfigDisabled).toBe(true)
+  })
+
+  it('marks standard router configuration read-only while LLM ensemble routing is active', () => {
+    const f = useSetupRouterForm()
+    f.initFromConfig({ enabled: true, tier_profile: 'openai' }, {}, 'openai')
+
+    const panel = makePanel(f, false, true)
+    expect(panel.value.routerMode).toBe('recommended')
+    expect(panel.value.routerModeChoice).toBe('recommended')
+    expect(panel.value.ensembleProfileActive).toBe(true)
+    expect(panel.value.routerConfigDisabled).toBe(true)
+    expect(panel.value.routerConfigDisabledReason).toBe('ensemble')
+    expect(f.payload().mode).toBe('recommended')
+  })
+
+  it('uses the ensemble disabled reason when ensemble routing is active over single-model settings', () => {
+    const f = useSetupRouterForm()
+    f.initFromConfig({ enabled: false }, {}, 'openrouter')
+
+    const panel = makePanel(f, true, true)
+    expect(panel.value.routerMode).toBe('disabled')
+    expect(panel.value.routerModeChoice).toBe('disabled')
+    expect(panel.value.routerConfigDisabled).toBe(true)
+    expect(panel.value.routerConfigDisabledReason).toBe('ensemble')
+  })
+
+  it('uses the single-model disabled reason when model routing is disabled and ensemble routing is inactive', () => {
+    const f = useSetupRouterForm()
+    f.initFromConfig({ enabled: false }, {}, 'openrouter')
+
+    const panel = makePanel(f, true, false)
+    expect(panel.value.routerMode).toBe('disabled')
+    expect(panel.value.routerModeChoice).toBe('disabled')
+    expect(panel.value.routerConfigDisabled).toBe(true)
+    expect(panel.value.routerConfigDisabledReason).toBe('single-model')
   })
 })

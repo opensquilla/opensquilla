@@ -140,7 +140,7 @@ function onActionClick(action: string, stepId: string | null) {
   overflow: hidden;
   padding: 10px 12px 11px;
   border: 1px solid color-mix(in srgb, var(--border) 82%, var(--accent) 18%);
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   background:
     linear-gradient(180deg,
       color-mix(in srgb, var(--bg-surface) 96%, var(--accent) 4%),
@@ -162,7 +162,7 @@ function onActionClick(action: string, stepId: string | null) {
   width: 18px;
   height: 18px;
   border: 1px solid color-mix(in srgb, var(--text-dim) 24%, transparent);
-  border-radius: 999px;
+  border-radius: var(--radius-full);
   background: color-mix(in srgb, var(--bg-base, var(--bg)) 76%, var(--text-dim) 8%);
   color: var(--text-muted);
   font-size: 11px;
@@ -192,7 +192,7 @@ function onActionClick(action: string, stepId: string | null) {
 
 .meta-ribbon-toggle {
   border: 1px solid transparent;
-  border-radius: 6px;
+  border-radius: var(--radius-md);
   padding: 2px 7px;
   background: transparent;
   color: var(--text-muted);
@@ -254,7 +254,7 @@ function onActionClick(action: string, stepId: string | null) {
   height: 2px;
   margin-top: 9px;
   overflow: hidden;
-  border-radius: 999px;
+  border-radius: var(--radius-full);
   background: color-mix(in srgb, var(--border) 64%, transparent);
 }
 
@@ -281,7 +281,7 @@ function onActionClick(action: string, stepId: string | null) {
   flex: 0 0 auto;
   padding: 3px 8px;
   border: 1px solid transparent;
-  border-radius: 6px;
+  border-radius: var(--radius-md);
   background: color-mix(in srgb, var(--bg-base, var(--bg)) 92%, var(--text-muted) 8%);
   color: var(--text-muted);
   cursor: pointer;
@@ -330,7 +330,7 @@ function onActionClick(action: string, stepId: string | null) {
   width: 5px;
   height: 5px;
   margin-left: 6px;
-  border-radius: 999px;
+  border-radius: var(--radius-full);
   background: currentColor;
   animation: live-pulse var(--dur-pulse) var(--ease-standard) infinite;
 }
@@ -355,7 +355,7 @@ function onActionClick(action: string, stepId: string | null) {
 
 .meta-ribbon-actions button {
   padding: 5px 10px;
-  border-radius: 6px;
+  border-radius: var(--radius-md);
   border: 1px solid var(--border);
   background: var(--bg-surface);
   color: var(--text);

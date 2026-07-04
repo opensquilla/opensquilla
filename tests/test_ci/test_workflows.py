@@ -685,7 +685,9 @@ def test_wheelhouse_release_publishes_only_recommended_router_profile() -> None:
 
     assert "      profile:\n" not in text
     assert "RELEASE_PROFILE: recommended" in text
-    assert "--profile \"${RELEASE_PROFILE}\"" in text
+    assert "opensquilla-release-assets-python-${{ env.RELEASE_PROFILE }}" in text
+    assert "opensquilla-release-assets-${{ env.RELEASE_PROFILE }}" in text
+    assert "--profile \"${RELEASE_PROFILE}\"" not in text
     assert "- core" not in text
 
 

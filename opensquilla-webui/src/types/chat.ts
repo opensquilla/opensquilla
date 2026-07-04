@@ -170,11 +170,89 @@ export interface ChatUsagePayload {
   cached_tokens?: number
   reasoning_tokens?: number
   cost_usd?: number
+  costUsd?: number
   routed_tier?: string
   routing_source?: string
   total_savings_pct?: number
+  totalSavingsPct?: number
+  total_savings_usd?: number
+  totalSavingsUsd?: number
+  savings_usd?: number
+  savingsUsd?: number
+  savings_pct?: number
+  savingsPct?: number
+  model_usage_breakdown?: ChatEnsembleUsageRow[]
+  modelUsageBreakdown?: ChatEnsembleUsageRow[]
+  ensemble_trace?: ChatEnsembleTrace
+  ensembleTrace?: ChatEnsembleTrace
   __savings_ui_suppressed?: boolean
   [key: string]: unknown
+}
+
+export interface ChatEnsembleUsageRow {
+  role?: string
+  profile?: string
+  label?: string
+  provider?: string
+  model?: string
+  sample_index?: number
+  input_tokens?: number
+  inputTokens?: number
+  output_tokens?: number
+  outputTokens?: number
+  reasoning_tokens?: number
+  reasoningTokens?: number
+  cached_tokens?: number
+  cachedTokens?: number
+  cache_write_tokens?: number
+  cacheWriteTokens?: number
+  billed_cost?: number
+  billedCost?: number
+  cost_usd?: number
+  costUsd?: number
+  cost_source?: string
+  costSource?: string
+  [key: string]: unknown
+}
+
+export interface ChatEnsembleTrace {
+  mode?: string
+  profile?: string
+  successful_proposers?: number
+  total_candidates?: number
+  fallback_used?: boolean
+  fallback_reason?: string
+  final_request_role?: string
+  llm_request_count?: number
+  candidates?: ChatEnsembleUsageRow[]
+  [key: string]: unknown
+}
+
+export interface ChatEnsembleMetaModel {
+  role: string
+  label: string
+  provider: string
+  model: string
+  modelShort: string
+  input: number
+  output: number
+  costUsd: number
+  // Live per-member lifecycle during streaming: 'running' while the proposer is
+  // still generating, 'done' once it finishes. Absent for settled/history rows.
+  status?: 'running' | 'done'
+}
+
+export interface ChatEnsembleMeta {
+  profile: string
+  modelCount: number
+  totalCandidates: number
+  requestCount: number
+  fallbackUsed: boolean
+  fallbackReason: string
+  costUsd: number
+  savedUsd: number
+  savedPct: number
+  models: ChatEnsembleMetaModel[]
 }
 
 /** Per-turn model reasoning captured from thinking deltas / done backfill. */
@@ -198,6 +276,9 @@ export interface ChatMessage {
   provenanceSourceTool?: string
   interrupted?: boolean
   routerSettled?: boolean
+  // Live-accumulated ensemble members for the in-flight router strip, grown by
+  // `session.event.ensemble_progress` deltas before the final `done` arrives.
+  ensemble?: ChatEnsembleMeta
   messageId?: string
   usage?: ChatUsagePayload
   turn_usage?: ChatUsagePayload
@@ -222,6 +303,7 @@ export interface ChatMessageMeta {
   hasSaved: boolean
   savedLabel: string
   turnSavedPct?: number
+  ensemble?: ChatEnsembleMeta
 }
 
 export interface ChatRenderedMessage {
@@ -256,6 +338,8 @@ export interface ChatRenderedMessage {
   routerStatic?: boolean
   routerSettled?: boolean
   routerPanel?: string
+  routerMode?: import('./modelRouting').ModelRoutingMode
+  ensemble?: ChatEnsembleMeta
   gridCells?: ChatRouterCell[]
   winnerIdx?: number
   parts?: import('./parts').ChatPart[]

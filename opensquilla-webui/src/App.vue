@@ -89,10 +89,10 @@
       <!-- Manage / Monitor bands. Option B leans the DESKTOP rail to the
            command-palette-led essentials, so these are hidden on desktop
            (docked + hover) via CSS and reached through the palette / deep links.
-           They stay rendered for the <=768px drawer ("More") so every
-           destination is still a tap away on mobile; routes are unchanged. -->
+           They stay rendered for the <=768px drawer ("More") so the secondary
+           destinations are still a tap away on mobile; routes are unchanged. -->
       <div class="sidebar-core__managed">
-        <template v-for="section in consoleSections" :key="section.group">
+        <template v-for="section in moreSections" :key="section.group">
           <p class="sidebar-nav-group-label" aria-hidden="true">{{ section.label }}</p>
           <router-link
             v-for="route in section.items"
@@ -108,10 +108,8 @@
           </router-link>
         </template>
       </div>
-      <!-- "More": the secondary destinations (Approvals / Agents / Channels /
-           Overview / Usage / Logs). Desktop-only trigger; it carries the pending
-           approval count so the urgency signal stays visible at level-1 without
-           opening the popover. Hidden on mobile, where the bands render inline. -->
+      <!-- "More": the secondary destinations (Agents / Channels / Overview /
+           Usage / Logs). Hidden on mobile, where the bands render inline. -->
       <button
         ref="moreTriggerRef"
         type="button"
@@ -119,18 +117,12 @@
         :class="{ 'is-open': moreOpen }"
         aria-haspopup="dialog"
         :aria-expanded="moreOpen"
-        :aria-label="appStore.approvalCount > 0
-          ? `More — ${appStore.approvalCount} approvals pending`
-          : 'More'"
+        aria-label="More"
         @click="toggleMore"
       >
         <Icon name="menu" :size="16" />
         <span class="sidebar-fn-label">{{ t('chrome.more') }}</span>
-        <span
-          v-if="appStore.approvalCount > 0"
-          class="sidebar-count-badge"
-        >{{ appStore.approvalCount }}</span>
-        <Icon v-else name="chevronDown" :size="14" class="sidebar-more-chevron" />
+        <Icon name="chevronDown" :size="14" class="sidebar-more-chevron" />
       </button>
     </div>
 
@@ -147,6 +139,7 @@
       @refresh="loadSessions"
       @rename="onRenameSession"
       @delete="onDeleteSession"
+      @bulk-delete="onBulkDeleteSessions"
       @new-chat="startNewChatInstant"
     />
 
@@ -188,8 +181,7 @@
   />
 
   <!-- "More" popover: teleported to <body> so it escapes the rail's
-       overflow:hidden and dock/hover transform. Approvals keeps its bespoke
-       deep-link handler + count badge; the rest are plain destinations. -->
+       overflow:hidden and dock/hover transform. -->
   <Teleport to="body">
     <div
       v-if="moreOpen"
@@ -199,37 +191,20 @@
       role="dialog"
       :aria-label="t('chrome.moreDestinations')"
     >
-      <template v-for="section in consoleSections" :key="section.group">
+      <template v-for="section in moreSections" :key="section.group">
         <p class="sidebar-nav-group-label">{{ section.label }}</p>
-        <template v-for="route in section.items" :key="route.path">
-          <button
-            v-if="route.path === '/approvals'"
-            type="button"
-            class="sidebar-fn-item"
-            :class="{ 'is-active': isNavActive('/approvals') }"
-            :aria-current="isNavActive('/approvals') ? 'page' : undefined"
-            @click="onMoreApprovals"
-          >
-            <Icon name="approvals" :size="16" />
-            <span class="sidebar-fn-label">{{ t('nav.approvals') }}</span>
-            <span
-              v-if="appStore.approvalCount > 0"
-              class="sidebar-count-badge"
-              :aria-label="`${appStore.approvalCount} pending`"
-            >{{ appStore.approvalCount }}</span>
-          </button>
-          <router-link
-            v-else
-            :to="route.path"
-            class="sidebar-fn-item"
-            :class="{ 'is-active': isNavActive(route.path) }"
-            :aria-current="isNavActive(route.path) ? 'page' : undefined"
-            @click="onMoreNavigate"
-          >
-            <Icon :name="route.icon" :size="16" />
-            <span class="sidebar-fn-label">{{ route.title }}</span>
-          </router-link>
-        </template>
+        <router-link
+          v-for="route in section.items"
+          :key="route.path"
+          :to="route.path"
+          class="sidebar-fn-item"
+          :class="{ 'is-active': isNavActive(route.path) }"
+          :aria-current="isNavActive(route.path) ? 'page' : undefined"
+          @click="onMoreNavigate"
+        >
+          <Icon :name="route.icon" :size="16" />
+          <span class="sidebar-fn-label">{{ route.title }}</span>
+        </router-link>
       </template>
     </div>
   </Teleport>
@@ -277,6 +252,7 @@
           @click="openConnectionSettings"
         >{{ connectionStateLabel }}</button>
         <span v-else class="conn-pill" :class="rpcStore.state">{{ connectionStateLabel }}</span>
+        <DesktopUpdateIndicator />
         <LanguageSwitcher />
         <div class="theme-menu-wrap">
           <button
@@ -375,6 +351,8 @@
 
   <ConfirmModal />
 
+  <UpdateBanner />
+
   <!-- Single app-wide announcer for the pending-approval count. The nav badge
        and topbar pill stay silent (no double-announce); this region carries the
        only spoken update when the count changes. -->
@@ -401,6 +379,8 @@ import Icon from './components/Icon.vue'
 import ErrorBoundary from './components/ErrorBoundary.vue'
 import ToastHost from './components/ToastHost.vue'
 import ConfirmModal from './components/ConfirmModal.vue'
+import UpdateBanner from './components/UpdateBanner.vue'
+import DesktopUpdateIndicator from './components/DesktopUpdateIndicator.vue'
 import SidebarConversations from './components/SidebarConversations.vue'
 import SidebarSetupBanner from './components/SidebarSetupBanner.vue'
 import CommandPalette from './components/CommandPalette.vue'
@@ -415,12 +395,24 @@ import type { RpcEventHandler } from '@/lib/rpc'
 import { isMacPlatform } from './utils/browser'
 import { useShortcutsStore } from './stores/shortcuts'
 import { bindingMatches, formatBinding } from './utils/keychord'
+import {
+  dispatchLocalSessionsDeleted,
+  localSessionsDeletedDetail,
+  LOCAL_SESSIONS_DELETED_EVENT,
+} from './utils/sessionSync'
 
 const appStore = useAppStore()
 const rpcStore = useRpcStore()
 const shortcutsStore = useShortcutsStore()
 const { t } = useI18n()
 const $route = useRoute()
+
+interface DeleteSessionsResponse {
+  deleted?: string[]
+  errors?: string[]
+}
+
+const APP_SESSION_SYNC_SOURCE = 'app-sidebar'
 
 // Localized connection-state label for the topbar pill and its tooltip. The
 // store state ('connected' | 'connecting' | 'disconnected') is a stable key, not
@@ -439,7 +431,7 @@ watch(() => appStore.locale, () => {
   void nextTick(syncTopbarReserve)
 })
 const { allSessions, sessionListError, isLoading, loadSessions } = useSessions()
-const { consoleSections, bottomRoutes, workNav } = useNavigation()
+const { moreSections, bottomRoutes, workNav } = useNavigation()
 const { pushToast } = useToasts()
 const webConfigEnabled = getPlatform().capabilities.hasWebConfig
 
@@ -456,8 +448,9 @@ const localChatSessions = ref<Record<string, { effectiveAgentId: string; title: 
 const renameOverrides = ref<Record<string, string>>({})
 
 const brandMarkUrl = computed(() => {
+  if (import.meta.env.DEV) return '/opensquilla-mark.png'
   const base = document.getElementById('opensquilla-data')?.dataset.basePath || '/control'
-  return `${base}/static/img/opensquilla-mark.png`
+  return `${base.replace(/\/$/, '')}/static/dist/opensquilla-mark.png`
 })
 
 // Display chords track the configurable bindings so the rail hint, the New chat
@@ -617,12 +610,6 @@ function toggleMore() {
 function onMoreNavigate() {
   moreOpen.value = false
   handleNavClick()
-}
-
-function onMoreApprovals() {
-  moreOpen.value = false
-  // Preserve the blocked-session deep-link + selection behavior of the row.
-  onApprovalsRowClick()
 }
 
 // Pointer dismissal scoped to the popover + its trigger (mirrors the theme menu);
@@ -878,37 +865,78 @@ async function onRenameSession({ key, title }: { key: string; title: string }) {
   }
 }
 
-// Delete a session, then refresh the list. If the deleted session is the one
-// open in the chat view, drop into a fresh draft so the view does not linger on
-// a session that no longer exists.
+function removeLocalSessions(keys: Set<string>) {
+  if (keys.size === 0) return
+  let next = localChatSessions.value
+  let changed = false
+  for (const key of keys) {
+    if (!next[key]) continue
+    const { [key]: _dropped, ...rest } = next
+    next = rest
+    changed = true
+  }
+  if (changed) localChatSessions.value = next
+}
+
+function handleLocalSessionsDeleted(event: Event) {
+  const detail = localSessionsDeletedDetail(event)
+  if (!detail || detail.source === APP_SESSION_SYNC_SOURCE) return
+  removeLocalSessions(new Set(detail.keys))
+  void loadSessions()
+}
+
+async function deleteSessions(keys: string[]): Promise<DeleteSessionsResponse | null> {
+  const uniqueKeys = [...new Set(keys.map(key => key.trim()).filter(Boolean))]
+  if (uniqueKeys.length === 0) return null
+  try {
+    return await rpcStore.call<DeleteSessionsResponse>('sessions.delete', { keys: uniqueKeys })
+  } catch (err: unknown) {
+    console.warn('[App] sessions.delete error:', errorMessage(err))
+    return null
+  }
+}
+
+// Delete sessions, then refresh the list. If the open session was deleted, drop
+// into a fresh draft so the view does not linger on a session that no longer exists.
+async function onBulkDeleteSessions(keys: string[]) {
+  const uniqueKeys = [...new Set(keys.map(key => key.trim()).filter(Boolean))]
+  if (uniqueKeys.length === 0) return
+  const currentKey = currentSessionKey.value
+  const wasCurrentDeleted = !!currentKey && uniqueKeys.includes(currentKey)
+  const result = await deleteSessions(uniqueKeys)
+  const deleted = new Set(result?.deleted || [])
+  if (!result || deleted.size === 0) {
+    console.warn('[App] sessions.delete reported failure:', result?.errors)
+    pushToast(t('shared.sidebar.bulkDeleteFailed'), { tone: 'danger' })
+    return
+  }
+  removeLocalSessions(deleted)
+  dispatchLocalSessionsDeleted(deleted, APP_SESSION_SYNC_SOURCE)
+  const failedCount = Math.max(0, uniqueKeys.length - deleted.size)
+  pushToast(t('shared.sidebar.bulkDeleteDone', { count: deleted.size }), { tone: 'ok' })
+  if (failedCount > 0 || (result.errors?.length || 0) > 0) {
+    console.warn('[App] sessions.delete partial failure:', result.errors)
+    pushToast(t('shared.sidebar.bulkDeletePartial', { count: failedCount || result.errors?.length || 0 }), { tone: 'danger' })
+  }
+  await loadSessions()
+  if (wasCurrentDeleted && deleted.has(currentKey)) {
+    router.push({ path: '/chat/new', query: { agent: preferredAgentId() } })
+  }
+}
+
 async function onDeleteSession(key: string) {
   if (!key) return
   const wasCurrent = key === currentSessionKey.value
-  let result: { deleted?: string[]; errors?: string[] } | undefined
-  try {
-    result = await rpcStore.call<{ deleted?: string[]; errors?: string[] }>('sessions.delete', { keys: [key] })
-  } catch (err: unknown) {
-    // A rejected call must not look like success: surface the error and bail
-    // before dropping the row, reloading, or navigating away from a session
-    // that still exists on the backend.
-    console.warn('[App] sessions.delete error:', errorMessage(err))
-    pushToast('Failed to delete session', { tone: 'danger' })
-    return
-  }
-  // The backend resolves even when a key fails to delete — it collects per-key
-  // errors into the response instead of throwing — so a non-throwing call is
-  // not proof of success. Only proceed when the key is actually reported
-  // deleted; otherwise surface the failure and bail.
+  const result = await deleteSessions([key])
   if (!result?.deleted?.includes(key)) {
     console.warn('[App] sessions.delete reported failure:', result?.errors)
     pushToast('Failed to delete session', { tone: 'danger' })
     return
   }
   pushToast('Session deleted', { tone: 'ok' })
-  if (localChatSessions.value[key]) {
-    const { [key]: _dropped, ...rest } = localChatSessions.value
-    localChatSessions.value = rest
-  }
+  const deleted = new Set([key])
+  removeLocalSessions(deleted)
+  dispatchLocalSessionsDeleted(deleted, APP_SESSION_SYNC_SOURCE)
   await loadSessions()
   if (wasCurrent) {
     router.push({ path: '/chat/new', query: { agent: preferredAgentId() } })
@@ -928,18 +956,6 @@ function openBlockedApprovalSession() {
     return
   }
   router.push('/approvals')
-}
-
-// Sidebar Approvals row: a persistent destination. While requests are pending
-// it shares the topbar pill's deep-link to the blocked session; when idle it is
-// the proactive way into the Approvals page (queue + strategy), with no fetch.
-function onApprovalsRowClick() {
-  handleNavClick()
-  if (appStore.approvalCount > 0) {
-    openBlockedApprovalSession()
-  } else {
-    router.push('/approvals')
-  }
 }
 
 // Footer settings row. Both platforms mount the same `/settings` overlay now, so
@@ -1189,6 +1205,7 @@ onMounted(() => {
     if (topbarRightRef.value) topbarReserveObserver.observe(topbarRightRef.value)
   }
   window.addEventListener('resize', scheduleTopbarReserve)
+  window.addEventListener(LOCAL_SESSIONS_DELETED_EVENT, handleLocalSessionsDeleted)
   syncTopbarReserve()
   loadAgents()
   loadSessions()
@@ -1210,6 +1227,7 @@ onUnmounted(() => {
     topbarReserveRaf = 0
   }
   window.removeEventListener('resize', scheduleTopbarReserve)
+  window.removeEventListener(LOCAL_SESSIONS_DELETED_EVENT, handleLocalSessionsDeleted)
   if (hoverLeaveTimer) clearTimeout(hoverLeaveTimer)
   if (sessionRefreshTimer) clearTimeout(sessionRefreshTimer)
   if (rpcUnsubSessionsChanged) rpcUnsubSessionsChanged()

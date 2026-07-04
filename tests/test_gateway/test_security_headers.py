@@ -38,6 +38,7 @@ def test_csp_allows_blob_images_for_artifact_previews() -> None:
     assert response.status_code == 200
     csp = response.headers.get("content-security-policy", "")
     assert "img-src 'self' data: blob:;" in csp, csp
+    assert "font-src 'self' data:;" in csp, csp
 
 
 def test_csp_still_constrains_default_and_connect_sources() -> None:

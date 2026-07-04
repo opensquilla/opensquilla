@@ -28,6 +28,12 @@
 
 ---
 
+## Neuigkeiten
+
+- 📢 **2026-07-03** — Unser technischer Bericht **[Agentic Routing: The Harness-Native Data Flywheel](docs/releases/agentic_routing_v0.pdf)** (Vorschau) ist erschienen und wurde zusammen mit OpenSquilla **0.5.0 Preview 1** veröffentlicht. Er beschreibt, wie der harness-native Router alltäglichen Agent-Traffic in ein sich selbst verbesserndes Daten-Schwungrad verwandelt.
+
+---
+
 ## Überblick
 
 OpenSquilla ist ein Token-effizienter Mikrokernel-AI-Agent. Ein lokaler
@@ -43,7 +49,7 @@ Provider-Schicht spricht mit OpenRouter, OpenAI, Anthropic, Ollama,
 DeepSeek, Gemini, Qwen/DashScope und über 20 weiteren LLM-Providern —
 ohne Änderung an deinem Code oder deinem Konfigurationsschema.
 
-OpenSquilla 0.4.1 ist die aktuelle Version.
+OpenSquilla 0.5.0 Preview 1 ist die aktuelle Preview-Version.
 
 Für aufgabenorientierte Produktdokumentation beginnst du am besten mit
 dem [OpenSquilla-Produktleitfaden](README.product.md) oder dem
@@ -56,41 +62,36 @@ dem [OpenSquilla-Produktleitfaden](README.product.md) oder dem
 OpenSquilla läuft unter Windows, macOS und Linux. Wähle den Weg, der zu
 deinem Einsatzzweck passt.
 
-Desktop-Installationsprogramme, Windows Portable und die schnelle
-Terminal-Installation liefern dir ein vorgefertigtes **Release** — kein
+Desktop-Installationsprogramme und die schnelle Terminal-Installation liefern dir
+ein vorgefertigtes **Release** — kein
 Git erforderlich. Die beiden anderen — Aus Quellcode installieren und
 Aus Quellcode entwickeln — bauen **aus einem Git-Checkout** (`git clone`
 + Git LFS).
 
 Release-Installationsbefehle verwenden veröffentlichte GitHub-Release-Assets.
-Das Windows-Portable-ZIP hat außerdem einen
-`/releases/latest/download/`-Alias für die aktuelle Version.
 Python-Wheel-Installationen verwenden versionsbehaftete Wheel-Dateinamen,
 weil die Installationsprogramme die im Wheel-Dateinamen eingebettete
 Version prüfen.
 
-Für den Desktop-Einsatz von 0.4.1 bevorzugst du die signierten
+Für den Desktop-Einsatz von 0.5.0 Preview 1 bevorzugst du die gepackten
 Desktop-Installationsprogramme aus dem GitHub-Release:
-`OpenSquilla-0.4.1-mac-arm64.dmg` unter macOS und
-`OpenSquilla-0.4.1-win-x64.exe` unter Windows. Das Windows-Portable-ZIP
-bleibt als Kompatibilitätspaket für Skripte und Portable-Ordner-Workflows
-weiterhin verfügbar.
+`OpenSquilla-0.5.0-rc1-mac-arm64.dmg` unter macOS und
+`OpenSquilla-0.5.0-rc1-win-x64.exe` unter Windows.
 
 | Weg | Zielgruppe | Wann verwenden |
 | --- | --- | --- |
-| [Desktop-Installationsprogramme](#desktop-installers) **(empfohlen für Desktop)** | macOS- und Windows-Nutzer | Signierte, gepackte Desktop-App |
-| [Windows Portable](#windows-portable-no-python) | Windows-Nutzer | Kompatibilität; keine Python-Toolchain; Start aus einem ZIP |
+| [Desktop-Installationsprogramme](#desktop-installers) **(empfohlen für Desktop)** | macOS- und Windows-Nutzer | Gepackte Desktop-App |
 | [Schnelle Terminal-Installation](#quick-terminal-install) **(empfohlen)** | Endnutzer auf jedem Betriebssystem | Release-Wheel aus dem Terminal |
 | [Aus Quellcode installieren](#install-from-source) | Nutzer, die `main` verfolgen | Aus einem Checkout ausführen, nicht bearbeiten |
 | [Aus Quellcode entwickeln](#develop-from-source) | Mitwirkende | Quellcode bearbeiten, testen oder debuggen |
 
 ### Voraussetzungen
 
-| Anforderung | Windows Portable | Schnelle Terminal-Installation | Aus Quellcode installieren | Aus Quellcode entwickeln |
-| --- | :---: | :---: | :---: | :---: |
-| Python 3.12+ | mitgeliefert | über `uv` | über `uv` oder System | über `uv` |
-| Git + Git LFS | — | — | erforderlich | erforderlich |
-| `uv` | — | wird bei Bedarf installiert | empfohlen | erforderlich |
+| Anforderung | Schnelle Terminal-Installation | Aus Quellcode installieren | Aus Quellcode entwickeln |
+| --- | :---: | :---: | :---: |
+| Python 3.12+ | über `uv` | über `uv` oder System | über `uv` |
+| Git + Git LFS | — | erforderlich | erforderlich |
+| `uv` | wird bei Bedarf installiert | empfohlen | erforderlich |
 
 Das Standardprofil `recommended` installiert **SquillaRouter** —
 OpenSquillas Modell-Router auf dem Gerät — und seine Modell-Assets;
@@ -99,9 +100,8 @@ separate Onboarding-Flag `--router disabled` behält die installierten
 Abhängigkeiten bei, schaltet den Router aber zur Laufzeit ab.
 
 Unter Windows benötigt die mit SquillaRouter gebündelte ONNX-Runtime
-zusätzlich die Visual-C++-Runtime. Der Windows-Portable-Launcher und das
-PowerShell-Installationsprogramm für die Quellcode-Installation
-installieren sie automatisch über `winget`; der Weg über die
+zusätzlich die Visual-C++-Runtime. Das PowerShell-Installationsprogramm für die
+Quellcode-Installation installiert sie automatisch über `winget`; der Weg über die
 **schnelle Terminal-Installation** (`uv tool install`) tut das nicht —
 falls beim Start ein `DLL load failed`-Fehler protokolliert wird,
 installiere sie manuell (siehe [Fehlerbehebung](#troubleshooting)).
@@ -110,7 +110,7 @@ installiert ist.
 
 Bei Terminal-Installationen unter macOS benötigt die LightGBM-Runtime
 von SquillaRouter möglicherweise zusätzlich die OpenMP-Systembibliothek.
-Die signierte Desktop-App bringt die benötigte Runtime mit, aber die
+Die Desktop-App bringt die benötigte Runtime mit, aber die
 **schnelle Terminal-Installation** installiert keine
 Homebrew-/Systembibliotheken. Falls beim Start `Library not loaded:
 @rpath/libomp.dylib` protokolliert wird, führe `brew install libomp` aus
@@ -125,65 +125,15 @@ Installationslinks: [Git](https://git-scm.com/downloads) ·
 
 ### Desktop-Installationsprogramme
 
-Die 0.4.1-Desktop-Installationsprogramme bündeln die Vue-Steuerkonsole
+Die 0.5.0-Preview-1-Desktop-Installationsprogramme bündeln die Vue-Steuerkonsole
 und die Gateway-Runtime in einer Electron-Hülle.
 
-- macOS Apple Silicon: <https://github.com/opensquilla/opensquilla/releases/download/v0.4.1/OpenSquilla-0.4.1-mac-arm64.dmg>
-- Windows x64: <https://github.com/opensquilla/opensquilla/releases/download/v0.4.1/OpenSquilla-0.4.1-win-x64.exe>
+- macOS Apple Silicon: <https://github.com/opensquilla/opensquilla/releases/download/v0.5.0rc1/OpenSquilla-0.5.0-rc1-mac-arm64.dmg>
+- Windows x64: <https://github.com/opensquilla/opensquilla/releases/download/v0.5.0rc1/OpenSquilla-0.5.0-rc1-win-x64.exe>
 
 Beende vor dem Upgrade jede laufende OpenSquilla-Desktop-App.
 Vorhandene `~/.opensquilla/config.toml` und Sitzungsdaten werden
 weiterverwendet.
-
-<a id="windows-portable-no-python"></a>
-
-### Windows Portable (ohne Python)
-
-Der Kompatibilitätsweg unter Windows — das ZIP bringt eine gebündelte
-CPython-Runtime mit, sodass keine separate Python-Installation nötig ist.
-
-1. Lade das aktuelle Portable-ZIP herunter:
-   <https://github.com/opensquilla/opensquilla/releases/latest/download/OpenSquilla-windows-x64-portable.zip>
-2. Entpacke es in einen beschreibbaren Ordner wie „Downloads“ oder
-   „Dokumente“, klicke dann mit der rechten Maustaste auf
-   `Start OpenSquilla.cmd` und wähle **Als Administrator ausführen**.
-3. Schließe die Ersteinrichtung ab und öffne anschließend
-   <http://127.0.0.1:18791/control/>.
-
-> [!NOTE]
-> Vorschau-Builds sind unsigniert; der Start als Administrator ist der
-> unterstützte Weg. Erscheint SmartScreen, wähle **Weitere Informationen**
-> → **Trotzdem ausführen**. Blockiert Smart App Control oder eine
-> Unternehmensrichtlinie die unsignierte App, nutze stattdessen die
-> [schnelle Terminal-Installation](#quick-terminal-install).
-
-<details>
-<summary>Fortgeschrittene Portable-Nutzung</summary>
-
-Stelle vor dem ersten Start einen OpenRouter-Key bereit:
-
-```powershell
-$env:OPENROUTER_API_KEY="sk-..."
-Set-ExecutionPolicy -Scope Process Bypass
-.\start.ps1
-```
-
-Wenn `OPENROUTER_API_KEY` gesetzt ist und keine lokale Konfiguration
-existiert, schreibt der Launcher eine Konfiguration mit Verweis auf die
-Umgebungsvariable und startet das Gateway ohne Nachfrage. Ist die
-Variable nicht gesetzt, kannst du im Onboarding-Assistenten einen
-beliebigen unterstützten Provider auswählen.
-
-Das Portable-ZIP installiert keinen globalen `opensquilla`-Befehl. Für
-ein Terminal, in dem `opensquilla …` funktioniert, führe
-`OpenSquilla Shell.cmd` aus oder rufe den gebündelten Launcher direkt
-auf:
-
-```powershell
-.\opensquilla.cmd onboard --provider openrouter --api-key-env OPENROUTER_API_KEY
-```
-
-</details>
 
 <a id="quick-terminal-install"></a>
 
@@ -216,7 +166,7 @@ $env:Path = "$env:USERPROFILE\.local\bin;" + $env:Path
 **2. OpenSquilla installieren** — derselbe Befehl auf jeder Plattform.
 
 ```sh
-uv tool install --python 3.12 "opensquilla[recommended] @ https://github.com/opensquilla/opensquilla/releases/download/v0.4.1/opensquilla-0.4.1-py3-none-any.whl"
+uv tool install --python 3.12 "opensquilla[recommended] @ https://github.com/opensquilla/opensquilla/releases/download/v0.5.0rc1/opensquilla-0.5.0rc1-py3-none-any.whl"
 ```
 
 Damit wird das OpenSquilla-Wheel von der Release-URL installiert;
@@ -244,7 +194,7 @@ opensquilla gateway run
 
 Für eine vollständig festgelegte Installation verwende die
 versionsbehaftete Wheel-URL:
-`https://github.com/opensquilla/opensquilla/releases/download/v0.4.1/opensquilla-0.4.1-py3-none-any.whl`.
+`https://github.com/opensquilla/opensquilla/releases/download/v0.5.0rc1/opensquilla-0.5.0rc1-py3-none-any.whl`.
 
 <a id="install-from-source"></a>
 
@@ -768,7 +718,7 @@ mit direktem Single-Model-Routing weiter, aber die gebündelte
 `SquillaRouter`-Runtime bleibt inaktiv, bis die macOS-OpenMP-Runtime
 installiert ist.
 
-Die signierte Desktop-App bringt die benötigte native Runtime mit. Wenn
+Die Desktop-App bringt die benötigte native Runtime mit. Wenn
 du die schnelle Terminal-Installation oder eine Quellcode-Installation
 aus einer Shell verwendet hast, installiere `libomp` mit Homebrew und
 starte das Gateway neu:
@@ -789,9 +739,8 @@ direktem Single-Model-Routing weiter, aber die gebündelte
 `SquillaRouter`-Runtime bleibt inaktiv, bis das Visual C++
 Redistributable für Visual Studio 2015–2022 (x64) installiert ist.
 
-Der Windows-Portable-Launcher und das PowerShell-Installationsprogramm
-für die Quellcode-Installation versuchen, das Redistributable über
-`winget` zu installieren. Wenn du die schnelle Terminal-Installation
+Das PowerShell-Installationsprogramm für die Quellcode-Installation versucht,
+das Redistributable über `winget` zu installieren. Wenn du die schnelle Terminal-Installation
 verwendet hast oder `winget` nicht verfügbar ist, installiere es manuell
 und starte PowerShell neu:
 <https://aka.ms/vs/17/release/vc_redist.x64.exe>. Stelle anschließend den
@@ -817,6 +766,18 @@ Community-Mitwirkende werden in
 [`CONTRIBUTORS.md`](CONTRIBUTORS.md) gewürdigt, einschließlich
 release-spezifischer Attributionshinweise für squash-gemergte oder
 wiedergespielte Arbeit.
+
+---
+
+## Mitwirkende
+
+Dank an alle, die zu OpenSquilla beitragen.
+
+<p align="center">
+  <a href="https://github.com/opensquilla/opensquilla/graphs/contributors">
+    <img src="https://contrib.rocks/image?repo=opensquilla/opensquilla&max=100&columns=10" alt="OpenSquilla contributors" />
+  </a>
+</p>
 
 ---
 

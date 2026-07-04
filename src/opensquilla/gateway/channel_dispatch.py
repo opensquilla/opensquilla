@@ -50,6 +50,7 @@ from opensquilla.channels.types import IncomingMessage, OutgoingMessage
 from opensquilla.engine.start_turn import start_turn_via_runtime
 from opensquilla.engine.types import (
     ArtifactEvent,
+    EnsembleProgressEvent,
     ErrorEvent,
     RouterDecisionEvent,
     RunHeartbeatEvent,
@@ -423,6 +424,14 @@ async def run_channel_dispatch(
             # Gap 2: Skip unmentioned group messages
             if _should_skip_unmentioned(channel, msg, session_key):
                 continue
+
+        await _apply_saved_channel_run_context(
+            route_envelope,
+            session_manager=session_manager,
+            config=config,
+            workspace_dir=None,
+            principal_is_owner=_is_channel_admin_sender(config, route_envelope),
+        )
 
         ingested = await _ingest_channel_message_attachments(channel=channel, msg=msg)
 
@@ -819,6 +828,14 @@ async def _dispatch_combined_message_after_debounce(channel: Any, combined: Any,
         if _should_skip_unmentioned(channel, msg, session_key):
             return
 
+    await _apply_saved_channel_run_context(
+        route_envelope,
+        session_manager=session_manager,
+        config=config,
+        workspace_dir=None,
+        principal_is_owner=_is_channel_admin_sender(config, route_envelope),
+    )
+
     ingested = await _ingest_channel_message_attachments(channel=channel, msg=msg)
 
     async with _maybe_lock(session_lock):
@@ -963,6 +980,43 @@ async def _record_delivery_context(
             await session_manager.update(main_session_key, **delivery_fields)
 
     return session, created
+
+
+async def _apply_saved_channel_run_context(
+    route_envelope: Any,
+    *,
+    session_manager: Any,
+    config: Any,
+    workspace_dir: str | None,
+    principal_is_owner: bool,
+) -> None:
+    """Attach saved sandbox run context to a channel route when one exists."""
+    if route_envelope is None or session_manager is None or config is None:
+        return
+    try:
+        from opensquilla.gateway.rpc_sessions import _apply_run_context_route_metadata
+        from opensquilla.sandbox.run_context import get_run_context
+
+        run_context = await get_run_context(
+            session_manager,
+            route_envelope.session_key,
+            config=config,
+            workspace=workspace_dir,
+        )
+    except Exception as exc:  # pragma: no cover - defensive channel path
+        log.warning(
+            "channel_dispatch.run_context_load_failed",
+            session_key=getattr(route_envelope, "session_key", ""),
+            error_type=type(exc).__name__,
+        )
+        return
+    if getattr(run_context, "source", "") != "saved":
+        return
+    _apply_run_context_route_metadata(
+        route_envelope,
+        run_context,
+        principal_is_owner=principal_is_owner,
+    )
 
 
 async def resolve_delivery_target(
@@ -1640,6 +1694,22 @@ def _router_decision_payload(event: RouterDecisionEvent) -> dict[str, Any]:
     }
 
 
+def _ensemble_progress_payload(event: EnsembleProgressEvent) -> dict[str, Any]:
+    return {
+        "event_type": event.event_type,
+        "proposer_index": event.proposer_index,
+        "proposer_label": event.proposer_label,
+        "proposer_model": event.proposer_model,
+        "proposer_provider": event.proposer_provider,
+        "sample_index": event.sample_index,
+        "elapsed_ms": event.elapsed_ms,
+        "input_tokens": event.input_tokens,
+        "output_tokens": event.output_tokens,
+        "cost_usd": event.cost_usd,
+        "error": event.error,
+    }
+
+
 def _tool_use_start_payload(event: ToolUseStartEvent) -> dict[str, Any]:
     return {
         "tool_use_id": event.tool_use_id,
@@ -2230,6 +2300,13 @@ async def _run_turn_batch_path(
                         "session.event.router_decision",
                         _router_decision_payload(event),
                     )
+            elif isinstance(event, EnsembleProgressEvent):
+                if event_bridge is not None:
+                    await event_bridge.emit(
+                        session_key,
+                        "session.event.ensemble_progress",
+                        _ensemble_progress_payload(event),
+                    )
             elif isinstance(event, ToolUseStartEvent):
                 if event_bridge is not None:
                     await event_bridge.emit(
@@ -2396,6 +2473,13 @@ async def _run_turn_streaming_path(
                         session_key,
                         "session.event.router_decision",
                         _router_decision_payload(event),
+                    )
+            elif isinstance(event, EnsembleProgressEvent):
+                if event_bridge is not None:
+                    await event_bridge.emit(
+                        session_key,
+                        "session.event.ensemble_progress",
+                        _ensemble_progress_payload(event),
                     )
             elif isinstance(event, ToolUseStartEvent):
                 if event_bridge is not None:

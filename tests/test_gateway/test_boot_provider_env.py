@@ -193,6 +193,38 @@ async def test_config_patch_safe_accepts_session_title_toggle(tmp_path) -> None:
     assert persisted["naming"]["enabled"] is False
 
 
+async def test_config_patch_safe_accepts_privacy_network_observability_toggle(tmp_path) -> None:
+    cfg = GatewayConfig(config_path=str(tmp_path / "config.toml"))
+    ctx = SimpleNamespace(config=cfg)
+
+    res = await _handle_config_patch_safe(
+        {"patches": {"privacy.disable_network_observability": True}},
+        ctx,
+    )
+
+    assert res["patched"] == ["privacy.disable_network_observability"]
+    assert res["restartRequired"] is False
+    assert ctx.config.privacy.disable_network_observability is True
+    persisted = tomllib.loads((tmp_path / "config.toml").read_text())
+    assert persisted["privacy"]["disable_network_observability"] is True
+
+
+async def test_config_patch_safe_accepts_llm_ensemble_toggle(tmp_path) -> None:
+    cfg = GatewayConfig(config_path=str(tmp_path / "config.toml"))
+    ctx = SimpleNamespace(config=cfg)
+
+    res = await _handle_config_patch_safe(
+        {"patches": {"llm_ensemble.enabled": True}},
+        ctx,
+    )
+
+    assert res["patched"] == ["llm_ensemble.enabled"]
+    assert res["restartRequired"] is False
+    assert ctx.config.llm_ensemble.enabled is True
+    persisted = tomllib.loads((tmp_path / "config.toml").read_text())
+    assert persisted["llm_ensemble"]["enabled"] is True
+
+
 async def test_config_patch_safe_rejects_session_title_advanced_paths(tmp_path) -> None:
     cfg = GatewayConfig(config_path=str(tmp_path / "config.toml"))
     ctx = SimpleNamespace(config=cfg)

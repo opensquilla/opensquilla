@@ -363,19 +363,64 @@ async def test_case04_squilla_router_fires_overrides_model() -> None:
     selector = _StubSelector("sel4", current_model="claude-opus-4.5")
     routed_provider = _StubProvider("opus_routed")
     selector.resolve_returns = routed_provider
+    provider_after_pipeline = _StubProvider("post_pipeline")
     executor = _RecordingPipelineExecutor(
         turn=_make_turn(metadata={"routed_tier": "premium"}, model="claude-sonnet-4.5"),
-        provider=_StubProvider("post_pipeline"),
+        provider=provider_after_pipeline,
     )
     stage = _make_stage(executor=executor)
-    inp = _make_input(
-        cloned_selector=selector, tool_defs=[1], model="claude-haiku-4.5",
-    )
+    inp = _make_input(cloned_selector=selector, tool_defs=[1])
     out = await stage.run(inp)
-    assert "claude-haiku-4.5" in selector.overridden_models
-    # explicit model wins
-    assert out.output.resolved_model == "claude-haiku-4.5"
+    assert selector.overridden_models == []
+    inner = getattr(out.output.provider, "_provider", None)
+    assert inner is provider_after_pipeline
+    assert out.output.resolved_model == "claude-sonnet-4.5"
     assert out.output.squilla_router_tier == "premium"
+
+
+@pytest.mark.asyncio
+async def test_explicit_model_override_reconciles_routed_model_and_clears_savings() -> None:
+    selector = _StubSelector("sel", current_model="claude-opus-4.5")
+    selector.resolve_returns = _StubProvider("routed")
+    turn = _make_turn(
+        metadata={
+            "routed_model": "claude-sonnet-4.5",
+            "savings_pct": 50.0,
+            "savings_max_price_per_m": 9.0,
+            "savings_routed_price_per_m": 3.0,
+        },
+        model="claude-sonnet-4.5",
+    )
+    executor = _RecordingPipelineExecutor(turn=turn, provider=_StubProvider("post"))
+    stage = _make_stage(executor=executor)
+    inp = _make_input(cloned_selector=selector, model="claude-haiku-4.5")
+
+    await stage.run(inp)
+
+    # routed_model realigned to the model that actually ran; savings dropped.
+    assert turn.metadata["routed_model"] == "claude-haiku-4.5"
+    assert turn.metadata["savings_pct"] == 0.0
+    assert turn.metadata["savings_max_price_per_m"] == 0.0
+    assert turn.metadata["savings_routed_price_per_m"] == 0.0
+
+
+@pytest.mark.asyncio
+async def test_explicit_model_equal_to_routed_keeps_savings() -> None:
+    selector = _StubSelector("sel", current_model="claude-haiku-4.5")
+    selector.resolve_returns = _StubProvider("routed")
+    turn = _make_turn(
+        metadata={"routed_model": "claude-haiku-4.5", "savings_pct": 42.0},
+        model="claude-haiku-4.5",
+    )
+    executor = _RecordingPipelineExecutor(turn=turn, provider=_StubProvider("post"))
+    stage = _make_stage(executor=executor)
+    inp = _make_input(cloned_selector=selector, model="claude-haiku-4.5")
+
+    await stage.run(inp)
+
+    # Explicit model matches the routed choice: no mismatch, savings preserved.
+    assert turn.metadata["routed_model"] == "claude-haiku-4.5"
+    assert turn.metadata["savings_pct"] == 42.0
 
 
 @pytest.mark.asyncio
@@ -442,7 +487,7 @@ async def test_case09_model_override_at_call_site() -> None:
     overridden_provider = _StubProvider("after_override")
     selector.resolve_returns = overridden_provider
     executor = _RecordingPipelineExecutor(
-        turn=_make_turn(model="claude-sonnet-4.5"), provider=_StubProvider("pp"),
+        turn=_make_turn(model=""), provider=_StubProvider("pp"),
     )
     stage = _make_stage(executor=executor)
     inp = _make_input(cloned_selector=selector, model="claude-haiku-4.5")

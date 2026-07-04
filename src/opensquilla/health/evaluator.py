@@ -1426,3 +1426,63 @@ def evaluate_sandbox(payload: dict[str, Any]) -> list[HealthFinding]:
             evidence=evidence,
         )
     ]
+
+
+def evaluate_llm_ensemble(payload: dict[str, Any]) -> list[HealthFinding]:
+    enabled = bool(payload.get("enabled"))
+    selection_mode = str(payload.get("selectionMode") or "")
+    if not enabled or selection_mode != "static_openrouter_b5":
+        return []
+    api_key_env = str(payload.get("apiKeyEnv") or "OPENROUTER_API_KEY")
+    credential_available = bool(payload.get("credentialAvailable"))
+    evidence = {
+        "enabled": enabled,
+        "selectionMode": selection_mode,
+        "activeProvider": payload.get("activeProvider"),
+        "apiKeyEnv": api_key_env,
+        "credentialAvailable": credential_available,
+    }
+    if credential_available:
+        return [
+            HealthFinding(
+                id="llm_ensemble.static_openrouter_b5.ready",
+                severity="ok",
+                surface="llm_ensemble",
+                title="LLM ensemble ready",
+                detail=(
+                    "The static OpenRouter B5 ensemble resolves an OpenRouter "
+                    "credential and is active for turns."
+                ),
+                evidence=evidence,
+            )
+        ]
+    return [
+        HealthFinding(
+            id="llm_ensemble.static_openrouter_b5.credentials.missing",
+            severity="warn",
+            surface="llm_ensemble",
+            title="LLM ensemble is enabled but cannot run",
+            detail=(
+                "LLM ensemble (static OpenRouter B5) is enabled but no OpenRouter "
+                "credential resolves — the ensemble is inactive and every turn falls "
+                f"back to the single configured provider. Set {api_key_env}, switch "
+                "llm_ensemble.selection_mode, or disable the ensemble."
+            ),
+            evidence=evidence,
+            fix_steps=[
+                FixStep(
+                    label="Set OpenRouter API key",
+                    detail=(
+                        f"Set {api_key_env} in the gateway environment, then restart "
+                        "the gateway."
+                    ),
+                ),
+                FixStep(
+                    label="Disable the ensemble",
+                    command="opensquilla config set llm_ensemble.enabled false",
+                ),
+                FixStep(label="Restart gateway", command="opensquilla gateway restart"),
+            ],
+            restart_required=True,
+        )
+    ]

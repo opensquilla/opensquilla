@@ -8,7 +8,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import replace
 from typing import Any, cast
 
-from opensquilla.gateway.config import GatewayConfig
+from opensquilla.gateway.config import GatewayConfig, static_openrouter_b5_ensemble_enabled
 from opensquilla.gateway.rpc import RpcContext, get_dispatcher
 from opensquilla.gateway.rpc_channels import _handle_channels_status
 from opensquilla.gateway.rpc_logs import _build_logs_status
@@ -17,6 +17,7 @@ from opensquilla.gateway.rpc_tools import _handle_providers_status, _handle_sear
 from opensquilla.health.evaluator import (
     evaluate_channels,
     evaluate_image_generation,
+    evaluate_llm_ensemble,
     evaluate_logs,
     evaluate_memory,
     evaluate_memory_embedding,
@@ -45,6 +46,7 @@ _COLLECTION_INSPECT_COMMANDS = {
     "memory_embedding": "opensquilla memory status --deep --json",
     "search": "opensquilla search status --json",
     "image_generation": "opensquilla onboard status --json",
+    "llm_ensemble": "opensquilla diagnostics status",
 }
 _READINESS_CRITICAL_COLLECTIONS = {"provider"}
 _UNKNOWN_SEARCH_PROVIDER_RE = re.compile(
@@ -273,6 +275,28 @@ def _router_payload(ctx: RpcContext, *, deep: bool = False) -> dict[str, Any]:
     }
 
 
+def _llm_ensemble_payload(ctx: RpcContext) -> dict[str, Any]:
+    config = getattr(ctx, "config", None)
+    ensemble_cfg = getattr(config, "llm_ensemble", None) if config is not None else None
+    payload: dict[str, Any] = {
+        "enabled": bool(getattr(ensemble_cfg, "enabled", False)),
+        "selectionMode": str(getattr(ensemble_cfg, "selection_mode", "") or ""),
+        "activeProvider": str(
+            getattr(getattr(config, "llm", None), "provider", "") or ""
+        ),
+    }
+    if config is not None and static_openrouter_b5_ensemble_enabled(config):
+        from opensquilla.provider.ensemble import static_openrouter_b5_credential_available
+        from opensquilla.provider.registry import get_provider_spec
+
+        payload["apiKeyEnv"] = str(get_provider_spec("openrouter").env_key or "")
+        payload["credentialAvailable"] = static_openrouter_b5_credential_available(
+            config,
+            getattr(config, "llm", None),
+        )
+    return payload
+
+
 def _memory_embedding_payload(ctx: RpcContext) -> dict[str, Any]:
     config = getattr(ctx, "config", None)
     memory_config = getattr(config, "memory", None) if config is not None else None
@@ -371,6 +395,11 @@ async def _handle_doctor_status(params: dict | None, ctx: RpcContext) -> dict[st
             "image_generation",
             lambda: _image_generation_payload(ctx),
             evaluate_image_generation,
+        ),
+        (
+            "llm_ensemble",
+            lambda: _llm_ensemble_payload(ctx),
+            evaluate_llm_ensemble,
         ),
     ]
 

@@ -374,12 +374,29 @@ def static_openrouter_b5_ensemble_enabled(config: Any) -> bool:
     )
 
 
+def static_openrouter_b5_ensemble_active(config: Any) -> bool:
+    """True when static-B5 is enabled *and* its members resolve a credential.
+
+    The stream-idle floors below exist for the real (slow) static-B5
+    ensemble. A keyless install can never run those members — the wrap is
+    skipped at turn time — so it keeps the default hang-detection budgets.
+    The credential check is the shared ensemble-side helper (lazy import;
+    ``provider`` never imports from ``gateway``, so no cycle) and therefore
+    cannot disagree with the turn-time wrap guard.
+    """
+    if not static_openrouter_b5_ensemble_enabled(config):
+        return False
+    from opensquilla.provider.ensemble import static_openrouter_b5_credential_available
+
+    return static_openrouter_b5_credential_available(config, getattr(config, "llm", None))
+
+
 def effective_agent_stream_idle_timeout_seconds(config: Any) -> float:
     value = _non_negative_float(
         getattr(config, "agent_stream_idle_timeout_seconds", 600.0),
         600.0,
     )
-    if static_openrouter_b5_ensemble_enabled(config):
+    if static_openrouter_b5_ensemble_active(config):
         value = max(value, STATIC_OPENROUTER_B5_MIN_AGENT_STREAM_IDLE_TIMEOUT_SECONDS)
     return value
 
@@ -389,7 +406,7 @@ def effective_webui_stream_idle_grace_seconds(config: Any) -> float:
         getattr(config, "webui_stream_idle_grace_seconds", 630.0),
         630.0,
     )
-    if static_openrouter_b5_ensemble_enabled(config):
+    if static_openrouter_b5_ensemble_active(config):
         server_idle = effective_agent_stream_idle_timeout_seconds(config)
         value = max(
             value,

@@ -31,6 +31,10 @@ export type ArtifactOpenResult =
   | { ok: true; status: number; url: string; objectUrl: string }
   | { ok: false; status: number; url: string; message: string }
 
+export type ArtifactGatewayOpenResult =
+  | { ok: true; status: number; url: string }
+  | { ok: false; status: number; url: string; message: string }
+
 const DEFAULT_BASE_ORIGIN = 'http://localhost'
 const BLOB_REVOKE_DELAY_MS = 60000
 
@@ -80,12 +84,16 @@ function hasActiveDocumentExtension(artifact: ArtifactPayload): boolean {
   return name.endsWith('.html') || name.endsWith('.htm') || name.endsWith('.xhtml')
 }
 
+export function isActiveDocumentArtifactCandidate(artifact: ArtifactPayload): boolean {
+  const artifactMime = normalizedMime(artifact.mime)
+  return artifactMime === 'text/html' || artifactMime === 'application/xhtml+xml' ||
+    hasActiveDocumentExtension(artifact)
+}
+
 export function isActiveDocumentArtifact(artifact: ArtifactPayload, blob: Blob): boolean {
   const responseMime = normalizedMime(blob.type)
-  const artifactMime = normalizedMime(artifact.mime)
   return responseMime === 'text/html' || responseMime === 'application/xhtml+xml' ||
-    artifactMime === 'text/html' || artifactMime === 'application/xhtml+xml' ||
-    hasActiveDocumentExtension(artifact)
+    isActiveDocumentArtifactCandidate(artifact)
 }
 
 export function isSameOriginArtifactUrl(url: string, baseOrigin: string): boolean {
@@ -116,6 +124,21 @@ export function artifactAccessHeaders(url: string, options: ArtifactAuthContext 
   return headers
 }
 
+export function artifactGatewayOpenUrl(artifact: ArtifactPayload, baseOrigin: string): string {
+  const rawId = artifact?.id ? String(artifact.id) : ''
+  if (rawId) return `/api/v1/artifacts/${encodeURIComponent(rawId)}/open`
+  const accessUrl = artifactAccessUrl(artifact, baseOrigin)
+  if (!accessUrl) return ''
+  try {
+    const url = new URL(accessUrl, baseOrigin)
+    if (url.origin !== new URL(baseOrigin).origin) return ''
+    const match = url.pathname.match(/^\/api\/v1\/artifacts\/([^/]+)$/)
+    return match ? `/api/v1/artifacts/${match[1]}/open` : ''
+  } catch {
+    return ''
+  }
+}
+
 export function artifactOpenFailureMessage(status: number, title: string): string {
   if (status === 401 || status === 403) {
     return 'Artifact open is not authorized. Refresh the page and try again.'
@@ -124,6 +147,42 @@ export function artifactOpenFailureMessage(status: number, title: string): strin
     return `Artifact is unavailable in this session: ${title}`
   }
   return `Artifact open failed. Use Download instead: ${title}`
+}
+
+export async function openArtifactViaGateway(
+  artifact: ArtifactPayload,
+  options: ArtifactFetchOptions = {},
+): Promise<ArtifactGatewayOpenResult> {
+  const baseOrigin = resolveBaseOrigin(options.baseOrigin)
+  const url = artifactGatewayOpenUrl(artifact, baseOrigin)
+  const title = safeTitle(artifact)
+  if (!url) {
+    return { ok: false, status: 0, url: '', message: artifactOpenFailureMessage(0, title) }
+  }
+
+  const fetchImpl = resolveFetch(options.fetchImpl)
+  if (!fetchImpl) {
+    return { ok: false, status: 0, url, message: artifactOpenFailureMessage(0, title) }
+  }
+
+  try {
+    const response = await fetchImpl(url, {
+      method: 'POST',
+      headers: artifactAccessHeaders(url, options),
+      credentials: 'same-origin',
+    })
+    if (!response.ok) {
+      return {
+        ok: false,
+        status: response.status,
+        url,
+        message: artifactOpenFailureMessage(response.status, title),
+      }
+    }
+    return { ok: true, status: response.status, url }
+  } catch {
+    return { ok: false, status: 0, url, message: artifactOpenFailureMessage(0, title) }
+  }
 }
 
 export async function fetchArtifactBlob(

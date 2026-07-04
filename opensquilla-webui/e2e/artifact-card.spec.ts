@@ -11,7 +11,7 @@ const PNG_1x1 = Buffer.from(
 
 // Seed a finished assistant turn carrying one image, one previewable document,
 // and one download-only data file, rewriting chat.history in flight.
-async function seedHistory(page: Page) {
+async function seedHistory(page: Page, options: { includeHtml?: boolean } = {}) {
   await page.routeWebSocket(/\/ws$/, ws => {
     const server = ws.connectToServer()
     const historyIds = new Set<string>()
@@ -31,6 +31,27 @@ async function seedHistory(page: Page) {
           historyIds.delete(String(frame.id))
           frame.ok = true
           delete frame.error
+          const artifacts = [
+            {
+              id: 'art-card-img',
+              name: 'generated-image.png',
+              mime: 'image/png',
+              size: 744448,
+              download_url: '/api/v1/artifacts/art-card-img',
+              thumbnail_url: '/api/v1/artifacts/art-card-img?variant=thumb',
+            },
+            { id: 'art-card-pdf', name: 'report-q2.pdf', mime: 'application/pdf', size: 188416 },
+            { id: 'art-card-csv', name: 'pricing.csv', mime: 'text/csv', size: 12288 },
+          ]
+          if (options.includeHtml) {
+            artifacts.push({
+              id: 'art-card-html',
+              name: 'interactive.html',
+              mime: 'text/html',
+              size: 4096,
+              download_url: '/api/v1/artifacts/art-card-html',
+            })
+          }
           frame.payload = {
             messages: [
               {
@@ -44,18 +65,7 @@ async function seedHistory(page: Page) {
                 text: 'Here you go.',
                 id: 'msg-artcard-assistant',
                 timestamp: Math.floor(Date.now() / 1000) - 60,
-                artifacts: [
-                  {
-                    id: 'art-card-img',
-                    name: 'generated-image.png',
-                    mime: 'image/png',
-                    size: 744448,
-                    download_url: '/api/v1/artifacts/art-card-img',
-                    thumbnail_url: '/api/v1/artifacts/art-card-img?variant=thumb',
-                  },
-                  { id: 'art-card-pdf', name: 'report-q2.pdf', mime: 'application/pdf', size: 188416 },
-                  { id: 'art-card-csv', name: 'pricing.csv', mime: 'text/csv', size: 12288 },
-                ],
+                artifacts,
               },
             ],
             has_more: false,
@@ -142,5 +152,35 @@ test.describe('Artifact deliverable cards', () => {
     // No Open affordance for non-previewable data.
     await expect(csvCard.getByRole('button', { name: 'Open pricing.csv' })).toHaveCount(0)
     await expect(csvCard.getByRole('button', { name: 'Download pricing.csv' })).toBeVisible()
+  })
+
+  test('html file card opens through the gateway native-open endpoint', async ({ page }) => {
+    let nativeOpenCount = 0
+    await page.route('**/api/v1/artifacts/**', async route => {
+      const request = route.request()
+      const url = new URL(request.url())
+      if (url.pathname === '/api/v1/artifacts/art-card-html/open') {
+        nativeOpenCount += 1
+        expect(request.method()).toBe('POST')
+        expect(request.headers()['x-opensquilla-session-key']).toBe(SESSION_KEY)
+        await route.fulfill({
+          status: 202,
+          contentType: 'application/json',
+          body: JSON.stringify({ ok: true, status: 'accepted' }),
+        })
+        return
+      }
+      await route.fulfill({ status: 200, contentType: 'image/png', body: PNG_1x1 })
+    })
+    await seedHistory(page, { includeHtml: true })
+    await page.goto(CONTROL_URL + 'chat?session=' + encodeURIComponent(SESSION_KEY))
+    await page.waitForSelector('.chat-header', { timeout: 10000 })
+
+    const htmlCard = page.locator('.msg-artifact-chip', { hasText: 'interactive.html' })
+    await expect(htmlCard).toBeVisible()
+    await expect(htmlCard.getByRole('button', { name: 'Open interactive.html' })).toBeVisible()
+    await htmlCard.getByRole('button', { name: 'Open interactive.html' }).click()
+
+    await expect.poll(() => nativeOpenCount).toBe(1)
   })
 })

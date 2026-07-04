@@ -289,6 +289,9 @@ export interface ChatMessage {
   output_tokens?: number
   restoredFromHistory?: boolean
   statusHistory?: import('./parts').StatusPart[]
+  /** Typed terminal error code (e.g. 'sandbox_threshold_exceeded') carried on
+   *  role:'error' messages so the renderer can offer a recovery action. */
+  errorCode?: string
 }
 
 export interface ChatMessageMeta {
@@ -345,4 +348,7 @@ export interface ChatRenderedMessage {
   parts?: import('./parts').ChatPart[]
   sources?: import('./parts').SourcePart[]
   statusHistory?: import('./parts').StatusPart[]
+  /** Typed terminal error code, propagated from the raw message so the error
+   *  card can render a recovery action (e.g. resume after a sandbox pause). */
+  errorCode?: string
 }

@@ -8,6 +8,13 @@
       <div class="msg-error-card__body">
         <span class="msg-error-card__heading">{{ t('chat.turnFailed') }}</span>
         <span v-if="message.text" class="msg-error-card__text">{{ message.text }}</span>
+        <button
+          v-if="showResume"
+          type="button"
+          class="msg-error-card__resume"
+          :disabled="resolving"
+          @click="onResume"
+        >{{ t('chat.sandboxPausedResume') }}</button>
       </div>
       <time v-if="timeIso" class="msg-error-card__time" :datetime="timeIso" :title="timeFull">{{ timeAbs }}</time>
     </div>
@@ -32,7 +39,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import Icon from '@/components/Icon.vue'
 import type { ChatRenderedMessage } from '@/types/chat'
@@ -45,6 +52,24 @@ const props = defineProps<{
   subagentSummary: (text: string) => string
   subagentBody: (text: string) => string
 }>()
+
+// Owner-driven recovery: a run paused by the sandbox denial ledger surfaces as a
+// terminal error carrying this code. Offer a Resume action that the parent wires
+// to the sandbox.resume RPC. Resume is idempotent, but we disable the button
+// after one click to avoid duplicate confirmations.
+const emit = defineEmits<{ resume: [] }>()
+const resolving = ref(false)
+const showResume = computed(
+  () =>
+    props.message.displayRole === 'error' &&
+    props.message.errorCode === 'sandbox_threshold_exceeded',
+)
+
+function onResume() {
+  if (resolving.value) return
+  resolving.value = true
+  emit('resume')
+}
 
 const timeIso = computed(() => isoTime(props.message.ts))
 const timeAbs = computed(() => absoluteTime(props.message.ts))
@@ -148,6 +173,29 @@ const timeFull = computed(() => fullTime(props.message.ts))
   line-height: 1.5;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
+}
+
+.msg-error-card__resume {
+  align-self: flex-start;
+  margin-top: 0.25rem;
+  padding: 0.3125rem 0.75rem;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 12%, var(--bg-surface));
+  border: 1px solid color-mix(in srgb, var(--danger) 40%, var(--border));
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: background var(--dur-fast);
+}
+
+.msg-error-card__resume:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--danger) 20%, var(--bg-surface));
+}
+
+.msg-error-card__resume:disabled {
+  opacity: 0.55;
+  cursor: default;
 }
 
 .msg-error-card__time {

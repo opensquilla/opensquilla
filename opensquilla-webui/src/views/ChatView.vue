@@ -215,6 +215,7 @@
           @extend-interrupt="extendInterrupt"
           @clarify-submit="submitClarify"
           @clarify-dismiss="dismissClarify"
+          @resume-sandbox="resumeSandbox"
         >
           <template #router-strip="{ message: msg }">
             <RouterFxStrip v-if="shouldRenderRouterStrip(msg)" :message="msg" />
@@ -1702,6 +1703,25 @@ async function forkConversation() {
     pushToast(t('chat.toast.forkFailed'), { tone: 'danger' })
   } finally {
     forkInFlight.value = false
+  }
+}
+
+// Owner recovery for a run paused by the sandbox denial ledger (the terminal
+// error card exposes a Resume button). Clearing the pause lets the next turn
+// proceed; the run itself already ended, so we prompt the user to resend.
+async function resumeSandbox() {
+  const key = sessionKey.value
+  if (!key) return
+  try {
+    await rpc.call('sandbox.resume', { sessionKey: key })
+    messages.value.push({
+      role: 'system',
+      text: t('chat.sandboxResumed'),
+      ts: new Date().toISOString(),
+    })
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err)
+    pushToast(t('chat.sandboxResumeFailed', { error: detail }), { tone: 'danger' })
   }
 }
 

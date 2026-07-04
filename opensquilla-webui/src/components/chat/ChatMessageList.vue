@@ -55,6 +55,7 @@
       :message="message"
       :subagent-summary="subagentSummary"
       :subagent-body="subagentBody"
+      @resume="$emit('resumeSandbox')"
     />
   </template>
 </template>
@@ -108,6 +109,7 @@ defineEmits<{
   extendInterrupt: [id: string]
   clarifySubmit: [fields: Record<string, string>, request?: NonNullable<Extract<import('@/types/parts').ChatPart, { type: 'interrupt' }>['clarify']>]
   clarifyDismiss: []
+  resumeSandbox: []
 }>()
 
 // The conversation tip: forking is whole-conversation in this release, so the

@@ -649,7 +649,9 @@ export function useChatRpcEventHandlers(options: UseChatRpcEventHandlersOptions)
       options.clearPendingRouterDecision()
       clearLiveThinking()
       stream.endStreaming()
-      messages.value.push({ role: 'error', text: eventSessionErrorMessage(payload), ts: new Date().toISOString() })
+      const rawErrorCode = (payload as { code?: unknown })?.code
+      const errorCode = typeof rawErrorCode === 'string' ? rawErrorCode : undefined
+      messages.value.push({ role: 'error', text: eventSessionErrorMessage(payload), errorCode, ts: new Date().toISOString() })
       options.scheduleHistorySync()
       if (activeTaskGroups.value.size > 0) {
         options.applySessionRunState(activeTaskGroupRunState(payload))

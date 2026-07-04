@@ -251,6 +251,7 @@ export function useChatRenderedMessages(options: UseChatRenderedMessagesOptions)
         reasoning: msg.role === 'assistant' ? msg.reasoning : undefined,
         interrupted: msg.interrupted,
         provenanceKind: msg.provenanceKind,
+        errorCode: msg.errorCode,
       }
       // Additive: derive discriminated parts from the finished rendered
       // object so they cannot drift from the fields the components read. Only

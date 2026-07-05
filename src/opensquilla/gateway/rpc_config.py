@@ -6,6 +6,24 @@ import copy
 from pathlib import Path
 from typing import Any, cast
 
+from opensquilla.gateway.config_secrets import (
+    REDACTED_PUBLIC_VALUE as _REDACTED_PUBLIC_VALUE,
+)
+from opensquilla.gateway.config_secrets import (
+    collect_paths as _collect_paths,
+)
+from opensquilla.gateway.config_secrets import (
+    inherit_runtime_secrets as _inherit_runtime_secrets,
+)
+from opensquilla.gateway.config_secrets import (
+    inherit_then_clear_explicit,
+)
+from opensquilla.gateway.config_secrets import (
+    is_sensitive_redacted_path as _is_sensitive_redacted_path,
+)
+from opensquilla.gateway.config_secrets import (
+    restore_redacted_values as _restore_redacted_values,
+)
 from opensquilla.gateway.rpc import RpcContext, get_dispatcher
 from opensquilla.paths import default_opensquilla_home
 
@@ -16,8 +34,7 @@ def _update_config_in_place(old: Any, new: Any) -> None:
     """Copy all fields from new config into the existing config object in-memory."""
     for field_name in type(new).model_fields:
         setattr(old, field_name, getattr(new, field_name))
-    if hasattr(old, "inherit_runtime_secrets"):
-        old.inherit_runtime_secrets(new)
+    _inherit_runtime_secrets(new, old)
 
 
 def _persist_config(config: Any) -> None:
@@ -34,28 +51,6 @@ def _persist_config(config: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "wb") as f:
         tomli_w.dump(config.to_toml_dict(), f)
-
-
-def _inherit_runtime_secrets(source: Any, target: Any) -> None:
-    if hasattr(target, "inherit_runtime_secrets") and source is not None:
-        target.inherit_runtime_secrets(source)
-
-
-def _clear_runtime_secret_paths(config: Any, paths: set[str]) -> None:
-    if not hasattr(config, "clear_runtime_secret"):
-        return
-    for path in paths:
-        config.clear_runtime_secret(path)
-
-
-def _collect_paths(payload: Any, prefix: str = "") -> set[str]:
-    paths: set[str] = set()
-    if isinstance(payload, dict):
-        for key, value in payload.items():
-            current = f"{prefix}.{key}" if prefix else key
-            paths.add(current)
-            paths.update(_collect_paths(value, current))
-    return paths
 
 
 def _strip_public_derived_config_fields(payload: dict[str, Any]) -> dict[str, Any]:
@@ -112,54 +107,6 @@ def _align_auto_router_profile_for_provider_patch(
 
     router.pop("tier_profile", None)
     router.pop("tiers", None)
-
-
-_REDACTED_PUBLIC_VALUE = "[redacted]"
-
-
-def _is_sensitive_redacted_path(path: str) -> bool:
-    if not path:
-        return False
-    from opensquilla.gateway.config import is_sensitive_config_key
-
-    return is_sensitive_config_key(path.rsplit(".", 1)[-1])
-
-
-def _has_existing_redacted_source(source: Any) -> bool:
-    return source is not None and source != ""
-
-
-def _restore_redacted_values(payload: Any, source: Any, prefix: str = "") -> tuple[Any, set[str]]:
-    if payload == _REDACTED_PUBLIC_VALUE and _is_sensitive_redacted_path(prefix):
-        if not _has_existing_redacted_source(source):
-            raise ValueError(f"Cannot preserve redacted secret at {prefix}: no existing secret")
-        return source, {prefix} if prefix else set()
-    if isinstance(payload, dict):
-        source_dict = source if isinstance(source, dict) else {}
-        restored: dict[str, Any] = {}
-        redacted_paths: set[str] = set()
-        for key, value in payload.items():
-            current = f"{prefix}.{key}" if prefix else key
-            child, child_paths = _restore_redacted_values(
-                value,
-                source_dict.get(key),
-                current,
-            )
-            restored[key] = child
-            redacted_paths.update(child_paths)
-        return restored, redacted_paths
-    if isinstance(payload, list):
-        source_list = source if isinstance(source, list) else []
-        restored_list: list[Any] = []
-        list_redacted_paths: set[str] = set()
-        for index, value in enumerate(payload):
-            current = f"{prefix}.{index}" if prefix else str(index)
-            source_value = source_list[index] if index < len(source_list) else None
-            child, child_paths = _restore_redacted_values(value, source_value, current)
-            restored_list.append(child)
-            list_redacted_paths.update(child_paths)
-        return restored_list, list_redacted_paths
-    return payload, set()
 
 
 def _memory_restart_required_for_paths(paths: set[str]) -> bool:
@@ -472,9 +419,8 @@ async def _handle_config_set(params: dict | None, ctx: RpcContext) -> dict[str, 
     new_config = GatewayConfig(**cfg_dict)
     if _memory_restart_required_for_paths({path}):
         _validate_memory_embedding_semantics(new_config)
-    _inherit_runtime_secrets(ctx.config, new_config)
     explicit_paths = {path} | _collect_paths(value, path)
-    _clear_runtime_secret_paths(new_config, explicit_paths - redacted_paths)
+    inherit_then_clear_explicit(ctx.config, new_config, explicit_paths - redacted_paths)
     _sync_provider_selector(ctx, new_config)
     _update_config_in_place(ctx.config, new_config)
     _sync_image_generation(new_config)
@@ -543,8 +489,7 @@ async def _handle_config_patch(params: dict | None, ctx: RpcContext) -> dict[str
     new_config = GatewayConfig(**cfg_dict)
     if _memory_restart_required_for_paths(explicit_paths):
         _validate_memory_embedding_semantics(new_config)
-    _inherit_runtime_secrets(ctx.config, new_config)
-    _clear_runtime_secret_paths(new_config, explicit_paths - redacted_paths)
+    inherit_then_clear_explicit(ctx.config, new_config, explicit_paths - redacted_paths)
 
     _sync_provider_selector(ctx, new_config)
     # Update in-memory config so subsequent requests see changes immediately
@@ -618,8 +563,9 @@ async def _handle_config_apply(params: dict | None, ctx: RpcContext) -> dict[str
     # Validate and persist the full replacement config
     new_config = GatewayConfig(**config_payload)
     _validate_memory_embedding_semantics(new_config)
-    _inherit_runtime_secrets(ctx.config, new_config)
-    _clear_runtime_secret_paths(new_config, _collect_paths(config_payload) - redacted_paths)
+    inherit_then_clear_explicit(
+        ctx.config, new_config, _collect_paths(config_payload) - redacted_paths
+    )
     _sync_provider_selector(ctx, new_config)
     if ctx.config is not None:
         _update_config_in_place(ctx.config, new_config)

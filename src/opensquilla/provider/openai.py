@@ -20,6 +20,7 @@ from opensquilla.secrets import clean_header_secret
 
 from .compat_policy import OpenAICompatPolicy, compat_policy_for_kind
 from .context_capabilities import supports_openrouter_explicit_prompt_cache
+from .failures import retry_after_from_headers
 from .minimax_compat import contains_minimax_protocol, parse_minimax_tool_calls
 from .openrouter_attribution import openrouter_app_headers
 from .protocol import ProviderConnectionConfig, ProviderMetadata
@@ -979,6 +980,10 @@ class OpenAIProvider:
                         yield ErrorEvent(
                             message=message,
                             code=str(response.status_code),
+                            retry_after_s=retry_after_from_headers(
+                                response.status_code,
+                                getattr(response, "headers", None),
+                            ),
                         )
                         return
 
@@ -1226,6 +1231,10 @@ class OpenAIProvider:
                     response.text,
                 ),
                 code=str(response.status_code),
+                retry_after_s=retry_after_from_headers(
+                    response.status_code,
+                    getattr(response, "headers", None),
+                ),
             )
             return
 

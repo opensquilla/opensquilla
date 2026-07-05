@@ -95,11 +95,17 @@ class DoneEvent:
 
 @dataclass
 class ErrorEvent:
-    """Stream error."""
+    """Stream error.
+
+    ``retry_after_s`` is the provider's ``Retry-After`` hint (parsed to
+    seconds) for 429/5xx responses, when the adapter saw one; ``None``
+    otherwise. Additive: consumers that ignore it behave exactly as before.
+    """
 
     kind: Literal["error"] = field(default="error", init=False)
     message: str = ""
     code: str = ""
+    retry_after_s: float | None = None
 
 
 @dataclass

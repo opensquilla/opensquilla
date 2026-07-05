@@ -318,6 +318,14 @@ class ModelSelector:
         """True if there is at least one more fallback available."""
         return self._index < len(self._chain) - 1
 
+    def remaining_chain(self) -> list[ProviderConfig]:
+        """Copy of the active chain link plus untried fallbacks, in order.
+
+        Read-only view for callers that need the candidate deployment set —
+        e.g. the provider health ledger's never-strand eligibility check.
+        """
+        return list(self._chain[self._index :])
+
     def next_fallback(self) -> LLMProvider:
         """Advance to the next fallback and return it.
 

@@ -222,6 +222,7 @@ from opensquilla.session.terminal_reply import build_terminal_reply, sanitize_ag
 from opensquilla.tools.types import CallerKind, ToolContext
 
 if TYPE_CHECKING:
+    from opensquilla.engine.routing.health import ProviderHealthLedger
     from opensquilla.persistence.meta_run_writer import MetaRunWriter
 
 # Stable user-facing envelope for LLM timeouts.
@@ -1201,10 +1202,16 @@ class _SelectorFallbackProvider:
         provider: Any,
         selector: Any,
         turn_metadata: dict[str, Any] | None = None,
+        *,
+        health_ledger: ProviderHealthLedger | None = None,
     ) -> None:
         self._provider = provider
         self._selector = selector
         self._turn_metadata = turn_metadata
+        # Opt-in provider health ledger (engine/routing/health.py). None —
+        # the default everywhere today — makes every ledger hook below a
+        # no-op, keeping the default fallback path byte-identical.
+        self._health_ledger = health_ledger
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self._provider, name)
@@ -1253,12 +1260,87 @@ class _SelectorFallbackProvider:
         except Exception:  # noqa: BLE001 — telemetry only
             pass
 
+    def _active_deployment(self) -> tuple[str, str]:
+        """(provider id, model) of the selector's currently-active chain link."""
+        provider_id = str(
+            getattr(self._selector, "active_provider_id", "") or self.provider_name
+        )
+        current_config = getattr(self._selector, "current_config", None)
+        model = str(getattr(current_config, "model", "") or "")
+        return provider_id, model
+
+    def _record_health_failure(self, event: ProviderErrorEvent) -> None:
+        """Feed one pre-content provider error into the opt-in health ledger."""
+        ledger = self._health_ledger
+        if ledger is None:
+            return
+        provider_id, model = self._active_deployment()
+        if not provider_id and not model:
+            return
+        kind = classify_provider_error(
+            provider_name=provider_id,
+            status_code=int(event.code) if str(event.code).isdigit() else None,
+            raw_code=event.code,
+            message=event.message,
+        )
+        ledger.record_failure(
+            provider_id,
+            model,
+            kind,
+            retry_after_s=getattr(event, "retry_after_s", None),
+        )
+
+    def _record_health_success(self) -> None:
+        """A user-visible response clears the deployment's strike count."""
+        ledger = self._health_ledger
+        if ledger is None:
+            return
+        provider_id, model = self._active_deployment()
+        if not provider_id and not model:
+            return
+        ledger.record_success(provider_id, model)
+
+    def _skip_benched_fallbacks(self) -> None:
+        """Advance past benched fallback deployments (opt-in ledger only).
+
+        Uses :meth:`ProviderHealthLedger.eligible` with the remaining chain as
+        the candidate set, so the ledger's never-strand exemption applies: when
+        every remaining deployment is benched, the current one is reported
+        eligible and no hop is taken. No-op without a ledger.
+        """
+        ledger = self._health_ledger
+        if ledger is None:
+            return
+        remaining_chain = getattr(self._selector, "remaining_chain", None)
+        has_fallback = getattr(self._selector, "has_fallback", None)
+        next_fallback = getattr(self._selector, "next_fallback", None)
+        if remaining_chain is None or has_fallback is None or next_fallback is None:
+            return
+        while True:
+            candidates = [
+                (str(getattr(cfg, "provider", "")), str(getattr(cfg, "model", "")))
+                for cfg in remaining_chain()
+            ]
+            if not candidates:
+                return
+            provider_id, model = candidates[0]
+            if ledger.eligible(provider_id, model, candidates):
+                return
+            if not has_fallback():
+                return
+            try:
+                self._provider = next_fallback()
+            except Exception:  # noqa: BLE001 — a failed hop must not break the turn
+                return
+            self._note_fallback_hop()
+
     def fallback_after_invalid_response(self, reason: str) -> bool:
         try:
             self._provider = self._selector.next_fallback_after_failure(RuntimeError(reason))
         except Exception:
             return False
         self._note_fallback_hop()
+        self._skip_benched_fallbacks()
         self._realign_routed_model_after_fallback()
         return True
 
@@ -1292,6 +1374,7 @@ class _SelectorFallbackProvider:
             if isinstance(event, ProviderErrorEvent) and _should_use_selector_fallback(
                 self.provider_name, event
             ):
+                self._record_health_failure(event)
                 try:
                     self._provider = self._selector.next_fallback_after_failure(
                         RuntimeError(event.message)
@@ -1302,6 +1385,7 @@ class _SelectorFallbackProvider:
                     yield event
                     return
                 self._note_fallback_hop()
+                self._skip_benched_fallbacks()
                 self._realign_routed_model_after_fallback()
                 async for fallback_event in self._provider.chat(
                     messages,
@@ -1315,6 +1399,7 @@ class _SelectorFallbackProvider:
                 for buffered_event in drain_pre_text_buffer():
                     yield buffered_event
                 emitted_user_visible_content = True
+                self._record_health_success()
                 yield event
                 continue
 

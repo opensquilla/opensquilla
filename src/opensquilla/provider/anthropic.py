@@ -12,6 +12,7 @@ import structlog
 from opensquilla.env import trust_env as _trust_env
 from opensquilla.execution_status import derive_is_error
 
+from .failures import retry_after_from_headers
 from .model_catalog import shared_catalog
 from .registry import AuthHeaderStyle
 from .request_proof import (
@@ -437,6 +438,10 @@ class AnthropicProvider:
                                 f"{body.decode('utf-8', errors='replace')}"
                             ),
                             code=str(response.status_code),
+                            retry_after_s=retry_after_from_headers(
+                                response.status_code,
+                                getattr(response, "headers", None),
+                            ),
                         )
                         return
 

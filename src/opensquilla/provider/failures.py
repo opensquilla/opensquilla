@@ -8,9 +8,12 @@ is a data change (a new matcher row), not a new branch.
 
 from __future__ import annotations
 
+import math
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
+from email.utils import parsedate_to_datetime
 from enum import StrEnum
 
 import structlog
@@ -347,6 +350,67 @@ def classify_provider_error(
         message_head=redact_error_text(message),
     )
     return ProviderFailureKind.UNKNOWN
+
+
+def parse_retry_after(
+    value: str | None,
+    *,
+    now_utc: datetime | None = None,
+) -> float | None:
+    """Parse a ``Retry-After`` header value into non-negative seconds.
+
+    Accepts both RFC 9110 forms: delta-seconds (``"120"``; fractional values
+    are tolerated) and HTTP-date (``"Wed, 21 Oct 2026 07:28:00 GMT"``, resolved
+    against ``now_utc`` — wall clock — at parse time so the caller can keep
+    working in relative/monotonic seconds afterwards). Returns ``None`` for a
+    missing, empty, negative, non-finite, or unparseable value; a past
+    HTTP-date parses to ``0.0``.
+    """
+    if value is None:
+        return None
+    text = value.strip()
+    if not text:
+        return None
+    try:
+        seconds = float(text)
+    except ValueError:
+        seconds = None
+    if seconds is not None:
+        if not math.isfinite(seconds) or seconds < 0:
+            return None
+        return seconds
+    try:
+        when = parsedate_to_datetime(text)
+    except (TypeError, ValueError):
+        return None
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=UTC)
+    reference = now_utc if now_utc is not None else datetime.now(UTC)
+    return max(0.0, (when - reference).total_seconds())
+
+
+def retry_after_from_headers(
+    status_code: int,
+    headers: Mapping[str, str] | None,
+) -> float | None:
+    """``Retry-After`` seconds for a 429/5xx response, else ``None``.
+
+    Guarded on the status code so a stray ``Retry-After`` on, say, a 404
+    never feeds cooldown machinery; parsing itself is :func:`parse_retry_after`.
+    Duck-typed and defensive: a headerless response object (``None``) or a
+    non-mapping stand-in yields ``None`` instead of raising into the
+    adapter's error path.
+    """
+    if status_code != 429 and status_code < 500:
+        return None
+    getter = getattr(headers, "get", None)
+    if getter is None:
+        return None
+    try:
+        value = getter("retry-after")
+    except Exception:  # noqa: BLE001 — header access must never break error handling
+        return None
+    return parse_retry_after(value if isinstance(value, str) else None)
 
 
 def decide_recovery_action(kind: ProviderFailureKind) -> ProviderRecoveryAction:

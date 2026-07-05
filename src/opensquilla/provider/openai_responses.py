@@ -17,6 +17,7 @@ import httpx
 from opensquilla.env import trust_env as _trust_env
 from opensquilla.secrets import clean_header_secret
 
+from .failures import retry_after_from_headers
 from .openai import _http_error_body_text, _resolve_llm_proxy
 from .protocol import ProviderConnectionConfig, ProviderMetadata
 from .stream_assembly import ToolStreamAccumulator
@@ -242,7 +243,14 @@ class OpenAIResponsesProvider:
             message = f"OpenAI Responses API error {response.status_code}"
             if detail:
                 message = f"{message}: {detail}"
-            yield ErrorEvent(message=message, code=str(response.status_code))
+            yield ErrorEvent(
+                message=message,
+                code=str(response.status_code),
+                retry_after_s=retry_after_from_headers(
+                    response.status_code,
+                    getattr(response, "headers", None),
+                ),
+            )
             return
 
         try:

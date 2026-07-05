@@ -87,10 +87,10 @@
 
         <div class="msg-ai-footer">
           <div v-if="message.meta" class="msg-ai-meta">
-            <span v-if="message.meta.model" class="msg-meta__model">{{ message.meta.modelShort }}</span>
-            <span v-if="message.meta.costUsd" class="msg-meta__cost">${{ message.meta.costUsd.toFixed(6).replace(/\.?0+$/, '') }}</span>
+            <span v-if="message.meta.model && !message.meta.ensemble" class="msg-meta__model">{{ message.meta.modelShort }}</span>
+            <span v-if="message.meta.costUsd && !message.meta.ensemble" class="msg-meta__cost">${{ message.meta.costUsd.toFixed(6).replace(/\.?0+$/, '') }}</span>
             <span v-if="message.meta.ensemble" class="msg-meta__ensemble">{{ t('chat.msgMeta.ensembleModels', { count: message.meta.ensemble.modelCount }) }}</span>
-            <span v-if="message.meta.hasSaved" class="savings-indicator">{{ message.meta.savedLabel }}</span>
+            <span v-if="message.meta.hasSaved && !message.meta.ensemble" class="savings-indicator">{{ message.meta.savedLabel }}</span>
             <span
               v-if="hasMetaDetails"
               ref="metaMoreRef"
@@ -841,7 +841,7 @@ function ensembleRole(role: string, label: string): string {
   }
 
   .msg-meta__ensemble {
-    max-width: 7rem;
+    max-width: min(14rem, 100%);
   }
 }
 

@@ -84,7 +84,13 @@ export function useSetupRouterForm() {
   const tierValues = ref<Record<string, SetupTierValue>>({})
   const mode = computed(() => routerMode.value)
   const defaultTier = computed(() => routerDefaultTier.value)
-  const routerModeChoice = computed(() => (routerMode.value === 'disabled' ? 'disabled' : 'recommended'))
+  const routerModeChoice = computed(() =>
+    routerMode.value === 'disabled'
+      ? 'disabled'
+      : routerMode.value === 'openrouter-mix'
+        ? 'openrouter-mix'
+        : 'recommended',
+  )
 
   function routerConfigDisabledReason(ensembleProfileActive: boolean): RouterConfigDisabledReason {
     if (ensembleProfileActive) return 'ensemble'

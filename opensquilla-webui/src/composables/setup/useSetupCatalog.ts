@@ -1,4 +1,4 @@
-import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import i18n from '@/i18n'
 import { useSetupChannelsForm } from '@/composables/setup/useSetupChannelsForm'
 import { useSetupCapabilitiesForm } from '@/composables/setup/useSetupCapabilitiesForm'
@@ -470,6 +470,15 @@ const privacyPanel = computed(() => ({
 }))
 
 const isOpenrouterProvider = computed(() => currentProvider.value.toLowerCase() === 'openrouter')
+// openrouter-mix is only valid for the openrouter provider. When the selection
+// moves off openrouter while a stored mix mode is loaded, coerce the mode back
+// to recommended so the save payload stays valid for the new provider. watch
+// only fires on transitions, so an initial non-openrouter load never trips this.
+watch(isOpenrouterProvider, (isOpenrouter) => {
+  if (!isOpenrouter && routerForm.mode.value === 'openrouter-mix') {
+    routerForm.setRouterMode('recommended')
+  }
+})
 const routerPanel = routerForm.createPanel({
   routerSummary,
   ensembleProfileActive,

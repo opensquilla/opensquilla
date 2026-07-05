@@ -603,3 +603,38 @@ class ModelCatalog:
         if provider and provider.strip().lower() in _LOCAL_PROVIDERS:
             return _LOCAL_CONTEXT_WINDOW
         return DEFAULT_CONTEXT_WINDOW
+
+
+# ---------------------------------------------------------------------------
+# Shared process-wide catalog instance.
+#
+# The gateway boots ONE catalog and warms it (fetch_openrouter); every other
+# resolution site should consult that same instance instead of constructing
+# cold copies that only ever see snapshot/static data. Callers that run
+# without a gateway boot (standalone CLI paths) fall back to a lazily-built
+# cold instance, which preserves today's snapshot/static-only semantics.
+# ---------------------------------------------------------------------------
+
+_shared_catalog: ModelCatalog | None = None
+_cold_catalog: ModelCatalog | None = None
+
+
+def set_shared_catalog(catalog: ModelCatalog | None) -> None:
+    """Install (or, with ``None``, clear) the process-wide shared catalog."""
+    global _shared_catalog
+    _shared_catalog = catalog
+
+
+def shared_catalog() -> ModelCatalog:
+    """Return the injected shared catalog, else a lazily-built cold instance.
+
+    The cold fallback is created once and reused, so repeated calls without
+    an injected catalog are stable (same object). Construction is idempotent
+    and GIL-serialized, so no locking is needed here.
+    """
+    if _shared_catalog is not None:
+        return _shared_catalog
+    global _cold_catalog
+    if _cold_catalog is None:
+        _cold_catalog = ModelCatalog()
+    return _cold_catalog

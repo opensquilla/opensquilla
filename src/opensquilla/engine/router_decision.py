@@ -6,19 +6,14 @@ from typing import Any, cast
 
 from opensquilla.engine.pipeline import TurnContext
 from opensquilla.engine.types import RouterDecisionEvent
-from opensquilla.provider.model_catalog import ModelCatalog
+from opensquilla.provider.model_catalog import shared_catalog
 from opensquilla.router_tiers import normalize_text_tier, tier_index
-
-_model_catalog: ModelCatalog | None = None
 
 
 def _resolve_context_window(model_id: str) -> int | None:
     if not model_id:
         return None
-    global _model_catalog  # noqa: PLW0603
-    if _model_catalog is None:
-        _model_catalog = ModelCatalog()
-    return _model_catalog.resolve_context_window(model_id)
+    return shared_catalog().resolve_context_window(model_id)
 
 
 def _coerce_probs(value: object) -> list[float]:

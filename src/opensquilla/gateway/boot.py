@@ -632,6 +632,15 @@ class ServiceContainer:
             reset_runtime()
         except Exception:
             pass
+        # Clear the shared catalog installed by build_services() so a torn-down
+        # container does not keep serving its (possibly warmed) catalog to
+        # module-level consumers; they revert to the cold-fallback semantics.
+        try:
+            from opensquilla.provider.model_catalog import set_shared_catalog
+
+            set_shared_catalog(None)
+        except Exception:
+            pass
 
         # ── 2. Tear down memory tier through MemoryManager ──
         # In real boot, the legacy `memory_watchers` / `memory_stores` below
@@ -1897,9 +1906,14 @@ async def build_services(
     # Keep a catalog for every provider so direct-provider runtime paths still
     # get static fallback capabilities (for example DeepSeek v4 thinking
     # replay) even when only OpenRouter performs a remote model-list fetch.
-    from opensquilla.provider.model_catalog import ModelCatalog
+    from opensquilla.provider.model_catalog import ModelCatalog, set_shared_catalog
 
     model_catalog = ModelCatalog()
+    # Publish the (soon-to-be-warmed) gateway catalog as the process-wide
+    # shared instance so module-level consumers (router decision events,
+    # usage RPC context windows, ensemble member wiring) resolve against
+    # live data instead of cold snapshot/static-only copies.
+    set_shared_catalog(model_catalog)
 
     async def _warm_model_catalog_and_pricing() -> None:
         if not (api_key and config.llm.provider == "openrouter"):

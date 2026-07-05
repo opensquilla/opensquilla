@@ -120,8 +120,6 @@ def approval_resolve_rpc_payload(
     approval_id: str,
     approved: bool,
     *,
-    allow_always: bool = False,
-    remember_intent: bool = False,
     elevated_mode: str | None = None,
 ) -> dict[str, Any]:
     """Resolve an approval and return its status payload."""
@@ -130,8 +128,6 @@ def approval_resolve_rpc_payload(
     queue.resolve(
         approval_id,
         approved,
-        allow_always=allow_always,
-        remember_intent=remember_intent,
         elevated_mode=None,
     )
     return approval_status_rpc_payload(queue, approval_id, queue.get_settings().mode)

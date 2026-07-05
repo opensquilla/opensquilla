@@ -355,7 +355,7 @@ def sensitive_target_in_command(
     """
     if _DISABLED:
         return None
-    from opensquilla.sandbox.intent_cache import _extract_intents
+    from opensquilla.sandbox.destructive_intents import _extract_intents
 
     effective_workspace = workspace
     if effective_workspace is None:

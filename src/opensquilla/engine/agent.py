@@ -1879,9 +1879,16 @@ class Agent:
         the model finishes, unless config.max_iterations is a positive cap.
         """
         if self._session_key:
-            from opensquilla.sandbox.escalation import clear_sandbox_approval_denials
+            from opensquilla.sandbox.escalation import (
+                clear_sandbox_approval_denials,
+                prune_once_mount_grants,
+            )
 
             clear_sandbox_approval_denials(self._session_key)
+            # "Allow once" path grants authorize at most the granting turn; expire
+            # them at the start of the next turn so a later access re-prompts
+            # instead of being silently allowed for the whole session (issue #418).
+            prune_once_mount_grants(self._session_key)
         async for event in self._turn_generator(
             message,
             extra_messages,
@@ -2373,7 +2380,7 @@ class Agent:
                     (
                         request_messages,
                         request_sanitize_result,
-                    ) = self._provider_request_messages_with_sanitize(
+                    ) = await self._provider_request_messages_with_sanitize_async(
                         request_turn_messages,
                         request_context_message=request_context_message,
                         request_context_insert_index=request_context_insert_index,
@@ -3299,7 +3306,7 @@ class Agent:
                                 if overflow_outcome.runtime_context_insert_index is not None
                                 else runtime_context_insert_index
                             )
-                            next_request_messages = self._provider_request_messages(
+                            next_request_messages = await self._provider_request_messages_async(
                                 overflow_outcome.messages,
                                 request_context_message=request_context_message,
                                 request_context_insert_index=next_request_context_insert_index,
@@ -4236,6 +4243,58 @@ class Agent:
         source_messages = self._sanitize_projected_tool_use_arguments_for_provider(source_messages)
         source_messages = repair_tool_pairing(source_messages)
         return sanitize_session_messages(source_messages)
+
+    async def _provider_request_messages_with_sanitize_async(
+        self,
+        messages: list[Message],
+        *,
+        request_context_message: Message | None,
+        request_context_insert_index: int,
+        runtime_context_message: Message,
+        runtime_context_insert_index: int,
+        turn_objective_message: Message | None = None,
+    ) -> tuple[list[Message], SessionSanitizeResult]:
+        """Off-loop wrapper for :meth:`_provider_request_messages_with_sanitize`.
+
+        The synchronous assembly runs the tool-result compaction snapshot writes,
+        each of which does a store-wide ``rglob`` over the shared tool-result
+        store (issue #305). Running the whole assembly in a worker thread keeps
+        that O(store) filesystem scan off the gateway event loop so per-turn
+        latency does not grow with the number of stored results. The assembly
+        touches no asyncio primitives, so it is thread-safe to offload.
+        """
+
+        def _run() -> tuple[list[Message], SessionSanitizeResult]:
+            return self._provider_request_messages_with_sanitize(
+                messages,
+                request_context_message=request_context_message,
+                request_context_insert_index=request_context_insert_index,
+                runtime_context_message=runtime_context_message,
+                runtime_context_insert_index=runtime_context_insert_index,
+                turn_objective_message=turn_objective_message,
+            )
+
+        return await asyncio.to_thread(_run)
+
+    async def _provider_request_messages_async(
+        self,
+        messages: list[Message],
+        *,
+        request_context_message: Message | None,
+        request_context_insert_index: int,
+        runtime_context_message: Message,
+        runtime_context_insert_index: int,
+        turn_objective_message: Message | None = None,
+    ) -> list[Message]:
+        request_messages, _ = await self._provider_request_messages_with_sanitize_async(
+            messages,
+            request_context_message=request_context_message,
+            request_context_insert_index=request_context_insert_index,
+            runtime_context_message=runtime_context_message,
+            runtime_context_insert_index=runtime_context_insert_index,
+            turn_objective_message=turn_objective_message,
+        )
+        return request_messages
 
     def _apply_provider_tool_result_overrides(self, messages: list[Message]) -> list[Message]:
         if not self._provider_tool_result_overrides:

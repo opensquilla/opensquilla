@@ -55,7 +55,10 @@ __all__ = [
     "TEXT_ATTACHMENT_MIMES",
     "AttachmentFailure",
     "AttachmentIngestResult",
+    "AttachmentResolutionError",
     "AttachmentTotalTooLargeError",
+    "ATTACHMENT_EXPIRED_CODE",
+    "ATTACHMENT_LOST_IN_RESTART_CODE",
     "attachment_media_type",
     "attachment_size_limit_for_mime",
     "can_stage_attachment_mime",
@@ -67,6 +70,37 @@ __all__ = [
     "sniff_mime_from_bytes",
     "validate_attachments",
 ]
+
+
+# Typed error codes for staged-attachment resolution failures. They travel on
+# the wire so a client can offer a recovery action (re-upload) rather than
+# treating the send as a generic, non-retryable INVALID_REQUEST dead end.
+ATTACHMENT_EXPIRED_CODE = "ATTACHMENT_EXPIRED"
+ATTACHMENT_LOST_IN_RESTART_CODE = "ATTACHMENT_LOST_IN_RESTART"
+
+
+class AttachmentResolutionError(ValueError):
+    """A staged attachment could not be resolved at send time.
+
+    Subclasses :class:`ValueError` so existing ``except ValueError`` handlers
+    keep working, but carries a typed ``code`` plus the attachment index and
+    uuid so the RPC layer can surface a recoverable, re-uploadable error.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: str,
+        attachment_index: int,
+        file_uuid: str | None,
+        recoverable: bool = True,
+    ) -> None:
+        super().__init__(message)
+        self.code = code
+        self.attachment_index = attachment_index
+        self.file_uuid = file_uuid
+        self.recoverable = recoverable
 
 
 class AttachmentTotalTooLargeError(ValueError):
@@ -592,12 +626,18 @@ async def resolve_attachments(
         try:
             payload, meta = await upload_store.get(ref)
         except AttachmentLostInRestartError as exc:
-            raise ValueError(
-                f"attachments[{index}] uuid lost in gateway restart; please re-upload"
+            raise AttachmentResolutionError(
+                f"attachments[{index}] uuid lost in gateway restart; please re-upload",
+                code=ATTACHMENT_LOST_IN_RESTART_CODE,
+                attachment_index=index,
+                file_uuid=ref,
             ) from exc
         except AttachmentNotFoundError as exc:
-            raise ValueError(
-                f"attachments[{index}] file_uuid {ref!r} is unknown or expired"
+            raise AttachmentResolutionError(
+                f"attachments[{index}] file_uuid {ref!r} is unknown or expired; please re-upload",
+                code=ATTACHMENT_EXPIRED_CODE,
+                attachment_index=index,
+                file_uuid=ref,
             ) from exc
         candidate = {k: v for k, v in attachment.items() if k != "file_uuid"}
         candidate["data"] = payload

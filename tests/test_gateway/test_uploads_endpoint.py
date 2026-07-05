@@ -583,3 +583,30 @@ def test_upload_rejects_query_token_when_disallowed_for_multipart() -> None:
     assert response.status_code == 401, response.text
     body: dict[str, Any] = response.json()
     assert "Authorization" in body.get("error", "") or "header" in body.get("error", "").lower()
+
+
+def test_upload_route_response_exposes_expires_at_and_ttl() -> None:
+    """The upload response must advertise the staged lifetime so a client can
+    re-upload before a slow compose sends against an expired uuid (issue #468)."""
+    pytest.importorskip("starlette.testclient")
+    from starlette.applications import Starlette
+    from starlette.testclient import TestClient
+
+    from opensquilla.gateway.config import GatewayConfig
+    from opensquilla.gateway.uploads import UploadStore, register_upload_routes
+
+    store = UploadStore(marker_dir=None, ttl_seconds=600, max_file_bytes=30 * 1024 * 1024)
+    app = Starlette(debug=False)
+    register_upload_routes(app, config=GatewayConfig(), store=store)
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/v1/files/upload",
+            files={"file": ("x.pdf", b"%PDF-1.4\n", "application/pdf")},
+        )
+    assert response.status_code == 200, response.text
+    body: dict[str, Any] = response.json()
+    assert body["file_uuid"].startswith("u-")
+    assert body["ttl_seconds"] == 600
+    assert isinstance(body["expires_at"], (int, float))
+    assert body["expires_at"] > time.time()

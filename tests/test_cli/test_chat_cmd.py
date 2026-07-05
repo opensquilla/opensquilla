@@ -1595,7 +1595,6 @@ async def test_gateway_client_resolve_approval_forwards_choice() -> None:
     result = await client.resolve_approval(
         "approval-1",
         True,
-        allow_always=True,
         choice="allow_same_type",
     )
 
@@ -1606,7 +1605,6 @@ async def test_gateway_client_resolve_approval_forwards_choice() -> None:
             {
                 "id": "approval-1",
                 "approved": True,
-                "allowAlways": True,
                 "choice": "allow_same_type",
             },
         )

@@ -101,6 +101,31 @@ RAW_INTERNAL_STRINGS = (
             },
             "output limit",
         ),
+        (
+            {
+                "status": "failed",
+                "terminal_reason": "sandbox_threshold_exceeded",
+                "error_class": "sandbox_threshold_exceeded",
+                "error_message": "Autonomous execution paused after repeated sandbox denials.",
+            },
+            "paused",
+        ),
+        (
+            {
+                "status": "failed",
+                "terminal_reason": "max_iterations",
+                "error_class": "max_iterations",
+            },
+            "maximum number of steps",
+        ),
+        (
+            {
+                "status": "failed",
+                "terminal_reason": "turn_output_token_budget_exceeded",
+                "error_class": "turn_output_token_budget_exceeded",
+            },
+            "budget limit",
+        ),
     ],
 )
 def test_build_terminal_reply_returns_user_readable_messages(
@@ -114,6 +139,23 @@ def test_build_terminal_reply_returns_user_readable_messages(
     assert not message.startswith("terminal_reason=")
     for raw in RAW_INTERNAL_STRINGS:
         assert raw not in message
+
+
+def test_sandbox_pause_reply_is_distinct_from_generic_failure() -> None:
+    # The denial-pause code must not collapse into the generic "failed" sentence:
+    # it needs its own actionable, resume-oriented phrasing.
+    paused = build_terminal_reply(
+        {
+            "status": "failed",
+            "terminal_reason": "sandbox_threshold_exceeded",
+            "error_class": "sandbox_threshold_exceeded",
+        }
+    )
+    generic = build_terminal_reply(
+        {"status": "failed", "terminal_reason": "error", "error_class": "RuntimeError"}
+    )
+    assert paused != generic
+    assert "resume" in paused.lower()
 
 
 def test_build_terminal_reply_accepts_agent_task_record_like_objects() -> None:

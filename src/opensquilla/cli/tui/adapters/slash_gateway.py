@@ -105,7 +105,6 @@ class GatewayClientLike(Protocol):
         approval_id: str,
         approved: bool,
         *,
-        allow_always: bool = False,
         choice: str | None = None,
     ) -> Any: ...
 

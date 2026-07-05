@@ -207,6 +207,26 @@ class DenialLedger:
         async with self._lock:
             self._sessions.pop(session_id, None)
 
+    async def clear_pause(self, session_id: str) -> bool:
+        """Clear an autonomous pause and reset the denial counters for a session.
+
+        Returns whether the session had been paused. Resetting the threshold
+        counters (not merely the pause flag) is required so the next gated action
+        starts fresh instead of immediately re-tripping ``threshold_reached`` and
+        re-pausing. This is the operator-facing recovery from §8.5's sticky pause.
+        """
+        async with self._lock:
+            state = self._sessions.get(session_id)
+            was_paused = bool(state and state.autonomous_paused)
+            if state is not None:
+                state.autonomous_paused = False
+                state.counts.clear()
+                state.total = 0
+                state.threshold_total = 0
+                state.last_fingerprint = None
+                state.last_reason = None
+            return was_paused
+
     async def purge_stale_outputs(self, session_id: str, fingerprint: str) -> bool:
         """Expose the §8.3 purge as a direct public call for integration."""
         return await self._cache.purge(session_id, fingerprint)

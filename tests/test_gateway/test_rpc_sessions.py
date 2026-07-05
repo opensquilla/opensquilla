@@ -1745,6 +1745,31 @@ class TestSessionsSend:
         assert payload["terminal_reason"] == "timeout"
         assert payload["error_message"] == "The task timed out before it could finish."
 
+    def test_terminal_error_payload_carries_typed_turn_outcome(self):
+        # Every terminal error must ship the typed TurnOutcome so surfaces can
+        # render a specific cause + retryability, not just the human string.
+        payload = _normalize_terminal_event_payload(
+            "session.event.error",
+            {
+                "message": "Autonomous execution paused after repeated sandbox denials.",
+                "code": "sandbox_threshold_exceeded",
+            },
+        )
+
+        outcome = payload["turn_outcome"]
+        assert outcome["kind"] == "blocked"
+        assert outcome["reason"] == "sandbox_threshold_exceeded"
+        assert outcome["retryable"] is True
+        # And the human message is the actionable, resume-oriented phrasing.
+        assert "resume" in payload["message"].lower()
+
+    def test_terminal_error_turn_outcome_defaults_to_failed_for_unknown_code(self):
+        payload = _normalize_terminal_event_payload(
+            "session.event.error",
+            {"message": "boom", "code": "SomeRuntimeError"},
+        )
+        assert payload["turn_outcome"]["kind"] == "failed"
+
     @pytest.mark.asyncio
     async def test_send_reset_same_key_intent_applies_before_append(
         self, dispatcher, ctx_with_sessions, session

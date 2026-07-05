@@ -26,7 +26,7 @@ def test_approval_queue_request_persists_across_queue_restart(tmp_path) -> None:
     assert reloaded.get(approval_id).approval_id == approval_id
     assert reloaded.get(approval_id).resolved is False
 
-    reloaded.resolve(approval_id, True, allow_always=True)
+    reloaded.resolve(approval_id, True)
     assert reloaded.get(approval_id).resolved is True
     assert reloaded.get(approval_id).approved is True
     reloaded.consume(approval_id)

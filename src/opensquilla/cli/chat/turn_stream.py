@@ -62,7 +62,6 @@ class GatewayStreamingClient(Protocol):
         approval_id: str,
         approved: bool,
         *,
-        allow_always: bool = False,
         choice: str | None = None,
     ) -> Any: ...
 
@@ -1006,7 +1005,6 @@ def local_approval_resolver(
         approval_id: str,
         approved: bool,
         *,
-        allow_always: bool = False,
         choice: str | None = None,
     ) -> None:
         from opensquilla.gateway.rpc import RpcContext, get_dispatcher
@@ -1014,7 +1012,6 @@ def local_approval_resolver(
         params: dict[str, Any] = {
             "id": approval_id,
             "approved": approved,
-            "allowAlways": allow_always,
         }
         if choice:
             params["choice"] = choice

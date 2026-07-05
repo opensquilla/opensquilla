@@ -176,6 +176,7 @@ METHOD_SCOPES: dict[str, str] = {
     "sandbox.bundle.enable": WRITE_SCOPE,  # OpenSquilla-only; owner-guarded handler.
     "sandbox.bundle.disable": WRITE_SCOPE,  # OpenSquilla-only; owner-guarded handler.
     "sandbox.setup.ensure": WRITE_SCOPE,  # OpenSquilla-only; owner-guarded setup.
+    "sandbox.resume": WRITE_SCOPE,  # OpenSquilla-only; owner-guarded denial-pause clear.
     "sandbox.run_context.set": WRITE_SCOPE,  # OpenSquilla-only; owner-guarded handler.
     "sandbox.path.pick": WRITE_SCOPE,  # OpenSquilla-only; owner-guarded host directory picker.
     # OpenSquilla-only; explicit override of `config.` admin prefix.

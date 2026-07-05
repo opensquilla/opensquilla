@@ -421,8 +421,6 @@ class ApprovalQueue:
         approval_id: str,
         approved: bool,
         *,
-        allow_always: bool = False,
-        remember_intent: bool = False,
         elevated_mode: str | None = None,
         allow_idempotent: bool = True,
     ) -> None:
@@ -520,8 +518,6 @@ class ApprovalQueue:
         claim_token: str,
         approved: bool,
         *,
-        allow_always: bool = False,
-        remember_intent: bool = False,
         elevated_mode: str | None = None,
     ) -> None:
         self._conn.execute("BEGIN IMMEDIATE")
@@ -570,8 +566,6 @@ class ApprovalQueue:
         approval_id: str,
         claim_token: str,
         *,
-        allow_always: bool = False,
-        remember_intent: bool = False,
         elevated_mode: str | None = None,
     ) -> None:
         self._conn.execute("BEGIN IMMEDIATE")

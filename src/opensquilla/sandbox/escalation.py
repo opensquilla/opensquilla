@@ -520,6 +520,32 @@ def reset_resolved_run_context_overlays() -> None:
     _DENIED_SANDBOX_APPROVALS.clear()
 
 
+def prune_once_mount_grants(session_key: str | None = None) -> int:
+    """Drop ``scope=='once'`` mount grants from the resolved run-context overlays.
+
+    "Allow once" must authorize at most the granting turn and then re-prompt
+    (issue #418). The grant is applied to the in-memory overlay when the user
+    approves; calling this at the start of the NEXT turn expires it so a later
+    access to the same path is re-evaluated instead of silently allowed for the
+    whole session. Returns the number of ``once`` mounts pruned. When
+    ``session_key`` is set, only that session's overlays are touched.
+    """
+    target = str(session_key or "").strip()
+    pruned = 0
+    for key in list(_RESOLVED_RUN_CONTEXT_OVERLAYS):
+        if target and key[0] != target:
+            continue
+        context = _RESOLVED_RUN_CONTEXT_OVERLAYS[key]
+        once_mounts = [m for m in context.mounts if m.scope == "once"]
+        if not once_mounts:
+            continue
+        remaining = tuple(m for m in context.mounts if m.scope != "once")
+        pruned += len(once_mounts)
+        updated = replace(context, mounts=remaining)
+        _RESOLVED_RUN_CONTEXT_OVERLAYS[key] = updated
+    return pruned
+
+
 def consume_temporary_network_grant(
     *,
     session_key: str | None,
@@ -964,6 +990,7 @@ __all__ = [
     "grant_temporary_mount_for_current_tool",
     "has_temporary_network_grant",
     "merge_run_context_overlay",
+    "prune_once_mount_grants",
     "remember_resolved_run_context",
     "reset_resolved_run_context_overlays",
     "resolved_run_context_overlay",

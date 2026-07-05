@@ -149,7 +149,6 @@ const ApprovalMonitor = (() => {
     const overlay = document.createElement('div');
     overlay.className = 'modal-backdrop';
 
-    const canAlways = item.namespace === 'exec' && !!item.command;
     const customChoices = Array.isArray(item.params && item.params.choices) ? item.params.choices : [];
     const title = _approvalTitle(item);
     const command = _approvalCommand(item);
@@ -159,7 +158,6 @@ const ApprovalMonitor = (() => {
       ? _renderCustomChoices(customChoices)
       : `
           <button class="btn btn--primary" data-approval-action="once" title="Approve only this pending tool call">Approve This Time</button>
-          ${canAlways ? '<button class="btn btn--ghost" data-approval-action="always" title="Remember this operation type for future matching intents">Always Allow This Type</button>' : ''}
           <button class="btn btn--danger" data-approval-action="deny">Deny</button>
         `;
 
@@ -185,8 +183,6 @@ const ApprovalMonitor = (() => {
           item,
           {
             approved,
-            allowAlways: false,
-            rememberIntent: false,
             choice: choiceId,
             decision: choiceId,
           },
@@ -197,10 +193,8 @@ const ApprovalMonitor = (() => {
     overlay.querySelectorAll('[data-approval-action]').forEach((btn) => {
       btn.addEventListener('click', () => {
         const action = btn.dataset.approvalAction;
-        const approved = action === 'once' || action === 'always';
-        const allowAlways = action === 'always';
-        const rememberIntent = action === 'always';
-        _resolve(item, { approved, allowAlways, rememberIntent }, overlay);
+        const approved = action === 'once';
+        _resolve(item, { approved }, overlay);
       });
     });
 
@@ -305,8 +299,6 @@ const ApprovalMonitor = (() => {
       id: item.id,
       namespace: item.namespace || 'exec',
       approved: !!resolution.approved,
-      allowAlways: !!resolution.allowAlways,
-      rememberIntent: !!resolution.rememberIntent,
     };
     if (resolution.choice) body.choice = resolution.choice;
     if (resolution.decision) body.decision = resolution.decision;

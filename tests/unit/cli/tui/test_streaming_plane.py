@@ -129,9 +129,9 @@ class _FakeGatewayClient:
         approval_id: str,
         approved: bool,
         *,
-        allow_always: bool = False,
+        choice: str | None = None,
     ) -> Any:
-        del approval_id, approved, allow_always
+        del approval_id, approved, choice
         return None
 
     async def abort_session(self, key: str) -> Any:

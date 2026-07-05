@@ -4,7 +4,6 @@ from pathlib import Path
 
 import pytest
 
-from opensquilla.application.intent_cache import get_intent_cache, reset_intent_cache
 from opensquilla.sandbox.governance import ALLOW, ApprovalGate
 from opensquilla.sandbox.types import (
     MountSpec,
@@ -27,7 +26,7 @@ class _RecordingQueue:
         return "approval-1"
 
     async def wait(self, approval_id: str, timeout: float | None = None) -> bool:
-        raise AssertionError("approval should not be awaited for a cached intent")
+        raise AssertionError("approval should not be awaited in this test")
 
     def resolve(self, approval_id: str, approved: bool) -> None:  # pragma: no cover
         raise AssertionError("resolve should not be called in this test")
@@ -46,39 +45,11 @@ def _policy(workspace: Path) -> SandboxPolicy:
     )
 
 
-@pytest.fixture(autouse=True)
-def _reset_cache():
-    reset_intent_cache()
-    yield
-    reset_intent_cache()
-
-
 @pytest.mark.asyncio
-async def test_gate_ignores_legacy_always_allowed_intent(tmp_path: Path) -> None:
-    target = tmp_path / "x"
-    get_intent_cache().record_always(f"rm {target}")
-
-    request = SandboxRequest(
-        argv=("shell.exec", f"rm {target}"),
-        cwd=tmp_path,
-        action_kind="shell.exec",
-        policy=_policy(tmp_path),
-    )
-    class _ResolvingQueue(_RecordingQueue):
-        async def wait(self, approval_id: str, timeout: float | None = None) -> bool:
-            return True
-
-    queue = _ResolvingQueue()
-    gate = ApprovalGate(queue)
-
-    decision = await gate.gate(request, request.policy, session_id="s1")
-
-    assert decision is ALLOW
-    assert queue.requested is True
-
-
-@pytest.mark.asyncio
-async def test_gate_enqueues_when_intent_not_cached(tmp_path: Path) -> None:
+async def test_gate_enqueues_when_approval_required(tmp_path: Path) -> None:
+    # Every approval-requiring action enqueues a fresh approval and allows only
+    # after a human approves — there is no intent-level suppression ("Allow
+    # always" was a removed no-op).
     request = SandboxRequest(
         argv=("shell.exec", f"rm {tmp_path / 'x'}"),
         cwd=tmp_path,

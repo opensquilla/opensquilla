@@ -64,23 +64,16 @@ def _complete_sandbox_resolution_claim(
     queue: Any,
     approval_id: str,
     claim_token: str,
-    *,
-    allow_always: bool,
-    remember_intent: bool,
 ) -> None:
     try:
         queue.complete_claimed_resolution(
             approval_id,
             claim_token,
-            allow_always=allow_always,
-            remember_intent=remember_intent,
         )
     except Exception:
         queue.complete_claimed_resolution(
             approval_id,
             claim_token,
-            allow_always=allow_always,
-            remember_intent=remember_intent,
         )
 
 
@@ -184,17 +177,24 @@ async def _handle_exec_approval_resolve(params: dict | None, ctx: RpcContext) ->
         raise ValueError("params.id is required")
     if "approved" not in params:
         raise ValueError("params.approved is required")
-    allow_always = bool(params.get("allowAlways", False))
-    remember_intent = bool(params.get("rememberIntent", False))
+    # "Allow always" / rememberIntent were a no-op placebo: the resolver accepted
+    # them and never suppressed a re-prompt. They are removed rather than left to
+    # silently promise a guarantee. Reject a truthy value loudly so clients (and
+    # any external caller) cannot re-grow the placebo; re-prompt fatigue is
+    # addressed by choosing a broader run mode instead.
+    if bool(params.get("allowAlways", False)) or bool(params.get("rememberIntent", False)):
+        raise RpcHandlerError(
+            "UNSUPPORTED_PARAM",
+            "'Allow always' / rememberIntent is no longer supported (it never "
+            "suppressed re-prompts). Switch to a broader run mode via /sandbox to "
+            "reduce approval prompts.",
+        )
     choice = params.get("choice")
     queue = get_approval_queue()
     approved = bool(params["approved"])
     pending = queue.get(params["id"])
     normalized_choice = str(choice).strip() if isinstance(choice, str) and choice.strip() else None
     sandbox_approval = is_sandbox_approval_kind(pending.params.get("approvalKind"))
-    if sandbox_approval:
-        allow_always = False
-        remember_intent = False
     if sandbox_approval and approved:
         _require_owner_for_sandbox_approval_resolution(ctx, choice=normalized_choice)
 
@@ -211,8 +211,6 @@ async def _handle_exec_approval_resolve(params: dict | None, ctx: RpcContext) ->
                 params["id"],
                 claim_token,
                 approved,
-                allow_always=allow_always,
-                remember_intent=remember_intent,
                 elevated_mode=None,
             )
         except Exception:
@@ -233,16 +231,12 @@ async def _handle_exec_approval_resolve(params: dict | None, ctx: RpcContext) ->
             queue,
             params["id"],
             claim_token,
-            allow_always=allow_always,
-            remember_intent=remember_intent,
         )
         return approval_status_rpc_payload(queue, params["id"], queue.get_settings().mode)
 
     queue.resolve(
         params["id"],
         approved,
-        allow_always=allow_always,
-        remember_intent=remember_intent,
         elevated_mode=None,
         allow_idempotent=not sandbox_approval,
     )

@@ -2622,3 +2622,69 @@ async def test_remove_domain_grant_rejects_invalid_domain(tmp_path):
             "domains": [{"domain": "pypi.org"}],
         }
     }
+
+
+@pytest.mark.asyncio
+async def test_once_mount_grant_is_not_persisted_to_session_origin(tmp_path):
+    # "Allow once" must not survive into the durable session origin — otherwise a
+    # gateway restart would silently re-grant it (issue #418).
+    from opensquilla.sandbox.run_context import RUN_CONTEXT_ORIGIN_KEY
+    from opensquilla.sandbox.run_context_service import add_mount_grant
+
+    manager = _SessionManager()
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+
+    await add_mount_grant(
+        manager,
+        manager.node.session_key,
+        path=str(outside),
+        access="rw",
+        scope="once",
+        config=_config(),
+        workspace=str(workspace),
+    )
+
+    origin = manager.node.origin or {}
+    persisted = origin.get(RUN_CONTEXT_ORIGIN_KEY, {})
+    persisted_mounts = persisted.get("mounts", [])
+    assert all(m.get("scope") != "once" for m in persisted_mounts), persisted_mounts
+
+
+def test_prune_once_mount_grants_expires_only_once_scoped_overlay_mounts():
+    # A "once" grant lives in the resolved overlay for the granting turn; pruning
+    # at the next turn start must drop it while leaving session-scoped grants.
+    from opensquilla.sandbox.escalation import (
+        prune_once_mount_grants,
+        remember_resolved_run_context,
+        reset_resolved_run_context_overlays,
+        resolved_run_context_overlay,
+    )
+    from opensquilla.sandbox.run_context import MountGrant, RunContext
+    from opensquilla.sandbox.run_mode import RunMode
+
+    reset_resolved_run_context_overlays()
+    try:
+        session_key = "agent:main:webchat:once"
+        context = RunContext(
+            run_mode=RunMode.STANDARD,
+            workspace=None,
+            mounts=(
+                MountGrant(path="/tmp/once", access="rw", scope="once"),
+                MountGrant(path="/tmp/session", access="ro", scope="chat"),
+            ),
+            source="resolved_overlay",
+        )
+        remember_resolved_run_context(session_key, None, context)
+
+        pruned = prune_once_mount_grants(session_key)
+        assert pruned == 1
+
+        overlay = resolved_run_context_overlay(session_key, None)
+        remaining_scopes = {m.scope for m in overlay.mounts}
+        assert "once" not in remaining_scopes
+        assert any(m.path == "/tmp/session" for m in overlay.mounts)
+    finally:
+        reset_resolved_run_context_overlays()

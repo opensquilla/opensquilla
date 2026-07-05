@@ -102,3 +102,47 @@ async def test_web_policy_denials_do_not_pause_unrelated_sandbox_actions(
     )
 
     assert decision is ALLOW
+
+
+@pytest.mark.asyncio
+async def test_clear_pause_recovers_a_paused_session(tmp_path: Path) -> None:
+    # Trip the sticky denial pause, then assert an operator resume clears it and
+    # the next gated action is evaluated normally instead of re-pausing.
+    ledger = DenialLedger(threshold=3)
+    denying_gate = _PolicyDenyingGate()
+
+    for i in range(3):
+        await gate_execution(
+            _request("shell.exec", ("cmd", str(i)), tmp_path),
+            _policy(),
+            session_id="s1",
+            ledger=ledger,
+            approval_gate=denying_gate,  # type: ignore[arg-type]
+        )
+    assert await ledger.is_paused("s1") is True
+
+    paused_decision = await gate_execution(
+        _request("shell.exec", ("cmd", "again"), tmp_path),
+        _policy(),
+        session_id="s1",
+        ledger=ledger,
+        approval_gate=ApprovalGate(_NeverAskedQueue()),
+    )
+    assert isinstance(paused_decision, DenialResult)
+    assert paused_decision.reason == DenialReason.THRESHOLD_EXCEEDED
+
+    # Operator resume: clears pause AND counters so the session starts fresh.
+    assert await ledger.clear_pause("s1") is True
+    assert await ledger.is_paused("s1") is False
+
+    resumed_decision = await gate_execution(
+        _request("shell.exec", ("true",), tmp_path),
+        _policy(),
+        session_id="s1",
+        ledger=ledger,
+        approval_gate=ApprovalGate(_NeverAskedQueue()),
+    )
+    assert resumed_decision is ALLOW
+
+    # Clearing an already-running session is a no-op that reports "not paused".
+    assert await ledger.clear_pause("s1") is False

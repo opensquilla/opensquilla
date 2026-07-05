@@ -100,8 +100,12 @@ def test_approval_monitor_inline_button_uses_modal_polling_path() -> None:
     assert "_poll();" in handler
     assert "_modal" in handler
     assert 'data-approval-action="once"' in monitor
-    assert 'data-approval-action="always"' in monitor
     assert 'data-approval-action="deny"' in monitor
+    # "Allow always" was a removed no-op — the legacy monitor must not ship it or
+    # send its now-rejected params.
+    assert 'data-approval-action="always"' not in monitor
+    assert "allowAlways" not in monitor
+    assert "rememberIntent" not in monitor
 
 
 def test_approval_monitor_renders_custom_choice_buttons_and_posts_selected_choice() -> None:
@@ -121,7 +125,7 @@ def test_approval_monitor_renders_custom_choice_buttons_and_posts_selected_choic
     assert "white-space: normal;" in components_css
     assert "justify-content: space-between;" in components_css
     assert "Approve This Time" in monitor
-    assert "Always Allow This Type" in monitor
+    assert "Always Allow This Type" not in monitor
 
 
 def test_approval_monitor_renders_sandbox_path_approval_as_plain_language_card() -> None:

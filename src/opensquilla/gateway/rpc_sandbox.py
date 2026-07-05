@@ -352,7 +352,42 @@ async def _handle_sandbox_explain(params: dict | None, ctx: RpcContext) -> dict:
             workspace=workspace,
         )
         result["runContext"] = _payload(context)
+        result["autonomousPaused"] = await _session_autonomous_paused(session_key)
     return result
+
+
+async def _session_autonomous_paused(session_key: str) -> bool:
+    """Whether the sandbox denial ledger has paused autonomous execution.
+
+    Surfaced so a client can render the paused state and offer a resume action
+    instead of leaving the run stuck with no visible recovery (issue #469).
+    """
+    from opensquilla.sandbox.integration import get_runtime
+
+    runtime = get_runtime()
+    if runtime is None:
+        return False
+    return await runtime.ledger.is_paused(session_key)
+
+
+@_d.method("sandbox.resume", scope="operator.write")
+async def _handle_sandbox_resume(params: dict | None, ctx: RpcContext) -> dict:
+    """Clear a denial-ledger autonomous pause so a stuck run can continue.
+
+    Owner-scoped recovery for the §8.5 sticky pause (issue #469): without this
+    there is no surface that can perform the "human intervention" the pause
+    message demands, so the only escape was restarting the gateway.
+    """
+    _require_owner(ctx, "sandbox.resume")
+    params = _require_params(params)
+    session_key = _require_session_key(params)
+    from opensquilla.sandbox.integration import get_runtime
+
+    runtime = get_runtime()
+    if runtime is None:
+        raise RpcHandlerError("UNAVAILABLE", "Sandbox runtime is not configured.", retryable=True)
+    resumed = await runtime.ledger.clear_pause(session_key)
+    return {"sessionKey": session_key, "resumed": resumed, "autonomousPaused": False}
 
 
 async def _require_sandbox_setup_ready_for_mode(ctx: RpcContext, run_mode: Any) -> None:

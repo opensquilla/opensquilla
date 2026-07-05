@@ -284,12 +284,15 @@ async def test_exec_approval_resolve_allows_non_owner_chat_scoped_sandbox_grant(
 
 
 @pytest.mark.asyncio
-async def test_exec_approval_resolve_ignores_legacy_intent_flags_for_sandbox_choice() -> None:
+async def test_exec_approval_resolve_rejects_legacy_intent_flags() -> None:
+    # "Allow always" / rememberIntent were a removed no-op; a truthy value must
+    # now be rejected loudly rather than silently accepted, and must not resolve
+    # the approval or apply any grant.
     from opensquilla.gateway.approval_queue import get_approval_queue, reset_approval_queue
+    from opensquilla.gateway.rpc import RpcHandlerError
     from opensquilla.gateway.rpc_approvals import _handle_exec_approval_resolve
     from opensquilla.sandbox.escalation import build_network_approval_params
     from opensquilla.sandbox.network_guard import NetworkDecision
-    from opensquilla.sandbox.run_context import get_run_context
 
     reset_approval_queue()
     manager = _SessionManager()
@@ -308,29 +311,25 @@ async def test_exec_approval_resolve_ignores_legacy_intent_flags_for_sandbox_cho
     queue = get_approval_queue()
     approval_id = queue.request(namespace="exec", params=params)
 
-    result = await _handle_exec_approval_resolve(
-        {
-            "id": approval_id,
-            "approved": True,
-            "choice": "allow_same_type",
-            "allowAlways": True,
-            "rememberIntent": True,
-        },
-        _ctx(
-            manager,
-            is_owner=False,
-            scopes=frozenset(["operator.approvals"]),
-        ),
-    )
+    with pytest.raises(RpcHandlerError) as excinfo:
+        await _handle_exec_approval_resolve(
+            {
+                "id": approval_id,
+                "approved": True,
+                "choice": "allow_same_type",
+                "allowAlways": True,
+                "rememberIntent": True,
+            },
+            _ctx(
+                manager,
+                is_owner=False,
+                scopes=frozenset(["operator.approvals"]),
+            ),
+        )
 
-    assert result["resolved"] is True
-    context = await get_run_context(
-        manager,
-        manager.node.session_key,
-        config=_ctx(manager).config,
-        workspace="/tmp/ws",
-    )
-    assert ("example.com", "chat") in [(grant.domain, grant.scope) for grant in context.domains]
+    assert excinfo.value.code == "UNSUPPORTED_PARAM"
+    # The approval is untouched — rejection happens before any resolution.
+    assert queue.get(approval_id).resolved is False
 
     reset_approval_queue()
 
@@ -1490,3 +1489,39 @@ def test_non_owner_route_trusted_hint_is_preserved() -> None:
     assert ctx.run_mode == "trusted"
     assert ctx.sandbox_run_context is not None
     assert ctx.sandbox_run_context.run_mode is RunMode.TRUSTED
+
+
+@pytest.mark.asyncio
+async def test_rpc_sandbox_resume_clears_denial_pause(monkeypatch) -> None:
+    # The owner-scoped resume RPC is the recovery surface for the sticky denial
+    # pause (issue #469): it must clear the pause so the run can continue.
+    from opensquilla.gateway.rpc_sandbox import _handle_sandbox_resume
+    from opensquilla.sandbox.governance import DenialLedger
+
+    ledger = DenialLedger(threshold=3)
+    manager = _SessionManager()
+    key = manager.node.session_key
+    await ledger.mark_paused(key)
+    monkeypatch.setattr(
+        "opensquilla.sandbox.integration.get_runtime",
+        lambda: SimpleNamespace(ledger=ledger),
+    )
+
+    result = await _handle_sandbox_resume({"sessionKey": key}, _ctx(manager))
+
+    assert result["resumed"] is True
+    assert result["autonomousPaused"] is False
+    assert await ledger.is_paused(key) is False
+
+
+@pytest.mark.asyncio
+async def test_rpc_sandbox_resume_rejects_non_owner() -> None:
+    from opensquilla.gateway.rpc import RpcHandlerError
+    from opensquilla.gateway.rpc_sandbox import _handle_sandbox_resume
+
+    manager = _SessionManager()
+    with pytest.raises(RpcHandlerError, match="requires owner principal"):
+        await _handle_sandbox_resume(
+            {"sessionKey": manager.node.session_key},
+            _ctx(manager, is_owner=False),
+        )

@@ -562,7 +562,13 @@ def _with_user_grants(context: RunContext) -> RunContext:
 
 
 def _session_persisted_context(context: RunContext) -> RunContext:
-    mounts = tuple(grant for grant in context.mounts if grant.scope != "workspace")
+    # ``workspace`` grants live in the durable user store, so they are not
+    # re-persisted on the session node. ``once`` grants are single-turn by
+    # contract ("Allow once"): they must NOT survive into the durable session
+    # origin (a gateway restart would otherwise silently re-grant them), so they
+    # are stripped here and live only in the in-memory resolved overlay for the
+    # remainder of the granting turn.
+    mounts = tuple(grant for grant in context.mounts if grant.scope not in ("workspace", "once"))
     domains = tuple(grant for grant in context.domains if grant.scope != "workspace")
     bundles = tuple(
         grant

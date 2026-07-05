@@ -219,3 +219,56 @@ def test_attachment_with_both_data_and_file_uuid_rejected() -> None:
     item["file_uuid"] = "u-1234"
     with pytest.raises(ValueError, match=r"(both|exactly one)"):
         _validate_attachments([item])
+
+
+async def test_resolve_attachments_expired_uuid_raises_typed_error(tmp_path) -> None:
+    """An expired staged uuid must raise a typed, recoverable error carrying the
+    attachment index + uuid — not a bare ValueError that collapses to a generic,
+    non-retryable INVALID_REQUEST (issue #468)."""
+    from opensquilla.gateway.attachment_ingest import (
+        ATTACHMENT_EXPIRED_CODE,
+        AttachmentResolutionError,
+        resolve_attachments,
+    )
+    from opensquilla.gateway.uploads import AttachmentNotFoundError
+
+    class _ExpiredStore:
+        async def get(self, ref: str):  # noqa: ANN202
+            raise AttachmentNotFoundError(ref)
+
+    with pytest.raises(AttachmentResolutionError) as excinfo:
+        await resolve_attachments(
+            [{"file_uuid": "u-gone", "mime": "application/pdf", "name": "x.pdf"}],
+            store=_ExpiredStore(),
+            material_root=tmp_path,
+            session_id="s1",
+        )
+    err = excinfo.value
+    assert err.code == ATTACHMENT_EXPIRED_CODE
+    assert err.attachment_index == 1
+    assert err.file_uuid == "u-gone"
+    assert err.recoverable is True
+    assert isinstance(err, ValueError)  # backward compatible with existing handlers
+
+
+async def test_resolve_attachments_restart_loss_raises_typed_error(tmp_path) -> None:
+    from opensquilla.gateway.attachment_ingest import (
+        ATTACHMENT_LOST_IN_RESTART_CODE,
+        AttachmentResolutionError,
+        resolve_attachments,
+    )
+    from opensquilla.gateway.uploads import AttachmentLostInRestartError
+
+    class _LostStore:
+        async def get(self, ref: str):  # noqa: ANN202
+            raise AttachmentLostInRestartError(ref)
+
+    with pytest.raises(AttachmentResolutionError) as excinfo:
+        await resolve_attachments(
+            [{"file_uuid": "u-lost", "mime": "application/pdf", "name": "x.pdf"}],
+            store=_LostStore(),
+            material_root=tmp_path,
+            session_id="s1",
+        )
+    assert excinfo.value.code == ATTACHMENT_LOST_IN_RESTART_CODE
+    assert excinfo.value.recoverable is True

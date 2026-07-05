@@ -105,7 +105,7 @@ def test_setup_engine_router_tier_override_updates_direct_fallback_model(tmp_pat
 
     data = tomllib.loads(target.read_text())
     assert data["llm"]["model"] == "gpt-5.5-custom"
-    assert data["squilla_router"]["tier_profile"] == "openai"
+    assert "tier_profile" not in data["squilla_router"]
     assert data["squilla_router"]["default_tier"] == "c2"
     assert data["squilla_router"]["tiers"]["c2"]["model"] == "gpt-5.5-custom"
     assert data["squilla_router"]["tiers"]["c2"]["thinking_level"] == "high"

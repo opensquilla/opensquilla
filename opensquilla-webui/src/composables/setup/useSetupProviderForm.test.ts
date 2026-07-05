@@ -100,6 +100,129 @@ describe('useSetupProviderForm — api_key / api_key_env are mutually exclusive'
   })
 })
 
+describe('useSetupProviderForm — provider credential state', () => {
+  it('keeps saved credentials when not replacing the key', () => {
+    const f = useSetupProviderForm()
+    f.initFromConfig(
+      { provider: 'openrouter', model: 'm', api_key_env: 'OPENROUTER_API_KEY' },
+      { hasConfig: true, llmConfigured: true, llmSource: 'explicit' },
+      [{ providerId: 'openrouter', fields: [{ name: 'model', label: 'Model' }] }],
+    )
+
+    expect(f.payload()).toEqual({ providerId: 'openrouter', model: 'm' })
+  })
+
+  it('rebuilds from scratch on initFromConfig and drops stale credential edits', () => {
+    const f = useSetupProviderForm()
+    const spec = [{ providerId: 'openrouter', fields: [{ name: 'model', label: 'Model' }] }]
+    const config = { provider: 'openrouter', model: 'm' }
+    const status = { hasConfig: true, llmConfigured: true, llmSource: 'explicit' }
+
+    f.selectProvider('openrouter')
+    f.updateField('api_key', 'sk-pasted')
+    f.initFromConfig(config, status, spec)
+
+    expect(f.selectedProvider.value).toBe('openrouter')
+    expect(f.payload()).toEqual({ providerId: 'openrouter', model: 'm' })
+    expect(f.isDirty.value).toBe(false)
+
+    f.updateField('api_key_env', 'OPENROUTER_API_KEY')
+    f.initFromConfig(config, status, spec)
+
+    expect(f.selectedProvider.value).toBe('openrouter')
+    expect(f.payload()).toEqual({ providerId: 'openrouter', model: 'm' })
+    expect(f.isDirty.value).toBe(false)
+  })
+
+  it('clears stale provider selection when initFromConfig has no effective provider', () => {
+    const f = useSetupProviderForm()
+    const spec = [{ providerId: 'openrouter', fields: [{ name: 'model', label: 'Model' }] }]
+
+    f.selectProvider('openrouter')
+    f.updateField('api_key', 'sk-pasted')
+    f.initFromConfig(
+      { provider: 'openrouter', model: 'm' },
+      { hasConfig: false, llmConfigured: false, llmSource: 'missing_env' },
+      spec,
+    )
+
+    expect(f.selectedProvider.value).toBe('')
+    expect(f.isDirty.value).toBe(false)
+  })
+
+  it('pasted replacement key clears the env reference in the save payload', () => {
+    const f = useSetupProviderForm()
+    f.selectProvider('openrouter')
+    f.updateField('api_key_env', 'OPENROUTER_API_KEY')
+    f.startCredentialReplace()
+    f.updateField('api_key', 'sk-pasted')
+
+    expect(f.payload()).toEqual({ providerId: 'openrouter', apiKey: 'sk-pasted' })
+  })
+
+  it('explicit env source clears the pasted key in the save payload', () => {
+    const f = useSetupProviderForm()
+    f.selectProvider('openrouter')
+    f.startCredentialReplace()
+    f.updateField('api_key', 'sk-pasted')
+    f.updateField('api_key_env', 'OPENROUTER_API_KEY')
+
+    expect(f.payload()).toEqual({ providerId: 'openrouter', apiKeyEnv: 'OPENROUTER_API_KEY' })
+  })
+
+  it('startCredentialReplace clears previous reveal state and marks replacement mode', () => {
+    const f = useSetupProviderForm()
+    f.setRevealedCredential('shown-key')
+    f.setRevealError('failed')
+
+    f.startCredentialReplace()
+
+    expect(f.replacingCredential.value).toBe(true)
+    expect(f.revealedCredential.value).toBe('')
+    expect(f.revealError.value).toBe('')
+  })
+
+  it('cancelCredentialReplace clears api_key but leaves api_key_env intact', () => {
+    const f = useSetupProviderForm()
+    f.selectProvider('openrouter')
+    f.updateField('api_key_env', 'OPENROUTER_API_KEY')
+    f.startCredentialReplace()
+    f.cancelCredentialReplace()
+
+    expect(f.replacingCredential.value).toBe(false)
+    expect(f.providerFieldValues.value.api_key).toBe('')
+    expect(f.providerFieldValues.value.api_key_env).toBe('OPENROUTER_API_KEY')
+  })
+
+  it('setRevealedCredential and setRevealError clear each other', () => {
+    const f = useSetupProviderForm()
+
+    f.setRevealError('failed')
+    expect(f.revealedCredential.value).toBe('')
+    expect(f.revealError.value).toBe('failed')
+
+    f.setRevealedCredential('shown-key')
+    expect(f.revealedCredential.value).toBe('shown-key')
+    expect(f.revealError.value).toBe('')
+  })
+
+  it('clears revealed credentials when credential inputs change', () => {
+    const f = useSetupProviderForm()
+    f.setRevealedCredential('shown-key')
+
+    f.updateField('api_key_env', 'OPENROUTER_API_KEY')
+
+    expect(f.revealedCredential.value).toBe('')
+    expect(f.revealError.value).toBe('')
+
+    f.setRevealedCredential('shown-key')
+    f.updateField('api_key', 'sk-next')
+
+    expect(f.revealedCredential.value).toBe('')
+    expect(f.revealError.value).toBe('')
+  })
+})
+
 // ---------------------------------------------------------------------------
 // Connection state machine — probe + model discovery
 // ---------------------------------------------------------------------------
@@ -244,7 +367,7 @@ describe('useSetupProviderForm — connection state machine', () => {
     expect(f.connection.value.models).toEqual([])
   })
 
-  it('re-probing unchanged credentials is served from the cache without new RPCs', async () => {
+  it('re-probing unchanged credentials sends a fresh RPC instead of reusing a stale verdict', async () => {
     mockRpc()
     const f = useSetupProviderForm()
     f.selectProvider('openai')
@@ -259,7 +382,12 @@ describe('useSetupProviderForm — connection state machine', () => {
     await f.probeConnection({ defaultModel: 'm' })
     expect(f.connection.value.phase).toBe('verified')
     expect(f.connection.value.models).toHaveLength(1)
-    expect(callMock).toHaveBeenCalledTimes(2) // cache hit — no extra calls
+    expect(callMock).toHaveBeenCalledTimes(4)
+    expect(callMock).toHaveBeenNthCalledWith(3, 'onboarding.provider.probe', {
+      providerId: 'openai',
+      apiKey: 'sk-first',
+      model: 'm',
+    })
   })
 
   it('a transient unreachable outcome is NOT cached, so retry re-probes', async () => {

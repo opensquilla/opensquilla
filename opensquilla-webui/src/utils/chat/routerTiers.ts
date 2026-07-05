@@ -9,14 +9,6 @@ const LEGACY_TEXT_TIER_ALIASES: Record<string, string> = {
   t3: 'c3',
 }
 
-const TIER_LABELS: Record<string, string> = {
-  c0: 'Fast/simple (c0)',
-  c1: 'Balanced default (c1)',
-  c2: 'Stronger reasoning (c2)',
-  c3: 'Max quality (c3)',
-  image_model: 'Image model',
-}
-
 export function normalizeRouterTextTier(value: unknown): string {
   const raw = String(value || '').trim().toLowerCase()
   if (!raw) return ''
@@ -61,5 +53,10 @@ export function sortRouterTiers(list: string[]): string[] {
 
 export function routerTierLabel(tier: string): string {
   const normalized = normalizeRouterTier(tier)
-  return TIER_LABELS[normalized] || normalized || 'Balanced default (c1)'
+  return normalized || DEFAULT_TEXT_TIER
+}
+
+export function routerTierLabelKey(tier: string): string {
+  const normalized = normalizeRouterTier(tier)
+  return `setup.router.tiers.${normalized || DEFAULT_TEXT_TIER}`
 }

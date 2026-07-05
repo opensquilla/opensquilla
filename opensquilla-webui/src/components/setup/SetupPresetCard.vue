@@ -1,10 +1,8 @@
 <script setup lang="ts">
-// Routing preset card for the Provider panel. Beginner rule: collapsed by
-// default to ONE summary line; expanding reveals the preset description, a
-// read-only tier preview (the shared SetupTierTable), and a single primary
-// action. When the Router section is already configured beyond defaults the
-// card only reflects the actual mode and links there — applying a preset over
-// deliberate router config is never offered (no silent clobber).
+// Routing template card for the Provider panel. Provider setup may offer a
+// template, but Model Routing remains the only place where active tiers are
+// reviewed or edited. The template can be applied from here once; details stay
+// collapsed until the user wants to inspect the seed rows.
 import { computed, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import SetupTierTable from '@/components/setup/SetupTierTable.vue'
@@ -41,7 +39,7 @@ const summaryLabel = computed(() =>
 // summary. Unknown modes fall back to the raw value rather than hiding it.
 const MODE_KEYS: Record<string, string> = {
   custom: 'setup.preset.modeCustom',
-  'openrouter-mix': 'setup.preset.modeOpenrouterMix',
+  'openrouter-mix': 'setup.preset.modeCustom',
   disabled: 'setup.preset.modeDisabled',
   recommended: 'setup.preset.modeRecommended',
 }
@@ -55,36 +53,31 @@ const customizedModeLabel = computed(() => {
 <template>
   <div class="setup-preset-card" data-testid="setup-preset-card">
     <!-- Router already configured beyond defaults (or has unsaved edits):
-         reflect the actual mode; the only action is wayfinding into Router. -->
+         reflect the active routing state; never offer to overwrite it here. -->
     <div v-if="panel.routerCustomized" class="setup-preset-card__summary">
-      <span class="setup-preset-card__text">{{ t('setup.preset.summary', { label: customizedModeLabel }) }}</span>
-      <span class="setup-preset-card__sep" aria-hidden="true">&middot;</span>
+      <span class="setup-preset-card__text">{{ t('setup.preset.customizedSummary', { label: customizedModeLabel }) }}</span>
+      <span class="setup-preset-card__desc">{{ t('setup.preset.customizedDesc') }}</span>
       <button
         type="button"
         class="setup-preset-card__link"
         data-testid="setup-preset-router-link"
-        @click="emit('goToSection', 'router')"
+        @click="emit('goToSection', 'modelStrategy')"
       >{{ t('setup.preset.viewInRouter') }}</button>
     </div>
     <template v-else>
       <div class="setup-preset-card__summary">
-        <span class="setup-preset-card__text">{{ t('setup.preset.summary', { label: summaryLabel }) }}</span>
-        <span class="setup-preset-card__sep" aria-hidden="true">&middot;</span>
-        <button
-          type="button"
-          class="setup-preset-card__link"
-          :aria-expanded="expanded ? 'true' : 'false'"
-          data-testid="setup-preset-toggle"
-          @click="expanded = !expanded"
-        >{{ expanded ? t('setup.preset.hide') : t('setup.preset.customize') }}</button>
-      </div>
-      <div v-if="expanded" class="setup-preset-card__body">
-        <p class="setup-preset-card__desc">
-          <span v-if="panel.synthesized" class="control-pill is-muted setup-preset-card__badge" data-testid="setup-preset-synthesized-badge">{{ t('setup.preset.synthesizedBadge') }}</span>
-          {{ panel.presetDescription }}
-        </p>
-        <SetupTierTable :rows="panel.tierRows" :tier-label="panel.tierLabel" readonly />
-        <div class="setup-preset-card__actions">
+        <div class="setup-preset-card__summary-copy">
+          <span class="setup-preset-card__text">{{ t('setup.preset.summary', { label: summaryLabel }) }}</span>
+          <span class="setup-preset-card__desc">{{ t('setup.preset.desc') }}</span>
+        </div>
+        <div class="setup-preset-card__summary-actions">
+          <button
+            type="button"
+            class="setup-preset-card__link"
+            :aria-expanded="expanded ? 'true' : 'false'"
+            data-testid="setup-preset-toggle"
+            @click="expanded = !expanded"
+          >{{ expanded ? t('setup.preset.hide') : t('setup.preset.customize') }}</button>
           <button
             type="button"
             class="btn btn--primary"
@@ -92,6 +85,13 @@ const customizedModeLabel = computed(() => {
             @click="emit('apply')"
           >{{ t('setup.preset.apply') }}</button>
         </div>
+      </div>
+      <div v-if="expanded" class="setup-preset-card__body">
+        <p class="setup-preset-card__desc">
+          <span v-if="panel.synthesized" class="control-pill is-muted setup-preset-card__badge" data-testid="setup-preset-synthesized-badge">{{ t('setup.preset.synthesizedBadge') }}</span>
+          {{ panel.presetDescription }}
+        </p>
+        <SetupTierTable :rows="panel.tierRows" :tier-label="panel.tierLabel" readonly />
       </div>
     </template>
   </div>
@@ -108,19 +108,30 @@ const customizedModeLabel = computed(() => {
 }
 
 .setup-preset-card__summary {
-  align-items: baseline;
+  align-items: center;
   display: flex;
   flex-wrap: wrap;
+  gap: var(--sp-2);
+  justify-content: space-between;
+}
+
+.setup-preset-card__summary-copy {
+  display: grid;
   gap: var(--sp-1);
+  min-width: min(100%, 24rem);
+}
+
+.setup-preset-card__summary-actions {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+  justify-content: flex-end;
 }
 
 .setup-preset-card__text {
   color: var(--text);
   font-size: var(--fs-sm);
-}
-
-.setup-preset-card__sep {
-  color: var(--text-dim);
 }
 
 .setup-preset-card__link {
@@ -152,10 +163,6 @@ const customizedModeLabel = computed(() => {
 
 .setup-preset-card__badge {
   margin-right: var(--sp-2);
-}
-
-.setup-preset-card__actions {
-  display: flex;
 }
 
 /* The shared table carries a bottom margin for the Router layout; the card's

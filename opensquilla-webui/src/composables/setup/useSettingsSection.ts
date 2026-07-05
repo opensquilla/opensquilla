@@ -2,26 +2,25 @@ import { ref } from 'vue'
 import { SETTINGS_SECTIONS, type SettingsSectionId } from '@/composables/setup/settingsSections'
 
 const DEFAULT_SECTION: SettingsSectionId = 'provider'
-
-function isSettingsSectionId(value: unknown): value is SettingsSectionId {
-  return typeof value === 'string' && SETTINGS_SECTIONS.some(s => s.id === value)
+const SECTION_ALIASES: Record<string, SettingsSectionId> = {
+  router: 'modelStrategy',
+  ensemble: 'modelStrategy',
+  chatModel: 'provider',
 }
 
-/**
- * Map a `/settings/:section` route param to a rail section id. An unknown or
- * missing param falls back to the default first section so a stale or
- * hand-typed URL never lands on a blank rail. Pure: safe to unit-test.
- */
+function sectionIdFor(value: unknown): SettingsSectionId | null {
+  if (typeof value !== 'string') return null
+  const canonical = SETTINGS_SECTIONS.find(s => s.id === value)
+  if (canonical) return canonical.id
+  return SECTION_ALIASES[value] || null
+}
+
 export function sectionFromRouteParam(param: unknown): SettingsSectionId {
-  return isSettingsSectionId(param) ? param : DEFAULT_SECTION
+  return sectionIdFor(param) || DEFAULT_SECTION
 }
 
-/**
- * Whether a route param is a recognised section. Lets the route layer decide
- * between replacing the URL with the canonical section vs. leaving it.
- */
-export function isKnownSectionParam(param: unknown): param is SettingsSectionId {
-  return isSettingsSectionId(param)
+export function isKnownSectionParam(param: unknown): boolean {
+  return sectionIdFor(param) !== null
 }
 
 export function useSettingsSection(initialSection: string) {

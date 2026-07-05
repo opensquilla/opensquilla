@@ -12,7 +12,7 @@ import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from opensquilla.gateway.config import GatewayConfig
+from opensquilla.gateway.config import GatewayConfig, LEGACY_OPENROUTER_MODEL_OPTIONS
 from opensquilla.onboarding.audio_specs import get_audio_provider_setup_spec
 from opensquilla.onboarding.config_store import default_config_path
 from opensquilla.onboarding.image_generation_specs import (
@@ -68,6 +68,8 @@ class OnboardingStatus:
     channel_count: int
     channels_configured: bool
     needs_onboarding: bool
+    llm_credential_status: dict[str, object] = field(default_factory=dict)
+    ensemble_credential_status: tuple[dict[str, object], ...] = ()
     sections: dict[str, SectionStatus] = field(default_factory=dict)
     section_details: dict[str, dict[str, object]] = field(default_factory=dict)
     warnings: tuple[str, ...] = ()
@@ -149,6 +151,220 @@ def _ensemble_detail(cfg: GatewayConfig) -> str:
     mode = str(getattr(ensemble, "selection_mode", "") or "")
     options = list(getattr(ensemble, "model_options", []) or [])
     return f"selection mode: {mode} ({len(options)} models)"
+
+
+def _candidate_field(candidate: object, field_name: str) -> object:
+    if isinstance(candidate, dict):
+        return candidate.get(field_name)
+    return getattr(candidate, field_name, None)
+
+
+def _ensemble_candidate_provider_ids(cfg: GatewayConfig) -> list[str]:
+    ensemble = getattr(cfg, "llm_ensemble", None)
+    if ensemble is None or not bool(getattr(ensemble, "enabled", False)):
+        return []
+
+    provider_ids: list[str] = []
+    seen: set[str] = set()
+
+    def add(provider: object) -> None:
+        provider_id = str(provider or "").strip().lower()
+        if provider_id and provider_id not in seen:
+            seen.add(provider_id)
+            provider_ids.append(provider_id)
+
+    llm = getattr(cfg, "llm", None)
+    add(getattr(llm, "provider", ""))
+
+    selection_mode = str(getattr(ensemble, "selection_mode", "") or "")
+    if selection_mode == "static_openrouter_b5":
+        add("openrouter")
+
+    router = getattr(cfg, "squilla_router", None)
+    tiers = getattr(router, "tiers", {}) or {}
+    if selection_mode == "router_dynamic" and isinstance(tiers, dict):
+        for tier_cfg in tiers.values():
+            if isinstance(tier_cfg, dict):
+                add(tier_cfg.get("provider") or getattr(llm, "provider", ""))
+
+    for candidate in getattr(ensemble, "candidates", []) or []:
+        if _candidate_field(candidate, "enabled") is False:
+            continue
+        add(_candidate_field(candidate, "provider"))
+
+    model_options = list(getattr(ensemble, "model_options", []) or [])
+    if tuple(model_options) == tuple(LEGACY_OPENROUTER_MODEL_OPTIONS):
+        model_options = []
+    for model in model_options:
+        model_s = str(model or "").strip()
+        if not model_s:
+            continue
+        add("openrouter" if "/" in model_s else getattr(llm, "provider", ""))
+
+    return provider_ids
+
+
+def _llm_provider_credential_status(
+    cfg: GatewayConfig,
+    provider_id: str,
+) -> dict[str, object]:
+    provider = str(provider_id or "").strip().lower()
+    try:
+        spec = get_provider_setup_spec(provider)
+    except KeyError:
+        return {"provider": provider, "available": False, "source": "none", "envKey": ""}
+
+    env_key = str(getattr(spec, "env_key", "") or "").strip()
+    if not spec.requires_api_key:
+        return {
+            "provider": provider,
+            "available": True,
+            "source": "not_required",
+            "envKey": env_key,
+        }
+
+    llm = getattr(cfg, "llm", None)
+    current_provider = str(getattr(llm, "provider", "") or "").strip().lower()
+    if provider == current_provider:
+        env_key = str(getattr(llm, "api_key_env", "") or "").strip() or env_key
+        if _saved_llm_api_key(cfg):
+            return {
+                "provider": provider,
+                "available": True,
+                "source": "explicit",
+                "envKey": env_key,
+            }
+        if env_key and os.environ.get(env_key):
+            return {
+                "provider": provider,
+                "available": True,
+                "source": "env",
+                "envKey": env_key,
+            }
+        return {
+            "provider": provider,
+            "available": False,
+            "source": "missing_env" if env_key else "none",
+            "envKey": env_key,
+        }
+
+    if env_key and os.environ.get(env_key):
+        return {
+            "provider": provider,
+            "available": True,
+            "source": "env",
+            "envKey": env_key,
+        }
+    return {
+        "provider": provider,
+        "available": False,
+        "source": "missing_env" if env_key else "none",
+        "envKey": env_key,
+    }
+
+
+def _mask_credential(value: str) -> str:
+    secret = str(value or "")
+    if not secret:
+        return ""
+    if len(secret) <= 4:
+        return "*" * len(secret)
+    return f"{'*' * (len(secret) - 4)}{secret[-4:]}"
+
+
+def _saved_llm_api_key(cfg: GatewayConfig) -> str:
+    llm = getattr(cfg, "llm", None)
+    runtime_secret_paths = getattr(cfg, "_runtime_secret_paths", set())
+    if "llm.api_key" in runtime_secret_paths:
+        return ""
+    return str(getattr(llm, "api_key", "") or "")
+
+
+def _llm_credential_status(cfg: GatewayConfig) -> dict[str, object]:
+    llm = getattr(cfg, "llm", None)
+    provider = str(getattr(llm, "provider", "") or "").strip().lower()
+    if not provider:
+        return {
+            "provider": "",
+            "available": False,
+            "source": "none",
+            "envKey": "",
+            "masked": "",
+            "revealAllowed": False,
+        }
+
+    try:
+        spec = get_provider_setup_spec(provider)
+    except KeyError:
+        return {
+            "provider": provider,
+            "available": False,
+            "source": "none",
+            "envKey": "",
+            "masked": "",
+            "revealAllowed": False,
+        }
+
+    env_key = str(getattr(spec, "env_key", "") or "").strip()
+    configured_env_key = str(getattr(llm, "api_key_env", "") or "").strip()
+    resolved_env_key = configured_env_key or env_key
+
+    if not spec.requires_api_key:
+        return {
+            "provider": provider,
+            "available": True,
+            "source": "not_required",
+            "envKey": resolved_env_key,
+            "masked": "",
+            "revealAllowed": False,
+        }
+
+    explicit_key = _saved_llm_api_key(cfg)
+    if explicit_key:
+        return {
+            "provider": provider,
+            "available": True,
+            "source": "explicit",
+            "envKey": resolved_env_key,
+            "masked": _mask_credential(explicit_key),
+            "revealAllowed": False,
+        }
+
+    if resolved_env_key:
+        env_value = str(os.environ.get(resolved_env_key) or "")
+        if env_value:
+            return {
+                "provider": provider,
+                "available": True,
+                "source": "env",
+                "envKey": resolved_env_key,
+                "masked": _mask_credential(env_value),
+                "revealAllowed": False,
+            }
+        return {
+            "provider": provider,
+            "available": False,
+            "source": "missing_env",
+            "envKey": resolved_env_key,
+            "masked": "",
+            "revealAllowed": False,
+        }
+
+    return {
+        "provider": provider,
+        "available": False,
+        "source": "none",
+        "envKey": "",
+        "masked": "",
+        "revealAllowed": False,
+    }
+
+
+def _ensemble_credential_status(cfg: GatewayConfig) -> tuple[dict[str, object], ...]:
+    return tuple(
+        _llm_provider_credential_status(cfg, provider)
+        for provider in _ensemble_candidate_provider_ids(cfg)
+    )
 
 
 def _router_mode(cfg: GatewayConfig) -> str:
@@ -498,6 +714,8 @@ def get_onboarding_status(config: GatewayConfig) -> OnboardingStatus:
         channel_count=len(config.channels.channels),
         channels_configured=bool(enabled_channels),
         needs_onboarding=_needs_onboarding(sections) or bool(runtime_blocking),
+        llm_credential_status=_llm_credential_status(config),
+        ensemble_credential_status=_ensemble_credential_status(config),
         sections=sections,
         section_details=section_details,
     )

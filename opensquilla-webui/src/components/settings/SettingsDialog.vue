@@ -127,13 +127,15 @@
               <Icon :name="s.icon" :size="16" aria-hidden="true" />
               <span class="settings-rail__label">{{ t('settings.rail.' + s.id) }}</span>
               <span v-if="sectionDirty(s.id)" class="settings-rail__dirty" aria-hidden="true"></span>
-              <span v-if="!s.client" class="settings-rail__dot" :class="sectionStatus(s.id).tone" aria-hidden="true"></span>
+              <span v-if="!s.client && s.id === 'connection'" class="settings-rail__dot" :class="sectionStatus(s.id).tone" aria-hidden="true"></span>
+              <span v-else-if="!s.client && sectionStatus(s.id).tone === 'is-warn'" class="settings-rail__warn" aria-hidden="true">!</span>
             </button>
           </template>
         </nav>
 
         <div
           :id="'settings-section-' + section"
+          ref="panelRef"
           class="settings-panel"
           role="tabpanel"
           :aria-labelledby="'settings-rail-' + section"
@@ -176,24 +178,23 @@
               :panel="privacyPanel"
               @update-disable-network-observability="setDisableNetworkObservability"
             />
-            <SetupRouterPanel
-              v-else-if="section === 'router'"
-              :panel="routerPanel"
-              @update-router-mode="setRouterMode"
+            <SetupModelStrategyPanel
+              v-else-if="section === 'modelStrategy'"
+              :panel="modelStrategyPanel"
+              @update-strategy="setModelStrategy"
               @update-router-default-tier="setRouterDefaultTier"
               @update-router-visual-mode="setRouterVisualMode"
               @update-tier-field="updateTierField"
+              @update-ensemble-enabled="setEnsembleEnabled"
+              @update-ensemble-selection-mode="setEnsembleSelectionMode"
+              @add-ensemble-model-option="addEnsembleModelOption"
+              @remove-ensemble-model-option="removeEnsembleModelOption"
+              @add-ensemble-candidate="addEnsembleCandidate"
+              @remove-ensemble-candidate="removeEnsembleCandidate"
+              @reset-ensemble-candidates="resetEnsembleCandidates"
+              @update-ensemble-min-successful="setEnsembleMinSuccessful"
+              @update-ensemble-all-failed-policy="setEnsembleAllFailedPolicy"
               @go-to-section="selectSection"
-            />
-            <SetupEnsemblePanel
-              v-else-if="section === 'ensemble'"
-              :panel="ensemblePanel"
-              @update-enabled="setEnsembleEnabled"
-              @update-selection-mode="setEnsembleSelectionMode"
-              @add-model-option="addEnsembleModelOption"
-              @remove-model-option="removeEnsembleModelOption"
-              @update-min-successful="setEnsembleMinSuccessful"
-              @update-all-failed-policy="setEnsembleAllFailedPolicy"
             />
             <SetupChannelsPanel
               v-else-if="section === 'channels'"
@@ -264,8 +265,7 @@ import SetupCommandBlock from '@/components/setup/SetupCommandBlock.vue'
 import SetupBehaviorPanel from '@/components/setup/SetupBehaviorPanel.vue'
 import SetupConnectionPanel from '@/components/settings/SetupConnectionPanel.vue'
 import SetupProviderPanel from '@/components/setup/SetupProviderPanel.vue'
-import SetupRouterPanel from '@/components/setup/SetupRouterPanel.vue'
-import SetupEnsemblePanel from '@/components/setup/SetupEnsemblePanel.vue'
+import SetupModelStrategyPanel from '@/components/setup/SetupModelStrategyPanel.vue'
 import SetupChannelsPanel from '@/components/setup/SetupChannelsPanel.vue'
 import SetupCapabilitiesPanel from '@/components/setup/SetupCapabilitiesPanel.vue'
 import SettingsPrivacyPanel from '@/components/settings/SettingsPrivacyPanel.vue'
@@ -296,9 +296,8 @@ const {
   providerPanel,
   behaviorPanel,
   privacyPanel,
-  routerPanel,
+  modelStrategyPanel,
   presetPanel,
-  ensemblePanel,
   channelsPanel,
   capabilitiesPanel,
   hasSetupAction,
@@ -318,13 +317,16 @@ const {
   selectProvider,
   setAutoSessionTitles,
   setDisableNetworkObservability,
-  setRouterMode,
+  setModelStrategy,
   setRouterDefaultTier,
   setRouterVisualMode,
   setEnsembleEnabled,
   setEnsembleSelectionMode,
   addEnsembleModelOption,
   removeEnsembleModelOption,
+  addEnsembleCandidate,
+  removeEnsembleCandidate,
+  resetEnsembleCandidates,
   setEnsembleMinSuccessful,
   setEnsembleAllFailedPolicy,
   applyProviderPreset,
@@ -354,6 +356,7 @@ const {
 
 const modalRef = ref<HTMLElement | null>(null)
 const railRef = ref<HTMLElement | null>(null)
+const panelRef = ref<HTMLElement | null>(null)
 const closeBtn = ref<HTMLButtonElement | null>(null)
 
 // Keep the active section's rail tab in view — on mobile the rail scrolls
@@ -364,6 +367,14 @@ function scrollActiveTabIntoView() {
     if (!el) return
     const reduce = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
     el.scrollIntoView({ inline: 'nearest', block: 'nearest', behavior: reduce ? 'auto' : 'smooth' })
+  })
+}
+
+function resetActivePanelScroll() {
+  void nextTick(() => {
+    const panel = panelRef.value
+    if (!panel) return
+    panel.scrollTo({ top: 0, left: 0, behavior: 'auto' })
   })
 }
 // Drives the modal's enter/leave <Transition>. Closing flips this to false so the
@@ -531,7 +542,10 @@ watch(routeParam, () => applyRouteSection())
 
 // Whenever the active section changes (rail click, deep link, Back), bring its
 // tab into view on the horizontally-scrolling mobile rail.
-watch(section, scrollActiveTabIntoView)
+watch(section, () => {
+  scrollActiveTabIntoView()
+  resetActivePanelScroll()
+})
 
 // The auto deep link lands on its readiness-derived section once config is
 // known, unless the user already navigated during the load.
@@ -752,6 +766,7 @@ onUnmounted(() => {
   display: flex;
   flex: 1;
   min-height: 0;
+  overflow: hidden;
 }
 
 .settings-rail {
@@ -805,6 +820,22 @@ onUnmounted(() => {
 .settings-rail__dot.is-ok { background: var(--ok); }
 .settings-rail__dot.is-warn { background: var(--warn-fill); }
 .settings-rail__dot.is-muted { background: var(--text-dim); opacity: 0.5; }
+
+.settings-rail__warn {
+  align-items: center;
+  background: var(--warn-fill);
+  clip-path: polygon(50% 0, 100% 100%, 0 100%);
+  color: var(--bg);
+  display: inline-flex;
+  flex-shrink: 0;
+  font-size: 7px;
+  font-weight: 700;
+  height: 11px;
+  justify-content: center;
+  line-height: 1;
+  padding-top: 3px;
+  width: 12px;
+}
 
 .settings-rail__dirty {
   background: var(--accent);
@@ -874,13 +905,16 @@ onUnmounted(() => {
   flex-wrap: wrap;
   font-size: var(--fs-xs);
   gap: var(--sp-2);
+  min-width: 0;
   padding: var(--sp-2) var(--sp-4);
 }
 
 .settings-foot__path {
   color: var(--text-muted);
+  flex: 1 1 240px;
   font-family: var(--font-mono);
   font-size: var(--fs-xs);
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -953,7 +987,21 @@ onUnmounted(() => {
   }
 
   .settings-foot {
+    align-items: flex-start;
+    gap: var(--sp-1) var(--sp-2);
     padding-bottom: max(var(--sp-2), env(safe-area-inset-bottom));
+  }
+
+  .settings-foot__text:first-child {
+    display: none;
+  }
+
+  .settings-foot__path {
+    flex-basis: calc(100% - 32px);
+  }
+
+  .settings-foot__sep {
+    display: none;
   }
 }
 </style>

@@ -231,7 +231,7 @@ def test_onboard_noninteractive_provider_can_omit_model_for_router_profile(
     assert data["squilla_router"]["tier_profile"] == "deepseek"
 
 
-def test_onboard_noninteractive_provider_without_router_profile_disables_router(
+def test_onboard_noninteractive_provider_without_router_profile_seeds_router_tiers(
     tmp_path, monkeypatch
 ):
     target = tmp_path / "c.toml"
@@ -256,7 +256,11 @@ def test_onboard_noninteractive_provider_without_router_profile_disables_router(
     assert data["llm"]["provider"] == "anthropic"
     assert data["llm"]["api_key_env"] == "ANTHROPIC_API_KEY"
     assert "api_key" not in data["llm"]
-    assert data["squilla_router"]["enabled"] is False
+    assert data["squilla_router"]["enabled"] is True
+    assert "tier_profile" not in data["squilla_router"]
+    for tier in ("c0", "c1", "c2", "c3"):
+        assert data["squilla_router"]["tiers"][tier]["provider"] == "anthropic"
+        assert data["squilla_router"]["tiers"][tier]["model"] == "claude-3-5-sonnet-latest"
 
 
 def test_onboard_noninteractive_provider_error_is_productized(tmp_path, monkeypatch):
@@ -1220,7 +1224,8 @@ def test_onboard_status_summarizes_blocking_and_optional_sections(
     assert result.exit_code == 0, result.stdout
     assert "OpenSquilla Setup Cockpit" in result.stdout
     assert "Blocking setup: Provider" in result.stdout
-    assert "Optional later: Channels, Image generation" in result.stdout
+    status_plain = _plain_text(result.stdout)
+    assert "Optional later: LLM ensemble, Channels, Image generation, Voice audio" in status_plain
     assert "llm" not in result.stdout
     assert "image_generation" not in result.stdout
 
@@ -1344,7 +1349,7 @@ def test_onboard_status_table_names_missing_env_keys_for_optional_capabilities(
     summary = _status_cockpit_summary(get_onboarding_status(load_config(target)))
     assert summary == (
         "Blocking setup: Memory embedding"
-        " · Optional later: Web search, Channels, Image generation, Voice audio"
+        " · Optional later: LLM ensemble, Web search, Channels, Image generation, Voice audio"
     )
 
 
@@ -1418,12 +1423,10 @@ def test_onboard_status_offers_ready_next_moves_when_all_sections_ready(
 
     assert result.exit_code == 0, result.stdout
     assert "OpenSquilla ready: yes" in result.stdout
-    assert "Ready next moves:" in result.stdout
-    assert "Start gateway:" in result.stdout
-    assert "opensquilla gateway run" in result.stdout
-    assert "Reconfigure later:" in result.stdout
-    assert "opensquilla onboard configure <section>" in result.stdout
-    assert "Optional next moves:" not in result.stdout
+    assert "Optional next moves:" in result.stdout
+    assert "Headless ensemble:" in result.stdout
+    assert "opensquilla onboard configure ensemble --enabled" in result.stdout
+    assert "Ready next moves:" not in result.stdout
     assert "Recommended next move:" not in result.stdout
 
 
@@ -2427,7 +2430,7 @@ def test_onboard_status_includes_ensemble_section(tmp_path, monkeypatch):
 
     assert result.exit_code == 0, result.stdout
     payload = _json.loads(result.stdout)
-    assert payload["sections"]["ensemble"] == "ok"
+    assert payload["sections"]["ensemble"] == "optional"
     detail = payload["sectionDetails"]["ensemble"]
     assert detail["label"] == "LLM ensemble"
     assert detail["required"] is False

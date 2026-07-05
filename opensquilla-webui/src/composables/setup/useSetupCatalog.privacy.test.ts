@@ -149,3 +149,273 @@ describe('useSetupCatalog privacy settings', () => {
     app.unmount()
   })
 })
+
+describe('useSetupCatalog model strategy IA', () => {
+  it('exposes the Model Strategy facade panel cards', async () => {
+    mockConfigSequence([
+      {
+        llm: { provider: 'openrouter', model: 'openrouter/auto' },
+        squilla_router: { enabled: true },
+        llm_ensemble: { enabled: true },
+      },
+    ])
+    const { api, app } = await mountCatalog()
+
+    expect(api.modelStrategyPanel.value.cards.map(card => card.id)).toEqual(['router', 'ensemble', 'single'])
+    expect(api.modelStrategyPanel.value.providerLabel).toBe('openrouter')
+    app.unmount()
+  })
+
+  it('marks Model Strategy dirty when selecting the single-model strategy', async () => {
+    mockConfigSequence([
+      {
+        llm: { provider: 'openrouter', model: 'openrouter/auto' },
+        squilla_router: { enabled: true },
+        llm_ensemble: { enabled: true },
+      },
+    ])
+    const { api, app } = await mountCatalog()
+
+    api.setModelStrategy('single')
+
+    expect(api.modelStrategyPanel.value.activeStrategy).toBe('single')
+    expect(api.sectionDirty('modelStrategy')).toBe(true)
+    expect(api.dirtySections.value.map(s => s.id)).toContain('modelStrategy')
+    app.unmount()
+  })
+
+  it('routes router readiness actions and status through Model Strategy', async () => {
+    rpcCall.mockImplementation(async (method: string) => {
+      if (method === 'onboarding.catalog') return {}
+      if (method === 'onboarding.status') {
+        return {
+          hasConfig: true,
+          sectionDetails: {
+            router: {
+              status: 'missing',
+              blocking: true,
+              label: 'Router',
+            },
+          },
+        }
+      }
+      if (method === 'channels.status') return { channels: [] }
+      if (method === 'config.get') return { llm: { provider: 'openrouter', model: 'openrouter/auto' } }
+      throw new Error(`Unexpected RPC method: ${method}`)
+    })
+    const { api, app } = await mountCatalog()
+
+    expect(api.actionItems.value).toContainEqual({ label: 'Router setup needed', section: 'modelStrategy' })
+    expect(api.sectionStatus('modelStrategy')).toEqual({ label: 'Needs action', tone: 'is-warn' })
+    app.unmount()
+  })
+
+  it('routes ensemble readiness actions through Model Strategy', async () => {
+    rpcCall.mockImplementation(async (method: string) => {
+      if (method === 'onboarding.catalog') return {}
+      if (method === 'onboarding.status') {
+        return {
+          hasConfig: true,
+          sectionDetails: {
+            ensemble: {
+              status: 'degraded',
+              actionRequired: true,
+              label: 'Ensemble',
+            },
+          },
+        }
+      }
+      if (method === 'channels.status') return { channels: [] }
+      if (method === 'config.get') return { llm: { provider: 'openrouter', model: 'openrouter/auto' } }
+      throw new Error(`Unexpected RPC method: ${method}`)
+    })
+    const { api, app } = await mountCatalog()
+
+    expect(api.actionItems.value).toContainEqual({ label: 'Ensemble setup needed', section: 'modelStrategy' })
+    expect(api.actionItems.value).not.toContainEqual({ label: 'Ensemble setup needed', section: 'provider' })
+    app.unmount()
+  })
+
+  it('auto-selects Model Strategy when ensemble readiness needs action', async () => {
+    rpcCall.mockImplementation(async (method: string) => {
+      if (method === 'onboarding.catalog') return {}
+      if (method === 'onboarding.status') {
+        return {
+          hasConfig: true,
+          sectionDetails: {
+            router: { status: 'ok', label: 'Router' },
+            ensemble: {
+              status: 'degraded',
+              actionRequired: true,
+              label: 'Ensemble',
+            },
+          },
+        }
+      }
+      if (method === 'channels.status') return { channels: [] }
+      if (method === 'config.get') return { llm: { provider: 'openrouter', model: 'openrouter/auto' } }
+      throw new Error(`Unexpected RPC method: ${method}`)
+    })
+    const { api, app } = await mountCatalog()
+
+    api.selectInitialSection('auto')
+
+    expect(api.section.value).toBe('modelStrategy')
+    app.unmount()
+  })
+
+  it('reports Model Strategy needs action when ensemble detail needs action', async () => {
+    rpcCall.mockImplementation(async (method: string) => {
+      if (method === 'onboarding.catalog') return {}
+      if (method === 'onboarding.status') {
+        return {
+          hasConfig: true,
+          sectionDetails: {
+            router: { status: 'ok', label: 'Router' },
+            ensemble: {
+              status: 'degraded',
+              actionRequired: true,
+              label: 'Ensemble',
+            },
+          },
+        }
+      }
+      if (method === 'channels.status') return { channels: [] }
+      if (method === 'config.get') return { llm: { provider: 'openrouter', model: 'openrouter/auto' } }
+      throw new Error(`Unexpected RPC method: ${method}`)
+    })
+    const { api, app } = await mountCatalog()
+
+    expect(api.sectionStatus('modelStrategy')).toEqual({ label: 'Needs action', tone: 'is-warn' })
+    app.unmount()
+  })
+
+  it('aggregates router and ensemble dirty state under Model Strategy', async () => {
+    mockConfigSequence([
+      {
+        llm: { provider: 'openrouter', model: 'openrouter/auto' },
+        squilla_router: { enabled: true },
+        llm_ensemble: { enabled: true },
+      },
+    ])
+    const { api, app } = await mountCatalog()
+
+    api.setModelStrategy('single')
+    expect(api.sectionDirty('modelStrategy')).toBe(true)
+
+    await api.discardChanges()
+    expect(api.sectionDirty('modelStrategy')).toBe(false)
+
+    api.setEnsembleEnabled(false)
+    expect(api.sectionDirty('modelStrategy')).toBe(true)
+    expect(api.dirtySections.value.map(s => s.id)).toContain('modelStrategy')
+    app.unmount()
+  })
+
+  it('saves dirty router and ensemble edits through the Model Strategy save path', async () => {
+    let routerSaved = false
+    let ensembleSaved = false
+    rpcCall.mockImplementation(async (method: string) => {
+      if (method === 'onboarding.catalog') return {}
+      if (method === 'onboarding.status') return {}
+      if (method === 'channels.status') return { channels: [] }
+      if (method === 'config.get') {
+        return {
+          llm: { provider: 'openrouter', model: 'openrouter/auto' },
+          squilla_router: { enabled: !routerSaved, default_tier: 'balanced' },
+          llm_ensemble: { enabled: ensembleSaved },
+        }
+      }
+      if (method === 'onboarding.router.configure') {
+        routerSaved = true
+        return {}
+      }
+      if (method === 'onboarding.ensemble.configure') {
+        ensembleSaved = true
+        return {}
+      }
+      if (method === 'config.patch.safe') return { restartRequired: false }
+      throw new Error(`Unexpected RPC method: ${method}`)
+    })
+    const { api, app } = await mountCatalog()
+
+    api.setModelStrategy('single')
+    api.setEnsembleEnabled(true)
+    await api.saveDirtySections()
+
+    expect(rpcCall).toHaveBeenCalledWith('onboarding.router.configure', expect.any(Object))
+    expect(rpcCall).toHaveBeenCalledWith('onboarding.ensemble.configure', { enabled: true })
+    app.unmount()
+  })
+
+  it('represents router and ensemble dirty state under Model Strategy', async () => {
+    mockConfigSequence([
+      {
+        llm: { provider: 'openrouter', model: 'openrouter/auto' },
+        squilla_router: { enabled: true },
+        llm_ensemble: { enabled: false },
+      },
+    ])
+    const { api, app } = await mountCatalog()
+
+    api.setRouterMode('disabled')
+    expect(api.sectionDirty('modelStrategy')).toBe(true)
+    expect(api.dirtySections.value.map(s => s.id)).toContain('modelStrategy')
+
+    await api.discardChanges()
+    expect(api.sectionDirty('modelStrategy')).toBe(false)
+
+    api.setEnsembleEnabled(true)
+    expect(api.sectionDirty('modelStrategy')).toBe(true)
+    expect(api.dirtySections.value.map(s => s.id)).toContain('modelStrategy')
+    app.unmount()
+  })
+})
+
+describe('useSetupCatalog provider credential reveal', () => {
+  it('reveals the saved provider key through the dedicated RPC', async () => {
+    rpcCall.mockImplementation(async (method: string) => {
+      if (method === 'onboarding.catalog') {
+        return {
+          providers: [
+            {
+              providerId: 'deepseek',
+              label: 'DeepSeek',
+              runtimeSupported: true,
+              requiresApiKey: true,
+              envKey: 'DEEPSEEK_API_KEY',
+              fields: [{ name: 'model', label: 'Model' }],
+            },
+          ],
+        }
+      }
+      if (method === 'onboarding.status') {
+        return {
+          hasConfig: true,
+          llmConfigured: true,
+          llmSource: 'explicit',
+          llmCredentialStatus: {
+            provider: 'deepseek',
+            available: true,
+            source: 'explicit',
+            envKey: 'DEEPSEEK_API_KEY',
+            masked: 'sk-••••1234',
+            revealAllowed: true,
+          },
+        }
+      }
+      if (method === 'channels.status') return { channels: [] }
+      if (method === 'config.get') return { llm: { provider: 'deepseek', model: 'deepseek-chat' } }
+      if (method === 'onboarding.provider.credential.reveal') return { ok: true, apiKey: 'sk-real-value' }
+      throw new Error(`Unexpected RPC method: ${method}`)
+    })
+
+    const { api, app } = await mountCatalog()
+
+    await api.revealProviderCredential()
+
+    expect(rpcCall).toHaveBeenCalledWith('onboarding.provider.credential.reveal', { providerId: 'deepseek' })
+    expect((api.providerPanel.value.credentialPanel as { revealed: string }).revealed).toBe('sk-real-value')
+    app.unmount()
+  })
+})

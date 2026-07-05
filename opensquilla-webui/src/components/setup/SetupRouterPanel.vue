@@ -26,7 +26,6 @@ interface RouterPanelContract {
   routerVisualModeDirty: boolean
   routerVisualModeOptions: readonly { value: string; label: string }[]
   hasSavedProvider: boolean
-  canUseOpenrouterMix: boolean
   textTiers: readonly string[]
   tierRows: readonly TierRow[]
   tierLabel: (tier: string) => string
@@ -72,10 +71,6 @@ const emit = defineEmits<{
         >
           <option value="recommended">{{ t('setup.router.modeModelRouting') }}</option>
           <option value="disabled">{{ t('setup.router.modeSingleModel') }}</option>
-          <option
-            v-if="panel.routerModeChoice === 'openrouter-mix' && panel.canUseOpenrouterMix"
-            value="openrouter-mix"
-          >{{ t('setup.router.modeOpenrouterMix') }}</option>
         </select>
       </div>
     </label>

@@ -13,6 +13,7 @@ from opensquilla.onboarding.mutations import (
     set_channel_enabled,
     upsert_channel,
     upsert_image_generation_provider,
+    upsert_llm_ensemble,
     upsert_llm_provider,
     upsert_memory_embedding,
     upsert_router,
@@ -176,11 +177,11 @@ def test_ollama_does_not_require_api_key():
     assert res.config.llm.provider == "ollama"
 
 
-def test_provider_save_outside_legacy_presets_disables_router():
-    """D18 pin: saving a provider outside the legacy preset nine (e.g. groq)
-    still yields enabled=False / tier_profile=None. The preset registry
-    synthesizes a groq preset, but save paths never auto-apply it — a
-    persisted synthesized tier_profile would brick rc1 loaders on downgrade.
+def test_provider_save_outside_packaged_presets_seeds_inline_router_tiers():
+    """Provider-neutral strategy setup seeds usable tiers for every chat model.
+
+    Non-packaged providers still persist inline tiers instead of tier_profile so
+    they do not masquerade as curated presets.
     """
     cfg = GatewayConfig()
     res = upsert_llm_provider(
@@ -190,8 +191,14 @@ def test_provider_save_outside_legacy_presets_disables_router():
         api_key="sk-test",
     )
     assert res.config.llm.provider == "groq"
-    assert res.config.squilla_router.enabled is False
+    assert res.config.squilla_router.enabled is True
     assert res.config.squilla_router.tier_profile is None
+    for tier in ("c0", "c1", "c2", "c3"):
+        assert res.config.squilla_router.tiers[tier]["provider"] == "groq"
+        assert res.config.squilla_router.tiers[tier]["model"] == "test-model"
+    persisted = res.config.to_toml_dict()["squilla_router"]
+    assert "tier_profile" not in persisted
+    assert persisted["tiers"]["c0"]["model"] == "test-model"
 
 
 def test_upsert_channel_appends_new():
@@ -315,6 +322,60 @@ def test_invalid_channel_type_rejected():
         upsert_channel(cfg, entry_payload={"type": "nope", "name": "x"})
 
 
+def test_upsert_llm_ensemble_accepts_structured_candidates_partial_merge():
+    cfg = GatewayConfig(
+        llm_ensemble={
+            "enabled": True,
+            "selection_mode": "router_dynamic",
+            "model_options": ["legacy/model"],
+            "min_successful_proposers": 2,
+        }
+    )
+
+    res = upsert_llm_ensemble(
+        cfg,
+        candidates=[
+            {
+                "provider": "openrouter",
+                "model": "qwen/qwen3.7-max",
+                "source": "custom",
+                "enabled": True,
+            }
+        ],
+    )
+
+    assert res.changed is True
+    assert res.config.llm_ensemble.enabled is True
+    assert res.config.llm_ensemble.selection_mode == "router_dynamic"
+    assert res.config.llm_ensemble.model_options == ["legacy/model"]
+    assert res.config.llm_ensemble.min_successful_proposers == 2
+    assert [candidate.model_dump() for candidate in res.config.llm_ensemble.candidates] == [
+        {
+            "provider": "openrouter",
+            "model": "qwen/qwen3.7-max",
+            "source": "custom",
+            "enabled": True,
+        }
+    ]
+    assert res.public_payload["candidates"] == [
+        {
+            "provider": "openrouter",
+            "model": "qwen/qwen3.7-max",
+            "source": "custom",
+            "enabled": True,
+        }
+    ]
+
+
+def test_upsert_llm_ensemble_keeps_legacy_model_options_payload():
+    cfg = GatewayConfig(llm_ensemble={"selection_mode": "router_dynamic"})
+
+    res = upsert_llm_ensemble(cfg, model_options=[" custom/model ", "custom/model"])
+
+    assert res.config.llm_ensemble.model_options == ["custom/model"]
+    assert res.public_payload["model_options"] == ["custom/model"]
+
+
 def test_telegram_webhook_requires_webhook_url():
     cfg = GatewayConfig()
     with pytest.raises(ValueError, match="webhook_url"):
@@ -364,10 +425,10 @@ def test_upsert_llm_provider_can_use_env_key_without_secret():
     assert res.public_payload["api_key_source"] == "env"
 
 
-def test_upsert_llm_provider_recomputes_openrouter_mix_on_provider_switch():
+def test_upsert_llm_provider_recomputes_router_preset_on_provider_switch():
     cfg = GatewayConfig(llm={"provider": "openrouter", "model": "deepseek/x"})
     assert cfg.squilla_router.enabled is True
-    assert cfg.squilla_router.tier_profile is None
+    assert cfg.squilla_router.tier_profile == "openrouter"
 
     res = upsert_llm_provider(
         cfg,
@@ -556,14 +617,62 @@ def test_upsert_router_custom_merges_provided_tiers_over_preset():
     assert res.config.squilla_router.tiers["c0"]["provider"] == "openrouter"
 
 
-def test_upsert_router_custom_requires_tier_models_for_synthesized_presets():
-    # groq's synthesized preset binds tiers to (groq, "") — no curated model
-    # ladder — so custom mode without explicit tier models must fail the
-    # standard tier validation instead of persisting empty routes.
+def test_upsert_router_can_enable_cross_provider_tiers():
+    cfg = GatewayConfig(llm={"provider": "openai", "model": "gpt-5.4-mini"})
+
+    res = upsert_router(
+        cfg,
+        mode="custom",
+        cross_provider_tiers=True,
+        tier_provider_mismatch="veto",
+        tiers={
+            "c0": {"provider": "openai", "model": "gpt-5.4-mini"},
+            "c1": {"provider": "openrouter", "model": "deepseek/deepseek-v4-pro"},
+            "c2": {"provider": "openrouter", "model": "z-ai/glm-5.2"},
+            "c3": {"provider": "openai", "model": "gpt-5.5"},
+        },
+    )
+
+    router = res.config.squilla_router
+    assert router.enabled is True
+    assert router.tier_profile is None
+    assert router.cross_provider_tiers is True
+    assert router.tier_provider_mismatch == "veto"
+    assert router.tiers["c1"]["provider"] == "openrouter"
+    assert res.public_payload["cross_provider_tiers"] is True
+    assert res.public_payload["tier_provider_mismatch"] == "veto"
+
+
+def test_upsert_router_rejects_unknown_tier_provider_mismatch_policy():
+    cfg = GatewayConfig(llm={"provider": "openai", "model": "gpt-5.4-mini"})
+
+    with pytest.raises(ValueError, match="tierProviderMismatch"):
+        upsert_router(
+            cfg,
+            mode="custom",
+            tier_provider_mismatch="drop",
+            tiers={
+                "c0": {"provider": "openai", "model": "gpt-5.4-mini"},
+                "c1": {"provider": "openai", "model": "gpt-5.4"},
+                "c2": {"provider": "openai", "model": "gpt-5.5-mini"},
+                "c3": {"provider": "openai", "model": "gpt-5.5"},
+            },
+        )
+
+
+def test_upsert_router_custom_seeds_current_model_for_synthesized_presets():
+    # Non-packaged providers have no curated ladder, so custom mode seeds every
+    # tier from the current Chat Model instead of leaving empty routes.
     cfg = GatewayConfig(llm={"provider": "groq", "model": "m"})
 
-    with pytest.raises(ValueError, match="requires model"):
-        upsert_router(cfg, mode="custom")
+    res = upsert_router(cfg, mode="custom")
+
+    assert res.config.squilla_router.enabled is True
+    assert res.config.squilla_router.tier_profile is None
+    for tier in ("c0", "c1", "c2", "c3"):
+        assert res.config.squilla_router.tiers[tier]["provider"] == "groq"
+        assert res.config.squilla_router.tiers[tier]["model"] == "m"
+    assert res.public_payload["mode"] == "custom"
 
 
 def test_upsert_router_custom_accepts_explicit_tiers_for_synthesized_presets():

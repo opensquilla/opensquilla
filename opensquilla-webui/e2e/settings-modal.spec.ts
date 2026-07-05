@@ -1,9 +1,10 @@
 import { test, expect } from '@playwright/test'
 
 const CONTROL_URL = '/control/'
-// Backend-config sections carry a readiness/status dot; Connection is the new
-// first entry (live socket state). Appearance + Advanced are the client-only pair.
-const SECTIONS = ['Connection', 'Provider', 'Router', 'Channels', 'Capabilities']
+// Backend-config sections carry a readiness/status dot; Connection is the first
+// entry (live socket state). Appearance, Keyboard, and Advanced are client-only.
+const SECTIONS = ['Connection', 'Provider', 'Router', 'Ensemble', 'Capabilities', 'Channels', 'Behavior', 'Privacy']
+const CLIENT_SECTIONS = ['Appearance', 'Keyboard', 'Advanced']
 
 const settingsRow = (page: import('@playwright/test').Page) =>
   page.locator('.sidebar-foot button')
@@ -29,14 +30,15 @@ test.describe('Settings modal', () => {
     await expect(page.getByRole('button', { name: 'Close' })).toBeFocused()
 
     // Rail has the backend-config sections (each with a readiness/status dot)
-    // plus the client-only Appearance + Advanced sections.
+    // plus the client-only sections.
     const tabs = dialog(page).getByRole('tab')
-    await expect(tabs).toHaveCount(SECTIONS.length + 2)
+    await expect(tabs).toHaveCount(SECTIONS.length + CLIENT_SECTIONS.length)
     for (const name of SECTIONS) {
       await expect(railTab(page, name)).toBeVisible()
     }
-    await expect(dialog(page).getByRole('tab', { name: 'Appearance' })).toBeVisible()
-    await expect(dialog(page).getByRole('tab', { name: 'Advanced' })).toBeVisible()
+    for (const name of CLIENT_SECTIONS) {
+      await expect(dialog(page).getByRole('tab', { name, exact: true })).toBeVisible()
+    }
 
     // Readiness banner: quiet ready line or actionable count.
     const banner = dialog(page).locator('.settings-banner')
@@ -95,6 +97,109 @@ test.describe('Settings modal', () => {
     await expect(page).not.toHaveURL(/\/settings/)
   })
 
+  test('keeps the SettingsDialog mounted when routing from default settings to a section', async ({ page }) => {
+    await openFromSidebar(page)
+    await expect(page).toHaveURL(/\/settings$/)
+    await expect(dialog(page).locator('.settings-banner')).toBeVisible()
+    await expect(dialog(page).locator('.settings-loading')).toHaveCount(0)
+
+    await page.evaluate(() => {
+      const modal = document.querySelector('.settings-modal')
+      if (!modal) throw new Error('settings modal missing')
+      const state = {
+        modal,
+        removed: false,
+        loadingSeen: false,
+        observer: null as MutationObserver | null,
+      }
+      state.observer = new MutationObserver(() => {
+        state.removed = state.removed || !document.body.contains(state.modal)
+        state.loadingSeen = state.loadingSeen || !!document.querySelector('.settings-loading')
+      })
+      state.observer.observe(document.body, { childList: true, subtree: true })
+      ;(window as typeof window & { __settingsModalProbe?: typeof state }).__settingsModalProbe = state
+    })
+
+    await railTab(page, 'Capabilities').click()
+    await expect(page).toHaveURL(/\/settings\/capabilities$/)
+    await expect(railTab(page, 'Capabilities')).toHaveAttribute('aria-selected', 'true')
+    await expect(dialog(page).getByRole('heading', { name: 'Web search' })).toBeVisible()
+    // Wait past the route fade and Settings pop enter windows so delayed
+    // remounts, re-entry animations, or loading fallbacks are caught.
+    await page.waitForTimeout(350)
+
+    const probe = await page.evaluate(() => {
+      const state = (window as typeof window & {
+        __settingsModalProbe?: {
+          modal: Element
+          removed: boolean
+          loadingSeen: boolean
+          observer: MutationObserver | null
+        }
+      }).__settingsModalProbe
+      if (!state) throw new Error('settings modal probe missing')
+      state.observer?.disconnect()
+      return {
+        sameNode: state.modal === document.querySelector('.settings-modal'),
+        removed: state.removed,
+        loadingSeen: state.loadingSeen,
+      }
+    })
+    expect(probe.sameNode).toBe(true)
+    expect(probe.removed).toBe(false)
+    expect(probe.loadingSeen).toBe(false)
+  })
+
+  test('opens Settings without applying the app route fade to the overlay', async ({ page }) => {
+    await page.goto(CONTROL_URL)
+    await page.waitForSelector('.conn-pill', { timeout: 10000 })
+    await page.evaluate(() => {
+      const state = {
+        overlaySeen: false,
+        routeFadeSeen: false,
+        observer: null as MutationObserver | null,
+      }
+      const inspect = () => {
+        const overlay = document.querySelector('.settings-overlay')
+        if (!overlay) return
+        state.overlaySeen = true
+        state.routeFadeSeen = state.routeFadeSeen || String(overlay.className).includes('route-fade-')
+      }
+      state.observer = new MutationObserver(inspect)
+      state.observer.observe(document.body, {
+        attributeFilter: ['class'],
+        attributes: true,
+        childList: true,
+        subtree: true,
+      })
+      inspect()
+      ;(window as typeof window & { __settingsOpenProbe?: typeof state }).__settingsOpenProbe = state
+    })
+
+    await settingsRow(page).click()
+    await expect(dialog(page)).toBeVisible()
+    await expect(dialog(page).locator('.settings-banner')).toBeVisible()
+    await page.waitForTimeout(200)
+
+    const probe = await page.evaluate(() => {
+      const state = (window as typeof window & {
+        __settingsOpenProbe?: {
+          overlaySeen: boolean
+          routeFadeSeen: boolean
+          observer: MutationObserver | null
+        }
+      }).__settingsOpenProbe
+      if (!state) throw new Error('settings open probe missing')
+      state.observer?.disconnect()
+      return {
+        overlaySeen: state.overlaySeen,
+        routeFadeSeen: state.routeFadeSeen,
+      }
+    })
+    expect(probe.overlaySeen).toBe(true)
+    expect(probe.routeFadeSeen).toBe(false)
+  })
+
   test('Router section saves the router panel visualization mode', async ({ page }) => {
     test.setTimeout(90000)
     await openFromSidebar(page)
@@ -116,7 +221,7 @@ test.describe('Settings modal', () => {
 
     await page.reload()
     await page.waitForSelector('.conn-pill', { timeout: 10000 })
-    await settingsRow(page).click()
+    await expect(dialog(page)).toBeVisible()
     await railTab(page, 'Router').click()
     await expect(visualMode()).toHaveValue(next)
 
@@ -137,6 +242,20 @@ test.describe('Settings modal', () => {
 
     // Escape inside the overlay must not collapse the docked sidebar.
     await expect(page.locator('.sidebar.docked')).toBeVisible()
+  })
+
+  test('closing Settings restores the previous route view without blanking the outlet', async ({ page }) => {
+    await page.goto(CONTROL_URL + 'chat/new')
+    await page.waitForSelector('.conn-pill', { timeout: 10000 })
+    await expect(page.getByLabel('Message to send')).toBeVisible()
+
+    await settingsRow(page).click()
+    await expect(dialog(page)).toBeVisible()
+    await page.getByRole('button', { name: 'Close' }).click()
+
+    await expect(dialog(page)).toBeHidden()
+    await expect(page).toHaveURL(/\/chat\/new$/)
+    await expect(page.getByLabel('Message to send')).toBeVisible()
   })
 
   test('cold deep link to /settings/connection closes home and moves focus to the sidebar', async ({ page }) => {
@@ -232,7 +351,6 @@ test.describe('Settings modal', () => {
     // Reload: the persisted value must survive a fresh modal.
     await page.reload()
     await page.waitForSelector('.conn-pill', { timeout: 10000 })
-    await settingsRow(page).click()
     await expect(dialog(page)).toBeVisible()
     await railTab(page, 'Capabilities').click()
     await expect(capture()).toBeVisible()
@@ -244,7 +362,7 @@ test.describe('Settings modal', () => {
     await expect(dialog(page).locator('.settings-dirtybar')).toBeHidden({ timeout: 10000 })
     await page.reload()
     await page.waitForSelector('.conn-pill', { timeout: 10000 })
-    await settingsRow(page).click()
+    await expect(dialog(page)).toBeVisible()
     await railTab(page, 'Capabilities').click()
     await expect(capture()).toBeVisible()
     expect(await capture().isChecked()).toBe(initial)
@@ -303,6 +421,7 @@ test.describe('Settings modal', () => {
   test('every boolean control in Capabilities uses the switch primitive (no raw checkboxes)', async ({ page }) => {
     await openFromSidebar(page)
     await railTab(page, 'Capabilities').click()
+    await expect(dialog(page).getByRole('heading', { name: 'Web search' })).toBeVisible()
 
     // Open the advanced search disclosure so its toggles render.
     const advanced = dialog(page).getByText('Advanced search options')

@@ -7,33 +7,28 @@ from opensquilla.provider.ensemble import build_ensemble_provider_from_config
 from opensquilla.provider.selector import ProviderConfig
 
 
-def test_llm_ensemble_defaults_enable_static_openrouter_b5() -> None:
+def test_llm_ensemble_defaults_to_disabled_for_model_router_first_install() -> None:
     cfg = GatewayConfig()
 
     ensemble = cfg.llm_ensemble
-    assert ensemble.enabled is True
+    assert cfg.squilla_router.enabled is True
+    assert ensemble.enabled is False
     assert ensemble.mode == "b5_fusion"
     assert ensemble.selection_mode == "static_openrouter_b5"
     assert ensemble.proposer_tools is False
     assert ensemble.min_successful_proposers == 1
-    assert ensemble.model_options == [
-        "deepseek/deepseek-v4-pro",
-        "z-ai/glm-5.2",
-        "qwen/qwen3.7-plus",
-        "deepseek/deepseek-v4-flash",
-        "qwen/qwen3.7-max",
-        "moonshotai/kimi-k2.6",
-        "moonshotai/kimi-k2.7-code",
-        "minimax/minimax-m3",
-    ]
+    assert ensemble.model_options == []
+    assert ensemble.candidates == []
     assert ensemble.candidate_max_chars == 24_000
     assert ensemble.proposer_timeout_seconds == 3600.0
     assert ensemble.aggregator_timeout_seconds == 3600.0
     assert ensemble.shuffle_candidates is True
     assert ensemble.record_candidates is False
 
+    enabled_cfg = cfg.model_copy(deep=True)
+    enabled_cfg.llm_ensemble.enabled = True
     provider = build_ensemble_provider_from_config(
-        config=cfg,
+        config=enabled_cfg,
         inherited_provider_config=ProviderConfig(
             provider="openrouter",
             model="routed/model",
@@ -58,9 +53,96 @@ def test_llm_ensemble_defaults_enable_static_openrouter_b5() -> None:
     assert provider.quorum_grace_seconds == 30.0
 
 
-def test_llm_ensemble_validates_model_options_not_empty() -> None:
-    with pytest.raises(ValueError, match="model_options"):
-        GatewayConfig(llm_ensemble={"model_options": []})
+def test_static_openrouter_b5_does_not_need_model_options() -> None:
+    cfg = GatewayConfig(
+        llm_ensemble={
+            "enabled": True,
+            "selection_mode": "static_openrouter_b5",
+            "model_options": [],
+        }
+    )
+
+    provider = build_ensemble_provider_from_config(
+        config=cfg,
+        inherited_provider_config=ProviderConfig(
+            provider="openrouter",
+            model="routed/model",
+            api_key="fake",
+            base_url="https://openrouter.example/api/v1",
+        ),
+        fallback_provider=None,
+    )
+
+    assert provider.profile_name == "static_openrouter_b5"
+    assert [member.provider_config.model for member in provider.proposers] == [
+        "deepseek/deepseek-v4-pro",
+        "z-ai/glm-5.2",
+        "moonshotai/kimi-k2.7-code",
+        "qwen/qwen3.7-max",
+    ]
+    assert provider.aggregator.provider_config.model == "z-ai/glm-5.2"
+
+
+def test_router_dynamic_ensemble_allows_empty_custom_model_options() -> None:
+    cfg = GatewayConfig(
+        llm_ensemble={
+            "selection_mode": "router_dynamic",
+            "model_options": [],
+        }
+    )
+
+    assert cfg.llm_ensemble.model_options == []
+
+
+def test_router_dynamic_ignores_legacy_default_openrouter_model_options() -> None:
+    cfg = GatewayConfig(
+        llm={
+            "provider": "deepseek",
+            "model": "deepseek-v4-flash",
+            "api_key": "fake",
+            "base_url": "https://api.deepseek.com",
+        },
+        llm_ensemble={
+            "enabled": True,
+            "selection_mode": "router_dynamic",
+            "model_options": [
+                "deepseek/deepseek-v4-pro",
+                "z-ai/glm-5.2",
+                "qwen/qwen3.7-plus",
+                "deepseek/deepseek-v4-flash",
+                "qwen/qwen3.7-max",
+                "moonshotai/kimi-k2.6",
+                "moonshotai/kimi-k2.7-code",
+                "minimax/minimax-m3",
+            ],
+        },
+        squilla_router={
+            "enabled": True,
+            "tiers": {
+                "c0": {"provider": "deepseek", "model": "deepseek-v4-flash"},
+                "c1": {"provider": "deepseek", "model": "deepseek-v4-flash"},
+                "c2": {"provider": "deepseek", "model": "deepseek-v4-pro"},
+                "c3": {"provider": "deepseek", "model": "deepseek-v4-pro"},
+            },
+        },
+    )
+    inherited = ProviderConfig(
+        provider="deepseek",
+        model="deepseek-v4-flash",
+        api_key="fake",
+        base_url="https://api.deepseek.com",
+    )
+
+    provider = build_ensemble_provider_from_config(
+        config=cfg,
+        inherited_provider_config=inherited,
+        fallback_provider=None,
+        turn_metadata={"routed_tier": "c1"},
+    )
+
+    pool = provider.selection_plan["candidate_pool"]
+    assert all(candidate["source"] != "legacy_model_options" for candidate in pool)
+    assert all(candidate["provider"] != "openrouter" for candidate in pool)
 
 
 def test_llm_ensemble_validates_selection_mode() -> None:
@@ -76,6 +158,79 @@ def test_llm_ensemble_model_options_are_operator_configurable() -> None:
     )
 
     assert cfg.llm_ensemble.model_options == ["custom/model", "other/model"]
+
+
+def test_router_dynamic_keeps_non_default_legacy_model_options_with_source() -> None:
+    cfg = GatewayConfig(
+        llm_ensemble={
+            "enabled": True,
+            "selection_mode": "router_dynamic",
+            "model_options": ["vendor/custom-model"],
+        }
+    )
+    inherited = ProviderConfig(
+        provider="deepseek",
+        model="deepseek-v4-flash",
+        api_key="fake",
+        base_url="https://api.deepseek.com",
+    )
+
+    provider = build_ensemble_provider_from_config(
+        config=cfg,
+        inherited_provider_config=inherited,
+        fallback_provider=None,
+        turn_metadata={"routed_tier": "c1"},
+    )
+
+    pool = provider.selection_plan["candidate_pool"]
+    legacy = next(candidate for candidate in pool if candidate["model"] == "vendor/custom-model")
+    assert legacy["provider"] == "openrouter"
+    assert legacy["source"] == "legacy_model_options"
+
+
+def test_router_dynamic_uses_structured_candidates_with_source() -> None:
+    cfg = GatewayConfig(
+        llm_ensemble={
+            "enabled": True,
+            "selection_mode": "router_dynamic",
+            "candidates": [
+                {
+                    "provider": "openrouter",
+                    "model": "qwen/qwen3.7-max",
+                    "source": "custom",
+                    "enabled": True,
+                },
+                {
+                    "provider": "openrouter",
+                    "model": "disabled/model",
+                    "source": "custom",
+                    "enabled": False,
+                },
+            ],
+        }
+    )
+    inherited = ProviderConfig(
+        provider="deepseek",
+        model="deepseek-v4-flash",
+        api_key="fake",
+        base_url="https://api.deepseek.com",
+    )
+
+    provider = build_ensemble_provider_from_config(
+        config=cfg,
+        inherited_provider_config=inherited,
+        fallback_provider=None,
+        turn_metadata={"routed_tier": "c2"},
+    )
+
+    pool = provider.selection_plan["candidate_pool"]
+    assert any(
+        candidate["provider"] == "openrouter"
+        and candidate["model"] == "qwen/qwen3.7-max"
+        and candidate["source"] == "custom"
+        for candidate in pool
+    )
+    assert all(candidate["model"] != "disabled/model" for candidate in pool)
 
 
 def test_build_ensemble_provider_inherits_current_openrouter_credentials() -> None:

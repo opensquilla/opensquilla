@@ -3,6 +3,10 @@ import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest'
 import { setActivePinia, createPinia } from 'pinia'
 import en from '@/locales/en.json'
 import zhHans from '@/locales/zh-Hans.json'
+import de from '@/locales/de.json'
+import es from '@/locales/es.json'
+import fr from '@/locales/fr.json'
+import ja from '@/locales/ja.json'
 import i18n, {
   resolveInitialLocale,
   normalizeLocale,
@@ -145,10 +149,14 @@ describe('missing-key fallback', () => {
 })
 
 describe('catalog parity', () => {
-  it('en and zh-Hans share the exact flattened key set', () => {
+  it('all bundled locales share the exact flattened key set', () => {
     const enKeys = Object.keys(flatten(en as Record<string, unknown>)).sort()
-    const zhKeys = Object.keys(flatten(zhHans as Record<string, unknown>)).sort()
-    expect(zhKeys).toEqual(enKeys)
+    const locales = { zhHans, de, es, fr, ja }
+
+    for (const [locale, messages] of Object.entries(locales)) {
+      const keys = Object.keys(flatten(messages as Record<string, unknown>)).sort()
+      expect(keys, locale).toEqual(enKeys)
+    }
   })
 
   it('no zh-Hans value is left as the English source', () => {

@@ -1,46 +1,49 @@
 import { describe, it, expect } from 'vitest'
 import { sectionFromRouteParam, isKnownSectionParam } from './useSettingsSection'
 import { SETTINGS_SECTIONS } from './settingsSections'
+import en from '@/locales/en.json'
 
-describe('sectionFromRouteParam — /settings/:section mapping', () => {
-  it('passes through every known section id unchanged', () => {
+describe('settings section IA', () => {
+  it('has one Model Strategy section instead of split Router and Ensemble sections', () => {
+    const ids = SETTINGS_SECTIONS.map(s => s.id)
+    expect(ids).toContain('modelStrategy')
+    expect(ids).not.toContain('router')
+    expect(ids).not.toContain('ensemble')
+    expect(ids.indexOf('provider')).toBeLessThan(ids.indexOf('modelStrategy'))
+    expect(ids.indexOf('modelStrategy')).toBeLessThan(ids.indexOf('capabilities'))
+  })
+
+  it('passes through every canonical section id unchanged', () => {
     for (const s of SETTINGS_SECTIONS) {
       expect(sectionFromRouteParam(s.id)).toBe(s.id)
+      expect(isKnownSectionParam(s.id)).toBe(true)
     }
   })
 
-  it('maps the new Connection section', () => {
-    expect(sectionFromRouteParam('connection')).toBe('connection')
+  it('has an English rail label for every canonical section id', () => {
+    for (const s of SETTINGS_SECTIONS) {
+      expect(en.settings.rail).toHaveProperty(s.id)
+    }
   })
 
-  it('maps the Behavior section for session preferences', () => {
-    expect(sectionFromRouteParam('behavior')).toBe('behavior')
+  it('aliases stale Router and Ensemble deep links to Model Strategy', () => {
+    expect(sectionFromRouteParam('router')).toBe('modelStrategy')
+    expect(sectionFromRouteParam('ensemble')).toBe('modelStrategy')
+    expect(isKnownSectionParam('router')).toBe(true)
+    expect(isKnownSectionParam('ensemble')).toBe(true)
   })
 
-  it('maps the Privacy section for gateway-backed privacy settings', () => {
-    expect(sectionFromRouteParam('privacy')).toBe('privacy')
+  it('aliases Chat Model deep links to the provider-backed section', () => {
+    expect(sectionFromRouteParam('chatModel')).toBe('provider')
+    expect(sectionFromRouteParam('provider')).toBe('provider')
+    expect(isKnownSectionParam('chatModel')).toBe(true)
   })
 
-  it('falls back to the default first section for unknown, missing, or sentinel params', () => {
-    // `auto` is a routing sentinel (/setup → /settings/auto), not a real
-    // section, so the param mapper treats it as unknown and defaults.
+  it('falls back to Provider for unknown, missing, and sentinel params', () => {
     expect(sectionFromRouteParam('auto')).toBe('provider')
     expect(sectionFromRouteParam('does-not-exist')).toBe('provider')
     expect(sectionFromRouteParam(undefined)).toBe('provider')
     expect(sectionFromRouteParam('')).toBe('provider')
-    // vue-router can hand back an array for a repeated param.
     expect(sectionFromRouteParam(['provider'])).toBe('provider')
-  })
-})
-
-describe('isKnownSectionParam', () => {
-  it('recognises real sections and rejects sentinels/unknowns', () => {
-    expect(isKnownSectionParam('connection')).toBe(true)
-    expect(isKnownSectionParam('behavior')).toBe(true)
-    expect(isKnownSectionParam('privacy')).toBe(true)
-    expect(isKnownSectionParam('capabilities')).toBe(true)
-    expect(isKnownSectionParam('auto')).toBe(false)
-    expect(isKnownSectionParam('nope')).toBe(false)
-    expect(isKnownSectionParam(undefined)).toBe(false)
   })
 })

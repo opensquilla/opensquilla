@@ -5,7 +5,13 @@ import { useSetupCapabilitiesForm } from '@/composables/setup/useSetupCapabiliti
 import { useSetupBehaviorForm } from '@/composables/setup/useSetupBehaviorForm'
 import { hasEffectiveProvider, useSetupProviderForm } from '@/composables/setup/useSetupProviderForm'
 import { useSetupRouterForm, type SetupTierRow } from '@/composables/setup/useSetupRouterForm'
-import { useSetupEnsembleForm } from '@/composables/setup/useSetupEnsembleForm'
+import {
+  useSetupEnsembleForm,
+  type EnsembleCandidateConfig,
+  type EnsembleCandidateView,
+  type EnsembleCredentialStatus,
+} from '@/composables/setup/useSetupEnsembleForm'
+import { useSetupModelStrategyForm } from '@/composables/setup/useSetupModelStrategyForm'
 import { useSettingsPromotedForm, DEFAULT_LLM_TIMEOUT_SECONDS } from '@/composables/setup/useSettingsPromotedForm'
 import { useSettingsSection } from '@/composables/setup/useSettingsSection'
 import { SETTINGS_SECTIONS, type SettingsSectionId } from '@/composables/setup/settingsSections'
@@ -14,7 +20,7 @@ import { useToasts } from '@/composables/useToasts'
 import { useConfirm } from '@/composables/useConfirm'
 import { saveFailedMessage } from '@/lib/rpcErrors'
 import { copyTextWithFallback } from '@/utils/browser'
-import { TEXT_TIERS, IMAGE_TIER, normalizeRouterTier, routerTierLabel } from '@/utils/chat/routerTiers'
+import { TEXT_TIERS, IMAGE_TIER, normalizeRouterTier, routerTierLabelKey } from '@/utils/chat/routerTiers'
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -135,6 +141,15 @@ interface OnboardingStatus {
   memoryEmbeddingSource?: string
   memoryEmbeddingEnvKey?: string
   memoryEmbeddingProvider?: string
+  llmCredentialStatus?: {
+    provider?: string
+    available?: boolean
+    source?: string
+    envKey?: string
+    masked?: string
+    revealAllowed?: boolean
+  }
+  ensembleCredentialStatus?: EnsembleCredentialStatus[]
 }
 
 interface OnboardingCatalog {
@@ -170,6 +185,7 @@ interface ConfigData {
     enabled?: boolean
     selection_mode?: string
     model_options?: string[]
+    candidates?: EnsembleCandidateConfig[]
     min_successful_proposers?: number
     all_failed_policy?: string
   }
@@ -315,6 +331,7 @@ function startChannelPolling() {
 const currentProvider = computed(() => (config.value.llm || {}).provider || '')
 const currentProviderConfig = computed(() => config.value.llm || {})
 const hasSavedProvider = computed(() => hasEffectiveProvider(currentProviderConfig.value, status.value))
+const modelStrategyForm = useSetupModelStrategyForm(routerForm, ensembleForm, currentProvider)
 
 const runtimeProviders = computed(() => (catalog.value.providers || []).filter(p => p.runtimeSupported))
 const catalogChannels = computed(() => catalog.value.channels || [])
@@ -325,8 +342,8 @@ const routerProfiles = computed(() => catalog.value.routerProfiles?.profiles || 
 const currentRouterProfile = computed(() => routerProfiles.value.find(p => p.providerId === currentProvider.value))
 const providerSpec = computed(() => runtimeProviders.value.find(p => p.providerId === providerForm.selectedProvider.value) || null)
 const providerFields = computed(() => providerSpec.value?.fields || [])
-const providerCoreFields = computed(() => providerFields.value.filter(f => !isProviderAdvancedField(f)))
-const providerAdvancedFields = computed(() => providerFields.value.filter(f => isProviderAdvancedField(f)))
+const providerCoreFields = computed(() => providerFields.value.filter(f => !isProviderCredentialField(f) && !isProviderAdvancedField(f)))
+const providerAdvancedFields = computed(() => providerFields.value.filter(f => !isProviderCredentialField(f) && isProviderAdvancedField(f)))
 
 const providerSummary = computed(() => {
   if (!hasSavedProvider.value) return t('setup.summary.notConfigured')
@@ -384,7 +401,7 @@ const routerSummary = computed(() => {
   if (!hasSavedProvider.value) return t('setup.router.chooseProviderFirst')
   if (ensembleProfileActive.value) return t('setup.router.summaryEnsemble')
   if (routerForm.mode.value === 'disabled') return t('setup.router.summaryDisabled')
-  if (routerForm.mode.value === 'openrouter-mix') return t('setup.router.modeOpenrouterMix')
+  if (routerForm.mode.value === 'openrouter-mix') return t('setup.preset.modeCustom')
   return t('setup.router.modeRecommended')
 })
 const ensembleProfileActive = computed(() => config.value.llm_ensemble?.enabled === true)
@@ -462,6 +479,41 @@ const audioBadgeLabel = computed(() => {
 })
 const audioKeyPlaceholder = computed(() => promotedForm.audioKeyConfigured.value ? t('setup.common.leaveBlankKeep') : t('setup.audio.pasteKey'))
 
+const providerCredentialPanel = computed(() => {
+  if (!providerSpec.value) return null
+  const selectedProviderId = String(providerForm.selectedProvider.value || '').trim().toLowerCase()
+  const savedCredential = status.value.llmCredentialStatus || {}
+  const savedProviderId = String(savedCredential.provider || '').trim().toLowerCase()
+  const savedMatchesSelected = selectedProviderId !== '' && savedProviderId === selectedProviderId
+  const requiresApiKey = providerSpec.value.requiresApiKey !== false
+
+  return {
+    providerLabel: providerSpec.value.label || providerForm.selectedProvider.value,
+    providerSelected: Boolean(providerForm.selectedProvider.value),
+    available: savedMatchesSelected ? savedCredential.available === true : !requiresApiKey,
+    source: savedMatchesSelected
+      ? String(savedCredential.source || 'none')
+      : (requiresApiKey ? 'none' : 'not_required'),
+    envKey: savedMatchesSelected
+      ? String(savedCredential.envKey || providerSpec.value.envKey || '')
+      : String(providerSpec.value.envKey || ''),
+    masked: savedMatchesSelected ? String(savedCredential.masked || '') : '',
+    revealAllowed: savedMatchesSelected ? savedCredential.revealAllowed === true : false,
+    revealed: providerForm.revealedCredential.value,
+    revealError: providerForm.revealError.value,
+    replacing: providerForm.replacingCredential.value,
+    apiKeyValue: String(providerForm.providerFieldValues.value.api_key || ''),
+    apiKeyEnvValue: providerForm.fieldValue(
+      { name: 'api_key_env', label: t('setup.common.apiKeyEnv'), default: providerSpec.value.envKey || '' },
+      config.value.llm || {},
+    ),
+    connection: providerForm.connection.value,
+    onReveal: revealProviderCredential,
+    onReplace: providerForm.startCredentialReplace,
+    onCancelReplace: providerForm.cancelCredentialReplace,
+  }
+})
+
 const providerPanel = providerForm.createPanel({
   currentConfig: currentProviderConfig,
   providerSummary,
@@ -472,6 +524,7 @@ const providerPanel = providerForm.createPanel({
   providerNeeds,
   providerCoreFields,
   providerAdvancedFields,
+  providerCredentialPanel,
   providerAdvancedOpen,
   providerEnvMissing,
   providerEnvKey,
@@ -512,6 +565,11 @@ const routerPanel = routerForm.createPanel({
   discoveredModelsProvider: computed(() => providerForm.selectedProvider.value),
   discoveredModelSource: computed(() => providerForm.connection.value.modelSource),
 })
+
+const ensembleTierCandidates = computed(() => routerPanel.value.tierRows.map(row => ({
+  provider: row.provider,
+  model: row.model,
+})))
 
 // ---------------------------------------------------------------------------
 // Routing preset card (Provider panel)
@@ -567,6 +625,16 @@ const ensembleStatusText = computed(() => (
 const ensemblePanel = ensembleForm.createPanel({
   statusText: ensembleStatusText,
   activeProvider: currentProvider,
+  tierCandidates: ensembleTierCandidates,
+  credentialStatus: computed(() => status.value.ensembleCredentialStatus || []),
+})
+
+const modelStrategyPanel = modelStrategyForm.createPanel({
+  hasSavedProvider,
+  providerLabel: providerSummary,
+  routerPanel,
+  ensemblePanel,
+  routerTemplateState: routerForm.tierTemplateState,
 })
 
 const channelsPanel = channelsForm.createPanel({
@@ -722,10 +790,11 @@ function firstActionSection(): SettingsSectionId {
   const details = status.value.sectionDetails || {}
   // Kept in sync with the SETTINGS_SECTIONS rail order so `/settings/auto` lands
   // on the first not-ready section in the same top-to-bottom order the rail reads
-  // (Provider → Router → Capabilities → Channels).
+  // (Provider -> Model Strategy -> Capabilities -> Channels).
   const sectionOrder: Array<[string, SettingsSectionId]> = [
     ['llm', 'provider'],
-    ['router', 'router'],
+    ['router', 'modelStrategy'],
+    ['ensemble', 'modelStrategy'],
     ['search', 'capabilities'],
     ['image_generation', 'capabilities'],
     ['memory_embedding', 'capabilities'],
@@ -758,10 +827,10 @@ function sectionStatus(sectionId: string): { label: string; tone: string } {
   if (sectionId === 'behavior' || sectionId === 'privacy' || sectionId === 'ensemble') {
     return { label: t('setup.status.appliesOnSave'), tone: 'is-muted' }
   }
-  if (sectionId === 'router' && !hasSavedProvider.value) {
+  if (sectionId === 'modelStrategy' && !hasSavedProvider.value) {
     return { label: t('setup.status.providerFirst'), tone: 'is-muted' }
   }
-  if (sectionId === 'router') return detailStepStatus((status.value.sectionDetails || {}).router)
+  if (sectionId === 'modelStrategy') return aggregateStepStatus(['router', 'ensemble'])
   if (sectionId === 'channels') return detailStepStatus((status.value.sectionDetails || {}).channels)
   if (sectionId === 'capabilities') {
     return aggregateStepStatus(['search', 'image_generation', 'memory_embedding', 'audio'])
@@ -804,7 +873,7 @@ function setupActionReason(name: string, detail: SectionDetail): string {
 
 function sectionForDetailName(name: string): SettingsSectionId | null {
   if (name === 'llm' || name === 'provider') return 'provider'
-  if (name === 'router') return 'router'
+  if (name === 'router' || name === 'ensemble') return 'modelStrategy'
   if (name === 'channels') return 'channels'
   if (name === 'search' || name === 'image_generation' || name === 'memory_embedding' || name === 'audio') return 'capabilities'
   return null
@@ -817,8 +886,7 @@ function sectionForDetailName(name: string): SettingsSectionId | null {
 const providerDirty = computed(() => providerForm.isDirty.value || promotedForm.timeoutDirty.value)
 const behaviorDirty = computed(() => behaviorForm.isDirty.value)
 const privacySectionDirty = computed(() => privacyDirty.value)
-const routerDirty = computed(() => routerForm.isDirty.value)
-const ensembleDirty = computed(() => ensembleForm.isDirty.value)
+const modelStrategyDirty = computed(() => modelStrategyForm.isDirty.value)
 const channelsDirty = computed(() => channelsForm.isDirty.value)
 const capabilitiesDirty = computed(() => (
   capabilitiesForm.searchDirty.value
@@ -832,8 +900,7 @@ function sectionDirty(sectionId: string): boolean {
   if (sectionId === 'provider') return providerDirty.value
   if (sectionId === 'behavior') return behaviorDirty.value
   if (sectionId === 'privacy') return privacySectionDirty.value
-  if (sectionId === 'router') return routerDirty.value
-  if (sectionId === 'ensemble') return ensembleDirty.value
+  if (sectionId === 'modelStrategy') return modelStrategyDirty.value
   if (sectionId === 'channels') return channelsDirty.value
   if (sectionId === 'capabilities') return capabilitiesDirty.value
   return false
@@ -846,8 +913,7 @@ async function saveDirtySections() {
   const otherSectionsDirty = (
     providerDirty.value
     || behaviorDirty.value
-    || routerDirty.value
-    || ensembleDirty.value
+    || modelStrategyDirty.value
     || channelsDirty.value
     || capabilitiesForm.searchDirty.value
     || capabilitiesForm.memoryDirty.value
@@ -861,8 +927,7 @@ async function saveDirtySections() {
   }
   if (providerDirty.value) await saveProvider()
   if (behaviorDirty.value) await saveBehavior()
-  if (routerDirty.value) await saveRouter()
-  if (ensembleDirty.value) await saveEnsemble()
+  if (modelStrategyDirty.value) await saveModelStrategy()
   if (channelsDirty.value) await saveChannel()
   if (capabilitiesForm.searchDirty.value) await saveSearch()
   if (capabilitiesForm.memoryDirty.value || promotedForm.captureDirty.value) await saveMemory()
@@ -886,6 +951,10 @@ function isProviderAdvancedField(field: FieldSpec): boolean {
   return false
 }
 
+function isProviderCredentialField(field: FieldSpec): boolean {
+  return field.name === 'api_key' || field.name === 'api_key_env'
+}
+
 function selectProvider(value: string) {
   providerForm.selectProvider(value)
 }
@@ -904,6 +973,21 @@ function onProviderChange() {
 
 function updateProviderField(name: string, value: unknown) {
   providerForm.updateField(name, value)
+}
+
+async function revealProviderCredential() {
+  const providerId = String(providerForm.selectedProvider.value || '').trim()
+  if (!providerId) return
+  try {
+    const res = await rpc.call<{ ok?: boolean; apiKey?: string }>('onboarding.provider.credential.reveal', { providerId })
+    if (res?.ok && typeof res.apiKey === 'string' && res.apiKey.length > 0) {
+      providerForm.setRevealedCredential(res.apiKey)
+      return
+    }
+    providerForm.setRevealError(t('setup.provider.credentialRevealUnavailable'))
+  } catch (err) {
+    providerForm.setRevealError(saveFailedMessage(err))
+  }
 }
 
 // Optional accelerator: live-probe the CURRENT (possibly unsaved) provider
@@ -977,6 +1061,18 @@ function addEnsembleModelOption(value: string) {
 
 function removeEnsembleModelOption(value: string) {
   ensembleForm.removeModelOption(value)
+}
+
+function addEnsembleCandidate(provider: string, model: string) {
+  ensembleForm.addCandidate(provider, model)
+}
+
+function removeEnsembleCandidate(candidate: EnsembleCandidateView) {
+  ensembleForm.removeCandidate(candidate)
+}
+
+function resetEnsembleCandidates() {
+  ensembleForm.resetModelOptions()
 }
 
 function setEnsembleMinSuccessful(value: number) {
@@ -1236,6 +1332,39 @@ async function saveEnsemble() {
   }
 }
 
+async function saveModelStrategy() {
+  const routerRoutingPayload = routerForm.routingDirty.value ? routerForm.payload() : null
+  const routerVisualPatches = routerForm.visualModePatches()
+  const ensemblePayload = ensembleForm.payload()
+  const hasRouterWork = Boolean(routerRoutingPayload) || Object.keys(routerVisualPatches).length > 0
+  const hasEnsembleWork = Object.keys(ensemblePayload).length > 0
+  if (!hasRouterWork && !hasEnsembleWork) return
+
+  let savedAny = false
+  try {
+    if (!hasSavedProvider.value && routerRoutingPayload) {
+      pushToast(t('setup.toast.chooseProviderRouter'), { tone: 'danger' })
+    } else if (hasRouterWork) {
+      if (routerRoutingPayload) {
+        await rpc.call('onboarding.router.configure', routerRoutingPayload)
+      }
+      const restart = await safePatchConfig(routerVisualPatches)
+      pushToast(restart ? t('setup.toast.routerSavedRestart') : t('setup.toast.routerSaved'))
+      savedAny = true
+    }
+
+    if (hasEnsembleWork) {
+      await rpc.call('onboarding.ensemble.configure', ensemblePayload)
+      pushToast(t('setup.toast.ensembleSaved'))
+      savedAny = true
+    }
+
+    if (savedAny) await loadData()
+  } catch (err) {
+    pushToast(saveFailedMessage(err), { tone: 'danger' })
+  }
+}
+
 // Explicit-user-action preset application (the ONLY path that sends presetId):
 // saves the current provider form values plus the preset, then reloads so the
 // Router section and routerMode reflect the applied tiers. Confirm-free by
@@ -1395,7 +1524,7 @@ function _toastEnvReferenceSave(
 // ---------------------------------------------------------------------------
 
 function tierLabel(tier: string): string {
-  return routerTierLabel(tier)
+  return t(routerTierLabelKey(tier))
 }
 
 function shellArg(value: string): string {
@@ -1431,6 +1560,7 @@ async function copyConfigPath() {
     providerPanel,
     behaviorPanel,
     privacyPanel,
+    modelStrategyPanel,
     routerPanel,
     presetPanel,
     ensemblePanel,
@@ -1457,6 +1587,7 @@ async function copyConfigPath() {
     selectProvider,
     setAutoSessionTitles,
     setDisableNetworkObservability,
+    setModelStrategy: modelStrategyForm.setStrategy,
     setRouterMode,
     setRouterDefaultTier,
     setRouterVisualMode,
@@ -1464,12 +1595,16 @@ async function copyConfigPath() {
     setEnsembleSelectionMode,
     addEnsembleModelOption,
     removeEnsembleModelOption,
+    addEnsembleCandidate,
+    removeEnsembleCandidate,
+    resetEnsembleCandidates,
     setEnsembleMinSuccessful,
     setEnsembleAllFailedPolicy,
     selectChannelType,
     updateProviderField,
     updateLlmTimeout,
     probeProviderConnection,
+    revealProviderCredential,
     updateTierField,
     updateChannelField,
     updateCapabilityField,
@@ -1483,6 +1618,7 @@ async function copyConfigPath() {
     savePrivacy,
     saveRouter,
     saveEnsemble,
+    saveModelStrategy,
     applyProviderPreset,
     saveChannel,
     enableChannel,

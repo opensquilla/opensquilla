@@ -44,23 +44,24 @@ beforeEach(() => {
   document.body.innerHTML = ''
 })
 
-describe('SetupPresetCard — collapsed summary (beginner rule)', () => {
-  it('collapses to one summary line: label + Customize, no table, no apply button', async () => {
+describe('SetupPresetCard — routing template summary', () => {
+  it('shows a routing template summary with direct apply, while keeping tier details collapsed', async () => {
     const { app, el } = await mountCard()
 
-    expect(el.textContent).toContain('Routing: DeepSeek balanced tiers')
-    expect(toggle(el)?.textContent).toContain('Customize')
+    expect(el.textContent).toContain('Routing template: DeepSeek balanced tiers')
+    expect(el.textContent).toContain('Apply once to fill Model Routing; edit the active tiers there.')
+    expect(toggle(el)?.textContent).toContain('View template details')
     expect(toggle(el)?.getAttribute('aria-expanded')).toBe('false')
     expect(el.querySelector('[role="table"]')).toBeNull()
-    expect(el.querySelector('[data-testid="setup-preset-apply"]')).toBeNull()
+    expect(el.querySelector('[data-testid="setup-preset-apply"]')?.textContent).toContain('Apply to Model Routing')
 
     app.unmount()
   })
 
-  it('says "Default — auto-generated" in the summary for synthesized presets', async () => {
+  it('labels synthesized presets without default decoration', async () => {
     const { app, el } = await mountCard({ synthesized: true, presetLabel: 'Groq default' })
 
-    expect(el.textContent).toContain('Routing: Default — auto-generated')
+    expect(el.textContent).toContain('Routing template: Generated routing template')
     expect(el.textContent).not.toContain('Groq default')
 
     app.unmount()
@@ -79,7 +80,7 @@ describe('SetupPresetCard — expanded', () => {
     expect(el.querySelector('[role="table"]')).toBeTruthy()
     // Read-only preview: the model cell is text, not an input.
     expect(el.querySelector('[aria-label="c0 model"]')?.tagName).toBe('SPAN')
-    expect(el.querySelector('[data-testid="setup-preset-apply"]')?.textContent).toContain('Use this preset')
+    expect(el.querySelector('[data-testid="setup-preset-apply"]')?.textContent).toContain('Apply to Model Routing')
 
     app.unmount()
   })
@@ -98,12 +99,10 @@ describe('SetupPresetCard — expanded', () => {
     curated.app.unmount()
   })
 
-  it('emits apply when "Use this preset" is clicked', async () => {
+  it('emits apply when "Apply to Model Routing" is clicked', async () => {
     const onApply = vi.fn()
     const { app, el } = await mountCard({}, { onApply })
 
-    toggle(el)?.click()
-    await nextTick()
     el.querySelector<HTMLButtonElement>('[data-testid="setup-preset-apply"]')?.click()
 
     expect(onApply).toHaveBeenCalledTimes(1)
@@ -119,25 +118,29 @@ describe('SetupPresetCard — router configured beyond defaults', () => {
       { onGoToSection },
     )
 
-    expect(el.textContent).toContain('Routing: custom')
+    expect(el.textContent).toContain('Model Routing already uses custom tiers.')
+    expect(el.textContent).toContain('Active tiers are edited in Model Routing.')
     expect(toggle(el)).toBeNull()
     expect(el.querySelector('[data-testid="setup-preset-apply"]')).toBeNull()
 
     const link = el.querySelector<HTMLButtonElement>('[data-testid="setup-preset-router-link"]')
-    expect(link?.textContent).toContain('View in Router')
+    expect(link?.textContent).toContain('Open Model Routing')
     link?.click()
-    expect(onGoToSection).toHaveBeenCalledWith('router')
+    expect(onGoToSection).toHaveBeenCalledWith('modelStrategy')
 
     app.unmount()
   })
 
-  it('names the other modes honestly (openrouter-mix, disabled)', async () => {
+  it('labels legacy openrouter-mix as custom tiers', async () => {
     const mix = await mountCard({ routerCustomized: true, routerMode: 'openrouter-mix' })
-    expect(mix.el.textContent).toContain('Routing: OpenRouter aggregated tiers')
+    expect(mix.el.textContent).toContain('custom')
+    expect(mix.el.textContent).not.toContain('OpenRouter aggregated')
     mix.app.unmount()
+  })
 
+  it('labels disabled routing as off', async () => {
     const disabled = await mountCard({ routerCustomized: true, routerMode: 'disabled' })
-    expect(disabled.el.textContent).toContain('Routing: single model')
+    expect(disabled.el.textContent).toContain('Model Routing already uses off.')
     disabled.app.unmount()
   })
 })

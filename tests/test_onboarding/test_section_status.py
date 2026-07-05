@@ -21,6 +21,7 @@ from opensquilla.onboarding.section_status import (
     router_section_status,
     search_section_status,
 )
+from opensquilla.onboarding.status import get_onboarding_status
 
 
 @pytest.fixture()
@@ -133,6 +134,131 @@ def test_ensemble_never_blocks_onboarding(cfg):
         assert detail["blocking"] is False
         assert detail["actionRequired"] is False
         assert detail["required"] is False
+
+
+def test_ensemble_status_reports_candidate_provider_credentials(cfg, monkeypatch):
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    cfg.llm = LlmProviderConfig(
+        provider="deepseek",
+        model="deepseek-v4-flash",
+        api_key="sk-deepseek",
+        base_url="https://api.deepseek.com",
+    )
+    cfg.llm_ensemble.enabled = True
+    cfg.llm_ensemble.selection_mode = "router_dynamic"
+    cfg.llm_ensemble.candidates = [
+        {
+            "provider": "openrouter",
+            "model": "qwen/qwen3.7-max",
+            "source": "custom",
+            "enabled": True,
+        }
+    ]
+
+    status = get_onboarding_status(cfg)
+
+    assert status.ensemble_credential_status == (
+        {
+            "provider": "deepseek",
+            "available": True,
+            "source": "explicit",
+            "envKey": "DEEPSEEK_API_KEY",
+        },
+        {
+            "provider": "openrouter",
+            "available": False,
+            "source": "missing_env",
+            "envKey": "OPENROUTER_API_KEY",
+        },
+    )
+
+
+def test_llm_credential_status_reports_explicit_key(cfg):
+    cfg.llm = LlmProviderConfig(
+        provider="deepseek",
+        model="deepseek-v4-flash",
+        api_key="sk-deepseek-secret-123456",
+        api_key_env="",
+        base_url="https://api.deepseek.com",
+    )
+
+    status = get_onboarding_status(cfg)
+
+    cred = status.llm_credential_status
+    assert cred["provider"] == "deepseek"
+    assert cred["available"] is True
+    assert cred["source"] == "explicit"
+    assert cred["envKey"] == "DEEPSEEK_API_KEY"
+    assert cred["masked"] != "sk-deepseek-secret-123456"
+    assert cred["masked"].endswith("3456")
+    assert cred["revealAllowed"] is False
+
+
+def test_llm_credential_status_reports_env_key(cfg, monkeypatch):
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-deepseek-env-654321")
+    cfg.llm = LlmProviderConfig(
+        provider="deepseek",
+        model="deepseek-v4-flash",
+        api_key="",
+        api_key_env="DEEPSEEK_API_KEY",
+        base_url="https://api.deepseek.com",
+    )
+
+    status = get_onboarding_status(cfg)
+
+    cred = status.llm_credential_status
+    assert cred["provider"] == "deepseek"
+    assert cred["available"] is True
+    assert cred["source"] == "env"
+    assert cred["envKey"] == "DEEPSEEK_API_KEY"
+    assert cred["masked"] != "sk-deepseek-env-654321"
+    assert cred["masked"].endswith("4321")
+    assert cred["revealAllowed"] is False
+
+
+def test_llm_credential_status_reports_missing_env(cfg, monkeypatch):
+    monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
+    cfg.llm = LlmProviderConfig(
+        provider="deepseek",
+        model="deepseek-v4-flash",
+        api_key="",
+        api_key_env="DEEPSEEK_API_KEY",
+        base_url="https://api.deepseek.com",
+    )
+
+    status = get_onboarding_status(cfg)
+
+    assert status.llm_credential_status == {
+        "provider": "deepseek",
+        "available": False,
+        "source": "missing_env",
+        "envKey": "DEEPSEEK_API_KEY",
+        "masked": "",
+        "revealAllowed": False,
+    }
+
+
+def test_llm_credential_status_treats_runtime_secret_cache_as_env(cfg, monkeypatch):
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-env-current")
+    cfg.llm = LlmProviderConfig(
+        provider="deepseek",
+        model="deepseek-v4-flash",
+        api_key="sk-runtime-cache",
+        api_key_env="DEEPSEEK_API_KEY",
+        base_url="https://api.deepseek.com",
+    )
+    cfg.mark_runtime_secret("llm.api_key")
+
+    status = get_onboarding_status(cfg)
+
+    cred = status.llm_credential_status
+    assert cred["provider"] == "deepseek"
+    assert cred["available"] is True
+    assert cred["source"] == "env"
+    assert cred["envKey"] == "DEEPSEEK_API_KEY"
+    assert cred["masked"] != "sk-runtime-cache"
+    assert cred["masked"].endswith("rent")
+    assert cred["revealAllowed"] is False
 
 
 # ── search ──────────────────────────────────────────────────────────────────

@@ -24,6 +24,8 @@ export interface SetupTierRow extends SetupTierValue {
 }
 
 export type RouterConfigDisabledReason = 'single-model' | 'ensemble' | null
+export type VisibleRouterModeChoice = 'router' | 'single'
+export type TierTemplateState = 'recommended' | 'custom' | 'disabled'
 
 const ROUTER_VISUAL_MODE_VALUES: readonly RouterVisualMode[] = ['real_candidates', 'legacy_grid']
 
@@ -66,6 +68,8 @@ interface RouterConfig {
   default_tier?: string
   visual_mode?: string
   tier_profile?: string | null
+  cross_provider_tiers?: boolean
+  tier_provider_mismatch?: string
   tiers?: Record<string, TierConfig>
 }
 
@@ -88,15 +92,32 @@ export function useSetupRouterForm() {
   const routerDefaultTier = ref(DEFAULT_TEXT_TIER)
   const routerVisualMode = ref<RouterVisualMode>(DEFAULT_ROUTER_VISUAL_MODE)
   const tierValues = ref<Record<string, SetupTierValue>>({})
+  const activeProvider = ref('')
+  const crossProviderTiers = ref(false)
+  const tierProviderMismatch = ref<'route' | 'veto'>('route')
   const mode = computed(() => routerMode.value)
   const defaultTier = computed(() => routerDefaultTier.value)
   const routerModeChoice = computed(() =>
     routerMode.value === 'disabled'
       ? 'disabled'
-      : routerMode.value === 'openrouter-mix'
-        ? 'openrouter-mix'
-        : 'recommended',
+      : 'recommended',
   )
+  const visibleModeChoice = computed<VisibleRouterModeChoice>(() =>
+    routerMode.value === 'disabled' ? 'single' : 'router',
+  )
+  const tierProviderIds = computed(() => {
+    const ids = new Set<string>()
+    Object.values(tierValues.value).forEach((tier) => {
+      const provider = String(tier.provider || '').trim().toLowerCase()
+      if (provider) ids.add(provider)
+    })
+    return ids
+  })
+  const hasMixedTierProviders = computed(() => {
+    if (tierProviderIds.value.size > 1) return true
+    const only = Array.from(tierProviderIds.value)[0] || ''
+    return Boolean(only && activeProvider.value && only !== activeProvider.value.toLowerCase())
+  })
 
   function routerConfigDisabledReason(ensembleProfileActive: boolean): RouterConfigDisabledReason {
     if (ensembleProfileActive) return 'ensemble'
@@ -110,6 +131,13 @@ export function useSetupRouterForm() {
   const visualModeBaseline = ref(routerVisualMode.value)
   const routingDirty = computed(() => routerSerialized.value !== routerBaseline.value)
   const visualModeDirty = computed(() => routerVisualMode.value !== visualModeBaseline.value)
+  const tierTemplateState = computed<TierTemplateState>(() => {
+    if (routerMode.value === 'disabled') return 'disabled'
+    if (hasMixedTierProviders.value) return 'custom'
+    if (routerMode.value === 'openrouter-mix') return 'custom'
+    if (routerMode.value === 'recommended' && !routingDirty.value) return 'recommended'
+    return 'custom'
+  })
   const isDirty = computed(() => routingDirty.value || visualModeDirty.value)
 
   function initFromConfig(
@@ -117,6 +145,9 @@ export function useSetupRouterForm() {
     profileTiers: Record<string, TierConfig>,
     provider = '',
   ) {
+    activeProvider.value = provider.toLowerCase()
+    crossProviderTiers.value = router.cross_provider_tiers === true
+    tierProviderMismatch.value = router.tier_provider_mismatch === 'veto' ? 'veto' : 'route'
     // openrouter-mix is the only enabled router mode whose tier_profile is null,
     // and it is only valid for the openrouter LLM provider; recommended carries
     // tier_profile = the provider. Anything else enabled is recommended.
@@ -181,7 +212,22 @@ export function useSetupRouterForm() {
   }
 
   function payload(): Record<string, unknown> {
-    return buildRouterPayload(routerMode.value, routerDefaultTier.value, tierValues.value)
+    const mode = routerMode.value === 'disabled'
+      ? 'disabled'
+      : hasMixedTierProviders.value
+        ? 'custom'
+        : routerMode.value === 'recommended'
+          ? 'recommended'
+          : 'custom'
+    const body = buildRouterPayload(mode, routerDefaultTier.value, tierValues.value)
+    if (hasMixedTierProviders.value) {
+      body.crossProviderTiers = true
+      body.tierProviderMismatch = 'veto'
+    } else if (crossProviderTiers.value) {
+      body.crossProviderTiers = true
+      body.tierProviderMismatch = tierProviderMismatch.value
+    }
+    return body
   }
 
   function visualModePatches(): Record<string, unknown> {
@@ -204,10 +250,10 @@ export function useSetupRouterForm() {
         routerVisualModeDirty: visualModeDirty.value,
         routerVisualModeOptions: routerVisualModeOptions(),
         hasSavedProvider: context.hasSavedProvider.value,
-        canUseOpenrouterMix: context.isOpenrouter.value,
         textTiers: context.textTiers,
         tierRows: tierRows(context.textTiers),
         tierLabel: context.tierLabel,
+        hasMixedTierProviders: hasMixedTierProviders.value,
         discoveredModels: context.discoveredModels?.value ?? [],
         discoveredModelsProvider: context.discoveredModelsProvider?.value ?? '',
         discoveredModelSource: context.discoveredModelSource?.value ?? 'none',
@@ -218,6 +264,9 @@ export function useSetupRouterForm() {
   return {
     mode,
     defaultTier,
+    visibleModeChoice,
+    tierTemplateState,
+    hasMixedTierProviders,
     routingDirty,
     visualModeDirty,
     isDirty,

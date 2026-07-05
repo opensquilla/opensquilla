@@ -41,6 +41,7 @@ interface ProviderPanelContext {
   providerNeeds: ComputedRef<string[]>
   providerCoreFields: ComputedRef<ProviderField[]>
   providerAdvancedFields: ComputedRef<ProviderField[]>
+  providerCredentialPanel: ComputedRef<ProviderCredentialPanelState | null>
   providerAdvancedOpen: ComputedRef<boolean>
   providerEnvMissing: ComputedRef<boolean>
   providerEnvKey: ComputedRef<string>
@@ -98,6 +99,25 @@ export interface ConnectionState {
   discoverError: string
 }
 
+export interface ProviderCredentialPanelState {
+  providerLabel: string
+  providerSelected: boolean
+  source: string
+  available: boolean
+  envKey: string
+  masked: string
+  revealAllowed: boolean
+  revealed: string
+  revealError: string
+  replacing: boolean
+  apiKeyValue: string
+  apiKeyEnvValue: string
+  connection: ConnectionState
+  onReveal?: () => void
+  onReplace?: () => void
+  onCancelReplace?: () => void
+}
+
 // Probe failure kinds that mean "the credential itself was rejected" (vs. the
 // endpoint being unreachable/unhappy). Kept to the unambiguous case: other
 // kinds (rate limits, credits, overload) get their own human sentence under
@@ -118,10 +138,6 @@ function freshConnection(providerId: string): ConnectionState {
     modelSource: 'none',
     discoverError: '',
   }
-}
-
-function snapshotConnection(state: ConnectionState): ConnectionState {
-  return { ...state, models: [...state.models] }
 }
 
 function normalizeDiscoveredModels(rows: unknown): DiscoveredModel[] {
@@ -171,6 +187,9 @@ export function hasEffectiveProvider(config: ProviderConfig, status: SetupStatus
 export function useSetupProviderForm() {
   const providerSelected = ref('')
   const providerFieldValues = ref<Record<string, unknown>>({})
+  const replacingCredential = ref(false)
+  const revealedCredential = ref('')
+  const revealError = ref('')
   const selectedProvider = computed(() => providerSelected.value)
 
   const serialized = computed(() => JSON.stringify({ p: providerSelected.value, v: providerFieldValues.value }))
@@ -183,29 +202,19 @@ export function useSetupProviderForm() {
   // -------------------------------------------------------------------------
 
   const connection = ref<ConnectionState>(freshConnection(''))
-  // Probe/discover outcomes cached per (provider + credential fingerprint) for
-  // the composable (settings dialog) lifetime. Only deterministic outcomes are
-  // stored — 'verified' and 'key_invalid' — so a transient 'unreachable' never
-  // pins a stale failure onto a retry.
-  const connectionCache = new Map<string, ConnectionState>()
   // Monotonic token: bumped by every reset and probe start so an in-flight
   // RPC result that raced a credential edit is discarded instead of applied.
   let connectionEpoch = 0
 
-  function credentialFingerprint(): string {
-    const values = providerFieldValues.value
-    return JSON.stringify([
-      providerSelected.value,
-      String(values.api_key ?? ''),
-      String(values.api_key_env ?? ''),
-      String(values.base_url ?? ''),
-      String(values.proxy ?? ''),
-    ])
-  }
-
   function resetConnection() {
     connectionEpoch += 1
     connection.value = freshConnection(providerSelected.value)
+  }
+
+  function resetCredentialUiState() {
+    replacingCredential.value = false
+    revealedCredential.value = ''
+    revealError.value = ''
   }
 
   // Params for probe/discover: the CURRENT form values, including an unsaved
@@ -224,12 +233,6 @@ export function useSetupProviderForm() {
 
   async function probeConnection(options: { defaultModel?: string } = {}): Promise<void> {
     if (!providerSelected.value || connection.value.phase === 'probing') return
-    const fingerprint = credentialFingerprint()
-    const cached = connectionCache.get(fingerprint)
-    if (cached) {
-      connection.value = snapshotConnection(cached)
-      return
-    }
     const epoch = ++connectionEpoch
     connection.value = { ...freshConnection(providerSelected.value), phase: 'probing' }
     const rpc = useRpcStore()
@@ -260,19 +263,17 @@ export function useSetupProviderForm() {
       }
     }
     connection.value = outcome
-    if (outcome.phase === 'key_invalid') {
-      connectionCache.set(fingerprint, snapshotConnection(outcome))
-    }
     if (outcome.phase === 'verified') {
       // Verified endpoint: immediately offer discovered models. The combined
-      // verified+models snapshot is cached by discoverModels when it settles.
+      // verified+models state is kept live only; every explicit test click
+      // re-probes so a newly issued key or recovered provider is not masked by
+      // a stale verdict.
       await discoverModels()
     }
   }
 
   async function discoverModels(): Promise<void> {
     if (!providerSelected.value) return
-    const fingerprint = credentialFingerprint()
     const epoch = connectionEpoch
     const rpc = useRpcStore()
     try {
@@ -308,12 +309,12 @@ export function useSetupProviderForm() {
         discoverError: err instanceof Error ? err.message : String(err),
       }
     }
-    if (connection.value.phase === 'verified' || connection.value.phase === 'key_invalid') {
-      connectionCache.set(fingerprint, snapshotConnection(connection.value))
-    }
   }
 
   function initFromConfig(config: ProviderConfig, status: SetupStatus, providers: ProviderSpec[]) {
+    resetCredentialUiState()
+    providerSelected.value = ''
+    providerFieldValues.value = {}
     if (hasEffectiveProvider(config, status) && config.provider) {
       providerSelected.value = config.provider
       const spec = providers.find(p => p.providerId === config.provider)
@@ -321,6 +322,7 @@ export function useSetupProviderForm() {
         // Secrets are write-only: config.get returns the literal "[redacted]",
         // which must never be seeded into the form or echoed back on save.
         if (field.secret || field.type === 'password') return
+        if (field.name === 'api_key_env') return
         const value = config[field.name]
         if (value !== undefined) providerFieldValues.value[field.name] = value
       })
@@ -330,8 +332,10 @@ export function useSetupProviderForm() {
   }
 
   function resetForProvider(spec: { fields?: ProviderField[] } | null | undefined) {
+    resetCredentialUiState()
     providerFieldValues.value = {}
     spec?.fields?.forEach(field => {
+      if (field.name === 'api_key_env') return
       providerFieldValues.value[field.name] = field.default ?? ''
     })
     resetConnection()
@@ -363,13 +367,41 @@ export function useSetupProviderForm() {
       if (name === 'api_key') providerFieldValues.value.api_key_env = ''
       else if (name === 'api_key_env') providerFieldValues.value.api_key = ''
     }
+    if (name === 'api_key' || name === 'api_key_env') {
+      revealedCredential.value = ''
+      revealError.value = ''
+    }
     // A credential/endpoint edit invalidates any earned connection verdict
     // (model edits deliberately don't — the verdict is about reachability).
     if (CONNECTION_FIELDS.has(name)) resetConnection()
   }
 
+  function startCredentialReplace() {
+    replacingCredential.value = true
+    revealedCredential.value = ''
+    revealError.value = ''
+  }
+
+  function cancelCredentialReplace() {
+    replacingCredential.value = false
+    providerFieldValues.value.api_key = ''
+    revealedCredential.value = ''
+    revealError.value = ''
+  }
+
+  function setRevealedCredential(value: string) {
+    revealedCredential.value = value
+    revealError.value = ''
+  }
+
+  function setRevealError(value: string) {
+    revealedCredential.value = ''
+    revealError.value = value
+  }
+
   function selectProvider(value: string) {
     providerSelected.value = value
+    resetCredentialUiState()
     resetConnection()
   }
 
@@ -397,6 +429,7 @@ export function useSetupProviderForm() {
       providerNeeds: context.providerNeeds.value,
       providerCoreFields: context.providerCoreFields.value,
       providerAdvancedFields: context.providerAdvancedFields.value,
+      credentialPanel: context.providerCredentialPanel.value,
       providerAdvancedOpen: context.providerAdvancedOpen.value,
       providerEnvMissing: context.providerEnvMissing.value,
       providerEnvKey: context.providerEnvKey.value,
@@ -411,11 +444,19 @@ export function useSetupProviderForm() {
     selectedProvider,
     isDirty,
     connection,
+    providerFieldValues,
+    replacingCredential,
+    revealedCredential,
+    revealError,
     initFromConfig,
     resetForProvider,
     fieldValue,
     selectProvider,
     updateField,
+    startCredentialReplace,
+    cancelCredentialReplace,
+    setRevealedCredential,
+    setRevealError,
     payload,
     probeConnection,
     discoverModels,

@@ -48,8 +48,8 @@ def test_interactive_ensemble_configure_persists(tmp_path, monkeypatch):
         def confirm(self, message: str, **kwargs: Any) -> _Answer:
             calls.append(message)
             if message == "Enable the LLM ensemble?":
-                # Ensemble ships enabled by default; the prompt reflects it.
-                assert kwargs.get("default") is True
+                # Model router ships as the default strategy; ensemble is opt-in.
+                assert kwargs.get("default") is False
                 return _Answer(True)
             raise AssertionError(f"unexpected confirm prompt: {message}")
 

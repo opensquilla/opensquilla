@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any, Literal, cast, get_args
 
@@ -92,28 +93,34 @@ def _positive_int(value: int | str, *, label: str) -> int:
     return parsed
 
 
+def _preset_tiers_with_model(preset: ProviderPreset, model: str) -> dict[str, dict]:
+    tiers = preset.tier_defaults()
+    for tier in tiers.values():
+        if not str(tier.get("model") or "").strip():
+            tier["model"] = model
+    return tiers
+
+
 def _reconcile_router_profile_for_provider(
     cfg: GatewayConfig,
     provider_id: str,
 ) -> None:
-    current_profile = getattr(cfg.squilla_router, "tier_profile", None)
-    if not getattr(cfg.squilla_router, "enabled", True):
-        return
-    if current_profile and str(current_profile).strip().lower() == provider_id:
-        return
-    if (
-        not current_profile
-        and provider_id == "openrouter"
-        and cfg.squilla_router.tiers.get("c0", {}).get("provider") == "openrouter"
-    ):
-        return
+    router_enabled = bool(getattr(cfg.squilla_router, "enabled", True))
+    preset = get_preset(provider_id)
     router_payload = cfg.squilla_router.model_dump(mode="python")
     router_payload.pop("tiers", None)
-    if provider_id in ROUTER_TIER_PROFILE_IDS:
-        router_payload["tier_profile"] = provider_id
-    else:
+    router_payload["enabled"] = router_enabled
+    if preset is None:
         router_payload["enabled"] = False
         router_payload["tier_profile"] = None
+    elif not preset.synthesized and router_enabled:
+        router_payload["tier_profile"] = provider_id
+    else:
+        router_payload["tier_profile"] = None
+        router_payload["tiers"] = _preset_tiers_with_model(
+            preset,
+            str(getattr(cfg.llm, "model", "") or "").strip(),
+        )
     cfg.squilla_router = SquillaRouterConfig(**router_payload)
 
 
@@ -179,6 +186,41 @@ def _merge_router_tiers(
         current.update(override)
         merged[tier_name] = _enforce_router_tier_role_invariants(tier_name, current)
     return merged
+
+
+def _canonical_tier_value(tier: Mapping[str, Any]) -> dict[str, Any]:
+    thinking = tier.get("thinking_level")
+    if thinking is None:
+        thinking = tier.get("thinkingLevel")
+    return {
+        "provider": str(tier.get("provider") or "").strip().lower(),
+        "model": str(tier.get("model") or "").strip(),
+        "description": str(tier.get("description") or "").strip(),
+        "thinking_level": (str(thinking or "").strip() or None),
+        "supports_image": bool(tier.get("supports_image", tier.get("supportsImage", False))),
+        "image_only": bool(tier.get("image_only", tier.get("imageOnly", False))),
+    }
+
+
+def _canonical_tier_map(tiers: Mapping[str, Any] | None) -> dict[str, dict[str, Any]]:
+    normalized: dict[str, dict[str, Any]] = {}
+    if not isinstance(tiers, Mapping):
+        return normalized
+    for raw_name, raw_tier in tiers.items():
+        name = normalize_text_tier(raw_name) or str(raw_name)
+        if name not in _ROUTER_TIER_KEYS or not isinstance(raw_tier, Mapping):
+            continue
+        tier = _normalize_tier_payload(name, raw_tier)
+        tier = _enforce_router_tier_role_invariants(name, tier)
+        normalized[name] = _canonical_tier_value(tier)
+    return normalized
+
+
+def _tiers_equal_after_canonical_normalization(
+    candidate: Mapping[str, Any] | None,
+    preset_tiers: Mapping[str, Any],
+) -> bool:
+    return _canonical_tier_map(candidate) == _canonical_tier_map(preset_tiers)
 
 
 def _validate_router_tiers(tiers: dict[str, Any], default_tier: str) -> None:
@@ -318,12 +360,8 @@ def _apply_provider_preset(cfg: GatewayConfig, preset: ProviderPreset, model: st
     if not preset.synthesized:
         router_payload["tier_profile"] = preset.preset_id
     else:
-        tiers = preset.tier_defaults()
-        for tier in tiers.values():
-            if not str(tier.get("model") or "").strip():
-                tier["model"] = model
         router_payload["tier_profile"] = None
-        router_payload["tiers"] = tiers
+        router_payload["tiers"] = _preset_tiers_with_model(preset, model)
     cfg.squilla_router = SquillaRouterConfig(**router_payload)
 
 
@@ -427,6 +465,8 @@ def upsert_router(
     mode: str = "recommended",
     default_tier: str | None = None,
     tiers: dict[str, Any] | None = None,
+    cross_provider_tiers: bool | None = None,
+    tier_provider_mismatch: str | None = None,
 ) -> MutationResult:
     if mode not in {"recommended", "openrouter-mix", "custom", "disabled"}:
         raise ValueError(
@@ -436,6 +476,13 @@ def upsert_router(
     provider = str(config.llm.provider or "").strip().lower()
     router_payload = config.squilla_router.model_dump(mode="python")
     router_payload.pop("tiers", None)
+    if cross_provider_tiers is not None:
+        router_payload["cross_provider_tiers"] = bool(cross_provider_tiers)
+    if tier_provider_mismatch is not None:
+        mismatch_policy = str(tier_provider_mismatch or "").strip()
+        if mismatch_policy not in {"route", "veto"}:
+            raise ValueError("tierProviderMismatch must be route or veto")
+        router_payload["tier_provider_mismatch"] = mismatch_policy
 
     default_tier_override = _normalize_explicit_text_tier(default_tier)
     default_tier_clean = default_tier_override or str(
@@ -444,47 +491,40 @@ def upsert_router(
     if default_tier_override is not None:
         router_payload["default_tier"] = default_tier_clean
 
-    public_payload: dict[str, Any] = {"mode": router_mode}
+    public_payload: dict[str, Any] = {}
     if router_mode == "disabled":
         router_payload["enabled"] = False
         router_payload["tier_profile"] = None
+        public_payload["mode"] = "disabled"
         public_payload.update({"enabled": False, "tier_profile": None})
-    elif router_mode == "openrouter-mix":
-        if provider != "openrouter":
-            raise ValueError("openrouter-mix router mode is only valid for openrouter LLM provider")
-        router_payload["enabled"] = True
-        router_payload["tier_profile"] = None
-        router_payload["tiers"] = _merge_router_tiers(
-            _router_tier_profile_defaults("openrouter"),
-            tiers,
-        )
-        public_payload.update({"enabled": True, "tier_profile": None})
-    elif router_mode == "custom":
-        # Provider-agnostic generalization of openrouter-mix: accepted for ANY
-        # active provider. Writes enabled=True, tier_profile=None (a synthesized
-        # preset id must never persist — downgrade contract) and merges the
-        # provided tiers over the provider's registry preset tiers. Synthesized
-        # presets bind every tier to (provider, default_model); the merge lets
-        # the caller override individual tiers.
-        preset = get_preset(provider)
-        base_tiers = preset.tier_defaults() if preset is not None else {}
-        router_payload["enabled"] = True
-        router_payload["tier_profile"] = None
-        router_payload["tiers"] = _merge_router_tiers(base_tiers, tiers)
-        public_payload.update({"enabled": True, "tier_profile": None})
     else:
-        if provider not in ROUTER_TIER_PROFILE_IDS:
-            router_payload["enabled"] = False
-            router_payload["tier_profile"] = None
-            public_payload.update({"enabled": False, "tier_profile": None})
-        else:
+        preset = get_preset(provider)
+        active_model = str(getattr(config.llm, "model", "") or "").strip()
+        base_tiers = _preset_tiers_with_model(preset, active_model) if preset is not None else {}
+        source_tiers = tiers
+        if router_mode == "openrouter-mix":
+            if provider != "openrouter":
+                raise ValueError("openrouter-mix router mode is only valid for openrouter LLM provider")
+            source_tiers = tiers if tiers is not None else getattr(config.squilla_router, "tiers", {})
+        merged_tiers = _merge_router_tiers(base_tiers, source_tiers)
+        writes_packaged_profile = (
+            router_mode in {"recommended", "openrouter-mix"}
+            and preset is not None
+            and not preset.synthesized
+            and _tiers_equal_after_canonical_normalization(merged_tiers, base_tiers)
+        )
+        if writes_packaged_profile:
             router_payload["enabled"] = True
             router_payload["tier_profile"] = provider
-            router_payload["tiers"] = _merge_router_tiers(
-                _router_tier_profile_defaults(provider),
-                tiers,
-            )
+            router_payload["tiers"] = merged_tiers
+            public_payload["mode"] = "recommended"
             public_payload.update({"enabled": True, "tier_profile": provider})
+        else:
+            router_payload["enabled"] = True
+            router_payload["tier_profile"] = None
+            router_payload["tiers"] = merged_tiers
+            public_payload["mode"] = "custom"
+            public_payload.update({"enabled": True, "tier_profile": None})
     warnings: list[str] = []
     if router_payload.get("enabled"):
         _validate_router_tiers(
@@ -503,6 +543,8 @@ def upsert_router(
     _sync_llm_model_to_router_default(new_cfg)
     public_payload["default_tier"] = new_cfg.squilla_router.default_tier
     public_payload["tiers"] = redact_router_tiers_payload(new_cfg.squilla_router.tiers)
+    public_payload["cross_provider_tiers"] = bool(new_cfg.squilla_router.cross_provider_tiers)
+    public_payload["tier_provider_mismatch"] = new_cfg.squilla_router.tier_provider_mismatch
     return MutationResult(
         config=new_cfg,
         changed=True,
@@ -531,6 +573,7 @@ def upsert_llm_ensemble(
     enabled: bool | None = None,
     selection_mode: str | None = None,
     model_options: list[str] | None = None,
+    candidates: list[dict[str, object]] | None = None,
     min_successful_proposers: int | str | None = None,
     all_failed_policy: str | None = None,
 ) -> MutationResult:
@@ -562,6 +605,15 @@ def upsert_llm_ensemble(
         if not isinstance(model_options, (list, tuple)):
             raise ValueError("model_options must be a list of model ids")
         merged["model_options"] = [str(option) for option in model_options]
+    if candidates is not None:
+        if not isinstance(candidates, (list, tuple)):
+            raise ValueError("candidates must be a list of candidate objects")
+        candidate_payloads: list[dict[str, object]] = []
+        for entry in candidates:
+            if not isinstance(entry, dict):
+                raise ValueError("candidates must be a list of candidate objects")
+            candidate_payloads.append(dict(entry))
+        merged["candidates"] = candidate_payloads
     if min_successful_proposers is not None:
         merged["min_successful_proposers"] = _positive_int(
             min_successful_proposers, label="min_successful_proposers"
@@ -590,6 +642,11 @@ def upsert_llm_ensemble(
         "min_successful_proposers": new_ensemble.min_successful_proposers,
         "all_failed_policy": new_ensemble.all_failed_policy,
     }
+    if candidates is not None or new_ensemble.candidates:
+        payload["candidates"] = [
+            candidate.model_dump(mode="python")
+            for candidate in new_ensemble.candidates
+        ]
     return MutationResult(
         config=new_cfg,
         changed=current != new_ensemble.model_dump(mode="python"),

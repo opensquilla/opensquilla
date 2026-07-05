@@ -18,6 +18,7 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from contextlib import contextmanager
+import os
 from typing import Any
 
 from opensquilla.gateway.config_secrets import inherit_runtime_secrets
@@ -174,12 +175,19 @@ def _status_payload(ctx: RpcContext) -> dict[str, Any]:
 
     cfg = _active_config(ctx)
     s = get_onboarding_status(cfg)
+    llm_credential_status = dict(s.llm_credential_status)
+    llm_credential_status["revealAllowed"] = bool(
+        ctx.principal.is_owner
+        and llm_credential_status.get("available") is True
+        and llm_credential_status.get("source") in {"explicit", "env"}
+    )
     return {
         "configPath": _config_path_for(ctx, cfg) or s.config_path,
         "hasConfig": s.has_config,
         "llmConfigured": s.llm_configured,
         "llmSource": s.llm_source,
         "llmEnvKey": s.llm_env_key,
+        "llmCredentialStatus": llm_credential_status,
         "imageGenerationConfigured": s.image_generation_configured,
         "imageGenerationEnabled": s.image_generation_enabled,
         "imageGenerationSource": s.image_generation_source,
@@ -201,12 +209,73 @@ def _status_payload(ctx: RpcContext) -> dict[str, Any]:
         "memoryEmbeddingEnvKey": s.memory_embedding_env_key,
         "channelCount": s.channel_count,
         "channelsConfigured": s.channels_configured,
+        "ensembleCredentialStatus": list(s.ensemble_credential_status),
         "needsOnboarding": s.needs_onboarding,
         "sections": {name: state.value for name, state in s.sections.items()},
         "sectionDetails": s.section_details,
         "envRecoveryCommands": env_recovery_commands(s),
         "warnings": list(s.warnings),
     }
+
+
+def _active_llm_credential_reveal_payload(ctx: RpcContext, provider_id: str) -> dict[str, Any]:
+    from opensquilla.onboarding.provider_specs import get_provider_setup_spec
+
+    if not ctx.principal.is_owner:
+        raise RpcHandlerError(
+            "onboarding.provider.credential.not_owner",
+            "Only the local gateway owner can reveal provider credentials.",
+        )
+
+    cfg = _active_config(ctx)
+    llm = getattr(cfg, "llm", None)
+    active_provider = str(getattr(llm, "provider", "") or "").strip().lower()
+    requested_provider = str(provider_id or "").strip().lower()
+    if requested_provider != active_provider:
+        raise RpcHandlerError(
+            "onboarding.provider.credential.inactive_provider",
+            "Credential reveal only supports the active provider.",
+        )
+
+    try:
+        spec = get_provider_setup_spec(active_provider)
+    except KeyError as exc:
+        raise RpcHandlerError(
+            "onboarding.provider.credential.unsupported_provider",
+            f"Unsupported active provider: {active_provider}",
+        ) from exc
+    env_key = (
+        str(getattr(llm, "api_key_env", "") or "").strip()
+        or str(getattr(spec, "env_key", "") or "").strip()
+    )
+    runtime_secret_paths = getattr(cfg, "_runtime_secret_paths", set())
+    explicit_key = (
+        ""
+        if "llm.api_key" in runtime_secret_paths
+        else str(getattr(llm, "api_key", "") or "")
+    )
+    if explicit_key:
+        return {
+            "ok": True,
+            "provider": active_provider,
+            "source": "explicit",
+            "envKey": env_key,
+            "apiKey": explicit_key,
+        }
+    if env_key:
+        env_value = str(os.environ.get(env_key) or "")
+        if env_value:
+            return {
+                "ok": True,
+                "provider": active_provider,
+                "source": "env",
+                "envKey": env_key,
+                "apiKey": env_value,
+            }
+    raise RpcHandlerError(
+        "onboarding.provider.credential.unavailable",
+        "No revealable credential is available for the active provider.",
+    )
 
 
 @_d.method("onboarding.status", scope="operator.read")
@@ -284,16 +353,38 @@ async def _provider_probe(params: Any, ctx: RpcContext) -> dict[str, Any]:
     from opensquilla.onboarding.probe import probe_llm_provider
 
     provider_id = _require(params, "providerId")
+    p = params if isinstance(params, dict) else {}
+    cfg = _active_config(ctx)
+    api_key = str(p.get("apiKey", "") or "")
+    api_key_env = str(p.get("apiKeyEnv", "") or "")
+    base_url = str(p.get("baseUrl", "") or "")
+    proxy = str(p.get("proxy", "") or "")
+    # Keep-current fallback: blank secret/url on the same provider reuses the
+    # stored config (mirrors upsert_llm_provider's password-field affordance).
+    if str(getattr(cfg.llm, "provider", "") or "") == str(provider_id):
+        if not api_key and not api_key_env:
+            api_key = str(getattr(cfg.llm, "api_key", "") or "")
+            api_key_env = str(getattr(cfg.llm, "api_key_env", "") or "")
+        if not base_url:
+            base_url = str(getattr(cfg.llm, "base_url", "") or "")
+        if not proxy:
+            proxy = str(getattr(cfg.llm, "proxy", "") or "")
     with _validation_error("onboarding.provider.invalid"):
         result = await probe_llm_provider(
             provider_id=provider_id,
-            model=params.get("model", "") if isinstance(params, dict) else "",
-            api_key=params.get("apiKey", "") if isinstance(params, dict) else "",
-            api_key_env=params.get("apiKeyEnv", "") if isinstance(params, dict) else "",
-            base_url=params.get("baseUrl", "") if isinstance(params, dict) else "",
-            proxy=params.get("proxy", "") if isinstance(params, dict) else "",
+            model=str(p.get("model", "") or ""),
+            api_key=api_key,
+            api_key_env=api_key_env,
+            base_url=base_url,
+            proxy=proxy,
         )
     return result.to_payload()
+
+
+@_d.method("onboarding.provider.credential.reveal", scope="operator.admin")
+async def _provider_credential_reveal(params: Any, ctx: RpcContext) -> dict[str, Any]:
+    provider_id = _require(params, "providerId")
+    return _active_llm_credential_reveal_payload(ctx, provider_id)
 
 
 @_d.method("onboarding.models.discover", scope="operator.admin")
@@ -356,8 +447,17 @@ async def _router_configure(params: Any, ctx: RpcContext) -> dict[str, Any]:
     mode = params.get("mode", "recommended") if isinstance(params, dict) else "recommended"
     default_tier = params.get("defaultTier") if isinstance(params, dict) else None
     tiers = params.get("tiers") if isinstance(params, dict) else None
+    cross_provider_tiers = params.get("crossProviderTiers") if isinstance(params, dict) else None
+    tier_provider_mismatch = params.get("tierProviderMismatch") if isinstance(params, dict) else None
     with _validation_error("onboarding.router.invalid"):
-        res = upsert_router(cfg, mode=mode, default_tier=default_tier, tiers=tiers)
+        res = upsert_router(
+            cfg,
+            mode=mode,
+            default_tier=default_tier,
+            tiers=tiers,
+            cross_provider_tiers=cross_provider_tiers,
+            tier_provider_mismatch=tier_provider_mismatch,
+        )
     _apply_inplace(ctx, res.config)
     _sync_provider_selector(ctx, res.config.llm)
     config_path = _persist(ctx, res.config, restart_required=res.restart_required)
@@ -387,6 +487,7 @@ async def _ensemble_configure(params: Any, ctx: RpcContext) -> dict[str, Any]:
             enabled=p.get("enabled"),
             selection_mode=p.get("selectionMode"),
             model_options=p.get("modelOptions"),
+            candidates=p.get("candidates"),
             min_successful_proposers=p.get("minSuccessfulProposers"),
             all_failed_policy=p.get("allFailedPolicy"),
         )

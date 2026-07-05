@@ -291,11 +291,17 @@
                double-exposure, and never two composers/textareas mid-swap).
                Console views are kept-alive, so the entering page is instant —
                out-in no longer incurs the old remount/fetch "dead gap". -->
-          <Transition name="route-fade" mode="out-in">
+          <template v-if="route.meta.routeTransition === 'none'">
             <KeepAlive v-if="route.meta.keepAlive" :max="12">
-              <component :is="Component" :key="route.name" />
+              <component :is="Component" :key="route.meta.viewKey || route.name" />
             </KeepAlive>
-            <component v-else :is="Component" :key="route.name" />
+            <component v-else :is="Component" :key="route.meta.viewKey || route.name" />
+          </template>
+          <Transition v-else name="route-fade" mode="out-in">
+            <KeepAlive v-if="route.meta.keepAlive" :max="12">
+              <component :is="Component" :key="route.meta.viewKey || route.name" />
+            </KeepAlive>
+            <component v-else :is="Component" :key="route.meta.viewKey || route.name" />
           </Transition>
         </router-view>
       </ErrorBoundary>

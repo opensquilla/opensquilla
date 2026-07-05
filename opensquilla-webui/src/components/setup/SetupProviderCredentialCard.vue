@@ -1,0 +1,434 @@
+<script setup lang="ts">
+import { computed, ref, watch } from 'vue'
+import { useI18n } from 'vue-i18n'
+import Icon from '@/components/Icon.vue'
+import type { ConnectionState } from '@/composables/setup/useSetupProviderForm'
+
+const { t } = useI18n()
+
+interface ProviderCredentialPanelContract {
+  providerLabel: string
+  providerSelected: boolean
+  source: string
+  available: boolean
+  envKey: string
+  masked: string
+  revealAllowed: boolean
+  revealed: string
+  revealError: string
+  replacing: boolean
+  apiKeyValue: string
+  apiKeyEnvValue: string
+  connection: ConnectionState
+}
+
+const props = defineProps<{
+  panel: ProviderCredentialPanelContract
+}>()
+
+const emit = defineEmits<{
+  reveal: []
+  replace: []
+  cancelReplace: []
+  testConnection: []
+  updateField: [name: string, value: string]
+}>()
+
+const showApiKey = ref(false)
+const detailsOpen = ref(false)
+
+watch(() => props.panel.replacing, replacing => {
+  if (!replacing) showApiKey.value = false
+})
+
+const title = computed(() => t('setup.provider.credentialTitle', { provider: props.panel.providerLabel }))
+const statusText = computed(() => (
+  props.panel.available
+    ? t('setup.provider.credentialConnected')
+    : t('setup.provider.credentialNeedsKey')
+))
+const statusTone = computed(() => (props.panel.available ? 'control-pill--ok' : 'control-pill--warn'))
+const sourceText = computed(() => {
+  switch (props.panel.source) {
+    case 'explicit':
+      return t('setup.provider.credentialSourceExplicit')
+    case 'env':
+      return t('setup.provider.credentialSourceEnv', { envKey: props.panel.envKey })
+    case 'missing_env':
+      return t('setup.provider.credentialSourceMissingEnv', { envKey: props.panel.envKey })
+    case 'not_required':
+      return t('setup.provider.credentialSourceNotRequired')
+    default:
+      return t('setup.provider.credentialSourceNone')
+  }
+})
+const displayValue = computed(() => props.panel.revealed || props.panel.masked || '')
+const showRevealButton = computed(() => props.panel.revealAllowed && Boolean(props.panel.masked))
+const showPublicHint = computed(() => !props.panel.revealAllowed && Boolean(props.panel.masked))
+const showCredentialControls = computed(() => props.panel.providerSelected && props.panel.source !== 'not_required')
+const probing = computed(() => props.panel.connection.phase === 'probing')
+
+const FAILURE_SENTENCE_KEYS: Record<string, string> = {
+  auth_invalid: 'setup.provider.failureAuth',
+  insufficient_credits: 'setup.provider.failureCredits',
+  rate_limited: 'setup.provider.failureRateLimited',
+  provider_overloaded: 'setup.provider.failureOverloaded',
+  model_not_found: 'setup.provider.failureModelNotFound',
+  transport_transient: 'setup.provider.failureUnreachable',
+  bad_request: 'setup.provider.failureBadRequest',
+}
+
+function failureSentence(connection: ConnectionState): string {
+  const key = FAILURE_SENTENCE_KEYS[connection.failureKind]
+  if (key) return t(key)
+  if (connection.detail) return connection.detail
+  return t('setup.provider.failureGeneric')
+}
+
+const connectionPill = computed(() => {
+  const connection = props.panel.connection
+  if (connection.phase === 'verified') {
+    return { tone: 'control-pill--ok', text: t('setup.provider.connected'), title: '' }
+  }
+  const title = [connection.failureKind, connection.detail].filter(Boolean).join(' — ')
+  if (connection.phase === 'key_invalid') {
+    return {
+      tone: 'control-pill--danger',
+      text: t('setup.provider.keyRejected', { reason: failureSentence(connection) }),
+      title,
+    }
+  }
+  if (connection.phase === 'unreachable') {
+    return {
+      tone: 'control-pill--warn',
+      text: t('setup.provider.notReachable', { reason: failureSentence(connection) }),
+      title,
+    }
+  }
+  return null
+})
+</script>
+
+<template>
+  <section class="setup-provider-credential">
+    <div class="setup-provider-credential__head">
+      <div>
+        <h4 class="setup-provider-credential__title">{{ title }}</h4>
+        <p class="setup-provider-credential__source">{{ sourceText }}</p>
+      </div>
+      <strong class="control-pill" :class="statusTone">{{ statusText }}</strong>
+    </div>
+
+    <div class="setup-provider-credential__body">
+      <template v-if="!panel.replacing">
+        <label v-if="showCredentialControls" class="control-row control-row--stack setup-provider-credential__field">
+          <div class="control-row__label-block">
+            <span class="control-row__label">{{ t('setup.common.apiKey') }}</span>
+          </div>
+          <div class="control-row__control setup-provider-credential__field-row">
+            <div class="setup-provider-credential__input-shell">
+              <input
+                class="control-input setup-provider-credential__input"
+                :value="displayValue"
+                name="setup_provider_api_key_display"
+                type="text"
+                readonly
+                :placeholder="t('setup.provider.credentialHiddenPlaceholder')"
+              >
+              <button
+                v-if="showRevealButton"
+                type="button"
+                class="setup-provider-credential__input-action"
+                :aria-label="t('setup.provider.viewCredential')"
+                :title="t('setup.provider.viewCredential')"
+                @click="emit('reveal')"
+              >
+                <Icon name="eye" :size="14" />
+              </button>
+            </div>
+            <button type="button" class="btn setup-provider-credential__replace" @click="emit('replace')">{{ t('setup.provider.replaceCredential') }}</button>
+          </div>
+        </label>
+        <p v-if="showPublicHint" class="control-row__desc">{{ t('setup.provider.credentialPublicHint') }}</p>
+        <p v-if="panel.revealError" class="setup-provider-credential__error">{{ panel.revealError }}</p>
+      </template>
+
+      <template v-else>
+        <label class="control-row control-row--stack setup-provider-credential__field">
+          <div class="control-row__label-block">
+            <span class="control-row__label">{{ t('setup.common.apiKey') }}</span>
+          </div>
+          <div class="control-row__control setup-provider-credential__field-row">
+            <div class="setup-provider-credential__input-shell">
+              <input
+                class="control-input setup-provider-credential__input"
+                :value="panel.apiKeyValue"
+                name="setup_provider_api_key"
+                :type="showApiKey ? 'text' : 'password'"
+                :placeholder="t('setup.provider.credentialReplacePlaceholder')"
+                autocomplete="off"
+                @input="emit('updateField', 'api_key', ($event.target as HTMLInputElement).value)"
+              >
+              <button
+                type="button"
+                class="setup-provider-credential__input-action"
+                :aria-label="showApiKey ? t('setup.provider.hideApiKey') : t('setup.provider.showApiKey')"
+                :title="showApiKey ? t('setup.provider.hideApiKey') : t('setup.provider.showApiKey')"
+                @click="showApiKey = !showApiKey"
+              >
+                <Icon :name="showApiKey ? 'eye-off' : 'eye'" :size="14" />
+              </button>
+            </div>
+            <button
+              type="button"
+              class="btn setup-provider-credential__replace"
+              @click="emit('cancelReplace')"
+            >{{ t('common.cancel') }}</button>
+          </div>
+        </label>
+      </template>
+    </div>
+
+    <div class="setup-provider-credential__footer">
+      <div class="control-row__label-block">
+        <span class="control-row__label">{{ t('setup.provider.connectionLabel') }}</span>
+        <span class="control-row__desc">{{ t('setup.provider.connectionDesc') }}</span>
+      </div>
+      <div class="control-row__control control-row__control--stack">
+        <div class="setup-connection__actions">
+          <button type="button" class="btn" :disabled="!panel.providerSelected || probing" @click="emit('testConnection')">
+            <span v-if="probing" class="setup-connection__spinner" aria-hidden="true"></span>
+            {{ probing ? t('setup.provider.testing') : t('setup.provider.testConnection') }}
+          </button>
+          <strong
+            v-if="connectionPill"
+            class="control-pill"
+            :class="connectionPill.tone"
+            :title="connectionPill.title || undefined"
+          >{{ connectionPill.text }}</strong>
+        </div>
+        <span
+          v-if="panel.connection.phase === 'verified' && panel.connection.discoverError"
+          class="setup-connection__hint"
+        >{{ t('setup.provider.discoverFailed') }}</span>
+      </div>
+    </div>
+
+    <details v-if="showCredentialControls" class="setup-provider-credential__details" :open="detailsOpen">
+      <summary class="setup-provider-credential__summary" @click.prevent="detailsOpen = !detailsOpen">{{ t('setup.provider.credentialAdvanced') }}</summary>
+      <label v-if="detailsOpen" class="control-row control-row--stack">
+        <div class="control-row__label-block">
+          <span class="control-row__label">{{ t('setup.common.apiKeyEnv') }}</span>
+        </div>
+        <div class="control-row__control">
+          <input
+            class="control-input"
+            :value="panel.apiKeyEnvValue"
+            name="setup_provider_api_key_env"
+            :placeholder="panel.envKey || t('setup.provider.envKeyFallback')"
+            @input="emit('updateField', 'api_key_env', ($event.target as HTMLInputElement).value)"
+          >
+        </div>
+      </label>
+    </details>
+  </section>
+</template>
+
+<style scoped>
+.setup-provider-credential {
+  margin: var(--sp-2) 0;
+  padding: var(--sp-2) 0;
+  border-block: 1px solid var(--border);
+  background: transparent;
+}
+
+.setup-provider-credential__head {
+  display: flex;
+  align-items: flex-start;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: var(--sp-3);
+  margin-bottom: var(--sp-1);
+}
+
+.setup-provider-credential__title {
+  margin: 0;
+  font-size: 14px;
+  line-height: 1.4;
+}
+
+.setup-provider-credential__source {
+  margin: 4px 0 0;
+  color: var(--text-muted);
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+.setup-provider-credential__head > .control-pill {
+  flex: 0 0 auto;
+  width: auto;
+}
+
+.setup-provider-credential__body,
+.setup-provider-credential__footer {
+  display: grid;
+  gap: var(--sp-1);
+}
+
+.setup-provider-credential__footer {
+  align-items: flex-start;
+  display: flex;
+  justify-content: space-between;
+  margin-top: var(--sp-1);
+}
+
+.setup-provider-credential__footer > .control-row__label-block {
+  flex: 1 1 260px;
+  min-width: 0;
+}
+
+.setup-provider-credential__footer > .control-row__control {
+  flex: 0 1 auto;
+  min-width: 0;
+}
+
+.setup-provider-credential__field {
+  padding: 0;
+}
+
+.setup-provider-credential__field-row {
+  align-items: center;
+  display: flex;
+  gap: var(--sp-2);
+}
+
+.setup-provider-credential__input-shell {
+  flex: 1 1 auto;
+  min-width: 0;
+  position: relative;
+}
+
+.setup-provider-credential__input {
+  padding-right: 40px;
+}
+
+.setup-provider-credential__input-action {
+  position: absolute;
+  top: 50%;
+  right: 10px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--text-muted);
+  transform: translateY(-50%);
+  cursor: pointer;
+}
+
+.setup-provider-credential__input-action:hover {
+  color: var(--text);
+}
+
+.setup-provider-credential__replace {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
+.setup-connection__actions {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+  justify-content: flex-end;
+}
+
+.setup-connection__actions .btn {
+  align-items: center;
+  display: inline-flex;
+  gap: var(--sp-2);
+  white-space: nowrap;
+}
+
+.setup-connection__spinner {
+  animation: setup-connection-spin var(--dur-pulse) linear infinite;
+  border: 2px solid color-mix(in srgb, currentColor 30%, transparent);
+  border-radius: var(--radius-full);
+  border-top-color: currentColor;
+  display: inline-block;
+  height: 12px;
+  width: 12px;
+}
+
+@keyframes setup-connection-spin {
+  to { transform: rotate(360deg); }
+}
+
+.setup-provider-credential__error {
+  margin: 0;
+  color: var(--danger);
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+.setup-provider-credential__details {
+  margin-top: var(--sp-1);
+}
+
+.setup-provider-credential__summary {
+  cursor: pointer;
+  color: var(--text-muted);
+  font-size: 13px;
+}
+
+@media (max-width: 520px) {
+  .setup-provider-credential__head {
+    align-items: flex-start;
+    gap: var(--sp-2);
+  }
+
+  .setup-provider-credential__head > :first-child {
+    flex: 1 1 220px;
+    min-width: 0;
+  }
+
+  .setup-provider-credential__footer {
+    align-items: flex-start;
+    flex-direction: row;
+    flex-wrap: wrap;
+    gap: var(--sp-2);
+  }
+
+  .setup-provider-credential__footer > .control-row__label-block {
+    flex: 1 1 240px;
+    min-width: 0;
+  }
+
+  .setup-provider-credential__footer > .control-row__control {
+    align-items: flex-start;
+    flex: 0 0 auto;
+    justify-content: flex-start;
+    width: auto;
+  }
+
+  .setup-provider-credential__footer .control-row__desc {
+    display: block;
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .setup-provider-credential__replace {
+    width: auto;
+  }
+
+  .setup-connection__actions {
+    justify-content: flex-start;
+  }
+}
+</style>

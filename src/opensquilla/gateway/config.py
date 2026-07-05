@@ -298,7 +298,7 @@ class LlmProviderConfig(BaseSettings):
         return self
 
 
-DEFAULT_LLM_ENSEMBLE_MODEL_OPTIONS = [
+LEGACY_OPENROUTER_MODEL_OPTIONS = [
     "deepseek/deepseek-v4-pro",
     "z-ai/glm-5.2",
     "qwen/qwen3.7-plus",
@@ -309,10 +309,35 @@ DEFAULT_LLM_ENSEMBLE_MODEL_OPTIONS = [
     "minimax/minimax-m3",
 ]
 
+# Backward-compatible alias for older imports. New configs do not use these as
+# defaults; they are only recognized as the old OpenRouter preset payload.
+DEFAULT_LLM_ENSEMBLE_MODEL_OPTIONS = LEGACY_OPENROUTER_MODEL_OPTIONS
+
 
 def _default_llm_ensemble_model_options() -> list[str]:
-    """Models operators may select for the router_dynamic ensemble candidate pool."""
-    return list(DEFAULT_LLM_ENSEMBLE_MODEL_OPTIONS)
+    """Legacy model_options default is intentionally empty for new configs."""
+    return []
+
+
+class LlmEnsembleCandidateConfig(BaseModel):
+    provider: str
+    model: str
+    source: Literal["custom", "legacy_model_options"] = "custom"
+    enabled: bool = True
+
+    @field_validator("provider", "model", mode="before")
+    @classmethod
+    def _strip_required_text(cls, value: object) -> str:
+        return str(value or "").strip()
+
+    @model_validator(mode="after")
+    def _validate_candidate(self) -> LlmEnsembleCandidateConfig:
+        if not self.provider:
+            raise ValueError("llm_ensemble.candidates.provider must be non-empty")
+        if not self.model:
+            raise ValueError("llm_ensemble.candidates.model must be non-empty")
+        self.provider = self.provider.lower()
+        return self
 
 
 class LlmEnsembleConfig(BaseSettings):
@@ -322,16 +347,17 @@ class LlmEnsembleConfig(BaseSettings):
         extra="ignore",
     )
 
-    # Static OpenRouter B5 is the default routing surface. The legacy scalar
-    # timeout/min-success field defaults remain below so `router_dynamic` keeps
-    # its historical behaviour when an operator explicitly selects it.
-    enabled: bool = True
+    # Model router is the default routing surface. The legacy static selection
+    # value remains below for read compatibility, but it is dormant until an
+    # operator explicitly enables the ensemble surface.
+    enabled: bool = False
     mode: Literal["b5_fusion"] = "b5_fusion"
     selection_mode: Literal["router_dynamic", "static_openrouter_b5"] = "static_openrouter_b5"
     proposer_tools: bool = False
     min_successful_proposers: int = Field(default=1, ge=1)
     all_failed_policy: Literal["fallback_single", "error"] = "fallback_single"
     model_options: list[str] = Field(default_factory=_default_llm_ensemble_model_options)
+    candidates: list[LlmEnsembleCandidateConfig] = Field(default_factory=list)
     candidate_max_chars: int = Field(default=24_000, ge=0)
     proposer_timeout_seconds: float = Field(default=3600.0, gt=0.0)
     aggregator_timeout_seconds: float = Field(default=3600.0, gt=0.0)
@@ -348,8 +374,6 @@ class LlmEnsembleConfig(BaseSettings):
                 continue
             seen_options.add(normalized)
             model_options.append(normalized)
-        if not model_options:
-            raise ValueError("llm_ensemble.model_options must define at least one model")
         self.model_options = model_options
         return self
 
@@ -1784,12 +1808,10 @@ class GatewayConfig(BaseSettings):
         if getattr(router, "tier_profile", None):
             return self
         provider = str(getattr(self.llm, "provider", "") or "").strip().lower()
-        # D18: the boot auto-default gate stays pinned to the legacy nine.
-        # Boot never auto-applies a synthesized preset — an auto-applied
-        # non-legacy tier_profile would be rejected by the validator and would
-        # brick rc1 loaders on downgrade. Onboarding preset-application UX is a
-        # later PR; membership here does not widen to the full registry.
-        if provider == "openrouter" or provider not in ROUTER_TIER_PROFILE_IDS:
+        # Boot auto-default stays pinned to the persistable packaged profiles.
+        # Synthesized presets are applied by onboarding/provider saves as
+        # inline tiers, never as a persisted tier_profile.
+        if provider not in ROUTER_TIER_PROFILE_IDS:
             return self
         fields_set = set(getattr(router, "model_fields_set", set()))
         has_custom_tiers = (

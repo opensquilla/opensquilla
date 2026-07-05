@@ -19,11 +19,11 @@ function makePanel(form: ReturnType<typeof useSetupRouterForm>, isOpenrouter: bo
 }
 
 describe('useSetupRouterForm — openrouter-mix round-trip', () => {
-  it('classifies an enabled openrouter config with no tier_profile as openrouter-mix', () => {
+  it('classifies legacy openrouter mix internally but saves canonical custom mode', () => {
     const f = useSetupRouterForm()
     f.initFromConfig({ enabled: true, tier_profile: null }, {}, 'openrouter')
     expect(f.mode.value).toBe('openrouter-mix')
-    expect(f.payload().mode).toBe('openrouter-mix')
+    expect(f.payload().mode).toBe('custom')
   })
 
   it('classifies an openrouter config WITH a tier_profile as recommended', () => {
@@ -44,11 +44,11 @@ describe('useSetupRouterForm — openrouter-mix round-trip', () => {
     expect(f.mode.value).toBe('disabled')
   })
 
-  it('offers the openrouter-mix option only for openrouter providers', () => {
+  it('does not expose an OpenRouter mix UI option for any provider', () => {
     const f = useSetupRouterForm()
     f.initFromConfig({ enabled: true, tier_profile: 'openai' }, {}, 'openai')
-    expect(makePanel(f, false).value.canUseOpenrouterMix).toBe(false)
-    expect(makePanel(f, true).value.canUseOpenrouterMix).toBe(true)
+    expect(Object.prototype.hasOwnProperty.call(makePanel(f, false).value, 'canUseOpenrouterMix')).toBe(false)
+    expect(Object.prototype.hasOwnProperty.call(makePanel(f, true).value, 'canUseOpenrouterMix')).toBe(false)
   })
 
   it('passes the LLM ensemble profile state to the router panel', () => {
@@ -74,7 +74,7 @@ describe('useSetupRouterForm — openrouter-mix round-trip', () => {
     }, {}, 'openrouter')
 
     expect(f.payload()).toMatchObject({
-      mode: 'openrouter-mix',
+      mode: 'custom',
       tiers: {
         c0: {
           provider: 'openrouter',
@@ -86,16 +86,18 @@ describe('useSetupRouterForm — openrouter-mix round-trip', () => {
     })
   })
 
-  it('surfaces openrouter-mix as its own honest select value and round-trips the payload', () => {
+  it('keeps openrouter-mix internally while exposing the layered UI choice', () => {
     const f = useSetupRouterForm()
     f.initFromConfig({ enabled: true, tier_profile: null }, {}, 'openrouter')
 
     const panel = makePanel(f, true)
     expect(panel.value.routerMode).toBe('openrouter-mix')
-    expect(panel.value.routerModeChoice).toBe('openrouter-mix')
-    expect(panel.value.canUseOpenrouterMix).toBe(true)
+    expect(panel.value.routerModeChoice).toBe('recommended')
+    expect(Object.prototype.hasOwnProperty.call(panel.value, 'canUseOpenrouterMix')).toBe(false)
     expect(panel.value.routerConfigDisabled).toBe(false)
-    expect(f.payload().mode).toBe('openrouter-mix')
+    expect(f.visibleModeChoice.value).toBe('router')
+    expect(f.tierTemplateState.value).toBe('custom')
+    expect(f.payload().mode).toBe('custom')
   })
 
   it('coerces a stored openrouter-mix mode back to recommended and marks the form dirty', () => {
@@ -151,5 +153,70 @@ describe('useSetupRouterForm — openrouter-mix round-trip', () => {
     expect(panel.value.routerModeChoice).toBe('disabled')
     expect(panel.value.routerConfigDisabled).toBe(true)
     expect(panel.value.routerConfigDisabledReason).toBe('single-model')
+  })
+})
+
+describe('useSetupRouterForm - model strategy semantics', () => {
+  it('keeps openrouter-mix internal and exposes it as custom tier state', () => {
+    const f = useSetupRouterForm()
+    f.initFromConfig({ enabled: true, tier_profile: null }, {}, 'openrouter')
+
+    expect(f.mode.value).toBe('openrouter-mix')
+    expect(f.tierTemplateState.value).toBe('custom')
+    expect(f.visibleModeChoice.value).toBe('router')
+  })
+
+  it('saves an edited legacy openrouter-mix table as custom mode', () => {
+    const f = useSetupRouterForm()
+    f.initFromConfig({
+      enabled: true,
+      tier_profile: null,
+      tiers: {
+        c0: { provider: 'openrouter', model: 'deepseek/deepseek-v4-flash' },
+        c1: { provider: 'openrouter', model: 'deepseek/deepseek-v4-pro' },
+        c2: { provider: 'openrouter', model: 'z-ai/glm-5.2' },
+        c3: { provider: 'openrouter', model: 'z-ai/glm-5.2' },
+      },
+    }, {}, 'openrouter')
+
+    f.updateTierField('c3', 'model', 'anthropic/claude-opus-4.8')
+
+    expect(f.payload().mode).toBe('custom')
+  })
+
+  it('adds cross-provider router fields when tier providers differ', () => {
+    const f = useSetupRouterForm()
+    f.initFromConfig({
+      enabled: true,
+      tier_profile: null,
+      tiers: {
+        c0: { provider: 'openai', model: 'gpt-5.4-mini' },
+        c1: { provider: 'openrouter', model: 'deepseek/deepseek-v4-pro' },
+        c2: { provider: 'openrouter', model: 'z-ai/glm-5.2' },
+        c3: { provider: 'openai', model: 'gpt-5.5' },
+      },
+    }, {}, 'openai')
+
+    expect(f.hasMixedTierProviders.value).toBe(true)
+    expect(f.tierTemplateState.value).toBe('custom')
+    expect(f.payload()).toMatchObject({
+      mode: 'custom',
+      crossProviderTiers: true,
+      tierProviderMismatch: 'veto',
+    })
+  })
+
+  it('exposes mixed-provider tier state through createPanel', () => {
+    const f = useSetupRouterForm()
+    f.initFromConfig({
+      enabled: true,
+      tier_profile: null,
+      tiers: {
+        c0: { provider: 'openai', model: 'gpt-5.4-mini' },
+        c1: { provider: 'openrouter', model: 'deepseek/deepseek-v4-pro' },
+      },
+    }, {}, 'openai')
+
+    expect(makePanel(f, false).value.hasMixedTierProviders).toBe(true)
   })
 })

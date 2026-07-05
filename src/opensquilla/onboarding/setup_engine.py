@@ -123,6 +123,13 @@ class SetupEngine:
             model_options = payload.get("modelOptions")
             if model_options is not None and not isinstance(model_options, (list, tuple)):
                 raise ValueError("modelOptions must be a list of model ids")
+            candidates = payload.get("candidates")
+            if candidates is not None and not isinstance(candidates, (list, tuple)):
+                raise ValueError("candidates must be a list of candidate objects")
+            if candidates is not None and any(
+                not isinstance(candidate, dict) for candidate in candidates
+            ):
+                raise ValueError("candidates must be a list of candidate objects")
             all_failed_policy = payload.get("allFailedPolicy")
             res = upsert_llm_ensemble(
                 self.config,
@@ -132,6 +139,11 @@ class SetupEngine:
                     None
                     if model_options is None
                     else [str(option) for option in model_options]
+                ),
+                candidates=(
+                    None
+                    if candidates is None
+                    else [dict(candidate) for candidate in candidates]
                 ),
                 min_successful_proposers=payload.get("minSuccessfulProposers"),
                 all_failed_policy=(

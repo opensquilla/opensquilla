@@ -30,7 +30,7 @@ const DISCOVERED: DiscoveredModel[] = [
 ]
 
 function panel(overrides: Record<string, unknown> = {}) {
-  return {
+  const base = {
     providerSummary: 'OpenAI',
     providerSelected: 'openai',
     runtimeProviders: [{ providerId: 'openai', label: 'OpenAI' }],
@@ -39,10 +39,27 @@ function panel(overrides: Record<string, unknown> = {}) {
     canConfigureRouter: false,
     providerNeeds: [],
     providerCoreFields: [
-      { name: 'api_key', label: 'API key', secret: true },
       { name: 'model', label: 'Model' },
     ],
     providerAdvancedFields: [],
+    credentialPanel: {
+      providerLabel: 'OpenAI',
+      providerSelected: true,
+      available: true,
+      source: 'explicit',
+      envKey: 'OPENAI_API_KEY',
+      masked: 'sk-••••1234',
+      revealAllowed: true,
+      revealed: '',
+      revealError: '',
+      replacing: false,
+      apiKeyValue: '',
+      apiKeyEnvValue: '',
+      connection: connection(),
+      onReveal: vi.fn(),
+      onReplace: vi.fn(),
+      onCancelReplace: vi.fn(),
+    },
     providerAdvancedOpen: false,
     providerEnvMissing: false,
     providerEnvKey: '',
@@ -51,6 +68,17 @@ function panel(overrides: Record<string, unknown> = {}) {
     connection: connection(),
     providerFieldValue: () => '',
     ...overrides,
+  }
+  const credentialPanel = (base.credentialPanel as Record<string, unknown>) || {}
+  return {
+    ...base,
+    credentialPanel: {
+      ...credentialPanel,
+      providerSelected: (overrides.providerSelected as string | undefined) !== undefined
+        ? Boolean(overrides.providerSelected)
+        : credentialPanel.providerSelected,
+      connection: (overrides.connection as ConnectionState | undefined) || (credentialPanel.connection as ConnectionState) || base.connection,
+    },
   }
 }
 
@@ -100,7 +128,7 @@ describe('SetupProviderPanel — test connection', () => {
 
   it('shows the Connected pill when verified', async () => {
     const { app, el } = await mountPanel({ connection: connection({ phase: 'verified' }) })
-    const pill = el.querySelector('.control-pill.control-pill--ok')
+    const pill = el.querySelector('.setup-connection__actions .control-pill.control-pill--ok')
     expect(pill?.textContent).toContain('✓ Connected')
     app.unmount()
   })
@@ -149,8 +177,54 @@ describe('SetupProviderPanel — model field', () => {
     })
     const combobox = el.querySelector('.setup-model-combobox input[role="combobox"]')
     expect(combobox?.getAttribute('name')).toBe('setup_provider_model')
-    // the api_key field is untouched
-    expect(el.querySelector('input[name="setup_provider_api_key"]')?.getAttribute('role')).toBeNull()
+    expect(el.querySelector('input[name="setup_provider_api_key"]')).toBeNull()
+    app.unmount()
+  })
+
+  it('does not render api_key or api_key_env as generic provider fields when the credential card is present', async () => {
+    const { app, el } = await mountPanel({
+      providerCoreFields: [
+        { name: 'model', label: 'Model' },
+      ],
+      providerAdvancedFields: [
+        { name: 'base_url', label: 'Base URL' },
+      ],
+    })
+
+    expect(el.querySelector('[data-name="api_key"]')).toBeNull()
+    expect(el.querySelector('[data-name="api_key_env"]')).toBeNull()
+    expect(el.textContent).toContain('OpenAI credential')
+
+    app.unmount()
+  })
+})
+
+describe('SetupProviderPanel — model strategy wayfinding', () => {
+  it('shows exactly one compact Model Routing entry without SquillaRouter wording', async () => {
+    const onGoToSection = vi.fn()
+    const preset = {
+      hasPreset: true,
+      presetLabel: 'OpenAI balanced tiers',
+      presetDescription: 'A curated tier split.',
+      synthesized: false,
+      tierRows: [],
+      tierLabel: (tier: string) => tier,
+      routerMode: 'custom',
+      routerCustomized: true,
+    }
+    const { app, el } = await mountPanel({ canConfigureRouter: true }, { preset, onGoToSection })
+    const routingLinks = Array.from(el.querySelectorAll<HTMLButtonElement>('button'))
+      .filter(btn => /Model Routing/.test(btn.textContent || ''))
+
+    expect(routingLinks).toHaveLength(1)
+    expect(routingLinks[0]?.textContent).toContain('Open Model Routing')
+    expect(el.textContent).not.toContain('SquillaRouter ready')
+    expect(el.textContent).not.toContain('Routing template:')
+    expect(el.textContent).not.toContain('Model Routing already uses')
+
+    routingLinks[0]?.click()
+
+    expect(onGoToSection).toHaveBeenCalledWith('modelStrategy')
     app.unmount()
   })
 })

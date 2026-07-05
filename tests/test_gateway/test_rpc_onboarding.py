@@ -225,6 +225,40 @@ async def test_router_configure_persists_image_model_as_image_capable(
 
 
 @pytest.mark.asyncio
+async def test_router_configure_persists_cross_provider_tiers(tmp_path, monkeypatch):
+    monkeypatch.setenv("OPENSQUILLA_GATEWAY_CONFIG_PATH", str(tmp_path / "c.toml"))
+    from opensquilla.gateway.config import GatewayConfig
+
+    ctx = _admin_ctx()
+    ctx.config = GatewayConfig(llm={"provider": "openai", "model": "gpt-5.4-mini"})
+    ctx.config.config_path = str(tmp_path / "c.toml")
+
+    res = await get_dispatcher().dispatch(
+        "r1",
+        "onboarding.router.configure",
+        {
+            "mode": "custom",
+            "crossProviderTiers": True,
+            "tierProviderMismatch": "veto",
+            "tiers": {
+                "c0": {"provider": "openai", "model": "gpt-5.4-mini"},
+                "c1": {"provider": "openrouter", "model": "deepseek/deepseek-v4-pro"},
+                "c2": {"provider": "openrouter", "model": "z-ai/glm-5.2"},
+                "c3": {"provider": "openai", "model": "gpt-5.5"},
+            },
+        },
+        ctx,
+    )
+
+    assert res.error is None, res.error
+    assert ctx.config.squilla_router.cross_provider_tiers is True
+    assert ctx.config.squilla_router.tier_provider_mismatch == "veto"
+    persisted = tomllib.loads((tmp_path / "c.toml").read_text())
+    assert persisted["squilla_router"]["cross_provider_tiers"] is True
+    assert persisted["squilla_router"]["tier_provider_mismatch"] == "veto"
+
+
+@pytest.mark.asyncio
 async def test_router_configure_rejects_image_model_as_default_tier(
     tmp_path,
     monkeypatch,

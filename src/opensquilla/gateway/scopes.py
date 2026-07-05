@@ -258,6 +258,7 @@ METHOD_SCOPES: dict[str, str] = {
     "channels.logout": ADMIN_SCOPE,
     "channels.restart": ADMIN_SCOPE,  # OpenSquilla-only.
     "diagnostics.set": ADMIN_SCOPE,
+    "onboarding.provider.credential.reveal": ADMIN_SCOPE,
     "cron.add": ADMIN_SCOPE,
     "cron.create": ADMIN_SCOPE,  # OpenSquilla-only alias for cron.add.
     "cron.update": ADMIN_SCOPE,

@@ -1,6 +1,12 @@
 import { describe, it, expect } from 'vitest'
 import { computed } from 'vue'
-import { useSetupEnsembleForm } from './useSetupEnsembleForm'
+import {
+  LEGACY_OPENROUTER_MODEL_OPTIONS,
+  OPENROUTER_FIXED_ENSEMBLE_AGGREGATOR,
+  OPENROUTER_FIXED_ENSEMBLE_PROPOSERS,
+  useSetupEnsembleForm,
+  type EnsembleConfigSlice,
+} from './useSetupEnsembleForm'
 
 // onboarding.ensemble.configure has partial-payload semantics (omitted keys
 // keep their current value on the gateway), so the form's contract is: track
@@ -10,14 +16,24 @@ const SAVED = {
   enabled: false,
   selection_mode: 'router_dynamic',
   model_options: ['custom/model-a', 'custom/model-b'],
+  candidates: [{ provider: 'deepseek', model: 'deepseek-v4-pro', source: 'custom', enabled: true }],
   min_successful_proposers: 2,
   all_failed_policy: 'error',
-}
+} satisfies EnsembleConfigSlice
 
-function makePanel(form: ReturnType<typeof useSetupEnsembleForm>, provider = 'openrouter') {
+function makePanel(
+  form: ReturnType<typeof useSetupEnsembleForm>,
+  provider = 'openrouter',
+  tierCandidates: Array<{ provider: string; model: string }> = [],
+) {
   return form.createPanel({
     statusText: computed(() => ''),
     activeProvider: computed(() => provider),
+    tierCandidates: computed(() => tierCandidates),
+    credentialStatus: computed(() => [
+      { provider: 'openrouter', available: false, source: 'missing_env', envKey: 'OPENROUTER_API_KEY' },
+      { provider: 'deepseek', available: true, source: 'explicit', envKey: 'DEEPSEEK_API_KEY' },
+    ]),
   })
 }
 
@@ -31,6 +47,7 @@ describe('useSetupEnsembleForm — init + dirty tracking', () => {
     expect(f.enabled.value).toBe(false)
     expect(f.selectionMode.value).toBe('router_dynamic')
     expect(f.modelOptions.value).toEqual(['custom/model-a', 'custom/model-b'])
+    expect(f.candidates.value).toEqual([{ provider: 'deepseek', model: 'deepseek-v4-pro', source: 'custom', enabled: true }])
     expect(f.minSuccessfulProposers.value).toBe(2)
     expect(f.allFailedPolicy.value).toBe('error')
   })
@@ -39,9 +56,10 @@ describe('useSetupEnsembleForm — init + dirty tracking', () => {
     const f = useSetupEnsembleForm()
     f.initFromConfig({ selection_mode: 'bogus', all_failed_policy: 'bogus', min_successful_proposers: -3 })
 
-    expect(f.enabled.value).toBe(true)
+    expect(f.enabled.value).toBe(false)
     expect(f.selectionMode.value).toBe('static_openrouter_b5')
     expect(f.modelOptions.value).toEqual([])
+    expect(f.candidates.value).toEqual([])
     expect(f.minSuccessfulProposers.value).toBe(1)
     expect(f.allFailedPolicy.value).toBe('fallback_single')
     expect(f.isDirty.value).toBe(false)
@@ -98,6 +116,20 @@ describe('useSetupEnsembleForm — partial payload building', () => {
     })
   })
 
+  it('sends structured candidates when custom candidates changed', () => {
+    const f = useSetupEnsembleForm()
+    f.initFromConfig(SAVED)
+
+    f.addCandidate('OpenRouter', 'qwen/qwen3.7-max')
+
+    expect(f.payload()).toEqual({
+      candidates: [
+        { provider: 'deepseek', model: 'deepseek-v4-pro', source: 'custom', enabled: true },
+        { provider: 'openrouter', model: 'qwen/qwen3.7-max', source: 'custom', enabled: true },
+      ],
+    })
+  })
+
   it('sends allFailedPolicy alone when only it changed', () => {
     const f = useSetupEnsembleForm()
     f.initFromConfig(SAVED)
@@ -127,6 +159,21 @@ describe('useSetupEnsembleForm — model option edits', () => {
     expect(f.payload()).toEqual({ modelOptions: ['b/two'] })
   })
 
+  it('resets custom model options and structured candidates back to the tier-derived baseline', () => {
+    const f = useSetupEnsembleForm()
+    f.initFromConfig({
+      selection_mode: 'router_dynamic',
+      model_options: ['a/one', 'b/two'],
+      candidates: [{ provider: 'deepseek', model: 'deepseek-v4-pro' }],
+    })
+
+    f.resetModelOptions()
+
+    expect(f.modelOptions.value).toEqual([])
+    expect(f.candidates.value).toEqual([])
+    expect(f.payload()).toEqual({ modelOptions: [], candidates: [] })
+  })
+
   it('clamps min successful proposers to a positive integer', () => {
     const f = useSetupEnsembleForm()
     f.initFromConfig(SAVED)
@@ -148,6 +195,55 @@ describe('useSetupEnsembleForm — panel contract', () => {
 
     f.setSelectionMode('static_openrouter_b5')
     expect(makePanel(f).value.showModelOptions).toBe(false)
+  })
+
+  it('shows only tier-derived candidates for DeepSeek when legacy OpenRouter defaults are present', () => {
+    const f = useSetupEnsembleForm()
+    f.initFromConfig({
+      selection_mode: 'router_dynamic',
+      model_options: [...LEGACY_OPENROUTER_MODEL_OPTIONS],
+    })
+
+    const panel = makePanel(f, 'deepseek', [
+      { provider: 'deepseek', model: 'deepseek-v4-flash' },
+      { provider: 'deepseek', model: 'deepseek-v4-pro' },
+    ])
+
+    expect(panel.value.tierCandidates.map(candidate => candidate.model)).toEqual([
+      'deepseek-v4-flash',
+      'deepseek-v4-pro',
+    ])
+    expect(panel.value.customCandidates).toEqual([])
+  })
+
+  it('materializes non-default legacy options as legacy candidates with provider credentials', () => {
+    const f = useSetupEnsembleForm()
+    f.initFromConfig({
+      selection_mode: 'router_dynamic',
+      model_options: ['moonshotai/kimi-k2.7-code'],
+    })
+
+    const panel = makePanel(f, 'deepseek')
+
+    expect(panel.value.customCandidates).toMatchObject([
+      {
+        provider: 'openrouter',
+        model: 'moonshotai/kimi-k2.7-code',
+        source: 'legacy_model_options',
+        credential: { available: false, source: 'missing_env' },
+      },
+    ])
+  })
+
+  it('uses the fixed OpenRouter 4+1 profile for static selection', () => {
+    const f = useSetupEnsembleForm()
+    f.initFromConfig({ selection_mode: 'static_openrouter_b5' })
+
+    const profile = makePanel(f, 'openrouter').value.fixedOpenRouterProfile
+
+    expect(profile?.proposers.map(candidate => candidate.model)).toEqual([...OPENROUTER_FIXED_ENSEMBLE_PROPOSERS])
+    expect(profile?.aggregator.model).toBe(OPENROUTER_FIXED_ENSEMBLE_AGGREGATOR)
+    expect(makePanel(f, 'openrouter').value.showCandidateEditor).toBe(false)
   })
 
   it('surfaces the OpenRouter credential hint only for static selection on a non-openrouter provider', () => {

@@ -60,7 +60,7 @@ describe('SetupRouterPanel', () => {
     const options = Array.from(select?.querySelectorAll('option') ?? [])
 
     expect(select?.value).toBe('recommended')
-    expect(options.map((option) => option.textContent || '')).toEqual(['Model routing', 'Single model'])
+    expect(options.map((option) => option.textContent || '')).toEqual(['AI single-model routing', 'Off'])
     expect(options.map((option) => option.value)).toEqual(['recommended', 'disabled'])
     expect(options.map((option) => option.textContent || '')).not.toContain('OpenRouter aggregated model tiers')
     app.unmount()
@@ -78,23 +78,23 @@ describe('SetupRouterPanel', () => {
     app.unmount()
   })
 
-  it('shows the LLM ensemble routing profile note when that mode is active', async () => {
+  it('shows the AI ensemble routing note when that mode is active', async () => {
     const { app, el } = await mountRouterPanel({ ensembleProfileActive: true })
 
-    expect(el.textContent).toContain('LLM ensemble routing profile')
-    expect(el.textContent).toContain('The tier table supplies candidate models for the ensemble router.')
+    expect(el.textContent).toContain('AI ensemble routing')
+    expect(el.textContent).toContain('The model tier table supplies candidate models for AI ensemble routing.')
 
     app.unmount()
   })
 
-  it('disables router configuration controls in single-model mode', async () => {
+  it('disables router configuration controls when routing is off', async () => {
     const { app, el } = await mountRouterPanel({
       routerMode: 'disabled',
       routerModeChoice: 'disabled',
       routerConfigDisabled: true,
     })
 
-    expect(el.textContent).toContain('Enable model routing to edit tier configuration.')
+    expect(el.textContent).toContain('Turn on AI single-model routing to edit model tiers.')
     expect(el.querySelector<HTMLSelectElement>('select[name="setup_router_default_tier"]')?.disabled).toBe(true)
     expect(el.querySelector<HTMLSelectElement>('select[name="setup_router_visual_mode"]')?.disabled).toBe(true)
     expect(el.querySelector<HTMLInputElement>('input[aria-label="c0 model"]')?.disabled).toBe(true)
@@ -105,14 +105,14 @@ describe('SetupRouterPanel', () => {
     app.unmount()
   })
 
-  it('keeps router configuration controls editable in model-routing mode', async () => {
+  it('keeps router configuration controls editable in AI single-model routing mode', async () => {
     const { app, el } = await mountRouterPanel({
       routerMode: 'recommended',
       routerModeChoice: 'recommended',
       routerConfigDisabled: false,
     })
 
-    expect(el.textContent).not.toContain('Enable model routing to edit tier configuration.')
+    expect(el.textContent).not.toContain('Turn on AI single-model routing to edit model tiers.')
     expect(el.querySelector<HTMLSelectElement>('select[name="setup_router_default_tier"]')?.disabled).toBe(false)
     expect(el.querySelector<HTMLSelectElement>('select[name="setup_router_visual_mode"]')?.disabled).toBe(false)
     expect(el.querySelector<HTMLInputElement>('input[aria-label="c0 model"]')?.disabled).toBe(false)
@@ -132,9 +132,9 @@ describe('SetupRouterPanel', () => {
       ensembleProfileActive: true,
     })
 
-    expect(el.textContent).toContain('LLM ensemble routing profile')
-    expect(el.textContent).toContain('AI model ensemble routing is active. Standard model routing settings are temporarily inactive.')
-    expect(el.textContent).not.toContain('Enable model routing to edit tier configuration.')
+    expect(el.textContent).toContain('AI ensemble routing')
+    expect(el.textContent).toContain('AI ensemble routing is active. Standard model tier settings are temporarily inactive.')
+    expect(el.textContent).not.toContain('Turn on AI single-model routing to edit model tiers.')
     expect(el.querySelector<HTMLSelectElement>('select[name="setup_router_mode"]')?.disabled).toBe(false)
     expect(el.querySelector<HTMLSelectElement>('select[name="setup_router_default_tier"]')?.disabled).toBe(true)
     expect(el.querySelector<HTMLSelectElement>('select[name="setup_router_visual_mode"]')?.disabled).toBe(true)

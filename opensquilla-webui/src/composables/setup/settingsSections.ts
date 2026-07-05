@@ -6,8 +6,8 @@
 // presentational: section ids, routes, panels, readiness, and save behaviour are
 // unchanged — the rail is only reordered and captioned. Order matters because the
 // rail (and the dirty-bar summary) reads top-to-bottom; it now mirrors the setup
-// dependency order (Provider → Router → Capabilities) so the two coupled panels
-// sit adjacent instead of being split by Behavior/Privacy.
+// dependency order (Chat Model → Model Routing → Capabilities) so the coupled
+// panels sit adjacent instead of being split by Behavior/Privacy.
 export const SETTINGS_SECTIONS = [
   // --- Gateway: host/connection state, renders before config loads ---
   // Connection carries a live status dot (driven by the gateway socket state,
@@ -18,14 +18,10 @@ export const SETTINGS_SECTIONS = [
   // reset. It is client-like (no readiness/RPC state, never dirty) and hidden on
   // web, where the host does not own a gateway process.
   { id: 'runtime', label: 'Runtime', icon: 'monitor', client: true, desktopOnly: true, group: 'gateway' },
-  // --- AI configuration: the coupled Provider → Router → Capabilities pipeline ---
-  { id: 'provider', label: 'Provider', icon: 'agents', client: false, desktopOnly: false, group: 'ai' },
-  { id: 'router', label: 'Router', icon: 'cron', client: false, desktopOnly: false, group: 'ai' },
-  // Ensemble sits directly under Router: it is the other half of the routing
-  // story ([llm_ensemble]), and the Router panel cross-references it when the
-  // ensemble profile takes over tier routing.
-  { id: 'ensemble', label: 'Ensemble', icon: 'router', client: false, desktopOnly: false, group: 'ai' },
-  { id: 'capabilities', label: 'Capabilities', icon: 'skills', client: false, desktopOnly: false, group: 'ai' },
+  // --- AI configuration: Chat Model -> Model Routing ---
+  { id: 'provider', label: 'Chat Model', icon: 'agents', client: false, desktopOnly: false, group: 'ai' },
+  { id: 'modelStrategy', label: 'Model Routing', icon: 'router', client: false, desktopOnly: false, group: 'ai' },
+  { id: 'capabilities', label: 'Capabilities', icon: 'skills', client: false, desktopOnly: false, group: 'capabilities' },
   // --- Delivery: where the assistant reaches users ---
   { id: 'channels', label: 'Channels', icon: 'channels', client: false, desktopOnly: false, group: 'delivery' },
   // --- Preferences: assistant behaviour + local app settings ---

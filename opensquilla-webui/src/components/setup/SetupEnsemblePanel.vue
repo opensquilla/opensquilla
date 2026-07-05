@@ -76,11 +76,10 @@ function submitModel() {
           class="control-input"
           :value="panel.selectionMode"
           name="setup_ensemble_selection_mode"
-          :title="t('setup.ensemble.rawValueTooltip', { value: panel.selectionMode })"
           @change="emit('updateSelectionMode', ($event.target as HTMLSelectElement).value)"
         >
-          <option value="static_openrouter_b5" title="static_openrouter_b5">{{ t('setup.ensemble.selectionStatic') }}</option>
-          <option value="router_dynamic" title="router_dynamic">{{ t('setup.ensemble.selectionDynamic') }}</option>
+          <option value="static_openrouter_b5">{{ t('setup.ensemble.selectionStatic') }}</option>
+          <option value="router_dynamic">{{ t('setup.ensemble.selectionDynamic') }}</option>
         </select>
       </div>
     </label>

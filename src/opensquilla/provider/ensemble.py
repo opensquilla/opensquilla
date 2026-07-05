@@ -1217,6 +1217,16 @@ _STATIC_OPENROUTER_B5_PROPOSER_MODELS = (
     "qwen/qwen3.7-max",
 )
 _STATIC_OPENROUTER_B5_AGGREGATOR_MODEL = "z-ai/glm-5.2"
+_LEGACY_OPENROUTER_MODEL_OPTIONS = (
+    "deepseek/deepseek-v4-pro",
+    "z-ai/glm-5.2",
+    "qwen/qwen3.7-plus",
+    "deepseek/deepseek-v4-flash",
+    "qwen/qwen3.7-max",
+    "moonshotai/kimi-k2.6",
+    "moonshotai/kimi-k2.7-code",
+    "minimax/minimax-m3",
+)
 _LEGACY_ENSEMBLE_MIN_SUCCESSFUL_PROPOSERS = 1
 _LEGACY_ENSEMBLE_TIMEOUT_SECONDS = 3600.0
 _LEGACY_ENSEMBLE_SHUFFLE_CANDIDATES = True
@@ -1627,7 +1637,27 @@ def _candidate_pool(
     )
 
     ensemble_cfg = getattr(config, "llm_ensemble", None)
-    for model in getattr(ensemble_cfg, "model_options", []) or []:
+
+    for entry in getattr(ensemble_cfg, "candidates", []) or []:
+        if getattr(entry, "enabled", True) is False:
+            continue
+        provider = str(getattr(entry, "provider", "") or "").strip()
+        model = str(getattr(entry, "model", "") or "").strip()
+        if not provider or not model:
+            continue
+        add(
+            _dynamic_candidate(
+                provider=provider,
+                model=model,
+                source=str(getattr(entry, "source", "") or "custom"),
+                pool_index=len(pool),
+            )
+        )
+
+    legacy_model_options = list(getattr(ensemble_cfg, "model_options", []) or [])
+    if tuple(legacy_model_options) == _LEGACY_OPENROUTER_MODEL_OPTIONS:
+        legacy_model_options = []
+    for model in legacy_model_options:
         model_s = str(model or "").strip()
         if not model_s:
             continue
@@ -1636,7 +1666,7 @@ def _candidate_pool(
             _dynamic_candidate(
                 provider=provider,
                 model=model_s,
-                source="model_options",
+                source="legacy_model_options",
                 pool_index=len(pool),
             )
         )

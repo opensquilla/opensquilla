@@ -5,7 +5,7 @@ export type IconName =
   | 'config' | 'logs' | 'skills' | 'agents' | 'approvals'
   | 'sun' | 'moon' | 'monitor' | 'x' | 'copy' | 'check'
   | 'send' | 'stop' | 'paperclip' | 'plus' | 'share' | 'trash'
-  | 'refresh' | 'download' | 'save' | 'menu' | 'user' | 'search'
+  | 'refresh' | 'download' | 'save' | 'menu' | 'user' | 'search' | 'eye' | 'eye-off'
   | 'edit' | 'info' | 'settings' | 'gear' | 'gauge' | 'router' | 'regenerate'
   | 'pencil' | 'fork' | 'listChecks' | 'chevronDown' | 'chevronRight' | 'arrowUp'
   | 'panel-left-open' | 'panel-left-close' | 'clock' | 'microphone'
@@ -49,6 +49,8 @@ const ICONS: Record<IconName, IconDef> = {
   menu:       { path: '<line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="18" x2="21" y2="18"/>' },
   user:       { path: '<path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/>' },
   search:     { path: '<circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>' },
+  eye:        { path: '<path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/>' },
+  'eye-off':  { path: '<path d="M9.88 9.88a3 3 0 1 0 4.24 4.24"/><path d="M10.73 5.08A10.43 10.43 0 0 1 12 5c6.5 0 10 7 10 7a18.18 18.18 0 0 1-4.29 5.31"/><path d="M6.61 6.61A18.35 18.35 0 0 0 2 12s3.5 7 10 7a10.54 10.54 0 0 0 5.39-1.61"/><line x1="2" y1="2" x2="22" y2="22"/>' },
   edit:       { path: '<path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>' },
   // 1.5 stroke variants
   info:       { path: '<circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/>', strokeWidth: 1.5 },

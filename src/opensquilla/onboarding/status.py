@@ -26,6 +26,7 @@ from opensquilla.onboarding.section_status import (
     SectionStatus,
     audio_section_status,
     channels_section_status,
+    ensemble_section_status,
     image_generation_section_status,
     llm_section_status,
     memory_embedding_section_status,
@@ -75,6 +76,7 @@ class OnboardingStatus:
 _SECTION_LABELS: dict[str, str] = {
     "llm": "Provider",
     "router": "Router",
+    "ensemble": "LLM ensemble",
     "search": "Web search",
     "channels": "Channels",
     "image_generation": "Image generation",
@@ -138,6 +140,15 @@ def _router_detail(cfg: GatewayConfig, llm_source: str) -> str:
         return f"SquillaRouter profile: {profile}"
     default_tier = str(getattr(router, "default_tier", "") or "c1").strip()
     return f"SquillaRouter default tier: {default_tier}"
+
+
+def _ensemble_detail(cfg: GatewayConfig) -> str:
+    ensemble = getattr(cfg, "llm_ensemble", None)
+    if ensemble is None or not bool(getattr(ensemble, "enabled", False)):
+        return "disabled"
+    mode = str(getattr(ensemble, "selection_mode", "") or "")
+    options = list(getattr(ensemble, "model_options", []) or [])
+    return f"selection mode: {mode} ({len(options)} models)"
 
 
 def _router_mode(cfg: GatewayConfig) -> str:
@@ -429,6 +440,7 @@ def get_onboarding_status(config: GatewayConfig) -> OnboardingStatus:
     detail_text = {
         "llm": _source_detail(llm_source, llm_env_key),
         "router": _router_detail(config, llm_source),
+        "ensemble": _ensemble_detail(config),
         "search": _source_detail(search_source, search_env_key),
         "image_generation": _with_provider(
             image_provider,
@@ -497,6 +509,7 @@ __all__ = [
     "get_onboarding_status",
     "channels_section_status",
     "audio_section_status",
+    "ensemble_section_status",
     "image_generation_section_status",
     "llm_section_status",
     "memory_embedding_section_status",

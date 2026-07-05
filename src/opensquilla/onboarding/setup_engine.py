@@ -21,6 +21,7 @@ from opensquilla.onboarding.mutations import (
     upsert_audio_provider,
     upsert_channel,
     upsert_image_generation_provider,
+    upsert_llm_ensemble,
     upsert_llm_provider,
     upsert_memory_embedding,
     upsert_router,
@@ -40,6 +41,7 @@ MEMORY_EMBEDDING_SECTION_ALIASES = frozenset(
     {"memory", "memory-embedding", "memory_embedding"}
 )
 AUDIO_SECTION_ALIASES = frozenset({"audio", "voice-audio", "voice_audio"})
+ENSEMBLE_SECTION_ALIASES = frozenset({"ensemble", "llm-ensemble", "llm_ensemble"})
 
 _CATALOG_SECTION_ALIASES = {
     "provider": "providers",
@@ -112,6 +114,29 @@ class SetupEngine:
                 mode=str(payload.get("mode", "recommended")),
                 default_tier=payload.get("defaultTier"),
                 tiers=payload.get("tiers"),
+            )
+        elif normalized in ENSEMBLE_SECTION_ALIASES:
+            # Keep-current semantics ride the mutation: keys absent from the
+            # payload (``None``) never touch the stored [llm_ensemble] values.
+            enabled = payload.get("enabled")
+            selection_mode = payload.get("selectionMode")
+            model_options = payload.get("modelOptions")
+            if model_options is not None and not isinstance(model_options, (list, tuple)):
+                raise ValueError("modelOptions must be a list of model ids")
+            all_failed_policy = payload.get("allFailedPolicy")
+            res = upsert_llm_ensemble(
+                self.config,
+                enabled=None if enabled is None else bool(enabled),
+                selection_mode=None if selection_mode is None else str(selection_mode),
+                model_options=(
+                    None
+                    if model_options is None
+                    else [str(option) for option in model_options]
+                ),
+                min_successful_proposers=payload.get("minSuccessfulProposers"),
+                all_failed_policy=(
+                    None if all_failed_policy is None else str(all_failed_policy)
+                ),
             )
         elif normalized == "search":
             res = upsert_search_provider(

@@ -102,6 +102,23 @@ def router_section_status(cfg: GatewayConfig) -> SectionStatus:
     return SectionStatus.OK if bool(getattr(router, "enabled", False)) else SectionStatus.OPTIONAL
 
 
+def ensemble_section_status(cfg: GatewayConfig) -> SectionStatus:
+    """``[llm_ensemble]`` mirrors the router: disabled is an opt-out, not a gap.
+
+    The ensemble reuses the active provider credential, so there is no
+    section-local key to verify — the section is ``OK`` when enabled and
+    ``OPTIONAL`` when disabled, and it never blocks onboarding.
+    """
+    ensemble = getattr(cfg, "llm_ensemble", None)
+    if ensemble is None:
+        return SectionStatus.OPTIONAL
+    return (
+        SectionStatus.OK
+        if bool(getattr(ensemble, "enabled", False))
+        else SectionStatus.OPTIONAL
+    )
+
+
 def search_section_status(cfg: GatewayConfig) -> SectionStatus:
     provider = _str(cfg, "search_provider")
     if not provider:
@@ -298,6 +315,7 @@ def section_verifiers() -> dict[str, Callable[[GatewayConfig], SectionStatus]]:
     return {
         "llm": llm_section_status,
         "router": router_section_status,
+        "ensemble": ensemble_section_status,
         "search": search_section_status,
         "channels": channels_section_status,
         "image_generation": image_generation_section_status,

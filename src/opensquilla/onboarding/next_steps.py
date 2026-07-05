@@ -41,6 +41,8 @@ _HEADLESS_SECTION_ALIASES = {
     "channel": "channels",
     "image_generation": "image-generation",
     "audio": "audio",
+    "llm-ensemble": "ensemble",
+    "llm_ensemble": "ensemble",
     "memory_embedding": "memory-embedding",
 }
 _HEADLESS_SETUP_COMMANDS = {
@@ -51,6 +53,10 @@ _HEADLESS_SETUP_COMMANDS = {
     "router": (
         "Headless router",
         "opensquilla onboard configure router --router recommended --default-tier c1",
+    ),
+    "ensemble": (
+        "Headless ensemble",
+        "opensquilla onboard configure ensemble --enabled",
     ),
     "channels": (
         "Channel recipes",

@@ -10,7 +10,6 @@ from __future__ import annotations
 import logging
 import threading
 import time
-from dataclasses import dataclass
 from inspect import Parameter, signature
 from typing import Any, Protocol, cast
 
@@ -18,16 +17,19 @@ import structlog
 
 from opensquilla.engine.pipeline import TurnContext
 from opensquilla.engine.pricing import lookup_price
+from opensquilla.engine.routing import (
+    PolicyInputs,
+    RoutingDecision,
+    RoutingPolicyEngine,
+    provider_mismatch,
+)
+from opensquilla.engine.routing.policy_data import DEFAULT_CONTEXT_WINDOW_TOKENS
 from opensquilla.provider.context_capabilities import provider_state_continuity_diagnostic
 from opensquilla.router_control import RouterControlHoldStore
 from opensquilla.router_runtime_diagnostics import router_runtime_operator_message
 from opensquilla.router_tiers import (
     DEFAULT_TEXT_TIER,
-    HIGHEST_TEXT_TIER,
-    ROUTE_CLASS_TO_TIER,
     TEXT_TIERS,
-    TIER_TO_ROUTE_CLASS,
-    TierConfig,
     normalize_text_tier,
 )
 from opensquilla.squilla_router.controller import (
@@ -124,116 +126,6 @@ _DEFER_ROUTING_HISTORY_KEY = "_defer_squilla_router_history"
 _PENDING_ROUTING_HISTORY_ENTRY_KEY = "_pending_squilla_router_history_entry"
 _PENDING_ROUTING_HISTORY_SESSION_KEY = "_pending_squilla_router_history_session"
 _THINKING_LEVELS = {"minimal", "low", "medium", "high", "xhigh", "adaptive"}
-_TIER_TO_ROUTE_CLASS = dict(TIER_TO_ROUTE_CLASS)
-_ROUTE_CLASS_TO_TIER = dict(ROUTE_CLASS_TO_TIER)
-_THINKING_MODE_ORDER = {"T0": 0, "T1": 1, "T2": 2, "T3": 3}
-_LARGE_CONTEXT_T2_FLOOR_TOKENS = 25_000
-_LARGE_CONTEXT_T3_FLOOR_TOKENS = 80_000
-_LARGE_CONTEXT_T3_CONTEXT_RATIO = 0.40
-_DEFAULT_CONTEXT_WINDOW_TOKENS = 200_000
-_COMPLAINT_TERMS = (
-    "不对",
-    "不行",
-    "不对劲",
-    "还是不对",
-    "完全不对",
-    "不是这样",
-    "你搞错了",
-    "你说错了",
-    "回答错了",
-    "理解错了",
-    "搞错重点了",
-    "错了",
-    "答非所问",
-    "没理解",
-    "没听懂",
-    "太差",
-    "太敷衍",
-    "敷衍",
-    "没用",
-    "废话",
-    "离谱",
-    "乱说",
-    "瞎说",
-    "胡扯",
-    "答得太差",
-    "质量太差",
-    "不满意",
-    "胡说",
-    "漏了",
-    "遗漏了",
-    "没提到",
-    "没覆盖",
-    "跑题了",
-    "偏题了",
-    "不是我要的",
-    "没按要求",
-    "没有按要求",
-    "重写",
-    "重新来",
-    "重新回答",
-    "再来一版",
-    "换个说法",
-    "重新组织",
-    "按我说的重来",
-    "你没有回答",
-    "垃圾",
-    "傻逼",
-    "sb",
-    "蠢",
-    "废物",
-    "滚",
-    "妈的",
-    "操",
-    "艹",
-    "wrong",
-    "incorrect",
-    "not correct",
-    "you are wrong",
-    "completely wrong",
-    "totally wrong",
-    "not what i asked",
-    "you misunderstood",
-    "that's not right",
-    "this is not right",
-    "bad answer",
-    "terrible answer",
-    "awful answer",
-    "horrible answer",
-    "poor answer",
-    "lazy answer",
-    "low quality",
-    "poor quality",
-    "try again",
-    "redo",
-    "rewrite",
-    "start over",
-    "answer again",
-    "you missed",
-    "missed the point",
-    "off topic",
-    "irrelevant",
-    "not helpful",
-    "garbage",
-    "trash",
-    "crap",
-    "sucks",
-    "stupid",
-    "idiot",
-    "moron",
-    "dumb",
-    "pathetic",
-    "ridiculous",
-    "fuck",
-    "fucking",
-    "shit",
-    "damn",
-    "wtf",
-    "asshole",
-    "bullshit",
-    "nonsense",
-    "useless",
-)
 
 
 def _routing_history_entry(
@@ -284,15 +176,10 @@ def commit_deferred_router_history(ctx: TurnContext) -> TurnContext:
 
 _RESPONSE_POLICY_OPEN = "[RESPONSE_POLICY:"
 
-
-@dataclass
-class RoutingDecision:
-    """Result of squilla router classification."""
-
-    tier: str
-    model: str
-    confidence: float
-    source: str  # "image_route" | "v4_phase3" | "v4_unavailable" | "default"
+# Post-classifier heuristics (confidence gate, complaint upgrade,
+# anti-downgrade, large-context floor, bind) live in engine/routing/policy.py;
+# the engine is stateless so one shared instance serves every turn.
+_POLICY_ENGINE = RoutingPolicyEngine()
 
 
 class _UnavailableV4Strategy:
@@ -520,11 +407,6 @@ def _inject_prompt_hint(message: str, hint: str) -> str:
     return f"{message}\n\n---\n[RESPONSE_POLICY: {hint}]"
 
 
-def _tier_index(tier: str, valid_tiers: list[str]) -> int:
-    normalized = normalize_text_tier(tier) or tier
-    return valid_tiers.index(normalized) if normalized in valid_tiers else -1
-
-
 def _token_estimate(value: object) -> int | None:
     if isinstance(value, bool):
         return None
@@ -559,31 +441,7 @@ def _context_window_tokens(ctx: TurnContext, router_cfg: object) -> int:
         tokens = _token_estimate(candidate)
         if tokens and tokens > 0:
             return tokens
-    return _DEFAULT_CONTEXT_WINDOW_TOKENS
-
-
-def _large_context_min_tier(
-    ctx: TurnContext,
-    *,
-    router_cfg: object,
-    semantic_message: str,
-) -> tuple[str, int] | None:
-    material_tokens = _material_estimated_tokens(ctx, semantic_message)
-    context_window = _context_window_tokens(ctx, router_cfg)
-    if (
-        material_tokens >= _LARGE_CONTEXT_T3_FLOOR_TOKENS
-        or material_tokens >= int(context_window * _LARGE_CONTEXT_T3_CONTEXT_RATIO)
-    ):
-        return HIGHEST_TEXT_TIER, material_tokens
-    if material_tokens >= _LARGE_CONTEXT_T2_FLOOR_TOKENS:
-        return "c2", material_tokens
-    return None
-
-
-def _tier_config_value(tier_cfg: object, key: str, default: object = None) -> object:
-    if isinstance(tier_cfg, dict):
-        return tier_cfg.get(key, default)
-    return getattr(tier_cfg, key, default)
+    return DEFAULT_CONTEXT_WINDOW_TOKENS
 
 
 def _flag_tier_provider_mismatch(
@@ -595,341 +453,40 @@ def _flag_tier_provider_mismatch(
 ) -> None:
     """Record the routed tier's provider; warn on unexecutable mismatches.
 
-    The tier's provider is always published as ``routed_provider`` so the
-    selector-apply site can execute it when ``cross_provider_tiers`` is
-    enabled. With the flag off, a tier naming another provider is a silent
-    misroute (the routed model runs on the active provider's credentials) —
-    surface it loudly in logs and telemetry.
+    Thin adapter over the flag-only ``provider_mismatch`` policy stage: it
+    gathers the active provider + cross-provider flag from the turn config,
+    applies the outcome to turn metadata, and emits the operator logs.
     """
-    if not routing_applied:
-        return
-    tier = TierConfig.from_value(tiers.get(tier_name))
-    if tier.provider:
-        ctx.metadata["routed_provider"] = tier.provider.lower()
-    active_provider = str(
-        getattr(getattr(ctx.config, "llm", None), "provider", "") or ""
-    ).strip().lower()
-    if not tier.provider or not active_provider:
-        return
-    if tier.provider.lower() == active_provider:
-        return
-    router_cfg = getattr(ctx.config, "squilla_router", None)
-    if bool(getattr(router_cfg, "cross_provider_tiers", False)):
+    outcome = provider_mismatch(
+        tiers=tiers,
+        tier_name=tier_name,
+        routing_applied=routing_applied,
+        active_provider=str(getattr(getattr(ctx.config, "llm", None), "provider", "") or ""),
+        cross_provider_tiers=bool(
+            getattr(getattr(ctx.config, "squilla_router", None), "cross_provider_tiers", False)
+        ),
+    )
+    if outcome.routed_provider:
+        ctx.metadata["routed_provider"] = outcome.routed_provider
+    if outcome.outcome == "cross_provider":
         log.info(
             "squilla_router.cross_provider_tier_routed",
             tier=tier_name,
-            tier_provider=tier.provider,
-            active_provider=active_provider,
-            model=tier.model,
+            tier_provider=outcome.tier_provider,
+            active_provider=outcome.active_provider,
+            model=outcome.tier_model,
             session=ctx.session_key,
         )
-        return
-    ctx.metadata["router_tier_provider_mismatch"] = tier.provider
-    log.warning(
-        "squilla_router.tier_provider_mismatch",
-        tier=tier_name,
-        tier_provider=tier.provider,
-        active_provider=active_provider,
-        model=tier.model,
-        session=ctx.session_key,
-    )
-
-
-def _upgrade_tier(tier: str, valid_tiers: list[str], steps: int) -> str:
-    idx = _tier_index(tier, valid_tiers)
-    if idx < 0:
-        return tier
-    return valid_tiers[min(idx + max(steps, 0), len(valid_tiers) - 1)]
-
-
-def _confidence_protected_tier(
-    tier: str,
-    *,
-    confidence: float,
-    router_cfg: object,
-    valid_tiers: list[str],
-    tiers: dict | None = None,
-) -> tuple[str, bool, float, str | None]:
-    threshold = float(getattr(router_cfg, "confidence_threshold", 0.5))
-    high_tier_margin = float(getattr(router_cfg, "confidence_high_tier_margin", 0.05))
-    default_tier = getattr(router_cfg, "default_tier", None)
-    if default_tier is None:
-        return tier, False, threshold, None
-    default_tier = normalize_text_tier(default_tier) or str(default_tier)
-    selected_cfg = tiers.get(tier, {}) if isinstance(tiers, dict) else {}
-    if bool(_tier_config_value(selected_cfg, "image_only", False)):
-        return tier, False, threshold, default_tier
-    tier_rank = _tier_index(tier, valid_tiers)
-    default_rank = _tier_index(default_tier, valid_tiers)
-    cutoff = threshold - high_tier_margin if tier_rank > default_rank else threshold
-    if confidence < cutoff and tier_rank >= 0 and default_rank >= 0 and tier != default_tier:
-        return default_tier, True, threshold, default_tier
-    return tier, False, threshold, default_tier
-
-
-def _detect_complaint(message: str, max_chars: int | None = None) -> list[str]:
-    text = message.strip()
-    if max_chars and max_chars > 0 and len(text) > max_chars:
-        return []
-    lowered = text.lower()
-    return [term for term in _COMPLAINT_TERMS if term in lowered]
-
-
-def _route_class_for_tier(tier: str) -> str | None:
-    normalized = normalize_text_tier(tier) or tier
-    return _TIER_TO_ROUTE_CLASS.get(normalized)
-
-
-def _apply_large_context_floor(
-    decision: RoutingDecision,
-    *,
-    ctx: TurnContext,
-    router_cfg: object,
-    tiers: dict,
-    valid_tiers: list[str],
-    semantic_message: str,
-    extra: dict | None,
-) -> RoutingDecision:
-    if decision.tier not in valid_tiers:
-        return decision
-
-    floor = _large_context_min_tier(
-        ctx,
-        router_cfg=router_cfg,
-        semantic_message=semantic_message,
-    )
-    if floor is None:
-        return decision
-
-    min_tier, material_tokens = floor
-    if min_tier not in valid_tiers:
-        return decision
-    if _tier_index(decision.tier, valid_tiers) >= _tier_index(min_tier, valid_tiers):
-        return decision
-
-    floored = RoutingDecision(
-        tier=min_tier,
-        model=tiers[min_tier].get("model", decision.model),
-        confidence=decision.confidence,
-        source="large_context_floor",
-    )
-    ctx.metadata["large_context_floor_from_tier"] = decision.tier
-    ctx.metadata["large_context_material_tokens"] = material_tokens
-
-    if extra is not None:
-        extra.setdefault("base_tier", decision.tier)
-        extra["large_context_floor_applied"] = True
-        extra["large_context_floor_from_tier"] = decision.tier
-        extra["large_context_floor_min_tier"] = min_tier
-        extra["large_context_material_tokens"] = material_tokens
-        extra["large_context_pre_floor_source"] = decision.source
-        extra["final_tier"] = min_tier
-        extra["final_route_class"] = _route_class_for_tier(min_tier)
-
-    return floored
-
-
-def _tier_for_route_class(route_class: object) -> str | None:
-    if route_class is None:
-        return None
-    return _ROUTE_CLASS_TO_TIER.get(str(route_class))
-
-
-def _min_thinking_mode_for_tier(tier: str | None) -> str | None:
-    tier = normalize_text_tier(tier)
-    if tier == HIGHEST_TEXT_TIER:
-        return "T3"
-    if tier == "c2":
-        return "T2"
-    if tier == DEFAULT_TEXT_TIER:
-        return "T1"
-    return None
-
-
-def _promote_thinking_mode(current: str | None, minimum: str | None) -> str | None:
-    if minimum is None:
-        return current
-    if current not in _THINKING_MODE_ORDER:
-        return minimum
-    if _THINKING_MODE_ORDER[current] < _THINKING_MODE_ORDER[minimum]:
-        return minimum
-    return current
-
-
-def _reconcile_controller_with_final_tier(
-    thinking_mode: str | None,
-    prompt_policy: str | None,
-    extra: dict,
-) -> tuple[str | None, str | None]:
-    """Keep controller output consistent with OpenSquilla's final tier overrides."""
-    final_tier = normalize_text_tier(extra.get("final_tier")) or extra.get("final_tier")
-    base_tier = normalize_text_tier(extra.get("base_tier")) or extra.get("base_tier")
-    if not final_tier or final_tier == base_tier:
-        return thinking_mode, prompt_policy
-
-    original_thinking = thinking_mode
-    original_prompt = prompt_policy
-
-    thinking_mode = _promote_thinking_mode(
-        thinking_mode,
-        _min_thinking_mode_for_tier(str(final_tier)),
-    )
-    if prompt_policy == "P0" and (
-        str(final_tier) in {"c2", HIGHEST_TEXT_TIER} or extra.get("complaint_detected")
-    ):
-        prompt_policy = "P1"
-    if thinking_mode is not None and prompt_policy is not None:
-        thinking_mode, prompt_policy = normalize_decisions(thinking_mode, prompt_policy)
-
-    if thinking_mode != original_thinking or prompt_policy != original_prompt:
-        extra.setdefault("base_thinking_mode", original_thinking)
-        extra.setdefault("base_prompt_policy", original_prompt)
-        extra["thinking_mode"] = thinking_mode
-        extra["prompt_policy"] = prompt_policy
-        extra["controller_reconciled"] = True
-    else:
-        extra.setdefault("controller_reconciled", False)
-    return thinking_mode, prompt_policy
-
-
-def _previous_final_entry(
-    routing_history: list[dict] | None,
-    now: float,
-    window: float,
-) -> dict | None:
-    if not routing_history:
-        return None
-    cutoff = now - window
-    for entry in reversed(routing_history):
-        if entry.get("_ts", now) >= cutoff:
-            return entry
-    return None
-
-
-def _previous_final_tier(entry: dict | None) -> str | None:
-    if not entry:
-        return None
-    tier = entry.get("final_tier")
-    if tier:
-        return normalize_text_tier(tier) or str(tier)
-    return _tier_for_route_class(entry.get("final_route_class") or entry.get("route_class"))
-
-
-def _finalize_decision(
-    decision: RoutingDecision,
-    *,
-    router_cfg: object,
-    tiers: dict,
-    valid_tiers: list[str],
-    message: str,
-    routing_history: list[dict] | None,
-    strategy_name: str,
-    extra: dict,
-) -> RoutingDecision:
-    if not _is_history_strategy(strategy_name):
-        return decision
-
-    base_tier = normalize_text_tier(decision.tier) or decision.tier
-    final_tier = base_tier
-    base_route_class = extra.get("route_class") or _route_class_for_tier(base_tier)
-    if base_route_class is not None:
-        extra["route_class"] = base_route_class
-        extra.setdefault("top1_label", base_route_class)
-
-    pre_confidence_tier = final_tier
-    (
-        final_tier,
-        confidence_gate_applied,
-        confidence_threshold,
-        confidence_default_tier,
-    ) = _confidence_protected_tier(
-        final_tier,
-        confidence=decision.confidence,
-        router_cfg=router_cfg,
-        valid_tiers=valid_tiers,
-        tiers=tiers,
-    )
-
-    now = time.monotonic()
-    window = float(getattr(router_cfg, "kv_cache_anti_downgrade_window_seconds", 600))
-    previous_entry = _previous_final_entry(
-        routing_history,
-        now,
-        window,
-    )
-    previous_tier = _previous_final_tier(previous_entry)
-    previous_route_class = None
-    if previous_entry:
-        previous_route_class = previous_entry.get("final_route_class") or previous_entry.get(
-            "route_class"
+    elif outcome.outcome == "mismatch":
+        ctx.metadata["router_tier_provider_mismatch"] = outcome.tier_provider
+        log.warning(
+            "squilla_router.tier_provider_mismatch",
+            tier=tier_name,
+            tier_provider=outcome.tier_provider,
+            active_provider=outcome.active_provider,
+            model=outcome.tier_model,
+            session=ctx.session_key,
         )
-
-    complaint_terms: list[str] = []
-    complaint_upgrade_applied = False
-    if getattr(router_cfg, "complaint_upgrade_enabled", True):
-        complaint_terms = _detect_complaint(
-            message,
-            max_chars=int(getattr(router_cfg, "complaint_upgrade_max_chars", 160)),
-        )
-        if complaint_terms:
-            upgrade_start_tier = final_tier
-            if pre_confidence_tier in valid_tiers and _tier_index(
-                pre_confidence_tier, valid_tiers
-            ) > _tier_index(upgrade_start_tier, valid_tiers):
-                upgrade_start_tier = pre_confidence_tier
-            if previous_tier in valid_tiers and _tier_index(
-                previous_tier, valid_tiers
-            ) > _tier_index(upgrade_start_tier, valid_tiers):
-                upgrade_start_tier = previous_tier
-            upgraded_tier = _upgrade_tier(
-                upgrade_start_tier,
-                valid_tiers,
-                int(getattr(router_cfg, "complaint_upgrade_steps", 1)),
-            )
-            complaint_upgrade_applied = upgraded_tier != final_tier
-            final_tier = upgraded_tier
-
-    anti_downgrade_applied = False
-    if (
-        getattr(router_cfg, "kv_cache_anti_downgrade_enabled", True)
-        and previous_tier in valid_tiers
-        and _tier_index(final_tier, valid_tiers) >= 0
-        and _tier_index(previous_tier, valid_tiers) > _tier_index(final_tier, valid_tiers)
-    ):
-        final_tier = previous_tier
-        anti_downgrade_applied = True
-
-    final_route_class = _route_class_for_tier(final_tier)
-    extra.update(
-        {
-            "base_tier": base_tier,
-            "pre_confidence_tier": normalize_text_tier(pre_confidence_tier)
-            or pre_confidence_tier,
-            "confidence_threshold": confidence_threshold,
-            "confidence_default_tier": confidence_default_tier,
-            "confidence_gate_applied": confidence_gate_applied,
-            "final_tier": final_tier,
-            "final_route_class": final_route_class,
-            "complaint_detected": bool(complaint_terms),
-            "complaint_terms": complaint_terms,
-            "complaint_upgrade_applied": complaint_upgrade_applied,
-            "complaint_upgrade_steps": int(getattr(router_cfg, "complaint_upgrade_steps", 1)),
-            "complaint_upgrade_max_chars": int(
-                getattr(router_cfg, "complaint_upgrade_max_chars", 160)
-            ),
-            "anti_downgrade_applied": anti_downgrade_applied,
-            "previous_tier": normalize_text_tier(previous_tier) or previous_tier,
-            "previous_route_class": previous_route_class,
-            "kv_cache_window_seconds": window,
-        }
-    )
-
-    return RoutingDecision(
-        tier=final_tier,
-        model=tiers[final_tier].get("model", decision.model),
-        confidence=decision.confidence,
-        source=decision.source,
-    )
 
 
 def _apply_controller(
@@ -1191,41 +748,32 @@ async def apply_squilla_router(ctx: TurnContext) -> TurnContext:
             thinking_mode = None
             prompt_policy = None
 
-    # --- Apply decisions ---
+    # --- Apply decisions: post-classifier policy stages -----------------------
+    # The policy engine consumes plain data only; context gathering stays here.
     if _is_history_strategy(strategy_name):
         routing_extra = ctx.metadata.setdefault("routing_extra", extra or {})
-        decision = _finalize_decision(
-            decision,
+    else:
+        routing_extra = ctx.metadata.get("routing_extra")
+    policy_result = _POLICY_ENGINE.run(
+        PolicyInputs(
+            decision=decision,
+            message=semantic_message,
             router_cfg=router_cfg,
             tiers=tiers,
             valid_tiers=valid_tiers,
-            message=semantic_message,
             routing_history=routing_history,
-            strategy_name=strategy_name,
-            extra=routing_extra,
+            extra=routing_extra if isinstance(routing_extra, dict) else None,
+            thinking_mode=thinking_mode,
+            prompt_policy=prompt_policy,
+            history_strategy=_is_history_strategy(strategy_name),
+            material_estimated_tokens=_material_estimated_tokens(ctx, semantic_message),
+            context_window_tokens=_context_window_tokens(ctx, router_cfg),
         )
-        thinking_mode, prompt_policy = _reconcile_controller_with_final_tier(
-            thinking_mode,
-            prompt_policy,
-            routing_extra,
-        )
-
-    routing_extra = ctx.metadata.get("routing_extra")
-    decision = _apply_large_context_floor(
-        decision,
-        ctx=ctx,
-        router_cfg=router_cfg,
-        tiers=tiers,
-        valid_tiers=valid_tiers,
-        semantic_message=semantic_message,
-        extra=routing_extra if isinstance(routing_extra, dict) else None,
     )
-    if decision.source == "large_context_floor" and isinstance(routing_extra, dict):
-        thinking_mode, prompt_policy = _reconcile_controller_with_final_tier(
-            thinking_mode,
-            prompt_policy,
-            routing_extra,
-        )
+    decision = policy_result.decision
+    thinking_mode = policy_result.thinking_mode
+    prompt_policy = policy_result.prompt_policy
+    ctx.metadata.update(policy_result.metadata_updates)
 
     routing_applied = rollout_phase != "observe"
     if routing_applied:

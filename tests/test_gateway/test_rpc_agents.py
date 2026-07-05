@@ -8,7 +8,7 @@ from opensquilla.gateway.rpc import RpcContext, get_dispatcher
 
 
 class _FailingModelSelector:
-    async def list_models(self) -> list[dict]:
+    async def list_models_detailed(self):
         raise RuntimeError("provider unavailable")
 
 
@@ -106,11 +106,14 @@ async def test_models_rpc_list_without_provider_selector_returns_empty() -> None
     )
 
     assert result.error is None, result.error
-    assert result.payload == []
+    assert result.payload == {"models": [], "errors": []}
 
 
 @pytest.mark.asyncio
-async def test_models_rpc_list_provider_failure_returns_empty() -> None:
+async def test_models_rpc_list_selector_crash_returns_empty() -> None:
+    # A selector whose list_models_detailed itself raises (as opposed to
+    # per-provider failures, which it reports in ``errors``) still yields an
+    # empty envelope rather than an RPC error.
     result = await get_dispatcher().dispatch(
         "r1",
         "models.list",
@@ -119,7 +122,59 @@ async def test_models_rpc_list_provider_failure_returns_empty() -> None:
     )
 
     assert result.error is None, result.error
-    assert result.payload == []
+    assert result.payload == {"models": [], "errors": []}
+
+
+class _DetailedModelSelector:
+    async def list_models_detailed(self):
+        from opensquilla.provider.selector import ModelListResult, ProviderListError
+        from opensquilla.provider.types import ModelInfo
+
+        return ModelListResult(
+            models=[
+                ModelInfo(provider="ollama", model_id="test-model-good").model_dump()
+            ],
+            errors=[
+                ProviderListError(
+                    provider="openrouter",
+                    model_hint="openrouter/test-model-locked",
+                    kind="auth_invalid",
+                    detail="401 invalid api key ***",
+                )
+            ],
+        )
+
+
+@pytest.mark.asyncio
+async def test_models_rpc_list_surfaces_classified_provider_errors() -> None:
+    result = await get_dispatcher().dispatch(
+        "r1",
+        "models.list",
+        {},
+        RpcContext(conn_id="test", provider_selector=_DetailedModelSelector()),
+    )
+
+    assert result.error is None, result.error
+    assert [m["id"] for m in result.payload["models"]] == ["test-model-good"]
+    assert result.payload["errors"] == [
+        {"provider": "openrouter", "kind": "auth_invalid", "detail": "401 invalid api key ***"}
+    ]
+
+
+@pytest.mark.asyncio
+async def test_models_rpc_list_filters_rows_but_keeps_errors() -> None:
+    # Filters narrow the rows only; a provider whose listing failed must stay
+    # visible even when its rows are filtered away.
+    result = await get_dispatcher().dispatch(
+        "r1",
+        "models.list",
+        {"provider": "openrouter"},
+        RpcContext(conn_id="test", provider_selector=_DetailedModelSelector()),
+    )
+
+    assert result.error is None, result.error
+    assert result.payload["models"] == []
+    assert [e["provider"] for e in result.payload["errors"]] == ["openrouter"]
 
 
 @pytest.mark.asyncio

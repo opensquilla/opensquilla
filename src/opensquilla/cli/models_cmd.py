@@ -9,7 +9,7 @@ from rich.table import Table
 
 from opensquilla.cli.gateway_rpc import run_gateway_sync
 from opensquilla.cli.output import print_json
-from opensquilla.cli.ui import ACCENT_HEADER, console
+from opensquilla.cli.ui import ACCENT_HEADER, console, error_console, markup_escape
 
 app = typer.Typer(help="Inspect available models.")
 
@@ -24,13 +24,20 @@ def models_list(
 ) -> None:
     """List available models from the running gateway."""
 
-    async def _with_client(client) -> list[dict[str, Any]]:
-        return cast(
-            list[dict[str, Any]],
-            await client.list_models(provider=provider, capabilities=capability),
+    async def _with_client(client) -> Any:
+        return await client.call(
+            "models.list", {"provider": provider, "capabilities": capability}
         )
 
-    rows = run_gateway_sync(_with_client, json_output=json_output)
+    payload = run_gateway_sync(_with_client, json_output=json_output)
+    if isinstance(payload, list):
+        # Pre-envelope gateways returned the bare row list.
+        rows = cast(list[dict[str, Any]], payload)
+        errors: list[dict[str, Any]] = []
+    else:
+        rows = cast(list[dict[str, Any]], list(payload.get("models") or []))
+        errors = cast(list[dict[str, Any]], list(payload.get("errors") or []))
+
     if json_output:
         print_json(rows)
         return
@@ -53,3 +60,14 @@ def models_list(
             str(pricing.get("outputPer1k") or ""),
         )
     console.print(table)
+
+    if errors:
+        error_console.print("[yellow]Some providers failed to list models:[/yellow]")
+        for err in errors:
+            provider_id = markup_escape(str(err.get("provider") or "unknown"))
+            kind = markup_escape(str(err.get("kind") or "unknown"))
+            detail = markup_escape(str(err.get("detail") or ""))
+            line = f"  - {provider_id}: {kind}"
+            if detail:
+                line += f" — {detail}"
+            error_console.print(f"[yellow]{line}[/yellow]")

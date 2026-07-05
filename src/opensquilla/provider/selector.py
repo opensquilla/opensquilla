@@ -5,8 +5,11 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field, replace
 
+from opensquilla.redaction import redact_error_text
+
 from .anthropic import AnthropicProvider
 from .compat_policy import OpenAICompatPolicy
+from .failures import classify_provider_error
 from .ollama import OllamaProvider
 from .openai import OpenAIProvider
 from .openai_codex import OpenAICodexProvider
@@ -45,6 +48,36 @@ class SelectorConfig:
     fallbacks: list[ProviderConfig] = field(default_factory=list)
 
 
+@dataclass(frozen=True)
+class ProviderListError:
+    """One provider's failure while listing models, classified and redacted.
+
+    ``model_hint`` is the chain link's configured model — an operator anchor
+    for *which* configured provider row failed, since several links can share
+    a provider id. ``kind`` is a :class:`ProviderFailureKind` value; ``detail``
+    is credential-masked free text safe to surface to clients.
+    """
+
+    provider: str
+    model_hint: str
+    kind: str
+    detail: str
+
+
+@dataclass
+class ModelListResult:
+    """Aggregated model-listing outcome across the whole selector chain.
+
+    ``models`` preserves the exact shape ``list_models`` returned before this
+    was introduced (provider ``ModelInfo`` dicts); ``errors`` is the additive
+    channel that lets callers tell "no models" apart from "every provider
+    rejected our credentials".
+    """
+
+    models: list[dict] = field(default_factory=list)
+    errors: list[ProviderListError] = field(default_factory=list)
+
+
 class ProviderBuildError(Exception):
     """Raised when a provider cannot be instantiated."""
 
@@ -58,6 +91,21 @@ def _unsupported_runtime_message(provider: str) -> str:
 
 def _missing_base_url_message(provider: str) -> str:
     return f"Provider '{provider}' requires an explicit base_url"
+
+
+def _exception_status_code(exc: Exception) -> int | None:
+    """Best-effort HTTP status code from a provider list_models exception.
+
+    Adapters raise heterogeneous errors: ``httpx.HTTPStatusError`` carries a
+    ``response.status_code``; others are plain messages. When no structured
+    code is present, ``classify_provider_error`` still classifies from the
+    message text (e.g. "invalid api key"), so ``None`` is a safe default.
+    """
+    response = getattr(exc, "response", None)
+    status_code = getattr(response, "status_code", None)
+    if isinstance(status_code, int):
+        return status_code
+    return None
 
 
 _ProviderConfigIdentity = tuple[
@@ -443,15 +491,39 @@ class ModelSelector:
 
     async def list_models(self) -> list[dict]:
         """Aggregate models from all configured providers in the chain."""
-        models: list[dict] = []
+        return (await self.list_models_detailed()).models
+
+    async def list_models_detailed(self) -> ModelListResult:
+        """Aggregate models across the chain, keeping per-provider failures.
+
+        Walks the chain exactly like :meth:`list_models`, but instead of
+        swallowing a failed link it classifies the exception through
+        :func:`classify_provider_error` and records a redacted
+        :class:`ProviderListError`, so model pickers can distinguish
+        "provider has no models" from "wrong key / URL".
+        """
+        result = ModelListResult()
         for cfg in self._chain:
             try:
                 provider = _build_provider(cfg)
                 provider_models = await provider.list_models()
-                models.extend(m.model_dump() for m in provider_models)
-            except Exception:
-                continue
-        return models
+                result.models.extend(m.model_dump() for m in provider_models)
+            except Exception as exc:
+                result.errors.append(
+                    ProviderListError(
+                        provider=cfg.provider,
+                        model_hint=cfg.model,
+                        kind=classify_provider_error(
+                            cfg.provider,
+                            _exception_status_code(exc),
+                            message=str(exc),
+                        ).value,
+                        # Provider error bodies can echo credentials (bad
+                        # keys, signed URLs) — never repeat them verbatim.
+                        detail=redact_error_text(str(exc)),
+                    )
+                )
+        return result
 
     @property
     def current_config(self) -> ProviderConfig:

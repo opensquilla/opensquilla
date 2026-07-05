@@ -8,19 +8,44 @@ public RPC field names are stable).
 - Adding a key requires deliberately extending the frozen sets in this file —
   that friction is the point: wire additions should be a conscious decision.
 
-The shape is frozen at ``_model_info_to_wire``, the pure row builder the
-``models.list`` handler maps over provider results; driving the full handler
-would require a live provider selector, which contract tests must not need.
-Rows are produced from a fully synthetic ``ModelInfo`` — zero network.
+The row and error shapes are frozen at ``_model_info_to_wire`` /
+``_list_error_to_wire``, the pure builders the ``models.list`` handler maps
+over selector results; the envelope is frozen by driving the handler with a
+fully synthetic in-memory selector stub — zero network either way.
 """
 
 from __future__ import annotations
 
-from opensquilla.gateway.rpc_models import _model_info_to_wire
+from opensquilla.gateway.rpc import RpcContext
+from opensquilla.gateway.rpc_models import (
+    _handle_models_list,
+    _list_error_to_wire,
+    _model_info_to_wire,
+)
+from opensquilla.provider.selector import ModelListResult, ProviderListError
 from opensquilla.provider.types import ModelInfo
 
-MODEL_ROW_KEYS = frozenset({"id", "name", "provider", "contextWindow", "capabilities", "pricing"})
+# Additive wire evolution: ``source`` (catalog provenance) and
+# ``reasoningFormat`` (reasoning dialect) were added deliberately. Extending
+# this frozen set is the conscious decision the friction is meant to force —
+# renaming or removing any existing key must still fail here.
+MODEL_ROW_KEYS = frozenset(
+    {
+        "id",
+        "name",
+        "provider",
+        "contextWindow",
+        "capabilities",
+        "pricing",
+        "source",
+        "reasoningFormat",
+    }
+)
 MODEL_PRICING_KEYS = frozenset({"inputPer1k", "outputPer1k"})
+# Additive top-level envelope key: ``errors`` carries classified, redacted
+# per-provider listing failures alongside ``models``. Each error row is frozen
+# to exactly these keys.
+MODEL_ERROR_KEYS = frozenset({"provider", "kind", "detail"})
 
 
 def _synthetic_model(**overrides) -> dict:
@@ -54,6 +79,35 @@ def test_model_row_values_map_from_model_info() -> None:
     assert row["pricing"] == {"inputPer1k": 0.001, "outputPer1k": 0.002}
 
 
+def test_model_row_carries_catalog_provenance() -> None:
+    # A model unknown to every catalog layer still resolves to a synthesized
+    # entry, so ``source``/``reasoningFormat`` are always renderable strings.
+    row = _model_info_to_wire(_synthetic_model())
+    assert isinstance(row["source"], str) and row["source"]
+    assert isinstance(row["reasoningFormat"], str) and row["reasoningFormat"]
+
+
+def test_error_row_keys_are_frozen() -> None:
+    err = _list_error_to_wire(
+        ProviderListError(
+            provider="test-provider",
+            model_hint="test-provider/test-model",
+            kind="auth_invalid",
+            detail="invalid api key",
+        )
+    )
+    assert set(err) == MODEL_ERROR_KEYS
+    # ``model_hint`` is selector-internal operator context; it stays off the
+    # wire on purpose.
+    assert "model_hint" not in err
+    assert err == {
+        "provider": "test-provider",
+        "kind": "auth_invalid",
+        "detail": "invalid api key",
+    }
+
+
+
 def test_model_row_capability_strings_are_frozen() -> None:
     # Capability strings are matched verbatim by the handler's
     # ``capabilities`` filter and by client-side capability badges.
@@ -69,3 +123,39 @@ def test_model_row_name_falls_back_to_the_model_id() -> None:
     # returns no display name.
     row = _model_info_to_wire(_synthetic_model(display_name=""))
     assert row["name"] == "test-provider/test-model"
+
+
+MODEL_ENVELOPE_KEYS = frozenset({"models", "errors"})
+
+
+class _StubSelector:
+    """Zero-network selector stub returning a fixed ModelListResult."""
+
+    def __init__(self, result: ModelListResult) -> None:
+        self._result = result
+
+    async def list_models_detailed(self) -> ModelListResult:
+        return self._result
+
+
+async def test_models_list_envelope_keys_are_frozen() -> None:
+    result = ModelListResult(
+        models=[_synthetic_model()],
+        errors=[
+            ProviderListError(
+                provider="test-provider",
+                model_hint="test-provider/test-model",
+                kind="auth_invalid",
+                detail="invalid api key",
+            )
+        ],
+    )
+    ctx = RpcContext(conn_id="test", provider_selector=_StubSelector(result))
+    envelope = await _handle_models_list({}, ctx)
+
+    assert set(envelope) == MODEL_ENVELOPE_KEYS
+    assert set(envelope["models"][0]) == MODEL_ROW_KEYS
+    assert envelope["errors"] == [
+        {"provider": "test-provider", "kind": "auth_invalid", "detail": "invalid api key"}
+    ]
+

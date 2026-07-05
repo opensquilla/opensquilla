@@ -74,6 +74,7 @@ export interface UseChatSendOptions {
   persistSession: (key: string, options?: PersistSessionOptions) => void
   isCompactInFlightForCurrentSession: () => boolean
   hasPendingAttachmentWork: () => boolean
+  prepareAttachmentsForSend?: (options?: { isCurrent?: () => boolean }) => Promise<boolean>
   enqueuePendingInput: (text: string) => boolean
   enqueueHiddenControl?: (item: { text: string; displayText: string }) => boolean
   popAllPendingIntoComposer: () => boolean
@@ -175,8 +176,21 @@ export function useChatSend(options: UseChatSendOptions) {
   async function dispatchSend(text: string, sendOpts?: { queueMode?: 'steer' }) {
     const requestSessionKey = options.sessionKey.value
     if (!requestSessionKey) return
-    const attachmentsToSend = options.pendingAttachments.value.filter(isSendableAttachment)
-    const attachmentsToKeep = options.pendingAttachments.value.filter(a => !isSendableAttachment(a))
+    const sendAttachmentIds = new Set(
+      options.pendingAttachments.value
+        .filter(isSendableAttachment)
+        .map(attachment => attachment.local_id),
+    )
+    if (options.prepareAttachmentsForSend) {
+      const ready = await options.prepareAttachmentsForSend({
+        isCurrent: () => options.sessionKey.value === requestSessionKey,
+      })
+      if (!ready) return
+      if (options.sessionKey.value !== requestSessionKey) return
+    }
+    const attachmentsToSend = options.pendingAttachments.value.filter((a): a is SendableAttachment => sendAttachmentIds.has(a.local_id) && isSendableAttachment(a))
+    const attachmentsToKeep = options.pendingAttachments.value.filter(a => !sendAttachmentIds.has(a.local_id) || !isSendableAttachment(a))
+    if (!text && attachmentsToSend.length === 0) return
 
     options.aborted.value = false
     options.closeSlashMenu()

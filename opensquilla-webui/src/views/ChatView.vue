@@ -802,6 +802,7 @@ const {
   removeAttachment,
   retryAttachment,
   hasPendingAttachmentWork,
+  prepareAttachmentsForSend,
 } = chatAttachments
 
 let sendCurrentInput: () => void = () => {}
@@ -1248,6 +1249,7 @@ const chatSend = useChatSend({
   persistSession,
   isCompactInFlightForCurrentSession,
   hasPendingAttachmentWork,
+  prepareAttachmentsForSend,
   enqueuePendingInput,
   enqueueHiddenControl,
   popAllPendingIntoComposer,

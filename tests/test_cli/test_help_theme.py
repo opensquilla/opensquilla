@@ -82,7 +82,10 @@ def test_configure_help_explains_section_specific_inputs() -> None:
     assert result.exit_code == 0, result.output
     output = click.unstyle(result.output)
     normalized = " ".join(output.replace("│", " ").split())
-    assert "Reconfigure provider, router, channels, search, image generation, or memory" in output
+    assert (
+        "Reconfigure provider, router, ensemble, channels, search, image generation, "
+        "or memory" in normalized
+    )
     assert "Usage:" in output
     assert "[SECTION]" in output
     assert "SECTION_ARG" not in output

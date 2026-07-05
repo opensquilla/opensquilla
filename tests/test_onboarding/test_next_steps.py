@@ -203,3 +203,16 @@ def test_env_reference_warnings_do_not_warn_for_image_generation_missing_env_whe
     warnings = env_reference_warnings(cfg)
 
     assert not any("Image generation" in warning for warning in warnings)
+
+
+def test_headless_setup_commands_cover_the_ensemble_section():
+    from opensquilla.onboarding.next_steps import headless_setup_commands
+
+    for section in ("ensemble", "llm-ensemble", "llm_ensemble"):
+        commands = headless_setup_commands(section)
+        assert commands == [
+            (
+                "Headless ensemble",
+                "opensquilla onboard configure ensemble --enabled",
+            )
+        ]

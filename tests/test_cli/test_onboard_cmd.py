@@ -761,7 +761,8 @@ def test_onboard_help_exposes_configure_command():
     assert "Listonboardingsetupoptionsforeveryconfigurablesection." in compact
     assert "configure" in result.stdout
     assert (
-        "Reconfigureprovider,router,channels,search,imagegeneration,ormemory."
+        "Reconfigureprovider,router,ensemble,channels,search,imagegeneration,"
+        "ormemory."
         in compact
     )
 
@@ -1553,6 +1554,11 @@ def test_onboard_if_needed_non_tty_hint_targets_blocking_memory_section(
             "opensquilla onboard configure router --router recommended --default-tier c1",
         ),
         (
+            "ensemble",
+            "Headless ensemble:",
+            "opensquilla onboard configure ensemble --enabled",
+        ),
+        (
             "channels",
             "Channel recipes:",
             "opensquilla onboard catalog channels",
@@ -2322,3 +2328,222 @@ def test_onboard_without_tty_prints_hint_without_writing_config(tmp_path, monkey
 def test_init_help_mentions_onboard():
     result = runner.invoke(app, ["init", "--help"])
     assert "onboard" in result.stdout.lower()
+
+
+def test_configure_ensemble_noninteractive(tmp_path, monkeypatch):
+    target = tmp_path / "c.toml"
+    monkeypatch.setenv("OPENSQUILLA_GATEWAY_CONFIG_PATH", str(target))
+
+    result = runner.invoke(
+        app,
+        [
+            "configure",
+            "ensemble",
+            "--enabled",
+            "--selection-mode",
+            "router_dynamic",
+            "--model-options",
+            "prov/model-a, prov/model-b",
+            "--min-successful-proposers",
+            "2",
+            "--all-failed-policy",
+            "error",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    data = tomllib.loads(target.read_text())
+    ensemble = data["llm_ensemble"]
+    assert ensemble["enabled"] is True
+    assert ensemble["selection_mode"] == "router_dynamic"
+    assert ensemble["model_options"] == ["prov/model-a", "prov/model-b"]
+    assert ensemble["min_successful_proposers"] == 2
+    assert ensemble["all_failed_policy"] == "error"
+
+
+def test_onboard_configure_ensemble_alias_uses_setup_engine(tmp_path, monkeypatch):
+    target = tmp_path / "c.toml"
+    monkeypatch.setenv("OPENSQUILLA_GATEWAY_CONFIG_PATH", str(target))
+
+    result = runner.invoke(
+        app,
+        ["onboard", "configure", "ensemble", "--disabled"],
+    )
+
+    assert result.exit_code == 0, result.output
+    data = tomllib.loads(target.read_text())
+    assert data["llm_ensemble"]["enabled"] is False
+
+
+def test_configure_ensemble_omitted_flags_keep_stored_values(tmp_path, monkeypatch):
+    target = tmp_path / "c.toml"
+    target.write_text(
+        "[llm_ensemble]\n"
+        "enabled = true\n"
+        'selection_mode = "router_dynamic"\n'
+        'model_options = ["stored/model-a", "stored/model-b"]\n'
+        "min_successful_proposers = 3\n"
+        'all_failed_policy = "error"\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("OPENSQUILLA_GATEWAY_CONFIG_PATH", str(target))
+
+    result = runner.invoke(
+        app,
+        ["configure", "ensemble", "--min-successful-proposers", "2"],
+    )
+
+    assert result.exit_code == 0, result.output
+    data = tomllib.loads(target.read_text())
+    ensemble = data["llm_ensemble"]
+    # Only the passed flag changed; everything else kept the stored values.
+    assert ensemble["min_successful_proposers"] == 2
+    assert ensemble["enabled"] is True
+    assert ensemble["selection_mode"] == "router_dynamic"
+    assert ensemble["model_options"] == ["stored/model-a", "stored/model-b"]
+    assert ensemble["all_failed_policy"] == "error"
+
+
+def test_configure_ensemble_rejects_invalid_selection_mode(tmp_path, monkeypatch):
+    target = tmp_path / "c.toml"
+    monkeypatch.setenv("OPENSQUILLA_GATEWAY_CONFIG_PATH", str(target))
+
+    result = runner.invoke(
+        app,
+        ["configure", "ensemble", "--selection-mode", "not-a-mode"],
+    )
+
+    assert result.exit_code == 2
+    assert "selection_mode must be one of" in result.stderr
+    assert "Traceback" not in result.output + result.stderr
+    assert not target.exists()
+
+
+def test_onboard_status_includes_ensemble_section(tmp_path, monkeypatch):
+    target = tmp_path / "c.toml"
+    monkeypatch.setenv("OPENSQUILLA_GATEWAY_CONFIG_PATH", str(target))
+
+    result = runner.invoke(app, ["onboard", "status", "--json", "--config", str(target)])
+
+    assert result.exit_code == 0, result.stdout
+    payload = _json.loads(result.stdout)
+    assert payload["sections"]["ensemble"] == "ok"
+    detail = payload["sectionDetails"]["ensemble"]
+    assert detail["label"] == "LLM ensemble"
+    assert detail["required"] is False
+    assert detail["blocking"] is False
+
+
+def test_onboard_status_table_shows_disabled_ensemble_detail(tmp_path, monkeypatch):
+    target = tmp_path / "c.toml"
+    target.write_text("[llm_ensemble]\nenabled = false\n", encoding="utf-8")
+    monkeypatch.setenv("OPENSQUILLA_GATEWAY_CONFIG_PATH", str(target))
+
+    result = runner.invoke(app, ["onboard", "status", "--json", "--config", str(target)])
+
+    assert result.exit_code == 0, result.stdout
+    payload = _json.loads(result.stdout)
+    assert payload["sections"]["ensemble"] == "optional"
+    assert payload["sectionDetails"]["ensemble"]["detail"] == "disabled"
+
+
+def _fake_probe_result(ok: bool, **overrides):
+    from opensquilla.onboarding.probe import ProviderProbeResult
+
+    async def fake_probe(**kwargs):
+        fake_probe.calls.append(kwargs)
+        return ProviderProbeResult(
+            ok=ok,
+            provider_id=kwargs["provider_id"],
+            model=kwargs["model"],
+            **overrides,
+        )
+
+    fake_probe.calls = []
+    return fake_probe
+
+
+def test_onboard_probe_flag_exits_zero_when_probe_passes(tmp_path, monkeypatch):
+    from opensquilla.onboarding import probe as probe_module
+
+    target = tmp_path / "c.toml"
+    monkeypatch.setenv("OPENSQUILLA_GATEWAY_CONFIG_PATH", str(target))
+    fake_probe = _fake_probe_result(ok=True)
+    monkeypatch.setattr(probe_module, "probe_llm_provider", fake_probe)
+
+    result = runner.invoke(
+        app,
+        [
+            "onboard",
+            "--provider", "openrouter",
+            "--model", "deepseek/deepseek-v4-flash",
+            "--api-key", "sk",
+            "--minimal",
+            "--probe",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "Probe OK" in result.stdout
+    assert [call["provider_id"] for call in fake_probe.calls] == ["openrouter"]
+    # The probe verifies exactly the credentials that were just saved.
+    assert fake_probe.calls[0]["api_key"] == "sk"
+    assert "sk" in target.read_text()
+
+
+def test_onboard_probe_flag_exits_nonzero_when_probe_fails(tmp_path, monkeypatch):
+    from opensquilla.onboarding import probe as probe_module
+
+    target = tmp_path / "c.toml"
+    monkeypatch.setenv("OPENSQUILLA_GATEWAY_CONFIG_PATH", str(target))
+    fake_probe = _fake_probe_result(
+        ok=False,
+        failure_kind="auth_invalid",
+        message="Incorrect API key provided",
+    )
+    monkeypatch.setattr(probe_module, "probe_llm_provider", fake_probe)
+
+    result = runner.invoke(
+        app,
+        [
+            "onboard",
+            "--provider", "openrouter",
+            "--model", "deepseek/deepseek-v4-flash",
+            "--api-key", "sk-bad",
+            "--minimal",
+            "--probe",
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert "Probe failed" in result.stderr
+    assert "auth_invalid" in result.stderr
+    assert "Incorrect API key provided" in result.stderr
+    # The probe is a CI gate, not a rollback: the config stays saved.
+    assert "openrouter" in target.read_text()
+
+
+def test_onboard_without_probe_flag_never_probes(tmp_path, monkeypatch):
+    from opensquilla.onboarding import probe as probe_module
+
+    target = tmp_path / "c.toml"
+    monkeypatch.setenv("OPENSQUILLA_GATEWAY_CONFIG_PATH", str(target))
+
+    def unexpected_probe(**_kwargs):
+        raise AssertionError("the probe must only run behind --probe")
+
+    monkeypatch.setattr(probe_module, "probe_llm_provider", unexpected_probe)
+
+    result = runner.invoke(
+        app,
+        [
+            "onboard",
+            "--provider", "openrouter",
+            "--model", "deepseek/deepseek-v4-flash",
+            "--api-key", "sk",
+            "--minimal",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "Probe" not in result.stdout

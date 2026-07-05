@@ -38,6 +38,7 @@ from opensquilla.onboarding.memory_embedding_specs import (
 from opensquilla.onboarding.mutations import (
     upsert_channel,
     upsert_image_generation_provider,
+    upsert_llm_ensemble,
     upsert_llm_provider,
     upsert_memory_embedding,
     upsert_router,
@@ -406,12 +407,8 @@ def _ask_provider_fields(
     questionary, spec, options: OnboardOptions
 ) -> dict[str, Any]:
     answers: dict[str, Any] = {}
-    if options.model:
-        answers["model"] = options.model
-    elif getattr(spec, "router_supported", False):
-        answers["model"] = ""
-    else:
-        answers["model"] = questionary.text("Model id").ask() or ""
+    # Resolve credentials and endpoint BEFORE the model so an optional live
+    # discovery can enumerate the candidate provider's models for the picker.
     if spec.requires_api_key:
         env_key = options.api_key_env or spec.env_key
         if options.api_key:
@@ -448,7 +445,192 @@ def _ask_provider_fields(
     else:
         answers["base_url"] = options.base_url or spec.default_base_url
     answers["proxy"] = options.proxy or ""
+
+    if options.model:
+        answers["model"] = options.model
+    elif getattr(spec, "router_supported", False):
+        answers["model"] = ""
+    else:
+        answers["model"] = _ask_direct_provider_model(questionary, spec, answers)
     return answers
+
+
+def _run_provider_probe(
+    *,
+    provider_id: str,
+    model: str,
+    api_key: str = "",
+    api_key_env: str = "",
+    base_url: str = "",
+    proxy: str = "",
+):
+    """Run the async provider probe from the sync onboarding flow.
+
+    Returns a ``ProviderProbeResult`` or ``None`` when the probe cannot even
+    be attempted (validation-level rejection or an unexpected error). A probe
+    NEVER blocks setup, so any failure degrades to ``None`` here and the caller
+    falls back to the offline free-text path.
+    """
+    import asyncio
+
+    from opensquilla.onboarding.probe import probe_llm_provider
+
+    try:
+        return asyncio.run(
+            probe_llm_provider(
+                provider_id=provider_id,
+                model=model,
+                api_key=api_key,
+                api_key_env=api_key_env,
+                base_url=base_url,
+                proxy=proxy,
+            )
+        )
+    except Exception:  # noqa: BLE001 - verification is best-effort, never fatal
+        return None
+
+
+def _run_provider_discovery(
+    *,
+    provider_id: str,
+    api_key: str = "",
+    api_key_env: str = "",
+    base_url: str = "",
+    proxy: str = "",
+):
+    """Run the async model discovery from the sync onboarding flow.
+
+    Returns a ``ProviderModelsDiscoverResult`` or ``None`` when discovery could
+    not be attempted; the caller then keeps the free-text model prompt.
+    """
+    import asyncio
+
+    from opensquilla.onboarding.probe import discover_provider_models
+
+    try:
+        return asyncio.run(
+            discover_provider_models(
+                provider_id=provider_id,
+                api_key=api_key,
+                api_key_env=api_key_env,
+                base_url=base_url,
+                proxy=proxy,
+            )
+        )
+    except Exception:  # noqa: BLE001 - discovery is best-effort, never fatal
+        return None
+
+
+_TYPE_MODEL_ID_CHOICE = "Type a model id…"
+
+
+def _discovered_model_label(model: dict[str, Any]) -> str:
+    model_id = str(model.get("id") or "")
+    context_window = model.get("contextWindow")
+    try:
+        ctx = int(context_window or 0)
+    except (TypeError, ValueError):
+        ctx = 0
+    if ctx > 0:
+        return f"{model_id}  ·  {ctx:,} ctx"
+    return model_id
+
+
+def _prompt_free_text_model(questionary) -> str:
+    return questionary.text("Model id").ask() or ""
+
+
+def _ask_direct_provider_model(questionary, spec, answers: dict[str, Any]) -> str:
+    """Free-text model path, optionally upgraded by live verify + discovery.
+
+    Scoped to providers that expose a direct model prompt (``router_supported``
+    is False): a router-driven provider never types a direct model, so there is
+    nothing to verify or discover for it. The verification is entirely optional
+    and adds ZERO new required prompts on the quick-start (happy) path — a probe
+    failure only surfaces a default-yes "Save anyway?" confirmation, and
+    discovery merely swaps the existing free-text prompt for a select of live
+    models (with a "type a model id…" escape back to the free-text prompt).
+
+    A probe needs a model id; the provider's ``default_direct_model`` is used
+    when present. Direct providers that ship no default model still verify
+    connectivity through discovery, which needs no model and doubles as the
+    credential check.
+    """
+    if not getattr(spec, "can_probe", False):
+        return _prompt_free_text_model(questionary)
+
+    console.print("[dim]Checking the connection…[/dim]")
+    probe_model = str(getattr(spec, "default_direct_model", "") or "").strip()
+    probed = False
+    if probe_model:
+        probe = _run_provider_probe(
+            provider_id=spec.provider_id,
+            model=probe_model,
+            api_key=answers.get("api_key", ""),
+            api_key_env=answers.get("api_key_env", ""),
+            base_url=answers.get("base_url", ""),
+            proxy=answers.get("proxy", ""),
+        )
+        if probe is not None:
+            probed = True
+            if not probe.ok:
+                if not _confirm_save_after_failed_check(questionary, spec, probe.message):
+                    raise UserCancelledError(section="provider")
+                return _prompt_free_text_model(questionary)
+
+    discovery = _run_provider_discovery(
+        provider_id=spec.provider_id,
+        api_key=answers.get("api_key", ""),
+        api_key_env=answers.get("api_key_env", ""),
+        base_url=answers.get("base_url", ""),
+        proxy=answers.get("proxy", ""),
+    )
+    if discovery is not None and not discovery.ok:
+        # When no probe ran (provider ships no default model), a failed
+        # discovery is the connection check: surface the redacted detail and
+        # offer the same non-blocking "Save anyway?" escape.
+        if not probed:
+            if not _confirm_save_after_failed_check(questionary, spec, discovery.detail):
+                raise UserCancelledError(section="provider")
+        return _prompt_free_text_model(questionary)
+
+    if probed:
+        console.print(f"[{ACCENT_SOFT}]◆[/] [dim]connection verified[/dim]")
+    models = list(getattr(discovery, "models", []) or []) if discovery else []
+    if not models:
+        return _prompt_free_text_model(questionary)
+
+    choices = [_discovered_model_label(model) for model in models] + [
+        _TYPE_MODEL_ID_CHOICE
+    ]
+    selected = _ask_or_cancel(
+        questionary.select("Model", choices=choices, default=choices[0]),
+        section="provider",
+    )
+    if selected == _TYPE_MODEL_ID_CHOICE:
+        return _prompt_free_text_model(questionary)
+    return str(selected).split(" ")[0]
+
+
+def _confirm_save_after_failed_check(questionary, spec, detail: str) -> bool:
+    """Show a redacted failure detail and ask the default-yes "Save anyway?".
+
+    A verification failure NEVER blocks offline setup — the default is yes so a
+    plain Enter keeps setup moving. Returns whether the user chose to continue.
+    """
+    message = detail or "the provider did not accept the request"
+    console.print(
+        warning_panel(
+            f"Could not verify {markup_escape(spec.provider_id)}: "
+            f"{markup_escape(message)}"
+        )
+    )
+    return bool(
+        _ask_or_cancel(
+            questionary.confirm("Save anyway?", default=True),
+            section="provider",
+        )
+    )
 
 
 def _ask_search_choice(questionary):
@@ -1078,6 +1260,133 @@ def run_interactive_router_configure(
         tiers=payload.get("tiers"),
     )
     return persist_config(result.config, path=config_path, restart_required=False)
+
+
+def _ensemble_selection_modes() -> tuple[str, ...]:
+    from opensquilla.onboarding.mutations import _LLM_ENSEMBLE_SELECTION_MODES
+
+    return _LLM_ENSEMBLE_SELECTION_MODES
+
+
+def _ensemble_all_failed_policies() -> tuple[str, ...]:
+    from opensquilla.onboarding.mutations import _LLM_ENSEMBLE_ALL_FAILED_POLICIES
+
+    return _LLM_ENSEMBLE_ALL_FAILED_POLICIES
+
+
+def _ask_ensemble_fields(questionary, cfg) -> dict[str, Any]:
+    """Collect [llm_ensemble] settings, seeding every default from the config.
+
+    Every prompt defaults to the stored value, so accepting all defaults is a
+    no-op edit — the ensemble step is only ever reached when the operator opts
+    in, and it adds no required prompts to the quick-start sequence. Disabling
+    is a one-answer operation: the tuning prompts are skipped and the stored
+    values stay untouched for a later re-enable.
+    """
+    ensemble = cfg.llm_ensemble
+    answers: dict[str, Any] = {}
+    answers["enabled"] = bool(
+        _ask_or_cancel(
+            questionary.confirm(
+                "Enable the LLM ensemble?",
+                default=bool(getattr(ensemble, "enabled", True)),
+            ),
+            section="ensemble",
+        )
+    )
+    if not answers["enabled"]:
+        return answers
+
+    modes = list(_ensemble_selection_modes())
+    current_mode = str(getattr(ensemble, "selection_mode", "") or "")
+    selection_mode = _ask_or_cancel(
+        questionary.select(
+            "Ensemble selection mode",
+            choices=modes,
+            default=current_mode if current_mode in modes else modes[0],
+        ),
+        section="ensemble",
+    )
+    answers["selection_mode"] = selection_mode
+
+    current_options = list(getattr(ensemble, "model_options", []) or [])
+    options_raw = _ask_or_cancel(
+        questionary.text(
+            "Ensemble model options (comma-separated; blank keeps current)",
+            default="",
+        ),
+        section="ensemble",
+    )
+    parsed_options = [
+        piece.strip() for piece in str(options_raw or "").split(",") if piece.strip()
+    ]
+    # Blank input keeps the stored options untouched (keep-current semantics).
+    answers["model_options"] = parsed_options if parsed_options else None
+    if answers["model_options"] is None and current_options:
+        console.print(
+            f"  [dim]Keeping {len(current_options)} configured model option(s).[/dim]"
+        )
+
+    min_raw = _ask_or_cancel(
+        questionary.text(
+            "Minimum successful proposers",
+            default=str(getattr(ensemble, "min_successful_proposers", 1)),
+        ),
+        section="ensemble",
+    )
+    answers["min_successful_proposers"] = str(min_raw or "").strip() or None
+
+    policies = list(_ensemble_all_failed_policies())
+    current_policy = str(getattr(ensemble, "all_failed_policy", "") or "")
+    answers["all_failed_policy"] = _ask_or_cancel(
+        questionary.select(
+            "Policy when all proposers fail",
+            choices=policies,
+            default=current_policy if current_policy in policies else policies[0],
+        ),
+        section="ensemble",
+    )
+    return answers
+
+
+def _print_ensemble_saved(cfg) -> None:
+    ensemble = cfg.llm_ensemble
+    state = "enabled" if getattr(ensemble, "enabled", False) else "disabled"
+    console.print(f"[bold {ACCENT}]◆[/] [bold]LLM ensemble {state}.[/]")
+    console.print(
+        f"  [dim]Selection mode:[/dim] "
+        f"[{ACCENT_SOFT}]{markup_escape(getattr(ensemble, 'selection_mode', ''))}[/]"
+        " [dim]· applies to the next turn, no restart needed[/dim]"
+    )
+
+
+def run_interactive_ensemble_configure(
+    config_path: str | Path | None = None,
+) -> PersistResult:
+    if not _is_tty():
+        cfg = load_config(config_path)
+        return _print_noninteractive_hint(cfg, config_path, section="ensemble")
+
+    import questionary as _qmod
+
+    questionary = _styled(_qmod)
+
+    cfg = load_config(config_path)
+    console.print(
+        banner_panel("LLM Ensemble Setup", "Tune the multi-model routing surface")
+    )
+    answers = _ask_ensemble_fields(questionary, cfg)
+    result = upsert_llm_ensemble(
+        cfg,
+        enabled=answers.get("enabled"),
+        selection_mode=answers.get("selection_mode"),
+        model_options=answers.get("model_options"),
+        min_successful_proposers=answers.get("min_successful_proposers"),
+        all_failed_policy=answers.get("all_failed_policy"),
+    )
+    persisted = persist_config(result.config, path=config_path, restart_required=False)
+    _print_ensemble_saved(result.config)
+    return persisted
 
 
 def _channel_control_fields(spec: ChannelSetupSpec) -> set[str]:
@@ -1983,6 +2292,7 @@ def _run_action_required_optional_sections(
     options: OnboardOptions,
     sections: tuple[str, ...] = (
         "router",
+        "ensemble",
         "channels",
         "search",
         "image_generation",
@@ -1995,6 +2305,18 @@ def _run_action_required_optional_sections(
             "section": "router",
             "label": "router",
             "runner": run_interactive_router_configure,
+            "skip": False,
+        },
+        # The ensemble step is opt-in only: its verifier never reports an
+        # action-required state today (ok when enabled, optional when
+        # disabled), so it never adds a prompt to the default quick-start
+        # sequence — it is reachable via `onboard configure ensemble` and
+        # would surface here only if a future verifier state demands action.
+        "ensemble": {
+            "prompt": "Configure the LLM ensemble now?",
+            "section": "ensemble",
+            "label": "ensemble",
+            "runner": run_interactive_ensemble_configure,
             "skip": False,
         },
         "channels": {
@@ -2137,6 +2459,7 @@ def run_interactive_configure(
         choices=[
             "provider",
             "router",
+            "ensemble",
             "channels",
             "search",
             "image-generation",
@@ -2153,6 +2476,8 @@ def run_interactive_configure(
         )
     if section == "router":
         return run_interactive_router_configure(config_path=config_path)
+    if section in {"ensemble", "llm-ensemble", "llm_ensemble"}:
+        return run_interactive_ensemble_configure(config_path=config_path)
     if section in {"channel", "channels"}:
         existing = load_config(config_path).channels.channels
         if existing:

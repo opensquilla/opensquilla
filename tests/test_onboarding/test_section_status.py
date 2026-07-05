@@ -13,6 +13,7 @@ from opensquilla.gateway.config import (
 from opensquilla.onboarding.section_status import (
     SectionStatus,
     channels_section_status,
+    ensemble_section_status,
     image_generation_section_status,
     llm_section_status,
     memory_embedding_section_status,
@@ -107,6 +108,31 @@ def test_router_disabled_is_optional(cfg):
 def test_router_enabled_is_ok(cfg):
     cfg.squilla_router.enabled = True
     assert router_section_status(cfg) is SectionStatus.OK
+
+
+# ── ensemble ────────────────────────────────────────────────────────────────
+
+def test_ensemble_enabled_is_ok(cfg):
+    cfg.llm_ensemble.enabled = True
+    assert ensemble_section_status(cfg) is SectionStatus.OK
+
+
+def test_ensemble_disabled_is_optional(cfg):
+    cfg.llm_ensemble.enabled = False
+    assert ensemble_section_status(cfg) is SectionStatus.OPTIONAL
+
+
+def test_ensemble_never_blocks_onboarding(cfg):
+    # The ensemble reuses the provider credential; there is nothing section-
+    # local to verify, so it must never produce a blocking/action state.
+    from opensquilla.onboarding.status import get_onboarding_status
+
+    for enabled in (True, False):
+        cfg.llm_ensemble.enabled = enabled
+        detail = get_onboarding_status(cfg).section_details["ensemble"]
+        assert detail["blocking"] is False
+        assert detail["actionRequired"] is False
+        assert detail["required"] is False
 
 
 # ── search ──────────────────────────────────────────────────────────────────

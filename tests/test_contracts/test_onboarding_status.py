@@ -60,10 +60,19 @@ STATUS_TOP_LEVEL_KEYS = frozenset(
 )
 
 # Section names double as wire keys inside ``sections`` / ``sectionDetails``.
+# ``ensemble`` is a deliberate additive extension of this frozen set: the
+# ``[llm_ensemble]`` routing surface gained CLI onboarding parity
+# (``opensquilla onboard configure ensemble``), and the CLI status table
+# renders straight from this payload, so the section rides the same frozen
+# contract. Its verifier only ever reports ``ok`` (enabled) or ``optional``
+# (disabled) — it can never block onboarding or add action-required noise
+# for existing clients. Extending this set here is the conscious decision
+# the freeze forces.
 SECTION_NAMES = frozenset(
     {
         "llm",
         "router",
+        "ensemble",
         "search",
         "channels",
         "image_generation",

@@ -268,3 +268,25 @@ def test_explicit_remote_memory_embedding_action_blocks_gateway_start():
     assert s.section_details["memory_embedding"]["actionRequired"] is True
     assert s.section_details["memory_embedding"]["blocking"] is True
     assert s.needs_onboarding is True
+
+
+def test_ensemble_section_detail_reflects_selection_mode():
+    cfg = GatewayConfig()
+    cfg.llm_ensemble.enabled = True
+
+    s = get_onboarding_status(cfg)
+
+    assert s.sections["ensemble"].value == "ok"
+    detail = s.section_details["ensemble"]
+    assert detail["label"] == "LLM ensemble"
+    assert str(detail["detail"]).startswith("selection mode: static_openrouter_b5")
+
+
+def test_ensemble_section_detail_shows_disabled():
+    cfg = GatewayConfig()
+    cfg.llm_ensemble.enabled = False
+
+    s = get_onboarding_status(cfg)
+
+    assert s.sections["ensemble"].value == "optional"
+    assert s.section_details["ensemble"]["detail"] == "disabled"

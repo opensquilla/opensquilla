@@ -37,6 +37,7 @@ from opensquilla.onboarding.next_steps import (
 )
 from opensquilla.onboarding.section_status import SectionStatus
 from opensquilla.onboarding.setup_engine import (
+    ENSEMBLE_SECTION_ALIASES,
     IMAGE_GENERATION_SECTION_ALIASES,
     MEMORY_EMBEDDING_SECTION_ALIASES,
     setup_catalog_payload,
@@ -371,6 +372,49 @@ def _print_optional_action_handoff(
         _print_status_path(label, command, suffix)
 
 
+def _probe_saved_provider(cfg) -> bool:
+    """Run a live one-token probe against the just-saved provider config.
+
+    Only invoked behind ``--probe`` on the non-interactive provider path so CI
+    can gate on real credentials; the default path never touches the network.
+    Any failure (classified or unexpected) prints a redacted detail and
+    returns False so the caller can exit non-zero.
+    """
+    import asyncio
+
+    from opensquilla.onboarding.probe import probe_llm_provider
+
+    llm = cfg.llm
+    console.print(f"[{ACCENT_SOFT}]◆[/] Checking the connection…")
+    try:
+        result = asyncio.run(
+            probe_llm_provider(
+                provider_id=str(getattr(llm, "provider", "") or ""),
+                model=str(getattr(llm, "model", "") or ""),
+                api_key=str(getattr(llm, "api_key", "") or ""),
+                api_key_env=str(getattr(llm, "api_key_env", "") or ""),
+                base_url=str(getattr(llm, "base_url", "") or ""),
+                proxy=str(getattr(llm, "proxy", "") or ""),
+            )
+        )
+    except Exception as exc:  # noqa: BLE001 - probe outcome maps to exit code
+        error_console.print(f"[red]Probe failed:[/red] {markup_escape(str(exc))}")
+        return False
+    if result.ok:
+        console.print(
+            f"[bold {ACCENT}]◆[/] [bold]Probe OK[/] "
+            f"[dim]·[/] [{ACCENT_SOFT}]{markup_escape(result.provider_id)}[/]"
+            f"[dim]/[/]{markup_escape(result.model)}"
+        )
+        return True
+    kind = result.failure_kind or "error"
+    detail = result.message or "the provider did not accept the request"
+    error_console.print(
+        f"[red]Probe failed ({markup_escape(kind)}):[/red] {markup_escape(detail)}"
+    )
+    return False
+
+
 onboard_app = typer.Typer(
     help=(
         "OpenSquilla setup cockpit for providers, SquillaRouter, "
@@ -425,6 +469,14 @@ def onboard_command(
         False,
         "--if-needed",
         help="Only run the wizard when required setup is incomplete.",
+    ),
+    probe: bool = typer.Option(
+        False,
+        "--probe",
+        help=(
+            "With --provider: verify the saved provider with a live one-token "
+            "probe and exit non-zero on probe failure (CI-friendly)."
+        ),
     ),
     config_path: Path | None = typer.Option(None, "--config", help="Override config path."),
 ) -> None:
@@ -490,6 +542,8 @@ def onboard_command(
             highlight=False,
             soft_wrap=True,
         )
+        if probe and not _probe_saved_provider(cfg):
+            raise typer.Exit(code=1)
         return
 
     options = OnboardOptions(
@@ -1026,7 +1080,7 @@ def configure_command(
         "",
         metavar="SECTION",
         help=(
-            "Section to configure: provider, router, channels, search, "
+            "Section to configure: provider, router, ensemble, channels, search, "
             "image (alias for image-generation), or memory "
             "(alias for memory-embedding)."
         ),
@@ -1035,7 +1089,7 @@ def configure_command(
         "",
         "--section",
         help=(
-            "Section to configure: provider, router, channels, search, "
+            "Section to configure: provider, router, ensemble, channels, search, "
             "image (alias for image-generation), or memory "
             "(alias for memory-embedding)."
         ),
@@ -1094,6 +1148,36 @@ def configure_command(
         "--default-tier",
         help="Default router text tier: c0, c1, c2, or c3.",
         rich_help_panel="Router",
+    ),
+    enabled: bool | None = typer.Option(
+        None,
+        "--enabled/--disabled",
+        help="Enable or disable the LLM ensemble (omit to keep current).",
+        rich_help_panel="LLM ensemble",
+    ),
+    selection_mode: str = typer.Option(
+        "",
+        "--selection-mode",
+        help="Ensemble selection mode: router_dynamic or static_openrouter_b5.",
+        rich_help_panel="LLM ensemble",
+    ),
+    model_options: str = typer.Option(
+        "",
+        "--model-options",
+        help="Comma-separated ensemble model ids (omit to keep current).",
+        rich_help_panel="LLM ensemble",
+    ),
+    min_successful_proposers: int | None = typer.Option(
+        None,
+        "--min-successful-proposers",
+        help="Minimum successful proposers for the ensemble (omit to keep current).",
+        rich_help_panel="LLM ensemble",
+    ),
+    all_failed_policy: str = typer.Option(
+        "",
+        "--all-failed-policy",
+        help="Policy when all proposers fail: fallback_single or error.",
+        rich_help_panel="LLM ensemble",
     ),
     search_provider: str = typer.Option(
         "",
@@ -1187,7 +1271,7 @@ def configure_command(
         rich_help_panel="Global",
     ),
 ) -> None:
-    """Reconfigure provider, router, channels, search, image generation, or memory."""
+    """Reconfigure provider, router, ensemble, channels, search, image generation, or memory."""
     selected = section or section_arg
     if selected:
         from opensquilla.onboarding.setup_engine import SetupEngine
@@ -1218,6 +1302,36 @@ def configure_command(
                 result = engine.persist()
                 _print_saved_path(result.path)
                 _print_env_reference_warnings(_load_config_for_cli(result.path))
+                return
+            ensemble_flags_given = (
+                enabled is not None
+                or bool(selection_mode)
+                or bool(model_options)
+                or min_successful_proposers is not None
+                or bool(all_failed_policy)
+            )
+            if normalized in ENSEMBLE_SECTION_ALIASES and ensemble_flags_given:
+                # Keep-current semantics: only flags the operator actually
+                # passed reach the mutation; omitted flags map to None and
+                # never touch the stored [llm_ensemble] values.
+                parsed_model_options = [
+                    piece.strip()
+                    for piece in model_options.split(",")
+                    if piece.strip()
+                ]
+                engine = SetupEngine(path=config_path)
+                engine.apply(
+                    "ensemble",
+                    {
+                        "enabled": enabled,
+                        "selectionMode": selection_mode or None,
+                        "modelOptions": parsed_model_options or None,
+                        "minSuccessfulProposers": min_successful_proposers,
+                        "allFailedPolicy": all_failed_policy or None,
+                    },
+                )
+                result = engine.persist()
+                _print_saved_path(result.path)
                 return
             if normalized == "search" and search_provider:
                 engine = SetupEngine(path=config_path)

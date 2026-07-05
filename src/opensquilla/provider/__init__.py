@@ -51,6 +51,7 @@ from .types import (
     ContentBlockToolUse,
     DoneEvent,
     ErrorEvent,
+    FailureInjector,
     Message,
     ModelCapabilities,
     ModelInfo,
@@ -64,6 +65,7 @@ from .types import (
     ToolUseDeltaEvent,
     ToolUseEndEvent,
     ToolUseStartEvent,
+    synthetic_failure_event,
 )
 
 __all__ = [
@@ -130,4 +132,7 @@ __all__ = [
     "ContentBlockToolResult",
     "ContentBlockCompaction",
     "ContentBlockDocument",
+    # Test-only failure injection seam
+    "FailureInjector",
+    "synthetic_failure_event",
 ]

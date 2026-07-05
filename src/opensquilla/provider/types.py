@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 from opensquilla.execution_status import ExecutionStatus
+
+if TYPE_CHECKING:
+    from opensquilla.provider.failures import ProviderFailureKind
 
 # ---------------------------------------------------------------------------
 # Stream event dataclasses
@@ -321,3 +325,116 @@ class Message(BaseModel):
     role: Literal["user", "assistant"]
     content: MessageContent
     reasoning_content: str | None = None
+
+
+# ---------------------------------------------------------------------------
+# Offline failure injection (test-only seam)
+# ---------------------------------------------------------------------------
+
+
+def synthetic_failure_event(kind: ProviderFailureKind) -> ErrorEvent:
+    """Build the canonical synthetic ``ErrorEvent`` for an injected failure kind.
+
+    Every shape is a synthetic dummy (never copied from real provider
+    traffic) chosen so that ``classify_provider_error`` maps it back to
+    ``kind`` for providers in the ``openai_compat`` failure family — the
+    round trip is pinned by tests/test_provider/test_failure_injection.py.
+    Family-scoped kinds (AUTH_INVALID, BAD_REQUEST, INSUFFICIENT_CREDITS)
+    only round-trip when the probed provider name resolves a failure family
+    in the registry; fakes should declare a registered ``provider_name``
+    such as ``"openai"``.
+    """
+    # Local import: this module is the lowest layer of the provider package
+    # and must not depend on ``failures`` (→ ``registry``) at import time.
+    from opensquilla.provider.failures import ProviderFailureKind as _Kind
+
+    shapes: dict[_Kind, tuple[str, str]] = {
+        _Kind.RATE_LIMITED: ("429", "injected rate limit"),
+        _Kind.PROVIDER_OVERLOADED: ("529", "injected upstream overloaded"),
+        _Kind.AUTH_INVALID: ("401", "injected invalid api key"),
+        _Kind.CONTEXT_OVERFLOW: ("", "injected context window overflow"),
+        _Kind.UNSUPPORTED_FEATURE: ("", "injected unsupported feature"),
+        _Kind.INSUFFICIENT_CREDITS: ("402", "injected insufficient credits"),
+        _Kind.MODEL_NOT_FOUND: ("404", "injected model not found"),
+        _Kind.TRANSPORT_TRANSIENT: ("", "injected connection timeout"),
+        _Kind.POLICY_REFUSAL: ("", "injected policy violation"),
+        _Kind.EMPTY_RESPONSE: ("empty_response", "empty_response"),
+        _Kind.MALFORMED_RESPONSE: ("", "injected malformed response payload"),
+        _Kind.BAD_REQUEST: ("400", "injected invalid_request"),
+        _Kind.UNKNOWN: ("", "injected unclassified failure"),
+    }
+    code, message = shapes[_Kind(kind)]
+    return ErrorEvent(message=message, code=code)
+
+
+@dataclass
+class FailureInjector:
+    """Scripted provider-failure seam for offline retry/fallback-chain tests.
+
+    Test-only by contract: nothing in the runtime constructs one. The agent
+    loop consults an injector only when a caller explicitly passes an
+    instance (every constructor default is ``None``), so the production call
+    path is untouched unless a test opts in — no environment variable or
+    process-global can activate it, and each injector instance owns its own
+    script, so nothing leaks between tests.
+
+    ``script`` is consumed front-to-back, one entry per provider chat call:
+
+    - ``"succeed"`` — delegate the call to the real provider untouched.
+    - ``ProviderFailureKind`` — emit one synthetic ``ErrorEvent`` (see
+      :func:`synthetic_failure_event`) without calling the provider.
+    - ``Exception`` instance — raise it from the stream, exercising the
+      transport-exception path.
+
+    An exhausted script delegates every further call, so a test scripts only
+    the hops it wants to drive. ``consumed`` records applied outcomes for
+    assertions.
+    """
+
+    script: list[Literal["succeed"] | ProviderFailureKind | Exception] = field(
+        default_factory=list
+    )
+    consumed: list[Literal["succeed"] | ProviderFailureKind | Exception] = field(
+        default_factory=list, init=False
+    )
+
+    def next_outcome(self) -> Literal["succeed"] | ProviderFailureKind | Exception:
+        """Pop the next scripted outcome; an exhausted script always succeeds."""
+        if not self.script:
+            return "succeed"
+        outcome = self.script.pop(0)
+        self.consumed.append(outcome)
+        return outcome
+
+    def chat(
+        self,
+        provider: Any,
+        messages: list[Message],
+        tools: list[ToolDefinition] | None = None,
+        config: ChatConfig | None = None,
+    ) -> AsyncIterator[StreamEvent]:
+        """Apply the next scripted outcome to one provider chat call.
+
+        ``"succeed"`` (and script exhaustion) returns ``provider.chat(...)``
+        with identical arguments; a scripted failure yields exactly one
+        synthetic ``ErrorEvent`` or raises the scripted exception instead of
+        contacting the provider.
+        """
+        outcome = self.next_outcome()
+        if outcome == "succeed":
+            stream: AsyncIterator[StreamEvent] = provider.chat(
+                messages, tools=tools, config=config
+            )
+            return stream
+        # Equality above rules out the "succeed" literal (no failure kind
+        # shares that value); help the type checker over the StrEnum overlap.
+        failure = cast("ProviderFailureKind | Exception", outcome)
+        return self._injected_stream(failure)
+
+    @staticmethod
+    async def _injected_stream(
+        outcome: ProviderFailureKind | Exception,
+    ) -> AsyncIterator[StreamEvent]:
+        if isinstance(outcome, Exception):
+            raise outcome
+        yield synthetic_failure_event(outcome)

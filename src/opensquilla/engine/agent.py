@@ -80,7 +80,7 @@ from opensquilla.provider import (
     ToolUseStartEvent as ProviderToolUseStart,
 )
 from opensquilla.provider.failures import ProviderFailureKind, classify_provider_error
-from opensquilla.provider.types import ContentBlockImage
+from opensquilla.provider.types import ContentBlockImage, FailureInjector
 from opensquilla.provider.types import (
     EnsembleProgressEvent as ProviderEnsembleProgressEvent,
 )
@@ -779,6 +779,7 @@ class Agent:
         session_flush_service: Any | None = None,
         tool_registry: ToolRegistry | None = None,
         tool_context: ToolContext | None = None,
+        failure_injector: FailureInjector | None = None,
     ) -> None:
         self.provider = provider
         self.config = config or AgentConfig()
@@ -791,6 +792,11 @@ class Agent:
         self._turn_call_logger = turn_call_logger
         self._tool_registry: ToolRegistry | None = tool_registry
         self._tool_context: ToolContext | None = tool_context
+        # Test-only offline failure seam. ``None`` on every production path,
+        # so the provider chat call below stays byte-identical to before when
+        # it is unset; a test passes an explicit FailureInjector to script the
+        # retry/rotate/fallback chain without a network or a real provider.
+        self._failure_injector: FailureInjector | None = failure_injector
         self._meta_run_writer = (self.config.metadata or {}).get("meta_run_writer")
         self._pending_warnings: list[WarningEvent] = []
 
@@ -2458,11 +2464,22 @@ class Agent:
                     _got_done_event = False
                     attempt_user_visible_emitted = False
                     try:
-                        raw_stream = self.provider.chat(
-                            request_messages,
-                            tools=provider_tools_for_call,
-                            config=call_chat_cfg,
-                        )
+                        if self._failure_injector is None:
+                            raw_stream = self.provider.chat(
+                                request_messages,
+                                tools=provider_tools_for_call,
+                                config=call_chat_cfg,
+                            )
+                        else:
+                            # Test-only seam: the injector either delegates this
+                            # exact call to self.provider or replaces it with one
+                            # scripted synthetic failure (see provider/types.py).
+                            raw_stream = self._failure_injector.chat(
+                                self.provider,
+                                request_messages,
+                                tools=provider_tools_for_call,
+                                config=call_chat_cfg,
+                            )
                         async for raw_ev in self._stream_provider_events_with_deadline(
                             raw_stream,
                             loop=_loop,

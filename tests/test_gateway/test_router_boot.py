@@ -301,6 +301,18 @@ def test_gateway_stream_timeout_config_defaults_remain_serializable() -> None:
     assert config.agent_stream_idle_timeout_seconds == 600.0
     assert config.webui_stream_idle_grace_seconds == 630.0
     assert config.webui_stream_idle_grace_seconds > config.agent_stream_idle_timeout_seconds
+    # A fresh install without an OpenRouter credential cannot run the static-B5
+    # ensemble, so the effective hang-detection budgets stay at the defaults.
+    assert effective_agent_stream_idle_timeout_seconds(config) == 600.0
+    assert effective_webui_stream_idle_grace_seconds(config) == 630.0
+
+
+def test_gateway_stream_timeout_defaults_floor_when_openrouter_key_present(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-synthetic")
+    config = GatewayConfig()
+
     assert effective_agent_stream_idle_timeout_seconds(config) == 1200.0
     assert effective_webui_stream_idle_grace_seconds(config) == 1260.0
 
@@ -321,10 +333,11 @@ def test_gateway_stream_timeouts_keep_legacy_effective_values_when_static_disabl
 
 def test_static_openrouter_b5_effective_stream_timeouts_extend_webui_budget() -> None:
     config = GatewayConfig(
+        llm={"provider": "openrouter", "api_key": "sk-or-synthetic"},
         llm_ensemble={
             "enabled": True,
             "selection_mode": "static_openrouter_b5",
-        }
+        },
     )
 
     assert config.agent_stream_idle_timeout_seconds == 600.0
@@ -333,10 +346,27 @@ def test_static_openrouter_b5_effective_stream_timeouts_extend_webui_budget() ->
     assert effective_webui_stream_idle_grace_seconds(config) == 1260.0
 
 
+def test_static_openrouter_b5_keyless_install_keeps_default_stream_timeouts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    config = GatewayConfig(
+        llm={"provider": "groq", "api_key": "sk-groq-synthetic"},
+        llm_ensemble={
+            "enabled": True,
+            "selection_mode": "static_openrouter_b5",
+        },
+    )
+
+    assert effective_agent_stream_idle_timeout_seconds(config) == 600.0
+    assert effective_webui_stream_idle_grace_seconds(config) == 630.0
+
+
 def test_static_openrouter_b5_webui_grace_stays_above_custom_stream_idle() -> None:
     config = GatewayConfig(
         agent_stream_idle_timeout_seconds=2000.0,
         webui_stream_idle_grace_seconds=630.0,
+        llm={"provider": "openrouter", "api_key": "sk-or-synthetic"},
         llm_ensemble={
             "enabled": True,
             "selection_mode": "static_openrouter_b5",

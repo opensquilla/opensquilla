@@ -4682,11 +4682,17 @@ class TurnRunner:
 
         ensemble_cfg = getattr(self._config, "llm_ensemble", None)
         if provider is not None and getattr(ensemble_cfg, "enabled", False):
+            from opensquilla.provider.ensemble import (
+                build_ensemble_provider_from_config,
+                static_openrouter_b5_credential_available,
+            )
+
             current_provider_config = (
                 getattr(cloned_selector, "current_config", None)
                 if cloned_selector is not None
                 else None
             )
+            selection_mode = str(getattr(ensemble_cfg, "selection_mode", "") or "")
             if current_provider_config is None:
                 log.warning(
                     "llm_ensemble.wrap_skipped",
@@ -4701,9 +4707,24 @@ class TurnRunner:
                     "llm_ensemble.wrap_skipped",
                     reason="incomplete_provider_selector_current_config",
                 )
+            elif selection_mode == "static_openrouter_b5" and not (
+                static_openrouter_b5_credential_available(
+                    self._config,
+                    current_provider_config,
+                )
+            ):
+                # Without an OpenRouter credential the static-B5 members can
+                # never succeed; wrapping would still post the conversation to
+                # OpenRouter with an empty bearer token on every turn. Keep the
+                # single-model provider instead.
+                log.warning(
+                    "llm_ensemble.wrap_skipped",
+                    reason="static_openrouter_b5_no_credential",
+                )
+                turn.metadata["ensemble_wrap_skipped_reason"] = (
+                    "static_openrouter_b5_no_credential"
+                )
             else:
-                from opensquilla.provider.ensemble import build_ensemble_provider_from_config
-
                 turn.metadata["ensemble_enabled"] = True
                 turn.metadata["routed_model_before_ensemble"] = (
                     turn.model or getattr(current_provider_config, "model", "")

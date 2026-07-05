@@ -9,6 +9,7 @@ from opensquilla.cli.main import app
 from opensquilla.health.evaluator import (
     evaluate_channels,
     evaluate_image_generation,
+    evaluate_llm_ensemble,
     evaluate_logs,
     evaluate_memory,
     evaluate_memory_embedding,
@@ -335,6 +336,15 @@ def _sample_findings() -> list[HealthFinding]:
                 "posture": "custom",
                 "sandbox": {"sandbox": True, "security_grading": False},
                 "permissions": {"default_mode": "full"},
+            }
+        ),
+        evaluate_llm_ensemble(
+            {
+                "enabled": True,
+                "selectionMode": "static_openrouter_b5",
+                "activeProvider": "groq",
+                "apiKeyEnv": "OPENROUTER_API_KEY",
+                "credentialAvailable": False,
             }
         ),
     ]

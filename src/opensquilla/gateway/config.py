@@ -815,6 +815,14 @@ class SquillaRouterConfig(BaseSettings):
     # deletes them. Additive key: the class-level extra="ignore" keeps old
     # builds rollback-tolerant when this key is present in config files.
     decision_retention_days: int = Field(default=30, ge=1)
+    # Opt-in on-device router calibration. When true, the routing policy applies
+    # the hard-clamped adjustment in <state>/router_calibration.json as a bias
+    # on the confidence gate, and the gateway runs a 24h in-process calibration
+    # job over local decision records. Default-off: the confidence gate stays
+    # byte-identical to today and no calibration job is scheduled. Additive key
+    # (class extra="ignore" keeps old builds rollback-tolerant). Never touches
+    # the router savings/cost math.
+    calibration_enabled: bool = False
     estimated_output_savings_pct: float = 0.03
     upgrade_to_c3_compaction_enabled: bool = True
     vision_history_lookback_turns: int = Field(default=8, ge=0)

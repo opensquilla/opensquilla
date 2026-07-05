@@ -8,6 +8,15 @@ orchestrating :class:`~opensquilla.engine.routing.policy.RoutingPolicyEngine`.
 
 from __future__ import annotations
 
+from opensquilla.engine.routing.calibration import (
+    CalibrationState,
+    aggregate_calibration,
+    apply_bias,
+    calibration_path,
+    effective_threshold,
+    load_calibration,
+    save_calibration,
+)
 from opensquilla.engine.routing.policy import (
     AntiDowngradeResult,
     CapabilityGateAction,
@@ -42,6 +51,7 @@ from opensquilla.engine.routing.policy import (
 
 __all__ = [
     "AntiDowngradeResult",
+    "CalibrationState",
     "CapabilityGateAction",
     "CapabilityGateResult",
     "ComplaintUpgradeResult",
@@ -53,14 +63,19 @@ __all__ = [
     "RoutingDecision",
     "RoutingPolicyEngine",
     "TierCapability",
+    "aggregate_calibration",
     "anti_downgrade",
+    "apply_bias",
     "bind",
+    "calibration_path",
     "capability_gate",
     "complaint_upgrade",
     "confidence_gate",
     "detect_complaint",
+    "effective_threshold",
     "large_context_floor",
     "large_context_min_tier",
+    "load_calibration",
     "previous_final_entry",
     "previous_final_tier",
     "provider_mismatch",
@@ -69,5 +84,6 @@ __all__ = [
     "record_capability_gate_trail",
     "record_provider_mismatch_veto_trail",
     "route_class_for_tier",
+    "save_calibration",
     "tier_for_route_class",
 ]

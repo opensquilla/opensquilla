@@ -1,0 +1,45 @@
+[
+  {
+    "text": "<minimax:tool_call>\n<invoke name=\"lookup\">\n",
+    "type": "TextDeltaEvent"
+  },
+  {
+    "text": "<parameter name=\"q\">cache status</parameter>\n",
+    "type": "TextDeltaEvent"
+  },
+  {
+    "text": "</invoke>\n</minimax:tool_call>",
+    "type": "TextDeltaEvent"
+  },
+  {
+    "synthetic_from_text": true,
+    "tool_name": "lookup",
+    "tool_use_id": "minimax_compat_000000000000",
+    "type": "ToolUseStartEvent"
+  },
+  {
+    "arguments": {
+      "q": "cache status"
+    },
+    "synthetic_from_text": true,
+    "tool_name": "lookup",
+    "tool_use_id": "minimax_compat_000000000000",
+    "type": "ToolUseEndEvent"
+  },
+  {
+    "billed_cost": 0.0,
+    "cache_write_tokens": 0,
+    "cached_tokens": 0,
+    "cost_source": "none",
+    "ensemble_trace": null,
+    "input_tokens": 14,
+    "model": "minimax-test-1",
+    "model_usage_breakdown": [],
+    "output_tokens": 22,
+    "reasoning_content": null,
+    "reasoning_tokens": 0,
+    "stop_reason": "stop",
+    "thinking_signature": null,
+    "type": "DoneEvent"
+  }
+]

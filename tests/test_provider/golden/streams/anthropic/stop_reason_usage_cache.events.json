@@ -1,0 +1,22 @@
+[
+  {
+    "text": "Cached reply.",
+    "type": "TextDeltaEvent"
+  },
+  {
+    "billed_cost": 0.0,
+    "cache_write_tokens": 40,
+    "cached_tokens": 100,
+    "cost_source": "none",
+    "ensemble_trace": null,
+    "input_tokens": 146,
+    "model": "",
+    "model_usage_breakdown": [],
+    "output_tokens": 3,
+    "reasoning_content": null,
+    "reasoning_tokens": 0,
+    "stop_reason": "max_tokens",
+    "thinking_signature": null,
+    "type": "DoneEvent"
+  }
+]

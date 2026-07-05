@@ -2379,6 +2379,7 @@ class TurnRunner:
         router_control_replay_depth: int = 0,
         *,
         pending_input_provider: PendingInputProvider | None = None,
+        bound_user_message_id: str | None = None,
     ) -> AsyncIterator[AgentEvent]:
         """Run one agent turn with full orchestration.
 
@@ -2443,6 +2444,7 @@ class TurnRunner:
                     no_memory_capture=no_memory_capture,
                     ingress_pipeline_steps=ingress_pipeline_steps,
                     router_control_replay_depth=router_control_replay_depth,
+                    bound_user_message_id=bound_user_message_id,
                 ):
                     yield event
             finally:
@@ -2484,6 +2486,7 @@ class TurnRunner:
                         no_memory_capture=no_memory_capture,
                         ingress_pipeline_steps=ingress_pipeline_steps,
                         router_control_replay_depth=router_control_replay_depth,
+                        bound_user_message_id=bound_user_message_id,
                     ):
                         yield event
                 finally:
@@ -2520,6 +2523,7 @@ class TurnRunner:
         router_control_replay_depth: int = 0,
         *,
         pending_input_provider: PendingInputProvider | None = None,
+        bound_user_message_id: str | None = None,
     ) -> AsyncIterator[AgentEvent]:
         # Observability: bracket turn setup + stream loop with monotonic clock
         # so latency_ms reflects the full turn.
@@ -2796,6 +2800,7 @@ class TurnRunner:
                     session_key=session_key,
                     agent_id=agent_id,
                     history_has_persisted_user=history_has_persisted_user,
+                    bound_user_message_id=bound_user_message_id,
                 )
             )
             ch_out = ch_outcome.require_output()
@@ -3059,6 +3064,13 @@ class TurnRunner:
                         session_key=session_key,
                         exc_info=True,
                     )
+            elif bound_user_message_id and self._session_manager is not None:
+                # Zero-output cancel: no assistant text/segments/artifacts ever
+                # streamed, so the only trace of this turn is the ingress-persisted
+                # user prompt. Drop it so a cancelled question does not silently
+                # influence later turns (#240). Cancels WITH partial output keep
+                # the `[interrupted]` marker above instead.
+                await self._rollback_cancelled_prompt(session_key, bound_user_message_id)
             if turn_call_logger is not None:
                 try:
                     turn_call_logger.write(
@@ -6299,14 +6311,62 @@ class TurnRunner:
             return _DEFAULT_PREFLIGHT_COMPACT_RATIO
         return ratio
 
+    async def _rollback_cancelled_prompt(
+        self,
+        session_key: str,
+        message_id: str,
+    ) -> bool:
+        """Remove the ingress-persisted user prompt for a zero-output cancel.
+
+        Returns whether a message was removed. Best-effort: a failure is logged
+        and swallowed so it can never mask the cancellation being handled.
+        """
+        if self._session_manager is None:
+            return False
+        remove_message = getattr(self._session_manager, "remove_message", None)
+        if not callable(remove_message):
+            return False
+        try:
+            removed = remove_message(session_key, message_id)
+            if inspect.isawaitable(removed):
+                removed = await removed
+            if removed:
+                log.info(
+                    "turn_runner.cancelled_prompt_rolled_back",
+                    session_key=session_key,
+                    message_id=message_id,
+                )
+            return bool(removed)
+        except Exception:  # pragma: no cover — never mask the cancel
+            log.warning(
+                "turn_runner.cancelled_prompt_rollback_failed",
+                session_key=session_key,
+                message_id=message_id,
+                exc_info=True,
+            )
+            return False
+
     async def _load_history(
         self,
         agent: Agent,
         session_key: str,
         *,
         trim_last_user: bool = True,
+        bound_user_message_id: str | None = None,
     ) -> str | None:
-        """Load existing transcript as agent history."""
+        """Load existing transcript as agent history.
+
+        ``bound_user_message_id`` binds this turn's history to the specific
+        persisted user message it answers, rather than to transcript position.
+        When sends are queued, ingress persists later prompts before earlier
+        turns finish, so the transcript can hold the bound message mid-stream
+        with unanswered future prompts after it. A positional "drop the last
+        user entry" then duplicates the current prompt and leaks those future
+        prompts into context. Slicing by id drops the bound entry (the caller
+        re-appends it) plus any later user entry while keeping the intervening
+        assistant replies. When the id is absent or not found, fall back to the
+        positional trim.
+        """
         if self._session_manager is None:
             return None
 
@@ -6324,6 +6384,33 @@ class TurnRunner:
         if emergency_override is not None:
             transcript = list(emergency_override.kept_entries)
             summary_markers.append(emergency_override.summary)
+
+        # Resolve the id-bound slice (see method docstring). Only active when we
+        # would otherwise trim positionally.
+        bound_index: int | None = None
+        bound_skip_indexes: set[int] = set()
+        if trim_last_user and bound_user_message_id:
+            for idx, candidate in enumerate(transcript):
+                if getattr(candidate, "message_id", None) == bound_user_message_id:
+                    bound_index = idx
+                    break
+            if bound_index is not None:
+                bound_skip_indexes = {
+                    idx
+                    for idx, candidate in enumerate(transcript)
+                    if idx >= bound_index and getattr(candidate, "role", None) == "user"
+                }
+            else:
+                # The bound message is not in the (possibly compacted) transcript;
+                # fall back to positional trim but surface it — a persistent
+                # occurrence means queued binding is silently degrading.
+                log.warning(
+                    "load_history.bound_message_missing",
+                    session_key=session_key,
+                    bound_user_message_id=bound_user_message_id,
+                    transcript_len=len(transcript),
+                )
+        bound_slice_applied = bool(bound_skip_indexes)
         model_caps = getattr(getattr(agent, "config", None), "model_capabilities", None)
         preserve_image_history = bool(
             getattr(getattr(agent, "config", None), "preserve_historical_images", False)
@@ -6349,13 +6436,15 @@ class TurnRunner:
         image_replay_entry_indexes: set[int] = set()
         image_replay_session_id: str | None = None
         if preserve_image_history and lookback > 0:
-            current_user_entry_index = (
-                len(transcript) - 1
-                if trim_last_user
-                and transcript
-                and getattr(transcript[-1], "role", None) == "user"
-                else None
-            )
+            current_user_entry_index = bound_index
+            if current_user_entry_index is None:
+                current_user_entry_index = (
+                    len(transcript) - 1
+                    if trim_last_user
+                    and transcript
+                    and getattr(transcript[-1], "role", None) == "user"
+                    else None
+                )
             user_entry_indexes = [
                 index
                 for index, entry in enumerate(transcript)
@@ -6375,6 +6464,11 @@ class TurnRunner:
                 attachment_replay_session_id = session_key
         last_entry_was_user = False
         for entry_index, entry in enumerate(transcript):
+            if entry_index in bound_skip_indexes:
+                # The bound current prompt (re-appended by the caller) and any
+                # later still-queued user prompt are excluded from history.
+                last_entry_was_user = False
+                continue
             if (
                 entry.role == "system"
                 and entry.content
@@ -6412,8 +6506,16 @@ class TurnRunner:
             last_entry_was_user = entry.role == "user"
         # Strip the caller-appended user turn only when the transcript really
         # ended on a user entry; an assistant entry that reconstructs into
-        # assistant + user(tool_result) must keep its tool_result tail.
-        if trim_last_user and last_entry_was_user and history and history[-1].role == "user":
+        # assistant + user(tool_result) must keep its tool_result tail. When the
+        # id-bound slice already excluded the current prompt, skip the positional
+        # pop entirely.
+        if (
+            not bound_slice_applied
+            and trim_last_user
+            and last_entry_was_user
+            and history
+            and history[-1].role == "user"
+        ):
             history.pop()
         context_states = await self._load_context_states(session_key)
         provider = getattr(agent, "provider", None)

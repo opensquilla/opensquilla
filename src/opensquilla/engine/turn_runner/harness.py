@@ -695,11 +695,13 @@ class _TurnRunnerHistoryLoaderAdapter(HistoryLoaderPort):
         agent: Agent,
         session_key: str,
         trim_last_user: bool,
+        bound_user_message_id: str | None = None,
     ) -> str | None:
         return await self._runner._load_history(
             agent,
             session_key,
             trim_last_user=trim_last_user,
+            bound_user_message_id=bound_user_message_id,
         )
 
 class _RequestContextPrependAdapter(RequestContextPrependPort):

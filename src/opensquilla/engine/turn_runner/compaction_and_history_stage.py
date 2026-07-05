@@ -140,6 +140,7 @@ class HistoryLoaderPort(Protocol):
         agent: Agent,
         session_key: str,
         trim_last_user: bool,
+        bound_user_message_id: str | None = None,
     ) -> str | None: ...
 
 @runtime_checkable
@@ -194,6 +195,7 @@ class CompactionAndHistoryStageInput:
     compaction_context_window_tokens: int | None = None
     compaction_provider: Any | None = None
     compaction_model: str | None = None
+    bound_user_message_id: str | None = None
 
 @dataclass(frozen=True)
 class CompactionAndHistoryStageOutput:
@@ -328,6 +330,7 @@ class CompactionAndHistoryStage:
             agent=inp.agent,
             session_key=inp.session_key,
             trim_last_user=inp.history_has_persisted_user,
+            bound_user_message_id=inp.bound_user_message_id,
         )
 
         # 4. Prepend compaction summary context to request_context_prompt (pure).

@@ -159,9 +159,16 @@ def _patch_preflight(runner, *, raises=None, calls=None):
 
 
 def _patch_load_history(runner, *, return_value=None, raises=None, calls=None):
-    async def _load(self, agent, session_key, *, trim_last_user=True):  # noqa: ARG001, ARG002
+    async def _load(
+        self, agent, session_key, *, trim_last_user=True, bound_user_message_id=None
+    ):  # noqa: ARG001, ARG002
         if calls is not None:
-            calls.append({"trim_last_user": trim_last_user})
+            calls.append(
+                {
+                    "trim_last_user": trim_last_user,
+                    "bound_user_message_id": bound_user_message_id,
+                }
+            )
         if raises is not None:
             raise raises("history boom")
         return return_value

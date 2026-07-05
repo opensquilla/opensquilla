@@ -781,27 +781,6 @@ const {
   ensureInterruptBubble,
 } = chatStream
 
-const chatRouterDecisionRuntime = useChatRouterDecisionRuntime({
-  messages,
-  sessionKey,
-  isStreaming,
-  streamBubble,
-  streamHasVisibleOutput,
-  startStreaming,
-  resetStreamForRouterReplay,
-  resetStreamIdleTimer,
-  setStreamActivity,
-  scrollToBottom,
-})
-const {
-  pendingDecision,
-  handleRouterControlReplay,
-  queueRouterDecision,
-  appendEnsembleProgress,
-  flushPendingRouterDecision,
-  clearPendingRouterDecision,
-} = chatRouterDecisionRuntime
-
 const chatAttachments = useChatAttachments()
 const {
   pendingAttachments,
@@ -904,6 +883,29 @@ const {
   setRouterVisualEffectsEnabled,
   bindFeatureRefresh,
 } = chatFeatureToggles
+
+const chatRouterDecisionRuntime = useChatRouterDecisionRuntime({
+  messages,
+  sessionKey,
+  isStreaming,
+  modelRoutingMode,
+  streamBubble,
+  streamHasVisibleOutput,
+  startStreaming,
+  resetStreamForRouterReplay,
+  resetStreamIdleTimer,
+  setStreamActivity,
+  scrollToBottom,
+})
+const {
+  pendingDecision,
+  handleRouterControlReplay,
+  queueRouterDecision,
+  appendEnsembleProgress,
+  markEnsembleHandoff,
+  flushPendingRouterDecision,
+  clearPendingRouterDecision,
+} = chatRouterDecisionRuntime
 
 // Gate the live answer's reveal to a [MIN,MAX] window so the model-router panel
 // decides (and animates) first, then the answer follows. Self-cleans via the
@@ -1340,6 +1342,7 @@ const rpcEventHandlers = useChatRpcEventHandlers({
   applySessionRunState,
   queueRouterDecision,
   appendEnsembleProgress,
+  markEnsembleHandoff,
   flushPendingRouterDecision,
   clearPendingRouterDecision,
   handleRouterControlReplay,

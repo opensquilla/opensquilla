@@ -109,6 +109,7 @@ const ensemble = computed(() => props.message.ensemble)
 const ensembleModels = computed(() => ensemble.value?.models || [])
 const isEnsemblePanel = computed(() => props.message.routerPanel === 'llm-ensemble')
 const hasEnsembleModels = computed(() => ensembleModels.value.length > 0)
+const isEnsembleHandoff = computed(() => props.message.routerState === 'handoff' && !hasEnsembleModels.value)
 // Ensemble strips are trace surfaces, not only animations: keep them openable
 // even while candidate details are still unknown so the empty/pending state is
 // visible instead of looking broken.
@@ -131,7 +132,9 @@ const candidateCount = computed(() => ensemble.value?.modelCount || ensembleMode
 const totalCandidates = computed(() => ensemble.value?.totalCandidates || 0)
 const hasKnownCandidateCount = computed(() => candidateCount.value > 0)
 const emptyTraceLabel = computed(() =>
-  hasKnownCandidateCount.value
+  isEnsembleHandoff.value
+    ? t('chat.routerFx.ensembleTraceUnavailable')
+    : hasKnownCandidateCount.value
     ? t('chat.routerFx.ensembleDetailUnavailable', { count: candidateCount.value })
     : t('chat.routerFx.ensembleTracePending'),
 )
@@ -143,6 +146,7 @@ const gridStyle = computed<Record<string, string>>(() => {
   }
 })
 const ensembleStatusLabel = computed(() => {
+  if (isEnsembleHandoff.value) return t('chat.routerFx.ensembleHandedOff')
   if (!hasEnsembleModels.value) return t('chat.routerFx.ensembleSelecting')
   if (isEnsembleDone.value) return t('chat.routerFx.ensembleDone', { count: candidateCount.value })
   return t('chat.routerFx.ensembleRunning', { count: candidateCount.value })
@@ -157,6 +161,7 @@ const ensembleButtonLabel = computed(() => {
 })
 const ensembleInspectorMeta = computed(() => {
   const pool = totalCandidates.value > 0 ? totalCandidates.value : candidateCount.value
+  if (pool <= 0) return t('chat.routerFx.ensembleTelemetryPendingMeta')
   return t('chat.routerFx.ensemblePlanMeta', { count: pool })
 })
 const fallbackLabel = computed(() => {

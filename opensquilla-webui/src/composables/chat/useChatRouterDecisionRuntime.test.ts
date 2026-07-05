@@ -2,13 +2,15 @@ import { describe, expect, it, vi } from 'vitest'
 import { ref } from 'vue'
 import type { ChatMessage } from '@/types/chat'
 import { useChatRouterDecisionRuntime } from '@/composables/chat/useChatRouterDecisionRuntime'
+import type { ModelRoutingMode } from '@/types/modelRouting'
 
-function makeRuntime(messages: ChatMessage[] = [], isStreaming = true) {
+function makeRuntime(messages: ChatMessage[] = [], isStreaming = true, modelRoutingMode: ModelRoutingMode = 'llm_ensemble') {
   const messagesRef = ref<ChatMessage[]>(messages)
   const runtime = useChatRouterDecisionRuntime({
     messages: messagesRef,
     sessionKey: ref('sess'),
     isStreaming: ref(isStreaming),
+    modelRoutingMode: ref(modelRoutingMode),
     streamBubble: ref(true),
     streamHasVisibleOutput: ref(false),
     startStreaming: vi.fn(),
@@ -92,5 +94,101 @@ describe('appendEnsembleProgress', () => {
     const { runtime, messagesRef } = makeRuntime([{ role: 'user', text: 'q', ts: 0 }])
     runtime.appendEnsembleProgress({ event_type: 'proposer_start', proposer_model: '' })
     expect(messagesRef.value.some(m => m.role === 'router')).toBe(false)
+  })
+})
+
+describe('markEnsembleHandoff', () => {
+  it('synthesizes a handoff router message when only the reserve strip exists', () => {
+    const { runtime, messagesRef } = makeRuntime([{ role: 'user', text: 'q', ts: 0 }])
+
+    runtime.markEnsembleHandoff()
+
+    const router = messagesRef.value.find(message => message.role === 'router')
+    expect(router?.routerDecision?.source).toBe('llm_ensemble')
+    expect(router?.routerState).toBe('handoff')
+  })
+
+  it('marks the live empty ensemble router as handed off once agent activity starts', () => {
+    const router: ChatMessage = {
+      role: 'router',
+      text: '',
+      ts: 1,
+      provenanceKind: 'router_decision',
+      routerDecision: { tier: 'c1', model: 'deepseek/deepseek-v4-pro', source: 'llm_ensemble' },
+    }
+    const { runtime } = makeRuntime([{ role: 'user', text: 'q', ts: 0 }, router])
+
+    runtime.markEnsembleHandoff()
+
+    expect(router.routerState).toBe('handoff')
+  })
+
+  it('keeps revealed ensemble candidates intact when marking handoff', () => {
+    const router: ChatMessage = {
+      role: 'router',
+      text: '',
+      ts: 1,
+      provenanceKind: 'router_decision',
+      routerDecision: { tier: 'c1', model: 'deepseek/deepseek-v4-pro', source: 'llm_ensemble' },
+      ensemble: {
+        profile: 'llm_ensemble',
+        modelCount: 1,
+        totalCandidates: 1,
+        requestCount: 1,
+        fallbackUsed: false,
+        fallbackReason: '',
+        costUsd: 0,
+        savedUsd: 0,
+        savedPct: 0,
+        models: [{
+          role: 'proposer',
+          label: 'proposer',
+          provider: 'openrouter',
+          model: 'z-ai/glm-5.2',
+          modelShort: 'glm-5.2',
+          input: 0,
+          output: 0,
+          costUsd: 0,
+          status: 'running',
+        }],
+      },
+    }
+    const { runtime } = makeRuntime([{ role: 'user', text: 'q', ts: 0 }, router])
+
+    runtime.markEnsembleHandoff()
+
+    expect(router.ensemble?.models).toHaveLength(1)
+    expect(router.ensemble?.models[0].model).toBe('z-ai/glm-5.2')
+    expect(router.routerState).toBe('handoff')
+  })
+
+  it('marks a live router row as handoff when ensemble mode owns the current turn', () => {
+    const router: ChatMessage = {
+      role: 'router',
+      text: '',
+      ts: 1,
+      provenanceKind: 'router_decision',
+      routerDecision: { tier: 'c1', model: 'deepseek/deepseek-v4-pro', source: 'squilla_router' },
+    }
+    const { runtime } = makeRuntime([{ role: 'user', text: 'q', ts: 0 }, router], true, 'llm_ensemble')
+
+    runtime.markEnsembleHandoff()
+
+    expect(router.routerState).toBe('handoff')
+  })
+
+  it('does not mark non-ensemble router messages', () => {
+    const router: ChatMessage = {
+      role: 'router',
+      text: '',
+      ts: 1,
+      provenanceKind: 'router_decision',
+      routerDecision: { tier: 'c1', model: 'deepseek/deepseek-v4-pro', source: 'squilla_router' },
+    }
+    const { runtime } = makeRuntime([{ role: 'user', text: 'q', ts: 0 }, router], true, 'squilla_router')
+
+    runtime.markEnsembleHandoff()
+
+    expect(router.routerState).toBeUndefined()
   })
 })

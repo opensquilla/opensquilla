@@ -360,6 +360,78 @@ describe('useChatRenderedMessages router visual mode', () => {
     ])
     expect(rendered[assistantIndex]?.meta?.ensemble?.modelCount).toBe(2)
   })
+
+  it('replaces an empty live handoff strip with completed assistant usage trace', () => {
+    const api = useChatRenderedMessages({
+      messages: ref<ChatMessage[]>([
+        { role: 'user', text: 'hello', ts: 0 },
+        {
+          role: 'router',
+          text: '',
+          ts: 1,
+          provenanceKind: 'router_decision',
+          routerState: 'handoff',
+          routerDecision: {
+            tier: 'c1',
+            model: '',
+            source: 'llm_ensemble',
+          },
+        },
+        {
+          role: 'assistant',
+          text: 'Done.',
+          ts: 2,
+          messageId: 'assistant-ensemble-handoff-complete',
+          usage: {
+            model: 'z-ai/glm-5.2',
+            model_usage_breakdown: [
+              { role: 'proposer', provider: 'openrouter', model: 'deepseek/deepseek-v4-pro' },
+              { role: 'aggregator', provider: 'openrouter', model: 'z-ai/glm-5.2' },
+            ],
+            ensemble_trace: {
+              profile: 'static_openrouter_b5',
+              llm_request_count: 5,
+              total_candidates: 5,
+              fallback_used: false,
+            },
+          },
+        },
+      ]),
+      sessionKey: ref('router-ensemble-handoff-complete-test'),
+      routerSlots: ref(['fast', 'balanced', 'strong']),
+      routerModels: ref({}),
+      routerTierConfigs: ref({
+        fast: { model: 'openai/gpt-5.4-mini', supportsImage: false, imageOnly: false },
+        balanced: { model: 'anthropic/claude-sonnet-4.6', supportsImage: false, imageOnly: false },
+        strong: { model: 'openai/gpt-5.5', supportsImage: false, imageOnly: false },
+      }),
+      routerVisualEffectsEnabled: ref(true),
+      routerVisualMode: ref('real_candidates'),
+      renderMarkdown: text => text,
+      stripGeneratedArtifactMarkers: text => text,
+      stripTimePrefix: text => text,
+      isSubagentCompletionMessage: () => false,
+      modelRoutingMode: ref('llm_ensemble'),
+      isStreaming: ref(false),
+    })
+
+    const rendered = api.renderedMessages.value
+    const strip = rendered.find(message => message.isRouterStrip)
+    const assistantIndex = rendered.findIndex(message => message.displayRole === 'assistant')
+    const stripIndex = rendered.findIndex(message => message.isRouterStrip)
+
+    expect(stripIndex).toBeGreaterThan(-1)
+    expect(assistantIndex).toBeGreaterThan(-1)
+    expect(stripIndex).toBeLessThan(assistantIndex)
+    expect(strip?.routerPanel).toBe('llm-ensemble')
+    expect(strip?.routerSettled).toBe(true)
+    expect(strip?.routerState).toBe('settled')
+    expect(strip?.ensemble?.modelCount).toBe(2)
+    expect(strip?.ensemble?.models.map(model => model.modelShort)).toEqual([
+      'deepseek-v4-pro',
+      'glm-5.2',
+    ])
+  })
 })
 
 describe('useChatRenderedMessages clarify history recovery', () => {

@@ -29,6 +29,7 @@ function createHarness(options: {
     appendFrame: vi.fn(),
     useReducer: ref(false),
   }
+  const markEnsembleHandoff = vi.fn()
   const scope = effectScope()
   const api = scope.run(() => useChatRpcEventHandlers({
     sessionKey: ref('agent:main:test'),
@@ -55,6 +56,7 @@ function createHarness(options: {
     applySessionRunState: vi.fn(),
     queueRouterDecision: vi.fn(),
     appendEnsembleProgress: vi.fn(),
+    markEnsembleHandoff,
     flushPendingRouterDecision: vi.fn(),
     clearPendingRouterDecision: vi.fn(),
     handleRouterControlReplay: vi.fn(),
@@ -67,7 +69,7 @@ function createHarness(options: {
     loadHistory: vi.fn(),
     loadCurrentSessionUsage: vi.fn(),
   }))!
-  return { api, messages, stream, stop: () => scope.stop() }
+  return { api, messages, stream, markEnsembleHandoff, stop: () => scope.stop() }
 }
 
 describe('useChatRpcEventHandlers done usage attachment', () => {
@@ -124,6 +126,44 @@ describe('useChatRpcEventHandlers done usage attachment', () => {
       expect(messages.value[1].model).toBe('z-ai/glm-5.2')
       expect(messages.value[1].input_tokens).toBe(10)
       expect(messages.value[1].output_tokens).toBe(1)
+    } finally {
+      stop()
+    }
+  })
+})
+
+describe('useChatRpcEventHandlers ensemble handoff', () => {
+  it('marks ensemble handoff when a current tool call starts', () => {
+    const { api, stream, markEnsembleHandoff, stop } = createHarness()
+
+    try {
+      api.handlers.onToolUseStart({
+        session_key: 'agent:main:test',
+        stream_seq: 1,
+        tool_use_id: 'tool-1',
+        tool_name: 'write_file',
+      })
+
+      expect(stream.appendToolCall).toHaveBeenCalledTimes(1)
+      expect(markEnsembleHandoff).toHaveBeenCalledTimes(1)
+    } finally {
+      stop()
+    }
+  })
+
+  it('does not mark handoff for stale tool events', () => {
+    const { api, stream, markEnsembleHandoff, stop } = createHarness()
+
+    try {
+      api.handlers.onToolUseStart({
+        session_key: 'agent:main:test',
+        stream_seq: -1,
+        tool_use_id: 'tool-1',
+        tool_name: 'write_file',
+      })
+
+      expect(stream.appendToolCall).not.toHaveBeenCalled()
+      expect(markEnsembleHandoff).not.toHaveBeenCalled()
     } finally {
       stop()
     }

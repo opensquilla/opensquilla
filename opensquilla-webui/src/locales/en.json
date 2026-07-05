@@ -1721,6 +1721,7 @@
     "aiModelEnsembleRouter": "AI model ensemble router",
     "routerFx": {
       "ensembleSelecting": "AI model ensemble router · selecting candidates",
+      "ensembleHandedOff": "AI model ensemble router · handed off to agent",
       "ensembleRunning": "AI model ensemble router · {count} candidates synthesizing",
       "ensembleDone": "{count} candidates synthesized",
       "ensembleMode": "ensemble",
@@ -1728,6 +1729,7 @@
       "ensembleToggleTrace": "Show ensemble route trace",
       "ensembleTraceTitle": "Candidate trace",
       "ensemblePlanMeta": "ensemble plan · pool {count}",
+      "ensembleTelemetryPendingMeta": "ensemble plan · telemetry pending",
       "ensembleFallbackNone": "fallback none",
       "ensembleFallbackUsed": "fallback used",
       "ensembleFallbackReason": "fallback · {reason}",
@@ -1735,6 +1737,7 @@
       "ensembleTokens": "{count} tok",
       "ensembleUsed": "used",
       "ensembleTracePending": "trace pending",
+      "ensembleTraceUnavailable": "trace unavailable until run completes",
       "ensembleDetailUnavailable": "{count} candidates · detail unavailable"
     },
     "sources": "Sources",

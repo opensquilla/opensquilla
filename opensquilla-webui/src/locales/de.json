@@ -1721,6 +1721,7 @@
     "aiModelEnsembleRouter": "AI-Modell-Ensemble-Router",
     "routerFx": {
       "ensembleSelecting": "AI-Modell-Ensemble-Router · Kandidaten werden gewählt",
+      "ensembleHandedOff": "AI-Modell-Ensemble-Router · an Agent übergeben",
       "ensembleRunning": "AI-Modell-Ensemble-Router · {count} Kandidaten werden synthetisiert",
       "ensembleDone": "{count} Kandidaten synthetisiert",
       "ensembleMode": "Ensemble",
@@ -1728,6 +1729,7 @@
       "ensembleToggleTrace": "Ensemble-Routing-Trace anzeigen",
       "ensembleTraceTitle": "Kandidatentrace",
       "ensemblePlanMeta": "Ensemble-Plan · Pool {count}",
+      "ensembleTelemetryPendingMeta": "Ensemble-Plan · Telemetrie ausstehend",
       "ensembleFallbackNone": "kein Fallback",
       "ensembleFallbackUsed": "Fallback verwendet",
       "ensembleFallbackReason": "Fallback · {reason}",
@@ -1735,6 +1737,7 @@
       "ensembleTokens": "{count} tok",
       "ensembleUsed": "verwendet",
       "ensembleTracePending": "Trace ausstehend",
+      "ensembleTraceUnavailable": "Trace nach Abschluss des Laufs verfügbar",
       "ensembleDetailUnavailable": "{count} Kandidaten · Details nicht verfügbar"
     },
     "sources": "Quellen",

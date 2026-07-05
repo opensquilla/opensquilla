@@ -1,5 +1,6 @@
 import { ref, type Ref } from 'vue'
 import type { ChatEnsembleMeta, ChatEnsembleMetaModel, ChatMessage } from '@/types/chat'
+import type { ModelRoutingMode } from '@/types/modelRouting'
 import type { EnsembleProgressPayload, RouterDecisionPayload } from '@/types/rpc'
 import {
   type NormalizedRouterDecision,
@@ -11,6 +12,7 @@ export interface UseChatRouterDecisionRuntimeOptions {
   messages: Ref<ChatMessage[]>
   sessionKey: Ref<string>
   isStreaming: Ref<boolean>
+  modelRoutingMode: Ref<ModelRoutingMode>
   streamBubble: Ref<boolean>
   streamHasVisibleOutput: Ref<boolean>
   startStreaming: () => void
@@ -135,6 +137,50 @@ export function useChatRouterDecisionRuntime(options: UseChatRouterDecisionRunti
     ensemble.totalCandidates = Math.max(ensemble.totalCandidates, ensemble.models.length)
   }
 
+  function isEnsembleRouterMessage(message: ChatMessage): boolean {
+    const decision = message.routerDecision || null
+    const source = String(decision?.source || decision?.routing_source || '').toLowerCase()
+    return source.includes('ensemble') || options.modelRoutingMode.value === 'llm_ensemble' || Boolean(message.ensemble)
+  }
+
+  function findLiveRouterMessage(): ChatMessage | undefined {
+    if (!options.isStreaming.value) return undefined
+    for (let i = options.messages.value.length - 1; i >= 0; i--) {
+      const message = options.messages.value[i]
+      if (message.role === 'user') break
+      if (message.role === 'router' && message.provenanceKind === 'router_decision') {
+        return message
+      }
+    }
+    return undefined
+  }
+
+  function synthesizeHandoffRouterMessage(): ChatMessage {
+    const message: ChatMessage = {
+      role: 'router',
+      text: '',
+      ts: new Date().toISOString(),
+      routerDecision: { tier: 'c1', model: '', source: 'llm_ensemble' },
+      provenanceKind: 'router_decision',
+      messageId: `router-${options.sessionKey.value}-ensemble-handoff`,
+      routerState: 'handoff',
+    }
+    options.messages.value.push(message)
+    return message
+  }
+
+  function markEnsembleHandoff() {
+    if (!options.isStreaming.value) return
+    let target = findLiveRouterMessage()
+    if (!target) {
+      if (options.modelRoutingMode.value !== 'llm_ensemble') return
+      target = synthesizeHandoffRouterMessage()
+    }
+    if (!isEnsembleRouterMessage(target)) return
+    target.routerState = 'handoff'
+    options.scrollToBottom()
+  }
+
   // Accumulate an ensemble_progress delta onto the live turn's router message so
   // the strip reveals members incrementally. Mirrors appendRouterDecision: find
   // the in-flight router message, else synthesize one.
@@ -142,17 +188,7 @@ export function useChatRouterDecisionRuntime(options: UseChatRouterDecisionRunti
     const member = memberFromEnsembleProgress(payload)
     if (!member) return
 
-    let target: ChatMessage | undefined
-    if (options.isStreaming.value) {
-      for (let i = options.messages.value.length - 1; i >= 0; i--) {
-        const message = options.messages.value[i]
-        if (message.role === 'user') break
-        if (message.role === 'router' && message.provenanceKind === 'router_decision') {
-          target = message
-          break
-        }
-      }
-    }
+    let target = findLiveRouterMessage()
 
     if (!target) {
       options.messages.value.push({
@@ -183,5 +219,6 @@ export function useChatRouterDecisionRuntime(options: UseChatRouterDecisionRunti
     flushPendingRouterDecision,
     clearPendingRouterDecision,
     appendEnsembleProgress,
+    markEnsembleHandoff,
   }
 }

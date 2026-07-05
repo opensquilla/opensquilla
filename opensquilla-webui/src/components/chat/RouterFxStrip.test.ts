@@ -56,7 +56,26 @@ describe('RouterFxStrip ensemble panel', () => {
     expect(el.querySelector('[data-testid="router-ensemble-inspector"]')).toBeTruthy()
     expect(el.querySelector('[data-testid="router-ensemble-detail-unavailable"]')).toBeTruthy()
     expect(el.textContent).toContain('trace pending')
+    expect(el.textContent).toContain('telemetry pending')
+    expect(el.textContent).not.toContain('pool 0')
     expect(el.textContent).not.toContain('0 candidates')
+    app.unmount()
+  })
+
+  it('shows handoff copy instead of selecting copy once the agent phase has started', async () => {
+    const { app, el } = await mountStrip(ensembleStrip({ routerState: 'handoff' }))
+
+    const button = el.querySelector<HTMLButtonElement>('[data-testid="router-ensemble-toggle"]')
+    expect(button).toBeTruthy()
+    expect(el.textContent).toContain('handed off to agent')
+    expect(el.textContent).not.toContain('selecting candidates')
+
+    button?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    await nextTick()
+
+    expect(el.querySelector('[data-testid="router-ensemble-inspector"]')).toBeTruthy()
+    expect(el.textContent).toContain('trace unavailable')
+    expect(el.textContent).not.toContain('trace pending')
     app.unmount()
   })
 })

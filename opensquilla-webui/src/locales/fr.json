@@ -1721,6 +1721,7 @@
     "aiModelEnsembleRouter": "Routeur agrégé de modèles IA",
     "routerFx": {
       "ensembleSelecting": "Routeur agrégé de modèles IA · sélection des candidats",
+      "ensembleHandedOff": "Routeur agrégé de modèles IA · transmis à l'agent",
       "ensembleRunning": "Routeur agrégé de modèles IA · {count} candidats en synthèse",
       "ensembleDone": "{count} candidats synthétisés",
       "ensembleMode": "ensemble",
@@ -1728,6 +1729,7 @@
       "ensembleToggleTrace": "Afficher la trace du routage agrégé",
       "ensembleTraceTitle": "Trace des candidats",
       "ensemblePlanMeta": "plan ensemble · pool {count}",
+      "ensembleTelemetryPendingMeta": "plan ensemble · télémétrie en attente",
       "ensembleFallbackNone": "aucun fallback",
       "ensembleFallbackUsed": "fallback utilisé",
       "ensembleFallbackReason": "fallback · {reason}",
@@ -1735,6 +1737,7 @@
       "ensembleTokens": "{count} tok",
       "ensembleUsed": "utilisé",
       "ensembleTracePending": "trace en attente",
+      "ensembleTraceUnavailable": "trace disponible à la fin de l'exécution",
       "ensembleDetailUnavailable": "{count} candidats · détail indisponible"
     },
     "sources": "Sources",

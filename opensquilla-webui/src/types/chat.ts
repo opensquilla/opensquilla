@@ -277,6 +277,7 @@ export interface ChatMessage {
   provenanceSourceSessionKey?: string
   provenanceSourceTool?: string
   interrupted?: boolean
+  routerState?: string
   routerSettled?: boolean
   // Live-accumulated ensemble members for the in-flight router strip, grown by
   // `session.event.ensemble_progress` deltas before the final `done` arrives.

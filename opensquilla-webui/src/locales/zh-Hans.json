@@ -1721,6 +1721,7 @@
     "aiModelEnsembleRouter": "AI 模型聚合路由",
     "routerFx": {
       "ensembleSelecting": "AI 模型聚合路由 · 正在选择候选",
+      "ensembleHandedOff": "AI 模型聚合路由 · 已交给 Agent",
       "ensembleRunning": "AI 模型聚合路由 · {count} 个候选正在合成",
       "ensembleDone": "{count} 个候选已合成",
       "ensembleMode": "聚合",
@@ -1728,6 +1729,7 @@
       "ensembleToggleTrace": "查看聚合路由 trace",
       "ensembleTraceTitle": "候选 trace",
       "ensemblePlanMeta": "聚合档案 · 候选池 {count}",
+      "ensembleTelemetryPendingMeta": "聚合档案 · telemetry 待更新",
       "ensembleFallbackNone": "未使用降级",
       "ensembleFallbackUsed": "已使用 fallback",
       "ensembleFallbackReason": "降级 · {reason}",
@@ -1735,6 +1737,7 @@
       "ensembleTokens": "{count} 令牌",
       "ensembleUsed": "已使用",
       "ensembleTracePending": "trace 待更新",
+      "ensembleTraceUnavailable": "运行完成后可查看 trace",
       "ensembleDetailUnavailable": "{count} 个候选 · 明细不可用"
     },
     "sources": "来源",

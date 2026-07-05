@@ -1721,6 +1721,7 @@
     "aiModelEnsembleRouter": "Enrutador agregado de modelos de IA",
     "routerFx": {
       "ensembleSelecting": "Enrutador agregado de modelos de IA · seleccionando candidatos",
+      "ensembleHandedOff": "Enrutador agregado de modelos de IA · entregado al agente",
       "ensembleRunning": "Enrutador agregado de modelos de IA · {count} candidatos sintetizando",
       "ensembleDone": "{count} candidatos sintetizados",
       "ensembleMode": "conjunto",
@@ -1728,6 +1729,7 @@
       "ensembleToggleTrace": "Mostrar traza del enrutamiento agregado",
       "ensembleTraceTitle": "Traza de candidatos",
       "ensemblePlanMeta": "plan de conjunto · pool {count}",
+      "ensembleTelemetryPendingMeta": "plan de conjunto · telemetría pendiente",
       "ensembleFallbackNone": "sin fallback",
       "ensembleFallbackUsed": "fallback usado",
       "ensembleFallbackReason": "fallback · {reason}",
@@ -1735,6 +1737,7 @@
       "ensembleTokens": "{count} tok",
       "ensembleUsed": "usado",
       "ensembleTracePending": "traza pendiente",
+      "ensembleTraceUnavailable": "traza disponible cuando finalice la ejecución",
       "ensembleDetailUnavailable": "{count} candidatos · detalle no disponible"
     },
     "sources": "Fuentes",

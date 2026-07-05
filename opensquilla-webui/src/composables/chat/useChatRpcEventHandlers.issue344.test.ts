@@ -74,6 +74,7 @@ function makeHarness(activeStreamTaskId = '') {
     applySessionRunState: vi.fn(),
     queueRouterDecision: vi.fn(),
     appendEnsembleProgress: vi.fn(),
+    markEnsembleHandoff: vi.fn(),
     flushPendingRouterDecision: vi.fn(),
     clearPendingRouterDecision: vi.fn(),
     handleRouterControlReplay: vi.fn(),

@@ -1721,6 +1721,7 @@
     "aiModelEnsembleRouter": "AI モデル集約ルーター",
     "routerFx": {
       "ensembleSelecting": "AI モデル集約ルーター · 候補を選択中",
+      "ensembleHandedOff": "AI モデル集約ルーター · エージェントへ引き継ぎ済み",
       "ensembleRunning": "AI モデル集約ルーター · {count} 件の候補を統合中",
       "ensembleDone": "{count} 件の候補を統合済み",
       "ensembleMode": "アンサンブル",
@@ -1728,6 +1729,7 @@
       "ensembleToggleTrace": "集約ルートの trace を表示",
       "ensembleTraceTitle": "候補 trace",
       "ensemblePlanMeta": "ensemble plan · pool {count}",
+      "ensembleTelemetryPendingMeta": "ensemble plan · telemetry pending",
       "ensembleFallbackNone": "fallback なし",
       "ensembleFallbackUsed": "fallback 使用",
       "ensembleFallbackReason": "fallback · {reason}",
@@ -1735,6 +1737,7 @@
       "ensembleTokens": "{count} tok",
       "ensembleUsed": "使用済み",
       "ensembleTracePending": "trace 待機中",
+      "ensembleTraceUnavailable": "実行完了後に trace を表示できます",
       "ensembleDetailUnavailable": "{count} 個の候補 · 詳細は利用できません"
     },
     "sources": "ソース",

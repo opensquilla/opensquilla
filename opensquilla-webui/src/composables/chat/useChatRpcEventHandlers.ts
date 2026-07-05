@@ -90,6 +90,7 @@ export interface UseChatRpcEventHandlersOptions {
   applySessionRunState: (source: ChatRunStatusSource | null | undefined) => void
   queueRouterDecision: (payload: RouterDecisionPayload) => void
   appendEnsembleProgress: (payload: EnsembleProgressPayload) => void
+  markEnsembleHandoff: () => void
   flushPendingRouterDecision: () => void
   clearPendingRouterDecision: () => void
   handleRouterControlReplay: () => void
@@ -354,6 +355,7 @@ export function useChatRpcEventHandlers(options: UseChatRpcEventHandlersOptions)
     if (!isCurrentTaskPayload(payload)) return
     if (!acceptStreamSeq(payload)) return
     stream.resetStreamIdleTimer()
+    options.markEnsembleHandoff()
     stream.appendDelta(payload.text || '')
   }
 
@@ -363,6 +365,7 @@ export function useChatRpcEventHandlers(options: UseChatRpcEventHandlersOptions)
     if (!isCurrentTaskPayload(payload)) return
     if (!acceptStreamSeq(payload)) return
     stream.resetStreamIdleTimer()
+    options.markEnsembleHandoff()
     stream.appendToolCall(payload)
   }
 
@@ -372,6 +375,7 @@ export function useChatRpcEventHandlers(options: UseChatRpcEventHandlersOptions)
     if (!isCurrentTaskPayload(payload)) return
     if (!acceptStreamSeq(payload)) return
     stream.resetStreamIdleTimer()
+    options.markEnsembleHandoff()
     stream.appendToolDelta(payload)
   }
 
@@ -402,6 +406,7 @@ export function useChatRpcEventHandlers(options: UseChatRpcEventHandlersOptions)
     const activeState = ['thinking', 'streaming', 'tool_calling', 'tool_use', 'running'].includes(String(to))
     if (!stream.isStreaming.value && activeState) stream.startStreaming()
     if (!stream.isStreaming.value) return
+    if (activeState) options.markEnsembleHandoff()
     if (to === 'thinking') {
       if (stream.streamBubble.value && !stream.streamHasVisibleOutput.value) {
         stream.setStreamActivity('Planning next step')

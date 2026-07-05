@@ -85,12 +85,17 @@ def _ready_router(ctx: RpcContext, *, deep: bool = False) -> dict[str, Any]:
     }
 
 
+def _inactive_llm_ensemble(ctx: RpcContext) -> dict[str, Any]:
+    return {"enabled": False, "selectionMode": ""}
+
+
 def _patch_ready_support_surfaces(monkeypatch: pytest.MonkeyPatch, rpc_doctor: Any) -> None:
     monkeypatch.setattr(rpc_doctor, "_handle_doctor_memory_status", _ready_memory)
     monkeypatch.setattr(rpc_doctor, "_handle_channels_status", _ready_channels)
     monkeypatch.setattr(rpc_doctor, "_handle_search_status", _ready_search)
     monkeypatch.setattr(rpc_doctor, "_build_logs_status", _ready_logs)
     monkeypatch.setattr(rpc_doctor, "_router_payload", _ready_router)
+    monkeypatch.setattr(rpc_doctor, "_llm_ensemble_payload", _inactive_llm_ensemble)
     monkeypatch.setattr(
         rpc_doctor,
         "_image_generation_payload",
@@ -824,3 +829,116 @@ async def test_doctor_status_treats_no_channels_as_optional_setup(monkeypatch) -
     assert channel_finding["fixSteps"][0]["command"] == (
         "opensquilla configure --section channels"
     )
+
+
+def _patch_all_but_llm_ensemble(monkeypatch: pytest.MonkeyPatch, rpc_doctor: Any) -> None:
+    async def provider_status(params: dict[str, Any], ctx: RpcContext) -> dict[str, Any]:
+        return {
+            "activeProvider": "groq",
+            "providers": [
+                {
+                    "providerId": "groq",
+                    "active": True,
+                    "configured": True,
+                    "buildable": True,
+                }
+            ],
+        }
+
+    monkeypatch.setattr(rpc_doctor, "_handle_providers_status", provider_status)
+    monkeypatch.setattr(rpc_doctor, "_handle_doctor_memory_status", _ready_memory)
+    monkeypatch.setattr(rpc_doctor, "_handle_channels_status", _ready_channels)
+    monkeypatch.setattr(rpc_doctor, "_handle_search_status", _ready_search)
+    monkeypatch.setattr(rpc_doctor, "_build_logs_status", _ready_logs)
+    monkeypatch.setattr(rpc_doctor, "_router_payload", _ready_router)
+    monkeypatch.setattr(
+        rpc_doctor,
+        "_image_generation_payload",
+        _optional_image_generation,
+    )
+
+
+@pytest.mark.asyncio
+async def test_doctor_status_warns_when_static_b5_ensemble_has_no_credential(
+    monkeypatch,
+) -> None:
+    import opensquilla.gateway.rpc_doctor as rpc_doctor
+
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    _patch_all_but_llm_ensemble(monkeypatch, rpc_doctor)
+
+    config = GatewayConfig(llm={"provider": "groq", "api_key": "sk-groq-synthetic"})
+    response = await get_dispatcher().dispatch(
+        "req-1",
+        "doctor.status",
+        {},
+        RpcContext(conn_id="test", config=config),
+    )
+
+    assert response.ok is True
+    finding = next(
+        finding
+        for finding in response.payload["findings"]
+        if finding["id"] == "llm_ensemble.static_openrouter_b5.credentials.missing"
+    )
+    assert finding["severity"] == "warn"
+    assert finding["readinessImpact"] == "degrades"
+    assert "OPENROUTER_API_KEY" in finding["detail"]
+    assert finding["evidence"]["activeProvider"] == "groq"
+    assert finding["evidence"]["credentialAvailable"] is False
+    commands = [step["command"] for step in finding["fixSteps"] if "command" in step]
+    assert "opensquilla config set llm_ensemble.enabled false" in commands
+    assert "opensquilla gateway restart" in commands
+
+
+@pytest.mark.asyncio
+async def test_doctor_status_reports_static_b5_ensemble_ready_when_keyed(
+    monkeypatch,
+) -> None:
+    import opensquilla.gateway.rpc_doctor as rpc_doctor
+
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-synthetic")
+    _patch_all_but_llm_ensemble(monkeypatch, rpc_doctor)
+
+    config = GatewayConfig(llm={"provider": "groq", "api_key": "sk-groq-synthetic"})
+    response = await get_dispatcher().dispatch(
+        "req-1",
+        "doctor.status",
+        {},
+        RpcContext(conn_id="test", config=config),
+    )
+
+    assert response.ok is True
+    ids = [finding["id"] for finding in response.payload["findings"]]
+    assert "llm_ensemble.static_openrouter_b5.credentials.missing" not in ids
+    assert "llm_ensemble.static_openrouter_b5.ready" in ids
+    assert response.payload["ready"] is True
+    assert response.payload["status"] == "ready"
+
+
+@pytest.mark.asyncio
+async def test_doctor_status_skips_ensemble_finding_when_ensemble_disabled(
+    monkeypatch,
+) -> None:
+    import opensquilla.gateway.rpc_doctor as rpc_doctor
+
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    _patch_all_but_llm_ensemble(monkeypatch, rpc_doctor)
+
+    config = GatewayConfig(
+        llm={"provider": "groq", "api_key": "sk-groq-synthetic"},
+        llm_ensemble={"enabled": False},
+    )
+    response = await get_dispatcher().dispatch(
+        "req-1",
+        "doctor.status",
+        {},
+        RpcContext(conn_id="test", config=config),
+    )
+
+    assert response.ok is True
+    assert not [
+        finding
+        for finding in response.payload["findings"]
+        if finding["surface"] == "llm_ensemble"
+    ]

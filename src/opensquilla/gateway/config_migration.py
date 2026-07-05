@@ -10,6 +10,7 @@ import os
 import tempfile
 import threading
 import warnings
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -18,6 +19,11 @@ import tomli_w
 
 from opensquilla.paths import default_opensquilla_home
 from opensquilla.search.types import MAX_SEARCH_RESULTS
+
+# Schema version stamped into every migrated payload. Bump this together with
+# a new ``_MIGRATIONS`` entry whenever a one-time value migration is added.
+# ``GatewayConfig.config_version`` (gateway/config.py) defaults to this value.
+LATEST_CONFIG_VERSION = 1
 
 DEPRECATED_MEMORY_FIELDS: frozenset[str] = frozenset(
     {
@@ -235,118 +241,190 @@ def migrate_config_payload(data: dict[str, Any]) -> ConfigMigrationResult:
 
     Call this only at user-owned disk-load boundaries, before GatewayConfig
     validates the payload.
+
+    Two classes of transforms run here:
+
+    * Always-run compat normalizations — idempotent, protective coercions
+      (deprecated-field strips, renames, range clamps) that must fire on
+      every load, even for stamped configs a user later hand-edits with
+      stale keys. Skipping them would hard-fail strict validation.
+    * Version-gated value migrations (``_MIGRATIONS``) — one-time value
+      rewrites gated on the payload's ``config_version`` stamp so they run
+      exactly once per config file.
+
+    The returned payload is always stamped with ``LATEST_CONFIG_VERSION``.
+    Stamping alone never marks the result as changed, so a file is never
+    rewritten solely to receive the stamp.
     """
     builder = _MigrationBuilder(payload=copy.deepcopy(data))
-    memory = builder.payload.get("memory")
-    if isinstance(memory, dict):
-        if memory.get("capture_mode") == "archive_turn_pair":
-            memory["capture_mode"] = "turn_pair"
-            builder.changes.append("memory.capture_mode: archive_turn_pair -> turn_pair")
 
-        if "index_captured_turns" in memory:
-            value = memory.pop("index_captured_turns")
-            builder.removed_fields.append("memory.index_captured_turns")
-            if bool(value):
-                builder.warnings.append(
-                    "memory.index_captured_turns was removed; captured turns are no "
-                    "longer indexed into normal recall"
-                )
+    _normalize_memory_fields(builder)
+    _normalize_agent_token_saving_fields(builder)
+    _clamp_search_max_results(builder)
 
-        deprecated: dict[str, object] = {}
-        for leaf in list(memory):
-            if leaf in DEPRECATED_MEMORY_LEAVES:
-                deprecated[f"memory.{leaf}"] = memory.pop(leaf)
+    stamped_version = _payload_config_version(builder.payload)
+    for version, migrate in _MIGRATIONS:
+        if stamped_version < version:
+            migrate(builder)
 
-        cost = memory.get("cost")
-        if isinstance(cost, dict):
-            for leaf in list(cost):
-                if leaf in DEPRECATED_COST_LEAVES:
-                    deprecated[f"memory.cost.{leaf}"] = cost.pop(leaf)
-            if not cost:
-                memory.pop("cost", None)
-
-        if deprecated:
-            builder.removed_fields.extend(sorted(deprecated))
-            handle_deprecated_memory_fields(deprecated, "config_migration")
-
-    token_saving = builder.payload.get("agent_token_saving")
-    if isinstance(token_saving, dict):
-        summary_input_leaf = "tool_result_compression_summary_input_max_chars"
-        projection_leaf = "tool_result_projection_max_inline_chars"
-        if summary_input_leaf in token_saving and projection_leaf not in token_saving:
-            token_saving[projection_leaf] = token_saving[summary_input_leaf]
-            builder.changes.append(
-                "agent_token_saving.tool_result_compression_summary_input_max_chars "
-                "-> agent_token_saving.tool_result_projection_max_inline_chars"
-            )
-
-        deprecated_token_saving: dict[str, object] = {}
-        for leaf in list(token_saving):
-            if leaf in DEPRECATED_AGENT_TOKEN_SAVING_LEAVES:
-                deprecated_token_saving[f"agent_token_saving.{leaf}"] = token_saving.pop(leaf)
-
-        if deprecated_token_saving:
-            builder.removed_fields.extend(sorted(deprecated_token_saving))
-            handle_deprecated_agent_token_saving_fields(
-                deprecated_token_saving,
-                "config_migration",
-            )
-            if (
-                deprecated_token_saving.get(
-                    "agent_token_saving.tool_result_compression_enabled"
-                )
-                is False
-                or deprecated_token_saving.get(
-                    "agent_token_saving.tool_result_compression_mode"
-                )
-                == "off"
-            ):
-                builder.warnings.append(
-                    "agent_token_saving.tool_result_compression_* was removed; "
-                    "tokenjuice projection is now the built-in tool-result path"
-                )
-
-    llm_ensemble = builder.payload.get("llm_ensemble")
-    if isinstance(llm_ensemble, dict):
-        proposer_timeout = _legacy_llm_ensemble_timeout_number(
-            llm_ensemble.get("proposer_timeout_seconds")
-        )
-        aggregator_timeout = _legacy_llm_ensemble_timeout_number(
-            llm_ensemble.get("aggregator_timeout_seconds")
-        )
-        if (
-            proposer_timeout is not None
-            and aggregator_timeout is not None
-            and proposer_timeout == aggregator_timeout
-            and proposer_timeout in _LEGACY_LLM_ENSEMBLE_TIMEOUT_SECONDS
-        ):
-            for leaf in ("proposer_timeout_seconds", "aggregator_timeout_seconds"):
-                llm_ensemble[leaf] = _DEFAULT_LLM_ENSEMBLE_TIMEOUT_SECONDS
-                builder.changes.append(
-                    "llm_ensemble."
-                    f"{leaf}: {proposer_timeout:g} -> "
-                    f"{_DEFAULT_LLM_ENSEMBLE_TIMEOUT_SECONDS:g}"
-                )
-
-    # search_max_results gained an upper bound (<= MAX_SEARCH_RESULTS); coerce any
-    # legacy out-of-range value here so an older config loads instead of failing
-    # strict validation at the GatewayConfig boundary.
-    search_max_results = builder.payload.get("search_max_results")
-    if search_max_results is not None and not isinstance(search_max_results, bool):
-        try:
-            requested = int(search_max_results)
-        except (TypeError, ValueError):
-            requested = None
-        if requested is not None:
-            coerced = min(max(requested, 1), MAX_SEARCH_RESULTS)
-            if coerced != search_max_results:
-                builder.payload["search_max_results"] = coerced
-                builder.changes.append(
-                    f"search_max_results: {search_max_results} -> {coerced} "
-                    f"(clamped to [1, {MAX_SEARCH_RESULTS}])"
-                )
+    # Stamp the payload so future loads skip completed one-time migrations.
+    # Deliberately not recorded in changes/removed_fields: the stamp must not
+    # flip ConfigMigrationResult.changed, so call sites only rewrite the
+    # on-disk file (and thereby persist the stamp) when a pass made a real
+    # change.
+    builder.payload["config_version"] = LATEST_CONFIG_VERSION
 
     return builder.result()
+
+
+def _payload_config_version(payload: dict[str, Any]) -> int:
+    """Return the payload's migration stamp; anything missing or invalid is 0.
+
+    Reads the raw payload (never a constructed model field) so env-provided
+    values can never gate migrations, and coerces defensively because this
+    runs before strict validation.
+    """
+    value = payload.get("config_version", 0)
+    if isinstance(value, bool) or not isinstance(value, int):
+        return 0
+    return int(value)
+
+
+def _normalize_memory_fields(builder: _MigrationBuilder) -> None:
+    """Always-run: strip/rename deprecated ``memory.*`` fields."""
+    memory = builder.payload.get("memory")
+    if not isinstance(memory, dict):
+        return
+
+    if memory.get("capture_mode") == "archive_turn_pair":
+        memory["capture_mode"] = "turn_pair"
+        builder.changes.append("memory.capture_mode: archive_turn_pair -> turn_pair")
+
+    if "index_captured_turns" in memory:
+        value = memory.pop("index_captured_turns")
+        builder.removed_fields.append("memory.index_captured_turns")
+        if bool(value):
+            builder.warnings.append(
+                "memory.index_captured_turns was removed; captured turns are no "
+                "longer indexed into normal recall"
+            )
+
+    deprecated: dict[str, object] = {}
+    for leaf in list(memory):
+        if leaf in DEPRECATED_MEMORY_LEAVES:
+            deprecated[f"memory.{leaf}"] = memory.pop(leaf)
+
+    cost = memory.get("cost")
+    if isinstance(cost, dict):
+        for leaf in list(cost):
+            if leaf in DEPRECATED_COST_LEAVES:
+                deprecated[f"memory.cost.{leaf}"] = cost.pop(leaf)
+        if not cost:
+            memory.pop("cost", None)
+
+    if deprecated:
+        builder.removed_fields.extend(sorted(deprecated))
+        handle_deprecated_memory_fields(deprecated, "config_migration")
+
+
+def _normalize_agent_token_saving_fields(builder: _MigrationBuilder) -> None:
+    """Always-run: migrate/strip deprecated ``agent_token_saving.*`` fields."""
+    token_saving = builder.payload.get("agent_token_saving")
+    if not isinstance(token_saving, dict):
+        return
+
+    summary_input_leaf = "tool_result_compression_summary_input_max_chars"
+    projection_leaf = "tool_result_projection_max_inline_chars"
+    if summary_input_leaf in token_saving and projection_leaf not in token_saving:
+        token_saving[projection_leaf] = token_saving[summary_input_leaf]
+        builder.changes.append(
+            "agent_token_saving.tool_result_compression_summary_input_max_chars "
+            "-> agent_token_saving.tool_result_projection_max_inline_chars"
+        )
+
+    deprecated_token_saving: dict[str, object] = {}
+    for leaf in list(token_saving):
+        if leaf in DEPRECATED_AGENT_TOKEN_SAVING_LEAVES:
+            deprecated_token_saving[f"agent_token_saving.{leaf}"] = token_saving.pop(leaf)
+
+    if deprecated_token_saving:
+        builder.removed_fields.extend(sorted(deprecated_token_saving))
+        handle_deprecated_agent_token_saving_fields(
+            deprecated_token_saving,
+            "config_migration",
+        )
+        if (
+            deprecated_token_saving.get(
+                "agent_token_saving.tool_result_compression_enabled"
+            )
+            is False
+            or deprecated_token_saving.get(
+                "agent_token_saving.tool_result_compression_mode"
+            )
+            == "off"
+        ):
+            builder.warnings.append(
+                "agent_token_saving.tool_result_compression_* was removed; "
+                "tokenjuice projection is now the built-in tool-result path"
+            )
+
+
+def _clamp_search_max_results(builder: _MigrationBuilder) -> None:
+    """Always-run: coerce ``search_max_results`` into its bounded range.
+
+    search_max_results gained an upper bound (<= MAX_SEARCH_RESULTS); coerce
+    any legacy out-of-range value here so an older config loads instead of
+    failing strict validation at the GatewayConfig boundary.
+    """
+    search_max_results = builder.payload.get("search_max_results")
+    if search_max_results is None or isinstance(search_max_results, bool):
+        return
+    try:
+        requested = int(search_max_results)
+    except (TypeError, ValueError):
+        return
+    coerced = min(max(requested, 1), MAX_SEARCH_RESULTS)
+    if coerced != search_max_results:
+        builder.payload["search_max_results"] = coerced
+        builder.changes.append(
+            f"search_max_results: {search_max_results} -> {coerced} "
+            f"(clamped to [1, {MAX_SEARCH_RESULTS}])"
+        )
+
+
+def _migrate_v1_llm_ensemble_legacy_timeouts(builder: _MigrationBuilder) -> None:
+    """Version 1: bump matching legacy llm_ensemble timeout defaults to 3600s."""
+    llm_ensemble = builder.payload.get("llm_ensemble")
+    if not isinstance(llm_ensemble, dict):
+        return
+
+    proposer_timeout = _legacy_llm_ensemble_timeout_number(
+        llm_ensemble.get("proposer_timeout_seconds")
+    )
+    aggregator_timeout = _legacy_llm_ensemble_timeout_number(
+        llm_ensemble.get("aggregator_timeout_seconds")
+    )
+    if (
+        proposer_timeout is not None
+        and aggregator_timeout is not None
+        and proposer_timeout == aggregator_timeout
+        and proposer_timeout in _LEGACY_LLM_ENSEMBLE_TIMEOUT_SECONDS
+    ):
+        for leaf in ("proposer_timeout_seconds", "aggregator_timeout_seconds"):
+            llm_ensemble[leaf] = _DEFAULT_LLM_ENSEMBLE_TIMEOUT_SECONDS
+            builder.changes.append(
+                "llm_ensemble."
+                f"{leaf}: {proposer_timeout:g} -> "
+                f"{_DEFAULT_LLM_ENSEMBLE_TIMEOUT_SECONDS:g}"
+            )
+
+
+# One-time value migrations, walked in ascending version order. An entry with
+# version N runs only when the payload's config_version stamp is below N.
+# Keep versions strictly increasing and cap them at LATEST_CONFIG_VERSION.
+_MIGRATIONS: list[tuple[int, Callable[[_MigrationBuilder], None]]] = [
+    (1, _migrate_v1_llm_ensemble_legacy_timeouts),
+]
 
 
 def backup_and_write_migrated_config(

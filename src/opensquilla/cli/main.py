@@ -90,6 +90,7 @@ from opensquilla.cli.cron_cmd import cron_app  # noqa: E402
 from opensquilla.cli.diagnostics_cmd import diagnostics_app  # noqa: E402
 from opensquilla.cli.dist_cmd import app as dist_app  # noqa: E402
 from opensquilla.cli.doctor_cmd import doctor_command  # noqa: E402
+from opensquilla.cli.ensemble_cmd import ensemble_app  # noqa: E402
 from opensquilla.cli.init_cmd import init_command  # noqa: E402
 from opensquilla.cli.mcp_server_cmd import app as mcp_server_app  # noqa: E402
 from opensquilla.cli.memory_flush_cmd import memory_flush_session_cmd  # noqa: E402
@@ -139,6 +140,7 @@ app.add_typer(dist_app, name="dist")
 app.add_typer(mcp_server_app, name="mcp-server")
 app.add_typer(migrate_app, name="migrate")
 app.add_typer(models_app, name="models")
+app.add_typer(ensemble_app, name="ensemble")
 app.add_typer(providers_app, name="providers")
 app.add_typer(router_app, name="router")
 app.add_typer(sandbox_app, name="sandbox")

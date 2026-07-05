@@ -7,6 +7,12 @@ from typing import Any
 
 from opensquilla.onboarding.channel_specs import get_channel_setup_spec
 
+# Re-export: the free-text primitive lives in the dependency-free
+# ``opensquilla.redaction`` module because ``opensquilla.provider.failures``
+# imports it and importing ``opensquilla.onboarding`` transitively imports
+# the provider package (a cycle if it lived here).
+from opensquilla.redaction import redact_error_text as redact_error_text
+
 REDACTED_PLACEHOLDER = "***"
 
 _PROVIDER_SECRET_FIELDS = frozenset({"api_key"})

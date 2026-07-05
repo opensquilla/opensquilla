@@ -591,3 +591,41 @@ async def _handle_config_schema_lookup(params: dict | None, ctx: RpcContext) -> 
         "default": node.get("default"),
         "enum": node.get("enum"),
     }
+
+
+@_d.method("config.effective", scope="operator.read")
+async def _handle_config_effective(params: dict | None, ctx: RpcContext) -> dict[str, Any]:
+    """Effective LLM routing values with per-field provenance.
+
+    Wire shape (public contract, frozen by
+    tests/test_contracts/test_config_effective_wire.py)::
+
+        {"fields": {"llm.model": {"value": ..., "source": "config"}, ...}}
+
+    Redaction: the resolver's field allowlist excludes secret-named fields
+    by construction, and this handler is belt-and-braces on top of that.
+    A flat ``{path, value, source}`` record defeats key-name redaction —
+    ``redact_public_config`` masks by dict KEY, and here the dict key is
+    literally ``"value"`` — so the secret-name check runs per dotted PATH
+    segment instead: a field whose path contains a secret-named segment is
+    dropped entirely. Raw values are additionally run through
+    ``redact_public_config`` BEFORE provenance-wrapping so that any
+    container-shaped value has secret-named members masked.
+    """
+    if ctx.config is None:
+        raise ValueError("No config available")
+
+    from opensquilla.gateway.config import is_sensitive_config_key, redact_public_config
+    from opensquilla.provider.model_catalog import shared_catalog
+    from opensquilla.provider.resolution import resolve_effective_llm
+
+    resolved = resolve_effective_llm(ctx.config, shared_catalog())
+    fields: dict[str, dict[str, Any]] = {}
+    for path, field in resolved.items():
+        if any(is_sensitive_config_key(segment) for segment in path.split(".")):
+            continue
+        fields[path] = {
+            "value": redact_public_config(field.value),
+            "source": field.source,
+        }
+    return {"fields": fields}

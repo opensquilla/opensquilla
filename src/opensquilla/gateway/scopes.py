@@ -85,6 +85,10 @@ METHOD_SCOPES: dict[str, str] = {
     "health": READ_SCOPE,
     "status": READ_SCOPE,
     "config.get": READ_SCOPE,
+    # OpenSquilla-only; provenance view over non-secret effective LLM fields.
+    # Explicit entry required: the `config.` prefix defaults to admin and the
+    # boot audit hard-fails on declared-vs-table drift (config.get precedent).
+    "config.effective": READ_SCOPE,
     "config.schema.lookup": READ_SCOPE,
     "sessions.get": READ_SCOPE,
     "sessions.list": READ_SCOPE,
@@ -255,6 +259,7 @@ METHOD_SCOPES: dict[str, str] = {
     # The probe persists nothing but carries candidate credentials.
     "onboarding.provider.probe": ADMIN_SCOPE,
     "onboarding.router.configure": ADMIN_SCOPE,
+    "onboarding.ensemble.configure": ADMIN_SCOPE,
     "onboarding.memory_embedding.configure": ADMIN_SCOPE,
     "onboarding.search.configure": ADMIN_SCOPE,
     "onboarding.imageGeneration.configure": ADMIN_SCOPE,

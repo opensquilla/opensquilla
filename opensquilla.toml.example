@@ -137,6 +137,59 @@ base_url = "https://openrouter.ai/api/v1"
 "z-ai/glm-5.1" = "z-ai"
 "z-ai/glm-5.2" = "z-ai"
 
+# LLM ensemble routing — the DEFAULT routing surface.
+# A fresh install ships enabled = true with selection_mode =
+# "static_openrouter_b5": each turn fans out to a fixed five-member
+# OpenRouter proposer set and fuses their candidates into one answer.
+#
+# Upgrade note (0.5.0rc1 → current):
+#   * static_openrouter_b5 is the default for FRESH installs only. Configs
+#     saved by earlier versions keep their stored `enabled` value.
+#   * Enabling the ensemble now selects "static_openrouter_b5", where
+#     0.5.0rc1's enable toggle gave "router_dynamic". Set
+#     selection_mode = "router_dynamic" to restore the rc1 behavior.
+#
+# Credential requirement: static_openrouter_b5 runs its members on
+# OpenRouter, so it needs a resolvable OpenRouter credential — the [llm]
+# api_key when the active provider is "openrouter", or OPENROUTER_API_KEY
+# in the environment otherwise. Without one the ensemble is inactive and
+# every turn falls back to the single configured provider —
+# `opensquilla doctor` reports this as the llm_ensemble finding
+# "LLM ensemble is enabled but cannot run".
+#
+# The keys below are also writable at runtime via the Web UI / the
+# `onboarding.ensemble.configure` RPC; omitted keys keep their current
+# values. Changes take effect on the next turn without a gateway restart.
+[llm_ensemble]
+enabled = true
+# "static_openrouter_b5": fixed five-member OpenRouter proposer set (default).
+# "router_dynamic": the local router picks proposers from model_options.
+selection_mode = "static_openrouter_b5"
+# Candidate pool for router_dynamic (ignored by static_openrouter_b5).
+model_options = [
+  "deepseek/deepseek-v4-pro",
+  "z-ai/glm-5.2",
+  "qwen/qwen3.7-plus",
+  "deepseek/deepseek-v4-flash",
+  "qwen/qwen3.7-max",
+  "moonshotai/kimi-k2.6",
+  "moonshotai/kimi-k2.7-code",
+  "minimax/minimax-m3",
+]
+# Minimum proposers that must succeed before aggregation (>= 1).
+min_successful_proposers = 1
+# When every proposer fails: "fallback_single" (single-provider turn) or "error".
+all_failed_policy = "fallback_single"
+
+# Advanced knobs — TOML-only (not on the configure RPC surface). Defaults:
+# mode = "b5_fusion"                  # only supported ensemble mode
+# proposer_tools = false              # allow tool calls inside proposer turns
+# candidate_max_chars = 24000         # per-candidate transcript budget (0 = unlimited)
+# proposer_timeout_seconds = 3600.0
+# aggregator_timeout_seconds = 3600.0
+# shuffle_candidates = true           # shuffle candidate order before aggregation
+# record_candidates = false           # persist per-proposer candidates for replay/debug
+
 # Model metadata catalog (added in 0.5.x; schema only — wiring lands in a
 # follow-up release). Offline-first: with refresh = "off" (the default) the
 # gateway never fetches model metadata (context windows, output caps, pricing,

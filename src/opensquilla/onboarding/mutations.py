@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass, field
-from typing import Any, Literal, cast
+from typing import Any, Literal, cast, get_args
 
 from pydantic import ValidationError
 
@@ -13,6 +13,7 @@ from opensquilla.gateway.config import (
     ROUTER_TIER_PROFILE_IDS,
     ChannelsConfig,
     GatewayConfig,
+    LlmEnsembleConfig,
     LlmProviderConfig,
     MemoryEmbeddingConfig,
     SquillaRouterConfig,
@@ -418,6 +419,93 @@ def upsert_router(
         restart_required=False,
         warnings=warnings,
         public_payload=public_payload,
+    )
+
+
+# Values the RPC surface may write into [llm_ensemble]. Sourced from the
+# config model's own Literal annotations so the mutation can never drift
+# from what GatewayConfig actually accepts.
+_LLM_ENSEMBLE_SELECTION_MODES: tuple[str, ...] = tuple(
+    str(value)
+    for value in get_args(LlmEnsembleConfig.model_fields["selection_mode"].annotation)
+)
+_LLM_ENSEMBLE_ALL_FAILED_POLICIES: tuple[str, ...] = tuple(
+    str(value)
+    for value in get_args(LlmEnsembleConfig.model_fields["all_failed_policy"].annotation)
+)
+
+
+def upsert_llm_ensemble(
+    config: GatewayConfig,
+    *,
+    enabled: bool | None = None,
+    selection_mode: str | None = None,
+    model_options: list[str] | None = None,
+    min_successful_proposers: int | str | None = None,
+    all_failed_policy: str | None = None,
+) -> MutationResult:
+    """Update the ``[llm_ensemble]`` routing surface.
+
+    Partial-payload semantics are pinned: the merge seeds from the *current*
+    ``llm_ensemble`` section and overrides only the keys explicitly present
+    in the request (``None`` = keep current). Omitted keys must never reset
+    to defaults — an enabled-only save from a client must not clobber an
+    operator's explicit ``selection_mode`` or ``model_options``.
+
+    The TurnRunner reads ``llm_ensemble`` live from the running config, so
+    no restart is required.
+    """
+    current = config.llm_ensemble.model_dump(mode="python")
+    merged = dict(current)
+
+    if enabled is not None:
+        merged["enabled"] = bool(enabled)
+    if selection_mode is not None:
+        mode_clean = str(selection_mode).strip()
+        if mode_clean not in _LLM_ENSEMBLE_SELECTION_MODES:
+            raise ValueError(
+                "selection_mode must be one of: "
+                + ", ".join(_LLM_ENSEMBLE_SELECTION_MODES)
+            )
+        merged["selection_mode"] = mode_clean
+    if model_options is not None:
+        if not isinstance(model_options, (list, tuple)):
+            raise ValueError("model_options must be a list of model ids")
+        merged["model_options"] = [str(option) for option in model_options]
+    if min_successful_proposers is not None:
+        merged["min_successful_proposers"] = _positive_int(
+            min_successful_proposers, label="min_successful_proposers"
+        )
+    if all_failed_policy is not None:
+        policy_clean = str(all_failed_policy).strip()
+        if policy_clean not in _LLM_ENSEMBLE_ALL_FAILED_POLICIES:
+            raise ValueError(
+                "all_failed_policy must be one of: "
+                + ", ".join(_LLM_ENSEMBLE_ALL_FAILED_POLICIES)
+            )
+        merged["all_failed_policy"] = policy_clean
+
+    try:
+        new_ensemble = LlmEnsembleConfig(**merged)
+    except ValidationError as exc:
+        raise ValueError(str(exc)) from exc
+
+    new_cfg = _clone(config)
+    new_cfg.llm_ensemble = new_ensemble
+
+    payload = {
+        "enabled": new_ensemble.enabled,
+        "selection_mode": new_ensemble.selection_mode,
+        "model_options": list(new_ensemble.model_options),
+        "min_successful_proposers": new_ensemble.min_successful_proposers,
+        "all_failed_policy": new_ensemble.all_failed_policy,
+    }
+    return MutationResult(
+        config=new_cfg,
+        changed=current != new_ensemble.model_dump(mode="python"),
+        restart_required=False,
+        warnings=[],
+        public_payload=payload,
     )
 
 

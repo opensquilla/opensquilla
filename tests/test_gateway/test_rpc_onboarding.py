@@ -323,6 +323,105 @@ async def test_router_catalog_rpc(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_ensemble_configure_partial_payload_updates_and_persists(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("OPENSQUILLA_GATEWAY_CONFIG_PATH", str(tmp_path / "c.toml"))
+    from opensquilla.gateway.config import GatewayConfig
+
+    ctx = _admin_ctx()
+    ctx.config = GatewayConfig(
+        llm_ensemble={
+            "enabled": False,
+            "selection_mode": "router_dynamic",
+            "model_options": ["custom/model-a"],
+        }
+    )
+    ctx.config.config_path = str(tmp_path / "c.toml")
+
+    res = await get_dispatcher().dispatch(
+        "r1",
+        "onboarding.ensemble.configure",
+        {"enabled": True},
+        ctx,
+    )
+
+    assert res.error is None, res.error
+    assert res.payload["changed"] is True
+    assert res.payload["restartRequired"] is False
+    assert res.payload["entry"]["enabled"] is True
+    # Omitted params keep the operator's explicit values.
+    assert res.payload["entry"]["selection_mode"] == "router_dynamic"
+    assert res.payload["entry"]["model_options"] == ["custom/model-a"]
+    assert ctx.config.llm_ensemble.enabled is True
+    assert ctx.config.llm_ensemble.selection_mode == "router_dynamic"
+    persisted = tomllib.loads((tmp_path / "c.toml").read_text())
+    assert persisted["llm_ensemble"]["enabled"] is True
+    assert persisted["llm_ensemble"]["selection_mode"] == "router_dynamic"
+    assert persisted["llm_ensemble"]["model_options"] == ["custom/model-a"]
+
+
+@pytest.mark.asyncio
+async def test_ensemble_configure_accepts_full_camel_case_payload(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("OPENSQUILLA_GATEWAY_CONFIG_PATH", str(tmp_path / "c.toml"))
+    res = await get_dispatcher().dispatch(
+        "r1",
+        "onboarding.ensemble.configure",
+        {
+            "enabled": True,
+            "selectionMode": "router_dynamic",
+            "modelOptions": ["custom/model-a", "custom/model-b"],
+            "minSuccessfulProposers": 2,
+            "allFailedPolicy": "error",
+        },
+        _admin_ctx(),
+    )
+
+    assert res.error is None, res.error
+    assert res.payload["entry"] == {
+        "enabled": True,
+        "selection_mode": "router_dynamic",
+        "model_options": ["custom/model-a", "custom/model-b"],
+        "min_successful_proposers": 2,
+        "all_failed_policy": "error",
+    }
+    persisted = tomllib.loads((tmp_path / "c.toml").read_text())
+    assert persisted["llm_ensemble"]["selection_mode"] == "router_dynamic"
+    assert persisted["llm_ensemble"]["min_successful_proposers"] == 2
+    assert persisted["llm_ensemble"]["all_failed_policy"] == "error"
+
+
+@pytest.mark.asyncio
+async def test_ensemble_configure_rejects_unknown_selection_mode(tmp_path, monkeypatch):
+    monkeypatch.setenv("OPENSQUILLA_GATEWAY_CONFIG_PATH", str(tmp_path / "c.toml"))
+    res = await get_dispatcher().dispatch(
+        "r1",
+        "onboarding.ensemble.configure",
+        {"selectionMode": "static_unknown"},
+        _admin_ctx(),
+    )
+
+    assert res.error is not None
+    assert res.error.code == "onboarding.ensemble.invalid"
+
+
+@pytest.mark.asyncio
+async def test_ensemble_configure_requires_admin(tmp_path, monkeypatch):
+    monkeypatch.setenv("OPENSQUILLA_GATEWAY_CONFIG_PATH", str(tmp_path / "c.toml"))
+    res = await get_dispatcher().dispatch(
+        "r1",
+        "onboarding.ensemble.configure",
+        {"enabled": False},
+        _read_ctx(),
+    )
+
+    assert res.error is not None
+    assert res.error.code == "UNAUTHORIZED"
+
+
+@pytest.mark.asyncio
 async def test_channel_upsert_redacts_secrets(tmp_path, monkeypatch):
     monkeypatch.setenv("OPENSQUILLA_GATEWAY_CONFIG_PATH", str(tmp_path / "c.toml"))
     res = await get_dispatcher().dispatch(

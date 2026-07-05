@@ -322,6 +322,37 @@ async def _router_configure(params: Any, ctx: RpcContext) -> dict[str, Any]:
     }
 
 
+@_d.method("onboarding.ensemble.configure", scope="operator.admin")
+async def _ensemble_configure(params: Any, ctx: RpcContext) -> dict[str, Any]:
+    """Configure the [llm_ensemble] routing surface.
+
+    Omitted params keep the current value (partial-payload merge in the
+    mutation); the TurnRunner reads llm_ensemble live, so no restart.
+    """
+    from opensquilla.onboarding.mutations import upsert_llm_ensemble
+
+    cfg = _active_config(ctx)
+    p = params if isinstance(params, dict) else {}
+    with _validation_error("onboarding.ensemble.invalid"):
+        res = upsert_llm_ensemble(
+            cfg,
+            enabled=p.get("enabled"),
+            selection_mode=p.get("selectionMode"),
+            model_options=p.get("modelOptions"),
+            min_successful_proposers=p.get("minSuccessfulProposers"),
+            all_failed_policy=p.get("allFailedPolicy"),
+        )
+    _apply_inplace(ctx, res.config)
+    config_path = _persist(ctx, res.config, restart_required=res.restart_required)
+    return {
+        "changed": res.changed,
+        "restartRequired": res.restart_required,
+        "configPath": config_path,
+        "entry": res.public_payload,
+        "warnings": res.warnings,
+    }
+
+
 @_d.method("onboarding.channel.probe", scope="operator.admin")
 async def _channel_probe(params: Any, ctx: RpcContext) -> dict[str, Any]:
     from opensquilla.onboarding.mutations import validate_channel_entry

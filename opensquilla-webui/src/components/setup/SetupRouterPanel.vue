@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { useI18n } from 'vue-i18n'
-import ControlSwitch from '@/components/ControlSwitch.vue'
+import SetupTierTable from '@/components/setup/SetupTierTable.vue'
 import type { RouterConfigDisabledReason } from '@/composables/setup/useSetupRouterForm'
+import type { DiscoveredModel } from '@/composables/setup/useSetupProviderForm'
 
 const { t } = useI18n()
 
@@ -29,6 +30,11 @@ interface RouterPanelContract {
   textTiers: readonly string[]
   tierRows: readonly TierRow[]
   tierLabel: (tier: string) => string
+  // Optional discovered-model data (provider panel connection machine). When
+  // absent the tier table renders exactly as before — plain free-text inputs.
+  discoveredModels?: DiscoveredModel[]
+  discoveredModelsProvider?: string
+  discoveredModelSource?: string
 }
 
 defineProps<{
@@ -116,20 +122,15 @@ const emit = defineEmits<{
             : t('setup.router.routingDisabledHint')
         }}
       </p>
-      <div class="setup-tier-table" role="table" :aria-disabled="panel.routerConfigDisabled ? 'true' : undefined">
-        <div class="setup-tier-table__row is-head" role="row">
-          <span>{{ t('setup.router.colTier') }}</span><span>{{ t('setup.router.colProvider') }}</span><span>{{ t('setup.router.colModel') }}</span><span>{{ t('setup.router.colThinking') }}</span><span>{{ t('setup.router.colImage') }}</span>
-        </div>
-        <div v-for="tier in panel.tierRows" :key="tier.name" class="setup-tier-table__row" role="row">
-          <span class="setup-tier-table__tier">{{ panel.tierLabel(tier.name) }}</span>
-          <span class="setup-tier-table__readonly" :aria-label="t('setup.router.tierProviderAria', { tier: tier.name })" :title="t('setup.router.tierProviderAria', { tier: tier.name })">{{ tier.provider || '-' }}</span>
-          <input :value="tier.model" :aria-label="t('setup.router.tierModelAria', { tier: tier.name })" :placeholder="t('setup.router.tierModelAria', { tier: tier.name })" :disabled="panel.routerConfigDisabled" @input="emit('updateTierField', tier.name, 'model', ($event.target as HTMLInputElement).value)">
-          <select :value="tier.thinkingLevel" :aria-label="t('setup.router.tierThinkingAria', { tier: tier.name })" :disabled="panel.routerConfigDisabled" @change="emit('updateTierField', tier.name, 'thinkingLevel', ($event.target as HTMLSelectElement).value)">
-            <option v-for="v in ['', 'off', 'none', 'minimal', 'low', 'medium', 'high', 'xhigh']" :key="v" :value="v">{{ v || '-' }}</option>
-          </select>
-          <ControlSwitch :checked="tier.supportsImage" :disabled="panel.routerConfigDisabled" :aria-label="t('setup.router.tierImageAria', { tier: tier.name })" @change="(v) => emit('updateTierField', tier.name, 'supportsImage', v)" />
-        </div>
-      </div>
+      <SetupTierTable
+        :rows="panel.tierRows"
+        :tier-label="panel.tierLabel"
+        :disabled="panel.routerConfigDisabled"
+        :models="panel.discoveredModels || []"
+        :models-provider="panel.discoveredModelsProvider || ''"
+        :model-source="panel.discoveredModelSource || 'none'"
+        @update-tier-field="(name, key, value) => emit('updateTierField', name, key, value)"
+      />
     </div>
     <div v-else class="setup-warning">
       <span>{{ t('setup.router.providerFirst') }}</span>

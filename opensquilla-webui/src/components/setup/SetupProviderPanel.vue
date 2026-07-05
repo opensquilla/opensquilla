@@ -5,7 +5,9 @@ import SetupField from '@/components/SetupField.vue'
 import SetupNeedList from '@/components/SetupNeedList.vue'
 import SetupCommandBlock from '@/components/setup/SetupCommandBlock.vue'
 import SetupModelCombobox from '@/components/setup/SetupModelCombobox.vue'
+import SetupPresetCard from '@/components/setup/SetupPresetCard.vue'
 import type { ConnectionState } from '@/composables/setup/useSetupProviderForm'
+import type { SetupTierRow } from '@/composables/setup/useSetupRouterForm'
 
 const { t } = useI18n()
 
@@ -41,8 +43,22 @@ interface ProviderPanelContract {
   providerFieldValue: (field: FieldSpec) => string
 }
 
+interface PresetCardContract {
+  hasPreset: boolean
+  presetLabel: string
+  presetDescription: string
+  synthesized: boolean
+  tierRows: SetupTierRow[]
+  tierLabel: (tier: string) => string
+  routerMode: string
+  routerCustomized: boolean
+}
+
 const props = defineProps<{
   panel: ProviderPanelContract
+  // Optional routing-preset card contract (absent on older gateways whose
+  // catalog carries no presets — the card simply doesn't render).
+  preset?: PresetCardContract | null
 }>()
 
 const emit = defineEmits<{
@@ -51,6 +67,7 @@ const emit = defineEmits<{
   updateProviderField: [name: string, value: unknown]
   updateLlmTimeout: [value: number]
   probeConnection: []
+  applyPreset: []
   copy: [command: string]
   goToSection: [value: string]
 }>()
@@ -158,6 +175,12 @@ function useCombobox(field: FieldSpec): boolean {
         @update="(name, val) => emit('updateProviderField', name, val)"
       />
     </template>
+    <SetupPresetCard
+      v-if="preset && preset.hasPreset"
+      :panel="preset"
+      @apply="emit('applyPreset')"
+      @go-to-section="(section) => emit('goToSection', section)"
+    />
     <div class="control-row">
       <div class="control-row__label-block">
         <span class="control-row__label">{{ t('setup.provider.connectionLabel') }}</span>

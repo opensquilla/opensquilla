@@ -21,6 +21,10 @@ export const SETTINGS_SECTIONS = [
   // --- AI configuration: the coupled Provider → Router → Capabilities pipeline ---
   { id: 'provider', label: 'Provider', icon: 'agents', client: false, desktopOnly: false, group: 'ai' },
   { id: 'router', label: 'Router', icon: 'cron', client: false, desktopOnly: false, group: 'ai' },
+  // Ensemble sits directly under Router: it is the other half of the routing
+  // story ([llm_ensemble]), and the Router panel cross-references it when the
+  // ensemble profile takes over tier routing.
+  { id: 'ensemble', label: 'Ensemble', icon: 'router', client: false, desktopOnly: false, group: 'ai' },
   { id: 'capabilities', label: 'Capabilities', icon: 'skills', client: false, desktopOnly: false, group: 'ai' },
   // --- Delivery: where the assistant reaches users ---
   { id: 'channels', label: 'Channels', icon: 'channels', client: false, desktopOnly: false, group: 'delivery' },

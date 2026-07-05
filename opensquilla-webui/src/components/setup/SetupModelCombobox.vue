@@ -23,6 +23,10 @@ const props = defineProps<{
   value: string
   models: DiscoveredModel[]
   modelSource: string
+  // Cell mode drops the outer control-row + label chrome so the combobox can
+  // live inside a table cell (tier table); the field label becomes the input's
+  // aria-label. Default (false) renders the full settings-row layout unchanged.
+  cell?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -135,21 +139,22 @@ function onKeydown(event: KeyboardEvent) {
 </script>
 
 <template>
-  <div class="control-row control-row--stack" :data-name="field.name" data-scope="provider">
-    <div class="control-row__label-block">
+  <div :class="cell ? 'setup-model-combobox--cellwrap' : 'control-row control-row--stack'" :data-name="cell ? undefined : field.name" :data-scope="cell ? undefined : 'provider'">
+    <div v-if="!cell" class="control-row__label-block">
       <label class="control-row__label" :for="fieldId">{{ field.label }}{{ field.required ? ' *' : '' }}</label>
       <span v-if="field.description" class="control-row__desc">{{ field.description }}</span>
     </div>
-    <div class="control-row__control setup-model-combobox">
+    <div class="setup-model-combobox" :class="cell ? undefined : 'control-row__control'">
       <input
         :id="fieldId"
-        class="control-input"
+        :class="cell ? undefined : 'control-input'"
         :name="fieldName"
         type="text"
         role="combobox"
         aria-autocomplete="list"
         :aria-expanded="open ? 'true' : 'false'"
         :aria-controls="`${fieldId}-listbox`"
+        :aria-label="cell ? field.label : undefined"
         autocomplete="off"
         :value="value"
         :placeholder="field.placeholder || ''"
@@ -207,6 +212,17 @@ function onKeydown(event: KeyboardEvent) {
 <style scoped>
 .setup-model-combobox {
   position: relative;
+}
+
+/* Cell mode: the wrapper is a grid/table cell — the input fills it and the
+   dropdown anchors to the cell. No label chrome. */
+.setup-model-combobox--cellwrap {
+  min-width: 0;
+}
+
+.setup-model-combobox--cellwrap .setup-model-combobox input {
+  box-sizing: border-box;
+  width: 100%;
 }
 
 .setup-model-combobox__list {

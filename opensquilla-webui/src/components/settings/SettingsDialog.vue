@@ -156,11 +156,13 @@
             <SetupProviderPanel
               v-if="section === 'provider'"
               :panel="providerPanel"
+              :preset="presetPanel"
               @update-provider-selected="selectProvider"
               @provider-change="onProviderChange"
               @update-provider-field="updateProviderField"
               @update-llm-timeout="updateLlmTimeout"
               @probe-connection="probeProviderConnection"
+              @apply-preset="applyProviderPreset"
               @copy="copyCommand"
               @go-to-section="selectSection"
             />
@@ -182,6 +184,16 @@
               @update-router-visual-mode="setRouterVisualMode"
               @update-tier-field="updateTierField"
               @go-to-section="selectSection"
+            />
+            <SetupEnsemblePanel
+              v-else-if="section === 'ensemble'"
+              :panel="ensemblePanel"
+              @update-enabled="setEnsembleEnabled"
+              @update-selection-mode="setEnsembleSelectionMode"
+              @add-model-option="addEnsembleModelOption"
+              @remove-model-option="removeEnsembleModelOption"
+              @update-min-successful="setEnsembleMinSuccessful"
+              @update-all-failed-policy="setEnsembleAllFailedPolicy"
             />
             <SetupChannelsPanel
               v-else-if="section === 'channels'"
@@ -253,6 +265,7 @@ import SetupBehaviorPanel from '@/components/setup/SetupBehaviorPanel.vue'
 import SetupConnectionPanel from '@/components/settings/SetupConnectionPanel.vue'
 import SetupProviderPanel from '@/components/setup/SetupProviderPanel.vue'
 import SetupRouterPanel from '@/components/setup/SetupRouterPanel.vue'
+import SetupEnsemblePanel from '@/components/setup/SetupEnsemblePanel.vue'
 import SetupChannelsPanel from '@/components/setup/SetupChannelsPanel.vue'
 import SetupCapabilitiesPanel from '@/components/setup/SetupCapabilitiesPanel.vue'
 import SettingsPrivacyPanel from '@/components/settings/SettingsPrivacyPanel.vue'
@@ -284,6 +297,8 @@ const {
   behaviorPanel,
   privacyPanel,
   routerPanel,
+  presetPanel,
+  ensemblePanel,
   channelsPanel,
   capabilitiesPanel,
   hasSetupAction,
@@ -306,6 +321,13 @@ const {
   setRouterMode,
   setRouterDefaultTier,
   setRouterVisualMode,
+  setEnsembleEnabled,
+  setEnsembleSelectionMode,
+  addEnsembleModelOption,
+  removeEnsembleModelOption,
+  setEnsembleMinSuccessful,
+  setEnsembleAllFailedPolicy,
+  applyProviderPreset,
   selectChannelType,
   updateProviderField,
   updateLlmTimeout,

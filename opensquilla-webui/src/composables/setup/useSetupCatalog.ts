@@ -4,7 +4,8 @@ import { useSetupChannelsForm } from '@/composables/setup/useSetupChannelsForm'
 import { useSetupCapabilitiesForm } from '@/composables/setup/useSetupCapabilitiesForm'
 import { useSetupBehaviorForm } from '@/composables/setup/useSetupBehaviorForm'
 import { hasEffectiveProvider, useSetupProviderForm } from '@/composables/setup/useSetupProviderForm'
-import { useSetupRouterForm } from '@/composables/setup/useSetupRouterForm'
+import { useSetupRouterForm, type SetupTierRow } from '@/composables/setup/useSetupRouterForm'
+import { useSetupEnsembleForm } from '@/composables/setup/useSetupEnsembleForm'
 import { useSettingsPromotedForm, DEFAULT_LLM_TIMEOUT_SECONDS } from '@/composables/setup/useSettingsPromotedForm'
 import { useSettingsSection } from '@/composables/setup/useSettingsSection'
 import { SETTINGS_SECTIONS, type SettingsSectionId } from '@/composables/setup/settingsSections'
@@ -13,7 +14,7 @@ import { useToasts } from '@/composables/useToasts'
 import { useConfirm } from '@/composables/useConfirm'
 import { saveFailedMessage } from '@/lib/rpcErrors'
 import { copyTextWithFallback } from '@/utils/browser'
-import { TEXT_TIERS, routerTierLabel } from '@/utils/chat/routerTiers'
+import { TEXT_TIERS, IMAGE_TIER, normalizeRouterTier, routerTierLabel } from '@/utils/chat/routerTiers'
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -39,6 +40,15 @@ function readinessLabel(status: string): string {
 // Types
 // ---------------------------------------------------------------------------
 
+interface ProviderPresetSpec {
+  presetId: string
+  label: string
+  description?: string
+  synthesized?: boolean
+  defaultModel?: string
+  tiers?: Record<string, TierConfig>
+}
+
 interface ProviderSpec {
   providerId: string
   label: string
@@ -50,6 +60,7 @@ interface ProviderSpec {
   requiresApiKey?: boolean
   defaultBaseUrl?: string
   defaultModel?: string
+  presets?: ProviderPresetSpec[]
 }
 
 interface FieldSpec {
@@ -97,6 +108,9 @@ interface SectionDetail {
   required?: boolean
   label?: string
   detail?: string
+  // Server-computed router mode (router section card only):
+  // recommended | openrouter-mix | custom | disabled.
+  routerMode?: string
 }
 
 interface OnboardingStatus {
@@ -154,6 +168,10 @@ interface ConfigData {
   }
   llm_ensemble?: {
     enabled?: boolean
+    selection_mode?: string
+    model_options?: string[]
+    min_successful_proposers?: number
+    all_failed_policy?: string
   }
   naming?: {
     enabled?: boolean
@@ -219,6 +237,7 @@ const disableNetworkObservability = ref(false)
 const providerForm = useSetupProviderForm()
 const behaviorForm = useSetupBehaviorForm()
 const routerForm = useSetupRouterForm()
+const ensembleForm = useSetupEnsembleForm()
 const channelsForm = useSetupChannelsForm()
 const capabilitiesForm = useSetupCapabilitiesForm()
 const promotedForm = useSettingsPromotedForm()
@@ -261,6 +280,7 @@ async function loadData() {
     providerForm.initFromConfig(config.value.llm || {}, status.value, runtimeProviders.value)
     behaviorForm.initFromConfig(config.value)
     routerForm.initFromConfig(config.value.squilla_router || {}, currentRouterProfile.value?.tiers || {}, currentProvider.value)
+    ensembleForm.initFromConfig(config.value.llm_ensemble || {})
     capabilitiesForm.initSearchFromConfig(config.value, searchProviders.value)
     capabilitiesForm.initMemoryFromConfig(config.value)
     capabilitiesForm.initImageFromConfig(config.value, status.value, imageProviders.value)
@@ -486,6 +506,67 @@ const routerPanel = routerForm.createPanel({
   isOpenrouter: isOpenrouterProvider,
   textTiers: TEXT_TIERS,
   tierLabel,
+  // Discovered models (provider connection machine) upgrade matching tier
+  // model cells to the shared combobox; absent/mismatched = plain inputs.
+  discoveredModels: computed(() => providerForm.connection.value.models),
+  discoveredModelsProvider: computed(() => providerForm.selectedProvider.value),
+  discoveredModelSource: computed(() => providerForm.connection.value.modelSource),
+})
+
+// ---------------------------------------------------------------------------
+// Routing preset card (Provider panel)
+// ---------------------------------------------------------------------------
+
+const selectedPreset = computed<ProviderPresetSpec | null>(() => providerSpec.value?.presets?.[0] || null)
+
+const presetRouterMode = computed(() => (
+  String(((status.value.sectionDetails || {}).router || {}).routerMode || 'recommended')
+))
+
+// "Configured beyond defaults": any unsaved router edits, or a persisted
+// non-recommended mode. A pristine install (no config file yet) defaults to
+// openrouter-mix on the wire, but nothing deliberate exists to clobber there,
+// so the apply path stays available for true first-run beginners.
+const presetRouterCustomized = computed(() => {
+  if (routerForm.isDirty.value) return true
+  if (status.value.hasConfig === false) return false
+  return presetRouterMode.value !== 'recommended'
+})
+
+function presetTierRows(preset: ProviderPresetSpec | null): SetupTierRow[] {
+  const tiers = preset?.tiers || {}
+  const order: string[] = [...TEXT_TIERS, IMAGE_TIER]
+  return Object.entries(tiers)
+    .map(([name, tier]) => ({ name: normalizeRouterTier(name) || name, tier }))
+    .filter(({ name }) => order.includes(name))
+    .sort((a, b) => order.indexOf(a.name) - order.indexOf(b.name))
+    .map(({ name, tier }) => ({
+      name,
+      provider: tier.provider || '',
+      model: tier.model || '',
+      thinkingLevel: tier.thinkingLevel || tier.thinking_level || '',
+      supportsImage: tier.supportsImage || tier.supports_image || false,
+    }))
+}
+
+const presetPanel = computed(() => ({
+  hasPreset: Boolean(selectedPreset.value),
+  presetLabel: selectedPreset.value?.label || '',
+  presetDescription: selectedPreset.value?.description || '',
+  synthesized: selectedPreset.value?.synthesized === true,
+  tierRows: presetTierRows(selectedPreset.value),
+  tierLabel,
+  routerMode: presetRouterMode.value,
+  routerCustomized: presetRouterCustomized.value,
+}))
+
+const ensembleStatusText = computed(() => (
+  ensembleForm.enabled.value ? t('setup.ensemble.statusOn') : t('setup.ensemble.statusOff')
+))
+
+const ensemblePanel = ensembleForm.createPanel({
+  statusText: ensembleStatusText,
+  activeProvider: currentProvider,
 })
 
 const channelsPanel = channelsForm.createPanel({
@@ -670,10 +751,11 @@ function sectionStatus(sectionId: string): { label: string; tone: string } {
     if (providerEnvMissing.value) return { label: t('setup.readiness.needsAction'), tone: 'is-warn' }
     return detailStepStatus((status.value.sectionDetails || {}).llm || (status.value.sectionDetails || {}).provider)
   }
-  // Behavior/Privacy are always-valid preference toggles, not readiness
-  // milestones — a neutral dot (rather than a green "Live" that overstates
-  // earned readiness) is honest; the dirty pip already signals unsaved edits.
-  if (sectionId === 'behavior' || sectionId === 'privacy') {
+  // Behavior/Privacy/Ensemble are always-valid preference toggles, not
+  // readiness milestones — a neutral dot (rather than a green "Live" that
+  // overstates earned readiness) is honest; the dirty pip already signals
+  // unsaved edits.
+  if (sectionId === 'behavior' || sectionId === 'privacy' || sectionId === 'ensemble') {
     return { label: t('setup.status.appliesOnSave'), tone: 'is-muted' }
   }
   if (sectionId === 'router' && !hasSavedProvider.value) {
@@ -736,6 +818,7 @@ const providerDirty = computed(() => providerForm.isDirty.value || promotedForm.
 const behaviorDirty = computed(() => behaviorForm.isDirty.value)
 const privacySectionDirty = computed(() => privacyDirty.value)
 const routerDirty = computed(() => routerForm.isDirty.value)
+const ensembleDirty = computed(() => ensembleForm.isDirty.value)
 const channelsDirty = computed(() => channelsForm.isDirty.value)
 const capabilitiesDirty = computed(() => (
   capabilitiesForm.searchDirty.value
@@ -750,6 +833,7 @@ function sectionDirty(sectionId: string): boolean {
   if (sectionId === 'behavior') return behaviorDirty.value
   if (sectionId === 'privacy') return privacySectionDirty.value
   if (sectionId === 'router') return routerDirty.value
+  if (sectionId === 'ensemble') return ensembleDirty.value
   if (sectionId === 'channels') return channelsDirty.value
   if (sectionId === 'capabilities') return capabilitiesDirty.value
   return false
@@ -763,6 +847,7 @@ async function saveDirtySections() {
     providerDirty.value
     || behaviorDirty.value
     || routerDirty.value
+    || ensembleDirty.value
     || channelsDirty.value
     || capabilitiesForm.searchDirty.value
     || capabilitiesForm.memoryDirty.value
@@ -777,6 +862,7 @@ async function saveDirtySections() {
   if (providerDirty.value) await saveProvider()
   if (behaviorDirty.value) await saveBehavior()
   if (routerDirty.value) await saveRouter()
+  if (ensembleDirty.value) await saveEnsemble()
   if (channelsDirty.value) await saveChannel()
   if (capabilitiesForm.searchDirty.value) await saveSearch()
   if (capabilitiesForm.memoryDirty.value || promotedForm.captureDirty.value) await saveMemory()
@@ -871,6 +957,34 @@ function updateTierField(
   value: string | boolean,
 ) {
   routerForm.updateTierField(name, key, value)
+}
+
+// ---------------------------------------------------------------------------
+// Ensemble helpers
+// ---------------------------------------------------------------------------
+
+function setEnsembleEnabled(value: boolean) {
+  ensembleForm.setEnabled(value)
+}
+
+function setEnsembleSelectionMode(value: string) {
+  ensembleForm.setSelectionMode(value)
+}
+
+function addEnsembleModelOption(value: string) {
+  ensembleForm.addModelOption(value)
+}
+
+function removeEnsembleModelOption(value: string) {
+  ensembleForm.removeModelOption(value)
+}
+
+function setEnsembleMinSuccessful(value: number) {
+  ensembleForm.setMinSuccessfulProposers(value)
+}
+
+function setEnsembleAllFailedPolicy(value: string) {
+  ensembleForm.setAllFailedPolicy(value)
 }
 
 // ---------------------------------------------------------------------------
@@ -1106,6 +1220,46 @@ async function saveRouter() {
   }
 }
 
+async function saveEnsemble() {
+  try {
+    // Partial payload: only the keys the user actually changed; the gateway
+    // keeps current values for everything omitted. No restart — the turn
+    // loop reads [llm_ensemble] live.
+    const params = ensembleForm.payload()
+    if (Object.keys(params).length) {
+      await rpc.call('onboarding.ensemble.configure', params)
+    }
+    pushToast(t('setup.toast.ensembleSaved'))
+    await loadData()
+  } catch (err) {
+    pushToast(saveFailedMessage(err), { tone: 'danger' })
+  }
+}
+
+// Explicit-user-action preset application (the ONLY path that sends presetId):
+// saves the current provider form values plus the preset, then reloads so the
+// Router section and routerMode reflect the applied tiers. Confirm-free by
+// design — the Router section can always change the result afterwards.
+async function applyProviderPreset() {
+  if (!providerForm.selectedProvider.value) {
+    pushToast(t('setup.toast.chooseProvider'), { tone: 'danger' })
+    return
+  }
+  const presetId = selectedPreset.value?.presetId || providerForm.selectedProvider.value
+  try {
+    await rpc.call('onboarding.provider.configure', { ...providerForm.payload(), presetId })
+    const restart = await patchConfig(promotedForm.providerPatches())
+    await loadData()
+    if (providerEnvMissing.value) {
+      pushToast(t('setup.toast.envNotVisibleGateway', { envKey: providerEnvKey.value }), { tone: 'danger' })
+      return
+    }
+    pushToast(restart ? t('setup.toast.presetAppliedRestart') : t('setup.toast.presetApplied'))
+  } catch (err) {
+    pushToast(saveFailedMessage(err), { tone: 'danger' })
+  }
+}
+
 async function saveChannel() {
   const entry = channelsForm.payload()
   try {
@@ -1278,6 +1432,8 @@ async function copyConfigPath() {
     behaviorPanel,
     privacyPanel,
     routerPanel,
+    presetPanel,
+    ensemblePanel,
     channelsPanel,
     capabilitiesPanel,
     loadData,
@@ -1304,6 +1460,12 @@ async function copyConfigPath() {
     setRouterMode,
     setRouterDefaultTier,
     setRouterVisualMode,
+    setEnsembleEnabled,
+    setEnsembleSelectionMode,
+    addEnsembleModelOption,
+    removeEnsembleModelOption,
+    setEnsembleMinSuccessful,
+    setEnsembleAllFailedPolicy,
     selectChannelType,
     updateProviderField,
     updateLlmTimeout,
@@ -1320,6 +1482,8 @@ async function copyConfigPath() {
     saveBehavior,
     savePrivacy,
     saveRouter,
+    saveEnsemble,
+    applyProviderPreset,
     saveChannel,
     enableChannel,
     disableChannel,

@@ -104,6 +104,7 @@ class SetupEngine:
                 api_key_env=str(payload.get("apiKeyEnv", "")),
                 base_url=str(payload.get("baseUrl", "")),
                 proxy=str(payload.get("proxy", "")),
+                preset_id=str(payload.get("presetId", "")),
             )
         elif normalized == "router":
             res = upsert_router(

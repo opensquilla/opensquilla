@@ -57,9 +57,20 @@ PROVIDER_ENTRY_KEYS = frozenset(
         "readmeScenarios",
         "whatYouNeed",
         "defaultDirectModel",
+        # Deliberate preset-surface additions: each provider entry now carries
+        # its registry preset(s) and the preset-declared default model. Adding
+        # these to the frozen set is the conscious decision the friction forces.
+        "defaultModel",
+        "presets",
         "capabilities",
         "fields",
     }
+)
+
+# Per-preset entry shape rendered by the preset picker (exactly one preset per
+# provider today; the wire is a list to allow future multi-preset providers).
+PROVIDER_PRESET_KEYS = frozenset(
+    {"presetId", "label", "description", "synthesized", "defaultModel", "tiers"}
 )
 
 # Per-field spec shape the wizard uses to render setup form inputs.
@@ -124,6 +135,41 @@ def test_provider_catalog_entry_keys_are_frozen() -> None:
     assert "openrouter" in provider_ids
 
 
+def test_provider_catalog_preset_keys_are_frozen() -> None:
+    entries = provider_catalog_payload()
+    for entry in entries:
+        presets = entry["presets"]
+        # Exactly one registry preset per runtime-supported provider today —
+        # widening to several curated presets is an allowed (deliberate)
+        # evolution, but silently losing the preset is a break.
+        assert len(presets) == 1, entry["providerId"]
+        for preset in presets:
+            assert set(preset) == PROVIDER_PRESET_KEYS, entry["providerId"]
+            # Preset ids are provider-bound (both packaged and synthesized
+            # preset ids equal their provider id); clients echo presetId back
+            # verbatim through onboarding.provider.configure.
+            assert preset["presetId"] == entry["providerId"]
+            assert isinstance(preset["synthesized"], bool), entry["providerId"]
+            # Preset tiers reuse the router-catalog tier payload shape so the
+            # same client component renders both.
+            tiers = preset["tiers"]
+            assert set(FROZEN_TEXT_TIERS) <= set(tiers), entry["providerId"]
+            for tier_name, tier in tiers.items():
+                assert set(tier) == ROUTER_TIER_PAYLOAD_KEYS, (entry["providerId"], tier_name)
+        # The entry-level defaultModel mirrors the (single) preset's.
+        assert entry["defaultModel"] == presets[0]["defaultModel"], entry["providerId"]
+
+
+def test_provider_catalog_preset_synthesized_flag_tracks_legacy_nine() -> None:
+    # The legacy nine ship packaged (curated) presets; everything else is
+    # synthesized. A packaged preset silently degrading to synthesized (or
+    # vice versa) changes what onboarding clients offer to apply.
+    entries = {entry["providerId"]: entry for entry in provider_catalog_payload()}
+    for provider_id, entry in entries.items():
+        expected_synthesized = provider_id not in FROZEN_ROUTER_PROFILE_IDS
+        assert entry["presets"][0]["synthesized"] is expected_synthesized, provider_id
+
+
 def test_router_catalog_top_level_shape_is_frozen() -> None:
     payload = router_catalog_payload()
     assert set(payload) == ROUTER_CATALOG_TOP_LEVEL_KEYS
@@ -139,7 +185,14 @@ def test_router_catalog_modes_are_frozen() -> None:
     for mode in modes:
         assert set(mode) == ROUTER_MODE_KEYS
     # Mode ids are sent back verbatim by onboarding.router.configure clients.
-    assert {mode["mode"] for mode in modes} == {"recommended", "openrouter-mix", "disabled"}
+    # "custom" is a deliberate addition: the provider-agnostic generalization
+    # of openrouter-mix accepted for any active provider.
+    assert {mode["mode"] for mode in modes} == {
+        "recommended",
+        "openrouter-mix",
+        "custom",
+        "disabled",
+    }
 
 
 def test_router_catalog_profiles_and_tier_payloads_are_frozen() -> None:

@@ -261,6 +261,9 @@ async def _provider_configure(params: Any, ctx: RpcContext) -> dict[str, Any]:
             api_key_env=params.get("apiKeyEnv", "") if isinstance(params, dict) else "",
             base_url=params.get("baseUrl", "") if isinstance(params, dict) else "",
             proxy=params.get("proxy", "") if isinstance(params, dict) else "",
+            # Explicit-user-action only (D18): a preset is applied exactly when
+            # the client sends presetId; a plain save never auto-applies one.
+            preset_id=params.get("presetId", "") if isinstance(params, dict) else "",
         )
     _apply_inplace(ctx, res.config)
     _sync_provider_selector(ctx, res.config.llm)
@@ -289,6 +292,51 @@ async def _provider_probe(params: Any, ctx: RpcContext) -> dict[str, Any]:
             api_key_env=params.get("apiKeyEnv", "") if isinstance(params, dict) else "",
             base_url=params.get("baseUrl", "") if isinstance(params, dict) else "",
             proxy=params.get("proxy", "") if isinstance(params, dict) else "",
+        )
+    return result.to_payload()
+
+
+@_d.method("onboarding.models.discover", scope="operator.admin")
+async def _models_discover(params: Any, ctx: RpcContext) -> dict[str, Any]:
+    """List a candidate provider's live models without persisting anything.
+
+    Admin-scoped (like ``onboarding.provider.probe``): the request carries
+    candidate credentials, so it must not be reachable at the read/write
+    tiers even though it changes no state.
+
+    No SSRF guard by design: discovery legitimately targets self-hosted and
+    loopback model servers (Ollama, vLLM, LM Studio), and the admin gate is
+    the trust boundary — an SSRF filter would break exactly those setups.
+
+    Blank credentials fall back to the stored config's, mirroring
+    ``upsert_llm_provider``'s keep semantics.
+    """
+    from opensquilla.onboarding.probe import discover_provider_models
+
+    provider_id = _require(params, "providerId")
+    p = params if isinstance(params, dict) else {}
+    cfg = _active_config(ctx)
+    api_key = str(p.get("apiKey", "") or "")
+    api_key_env = str(p.get("apiKeyEnv", "") or "")
+    base_url = str(p.get("baseUrl", "") or "")
+    proxy = str(p.get("proxy", "") or "")
+    # Keep-current fallback: blank secret/url on the same provider reuses the
+    # stored config (mirrors upsert_llm_provider's password-field affordance).
+    if str(getattr(cfg.llm, "provider", "") or "") == str(provider_id):
+        if not api_key and not api_key_env:
+            api_key = str(getattr(cfg.llm, "api_key", "") or "")
+            api_key_env = str(getattr(cfg.llm, "api_key_env", "") or "")
+        if not base_url:
+            base_url = str(getattr(cfg.llm, "base_url", "") or "")
+        if not proxy:
+            proxy = str(getattr(cfg.llm, "proxy", "") or "")
+    with _validation_error("onboarding.provider.invalid"):
+        result = await discover_provider_models(
+            provider_id=provider_id,
+            api_key=api_key,
+            api_key_env=api_key_env,
+            base_url=base_url,
+            proxy=proxy,
         )
     return result.to_payload()
 

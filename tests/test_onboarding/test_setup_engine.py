@@ -50,6 +50,32 @@ def test_setup_engine_can_derive_provider_model_from_router_default_tier(tmp_pat
     assert data["squilla_router"]["default_tier"] == "c1"
 
 
+def test_setup_engine_passes_preset_id_through_to_provider_upsert(tmp_path):
+    # The CLI's --preset flag rides this payload key; a synthesized preset
+    # must persist the custom-mode shape (no tier_profile, expanded tiers).
+    target = tmp_path / "config.toml"
+    engine = SetupEngine(path=target)
+
+    engine.apply(
+        "provider",
+        {
+            "providerId": "groq",
+            "model": "llama-3.3-70b",
+            "apiKeyEnv": "GROQ_API_KEY",
+            "presetId": "groq",
+        },
+    )
+    engine.persist()
+
+    data = tomllib.loads(target.read_text())
+    assert data["llm"]["provider"] == "groq"
+    assert data["squilla_router"]["enabled"] is True
+    assert "tier_profile" not in data["squilla_router"]
+    tier = data["squilla_router"]["tiers"]["c0"]
+    assert tier["provider"] == "groq"
+    assert tier["model"] == "llama-3.3-70b"
+
+
 def test_setup_engine_router_tier_override_updates_direct_fallback_model(tmp_path):
     target = tmp_path / "config.toml"
     engine = SetupEngine(path=target)

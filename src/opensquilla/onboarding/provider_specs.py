@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import Any, Literal
 
 from opensquilla.gateway.config import ROUTER_TIER_PROFILE_IDS, _router_tier_profile_defaults
+from opensquilla.provider.preset_registry import ProviderPreset, get_preset
 from opensquilla.provider.registry import ProviderSpec, list_provider_specs
 
 FieldType = Literal["text", "password", "select", "bool"]
@@ -275,40 +276,81 @@ def get_provider_setup_spec(provider_id: str) -> ProviderSetupSpec:
     raise KeyError(f"unknown provider: {provider_id!r}")
 
 
+def _preset_payload(preset: ProviderPreset) -> dict[str, Any]:
+    """Wire view of one registry preset (packaged or synthesized).
+
+    Tier rows reuse the router catalog's camelCase tier shape so preset
+    pickers and router profile cards render through the same component.
+    """
+    from opensquilla.onboarding.router_specs import _tier_payload
+
+    return {
+        "presetId": preset.preset_id,
+        "label": preset.label,
+        "description": preset.description,
+        "synthesized": preset.synthesized,
+        "defaultModel": preset.default_model,
+        "tiers": {
+            name: _tier_payload(tier)
+            for name, tier in preset.tier_defaults().items()
+        },
+    }
+
+
+def _provider_presets_payload(provider_id: str) -> list[dict[str, Any]]:
+    """Registry presets for one provider — exactly one per provider today.
+
+    A list on the wire on purpose: multiple curated presets per provider is
+    the expected evolution, and clients should already iterate.
+    """
+    preset = get_preset(provider_id)
+    return [_preset_payload(preset)] if preset is not None else []
+
+
+def _provider_entry_payload(s: ProviderSetupSpec) -> dict[str, Any]:
+    preset = get_preset(s.provider_id)
+    return {
+        "providerId": s.provider_id,
+        "label": s.label,
+        "backend": s.backend,
+        "providerKind": s.provider_kind,
+        "runtimeSupported": s.runtime_supported,
+        "verification": s.verification,
+        "envKey": s.env_key,
+        "defaultBaseUrl": s.default_base_url,
+        "requiresApiKey": s.requires_api_key,
+        "requiresBaseUrl": s.requires_base_url,
+        "routerSupported": s.router_supported,
+        "deployment": s.deployment,
+        "blocking": s.blocking,
+        "canProbe": s.can_probe,
+        "readmeScenarios": list(s.readme_scenarios),
+        "whatYouNeed": list(s.what_you_need),
+        "defaultDirectModel": s.default_direct_model,
+        # Preset surface (additive): the provider's registry preset(s) and the
+        # preset-declared default model. defaultDirectModel stays the
+        # legacy-derived direct-model hint; defaultModel is the preset's.
+        "defaultModel": preset.default_model if preset is not None else "",
+        "presets": _provider_presets_payload(s.provider_id),
+        "capabilities": list(s.capabilities),
+        "fields": [
+            {
+                "name": f.name,
+                "label": f.label,
+                "type": f.field_type,
+                "required": f.required,
+                "default": f.default,
+                "description": f.description,
+                "secret": f.secret,
+            }
+            for f in s.fields
+        ],
+    }
+
+
 def provider_catalog_payload() -> list[dict[str, Any]]:
     return [
-        {
-            "providerId": s.provider_id,
-            "label": s.label,
-            "backend": s.backend,
-            "providerKind": s.provider_kind,
-            "runtimeSupported": s.runtime_supported,
-            "verification": s.verification,
-            "envKey": s.env_key,
-            "defaultBaseUrl": s.default_base_url,
-            "requiresApiKey": s.requires_api_key,
-            "requiresBaseUrl": s.requires_base_url,
-            "routerSupported": s.router_supported,
-            "deployment": s.deployment,
-            "blocking": s.blocking,
-            "canProbe": s.can_probe,
-            "readmeScenarios": list(s.readme_scenarios),
-            "whatYouNeed": list(s.what_you_need),
-            "defaultDirectModel": s.default_direct_model,
-            "capabilities": list(s.capabilities),
-            "fields": [
-                {
-                    "name": f.name,
-                    "label": f.label,
-                    "type": f.field_type,
-                    "required": f.required,
-                    "default": f.default,
-                    "description": f.description,
-                    "secret": f.secret,
-                }
-                for f in s.fields
-            ],
-        }
+        _provider_entry_payload(s)
         for s in list_provider_setup_specs()
         if s.runtime_supported
     ]

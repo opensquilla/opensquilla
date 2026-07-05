@@ -5,6 +5,7 @@ from __future__ import annotations
 import platform
 import tomllib
 
+import httpx
 import pytest
 
 import opensquilla.gateway.rpc_onboarding  # noqa: F401  ensures registration
@@ -1079,3 +1080,50 @@ async def test_channel_disable_then_remove(tmp_path, monkeypatch):
     res2 = await d.dispatch("r3", "onboarding.channel.remove", {"name": "w"}, _admin_ctx())
     assert res2.error is None
     assert res2.payload["changed"] is True
+
+
+def _stub_openai_transport(monkeypatch, response):
+    transport = httpx.MockTransport(lambda request: response)
+    real_async_client = httpx.AsyncClient
+
+    def patched(*args, **kwargs):
+        kwargs["transport"] = transport
+        return real_async_client(*args, **kwargs)
+
+    monkeypatch.setattr("opensquilla.provider.openai.httpx.AsyncClient", patched)
+
+
+@pytest.mark.asyncio
+async def test_models_discover_requires_admin_scope(tmp_path, monkeypatch):
+    monkeypatch.setenv("OPENSQUILLA_GATEWAY_CONFIG_PATH", str(tmp_path / "c.toml"))
+    res = await get_dispatcher().dispatch(
+        "r1",
+        "onboarding.models.discover",
+        {"providerId": "openai", "apiKey": "sk-test"},
+        _read_ctx(),
+    )
+    assert res.error is not None
+    assert "scope" in res.error.message.lower()
+
+
+@pytest.mark.asyncio
+async def test_models_discover_lists_live_models(tmp_path, monkeypatch):
+    monkeypatch.setenv("OPENSQUILLA_GATEWAY_CONFIG_PATH", str(tmp_path / "c.toml"))
+    _stub_openai_transport(
+        monkeypatch,
+        httpx.Response(
+            200,
+            headers={"content-type": "application/json"},
+            content=b'{"data": [{"id": "gpt-x", "name": "GPT X", "context_length": 32000}]}',
+        ),
+    )
+    res = await get_dispatcher().dispatch(
+        "r1",
+        "onboarding.models.discover",
+        {"providerId": "openai", "apiKey": "sk-test"},
+        _admin_ctx(),
+    )
+    assert res.error is None, res.error
+    assert res.payload["ok"] is True
+    assert res.payload["source"] == "live"
+    assert [m["id"] for m in res.payload["models"]] == ["gpt-x"]

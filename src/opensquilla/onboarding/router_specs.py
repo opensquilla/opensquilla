@@ -85,6 +85,14 @@ def router_catalog_payload() -> dict[str, Any]:
                 "description": "Keep the built-in OpenRouter mixed model routes.",
             },
             {
+                "mode": "custom",
+                "label": "Custom provider mix",
+                "description": (
+                    "Route c0-c3 on the active provider using its registry "
+                    "preset tiers, with per-tier overrides."
+                ),
+            },
+            {
                 "mode": "disabled",
                 "label": "Disable router",
                 "description": "Use the configured provider/model directly.",

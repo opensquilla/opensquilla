@@ -43,7 +43,7 @@ OpenRouter, OpenAI, Anthropic, Ollama, DeepSeek, Gemini, Qwen/DashScope,
 and 20+ other LLM providers with no change to your code or config
 schema.
 
-OpenSquilla 0.5.0 Preview 1 is the current preview release.
+OpenSquilla 0.5.0 Preview 2 is the current preview release.
 
 For task-oriented product documentation, start with the
 [OpenSquilla Product Guide](README.product.md) or the
@@ -63,9 +63,9 @@ Develop from source — build **from a Git checkout** (`git clone` + Git LFS).
 Release install commands use published GitHub release assets. Python wheel installs use versioned wheel filenames because installers validate the version
 embedded in the wheel filename.
 
-For 0.5.0 Preview 1 desktop use, prefer the packaged desktop installers from
-the GitHub Release: `OpenSquilla-0.5.0-rc1-mac-arm64.dmg` on macOS and
-`OpenSquilla-0.5.0-rc1-win-x64.exe` on Windows.
+For 0.5.0 Preview 2 desktop use, prefer the packaged desktop installers from
+the GitHub Release: `OpenSquilla-0.5.0-rc2-mac-arm64.dmg` on macOS and
+`OpenSquilla-0.5.0-rc2-win-x64.exe` on Windows.
 
 | Path | Audience | When to use |
 | --- | --- | --- |
@@ -109,11 +109,11 @@ Install links: [Git](https://git-scm.com/downloads) ·
 
 ### Desktop installers
 
-The 0.5.0 Preview 1 desktop installers package the Vue control console and
+The 0.5.0 Preview 2 desktop installers package the Vue control console and
 gateway runtime in an Electron shell.
 
-- macOS Apple Silicon: <https://github.com/opensquilla/opensquilla/releases/download/v0.5.0rc1/OpenSquilla-0.5.0-rc1-mac-arm64.dmg>
-- Windows x64: <https://github.com/opensquilla/opensquilla/releases/download/v0.5.0rc1/OpenSquilla-0.5.0-rc1-win-x64.exe>
+- macOS Apple Silicon: <https://github.com/opensquilla/opensquilla/releases/download/v0.5.0rc2/OpenSquilla-0.5.0-rc2-mac-arm64.dmg>
+- Windows x64: <https://github.com/opensquilla/opensquilla/releases/download/v0.5.0rc2/OpenSquilla-0.5.0-rc2-win-x64.exe>
 
 Quit any running OpenSquilla desktop app before upgrading. On macOS, drag the
 app from the DMG into Applications for installation or updates, eject the DMG,
@@ -155,7 +155,7 @@ $env:Path = "$env:USERPROFILE\.local\bin;" + $env:Path
 **2. Install OpenSquilla** — the same command on every platform.
 
 ```sh
-uv tool install --python 3.12 "opensquilla[recommended] @ https://github.com/opensquilla/opensquilla/releases/download/v0.5.0rc1/opensquilla-0.5.0rc1-py3-none-any.whl"
+uv tool install --python 3.12 "opensquilla[recommended] @ https://github.com/opensquilla/opensquilla/releases/download/v0.5.0rc2/opensquilla-0.5.0rc2-py3-none-any.whl"
 ```
 
 This installs the OpenSquilla wheel from the release URL, then lets
@@ -179,7 +179,7 @@ opensquilla gateway run
 > a new terminal, or re-run the PATH line from step 1.
 
 For a fully pinned install, use the versioned wheel URL:
-`https://github.com/opensquilla/opensquilla/releases/download/v0.5.0rc1/opensquilla-0.5.0rc1-py3-none-any.whl`.
+`https://github.com/opensquilla/opensquilla/releases/download/v0.5.0rc2/opensquilla-0.5.0rc2-py3-none-any.whl`.
 
 ### Install from source
 
@@ -587,27 +587,26 @@ settings live in `opensquilla.toml.example`.
 
 ---
 
-## What's New in 0.5.0 Preview 1
+## What's New in 0.5.0 Preview 2
 
-OpenSquilla 0.5.0 Preview 1 is a preview release for the new routing and
+OpenSquilla 0.5.0 Preview 2 is a preview release for the new routing and
 desktop/runtime line:
 
-- **Model Ensemble and smarter routing** - dynamic Model Ensemble routing,
-  OpenAI-compatible provider handling, Codex-style provider support,
-  progressive reveal, and direct single-model defaults are easier to configure
-  and inspect.
-- **Managed execution alignment** - sandbox, run-mode, approval, and host
-  execution paths share clearer authorization boundaries and diagnostics.
-- **Desktop and Control UI polish** - settings, router controls, drag-and-drop
-  attachments, history materialization, and image preview navigation are
-  steadier across refreshes and desktop sessions.
-- **OpenTUI and terminal reliability** - the preview terminal frontend, gateway
-  lifecycle handling, subprocess encoding, and Windows process cleanup all get
-  tighter failure behavior.
+- **Model Ensemble and smarter routing** - fresh installs stay on the
+  single-model `squilla_router` path, while users who turn on ensemble mode get
+  the static OpenRouter B5 profile by default.
+- **Provider and migration recovery** - provider/router setup, custom provider
+  handling, migration persistence, and onboarding status contracts are steadier.
+- **Desktop and Control UI polish** - local HTML artifact opening, desktop
+  reopen behavior, session cleanup, attachment isolation, composer drafts, and
+  ensemble progress display are more reliable.
+- **Web UI uploads and CI contracts** - staged uploads refresh expired file UUIDs
+  before send, and Preview 2 repairs the main CI contract drift found after
+  Preview 1.
 - **Simplified release assets** - 0.5 preview releases publish Electron desktop installers and the Python wheel only.
 
 Full notes: [`CHANGELOG.md`](CHANGELOG.md) ·
-[`docs/releases/0.5.0rc1.md`](docs/releases/0.5.0rc1.md).
+[`docs/releases/0.5.0rc2.md`](docs/releases/0.5.0rc2.md).
 
 ## What's New in 0.2.1
 

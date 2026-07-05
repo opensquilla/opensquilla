@@ -20,6 +20,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from typing import Any
 
+from opensquilla.gateway.config_secrets import inherit_runtime_secrets
 from opensquilla.gateway.rpc import RpcContext, RpcHandlerError, get_dispatcher
 from opensquilla.search.types import DEFAULT_SEARCH_MAX_RESULTS
 
@@ -84,8 +85,7 @@ def _apply_inplace(ctx: RpcContext, new_cfg: Any) -> None:
         return
     for field_name in type(new_cfg).model_fields:
         setattr(ctx.config, field_name, getattr(new_cfg, field_name))
-    if hasattr(ctx.config, "inherit_runtime_secrets"):
-        ctx.config.inherit_runtime_secrets(new_cfg)
+    inherit_runtime_secrets(new_cfg, ctx.config)
 
 
 def _sync_provider_selector(ctx: RpcContext, llm_cfg: Any) -> None:
@@ -152,7 +152,7 @@ def _persist(ctx: RpcContext, new_cfg: Any, *, restart_required: bool) -> str:
         and ctx.config is not new_cfg
         and hasattr(new_cfg, "inherit_runtime_secrets")
     ):
-        new_cfg.inherit_runtime_secrets(ctx.config)
+        inherit_runtime_secrets(ctx.config, new_cfg)
     path = _config_path_for(ctx, new_cfg) or _config_path_for(ctx, ctx.config)
     persist = persist_config(new_cfg, path=path, restart_required=restart_required)
     # Preserve the resolved path on the running config so subsequent saves

@@ -19,6 +19,10 @@ from opensquilla.gateway.config import (
     SquillaRouterConfig,
     _router_tier_profile_defaults,
 )
+from opensquilla.gateway.config_secrets import (
+    clear_runtime_secret_paths,
+    inherit_runtime_secrets,
+)
 from opensquilla.onboarding.audio_specs import get_audio_provider_setup_spec
 from opensquilla.onboarding.image_generation_specs import (
     get_image_generation_provider_setup_spec,
@@ -68,7 +72,7 @@ class MutationResult:
 
 def _clone(cfg: GatewayConfig) -> GatewayConfig:
     new_cfg = cfg.model_copy(deep=True)
-    new_cfg.inherit_runtime_secrets(cfg)
+    inherit_runtime_secrets(cfg, new_cfg)
     return new_cfg
 
 
@@ -394,7 +398,7 @@ def upsert_llm_provider(
     else:
         _reconcile_router_profile_for_provider(new_cfg, provider_id)
     if api_key:
-        new_cfg.clear_runtime_secret("llm.api_key")
+        clear_runtime_secret_paths(new_cfg, {"llm.api_key"})
 
     payload = {
         "provider": provider_id,
@@ -653,7 +657,7 @@ def upsert_search_provider(
     new_cfg.search_fallback_policy = fallback_policy_value
     new_cfg.search_diagnostics = bool(diagnostics)
     if api_key:
-        new_cfg.clear_runtime_secret("search_api_key")
+        clear_runtime_secret_paths(new_cfg, {"search_api_key"})
 
     api_key_source = (
         "explicit" if effective_api_key else ("env" if effective_api_key_env else "none")
@@ -804,7 +808,9 @@ def upsert_image_generation_provider(
     next_provider_cfg.api_key_env = env_key
     next_provider_cfg.base_url = effective_base_url
     if api_key:
-        new_cfg.clear_runtime_secret(f"image_generation.providers.{provider_id}.api_key")
+        clear_runtime_secret_paths(
+            new_cfg, {f"image_generation.providers.{provider_id}.api_key"}
+        )
 
     payload = {
         "provider": provider_id,
@@ -916,7 +922,7 @@ def upsert_audio_provider(
     new_cfg.audio.tts.model = effective_tts_model
     new_cfg.audio.tts.language_code = effective_language_code
     if api_key:
-        new_cfg.clear_runtime_secret(f"audio.providers.{provider_id}.api_key")
+        clear_runtime_secret_paths(new_cfg, {f"audio.providers.{provider_id}.api_key"})
 
     payload = {
         "provider": provider_id,
@@ -1041,8 +1047,10 @@ def upsert_memory_embedding(
     new_cfg.memory.embedding = MemoryEmbeddingConfig.model_validate(payload)
     changed = old_memory != new_cfg.memory.model_dump(mode="python")
     if api_key_value or api_key_env_value:
-        new_cfg.clear_runtime_secret("memory.embedding.remote.api_key")
-        new_cfg.clear_runtime_secret("memory.embedding.api_key")
+        clear_runtime_secret_paths(
+            new_cfg,
+            {"memory.embedding.remote.api_key", "memory.embedding.api_key"},
+        )
 
     return MutationResult(
         config=new_cfg,

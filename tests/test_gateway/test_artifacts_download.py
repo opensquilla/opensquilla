@@ -164,6 +164,22 @@ def test_artifact_native_open_owner_opens_html_copy(tmp_path: Path, monkeypatch)
     assert opened[0].read_bytes() == b"<!doctype html><title>ok</title>"
 
 
+def test_artifact_open_cache_dir_skips_posix_mode_bits_on_windows(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    from opensquilla.gateway import artifacts as artifact_routes
+
+    temp_root = tmp_path / "tmp"
+    cache_root = temp_root / "opensquilla-artifacts"
+    cache_root.mkdir(parents=True)
+    cache_root.chmod(0o777)
+    monkeypatch.setattr(artifact_routes.tempfile, "gettempdir", lambda: str(temp_root))
+    monkeypatch.setattr(artifact_routes.sys, "platform", "win32")
+
+    assert artifact_routes._artifact_open_cache_dir() == cache_root
+
+
 def test_artifact_native_open_requires_auth_and_owner(tmp_path: Path, monkeypatch) -> None:
     pytest.importorskip("starlette.testclient")
     from starlette.testclient import TestClient

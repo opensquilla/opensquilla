@@ -51,6 +51,8 @@ def test_goldens_contain_no_credential_material() -> None:
     files = sorted(harness.GOLDEN_ROOT.rglob("*.json"))
     assert files, "no golden files found"
     for path in files:
-        text = path.read_text(encoding="utf-8")
+        raw = path.read_bytes()
+        assert b"\r\n" not in raw, f"golden file must be checked out with LF endings: {path}"
+        text = raw.decode("utf-8")
         assert harness.FAKE_API_KEY not in text, f"credential material leaked into {path}"
         assert "Bearer " not in text, f"auth header value leaked into {path}"

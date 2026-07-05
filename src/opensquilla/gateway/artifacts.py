@@ -110,15 +110,16 @@ def _artifact_open_cache_dir() -> Path:
         pass
     if root.is_symlink() or not root.is_dir():
         raise OSError("unsafe artifact open temp directory")
-    uid = getattr(os, "getuid", lambda: None)()
-    stat_result = root.stat()
-    if uid is not None and getattr(stat_result, "st_uid", uid) != uid:
-        raise OSError("artifact open temp directory is owned by another user")
-    if stat_result.st_mode & 0o077:
-        root.chmod(0o700)
+    if sys.platform != "win32":
+        uid = getattr(os, "getuid", lambda: None)()
         stat_result = root.stat()
+        if uid is not None and getattr(stat_result, "st_uid", uid) != uid:
+            raise OSError("artifact open temp directory is owned by another user")
         if stat_result.st_mode & 0o077:
-            raise OSError("artifact open temp directory permissions are too broad")
+            root.chmod(0o700)
+            stat_result = root.stat()
+            if stat_result.st_mode & 0o077:
+                raise OSError("artifact open temp directory permissions are too broad")
     return root
 
 

@@ -784,6 +784,19 @@ class SquillaRouterConfig(BaseSettings):
     # key. Off: such tiers run on the active provider (with a logged
     # mismatch warning), preserving the historical behavior.
     cross_provider_tiers: bool = False
+    # What routing does when it lands on a tier naming a provider other than
+    # llm.provider while cross_provider_tiers is off. "route" preserves the
+    # historical, documented-intentional behavior: flag the mismatch loudly
+    # (warning log + router_tier_provider_mismatch metadata) but still run
+    # the tier's model id on the active provider's credentials. "veto"
+    # rebinds the turn to the nearest tier that executes on the active
+    # provider (or the default tier), recording the veto in the routing
+    # trail; without a usable rebind target it falls back to route-and-flag.
+    # Downgrade note: additive key. This section is extra="ignore", so an
+    # rc1 loader reading a config that carries this key simply drops it and
+    # falls back to the historical route-and-flag behavior — persisting it
+    # never bricks a downgraded gateway.
+    tier_provider_mismatch: Literal["route", "veto"] = "route"
     tiers: dict = Field(default_factory=_default_tiers)
     default_tier: str = DEFAULT_TEXT_TIER
     confidence_threshold: float = 0.5

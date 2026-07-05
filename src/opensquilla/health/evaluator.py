@@ -889,6 +889,77 @@ def _router_runtime_missing_guidance(
 
 
 def evaluate_router(payload: dict[str, Any]) -> list[HealthFinding]:
+    findings = _evaluate_router_readiness(payload)
+    findings.extend(_router_tier_provider_mismatch_findings(payload))
+    return findings
+
+
+def _router_tier_provider_mismatch_findings(payload: dict[str, Any]) -> list[HealthFinding]:
+    """Advisory: enabled router tiers whose provider will silently misroute.
+
+    Emitted only for the risky combination — a configured tier names a
+    provider other than the active one, ``cross_provider_tiers`` is off, and
+    ``squilla_router.tier_provider_mismatch`` is ``"route"`` — where the
+    tier's model id is sent to the active provider's credentials. Aligned
+    tiers, cross-provider execution, or veto mode produce no finding.
+    """
+    if not payload.get("enabled"):
+        return []
+    if bool(payload.get("crossProviderTiers")):
+        return []
+    mode = str(payload.get("tierProviderMismatch") or "route")
+    if mode != "route":
+        return []
+    raw_mismatched = payload.get("mismatchedTierProviders")
+    if not isinstance(raw_mismatched, dict) or not raw_mismatched:
+        return []
+    active = str(payload.get("activeProvider") or "")
+    if not active:
+        return []
+    mismatched = {str(tier): str(provider) for tier, provider in raw_mismatched.items()}
+    tier_list = ", ".join(
+        f"{tier} -> {provider}" for tier, provider in sorted(mismatched.items())
+    )
+    return [
+        HealthFinding(
+            id="router.tier_provider.mismatch",
+            severity="warn",
+            surface="router",
+            title="Router tiers will silently misroute",
+            detail=(
+                f"Router tier(s) {tier_list} name a provider other than the active "
+                f"provider {active}, and cross-provider tier execution is disabled. "
+                'With squilla_router.tier_provider_mismatch = "route" these tiers '
+                "misroute: the tier's model id is sent to the active provider's "
+                'credentials. Set squilla_router.tier_provider_mismatch = "veto" to '
+                "rebind such turns to the nearest same-provider tier, enable "
+                "cross_provider_tiers, or align the tier providers."
+            ),
+            evidence={
+                "activeProvider": active,
+                "mismatchedTierProviders": mismatched,
+                "crossProviderTiers": False,
+                "tierProviderMismatch": mode,
+            },
+            fix_steps=[
+                FixStep(
+                    label="Veto mismatched tiers",
+                    command=(
+                        "opensquilla config set squilla_router.tier_provider_mismatch veto"
+                    ),
+                ),
+                FixStep(
+                    label="Inspect router config",
+                    command="opensquilla diagnostics status",
+                ),
+                FixStep(label="Restart gateway", command="opensquilla gateway restart"),
+            ],
+            restart_required=True,
+        )
+    ]
+
+
+def _evaluate_router_readiness(payload: dict[str, Any]) -> list[HealthFinding]:
     if "enabled" not in payload:
         return _diagnostic_incomplete(
             "router",

@@ -17,6 +17,12 @@ pre-gate tier, and the previous turn's tier.
 ``anti_downgrade`` — within the KV-cache window, never route below the
 previous turn's final tier.
 
+``capability_gate`` — after the preference stages settle, walk the working
+tier UP when the model catalog gives a definite signal that its model
+cannot serve the turn (missing vision on an image turn, material context
+that exceeds the model's known window). Absent or unknown capability data
+means no action (see :func:`capability_gate`).
+
 ``bind`` — record the finalized routing trail into ``routing_extra`` and
 rebind the decision to the final tier's configured model. Controller heads
 (thinking mode / prompt policy) are reconciled against the final tier via
@@ -26,13 +32,20 @@ rebind the decision to the final tier's configured model. Controller heads
 floored to c2/c3 regardless of the classified tier; a floored decision is
 reconciled again.
 
-``provider_mismatch`` — flag-only: publish the routed tier's provider and
-detect tiers that name a provider other than the active one. It never
-vetoes or alters the decision.
+``provider_mismatch`` — flag-only by default: publish the routed tier's
+provider and detect tiers that name a provider other than the active one
+without altering the decision. When ``squilla_router.tier_provider_mismatch``
+is ``"veto"``, the step uses :func:`provider_mismatch_veto` to rebind such
+turns to the nearest tier that executes on the active provider (or the
+default tier) instead of misrouting.
 
-This module is a pure extraction: stage behavior, ordering, thresholds, and
-emitted metadata are byte-identical to the previous inline implementation
-(see ``tests/test_engine/test_routing_policy_parity.py``).
+The original stages are a pure extraction: their behavior, ordering,
+thresholds, and emitted metadata are byte-identical to the previous inline
+implementation (see ``tests/test_engine/test_routing_policy_parity.py``).
+``capability_gate`` and the ``provider_mismatch`` veto variant are additive
+and default-off: without definite catalog data (gate) or the ``"veto"``
+config value (mismatch), the pipeline's output is unchanged, and the parity
+golden pins that.
 """
 
 from __future__ import annotations
@@ -268,6 +281,134 @@ def anti_downgrade(
     return AntiDowngradeResult(tier, False)
 
 
+@dataclass(frozen=True)
+class TierCapability:
+    """Definite catalog facts for one tier's model.
+
+    ``None`` on either field means the catalog gave no definite signal for
+    it (unknown model, synthesized entry, flag-gated empty capabilities, or
+    a defaulted context window) — the capability gate never acts on a
+    ``None``.
+    """
+
+    supports_vision: bool | None = None
+    context_window: int | None = None
+
+
+@dataclass(frozen=True)
+class CapabilityGateAction:
+    rule: str  # "vision_walk_up" | "context_walk_up"
+    from_tier: str
+    to_tier: str
+
+
+@dataclass(frozen=True)
+class CapabilityGateResult:
+    tier: str
+    actions: tuple[CapabilityGateAction, ...] = ()
+
+
+def capability_gate(
+    tier: str,
+    *,
+    valid_tiers: list[str],
+    tier_capabilities: dict[str, TierCapability] | None,
+    turn_has_image: bool,
+    material_tokens: int,
+) -> CapabilityGateResult:
+    """Walk the working tier UP when the catalog says its model cannot serve
+    the turn.
+
+    Placement: after ``complaint_upgrade`` and ``anti_downgrade``,
+    immediately before ``bind``. The earlier stages express *preferences*
+    (cheapest capable tier, upgrade on complaint, hold the KV-cache tier);
+    this stage enforces *hard model constraints* (vision input, context
+    fit), so it must see the tier those preferences settled on — running it
+    earlier would let a later preference stage restart from a tier the gate
+    already rejected, and running it after ``bind`` would record a
+    ``final_tier``/trail naming a model the turn cannot run on and hide the
+    correction from controller reconciliation. The gate only ever moves up
+    the ladder, so it cannot undo the anti-downgrade hold, and the
+    ``large_context_floor`` downstream can still raise the result further.
+
+    Never act on ignorance: every move requires a definite catalog signal
+    on BOTH ends. A tier whose :class:`TierCapability` field is ``None``
+    (unknown model / synthesized entry / anthropic-ollama flag-gated empty
+    capabilities / defaulted context window) neither triggers a walk-up nor
+    qualifies as a walk-up target — with no capability data at all the gate
+    is a strict no-op, which is what keeps the parity golden byte-identical.
+
+    Rules:
+
+    - ``vision_walk_up`` — the turn carries an image (the step's existing
+      image-bypass signal, reused, not recomputed) and the working tier's
+      model is definitely non-vision: move to the nearest HIGHER tier whose
+      model is definitely vision-capable, mirroring the image bypass's
+      "prefer an image-capable tier" semantics. No definite target above —
+      no action.
+    - ``context_walk_up`` — the estimated material tokens exceed the
+      working tier model's definitely-known context window: move to the
+      nearest higher tier whose window definitely fits, or saturate at the
+      top tier when none fits. Already at the top — no action.
+    """
+    if not tier_capabilities:
+        return CapabilityGateResult(tier)
+    idx = _tier_index(tier, valid_tiers)
+    if idx < 0:
+        return CapabilityGateResult(tier)
+    current = valid_tiers[idx]
+    actions: list[CapabilityGateAction] = []
+
+    def _caps(name: str) -> TierCapability:
+        capability = tier_capabilities.get(name)
+        return capability if capability is not None else TierCapability()
+
+    if turn_has_image and _caps(current).supports_vision is False:
+        for candidate in valid_tiers[idx + 1 :]:
+            if _caps(candidate).supports_vision is True:
+                actions.append(CapabilityGateAction("vision_walk_up", current, candidate))
+                current = candidate
+                idx = _tier_index(current, valid_tiers)
+                break
+
+    window = _caps(current).context_window
+    if material_tokens > 0 and window is not None and material_tokens > window:
+        target: str | None = None
+        for candidate in valid_tiers[idx + 1 :]:
+            candidate_window = _caps(candidate).context_window
+            if candidate_window is not None and material_tokens <= candidate_window:
+                target = candidate
+                break
+        if target is None and idx < len(valid_tiers) - 1:
+            target = valid_tiers[-1]  # nothing definitely fits: saturate at the top
+        if target is not None and target != current:
+            actions.append(CapabilityGateAction("context_walk_up", current, target))
+            current = target
+
+    return CapabilityGateResult(current, tuple(actions))
+
+
+def record_capability_gate_trail(extra: dict, result: CapabilityGateResult) -> None:
+    """Append the gate's actions to the ``routing_extra`` trail.
+
+    Written only when the gate acted, so untouched turns keep byte-identical
+    routing metadata.
+    """
+    if not result.actions:
+        return
+    trail = extra.setdefault("routing_trail", [])
+    for action in result.actions:
+        trail.append(
+            {
+                "stage": "capability_gate",
+                "rule": action.rule,
+                "from_tier": action.from_tier,
+                "to_tier": action.to_tier,
+            }
+        )
+    extra["capability_gate_applied"] = True
+
+
 def bind(
     decision: RoutingDecision,
     *,
@@ -432,7 +573,10 @@ def provider_mismatch(
     selector-apply site can execute it when ``cross_provider_tiers`` is
     enabled. With the flag off, a tier naming another provider is a silent
     misroute (the routed model runs on the active provider's credentials) —
-    the caller surfaces it loudly in logs and telemetry.
+    the caller surfaces it loudly in logs and telemetry. Operators who want
+    the pipeline to act instead of flag opt into
+    ``squilla_router.tier_provider_mismatch = "veto"``, which routes the
+    assessment through :func:`provider_mismatch_veto`.
     """
     if not routing_applied:
         return ProviderMismatchOutcome("skipped", None, "", "", "")
@@ -448,6 +592,88 @@ def provider_mismatch(
             "cross_provider", routed_provider, tier.provider, tier.model, active
         )
     return ProviderMismatchOutcome("mismatch", routed_provider, tier.provider, tier.model, active)
+
+
+@dataclass(frozen=True)
+class ProviderMismatchVeto:
+    """Rebind decision for ``squilla_router.tier_provider_mismatch = "veto"``."""
+
+    applied: bool
+    from_tier: str = ""
+    to_tier: str = ""
+
+
+def provider_mismatch_veto(
+    *,
+    tiers: dict,
+    tier_name: str,
+    valid_tiers: list[str],
+    routing_applied: bool,
+    active_provider: str,
+    cross_provider_tiers: bool,
+    default_tier: object = None,
+) -> ProviderMismatchVeto:
+    """Pick the rebind target when a provider mismatch must be vetoed.
+
+    Runs the same assessment as :func:`provider_mismatch`; anything other
+    than a ``"mismatch"`` outcome (match, cross-provider execution enabled,
+    routing not applied) abstains. On a mismatch it rebinds to the nearest
+    tier — by ladder distance, preferring the cheaper tier on ties — whose
+    turn actually executes on the active provider's credentials (a tier
+    naming the active provider, or naming none). When no such tier exists
+    it falls back to the configured default tier; without a usable default
+    it abstains, leaving the flag-only route-and-warn behavior in effect.
+    """
+    outcome = provider_mismatch(
+        tiers=tiers,
+        tier_name=tier_name,
+        routing_applied=routing_applied,
+        active_provider=active_provider,
+        cross_provider_tiers=cross_provider_tiers,
+    )
+    if outcome.outcome != "mismatch":
+        return ProviderMismatchVeto(False)
+
+    current = normalize_text_tier(tier_name) or tier_name
+    idx = _tier_index(current, valid_tiers)
+    active = str(active_provider or "").strip().lower()
+
+    def _executes_on_active(name: str) -> bool:
+        tier = TierConfig.from_value(tiers.get(name))
+        return not tier.provider or tier.provider.lower() == active
+
+    if idx >= 0:
+        candidates = sorted(
+            (name for name in valid_tiers if name != current and _executes_on_active(name)),
+            key=lambda name: (
+                abs(_tier_index(name, valid_tiers) - idx),
+                _tier_index(name, valid_tiers),
+            ),
+        )
+        if candidates:
+            return ProviderMismatchVeto(True, current, candidates[0])
+
+    fallback = normalize_text_tier(default_tier) or (
+        str(default_tier) if default_tier else None
+    )
+    if fallback and fallback in valid_tiers and fallback != current:
+        return ProviderMismatchVeto(True, current, fallback)
+    return ProviderMismatchVeto(False, current, "")
+
+
+def record_provider_mismatch_veto_trail(extra: dict, veto: ProviderMismatchVeto) -> None:
+    """Append a veto rebind to the ``routing_extra`` trail (only when applied)."""
+    if not veto.applied:
+        return
+    extra.setdefault("routing_trail", []).append(
+        {
+            "stage": "provider_mismatch",
+            "rule": "veto_rebind",
+            "from_tier": veto.from_tier,
+            "to_tier": veto.to_tier,
+        }
+    )
+    extra["provider_mismatch_veto_applied"] = True
 
 
 # ---------------------------------------------------------------------------
@@ -472,6 +698,10 @@ class PolicyInputs:
     material_estimated_tokens: int
     context_window_tokens: int
     now: float | None = None  # injectable clock for tests; defaults to monotonic
+    # Capability-gate inputs. Both default to "no signal", which keeps the
+    # gate a strict no-op (parity with the pre-gate pipeline).
+    turn_has_image: bool = False
+    tier_capabilities: dict[str, TierCapability] | None = None
 
 
 @dataclass
@@ -581,6 +811,16 @@ class RoutingPolicyEngine:
             previous_tier=previous_tier,
         )
         final_tier = downgrade.tier
+
+        gate_capabilities = capability_gate(
+            final_tier,
+            valid_tiers=inputs.valid_tiers,
+            tier_capabilities=inputs.tier_capabilities,
+            turn_has_image=inputs.turn_has_image,
+            material_tokens=inputs.material_estimated_tokens,
+        )
+        record_capability_gate_trail(extra, gate_capabilities)
+        final_tier = gate_capabilities.tier
 
         return bind(
             decision,

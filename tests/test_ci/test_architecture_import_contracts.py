@@ -23,6 +23,7 @@ APPROVED_PACKAGE_IMPORTS: frozenset[tuple[str, str]] = frozenset({
     ("cli", "contrib"),
     ("cli", "dist"),
     ("cli", "engine"),
+    ("cli", "eval"),
     ("cli", "gateway"),
     ("cli", "health"),
     ("cli", "memory"),
@@ -53,6 +54,10 @@ APPROVED_PACKAGE_IMPORTS: frozenset[tuple[str, str]] = frozenset({
     ("engine", "skills"),
     ("engine", "squilla_router"),
     ("engine", "tools"),
+    # The measurement-only eval harness observes providers (and pricing) through
+    # their public surface; nothing imports eval back, so it joins no cycle.
+    ("eval", "engine"),
+    ("eval", "provider"),
     ("gateway", "agents"),
     ("gateway", "application"),
     ("gateway", "chat"),

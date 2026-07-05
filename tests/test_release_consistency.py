@@ -85,6 +85,10 @@ def test_release_workflow_hydrates_and_smokes_desktop_router_runtime() -> None:
         assert "npm run verify:package" in job
         assert "npm run verify:gateway-smoke" in job
         assert 'OPENSQUILLA_REQUIRE_PACKAGED_GATEWAY_SMOKE: "1"' in job
+        if job_name == "build-desktop-macos":
+            assert 'OPENSQUILLA_GATEWAY_SMOKE_TIMEOUT_MS: "240000"' in job
+        else:
+            assert "OPENSQUILLA_GATEWAY_SMOKE_TIMEOUT_MS" not in job
 
 
 def test_release_workflow_keeps_macos_signing_identity_auto_selected() -> None:

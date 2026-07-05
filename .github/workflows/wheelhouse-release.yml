@@ -231,6 +231,7 @@ jobs:
         working-directory: desktop/electron
         env:
           OPENSQUILLA_REQUIRE_PACKAGED_GATEWAY_SMOKE: "1"
+          OPENSQUILLA_GATEWAY_SMOKE_TIMEOUT_MS: "240000"
         run: npm run verify:gateway-smoke
 
       - name: List macOS artifacts

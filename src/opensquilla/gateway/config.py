@@ -2404,6 +2404,17 @@ _PUBLIC_SECRET_EXACT_KEYS = frozenset(
         "signing_secret",
         "app_secret",
         "verification_token",
+        # Channel-crypto secrets that no generic suffix above catches:
+        # channels.feishu.encrypt_key (event decryption key) and
+        # channels.wecom.encoding_aes_key (callback AES key). Exact names on
+        # purpose — NOT a blanket "_key" suffix: key-NAME/reference fields
+        # must stay readable (llm.api_key_env and the other *_env fields name
+        # WHICH env var a secret loads from and clients render them), and a
+        # "_key" suffix would also swallow future non-secret identifiers
+        # (session/public/idempotency keys). Add further crypto-material
+        # fields here individually, never by widening the suffix set.
+        "encrypt_key",
+        "encoding_aes_key",
     }
 )
 _PUBLIC_SECRET_SUFFIXES = ("_token", "_secret", "_password", "_api_key")

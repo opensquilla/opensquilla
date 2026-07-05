@@ -7,7 +7,7 @@ import tomllib
 from collections.abc import Mapping
 from functools import cache
 from importlib import resources
-from typing import Any
+from typing import Any, Literal
 
 import httpx
 import structlog
@@ -28,6 +28,13 @@ log = structlog.get_logger(__name__)
 DEFAULT_MAX_TOKENS = 16384
 SAFE_OPENROUTER_DEFAULT_MAX_TOKENS = 8192
 DEFAULT_CONTEXT_WINDOW = 200_000
+
+# Layer attribution for the ``*_with_source`` resolver variants. "override"
+# is the caller-supplied explicit value (config), "catalog" is any model-
+# metadata layer (live catalog, models.dev snapshot, packaged static
+# fallback), "default" is a hardcoded engine default.
+MaxTokensSource = Literal["override", "catalog", "default"]
+ContextWindowSource = Literal["catalog", "default"]
 
 # Local runtimes (Ollama, …) have unqualified model ids that miss the catalog
 # and the static table, so the 200k cloud default would make the turn budget
@@ -532,21 +539,43 @@ class ModelCatalog:
         self, model_id: str, user_override: int = 0, provider: str = ""
     ) -> int:
         """Resolve max_tokens: user > catalog > static fallback > default, then clamp."""
+        return self.resolve_max_tokens_with_source(model_id, user_override, provider)[0]
+
+    def resolve_max_tokens_with_source(
+        self, model_id: str, user_override: int = 0, provider: str = ""
+    ) -> tuple[int, MaxTokensSource]:
+        """Resolve max_tokens and name the layer that decided the value.
+
+        ``override`` = the caller-supplied ``user_override`` (an explicit
+        config value); ``catalog`` = live provider catalog, models.dev
+        snapshot, or the packaged static fallback table; ``default`` =
+        :data:`DEFAULT_MAX_TOKENS`. :meth:`resolve_max_tokens` delegates
+        here (single implementation), so value and attribution can never
+        drift apart. The clamp below may lower the number without changing
+        the attribution: the source names the layer that supplied the
+        pre-clamp candidate.
+        """
         context_window = self.resolve_context_window(model_id, provider)
         info = self._models.get(model_id)
 
         using_user_override = user_override > 0
         snapshot_limits = _models_dev_limits(provider, model_id)
+        source: MaxTokensSource
         if using_user_override:
             effective = user_override
+            source = "override"
         elif info and info.max_output_tokens > 0:
             effective = info.max_output_tokens
+            source = "catalog"
         elif snapshot_limits is not None and snapshot_limits[0] > 0:
             effective = snapshot_limits[0]
+            source = "catalog"
         elif (static := _static_fallback_entry(model_id)) is not None:
             effective = static[0]
+            source = "catalog"
         else:
             effective = DEFAULT_MAX_TOKENS
+            source = "default"
 
         # Clamp to context window. Some provider catalogs report a model's
         # max_completion_tokens as almost the entire context window; using that
@@ -561,22 +590,35 @@ class ModelCatalog:
             ):
                 effective = min(effective, SAFE_OPENROUTER_DEFAULT_MAX_TOKENS)
 
-        return effective
+        return effective, source
 
     def resolve_context_window(self, model_id: str, provider: str = "") -> int:
         """Resolve context window: catalog > models.dev > static fallback > local/default."""
+        return self.resolve_context_window_with_source(model_id, provider)[0]
+
+    def resolve_context_window_with_source(
+        self, model_id: str, provider: str = ""
+    ) -> tuple[int, ContextWindowSource]:
+        """Resolve the context window and name the layer that decided it.
+
+        ``catalog`` = live provider catalog, models.dev snapshot, or the
+        packaged static fallback table; ``default`` = the local-runtime or
+        cloud default window. :meth:`resolve_context_window` delegates here
+        (single implementation), so value and attribution can never drift
+        apart.
+        """
         info = self._models.get(model_id)
         if info and info.context_window > 0:
-            return info.context_window
+            return info.context_window, "catalog"
         snapshot_limits = _models_dev_limits(provider, model_id)
         if snapshot_limits is not None and snapshot_limits[1] > 0:
-            return snapshot_limits[1]
+            return snapshot_limits[1], "catalog"
         static = _static_fallback_entry(model_id)
         if static is not None:
-            return static[1]
+            return static[1], "catalog"
         if provider and provider.strip().lower() in LOCAL_RUNTIME_PROVIDERS:
-            return _LOCAL_CONTEXT_WINDOW
-        return DEFAULT_CONTEXT_WINDOW
+            return _LOCAL_CONTEXT_WINDOW, "default"
+        return DEFAULT_CONTEXT_WINDOW, "default"
 
 
 # ---------------------------------------------------------------------------

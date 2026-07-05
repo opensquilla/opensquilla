@@ -2088,6 +2088,17 @@ class TurnRunner:
             turn_error_persist=_TurnRunnerTurnErrorPersistAdapter(self),
         )
 
+    @property
+    def router_control_hold_store(self) -> RouterControlHoldStore:
+        """Session-keyed router-control hold store consulted by the router step.
+
+        This is the same instance forwarded into the turn loop through
+        ``initial_metadata["router_control_hold_store"]`` (and onto the
+        ``router_control`` tool context), so operator RPCs that read or write
+        holds here directly affect the routing of subsequent turns.
+        """
+        return self._router_control_hold_store
+
     def has_compacted_this_turn(self, session_key: str) -> bool:
         return session_key in self._turn_compacted_sessions
 

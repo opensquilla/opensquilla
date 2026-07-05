@@ -18,6 +18,7 @@ from opensquilla.provider.failures import ProviderFailureKind, classify_provider
 from opensquilla.provider.registry import get_provider_spec
 from opensquilla.provider.selector import ProviderBuildError, build_provider
 from opensquilla.provider.types import ChatConfig, DoneEvent, ErrorEvent, Message
+from opensquilla.redaction import redact_error_text
 
 log = structlog.get_logger(__name__)
 
@@ -125,19 +126,25 @@ async def probe_llm_provider(
                     provider_id=provider_id,
                     model=model,
                     failure_kind=kind.value,
-                    message=event.message,
+                    # Provider error bodies can echo credentials (bad keys,
+                    # signed URLs) — never repeat them verbatim.
+                    message=redact_error_text(event.message),
                     code=str(event.code),
                 )
             if isinstance(event, DoneEvent):
                 return ProviderProbeResult(ok=True, provider_id=provider_id, model=model)
     except Exception as exc:  # noqa: BLE001 - a probe never raises transport noise
-        log.warning("onboarding.provider_probe_failed", provider=provider_id, error=str(exc))
+        log.warning(
+            "onboarding.provider_probe_failed",
+            provider=provider_id,
+            error=redact_error_text(str(exc)),
+        )
         return ProviderProbeResult(
             ok=False,
             provider_id=provider_id,
             model=model,
             failure_kind=ProviderFailureKind.TRANSPORT_TRANSIENT.value,
-            message=str(exc),
+            message=redact_error_text(str(exc)),
         )
 
     return ProviderProbeResult(

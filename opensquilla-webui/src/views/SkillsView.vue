@@ -29,8 +29,8 @@
       :tiles="statTiles"
       :active-key="statusFilter"
       :proposal-count="proposals.length"
-      @select="setStatusFilter"
-      @show-proposals="scrollToProposals"
+      @select="selectStatusFilter"
+      @show-proposals="showProposalsFromStats"
     />
 
     <div class="sk-tabs" role="tablist" :aria-label="t('cronSkills.skillsView.tabsLabel')">
@@ -188,7 +188,7 @@
 </template>
 
 <script setup lang="ts">
-import { onActivated, onDeactivated, onUnmounted, ref } from 'vue'
+import { nextTick, onActivated, onDeactivated, onUnmounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import Icon from '@/components/Icon.vue'
 import ControlSwitch from '@/components/ControlSwitch.vue'
@@ -287,6 +287,17 @@ onUnmounted(teardownLive)
 
 function scrollToProposals() {
   proposalsPanelRef.value?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+}
+
+function selectStatusFilter(key: string) {
+  activeTab.value = 'installed'
+  setStatusFilter(key)
+}
+
+async function showProposalsFromStats() {
+  activeTab.value = 'installed'
+  await nextTick()
+  scrollToProposals()
 }
 
 function openSkillDialog(skill: Skill) {

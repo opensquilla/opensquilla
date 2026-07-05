@@ -10,6 +10,7 @@ interface RegistrySearchData {
 
 interface InstallResult {
   success: boolean
+  name?: string
   message?: string
   missing_still?: {
     bins?: string[]
@@ -66,11 +67,29 @@ export function useSkillRegistry(
     void installSkill(url, 'github')
   }
 
+  function markRegistryResultInstalled(identifier: string, source: string, installedName?: string) {
+    const installSource = source || 'clawhub'
+    registryResults.value = registryResults.value.map((result) => {
+      const resultSource = result.source || 'clawhub'
+      const resultIdentifier = result.identifier || result.name
+      const sameSource = resultSource === installSource
+      const sameIdentifier =
+        resultIdentifier === identifier ||
+        result.identifier === identifier ||
+        result.name === identifier
+      const sameInstalledName = !!installedName && result.name === installedName
+
+      if (!sameSource || (!sameIdentifier && !sameInstalledName)) return result
+      return { ...result, installed: true }
+    })
+  }
+
   async function installSkill(identifier: string, source: string) {
     installingId.value = identifier
     try {
       const res = await rpc.call<InstallResult>('skills.install', { identifier, source })
       if (res.success) {
+        markRegistryResultInstalled(identifier, source, res.name)
         await loadData()
       } else {
         pushToast(res.message || t('cronSkills.registry.installFailed'), { tone: 'danger' })

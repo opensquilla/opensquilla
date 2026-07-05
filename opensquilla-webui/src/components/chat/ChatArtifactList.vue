@@ -108,8 +108,8 @@
         :title="artifactFileTitle(artifact)"
         :kind-pill="artifactKindPill(artifact)"
         :size="artifactSizeLabel(artifact)"
-        :previewable="canPreview(artifact)"
-        :action-label="artifactActionLabel(artifact)"
+        :previewable="artifactCanOpen(artifact)"
+        :action-label="artifactChipActionLabel(artifact)"
         @open="openFile($event)"
         @download="$emit('download', $event)"
       />
@@ -226,11 +226,13 @@ import {
 } from '@/composables/chat/useArtifactPreview'
 import {
   fetchArtifactBlob,
+  isActiveDocumentArtifactCandidate,
   openArtifactBlobUrl,
+  openArtifactViaGateway,
 } from '@/utils/chat/artifactAccess'
 import { usePlatform } from '@/platform'
+import { useRpcStore } from '@/stores/rpc'
 import {
-  artifactActionLabel,
   artifactCategory,
   artifactDownloadUrl,
   artifactFileSubtitle,
@@ -256,6 +258,7 @@ defineEmits<{
 const { t } = useI18n()
 const { pushToast } = useToasts()
 const platform = usePlatform()
+const rpcStore = useRpcStore()
 
 const visualArtifacts = computed(() => props.artifacts.filter(artifact => artifactCategory(artifact) === 'visual'))
 const navigationVisualArtifacts = computed(() => {
@@ -266,6 +269,28 @@ const fileArtifacts = computed(() => props.artifacts.filter(artifact => artifact
 
 function artifactKey(artifact: ArtifactPayload): string {
   return String(artifact.id || artifact.download_url || artifact.name || '')
+}
+
+const webOwnerCanNativeOpen = computed(() => {
+  if (platform.capabilities.isDesktop) return false
+  const auth = rpcStore.auth
+  const principal = auth && typeof auth === 'object' ? auth.principal : null
+  return Boolean(
+    principal &&
+    typeof principal === 'object' &&
+    (principal as Record<string, unknown>).isOwner === true,
+  )
+})
+
+function artifactCanOpen(artifact: ArtifactPayload): boolean {
+  if (!canPreview(artifact)) return false
+  if (!isActiveDocumentArtifactCandidate(artifact)) return true
+  if (platform.capabilities.canOpenArtifactsNatively && platform.files.openArtifact) return true
+  return webOwnerCanNativeOpen.value
+}
+
+function artifactChipActionLabel(artifact: ArtifactPayload): string {
+  return artifactCanOpen(artifact) ? 'Open' : 'Download'
 }
 
 function sameOrigin(url: string): boolean {
@@ -368,6 +393,17 @@ async function openFile(artifact: ArtifactPayload) {
     if (!result.ok) {
       pushToast(result.message || t('chat.toast.artifactOpenFailed'), { tone: 'danger' })
     }
+    return
+  }
+
+  if (isActiveDocumentArtifactCandidate(artifact)) {
+    const result = await openArtifactViaGateway(artifact, {
+      baseOrigin: window.location.origin,
+      sessionKey: props.sessionKey,
+      authToken: props.authToken,
+    })
+    if (result.ok) return
+    pushToast(result.message, { tone: 'danger' })
     return
   }
 

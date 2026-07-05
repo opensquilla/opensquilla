@@ -3,10 +3,13 @@ import type { ArtifactPayload } from '@/types/rpc'
 import {
   artifactAccessHeaders,
   artifactAccessUrl,
+  artifactGatewayOpenUrl,
   artifactOpenFailureMessage,
   fetchArtifactBlob,
   isActiveDocumentArtifact,
+  isActiveDocumentArtifactCandidate,
   openArtifactBlobUrl,
+  openArtifactViaGateway,
 } from './artifactAccess'
 
 function artifact(overrides: Partial<ArtifactPayload> = {}): ArtifactPayload {
@@ -58,6 +61,79 @@ describe('artifactAccessHeaders', () => {
       sessionKey: 'agent:main:webchat:ok',
       authToken: 'secret',
     })).toEqual({})
+  })
+})
+
+describe('artifactGatewayOpenUrl', () => {
+  it('builds the same-origin native-open endpoint from artifact id', () => {
+    expect(artifactGatewayOpenUrl(artifact(), 'http://127.0.0.1:18793')).toBe(
+      '/api/v1/artifacts/art-report/open',
+    )
+  })
+
+  it('falls back to a same-origin artifact download URL when id is absent', () => {
+    expect(
+      artifactGatewayOpenUrl(
+        artifact({
+          id: undefined,
+          download_url: '/api/v1/artifacts/art-from-url?sessionKey=old-session',
+        }),
+        'http://127.0.0.1:18793',
+      ),
+    ).toBe('/api/v1/artifacts/art-from-url/open')
+  })
+
+  it('does not build a native-open endpoint for cross-origin artifacts', () => {
+    expect(
+      artifactGatewayOpenUrl(
+        artifact({ id: undefined, download_url: 'https://files.example.test/artifacts/art-report' }),
+        'http://127.0.0.1:18793',
+      ),
+    ).toBe('')
+  })
+})
+
+describe('openArtifactViaGateway', () => {
+  it('posts to the owner-only native-open endpoint with WebUI auth headers', async () => {
+    const fetchImpl = vi.fn(async () => new Response('{"ok":true}', {
+      status: 202,
+      headers: { 'content-type': 'application/json' },
+    }))
+
+    const result = await openArtifactViaGateway(artifact({ name: 'page.html', mime: 'text/html' }), {
+      baseOrigin: 'http://127.0.0.1:18793',
+      sessionKey: 'agent:main:webchat:ok',
+      authToken: 'secret',
+      fetchImpl,
+    })
+
+    expect(result.ok).toBe(true)
+    expect(fetchImpl).toHaveBeenCalledWith('/api/v1/artifacts/art-report/open', {
+      method: 'POST',
+      headers: {
+        'x-opensquilla-session-key': 'agent:main:webchat:ok',
+        Authorization: 'Bearer secret',
+      },
+      credentials: 'same-origin',
+    })
+  })
+
+  it('returns a failure message when native open is not authorized', async () => {
+    const fetchImpl = vi.fn(async () => new Response('{"code":"OWNER_REQUIRED"}', {
+      status: 403,
+      headers: { 'content-type': 'application/json' },
+    }))
+
+    const result = await openArtifactViaGateway(artifact({ name: 'page.html', mime: 'text/html' }), {
+      baseOrigin: 'http://127.0.0.1:18793',
+      fetchImpl,
+    })
+
+    expect(result.ok).toBe(false)
+    if (!result.ok) {
+      expect(result.status).toBe(403)
+      expect(result.message).toBe('Artifact open is not authorized. Refresh the page and try again.')
+    }
   })
 })
 
@@ -375,6 +451,15 @@ describe('openArtifactBlobUrl', () => {
 })
 
 describe('isActiveDocumentArtifact', () => {
+  it.each([
+    ['page.html', 'text/plain'],
+    ['page.xhtml', 'text/plain'],
+    ['report.txt', 'text/html'],
+    ['report.txt', 'application/xhtml+xml'],
+  ])('flags active document candidates before fetching: %s', (name, mime) => {
+    expect(isActiveDocumentArtifactCandidate(artifact({ name, mime }))).toBe(true)
+  })
+
   it.each([
     ['page.html', 'text/plain', 'text/plain'],
     ['report.txt', 'text/html; charset=utf-8', 'text/plain'],

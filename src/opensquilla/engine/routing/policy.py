@@ -55,6 +55,11 @@ from dataclasses import dataclass, field
 
 import structlog
 
+from opensquilla.engine.routing.calibration import (
+    CalibrationState,
+    apply_bias,
+    effective_threshold,
+)
 from opensquilla.engine.routing.policy_data import (
     COMPLAINT_TERMS,
     LARGE_CONTEXT_T2_FLOOR_TOKENS,
@@ -194,21 +199,33 @@ def confidence_gate(
     router_cfg: object,
     valid_tiers: list[str],
     tiers: dict | None = None,
+    calibration: CalibrationState | None = None,
 ) -> ConfidenceGateResult:
-    """Fall back to the default tier when classifier confidence is too low."""
-    threshold = float(getattr(router_cfg, "confidence_threshold", 0.5))
+    """Fall back to the default tier when classifier confidence is too low.
+
+    ``calibration`` is additive and default-off: :func:`effective_threshold`
+    and :func:`apply_bias` are exact identities when it is ``None``, so with no
+    calibration state this stage is byte-identical to the pre-calibration gate
+    (the routing parity golden pins that). With a state, the base
+    ``confidence_threshold`` is shifted by the clamped ``threshold_adjust``
+    (result kept in ``[0.3, 0.7]``) and the proposed tier's confidence is nudged
+    by its clamped per-class bias before the cutoff comparison.
+    """
+    base_threshold = float(getattr(router_cfg, "confidence_threshold", 0.5))
     high_tier_margin = float(getattr(router_cfg, "confidence_high_tier_margin", 0.05))
     default_tier = getattr(router_cfg, "default_tier", None)
+    threshold = effective_threshold(base_threshold, calibration)
     if default_tier is None:
         return ConfidenceGateResult(tier, False, threshold, None)
     default_tier = normalize_text_tier(default_tier) or str(default_tier)
     selected_cfg = tiers.get(tier, {}) if isinstance(tiers, dict) else {}
     if bool(_tier_config_value(selected_cfg, "image_only", False)):
         return ConfidenceGateResult(tier, False, threshold, default_tier)
+    gate_confidence = apply_bias(confidence, tier, calibration)
     tier_rank = _tier_index(tier, valid_tiers)
     default_rank = _tier_index(default_tier, valid_tiers)
     cutoff = threshold - high_tier_margin if tier_rank > default_rank else threshold
-    if confidence < cutoff and tier_rank >= 0 and default_rank >= 0 and tier != default_tier:
+    if gate_confidence < cutoff and tier_rank >= 0 and default_rank >= 0 and tier != default_tier:
         return ConfidenceGateResult(default_tier, True, threshold, default_tier)
     return ConfidenceGateResult(tier, False, threshold, default_tier)
 
@@ -702,6 +719,10 @@ class PolicyInputs:
     # gate a strict no-op (parity with the pre-gate pipeline).
     turn_has_image: bool = False
     tier_capabilities: dict[str, TierCapability] | None = None
+    # On-device confidence-gate calibration. ``None`` (the default) keeps the
+    # gate byte-identical to today; a non-neutral state shifts the effective
+    # threshold and per-class confidence bias (both hard-clamped at read time).
+    calibration: CalibrationState | None = None
 
 
 @dataclass
@@ -779,6 +800,7 @@ class RoutingPolicyEngine:
             router_cfg=inputs.router_cfg,
             valid_tiers=inputs.valid_tiers,
             tiers=inputs.tiers,
+            calibration=inputs.calibration,
         )
         final_tier = gate.tier
 

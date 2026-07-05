@@ -18,10 +18,13 @@ import structlog
 from opensquilla.engine.pipeline import TurnContext
 from opensquilla.engine.pricing import lookup_price
 from opensquilla.engine.routing import (
+    CalibrationState,
     PolicyInputs,
     RoutingDecision,
     RoutingPolicyEngine,
     TierCapability,
+    calibration_path,
+    load_calibration,
     provider_mismatch,
     provider_mismatch_veto,
     reconcile_controller_with_final_tier,
@@ -215,6 +218,48 @@ _RESPONSE_POLICY_OPEN = "[RESPONSE_POLICY:"
 # anti-downgrade, large-context floor, bind) live in engine/routing/policy.py;
 # the engine is stateless so one shared instance serves every turn.
 _POLICY_ENGINE = RoutingPolicyEngine()
+
+# On-device calibration: cached by the calibration file's mtime so the common
+# path costs one stat() per turn, not a full parse. Only consulted when the
+# operator opts into ``squilla_router.calibration_enabled`` — with the flag off
+# (the default) this returns ``None`` and the confidence gate is byte-identical
+# to today.
+_calibration_cache_lock = threading.Lock()
+_calibration_cache_state: CalibrationState | None = None
+_calibration_cache_mtime: float | None = None
+_calibration_cache_valid = False
+
+
+def _calibration_for_turn(router_cfg: object) -> CalibrationState | None:
+    """Return the active calibration state, or ``None`` for the default path.
+
+    ``None`` is returned when calibration is disabled or the state is neutral,
+    so the only time a non-``None`` state reaches the policy engine is when a
+    real, non-neutral calibration file exists — keeping the parity contract.
+    """
+    if not getattr(router_cfg, "calibration_enabled", False):
+        return None
+    global _calibration_cache_state, _calibration_cache_mtime, _calibration_cache_valid
+    try:
+        path = calibration_path()
+    except Exception:  # noqa: BLE001 - calibration must never break routing
+        return None
+    try:
+        mtime: float | None = path.stat().st_mtime
+    except OSError:
+        mtime = None
+    with _calibration_cache_lock:
+        if not (_calibration_cache_valid and _calibration_cache_mtime == mtime):
+            try:
+                _calibration_cache_state = load_calibration(path)
+            except Exception:  # noqa: BLE001 - fall back to the neutral/default path
+                _calibration_cache_state = None
+            _calibration_cache_mtime = mtime
+            _calibration_cache_valid = True
+        state = _calibration_cache_state
+    if state is None or state.is_neutral():
+        return None
+    return state
 
 
 class _UnavailableV4Strategy:
@@ -1003,6 +1048,7 @@ async def apply_squilla_router(ctx: TurnContext) -> TurnContext:
                 valid_tiers,
                 str(getattr(getattr(ctx.config, "llm", None), "provider", "") or ""),
             ),
+            calibration=_calibration_for_turn(router_cfg),
         )
     )
     decision = policy_result.decision

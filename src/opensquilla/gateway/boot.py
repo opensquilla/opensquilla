@@ -538,6 +538,7 @@ class ServiceContainer:
     memory_repair_service: Any = None
     meta_run_writer: Any = None
     router_decision_writer: Any = None
+    router_calibration_service: Any = None
     task_runtime: Any = None
     heartbeat_loop: Any = None
     heartbeat_watcher: Any = None
@@ -620,6 +621,12 @@ class ServiceContainer:
         if self.memory_repair_service is not None:
             try:
                 await self.memory_repair_service.stop()
+            except Exception:
+                pass
+        if self.router_calibration_service is not None:
+            # Stop the 24h job before its writer is closed below.
+            try:
+                await self.router_calibration_service.stop()
             except Exception:
                 pass
         if self.meta_run_writer is not None:
@@ -2319,6 +2326,29 @@ async def build_services(
             pass
         router_decision_writer = None
 
+    # ── Router calibration (opt-in 24h in-process job) ──────────────
+    # Only when squilla_router.calibration_enabled is true AND a real decision
+    # writer exists. Default-off: no service is constructed, so gateway boot is
+    # unchanged and the confidence gate stays byte-identical to today.
+    router_calibration_service = None
+    try:
+        _router_cfg_calib = getattr(config, "squilla_router", None)
+        if (
+            router_decision_writer is not None
+            and getattr(_router_cfg_calib, "enabled", False)
+            and getattr(_router_cfg_calib, "calibration_enabled", False)
+        ):
+            from opensquilla.engine.routing.calibration_service import (
+                RouterCalibrationService,
+            )
+
+            router_calibration_service = RouterCalibrationService(
+                writer=router_decision_writer,
+            )
+    except Exception as e:  # noqa: BLE001 - calibration must not block boot.
+        log.warning("build_services.router_calibration_service_failed", error=str(e))
+        router_calibration_service = None
+
     svc = ServiceContainer(
         config=config,
         provider_selector=provider_selector,
@@ -2339,6 +2369,7 @@ async def build_services(
         memory_repair_service=memory_repair_service,
         meta_run_writer=meta_run_writer,
         router_decision_writer=router_decision_writer,
+        router_calibration_service=router_calibration_service,
         deferred_warmups=deferred_warmups,
     )
     # Attach deferred callback ref so start_gateway_server can wire TurnRunner
@@ -2561,6 +2592,11 @@ async def start_gateway_server(
     if memory_repair_service is not None:
         memory_repair_service.start()
         log.info("gateway.memory_repair_service_started")
+
+    router_calibration_service = getattr(svc, "router_calibration_service", None)
+    if router_calibration_service is not None:
+        router_calibration_service.start()
+        log.info("gateway.router_calibration_service_started")
 
     # Lazy ref for channel_manager — cron handler captures it via closure,
     # populated after channel_manager is constructed below.

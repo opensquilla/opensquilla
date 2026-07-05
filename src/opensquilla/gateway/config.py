@@ -1300,6 +1300,50 @@ class AgentSubagentDefaults(BaseModel):
     """When ``True``, killing a parent session also cancels its descendants."""
 
 
+class AgentRoutingConfig(BaseModel):
+    """Per-agent router tier overrides for a durable agent profile.
+
+    Both fields are optional and default to ``None`` ("unset"). Tier strings are
+    canonicalized to ``c0``–``c3`` exactly the way :class:`SquillaRouterConfig`
+    normalizes its ``default_tier``: legacy ``t0``–``t3`` aliases and a leading
+    ``tier:`` prefix are accepted, and an unrecognized value is kept verbatim
+    (normalize-or-keep). This matches every other tier-accepting surface in the
+    codebase (``SquillaRouterConfig``, ``engine/routing/policy.py``) rather than
+    inventing a stricter rejection path the rest of the codebase lacks.
+
+    Ordering between ``default_tier`` and ``max_tier`` is intentionally NOT
+    enforced: ``SquillaRouterConfig`` enforces no analogous ceiling constraint,
+    so this block mirrors that rigor. The block is additive schema only — no
+    consumer reads it yet, so it does not change routing behavior for any
+    existing config. Wiring ``max_tier`` as a routing ceiling / ``default_tier``
+    as a per-agent starting tier is a documented follow-up.
+    """
+
+    default_tier: str | None = None
+    """Preferred starting tier for turns run under this agent. ``None`` → unset;
+    routing falls back to ``squilla_router.default_tier`` (current behavior)."""
+
+    max_tier: str | None = None
+    """Ceiling tier this agent's turns may be routed to. ``None`` → unset; no
+    per-agent ceiling is applied (current behavior)."""
+
+    @model_validator(mode="before")
+    @classmethod
+    def _normalize_tiers(cls, values: Any) -> Any:
+        if not isinstance(values, dict):
+            return values
+        values = dict(values)
+        for key in ("default_tier", "max_tier"):
+            raw = values.get(key)
+            if raw is None:
+                continue
+            text = str(raw).strip()
+            if text[:5].lower() == "tier:":
+                text = text[5:]
+            values[key] = normalize_text_tier(text) or raw
+        return values
+
+
 class AgentEntryConfig(BaseModel):
     """Gateway config entry for a durable, user-managed agent."""
 
@@ -1313,6 +1357,9 @@ class AgentEntryConfig(BaseModel):
     enabled: bool = True
     system_prompt: str | None = None
     subagents: AgentSubagentDefaults | None = None
+    routing: AgentRoutingConfig | None = None
+    """Additive per-agent tier overrides. ``None`` → unset (nothing persisted;
+    current routing behavior preserved)."""
 
     @field_validator("id")
     @classmethod

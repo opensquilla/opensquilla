@@ -21,15 +21,23 @@ from opensquilla.engine.routing import (
     PolicyInputs,
     RoutingDecision,
     RoutingPolicyEngine,
+    TierCapability,
     provider_mismatch,
+    provider_mismatch_veto,
+    reconcile_controller_with_final_tier,
+    record_provider_mismatch_veto_trail,
+    route_class_for_tier,
 )
 from opensquilla.engine.routing.policy_data import DEFAULT_CONTEXT_WINDOW_TOKENS
 from opensquilla.provider.context_capabilities import provider_state_continuity_diagnostic
+from opensquilla.provider.model_catalog import shared_catalog
+from opensquilla.provider.types import ModelCapabilities
 from opensquilla.router_control import RouterControlHoldStore
 from opensquilla.router_runtime_diagnostics import router_runtime_operator_message
 from opensquilla.router_tiers import (
     DEFAULT_TEXT_TIER,
     TEXT_TIERS,
+    TierConfig,
     normalize_text_tier,
 )
 from opensquilla.squilla_router.controller import (
@@ -444,6 +452,51 @@ def _context_window_tokens(ctx: TurnContext, router_cfg: object) -> int:
     return DEFAULT_CONTEXT_WINDOW_TOKENS
 
 
+def _tier_capability_facts(
+    tiers: dict,
+    valid_tiers: list[str],
+    active_provider: str,
+) -> dict[str, TierCapability]:
+    """Definite catalog facts per text tier for the capability gate.
+
+    Context gathering stays in the step (the policy engine consumes plain
+    data only). Every field is emitted as ``None`` unless the shared model
+    catalog gives a definite signal, so the gate never acts on ignorance:
+
+    - ``supports_vision`` is known only when the resolved entry is NOT
+      synthesized and ``get_capabilities`` returned something other than
+      the empty :class:`ModelCapabilities` — an empty result covers both
+      "no layer knew any capability" and the anthropic/ollama flag-gated
+      early return, none of which is a definite non-vision signal.
+    - ``context_window`` is known only when
+      ``resolve_context_window_with_source`` attributes the value to the
+      catalog (live/snapshot/corrections); engine defaults are estimates,
+      not knowledge.
+    """
+    catalog = shared_catalog()
+    empty_capabilities = ModelCapabilities()
+    facts: dict[str, TierCapability] = {}
+    for name in valid_tiers:
+        tier = TierConfig.from_value(tiers.get(name))
+        if not tier.model:
+            facts[name] = TierCapability()
+            continue
+        provider = (tier.provider or active_provider or "").strip().lower()
+        supports_vision: bool | None = None
+        entry = catalog.resolve_entry(tier.model, provider=provider)
+        if entry.source != "synthesized":
+            capabilities = catalog.get_capabilities(tier.model, provider_name=provider)
+            if capabilities != empty_capabilities:
+                supports_vision = capabilities.supports_vision
+        window, window_source = catalog.resolve_context_window_with_source(tier.model, provider)
+        context_window = window if window_source == "catalog" and window > 0 else None
+        facts[name] = TierCapability(
+            supports_vision=supports_vision,
+            context_window=context_window,
+        )
+    return facts
+
+
 def _flag_tier_provider_mismatch(
     ctx: TurnContext,
     tiers: dict,
@@ -455,7 +508,12 @@ def _flag_tier_provider_mismatch(
 
     Thin adapter over the flag-only ``provider_mismatch`` policy stage: it
     gathers the active provider + cross-provider flag from the turn config,
-    applies the outcome to turn metadata, and emits the operator logs.
+    applies the outcome to turn metadata, and emits the operator logs. With
+    ``squilla_router.tier_provider_mismatch = "route"`` (the default) the
+    silent misroute stays intentional telemetry; ``"veto"`` is handled
+    upstream by :func:`_apply_provider_mismatch_veto`, after which this
+    adapter re-assesses (and normally records a clean match for) the
+    rebound tier.
     """
     outcome = provider_mismatch(
         tiers=tiers,
@@ -487,6 +545,71 @@ def _flag_tier_provider_mismatch(
             model=outcome.tier_model,
             session=ctx.session_key,
         )
+
+
+def _apply_provider_mismatch_veto(
+    ctx: TurnContext,
+    router_cfg: object,
+    tiers: dict,
+    valid_tiers: list[str],
+    decision: RoutingDecision,
+    thinking_mode: str | None,
+    prompt_policy: str | None,
+    *,
+    routing_applied: bool,
+) -> tuple[RoutingDecision, str | None, str | None]:
+    """Rebind a mismatched classify-path decision when veto mode is on.
+
+    A strict no-op unless ``squilla_router.tier_provider_mismatch`` is
+    ``"veto"`` AND routing applies AND the ``provider_mismatch_veto`` stage
+    finds a usable rebind target; every other combination (the default
+    ``"route"`` mode above all) leaves the decision byte-identical to the
+    historical flag-and-misroute behavior. The router-control hold path is
+    intentionally exempt: an operator hold pins an explicit
+    tier/model/provider triple and must not be second-guessed.
+    """
+    mode = str(getattr(router_cfg, "tier_provider_mismatch", "route") or "route").strip().lower()
+    if mode != "veto" or not routing_applied:
+        return decision, thinking_mode, prompt_policy
+    veto = provider_mismatch_veto(
+        tiers=tiers,
+        tier_name=decision.tier,
+        valid_tiers=valid_tiers,
+        routing_applied=routing_applied,
+        active_provider=str(getattr(getattr(ctx.config, "llm", None), "provider", "") or ""),
+        cross_provider_tiers=bool(getattr(router_cfg, "cross_provider_tiers", False)),
+        default_tier=getattr(router_cfg, "default_tier", None),
+    )
+    if not veto.applied:
+        return decision, thinking_mode, prompt_policy
+
+    rebound = RoutingDecision(
+        tier=veto.to_tier,
+        model=tiers[veto.to_tier].get("model", decision.model),
+        confidence=decision.confidence,
+        source=decision.source,
+    )
+    ctx.metadata["provider_mismatch_veto_applied"] = True
+    ctx.metadata["provider_mismatch_veto_from_tier"] = veto.from_tier
+    ctx.metadata["provider_mismatch_veto_to_tier"] = veto.to_tier
+    extra = ctx.metadata.get("routing_extra")
+    if isinstance(extra, dict):
+        record_provider_mismatch_veto_trail(extra, veto)
+        extra["final_tier"] = veto.to_tier
+        extra["final_route_class"] = route_class_for_tier(veto.to_tier)
+        thinking_mode, prompt_policy = reconcile_controller_with_final_tier(
+            thinking_mode,
+            prompt_policy,
+            extra,
+        )
+    log.warning(
+        "squilla_router.tier_provider_mismatch_vetoed",
+        from_tier=veto.from_tier,
+        to_tier=veto.to_tier,
+        model=rebound.model,
+        session=ctx.session_key,
+    )
+    return rebound, thinking_mode, prompt_policy
 
 
 def _apply_controller(
@@ -561,7 +684,12 @@ async def apply_squilla_router(ctx: TurnContext) -> TurnContext:
     history_gate_needs_image = (
         ctx.metadata.get("router_vision_followup_needs_image") is True
     )
-    if current_turn_has_image or history_gate_needs_image:
+    # Computed once and reused below by both the bypass and the policy
+    # engine's capability gate (which must not recompute the signal). On the
+    # classify path this is always False today — the bypass routes or raises
+    # for every image turn — which is exactly the gate's no-op default.
+    turn_needs_image = current_turn_has_image or history_gate_needs_image
+    if turn_needs_image:
         image_tiers = {k: v for k, v in tiers.items() if v.get("supports_image", False)}
         if not image_tiers:
             log.warning(
@@ -768,6 +896,12 @@ async def apply_squilla_router(ctx: TurnContext) -> TurnContext:
             history_strategy=_is_history_strategy(strategy_name),
             material_estimated_tokens=_material_estimated_tokens(ctx, semantic_message),
             context_window_tokens=_context_window_tokens(ctx, router_cfg),
+            turn_has_image=turn_needs_image,
+            tier_capabilities=_tier_capability_facts(
+                tiers,
+                valid_tiers,
+                str(getattr(getattr(ctx.config, "llm", None), "provider", "") or ""),
+            ),
         )
     )
     decision = policy_result.decision
@@ -776,6 +910,16 @@ async def apply_squilla_router(ctx: TurnContext) -> TurnContext:
     ctx.metadata.update(policy_result.metadata_updates)
 
     routing_applied = rollout_phase != "observe"
+    decision, thinking_mode, prompt_policy = _apply_provider_mismatch_veto(
+        ctx,
+        router_cfg,
+        tiers,
+        valid_tiers,
+        decision,
+        thinking_mode,
+        prompt_policy,
+        routing_applied=routing_applied,
+    )
     if routing_applied:
         ctx.model = decision.model
     ctx.metadata["routed_tier"] = decision.tier

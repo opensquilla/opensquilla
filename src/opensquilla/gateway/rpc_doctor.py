@@ -262,6 +262,18 @@ def _router_payload(ctx: RpcContext, *, deep: bool = False) -> dict[str, Any]:
         error = str(exc)
         runtime_error_kind = classify_router_runtime_error(exc)
 
+    active_provider = str(getattr(getattr(config, "llm", None), "provider", "") or "")
+    mismatched_tier_providers: dict[str, str] = {}
+    tiers = getattr(router, "tiers", {}) or {}
+    if isinstance(tiers, dict) and active_provider.strip():
+        from opensquilla.router_tiers import TierConfig
+
+        active_l = active_provider.strip().lower()
+        for tier_name, tier_value in tiers.items():
+            tier = TierConfig.from_value(tier_value)
+            if tier.provider and tier.provider.lower() != active_l:
+                mismatched_tier_providers[str(tier_name)] = tier.provider
+
     return {
         "enabled": bool(getattr(router, "enabled", False)),
         "rolloutPhase": getattr(router, "rollout_phase", None),
@@ -272,6 +284,12 @@ def _router_payload(ctx: RpcContext, *, deep: bool = False) -> dict[str, Any]:
         "requireRouterRuntime": bool(getattr(router, "require_router_runtime", False)),
         "runtimeErrorKind": runtime_error_kind,
         "error": error,
+        "activeProvider": active_provider,
+        "crossProviderTiers": bool(getattr(router, "cross_provider_tiers", False)),
+        "tierProviderMismatch": str(
+            getattr(router, "tier_provider_mismatch", "route") or "route"
+        ),
+        "mismatchedTierProviders": mismatched_tier_providers,
     }
 
 

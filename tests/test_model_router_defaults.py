@@ -1,3 +1,4 @@
+import sys
 import tomllib
 from importlib.util import module_from_spec, spec_from_file_location
 from pathlib import Path
@@ -17,7 +18,15 @@ def _squilla_router_config_cls():
     assert spec is not None
     assert spec.loader is not None
     module = module_from_spec(spec)
-    spec.loader.exec_module(module)
+    # Register the module for the duration of exec (the documented importlib
+    # recipe): pydantic resolves stringified annotations such as
+    # Literal["route", "veto"] through sys.modules[cls.__module__] at class
+    # build time, so an unregistered module leaves the models half-defined.
+    sys.modules[spec.name] = module
+    try:
+        spec.loader.exec_module(module)
+    finally:
+        sys.modules.pop(spec.name, None)
     return module.SquillaRouterConfig
 
 

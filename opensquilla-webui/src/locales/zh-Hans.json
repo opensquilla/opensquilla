@@ -875,7 +875,6 @@
       "details": "详情",
       "unknownTool": "未知",
       "approveOnce": "批准一次",
-      "alwaysAllow": "始终允许此项",
       "allowSameType": "允许同类型",
       "deny": "拒绝",
       "loadFailed": "加载审批失败：{msg}",
@@ -1619,13 +1618,11 @@
       "denyReasonPlaceholder": "拒绝原因（可选）——将发送给智能体",
       "denyReasonLabel": "拒绝原因，可选，将发送给智能体",
       "allowOnce": "允许一次",
-      "allowAlways": "始终允许此项",
       "allowSameType": "允许同类型",
       "deny": "拒绝",
       "expiresIn": "{time} 后过期",
       "outcomeExpired": "已过期 — 未运行",
       "outcomeDenied": "已拒绝",
-      "outcomeApprovedAlways": "已批准 · 始终允许",
       "outcomeApproved": "已批准 · 已恢复运行"
     },
     "clarify": {

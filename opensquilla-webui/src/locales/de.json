@@ -875,7 +875,6 @@
       "details": "Details",
       "unknownTool": "Unbekannt",
       "approveOnce": "Einmal genehmigen",
-      "alwaysAllow": "Dies immer zulassen",
       "allowSameType": "Gleichen Typ zulassen",
       "deny": "Ablehnen",
       "loadFailed": "Genehmigungen konnten nicht geladen werden: {msg}",
@@ -1619,13 +1618,11 @@
       "denyReasonPlaceholder": "Ablehnungsgrund (optional) — an den Agenten gesendet",
       "denyReasonLabel": "Ablehnungsgrund, optional, an den Agenten gesendet",
       "allowOnce": "Einmal zulassen",
-      "allowAlways": "Dies immer zulassen",
       "allowSameType": "Gleichen Typ zulassen",
       "deny": "Ablehnen",
       "expiresIn": "Läuft ab in {time}",
       "outcomeExpired": "Abgelaufen — nicht ausgeführt",
       "outcomeDenied": "Abgelehnt",
-      "outcomeApprovedAlways": "Genehmigt · immer zugelassen",
       "outcomeApproved": "Genehmigt · Lauf fortgesetzt"
     },
     "clarify": {

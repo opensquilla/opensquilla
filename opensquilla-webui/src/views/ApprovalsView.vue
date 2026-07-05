@@ -104,12 +104,12 @@
               <span>{{ t('console.approvals.approveOnce') }}</span>
             </button>
             <button
-              v-if="canAlways(item)"
+              v-if="isSandboxApproval(item)"
               class="btn btn--ghost"
               :disabled="resolvingId === item.id"
               @click="resolveApproval(item, 'always')"
             >
-              {{ secondaryApprovalLabel(item) }}
+              {{ t('console.approvals.allowSameType') }}
             </button>
             <button
               class="btn btn--danger"
@@ -297,16 +297,8 @@ function approvalDetail(item: ApprovalItem): string {
   }
 }
 
-function canAlways(item: ApprovalItem): boolean {
-  return isSandboxApproval(item) || (item.namespace === 'exec' && !!approvalCommand(item))
-}
-
 function isSandboxApproval(item: ApprovalItem): boolean {
   return String(item.params?.approvalKind || item.args?.approvalKind || '').trim().startsWith('sandbox_')
-}
-
-function secondaryApprovalLabel(item: ApprovalItem): string {
-  return isSandboxApproval(item) ? t('console.approvals.allowSameType') : t('console.approvals.alwaysAllow')
 }
 
 async function resolveApproval(item: ApprovalItem, decision: string) {
@@ -315,15 +307,10 @@ async function resolveApproval(item: ApprovalItem, decision: string) {
   resolvingId.value = id
   const namespace = item.namespace || 'exec'
   const approved = decision === 'approve' || decision === 'always'
-  const sandboxApproval = isSandboxApproval(item)
-  const allowAlways = decision === 'always' && !sandboxApproval
-  const rememberIntent = decision === 'always' && !sandboxApproval
   const body: Record<string, unknown> = {
     id,
     namespace,
     approved,
-    allowAlways,
-    rememberIntent,
     choice: decision === 'always' ? 'allow_same_type' : decision === 'deny' ? 'deny' : 'allow_once',
   }
 

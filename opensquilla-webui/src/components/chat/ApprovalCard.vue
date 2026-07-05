@@ -80,13 +80,13 @@
           {{ t('chat.approval.allowOnce') }}
         </button>
         <button
-          v-if="canAllowAlways"
+          v-if="isSandboxApproval"
           class="btn btn--ghost"
           type="button"
           :disabled="busy"
           @click="$emit('allow-always')"
         >
-          {{ allowAlwaysLabel }}
+          {{ t('chat.approval.allowSameType') }}
         </button>
         <button
           class="btn approval-card__deny"
@@ -171,12 +171,6 @@ const countdownText = computed(() =>
 const isSandboxApproval = computed(() =>
   String(props.approval.approvalKind || props.approval.args?.approvalKind || '').startsWith('sandbox_'))
 
-const canAllowAlways = computed(() =>
-  isSandboxApproval.value || (props.approval.namespace === 'exec' && !!props.approval.command))
-
-const allowAlwaysLabel = computed(() =>
-  isSandboxApproval.value ? t('chat.approval.allowSameType') : t('chat.approval.allowAlways'))
-
 const formattedArgs = computed(() => {
   if (!props.approval.args) return ''
   try {
@@ -189,7 +183,6 @@ const formattedArgs = computed(() => {
 const outcomeText = computed(() => {
   if (props.resolution === 'expired') return t('chat.approval.outcomeExpired')
   if (props.resolution === 'denied') return t('chat.approval.outcomeDenied')
-  if (props.resolution === 'approved_always') return t('chat.approval.outcomeApprovedAlways')
   return t('chat.approval.outcomeApproved')
 })
 

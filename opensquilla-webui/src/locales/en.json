@@ -875,7 +875,6 @@
       "details": "Details",
       "unknownTool": "Unknown",
       "approveOnce": "Approve once",
-      "alwaysAllow": "Always allow this",
       "allowSameType": "Allow same type",
       "deny": "Deny",
       "loadFailed": "Failed to load approvals: {msg}",
@@ -1619,13 +1618,11 @@
       "denyReasonPlaceholder": "Deny reason (optional) — sent to the agent",
       "denyReasonLabel": "Deny reason, optional, sent to the agent",
       "allowOnce": "Allow once",
-      "allowAlways": "Always allow this",
       "allowSameType": "Allow same type",
       "deny": "Deny",
       "expiresIn": "Expires in {time}",
       "outcomeExpired": "Expired — not run",
       "outcomeDenied": "Denied",
-      "outcomeApprovedAlways": "Approved · always allowed",
       "outcomeApproved": "Approved · run resumed"
     },
     "clarify": {

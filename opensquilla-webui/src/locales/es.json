@@ -875,7 +875,6 @@
       "details": "Detalles",
       "unknownTool": "Desconocida",
       "approveOnce": "Aprobar una vez",
-      "alwaysAllow": "Permitir esto siempre",
       "allowSameType": "Permitir el mismo tipo",
       "deny": "Denegar",
       "loadFailed": "No se pudieron cargar las aprobaciones: {msg}",
@@ -1619,13 +1618,11 @@
       "denyReasonPlaceholder": "Motivo de la denegación (opcional) — se envía al agente",
       "denyReasonLabel": "Motivo de la denegación, opcional, se envía al agente",
       "allowOnce": "Permitir una vez",
-      "allowAlways": "Permitir esto siempre",
       "allowSameType": "Permitir el mismo tipo",
       "deny": "Denegar",
       "expiresIn": "Caduca en {time}",
       "outcomeExpired": "Caducada — no ejecutada",
       "outcomeDenied": "Denegada",
-      "outcomeApprovedAlways": "Aprobada · permitida siempre",
       "outcomeApproved": "Aprobada · ejecución reanudada"
     },
     "clarify": {

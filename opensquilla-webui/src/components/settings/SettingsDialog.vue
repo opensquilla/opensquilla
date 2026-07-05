@@ -160,6 +160,7 @@
               @provider-change="onProviderChange"
               @update-provider-field="updateProviderField"
               @update-llm-timeout="updateLlmTimeout"
+              @probe-connection="probeProviderConnection"
               @copy="copyCommand"
               @go-to-section="selectSection"
             />
@@ -308,6 +309,7 @@ const {
   selectChannelType,
   updateProviderField,
   updateLlmTimeout,
+  probeProviderConnection,
   updateTierField,
   updateChannelField,
   updateCapabilityField,

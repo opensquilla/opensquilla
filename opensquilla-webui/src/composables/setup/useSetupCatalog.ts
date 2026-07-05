@@ -820,6 +820,13 @@ function updateProviderField(name: string, value: unknown) {
   providerForm.updateField(name, value)
 }
 
+// Optional accelerator: live-probe the CURRENT (possibly unsaved) provider
+// form values. Never gates saving. The probe RPC requires a model id, so an
+// empty model field falls back to the catalog's default for the provider.
+function probeProviderConnection() {
+  void providerForm.probeConnection({ defaultModel: providerSpec.value?.defaultModel || '' })
+}
+
 function updateLlmTimeout(value: number) {
   promotedForm.setLlmTimeoutSeconds(value)
 }
@@ -1300,6 +1307,7 @@ async function copyConfigPath() {
     selectChannelType,
     updateProviderField,
     updateLlmTimeout,
+    probeProviderConnection,
     updateTierField,
     updateChannelField,
     updateCapabilityField,

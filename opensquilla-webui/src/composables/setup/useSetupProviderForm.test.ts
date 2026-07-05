@@ -1,5 +1,16 @@
-import { describe, it, expect } from 'vitest'
+import { beforeEach, describe, it, expect, vi } from 'vitest'
 import { useSetupProviderForm, buildProviderPayload, hasEffectiveProvider } from './useSetupProviderForm'
+
+// The connection state machine talks to the gateway through the rpc store —
+// stub it at the module seam (the pattern useSetupCatalog tests use).
+const { callMock } = vi.hoisted(() => ({ callMock: vi.fn() }))
+vi.mock('@/stores/rpc', () => ({
+  useRpcStore: () => ({ call: callMock }),
+}))
+
+beforeEach(() => {
+  callMock.mockReset()
+})
 
 describe('buildProviderPayload', () => {
   it('camel-cases keys and drops empty values', () => {
@@ -86,5 +97,220 @@ describe('useSetupProviderForm — api_key / api_key_env are mutually exclusive'
     const p = f.payload()
     // blank paste must not clear the env reference
     expect(p.apiKeyEnv).toBe('OPENROUTER_API_KEY')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Connection state machine — probe + model discovery
+// ---------------------------------------------------------------------------
+
+const PROBE_OK = { ok: true, providerId: 'openai', model: 'test-model', failureKind: '', message: '', code: '' }
+
+const DISCOVER_ROW = {
+  id: 'test-vendor/test-model',
+  name: 'Test Model',
+  contextWindow: 262144,
+  maxOutputTokens: 16384,
+  capabilities: ['chat', 'tools'],
+  pricing: null,
+  capabilitySource: 'synthesized',
+}
+
+const DISCOVER_OK = { ok: true, failureKind: '', detail: '', source: 'live', models: [DISCOVER_ROW] }
+
+function mockRpc(responses: { probe?: unknown; discover?: unknown } = {}) {
+  callMock.mockImplementation(async (method: string) => {
+    if (method === 'onboarding.provider.probe') return responses.probe ?? PROBE_OK
+    if (method === 'onboarding.models.discover') return responses.discover ?? DISCOVER_OK
+    throw new Error(`unexpected rpc method: ${method}`)
+  })
+}
+
+describe('useSetupProviderForm — connection state machine', () => {
+  it('starts unconfigured and moves to unverified when a provider is selected', () => {
+    const f = useSetupProviderForm()
+    expect(f.connection.value.phase).toBe('unconfigured')
+    f.selectProvider('openai')
+    expect(f.connection.value.phase).toBe('unverified')
+  })
+
+  it('probe ok goes probing → verified and auto-discovers models', async () => {
+    mockRpc()
+    const f = useSetupProviderForm()
+    f.selectProvider('openai')
+    f.updateField('api_key', 'sk-unsaved')
+    f.updateField('model', 'test-model')
+
+    const pending = f.probeConnection()
+    expect(f.connection.value.phase).toBe('probing')
+    await pending
+
+    expect(f.connection.value.phase).toBe('verified')
+    expect(f.connection.value.modelSource).toBe('live')
+    expect(f.connection.value.models).toHaveLength(1)
+    expect(f.connection.value.models[0].id).toBe('test-vendor/test-model')
+    expect(f.connection.value.discoverError).toBe('')
+    expect(callMock).toHaveBeenCalledTimes(2)
+  })
+
+  it('sends the CURRENT unsaved form values and falls back to the default model', async () => {
+    mockRpc()
+    const f = useSetupProviderForm()
+    f.selectProvider('openai')
+    f.updateField('api_key', 'sk-unsaved')
+
+    await f.probeConnection({ defaultModel: 'test-default-model' })
+
+    expect(callMock).toHaveBeenNthCalledWith(1, 'onboarding.provider.probe', {
+      providerId: 'openai',
+      apiKey: 'sk-unsaved',
+      model: 'test-default-model',
+    })
+    // discover ignores the model but reuses the same candidate credentials
+    expect(callMock).toHaveBeenNthCalledWith(2, 'onboarding.models.discover', {
+      providerId: 'openai',
+      apiKey: 'sk-unsaved',
+    })
+  })
+
+  it('classifies auth_invalid as key_invalid', async () => {
+    mockRpc({ probe: { ok: false, failureKind: 'auth_invalid', message: 'No API key available.' } })
+    const f = useSetupProviderForm()
+    f.selectProvider('openai')
+    await f.probeConnection()
+
+    expect(f.connection.value.phase).toBe('key_invalid')
+    expect(f.connection.value.failureKind).toBe('auth_invalid')
+    expect(f.connection.value.detail).toBe('No API key available.')
+    expect(callMock).toHaveBeenCalledTimes(1) // no discover after a failed probe
+  })
+
+  it('classifies non-auth failures as unreachable', async () => {
+    mockRpc({ probe: { ok: false, failureKind: 'transport_transient', message: 'connect timeout' } })
+    const f = useSetupProviderForm()
+    f.selectProvider('openai')
+    await f.probeConnection()
+
+    expect(f.connection.value.phase).toBe('unreachable')
+    expect(f.connection.value.failureKind).toBe('transport_transient')
+  })
+
+  it('maps a thrown RPC error to unreachable with the message as detail', async () => {
+    callMock.mockRejectedValue(new Error('gateway offline'))
+    const f = useSetupProviderForm()
+    f.selectProvider('openai')
+    await f.probeConnection()
+
+    expect(f.connection.value.phase).toBe('unreachable')
+    expect(f.connection.value.detail).toBe('gateway offline')
+  })
+
+  it('a credential edit resets a verified connection to unverified and clears models', async () => {
+    mockRpc()
+    const f = useSetupProviderForm()
+    f.selectProvider('openai')
+    f.updateField('api_key', 'sk-first')
+    await f.probeConnection({ defaultModel: 'm' })
+    expect(f.connection.value.phase).toBe('verified')
+
+    f.updateField('api_key', 'sk-second')
+    expect(f.connection.value.phase).toBe('unverified')
+    expect(f.connection.value.models).toEqual([])
+  })
+
+  it('a base_url edit resets, a model edit does not', async () => {
+    mockRpc()
+    const f = useSetupProviderForm()
+    f.selectProvider('openai')
+    await f.probeConnection({ defaultModel: 'm' })
+    expect(f.connection.value.phase).toBe('verified')
+
+    f.updateField('model', 'another-model')
+    expect(f.connection.value.phase).toBe('verified')
+
+    f.updateField('base_url', 'http://127.0.0.1:11434')
+    expect(f.connection.value.phase).toBe('unverified')
+  })
+
+  it('switching provider resets the connection', async () => {
+    mockRpc()
+    const f = useSetupProviderForm()
+    f.selectProvider('openai')
+    await f.probeConnection({ defaultModel: 'm' })
+    expect(f.connection.value.phase).toBe('verified')
+
+    f.selectProvider('openrouter')
+    expect(f.connection.value.phase).toBe('unverified')
+    expect(f.connection.value.models).toEqual([])
+  })
+
+  it('re-probing unchanged credentials is served from the cache without new RPCs', async () => {
+    mockRpc()
+    const f = useSetupProviderForm()
+    f.selectProvider('openai')
+    f.updateField('api_key', 'sk-first')
+    await f.probeConnection({ defaultModel: 'm' })
+    expect(callMock).toHaveBeenCalledTimes(2)
+
+    f.updateField('api_key', 'sk-other') // invalidate
+    f.updateField('api_key', 'sk-first') // back to the cached fingerprint
+    expect(f.connection.value.phase).toBe('unverified')
+
+    await f.probeConnection({ defaultModel: 'm' })
+    expect(f.connection.value.phase).toBe('verified')
+    expect(f.connection.value.models).toHaveLength(1)
+    expect(callMock).toHaveBeenCalledTimes(2) // cache hit — no extra calls
+  })
+
+  it('a transient unreachable outcome is NOT cached, so retry re-probes', async () => {
+    mockRpc({ probe: { ok: false, failureKind: 'transport_transient', message: 'timeout' } })
+    const f = useSetupProviderForm()
+    f.selectProvider('openai')
+    await f.probeConnection()
+    expect(f.connection.value.phase).toBe('unreachable')
+    expect(callMock).toHaveBeenCalledTimes(1)
+
+    mockRpc() // endpoint recovered
+    await f.probeConnection({ defaultModel: 'm' })
+    expect(f.connection.value.phase).toBe('verified')
+  })
+
+  it('discards a stale probe result that raced a credential edit', async () => {
+    let resolveProbe!: (value: unknown) => void
+    callMock.mockImplementation(() => new Promise(resolve => { resolveProbe = resolve }))
+    const f = useSetupProviderForm()
+    f.selectProvider('openai')
+
+    const pending = f.probeConnection()
+    f.updateField('api_key', 'sk-edited-mid-flight')
+    resolveProbe(PROBE_OK)
+    await pending
+
+    expect(f.connection.value.phase).toBe('unverified')
+    expect(callMock).toHaveBeenCalledTimes(1) // stale ok never triggers discover
+  })
+
+  it('a failed discover keeps the verified phase and sets discoverError', async () => {
+    mockRpc({ discover: { ok: false, failureKind: 'bad_request', detail: 'listing unsupported', source: 'none', models: [] } })
+    const f = useSetupProviderForm()
+    f.selectProvider('openai')
+    await f.probeConnection({ defaultModel: 'm' })
+
+    expect(f.connection.value.phase).toBe('verified')
+    expect(f.connection.value.models).toEqual([])
+    expect(f.connection.value.modelSource).toBe('none')
+    expect(f.connection.value.discoverError).toBe('listing unsupported')
+  })
+
+  it('an empty listing (ok, source none) is not an error', async () => {
+    mockRpc({ discover: { ok: true, failureKind: '', detail: '', source: 'none', models: [] } })
+    const f = useSetupProviderForm()
+    f.selectProvider('openai')
+    await f.probeConnection({ defaultModel: 'm' })
+
+    expect(f.connection.value.phase).toBe('verified')
+    expect(f.connection.value.models).toEqual([])
+    expect(f.connection.value.modelSource).toBe('none')
+    expect(f.connection.value.discoverError).toBe('')
   })
 })

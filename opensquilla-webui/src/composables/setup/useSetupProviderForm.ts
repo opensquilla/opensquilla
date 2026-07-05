@@ -1,4 +1,5 @@
 import { computed, ref, type ComputedRef, type Ref } from 'vue'
+import { useRpcStore } from '@/stores/rpc'
 
 interface ProviderField {
   name: string
@@ -47,6 +48,106 @@ interface ProviderPanelContext {
   llmTimeoutSeconds: Ref<number>
 }
 
+// ---------------------------------------------------------------------------
+// Connection state machine (probe + model discovery)
+// ---------------------------------------------------------------------------
+
+/**
+ * Lifecycle of the optional "Test connection" accelerator. Saving is NEVER
+ * gated on this state — a user can save an unverified (or even failing)
+ * config at any time; the machine only powers inline feedback and the
+ * discovered-model combobox.
+ *
+ *   unconfigured -- selectProvider(id) --> unverified
+ *   unverified   -- probeConnection()  --> probing
+ *   probing      -- probe ok           --> verified (auto-fires discoverModels)
+ *   probing      -- auth-ish failure   --> key_invalid
+ *   probing      -- other failure/RPC error --> unreachable
+ *   any          -- credential/provider/baseUrl/proxy edit --> unverified
+ */
+export type ConnectionPhase =
+  | 'unconfigured'
+  | 'unverified'
+  | 'probing'
+  | 'verified'
+  | 'key_invalid'
+  | 'unreachable'
+
+export interface DiscoveredModelPricing {
+  inputPer1k: number
+  outputPer1k: number
+}
+
+/** One row of the onboarding.models.discover wire envelope (camelCase, frozen). */
+export interface DiscoveredModel {
+  id: string
+  name: string
+  contextWindow: number | null
+  maxOutputTokens: number | null
+  capabilities: string[]
+  pricing: DiscoveredModelPricing | null
+  capabilitySource: string
+}
+
+export interface ConnectionState {
+  phase: ConnectionPhase
+  failureKind: string
+  detail: string
+  models: DiscoveredModel[]
+  modelSource: 'live' | 'none'
+  discoverError: string
+}
+
+// Probe failure kinds that mean "the credential itself was rejected" (vs. the
+// endpoint being unreachable/unhappy). Kept to the unambiguous case: other
+// kinds (rate limits, credits, overload) get their own human sentence under
+// the generic "couldn't connect" headline.
+const AUTH_FAILURE_KINDS = new Set(['auth_invalid'])
+
+// Editing any of these form fields changes what a probe would test, so a
+// previously earned verdict no longer applies. (Model is deliberately absent:
+// the connection verdict is about credentials + endpoint, not the model id.)
+const CONNECTION_FIELDS = new Set(['api_key', 'api_key_env', 'base_url', 'proxy'])
+
+function freshConnection(providerId: string): ConnectionState {
+  return {
+    phase: providerId ? 'unverified' : 'unconfigured',
+    failureKind: '',
+    detail: '',
+    models: [],
+    modelSource: 'none',
+    discoverError: '',
+  }
+}
+
+function snapshotConnection(state: ConnectionState): ConnectionState {
+  return { ...state, models: [...state.models] }
+}
+
+function normalizeDiscoveredModels(rows: unknown): DiscoveredModel[] {
+  if (!Array.isArray(rows)) return []
+  return rows
+    .filter((row): row is Record<string, unknown> => Boolean(row) && typeof row === 'object')
+    .map(row => {
+      const pricing = row.pricing
+      return {
+        id: String(row.id ?? ''),
+        name: String(row.name ?? row.id ?? ''),
+        contextWindow: typeof row.contextWindow === 'number' ? row.contextWindow : null,
+        maxOutputTokens: typeof row.maxOutputTokens === 'number' ? row.maxOutputTokens : null,
+        capabilities: Array.isArray(row.capabilities) ? row.capabilities.map(String) : [],
+        pricing: pricing && typeof pricing === 'object'
+          ? {
+              inputPer1k: Number((pricing as Record<string, unknown>).inputPer1k ?? 0),
+              outputPer1k: Number((pricing as Record<string, unknown>).outputPer1k ?? 0),
+            }
+          : null,
+        capabilitySource: String(row.capabilitySource ?? ''),
+      }
+    })
+    .filter(model => model.id)
+}
+
 function camel(name: string): string {
   return String(name || '').replace(/_([a-z])/g, (_, c) => c.toUpperCase())
 }
@@ -77,6 +178,141 @@ export function useSetupProviderForm() {
   const baseline = ref(serialized.value)
   const isDirty = computed(() => serialized.value !== baseline.value)
 
+  // -------------------------------------------------------------------------
+  // Connection state machine
+  // -------------------------------------------------------------------------
+
+  const connection = ref<ConnectionState>(freshConnection(''))
+  // Probe/discover outcomes cached per (provider + credential fingerprint) for
+  // the composable (settings dialog) lifetime. Only deterministic outcomes are
+  // stored — 'verified' and 'key_invalid' — so a transient 'unreachable' never
+  // pins a stale failure onto a retry.
+  const connectionCache = new Map<string, ConnectionState>()
+  // Monotonic token: bumped by every reset and probe start so an in-flight
+  // RPC result that raced a credential edit is discarded instead of applied.
+  let connectionEpoch = 0
+
+  function credentialFingerprint(): string {
+    const values = providerFieldValues.value
+    return JSON.stringify([
+      providerSelected.value,
+      String(values.api_key ?? ''),
+      String(values.api_key_env ?? ''),
+      String(values.base_url ?? ''),
+      String(values.proxy ?? ''),
+    ])
+  }
+
+  function resetConnection() {
+    connectionEpoch += 1
+    connection.value = freshConnection(providerSelected.value)
+  }
+
+  // Params for probe/discover: the CURRENT form values, including an unsaved
+  // pasted key — this is what makes "test before save" possible. Empty values
+  // are dropped (the gateway falls back to the stored config / spec env key).
+  function connectionParams(defaultModel = ''): Record<string, unknown> {
+    const p = payload()
+    const params: Record<string, unknown> = { providerId: providerSelected.value }
+    for (const key of ['apiKey', 'apiKeyEnv', 'baseUrl', 'proxy'] as const) {
+      if (p[key] !== undefined) params[key] = p[key]
+    }
+    const model = String(p.model ?? '').trim() || String(defaultModel || '').trim()
+    if (model) params.model = model
+    return params
+  }
+
+  async function probeConnection(options: { defaultModel?: string } = {}): Promise<void> {
+    if (!providerSelected.value || connection.value.phase === 'probing') return
+    const fingerprint = credentialFingerprint()
+    const cached = connectionCache.get(fingerprint)
+    if (cached) {
+      connection.value = snapshotConnection(cached)
+      return
+    }
+    const epoch = ++connectionEpoch
+    connection.value = { ...freshConnection(providerSelected.value), phase: 'probing' }
+    const rpc = useRpcStore()
+    let outcome: ConnectionState
+    try {
+      const res = await rpc.call<{ ok?: boolean; failureKind?: string; message?: string }>(
+        'onboarding.provider.probe',
+        connectionParams(options.defaultModel),
+      )
+      if (epoch !== connectionEpoch) return
+      if (res?.ok) {
+        outcome = { ...freshConnection(providerSelected.value), phase: 'verified' }
+      } else {
+        const kind = String(res?.failureKind || '')
+        outcome = {
+          ...freshConnection(providerSelected.value),
+          phase: AUTH_FAILURE_KINDS.has(kind) ? 'key_invalid' : 'unreachable',
+          failureKind: kind,
+          detail: String(res?.message || ''),
+        }
+      }
+    } catch (err) {
+      if (epoch !== connectionEpoch) return
+      outcome = {
+        ...freshConnection(providerSelected.value),
+        phase: 'unreachable',
+        detail: err instanceof Error ? err.message : String(err),
+      }
+    }
+    connection.value = outcome
+    if (outcome.phase === 'key_invalid') {
+      connectionCache.set(fingerprint, snapshotConnection(outcome))
+    }
+    if (outcome.phase === 'verified') {
+      // Verified endpoint: immediately offer discovered models. The combined
+      // verified+models snapshot is cached by discoverModels when it settles.
+      await discoverModels()
+    }
+  }
+
+  async function discoverModels(): Promise<void> {
+    if (!providerSelected.value) return
+    const fingerprint = credentialFingerprint()
+    const epoch = connectionEpoch
+    const rpc = useRpcStore()
+    try {
+      const res = await rpc.call<{
+        ok?: boolean
+        failureKind?: string
+        detail?: string
+        source?: string
+        models?: unknown
+      }>('onboarding.models.discover', connectionParams())
+      if (epoch !== connectionEpoch) return
+      if (res?.ok) {
+        connection.value = {
+          ...connection.value,
+          models: normalizeDiscoveredModels(res.models),
+          modelSource: res.source === 'live' ? 'live' : 'none',
+          discoverError: '',
+        }
+      } else {
+        connection.value = {
+          ...connection.value,
+          models: [],
+          modelSource: 'none',
+          discoverError: String(res?.detail || res?.failureKind || 'discover failed'),
+        }
+      }
+    } catch (err) {
+      if (epoch !== connectionEpoch) return
+      connection.value = {
+        ...connection.value,
+        models: [],
+        modelSource: 'none',
+        discoverError: err instanceof Error ? err.message : String(err),
+      }
+    }
+    if (connection.value.phase === 'verified' || connection.value.phase === 'key_invalid') {
+      connectionCache.set(fingerprint, snapshotConnection(connection.value))
+    }
+  }
+
   function initFromConfig(config: ProviderConfig, status: SetupStatus, providers: ProviderSpec[]) {
     if (hasEffectiveProvider(config, status) && config.provider) {
       providerSelected.value = config.provider
@@ -90,6 +326,7 @@ export function useSetupProviderForm() {
       })
     }
     baseline.value = serialized.value
+    resetConnection()
   }
 
   function resetForProvider(spec: { fields?: ProviderField[] } | null | undefined) {
@@ -97,6 +334,7 @@ export function useSetupProviderForm() {
     spec?.fields?.forEach(field => {
       providerFieldValues.value[field.name] = field.default ?? ''
     })
+    resetConnection()
   }
 
   function fieldValue(field: ProviderField, current: ProviderConfig): string {
@@ -125,10 +363,14 @@ export function useSetupProviderForm() {
       if (name === 'api_key') providerFieldValues.value.api_key_env = ''
       else if (name === 'api_key_env') providerFieldValues.value.api_key = ''
     }
+    // A credential/endpoint edit invalidates any earned connection verdict
+    // (model edits deliberately don't — the verdict is about reachability).
+    if (CONNECTION_FIELDS.has(name)) resetConnection()
   }
 
   function selectProvider(value: string) {
     providerSelected.value = value
+    resetConnection()
   }
 
   function payload(): Record<string, unknown> {
@@ -160,6 +402,7 @@ export function useSetupProviderForm() {
       providerEnvKey: context.providerEnvKey.value,
       providerEnvCommand: context.providerEnvCommand.value,
       llmTimeoutSeconds: context.llmTimeoutSeconds.value,
+      connection: connection.value,
       providerFieldValue: (field: ProviderField) => fieldValue(field, context.currentConfig.value),
     }))
   }
@@ -167,12 +410,15 @@ export function useSetupProviderForm() {
   return {
     selectedProvider,
     isDirty,
+    connection,
     initFromConfig,
     resetForProvider,
     fieldValue,
     selectProvider,
     updateField,
     payload,
+    probeConnection,
+    discoverModels,
     createPanel,
   }
 }

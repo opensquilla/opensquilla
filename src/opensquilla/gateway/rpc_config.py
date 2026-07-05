@@ -227,12 +227,106 @@ def _restart_required(
     old_sandbox_posture_fingerprint: dict[str, Any],
     new_config: Any,
 ) -> bool:
-    return (
-        old_memory_fingerprint != _memory_restart_fingerprint(new_config)
-        or old_channels_fingerprint != _channels_restart_fingerprint(new_config)
-        or old_sandbox_posture_fingerprint
-        != _sandbox_posture_restart_fingerprint(new_config)
+    return bool(
+        _restart_sections(
+            old_memory_fingerprint=old_memory_fingerprint,
+            old_channels_fingerprint=old_channels_fingerprint,
+            old_sandbox_posture_fingerprint=old_sandbox_posture_fingerprint,
+            new_config=new_config,
+        )
     )
+
+
+def _restart_sections(
+    *,
+    old_memory_fingerprint: dict[str, Any],
+    old_channels_fingerprint: Any,
+    old_sandbox_posture_fingerprint: dict[str, Any],
+    new_config: Any,
+) -> list[str]:
+    """Top-level sections whose restart fingerprint changed old→new.
+
+    Mirrors :func:`_restart_required` but names the gated sections so
+    responses can report *why* a restart is required and so the
+    ``liveApplied`` diff can exclude exactly those sections. The sandbox
+    posture fingerprint spans two top-level sections (``permissions`` and
+    ``sandbox``); they are compared per key so the response names only the
+    one that actually changed.
+    """
+    sections: list[str] = []
+    if old_memory_fingerprint != _memory_restart_fingerprint(new_config):
+        sections.append("memory")
+    if old_channels_fingerprint != _channels_restart_fingerprint(new_config):
+        sections.append("channels")
+    new_sandbox_posture = _sandbox_posture_restart_fingerprint(new_config)
+    for key in ("permissions", "sandbox"):
+        if old_sandbox_posture_fingerprint.get(key) != new_sandbox_posture.get(key):
+            sections.append(key)
+    return sections
+
+
+def _live_applied_sections(
+    old_dump: dict[str, Any],
+    new_dump: dict[str, Any],
+    restart_gated: list[str],
+) -> list[str]:
+    """Top-level config sections that differ old→new and are not restart-gated.
+
+    These are the sections a write/reload actually hot-applied in-process via
+    :func:`_update_config_in_place`. Sections listed in ``restart_gated``
+    changed too but only take live effect after a gateway restart, so they are
+    excluded here. ``config_path`` is machine-local load metadata, not a
+    config section, and is never reported.
+
+    Honesty caveat: restart fingerprints cover only memory/channels/sandbox
+    posture. Boot-only fields outside those fingerprints (auth, host, port,
+    file logging, search provider wiring) are reported here when they differ
+    even though parts of them are read once at boot — see the
+    ``config.reload`` handler docstring for the known blind spots.
+    """
+    excluded = set(restart_gated) | {"config_path"}
+    keys = set(old_dump) | set(new_dump)
+    return sorted(
+        key
+        for key in keys
+        if key not in excluded and old_dump.get(key) != new_dump.get(key)
+    )
+
+
+def _config_dump(config: Any) -> dict[str, Any]:
+    if config is None or not hasattr(config, "model_dump"):
+        return {}
+    data = config.model_dump(mode="python")
+    return data if isinstance(data, dict) else {}
+
+
+def _change_meta(
+    *,
+    old_memory_fingerprint: dict[str, Any],
+    old_channels_fingerprint: Any,
+    old_sandbox_posture_fingerprint: dict[str, Any],
+    old_dump: dict[str, Any],
+    new_config: Any,
+) -> dict[str, Any]:
+    """Build the shared ``restartRequired`` / ``restartSections`` /
+    ``liveApplied`` response fields from old fingerprints + old dump vs the
+    candidate config. ``restartRequired`` is ``bool(restartSections)`` and
+    agrees with :func:`_restart_required` (same fingerprints, same
+    comparisons — only named per section)."""
+    restart_sections = _restart_sections(
+        old_memory_fingerprint=old_memory_fingerprint,
+        old_channels_fingerprint=old_channels_fingerprint,
+        old_sandbox_posture_fingerprint=old_sandbox_posture_fingerprint,
+        new_config=new_config,
+    )
+    live_applied = _live_applied_sections(
+        old_dump, _config_dump(new_config), restart_sections
+    )
+    return {
+        "restartRequired": bool(restart_sections),
+        "restartSections": restart_sections,
+        "liveApplied": live_applied,
+    }
 
 
 def _validate_memory_embedding_semantics(config: Any) -> None:
@@ -360,6 +454,7 @@ async def _handle_config_set(params: dict | None, ctx: RpcContext) -> dict[str, 
     old_channels_fingerprint = _channels_restart_fingerprint(ctx.config)
     old_sandbox_posture_fingerprint = _sandbox_posture_restart_fingerprint(ctx.config)
     cfg_dict = ctx.config.model_dump() if hasattr(ctx.config, "model_dump") else {}
+    old_dump = copy.deepcopy(cfg_dict) if isinstance(cfg_dict, dict) else {}
     # Validate path exists
     source_value = _resolve_path(cfg_dict, path)
     value = params["value"]
@@ -384,14 +479,13 @@ async def _handle_config_set(params: dict | None, ctx: RpcContext) -> dict[str, 
     _update_config_in_place(ctx.config, new_config)
     _sync_image_generation(new_config)
     _persist_config(ctx.config)
-    return {
-        "restartRequired": _restart_required(
-            old_memory_fingerprint=old_memory_fingerprint,
-            old_channels_fingerprint=old_channels_fingerprint,
-            old_sandbox_posture_fingerprint=old_sandbox_posture_fingerprint,
-            new_config=new_config,
-        )
-    }
+    return _change_meta(
+        old_memory_fingerprint=old_memory_fingerprint,
+        old_channels_fingerprint=old_channels_fingerprint,
+        old_sandbox_posture_fingerprint=old_sandbox_posture_fingerprint,
+        old_dump=old_dump,
+        new_config=new_config,
+    )
 
 
 @_d.method("config.patch", scope="operator.admin")
@@ -458,14 +552,16 @@ async def _handle_config_patch(params: dict | None, ctx: RpcContext) -> dict[str
     _sync_image_generation(new_config)
 
     _persist_config(ctx.config)
+    change_meta = _change_meta(
+        old_memory_fingerprint=old_memory_fingerprint,
+        old_channels_fingerprint=old_channels_fingerprint,
+        old_sandbox_posture_fingerprint=old_sandbox_posture_fingerprint,
+        old_dump=source_cfg_dict,
+        new_config=new_config,
+    )
     return {
         "patched": list(dot_patches.keys()) + (["(merge)"] if patch_data else []),
-        "restartRequired": _restart_required(
-            old_memory_fingerprint=old_memory_fingerprint,
-            old_channels_fingerprint=old_channels_fingerprint,
-            old_sandbox_posture_fingerprint=old_sandbox_posture_fingerprint,
-            new_config=new_config,
-        ),
+        **change_meta,
     }
 
 
@@ -529,14 +625,125 @@ async def _handle_config_apply(params: dict | None, ctx: RpcContext) -> dict[str
         _update_config_in_place(ctx.config, new_config)
     _sync_image_generation(new_config)
     _persist_config(ctx.config if ctx.config is not None else new_config)
-    return {
-        "restartRequired": _restart_required(
-            old_memory_fingerprint=old_memory_fingerprint,
-            old_channels_fingerprint=old_channels_fingerprint,
-            old_sandbox_posture_fingerprint=old_sandbox_posture_fingerprint,
-            new_config=new_config,
-        )
-    }
+    return _change_meta(
+        old_memory_fingerprint=old_memory_fingerprint,
+        old_channels_fingerprint=old_channels_fingerprint,
+        old_sandbox_posture_fingerprint=old_sandbox_posture_fingerprint,
+        old_dump=old_payload if isinstance(old_payload, dict) else {},
+        new_config=new_config,
+    )
+
+
+def _get_config_attr(config: Any, path: str) -> Any:
+    """Walk a dot-separated attribute path on a config model."""
+    obj: Any = config
+    for part in path.split("."):
+        obj = getattr(obj, part, None)
+        if obj is None:
+            return None
+    return obj
+
+
+def _set_config_attr(config: Any, path: str, value: Any) -> None:
+    """Set a dot-separated attribute path on a config model."""
+    parts = path.split(".")
+    obj: Any = config
+    for part in parts[:-1]:
+        obj = getattr(obj, part, None)
+        if obj is None:
+            return
+    setattr(obj, parts[-1], value)
+
+
+@_d.method("config.reload", scope="operator.admin")
+async def _handle_config_reload(params: dict | None, ctx: RpcContext) -> dict[str, Any]:
+    """Re-read the on-disk config file and hot-apply it (validate, then apply).
+
+    Hand-edited TOML is otherwise only read at boot; this handler gives
+    ``opensquilla gateway reload`` the same hot-apply path the RPC writers
+    have. Semantics are validate-then-apply-or-rollback: the candidate is
+    built and validated from disk first, and on any failure the live
+    ``ctx.config`` object is left untouched (same object identity, same
+    values) and an ``{"ok": false, "error": ...}`` payload is returned.
+
+    Sequence (order is load-bearing for secret handling):
+
+    1. Build the candidate with ``onboarding.config_store.load_config`` —
+       it migrates, validates, stamps ``config_path``, and re-marks
+       ``llm.api_key`` as a runtime secret only when the TOML omits it.
+       Runtime-secret markers are deliberately NOT inherited from the old
+       config: a stale marker would make the next persist silently drop an
+       operator's newly hand-written on-disk ``llm.api_key``
+       (``to_toml_dict`` deletes marked paths).
+    2. Restore boot-generated, non-reconstructible secrets by value AND
+       marker: any path in the old config's runtime-secret set that is empty
+       in the candidate and read-only for writers (today exactly
+       ``auth.token``) is copied over and re-marked so a later persist can
+       never write it to disk.
+    3. ``_sync_provider_selector`` runs on the CANDIDATE before the in-place
+       swap: it re-resolves provider env keys onto the candidate and re-marks
+       ``llm.api_key`` when the key came from the environment. Running it
+       after the swap would leave an empty api_key with an empty marker set,
+       and a later persist could leak an env key to disk.
+    4. ``_update_config_in_place`` swaps values + markers into ``ctx.config``,
+       then ``_sync_image_generation`` refreshes media tooling.
+
+    Reload is read-only against disk: it never persists the config file.
+
+    Honesty notes (mirrored in ``opensquilla.toml.example``): the restart
+    fingerprints cover only memory (retrieval mode + embedding), channels,
+    and sandbox posture (permissions + sandbox). Boot-only sections outside
+    those fingerprints — auth, host/port binding, file logging, and the
+    search provider wiring — are blind spots: they hot-apply into
+    ``ctx.config`` (and so may appear in ``liveApplied``) but components
+    constructed at boot keep their old values until a real restart. Neither
+    this handler nor ``config.set``/``config.patch`` live-syncs the search
+    provider.
+    """
+    if ctx.config is None:
+        raise ValueError("No config available")
+
+    from opensquilla.onboarding.config_store import load_config, resolve_config_path
+
+    target, _source = resolve_config_path(getattr(ctx.config, "config_path", None) or None)
+    try:
+        candidate = load_config(target)
+        _validate_memory_embedding_semantics(candidate)
+    except Exception as exc:  # noqa: BLE001 — rollback contract: config untouched
+        return {"ok": False, "path": str(target), "error": str(exc)}
+
+    old_memory_fingerprint = _memory_restart_fingerprint(ctx.config)
+    old_channels_fingerprint = _channels_restart_fingerprint(ctx.config)
+    old_sandbox_posture_fingerprint = _sandbox_posture_restart_fingerprint(ctx.config)
+    old_dump = _config_dump(ctx.config)
+
+    # Step 2: carry forward boot-generated secrets the disk cannot restore.
+    old_secret_paths = set(getattr(ctx.config, "_runtime_secret_paths", set()))
+    for path in sorted(old_secret_paths & _READONLY_PATHS):
+        if _get_config_attr(candidate, path):
+            continue
+        old_value = _get_config_attr(ctx.config, path)
+        if not old_value:
+            continue
+        _set_config_attr(candidate, path, old_value)
+        candidate.mark_runtime_secret(path)
+
+    # Step 3: selector sync on the candidate BEFORE the in-place swap.
+    _sync_provider_selector(ctx, candidate)
+
+    change_meta = _change_meta(
+        old_memory_fingerprint=old_memory_fingerprint,
+        old_channels_fingerprint=old_channels_fingerprint,
+        old_sandbox_posture_fingerprint=old_sandbox_posture_fingerprint,
+        old_dump=old_dump,
+        new_config=candidate,
+    )
+
+    # Step 4: swap values + runtime-secret markers into the live config.
+    _update_config_in_place(ctx.config, candidate)
+    _sync_image_generation(candidate)
+
+    return {"ok": True, "path": str(target), **change_meta}
 
 
 @_d.method("config.schema", scope="operator.admin")

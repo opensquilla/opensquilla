@@ -4,6 +4,14 @@
 #
 # Precedence: env vars > opensquilla.toml > defaults
 # Also searched: ~/.opensquilla/config.toml (global user config)
+#
+# Applying changes: edits made through the RPC/Web UI (config.set/patch/apply)
+# hot-apply immediately. Hand-edits to this file are only read at boot — run
+# `opensquilla gateway reload` (or restart) to pick them up. Channel, memory
+# embedding/retrieval-mode, and sandbox/permissions changes always need a full
+# `opensquilla gateway restart`; auth, host/port, file logging, and the search
+# provider are also read only at boot (reload updates the stored values but
+# the running components keep the boot-time ones).
 
 # Workspace/state defaults
 # Defaults:

@@ -404,3 +404,60 @@ def restart_gateway(
         ),
     )
     _emit_lifecycle_result(manager.restart(), json_output=json_output)
+
+
+def reload_gateway(
+    config_path: str | None = typer.Option(None, "--config", help="Override config path"),
+    gateway_url: str | None = typer.Option(
+        None, "--gateway", help="Gateway WebSocket URL to call"
+    ),
+    json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
+) -> None:
+    """Re-read the on-disk config into the running gateway (hot-apply).
+
+    Calls the admin ``config.reload`` RPC. Hand-edited TOML is otherwise
+    only read at boot; RPC/Web-UI edits already hot-apply. Channel, memory
+    embedding, and sandbox posture changes still need a full
+    ``opensquilla gateway restart`` — the summary printed here says so.
+    """
+    from opensquilla.cli.gateway_rpc import run_gateway_sync
+    from opensquilla.cli.output import print_json
+
+    async def _run(client):
+        return await client.call("config.reload", {})
+
+    payload = run_gateway_sync(
+        _run,
+        gateway_url=gateway_url,
+        config_path=config_path,
+        json_output=json_output,
+    )
+    if not isinstance(payload, dict):
+        payload = {}
+
+    if json_output:
+        print_json(payload)
+        if payload.get("ok") is not True:
+            raise typer.Exit(code=1)
+        return
+
+    if payload.get("ok") is not True:
+        typer.echo(f"Reload failed: {payload.get('error', 'unknown error')}", err=True)
+        if payload.get("path"):
+            typer.echo(f"Config file: {payload['path']}", err=True)
+        typer.echo("The running config was left unchanged.", err=True)
+        raise typer.Exit(code=1)
+
+    if payload.get("path"):
+        typer.echo(f"Reloaded config from {payload['path']}")
+    live_applied = payload.get("liveApplied") or []
+    typer.echo(
+        "Applied live: " + (", ".join(live_applied) if live_applied else "(no changes)")
+    )
+    if payload.get("restartRequired"):
+        sections = payload.get("restartSections") or []
+        suffix = f" ({', '.join(sections)})" if sections else ""
+        typer.echo(
+            f"Restart required{suffix}: run `opensquilla gateway restart` "
+            "to finish applying these sections."
+        )

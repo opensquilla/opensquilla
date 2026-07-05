@@ -212,6 +212,10 @@ METHOD_SCOPES: dict[str, str] = {
     "exec.proposals.settings.get": PROPOSALS_SCOPE,
     "exec.proposals.auto_enabled.list": PROPOSALS_SCOPE,
     # ----- admin -----
+    # OpenSquilla-only; re-reads the on-disk TOML and swaps the ENTIRE runtime
+    # config (values + runtime-secret markers), so it stays admin even though
+    # the `config.` prefix default would already classify it as admin.
+    "config.reload": ADMIN_SCOPE,
     "chat.inject": ADMIN_SCOPE,
     "system-event": ADMIN_SCOPE,
     "set-heartbeats": ADMIN_SCOPE,

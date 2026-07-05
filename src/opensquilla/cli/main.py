@@ -801,6 +801,31 @@ def gateway_restart(
     )
 
 
+@gateway_app.command("reload")
+def gateway_reload(
+    config_path: str | None = typer.Option(None, "--config", help="Override config path."),
+    gateway_url: str | None = typer.Option(
+        None,
+        "--gateway",
+        help="Gateway WebSocket URL to call (default: resolved from config).",
+    ),
+    json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
+) -> None:
+    """Re-read the on-disk config into the running gateway without a restart.
+
+    Hand-edited TOML is only read at boot; this hot-applies it via the
+    admin `config.reload` RPC. Channel, memory-embedding, and sandbox
+    posture changes still require `opensquilla gateway restart`.
+    """
+    from opensquilla.cli.gateway_cmd import reload_gateway
+
+    reload_gateway(
+        config_path=config_path,
+        gateway_url=gateway_url,
+        json_output=json_output,
+    )
+
+
 # ── replay sub-app ────────────────────────────────────────────────────────────
 
 app.add_typer(replay_app, name="replay")

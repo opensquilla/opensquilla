@@ -428,7 +428,10 @@ def test_upsert_llm_provider_can_use_env_key_without_secret():
 def test_upsert_llm_provider_recomputes_router_preset_on_provider_switch():
     cfg = GatewayConfig(llm={"provider": "openrouter", "model": "deepseek/x"})
     assert cfg.squilla_router.enabled is True
-    assert cfg.squilla_router.tier_profile == "openrouter"
+    # Fresh OpenRouter configs remain the openrouter-mix/direct-router shape.
+    # Saving a different packaged provider below should still recompute that
+    # provider's compact router profile.
+    assert cfg.squilla_router.tier_profile is None
 
     res = upsert_llm_provider(
         cfg,

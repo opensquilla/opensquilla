@@ -121,20 +121,49 @@ def test_catalog_list_json_surfaces(tmp_path: Path, monkeypatch):
 
 def test_models_list_json_uses_gateway_client(monkeypatch):
     fake = _install_fake_gateway(monkeypatch)
-    fake.model_rows = [
-        {
-            "id": "model-a",
-            "provider": "openrouter",
-            "contextWindow": 123,
-            "capabilities": ["chat"],
+    fake.rpc_payloads = {
+        "models.list": {
+            "models": [
+                {
+                    "id": "model-a",
+                    "provider": "openrouter",
+                    "contextWindow": 123,
+                    "capabilities": ["chat"],
+                }
+            ],
+            "errors": [],
         }
-    ]
+    }
 
     result = runner.invoke(app, ["models", "list", "--provider", "openrouter", "--json"])
 
     assert result.exit_code == 0, result.stdout
     assert json.loads(result.stdout)[0]["id"] == "model-a"
     assert ("models.list", {"provider": "openrouter", "capabilities": None}) in fake.calls
+
+
+def test_models_list_table_warns_about_provider_listing_errors(monkeypatch):
+    fake = _install_fake_gateway(monkeypatch)
+    fake.rpc_payloads = {
+        "models.list": {
+            "models": [],
+            "errors": [
+                {
+                    "provider": "openrouter",
+                    "kind": "auth_invalid",
+                    "detail": "401 invalid api key ***",
+                }
+            ],
+        }
+    }
+
+    result = runner.invoke(app, ["models", "list"])
+
+    assert result.exit_code == 0, result.stdout
+    # Rows table stays on stdout; the warning block goes to stderr.
+    assert "auth_invalid" not in result.stdout
+    assert "openrouter" in result.stderr
+    assert "auth_invalid" in result.stderr
 
 
 def test_config_get_honors_env_path_and_redacts(tmp_path: Path, monkeypatch):

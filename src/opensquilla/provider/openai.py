@@ -8,11 +8,8 @@ import os
 import re
 import sys
 from collections.abc import AsyncIterator, Mapping
-from typing import TYPE_CHECKING, Any, cast
+from typing import Any, cast
 from uuid import uuid4
-
-if TYPE_CHECKING:
-    from opensquilla.engine.types import ThinkingLevel
 
 import httpx
 import structlog
@@ -26,6 +23,12 @@ from .context_capabilities import supports_openrouter_explicit_prompt_cache
 from .minimax_compat import contains_minimax_protocol, parse_minimax_tool_calls
 from .openrouter_attribution import openrouter_app_headers
 from .protocol import ProviderConnectionConfig, ProviderMetadata
+from .reasoning_dialects import (
+    ReasoningDisableArgs,
+    ReasoningEnableArgs,
+    apply_reasoning_disable,
+    apply_reasoning_enable,
+)
 from .request_proof import (
     ProviderRequestBudgetExceededError,
     prove_provider_payload_from_env,
@@ -114,46 +117,6 @@ def _strip_tool_schema_keywords(value: Any, unsupported: frozenset[str]) -> Any:
     if isinstance(value, list):
         return [_strip_tool_schema_keywords(item, unsupported) for item in value]
     return value
-
-
-def _resolve_reasoning_effort(level: ThinkingLevel | None, budget: int) -> str:
-    """Map ThinkingLevel to OpenRouter/DeepSeek effort string."""
-    from opensquilla.engine.types import (
-        ThinkingLevel,  # local: avoids circular import at module load
-    )
-
-    _level_map = {
-        ThinkingLevel.MINIMAL: "minimal",
-        ThinkingLevel.LOW: "low",
-        ThinkingLevel.MEDIUM: "medium",
-        ThinkingLevel.HIGH: "high",
-        ThinkingLevel.XHIGH: "xhigh",
-    }
-    if level and level in _level_map:
-        return _level_map[level]
-    if budget <= 1024:
-        return "low"
-    elif budget <= 10000:
-        return "medium"
-    else:
-        return "high"
-
-
-def _resolve_deepseek_reasoning_effort(level: ThinkingLevel | None) -> str:
-    """Map OpenSquilla thinking levels to DeepSeek V4's documented effort values."""
-    from opensquilla.engine.types import (
-        ThinkingLevel,  # local: avoids circular import at module load
-    )
-
-    if level == ThinkingLevel.XHIGH:
-        return "max"
-    return "high"
-
-
-def _gemini_supports_reasoning_none(model: str) -> bool:
-    """Return True for Gemini OpenAI-compatible models with documented off control."""
-    model_name = model.rsplit("/", 1)[-1].strip().lower()
-    return model_name.startswith("gemini-2.5-flash")
 
 
 def _extract_think_tags(text: str) -> str:
@@ -659,8 +622,15 @@ class OpenAIProvider:
         self._base_url = base_url.rstrip("/")
         self._proxy = _resolve_llm_proxy(proxy)
         self._org_id = org_id
-        inferred_kind = "openrouter" if "openrouter.ai" in self._base_url else "openai"
-        self._provider_kind = provider_kind or inferred_kind
+        if not provider_kind:
+            # Fallback for direct construction only (tests, ad-hoc
+            # embedding): every production path flows through
+            # selector._build_provider, which always passes the registry
+            # spec's provider_kind. The base-url sniff keeps a bare
+            # OpenAIProvider(base_url="https://openrouter.ai/...") resolving
+            # the OpenRouter dialect instead of silently degrading.
+            provider_kind = "openrouter" if "openrouter.ai" in self._base_url else "openai"
+        self._provider_kind = provider_kind
         self._compat = compat or compat_policy_for_kind(self._provider_kind)
         self._replay_provider_state = replay_provider_state
         self._provider_routing: Mapping[str, str] = provider_routing or {}
@@ -806,67 +776,43 @@ class OpenAIProvider:
                     "allow_fallbacks": True,
                 }
 
-        # Reasoning injection (gated on thinking being enabled)
+        # Reasoning injection (gated on thinking being enabled). Gating —
+        # which model/capability profile triggers a payload at all — lives
+        # here; how each dialect spells it lives in reasoning_dialects.
         thinking_toggle_model = (
             self._model.strip().lower() in self._compat.thinking_toggle_model_ids
         )
         if (caps and caps.supports_reasoning and cfg.thinking) or (
             thinking_toggle_model and cfg.thinking
         ):
-            effort = _resolve_reasoning_effort(cfg.thinking_level, cfg.thinking_budget_tokens)
             reasoning_format = (
                 caps.reasoning_format
                 if caps is not None
                 else self._compat.default_reasoning_format
             )
-            if reasoning_format == "openrouter":
-                payload["reasoning"] = {"effort": effort}
-            elif reasoning_format == "openai":
-                payload["reasoning_effort"] = effort
-            elif reasoning_format == "deepseek":
-                payload["thinking"] = {"type": "enabled"}
-                payload["reasoning_effort"] = _resolve_deepseek_reasoning_effort(cfg.thinking_level)
-            elif reasoning_format == "gemini":
-                payload["reasoning_effort"] = effort
-            elif reasoning_format == "zai":
-                payload["thinking"] = {"type": "enabled"}
-            elif reasoning_format == "dashscope":
-                payload["enable_thinking"] = True
-                payload["thinking_budget"] = cfg.thinking_budget_tokens
-            elif reasoning_format in {"moonshot", "volcengine"}:
-                payload["thinking"] = {"type": "enabled"}
-        elif thinking_toggle_model or (
-            caps and caps.supports_reasoning and caps.reasoning_format == "deepseek"
-        ):
+            apply_reasoning_enable(
+                payload,
+                reasoning_format,
+                ReasoningEnableArgs(
+                    thinking_level=cfg.thinking_level,
+                    thinking_budget_tokens=cfg.thinking_budget_tokens,
+                ),
+            )
+        elif thinking_toggle_model:
+            # Toggle models need an explicit off payload even without a
+            # capability profile (policy gating, independent of dialect).
             payload["thinking"] = {"type": "disabled"}
-        elif (
-            caps
-            and caps.supports_reasoning
-            and caps.reasoning_format == "gemini"
-            and _gemini_supports_reasoning_none(self._model)
-        ):
-            payload["reasoning_effort"] = "none"
-        elif caps and caps.supports_reasoning and caps.reasoning_format == "zai":
-            payload["thinking"] = {"type": "disabled"}
-        elif caps and caps.supports_reasoning and caps.reasoning_format == "dashscope":
-            payload["enable_thinking"] = False
-        elif (
-            caps
-            and caps.supports_reasoning
-            and caps.reasoning_format
-            in {
-                "moonshot",
-                "volcengine",
-            }
-        ):
-            payload["thinking"] = {"type": "disabled"}
-        elif (
-            caps
-            and caps.supports_reasoning
-            and caps.reasoning_format == "openrouter"
-            and self._model.strip().lower() in self._compat.disable_reasoning_by_default_models
-        ):
-            payload["reasoning"] = {"enabled": False}
+        elif caps and caps.supports_reasoning:
+            apply_reasoning_disable(
+                payload,
+                caps.reasoning_format,
+                ReasoningDisableArgs(
+                    model=self._model,
+                    disable_reasoning_by_default_models=(
+                        self._compat.disable_reasoning_by_default_models
+                    ),
+                ),
+            )
 
         fallback_reason = (
             "native_is_error_unavailable"

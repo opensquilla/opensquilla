@@ -1810,6 +1810,93 @@ class LlmProviderProfile(BaseSettings):
     proxy: str = ""
 
 
+class ModelCatalogConfig(BaseSettings):
+    """Model metadata catalog behavior (offline-first).
+
+    Schema-first landing: these knobs are validated and persisted now; the
+    provider layer consumes them in a follow-up change. ``refresh`` controls
+    whether the gateway may fetch model *metadata* (context windows, output
+    caps, pricing, capability flags) from the network at all. The default
+    ``"off"`` keeps every install fully offline — metadata resolves from
+    bundled/registry defaults, an optional ``pin_path`` file, and per-model
+    ``[models.*]`` overrides. Today's OpenRouter live model-list fetch is a
+    separate, existing mechanism that this flag does not govern yet.
+    """
+
+    model_config = SettingsConfigDict(env_prefix="OPENSQUILLA_MODEL_CATALOG_")
+
+    # "off" = never fetch model metadata (offline-first default);
+    # "startup" = allow one refresh when the gateway boots.
+    refresh: Literal["off", "startup"] = "off"
+    # Local JSON/TOML catalog override file for air-gapped deploys. Validated
+    # only as a string here; existence/shape checks happen when the catalog
+    # wiring consumes it.
+    pin_path: str = ""
+    # Advisory age threshold (days) for doctor warnings about stale pinned or
+    # cached model metadata. Never blocks a turn.
+    stale_after_days: int = Field(default=45, ge=1)
+
+
+# Known provider reasoning-format dialects accepted by
+# ``ModelOverrideConfig.reasoning_format``. Deliberately a conservative
+# literal rather than an import: the canonical dialect registry may land in
+# a parallel branch, and this set must stay valid either way. Fold it into
+# the registry (and keep the names identical) once that lands.
+KNOWN_REASONING_FORMATS: frozenset[str] = frozenset(
+    {
+        "openrouter",
+        "openai",
+        "deepseek",
+        "gemini",
+        "zai",
+        "dashscope",
+        "moonshot",
+        "volcengine",
+        "none",
+    }
+)
+
+
+class ModelOverrideConfig(BaseModel):
+    """Per-model metadata override, written as ``[models.<provider_id>."<model_id>"]``.
+
+    Every field is optional; ``None`` means "no override" and the value keeps
+    resolving from the model catalog / provider registry as before. Model ids
+    are matched *exactly* (TOML quoted keys carry dots and slashes verbatim).
+    Globs are deliberately not supported in user config: exact ids keep
+    override semantics unambiguous, and the shipped catalog corrections layer
+    owns pattern matching. Keys are not screened for glob-looking syntax
+    either — a key that matches no model is simply inert, and rejecting
+    characters here could break unusual but legitimate model ids.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    context_window: int | None = Field(default=None, ge=1)
+    max_output_tokens: int | None = Field(default=None, ge=1)
+    reasoning_format: str | None = None
+    supports_reasoning: bool | None = None
+    supports_tools: bool | None = None
+    supports_vision: bool | None = None
+    input_cost_per_mtok: float | None = Field(default=None, ge=0)
+    output_cost_per_mtok: float | None = Field(default=None, ge=0)
+    thinking_level_map: dict[str, str] | None = None
+
+    @field_validator("reasoning_format")
+    @classmethod
+    def _validate_reasoning_format(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip().lower()
+        if normalized not in KNOWN_REASONING_FORMATS:
+            allowed = ", ".join(sorted(KNOWN_REASONING_FORMATS))
+            raise ValueError(
+                f"reasoning_format {value!r} is not a known dialect; "
+                f"expected one of {allowed}"
+            )
+        return normalized
+
+
 class _EnvWithoutConfigVersion(PydanticBaseSettingsSource):
     """Env-backed settings source that never yields ``config_version``.
 
@@ -1881,6 +1968,11 @@ class GatewayConfig(BaseSettings):
     # provider id; consumed by cross-provider router tiers.
     llm_profiles: dict[str, LlmProviderProfile] = Field(default_factory=dict)
     llm_ensemble: LlmEnsembleConfig = Field(default_factory=LlmEnsembleConfig)
+    # Model metadata catalog behavior (offline-first; see ModelCatalogConfig).
+    model_catalog: ModelCatalogConfig = Field(default_factory=ModelCatalogConfig)
+    # Per-model metadata overrides keyed [models.<provider_id>."<model_id>"].
+    # Exact model ids only (quoted TOML keys); see ModelOverrideConfig.
+    models: dict[str, dict[str, ModelOverrideConfig]] = Field(default_factory=dict)
     prompt_cache: PromptCacheConfig = Field(default_factory=PromptCacheConfig)
     safety: SafetyConfig = Field(default_factory=SafetyConfig)
     prompt: PromptConfig = Field(default_factory=PromptConfig)

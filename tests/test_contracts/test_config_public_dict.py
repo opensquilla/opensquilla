@@ -43,6 +43,12 @@ PUBLIC_TOP_LEVEL_KEYS = frozenset(
         "llm",
         "llm_profiles",
         "llm_ensemble",
+        # Deliberate 0.5.x additions: model-catalog behavior and per-model
+        # metadata overrides landed as additive top-level sections (schema
+        # first; provider wiring follows). Once listed here they are frozen
+        # like every other name.
+        "model_catalog",
+        "models",
         "prompt_cache",
         "safety",
         "prompt",

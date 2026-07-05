@@ -1,11 +1,25 @@
-"""Provider failure classification and runtime recovery decisions."""
+"""Provider failure classification and runtime recovery decisions.
+
+Classification is table-driven: each ``failure_family`` maps to an ordered
+tuple of :class:`FailureMatcher` rows, walked after a shared pre-pass and
+before a shared generic tail. Adding coverage for a new backend's error text
+is a data change (a new matcher row), not a new branch.
+"""
 
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
+from dataclasses import dataclass, field
 from enum import StrEnum
 
+import structlog
+
+from opensquilla.redaction import redact_error_text
+
 from .registry import UnknownProviderError, get_provider_spec
+
+log = structlog.get_logger(__name__)
 
 
 class ProviderFailureKind(StrEnum):
@@ -45,7 +59,9 @@ def _failure_family(provider: str) -> str:
     except UnknownProviderError:
         return ""
 
-_GATEWAY_TRANSIENT_STATUS_CODES = {499, 500, 502, 503, 504, 520, 521, 522, 523, 524, 529}
+_GATEWAY_TRANSIENT_STATUS_CODES = frozenset(
+    {499, 500, 502, 503, 504, 520, 521, 522, 523, 524, 529}
+)
 _GATEWAY_CODES = r"(?:499|500|502|503|504|520|521|522|523|524|529)"
 _GATEWAY_CONTEXT = r"(?:cloudflare|openrouter|upstream|gateway|backend)"
 _GATEWAY_ERROR_TERMS = (
@@ -65,10 +81,100 @@ def _joined(status_code: int | None, raw_code: str, message: str) -> str:
     return f"{status_code or ''} {raw_code or ''} {message or ''}".lower()
 
 
-def _is_context_overflow(text: str) -> bool:
-    return any(
-        marker in text
-        for marker in (
+@dataclass(frozen=True)
+class FailureSignal:
+    """One provider error, pre-normalized for matcher evaluation."""
+
+    status_code: int | None
+    raw_code: str  # stripped + lowercased
+    message: str  # raw, untouched
+    text: str  # "{status} {raw_code} {message}" lowercased
+
+
+@dataclass(frozen=True)
+class FailureMatcher:
+    """One data row of the classification tables.
+
+    A matcher matches when every *declared* constraint holds (empty
+    constraints are wildcards): ``status_codes``/``raw_codes`` are set
+    membership, ``message_substrings`` is any-of over the joined lowercased
+    text, ``message_substrings_all`` is all-of over the same text (for
+    conjunctions like ollama's "pull" + "model"), and ``predicate`` is a
+    named escape hatch for the few checks that are not expressible as
+    substring/status data (exact-match empty-response shapes, the
+    gateway-transient regex). An original ``status OR substring`` branch
+    becomes two adjacent rows with the same kind.
+    """
+
+    kind: ProviderFailureKind
+    status_codes: frozenset[int] = frozenset()
+    raw_codes: frozenset[str] = frozenset()
+    message_substrings: tuple[str, ...] = ()
+    message_substrings_all: tuple[str, ...] = ()
+    predicate: Callable[[FailureSignal], bool] | None = field(default=None, compare=False)
+
+    def __post_init__(self) -> None:
+        if not (
+            self.status_codes
+            or self.raw_codes
+            or self.message_substrings
+            or self.message_substrings_all
+            or self.predicate is not None
+        ):
+            raise ValueError("FailureMatcher needs at least one constraint (would match all)")
+
+    def matches(self, signal: FailureSignal) -> bool:
+        if self.status_codes and signal.status_code not in self.status_codes:
+            return False
+        if self.raw_codes and signal.raw_code not in self.raw_codes:
+            return False
+        if self.message_substrings and not any(
+            marker in signal.text for marker in self.message_substrings
+        ):
+            return False
+        if self.message_substrings_all and not all(
+            marker in signal.text for marker in self.message_substrings_all
+        ):
+            return False
+        return self.predicate is None or self.predicate(signal)
+
+
+def _is_empty_response(signal: FailureSignal) -> bool:
+    """Named predicate: exact-match (not substring) empty-response shapes.
+
+    A substring rule would misfire on transport noise such as
+    "HTTP 500: empty response body", which must stay gateway-transient.
+    """
+    return signal.raw_code == "empty_response" or signal.message.strip().lower() in {
+        "empty_response",
+        "empty response",
+        "provider returned an empty response",
+    }
+
+
+def _is_gateway_transient(signal: FailureSignal) -> bool:
+    """Named predicate: gateway status codes scoped by context words.
+
+    A regex (not substrings) so that unscoped numbers like "520 tokens" do
+    not classify as transient.
+    """
+    return bool(_GATEWAY_TRANSIENT_RE.search(signal.text))
+
+
+_MODEL_UNAVAILABLE_SUBSTRINGS = (
+    "no endpoints found",
+    "model not found",
+    "model is not available",
+    "model not available",
+    "not available in your region",
+    "not available in the requested region",
+)
+
+# Family-independent kinds checked before any family table.
+_SHARED_PRE_MATCHERS: tuple[FailureMatcher, ...] = (
+    FailureMatcher(
+        ProviderFailureKind.CONTEXT_OVERFLOW,
+        message_substrings=(
             "context length",
             "context window",
             "maximum context",
@@ -77,50 +183,135 @@ def _is_context_overflow(text: str) -> bool:
             "input exceeds",
             "provider_request_budget_exhausted",
             "too many tokens",
-        )
-    )
-
-
-def _is_policy_refusal(text: str) -> bool:
-    return any(
-        marker in text
-        for marker in (
+        ),
+    ),
+    FailureMatcher(
+        ProviderFailureKind.POLICY_REFUSAL,
+        message_substrings=(
             "content policy",
             "policy violation",
             "safety policy",
             "moderation",
             "refusal",
             "blocked by policy",
-        )
-    )
+        ),
+    ),
+    FailureMatcher(ProviderFailureKind.EMPTY_RESPONSE, predicate=_is_empty_response),
+)
 
+FAILURE_TABLES: dict[str, tuple[FailureMatcher, ...]] = {
+    "openai_compat": (
+        FailureMatcher(ProviderFailureKind.MODEL_NOT_FOUND, status_codes=frozenset({404})),
+        FailureMatcher(
+            ProviderFailureKind.MODEL_NOT_FOUND,
+            message_substrings=_MODEL_UNAVAILABLE_SUBSTRINGS,
+        ),
+        FailureMatcher(ProviderFailureKind.AUTH_INVALID, status_codes=frozenset({401, 403})),
+        FailureMatcher(
+            ProviderFailureKind.AUTH_INVALID,
+            message_substrings=("invalid api key", "unauthorized"),
+        ),
+        FailureMatcher(ProviderFailureKind.INSUFFICIENT_CREDITS, status_codes=frozenset({402})),
+        FailureMatcher(
+            ProviderFailureKind.INSUFFICIENT_CREDITS,
+            message_substrings=("insufficient credits", "no credits"),
+        ),
+        FailureMatcher(ProviderFailureKind.RATE_LIMITED, status_codes=frozenset({429})),
+        FailureMatcher(
+            ProviderFailureKind.RATE_LIMITED,
+            message_substrings=("rate limit", "rate_limit"),
+        ),
+        FailureMatcher(
+            ProviderFailureKind.UNSUPPORTED_FEATURE,
+            message_substrings=("does not support", "unsupported"),
+        ),
+        FailureMatcher(
+            ProviderFailureKind.PROVIDER_OVERLOADED,
+            status_codes=_GATEWAY_TRANSIENT_STATUS_CODES,
+        ),
+        FailureMatcher(ProviderFailureKind.PROVIDER_OVERLOADED, message_substrings=("overloaded",)),
+        FailureMatcher(ProviderFailureKind.PROVIDER_OVERLOADED, predicate=_is_gateway_transient),
+        FailureMatcher(ProviderFailureKind.BAD_REQUEST, status_codes=frozenset({400})),
+        FailureMatcher(ProviderFailureKind.BAD_REQUEST, message_substrings=("invalid_request",)),
+    ),
+    "anthropic": (
+        FailureMatcher(ProviderFailureKind.MODEL_NOT_FOUND, status_codes=frozenset({404})),
+        FailureMatcher(
+            ProviderFailureKind.MODEL_NOT_FOUND,
+            message_substrings=("not_found_error", *_MODEL_UNAVAILABLE_SUBSTRINGS),
+        ),
+        FailureMatcher(ProviderFailureKind.AUTH_INVALID, status_codes=frozenset({401, 403})),
+        FailureMatcher(
+            ProviderFailureKind.AUTH_INVALID,
+            message_substrings=("authentication_error",),
+        ),
+        FailureMatcher(ProviderFailureKind.INSUFFICIENT_CREDITS, status_codes=frozenset({402})),
+        FailureMatcher(
+            ProviderFailureKind.INSUFFICIENT_CREDITS,
+            message_substrings=("credit balance",),
+        ),
+        FailureMatcher(ProviderFailureKind.RATE_LIMITED, status_codes=frozenset({429})),
+        FailureMatcher(
+            ProviderFailureKind.RATE_LIMITED,
+            message_substrings=("rate_limit_error",),
+        ),
+        FailureMatcher(
+            ProviderFailureKind.PROVIDER_OVERLOADED,
+            status_codes=_GATEWAY_TRANSIENT_STATUS_CODES,
+        ),
+        FailureMatcher(
+            ProviderFailureKind.PROVIDER_OVERLOADED,
+            message_substrings=("overloaded_error",),
+        ),
+        FailureMatcher(
+            ProviderFailureKind.BAD_REQUEST,
+            message_substrings=("invalid_request_error",),
+        ),
+    ),
+    "ollama": (
+        FailureMatcher(
+            ProviderFailureKind.MODEL_NOT_FOUND,
+            message_substrings=("model not found",),
+        ),
+        FailureMatcher(
+            ProviderFailureKind.MODEL_NOT_FOUND,
+            message_substrings_all=("pull", "model"),
+        ),
+        # Ollama Cloud / secured remote hosts return standard auth statuses;
+        # without these rows a 401 fell through to UNKNOWN.
+        FailureMatcher(ProviderFailureKind.AUTH_INVALID, status_codes=frozenset({401, 403})),
+        FailureMatcher(ProviderFailureKind.AUTH_INVALID, message_substrings=("unauthorized",)),
+        FailureMatcher(
+            ProviderFailureKind.TRANSPORT_TRANSIENT,
+            message_substrings=(
+                "connection refused",
+                "connection error",
+                "request error",
+                "timeout",
+            ),
+        ),
+    ),
+}
 
-def _is_empty_response(raw_code: str, message: str) -> bool:
-    normalized_code = (raw_code or "").strip().lower()
-    normalized_message = (message or "").strip().lower()
-    return normalized_code == "empty_response" or normalized_message in {
-        "empty_response",
-        "empty response",
-        "provider returned an empty response",
-    }
-
-
-def _is_model_unavailable(text: str) -> bool:
-    return any(
-        marker in text
-        for marker in (
-            "no endpoints found",
-            "model not found",
-            "model is not available",
-            "model not available",
-            "not available in your region",
-            "not available in the requested region",
-        )
-    )
-
-
-def _is_gateway_transient(text: str) -> bool:
-    return bool(_GATEWAY_TRANSIENT_RE.search(text))
+# Generic tail: runs for every family (and for providers with no family)
+# after the family table missed.
+_SHARED_TAIL_MATCHERS: tuple[FailureMatcher, ...] = (
+    FailureMatcher(ProviderFailureKind.RATE_LIMITED, status_codes=frozenset({429})),
+    FailureMatcher(ProviderFailureKind.RATE_LIMITED, message_substrings=("rate limit",)),
+    FailureMatcher(
+        ProviderFailureKind.PROVIDER_OVERLOADED,
+        status_codes=_GATEWAY_TRANSIENT_STATUS_CODES,
+    ),
+    FailureMatcher(ProviderFailureKind.PROVIDER_OVERLOADED, predicate=_is_gateway_transient),
+    FailureMatcher(
+        ProviderFailureKind.MALFORMED_RESPONSE,
+        message_substrings=("malformed", "invalid json"),
+    ),
+    FailureMatcher(
+        ProviderFailureKind.TRANSPORT_TRANSIENT,
+        message_substrings=("timeout", "request error"),
+    ),
+)
 
 
 def classify_provider_error(
@@ -132,74 +323,29 @@ def classify_provider_error(
     """Classify a provider error into a stable runtime failure kind."""
 
     provider = (provider_name or "").lower()
-    text = _joined(status_code, raw_code, message)
     family = _failure_family(provider)
+    signal = FailureSignal(
+        status_code=status_code,
+        raw_code=(raw_code or "").strip().lower(),
+        message=message or "",
+        text=_joined(status_code, raw_code, message),
+    )
 
-    if _is_context_overflow(text):
-        return ProviderFailureKind.CONTEXT_OVERFLOW
-    if _is_policy_refusal(text):
-        return ProviderFailureKind.POLICY_REFUSAL
-    if _is_empty_response(raw_code, message):
-        return ProviderFailureKind.EMPTY_RESPONSE
+    for table in (_SHARED_PRE_MATCHERS, FAILURE_TABLES.get(family, ()), _SHARED_TAIL_MATCHERS):
+        for matcher in table:
+            if matcher.matches(signal):
+                return matcher.kind
 
-    if family == "openai_compat":
-        if status_code == 404 or _is_model_unavailable(text):
-            return ProviderFailureKind.MODEL_NOT_FOUND
-        if status_code in {401, 403} or "invalid api key" in text or "unauthorized" in text:
-            return ProviderFailureKind.AUTH_INVALID
-        if status_code == 402 or "insufficient credits" in text or "no credits" in text:
-            return ProviderFailureKind.INSUFFICIENT_CREDITS
-        if status_code == 429 or "rate limit" in text or "rate_limit" in text:
-            return ProviderFailureKind.RATE_LIMITED
-        if "does not support" in text or "unsupported" in text:
-            return ProviderFailureKind.UNSUPPORTED_FEATURE
-        if (
-            status_code in _GATEWAY_TRANSIENT_STATUS_CODES
-            or "overloaded" in text
-            or _is_gateway_transient(text)
-        ):
-            return ProviderFailureKind.PROVIDER_OVERLOADED
-        if status_code == 400 or "invalid_request" in text:
-            return ProviderFailureKind.BAD_REQUEST
-
-    if family == "anthropic":
-        if status_code == 404 or "not_found_error" in text or _is_model_unavailable(text):
-            return ProviderFailureKind.MODEL_NOT_FOUND
-        if status_code in {401, 403} or "authentication_error" in text:
-            return ProviderFailureKind.AUTH_INVALID
-        if status_code == 402 or "credit balance" in text:
-            return ProviderFailureKind.INSUFFICIENT_CREDITS
-        if status_code == 429 or "rate_limit_error" in text:
-            return ProviderFailureKind.RATE_LIMITED
-        if status_code in _GATEWAY_TRANSIENT_STATUS_CODES or "overloaded_error" in text:
-            return ProviderFailureKind.PROVIDER_OVERLOADED
-        if "invalid_request_error" in text:
-            return ProviderFailureKind.BAD_REQUEST
-
-    if family == "ollama":
-        if "model not found" in text or "pull" in text and "model" in text:
-            return ProviderFailureKind.MODEL_NOT_FOUND
-        # Ollama Cloud / secured remote hosts return standard auth statuses;
-        # without this branch a 401 fell through to UNKNOWN.
-        if status_code in {401, 403} or "unauthorized" in text:
-            return ProviderFailureKind.AUTH_INVALID
-        if (
-            "connection refused" in text
-            or "connection error" in text
-            or "request error" in text
-            or "timeout" in text
-        ):
-            return ProviderFailureKind.TRANSPORT_TRANSIENT
-
-    if status_code == 429 or "rate limit" in text:
-        return ProviderFailureKind.RATE_LIMITED
-    if status_code in _GATEWAY_TRANSIENT_STATUS_CODES or _is_gateway_transient(text):
-        return ProviderFailureKind.PROVIDER_OVERLOADED
-    if "malformed" in text or "invalid json" in text:
-        return ProviderFailureKind.MALFORMED_RESPONSE
-    if "timeout" in text or "request error" in text:
-        return ProviderFailureKind.TRANSPORT_TRANSIENT
-
+    # UNKNOWN downgrades recovery to SURFACE, so make every miss observable:
+    # a field report of this event is exactly one new FailureMatcher row.
+    log.warning(
+        "provider_failure.unclassified",
+        provider=provider,
+        failure_family=family,
+        status_code=status_code,
+        raw_code=raw_code,
+        message_head=redact_error_text(message),
+    )
     return ProviderFailureKind.UNKNOWN
 
 

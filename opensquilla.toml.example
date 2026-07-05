@@ -97,6 +97,7 @@ base_url = "https://openrouter.ai/api/v1"
 # volcengine    VOLCENGINE_API_KEY       https://ark.cn-beijing.volces.com/api/v3
 # byteplus      BYTEPLUS_API_KEY         https://ark.ap-southeast.bytepluses.com/api/v3
 # vllm          none                     explicit base_url required
+# custom        CUSTOM_LLM_API_KEY (optional)  explicit base_url required
 # lm_studio     none                     http://localhost:1234/v1
 # ovms          none                     http://localhost:8000/v3
 # qianfan       QIANFAN_API_KEY          https://qianfan.baidubce.com/v2
@@ -110,6 +111,15 @@ base_url = "https://openrouter.ai/api/v1"
 # model = "deepseek-v4-flash"
 # api_key = ""          # env DEEPSEEK_API_KEY also works
 # base_url = "https://api.deepseek.com"
+#
+# Example self-hosted / custom OpenAI-compatible endpoint (vLLM, SGLang, TGI,
+# llama.cpp server, or any proxy speaking the Chat Completions API):
+# provider = "custom"
+# base_url = "http://127.0.0.1:8000/v1"   # required — no default endpoint
+# model = "qwen3-32b-awq"
+# # api_key is optional: set env CUSTOM_LLM_API_KEY (or api_key here) only if
+# # your endpoint enforces one. Declare the endpoint's real context window via
+# # [models.custom."qwen3-32b-awq"] — see the per-model overrides section below.
 
 # Pin each model to its native upstream provider on OpenRouter.
 # Sends provider.only=[slug] + allow_fallbacks=true per request.
@@ -126,6 +136,51 @@ base_url = "https://openrouter.ai/api/v1"
 "z-ai/glm-4.6" = "z-ai"
 "z-ai/glm-5.1" = "z-ai"
 "z-ai/glm-5.2" = "z-ai"
+
+# Model metadata catalog (added in 0.5.x; schema only — wiring lands in a
+# follow-up release). Offline-first: with refresh = "off" (the default) the
+# gateway never fetches model metadata (context windows, output caps, pricing,
+# capability flags) from the network. Today's OpenRouter live model-list fetch
+# is a separate, existing mechanism that this flag does NOT govern yet.
+# Downgrade note: model_catalog and the models tables below are top-level
+# sections written to disk only when a config persist re-materializes the full
+# file. 0.5.0rc1 and older reject unknown top-level keys, so delete both
+# sections before downgrading (same class as config_version; see the 0.5.x
+# release notes).
+# [model_catalog]
+# refresh = "off"          # "off" | "startup" (fetch once at gateway boot)
+# pin_path = ""            # local JSON/TOML catalog override for air-gapped deploys
+# stale_after_days = 45    # advisory doctor threshold for metadata age (days)
+
+# Per-model metadata overrides (added in 0.5.x), keyed
+# [models.<provider_id>."<model_id>"]. Quote model ids that contain dots or
+# slashes. Exact ids only — globs are not supported in user config. Every
+# field is optional; anything unset keeps resolving from catalog/registry
+# metadata as before.
+#
+# Self-hosted example: a vLLM endpoint declaring its real context window so
+# context budgeting and compaction stop assuming a conservative default:
+# [models.vllm."qwen3-32b-awq"]
+# context_window = 131072
+# max_output_tokens = 8192
+# supports_tools = true
+#
+# The generic `custom` provider (any self-hosted OpenAI-compatible endpoint;
+# see the [llm] example above) uses the same override table, keyed by its
+# served model id:
+# [models.custom."qwen3-32b-awq"]
+# context_window = 131072
+# max_output_tokens = 8192
+# supports_tools = true
+#
+# [models.openrouter."z-ai/glm-5.2"]
+# # reasoning_format: openrouter | openai | deepseek | gemini | zai |
+# #                   dashscope | moonshot | volcengine | none
+# reasoning_format = "openrouter"
+# supports_reasoning = true
+# input_cost_per_mtok = 0.5    # USD per million input tokens (example value)
+# output_cost_per_mtok = 2.0   # USD per million output tokens (example value)
+# thinking_level_map = { high = "high", medium = "medium" }
 
 [memory]
 # "workspace" stores MEMORY.md and memory/*.md under workspace_dir.

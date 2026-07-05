@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import pytest
+
+from opensquilla.provider import models_dev
 from opensquilla.provider.models_dev import (
     _snapshot_providers,
     lookup_limits,
@@ -52,3 +55,42 @@ def test_unknown_model_returns_none() -> None:
     assert lookup_model("openai", "no-such-model-xyz") is None
     assert lookup_limits("openai", "no-such-model-xyz") is None
     assert lookup_model("", "") is None
+
+
+# ---------------------------------------------------------------------------
+# Optional per-Mtok cost keys (in/out/cr/cw_mtok). The committed snapshot
+# does not carry them yet, so these drive synthetic tables.
+# ---------------------------------------------------------------------------
+
+_COSTED_TABLES = {
+    "acme": {"model-a": {"ctx": 10_000, "out": 1_000, "tools": True, "in_mtok": 2.5}},
+    "other": {"model-a": {"ctx": 8_000, "out": 900, "tools": True, "in_mtok": 9.9}},
+}
+
+
+def test_provider_table_hit_passes_cost_keys_through(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(models_dev, "_snapshot_providers", lambda: _COSTED_TABLES)
+
+    entry = lookup_model("acme", "model-a")
+
+    assert entry is not None
+    assert entry["in_mtok"] == 2.5
+    assert "out_mtok" not in entry  # absent keys stay absent
+
+
+def test_cross_provider_merge_drops_cost_keys(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(models_dev, "_snapshot_providers", lambda: _COSTED_TABLES)
+
+    merged = lookup_model("unlisted-provider", "model-a")
+
+    assert merged is not None
+    # Limits still merge conservatively…
+    assert merged["ctx"] == 8_000
+    assert merged["out"] == 900
+    # …but another provider's pricing never survives the fallback merge.
+    assert "in_mtok" not in merged
+    assert "out_mtok" not in merged
+    assert "cr_mtok" not in merged
+    assert "cw_mtok" not in merged

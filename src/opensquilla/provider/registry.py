@@ -3,9 +3,39 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import ClassVar, Literal
+from typing import Literal
 
 from .compat_policy import OpenAICompatPolicy, compat_policy_for_kind
+from .context_capabilities import (
+    ANTHROPIC_CONTEXT_PROFILE,
+    OPENAI_RESPONSES_CONTEXT_PROFILE,
+    OPENROUTER_CONTEXT_PROFILE,
+    ProviderContextProfile,
+)
+
+# ---------------------------------------------------------------------------
+# Named local-provider sets. ONE home, TWO deliberately distinct sets — they
+# answer different questions and must not be merged:
+#
+# - KEYLESS_PROVIDERS: providers whose API key is optional even when an
+#   env_key is declared — local runtimes plus the generic self-hosted
+#   ``custom`` endpoint (many self-hosted servers run without
+#   authentication). Drives ``ProviderSpec.requires_api_key``.
+# - LOCAL_RUNTIME_PROVIDERS: the superset the model catalog's context-window
+#   heuristic uses (model_catalog.py): runtimes that serve models from the
+#   local machine, whose unqualified model ids miss every catalog and would
+#   otherwise inherit the 200k cloud default. ``vllm`` and the bare
+#   ``local`` alias belong here but stay OUT of KEYLESS_PROVIDERS: local
+#   serving does not imply keyless onboarding (a vLLM deployment can front
+#   real auth), so folding them in would silently weaken requires_api_key.
+#
+# The derivation is explicit (superset = keyless | extras) so the two sets
+# can never drift apart by accident.
+# ---------------------------------------------------------------------------
+
+KEYLESS_PROVIDERS: frozenset[str] = frozenset({"ollama", "lm_studio", "ovms", "custom"})
+
+LOCAL_RUNTIME_PROVIDERS: frozenset[str] = KEYLESS_PROVIDERS | {"vllm", "local"}
 
 ProviderBackend = Literal[
     "openai_compat",
@@ -16,6 +46,12 @@ ProviderBackend = Literal[
     "unsupported_oauth",
     "unsupported_responses",
 ]
+
+# How the provider authenticates the request. Consumed by the anthropic
+# backend today (Anthropic proper wants ``x-api-key``; MiniMax's
+# Anthropic-compatible endpoints want ``Authorization: Bearer``). "bearer"
+# is the default because every other backend sends a Bearer header.
+AuthHeaderStyle = Literal["x-api-key", "bearer"]
 
 
 @dataclass(frozen=True)
@@ -37,14 +73,20 @@ class ProviderSpec:
     # field, schema keyword strips, reasoning toggles, ...). Defaults to the
     # kind-keyed policy; only meaningful for backend == "openai_compat".
     compat: OpenAICompatPolicy = field(default_factory=OpenAICompatPolicy)
-
-    _LOCAL_PROVIDERS: ClassVar[frozenset[str]] = frozenset(
-        {"ollama", "lm_studio", "ovms"}
-    )
+    # Auth header shape for the anthropic backend (see AuthHeaderStyle).
+    auth_header_style: AuthHeaderStyle = "bearer"
+    # Purely provider-keyed context/prompt-cache capabilities. None for
+    # providers whose cache behavior is host-guarded (gemini, openai) or
+    # unknown — those stay code branches in context_capabilities.
+    context_profile: ProviderContextProfile | None = None
+    # models.dev provider ids feeding the vendored model catalog snapshot
+    # (merged in order; first source of a model id wins). Empty for
+    # local/self-hosted or OAuth-only providers with no public catalog.
+    catalog_source: tuple[str, ...] = ()
 
     def requires_api_key(self) -> bool:
         """True if onboarding must collect an API key for this provider."""
-        if self.provider_id in self._LOCAL_PROVIDERS:
+        if self.provider_id in KEYLESS_PROVIDERS:
             return False
         return bool(self.env_key) and self.env_key != "OAuth"
 
@@ -76,6 +118,9 @@ def _spec(
     failure_family: str = "openai_compat",
     runtime_supported: bool = True,
     capabilities: frozenset[str] | None = None,
+    auth_header_style: AuthHeaderStyle = "bearer",
+    context_profile: ProviderContextProfile | None = None,
+    catalog_source: tuple[str, ...] = (),
 ) -> ProviderSpec:
     if required_fields is None:
         required_fields = frozenset({"api_key", "model"}) if env_key else frozenset({"model"})
@@ -91,6 +136,9 @@ def _spec(
         runtime_supported=runtime_supported,
         capabilities=capabilities or frozenset({"chat"}),
         compat=compat_policy_for_kind(provider_kind),
+        auth_header_style=auth_header_style,
+        context_profile=context_profile,
+        catalog_source=catalog_source,
     )
 
 
@@ -101,8 +149,17 @@ for _provider_spec in [
         "openrouter",
         "OPENROUTER_API_KEY",
         "https://openrouter.ai/api/v1",
+        context_profile=OPENROUTER_CONTEXT_PROFILE,
+        catalog_source=("openrouter",),
     ),
-    _spec("openai", "openai_compat", "openai", "OPENAI_API_KEY", "https://api.openai.com/v1"),
+    _spec(
+        "openai",
+        "openai_compat",
+        "openai",
+        "OPENAI_API_KEY",
+        "https://api.openai.com/v1",
+        catalog_source=("openai",),
+    ),
     _spec(
         "openai_responses",
         "openai_responses",
@@ -110,12 +167,15 @@ for _provider_spec in [
         "OPENAI_API_KEY",
         "https://api.openai.com/v1",
         capabilities=frozenset({"chat", "responses"}),
+        context_profile=OPENAI_RESPONSES_CONTEXT_PROFILE,
+        catalog_source=("openai",),
     ),
     _spec(
         "azure",
         "openai_compat",
         "azure",
         "AZURE_OPENAI_API_KEY",
+        catalog_source=("azure",),
     ),
     _spec(
         "anthropic",
@@ -124,6 +184,9 @@ for _provider_spec in [
         "ANTHROPIC_API_KEY",
         "https://api.anthropic.com",
         failure_family="anthropic",
+        auth_header_style="x-api-key",
+        context_profile=ANTHROPIC_CONTEXT_PROFILE,
+        catalog_source=("anthropic",),
     ),
     _spec(
         "ollama",
@@ -143,6 +206,7 @@ for _provider_spec in [
         "DEEPSEEK_API_KEY",
         "https://api.deepseek.com",
         reasoning_shape="deepseek",
+        catalog_source=("deepseek",),
     ),
     _spec(
         "gemini",
@@ -151,6 +215,7 @@ for _provider_spec in [
         "GEMINI_API_KEY",
         "https://generativelanguage.googleapis.com/v1beta/openai",
         reasoning_shape="gemini",
+        catalog_source=("google",),
     ),
     _spec(
         "dashscope",
@@ -158,6 +223,7 @@ for _provider_spec in [
         "dashscope",
         "DASHSCOPE_API_KEY",
         "https://dashscope.aliyuncs.com/compatible-mode/v1",
+        catalog_source=("alibaba-cn", "alibaba"),
     ),
     _spec(
         "bailian_coding",
@@ -165,6 +231,7 @@ for _provider_spec in [
         "bailian_coding",
         "BAILIAN_API_KEY",
         "https://coding-intl.dashscope.aliyuncs.com/v1",
+        catalog_source=("alibaba", "alibaba-cn"),
     ),
     _spec(
         "moonshot",
@@ -172,6 +239,7 @@ for _provider_spec in [
         "moonshot",
         "MOONSHOT_API_KEY",
         "https://api.moonshot.ai/v1",
+        catalog_source=("moonshotai",),
     ),
     _spec(
         "minimax",
@@ -180,6 +248,8 @@ for _provider_spec in [
         "MINIMAX_API_KEY",
         "https://api.minimaxi.com/anthropic",
         failure_family="anthropic",
+        auth_header_style="bearer",
+        catalog_source=("minimax",),
     ),
     _spec(
         "minimax_openai",
@@ -187,6 +257,7 @@ for _provider_spec in [
         "minimax",
         "MINIMAX_API_KEY",
         "https://api.minimaxi.com/v1",
+        catalog_source=("minimax",),
     ),
     _spec(
         "minimax_cn",
@@ -195,6 +266,8 @@ for _provider_spec in [
         "MINIMAX_CN_API_KEY",
         "https://api.minimaxi.com/anthropic",
         failure_family="anthropic",
+        auth_header_style="bearer",
+        catalog_source=("minimax",),
     ),
     _spec(
         "minimax_global",
@@ -203,9 +276,25 @@ for _provider_spec in [
         "MINIMAX_API_KEY",
         "https://api.minimax.io/anthropic",
         failure_family="anthropic",
+        auth_header_style="bearer",
+        catalog_source=("minimax",),
     ),
-    _spec("mistral", "openai_compat", "mistral", "MISTRAL_API_KEY", "https://api.mistral.ai/v1"),
-    _spec("groq", "openai_compat", "groq", "GROQ_API_KEY", "https://api.groq.com/openai/v1"),
+    _spec(
+        "mistral",
+        "openai_compat",
+        "mistral",
+        "MISTRAL_API_KEY",
+        "https://api.mistral.ai/v1",
+        catalog_source=("mistral",),
+    ),
+    _spec(
+        "groq",
+        "openai_compat",
+        "groq",
+        "GROQ_API_KEY",
+        "https://api.groq.com/openai/v1",
+        catalog_source=("groq",),
+    ),
     _spec(
         "zhipu",
         "openai_compat",
@@ -213,6 +302,7 @@ for _provider_spec in [
         "ZAI_API_KEY",
         "https://open.bigmodel.cn/api/paas/v4",
         reasoning_shape="zai",
+        catalog_source=("zhipuai", "zai"),
     ),
     _spec(
         "qianfan",
@@ -220,6 +310,7 @@ for _provider_spec in [
         "qianfan",
         "QIANFAN_API_KEY",
         "https://qianfan.baidubce.com/v2",
+        catalog_source=("qianfan", "baidu"),
     ),
     _spec(
         "siliconflow",
@@ -227,6 +318,7 @@ for _provider_spec in [
         "siliconflow",
         "SILICONFLOW_API_KEY",
         "https://api.siliconflow.cn/v1",
+        catalog_source=("siliconflow",),
     ),
     _spec(
         "aihubmix",
@@ -241,6 +333,7 @@ for _provider_spec in [
         "volcengine",
         "VOLCENGINE_API_KEY",
         "https://ark.cn-beijing.volces.com/api/v3",
+        catalog_source=("volcengine",),
     ),
     _spec(
         "byteplus",
@@ -248,6 +341,23 @@ for _provider_spec in [
         "byteplus",
         "BYTEPLUS_API_KEY",
         "https://ark.ap-southeast.bytepluses.com/api/v3",
+        catalog_source=("byteplus",),
+    ),
+    # First-class id for any self-hosted or otherwise unlisted
+    # OpenAI-compatible endpoint (vLLM, SGLang, TGI, llama.cpp server, a
+    # bespoke proxy, ...). Pure registry metadata — the openai_compat backend
+    # and its "openai" dialect policy are reused unchanged. No
+    # default_base_url on purpose: requires_base_url() must stay True, the
+    # endpoint is defined by its operator-supplied URL. The API key is
+    # optional (listed in KEYLESS_PROVIDERS); CUSTOM_LLM_API_KEY is read when
+    # the endpoint enforces one.
+    _spec(
+        "custom",
+        "openai_compat",
+        "openai",
+        "CUSTOM_LLM_API_KEY",
+        required_fields=frozenset({"model", "base_url"}),
+        failure_family="openai_compat",
     ),
     _spec("vllm", "openai_compat", "openai"),
     _spec("lm_studio", "openai_compat", "lm_studio", default_base_url="http://localhost:1234/v1"),

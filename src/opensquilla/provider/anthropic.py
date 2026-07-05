@@ -12,6 +12,8 @@ import structlog
 from opensquilla.env import trust_env as _trust_env
 from opensquilla.execution_status import derive_is_error
 
+from .model_catalog import shared_catalog
+from .registry import AuthHeaderStyle
 from .request_proof import (
     ProviderRequestBudgetExceededError,
     prove_provider_payload_from_env,
@@ -34,38 +36,16 @@ _ANTHROPIC_API_BASE = "https://api.anthropic.com"
 _ANTHROPIC_VERSION = "2023-06-01"
 
 
-def _uses_authorization_bearer(base_url: str) -> bool:
-    """MiniMax Anthropic-compatible APIs require Authorization."""
-    normalized = base_url.lower()
-    return "api.minimaxi.com" in normalized or "api.minimax.io" in normalized
-
-
-_KNOWN_MODELS: list[dict[str, Any]] = [
-    {
-        "model_id": "claude-opus-4-6",
-        "display_name": "Claude Opus 4.6",
-        "context_window": 200000,
-        "max_output_tokens": 32000,
-        "input_cost_per_1k": 0.015,
-        "output_cost_per_1k": 0.075,
-    },
-    {
-        "model_id": "claude-sonnet-4-6",
-        "display_name": "Claude Sonnet 4.6",
-        "context_window": 200000,
-        "max_output_tokens": 16000,
-        "input_cost_per_1k": 0.003,
-        "output_cost_per_1k": 0.015,
-    },
-    {
-        "model_id": "claude-haiku-4-5-20251001",
-        "display_name": "Claude Haiku 4.5",
-        "context_window": 200000,
-        "max_output_tokens": 8192,
-        "input_cost_per_1k": 0.00025,
-        "output_cost_per_1k": 0.00125,
-    },
-]
+# The SKUs this adapter advertises from list_models. The LISTING SET is
+# adapter knowledge — which models the provider surface offers — while the
+# per-model metadata (windows, display names, pricing) resolves through the
+# shared layered catalog, whose packaged corrections rows
+# (catalog_overrides.toml) are the canonical source for these ids.
+_LISTING_MODEL_IDS: tuple[str, ...] = (
+    "claude-opus-4-6",
+    "claude-sonnet-4-6",
+    "claude-haiku-4-5-20251001",
+)
 
 
 def _build_tool_payload(tool: ToolDefinition) -> dict[str, Any]:
@@ -293,12 +273,18 @@ class AnthropicProvider:
         base_url: str = _ANTHROPIC_API_BASE,
         proxy: str | None = None,
         replay_provider_state: bool = True,
+        auth_header_style: AuthHeaderStyle = "x-api-key",
     ) -> None:
+        # The default auth style matches Anthropic proper so direct
+        # construction (tests, embedding) against the default host behaves
+        # unchanged; registry-built providers receive the spec's style
+        # (MiniMax's Anthropic-compatible endpoints need a Bearer header).
         self._api_key = api_key
         self._model = model
         self._base_url = base_url.rstrip("/")
         self._proxy = proxy or None
         self._replay_provider_state = replay_provider_state
+        self._auth_header_style = auth_header_style
 
     @property
     def model(self) -> str:
@@ -413,7 +399,7 @@ class AnthropicProvider:
             "content-type": "application/json",
             "accept": "text/event-stream",
         }
-        if _uses_authorization_bearer(self._base_url):
+        if self._auth_header_style == "bearer":
             headers["Authorization"] = f"Bearer {self._api_key}"
         else:
             headers["x-api-key"] = self._api_key
@@ -581,4 +567,26 @@ class AnthropicProvider:
             )
 
     async def list_models(self) -> list[ModelInfo]:
-        return [ModelInfo(provider=self.provider_name, **m) for m in _KNOWN_MODELS]
+        """Build listing rows for the adapter's SKUs from the shared catalog.
+
+        The catalog's canonical costs are USD per million tokens; the
+        ``ModelInfo`` wire contract carries per-1k floats (rpc_models
+        renders per-1k), so entry costs are converted back (÷1000).
+        Capability flags stay at ``ModelInfo`` defaults — the listing has
+        only ever advertised identity, windows, and pricing.
+        """
+        rows: list[ModelInfo] = []
+        for model_id in _LISTING_MODEL_IDS:
+            entry = shared_catalog().resolve_entry(model_id, provider=self.provider_name)
+            rows.append(
+                ModelInfo(
+                    provider=self.provider_name,
+                    model_id=model_id,
+                    display_name=entry.display_name or model_id,
+                    context_window=entry.context_window,
+                    max_output_tokens=entry.max_output_tokens,
+                    input_cost_per_1k=(entry.input_cost_per_mtok or 0.0) / 1000.0,
+                    output_cost_per_1k=(entry.output_cost_per_mtok or 0.0) / 1000.0,
+                )
+            )
+        return rows

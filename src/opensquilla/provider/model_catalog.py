@@ -2,17 +2,25 @@
 
 from __future__ import annotations
 
+import fnmatch
+import tomllib
+from collections.abc import Mapping
+from functools import cache
+from importlib import resources
+from typing import Any, Literal
+
 import httpx
 import structlog
 
 from opensquilla.env import trust_env as _trust_env
 from opensquilla.secrets import clean_header_secret
 
+from .catalog_types import CatalogSource, ModelCatalogEntry, coerce_entry_field
 from .models_dev import lookup_limits as _models_dev_limits
 from .models_dev import lookup_model as _models_dev_model
 from .ollama import _OLLAMA_DEFAULT_NUM_CTX
 from .openrouter_attribution import openrouter_app_headers
-from .registry import UnknownProviderError, get_provider_spec
+from .registry import LOCAL_RUNTIME_PROVIDERS
 from .types import ModelCapabilities, ModelInfo
 
 log = structlog.get_logger(__name__)
@@ -21,66 +29,31 @@ DEFAULT_MAX_TOKENS = 16384
 SAFE_OPENROUTER_DEFAULT_MAX_TOKENS = 8192
 DEFAULT_CONTEXT_WINDOW = 200_000
 
+# Layer attribution for the ``*_with_source`` resolver variants. "override"
+# is the caller-supplied explicit value (config), "catalog" is any model-
+# metadata layer (live catalog, models.dev snapshot, packaged static
+# fallback), "default" is a hardcoded engine default.
+MaxTokensSource = Literal["override", "catalog", "default"]
+ContextWindowSource = Literal["catalog", "default"]
+
 # Local runtimes (Ollama, …) have unqualified model ids that miss the catalog
-# and the static table, so the 200k cloud default would make the turn budget
-# over-estimate and skip trimming while the runtime silently truncates. Report
-# the runtime's own default window so budgeting matches what it actually allows.
+# and the packaged corrections, so the 200k cloud default would make the turn
+# budget over-estimate and skip trimming while the runtime silently truncates.
+# Report the runtime's own default window so budgeting matches what it
+# actually allows. Membership lives in registry.py (LOCAL_RUNTIME_PROVIDERS)
+# next to its keyless sibling set so the two cannot drift apart unnoticed.
 _LOCAL_CONTEXT_WINDOW = _OLLAMA_DEFAULT_NUM_CTX
-_LOCAL_PROVIDERS = frozenset({"ollama", "lm_studio", "ovms", "vllm", "local"})
 
-# Static fallback for squilla-router tier models + default model.
-# Used when the OpenRouter API is unreachable at boot.
-# Format: model_id → (max_output_tokens, context_window)
-#
-# Keys are provider-agnostic basenames (no "vendor/" prefix); a model that
-# was previously listed under both spellings is merged to ONE conservative
-# (per-dimension min) tuple. Conservative because over-estimating the
-# context window causes silent server-side truncation, while
-# under-estimating only triggers compaction earlier. Lookups normalize the
-# requested id via ``_static_fallback_entry`` so either spelling resolves
-# to the same entry. When offline, the live catalog still overrides this.
-_STATIC_FALLBACK: dict[str, tuple[int, int]] = {
-    "claude-opus-4.8": (128_000, 1_000_000),
-    "claude-sonnet-4.6": (128_000, 1_000_000),
-    "gemini-3.5-flash": (65_536, 1_048_576),
-    "gpt-5.4-nano": (128_000, 400_000),
-    "gpt-5.4-mini": (128_000, 400_000),
-    "gpt-5.5": (128_000, 1_000_000),
-    "qwen3-coder-plus": (65_536, 1_000_000),
-    "grok-4.3": (DEFAULT_MAX_TOKENS, 1_000_000),
-    "glm-4.5-air": (98_304, 131_072),
-    "glm-4.6": (131_072, 202_752),
-    "glm-4.7-flashx": (128_000, 200_000),
-    "glm-5": (80_000, 80_000),
-    "glm-5.1": (128_000, 200_000),
-    "glm-5.2": (262_144, 1_048_576),
-    "minimax-m2.5": (65_536, 196_608),
-    "minimax-m2.7": (8192, 196_608),
-    "step-3.5-flash": (16_384, 256_000),
-    "deepseek-v4-flash": (16_384, 1_048_576),
-    "deepseek-v4-pro": (16_384, 1_048_576),
-    "deepseek-v3.2": (16_384, 163_840),
-    "moonshot-v1-8k": (8192, 8192),
-    "moonshot-v1-32k": (32_768, 32_768),
-    "moonshot-v1-128k": (131_072, 131_072),
-    "kimi-k2.5": (32_768, 262_144),
-    "kimi-k2.6": (32_768, 262_144),
-}
-
-
-def _static_fallback_entry(model_id: str) -> tuple[int, int] | None:
-    """Return the static ``(max_output, context_window)`` for a model.
-
-    Tries the id verbatim, then the basename after the final ``/`` so the
-    same physical model resolves identically whether referenced as a bare
-    id (``glm-5``) or a provider-qualified id (``z-ai/glm-5``).
-    """
-    entry = _STATIC_FALLBACK.get(model_id)
-    if entry is not None:
-        return entry
-    if "/" in model_id:
-        return _STATIC_FALLBACK.get(model_id.rsplit("/", 1)[-1])
-    return None
+# One-release migration gate (recorded decision OQ#5). get_capabilities has
+# always early-returned EMPTY capabilities (reasoning off, tools on, vision
+# off, streaming on) for the anthropic and ollama providers instead of
+# consulting any catalog. Keep that exact behavior for one release while the
+# rest of the ladder moves to catalog data. When this flips to True, both
+# providers resolve through the layered catalog like every other provider —
+# real rows then change engine-level behavior: supports_vision from the
+# catalog stops the engine stripping images for vision-capable models, and
+# supports_tools starts gating tool wiring per model instead of always-on.
+CATALOG_CAPABILITIES_FOR_ANTHROPIC_OLLAMA = False
 
 
 def _price_per_1k(value: object) -> float:
@@ -96,19 +69,267 @@ def _price_per_1k(value: object) -> float:
         return 0.0
 
 
+# ---------------------------------------------------------------------------
+# Layered resolution (resolve_entry) — user > live > corrections > snapshot >
+# synthesized. Each layer adapter returns a dict of only the fields it
+# GENUINELY KNOWS for a model; merging is per field, so a lower layer fills
+# only fields every higher layer left unset (see catalog_types.py for the
+# per-type "unset" sentinels). get_capabilities resolves through this chain
+# (host-trust branches excepted). The legacy resolve_max_tokens /
+# resolve_context_window paths keep their own chain order (live > snapshot >
+# corrections budgets > defaults); they consult the corrections data only in
+# the slot the retired static fallback table occupied, via
+# ``_corrections_budget_fallback``.
+# ---------------------------------------------------------------------------
+
+# Synthesized floor applied after all layers: conservative budgets for
+# models nothing knows, so resolution never fails.
+_SYNTHESIZED_DEFAULTS: dict[str, Any] = {
+    "context_window": 32_768,
+    "max_output_tokens": 8_192,
+    "supports_tools": True,
+    "supports_reasoning": False,
+}
+
+
+def _normalize_corrections(payload: Mapping[str, Any]) -> dict[str, dict[str, dict[str, Any]]]:
+    """Normalize a parsed catalog_overrides.toml payload.
+
+    Provider and model keys are lowercased; field values are validated and
+    coerced via ``coerce_entry_field``. Bad rows or fields are logged and
+    dropped — packaged corrections degrade, they never crash resolution.
+    """
+    tables: dict[str, dict[str, dict[str, Any]]] = {}
+    for provider_key, models in payload.items():
+        if not isinstance(models, Mapping):
+            log.warning("model_catalog.corrections_bad_provider", provider=str(provider_key))
+            continue
+        table: dict[str, dict[str, Any]] = {}
+        for model_key, fields in models.items():
+            if not isinstance(fields, Mapping):
+                log.warning(
+                    "model_catalog.corrections_bad_entry",
+                    provider=str(provider_key),
+                    model=str(model_key),
+                )
+                continue
+            entry: dict[str, Any] = {}
+            for name, value in fields.items():
+                try:
+                    entry[str(name)] = coerce_entry_field(str(name), value)
+                except ValueError as exc:
+                    log.warning(
+                        "model_catalog.corrections_bad_field",
+                        provider=str(provider_key),
+                        model=str(model_key),
+                        error=str(exc),
+                    )
+            if entry:
+                table[str(model_key).strip().lower()] = entry
+        if table:
+            tables[str(provider_key).strip().lower()] = table
+    return tables
+
+
+@cache
+def _corrections_tables() -> dict[str, dict[str, dict[str, Any]]]:
+    """Lazily load the packaged corrections file (catalog_overrides.toml)."""
+    try:
+        path = resources.files("opensquilla.provider").joinpath("catalog_overrides.toml")
+        payload = tomllib.loads(path.read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001 - a missing/corrupt file degrades, never crashes
+        log.warning("model_catalog.corrections_unavailable")
+        return {}
+    return _normalize_corrections(payload)
+
+
+def _corrections_budget_fallback(model_id: str) -> tuple[int, int] | None:
+    """Conservative ``(max_output_tokens, context_window)`` from corrections.
+
+    Fills exactly the resolution slot the retired static fallback table
+    occupied in the legacy ``resolve_max_tokens`` / ``resolve_context_window``
+    chains: consulted only after the live catalog and the models.dev snapshot
+    both miss. Like that table, the lookup is provider-agnostic and keyed by
+    basename — the requested id and every exact (non-glob) corrections row
+    key are normalized to the basename after the final ``/``, so a model
+    resolves identically whether referenced bare (``moonshot-v1-8k``) or
+    provider-qualified (``moonshot/moonshot-v1-8k``), and regardless of which
+    provider table carries the row. Glob rows belong to the capability
+    ladder and are never consulted for budgets.
+
+    When several rows share a basename, the per-dimension minimum wins —
+    over-estimating a context window causes silent server-side truncation,
+    while under-estimating only triggers compaction earlier. A dimension no
+    row knows is returned as 0 (callers treat 0 as unknown).
+    """
+    basename = (model_id or "").strip().lower().rsplit("/", 1)[-1]
+    if not basename:
+        return None
+    max_outputs: list[int] = []
+    windows: list[int] = []
+    matched = False
+    for table in _corrections_tables().values():
+        for key, entry in table.items():
+            if any(marker in key for marker in "*?["):
+                continue
+            if key.rsplit("/", 1)[-1] != basename:
+                continue
+            max_output = int(entry.get("max_output_tokens") or 0)
+            window = int(entry.get("context_window") or 0)
+            if max_output <= 0 and window <= 0:
+                continue
+            matched = True
+            if max_output > 0:
+                max_outputs.append(max_output)
+            if window > 0:
+                windows.append(window)
+    if not matched:
+        return None
+    return (
+        min(max_outputs) if max_outputs else 0,
+        min(windows) if windows else 0,
+    )
+
+
+def _live_layer_fields(info: ModelInfo | None) -> dict[str, Any]:
+    """Fields the live provider catalog knows, adapted per-1k → per-Mtok.
+
+    Capability booleans are computed deterministically from the provider
+    response at populate time, so they are emitted as known whenever the
+    model is in the cache. A 0.0 per-1k price is the live cache's "free or
+    unknown" sentinel, so costs are emitted only when positive — this layer
+    never claims a known $0 price.
+    """
+    if info is None:
+        return {}
+    fields: dict[str, Any] = {
+        "supports_reasoning": info.supports_reasoning,
+        "supports_tools": info.supports_tools,
+        "supports_vision": info.supports_vision,
+    }
+    if info.display_name:
+        fields["display_name"] = info.display_name
+    if info.context_window > 0:
+        fields["context_window"] = info.context_window
+    if info.max_output_tokens > 0:
+        fields["max_output_tokens"] = info.max_output_tokens
+    if info.supports_reasoning:
+        # The live cache is the OpenRouter catalog; its reasoning models
+        # stream through the OpenRouter dialect (matches get_capabilities).
+        fields["reasoning_format"] = "openrouter"
+    if info.input_cost_per_1k > 0:
+        fields["input_cost_per_mtok"] = info.input_cost_per_1k * 1000.0
+    if info.output_cost_per_1k > 0:
+        fields["output_cost_per_mtok"] = info.output_cost_per_1k * 1000.0
+    return fields
+
+
+def _corrections_layer_fields(provider_id: str, model_id: str) -> dict[str, Any]:
+    """Fields from the packaged corrections table for ``(provider, model)``.
+
+    The exact (lowercased) model key is consulted first; every other key in
+    the provider table is then tried as an fnmatch glob against the
+    lowercased model id, in file order, each filling only fields still
+    unset within this layer. No provider → no corrections.
+    """
+    if not provider_id:
+        return {}
+    table = _corrections_tables().get(provider_id)
+    if not table:
+        return {}
+    model_l = model_id.strip().lower()
+    fields: dict[str, Any] = {}
+    exact = table.get(model_l)
+    if exact:
+        fields.update(exact)
+    for pattern, entry in table.items():
+        if pattern == model_l:
+            continue
+        if fnmatch.fnmatchcase(model_l, pattern):
+            for name, value in entry.items():
+                fields.setdefault(name, value)
+    return fields
+
+
+def _snapshot_layer_fields(provider_id: str, model_id: str) -> dict[str, Any]:
+    """Fields from the vendored models.dev snapshot.
+
+    The snapshot carries ``supports_reasoning`` as data but never a
+    ``reasoning_format`` — the streaming dialect is provider knowledge the
+    snapshot does not have. Optional per-Mtok cost keys (``in_mtok``,
+    ``out_mtok``, ``cr_mtok``, ``cw_mtok``) are emitted when present:
+    snapshot costs are explicit data, so a vendored 0 means a known-free
+    price (unlike the live cache's 0.0 "free or unknown" sentinel).
+    """
+    entry = _models_dev_model(provider_id, model_id)
+    if entry is None:
+        return {}
+    fields: dict[str, Any] = {}
+    context_window = int(entry.get("ctx") or 0)
+    max_output = int(entry.get("out") or 0)
+    if context_window > 0:
+        fields["context_window"] = context_window
+    if max_output > 0:
+        fields["max_output_tokens"] = max_output
+    for snapshot_key, field_name in (
+        ("reasoning", "supports_reasoning"),
+        ("tools", "supports_tools"),
+        ("vision", "supports_vision"),
+    ):
+        if snapshot_key in entry:
+            fields[field_name] = bool(entry[snapshot_key])
+    for snapshot_key, field_name in (
+        ("in_mtok", "input_cost_per_mtok"),
+        ("out_mtok", "output_cost_per_mtok"),
+        ("cr_mtok", "cache_read_cost_per_mtok"),
+        ("cw_mtok", "cache_write_cost_per_mtok"),
+    ):
+        value = entry.get(snapshot_key)
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            fields[field_name] = float(value)
+    return fields
+
+
+def _capabilities_from_entry(entry: ModelCatalogEntry) -> ModelCapabilities:
+    """Adapt one resolved ``ModelCatalogEntry`` to ``ModelCapabilities``.
+
+    Reasoning is enabled only when the entry ALSO names a streaming dialect
+    (``reasoning_format`` other than ``"none"``). The snapshot layer may
+    know ``supports_reasoning=True`` for a model but it never carries a
+    ``reasoning_format`` — the dialect is provider knowledge the snapshot
+    does not have — and claiming reasoning without a dialect would send
+    requests with no thinking toggle at all. This preserves the legacy
+    fallback's deliberate semantics: for models only the snapshot knows,
+    tools/vision are filled but reasoning stays OFF; the adaptation never
+    invents a reasoning format.
+    """
+    reasoning_format = entry.reasoning_format
+    supports_reasoning = entry.supports_reasoning and reasoning_format not in ("", "none")
+    return ModelCapabilities(
+        supports_reasoning=supports_reasoning,
+        supports_tools=entry.supports_tools,
+        supports_vision=entry.supports_vision,
+        reasoning_format=reasoning_format if supports_reasoning else "none",
+    )
+
+
 class ModelCatalog:
     """In-memory cache of model metadata fetched from provider API.
 
     Priority chain for max_tokens:
       1. User config override (>0)
       2. API-fetched catalog value
-      3. Static fallback table
-      4. DEFAULT_MAX_TOKENS (16384)
+      3. models.dev snapshot value
+      4. Packaged corrections budgets (catalog_overrides.toml)
+      5. DEFAULT_MAX_TOKENS (16384)
       → then clamp to min(value, context_window)
     """
 
     def __init__(self) -> None:
         self._models: dict[str, ModelInfo] = {}
+        # User-override layer for resolve_entry; keys are lowercased
+        # "provider/model" or bare model ids (see set_user_overrides).
+        self._user_overrides: dict[str, dict[str, Any]] = {}
 
     def __len__(self) -> int:
         return len(self._models)
@@ -146,21 +367,36 @@ class ModelCatalog:
         provider_name: str = "openrouter",
         base_url: str = "",
     ) -> ModelCapabilities:
-        """Resolve ModelCapabilities for a model based on provider and catalog data."""
-        if provider_name == "anthropic":
-            return ModelCapabilities()
-        if provider_name == "ollama":
-            return ModelCapabilities()
-        provider_id = provider_name.strip().lower()
-        try:
-            provider_spec = get_provider_spec(provider_id)
-        except UnknownProviderError:
-            provider_spec = None
+        """Resolve ModelCapabilities through the layered catalog.
 
+        Per-model capability knowledge (the former per-provider prefix
+        ladder) lives in the corrections layer (``catalog_overrides.toml``)
+        and resolves via ``resolve_entry``. Only decisions that hinge on
+        HOST TRUST remain code below: trust in a base URL cannot be
+        expressed in the (provider, model)-keyed corrections schema, so
+        the base-url-sniffing branches keep their exact legacy shape
+        (mirroring the context-capabilities decision).
+        """
+        # Anthropic/Ollama keep the historical early-return-empty behavior
+        # behind a one-release gate — see the flag's comment at the top of
+        # this module for what changes when it flips.
+        if (
+            provider_name in ("anthropic", "ollama")
+            and not CATALOG_CAPABILITIES_FOR_ANTHROPIC_OLLAMA
+        ):
+            return ModelCapabilities()
+        # HOST TRUST (code, not data): an OpenAI-kind config whose base URL
+        # points at DeepSeek serves DeepSeek reasoning models regardless of
+        # the model id spelling.
         if provider_name == "openai" and "deepseek" in base_url.lower():
             return ModelCapabilities(
                 supports_reasoning=True, supports_tools=True, reasoning_format="deepseek"
             )
+        # Live OpenRouter catalog hit: its reasoning models stream through
+        # the OpenRouter dialect. resolve_entry's live layer would produce
+        # the same answer, but the explicit branch keeps the ladder's
+        # historical ordering — a live reasoning hit outranks the
+        # api.openai.com host guard below.
         info = self._models.get(model_id)
         if info and info.supports_reasoning:
             return ModelCapabilities(
@@ -170,6 +406,13 @@ class ModelCatalog:
                 reasoning_format="openrouter",
             )
         model_l = model_id.strip().lower()
+        # HOST TRUST (code, not data): only api.openai.com is trusted to
+        # serve the real gpt-5/o1/o3/o4 reasoning stack. The model-prefix
+        # set stays code WITH the host check because a corrections row is
+        # keyed by (provider, model) only — it cannot express "reasoning
+        # with the openai dialect at this host, snapshot capabilities at
+        # any other", so transcribing the prefixes to data would grant the
+        # openai reasoning dialect to arbitrary proxy base URLs.
         if (
             provider_name == "openai"
             and "api.openai.com" in base_url.lower()
@@ -180,105 +423,9 @@ class ModelCatalog:
                 supports_tools=True,
                 reasoning_format="openai",
             )
-        if provider_spec and provider_spec.reasoning_shape == "deepseek":
-            return ModelCapabilities(
-                supports_reasoning=True,
-                supports_tools=True,
-                reasoning_format="deepseek",
-            )
-        if provider_spec and provider_spec.reasoning_shape == "gemini":
-            supports_reasoning = model_l.startswith("gemini-2.5")
-            return ModelCapabilities(
-                supports_reasoning=supports_reasoning,
-                supports_tools=True,
-                supports_vision=True,
-                reasoning_format="gemini" if supports_reasoning else "none",
-            )
-        if provider_spec and provider_spec.reasoning_shape == "zai":
-            supports_reasoning = model_l.startswith(("glm-4.5", "glm-4.7", "glm-5"))
-            return ModelCapabilities(
-                supports_reasoning=supports_reasoning,
-                supports_tools=True,
-                reasoning_format="zai" if supports_reasoning else "none",
-            )
-        if provider_id == "dashscope":
-            supports_reasoning = model_l.startswith(
-                (
-                    "qwen3",
-                    "qwen-plus",
-                    "qwen-flash",
-                    "qwen-turbo",
-                    "qwen-max",
-                    "qwq",
-                )
-            )
-            return ModelCapabilities(
-                supports_reasoning=supports_reasoning,
-                supports_tools=True,
-                supports_vision=model_l.startswith(("qwen3.5", "qwen3.6", "qwen-vl")),
-                reasoning_format="dashscope" if supports_reasoning else "none",
-            )
-        if provider_id == "moonshot":
-            supports_reasoning = model_l.startswith(
-                ("kimi-k2.5", "kimi-k2.6", "kimi-k2-thinking")
-            )
-            return ModelCapabilities(
-                supports_reasoning=supports_reasoning,
-                supports_tools=True,
-                supports_vision=model_l.startswith(("kimi-k2.5", "kimi-k2.6")),
-                reasoning_format="moonshot" if supports_reasoning else "none",
-            )
-        if provider_id == "volcengine":
-            # doubao-seed-1-6 and -1-8 and the seed-2 line are reasoning
-            # models; without 1-6 here the stream path emits no thinking
-            # toggle, so reasoning leaks into thinking-disabled requests
-            # (verified live 2026-07-02 against doubao-seed-1-6-251015).
-            supports_reasoning = (
-                "thinking" in model_l
-                or model_l.startswith("doubao-seed-2")
-                or model_l.startswith("doubao-seed-1-8")
-                or model_l.startswith("doubao-seed-1-6")
-            )
-            return ModelCapabilities(
-                supports_reasoning=supports_reasoning,
-                supports_tools=True,
-                supports_vision=model_l.startswith(
-                    ("doubao-seed-1-6", "doubao-seed-1-8", "doubao-seed-2")
-                ),
-                reasoning_format="volcengine" if supports_reasoning else "none",
-            )
-        if provider_id == "byteplus":
-            supports_reasoning = (
-                "thinking" in model_l
-                or model_l.startswith("seed-2")
-                or model_l.startswith("seed-1-8")
-                or model_l.startswith("seed-1-6")
-                or model_l.startswith(("kimi-k2-", "kimi-k2."))
-            )
-            return ModelCapabilities(
-                supports_reasoning=supports_reasoning,
-                supports_tools=True,
-                supports_vision=model_l.startswith(
-                    ("seed-1-6", "seed-1-8", "seed-2", "kimi-k2-", "kimi-k2.")
-                ),
-                reasoning_format="volcengine" if supports_reasoning else "none",
-            )
-        # Unknown to every provider-specific branch: fill tools/vision from
-        # the vendored models.dev snapshot when the live catalog has nothing.
-        # Reasoning stays off here on purpose — enabling it requires knowing
-        # the provider's reasoning *format*, which is dialect knowledge the
-        # snapshot does not carry.
-        if info is None:
-            snapshot_entry = _models_dev_model(provider_id, model_id)
-            if snapshot_entry is not None:
-                return ModelCapabilities(
-                    supports_tools=bool(snapshot_entry.get("tools", True)),
-                    supports_vision=bool(snapshot_entry.get("vision", False)),
-                )
-        return ModelCapabilities(
-            supports_tools=info.supports_tools if info else True,
-            supports_vision=info.supports_vision if info else False,
-        )
+        # Everything else is data: user overrides > live > corrections
+        # (the transcribed capability ladder) > snapshot > synthesized.
+        return _capabilities_from_entry(self.resolve_entry(model_id, provider=provider_name))
 
     async def fetch_openrouter(self, api_key: str, base_url: str, proxy: str = "") -> None:
         """Fetch model list from OpenRouter /api/v1/models endpoint.
@@ -305,25 +452,130 @@ class ModelCatalog:
         """Look up model metadata by ID."""
         return self._models.get(model_id)
 
+    def set_user_overrides(self, overrides: Mapping[str, Mapping[str, Any]]) -> None:
+        """Replace the user-override layer (highest resolution authority).
+
+        Keys are ``"provider/model"`` or a bare model id and are matched
+        case-insensitively. At resolve time the provider-qualified key is
+        consulted first; the bare-model key then fills only fields the
+        qualified key left unset. Values map ``ModelCatalogEntry`` data-field
+        names to values. Unknown field names or type-incompatible values are
+        REJECTED with ``ValueError`` (fail fast at configuration time); on
+        rejection the previously installed overrides remain in effect.
+        """
+        validated: dict[str, dict[str, Any]] = {}
+        for key, fields in overrides.items():
+            entry: dict[str, Any] = {}
+            for name, value in fields.items():
+                try:
+                    entry[str(name)] = coerce_entry_field(str(name), value)
+                except ValueError as exc:
+                    raise ValueError(
+                        f"invalid model catalog override for {key!r}: {exc}"
+                    ) from exc
+            validated[str(key).strip().lower()] = entry
+        self._user_overrides = validated
+
+    def _user_override_fields(self, model_id: str, provider_id: str) -> dict[str, Any]:
+        """Fields from the user-override layer for ``(provider, model)``."""
+        if not self._user_overrides:
+            return {}
+        model_l = model_id.strip().lower()
+        keys = [f"{provider_id}/{model_l}"] if provider_id else []
+        keys.append(model_l)
+        fields: dict[str, Any] = {}
+        for key in keys:
+            entry = self._user_overrides.get(key)
+            if entry:
+                for name, value in entry.items():
+                    fields.setdefault(name, value)
+        return fields
+
+    def resolve_entry(self, model: str, *, provider: str = "") -> ModelCatalogEntry:
+        """Resolve one typed catalog entry through the layered sources.
+
+        Authority order, merged per FIELD — a lower layer fills only fields
+        every higher layer left unset:
+
+        1. user overrides (``set_user_overrides``)
+        2. live provider catalog (per-1k costs adapted to per-Mtok)
+        3. packaged corrections (``catalog_overrides.toml``, exact then glob)
+        4. models.dev snapshot
+        5. synthesized fallback — never fails: unknown models yield a
+           conservative entry (32k context / 8k output, tools on,
+           reasoning off) with ``source="synthesized"``.
+
+        ``source`` names the highest-authority layer that contributed at
+        least one field. ``get_capabilities`` resolves through this chain
+        (its host-trust branches excepted). The legacy ``resolve_max_tokens``
+        / ``resolve_context_window`` paths keep their own chain order and
+        consult the corrections data only at the slot the retired static
+        fallback table occupied (below the snapshot), via
+        ``_corrections_budget_fallback``.
+        """
+        provider_id = (provider or "").strip().lower()
+        model_id = (model or "").strip()
+        layers: tuple[tuple[CatalogSource, dict[str, Any]], ...] = (
+            ("user", self._user_override_fields(model_id, provider_id)),
+            ("live", _live_layer_fields(self._models.get(model_id))),
+            ("corrections", _corrections_layer_fields(provider_id, model_id)),
+            ("snapshot", _snapshot_layer_fields(provider_id, model_id)),
+        )
+        merged: dict[str, Any] = {}
+        source: CatalogSource = "synthesized"
+        for layer_source, fields in layers:
+            for name, value in fields.items():
+                if name not in merged:
+                    merged[name] = value
+                    if source == "synthesized":
+                        source = layer_source
+        for name, value in _SYNTHESIZED_DEFAULTS.items():
+            merged.setdefault(name, value)
+        return ModelCatalogEntry(
+            provider_id=provider_id, model_id=model_id, source=source, **merged
+        )
+
     def resolve_max_tokens(
         self, model_id: str, user_override: int = 0, provider: str = ""
     ) -> int:
-        """Resolve max_tokens: user > catalog > static fallback > default, then clamp."""
+        """Resolve max_tokens: user > catalog > corrections budgets > default, then clamp."""
+        return self.resolve_max_tokens_with_source(model_id, user_override, provider)[0]
+
+    def resolve_max_tokens_with_source(
+        self, model_id: str, user_override: int = 0, provider: str = ""
+    ) -> tuple[int, MaxTokensSource]:
+        """Resolve max_tokens and name the layer that decided the value.
+
+        ``override`` = the caller-supplied ``user_override`` (an explicit
+        config value); ``catalog`` = live provider catalog, models.dev
+        snapshot, or the packaged corrections budget rows; ``default`` =
+        :data:`DEFAULT_MAX_TOKENS`. :meth:`resolve_max_tokens` delegates
+        here (single implementation), so value and attribution can never
+        drift apart. The clamp below may lower the number without changing
+        the attribution: the source names the layer that supplied the
+        pre-clamp candidate.
+        """
         context_window = self.resolve_context_window(model_id, provider)
         info = self._models.get(model_id)
 
         using_user_override = user_override > 0
         snapshot_limits = _models_dev_limits(provider, model_id)
+        source: MaxTokensSource
         if using_user_override:
             effective = user_override
+            source = "override"
         elif info and info.max_output_tokens > 0:
             effective = info.max_output_tokens
+            source = "catalog"
         elif snapshot_limits is not None and snapshot_limits[0] > 0:
             effective = snapshot_limits[0]
-        elif (static := _static_fallback_entry(model_id)) is not None:
-            effective = static[0]
+            source = "catalog"
+        elif (budgets := _corrections_budget_fallback(model_id)) is not None and budgets[0] > 0:
+            effective = budgets[0]
+            source = "catalog"
         else:
             effective = DEFAULT_MAX_TOKENS
+            source = "default"
 
         # Clamp to context window. Some provider catalogs report a model's
         # max_completion_tokens as almost the entire context window; using that
@@ -338,19 +590,67 @@ class ModelCatalog:
             ):
                 effective = min(effective, SAFE_OPENROUTER_DEFAULT_MAX_TOKENS)
 
-        return effective
+        return effective, source
 
     def resolve_context_window(self, model_id: str, provider: str = "") -> int:
-        """Resolve context window: catalog > models.dev > static fallback > local/default."""
+        """Resolve context window: catalog > models.dev > corrections budgets > local/default."""
+        return self.resolve_context_window_with_source(model_id, provider)[0]
+
+    def resolve_context_window_with_source(
+        self, model_id: str, provider: str = ""
+    ) -> tuple[int, ContextWindowSource]:
+        """Resolve the context window and name the layer that decided it.
+
+        ``catalog`` = live provider catalog, models.dev snapshot, or the
+        packaged corrections budget rows; ``default`` = the local-runtime or
+        cloud default window. :meth:`resolve_context_window` delegates here
+        (single implementation), so value and attribution can never drift
+        apart.
+        """
         info = self._models.get(model_id)
         if info and info.context_window > 0:
-            return info.context_window
+            return info.context_window, "catalog"
         snapshot_limits = _models_dev_limits(provider, model_id)
         if snapshot_limits is not None and snapshot_limits[1] > 0:
-            return snapshot_limits[1]
-        static = _static_fallback_entry(model_id)
-        if static is not None:
-            return static[1]
-        if provider and provider.strip().lower() in _LOCAL_PROVIDERS:
-            return _LOCAL_CONTEXT_WINDOW
-        return DEFAULT_CONTEXT_WINDOW
+            return snapshot_limits[1], "catalog"
+        budgets = _corrections_budget_fallback(model_id)
+        if budgets is not None and budgets[1] > 0:
+            return budgets[1], "catalog"
+        if provider and provider.strip().lower() in LOCAL_RUNTIME_PROVIDERS:
+            return _LOCAL_CONTEXT_WINDOW, "default"
+        return DEFAULT_CONTEXT_WINDOW, "default"
+
+
+# ---------------------------------------------------------------------------
+# Shared process-wide catalog instance.
+#
+# The gateway boots ONE catalog and warms it (fetch_openrouter); every other
+# resolution site should consult that same instance instead of constructing
+# cold copies that only ever see snapshot/corrections data. Callers that run
+# without a gateway boot (standalone CLI paths) fall back to a lazily-built
+# cold instance, which preserves today's snapshot/corrections-only semantics.
+# ---------------------------------------------------------------------------
+
+_shared_catalog: ModelCatalog | None = None
+_cold_catalog: ModelCatalog | None = None
+
+
+def set_shared_catalog(catalog: ModelCatalog | None) -> None:
+    """Install (or, with ``None``, clear) the process-wide shared catalog."""
+    global _shared_catalog
+    _shared_catalog = catalog
+
+
+def shared_catalog() -> ModelCatalog:
+    """Return the injected shared catalog, else a lazily-built cold instance.
+
+    The cold fallback is created once and reused, so repeated calls without
+    an injected catalog are stable (same object). Construction is idempotent
+    and GIL-serialized, so no locking is needed here.
+    """
+    if _shared_catalog is not None:
+        return _shared_catalog
+    global _cold_catalog
+    if _cold_catalog is None:
+        _cold_catalog = ModelCatalog()
+    return _cold_catalog

@@ -172,12 +172,17 @@
                         <code>{{ step.command }}</code>
                         <button
                           class="health-step__copy"
+                          :class="{ 'health-step__copy--ok': copiedCommandKey === healthStepCopyKey(finding, fIdx, sIdx) }"
                           type="button"
-                          :title="t('sessions.overview.copyCommand')"
-                          :aria-label="t('sessions.overview.copyCommand')"
-                          @click="copyCommand(step.command!)"
+                          :title="copiedCommandKey === healthStepCopyKey(finding, fIdx, sIdx)
+                            ? t('setup.toast.copiedCommand')
+                            : t('sessions.overview.copyCommand')"
+                          :aria-label="copiedCommandKey === healthStepCopyKey(finding, fIdx, sIdx)
+                            ? t('setup.toast.copiedCommand')
+                            : t('sessions.overview.copyCommand')"
+                          @click="copyCommand(step.command!, healthStepCopyKey(finding, fIdx, sIdx))"
                         >
-                          <Icon name="copy" :size="14" />
+                          <Icon :name="copiedCommandKey === healthStepCopyKey(finding, fIdx, sIdx) ? 'check' : 'copy'" :size="14" />
                         </button>
                       </span>
                       <span v-if="step.detail" class="health-step__detail">{{ step.detail }}</span>
@@ -292,6 +297,7 @@ import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
 import { useRpcStore } from '@/stores/rpc'
 import { useRequest } from '@/composables/useRequest'
+import { useToasts } from '@/composables/useToasts'
 import { copyTextWithFallback } from '@/utils/browser'
 import Icon from '@/components/Icon.vue'
 import ErrorState from '@/components/ErrorState.vue'
@@ -374,6 +380,7 @@ interface LogEvent {
 const { t } = useI18n()
 const router = useRouter()
 const rpc = useRpcStore()
+const { pushToast } = useToasts()
 
 // ---------------------------------------------------------------------------
 // State
@@ -444,11 +451,13 @@ const recentSessions = computed<Session[]>(() => {
 const healthLoading = ref(true)
 const healthReport = ref<HealthReport | null>(null)
 const healthError = ref<Error | null>(null)
+const copiedCommandKey = ref('')
 
 const eventLog = ref<LogEvent[]>([])
 
 let autoRefreshId: ReturnType<typeof setInterval> | null = null
 let unsubEvents: (() => void) | null = null
+let copiedCommandResetId: ReturnType<typeof setTimeout> | null = null
 
 // ---------------------------------------------------------------------------
 // Computed
@@ -569,6 +578,7 @@ onDeactivated(() => {
 
 onUnmounted(() => {
   stopTimers()
+  clearCopiedCommandTimer()
 })
 
 function startTimers() {
@@ -631,12 +641,33 @@ async function loadHealth() {
   }
 }
 
-async function copyCommand(command: string) {
+function clearCopiedCommandTimer() {
+  if (copiedCommandResetId) {
+    clearTimeout(copiedCommandResetId)
+    copiedCommandResetId = null
+  }
+}
+
+function healthStepCopyKey(finding: Finding, findingIndex: number, stepIndex: number): string {
+  return `${findingGroupKind(finding)}:${finding.id || finding.title || findingIndex}:${stepIndex}`
+}
+
+async function copyCommand(command: string, key: string) {
   if (!command) return
   try {
     await copyTextWithFallback(command)
-  } catch {
-    // Silently ignore copy failures
+    copiedCommandKey.value = key
+    pushToast(t('setup.toast.copiedCommand'), { tone: 'ok' })
+    clearCopiedCommandTimer()
+    copiedCommandResetId = setTimeout(() => {
+      copiedCommandKey.value = ''
+      copiedCommandResetId = null
+    }, 1600)
+  } catch (err) {
+    clearCopiedCommandTimer()
+    copiedCommandKey.value = ''
+    const error = err instanceof Error ? err.message : String(err)
+    pushToast(t('setup.toast.copyFailed', { error }), { tone: 'danger' })
   }
 }
 
@@ -1770,6 +1801,13 @@ function gatewayContextUrl(): string {
   background: var(--bg-hover);
   border-color: var(--accent);
   color: var(--text);
+}
+
+.health-step__copy--ok,
+.health-step__copy--ok:hover {
+  background: color-mix(in srgb, var(--ok) 14%, var(--bg-elevated));
+  border-color: var(--ok);
+  color: var(--ok);
 }
 
 .health-empty {

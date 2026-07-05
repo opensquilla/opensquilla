@@ -11,7 +11,7 @@ from collections.abc import AsyncIterator, Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from typing import Any, Literal
 
-from .model_catalog import ModelCatalog
+from .model_catalog import shared_catalog
 from .protocol import LLMProvider, ProviderMetadata
 from .registry import get_provider_spec
 from .selector import ModelSelector, ProviderConfig, SelectorConfig
@@ -241,7 +241,7 @@ def _member_model_capabilities(member: EnsembleMemberConfig) -> ModelCapabilitie
         if static_caps is not None:
             return static_caps
     try:
-        return ModelCatalog().get_capabilities(
+        return shared_catalog().get_capabilities(
             cfg.model,
             provider_name=provider,
             base_url=cfg.base_url,
@@ -255,7 +255,7 @@ def _member_max_tokens(member: EnsembleMemberConfig) -> int:
         return member.max_tokens
     cfg = member.provider_config
     try:
-        return ModelCatalog().resolve_max_tokens(
+        return shared_catalog().resolve_max_tokens(
             cfg.model,
             user_override=0,
             provider=cfg.provider,
@@ -1304,9 +1304,10 @@ _DYNAMIC_SELECTED_PENALTY = {
     "aggregator_strong": 0.12,
 }
 
-# quality/cost_latency are a manually-refreshed static snapshot (same pattern as
-# _STATIC_FALLBACK in model_catalog.py), not live-fetched. Refresh both columns together
-# so they stay apples-to-apples with the formulas below when models are added/renamed.
+# quality/cost_latency are a manually-refreshed static snapshot (same pattern as the
+# packaged budget rows in catalog_overrides.toml), not live-fetched. Refresh both columns
+# together so they stay apples-to-apples with the formulas below when models are
+# added/renamed.
 #
 # quality = Artificial Analysis Intelligence Index / 100, v4.1 methodology, single leaderboard
 #   snapshot fetched 2026-07-03 from https://artificialanalysis.ai/leaderboards/models (reasoning

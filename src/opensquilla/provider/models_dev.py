@@ -4,8 +4,9 @@ The snapshot (``models_dev_snapshot.json``, refreshed via
 ``scripts/refresh_models_dev_snapshot.py``) is the offline source of real
 per-``(provider, model)`` context/output limits and capability booleans. It
 sits between the live provider catalog (authoritative when reachable) and
-the hand-maintained conservative ``_STATIC_FALLBACK`` (emergency floor), so
-direct-provider deployments stop running on guessed limits.
+the hand-maintained conservative budget rows packaged in
+``catalog_overrides.toml`` (emergency floor), so direct-provider deployments
+stop running on guessed limits.
 """
 
 from __future__ import annotations
@@ -18,6 +19,13 @@ from typing import Any
 import structlog
 
 log = structlog.get_logger(__name__)
+
+# Optional per-Mtok cost keys a snapshot entry may carry (see
+# scripts/refresh_models_dev_snapshot.py). Provider-table hits pass them
+# through verbatim; the cross-provider merge strips them (costs are set by
+# the provider actually serving the request, so another provider's numbers
+# would be actively wrong rather than conservative).
+_COST_KEYS = ("in_mtok", "out_mtok", "cr_mtok", "cw_mtok")
 
 
 @cache
@@ -77,6 +85,8 @@ def lookup_model(provider_id: str, model_id: str) -> dict[str, Any] | None:
         merged["out"] = min(int(merged.get("out") or 0), int(other.get("out") or 0))
         for flag in ("reasoning", "tools", "vision"):
             merged[flag] = bool(merged.get(flag)) and bool(other.get(flag))
+    for cost_key in _COST_KEYS:
+        merged.pop(cost_key, None)
     return merged
 
 

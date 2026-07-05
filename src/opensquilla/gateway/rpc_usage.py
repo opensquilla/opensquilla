@@ -7,13 +7,12 @@ from collections.abc import Mapping
 from typing import Any
 
 from opensquilla.gateway.rpc import RpcContext, get_dispatcher
-from opensquilla.provider.model_catalog import ModelCatalog
+from opensquilla.provider.model_catalog import shared_catalog
 from opensquilla.session.cost_rollup import rollup_cost_source
 from opensquilla.session.tokenizer import estimate_tokens
 
 _d = get_dispatcher()
 _CONTEXT_WARNING_RATIO = 0.85
-_CONTEXT_WINDOW_CATALOG = ModelCatalog()
 
 
 def _now_ms() -> int:
@@ -72,7 +71,7 @@ def _resolve_context_window(model: str | None, ctx: RpcContext) -> tuple[int | N
             window = _positive_int(catalog.resolve_context_window(model, provider))
             if window is not None:
                 return window, "runtime_model_catalog"
-        window = _positive_int(_CONTEXT_WINDOW_CATALOG.resolve_context_window(model, provider))
+        window = _positive_int(shared_catalog().resolve_context_window(model, provider))
         if window is not None:
             return window, "static_model_catalog"
     return None, "unavailable"

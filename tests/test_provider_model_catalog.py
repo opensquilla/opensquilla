@@ -4,13 +4,13 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from opensquilla.provider.model_catalog import _STATIC_FALLBACK, ModelCatalog
+from opensquilla.provider.model_catalog import ModelCatalog, _corrections_budget_fallback
 
 
 def test_deepseek_v4_direct_models_use_models_dev_limits() -> None:
     # The vendored models.dev snapshot supplies the real per-(provider, model)
-    # budgets offline (PR #406 roadmap item 4); the conservative static table
-    # remains only the emergency floor beneath it.
+    # budgets offline (PR #406 roadmap item 4); the packaged corrections
+    # budget rows remain only the emergency floor beneath it.
     catalog = ModelCatalog()
 
     for model in ("deepseek-v4-flash", "deepseek-v4-pro"):
@@ -47,24 +47,87 @@ def test_direct_profile_windows_resolve_from_models_dev_snapshot() -> None:
         assert max_tokens <= context_window
 
 
-def test_static_fallback_keys_are_provider_agnostic_and_conservative() -> None:
-    # No provider-qualified spellings remain, so one physical model cannot
-    # carry two divergent budget tuples.
-    assert all("/" not in key for key in _STATIC_FALLBACK)
-    # Conservative-min merges of formerly divergent pairs.
-    assert _STATIC_FALLBACK["glm-5"] == (80_000, 80_000)
-    assert _STATIC_FALLBACK["deepseek-v4-flash"] == (16_384, 1_048_576)
-    assert _STATIC_FALLBACK["kimi-k2.6"] == (32_768, 262_144)
+def test_corrections_budget_fallback_is_provider_agnostic_by_basename() -> None:
+    # The retired static table's budget slot now resolves from the packaged
+    # corrections rows, keyed PROVIDER-AGNOSTICALLY by basename. The moonshot
+    # window rows carry the exact values the static table did.
+    assert _corrections_budget_fallback("moonshot-v1-8k") == (8_192, 8_192)
+    assert _corrections_budget_fallback("moonshot-v1-32k") == (32_768, 32_768)
+    assert _corrections_budget_fallback("moonshot-v1-128k") == (131_072, 131_072)
+    # The vendor-qualified router-tier rows the snapshot only knows by their
+    # slash id resolve for the bare basename too (grok's static tuple was
+    # DEFAULT_MAX_TOKENS output / 1M window).
+    assert _corrections_budget_fallback("grok-4.3") == (16_384, 1_000_000)
+    assert _corrections_budget_fallback("step-3.5-flash") == (16_384, 256_000)
+    # Glob capability-ladder rows are never consulted for budgets, and an
+    # unknown basename yields None.
+    assert _corrections_budget_fallback("model-nobody-knows") is None
 
 
-def test_static_fallback_qualified_and_unqualified_resolve_identically() -> None:
+def test_corrections_budget_qualified_and_unqualified_resolve_identically() -> None:
     catalog = ModelCatalog()
     for qualified, bare in (
         ("z-ai/glm-5", "glm-5"),
         ("deepseek/deepseek-v4-pro", "deepseek-v4-pro"),
+        ("moonshot/moonshot-v1-8k", "moonshot-v1-8k"),
     ):
         assert catalog.resolve_context_window(qualified) == catalog.resolve_context_window(bare)
         assert catalog.resolve_max_tokens(qualified) == catalog.resolve_max_tokens(bare)
+
+
+# Retirement parity net for the 25 keys of the deleted static fallback table.
+# Expectations are LITERALS captured from the pre-change tree (both resolvers
+# run against staging/provider-overhaul before the table was removed), for
+# the two call shapes production uses: no provider (router-decision path)
+# and the key's natural provider (turn-runner path). Any drift here means
+# the retirement changed a resolution the static table used to decide.
+#
+# key → (natural provider,
+#        (max_tokens, context_window) with provider="",
+#        (max_tokens, context_window) with the natural provider)
+_STATIC_RETIREMENT_PARITY: dict[str, tuple[str, tuple[int, int], tuple[int, int]]] = {
+    "claude-opus-4.8": ("anthropic", (128_000, 1_000_000), (128_000, 1_000_000)),
+    "claude-sonnet-4.6": ("anthropic", (128_000, 1_000_000), (128_000, 1_000_000)),
+    "gemini-3.5-flash": ("gemini", (65_536, 1_048_576), (65_536, 1_048_576)),
+    "gpt-5.4-nano": ("openai", (128_000, 400_000), (128_000, 400_000)),
+    "gpt-5.4-mini": ("openai", (128_000, 400_000), (128_000, 400_000)),
+    "gpt-5.5": ("openai", (128_000, 1_050_000), (128_000, 1_050_000)),
+    "qwen3-coder-plus": ("dashscope", (65_536, 1_048_576), (65_536, 1_048_576)),
+    "grok-4.3": ("xai", (16_384, 1_000_000), (16_384, 1_000_000)),
+    "glm-4.5-air": ("zhipu", (98_304, 131_072), (98_304, 131_072)),
+    "glm-4.6": ("zhipu", (131_072, 204_800), (131_072, 204_800)),
+    "glm-4.7-flashx": ("zhipu", (131_072, 200_000), (131_072, 200_000)),
+    "glm-5": ("zhipu", (16_384, 202_752), (131_072, 204_800)),
+    "glm-5.1": ("zhipu", (128_000, 200_000), (131_072, 200_000)),
+    "glm-5.2": ("zhipu", (131_072, 1_000_000), (131_072, 1_000_000)),
+    "minimax-m2.5": ("minimax", (131_072, 204_800), (131_072, 204_800)),
+    "minimax-m2.7": ("minimax", (131_072, 204_800), (131_072, 204_800)),
+    "step-3.5-flash": ("stepfun", (16_384, 256_000), (16_384, 256_000)),
+    "deepseek-v4-flash": ("deepseek", (384_000, 1_000_000), (384_000, 1_000_000)),
+    "deepseek-v4-pro": ("deepseek", (384_000, 1_000_000), (384_000, 1_000_000)),
+    "deepseek-v3.2": ("deepseek", (8_192, 128_000), (8_192, 128_000)),
+    "moonshot-v1-8k": ("moonshot", (8_192, 8_192), (8_192, 8_192)),
+    "moonshot-v1-32k": ("moonshot", (8_192, 32_768), (8_192, 32_768)),
+    "moonshot-v1-128k": ("moonshot", (8_192, 131_072), (8_192, 131_072)),
+    "kimi-k2.5": ("moonshot", (32_768, 262_144), (8_192, 262_144)),
+    "kimi-k2.6": ("moonshot", (16_384, 262_144), (8_192, 262_144)),
+}
+
+
+def test_static_table_retirement_keeps_all_25_key_resolutions_identical() -> None:
+    assert len(_STATIC_RETIREMENT_PARITY) == 25
+    catalog = ModelCatalog()
+    for model, (natural, bare_expected, natural_expected) in _STATIC_RETIREMENT_PARITY.items():
+        observed_bare = (
+            catalog.resolve_max_tokens(model),
+            catalog.resolve_context_window(model),
+        )
+        assert observed_bare == bare_expected, (model, "")
+        observed_natural = (
+            catalog.resolve_max_tokens(model, provider=natural),
+            catalog.resolve_context_window(model, natural),
+        )
+        assert observed_natural == natural_expected, (model, natural)
 
 
 def test_populate_from_data_parses_openrouter_pricing() -> None:

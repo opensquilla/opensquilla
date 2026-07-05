@@ -176,6 +176,24 @@ def test_ollama_does_not_require_api_key():
     assert res.config.llm.provider == "ollama"
 
 
+def test_provider_save_outside_legacy_presets_disables_router():
+    """D18 pin: saving a provider outside the legacy preset nine (e.g. groq)
+    still yields enabled=False / tier_profile=None. The preset registry
+    synthesizes a groq preset, but save paths never auto-apply it — a
+    persisted synthesized tier_profile would brick rc1 loaders on downgrade.
+    """
+    cfg = GatewayConfig()
+    res = upsert_llm_provider(
+        cfg,
+        provider_id="groq",
+        model="test-model",
+        api_key="sk-test",
+    )
+    assert res.config.llm.provider == "groq"
+    assert res.config.squilla_router.enabled is False
+    assert res.config.squilla_router.tier_profile is None
+
+
 def test_upsert_channel_appends_new():
     cfg = GatewayConfig()
     res = upsert_channel(

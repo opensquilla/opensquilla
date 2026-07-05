@@ -60,8 +60,11 @@ class ProviderSpec:
     # local/self-hosted or OAuth-only providers with no public catalog.
     catalog_source: tuple[str, ...] = ()
 
+    # Providers whose API key is optional even when an env_key is declared:
+    # local runtimes plus the generic self-hosted ``custom`` endpoint (many
+    # self-hosted servers run without authentication).
     _LOCAL_PROVIDERS: ClassVar[frozenset[str]] = frozenset(
-        {"ollama", "lm_studio", "ovms"}
+        {"ollama", "lm_studio", "ovms", "custom"}
     )
 
     def requires_api_key(self) -> bool:
@@ -322,6 +325,22 @@ for _provider_spec in [
         "BYTEPLUS_API_KEY",
         "https://ark.ap-southeast.bytepluses.com/api/v3",
         catalog_source=("byteplus",),
+    ),
+    # First-class id for any self-hosted or otherwise unlisted
+    # OpenAI-compatible endpoint (vLLM, SGLang, TGI, llama.cpp server, a
+    # bespoke proxy, ...). Pure registry metadata — the openai_compat backend
+    # and its "openai" dialect policy are reused unchanged. No
+    # default_base_url on purpose: requires_base_url() must stay True, the
+    # endpoint is defined by its operator-supplied URL. The API key is
+    # optional (listed in _LOCAL_PROVIDERS); CUSTOM_LLM_API_KEY is read when
+    # the endpoint enforces one.
+    _spec(
+        "custom",
+        "openai_compat",
+        "openai",
+        "CUSTOM_LLM_API_KEY",
+        required_fields=frozenset({"model", "base_url"}),
+        failure_family="openai_compat",
     ),
     _spec("vllm", "openai_compat", "openai"),
     _spec("lm_studio", "openai_compat", "lm_studio", default_base_url="http://localhost:1234/v1"),

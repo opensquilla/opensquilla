@@ -20,6 +20,9 @@ _CATALOG_SOURCE_WAIVERS: frozenset[str] = frozenset(
         "lm_studio",
         "ovms",
         "vllm",
+        # Generic self-hosted OpenAI-compatible endpoint id: the model set is
+        # whatever the operator serves; no models.dev source exists.
+        "custom",
         # Deployment-defined aggregation proxy: the model set is whatever
         # the operator's LiteLLM instance routes; no stable public catalog.
         "litellm_proxy",

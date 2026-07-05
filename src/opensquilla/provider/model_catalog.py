@@ -34,7 +34,7 @@ DEFAULT_CONTEXT_WINDOW = 200_000
 # over-estimate and skip trimming while the runtime silently truncates. Report
 # the runtime's own default window so budgeting matches what it actually allows.
 _LOCAL_CONTEXT_WINDOW = _OLLAMA_DEFAULT_NUM_CTX
-_LOCAL_PROVIDERS = frozenset({"ollama", "lm_studio", "ovms", "vllm", "local"})
+_LOCAL_PROVIDERS = frozenset({"ollama", "lm_studio", "ovms", "vllm", "custom", "local"})
 
 # Static fallback for squilla-router tier models + default model.
 # Used when the OpenRouter API is unreachable at boot.

@@ -66,7 +66,7 @@ EXPECTED_VERIFIED = {
 # Experimental: registry-runnable, offered with a visible caveat.
 EXPECTED_EXPERIMENTAL = {
     "azure", "bailian_coding", "minimax", "minimax_openai", "minimax_cn",
-    "minimax_global", "mistral", "groq", "aihubmix", "vllm",
+    "minimax_global", "mistral", "groq", "aihubmix", "vllm", "custom",
     "lm_studio", "siliconflow", "ovms", "litellm_proxy", "openai_codex",
 }
 EXPECTED_SUPPORTED = EXPECTED_VERIFIED | EXPECTED_EXPERIMENTAL
@@ -160,6 +160,48 @@ def test_azure_requires_base_url_in_setup_spec():
 def test_vllm_requires_base_url_in_setup_spec():
     spec = get_provider_setup_spec("vllm")
     assert spec.requires_base_url is True
+
+
+def test_custom_provider_is_a_first_class_self_hosted_endpoint():
+    """The generic ``custom`` id: base URL is mandatory (there is no default
+    endpoint to fall back to), the API key is optional (self-hosted servers
+    often run unauthenticated), and the entry is runtime-supported so it can
+    be configured and probed like any other provider."""
+    spec = get_provider_setup_spec("custom")
+
+    assert spec.runtime_supported is True
+    assert spec.backend == "openai_compat"
+    assert spec.provider_kind == "openai"
+    assert spec.deployment == "custom"
+    assert spec.label.startswith("Custom OpenAI-compatible endpoint")
+
+    assert spec.requires_base_url is True
+    assert spec.default_base_url == ""
+    base_field = next(f for f in spec.fields if f.name == "base_url")
+    assert base_field.required is True
+
+    assert spec.requires_api_key is False
+    assert spec.env_key == "CUSTOM_LLM_API_KEY"
+    api_field = next(f for f in spec.fields if f.name == "api_key")
+    assert api_field.required is False
+
+    model_field = next(f for f in spec.fields if f.name == "model")
+    assert model_field.required is True
+
+
+def test_custom_provider_catalog_payload_semantics():
+    row = next(
+        row for row in provider_catalog_payload() if row["providerId"] == "custom"
+    )
+
+    assert row["runtimeSupported"] is True
+    assert row["requiresApiKey"] is False
+    assert row["requiresBaseUrl"] is True
+    assert row["envKey"] == "CUSTOM_LLM_API_KEY"
+    assert row["defaultBaseUrl"] == ""
+    fields = {f["name"]: f for f in row["fields"]}
+    assert fields["base_url"]["required"] is True
+    assert fields["api_key"]["required"] is False
 
 
 def test_unknown_provider_raises():

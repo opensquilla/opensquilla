@@ -97,6 +97,7 @@ base_url = "https://openrouter.ai/api/v1"
 # volcengine    VOLCENGINE_API_KEY       https://ark.cn-beijing.volces.com/api/v3
 # byteplus      BYTEPLUS_API_KEY         https://ark.ap-southeast.bytepluses.com/api/v3
 # vllm          none                     explicit base_url required
+# custom        CUSTOM_LLM_API_KEY (optional)  explicit base_url required
 # lm_studio     none                     http://localhost:1234/v1
 # ovms          none                     http://localhost:8000/v3
 # qianfan       QIANFAN_API_KEY          https://qianfan.baidubce.com/v2
@@ -110,6 +111,15 @@ base_url = "https://openrouter.ai/api/v1"
 # model = "deepseek-v4-flash"
 # api_key = ""          # env DEEPSEEK_API_KEY also works
 # base_url = "https://api.deepseek.com"
+#
+# Example self-hosted / custom OpenAI-compatible endpoint (vLLM, SGLang, TGI,
+# llama.cpp server, or any proxy speaking the Chat Completions API):
+# provider = "custom"
+# base_url = "http://127.0.0.1:8000/v1"   # required — no default endpoint
+# model = "qwen3-32b-awq"
+# # api_key is optional: set env CUSTOM_LLM_API_KEY (or api_key here) only if
+# # your endpoint enforces one. Declare the endpoint's real context window via
+# # [models.custom."qwen3-32b-awq"] — see the per-model overrides section below.
 
 # Pin each model to its native upstream provider on OpenRouter.
 # Sends provider.only=[slug] + allow_fallbacks=true per request.
@@ -151,6 +161,14 @@ base_url = "https://openrouter.ai/api/v1"
 # Self-hosted example: a vLLM endpoint declaring its real context window so
 # context budgeting and compaction stop assuming a conservative default:
 # [models.vllm."qwen3-32b-awq"]
+# context_window = 131072
+# max_output_tokens = 8192
+# supports_tools = true
+#
+# The generic `custom` provider (any self-hosted OpenAI-compatible endpoint;
+# see the [llm] example above) uses the same override table, keyed by its
+# served model id:
+# [models.custom."qwen3-32b-awq"]
 # context_window = 131072
 # max_output_tokens = 8192
 # supports_tools = true

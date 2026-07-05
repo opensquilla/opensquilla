@@ -307,14 +307,14 @@ def test_gateway_stream_timeout_config_defaults_remain_serializable() -> None:
     assert effective_webui_stream_idle_grace_seconds(config) == 630.0
 
 
-def test_gateway_stream_timeout_defaults_floor_when_openrouter_key_present(
+def test_gateway_stream_timeout_defaults_stay_single_router_when_openrouter_key_present(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-synthetic")
     config = GatewayConfig()
 
-    assert effective_agent_stream_idle_timeout_seconds(config) == 1200.0
-    assert effective_webui_stream_idle_grace_seconds(config) == 1260.0
+    assert effective_agent_stream_idle_timeout_seconds(config) == 600.0
+    assert effective_webui_stream_idle_grace_seconds(config) == 630.0
 
 
 def test_gateway_stream_timeouts_keep_legacy_effective_values_when_static_disabled() -> None:

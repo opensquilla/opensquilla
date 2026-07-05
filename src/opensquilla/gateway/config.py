@@ -1811,7 +1811,7 @@ class GatewayConfig(BaseSettings):
         # Boot auto-default stays pinned to the persistable packaged profiles.
         # Synthesized presets are applied by onboarding/provider saves as
         # inline tiers, never as a persisted tier_profile.
-        if provider not in ROUTER_TIER_PROFILE_IDS:
+        if provider == "openrouter" or provider not in ROUTER_TIER_PROFILE_IDS:
             return self
         fields_set = set(getattr(router, "model_fields_set", set()))
         has_custom_tiers = (

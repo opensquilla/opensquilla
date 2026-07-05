@@ -26,6 +26,16 @@ trailers.
 | [@ab2ence](https://github.com/ab2ence) | macOS Seatbelt backend execution, denial escalation, and release-candidate type-check cleanup. | [#46](https://github.com/opensquilla/opensquilla/pull/46), [`fb1e6225`](https://github.com/opensquilla/opensquilla/pull/46/commits/fb1e6225e4db9cb0801ea347a89c2066e3e0601b), [`f73ac3eb`](https://github.com/opensquilla/opensquilla/pull/46/commits/f73ac3eb0044c64c79cfd18f9ec03d1bba9128ff), [`cf3b046f`](https://github.com/opensquilla/opensquilla/pull/46/commits/cf3b046f42a42efc951320b0af80e9d066dcf7d2) |
 | [@kimjune01](https://github.com/kimjune01) | Provider stream timeout cleanup fix that prevents double-closing provider streams. | [#46](https://github.com/opensquilla/opensquilla/pull/46), [`06e3126d`](https://github.com/opensquilla/opensquilla/pull/46/commits/06e3126d8ebda4ad4cf349ca7be0d0804e0c008d) |
 
+## OpenSquilla 0.5.0rc2
+
+The 0.5.0 Preview 2 release records new human contributor work after the
+0.5.0 Preview 1 release. It intentionally does not repeat the earlier 0.5.0rc1
+or 0.4.x contributor lists.
+
+| Contributor | 0.5.0 Preview 2 contribution | Evidence |
+| --- | --- | --- |
+| [@HuaXiawithMoon](https://github.com/HuaXiawithMoon) | Kept `code-task` build scaffolding non-interactive by switching the runner-owned Electron/Vite scaffold to the package-supported skip flag. | [#473](https://github.com/opensquilla/opensquilla/pull/473) |
+
 ## OpenSquilla 0.5.0rc1
 
 The 0.5.0 Preview 1 release records new human contributor work after the

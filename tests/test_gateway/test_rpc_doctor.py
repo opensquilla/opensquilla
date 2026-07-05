@@ -880,7 +880,10 @@ async def test_doctor_status_warns_when_static_b5_ensemble_has_no_credential(
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
     _patch_all_but_llm_ensemble(monkeypatch, rpc_doctor)
 
-    config = GatewayConfig(llm={"provider": "groq", "api_key": "sk-groq-synthetic"})
+    config = GatewayConfig(
+        llm={"provider": "groq", "api_key": "sk-groq-synthetic"},
+        llm_ensemble={"enabled": True, "selection_mode": "static_openrouter_b5"},
+    )
     response = await get_dispatcher().dispatch(
         "req-1",
         "doctor.status",
@@ -913,7 +916,10 @@ async def test_doctor_status_reports_static_b5_ensemble_ready_when_keyed(
     monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-synthetic")
     _patch_all_but_llm_ensemble(monkeypatch, rpc_doctor)
 
-    config = GatewayConfig(llm={"provider": "groq", "api_key": "sk-groq-synthetic"})
+    config = GatewayConfig(
+        llm={"provider": "groq", "api_key": "sk-groq-synthetic"},
+        llm_ensemble={"enabled": True, "selection_mode": "static_openrouter_b5"},
+    )
     response = await get_dispatcher().dispatch(
         "req-1",
         "doctor.status",

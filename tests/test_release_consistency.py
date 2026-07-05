@@ -5,8 +5,8 @@ import re
 import tomllib
 from pathlib import Path
 
-CURRENT_VERSION = "0.5.0rc1"
-CURRENT_DESKTOP_VERSION = "0.5.0-rc1"
+CURRENT_VERSION = "0.5.0rc2"
+CURRENT_DESKTOP_VERSION = "0.5.0-rc2"
 CURRENT_TAG = f"v{CURRENT_VERSION}"
 HISTORICAL_PREVIEW_VERSION = "0.2.0rc1"
 HISTORICAL_PREVIEW_TAG = f"v{HISTORICAL_PREVIEW_VERSION}"
@@ -368,11 +368,11 @@ def test_current_release_notes_prioritize_model_ensemble_and_sandbox() -> None:
         "### Desktop and Control UI polish"
     )
     assert "No Windows portable assets are published for 0.5.0 preview releases" in notes
-    assert "0.5.0rc1 portable zip" in notes
+    assert "0.5.0rc2 portable zip" in notes
     assert "## Upgrading from 0.4.1" in notes
     assert "## Acknowledgements" in notes
-    assert "@ab2ence" in notes
-    assert "first-time OpenSquilla release contributor" in notes
+    assert "@HuaXiawithMoon" in notes
+    assert "CONTRIBUTORS.md" in notes
 
 
 def test_docs_index_links_current_release_notes() -> None:
@@ -382,20 +382,15 @@ def test_docs_index_links_current_release_notes() -> None:
     assert "releases/0.4.0.md" in index
 
 
-def test_current_contributor_ledger_records_050rc1_attribution() -> None:
+def test_current_contributor_ledger_records_050rc2_attribution() -> None:
     ledger = Path("CONTRIBUTORS.md").read_text(encoding="utf-8")
-    section = ledger.split("## OpenSquilla 0.5.0rc1", 1)[1].split("## OpenSquilla 0.4.1", 1)[0]
+    section = ledger.split("## OpenSquilla 0.5.0rc2", 1)[1].split(
+        "## OpenSquilla 0.5.0rc1", 1
+    )[0]
 
-    assert "@ab2ence" in section
-    assert "@Liu-RK" in section
-    assert "@TUOXI293" in section
-    assert "#388" in section
-    assert "#412" in section
-    assert "#447" in section
-    assert "#450" in section
-    assert "#454" in section
-    assert "[@tqangxl](https://github.com/tqangxl)" in section
     assert "[@HuaXiawithMoon](https://github.com/HuaXiawithMoon)" in section
+    assert "#473" in section
+    assert "@ab2ence" not in section
     assert "@nice-code-la" not in section
     assert "Codex" not in section
     assert "Claude Code" not in section

@@ -348,7 +348,7 @@ async function verifyAsarPackageVersion(asarPath, label) {
   if (!semverPattern.test(version) || /\d(?:a|b|rc)\d+$/.test(version)) {
     fail(
       `${label} app.asar package.json version is not npm semver: ${JSON.stringify(version)}; ` +
-        'prereleases must use 0.5.0-rc1 style, not 0.5.0rc1'
+        'prereleases must use 0.5.0-rc2 style, not 0.5.0rc2'
     )
   }
 }

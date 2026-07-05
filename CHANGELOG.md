@@ -12,6 +12,33 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Fixed
 
+## [0.5.0rc2] - 2026-07-06
+
+### Added
+
+- Added clearer provider/router setup surfaces, config provenance RPC coverage,
+  preset registry behavior, custom provider substrate, and cross-provider router
+  settings for the 0.5 preview line.
+
+### Changed
+
+- Kept fresh installs on the direct single-model `squilla_router` path while
+  making front-end-enabled ensemble mode default to `static_openrouter_b5`.
+- Refined desktop onboarding, session empty states, ensemble progress display,
+  and packaged Web UI assets for the Preview 2 release surface.
+
+### Fixed
+
+- Fixed main CI contract drift around default router mode, migration/provider
+  persistence, static-B5 doctor checks, and onboarding status wire fields.
+- Fixed code-task scaffold prompts so build-mode scaffolding stays
+  non-interactive.
+- Fixed expired staged Web UI uploads by refreshing file UUIDs before send when
+  the original file remains available.
+- Fixed local HTML artifact opening, desktop reopen behavior, cancelled-turn
+  rollback, sandbox denial resume recovery, composer draft persistence, session
+  cleanup, attachment isolation, and several provider/router recovery paths.
+
 ## [0.5.0rc1] - 2026-07-04
 
 ### Added

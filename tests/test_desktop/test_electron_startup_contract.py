@@ -799,7 +799,7 @@ def test_package_verifier_hard_fails_stale_runtime_and_boot_contract() -> None:
         "first-run onboarding an owned modal child window",
         "does not prefer the onboarding window when focusing",
         "app.asar package.json version is not npm semver",
-        "prereleases must use 0.5.0-rc1 style, not 0.5.0rc1",
+        "prereleases must use 0.5.0-rc2 style, not 0.5.0rc2",
         "process.exit(1)",
     ]:
         assert expected in verifier

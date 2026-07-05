@@ -2,6 +2,7 @@
 
 | Version | Tag | Date | Notes |
 |---|---|---|---|
+| 0.5.0rc2 | v0.5.0rc2 | 2026-07-06 | Preview: provider/router recovery, Web UI upload refresh, desktop/session fixes, and CI contract repair |
 | 0.5.0rc1 | v0.5.0rc1 | 2026-07-04 | Preview: Model Ensemble routing, Control UI, managed execution, OpenTUI, and portable retirement |
 | 0.4.1 | v0.4.1 | 2026-06-30 | Desktop reliability, six-language client support, telemetry accuracy, router packaging, and mainline governance |
 | 0.4.0 | v0.4.0 | 2026-06-27 | Control UI refresh, manual MetaSkills, coding mode, search expansion, and runtime hardening |
@@ -57,9 +58,9 @@ release, download, or update checks may still contact GitHub after user intent.
 
 Preview README install commands must use tag-pinned URLs such as:
 
-- `https://github.com/opensquilla/opensquilla/releases/download/v0.5.0rc1/OpenSquilla-0.5.0-rc1-mac-arm64.dmg`
-- `https://github.com/opensquilla/opensquilla/releases/download/v0.5.0rc1/OpenSquilla-0.5.0-rc1-win-x64.exe`
-- `https://github.com/opensquilla/opensquilla/releases/download/v0.5.0rc1/opensquilla-0.5.0rc1-py3-none-any.whl`
+- `https://github.com/opensquilla/opensquilla/releases/download/v0.5.0rc2/OpenSquilla-0.5.0-rc2-mac-arm64.dmg`
+- `https://github.com/opensquilla/opensquilla/releases/download/v0.5.0rc2/OpenSquilla-0.5.0-rc2-win-x64.exe`
+- `https://github.com/opensquilla/opensquilla/releases/download/v0.5.0rc2/opensquilla-0.5.0rc2-py3-none-any.whl`
 
 ## Release SOP
 
@@ -84,12 +85,12 @@ Preview README install commands must use tag-pinned URLs such as:
    more time, then create the annotated tag on that exact SHA:
 
    ```sh
-   git tag -a v0.5.0rc1 <verified-sha> -m "OpenSquilla 0.5.0 Preview 1"
-   git push origin v0.5.0rc1
+   git tag -a v0.5.0rc2 <verified-sha> -m "OpenSquilla 0.5.0 Preview 2"
+   git push origin v0.5.0rc2
    ```
 
 8. Wait for `.github/workflows/wheelhouse-release.yml`, then review the draft
-   GitHub Release. For `v0.5.0rc1`, confirm it is a pre-release, is not marked
+   GitHub Release. For `v0.5.0rc2`, confirm it is a pre-release, is not marked
    Latest, and contains only the Electron installers, updater metadata,
    versioned wheel, `SHA256SUMS`, plus GitHub's generated source archives. It
    must not contain `OpenSquilla-*-portable.zip` or
@@ -98,10 +99,10 @@ Preview README install commands must use tag-pinned URLs such as:
    post-publish tag URL checks:
 
    ```sh
-   curl --fail --head --location https://github.com/opensquilla/opensquilla/releases/download/v0.5.0rc1/OpenSquilla-0.5.0-rc1-mac-arm64.dmg
-   curl --fail --head --location https://github.com/opensquilla/opensquilla/releases/download/v0.5.0rc1/OpenSquilla-0.5.0-rc1-win-x64.exe
-   curl --fail --head --location https://github.com/opensquilla/opensquilla/releases/download/v0.5.0rc1/opensquilla-0.5.0rc1-py3-none-any.whl
-   curl --fail --head --location https://github.com/opensquilla/opensquilla/releases/download/v0.5.0rc1/SHA256SUMS
+   curl --fail --head --location https://github.com/opensquilla/opensquilla/releases/download/v0.5.0rc2/OpenSquilla-0.5.0-rc2-mac-arm64.dmg
+   curl --fail --head --location https://github.com/opensquilla/opensquilla/releases/download/v0.5.0rc2/OpenSquilla-0.5.0-rc2-win-x64.exe
+   curl --fail --head --location https://github.com/opensquilla/opensquilla/releases/download/v0.5.0rc2/opensquilla-0.5.0rc2-py3-none-any.whl
+   curl --fail --head --location https://github.com/opensquilla/opensquilla/releases/download/v0.5.0rc2/SHA256SUMS
    ```
 
 10. If a release tag is wrong before publication, stop and repair it explicitly:
@@ -121,7 +122,7 @@ These checks cannot be fully proven by local artifact generation:
 
 - The tag exists on GitHub and matches `pyproject.toml`.
 - The release workflow can fetch hydrated Git LFS router assets.
-- The draft GitHub Release title is `OpenSquilla 0.5.0 Preview 1`.
+- The draft GitHub Release title is `OpenSquilla 0.5.0 Preview 2`.
 - The draft GitHub Release is marked Pre-release and is not marked Latest.
 - Preview GitHub Releases contain the Electron installers, updater metadata,
   versioned wheel, and `SHA256SUMS` after `gh release upload --clobber`.
@@ -137,5 +138,5 @@ These checks cannot be fully proven by local artifact generation:
 
 Release assets are distributed as built artifacts, so the package filename,
 installer name, wheel name, and tag should describe the same preview build.
-PEP 440 accepts `0.5.0rc1`, while the public GitHub Release title can use the
-friendlier name "OpenSquilla 0.5.0 Preview 1".
+PEP 440 accepts `0.5.0rc2`, while the public GitHub Release title can use the
+friendlier name "OpenSquilla 0.5.0 Preview 2".

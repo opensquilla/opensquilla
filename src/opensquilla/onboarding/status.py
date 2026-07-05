@@ -140,6 +140,28 @@ def _router_detail(cfg: GatewayConfig, llm_source: str) -> str:
     return f"SquillaRouter default tier: {default_tier}"
 
 
+def _router_mode(cfg: GatewayConfig) -> str:
+    """Compute the effective router mode the Web UI infers client-side today.
+
+    The mode is a pure function of ``(enabled, provider, tier_profile)``:
+
+    - ``disabled`` when the router is off;
+    - ``openrouter-mix`` when enabled, provider is ``openrouter``, and no
+      persisted ``tier_profile`` (the openrouter-only alias);
+    - ``custom`` when enabled with no ``tier_profile`` on a non-openrouter
+      provider (the provider-agnostic generalization);
+    - ``recommended`` otherwise (a persisted legacy tier_profile).
+    """
+    router = getattr(cfg, "squilla_router", None)
+    if router is None or not bool(getattr(router, "enabled", False)):
+        return "disabled"
+    provider = str(getattr(getattr(cfg, "llm", None), "provider", "") or "").strip().lower()
+    tier_profile = str(getattr(router, "tier_profile", "") or "").strip()
+    if not tier_profile:
+        return "openrouter-mix" if provider == "openrouter" else "custom"
+    return "recommended"
+
+
 def _llm_source(cfg: GatewayConfig, status: SectionStatus) -> tuple[str, str]:
     """Re-derive the legacy ``llm_source`` annotation alongside the verifier.
 
@@ -428,6 +450,14 @@ def get_onboarding_status(config: GatewayConfig) -> OnboardingStatus:
 
     enabled_channels = [c for c in config.channels.channels if c.enabled]
 
+    section_details = _section_details(sections, detail_text, runtime_blocking)
+    if "router" in section_details:
+        # Additive read-side key on the router card only: an explicit
+        # server-computed mode so clients stop inferring it from
+        # (provider, tier_profile) pairs. Contract-frozen in
+        # tests/test_contracts/test_onboarding_status.py.
+        section_details["router"]["routerMode"] = _router_mode(config)
+
     return OnboardingStatus(
         config_path=str(path),
         has_config=has_config,
@@ -457,7 +487,7 @@ def get_onboarding_status(config: GatewayConfig) -> OnboardingStatus:
         channels_configured=bool(enabled_channels),
         needs_onboarding=_needs_onboarding(sections) or bool(runtime_blocking),
         sections=sections,
-        section_details=_section_details(sections, detail_text, runtime_blocking),
+        section_details=section_details,
     )
 
 

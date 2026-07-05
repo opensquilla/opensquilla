@@ -78,6 +78,16 @@ SECTION_DETAIL_REQUIRED_KEYS = frozenset(
     {"label", "status", "required", "optional", "blocking", "actionRequired"}
 )
 
+# Additive per-section keys, allowed only on the named section. ``routerMode``
+# is a deliberate router-card addition: a server-computed
+# ``recommended|openrouter-mix|custom|disabled`` value so clients stop
+# inferring the mode from (provider, tier_profile) pairs. Adding to this map is
+# the conscious decision the friction forces.
+SECTION_EXTRA_KEYS = {"router": frozenset({"routerMode"})}
+
+# Every mode value the router card may carry; matched verbatim by clients.
+ROUTER_MODE_VALUES = frozenset({"recommended", "openrouter-mix", "custom", "disabled"})
+
 # Shape of one env-recovery command row shown when a configured env key is
 # not visible in the running shell.
 ENV_RECOVERY_COMMAND_KEYS = frozenset({"section", "label", "command"})
@@ -107,8 +117,58 @@ async def test_onboarding_status_section_keys_are_frozen(tmp_path) -> None:
     for name, detail in payload["sectionDetails"].items():
         missing = SECTION_DETAIL_REQUIRED_KEYS - set(detail)
         assert not missing, (name, missing)
-        extra = set(detail) - SECTION_DETAIL_REQUIRED_KEYS - {"detail"}
+        allowed_extra = {"detail"} | SECTION_EXTRA_KEYS.get(name, frozenset())
+        extra = set(detail) - SECTION_DETAIL_REQUIRED_KEYS - allowed_extra
         assert not extra, (name, extra)
+
+
+async def test_router_section_carries_an_explicit_router_mode(tmp_path) -> None:
+    # routerMode must always be present on the router card and only ever be
+    # one of the four frozen mode strings.
+    payload = _status_payload(RpcContext(conn_id="contract", config=_synthetic_config(tmp_path)))
+    assert payload["sectionDetails"]["router"]["routerMode"] in ROUTER_MODE_VALUES
+
+
+async def test_router_mode_computation_is_frozen(tmp_path) -> None:
+    """Pin the (enabled, provider, tier_profile) → routerMode mapping."""
+
+    def mode_for(cfg: GatewayConfig) -> str:
+        payload = _status_payload(RpcContext(conn_id="contract", config=cfg))
+        return payload["sectionDetails"]["router"]["routerMode"]
+
+    # Default config: openrouter provider, router enabled, no tier_profile.
+    assert mode_for(_synthetic_config(tmp_path)) == "openrouter-mix"
+
+    # Router off wins regardless of provider/profile.
+    assert (
+        mode_for(_synthetic_config(tmp_path, squilla_router={"enabled": False})) == "disabled"
+    )
+
+    # A persisted legacy tier_profile is the recommended shape.
+    assert (
+        mode_for(
+            _synthetic_config(
+                tmp_path,
+                llm=LlmProviderConfig(provider="deepseek", model="deepseek-v4-flash"),
+                squilla_router={"enabled": True, "tier_profile": "deepseek"},
+            )
+        )
+        == "recommended"
+    )
+
+    # Enabled with no tier_profile on a non-openrouter provider is custom.
+    # (groq is outside the legacy nine, so the boot auto-default never
+    # assigns it a tier_profile.)
+    assert (
+        mode_for(
+            _synthetic_config(
+                tmp_path,
+                llm=LlmProviderConfig(provider="groq", model="m"),
+                squilla_router={"enabled": True},
+            )
+        )
+        == "custom"
+    )
 
 
 async def test_env_recovery_command_rows_are_frozen(

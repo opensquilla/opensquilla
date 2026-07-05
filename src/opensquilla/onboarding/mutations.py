@@ -34,6 +34,7 @@ from opensquilla.onboarding.redaction import (
     redact_search_payload,
 )
 from opensquilla.onboarding.search_specs import get_search_provider_setup_spec
+from opensquilla.provider.preset_registry import ProviderPreset, get_preset
 from opensquilla.router_tiers import (
     DEFAULT_TEXT_TIER,
     TEXT_TIERS,
@@ -43,7 +44,7 @@ from opensquilla.search.types import DEFAULT_SEARCH_MAX_RESULTS, MAX_SEARCH_RESU
 from opensquilla.secrets import clean_header_secret
 
 SearchFallbackPolicy = Literal["off", "network"]
-RouterMode = Literal["recommended", "openrouter-mix", "disabled"]
+RouterMode = Literal["recommended", "openrouter-mix", "custom", "disabled"]
 _TEXT_ROUTER_TIERS = TEXT_TIERS
 _ROUTER_TIER_KEYS = set(_TEXT_ROUTER_TIERS) | {"image_model"}
 _TIER_KEY_ALIASES = {
@@ -263,6 +264,58 @@ def _sync_llm_model_to_router_default(cfg: GatewayConfig) -> None:
         cfg.llm.model = model
 
 
+def _resolve_provider_preset(preset_id: str, provider_id: str) -> ProviderPreset | None:
+    """Validate an explicitly requested preset against the target provider.
+
+    Returns ``None`` when no preset was requested. A preset id that does not
+    exist or that belongs to a different provider is a validation error —
+    presets are provider-bound (packaged legacy ids and synthesized ids both
+    equal their provider id).
+    """
+    preset_id_clean = _clean_optional_str(preset_id).lower()
+    if not preset_id_clean:
+        return None
+    preset = get_preset(preset_id_clean)
+    if preset is None or preset.provider_id != provider_id:
+        raise ValueError(
+            f"preset {preset_id!r} does not apply to provider {provider_id!r}"
+        )
+    return preset
+
+
+def _apply_provider_preset(cfg: GatewayConfig, preset: ProviderPreset, model: str) -> None:
+    """Apply an explicitly requested registry preset to the router config.
+
+    D18: this runs ONLY for an explicit ``presetId`` — a plain provider save
+    goes through ``_reconcile_router_profile_for_provider`` unchanged, so save
+    paths stay pinned to the legacy nine unless the user asked for a preset.
+
+    Packaged (legacy-nine) preset → exactly today's recommended write shape:
+    ``enabled=True`` with the persisted ``tier_profile`` id and no inline
+    tiers, so ``to_toml_dict`` keeps persisting the compact profile form.
+
+    Synthesized preset → the custom-mode write shape: ``enabled=True``,
+    ``tier_profile=None`` (non-legacy ids must never persist — downgrade
+    contract) plus the preset's expanded tiers. A synthesized preset carries
+    no curated model ladder (its ``default_model`` may be empty), so empty
+    tier model slots are completed with this save's effective model — the
+    operator's explicit model is the only model binding this save knows.
+    """
+    router_payload = cfg.squilla_router.model_dump(mode="python")
+    router_payload.pop("tiers", None)
+    router_payload["enabled"] = True
+    if not preset.synthesized:
+        router_payload["tier_profile"] = preset.preset_id
+    else:
+        tiers = preset.tier_defaults()
+        for tier in tiers.values():
+            if not str(tier.get("model") or "").strip():
+                tier["model"] = model
+        router_payload["tier_profile"] = None
+        router_payload["tiers"] = tiers
+    cfg.squilla_router = SquillaRouterConfig(**router_payload)
+
+
 def upsert_llm_provider(
     config: GatewayConfig,
     *,
@@ -273,13 +326,19 @@ def upsert_llm_provider(
     base_url: str = "",
     proxy: str = "",
     provider_routing: dict[str, str] | None = None,
+    preset_id: str = "",
 ) -> MutationResult:
     spec = get_provider_setup_spec(provider_id)
     if not spec.runtime_supported:
         raise ValueError(
             f"provider {provider_id!r} is not runtime-supported and cannot be configured"
         )
+    preset = _resolve_provider_preset(preset_id, provider_id)
     model_clean = _clean_optional_str(model)
+    if not model_clean and preset is not None:
+        # Explicit preset application: the preset's default model fills the
+        # provider's direct model when the caller gave none.
+        model_clean = preset.default_model.strip()
     if not model_clean:
         model_clean = _router_default_model_for_provider(
             provider_id,
@@ -321,7 +380,12 @@ def upsert_llm_provider(
         proxy=proxy,
         provider_routing=dict(provider_routing or {}),
     )
-    _reconcile_router_profile_for_provider(new_cfg, provider_id)
+    if preset is not None:
+        # Explicit user action only — a plain save (no presetId) must keep
+        # today's reconcile behavior byte-for-byte (D18).
+        _apply_provider_preset(new_cfg, preset, model_clean)
+    else:
+        _reconcile_router_profile_for_provider(new_cfg, provider_id)
     if api_key:
         new_cfg.clear_runtime_secret("llm.api_key")
 
@@ -353,8 +417,10 @@ def upsert_router(
     default_tier: str | None = None,
     tiers: dict[str, Any] | None = None,
 ) -> MutationResult:
-    if mode not in {"recommended", "openrouter-mix", "disabled"}:
-        raise ValueError("router mode must be recommended, openrouter-mix, or disabled")
+    if mode not in {"recommended", "openrouter-mix", "custom", "disabled"}:
+        raise ValueError(
+            "router mode must be recommended, openrouter-mix, custom, or disabled"
+        )
     router_mode = cast(RouterMode, mode)
     provider = str(config.llm.provider or "").strip().lower()
     router_payload = config.squilla_router.model_dump(mode="python")
@@ -381,6 +447,19 @@ def upsert_router(
             _router_tier_profile_defaults("openrouter"),
             tiers,
         )
+        public_payload.update({"enabled": True, "tier_profile": None})
+    elif router_mode == "custom":
+        # Provider-agnostic generalization of openrouter-mix: accepted for ANY
+        # active provider. Writes enabled=True, tier_profile=None (a synthesized
+        # preset id must never persist — downgrade contract) and merges the
+        # provided tiers over the provider's registry preset tiers. Synthesized
+        # presets bind every tier to (provider, default_model); the merge lets
+        # the caller override individual tiers.
+        preset = get_preset(provider)
+        base_tiers = preset.tier_defaults() if preset is not None else {}
+        router_payload["enabled"] = True
+        router_payload["tier_profile"] = None
+        router_payload["tiers"] = _merge_router_tiers(base_tiers, tiers)
         public_payload.update({"enabled": True, "tier_profile": None})
     else:
         if provider not in ROUTER_TIER_PROFILE_IDS:

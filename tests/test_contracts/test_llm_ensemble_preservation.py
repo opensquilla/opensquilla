@@ -125,6 +125,22 @@ def test_router_openrouter_mix_save_preserves_llm_ensemble_subtree() -> None:
     _assert_custom_values(res.config)
 
 
+def test_router_custom_save_preserves_llm_ensemble_subtree() -> None:
+    # Mode "custom" writes squilla_router.* (plus the standard llm.model sync
+    # every enabled mode performs) and must never touch [llm_ensemble].
+    cfg = _config_with_custom_ensemble(
+        llm={"provider": "deepseek", "model": "deepseek-chat"}
+    )
+    before = _ensemble_subtree_bytes(cfg)
+
+    res = upsert_router(cfg, mode="custom")
+
+    assert res.config.squilla_router.enabled is True
+    assert res.config.squilla_router.tier_profile is None
+    assert _ensemble_subtree_bytes(res.config) == before
+    _assert_custom_values(res.config)
+
+
 def test_router_disabled_save_preserves_llm_ensemble_subtree() -> None:
     cfg = _config_with_custom_ensemble()
     before = _ensemble_subtree_bytes(cfg)

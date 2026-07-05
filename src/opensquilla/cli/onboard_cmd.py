@@ -1047,6 +1047,12 @@ def configure_command(
         help="Text provider id for provider setup.",
         rich_help_panel="Text provider",
     ),
+    preset: str = typer.Option(
+        "",
+        "--preset",
+        help="Explicitly apply this router preset id when saving the provider.",
+        rich_help_panel="Text provider",
+    ),
     model: str = typer.Option(
         "",
         "--model",
@@ -1199,6 +1205,7 @@ def configure_command(
                         "apiKeyEnv": api_key_env,
                         "baseUrl": base_url,
                         "proxy": proxy,
+                        "presetId": preset,
                     },
                 )
                 result = engine.persist()

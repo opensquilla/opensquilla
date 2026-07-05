@@ -383,6 +383,93 @@ def test_upsert_llm_provider_recomputes_openrouter_mix_on_provider_switch():
     assert "tiers" not in res.config.to_toml_dict()["squilla_router"]
 
 
+def test_upsert_llm_provider_without_preset_matches_todays_reconcile_behavior():
+    # D18-intact: a plain provider save (no presetId) must behave exactly as
+    # before — the reconcile path assigns the legacy tier_profile and writes
+    # no inline tiers. This freezes that the preset feature did not change the
+    # no-preset default.
+    cfg = GatewayConfig(llm={"provider": "openrouter", "model": "deepseek/x"})
+
+    res = upsert_llm_provider(cfg, provider_id="deepseek", model="deepseek-chat",
+                              api_key_env="DEEPSEEK_API_KEY")
+
+    persisted = res.config.to_toml_dict()["squilla_router"]
+    assert persisted["tier_profile"] == "deepseek"
+    assert "tiers" not in persisted
+
+
+def test_upsert_llm_provider_preset_id_legacy_writes_recommended_shape():
+    # Explicit legacy-nine presetId == today's recommended path: enabled,
+    # persisted tier_profile, no inline tiers.
+    cfg = GatewayConfig(llm={"provider": "openrouter", "model": "deepseek/x"})
+
+    res = upsert_llm_provider(
+        cfg,
+        provider_id="deepseek",
+        model="deepseek-chat",
+        api_key_env="DEEPSEEK_API_KEY",
+        preset_id="deepseek",
+    )
+
+    assert res.config.squilla_router.enabled is True
+    assert res.config.squilla_router.tier_profile == "deepseek"
+    persisted = res.config.to_toml_dict()["squilla_router"]
+    assert persisted["tier_profile"] == "deepseek"
+    assert "tiers" not in persisted
+
+
+def test_upsert_llm_provider_preset_id_applies_default_model_when_model_omitted():
+    cfg = GatewayConfig(llm={"provider": "openrouter", "model": "deepseek/x"})
+
+    res = upsert_llm_provider(
+        cfg,
+        provider_id="deepseek",
+        preset_id="deepseek",
+        api_key_env="DEEPSEEK_API_KEY",
+    )
+
+    # deepseek preset default_model is deepseek-v4-flash.
+    assert res.config.llm.model == "deepseek-v4-flash"
+
+
+def test_upsert_llm_provider_preset_id_synthesized_writes_custom_shape():
+    # A synthesized preset id (== provider id) writes the custom-mode shape:
+    # enabled, tier_profile=None, expanded tiers, with empty model slots filled
+    # by the effective model.
+    cfg = GatewayConfig(llm={"provider": "openrouter", "model": "deepseek/x"})
+
+    res = upsert_llm_provider(
+        cfg,
+        provider_id="groq",
+        model="llama-3.3-70b",
+        api_key_env="GROQ_API_KEY",
+        preset_id="groq",
+    )
+
+    router = res.config.squilla_router
+    assert router.enabled is True
+    assert router.tier_profile is None
+    for tier in ("c0", "c1", "c2", "c3"):
+        assert router.tiers[tier]["provider"] == "groq"
+        assert router.tiers[tier]["model"] == "llama-3.3-70b"
+    persisted = res.config.to_toml_dict()["squilla_router"]
+    assert "tier_profile" not in persisted
+    assert persisted["tiers"]["c0"]["model"] == "llama-3.3-70b"
+
+
+def test_upsert_llm_provider_preset_id_must_match_provider():
+    cfg = GatewayConfig()
+
+    with pytest.raises(ValueError, match="does not apply to provider"):
+        upsert_llm_provider(
+            cfg,
+            provider_id="deepseek",
+            model="deepseek-chat",
+            api_key_env="DEEPSEEK_API_KEY",
+            preset_id="openai",
+        )
+
+
 def test_upsert_router_recommended_writes_profile_without_expanded_tiers():
     cfg = GatewayConfig(llm={"provider": "deepseek", "model": "deepseek-chat"})
 
@@ -431,6 +518,90 @@ def test_upsert_router_rejects_openrouter_mix_for_direct_provider():
 
     with pytest.raises(ValueError, match="openrouter-mix"):
         upsert_router(cfg, mode="openrouter-mix")
+
+
+def test_upsert_router_custom_is_accepted_for_any_provider():
+    # custom is the provider-agnostic generalization of openrouter-mix: for a
+    # legacy-nine provider it seeds tiers from the packaged preset but writes
+    # NO tier_profile.
+    cfg = GatewayConfig(llm={"provider": "deepseek", "model": "deepseek-chat"})
+
+    res = upsert_router(cfg, mode="custom")
+
+    assert res.config.squilla_router.enabled is True
+    assert res.config.squilla_router.tier_profile is None
+    assert res.config.squilla_router.tiers["c0"]["provider"] == "deepseek"
+    assert res.config.squilla_router.tiers["c0"]["model"] == "deepseek-v4-flash"
+    assert res.public_payload["mode"] == "custom"
+    assert res.public_payload["tier_profile"] is None
+    # With no persisted profile the effective tiers persist expanded inline.
+    persisted = res.config.to_toml_dict()["squilla_router"]
+    assert "tier_profile" not in persisted
+    assert persisted["tiers"]["c2"]["model"] == "deepseek-v4-pro"
+
+
+def test_upsert_router_custom_merges_provided_tiers_over_preset():
+    cfg = GatewayConfig(llm={"provider": "openrouter", "model": "z-ai/glm-5.1"})
+
+    res = upsert_router(
+        cfg,
+        mode="custom",
+        tiers={"c3": {"provider": "openrouter", "model": "anthropic/claude-opus-4.8"}},
+    )
+
+    assert res.config.squilla_router.enabled is True
+    assert res.config.squilla_router.tier_profile is None
+    assert res.config.squilla_router.tiers["c3"]["model"] == "anthropic/claude-opus-4.8"
+    # Unoverridden tiers keep the openrouter preset values.
+    assert res.config.squilla_router.tiers["c0"]["provider"] == "openrouter"
+
+
+def test_upsert_router_custom_requires_tier_models_for_synthesized_presets():
+    # groq's synthesized preset binds tiers to (groq, "") — no curated model
+    # ladder — so custom mode without explicit tier models must fail the
+    # standard tier validation instead of persisting empty routes.
+    cfg = GatewayConfig(llm={"provider": "groq", "model": "m"})
+
+    with pytest.raises(ValueError, match="requires model"):
+        upsert_router(cfg, mode="custom")
+
+
+def test_upsert_router_custom_accepts_explicit_tiers_for_synthesized_presets():
+    cfg = GatewayConfig(llm={"provider": "groq", "model": "m"})
+
+    res = upsert_router(
+        cfg,
+        mode="custom",
+        tiers={
+            "c0": {"model": "groq-fast"},
+            "c1": {"model": "groq-mid"},
+            "c2": {"model": "groq-strong"},
+            "c3": {"model": "groq-max"},
+        },
+    )
+
+    assert res.config.squilla_router.enabled is True
+    assert res.config.squilla_router.tier_profile is None
+    assert res.config.squilla_router.tiers["c1"] == {
+        "provider": "groq",
+        "model": "groq-mid",
+        "description": (
+            "groq balanced route (synthesized default; no curated per-tier model ladder)."
+        ),
+        "supports_image": False,
+    }
+    # The default tier's model syncs into llm.model (same as the other
+    # enabled modes).
+    assert res.config.llm.model == "groq-mid"
+
+
+def test_upsert_router_custom_sync_llm_model_from_default_tier():
+    cfg = GatewayConfig(llm={"provider": "deepseek", "model": "deepseek-chat"})
+
+    res = upsert_router(cfg, mode="custom", default_tier="c2")
+
+    assert res.config.squilla_router.default_tier == "c2"
+    assert res.config.llm.model == "deepseek-v4-pro"
 
 
 def test_upsert_llm_provider_keeps_runtime_secret_marker_when_reusing_key():

@@ -171,6 +171,7 @@ class RouterControlHoldStore:
         now_monotonic: float | None = None,
         turns_remaining: int = DEFAULT_HOLD_TURNS,
         ttl_seconds: float = DEFAULT_HOLD_TTL_SECONDS,
+        source: str = "router_control_tool",
     ) -> RouterControlHold:
         now = time.monotonic() if now_monotonic is None else now_monotonic
         hold = RouterControlHold(
@@ -183,6 +184,7 @@ class RouterControlHoldStore:
             last_activity_at_monotonic=now,
             turns_remaining=turns_remaining,
             ttl_seconds=ttl_seconds,
+            source=source,
         )
         self._holds[session_key] = hold
         return hold

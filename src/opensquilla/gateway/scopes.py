@@ -110,6 +110,9 @@ METHOD_SCOPES: dict[str, str] = {
     "logs.trace": READ_SCOPE,
     "models.list": READ_SCOPE,
     "providers.status": READ_SCOPE,
+    # OpenSquilla-only; non-consuming peek at a session's router-control hold
+    # plus the valid target menu (see rpc_routing.py).
+    "routing.hold.get": READ_SCOPE,
     "search.status": READ_SCOPE,
     "memory.list": READ_SCOPE,
     "memory.search": READ_SCOPE,
@@ -252,6 +255,12 @@ METHOD_SCOPES: dict[str, str] = {
     "cron.remove": ADMIN_SCOPE,
     "cron.run": ADMIN_SCOPE,
     "sessions.patch": ADMIN_SCOPE,
+    # OpenSquilla-only — operator router-control holds pin a session's routing
+    # tier (or restore auto), rebinding which model serves its turns, so
+    # mutation is admin-gated like sessions.patch (which rebinds a session's
+    # model the same way). The read peek is classified above.
+    "routing.hold.set": ADMIN_SCOPE,
+    "routing.hold.clear": ADMIN_SCOPE,
     "memory.index": ADMIN_SCOPE,
     "memory.raw_fallbacks.list": ADMIN_SCOPE,
     "memory.raw_fallbacks.show": ADMIN_SCOPE,

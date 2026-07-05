@@ -230,3 +230,54 @@ def test_load_recent_history_bounds_window_and_per_session(tmp_path: Path) -> No
     assert grouped["agent:a"][-1]["final_tier"] == "c1"  # index 6 -> even -> c1
     assert len(grouped["agent:c"]) == 1
     writer.close()
+
+
+def test_list_decisions_orders_newest_first_and_parses_json(tmp_path: Path) -> None:
+    writer, _db = _make_writer(tmp_path)
+    for index in range(3):
+        writer.record_decision(
+            _base_record(decision_id=f"d{index}", ts_ms=1_000 * (index + 1))
+        )
+    rows = writer.list_decisions()
+    assert [row["decision_id"] for row in rows] == ["d2", "d1", "d0"]
+    top = rows[0]
+    # Whitelisted columns only, JSON columns parsed back into structures.
+    assert set(top) == {
+        "decision_id", "session_key", "turn_index", "ts_ms", "classifier",
+        "proposed_tier", "confidence", "probs", "flags", "final_tier",
+        "provider", "model", "thinking_level", "source", "trail",
+        "baseline_model", "savings_pct", "executed_kind", "ensemble_profile",
+        "fallback_hops",
+    }
+    assert top["probs"] == [0.05, 0.91, 0.03, 0.01]
+    assert top["flags"] == ["code", "multi_step"]
+    assert top["trail"][0] == {"stage": "classify", "tier": "c1", "route_class": "R1"}
+    assert top["savings_pct"] == 42.5
+    writer.close()
+
+
+def test_list_decisions_filters_pages_and_limits(tmp_path: Path) -> None:
+    writer, _db = _make_writer(tmp_path)
+    for index in range(4):
+        writer.record_decision(
+            _base_record(decision_id=f"a{index}", session_key="agent:a", ts_ms=1_000 + index)
+        )
+    writer.record_decision(
+        _base_record(decision_id="b0", session_key="agent:b", ts_ms=9_000)
+    )
+
+    only_a = writer.list_decisions(session_key="agent:a")
+    assert [row["decision_id"] for row in only_a] == ["a3", "a2", "a1", "a0"]
+
+    page = writer.list_decisions(session_key="agent:a", before_ts_ms=1_002, limit=1)
+    assert [row["decision_id"] for row in page] == ["a1"]
+
+    assert len(writer.list_decisions(limit=2)) == 2
+    writer.close()
+
+
+def test_list_decisions_is_best_effort_after_close(tmp_path: Path) -> None:
+    writer, _db = _make_writer(tmp_path)
+    writer.record_decision(_base_record())
+    writer.close()
+    assert writer.list_decisions() == []  # no raise

@@ -144,6 +144,10 @@ METHOD_SCOPES: dict[str, str] = {
     "meta.runs.list": READ_SCOPE,
     "meta.runs.failures": READ_SCOPE,
     "meta.runs.cost": READ_SCOPE,
+    # OpenSquilla-only — persisted per-turn router decision records (V017
+    # router_decisions). The table stores enum tokens and numbers only (no
+    # prompt text), so the listing is a plain operator read.
+    "router.decisions.list": READ_SCOPE,
     # OpenSquilla-only — onboarding catalog and status are operator-readable.
     "onboarding.status": READ_SCOPE,
     "onboarding.catalog": READ_SCOPE,
@@ -236,6 +240,11 @@ METHOD_SCOPES: dict[str, str] = {
     "meta.runs.replay": ADMIN_SCOPE,
     "meta.runs.validate": ADMIN_SCOPE,
     "meta.runs.eval_baseline": ADMIN_SCOPE,
+    # OpenSquilla-only — dormant feedback intake (deferred F7 follow-up).
+    # Validates and logs an operator rating for one decision record; nothing
+    # consumes it and it never feeds routing or calibration. Admin because it
+    # is a write-shaped mutation intake, not an observability read.
+    "router.feedback.submit": ADMIN_SCOPE,
     # Proposal mutation changes the managed skill layer or unattended
     # synthesis state, so require authenticated admin rather than remote
     # no-auth operator.proposals.

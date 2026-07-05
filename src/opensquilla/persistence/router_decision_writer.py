@@ -170,6 +170,17 @@ def sanitize_trail(raw: object) -> list[dict[str, Any]]:
     return out
 
 
+def _load_json_list(raw: object) -> list[Any]:
+    """Parse a stored JSON-array column; degrade to ``[]`` on any mismatch."""
+    if not isinstance(raw, str) or not raw:
+        return []
+    try:
+        parsed = json.loads(raw)
+    except Exception:  # noqa: BLE001
+        return []
+    return parsed if isinstance(parsed, list) else []
+
+
 def _optional_number(value: object) -> float | None:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return None
@@ -347,6 +358,55 @@ class RouterDecisionWriter:
             grouped.setdefault(str(row["session_key"]), []).append(entry)
         bound = max(1, int(per_session))
         return {key: entries[-bound:] for key, entries in grouped.items()}
+
+    def list_decisions(
+        self,
+        *,
+        session_key: str | None = None,
+        limit: int = 50,
+        before_ts_ms: int | None = None,
+    ) -> list[dict[str, Any]]:
+        """Return sanitized decision rows, newest first.
+
+        Read surface for the ``router.decisions.list`` RPC. Only the
+        whitelisted ``_COLUMNS`` are selected; the table stores enum tokens
+        and numbers only (V017 privacy contract), so every returned value is
+        already safe for operator display. ``before_ts_ms`` pages backwards:
+        pass the oldest ``ts_ms`` of the previous page to fetch older rows.
+        Best-effort like every method here — any failure returns ``[]``.
+
+        JSON columns (``probs``/``flags``/``trail``) are parsed back into
+        structures; a corrupt cell degrades to an empty list rather than
+        failing the listing.
+        """
+        bound = max(1, min(int(limit), 1000))
+        clauses: list[str] = []
+        args: list[Any] = []
+        if session_key:
+            clauses.append("session_key = ?")
+            args.append(session_key)
+        if before_ts_ms is not None:
+            clauses.append("ts_ms < ?")
+            args.append(int(before_ts_ms))
+        where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
+        sql = (
+            f"SELECT {', '.join(_COLUMNS)} FROM router_decisions"
+            f"{where} ORDER BY ts_ms DESC, decision_id DESC LIMIT ?"
+        )
+        args.append(bound)
+        try:
+            with self._lock:
+                rows = self._conn.execute(sql, tuple(args)).fetchall()
+        except Exception as exc:  # noqa: BLE001
+            log.warning("router_decision_writer.list_failed: %s", exc)
+            return []
+        out: list[dict[str, Any]] = []
+        for row in rows:
+            record: dict[str, Any] = {column: row[column] for column in _COLUMNS}
+            for json_column in ("probs", "flags", "trail"):
+                record[json_column] = _load_json_list(record.get(json_column))
+            out.append(record)
+        return out
 
 
 # ---------------------------------------------------------------------------

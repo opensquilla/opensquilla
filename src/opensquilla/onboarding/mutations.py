@@ -207,6 +207,13 @@ def _tier_provider_credentials_resolvable(
         return True
     if not spec.requires_api_key():
         return True
+    # A rotation pool resolves when any of its named env vars is set —
+    # mirror the runtime path so pool-only profiles are not flagged as
+    # credential-less.
+    for pool_env_name in getattr(profile, "api_key_env_pool", None) or []:
+        pool_env_name = str(pool_env_name or "").strip()
+        if pool_env_name and pool_env_name != "OAuth" and os.environ.get(pool_env_name):
+            return True
     env_name = str(getattr(profile, "api_key_env", "") or "").strip() or spec.env_key
     return bool(env_name and env_name != "OAuth" and os.environ.get(env_name))
 

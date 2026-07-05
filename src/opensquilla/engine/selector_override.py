@@ -24,7 +24,14 @@ _ROUTE_SAVINGS_KEYS = (
 )
 
 
-def resolve_tier_provider_config(config: Any, provider_id: str, model: str) -> Any | None:
+def resolve_tier_provider_config(
+    config: Any,
+    provider_id: str,
+    model: str,
+    *,
+    session_key: str = "",
+    turn_metadata: dict[str, Any] | None = None,
+) -> Any | None:
     """Build a per-turn ProviderConfig for a cross-provider router tier.
 
     Credentials come from ``[llm_profiles.<provider_id>]`` when present,
@@ -32,6 +39,14 @@ def resolve_tier_provider_config(config: Any, provider_id: str, model: str) -> A
     registry default. Returns None (with a warning) when the provider is
     unknown or a required key cannot be resolved — the caller keeps the
     active provider, never guesses secrets.
+
+    Key resolution order: explicit ``api_key``, then ``api_key_env_pool``
+    (session-pinned rotation over env-var names; a pool whose names all
+    resolve to nothing degrades to the next step), then ``api_key_env`` or
+    the registry env key. A profile without a pool takes exactly the
+    pre-pool single-key path. When a pool credential is used, its non-secret
+    identifiers are recorded in ``turn_metadata['credential_pool']`` so the
+    provider-failure path can park the key on 429/credits/auth failures.
     """
     from opensquilla.provider.registry import UnknownProviderError, get_provider_spec
     from opensquilla.provider.selector import ProviderConfig
@@ -48,6 +63,40 @@ def resolve_tier_provider_config(config: Any, provider_id: str, model: str) -> A
 
     profile = (getattr(config, "llm_profiles", None) or {}).get(provider_id)
     api_key = str(getattr(profile, "api_key", "") or "").strip()
+    pool_names = [
+        str(name).strip()
+        for name in (getattr(profile, "api_key_env_pool", None) or [])
+        if str(name).strip()
+    ]
+    if not api_key and pool_names:
+        from opensquilla.gateway.llm_runtime import (
+            NoCredentialsAvailable,
+            profile_credential_pools,
+        )
+
+        try:
+            pooled = profile_credential_pools().acquire_for_session(
+                provider_id,
+                pool_names,
+                session_key,
+            )
+        except NoCredentialsAvailable:
+            log.warning(
+                "cross_provider_tier.credential_pool_exhausted",
+                provider=provider_id,
+                pool_size=len(pool_names),
+            )
+            return None
+        if pooled is not None:
+            api_key = pooled.api_key
+            if turn_metadata is not None:
+                # Non-secret identifiers only (env-var name + masked key id).
+                turn_metadata["credential_pool"] = {
+                    "provider": provider_id,
+                    "session_key": session_key,
+                    "env_name": pooled.env_name,
+                    "key_id": pooled.key_id,
+                }
     if not api_key:
         env_name = str(getattr(profile, "api_key_env", "") or "").strip() or spec.env_key
         if env_name and env_name != "OAuth":
@@ -86,6 +135,7 @@ def cross_provider_tier_config(
     model: str,
     *,
     active_provider_id: str,
+    session_key: str = "",
 ) -> Any | None:
     """Return the ProviderConfig for an executable cross-provider tier, or None.
 
@@ -116,7 +166,13 @@ def cross_provider_tier_config(
         )
         turn_metadata["routed_provider_blocked"] = "provider_state_continuity"
         return None
-    return resolve_tier_provider_config(config, routed_provider, model)
+    return resolve_tier_provider_config(
+        config,
+        routed_provider,
+        model,
+        session_key=session_key,
+        turn_metadata=turn_metadata,
+    )
 
 
 def apply_model_override(

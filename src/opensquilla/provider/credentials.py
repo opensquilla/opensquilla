@@ -14,10 +14,16 @@ class NoCredentialsAvailable(RuntimeError):  # noqa: N818 - public compatibility
 
 @dataclass
 class Credential:
-    """A single opaque credential tracked by ``CredentialPool``."""
+    """A single opaque credential tracked by ``CredentialPool``.
+
+    ``secret`` is excluded from the auto-generated ``repr`` so that logging
+    or interpolating a ``Credential`` (``log.info(..., cred=cred)``,
+    f-strings, tracebacks) can never leak the live key value. Identify
+    credentials by ``cred_id`` (an env-var name or another non-secret id).
+    """
 
     cred_id: str
-    secret: str = ""
+    secret: str = field(default="", repr=False)
     acquisitions: int = 0
     _parked_until: float = 0.0
     metadata: dict[str, str] = field(default_factory=dict)
@@ -49,6 +55,20 @@ class CredentialPool:
 
     def __len__(self) -> int:
         return len(self._creds)
+
+    def available(self, cred_id: str) -> bool:
+        """Return True when ``cred_id`` exists and is not currently parked.
+
+        Wiring helper for callers that pin a credential (e.g. per-session
+        pinning for prompt-cache warmth) and must check eligibility without
+        advancing the round-robin cursor or the acquisition counters.
+        """
+        with self._lock:
+            now = self._clock()
+            for cred in self._creds:
+                if cred.cred_id == cred_id:
+                    return cred._parked_until <= now
+            return False
 
     def acquire(self) -> Credential:
         """Return the next eligible credential.

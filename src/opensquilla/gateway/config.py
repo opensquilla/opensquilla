@@ -1466,14 +1466,22 @@ class LlmProviderProfile(BaseSettings):
     Written as ``[llm_profiles.<provider_id>]`` in the config TOML and
     referenced by router tiers through their existing ``provider`` field.
     Resolution order per field matches the primary provider: explicit value,
-    then ``api_key_env`` (or the registry env key), then the registry
-    default base URL.
+    then ``api_key_env_pool`` (when non-empty), then ``api_key_env`` (or the
+    registry env key), then the registry default base URL.
     """
 
     model_config = SettingsConfigDict(extra="ignore")
 
     api_key: str = ""
     api_key_env: str = ""
+    # Rotation pool of env-var NAMES (never key values) for this profile,
+    # e.g. ["OPENAI_KEY_A", "OPENAI_KEY_B"]. Resolved from the environment at
+    # runtime; secrets are never persisted or logged. Profiles-only this
+    # cycle: the top-level [llm] model must NOT gain this field — [llm] is
+    # extra="forbid", so a stamped default would brick downgrade to 0.5.0rc1,
+    # while this profile model is extra="ignore" and rc1 tolerates the field
+    # on load (rc1's first persist silently strips it; release-noted).
+    api_key_env_pool: list[str] = Field(default_factory=list)
     base_url: str = ""
     proxy: str = ""
 

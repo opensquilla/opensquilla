@@ -1147,6 +1147,51 @@ def _should_use_selector_fallback(provider_name: str, event: ProviderErrorEvent)
     }
 
 
+def _report_credential_pool_failure(
+    provider_name: str,
+    turn_metadata: dict[str, Any] | None,
+    event: ProviderErrorEvent,
+) -> None:
+    """Park a pool-served profile key on rate-limit / credits / auth failures.
+
+    No-op unless this turn's provider was resolved through a profile
+    credential pool (the non-secret ``credential_pool`` stamp written at
+    resolution time) and the tier ProviderConfig was actually applied
+    (``routed_provider_applied`` names the same provider — instance
+    ``provider_name`` is not used because openai-compatible backends share
+    the generic ``"openai"`` name). The pool manager additionally ignores
+    kinds other than RATE_LIMITED / INSUFFICIENT_CREDITS / AUTH_INVALID and
+    sessions it never pinned. Never raises: credential bookkeeping must not
+    break the turn loop.
+    """
+    if not turn_metadata:
+        return
+    pool_info = turn_metadata.get("credential_pool")
+    if not isinstance(pool_info, dict):
+        return
+    pool_provider = str(pool_info.get("provider") or "")
+    if not pool_provider:
+        return
+    if str(turn_metadata.get("routed_provider_applied") or "") != pool_provider:
+        return
+    try:
+        kind = classify_provider_error(
+            provider_name=provider_name,
+            status_code=int(event.code) if str(event.code).isdigit() else None,
+            raw_code=event.code,
+            message=event.message,
+        )
+        from opensquilla.gateway.llm_runtime import profile_credential_pools
+
+        profile_credential_pools().report_failure(
+            pool_provider,
+            str(pool_info.get("session_key") or ""),
+            kind,
+        )
+    except Exception:  # noqa: BLE001 — credential bookkeeping only
+        log.debug("credential_pool.report_failed", provider=pool_provider)
+
+
 def _normalize_heartbeat_text(
     text: str,
     *,
@@ -1285,6 +1330,12 @@ class _SelectorFallbackProvider:
             return drained
 
         async for event in self._provider.chat(messages, tools=tools, config=config):
+            if isinstance(event, ProviderErrorEvent):
+                _report_credential_pool_failure(
+                    self.provider_name,
+                    self._turn_metadata,
+                    event,
+                )
             if emitted_user_visible_content:
                 yield event
                 continue
@@ -4694,6 +4745,7 @@ class TurnRunner:
                     turn.metadata,
                     turn.model,
                     active_provider_id=getattr(cloned_selector, "active_provider_id", ""),
+                    session_key=turn.session_key,
                 ),
             )
 

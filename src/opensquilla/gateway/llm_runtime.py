@@ -2,11 +2,18 @@
 
 from __future__ import annotations
 
+import hashlib
 import os
-from dataclasses import dataclass
+import threading
+import time
+from collections.abc import Callable
+from dataclasses import dataclass, field
 from typing import Any
 
 import structlog
+
+from opensquilla.provider.credentials import Credential, CredentialPool, NoCredentialsAvailable
+from opensquilla.provider.failures import ProviderFailureKind
 
 log = structlog.get_logger(__name__)
 
@@ -105,3 +112,272 @@ def resolve_llm_runtime_config(config: Any) -> LlmRuntimeConfig:
         api_key_from_env=bool(env_api_key),
         base_url_from_env=bool(env_base_url),
     )
+
+
+# ---------------------------------------------------------------------------
+# Profile credential pools ([llm_profiles.<id>].api_key_env_pool)
+# ---------------------------------------------------------------------------
+
+#: Cooldown applied on RATE_LIMITED when the caller has no Retry-After hint
+#: (the provider error event carries no header data today).
+RATE_LIMITED_COOLDOWN_SECONDS = 60.0
+#: INSUFFICIENT_CREDITS parks much longer than a 429: credits do not refill
+#: on a rate-limit window, but the account may be topped up mid-process, so
+#: the key is parked rather than permanently retired.
+INSUFFICIENT_CREDITS_COOLDOWN_SECONDS = 3600.0
+
+_REPORTABLE_FAILURE_KINDS = frozenset(
+    {
+        ProviderFailureKind.RATE_LIMITED,
+        ProviderFailureKind.INSUFFICIENT_CREDITS,
+        ProviderFailureKind.AUTH_INVALID,
+    }
+)
+
+
+def masked_key_id(secret: str) -> str:
+    """Return a short, stable, non-reversible id for a key value.
+
+    Safe to log and correlate across events/processes; never derived from
+    key substrings (no prefixes/last-4), only a truncated SHA-256 digest.
+    """
+    return hashlib.sha256(secret.encode("utf-8")).hexdigest()[:12]
+
+
+@dataclass(frozen=True)
+class PooledCredential:
+    """A pool-resolved profile credential.
+
+    ``env_name`` (the credential id) and ``key_id`` are safe to log;
+    ``api_key`` is the live secret and is excluded from ``repr``.
+    """
+
+    provider_id: str
+    env_name: str
+    key_id: str
+    api_key: str = field(default="", repr=False)
+
+
+class ProfileCredentialPools:
+    """Process-wide credential pools for ``[llm_profiles.<id>]`` rotation.
+
+    Wraps :class:`CredentialPool` per provider profile and adds the runtime
+    concerns the pool itself stays agnostic of:
+
+    - **Construction from env-var names** — ``api_key_env_pool`` holds names
+      only; values are resolved from the environment when the pool is built
+      and live only in memory. Unset names are skipped with a warning; if no
+      name resolves the caller falls back to single-key resolution.
+    - **Per-session pinning** — the first acquire for a session key pins the
+      credential, so subsequent turns reuse the same key (prompt-cache
+      warmth) until it is parked or the pool is rebuilt. Pin reuse does not
+      advance the round-robin cursor or acquisition counts.
+    - **Failure-kind parking** — RATE_LIMITED parks for the Retry-After hint
+      (or a default), INSUFFICIENT_CREDITS parks long, AUTH_INVALID parks
+      permanently for the process. Every report drops the session pin so the
+      next turn re-acquires (rotating to another key).
+    - **Config-change rebuilds** — the pool is rebuilt (and its pins and
+      parked state reset) when the profile's configured name list changes,
+      e.g. after a config hot-apply.
+
+    Telemetry contract: every event logs only the env-var NAME and the
+    masked ``key_id`` — never the resolved secret value.
+    """
+
+    def __init__(self, *, clock: Callable[[], float] = time.monotonic) -> None:
+        self._clock = clock
+        self._lock = threading.Lock()
+        self._pools: dict[str, CredentialPool] = {}
+        self._pool_fingerprints: dict[str, tuple[str, ...]] = {}
+        self._creds_by_id: dict[str, dict[str, Credential]] = {}
+        self._key_ids: dict[str, dict[str, str]] = {}
+        self._pins: dict[str, dict[str, str]] = {}
+
+    def acquire_for_session(
+        self,
+        provider_id: str,
+        env_pool: list[str],
+        session_key: str,
+    ) -> PooledCredential | None:
+        """Resolve a pool credential for ``session_key``, pinning it.
+
+        Returns None when no configured env name resolves to a value (the
+        caller degrades to the single-key path). Raises
+        :class:`NoCredentialsAvailable` when the pool exists but every
+        credential is parked.
+        """
+        provider_id = (provider_id or "").strip().lower()
+        names = tuple(dict.fromkeys(n.strip() for n in env_pool if n and n.strip()))
+        if not provider_id or not names:
+            return None
+        with self._lock:
+            pool = self._ensure_pool_locked(provider_id, names)
+            if pool is None:
+                return None
+
+            pins = self._pins.setdefault(provider_id, {})
+            pinned_id = pins.get(session_key)
+            if pinned_id is not None and pool.available(pinned_id):
+                cred = self._creds_by_id[provider_id][pinned_id]
+                log.debug(
+                    "credential_pool.pin_reused",
+                    provider=provider_id,
+                    session_key=session_key,
+                    env_name=cred.cred_id,
+                    key_id=self._key_ids[provider_id][cred.cred_id],
+                )
+                return self._pooled_locked(provider_id, cred)
+
+            cred = pool.acquire()  # may raise NoCredentialsAvailable
+            pins[session_key] = cred.cred_id
+            log.info(
+                "credential_pool.rotation",
+                provider=provider_id,
+                session_key=session_key,
+                env_name=cred.cred_id,
+                key_id=self._key_ids[provider_id][cred.cred_id],
+                pool_size=len(pool),
+            )
+            return self._pooled_locked(provider_id, cred)
+
+    def report_failure(
+        self,
+        provider_id: str,
+        session_key: str,
+        kind: ProviderFailureKind,
+        *,
+        retry_after_seconds: float | None = None,
+    ) -> None:
+        """Park the credential pinned to ``session_key`` per failure kind.
+
+        No-op when the (provider, session) pair holds no pin — failures of
+        providers or sessions this manager never served cannot be attributed
+        to a pool credential. The pin is always dropped so the next acquire
+        rotates to another eligible key.
+        """
+        if kind not in _REPORTABLE_FAILURE_KINDS:
+            return
+        provider_id = (provider_id or "").strip().lower()
+        with self._lock:
+            pool = self._pools.get(provider_id)
+            pins = self._pins.get(provider_id, {})
+            cred_id = pins.pop(session_key, None)
+            if pool is None or cred_id is None:
+                return
+            if kind is ProviderFailureKind.AUTH_INVALID:
+                cooldown = float("inf")
+            elif kind is ProviderFailureKind.INSUFFICIENT_CREDITS:
+                cooldown = INSUFFICIENT_CREDITS_COOLDOWN_SECONDS
+            else:
+                cooldown = (
+                    retry_after_seconds
+                    if retry_after_seconds is not None and retry_after_seconds >= 0
+                    else RATE_LIMITED_COOLDOWN_SECONDS
+                )
+            pool.report_429(cred_id, cooldown_seconds=cooldown)
+            # Drop every other session pinned to the now-parked key so they
+            # rotate on their next turn instead of failing the same way.
+            for other_session in [s for s, c in pins.items() if c == cred_id]:
+                pins.pop(other_session, None)
+            log.warning(
+                "credential_pool.cooldown",
+                provider=provider_id,
+                session_key=session_key,
+                env_name=cred_id,
+                key_id=self._key_ids.get(provider_id, {}).get(cred_id, ""),
+                failure_kind=str(kind),
+                cooldown_seconds=cooldown,
+                permanent=cooldown == float("inf"),
+            )
+
+    def _pooled_locked(self, provider_id: str, cred: Credential) -> PooledCredential:
+        return PooledCredential(
+            provider_id=provider_id,
+            env_name=cred.cred_id,
+            key_id=self._key_ids[provider_id][cred.cred_id],
+            api_key=cred.secret,
+        )
+
+    def _ensure_pool_locked(
+        self,
+        provider_id: str,
+        names: tuple[str, ...],
+    ) -> CredentialPool | None:
+        if self._pool_fingerprints.get(provider_id) == names:
+            return self._pools.get(provider_id)
+
+        # Configured name list changed (or first use): rebuild. Parked state
+        # and pins reset by design — a config edit is an operator action.
+        credentials: list[Credential] = []
+        key_ids: dict[str, str] = {}
+        for env_name in names:
+            secret = os.environ.get(env_name, "").strip()
+            if not secret:
+                log.warning(
+                    "credential_pool.env_unset",
+                    provider=provider_id,
+                    env_name=env_name,
+                )
+                continue
+            credentials.append(Credential(cred_id=env_name, secret=secret))
+            key_ids[env_name] = masked_key_id(secret)
+
+        self._pool_fingerprints[provider_id] = names
+        self._pins.pop(provider_id, None)
+        if not credentials:
+            self._pools.pop(provider_id, None)
+            self._creds_by_id.pop(provider_id, None)
+            self._key_ids.pop(provider_id, None)
+            log.warning(
+                "credential_pool.no_resolvable_keys",
+                provider=provider_id,
+                env_names=list(names),
+            )
+            return None
+        pool = CredentialPool(credentials, clock=self._clock)
+        self._pools[provider_id] = pool
+        self._creds_by_id[provider_id] = {cred.cred_id: cred for cred in credentials}
+        self._key_ids[provider_id] = key_ids
+        log.info(
+            "credential_pool.built",
+            provider=provider_id,
+            env_names=[cred.cred_id for cred in credentials],
+            pool_size=len(pool),
+        )
+        return pool
+
+
+_profile_pools = ProfileCredentialPools()
+_profile_pools_lock = threading.Lock()
+
+
+def profile_credential_pools() -> ProfileCredentialPools:
+    """Return the process-wide profile credential pool manager."""
+    return _profile_pools
+
+
+def reset_profile_credential_pools(
+    *,
+    clock: Callable[[], float] = time.monotonic,
+) -> ProfileCredentialPools:
+    """Replace the process-wide manager (test hook; also clears all pins)."""
+    global _profile_pools
+    with _profile_pools_lock:
+        _profile_pools = ProfileCredentialPools(clock=clock)
+        return _profile_pools
+
+
+__all__ = [
+    "INSUFFICIENT_CREDITS_COOLDOWN_SECONDS",
+    "OPENROUTER_DEFAULT_PROVIDER_ROUTING",
+    "RATE_LIMITED_COOLDOWN_SECONDS",
+    "LlmRuntimeConfig",
+    "NoCredentialsAvailable",
+    "PooledCredential",
+    "ProfileCredentialPools",
+    "masked_key_id",
+    "profile_credential_pools",
+    "provider_base_url_env_name",
+    "reset_profile_credential_pools",
+    "resolve_llm_runtime_config",
+]

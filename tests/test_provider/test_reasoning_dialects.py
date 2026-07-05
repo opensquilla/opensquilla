@@ -26,25 +26,26 @@ from opensquilla.provider.registry import list_provider_specs
 
 # Every reasoning_format value reachable today, with where each comes from:
 #   "openrouter" — compat_policy: openrouter policy replay_reasoning_format;
-#       model_catalog.get_capabilities catalog-info branch (an OpenRouter
+#       model_catalog.get_capabilities live-catalog branch (an OpenRouter
 #       /models row with reasoning support); provider/ensemble.py members.
 #   "openai"     — get_capabilities api.openai.com + gpt-5/o1/o3/o4 prefix
-#       branch (model_catalog.py).
+#       branch (model_catalog.py; host trust stays code).
 #   "deepseek"   — compat_policy: deepseek policy default_reasoning_format;
-#       get_capabilities deepseek-base-url branch and the
-#       ProviderSpec(reasoning_shape="deepseek") branch (registry.py: deepseek).
-#   "gemini"     — get_capabilities ProviderSpec(reasoning_shape="gemini")
-#       branch, gemini-2.5 prefix ladder (registry.py: gemini).
-#   "zai"        — get_capabilities ProviderSpec(reasoning_shape="zai")
-#       branch, glm prefix ladder (registry.py: zhipu).
-#   "dashscope"  — get_capabilities provider_id == "dashscope" branch, qwen/qwq
-#       prefix ladder.
-#   "moonshot"   — get_capabilities provider_id == "moonshot" branch, kimi
-#       prefix ladder.
-#   "volcengine" — get_capabilities provider_id == "volcengine" AND
-#       provider_id == "byteplus" branches (two providers, one wire spelling).
+#       get_capabilities deepseek-base-url branch (code) and the transcribed
+#       [deepseek."*"] corrections row (catalog_overrides.toml).
+#   "gemini"     — [gemini."gemini-2.5*"] corrections row (transcribed from
+#       the reasoning_shape="gemini" branch).
+#   "zai"        — [zhipu."glm-4.5*"/"glm-4.7*"/"glm-5*"] corrections rows
+#       (transcribed from the reasoning_shape="zai" branch).
+#   "dashscope"  — [dashscope."qwen…*"/"qwq*"] corrections rows (transcribed
+#       from the dashscope prefix ladder).
+#   "moonshot"   — [moonshot."kimi-k2…*"] corrections rows (transcribed from
+#       the moonshot prefix ladder).
+#   "volcengine" — [volcengine.…] AND [byteplus.…] corrections rows (two
+#       providers, one wire spelling).
 #   "none"       — ModelCapabilities default plus every non-reasoning
-#       fallthrough in get_capabilities and ProviderSpec.reasoning_shape.
+#       fallthrough (catch-all "*" rows and the no-dialect adaptation in
+#       model_catalog._capabilities_from_entry).
 REACHABLE_REASONING_FORMATS = frozenset(
     {
         "openrouter",

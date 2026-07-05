@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import ClassVar, Literal
+from typing import Literal
 
 from .compat_policy import OpenAICompatPolicy, compat_policy_for_kind
 from .context_capabilities import (
@@ -12,6 +12,30 @@ from .context_capabilities import (
     OPENROUTER_CONTEXT_PROFILE,
     ProviderContextProfile,
 )
+
+# ---------------------------------------------------------------------------
+# Named local-provider sets. ONE home, TWO deliberately distinct sets — they
+# answer different questions and must not be merged:
+#
+# - KEYLESS_PROVIDERS: providers whose API key is optional even when an
+#   env_key is declared — local runtimes plus the generic self-hosted
+#   ``custom`` endpoint (many self-hosted servers run without
+#   authentication). Drives ``ProviderSpec.requires_api_key``.
+# - LOCAL_RUNTIME_PROVIDERS: the superset the model catalog's context-window
+#   heuristic uses (model_catalog.py): runtimes that serve models from the
+#   local machine, whose unqualified model ids miss every catalog and would
+#   otherwise inherit the 200k cloud default. ``vllm`` and the bare
+#   ``local`` alias belong here but stay OUT of KEYLESS_PROVIDERS: local
+#   serving does not imply keyless onboarding (a vLLM deployment can front
+#   real auth), so folding them in would silently weaken requires_api_key.
+#
+# The derivation is explicit (superset = keyless | extras) so the two sets
+# can never drift apart by accident.
+# ---------------------------------------------------------------------------
+
+KEYLESS_PROVIDERS: frozenset[str] = frozenset({"ollama", "lm_studio", "ovms", "custom"})
+
+LOCAL_RUNTIME_PROVIDERS: frozenset[str] = KEYLESS_PROVIDERS | {"vllm", "local"}
 
 ProviderBackend = Literal[
     "openai_compat",
@@ -60,16 +84,9 @@ class ProviderSpec:
     # local/self-hosted or OAuth-only providers with no public catalog.
     catalog_source: tuple[str, ...] = ()
 
-    # Providers whose API key is optional even when an env_key is declared:
-    # local runtimes plus the generic self-hosted ``custom`` endpoint (many
-    # self-hosted servers run without authentication).
-    _LOCAL_PROVIDERS: ClassVar[frozenset[str]] = frozenset(
-        {"ollama", "lm_studio", "ovms", "custom"}
-    )
-
     def requires_api_key(self) -> bool:
         """True if onboarding must collect an API key for this provider."""
-        if self.provider_id in self._LOCAL_PROVIDERS:
+        if self.provider_id in KEYLESS_PROVIDERS:
             return False
         return bool(self.env_key) and self.env_key != "OAuth"
 
@@ -332,7 +349,7 @@ for _provider_spec in [
     # and its "openai" dialect policy are reused unchanged. No
     # default_base_url on purpose: requires_base_url() must stay True, the
     # endpoint is defined by its operator-supplied URL. The API key is
-    # optional (listed in _LOCAL_PROVIDERS); CUSTOM_LLM_API_KEY is read when
+    # optional (listed in KEYLESS_PROVIDERS); CUSTOM_LLM_API_KEY is read when
     # the endpoint enforces one.
     _spec(
         "custom",

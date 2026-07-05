@@ -75,3 +75,258 @@ context_window = 200000
 max_output_tokens = 8192
 input_cost_per_mtok = 0.25
 output_cost_per_mtok = 1.25
+
+# --- capability ladder migration (transcribed from get_capabilities) ---
+#
+# Rows below carry the per-provider capability ladder that used to live as
+# code branches in ModelCatalog.get_capabilities (model_catalog.py). Each
+# row is a verbatim transcription of one prefix rule; the trailing "*" row
+# per provider transcribes that branch's fall-through (the branch returned
+# for EVERY model of its provider, so the catch-all is part of the ladder,
+# not an invention — it deliberately shadows snapshot capability data the
+# ladder never consulted).
+#
+# ORDER MATTERS: the corrections loader consults the exact model key first,
+# then every other key as an fnmatch glob IN FILE ORDER, each filling only
+# fields still unset. More specific prefixes therefore appear before the
+# general ones (qwen3.5* before qwen3*), and the "*" catch-all is last.
+#
+# NOT transcribed, on purpose (host trust stays code in get_capabilities):
+# - the deepseek-in-base_url sniff for provider "openai";
+# - the api.openai.com host guard with its gpt-5/o1/o3/o4 prefix set. A
+#   corrections row is keyed by (provider, model) only and cannot express
+#   "openai dialect at this host, snapshot capabilities elsewhere" — an
+#   [openai."gpt-5*"] row would grant the openai reasoning dialect (and the
+#   wrong vision flag) to arbitrary proxy base URLs.
+
+# dashscope (Qwen): reasoning for qwen3/qwen-plus/qwen-flash/qwen-turbo/
+# qwen-max/qwq prefixes; vision for qwen3.5/qwen3.6/qwen-vl; tools always.
+
+[dashscope."qwen3.5*"]
+supports_reasoning = true
+supports_tools = true
+supports_vision = true
+reasoning_format = "dashscope"
+
+[dashscope."qwen3.6*"]
+supports_reasoning = true
+supports_tools = true
+supports_vision = true
+reasoning_format = "dashscope"
+
+# qwen-vl-* is vision-only: it matches no reasoning prefix (qwen-vl is not
+# qwen-max/-plus/-flash/-turbo), so the ladder returned vision without
+# reasoning for it.
+[dashscope."qwen-vl*"]
+supports_reasoning = false
+supports_tools = true
+supports_vision = true
+reasoning_format = "none"
+
+[dashscope."qwen3*"]
+supports_reasoning = true
+supports_tools = true
+supports_vision = false
+reasoning_format = "dashscope"
+
+[dashscope."qwen-plus*"]
+supports_reasoning = true
+supports_tools = true
+supports_vision = false
+reasoning_format = "dashscope"
+
+[dashscope."qwen-flash*"]
+supports_reasoning = true
+supports_tools = true
+supports_vision = false
+reasoning_format = "dashscope"
+
+[dashscope."qwen-turbo*"]
+supports_reasoning = true
+supports_tools = true
+supports_vision = false
+reasoning_format = "dashscope"
+
+[dashscope."qwen-max*"]
+supports_reasoning = true
+supports_tools = true
+supports_vision = false
+reasoning_format = "dashscope"
+
+[dashscope."qwq*"]
+supports_reasoning = true
+supports_tools = true
+supports_vision = false
+reasoning_format = "dashscope"
+
+[dashscope."*"]
+supports_reasoning = false
+supports_tools = true
+supports_vision = false
+reasoning_format = "none"
+
+# moonshot (Kimi): reasoning for kimi-k2.5/kimi-k2.6/kimi-k2-thinking
+# prefixes; vision for kimi-k2.5/kimi-k2.6; tools always. (The exact
+# moonshot-v1-* window rows above carry no capability fields, so the "*"
+# row fills their capabilities: non-reasoning, tools on.)
+
+[moonshot."kimi-k2.5*"]
+supports_reasoning = true
+supports_tools = true
+supports_vision = true
+reasoning_format = "moonshot"
+
+[moonshot."kimi-k2.6*"]
+supports_reasoning = true
+supports_tools = true
+supports_vision = true
+reasoning_format = "moonshot"
+
+[moonshot."kimi-k2-thinking*"]
+supports_reasoning = true
+supports_tools = true
+supports_vision = false
+reasoning_format = "moonshot"
+
+[moonshot."*"]
+supports_reasoning = false
+supports_tools = true
+supports_vision = false
+reasoning_format = "none"
+
+# volcengine (Ark, doubao): doubao-seed-1-6 and -1-8 and the seed-2 line
+# are reasoning models; without 1-6 here the stream path emits no thinking
+# toggle, so reasoning leaks into thinking-disabled requests (verified live
+# 2026-07-02 against doubao-seed-1-6-251015). Any id containing "thinking"
+# also reasons; vision only for the doubao-seed-1-6/1-8/2 prefixes.
+
+[volcengine."doubao-seed-1-6*"]
+supports_reasoning = true
+supports_tools = true
+supports_vision = true
+reasoning_format = "volcengine"
+
+[volcengine."doubao-seed-1-8*"]
+supports_reasoning = true
+supports_tools = true
+supports_vision = true
+reasoning_format = "volcengine"
+
+[volcengine."doubao-seed-2*"]
+supports_reasoning = true
+supports_tools = true
+supports_vision = true
+reasoning_format = "volcengine"
+
+# Substring rule, not a prefix: the ladder checked `"thinking" in model`.
+[volcengine."*thinking*"]
+supports_reasoning = true
+supports_tools = true
+supports_vision = false
+reasoning_format = "volcengine"
+
+[volcengine."*"]
+supports_reasoning = false
+supports_tools = true
+supports_vision = false
+reasoning_format = "none"
+
+# byteplus (Ark international): same wire dialect as volcengine
+# ("volcengine" reasoning_format — two providers, one wire spelling).
+# Reasoning AND vision for seed-1-6/seed-1-8/seed-2/kimi-k2-/kimi-k2.
+# prefixes; any id containing "thinking" reasons without vision.
+
+[byteplus."seed-1-6*"]
+supports_reasoning = true
+supports_tools = true
+supports_vision = true
+reasoning_format = "volcengine"
+
+[byteplus."seed-1-8*"]
+supports_reasoning = true
+supports_tools = true
+supports_vision = true
+reasoning_format = "volcengine"
+
+[byteplus."seed-2*"]
+supports_reasoning = true
+supports_tools = true
+supports_vision = true
+reasoning_format = "volcengine"
+
+[byteplus."kimi-k2-*"]
+supports_reasoning = true
+supports_tools = true
+supports_vision = true
+reasoning_format = "volcengine"
+
+[byteplus."kimi-k2.*"]
+supports_reasoning = true
+supports_tools = true
+supports_vision = true
+reasoning_format = "volcengine"
+
+# Substring rule, not a prefix: the ladder checked `"thinking" in model`.
+[byteplus."*thinking*"]
+supports_reasoning = true
+supports_tools = true
+supports_vision = false
+reasoning_format = "volcengine"
+
+[byteplus."*"]
+supports_reasoning = false
+supports_tools = true
+supports_vision = false
+reasoning_format = "none"
+
+# ProviderSpec.reasoning_shape transcriptions. These branches keyed off the
+# provider spec, not model ids — each applied to EVERY model of its
+# provider — so a "*" row expresses each one exactly.
+
+# deepseek (reasoning_shape="deepseek"): every model reasons through the
+# deepseek dialect; the ladder never granted vision here.
+[deepseek."*"]
+supports_reasoning = true
+supports_tools = true
+supports_vision = false
+reasoning_format = "deepseek"
+
+# gemini (reasoning_shape="gemini"): reasoning only for the gemini-2.5
+# prefix; vision and tools for every model.
+[gemini."gemini-2.5*"]
+supports_reasoning = true
+supports_tools = true
+supports_vision = true
+reasoning_format = "gemini"
+
+[gemini."*"]
+supports_reasoning = false
+supports_tools = true
+supports_vision = true
+reasoning_format = "none"
+
+# zhipu (reasoning_shape="zai"): reasoning for glm-4.5/glm-4.7/glm-5
+# prefixes; the ladder never granted vision here (not even for glm-*v).
+[zhipu."glm-4.5*"]
+supports_reasoning = true
+supports_tools = true
+supports_vision = false
+reasoning_format = "zai"
+
+[zhipu."glm-4.7*"]
+supports_reasoning = true
+supports_tools = true
+supports_vision = false
+reasoning_format = "zai"
+
+[zhipu."glm-5*"]
+supports_reasoning = true
+supports_tools = true
+supports_vision = false
+reasoning_format = "zai"
+
+[zhipu."*"]
+supports_reasoning = false
+supports_tools = true
+supports_vision = false
+reasoning_format = "none"

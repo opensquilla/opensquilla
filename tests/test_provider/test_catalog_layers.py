@@ -247,12 +247,26 @@ def test_packaged_corrections_file_parses_with_expected_tables() -> None:
         .read_text(encoding="utf-8")
     )
     payload = tomllib.loads(text)
-    # Window/pricing corrections sourced from in-repo static tables.
-    assert set(payload) == {"moonshot", "anthropic"}
+    # Window/pricing corrections (static tables) + the transcribed
+    # capability ladder (see the "capability ladder migration" section).
+    assert set(payload) == {
+        "moonshot",
+        "anthropic",
+        "dashscope",
+        "volcengine",
+        "byteplus",
+        "deepseek",
+        "gemini",
+        "zhipu",
+    }
     assert set(payload["moonshot"]) == {
         "moonshot-v1-8k",
         "moonshot-v1-32k",
         "moonshot-v1-128k",
+        "kimi-k2.5*",
+        "kimi-k2.6*",
+        "kimi-k2-thinking*",
+        "*",
     }
     assert set(payload["anthropic"]) == {
         "claude-opus-4-6",
@@ -264,6 +278,35 @@ def test_packaged_corrections_file_parses_with_expected_tables() -> None:
     tables = model_catalog_module._normalize_corrections(payload)
     assert {p: set(t) for p, t in tables.items()} == {p: set(t) for p, t in payload.items()}
     assert all(fields for table in tables.values() for fields in table.values())
+
+
+def test_ladder_glob_rows_keep_specific_before_general_file_order() -> None:
+    """FILE ORDER of the transcribed ladder rows is load-bearing.
+
+    The corrections loader matches globs in file order, each filling only
+    fields still unset — so a more specific prefix must appear before the
+    general one it overlaps (qwen3.5* before qwen3*, doubao-seed-1-6*
+    before *thinking*) and the "*" catch-all must be the LAST key of every
+    ladder provider table. Reordering rows would silently change matching.
+    """
+    payload = tomllib.loads(
+        resources.files("opensquilla.provider")
+        .joinpath("catalog_overrides.toml")
+        .read_text(encoding="utf-8")
+    )
+    for provider in ("dashscope", "moonshot", "volcengine", "byteplus", "gemini", "zhipu"):
+        keys = list(payload[provider])
+        assert keys[-1] == "*", provider
+        assert keys.count("*") == 1, provider
+    dashscope = list(payload["dashscope"])
+    assert dashscope.index("qwen3.5*") < dashscope.index("qwen3*")
+    assert dashscope.index("qwen3.6*") < dashscope.index("qwen3*")
+    volcengine = list(payload["volcengine"])
+    assert volcengine.index("doubao-seed-1-6*") < volcengine.index("*thinking*")
+    byteplus = list(payload["byteplus"])
+    assert byteplus.index("kimi-k2-*") < byteplus.index("*thinking*")
+    # deepseek is a single catch-all (reasoning_shape transcription).
+    assert list(payload["deepseek"]) == ["*"]
 
 
 # ---------------------------------------------------------------------------
@@ -438,8 +481,11 @@ def test_snapshot_partial_cost_keys_leave_missing_fields_unknown(
 
 # ---------------------------------------------------------------------------
 # PARITY NET — the legacy resolve paths must keep returning today's exact
-# values (captured as literals from the pre-change tree). resolve_entry is a
-# parallel substrate; any drift here is an accidental behavior change.
+# values (captured as literals from the pre-change tree). get_capabilities
+# now resolves through resolve_entry + the transcribed ladder rows, and
+# resolve_max_tokens / resolve_context_window remain independent; any drift
+# here is an accidental behavior change. The exhaustive provider x model
+# sweep lives in test_capability_ladder_parity.py.
 # ---------------------------------------------------------------------------
 
 # (model, provider) → (resolve_max_tokens, resolve_context_window)
@@ -505,13 +551,17 @@ def test_parity_legacy_capabilities_unchanged() -> None:
         assert observed == expected, (model, provider, base_url)
 
 
-def test_parity_snapshot_resolutions_unchanged_by_cost_plumbing() -> None:
-    # The committed snapshot carries no cost keys and the packaged
-    # corrections rows touch only moonshot-v1-* / anthropic ids, so
-    # snapshot-sourced resolutions elsewhere are IDENTICAL to the pre-change
-    # tree. Expected entries are full literals captured from a control run
-    # on the unmodified tree — frozen-dataclass equality covers every field,
-    # including the four cost fields staying None.
+def test_full_entry_literals_snapshot_and_transcribed_ladder() -> None:
+    # Full-literal entry pins (frozen-dataclass equality covers every field,
+    # including the four cost fields staying None). openai has NO ladder
+    # rows — the api.openai.com branch is host-guarded and stays code — so
+    # its snapshot resolution is byte-identical to the pre-ladder tree:
+    # supports_reasoning is snapshot data but reasoning_format stays "none"
+    # (the snapshot never knows the dialect). deepseek/gemini entries now
+    # layer the transcribed capability-ladder rows (reasoning_format,
+    # ladder-scoped capability booleans) over snapshot windows, so their
+    # source moved to "corrections" — deliberately, as part of the
+    # capability-ladder migration.
     catalog = ModelCatalog()
     expected_entries = (
         ModelCatalogEntry(
@@ -529,10 +579,13 @@ def test_parity_snapshot_resolutions_unchanged_by_cost_plumbing() -> None:
             model_id="deepseek-chat",
             context_window=1_000_000,
             max_output_tokens=384_000,
-            supports_reasoning=False,
+            # The ladder's deepseek shape: every model of the provider
+            # reasons through the deepseek dialect (snapshot said False).
+            supports_reasoning=True,
             supports_tools=True,
             supports_vision=False,
-            source="snapshot",
+            reasoning_format="deepseek",
+            source="corrections",
         ),
         ModelCatalogEntry(
             provider_id="gemini",
@@ -542,7 +595,21 @@ def test_parity_snapshot_resolutions_unchanged_by_cost_plumbing() -> None:
             supports_reasoning=True,
             supports_tools=True,
             supports_vision=True,
-            source="snapshot",
+            reasoning_format="gemini",
+            source="corrections",
+        ),
+        ModelCatalogEntry(
+            provider_id="zhipu",
+            model_id="glm-4.6",
+            context_window=204_800,
+            max_output_tokens=131_072,
+            # Ladder semantics win over the snapshot's reasoning=True:
+            # the zai shape reasons only for glm-4.5/glm-4.7/glm-5.
+            supports_reasoning=False,
+            supports_tools=True,
+            supports_vision=False,
+            reasoning_format="none",
+            source="corrections",
         ),
     )
     for want in expected_entries:

@@ -20,7 +20,7 @@ from .models_dev import lookup_limits as _models_dev_limits
 from .models_dev import lookup_model as _models_dev_model
 from .ollama import _OLLAMA_DEFAULT_NUM_CTX
 from .openrouter_attribution import openrouter_app_headers
-from .registry import UnknownProviderError, get_provider_spec
+from .registry import LOCAL_RUNTIME_PROVIDERS
 from .types import ModelCapabilities, ModelInfo
 
 log = structlog.get_logger(__name__)
@@ -33,8 +33,20 @@ DEFAULT_CONTEXT_WINDOW = 200_000
 # and the static table, so the 200k cloud default would make the turn budget
 # over-estimate and skip trimming while the runtime silently truncates. Report
 # the runtime's own default window so budgeting matches what it actually allows.
+# Membership lives in registry.py (LOCAL_RUNTIME_PROVIDERS) next to its
+# keyless sibling set so the two cannot drift apart unnoticed.
 _LOCAL_CONTEXT_WINDOW = _OLLAMA_DEFAULT_NUM_CTX
-_LOCAL_PROVIDERS = frozenset({"ollama", "lm_studio", "ovms", "vllm", "custom", "local"})
+
+# One-release migration gate (recorded decision OQ#5). get_capabilities has
+# always early-returned EMPTY capabilities (reasoning off, tools on, vision
+# off, streaming on) for the anthropic and ollama providers instead of
+# consulting any catalog. Keep that exact behavior for one release while the
+# rest of the ladder moves to catalog data. When this flips to True, both
+# providers resolve through the layered catalog like every other provider —
+# real rows then change engine-level behavior: supports_vision from the
+# catalog stops the engine stripping images for vision-capable models, and
+# supports_tools starts gating tool wiring per model instead of always-on.
+CATALOG_CAPABILITIES_FOR_ANTHROPIC_OLLAMA = False
 
 # Static fallback for squilla-router tier models + default model.
 # Used when the OpenRouter API is unreachable at boot.
@@ -109,9 +121,9 @@ def _price_per_1k(value: object) -> float:
 # synthesized. Each layer adapter returns a dict of only the fields it
 # GENUINELY KNOWS for a model; merging is per field, so a lower layer fills
 # only fields every higher layer left unset (see catalog_types.py for the
-# per-type "unset" sentinels). The legacy get_capabilities /
-# resolve_max_tokens / resolve_context_window paths are intentionally NOT
-# routed through this yet.
+# per-type "unset" sentinels). get_capabilities resolves through this chain
+# (host-trust branches excepted); the legacy resolve_max_tokens /
+# resolve_context_window paths are intentionally NOT routed through it yet.
 # ---------------------------------------------------------------------------
 
 # Synthesized floor applied after all layers: conservative budgets for
@@ -274,6 +286,29 @@ def _snapshot_layer_fields(provider_id: str, model_id: str) -> dict[str, Any]:
     return fields
 
 
+def _capabilities_from_entry(entry: ModelCatalogEntry) -> ModelCapabilities:
+    """Adapt one resolved ``ModelCatalogEntry`` to ``ModelCapabilities``.
+
+    Reasoning is enabled only when the entry ALSO names a streaming dialect
+    (``reasoning_format`` other than ``"none"``). The snapshot layer may
+    know ``supports_reasoning=True`` for a model but it never carries a
+    ``reasoning_format`` — the dialect is provider knowledge the snapshot
+    does not have — and claiming reasoning without a dialect would send
+    requests with no thinking toggle at all. This preserves the legacy
+    fallback's deliberate semantics: for models only the snapshot knows,
+    tools/vision are filled but reasoning stays OFF; the adaptation never
+    invents a reasoning format.
+    """
+    reasoning_format = entry.reasoning_format
+    supports_reasoning = entry.supports_reasoning and reasoning_format not in ("", "none")
+    return ModelCapabilities(
+        supports_reasoning=supports_reasoning,
+        supports_tools=entry.supports_tools,
+        supports_vision=entry.supports_vision,
+        reasoning_format=reasoning_format if supports_reasoning else "none",
+    )
+
+
 class ModelCatalog:
     """In-memory cache of model metadata fetched from provider API.
 
@@ -327,21 +362,36 @@ class ModelCatalog:
         provider_name: str = "openrouter",
         base_url: str = "",
     ) -> ModelCapabilities:
-        """Resolve ModelCapabilities for a model based on provider and catalog data."""
-        if provider_name == "anthropic":
-            return ModelCapabilities()
-        if provider_name == "ollama":
-            return ModelCapabilities()
-        provider_id = provider_name.strip().lower()
-        try:
-            provider_spec = get_provider_spec(provider_id)
-        except UnknownProviderError:
-            provider_spec = None
+        """Resolve ModelCapabilities through the layered catalog.
 
+        Per-model capability knowledge (the former per-provider prefix
+        ladder) lives in the corrections layer (``catalog_overrides.toml``)
+        and resolves via ``resolve_entry``. Only decisions that hinge on
+        HOST TRUST remain code below: trust in a base URL cannot be
+        expressed in the (provider, model)-keyed corrections schema, so
+        the base-url-sniffing branches keep their exact legacy shape
+        (mirroring the context-capabilities decision).
+        """
+        # Anthropic/Ollama keep the historical early-return-empty behavior
+        # behind a one-release gate — see the flag's comment at the top of
+        # this module for what changes when it flips.
+        if (
+            provider_name in ("anthropic", "ollama")
+            and not CATALOG_CAPABILITIES_FOR_ANTHROPIC_OLLAMA
+        ):
+            return ModelCapabilities()
+        # HOST TRUST (code, not data): an OpenAI-kind config whose base URL
+        # points at DeepSeek serves DeepSeek reasoning models regardless of
+        # the model id spelling.
         if provider_name == "openai" and "deepseek" in base_url.lower():
             return ModelCapabilities(
                 supports_reasoning=True, supports_tools=True, reasoning_format="deepseek"
             )
+        # Live OpenRouter catalog hit: its reasoning models stream through
+        # the OpenRouter dialect. resolve_entry's live layer would produce
+        # the same answer, but the explicit branch keeps the ladder's
+        # historical ordering — a live reasoning hit outranks the
+        # api.openai.com host guard below.
         info = self._models.get(model_id)
         if info and info.supports_reasoning:
             return ModelCapabilities(
@@ -351,6 +401,13 @@ class ModelCatalog:
                 reasoning_format="openrouter",
             )
         model_l = model_id.strip().lower()
+        # HOST TRUST (code, not data): only api.openai.com is trusted to
+        # serve the real gpt-5/o1/o3/o4 reasoning stack. The model-prefix
+        # set stays code WITH the host check because a corrections row is
+        # keyed by (provider, model) only — it cannot express "reasoning
+        # with the openai dialect at this host, snapshot capabilities at
+        # any other", so transcribing the prefixes to data would grant the
+        # openai reasoning dialect to arbitrary proxy base URLs.
         if (
             provider_name == "openai"
             and "api.openai.com" in base_url.lower()
@@ -361,105 +418,9 @@ class ModelCatalog:
                 supports_tools=True,
                 reasoning_format="openai",
             )
-        if provider_spec and provider_spec.reasoning_shape == "deepseek":
-            return ModelCapabilities(
-                supports_reasoning=True,
-                supports_tools=True,
-                reasoning_format="deepseek",
-            )
-        if provider_spec and provider_spec.reasoning_shape == "gemini":
-            supports_reasoning = model_l.startswith("gemini-2.5")
-            return ModelCapabilities(
-                supports_reasoning=supports_reasoning,
-                supports_tools=True,
-                supports_vision=True,
-                reasoning_format="gemini" if supports_reasoning else "none",
-            )
-        if provider_spec and provider_spec.reasoning_shape == "zai":
-            supports_reasoning = model_l.startswith(("glm-4.5", "glm-4.7", "glm-5"))
-            return ModelCapabilities(
-                supports_reasoning=supports_reasoning,
-                supports_tools=True,
-                reasoning_format="zai" if supports_reasoning else "none",
-            )
-        if provider_id == "dashscope":
-            supports_reasoning = model_l.startswith(
-                (
-                    "qwen3",
-                    "qwen-plus",
-                    "qwen-flash",
-                    "qwen-turbo",
-                    "qwen-max",
-                    "qwq",
-                )
-            )
-            return ModelCapabilities(
-                supports_reasoning=supports_reasoning,
-                supports_tools=True,
-                supports_vision=model_l.startswith(("qwen3.5", "qwen3.6", "qwen-vl")),
-                reasoning_format="dashscope" if supports_reasoning else "none",
-            )
-        if provider_id == "moonshot":
-            supports_reasoning = model_l.startswith(
-                ("kimi-k2.5", "kimi-k2.6", "kimi-k2-thinking")
-            )
-            return ModelCapabilities(
-                supports_reasoning=supports_reasoning,
-                supports_tools=True,
-                supports_vision=model_l.startswith(("kimi-k2.5", "kimi-k2.6")),
-                reasoning_format="moonshot" if supports_reasoning else "none",
-            )
-        if provider_id == "volcengine":
-            # doubao-seed-1-6 and -1-8 and the seed-2 line are reasoning
-            # models; without 1-6 here the stream path emits no thinking
-            # toggle, so reasoning leaks into thinking-disabled requests
-            # (verified live 2026-07-02 against doubao-seed-1-6-251015).
-            supports_reasoning = (
-                "thinking" in model_l
-                or model_l.startswith("doubao-seed-2")
-                or model_l.startswith("doubao-seed-1-8")
-                or model_l.startswith("doubao-seed-1-6")
-            )
-            return ModelCapabilities(
-                supports_reasoning=supports_reasoning,
-                supports_tools=True,
-                supports_vision=model_l.startswith(
-                    ("doubao-seed-1-6", "doubao-seed-1-8", "doubao-seed-2")
-                ),
-                reasoning_format="volcengine" if supports_reasoning else "none",
-            )
-        if provider_id == "byteplus":
-            supports_reasoning = (
-                "thinking" in model_l
-                or model_l.startswith("seed-2")
-                or model_l.startswith("seed-1-8")
-                or model_l.startswith("seed-1-6")
-                or model_l.startswith(("kimi-k2-", "kimi-k2."))
-            )
-            return ModelCapabilities(
-                supports_reasoning=supports_reasoning,
-                supports_tools=True,
-                supports_vision=model_l.startswith(
-                    ("seed-1-6", "seed-1-8", "seed-2", "kimi-k2-", "kimi-k2.")
-                ),
-                reasoning_format="volcengine" if supports_reasoning else "none",
-            )
-        # Unknown to every provider-specific branch: fill tools/vision from
-        # the vendored models.dev snapshot when the live catalog has nothing.
-        # Reasoning stays off here on purpose — enabling it requires knowing
-        # the provider's reasoning *format*, which is dialect knowledge the
-        # snapshot does not carry.
-        if info is None:
-            snapshot_entry = _models_dev_model(provider_id, model_id)
-            if snapshot_entry is not None:
-                return ModelCapabilities(
-                    supports_tools=bool(snapshot_entry.get("tools", True)),
-                    supports_vision=bool(snapshot_entry.get("vision", False)),
-                )
-        return ModelCapabilities(
-            supports_tools=info.supports_tools if info else True,
-            supports_vision=info.supports_vision if info else False,
-        )
+        # Everything else is data: user overrides > live > corrections
+        # (the transcribed capability ladder) > snapshot > synthesized.
+        return _capabilities_from_entry(self.resolve_entry(model_id, provider=provider_name))
 
     async def fetch_openrouter(self, api_key: str, base_url: str, proxy: str = "") -> None:
         """Fetch model list from OpenRouter /api/v1/models endpoint.
@@ -540,9 +501,10 @@ class ModelCatalog:
            reasoning off) with ``source="synthesized"``.
 
         ``source`` names the highest-authority layer that contributed at
-        least one field. This is a parallel substrate: the legacy
-        ``get_capabilities`` / ``resolve_max_tokens`` /
-        ``resolve_context_window`` paths do not route through it yet.
+        least one field. ``get_capabilities`` now resolves through this
+        chain (its host-trust branches excepted); the legacy
+        ``resolve_max_tokens`` / ``resolve_context_window`` paths do not
+        route through it yet.
         """
         provider_id = (provider or "").strip().lower()
         model_id = (model or "").strip()
@@ -612,7 +574,7 @@ class ModelCatalog:
         static = _static_fallback_entry(model_id)
         if static is not None:
             return static[1]
-        if provider and provider.strip().lower() in _LOCAL_PROVIDERS:
+        if provider and provider.strip().lower() in LOCAL_RUNTIME_PROVIDERS:
             return _LOCAL_CONTEXT_WINDOW
         return DEFAULT_CONTEXT_WINDOW
 

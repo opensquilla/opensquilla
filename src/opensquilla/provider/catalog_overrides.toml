@@ -1,0 +1,36 @@
+# catalog_overrides.toml — packaged metadata corrections for the layered
+# model catalog (see src/opensquilla/provider/model_catalog.py).
+#
+# Authority order (highest first): user overrides > live provider catalog >
+# THIS FILE (corrections) > models.dev snapshot > synthesized fallback.
+# Merging is per FIELD: a correction fills only fields the higher layers
+# left unset, and is itself overridden field-by-field the same way.
+#
+# Schema — one TOML table per (provider, model-or-glob) pair:
+#
+#   [<provider>."<model-or-glob>"]
+#   display_name = "…"               # str: display_name, family,
+#   reasoning_format = "deepseek"    #      reasoning_format, release_date, status
+#   context_window = 262144          # int: context_window, max_output_tokens
+#   max_output_tokens = 32768
+#   supports_reasoning = true        # bool: supports_reasoning, supports_tools,
+#   supports_vision = false          #       supports_vision (real booleans only)
+#   input_cost_per_mtok = 2.5        # float, USD per MILLION tokens:
+#   output_cost_per_mtok = 10.0      #   input/output/cache_read/cache_write
+#   cache_read_cost_per_mtok = 0.25  #   _cost_per_mtok, quality_prior
+#   quality_prior = 0.7
+#
+# Keys:
+# - <provider> is the lowercased provider id from the provider registry
+#   (e.g. "openrouter", "deepseek", "zhipu"). Corrections apply only when the
+#   caller resolves with that provider; there is no cross-provider table.
+# - "<model-or-glob>" is compared against the lowercased model id. An exact
+#   key is consulted first; every other key in the provider table is then
+#   tried as an fnmatch glob (e.g. "glm-5*", "doubao-seed-1-6-*") in file
+#   order, each filling only fields still unset within this layer.
+# - Field names must match ModelCatalogEntry data fields
+#   (src/opensquilla/provider/catalog_types.py); unknown names or wrongly
+#   typed values are logged and ignored — a bad row degrades, never crashes.
+#
+# No data rows yet: this file is bootstrapped empty so per-model fixes land
+# here as data instead of as code branches.

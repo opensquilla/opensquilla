@@ -47,6 +47,60 @@ class ProviderContextCapabilities:
 
 
 @dataclass(frozen=True)
+class ProviderContextProfile:
+    """Static context-capability profile carried on a ``ProviderSpec``.
+
+    Only branches keyed purely on the provider identity live here. Branches
+    that also consult the request host (Gemini's ``generativelanguage``
+    endpoint, OpenAI's ``api.openai.com`` guard) deliberately stay as code in
+    :func:`provider_context_capabilities` — expressing them as spec profiles
+    would grant cache behavior to custom-base-url deployments that do not
+    serve it.
+    """
+
+    prompt_cache: PromptCacheSupport = PromptCacheSupport.NONE
+    native_compaction: NativeCompactionSupport = NativeCompactionSupport.NONE
+    native_compaction_state_kind: str | None = None
+    supports_cache_breakpoints: bool = False
+    state_portable_across_providers: bool = False
+    min_cache_tokens: int | None = None
+    cache_ttl_options: tuple[int, ...] = ()
+    # Optional per-model hook: (model-id prefix, cache support) pairs, first
+    # match wins, ``prompt_cache`` is the fallback for unmatched models. When
+    # the table is non-empty, cache-breakpoint support follows the resolved
+    # level (only explicit-cache models accept cache_control breakpoints).
+    prompt_cache_model_prefix_table: tuple[tuple[str, PromptCacheSupport], ...] = ()
+
+
+ANTHROPIC_CONTEXT_PROFILE = ProviderContextProfile(
+    prompt_cache=PromptCacheSupport.EXPLICIT,
+    native_compaction=NativeCompactionSupport.NONE,
+    supports_cache_breakpoints=True,
+    state_portable_across_providers=False,
+)
+
+OPENAI_RESPONSES_CONTEXT_PROFILE = ProviderContextProfile(
+    prompt_cache=PromptCacheSupport.AUTOMATIC,
+    native_compaction=NativeCompactionSupport.STANDALONE,
+    native_compaction_state_kind=OPENAI_RESPONSES_COMPACTED_WINDOW_STATE_KIND,
+    state_portable_across_providers=False,
+)
+
+OPENROUTER_CONTEXT_PROFILE = ProviderContextProfile(
+    # Fallback for model ids outside the prefix table below.
+    prompt_cache=PromptCacheSupport.IMPLICIT,
+    state_portable_across_providers=False,
+    prompt_cache_model_prefix_table=(
+        ("anthropic/", PromptCacheSupport.EXPLICIT),
+        ("google/", PromptCacheSupport.EXPLICIT),
+        ("deepseek/", PromptCacheSupport.EXPLICIT),
+        ("x-ai/", PromptCacheSupport.EXPLICIT),
+        ("z-ai/", PromptCacheSupport.IMPLICIT),
+    ),
+)
+
+
+@dataclass(frozen=True)
 class ProviderStateContinuityDiagnostic:
     decision: ProviderStateContinuityDecision
     candidate_provider: str
@@ -70,12 +124,50 @@ class ProviderStateContinuityDiagnostic:
         }
 
 
-def _openrouter_prompt_cache_support(model_l: str) -> PromptCacheSupport:
-    if model_l.startswith(("anthropic/", "google/", "deepseek/", "x-ai/")):
-        return PromptCacheSupport.EXPLICIT
-    if model_l.startswith("z-ai/"):
-        return PromptCacheSupport.IMPLICIT
-    return PromptCacheSupport.IMPLICIT
+def _registered_context_profile(provider: str) -> ProviderContextProfile | None:
+    """Spec-carried profile for a provider id, or None when host guards apply."""
+    # Local import: the registry imports this module for the profile
+    # definitions attached to its specs.
+    from .registry import UnknownProviderError, get_provider_spec
+
+    try:
+        return get_provider_spec(provider).context_profile
+    except UnknownProviderError:
+        return None
+
+
+def _profile_prompt_cache(profile: ProviderContextProfile, model_l: str) -> PromptCacheSupport:
+    for prefix, support in profile.prompt_cache_model_prefix_table:
+        if model_l.startswith(prefix):
+            return support
+    return profile.prompt_cache
+
+
+def _capabilities_from_profile(
+    profile: ProviderContextProfile,
+    *,
+    provider: str,
+    model: str,
+    model_l: str,
+) -> ProviderContextCapabilities:
+    prompt_cache = profile.prompt_cache
+    supports_cache_breakpoints = profile.supports_cache_breakpoints
+    if profile.prompt_cache_model_prefix_table:
+        prompt_cache = _profile_prompt_cache(profile, model_l)
+        # Per-model resolution: only explicit-cache models accept
+        # cache_control breakpoints.
+        supports_cache_breakpoints = prompt_cache == PromptCacheSupport.EXPLICIT
+    return ProviderContextCapabilities(
+        provider=provider,
+        model=model,
+        prompt_cache=prompt_cache,
+        native_compaction=profile.native_compaction,
+        native_compaction_state_kind=profile.native_compaction_state_kind,
+        supports_cache_breakpoints=supports_cache_breakpoints,
+        state_portable_across_providers=profile.state_portable_across_providers,
+        min_cache_tokens=profile.min_cache_tokens,
+        cache_ttl_options=profile.cache_ttl_options,
+    )
 
 
 def _gemini_min_cache_tokens(model_l: str) -> int | None:
@@ -96,26 +188,15 @@ def provider_context_capabilities(
     model_l = model.strip().lower()
     base_l = base_url.strip().lower()
 
-    if provider == "openrouter":
-        prompt_cache = _openrouter_prompt_cache_support(model_l)
-        return ProviderContextCapabilities(
-            provider=provider,
-            model=model,
-            prompt_cache=prompt_cache,
-            supports_cache_breakpoints=prompt_cache == PromptCacheSupport.EXPLICIT,
-            state_portable_across_providers=False,
+    profile = _registered_context_profile(provider)
+    if profile is not None:
+        return _capabilities_from_profile(
+            profile, provider=provider, model=model, model_l=model_l
         )
 
-    if provider == "anthropic":
-        return ProviderContextCapabilities(
-            provider=provider,
-            model=model,
-            prompt_cache=PromptCacheSupport.EXPLICIT,
-            native_compaction=NativeCompactionSupport.NONE,
-            supports_cache_breakpoints=True,
-            state_portable_across_providers=False,
-        )
-
+    # The two branches below stay code, not spec profiles: each is gated on
+    # the request host, and keying them on the provider id alone would grant
+    # cache behavior to custom-base-url deployments that do not serve it.
     if provider == "gemini" or "generativelanguage.googleapis.com" in base_l:
         return ProviderContextCapabilities(
             provider=provider,
@@ -123,16 +204,6 @@ def provider_context_capabilities(
             prompt_cache=PromptCacheSupport.IMPLICIT,
             native_compaction=NativeCompactionSupport.NONE,
             min_cache_tokens=_gemini_min_cache_tokens(model_l),
-            state_portable_across_providers=False,
-        )
-
-    if provider == "openai_responses":
-        return ProviderContextCapabilities(
-            provider=provider,
-            model=model,
-            prompt_cache=PromptCacheSupport.AUTOMATIC,
-            native_compaction=NativeCompactionSupport.STANDALONE,
-            native_compaction_state_kind=OPENAI_RESPONSES_COMPACTED_WINDOW_STATE_KIND,
             state_portable_across_providers=False,
         )
 

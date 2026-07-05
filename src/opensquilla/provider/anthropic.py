@@ -12,6 +12,7 @@ import structlog
 from opensquilla.env import trust_env as _trust_env
 from opensquilla.execution_status import derive_is_error
 
+from .registry import AuthHeaderStyle
 from .request_proof import (
     ProviderRequestBudgetExceededError,
     prove_provider_payload_from_env,
@@ -32,12 +33,6 @@ log = structlog.get_logger(__name__)
 
 _ANTHROPIC_API_BASE = "https://api.anthropic.com"
 _ANTHROPIC_VERSION = "2023-06-01"
-
-
-def _uses_authorization_bearer(base_url: str) -> bool:
-    """MiniMax Anthropic-compatible APIs require Authorization."""
-    normalized = base_url.lower()
-    return "api.minimaxi.com" in normalized or "api.minimax.io" in normalized
 
 
 _KNOWN_MODELS: list[dict[str, Any]] = [
@@ -293,12 +288,18 @@ class AnthropicProvider:
         base_url: str = _ANTHROPIC_API_BASE,
         proxy: str | None = None,
         replay_provider_state: bool = True,
+        auth_header_style: AuthHeaderStyle = "x-api-key",
     ) -> None:
+        # The default auth style matches Anthropic proper so direct
+        # construction (tests, embedding) against the default host behaves
+        # unchanged; registry-built providers receive the spec's style
+        # (MiniMax's Anthropic-compatible endpoints need a Bearer header).
         self._api_key = api_key
         self._model = model
         self._base_url = base_url.rstrip("/")
         self._proxy = proxy or None
         self._replay_provider_state = replay_provider_state
+        self._auth_header_style = auth_header_style
 
     @property
     def model(self) -> str:
@@ -413,7 +414,7 @@ class AnthropicProvider:
             "content-type": "application/json",
             "accept": "text/event-stream",
         }
-        if _uses_authorization_bearer(self._base_url):
+        if self._auth_header_style == "bearer":
             headers["Authorization"] = f"Bearer {self._api_key}"
         else:
             headers["x-api-key"] = self._api_key

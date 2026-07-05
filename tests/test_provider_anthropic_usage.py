@@ -10,6 +10,7 @@ from opensquilla.provider.anthropic import (
     _anthropic_iteration_token_counts,
     _build_message_payload,
 )
+from opensquilla.provider.selector import build_provider
 from opensquilla.provider.types import (
     ChatConfig,
     ContentBlockCompaction,
@@ -102,16 +103,22 @@ def _sse_body(events: list[dict]) -> bytes:
 
 
 @pytest.mark.parametrize(
-    "base_url",
+    ("provider_id", "expected_base_url"),
     [
-        "https://api.minimaxi.com/anthropic",
-        "https://api.minimax.io/anthropic",
+        ("minimax", "https://api.minimaxi.com/anthropic"),
+        ("minimax_global", "https://api.minimax.io/anthropic"),
     ],
 )
 def test_minimax_anthropic_endpoints_use_authorization_bearer(
     monkeypatch,
-    base_url: str,
+    provider_id: str,
+    expected_base_url: str,
 ) -> None:
+    """Registry-built MiniMax providers sign with Authorization: Bearer.
+
+    The auth style comes from the ProviderSpec (auth_header_style) rather
+    than a base-url sniff, so the proof drives the production build path.
+    """
     captured: dict[str, object] = {}
     body = _sse_body(
         [
@@ -141,11 +148,12 @@ def test_minimax_anthropic_endpoints_use_authorization_bearer(
 
     monkeypatch.setattr("opensquilla.provider.anthropic.httpx.AsyncClient", patched_async_client)
 
-    provider = AnthropicProvider(
-        api_key="test-key",
+    provider = build_provider(
+        provider=provider_id,
         model="MiniMax-M2.7",
-        base_url=base_url,
+        api_key="test-key",
     )
+    assert isinstance(provider, AnthropicProvider)
 
     async def _collect() -> None:
         async for _ in provider.chat([Message(role="user", content="hi")], config=ChatConfig()):
@@ -154,9 +162,52 @@ def test_minimax_anthropic_endpoints_use_authorization_bearer(
     asyncio.run(_collect())
 
     headers = captured["headers"]
-    assert captured["url"] == f"{base_url}/v1/messages"
+    assert captured["url"] == f"{expected_base_url}/v1/messages"
     assert headers["Authorization"] == "Bearer test-key"
     assert "x-api-key" not in headers
+
+
+def test_direct_construction_defaults_to_x_api_key(monkeypatch) -> None:
+    """Bare AnthropicProvider construction keeps Anthropic-proper auth."""
+    captured: dict[str, object] = {}
+    body = _sse_body(
+        [
+            {
+                "type": "message_start",
+                "message": {"id": "msg_1", "model": "claude-test", "usage": {}},
+            },
+            {"type": "message_stop"},
+        ]
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["headers"] = request.headers
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/event-stream"},
+            content=body,
+        )
+
+    transport = httpx.MockTransport(handler)
+    real_async_client = httpx.AsyncClient
+
+    def patched_async_client(*args, **kwargs):
+        kwargs["transport"] = transport
+        return real_async_client(*args, **kwargs)
+
+    monkeypatch.setattr("opensquilla.provider.anthropic.httpx.AsyncClient", patched_async_client)
+
+    provider = AnthropicProvider(api_key="test-key", model="claude-test")
+
+    async def _collect() -> None:
+        async for _ in provider.chat([Message(role="user", content="hi")], config=ChatConfig()):
+            pass
+
+    asyncio.run(_collect())
+
+    headers = captured["headers"]
+    assert headers["x-api-key"] == "test-key"
+    assert "Authorization" not in headers
 
 
 def test_anthropic_done_event_carries_cache_write_tokens(monkeypatch) -> None:

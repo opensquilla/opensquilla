@@ -659,8 +659,15 @@ class OpenAIProvider:
         self._base_url = base_url.rstrip("/")
         self._proxy = _resolve_llm_proxy(proxy)
         self._org_id = org_id
-        inferred_kind = "openrouter" if "openrouter.ai" in self._base_url else "openai"
-        self._provider_kind = provider_kind or inferred_kind
+        if not provider_kind:
+            # Fallback for direct construction only (tests, ad-hoc
+            # embedding): every production path flows through
+            # selector._build_provider, which always passes the registry
+            # spec's provider_kind. The base-url sniff keeps a bare
+            # OpenAIProvider(base_url="https://openrouter.ai/...") resolving
+            # the OpenRouter dialect instead of silently degrading.
+            provider_kind = "openrouter" if "openrouter.ai" in self._base_url else "openai"
+        self._provider_kind = provider_kind
         self._compat = compat or compat_policy_for_kind(self._provider_kind)
         self._replay_provider_state = replay_provider_state
         self._provider_routing: Mapping[str, str] = provider_routing or {}

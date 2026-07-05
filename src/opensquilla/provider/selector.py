@@ -2,16 +2,22 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field, replace
 
 from .anthropic import AnthropicProvider
+from .compat_policy import OpenAICompatPolicy
 from .ollama import OllamaProvider
 from .openai import OpenAIProvider
 from .openai_codex import OpenAICodexProvider
 from .openai_responses import OpenAIResponsesProvider
 from .protocol import LLMProvider, ProviderPlugin, resolve_failover_chain
-from .registry import UnknownProviderError, get_provider_spec
+from .registry import (
+    AuthHeaderStyle,
+    ProviderSpec,
+    UnknownProviderError,
+    get_provider_spec,
+)
 
 
 @dataclass
@@ -83,75 +89,142 @@ def _build_provider(cfg: ProviderConfig) -> LLMProvider:
     if not spec.runtime_supported:
         raise ProviderBuildError(_unsupported_runtime_message(cfg.provider))
 
-    base_url = cfg.base_url or spec.default_base_url
+    context = _build_context(cfg, spec)
 
-    if not base_url and spec.requires_base_url():
+    if not context.base_url and spec.requires_base_url():
         raise ProviderBuildError(_missing_base_url_message(cfg.provider))
 
-    match spec.backend:
-        case "anthropic":
-            kwargs: dict = {
-                "api_key": cfg.api_key,
-                "model": cfg.model,
-                "replay_provider_state": cfg.replay_provider_state,
-            }
-            if base_url:
-                kwargs["base_url"] = base_url
-            if cfg.proxy:
-                kwargs["proxy"] = cfg.proxy
-            return AnthropicProvider(**kwargs)
+    factory = _BACKEND_FACTORIES.get(spec.backend)
+    if factory is None:
+        raise ProviderBuildError(_unsupported_runtime_message(cfg.provider))
+    return factory(context)
 
-        case "openai_compat":
-            kwargs = {
-                "api_key": cfg.api_key,
-                "model": cfg.model,
-                "provider_kind": spec.provider_kind,
-                "compat": spec.compat,
-                "replay_provider_state": cfg.replay_provider_state,
-            }
-            if base_url:
-                kwargs["base_url"] = base_url
-            if cfg.org_id:
-                kwargs["org_id"] = cfg.org_id
-            if cfg.proxy:
-                kwargs["proxy"] = cfg.proxy
-            if cfg.provider_routing:
-                kwargs["provider_routing"] = cfg.provider_routing
-            return OpenAIProvider(**kwargs)
 
-        case "openai_responses":
-            kwargs = {
-                "api_key": cfg.api_key,
-                "model": cfg.model,
-            }
-            if base_url:
-                kwargs["base_url"] = base_url
-            if cfg.org_id:
-                kwargs["org_id"] = cfg.org_id
-            if cfg.proxy:
-                kwargs["proxy"] = cfg.proxy
-            return OpenAIResponsesProvider(**kwargs)
+@dataclass(frozen=True)
+class ProviderBuildContext:
+    """Everything a backend factory may consume, assembled in one place.
 
-        case "ollama":
-            kwargs = {"model": cfg.model}
-            if base_url:
-                kwargs["base_url"] = base_url
-            if cfg.proxy:
-                kwargs["proxy"] = cfg.proxy
-            if cfg.api_key:
-                kwargs["api_key"] = cfg.api_key
-            return OllamaProvider(**kwargs)
+    The superset of ``ProviderConfig`` runtime fields plus the spec-derived
+    fields the adapters need. Provider constructor signatures are unchanged;
+    each backend factory picks the fields its adapter accepts, so a
+    capability an adapter cannot receive yet (e.g. ``num_ctx``, which
+    ``ProviderConfig`` does not carry) is a visible gap here instead of an
+    implicit omission scattered across call sites.
+    """
 
-        case "openai_codex":
-            kwargs = {"model": cfg.model}
-            if base_url:
-                kwargs["base_url"] = base_url
-            if cfg.proxy:
-                kwargs["proxy"] = cfg.proxy
-            return OpenAICodexProvider(**kwargs)
+    provider_id: str
+    backend: str
+    kind: str
+    model: str
+    api_key: str = ""
+    base_url: str = ""  # resolved: config override or the spec default
+    org_id: str = ""
+    proxy: str = ""
+    provider_routing: Mapping[str, str] = field(default_factory=dict)
+    replay_provider_state: bool = True
+    # OllamaProvider knob; never populated today because ProviderConfig has
+    # no num_ctx field — kept visible so the gap is explicit.
+    num_ctx: int | None = None
+    # Spec-derived fields.
+    auth_header_style: AuthHeaderStyle = "bearer"
+    compat: OpenAICompatPolicy = field(default_factory=OpenAICompatPolicy)
 
-        case _:
-            raise ProviderBuildError(_unsupported_runtime_message(cfg.provider))
+
+def _build_context(cfg: ProviderConfig, spec: ProviderSpec) -> ProviderBuildContext:
+    return ProviderBuildContext(
+        provider_id=cfg.provider,
+        backend=spec.backend,
+        kind=spec.provider_kind,
+        model=cfg.model,
+        api_key=cfg.api_key,
+        base_url=cfg.base_url or spec.default_base_url,
+        org_id=cfg.org_id,
+        proxy=cfg.proxy,
+        provider_routing=dict(cfg.provider_routing),
+        replay_provider_state=cfg.replay_provider_state,
+        auth_header_style=spec.auth_header_style,
+        compat=spec.compat,
+    )
+
+
+def _build_anthropic(ctx: ProviderBuildContext) -> LLMProvider:
+    kwargs: dict = {
+        "api_key": ctx.api_key,
+        "model": ctx.model,
+        "replay_provider_state": ctx.replay_provider_state,
+        "auth_header_style": ctx.auth_header_style,
+    }
+    if ctx.base_url:
+        kwargs["base_url"] = ctx.base_url
+    if ctx.proxy:
+        kwargs["proxy"] = ctx.proxy
+    return AnthropicProvider(**kwargs)
+
+
+def _build_openai_compat(ctx: ProviderBuildContext) -> LLMProvider:
+    kwargs: dict = {
+        "api_key": ctx.api_key,
+        "model": ctx.model,
+        "provider_kind": ctx.kind,
+        "compat": ctx.compat,
+        "replay_provider_state": ctx.replay_provider_state,
+    }
+    if ctx.base_url:
+        kwargs["base_url"] = ctx.base_url
+    if ctx.org_id:
+        kwargs["org_id"] = ctx.org_id
+    if ctx.proxy:
+        kwargs["proxy"] = ctx.proxy
+    if ctx.provider_routing:
+        kwargs["provider_routing"] = ctx.provider_routing
+    return OpenAIProvider(**kwargs)
+
+
+def _build_openai_responses(ctx: ProviderBuildContext) -> LLMProvider:
+    # Gap made visible: the Responses adapter has no replay_provider_state
+    # or provider_routing knobs today.
+    kwargs: dict = {
+        "api_key": ctx.api_key,
+        "model": ctx.model,
+    }
+    if ctx.base_url:
+        kwargs["base_url"] = ctx.base_url
+    if ctx.org_id:
+        kwargs["org_id"] = ctx.org_id
+    if ctx.proxy:
+        kwargs["proxy"] = ctx.proxy
+    return OpenAIResponsesProvider(**kwargs)
+
+
+def _build_ollama(ctx: ProviderBuildContext) -> LLMProvider:
+    kwargs: dict = {"model": ctx.model}
+    if ctx.base_url:
+        kwargs["base_url"] = ctx.base_url
+    if ctx.proxy:
+        kwargs["proxy"] = ctx.proxy
+    if ctx.api_key:
+        kwargs["api_key"] = ctx.api_key
+    if ctx.num_ctx is not None:
+        kwargs["num_ctx"] = ctx.num_ctx
+    return OllamaProvider(**kwargs)
+
+
+def _build_openai_codex(ctx: ProviderBuildContext) -> LLMProvider:
+    kwargs: dict = {"model": ctx.model}
+    if ctx.base_url:
+        kwargs["base_url"] = ctx.base_url
+    if ctx.proxy:
+        kwargs["proxy"] = ctx.proxy
+    return OpenAICodexProvider(**kwargs)
+
+
+_BACKEND_FACTORIES: dict[str, Callable[[ProviderBuildContext], LLMProvider]] = {
+    "anthropic": _build_anthropic,
+    "openai_compat": _build_openai_compat,
+    "openai_responses": _build_openai_responses,
+    "ollama": _build_ollama,
+    "openai_codex": _build_openai_codex,
+}
 
 
 class ModelSelector:

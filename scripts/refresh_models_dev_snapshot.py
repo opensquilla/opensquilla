@@ -22,6 +22,8 @@ from pathlib import Path
 
 import httpx
 
+from opensquilla.provider.registry import list_provider_specs
+
 API_URL = "https://models.dev/api.json"
 SNAPSHOT_PATH = (
     Path(__file__).resolve().parents[1]
@@ -32,29 +34,14 @@ SNAPSHOT_PATH = (
 )
 
 # OpenSquilla provider id -> models.dev provider ids (merged in order; the
-# first source of a model id wins).
+# first source of a model id wins). Derived from each registered spec's
+# ``catalog_source`` so this script cannot drift from the provider registry.
+# Script-only extras (sources for providers the registry does not carry)
+# would be added explicitly after the comprehension — none exist today.
 PROVIDER_SOURCES: dict[str, tuple[str, ...]] = {
-    "openrouter": ("openrouter",),
-    "openai": ("openai",),
-    "openai_responses": ("openai",),
-    "anthropic": ("anthropic",),
-    "deepseek": ("deepseek",),
-    "gemini": ("google",),
-    "dashscope": ("alibaba-cn", "alibaba"),
-    "bailian_coding": ("alibaba", "alibaba-cn"),
-    "moonshot": ("moonshotai",),
-    "zhipu": ("zhipuai", "zai"),
-    "minimax": ("minimax",),
-    "minimax_openai": ("minimax",),
-    "minimax_cn": ("minimax",),
-    "minimax_global": ("minimax",),
-    "mistral": ("mistral",),
-    "groq": ("groq",),
-    "siliconflow": ("siliconflow",),
-    "volcengine": ("volcengine",),
-    "byteplus": ("byteplus",),
-    "qianfan": ("qianfan", "baidu"),
-    "azure": ("azure",),
+    spec.provider_id: spec.catalog_source
+    for spec in list_provider_specs()
+    if spec.catalog_source
 }
 
 

@@ -19,6 +19,8 @@ from opensquilla.engine.routing.calibration import (
 )
 from opensquilla.engine.routing.policy import (
     AntiDowngradeResult,
+    BudgetGateInput,
+    BudgetGateResult,
     CapabilityGateAction,
     CapabilityGateResult,
     ComplaintUpgradeResult,
@@ -31,7 +33,9 @@ from opensquilla.engine.routing.policy import (
     RoutingPolicyEngine,
     TierCapability,
     anti_downgrade,
+    apply_budget_gate,
     bind,
+    budget_gate,
     capability_gate,
     complaint_upgrade,
     confidence_gate,
@@ -43,6 +47,7 @@ from opensquilla.engine.routing.policy import (
     provider_mismatch,
     provider_mismatch_veto,
     reconcile_controller_with_final_tier,
+    record_budget_gate_trail,
     record_capability_gate_trail,
     record_provider_mismatch_veto_trail,
     route_class_for_tier,
@@ -51,6 +56,8 @@ from opensquilla.engine.routing.policy import (
 
 __all__ = [
     "AntiDowngradeResult",
+    "BudgetGateInput",
+    "BudgetGateResult",
     "CalibrationState",
     "CapabilityGateAction",
     "CapabilityGateResult",
@@ -66,7 +73,9 @@ __all__ = [
     "aggregate_calibration",
     "anti_downgrade",
     "apply_bias",
+    "apply_budget_gate",
     "bind",
+    "budget_gate",
     "calibration_path",
     "capability_gate",
     "complaint_upgrade",
@@ -81,6 +90,7 @@ __all__ = [
     "provider_mismatch",
     "provider_mismatch_veto",
     "reconcile_controller_with_final_tier",
+    "record_budget_gate_trail",
     "record_capability_gate_trail",
     "record_provider_mismatch_veto_trail",
     "route_class_for_tier",

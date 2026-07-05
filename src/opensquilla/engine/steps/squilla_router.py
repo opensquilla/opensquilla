@@ -18,6 +18,7 @@ import structlog
 from opensquilla.engine.pipeline import TurnContext
 from opensquilla.engine.pricing import lookup_price
 from opensquilla.engine.routing import (
+    BudgetGateInput,
     CalibrationState,
     PolicyInputs,
     RoutingDecision,
@@ -637,6 +638,147 @@ def _tier_capability_facts(
     return facts
 
 
+# Session-spend keys the runtime seeds into router metadata when the budget
+# gate is active (see runtime._run_pipeline). Absent on the default path, which
+# keeps the gate suspended (never acting on an unknown cost).
+_BUDGET_SPEND_KEYS = (
+    "session_billed_cost_usd",
+    "session_total_cost_usd",
+    "session_estimated_cost_usd",
+)
+
+
+def _budget_cost_value(value: object) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    as_float = float(value)
+    if as_float != as_float or as_float in (float("inf"), float("-inf")):
+        return None
+    return as_float
+
+
+def _session_accumulated_spend(ctx: TurnContext) -> tuple[float | None, str]:
+    """Read the session's accumulated spend from turn metadata.
+
+    Precedence mirrors ``session/cost_rollup.rollup_cost_source`` (READ only —
+    that module is off-limits): provider-billed total first, then the
+    estimate/total. Returns ``(None, "unknown")`` when NO cost signal is
+    present at all — a fresh session with no billed total yet — so the gate
+    suspends rather than acting on missing data. Keys present but all zero are
+    a known-zero spend, not an unknown one.
+    """
+    metadata = getattr(ctx, "metadata", {}) or {}
+    if not any(key in metadata for key in _BUDGET_SPEND_KEYS):
+        return None, "unknown"
+    billed = _budget_cost_value(metadata.get("session_billed_cost_usd"))
+    if billed is not None and billed > 0:
+        return billed, "billed"
+    total = _budget_cost_value(metadata.get("session_total_cost_usd"))
+    if total is not None and total > 0:
+        return total, "estimate"
+    estimated = _budget_cost_value(metadata.get("session_estimated_cost_usd"))
+    if estimated is not None and estimated > 0:
+        return estimated, "estimate"
+    return 0.0, "none"
+
+
+def _budget_next_turn_estimate(routed_model: str, material_tokens: int) -> float | None:
+    """Rough forward estimate (USD) of this turn's marginal input cost.
+
+    READS ``engine/pricing`` prices (offline-safe static fallback); never
+    writes new cost math into the savings path. Returns ``None`` when the model
+    or token count is unknown so the gate suspends instead of guessing; a
+    free/local model is a known-zero marginal cost.
+    """
+    model = str(routed_model or "").strip()
+    if not model or material_tokens <= 0:
+        return None
+    input_per_m = float(getattr(lookup_price(model), "input_per_m", 0.0) or 0.0)
+    if input_per_m <= 0:
+        return 0.0
+    return (material_tokens / 1_000_000.0) * input_per_m
+
+
+def _budget_gate_input_for_turn(
+    ctx: TurnContext,
+    router_cfg: object,
+    *,
+    routed_model: str,
+    material_tokens: int,
+) -> BudgetGateInput | None:
+    """Assemble the budget-gate signal, or ``None`` for the default no-op path.
+
+    Mirrors :func:`_calibration_for_turn`: ``None`` is returned whenever the
+    gate is disabled (no ``budget`` block, ``action = "off"``, or no positive
+    ``limit_usd``), so the only time a non-``None`` input reaches the policy
+    engine is when the operator has set an active per-session ceiling. Degrades
+    to a suspended input (``spend_usd=None``) when the accumulated spend — or a
+    requested forward price — cannot be determined.
+    """
+    budget_cfg = getattr(router_cfg, "budget", None)
+    if budget_cfg is None:
+        return None
+    action = str(getattr(budget_cfg, "action", "warn") or "warn").strip().lower()
+    if action not in ("warn", "cap"):
+        return None
+    limit = _budget_cost_value(getattr(budget_cfg, "limit_usd", None))
+    if limit is None or limit <= 0:
+        return None
+
+    cap_tier = getattr(budget_cfg, "cap_tier", None)
+    resolved_cap = normalize_text_tier(cap_tier) if cap_tier else None
+    if action == "cap" and resolved_cap is None:
+        resolved_cap = normalize_text_tier(getattr(router_cfg, "default_tier", None))
+
+    spend, source = _session_accumulated_spend(ctx)
+    estimate: float | None = None
+    if spend is not None and bool(getattr(budget_cfg, "include_next_turn_estimate", False)):
+        estimate = _budget_next_turn_estimate(routed_model, material_tokens)
+        if estimate is None:
+            # Forward projection requested but the next turn cannot be priced:
+            # never act on an unknown cost -> suspend.
+            spend = None
+            source = "unknown"
+
+    return BudgetGateInput(
+        action=action,
+        limit_usd=limit,
+        spend_usd=spend,
+        estimate_usd=estimate,
+        cap_tier=resolved_cap,
+        spend_source=source,
+        session_key=ctx.session_key,
+    )
+
+
+def _log_budget_outcome(ctx: TurnContext) -> None:
+    """Emit the ``router_budget.*`` event when the gate acted (warn/cap).
+
+    No secrets and no prompt text — only the session key, spend, limit, and
+    action. Suspensions are logged separately at debug from the gather site,
+    where the suspended signal is known.
+    """
+    outcome = ctx.metadata.get("router_budget_outcome")
+    if outcome == "warn":
+        log.warning(
+            "router_budget.warn",
+            session=ctx.session_key,
+            spend_usd=ctx.metadata.get("router_budget_spend_usd"),
+            limit_usd=ctx.metadata.get("router_budget_limit_usd"),
+            action=ctx.metadata.get("router_budget_action"),
+        )
+    elif outcome == "cap":
+        log.warning(
+            "router_budget.cap",
+            session=ctx.session_key,
+            spend_usd=ctx.metadata.get("router_budget_spend_usd"),
+            limit_usd=ctx.metadata.get("router_budget_limit_usd"),
+            action=ctx.metadata.get("router_budget_action"),
+            from_tier=ctx.metadata.get("router_budget_from_tier"),
+            to_tier=ctx.metadata.get("router_budget_to_tier"),
+        )
+
+
 def _flag_tier_provider_mismatch(
     ctx: TurnContext,
     tiers: dict,
@@ -1028,6 +1170,22 @@ async def apply_squilla_router(ctx: TurnContext) -> TurnContext:
         routing_extra = ctx.metadata.setdefault("routing_extra", extra or {})
     else:
         routing_extra = ctx.metadata.get("routing_extra")
+    material_estimated_tokens = _material_estimated_tokens(ctx, semantic_message)
+    budget_input = _budget_gate_input_for_turn(
+        ctx,
+        router_cfg,
+        routed_model=decision.model,
+        material_tokens=material_estimated_tokens,
+    )
+    if budget_input is not None and budget_input.spend_usd is None:
+        # Active gate but the accumulated spend (or a required forward price)
+        # could not be determined: suspend rather than act on missing data.
+        log.debug(
+            "router_budget.suspended",
+            session=ctx.session_key,
+            limit_usd=budget_input.limit_usd,
+            spend_source=budget_input.spend_source,
+        )
     policy_result = _POLICY_ENGINE.run(
         PolicyInputs(
             decision=decision,
@@ -1040,7 +1198,7 @@ async def apply_squilla_router(ctx: TurnContext) -> TurnContext:
             thinking_mode=thinking_mode,
             prompt_policy=prompt_policy,
             history_strategy=_is_history_strategy(strategy_name),
-            material_estimated_tokens=_material_estimated_tokens(ctx, semantic_message),
+            material_estimated_tokens=material_estimated_tokens,
             context_window_tokens=_context_window_tokens(ctx, router_cfg),
             turn_has_image=turn_needs_image,
             tier_capabilities=_tier_capability_facts(
@@ -1049,12 +1207,14 @@ async def apply_squilla_router(ctx: TurnContext) -> TurnContext:
                 str(getattr(getattr(ctx.config, "llm", None), "provider", "") or ""),
             ),
             calibration=_calibration_for_turn(router_cfg),
+            budget=budget_input,
         )
     )
     decision = policy_result.decision
     thinking_mode = policy_result.thinking_mode
     prompt_policy = policy_result.prompt_policy
     ctx.metadata.update(policy_result.metadata_updates)
+    _log_budget_outcome(ctx)
 
     routing_applied = rollout_phase != "observe"
     decision, thinking_mode, prompt_policy = _apply_provider_mismatch_veto(

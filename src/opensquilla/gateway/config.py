@@ -767,6 +767,47 @@ def _router_tier_profile_defaults(profile: str | None) -> dict:
     return preset.tier_defaults()
 
 
+class RouterBudgetConfig(BaseModel):
+    """Additive, opt-in per-session spend gate for the router.
+
+    Default state is a complete no-op: with no ``limit_usd`` set (or
+    ``action = "off"``) the routing policy's budget stage never runs, so the
+    chosen tier is byte-identical to a build without this block (the routing
+    parity golden pins that). The gate READS the session's already-accumulated
+    billed/estimated spend — it never recomputes cost math — and, when that
+    spend crosses ``limit_usd``, takes ``action``:
+
+    - ``"warn"`` (the default action) — annotate routing metadata + emit a
+      ``router_budget.warn`` log, but leave the routed tier UNCHANGED.
+    - ``"cap"`` — lower the routed tier to ``cap_tier`` (or the router
+      ``default_tier`` when unset), never raising it.
+    - ``"off"`` — disable the gate regardless of ``limit_usd``.
+
+    When the accumulated spend (or a required forward price) cannot be
+    determined, the gate SUSPENDS (a no-op) rather than acting on missing data.
+
+    ``extra="ignore"`` keeps the block downgrade-tolerant: an older loader
+    reading a config that carries it simply drops it and falls back to today's
+    un-gated routing. Nothing that activates the gate is persisted while it is
+    unset — ``limit_usd``/``cap_tier`` default to ``None`` and drop out of the
+    ``exclude_none`` TOML dump.
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    action: Literal["off", "warn", "cap"] = "warn"
+    # Per-session ceiling in USD. ``None`` (or a non-positive value) disables
+    # the gate — this is the default, byte-identical no-op state.
+    limit_usd: float | None = None
+    # Cap target for ``action = "cap"``. ``None`` falls back to the router's
+    # ``default_tier`` at gather time. Normalized through router_tiers.
+    cap_tier: str | None = None
+    # Opt-in forward projection: add an estimate of the next turn's marginal
+    # input cost to the accumulated spend before comparing to ``limit_usd``.
+    # When the estimate cannot be determined the gate SUSPENDS.
+    include_next_turn_estimate: bool = False
+
+
 class SquillaRouterConfig(BaseSettings):
     model_config = SettingsConfigDict(
         env_prefix="OPENSQUILLA_SQUILLA_ROUTER_",
@@ -823,6 +864,12 @@ class SquillaRouterConfig(BaseSettings):
     # (class extra="ignore" keeps old builds rollback-tolerant). Never touches
     # the router savings/cost math.
     calibration_enabled: bool = False
+    # Opt-in per-session spend gate. Default (no limit) is a complete no-op:
+    # the routing policy's budget stage never runs, so the chosen tier stays
+    # byte-identical to today. Reads accumulated session spend; never
+    # recomputes cost. Additive key (class extra="ignore" keeps old builds
+    # rollback-tolerant).
+    budget: RouterBudgetConfig = Field(default_factory=RouterBudgetConfig)
     estimated_output_savings_pct: float = 0.03
     upgrade_to_c3_compaction_enabled: bool = True
     vision_history_lookback_turns: int = Field(default=8, ge=0)

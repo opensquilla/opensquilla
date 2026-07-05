@@ -565,6 +565,175 @@ def large_context_floor(
     return floored
 
 
+# ---------------------------------------------------------------------------
+# Budget gate (additive, default-off)
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class BudgetGateInput:
+    """Session-spend signal + config for the budget gate, as plain data.
+
+    Assembled by the squilla-router step and passed IN — the gate never reads
+    session storage or pricing itself. ``None`` for the whole input means the
+    gate is off (the default, byte-identical path). ``spend_usd`` is ``None``
+    when the accumulated spend (or a required forward price) could not be
+    determined; the gate then SUSPENDS rather than acting on missing data.
+    """
+
+    action: str  # "warn" | "cap"
+    limit_usd: float
+    spend_usd: float | None
+    estimate_usd: float | None = None
+    cap_tier: str | None = None
+    spend_source: str = "unknown"  # "billed" | "estimate" | "none" | "unknown"
+    session_key: str | None = None
+
+
+@dataclass(frozen=True)
+class BudgetGateResult:
+    tier: str
+    outcome: str  # "off" | "suspended" | "under_limit" | "warn" | "cap"
+    spend_usd: float | None = None
+    projected_usd: float | None = None
+    limit_usd: float | None = None
+    action: str = "off"
+    from_tier: str = ""
+    spend_source: str = "unknown"
+    session_key: str | None = None
+
+
+def budget_gate(
+    tier: str,
+    *,
+    valid_tiers: list[str],
+    budget: BudgetGateInput | None,
+) -> BudgetGateResult:
+    """Warn or cap when accumulated session spend crosses the configured limit.
+
+    Placement: after :func:`large_context_floor` — budget is the LAST routing
+    consideration. Every earlier stage expresses a capability or preference
+    that can raise the tier; this one can only hold or LOWER it (warn/cap),
+    never raise, so it must run once the rest of the pipeline has settled.
+    Pure over plain data.
+
+    Semantics:
+
+    - ``budget is None`` (off / default / no limit) -> ``off``: a complete
+      no-op, byte-identical to the pre-gate pipeline (the parity golden pins
+      this).
+    - ``spend_usd is None`` (no billed/estimated total yet, or a required
+      forward price could not be priced) -> ``suspended``: never act on an
+      unknown cost.
+    - ``spend (+ estimate) <= limit`` -> ``under_limit``: no-op.
+    - over limit, ``action == "warn"`` -> ``warn``: annotate + log, tier
+      UNCHANGED.
+    - over limit, ``action == "cap"`` with a cap target strictly below the
+      working tier -> ``cap``: lower to that tier. A cap target at or above
+      the working tier (or an unknown/invalid one) degrades to ``warn`` — the
+      gate never raises.
+    """
+    if budget is None:
+        return BudgetGateResult(tier, "off")
+    if budget.spend_usd is None:
+        return BudgetGateResult(
+            tier,
+            "suspended",
+            limit_usd=budget.limit_usd,
+            action=budget.action,
+            spend_source=budget.spend_source,
+            session_key=budget.session_key,
+        )
+    projected = budget.spend_usd + (budget.estimate_usd or 0.0)
+    common: dict[str, object] = {
+        "spend_usd": budget.spend_usd,
+        "projected_usd": projected,
+        "limit_usd": budget.limit_usd,
+        "spend_source": budget.spend_source,
+        "session_key": budget.session_key,
+    }
+    if projected <= budget.limit_usd:
+        return BudgetGateResult(tier, "under_limit", action=budget.action, **common)  # type: ignore[arg-type]
+    if budget.action == "cap":
+        target = normalize_text_tier(budget.cap_tier) if budget.cap_tier else None
+        if (
+            target is not None
+            and target in valid_tiers
+            and _tier_index(target, valid_tiers) < _tier_index(tier, valid_tiers)
+        ):
+            return BudgetGateResult(target, "cap", action="cap", from_tier=tier, **common)  # type: ignore[arg-type]
+        # No cap target strictly below the working tier: warn, never raise.
+        return BudgetGateResult(tier, "warn", action="warn", from_tier=tier, **common)  # type: ignore[arg-type]
+    return BudgetGateResult(tier, "warn", action="warn", from_tier=tier, **common)  # type: ignore[arg-type]
+
+
+def record_budget_gate_trail(extra: dict, result: BudgetGateResult) -> None:
+    """Append the budget gate's action to the routing trail (warn/cap only)."""
+    if result.outcome not in ("warn", "cap"):
+        return
+    entry: dict[str, object] = {
+        "stage": "budget_gate",
+        "rule": result.outcome,
+        "spend_usd": result.spend_usd,
+        "limit_usd": result.limit_usd,
+    }
+    if result.outcome == "cap":
+        entry["from_tier"] = result.from_tier
+        entry["to_tier"] = result.tier
+    extra.setdefault("routing_trail", []).append(entry)
+    extra["budget_gate_applied"] = True
+    extra["budget_gate_outcome"] = result.outcome
+
+
+def apply_budget_gate(
+    decision: RoutingDecision,
+    result: BudgetGateResult,
+    *,
+    tiers: dict,
+    extra: dict | None,
+    metadata_updates: dict,
+) -> RoutingDecision:
+    """Apply a :func:`budget_gate` result to the decision + turn metadata.
+
+    ``off``, ``suspended``, and ``under_limit`` are all complete no-ops: they
+    return the decision untouched and write NOTHING to ``extra`` or
+    ``metadata_updates``. That is the byte-identical guarantee — a metadata
+    trace exists if and only if the gate ACTED. Only ``warn``/``cap`` record
+    observability metadata and annotate the routing trail; only ``cap`` rebinds
+    the decision to a lower tier's model. The gate never raises the tier.
+    """
+    if result.outcome not in ("warn", "cap"):
+        return decision
+
+    metadata_updates["router_budget_applied"] = True
+    metadata_updates["router_budget_outcome"] = result.outcome
+    metadata_updates["router_budget_action"] = result.action
+    metadata_updates["router_budget_limit_usd"] = result.limit_usd
+    metadata_updates["router_budget_spend_source"] = result.spend_source
+    if result.spend_usd is not None:
+        metadata_updates["router_budget_spend_usd"] = result.spend_usd
+    if result.projected_usd is not None and result.projected_usd != result.spend_usd:
+        metadata_updates["router_budget_projected_usd"] = result.projected_usd
+    if extra is not None:
+        record_budget_gate_trail(extra, result)
+
+    if result.outcome == "cap":
+        metadata_updates["router_budget_from_tier"] = result.from_tier
+        metadata_updates["router_budget_to_tier"] = result.tier
+        capped = RoutingDecision(
+            tier=result.tier,
+            model=tiers[result.tier].get("model", decision.model),
+            confidence=decision.confidence,
+            source="budget_cap",
+        )
+        if extra is not None:
+            extra["final_tier"] = result.tier
+            extra["final_route_class"] = route_class_for_tier(result.tier)
+        return capped
+
+    return decision  # warn: tier UNCHANGED
+
+
 @dataclass(frozen=True)
 class ProviderMismatchOutcome:
     """Flag-only assessment of the routed tier's provider vs the active one."""
@@ -723,6 +892,10 @@ class PolicyInputs:
     # gate byte-identical to today; a non-neutral state shifts the effective
     # threshold and per-class confidence bias (both hard-clamped at read time).
     calibration: CalibrationState | None = None
+    # Per-session spend gate signal. ``None`` (the default) keeps the budget
+    # stage a complete no-op (parity with the pre-gate pipeline); a non-``None``
+    # input is only assembled when the operator sets an active limit.
+    budget: BudgetGateInput | None = None
 
 
 @dataclass
@@ -771,6 +944,23 @@ class RoutingPolicyEngine:
                 thinking_mode,
                 prompt_policy,
                 extra,
+            )
+
+        # Budget gate runs last: it can only hold or lower the tier, never
+        # raise it. With ``budget is None`` (the default) the whole block is
+        # skipped, so routing is byte-identical to the pre-gate pipeline.
+        if inputs.budget is not None:
+            budget_result = budget_gate(
+                decision.tier,
+                valid_tiers=inputs.valid_tiers,
+                budget=inputs.budget,
+            )
+            decision = apply_budget_gate(
+                decision,
+                budget_result,
+                tiers=inputs.tiers,
+                extra=extra,
+                metadata_updates=metadata_updates,
             )
 
         return PolicyResult(

@@ -4795,6 +4795,32 @@ class TurnRunner:
             initial_metadata["channel_kind"] = tool_context.channel_kind
             initial_metadata["channel_id"] = tool_context.channel_id
 
+        # Budget gate (opt-in): seed the session's already-accumulated spend so
+        # the router step can read it. Gated on an active limit, so the default
+        # path pays no extra session read. Reads existing session cost totals;
+        # it never recomputes cost math.
+        budget_cfg = getattr(router_cfg, "budget", None)
+        if (
+            budget_cfg is not None
+            and str(getattr(budget_cfg, "action", "warn") or "warn").strip().lower() != "off"
+            and getattr(budget_cfg, "limit_usd", None)
+            and self._session_manager is not None
+        ):
+            try:
+                budget_session = await self._session_manager.get_session(session_key)
+            except Exception:  # noqa: BLE001 - budget seeding must never break a turn
+                budget_session = None
+            if budget_session is not None:
+                initial_metadata["session_billed_cost_usd"] = float(
+                    getattr(budget_session, "billed_cost_usd", 0.0) or 0.0
+                )
+                initial_metadata["session_total_cost_usd"] = float(
+                    getattr(budget_session, "total_cost_usd", 0.0) or 0.0
+                )
+                initial_metadata["session_estimated_cost_usd"] = float(
+                    getattr(budget_session, "estimated_cost_usd", 0.0) or 0.0
+                )
+
         turn = TurnContext(
             message=message,
             session_key=session_key,

@@ -10,6 +10,8 @@ export interface Attachment {
   data?: string
   dataUrl?: string
   file_uuid?: string
+  expires_at?: number
+  ttl_seconds?: number
   error?: string
   file?: File
 }

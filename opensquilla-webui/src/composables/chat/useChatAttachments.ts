@@ -10,9 +10,20 @@ const ATTACHMENT_PDF_HARD_CAP_BYTES = 30 * 1024 * 1024
 const ATTACHMENT_OFFICE_HARD_CAP_BYTES = 30 * 1024 * 1024
 const MAX_ATTACHMENTS = 10
 const MAX_TOTAL_ATTACHMENT_BYTES = 60 * 1024 * 1024
+const STAGED_UPLOAD_REFRESH_GRACE_MS = 30_000
 // Email is held to the text cap (bounded text is extracted; large emails are
 // large only due to attachments we never read), so it inlines and never stages.
 const ATTACHMENT_EMAIL_HARD_CAP_BYTES = ATTACHMENT_TEXT_HARD_CAP_BYTES
+
+type UploadResponseMeta = {
+  fileUuid: string
+  expiresAt?: number
+  ttlSeconds?: number
+}
+
+type AttachmentPreparationOptions = {
+  isCurrent?: () => boolean
+}
 
 const DOCX_MIME = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
 const XLSX_MIME = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
@@ -88,6 +99,7 @@ export function useChatAttachments() {
   const { pushToast } = useToasts()
   const pendingAttachments = ref<Attachment[]>([])
   const nextAttachmentId = ref(1)
+  const refreshInFlightAttachmentIds = new Set<number>()
 
   function onFileInputChange(e: Event) {
     const target = e.target as HTMLInputElement
@@ -166,6 +178,24 @@ export function useChatAttachments() {
   }
 
   async function uploadAttachmentStaged(file: File, mime: string, localId: number) {
+    const meta = await uploadAttachmentFile(file, mime)
+    const idx = pendingAttachments.value.findIndex(a => a.local_id === localId)
+    if (idx >= 0) {
+      pendingAttachments.value[idx] = {
+        kind: 'staged',
+        local_id: localId,
+        name: file.name || 'Untitled file',
+        mime,
+        size: file.size,
+        file_uuid: meta.fileUuid,
+        expires_at: meta.expiresAt,
+        ttl_seconds: meta.ttlSeconds,
+        file,
+      }
+    }
+  }
+
+  async function uploadAttachmentFile(file: File, mime: string): Promise<UploadResponseMeta> {
     const form = new FormData()
     form.append('file', file, file.name)
     form.append('mime', mime)
@@ -180,11 +210,7 @@ export function useChatAttachments() {
       throw new Error(`HTTP ${response.status} ${detail}`)
     }
     const result = await response.json()
-    const fileUuid = uploadResponseFileUuid(result)
-    const idx = pendingAttachments.value.findIndex(a => a.local_id === localId)
-    if (idx >= 0) {
-      pendingAttachments.value[idx] = { kind: 'staged', local_id: localId, name: file.name || 'Untitled file', mime, size: file.size, file_uuid: fileUuid }
-    }
+    return uploadResponseMeta(result)
   }
 
   function removeAttachment(index: number) {
@@ -218,7 +244,57 @@ export function useChatAttachments() {
   }
 
   function hasPendingAttachmentWork(): boolean {
-    return pendingAttachments.value.some(a => a.kind === 'inline_pending' || a.kind === 'uploading')
+    return refreshInFlightAttachmentIds.size > 0 || pendingAttachments.value.some(a => a.kind === 'inline_pending' || a.kind === 'uploading')
+  }
+
+  async function prepareAttachmentsForSend(options: AttachmentPreparationOptions = {}): Promise<boolean> {
+    const isCurrent = options.isCurrent ?? (() => true)
+    const staged = [...pendingAttachments.value].filter(stagedUploadNeedsRefresh)
+    for (const attachment of staged) {
+      if (!isCurrent()) return false
+      if (refreshInFlightAttachmentIds.has(attachment.local_id)) return false
+      const idx = pendingAttachments.value.findIndex(a => a.local_id === attachment.local_id)
+      if (idx < 0 || pendingAttachments.value[idx].kind !== 'staged') continue
+      if (!attachment.file) {
+        pendingAttachments.value[idx] = {
+          kind: 'failed',
+          local_id: attachment.local_id,
+          name: attachment.name,
+          mime: attachment.mime,
+          size: attachment.size,
+          error: 'Upload expired; select the file again',
+        }
+        pushToast(`Upload expired for ${attachment.name}: select the file again`, { tone: 'danger' })
+        return false
+      }
+      refreshInFlightAttachmentIds.add(attachment.local_id)
+      try {
+        const meta = await uploadAttachmentFile(attachment.file, attachment.mime)
+        if (!isCurrent()) return false
+        const currentIdx = pendingAttachments.value.findIndex(a => a.local_id === attachment.local_id)
+        if (currentIdx < 0 || pendingAttachments.value[currentIdx].kind !== 'staged') continue
+        pendingAttachments.value[currentIdx] = {
+          kind: 'staged',
+          local_id: attachment.local_id,
+          name: attachment.name,
+          mime: attachment.mime,
+          size: attachment.size,
+          file_uuid: meta.fileUuid,
+          expires_at: meta.expiresAt,
+          ttl_seconds: meta.ttlSeconds,
+          file: attachment.file,
+        }
+      } catch (err: unknown) {
+        if (!isCurrent()) return false
+        const message = uploadFailureMessage(err)
+        markAttachmentFailed(attachment.local_id, attachment.file, attachment.mime, message)
+        pushToast(`${i18n.global.t('chat.toast.uploadFailed', { name: attachment.name })}: ${message}`, { tone: 'danger' })
+        return false
+      } finally {
+        refreshInFlightAttachmentIds.delete(attachment.local_id)
+      }
+    }
+    return true
   }
 
   function canAcceptAttachment(fileName: string, size: number): boolean {
@@ -243,6 +319,7 @@ export function useChatAttachments() {
     removeAttachment,
     retryAttachment,
     hasPendingAttachmentWork,
+    prepareAttachmentsForSend,
   }
 }
 
@@ -260,12 +337,27 @@ function uploadFailureMessage(err: unknown): string {
   return String(err)
 }
 
-function uploadResponseFileUuid(result: unknown): string {
-  const fileUuid = typeof (result as { file_uuid?: unknown } | null)?.file_uuid === 'string'
-    ? (result as { file_uuid: string }).file_uuid.trim()
-    : ''
+function uploadResponseMeta(result: unknown): UploadResponseMeta {
+  const record = (result && typeof result === 'object' ? result : {}) as {
+    file_uuid?: unknown
+    expires_at?: unknown
+    ttl_seconds?: unknown
+  }
+  const fileUuid = typeof record.file_uuid === 'string' ? record.file_uuid.trim() : ''
   if (!fileUuid) throw new Error('Upload response missing file_uuid')
-  return fileUuid
+  const expiresAt = typeof record.expires_at === 'number' && Number.isFinite(record.expires_at)
+    ? record.expires_at
+    : undefined
+  const ttlSeconds = typeof record.ttl_seconds === 'number' && Number.isFinite(record.ttl_seconds)
+    ? record.ttl_seconds
+    : undefined
+  return { fileUuid, expiresAt, ttlSeconds }
+}
+
+function stagedUploadNeedsRefresh(attachment: Attachment): boolean {
+  if (attachment.kind !== 'staged') return false
+  if (typeof attachment.expires_at !== 'number' || !Number.isFinite(attachment.expires_at)) return false
+  return attachment.expires_at * 1000 <= Date.now() + STAGED_UPLOAD_REFRESH_GRACE_MS
 }
 
 function attachmentCountsTowardLimits(attachment: Attachment): boolean {

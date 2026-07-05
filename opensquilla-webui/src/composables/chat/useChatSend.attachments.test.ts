@@ -119,6 +119,144 @@ describe('useChatSend attachment payloads', () => {
     expect(pendingAttachments.value).toEqual([failed])
   })
 
+  it('refreshes staged uploads before serializing chat.send attachments', async () => {
+    const pendingAttachments = ref<Attachment[]>([
+      {
+        kind: 'staged',
+        local_id: 1,
+        name: 'ready.pdf',
+        mime: 'application/pdf',
+        file_uuid: 'file-expired',
+        expires_at: Date.now() / 1000 - 1,
+        file: new File(['pdf'], 'ready.pdf', { type: 'application/pdf' }),
+      },
+    ])
+    const prepareAttachmentsForSend = vi.fn(async () => {
+      pendingAttachments.value = [
+        {
+          kind: 'staged',
+          local_id: 1,
+          name: 'ready.pdf',
+          mime: 'application/pdf',
+          file_uuid: 'file-fresh',
+          expires_at: Date.now() / 1000 + 600,
+          file: new File(['pdf'], 'ready.pdf', { type: 'application/pdf' }),
+        },
+      ]
+      return true
+    })
+    const { api, rpc } = makeOptions({ pendingAttachments, prepareAttachmentsForSend })
+
+    await api.onSend()
+
+    expect(prepareAttachmentsForSend).toHaveBeenCalledTimes(1)
+    expect(rpc.call).toHaveBeenCalledWith('chat.send', expect.objectContaining({
+      attachments: [
+        { type: 'application/pdf', file_uuid: 'file-fresh', mime: 'application/pdf', name: 'ready.pdf' },
+      ],
+    }))
+  })
+
+  it('does not include attachments added while preparing an earlier send', async () => {
+    const initialAttachment: Attachment = {
+      kind: 'staged',
+      local_id: 1,
+      name: 'initial.pdf',
+      mime: 'application/pdf',
+      file_uuid: 'file-initial',
+    }
+    const addedAttachment: Attachment = {
+      kind: 'staged',
+      local_id: 2,
+      name: 'added-later.pdf',
+      mime: 'application/pdf',
+      file_uuid: 'file-added-later',
+    }
+    const pendingAttachments = ref<Attachment[]>([initialAttachment])
+    const prepareAttachmentsForSend = vi.fn(async () => {
+      pendingAttachments.value = [initialAttachment, addedAttachment]
+      return true
+    })
+    const { api, rpc } = makeOptions({ pendingAttachments, prepareAttachmentsForSend })
+
+    await api.onSend()
+
+    expect(rpc.call).toHaveBeenCalledWith('chat.send', expect.objectContaining({
+      attachments: [
+        { type: 'application/pdf', file_uuid: 'file-initial', mime: 'application/pdf', name: 'initial.pdf' },
+      ],
+    }))
+    expect(pendingAttachments.value).toEqual([addedAttachment])
+  })
+
+  it('does not mutate or send when attachment preparation returns false', async () => {
+    const inputText = ref('hello')
+    const expiredAttachment: Attachment = {
+      kind: 'staged',
+      local_id: 1,
+      name: 'ready.pdf',
+      mime: 'application/pdf',
+      file_uuid: 'file-expired',
+      expires_at: Date.now() / 1000 - 1,
+      file: new File(['pdf'], 'ready.pdf', { type: 'application/pdf' }),
+    }
+    const pendingAttachments = ref<Attachment[]>([expiredAttachment])
+    const prepareAttachmentsForSend = vi.fn(async () => false)
+    const { api, options, rpc, stream } = makeOptions({
+      inputText,
+      pendingAttachments,
+      prepareAttachmentsForSend,
+    })
+
+    await api.onSend()
+
+    expect(prepareAttachmentsForSend).toHaveBeenCalledTimes(1)
+    expect(rpc.call).not.toHaveBeenCalled()
+    expect(options.messages.value).toHaveLength(0)
+    expect(inputText.value).toBe('hello')
+    expect(pendingAttachments.value).toEqual([expiredAttachment])
+    expect(stream.startStreaming).not.toHaveBeenCalled()
+  })
+
+  it('does not mutate or send when session changes during attachment preparation', async () => {
+    let resolvePrepare!: (ready: boolean) => void
+    let prepareContext: { isCurrent?: () => boolean } | undefined
+    const inputText = ref('hello')
+    const sessionKey = ref('agent:main:webchat:first')
+    const stagedAttachment: Attachment = {
+      kind: 'staged',
+      local_id: 1,
+      name: 'ready.pdf',
+      mime: 'application/pdf',
+      file_uuid: 'file-ready',
+      file: new File(['pdf'], 'ready.pdf', { type: 'application/pdf' }),
+    }
+    const pendingAttachments = ref<Attachment[]>([stagedAttachment])
+    const prepareAttachmentsForSend = vi.fn((context?: { isCurrent?: () => boolean }) => new Promise<boolean>(resolve => {
+      prepareContext = context
+      resolvePrepare = resolve
+    }))
+    const { api, options, rpc, stream } = makeOptions({
+      inputText,
+      sessionKey,
+      pendingAttachments,
+      prepareAttachmentsForSend,
+    })
+
+    const send = api.onSend()
+    sessionKey.value = 'agent:main:webchat:second'
+    expect(prepareContext?.isCurrent?.()).toBe(false)
+    resolvePrepare(true)
+    await send
+
+    expect(prepareAttachmentsForSend).toHaveBeenCalledTimes(1)
+    expect(rpc.call).not.toHaveBeenCalled()
+    expect(options.messages.value).toHaveLength(0)
+    expect(inputText.value).toBe('hello')
+    expect(pendingAttachments.value).toEqual([stagedAttachment])
+    expect(stream.startStreaming).not.toHaveBeenCalled()
+  })
+
   it('does not dispatch an empty failed-only attachment draft', async () => {
     const failed: Attachment = {
       kind: 'failed',

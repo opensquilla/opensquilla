@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { useChatAttachments } from './useChatAttachments'
+import type { Attachment } from '@/types/chat'
 
 const pushToast = vi.hoisted(() => vi.fn())
 
@@ -172,5 +173,193 @@ describe('useChatAttachments', () => {
     expect(attachments.pendingAttachments.value).toMatchObject([
       { kind: 'staged', name: 'retry.pdf', file_uuid: 'file-retry' },
     ])
+  })
+
+  it('refreshes expired staged uploads before send when the original file is available', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => ({ file_uuid: 'file-expired', expires_at: Date.now() / 1000 - 1, ttl_seconds: 600 }),
+        text: async () => '',
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => ({ file_uuid: 'file-fresh', expires_at: Date.now() / 1000 + 600, ttl_seconds: 600 }),
+        text: async () => '',
+      })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const attachments = useChatAttachments()
+    await attachments.addAttachment(stagedPdf('refresh.pdf'))
+    await flushUpload()
+
+    expect(attachments.pendingAttachments.value).toMatchObject([
+      { kind: 'staged', name: 'refresh.pdf', file_uuid: 'file-expired' },
+    ])
+
+    const ready = await attachments.prepareAttachmentsForSend()
+
+    expect(ready).toBe(true)
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    expect(attachments.pendingAttachments.value).toMatchObject([
+      { kind: 'staged', name: 'refresh.pdf', file_uuid: 'file-fresh' },
+    ])
+  })
+
+  it('refreshes staged uploads that are inside the expiration grace window', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({ file_uuid: 'file-fresh', expires_at: Date.now() / 1000 + 600, ttl_seconds: 600 }),
+      text: async () => '',
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    const attachments = useChatAttachments()
+    attachments.pendingAttachments.value = [
+      {
+        kind: 'staged',
+        local_id: 1,
+        name: 'near-expiry.pdf',
+        mime: 'application/pdf',
+        file_uuid: 'file-near-expiry',
+        expires_at: Date.now() / 1000 + 10,
+        file: stagedPdf('near-expiry.pdf'),
+      },
+    ]
+
+    const ready = await attachments.prepareAttachmentsForSend()
+
+    expect(ready).toBe(true)
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(attachments.pendingAttachments.value).toMatchObject([
+      { kind: 'staged', name: 'near-expiry.pdf', file_uuid: 'file-fresh' },
+    ])
+  })
+
+  it('does not refresh staged uploads that are outside the expiration grace window', async () => {
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+    const attachments = useChatAttachments()
+    const stagedAttachment: Attachment = {
+      kind: 'staged',
+      local_id: 1,
+      name: 'fresh.pdf',
+      mime: 'application/pdf',
+      file_uuid: 'file-fresh-enough',
+      expires_at: Date.now() / 1000 + 120,
+      file: stagedPdf('fresh.pdf'),
+    }
+    attachments.pendingAttachments.value = [stagedAttachment]
+
+    const ready = await attachments.prepareAttachmentsForSend()
+
+    expect(ready).toBe(true)
+    expect(fetchMock).not.toHaveBeenCalled()
+    expect(attachments.pendingAttachments.value).toEqual([stagedAttachment])
+  })
+
+  it('does not rewrite or toast when refresh completes after preparation is stale', async () => {
+    let resolveUpload!: (response: unknown) => void
+    const fetchMock = vi.fn(() => new Promise(resolve => {
+      resolveUpload = resolve
+    }))
+    vi.stubGlobal('fetch', fetchMock)
+    const attachments = useChatAttachments()
+    const stagedAttachment: Attachment = {
+      kind: 'staged',
+      local_id: 1,
+      name: 'stale-session.pdf',
+      mime: 'application/pdf',
+      file_uuid: 'file-expired',
+      expires_at: Date.now() / 1000 - 1,
+      file: stagedPdf('stale-session.pdf'),
+    }
+    attachments.pendingAttachments.value = [stagedAttachment]
+    let current = true
+
+    const ready = attachments.prepareAttachmentsForSend({ isCurrent: () => current })
+
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(attachments.hasPendingAttachmentWork()).toBe(true)
+    expect(attachments.pendingAttachments.value).toEqual([stagedAttachment])
+
+    current = false
+    resolveUpload({
+      ok: true,
+      status: 200,
+      json: async () => ({ file_uuid: 'file-fresh', expires_at: Date.now() / 1000 + 600, ttl_seconds: 600 }),
+      text: async () => '',
+    })
+
+    await expect(ready).resolves.toBe(false)
+    expect(attachments.hasPendingAttachmentWork()).toBe(false)
+    expect(attachments.pendingAttachments.value).toEqual([stagedAttachment])
+    expect(pushToast).not.toHaveBeenCalled()
+  })
+
+  it('marks expired staged uploads failed when the original file is unavailable', async () => {
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+    const attachments = useChatAttachments()
+    attachments.pendingAttachments.value = [
+      {
+        kind: 'staged',
+        local_id: 1,
+        name: 'missing-local-file.pdf',
+        mime: 'application/pdf',
+        file_uuid: 'file-expired',
+        expires_at: Date.now() / 1000 - 1,
+      },
+    ]
+
+    const ready = await attachments.prepareAttachmentsForSend()
+
+    expect(ready).toBe(false)
+    expect(fetchMock).not.toHaveBeenCalled()
+    expect(attachments.pendingAttachments.value).toMatchObject([
+      { kind: 'failed', name: 'missing-local-file.pdf', error: 'Upload expired; select the file again' },
+    ])
+    expect(attachments.pendingAttachments.value[0].file_uuid).toBeUndefined()
+    expect(pushToast).toHaveBeenCalledWith(
+      'Upload expired for missing-local-file.pdf: select the file again',
+      { tone: 'danger' },
+    )
+  })
+
+  it('marks expired staged uploads failed and retryable when refresh upload fails', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 503,
+      text: async () => 'unavailable',
+      json: async () => ({}),
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    const attachments = useChatAttachments()
+    attachments.pendingAttachments.value = [
+      {
+        kind: 'staged',
+        local_id: 1,
+        name: 'refresh-fails.pdf',
+        mime: 'application/pdf',
+        file_uuid: 'file-expired',
+        expires_at: Date.now() / 1000 - 1,
+        file: stagedPdf('refresh-fails.pdf'),
+      },
+    ]
+
+    const ready = await attachments.prepareAttachmentsForSend()
+
+    expect(ready).toBe(false)
+    expect(attachments.pendingAttachments.value).toMatchObject([
+      { kind: 'failed', name: 'refresh-fails.pdf', error: 'HTTP 503 unavailable' },
+    ])
+    expect(attachments.pendingAttachments.value[0].file).toBeInstanceOf(File)
+    expect(pushToast).toHaveBeenCalledWith(
+      expect.stringContaining('Upload failed for refresh-fails.pdf: HTTP 503 unavailable'),
+      { tone: 'danger' },
+    )
   })
 })

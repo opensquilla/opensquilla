@@ -147,6 +147,7 @@ from opensquilla.engine.types import (
     AgentConfig,
     AgentEvent,
     DoneEvent,
+    EnsembleProgressEvent,
     ErrorEvent,
     RouterControlReplayEvent,
     ThinkingLevel,
@@ -173,6 +174,9 @@ from opensquilla.observability.turn_call_log import TurnCallLogger, is_turn_call
 from opensquilla.paths import media_root_from_config
 from opensquilla.provider import (
     ErrorEvent as ProviderErrorEvent,
+)
+from opensquilla.provider.types import (
+    EnsembleProgressEvent as ProviderEnsembleProgressEvent,
 )
 from opensquilla.provider import (
     ProviderRecoveryAction,
@@ -1412,6 +1416,9 @@ class _SelectorFallbackProvider:
             return drained
 
         async for event in self._provider.chat(messages, tools=tools, config=config):
+            if isinstance(event, ProviderEnsembleProgressEvent):
+                yield _provider_ensemble_progress_to_engine_event(event)
+                continue
             if isinstance(event, ProviderErrorEvent):
                 _report_credential_pool_failure(
                     self.provider_name,
@@ -1443,6 +1450,9 @@ class _SelectorFallbackProvider:
                     tools=tools,
                     config=config,
                 ):
+                    if isinstance(fallback_event, ProviderEnsembleProgressEvent):
+                        yield _provider_ensemble_progress_to_engine_event(fallback_event)
+                        continue
                     yield fallback_event
                 return
 
@@ -1478,6 +1488,24 @@ class _SelectorFallbackProvider:
 def _is_non_empty_provider_text_delta(event: Any) -> bool:
     """Return True only once a provider event carries user-visible text."""
     return getattr(event, "kind", "") == "text_delta" and bool(getattr(event, "text", ""))
+
+
+def _provider_ensemble_progress_to_engine_event(
+    event: ProviderEnsembleProgressEvent,
+) -> EnsembleProgressEvent:
+    return EnsembleProgressEvent(
+        event_type=event.event_type,
+        proposer_index=event.proposer_index,
+        proposer_label=event.proposer_label,
+        proposer_model=event.proposer_model,
+        proposer_provider=event.proposer_provider,
+        sample_index=event.sample_index,
+        elapsed_ms=event.elapsed_ms,
+        input_tokens=event.input_tokens,
+        output_tokens=event.output_tokens,
+        cost_usd=event.cost_usd,
+        error=event.error,
+    )
 
 
 @dataclass

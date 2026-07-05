@@ -1734,6 +1734,7 @@
       "ensembleRouterPoolHidden": "Router-Pool ausgeblendet",
       "ensembleTokens": "{count} tok",
       "ensembleUsed": "verwendet",
+      "ensembleTracePending": "Trace ausstehend",
       "ensembleDetailUnavailable": "{count} Kandidaten · Details nicht verfügbar"
     },
     "sources": "Quellen",

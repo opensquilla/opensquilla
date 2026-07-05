@@ -1734,6 +1734,7 @@
       "ensembleRouterPoolHidden": "router pool 非表示",
       "ensembleTokens": "{count} tok",
       "ensembleUsed": "使用済み",
+      "ensembleTracePending": "trace 待機中",
       "ensembleDetailUnavailable": "{count} 個の候補 · 詳細は利用できません"
     },
     "sources": "ソース",

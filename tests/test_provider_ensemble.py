@@ -723,6 +723,68 @@ def test_runtime_wrap_is_after_selector_resolution() -> None:
     assert "current_provider_config" in source
 
 
+@pytest.mark.asyncio
+async def test_runtime_normalizes_provider_ensemble_progress_event() -> None:
+    from opensquilla.engine.runtime import _SelectorFallbackProvider
+    from opensquilla.engine.types import EnsembleProgressEvent as EngineEnsembleProgressEvent
+
+    class _Provider:
+        provider_name = "openrouter"
+
+        def chat(
+            self,
+            messages: list[Any],
+            tools: Any = None,
+            config: Any = None,
+        ) -> AsyncIterator[StreamEvent]:
+            return self._chat(messages, tools=tools, config=config)
+
+        async def _chat(
+            self,
+            messages: list[Any],
+            *,
+            tools: Any = None,
+            config: Any = None,
+        ) -> AsyncIterator[StreamEvent]:
+            yield EnsembleProgressEvent(
+                event_type="proposer_start",
+                proposer_index=2,
+                proposer_label="proposer_3",
+                proposer_model="qwen/qwen3.7-max",
+                proposer_provider="openrouter",
+                sample_index=0,
+                elapsed_ms=123,
+                input_tokens=11,
+                output_tokens=22,
+                cost_usd=0.003,
+                error="",
+            )
+            yield DoneEvent(model="qwen/qwen3.7-max")
+
+        async def list_models(self) -> list[Any]:
+            return []
+
+    class _Selector:
+        current_config = ProviderConfig(provider="openrouter", model="qwen/qwen3.7-max")
+
+    provider = _SelectorFallbackProvider(_Provider(), _Selector())
+
+    events = [event async for event in provider.chat([])]
+
+    assert isinstance(events[0], EngineEnsembleProgressEvent)
+    assert events[0].event_type == "proposer_start"
+    assert events[0].proposer_index == 2
+    assert events[0].proposer_label == "proposer_3"
+    assert events[0].proposer_model == "qwen/qwen3.7-max"
+    assert events[0].proposer_provider == "openrouter"
+    assert events[0].sample_index == 0
+    assert events[0].elapsed_ms == 123
+    assert events[0].input_tokens == 11
+    assert events[0].output_tokens == 22
+    assert events[0].cost_usd == 0.003
+    assert events[0].error == ""
+
+
 def _static_b5_gateway_config() -> Any:
     from opensquilla.gateway.config import GatewayConfig
 

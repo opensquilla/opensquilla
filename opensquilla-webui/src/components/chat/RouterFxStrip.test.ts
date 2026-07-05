@@ -55,6 +55,8 @@ describe('RouterFxStrip ensemble panel', () => {
 
     expect(el.querySelector('[data-testid="router-ensemble-inspector"]')).toBeTruthy()
     expect(el.querySelector('[data-testid="router-ensemble-detail-unavailable"]')).toBeTruthy()
+    expect(el.textContent).toContain('trace pending')
+    expect(el.textContent).not.toContain('0 candidates')
     app.unmount()
   })
 })

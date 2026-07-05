@@ -1734,6 +1734,7 @@
       "ensembleRouterPoolHidden": "pool du routeur masqué",
       "ensembleTokens": "{count} tok",
       "ensembleUsed": "utilisé",
+      "ensembleTracePending": "trace en attente",
       "ensembleDetailUnavailable": "{count} candidats · détail indisponible"
     },
     "sources": "Sources",

@@ -1734,6 +1734,7 @@
       "ensembleRouterPoolHidden": "普通 router 池已隐藏",
       "ensembleTokens": "{count} 令牌",
       "ensembleUsed": "已使用",
+      "ensembleTracePending": "trace 待更新",
       "ensembleDetailUnavailable": "{count} 个候选 · 明细不可用"
     },
     "sources": "来源",

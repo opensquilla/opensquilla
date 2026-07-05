@@ -58,7 +58,7 @@
             class="router-fx-inspector__row router-fx-inspector__row--empty"
             data-testid="router-ensemble-detail-unavailable"
           >
-            <span class="router-fx-inspector__empty">{{ t('chat.routerFx.ensembleDetailUnavailable', { count: candidateCount }) }}</span>
+            <span class="router-fx-inspector__empty">{{ emptyTraceLabel }}</span>
           </div>
         </div>
         <div class="router-fx-inspector__foot">
@@ -129,6 +129,12 @@ const gridColumnCount = computed(() => isLegacyGrid.value ? 5 : Math.min(4, Math
 const mobileGridColumnCount = computed(() => isLegacyGrid.value ? 3 : (gridCells.value.length > 2 ? 2 : Math.max(1, gridCells.value.length)))
 const candidateCount = computed(() => ensemble.value?.modelCount || ensembleModels.value.length)
 const totalCandidates = computed(() => ensemble.value?.totalCandidates || 0)
+const hasKnownCandidateCount = computed(() => candidateCount.value > 0)
+const emptyTraceLabel = computed(() =>
+  hasKnownCandidateCount.value
+    ? t('chat.routerFx.ensembleDetailUnavailable', { count: candidateCount.value })
+    : t('chat.routerFx.ensembleTracePending'),
+)
 const inspectorId = computed(() => `router-ensemble-inspector-${props.message.messageId || props.message.id || 'current'}`)
 const gridStyle = computed<Record<string, string>>(() => {
   return {

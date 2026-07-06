@@ -6,10 +6,35 @@
     <title>OpenSquilla</title>
     <meta name="description" content="OpenSquilla - microkernel control console" />
     <link rel="icon" type="image/png" href="./opensquilla-mark.png" />
-    <script type="module" crossorigin src="./assets/index-BS_rnPc3.js"></script>
-    <link rel="modulepreload" crossorigin href="./assets/Icon-Bg__GkWf.js">
+    <!-- Anti-flash: stamp the active theme on <html> before first paint, so a
+         light/system-light or custom-palette user never sees the :root (dark)
+         ground flash to their real theme on cold load. Mirrors the store's
+         resolution (localStorage 'opensquilla-theme'; 'system'/absent → OS
+         preference). The eager per-theme token block then paints correctly on
+         the very first frame; the store re-applies the same value on mount. -->
+    <script>
+      (function () {
+        try {
+          var t = localStorage.getItem('opensquilla-theme')
+          // Renamed ids persisted before the rename resolve to their current id
+          // (kept in sync with LEGACY_THEME_IDS in src/themes/registry.ts) so a
+          // legacy choice paints correctly on the very first frame.
+          var legacy = { nord: 'arctic', phosphor: 'crt-green' }
+          if (t && legacy[t]) t = legacy[t]
+          if (!t || t === 'system') {
+            t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'
+          }
+          document.documentElement.setAttribute('data-theme', t)
+        } catch (e) {
+          /* private-mode / disabled storage: fall through to the :root default */
+        }
+      })()
+    </script>
+    <script type="module" crossorigin src="./assets/index-BWR5tCz5.js"></script>
+    <link rel="modulepreload" crossorigin href="./assets/_plugin-vue_export-helper-C4x5kwI5.js">
+    <link rel="modulepreload" crossorigin href="./assets/Icon-5vvapsUR.js">
     <link rel="stylesheet" crossorigin href="./assets/Icon-Bc-ml2D8.css">
-    <link rel="stylesheet" crossorigin href="./assets/index-Dc3IL9-y.css">
+    <link rel="stylesheet" crossorigin href="./assets/index-Cu1qpw9k.css">
   </head>
   <body>
     <div id="app"></div>

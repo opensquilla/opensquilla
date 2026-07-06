@@ -117,6 +117,51 @@ class PriceEntry:
     cache_write_per_m: float | None = None
 
 
+@dataclass(frozen=True)
+class CostEstimate:
+    """One priced token set. ``basis`` discloses estimate quality:
+    cache_aware — four-bucket math with known cache rates;
+    cache_blind — cache tokens present but a needed rate is unknown, so the
+    legacy input*rate formula was used (conservative upper bound);
+    free — zero-priced (local runtime or known-free model)."""
+
+    cost_usd: float
+    basis: str
+
+
+def estimate_cost(
+    *,
+    input_tokens: int,
+    output_tokens: int,
+    cache_read_tokens: int = 0,
+    cache_write_tokens: int = 0,
+    price: PriceEntry,
+) -> CostEstimate:
+    """Price four token buckets. ``input_tokens`` is the normalized total that
+    already INCLUDES cache read/write tokens (adapter contract; see
+    provider/anthropic.py and provider/openai.py usage normalization)."""
+    inp = max(0, int(input_tokens or 0))
+    out = max(0, int(output_tokens or 0))
+    read = min(max(0, int(cache_read_tokens or 0)), inp)
+    write = min(max(0, int(cache_write_tokens or 0)), inp - read)
+
+    if not any(
+        (price.input_per_m, price.output_per_m, price.cache_read_per_m, price.cache_write_per_m)
+    ):
+        return CostEstimate(0.0, "free")
+    if (read and price.cache_read_per_m is None) or (write and price.cache_write_per_m is None):
+        blind = (inp * price.input_per_m + out * price.output_per_m) / 1_000_000
+        return CostEstimate(blind, "cache_blind")
+    fresh = inp - read - write
+    cost = (
+        fresh * price.input_per_m
+        + read * (price.cache_read_per_m or 0.0)
+        + write * (price.cache_write_per_m or 0.0)
+        + out * price.output_per_m
+    ) / 1_000_000
+    return CostEstimate(cost, "cache_aware")
+
+
 # Canonical non-discount prices that must override OpenRouter's promotional or routed
 # discounted prices. Empty unless a provider's live-quoted price is genuinely wrong
 # (e.g. a routed/promotional discount OpenRouter does not expose via its discount

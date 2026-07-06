@@ -10,6 +10,42 @@ function getDefaultRpcUrl(): string {
   return `${proto}//${location.host}/ws`
 }
 
+function clearOpenSquillaStorage(storage: Storage): void {
+  try {
+    for (const key of Object.keys(storage)) {
+      if (key.startsWith('opensquilla.')) storage.removeItem(key)
+    }
+  } catch {}
+}
+
+function clearOpenSquillaBrowserState(): void {
+  try { clearOpenSquillaStorage(localStorage) } catch {}
+  try { clearOpenSquillaStorage(sessionStorage) } catch {}
+}
+
+function consumeLinkTokenFromUrl(): { url: string; token: string } | null {
+  let url: URL
+  try {
+    url = new URL(window.location.href)
+  } catch {
+    return null
+  }
+  const token = (url.searchParams.get('token') || '').trim()
+  if (!token) return null
+
+  clearOpenSquillaBrowserState()
+  const rpcUrl = getDefaultRpcUrl()
+  saveConnectionSettings(rpcUrl, token)
+
+  try {
+    url.searchParams.delete('token')
+    const cleaned = `${url.pathname}${url.search}${url.hash}`
+    window.history.replaceState(null, '', cleaned)
+  } catch {}
+
+  return { url: rpcUrl, token }
+}
+
 function loadConnectionSettings(): { url: string; token: string } {
   let url = getDefaultRpcUrl()
   let token = ''
@@ -54,6 +90,7 @@ export const useRpcStore = defineStore('rpc', () => {
     })
 
     // Auto-connect on init. Desktop shells use the local gateway serving this UI.
+    consumeLinkTokenFromUrl()
     const { url, token } = loadConnectionSettings()
     if (rpc.state === 'disconnected') {
       rpc.connect(url, token || undefined)
@@ -65,6 +102,17 @@ export const useRpcStore = defineStore('rpc', () => {
     error.value = null
     saveConnectionSettings(url, token || '')
     client.value.connect(url, token)
+  }
+
+  function applyLinkTokenFromUrl(): boolean {
+    const settings = consumeLinkTokenFromUrl()
+    if (!settings) return false
+    if (client.value) {
+      client.value.disconnect()
+      error.value = null
+      client.value.connect(settings.url, settings.token)
+    }
+    return true
   }
 
   function disconnect() {
@@ -106,6 +154,7 @@ export const useRpcStore = defineStore('rpc', () => {
     isConnecting,
     init,
     connect,
+    applyLinkTokenFromUrl,
     disconnect,
     call,
     on,

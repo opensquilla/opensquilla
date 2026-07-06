@@ -208,6 +208,11 @@ def _with_model_usage_cost_fields(rows: list[dict[str, Any]]) -> list[dict[str, 
         item = dict(row)
         model_id = str(item.get("model") or "")
         if model_id:
+            cache_read = (
+                item.get("cache_read_tokens")
+                if "cache_read_tokens" in item
+                else item.get("cached_tokens")
+            )
             item.update(
                 model_usage_cost_fields(
                     model_id=model_id,
@@ -221,6 +226,12 @@ def _with_model_usage_cost_fields(rows: list[dict[str, Any]]) -> list[dict[str, 
                         or item.get("billed_cost_usd")
                         or item.get("billedCostUsd")
                     ),
+                    # Unbilled rows must be priced with their own cache counts,
+                    # not cache-blind — otherwise the legacy-inference path in
+                    # model_usage_cost_fields treats every cache token as fresh
+                    # input while still labeling the estimate "cache_aware".
+                    cache_read_tokens=_usage_int(cache_read or 0),
+                    cache_write_tokens=_usage_int(item.get("cache_write_tokens") or 0),
                 )
             )
         enriched.append(item)
@@ -2088,6 +2099,10 @@ class Agent:
         total_cached_tokens = 0
         total_cache_write_tokens = 0
         total_billed_cost = 0.0
+        # Estimate-backed accumulator for max_turn_cost_usd: billed cost when a
+        # call reported one, otherwise the layered-resolver estimate — unlike
+        # total_billed_cost, this never sits at 0.0 for a cost-blind provider.
+        total_cost_usd_accum = 0.0
         usage_turn_baseline = (
             self._usage_tracker.session_checkpoint(self._session_key)
             if self._usage_tracker and self._session_key
@@ -2169,6 +2184,16 @@ class Agent:
                         f"(max_turn_billed_cost_usd=${max_cost:.6f})."
                     ),
                     code="turn_billed_cost_budget_exceeded",
+                )
+            max_total = _positive_float(getattr(self.config, "max_turn_cost_usd", 0.0))
+            if max_total is not None and total_cost_usd_accum > max_total:
+                return ErrorEvent(
+                    message=(
+                        f"Turn stopped after ${total_cost_usd_accum:.6f} "
+                        f"({'billed' if total_billed_cost > 0 else 'estimated'} cost basis; "
+                        f"max_turn_cost_usd=${max_total:.6f})."
+                    ),
+                    code="turn_cost_budget_exceeded",
                 )
             max_tool_errors = self._positive_int(getattr(self.config, "max_turn_tool_errors", 0))
             if max_tool_errors is not None and turn_tool_errors >= max_tool_errors:
@@ -2618,6 +2643,24 @@ class Agent:
                                 total_reasoning_tokens += raw_ev.reasoning_tokens
                                 total_cached_tokens += raw_ev.cached_tokens
                                 total_cache_write_tokens += raw_ev.cache_write_tokens
+                                if raw_ev.billed_cost > 0:
+                                    total_cost_usd_accum += raw_ev.billed_cost
+                                else:
+                                    from opensquilla.engine.pricing import (
+                                        estimate_cost,
+                                        resolve_model_price,
+                                    )
+
+                                    total_cost_usd_accum += estimate_cost(
+                                        input_tokens=raw_ev.input_tokens,
+                                        output_tokens=raw_ev.output_tokens,
+                                        cache_read_tokens=raw_ev.cached_tokens,
+                                        cache_write_tokens=raw_ev.cache_write_tokens,
+                                        price=resolve_model_price(
+                                            raw_ev.model or self.config.model_id or "",
+                                            self.config.provider_id,
+                                        ).entry,
+                                    ).cost_usd
                                 if raw_ev.model:
                                     last_actual_model = raw_ev.model
                                 # Usage/cost accounting is billed-attempt based: discarded
@@ -6673,6 +6716,7 @@ class Agent:
             max_turn_input_tokens=self.config.max_turn_input_tokens,
             max_turn_output_tokens=self.config.max_turn_output_tokens,
             max_turn_billed_cost_usd=self.config.max_turn_billed_cost_usd,
+            max_turn_cost_usd=self.config.max_turn_cost_usd,
             max_turn_tool_errors=self.config.max_turn_tool_errors,
             length_capped_continuations=self.config.length_capped_continuations,
             context_window_tokens=self.config.context_window_tokens,

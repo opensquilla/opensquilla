@@ -287,6 +287,36 @@ class _ConfigCapturingProvider:
         return []
 
 
+class _NoBilledCostUsageProvider:
+    provider_name = "fake"
+
+    def __init__(self, *, input_tokens: int = 1, output_tokens: int = 1) -> None:
+        self.input_tokens = input_tokens
+        self.output_tokens = output_tokens
+        self.calls: list[list[Message]] = []
+
+    def chat(
+        self,
+        messages: list[Message],
+        tools: list[Any] | None = None,
+        config: ChatConfig | None = None,
+    ) -> AsyncIterator[Any]:
+        self.calls.append(messages)
+        return self._stream()
+
+    async def _stream(self) -> AsyncIterator[Any]:
+        yield ProviderText(text="done")
+        yield ProviderDone(
+            stop_reason="stop",
+            input_tokens=self.input_tokens,
+            output_tokens=self.output_tokens,
+            billed_cost=0.0,
+        )
+
+    async def list_models(self) -> list[Any]:
+        return []
+
+
 class _CompactingErrorSessionManager:
     def __init__(self, *, compact_raises: bool = False) -> None:
         self.calls: list[tuple[str, str]] = []
@@ -670,6 +700,67 @@ def test_agent_child_config_inherits_context_and_flush_budget_policy() -> None:
     assert child.config.flush_backoff_max_seconds == 30.0
     assert child.config.flush_archive_max_bytes == 999_999
     assert child.config.flush_compaction_requires_safe_receipt is False
+
+
+def test_agent_config_max_turn_cost_usd_defaults_to_disabled() -> None:
+    assert AgentConfig().max_turn_cost_usd == 0.0
+
+
+def test_agent_child_config_inherits_max_turn_cost_usd() -> None:
+    agent = Agent(
+        provider=_ContextOverflowProvider(success_after=1),
+        config=AgentConfig(max_turn_cost_usd=0.42),
+    )
+
+    child = agent._make_child_agent(SubagentSpec(task="child task"), depth=1)
+
+    assert child.config.max_turn_cost_usd == 0.42
+
+
+@pytest.mark.asyncio
+async def test_agent_stops_when_turn_estimated_cost_budget_is_exceeded() -> None:
+    # No provider-billed cost at all (billed_cost=0.0 on every call), so the
+    # gate must fall back to the estimator to know it is over budget.
+    provider = _NoBilledCostUsageProvider(input_tokens=1000, output_tokens=1000)
+    agent = Agent(
+        provider=provider,
+        config=AgentConfig(
+            model_id="deepseek/deepseek-v4-pro-20260423",
+            max_turn_cost_usd=0.001,
+        ),
+    )
+
+    events = [event async for event in agent.run_turn("hello")]
+
+    assert len(provider.calls) == 1
+    error = next(
+        event
+        for event in events
+        if event.kind == "error" and event.code == "turn_cost_budget_exceeded"
+    )
+    assert "estimated cost basis" in error.message
+
+
+def test_with_model_usage_cost_fields_prices_unbilled_cache_reads_cache_aware() -> None:
+    from opensquilla.engine import agent as agent_module
+
+    blind_row = {
+        "model": "deepseek/deepseek-v4-pro-20260423",
+        "input_tokens": 1000,
+        "output_tokens": 0,
+        "billed_cost": 0.0,
+    }
+    cached_row = dict(blind_row, cache_read_tokens=800)
+
+    blind = agent_module._with_model_usage_cost_fields([blind_row])[0]
+    cached = agent_module._with_model_usage_cost_fields([cached_row])[0]
+
+    assert blind["estimate_basis"] == "cache_aware"
+    assert cached["estimate_basis"] == "cache_aware"
+    # (200 * 0.435 + 800 * 0.003625) / 1e6 == 0.0000899, rounded to 6dp by
+    # model_usage_cost_fields.
+    assert cached["cost_usd"] == pytest.approx(0.00009)
+    assert cached["cost_usd"] < blind["cost_usd"]
 
 
 class _BudgetCheckingProvider:

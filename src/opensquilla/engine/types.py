@@ -436,6 +436,10 @@ class AgentConfig:
     max_turn_input_tokens: int = 0
     max_turn_output_tokens: int = 0
     max_turn_billed_cost_usd: float = 0.0
+    # Estimate-backed cousin of max_turn_billed_cost_usd: falls back to
+    # estimate_cost() for calls with no provider-reported billed_cost, so the
+    # gate works even on providers/paths that never report real dollars.
+    max_turn_cost_usd: float = 0.0
     max_turn_tool_errors: int = 0
     temperature: float | None = None
     thinking: bool | ThinkingLevel = False

@@ -108,17 +108,20 @@ class PricingCache:
 
 @dataclass
 class PriceEntry:
-    """Pricing per 1M tokens in USD."""
+    """Pricing per 1M tokens in USD. Cache rates are None when unknown —
+    the estimator then falls back to the cache-blind formula and labels it."""
 
     input_per_m: float
     output_per_m: float
+    cache_read_per_m: float | None = None
+    cache_write_per_m: float | None = None
 
 
 # Canonical non-discount prices that must override OpenRouter's promotional or routed
-# discounted prices. Values are USD per 1M tokens from official provider pricing.
-_PRICE_OVERRIDES: list[tuple[str, PriceEntry]] = [
-    ("deepseek/deepseek-v4-pro", PriceEntry(1.74, 3.48)),
-]
+# discounted prices. Empty unless a provider's live-quoted price is genuinely wrong
+# (e.g. a routed/promotional discount OpenRouter does not expose via its discount
+# field); ordinary price refreshes belong in the static table below, not here.
+_PRICE_OVERRIDES: list[tuple[str, PriceEntry]] = []
 
 
 _PRICE_LOCK = threading.RLock()
@@ -321,8 +324,14 @@ def seed_live_price_cache_for_tests(model_id: str, price: PriceEntry) -> None:
 # Built-in pricing table: model_prefix → (input_per_M, output_per_M)
 _PRICING_TABLE: list[tuple[str, PriceEntry]] = [
     # Offline fallback for Squilla Router tier models.
-    ("anthropic/claude-opus-4.8", PriceEntry(5.0, 25.0)),
-    ("anthropic/claude-sonnet-4.6", PriceEntry(3.0, 15.0)),
+    (
+        "anthropic/claude-opus-4.8",
+        PriceEntry(5.0, 25.0, cache_read_per_m=0.5, cache_write_per_m=6.25),
+    ),
+    (
+        "anthropic/claude-sonnet-4.6",
+        PriceEntry(3.0, 15.0, cache_read_per_m=0.3, cache_write_per_m=3.75),
+    ),
     ("google/gemini-3.5-flash", PriceEntry(1.5, 9.0)),
     ("openai/gpt-5.4-mini", PriceEntry(0.75, 4.5)),
     ("openai/gpt-5.5", PriceEntry(5.0, 30.0)),
@@ -335,14 +344,15 @@ _PRICING_TABLE: list[tuple[str, PriceEntry]] = [
     ("stepfun/step-3.5-flash", PriceEntry(0.10, 0.30)),
     ("z-ai/glm-4.5-air", PriceEntry(0.13, 0.85)),
     ("minimax/minimax-m2.5", PriceEntry(0.118, 0.99)),
-    ("deepseek/deepseek-v4-flash", PriceEntry(0.14, 0.28)),
-    ("deepseek/deepseek-v4-pro", PriceEntry(1.74, 3.48)),
+    ("deepseek/deepseek-v4-flash", PriceEntry(0.14, 0.28, cache_read_per_m=0.0028)),
+    ("deepseek/deepseek-v4-pro", PriceEntry(0.435, 0.87, cache_read_per_m=0.003625)),
     ("deepseek/deepseek-v3.2", PriceEntry(0.26, 0.38)),
     ("google/gemini-3-flash-preview", PriceEntry(0.50, 3.0)),
     ("qwen/qwen3.7-plus", PriceEntry(0.40, 1.60)),
     ("z-ai/glm-5.2", PriceEntry(1.40, 4.40)),
     ("z-ai/glm-5.1", PriceEntry(1.40, 4.40)),
     ("z-ai/glm-5", PriceEntry(0.72, 2.30)),
+    ("moonshotai/kimi-k2.7-code", PriceEntry(0.95, 4.0, cache_read_per_m=0.19)),
     ("moonshotai/kimi-k2.6", PriceEntry(0.95, 4.0)),
     ("moonshotai/kimi-k2.5", PriceEntry(0.3827, 1.72)),
     # Direct provider smoke estimates.
@@ -359,11 +369,18 @@ _PRICING_TABLE: list[tuple[str, PriceEntry]] = [
     ("gpt-5.4-nano", PriceEntry(0.20, 1.25)),
     ("gpt-5.4-mini", PriceEntry(0.75, 4.50)),
     ("gpt-5.5", PriceEntry(5.0, 30.0)),
+    ("glm-5.2", PriceEntry(1.40, 4.40, cache_read_per_m=0.26)),
     ("glm-5.1", PriceEntry(1.40, 4.40)),
     ("glm-5", PriceEntry(0.72, 2.30)),
+    ("kimi-k2.7-code", PriceEntry(0.95, 4.0, cache_read_per_m=0.19)),
     ("kimi-k2.5", PriceEntry(0.3827, 1.72)),
-    ("deepseek-v4-flash", PriceEntry(0.14, 0.28)),
-    ("deepseek-v4-pro", PriceEntry(1.74, 3.48)),
+    ("claude-haiku-4-5", PriceEntry(1.0, 5.0, cache_read_per_m=0.1, cache_write_per_m=1.25)),
+    ("deepseek-v4-flash", PriceEntry(0.14, 0.28, cache_read_per_m=0.0028)),
+    ("deepseek-v4-pro", PriceEntry(0.435, 0.87, cache_read_per_m=0.003625)),
+    ("deepseek-chat", PriceEntry(0.14, 0.28, cache_read_per_m=0.0028)),
+    ("deepseek-reasoner", PriceEntry(0.26, 0.38)),
+    ("qwen3.7-max", PriceEntry(1.25, 3.75)),
+    ("qwen3.7-plus", PriceEntry(0.40, 1.60)),
     ("gemini-2.5-flash-lite", PriceEntry(0.10, 0.40)),
     ("gemini-2.5-flash", PriceEntry(0.15, 0.60)),
     ("gemini-2.5-pro", PriceEntry(1.25, 10.0)),
@@ -399,23 +416,60 @@ _PRICING_TABLE: list[tuple[str, PriceEntry]] = [
     ("o3-mini", PriceEntry(1.10, 4.40)),
     ("o1-mini", PriceEntry(3.0, 12.0)),
     ("o1", PriceEntry(15.0, 60.0)),
-    # Anthropic Claude.
-    ("anthropic/claude-opus-4.8", PriceEntry(5.0, 25.0)),
-    ("anthropic/claude-opus-4.5", PriceEntry(5.0, 25.0)),
-    ("anthropic/claude-opus-4", PriceEntry(15.0, 75.0)),
-    ("anthropic/claude-sonnet-4", PriceEntry(3.0, 15.0)),
-    ("anthropic/claude-3-5-sonnet", PriceEntry(3.0, 15.0)),
-    ("anthropic/claude-3-5-haiku", PriceEntry(0.80, 4.0)),
-    ("anthropic/claude-3-opus", PriceEntry(15.0, 75.0)),
-    ("anthropic/claude-3-sonnet", PriceEntry(3.0, 15.0)),
-    ("anthropic/claude-3-haiku", PriceEntry(0.25, 1.25)),
-    ("claude-opus-4", PriceEntry(15.0, 75.0)),
-    ("claude-sonnet-4", PriceEntry(3.0, 15.0)),
-    ("claude-3-5-sonnet", PriceEntry(3.0, 15.0)),
-    ("claude-3-5-haiku", PriceEntry(0.80, 4.0)),
-    ("claude-3-opus", PriceEntry(15.0, 75.0)),
-    ("claude-3-sonnet", PriceEntry(3.0, 15.0)),
-    ("claude-3-haiku", PriceEntry(0.25, 1.25)),
+    # Anthropic Claude. Cache rates are 0.1x (read) / 1.25x (write) of each row's
+    # own input price, matching Anthropic's standard 5-minute prompt-cache pricing.
+    (
+        "anthropic/claude-opus-4.8",
+        PriceEntry(5.0, 25.0, cache_read_per_m=0.5, cache_write_per_m=6.25),
+    ),
+    (
+        "anthropic/claude-opus-4.5",
+        PriceEntry(5.0, 25.0, cache_read_per_m=0.5, cache_write_per_m=6.25),
+    ),
+    (
+        "anthropic/claude-opus-4",
+        PriceEntry(15.0, 75.0, cache_read_per_m=1.5, cache_write_per_m=18.75),
+    ),
+    (
+        "anthropic/claude-sonnet-4",
+        PriceEntry(3.0, 15.0, cache_read_per_m=0.3, cache_write_per_m=3.75),
+    ),
+    (
+        "anthropic/claude-3-5-sonnet",
+        PriceEntry(3.0, 15.0, cache_read_per_m=0.3, cache_write_per_m=3.75),
+    ),
+    (
+        "anthropic/claude-3-5-haiku",
+        PriceEntry(0.80, 4.0, cache_read_per_m=0.08, cache_write_per_m=1.0),
+    ),
+    (
+        "anthropic/claude-3-opus",
+        PriceEntry(15.0, 75.0, cache_read_per_m=1.5, cache_write_per_m=18.75),
+    ),
+    (
+        "anthropic/claude-3-sonnet",
+        PriceEntry(3.0, 15.0, cache_read_per_m=0.3, cache_write_per_m=3.75),
+    ),
+    (
+        "anthropic/claude-3-haiku",
+        PriceEntry(0.25, 1.25, cache_read_per_m=0.025, cache_write_per_m=0.3125),
+    ),
+    ("claude-opus-4", PriceEntry(15.0, 75.0, cache_read_per_m=1.5, cache_write_per_m=18.75)),
+    ("claude-sonnet-4", PriceEntry(3.0, 15.0, cache_read_per_m=0.3, cache_write_per_m=3.75)),
+    (
+        "claude-3-5-sonnet",
+        PriceEntry(3.0, 15.0, cache_read_per_m=0.3, cache_write_per_m=3.75),
+    ),
+    (
+        "claude-3-5-haiku",
+        PriceEntry(0.80, 4.0, cache_read_per_m=0.08, cache_write_per_m=1.0),
+    ),
+    ("claude-3-opus", PriceEntry(15.0, 75.0, cache_read_per_m=1.5, cache_write_per_m=18.75)),
+    ("claude-3-sonnet", PriceEntry(3.0, 15.0, cache_read_per_m=0.3, cache_write_per_m=3.75)),
+    (
+        "claude-3-haiku",
+        PriceEntry(0.25, 1.25, cache_read_per_m=0.025, cache_write_per_m=0.3125),
+    ),
     # Google Gemini.
     ("google/gemini-2.5-flash", PriceEntry(0.15, 0.60)),
     ("google/gemini-2.5-pro", PriceEntry(1.25, 10.0)),

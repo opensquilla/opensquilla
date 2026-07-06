@@ -3,6 +3,8 @@
 import asyncio
 from types import SimpleNamespace
 
+import pytest
+
 from opensquilla.engine.usage import UsageTracker
 from opensquilla.gateway import rpc_usage
 from opensquilla.gateway.rpc.registry import RpcContext
@@ -128,7 +130,7 @@ def test_usage_status_tracker_row_source_mixed_when_some_models_unbilled() -> No
     # (for billed models) + estimate (for unbilled models). Setting this to
     # billed_cost only under-reports by the unbilled portion.
     breakdown_sum = sum(item["costUsd"] for item in row["modelBreakdown"])
-    assert row["costUsd"] == breakdown_sum
+    assert row["costUsd"] == pytest.approx(breakdown_sum)
     # And the unbilled model contributed a non-zero estimate.
     assert row["costUsd"] > 0.05
 

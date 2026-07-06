@@ -23,6 +23,34 @@
         }
       })();
     </script>
+    {% if link_token %}
+    <!-- Direct operator links seed the gateway connection before the app boots. -->
+    <script>
+      (function () {
+        try {
+          function clearOpenSquillaStorage(storage) {
+            for (var i = storage.length - 1; i >= 0; i -= 1) {
+              var key = storage.key(i);
+              if (key && key.indexOf('opensquilla.chat.draft:') === 0) storage.removeItem(key);
+            }
+          }
+          var token = {{ link_token | tojson | safe }};
+          var wsUrl = {{ ws_url | tojson | safe }};
+          localStorage.removeItem('opensquilla.wsUrl');
+          clearOpenSquillaStorage(localStorage);
+          sessionStorage.removeItem('opensquilla.wsToken');
+          sessionStorage.removeItem('opensquilla.cachedAuth');
+          if (wsUrl) localStorage.setItem('opensquilla.wsUrl', wsUrl);
+          if (token) sessionStorage.setItem('opensquilla.wsToken', token);
+          if (window.history && window.history.replaceState) {
+            var url = new URL(window.location.href);
+            url.searchParams.delete('token');
+            window.history.replaceState(null, '', url.pathname + url.search + url.hash);
+          }
+        } catch (e) { /* connection settings stay editable in the UI */ }
+      })();
+    </script>
+    {% endif %}
     <!-- KaTeX: math/LaTeX rendering -->
     <link rel="stylesheet" href="{{ base_path }}/static/vendor/katex.min.css?v={{ version }}">
     <!-- CSS: base -> components -> view-specific -> mobile (last for override) -->

@@ -2,6 +2,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createApp, nextTick } from 'vue'
 import { useSetupCatalog } from './useSetupCatalog'
+import { PROVIDER_CREDENTIAL_REVEAL_TIMEOUT_MS } from './useSetupProviderForm'
 
 const rpcCall = vi.hoisted(() => vi.fn())
 const waitForConnection = vi.hoisted(() => vi.fn(async () => {}))
@@ -50,6 +51,7 @@ function mockConfigSequence(configs: Array<Record<string, unknown>>) {
 }
 
 afterEach(() => {
+  vi.useRealTimers()
   vi.restoreAllMocks()
   rpcCall.mockReset()
   waitForConnection.mockClear()
@@ -412,10 +414,19 @@ describe('useSetupCatalog provider credential reveal', () => {
 
     const { api, app } = await mountCatalog()
 
+    vi.useFakeTimers()
     await api.revealProviderCredential()
 
     expect(rpcCall).toHaveBeenCalledWith('onboarding.provider.credential.reveal', { providerId: 'deepseek' })
-    expect((api.providerPanel.value.credentialPanel as { revealed: string }).revealed).toBe('sk-real-value')
+    const credentialPanel = api.providerPanel.value.credentialPanel as { masked: string; revealed: string }
+    expect(credentialPanel.revealed).toBe('sk-real-value')
+
+    vi.advanceTimersByTime(PROVIDER_CREDENTIAL_REVEAL_TIMEOUT_MS)
+    await nextTick()
+
+    const expiredCredentialPanel = api.providerPanel.value.credentialPanel as { masked: string; revealed: string }
+    expect(expiredCredentialPanel.masked).toBe('sk-••••1234')
+    expect(expiredCredentialPanel.revealed).toBe('')
     app.unmount()
   })
 })

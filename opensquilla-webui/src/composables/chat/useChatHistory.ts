@@ -52,6 +52,7 @@ export interface UseChatHistoryOptions {
   lastHeaderRole: Ref<string>
   lastHeaderDay: Ref<string>
   preserveLiveTail?: Ref<boolean>
+  autoScroll?: Ref<boolean>
   stripTimePrefix: (text: string) => string
   scrollToBottom: () => void
 }
@@ -213,7 +214,7 @@ export function useChatHistory(options: UseChatHistoryOptions) {
           options.threadRef.value.scrollTop += Math.max(0, nextHeight - previousHeight)
           return
         }
-        options.scrollToBottom()
+        if (options.autoScroll?.value ?? true) options.scrollToBottom()
       })
       flushPendingHistorySync()
     } catch {

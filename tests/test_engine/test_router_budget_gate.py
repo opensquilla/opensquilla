@@ -28,6 +28,7 @@ from opensquilla.engine.routing import (
     budget_gate,
     route_class_for_tier,
 )
+from opensquilla.engine.steps.squilla_router import _session_accumulated_spend
 
 VALID_TIERS = ["c0", "c1", "c2", "c3"]
 
@@ -237,9 +238,89 @@ def test_apply_cap_rebinds_tier_and_model() -> None:
         "rule": "cap",
         "spend_usd": 9.0,
         "limit_usd": 1.0,
+        "spend_source": "billed",
         "from_tier": "c3",
         "to_tier": "c1",
     }
+
+
+def test_apply_warn_records_spend_source_in_trail_and_metadata() -> None:
+    # A warn outcome threads the spend basis into both the metadata trace and
+    # the routing-trail entry so the decision is auditable.
+    extra: dict = {"route_class": "R2"}
+    meta: dict = {}
+    decision = _decision("c2")
+    result = budget_gate(
+        "c2",
+        valid_tiers=VALID_TIERS,
+        budget=budget_input(spend_usd=5.0, spend_source="estimate_mixed"),
+    )
+    apply_budget_gate(decision, result, tiers=TIERS, extra=extra, metadata_updates=meta)
+    assert meta["router_budget_spend_source"] == "estimate_mixed"
+    assert extra["routing_trail"][-1]["spend_source"] == "estimate_mixed"
+
+
+# ---------------------------------------------------------------------------
+# _session_accumulated_spend — seeded provenance -> spend source
+# ---------------------------------------------------------------------------
+
+
+def _spend_ctx(**metadata: object) -> SimpleNamespace:
+    return SimpleNamespace(metadata=dict(metadata))
+
+
+def test_accumulated_spend_billed_ignores_rollup_label() -> None:
+    # A positive billed total is authoritative regardless of the rollup label.
+    spend, source = _session_accumulated_spend(
+        _spend_ctx(
+            session_billed_cost_usd=3.0,
+            session_total_cost_usd=3.0,
+            session_cost_source="mixed",
+        )
+    )
+    assert (spend, source) == (3.0, "billed")
+
+
+def test_accumulated_spend_estimate_label_maps_to_estimate() -> None:
+    spend, source = _session_accumulated_spend(
+        _spend_ctx(
+            session_billed_cost_usd=0.0,
+            session_total_cost_usd=2.5,
+            session_estimated_cost_usd=2.5,
+            session_cost_source="opensquilla_estimate",
+        )
+    )
+    assert (spend, source) == (2.5, "estimate")
+
+
+def test_accumulated_spend_mixed_label_maps_to_estimate_mixed() -> None:
+    spend, source = _session_accumulated_spend(
+        _spend_ctx(
+            session_billed_cost_usd=0.0,
+            session_total_cost_usd=4.0,
+            session_cost_source="mixed",
+        )
+    )
+    assert (spend, source) == (4.0, "estimate_mixed")
+
+
+def test_accumulated_spend_absent_label_stays_estimate() -> None:
+    spend, source = _session_accumulated_spend(_spend_ctx(session_total_cost_usd=1.5))
+    assert (spend, source) == (1.5, "estimate")
+
+
+def test_accumulated_spend_unknown_and_none_preserved() -> None:
+    # No spend keys at all -> unknown (the gate suspends on missing data).
+    assert _session_accumulated_spend(_spend_ctx()) == (None, "unknown")
+    # Keys present but all zero -> a known-zero spend, not an unknown one, even
+    # with a rollup label present.
+    assert _session_accumulated_spend(
+        _spend_ctx(
+            session_billed_cost_usd=0.0,
+            session_total_cost_usd=0.0,
+            session_cost_source="mixed",
+        )
+    ) == (0.0, "none")
 
 
 # ---------------------------------------------------------------------------

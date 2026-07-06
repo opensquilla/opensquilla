@@ -16,11 +16,6 @@
       (function () {
         try {
           var t = localStorage.getItem('opensquilla-theme')
-          // Renamed ids persisted before the rename resolve to their current id
-          // (kept in sync with LEGACY_THEME_IDS in src/themes/registry.ts) so a
-          // legacy choice paints correctly on the very first frame.
-          var legacy = { nord: 'arctic', phosphor: 'crt-green' }
-          if (t && legacy[t]) t = legacy[t]
           if (!t || t === 'system') {
             t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'
           }
@@ -30,11 +25,11 @@
         }
       })()
     </script>
-    <script type="module" crossorigin src="./assets/index-pNgyJSuv.js"></script>
+    <script type="module" crossorigin src="./assets/index-irglsknV.js"></script>
     <link rel="modulepreload" crossorigin href="./assets/_plugin-vue_export-helper-C4x5kwI5.js">
     <link rel="modulepreload" crossorigin href="./assets/Icon-5vvapsUR.js">
     <link rel="stylesheet" crossorigin href="./assets/Icon-Bc-ml2D8.css">
-    <link rel="stylesheet" crossorigin href="./assets/index-Cu1qpw9k.css">
+    <link rel="stylesheet" crossorigin href="./assets/index-BPJ-sXIh.css">
   </head>
   <body>
     <div id="app"></div>

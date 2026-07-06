@@ -31,7 +31,17 @@
           <div v-if="m.cacheReadTokens > 0"><dt>{{ t('usageLogs.metrics.cacheRead') }}</dt><dd class="usage-mono usage-dim">{{ m.cacheReadTokens.toLocaleString() }}</dd></div>
           <div v-if="m.cacheWriteTokens > 0"><dt>{{ t('usageLogs.metrics.cacheWrite') }}</dt><dd class="usage-mono usage-dim">{{ m.cacheWriteTokens.toLocaleString() }}</dd></div>
           <div><dt>{{ t('usageLogs.metrics.sessions') }}</dt><dd>{{ m.sessions }}</dd></div>
-          <div class="usage-model-card__cost-row"><dt>{{ t('usageLogs.metrics.cost') }}</dt><dd class="usage-mono usage-cost">{{ fmtCost(m.costUsd) }}</dd></div>
+          <div class="usage-model-card__cost-row">
+            <dt>{{ t('usageLogs.metrics.cost') }}</dt>
+            <dd class="usage-mono usage-cost">
+              {{ fmtCost(m.costUsd) }}
+              <span
+                class="usage-source"
+                :class="costSourceClassesForModelCard(m)"
+                :title="costSourceTooltipForModelCard(m)"
+              >{{ costSourceLabelForModelCard(m) }}</span>
+            </dd>
+          </div>
         </dl>
       </article>
     </div>
@@ -48,5 +58,8 @@ defineProps<{
   modelCards: ModelCard[]
   modelsMeta: string
   fmtCost: (cost: number | null | undefined, opts?: { decimals?: number }) => string
+  costSourceClassesForModelCard: (m: ModelCard) => Record<string, boolean>
+  costSourceLabelForModelCard: (m: ModelCard) => string
+  costSourceTooltipForModelCard: (m: ModelCard) => string
 }>()
 </script>

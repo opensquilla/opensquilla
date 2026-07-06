@@ -1563,7 +1563,8 @@
         "label": "Éphémère",
         "tooltip": "Session éphémère — coût pas encore persisté",
         "short": "éphémère"
-      }
+      },
+      "cacheBlindHint": "Inclut des estimations qui tarifient les jetons en cache au tarif d'entrée plein — à considérer comme un plafond."
     },
     "relTime": {
       "justNow": "à l'instant",

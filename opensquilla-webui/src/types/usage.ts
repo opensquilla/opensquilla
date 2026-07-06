@@ -77,6 +77,8 @@ export interface ModelCard {
   sessions: number
   share: number
   totalTokens: number
+  costSource: string
+  anyCacheBlind: boolean
 }
 
 export interface BreakdownRow {

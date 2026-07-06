@@ -1563,7 +1563,8 @@
         "label": "Flüchtig",
         "tooltip": "Flüchtige Sitzung — Kosten noch nicht persistiert",
         "short": "flüchtig"
-      }
+      },
+      "cacheBlindHint": "Enthält Schätzungen, die zwischengespeicherte Tokens zum vollen Eingabepreis bewerten — als Obergrenze zu verstehen."
     },
     "relTime": {
       "justNow": "gerade eben",

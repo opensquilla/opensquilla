@@ -1563,7 +1563,8 @@
         "label": "Efímera",
         "tooltip": "Sesión efímera: el coste aún no se ha persistido",
         "short": "efímera"
-      }
+      },
+      "cacheBlindHint": "Incluye estimaciones que valoran los tokens en caché a la tarifa de entrada completa — considérelo un límite superior."
     },
     "relTime": {
       "justNow": "ahora mismo",

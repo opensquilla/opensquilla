@@ -53,6 +53,9 @@
       :model-cards="modelCards"
       :models-meta="modelsMeta"
       :fmt-cost="fmtCost"
+      :cost-source-classes-for-model-card="costSourceClassesForModelCard"
+      :cost-source-label-for-model-card="costSourceLabelForModelCard"
+      :cost-source-tooltip-for-model-card="costSourceTooltipForModelCard"
     />
 
     <div v-if="usageLoading && sortedRows.length === 0" class="state">
@@ -143,6 +146,9 @@ const {
   costSourceClassesForBreakdown,
   costSourceLabelForBreakdown,
   costSourceTooltipForBreakdown,
+  costSourceClassesForModelCard,
+  costSourceLabelForModelCard,
+  costSourceTooltipForModelCard,
   modelDisplayLabel,
   rowKey,
   rowBreakdown,

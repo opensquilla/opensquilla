@@ -1563,7 +1563,8 @@
         "label": "Ephemeral",
         "tooltip": "Ephemeral session — cost not yet persisted",
         "short": "ephemeral"
-      }
+      },
+      "cacheBlindHint": "Includes estimates that price cached tokens at the full input rate — treat as an upper bound."
     },
     "relTime": {
       "justNow": "just now",

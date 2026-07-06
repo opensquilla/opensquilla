@@ -110,6 +110,8 @@ def test_models_toml_quoted_keys_parse(tmp_path: Path) -> None:
                 "supports_reasoning = true",
                 "input_cost_per_mtok = 0.5",
                 "output_cost_per_mtok = 2.0",
+                "cache_read_cost_per_mtok = 0.05",
+                "cache_write_cost_per_mtok = 0.6",
                 'thinking_level_map = { high = "high", medium = "medium" }',
                 "",
             ]
@@ -130,6 +132,8 @@ def test_models_toml_quoted_keys_parse(tmp_path: Path) -> None:
     assert glm.supports_reasoning is True
     assert glm.input_cost_per_mtok == 0.5
     assert glm.output_cost_per_mtok == 2.0
+    assert glm.cache_read_cost_per_mtok == 0.05
+    assert glm.cache_write_cost_per_mtok == 0.6
     assert glm.thinking_level_map == {"high": "high", "medium": "medium"}
 
 
@@ -147,12 +151,29 @@ def test_model_override_rejects_unknown_fields() -> None:
         {"max_output_tokens": 0},
         {"input_cost_per_mtok": -0.1},
         {"output_cost_per_mtok": -1},
+        {"cache_read_cost_per_mtok": -0.01},
+        {"cache_write_cost_per_mtok": -1},
     ],
-    ids=["context-window", "max-output", "input-cost", "output-cost"],
+    ids=[
+        "context-window",
+        "max-output",
+        "input-cost",
+        "output-cost",
+        "cache-read-cost",
+        "cache-write-cost",
+    ],
 )
 def test_model_override_rejects_out_of_range_values(override: dict[str, Any]) -> None:
     with pytest.raises(ValidationError):
         GatewayConfig.model_validate({"models": {"custom": {"m": override}}})
+
+
+def test_model_override_accepts_cache_cost_fields() -> None:
+    override = ModelOverrideConfig(
+        input_cost_per_mtok=0.2, cache_read_cost_per_mtok=0.05, cache_write_cost_per_mtok=0.6
+    )
+    assert override.cache_read_cost_per_mtok == 0.05
+    assert override.cache_write_cost_per_mtok == 0.6
 
 
 @pytest.mark.parametrize("dialect", sorted(KNOWN_REASONING_FORMATS))

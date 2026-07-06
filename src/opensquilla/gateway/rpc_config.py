@@ -321,6 +321,22 @@ def _sync_image_generation(config: Any) -> None:
     configure_audio(getattr(config, "audio", None))
 
 
+def _sync_model_catalog_overrides(config: Any) -> None:
+    """Re-apply ``[models.*]`` overrides onto the shared catalog.
+
+    ``ModelCatalog`` is a boot-constructed singleton (see
+    ``gateway.boot.build_services``); without this, a live ``[models.*]``
+    edit made via ``config.set``/``patch``/``apply`` or ``opensquilla gateway
+    reload`` would hot-apply into the config object but silently keep
+    resolving prices/capabilities from the stale override snapshot until a
+    full restart.
+    """
+    from opensquilla.gateway.boot import apply_model_catalog_overrides
+    from opensquilla.provider.model_catalog import shared_catalog
+
+    apply_model_catalog_overrides(shared_catalog(), config)
+
+
 # Read-only paths that cannot be modified via config.set/patch/apply.
 # config_version is the migration stamp owned by migrate_config_payload;
 # client writes to it could re-run or skip one-time migrations.
@@ -424,6 +440,7 @@ async def _handle_config_set(params: dict | None, ctx: RpcContext) -> dict[str, 
     _sync_provider_selector(ctx, new_config)
     _update_config_in_place(ctx.config, new_config)
     _sync_image_generation(new_config)
+    _sync_model_catalog_overrides(new_config)
     _persist_config(ctx.config)
     return _change_meta(
         old_memory_fingerprint=old_memory_fingerprint,
@@ -495,6 +512,7 @@ async def _handle_config_patch(params: dict | None, ctx: RpcContext) -> dict[str
     # Update in-memory config so subsequent requests see changes immediately
     _update_config_in_place(ctx.config, new_config)
     _sync_image_generation(new_config)
+    _sync_model_catalog_overrides(new_config)
 
     _persist_config(ctx.config)
     change_meta = _change_meta(
@@ -570,6 +588,7 @@ async def _handle_config_apply(params: dict | None, ctx: RpcContext) -> dict[str
     if ctx.config is not None:
         _update_config_in_place(ctx.config, new_config)
     _sync_image_generation(new_config)
+    _sync_model_catalog_overrides(new_config)
     _persist_config(ctx.config if ctx.config is not None else new_config)
     return _change_meta(
         old_memory_fingerprint=old_memory_fingerprint,
@@ -688,6 +707,7 @@ async def _handle_config_reload(params: dict | None, ctx: RpcContext) -> dict[st
     # Step 4: swap values + runtime-secret markers into the live config.
     _update_config_in_place(ctx.config, candidate)
     _sync_image_generation(candidate)
+    _sync_model_catalog_overrides(candidate)
 
     return {"ok": True, "path": str(target), **change_meta}
 

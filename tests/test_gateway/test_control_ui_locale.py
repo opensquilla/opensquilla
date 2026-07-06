@@ -139,11 +139,16 @@ def test_template_bootstraps_link_token_before_frontend_loads():
         vite_js_url="/control/static/dist/assets/app.js",
     )
 
+    assert "function clearOpenSquillaStorage(storage)" in html
+    assert "key.indexOf('opensquilla.') === 0" in html
     assert "sessionStorage.setItem('opensquilla.wsToken'" in html
     assert "localStorage.setItem('opensquilla.wsUrl'" in html
     assert "ws://host/ws" in html
     assert 'tok-\\"quoted\\"&ok=1' in html
     assert "url.searchParams.delete('token')" in html
+    assert html.index("clearOpenSquillaStorage(localStorage)") < html.index(
+        "sessionStorage.setItem('opensquilla.wsToken'"
+    )
     assert html.index("sessionStorage.setItem('opensquilla.wsToken'") < html.index(
         'type="module"'
     )

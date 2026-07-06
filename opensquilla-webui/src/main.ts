@@ -22,6 +22,9 @@ appStore.initTheme()
 
 const rpcStore = useRpcStore()
 rpcStore.init()
+router.afterEach(() => {
+  rpcStore.applyLinkTokenFromUrl()
+})
 
 // Resolve + load the active locale before mounting so the first paint is
 // already in the right language (no English flash). initLocale never rejects

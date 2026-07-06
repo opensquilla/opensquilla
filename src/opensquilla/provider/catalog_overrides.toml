@@ -73,8 +73,8 @@ max_output_tokens = 131072
 display_name = "Claude Opus 4.6"
 context_window = 200000
 max_output_tokens = 32000
-input_cost_per_mtok = 15.0
-output_cost_per_mtok = 75.0
+input_cost_per_mtok = 5.0
+output_cost_per_mtok = 25.0
 
 [anthropic."claude-sonnet-4-6"]
 display_name = "Claude Sonnet 4.6"
@@ -87,8 +87,10 @@ output_cost_per_mtok = 15.0
 display_name = "Claude Haiku 4.5"
 context_window = 200000
 max_output_tokens = 8192
-input_cost_per_mtok = 0.25
-output_cost_per_mtok = 1.25
+input_cost_per_mtok = 1.0
+output_cost_per_mtok = 5.0
+cache_read_cost_per_mtok = 0.10
+cache_write_cost_per_mtok = 1.25
 
 # openrouter rows: token budgets for the squilla-router tier models the
 # models.dev snapshot does not carry (its openrouter table stores them

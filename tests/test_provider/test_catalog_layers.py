@@ -350,14 +350,15 @@ def test_anthropic_listing_models_priced_via_packaged_corrections() -> None:
     # The corrections rows are the canonical metadata for the SKUs the
     # Anthropic adapter lists (the adapter's _KNOWN_MODELS table has been
     # retired; list_models resolves these rows through the shared catalog).
-    # Literals pin the retired table's values, with per-1k costs converted
-    # to the canonical per-Mtok unit (x1000). The corrections rows carry no
-    # cache pricing, so cache_read/write fall through to the snapshot's
-    # vendored models.dev cache rates for the same SKU.
+    # Values are verified against Anthropic's published per-model pricing
+    # page (input/output per Mtok). The opus-4-6 and sonnet-4-6 rows carry
+    # no cache pricing, so their cache_read/write fall through to the
+    # snapshot's vendored models.dev cache rates for the same SKU; the
+    # haiku-4-5 row now carries its own cache rates directly.
     listing_rows = (
-        ("claude-opus-4-6", "Claude Opus 4.6", 200_000, 32_000, 15.0, 75.0, 0.5, 6.25),
+        ("claude-opus-4-6", "Claude Opus 4.6", 200_000, 32_000, 5.0, 25.0, 0.5, 6.25),
         ("claude-sonnet-4-6", "Claude Sonnet 4.6", 200_000, 16_000, 3.0, 15.0, 0.3, 3.75),
-        ("claude-haiku-4-5-20251001", "Claude Haiku 4.5", 200_000, 8_192, 0.25, 1.25, 0.1, 1.25),
+        ("claude-haiku-4-5-20251001", "Claude Haiku 4.5", 200_000, 8_192, 1.0, 5.0, 0.1, 1.25),
     )
     catalog = ModelCatalog()
     for (

@@ -586,7 +586,7 @@ class BudgetGateInput:
     spend_usd: float | None
     estimate_usd: float | None = None
     cap_tier: str | None = None
-    spend_source: str = "unknown"  # "billed" | "estimate" | "none" | "unknown"
+    spend_source: str = "unknown"  # "billed" | "estimate" | "estimate_mixed" | "none" | "unknown"
     session_key: str | None = None
 
 

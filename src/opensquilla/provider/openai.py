@@ -256,7 +256,8 @@ def _first_present(*sources: tuple[Mapping[str, Any], str]) -> int:
     Truthiness chains via ``or`` would skip an explicit ``0`` from the canonical
     field and silently fall through to a less-canonical one — e.g. an
     ``cache_creation_input_tokens=0`` getting overwritten by a non-zero
-    ``prompt_cache_miss_tokens``. Use ``in`` instead so a real zero wins.
+    ``prompt_tokens_details.cache_write_tokens``. Use ``in`` instead so a real
+    zero wins.
     """
     for src, key in sources:
         if isinstance(src, Mapping) and key in src:

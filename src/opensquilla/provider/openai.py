@@ -287,14 +287,11 @@ def _usage_fields(usage: Mapping[str, Any] | None) -> tuple[int, int, int, int, 
     #   - usage.cache_creation_input_tokens          — Anthropic-via-OpenRouter passthrough.
     #   - prompt_tokens_details.cache_write_tokens   — OpenRouter documented field.
     #   - usage.cache_write_tokens                   — top-level alias some proxies use.
-    #   - usage.prompt_cache_miss_tokens             — DeepSeek (miss == write under their
-    #     prompt-cache pricing model).
     #   - prompt_tokens_details.cache_creation_tokens — defensive fallback.
     cache_write_tokens = _first_present(
         (usage, "cache_creation_input_tokens"),
         (prompt_details, "cache_write_tokens"),
         (usage, "cache_write_tokens"),
-        (usage, "prompt_cache_miss_tokens"),
         (prompt_details, "cache_creation_tokens"),
     )
 

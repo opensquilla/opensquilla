@@ -2,7 +2,8 @@
 
 Covers cache_write_tokens detection across the variants we encounter
 in the wild:
-- DeepSeek: ``prompt_cache_miss_tokens`` (the miss is the write).
+- DeepSeek: ``prompt_cache_miss_tokens`` is fresh input already counted in
+  ``prompt_tokens`` — not a cache write — so it must be excluded.
 - Anthropic-via-OpenRouter passthrough: ``cache_creation_input_tokens``.
 - Nested under ``prompt_tokens_details`` (some chat-completion providers).
 - Absent: returns 0 cleanly.
@@ -16,12 +17,15 @@ def test_usage_fields_returns_zero_when_usage_missing() -> None:
     assert _usage_fields({}) == (0, 0, 0, 0, 0, 0.0)
 
 
-def test_usage_fields_extracts_deepseek_prompt_cache_miss_tokens() -> None:
+def test_deepseek_prompt_cache_miss_tokens_are_not_cache_writes() -> None:
+    """DeepSeek's prompt_cache_miss_tokens is fresh input already billed inside
+    prompt_tokens at the standard rate — it carries no write premium and must
+    not be counted as a cache write."""
     usage = {
         "prompt_tokens": 1500,
         "completion_tokens": 200,
-        "prompt_tokens_details": {"cached_tokens": 1000},
-        "prompt_cache_miss_tokens": 500,
+        "prompt_cache_hit_tokens": 1100,
+        "prompt_cache_miss_tokens": 400,
     }
 
     input_t, output_t, reasoning_t, cached_t, cache_write_t, billed_cost = _usage_fields(usage)
@@ -29,8 +33,8 @@ def test_usage_fields_extracts_deepseek_prompt_cache_miss_tokens() -> None:
     assert input_t == 1500
     assert output_t == 200
     assert reasoning_t == 0
-    assert cached_t == 1000
-    assert cache_write_t == 500
+    assert cached_t == 1100
+    assert cache_write_t == 0
     assert billed_cost == 0.0
 
 
@@ -121,7 +125,7 @@ def test_usage_fields_extracts_deepseek_prompt_cache_hit_tokens_for_reads() -> N
 
     *_, cached_t, cache_write_t, _ = _usage_fields(usage)
     assert cached_t == 1100
-    assert cache_write_t == 400
+    assert cache_write_t == 0
 
 
 def test_usage_fields_prompt_tokens_details_cached_takes_precedence_over_top_level_hit() -> None:
@@ -175,16 +179,17 @@ def test_usage_fields_canonical_zero_beats_fallback_nonzero() -> None:
         "prompt_tokens": 1000,
         "completion_tokens": 50,
         "cache_creation_input_tokens": 0,  # canonical, explicit zero
-        "prompt_cache_miss_tokens": 9999,  # fallback — must NOT win here
+        "prompt_tokens_details": {"cache_write_tokens": 9999},  # fallback — must NOT win here
     }
 
     *_, cache_write_t, _ = _usage_fields(usage)
     assert cache_write_t == 0
 
 
-def test_usage_fields_write_priority_orders_openrouter_over_deepseek_miss() -> None:
-    """When both OpenRouter's documented field and DeepSeek's miss key are present,
-    the OpenRouter cache_write_tokens (documented as the canonical write count) wins."""
+def test_usage_fields_write_priority_orders_prompt_details_over_top_level_alias() -> None:
+    """When both OpenRouter's documented prompt_tokens_details.cache_write_tokens
+    field and the top-level cache_write_tokens alias are present, the
+    prompt_tokens_details field (documented as canonical) wins."""
     usage = {
         "prompt_tokens": 1000,
         "completion_tokens": 50,
@@ -192,7 +197,7 @@ def test_usage_fields_write_priority_orders_openrouter_over_deepseek_miss() -> N
             "cached_tokens": 800,
             "cache_write_tokens": 100,
         },
-        "prompt_cache_miss_tokens": 200,
+        "cache_write_tokens": 9999,
     }
 
     *_, cache_write_t, _ = _usage_fields(usage)

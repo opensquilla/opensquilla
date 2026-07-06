@@ -66,7 +66,12 @@ class _OpenSquillaDataParser(HTMLParser):
             self.data_update = attr_map.get("data-update")
 
 
-def _render(locale: str, update: dict | None = None) -> str:
+def _render(
+    locale: str,
+    update: dict | None = None,
+    link_token: str = "",
+    vite_js_url: str = "",
+) -> str:
     tpl = control_ui._get_jinja_env().get_template("index.html")
     return tpl.render(
         version="0.0.0",
@@ -77,7 +82,8 @@ def _render(locale: str, update: dict | None = None) -> str:
         locale=locale,
         update=update,
         features={},
-        vite_js_url="",
+        link_token=link_token,
+        vite_js_url=vite_js_url,
         vite_css_urls=[],
     )
 
@@ -112,3 +118,32 @@ def test_template_escapes_update_json_for_data_attribute():
         "latest": '0.5.0-"quoted"',
         "url": 'https://example.test/releases?note="quoted"&ok=1',
     }
+
+
+def test_bootstrap_context_includes_link_token_from_query_param():
+    request = SimpleNamespace(
+        headers={"host": "example.test"},
+        url=SimpleNamespace(scheme="http"),
+        query_params={"token": "link-token"},
+    )
+
+    ctx = control_ui._build_bootstrap_context(GatewayConfig(), request)
+
+    assert ctx["link_token"] == "link-token"
+
+
+def test_template_bootstraps_link_token_before_frontend_loads():
+    html = _render(
+        "en",
+        link_token='tok-"quoted"&ok=1',
+        vite_js_url="/control/static/dist/assets/app.js",
+    )
+
+    assert "sessionStorage.setItem('opensquilla.wsToken'" in html
+    assert "localStorage.setItem('opensquilla.wsUrl'" in html
+    assert "ws://host/ws" in html
+    assert 'tok-\\"quoted\\"&ok=1' in html
+    assert "url.searchParams.delete('token')" in html
+    assert html.index("sessionStorage.setItem('opensquilla.wsToken'") < html.index(
+        'type="module"'
+    )

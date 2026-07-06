@@ -23,6 +23,24 @@
         }
       })();
     </script>
+    {% if link_token %}
+    <!-- Direct operator links seed the gateway connection before the app boots. -->
+    <script>
+      (function () {
+        try {
+          var token = {{ link_token | tojson | safe }};
+          var wsUrl = {{ ws_url | tojson | safe }};
+          if (wsUrl) localStorage.setItem('opensquilla.wsUrl', wsUrl);
+          if (token) sessionStorage.setItem('opensquilla.wsToken', token);
+          if (window.history && window.history.replaceState) {
+            var url = new URL(window.location.href);
+            url.searchParams.delete('token');
+            window.history.replaceState(null, '', url.pathname + url.search + url.hash);
+          }
+        } catch (e) { /* connection settings stay editable in the UI */ }
+      })();
+    </script>
+    {% endif %}
     <!-- KaTeX: math/LaTeX rendering -->
     <link rel="stylesheet" href="{{ base_path }}/static/vendor/katex.min.css?v={{ version }}">
     <!-- CSS: base -> components -> view-specific -> mobile (last for override) -->

@@ -440,6 +440,11 @@ class AgentConfig:
     extra_system_prompt: str | None = None
     workspace_dir: str | None = None
     model_id: str | None = None
+    # CONFIGURED provider id (e.g. "vllm", "lm_studio"), sourced from
+    # config.llm.provider — NOT the adapter class name (openai_compat
+    # deployments all report provider_name == "openai"). Threaded into usage
+    # tracking so the layered price resolver can treat local runtimes as free.
+    provider_id: str = ""
     stop_sequences: list[str] = field(default_factory=list)
     context_window_tokens: int = 200000
     context_overflow_threshold: float = 0.85  # trigger at 85%

@@ -2677,6 +2677,7 @@ class Agent:
                                                 ),
                                                 provider=str(
                                                     usage_row.get("provider")
+                                                    or self.config.provider_id
                                                     or getattr(self.provider, "provider_name", "")
                                                     or ""
                                                 ),
@@ -2690,7 +2691,10 @@ class Agent:
                                             cache_read_tokens=raw_ev.cached_tokens,
                                             cache_write_tokens=raw_ev.cache_write_tokens,
                                             billed_cost=raw_ev.billed_cost,
-                                            provider=getattr(self.provider, "provider_name", ""),
+                                            provider=(
+                                                self.config.provider_id
+                                                or getattr(self.provider, "provider_name", "")
+                                            ),
                                         )
                                 ensemble_trace = getattr(raw_ev, "ensemble_trace", None)
                                 if isinstance(ensemble_trace, dict):
@@ -4077,7 +4081,7 @@ class Agent:
             done_model = self.config.model_id or ""
         from opensquilla.engine.pricing import lookup_price
 
-        price = lookup_price(done_model)
+        price = lookup_price(done_model, self.config.provider_id)
         estimated_cost = (
             total_input_tokens * price.input_per_m + total_output_tokens * price.output_per_m
         ) / 1_000_000
@@ -6639,6 +6643,7 @@ class Agent:
         child_cfg = AgentConfig(
             max_iterations=spec.max_iterations,
             timeout=spec.timeout,
+            provider_id=self.config.provider_id,
             max_tokens=self.config.max_tokens,
             max_turn_llm_calls=self.config.max_turn_llm_calls,
             max_turn_input_tokens=self.config.max_turn_input_tokens,

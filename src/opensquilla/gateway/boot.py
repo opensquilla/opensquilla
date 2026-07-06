@@ -3010,6 +3010,7 @@ async def start_gateway_server(
 
             base_config = AgentConfig(
                 model_id=auto_model_id,
+                provider_id=getattr(provider_selector, "active_provider_id", ""),
                 workspace_dir=workspace_str,
                 metadata=auto_metadata,
             )

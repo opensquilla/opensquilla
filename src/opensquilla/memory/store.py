@@ -151,13 +151,13 @@ def _query_embedding_hash(query: str) -> str:
     return hashlib.sha256(f"query\0{query}".encode("utf-8", errors="replace")).hexdigest()
 
 
-def _estimate_embedding_cost_usd(model: str, input_tokens: int) -> float:
+def _estimate_embedding_cost_usd(model: str, input_tokens: int, provider: str = "") -> float:
     if not model or input_tokens <= 0:
         return 0.0
     try:
         from opensquilla.engine.pricing import lookup_price
 
-        price = lookup_price(model)
+        price = lookup_price(model, provider)
         return input_tokens * price.input_per_m / 1_000_000
     except Exception:  # noqa: BLE001
         return 0.0
@@ -240,7 +240,9 @@ class LongTermMemoryStore:
         ) + input_tokens
         self._embedding_usage["cost_usd"] = float(
             self._embedding_usage.get("cost_usd", 0.0) or 0.0
-        ) + _estimate_embedding_cost_usd(self._provider.model, input_tokens)
+        ) + _estimate_embedding_cost_usd(
+            self._provider.model, input_tokens, self._provider.provider_id
+        )
         self._embedding_usage["model"] = self._provider.model
         self._embedding_usage["provider"] = self._provider.provider_id
         self._embedding_usage["cost_source"] = "opensquilla_static_estimate"

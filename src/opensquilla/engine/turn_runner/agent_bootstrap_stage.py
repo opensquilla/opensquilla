@@ -411,6 +411,7 @@ class AgentBootstrapStage:
             cache_mode=inp.turn.metadata.get("cache_mode", "off"),
             skills_context_prompt=inp.turn.metadata.get("skills_context_prompt"),
             model_id=inp.resolved_model,
+            provider_id=inp.active_provider_id,
             workspace_dir=inp.turn.metadata.get("bootstrap_workspace_dir") or None,
             timeout=budgets.runtime_timeout,
             iteration_timeout=budgets.iteration_timeout,

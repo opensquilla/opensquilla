@@ -134,6 +134,15 @@ def _update_payload(config: GatewayConfig) -> dict | None:
     return info.to_public_dict()
 
 
+def _link_token_from_request(request: Request) -> str:
+    """Return the optional operator token carried by a Control UI deep link."""
+    try:
+        token = request.query_params.get("token") or ""
+    except Exception:
+        return ""
+    return str(token).strip()
+
+
 def _build_bootstrap_context(config: GatewayConfig, request: Request) -> dict:
     """Build the template context for bootstrap config injection."""
     return {
@@ -144,6 +153,7 @@ def _build_bootstrap_context(config: GatewayConfig, request: Request) -> dict:
         "config_path": config.config_path or "",
         "locale": _resolve_locale(config, request),
         "update": _update_payload(config),
+        "link_token": _link_token_from_request(request),
         "features": {
             "diagnostics": config.diagnostics_enabled,
         },

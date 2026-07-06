@@ -9,8 +9,10 @@
 
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
+import { useI18n } from 'vue-i18n'
 import type { ChatPart, SourcePart } from '@/types/parts'
 import { decorateCitations } from '@/utils/chat/citations'
+import { copyTextWithFallback } from '@/utils/browser'
 
 const props = withDefaults(
   defineProps<{
@@ -22,6 +24,7 @@ const props = withDefaults(
 
 const emit = defineEmits<{ citation: [sourceId: number] }>()
 
+const { t } = useI18n()
 const rootEl = ref<HTMLDivElement | null>(null)
 const missingCitationIds = ref<number[]>([])
 
@@ -32,6 +35,99 @@ const missingCitationLabel = computed(() =>
 function labelFor(sourceId: number): string {
   const source = props.sources[sourceId - 1]
   return source ? source.title || source.domain : ''
+}
+
+function codeText(pre: HTMLPreElement): string {
+  const code = pre.querySelector('code')
+  return code?.textContent || ''
+}
+
+function hasCodeCopyButton(pre: HTMLPreElement): boolean {
+  return Array.from(pre.children).some(child => child.classList.contains('code-copy-btn'))
+}
+
+function setCodeCopyButtonState(button: HTMLButtonElement, state: 'idle' | 'copied' | 'error') {
+  const label = state === 'copied'
+    ? t('chat.copied')
+    : state === 'error'
+      ? t('chat.toast.copyFailed')
+      : t('chat.copy')
+  button.replaceChildren(createCodeCopyIcon(state))
+  button.title = label
+  button.setAttribute('aria-label', label)
+}
+
+function createCodeCopyIcon(state: 'idle' | 'copied' | 'error'): SVGSVGElement {
+  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg')
+  svg.setAttribute('viewBox', '0 0 24 24')
+  svg.setAttribute('width', '15')
+  svg.setAttribute('height', '15')
+  svg.setAttribute('aria-hidden', 'true')
+  svg.setAttribute('focusable', 'false')
+  svg.setAttribute('fill', 'none')
+  svg.setAttribute('stroke', 'currentColor')
+  svg.setAttribute('stroke-width', '2')
+  svg.setAttribute('stroke-linecap', 'round')
+  svg.setAttribute('stroke-linejoin', 'round')
+
+  if (state === 'copied') {
+    svg.appendChild(svgNode('polyline', { points: '20 6 9 17 4 12' }))
+    return svg
+  }
+  if (state === 'error') {
+    svg.appendChild(svgNode('path', { d: 'M18 6 6 18' }))
+    svg.appendChild(svgNode('path', { d: 'm6 6 12 12' }))
+    return svg
+  }
+
+  svg.appendChild(svgNode('rect', { width: '14', height: '14', x: '8', y: '8', rx: '2', ry: '2' }))
+  svg.appendChild(svgNode('path', { d: 'M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2' }))
+  return svg
+}
+
+function svgNode(tag: string, attrs: Record<string, string>): SVGElement {
+  const node = document.createElementNS('http://www.w3.org/2000/svg', tag)
+  for (const [key, value] of Object.entries(attrs)) node.setAttribute(key, value)
+  return node
+}
+
+function decorateCodeBlocks() {
+  const root = rootEl.value
+  if (!root) return
+  for (const pre of root.querySelectorAll<HTMLPreElement>('pre')) {
+    if (hasCodeCopyButton(pre)) continue
+    const text = codeText(pre)
+    if (!text) continue
+
+    pre.classList.add('code-block')
+    const button = document.createElement('button')
+    button.type = 'button'
+    button.className = 'code-copy-btn'
+    setCodeCopyButtonState(button, 'idle')
+    button.addEventListener('click', async event => {
+      event.preventDefault()
+      event.stopPropagation()
+      try {
+        await copyTextWithFallback(codeText(pre))
+        setCodeCopyButtonState(button, 'copied')
+        button.classList.add('is-copied')
+        window.setTimeout(() => {
+          if (!button.isConnected) return
+          setCodeCopyButtonState(button, 'idle')
+          button.classList.remove('is-copied')
+        }, 1600)
+      } catch {
+        setCodeCopyButtonState(button, 'error')
+        button.classList.add('is-error')
+        window.setTimeout(() => {
+          if (!button.isConnected) return
+          setCodeCopyButtonState(button, 'idle')
+          button.classList.remove('is-error')
+        }, 1600)
+      }
+    })
+    pre.appendChild(button)
+  }
 }
 
 // After `v-html` has applied the sanitized body, upgrade any `[n]` that maps to
@@ -49,6 +145,7 @@ function decorate() {
       missingCitationIds.value = props.sources.length > 0 ? ids : []
     },
   })
+  decorateCodeBlocks()
 }
 
 onMounted(decorate)
@@ -84,6 +181,60 @@ watch(() => props.sources, decorate, { flush: 'post' })
   padding: 0.625rem;
   overflow-x: auto;
   margin: 0.375rem 0;
+}
+.msg-ai-text :deep(pre.code-block) {
+  position: relative;
+  padding-top: 1.9rem;
+}
+
+.msg-ai-text :deep(pre.code-block > .code-lang) {
+  right: 2.75rem;
+}
+
+.msg-ai-text :deep(.code-copy-btn) {
+  position: absolute;
+  top: 0.375rem;
+  right: 0.375rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.75rem;
+  height: 1.75rem;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text);
+  opacity: 0.78;
+  cursor: pointer;
+  transition: color var(--transition), background var(--transition), opacity var(--transition);
+}
+
+.msg-ai-text :deep(.code-copy-btn svg) {
+  display: block;
+  width: 0.9375rem;
+  height: 0.9375rem;
+}
+
+.msg-ai-text :deep(.code-copy-btn:hover) {
+  color: var(--text);
+  opacity: 1;
+  background: var(--bg-hover);
+}
+
+.msg-ai-text :deep(.code-copy-btn:focus-visible) {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+.msg-ai-text :deep(.code-copy-btn.is-copied) {
+  color: var(--ok);
+  opacity: 1;
+}
+
+.msg-ai-text :deep(.code-copy-btn.is-error) {
+  color: var(--danger);
+  opacity: 1;
 }
 .msg-ai-text :deep(pre code) {
   background: transparent;

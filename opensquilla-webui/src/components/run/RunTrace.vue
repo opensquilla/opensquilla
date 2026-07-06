@@ -511,13 +511,17 @@ const visibleItems = computed<TimelineRenderItem[]>(() => {
   return out
 })
 
+const codeBlockDecorationSignature = computed(() => visibleItems.value
+  .map(item => item.type === 'text' ? `${item.key}:${item.html}` : item.key)
+  .join('|'))
+
 onMounted(async () => {
   await nextTick()
   decorateCodeBlocks()
 })
 
 watch(
-  () => visibleItems.value.map(item => item.key).join('|'),
+  codeBlockDecorationSignature,
   async () => {
     await nextTick()
     decorateCodeBlocks()

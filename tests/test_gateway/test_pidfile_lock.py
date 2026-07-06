@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+import os
 import sys
 import types
 from pathlib import Path
@@ -44,6 +46,25 @@ def test_pid_lock_rejects_second_acquisition_while_first_is_held(tmp_path: Path)
         first.release()
 
 
+def test_pid_lock_overwrites_live_stale_pid_when_lock_is_free(tmp_path: Path) -> None:
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    pid_path = state_dir / "gateway.pid"
+    pid_path.write_text(
+        json.dumps({"pid": os.getpid(), "start_ts": "2000-01-01T00:00:00+00:00"}),
+        encoding="utf-8",
+    )
+
+    lock = GatewayPidLock(state_dir)
+    lock.acquire()
+    try:
+        payload = json.loads(pid_path.read_text(encoding="utf-8"))
+        assert payload["pid"] == os.getpid()
+        assert payload["start_ts"] != "2000-01-01T00:00:00+00:00"
+    finally:
+        lock.release()
+
+
 def test_pid_lock_release_is_idempotent(tmp_path: Path) -> None:
     state_dir = tmp_path / "state"
     lock = GatewayPidLock(state_dir)
@@ -53,7 +74,28 @@ def test_pid_lock_release_is_idempotent(tmp_path: Path) -> None:
     lock.release()
 
     assert not (state_dir / "gateway.pid").exists()
-    assert not (state_dir / "gateway.pid.lock").exists()
+    assert (state_dir / "gateway.pid.lock").exists()
+
+
+def test_pid_lock_release_keeps_lock_file_identity_for_successors(
+    tmp_path: Path,
+) -> None:
+    state_dir = tmp_path / "state"
+    first = GatewayPidLock(state_dir)
+    first.acquire()
+    first.release()
+
+    second = GatewayPidLock(state_dir)
+    second.acquire()
+    try:
+        assert (state_dir / "gateway.pid.lock").exists()
+        third = GatewayPidLock(state_dir)
+        with pytest.raises(SystemExit) as exc_info:
+            third.acquire()
+
+        assert exc_info.value.code == 1
+    finally:
+        second.release()
 
 
 def test_windows_is_alive_rejects_opened_process_with_non_active_exit_code(

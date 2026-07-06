@@ -136,6 +136,7 @@ def run_gateway(
     config = config.model_copy(update={"host": host, "port": resolved_port, "debug": debug})
 
     if not _gateway_bind_available(host, resolved_port):
+        console.print("OPENSQUILLA_GATEWAY_PORT_IN_USE")
         console.print(
             f"[red]Gateway could not start:[/red] {host}:{resolved_port} is already in use."
         )

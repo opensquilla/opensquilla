@@ -172,6 +172,8 @@ let bootStatus: BootStatus = {
   at: new Date().toISOString(),
 }
 let bootError: BootError | null = null
+let forceOnboardingOnNextStartup = false
+const gatewayProcessTreeChildren = new WeakSet<ChildProcessWithoutNullStreams>()
 
 const gatewayState: GatewayState = {
   url: '',
@@ -1006,6 +1008,14 @@ async function resetDesktopSettings(): Promise<void> {
   // source of truth, so it is no longer regenerated on every boot).
   await rm(credentialPath(), { force: true })
   await rm(desktopConfigPath(), { force: true })
+}
+
+function clearReusableGatewayState(): void {
+  gatewayState.url = ''
+  gatewayState.port = 0
+  gatewayState.owned = false
+  gatewayState.status = 'stopped'
+  gatewayState.error = undefined
 }
 
 interface ArtifactOpenRequest {
@@ -3264,28 +3274,55 @@ async function resolveGatewayRuntime(): Promise<RuntimeLaunch> {
   }
 }
 
-function isPortOpen(port: number): Promise<boolean> {
-  return new Promise((resolveOpen) => {
-    const socket = net.createConnection({ host: '127.0.0.1', port })
-    socket.setTimeout(350)
-    socket.on('connect', () => {
-      socket.destroy()
-      resolveOpen(true)
-    })
-    socket.on('timeout', () => {
-      socket.destroy()
-      resolveOpen(false)
-    })
-    socket.on('error', () => resolveOpen(false))
+const GATEWAY_PORT_FIRST = 18791
+const GATEWAY_PORT_LAST = 18830
+let gatewayPortCursor = GATEWAY_PORT_FIRST
+
+function explicitGatewayPort(): number | null {
+  const envPort = Number(process.env.OPENSQUILLA_DESKTOP_GATEWAY_PORT || '')
+  return Number.isInteger(envPort) && envPort > 0 ? envPort : null
+}
+
+function hasExplicitGatewayPort(): boolean {
+  return explicitGatewayPort() !== null
+}
+
+function nextGatewayPortAfter(port: number): number {
+  return port >= GATEWAY_PORT_LAST ? GATEWAY_PORT_FIRST : port + 1
+}
+
+function isPortBindable(port: number): Promise<boolean> {
+  return new Promise((resolveBindable) => {
+    const server = net.createServer()
+    let settled = false
+    const settle = (bindable: boolean) => {
+      if (settled) return
+      settled = true
+      server.removeAllListeners()
+      if (server.listening) {
+        server.close(() => resolveBindable(bindable))
+      } else {
+        resolveBindable(bindable)
+      }
+    }
+    server.once('error', () => settle(false))
+    server.once('listening', () => settle(true))
+    server.listen({ host: '127.0.0.1', port, exclusive: true })
   })
 }
 
 async function findGatewayPort(): Promise<number> {
-  const envPort = Number(process.env.OPENSQUILLA_DESKTOP_GATEWAY_PORT || '')
-  if (Number.isInteger(envPort) && envPort > 0) return envPort
+  const envPort = explicitGatewayPort()
+  if (envPort !== null) return envPort
 
-  for (let port = 18791; port <= 18830; port += 1) {
-    if (!(await isPortOpen(port))) return port
+  const portCount = GATEWAY_PORT_LAST - GATEWAY_PORT_FIRST + 1
+  const startPort = Math.min(Math.max(gatewayPortCursor, GATEWAY_PORT_FIRST), GATEWAY_PORT_LAST)
+  for (let offset = 0; offset < portCount; offset += 1) {
+    const port = GATEWAY_PORT_FIRST + ((startPort - GATEWAY_PORT_FIRST + offset) % portCount)
+    if (await isPortBindable(port)) {
+      gatewayPortCursor = nextGatewayPortAfter(port)
+      return port
+    }
   }
   throw new Error('No free OpenSquilla desktop gateway port found in 18791-18830.')
 }
@@ -3322,6 +3359,13 @@ function gatewayExitLooksLikeNewerConfig(output: string): boolean {
     normalized.includes('extra inputs are not permitted')
   )
   return hasValidationSignal && NEWER_CONFIG_DIAGNOSTIC_FIELDS.some((field) => normalized.includes(field))
+}
+
+function gatewayExitLooksLikePortInUse(output: string): boolean {
+  return /OPENSQUILLA_GATEWAY_PORT_IN_USE/i.test(output)
+    || /gateway could not start:.*is already in use/i.test(output)
+    || /gateway port is already in use/i.test(output)
+    || /:\d+\s+is already in use/i.test(output)
 }
 
 function classifyGatewayExitMessage(message: string, outputTail: string): string {
@@ -3384,7 +3428,7 @@ async function reuseHealthyGatewayState(): Promise<GatewayState | null> {
 }
 
 async function startGateway(): Promise<GatewayState> {
-  const reusableGateway = await reuseHealthyGatewayState()
+  const reusableGateway = forceOnboardingOnNextStartup ? null : await reuseHealthyGatewayState()
   if (reusableGateway) return reusableGateway
 
   assertSupportedMacInstallLocation()
@@ -3414,6 +3458,7 @@ async function startGateway(): Promise<GatewayState> {
 
   sendBootStatus('profile')
   const connection = await runOnboarding()
+  forceOnboardingOnNextStartup = false
   const apiKey = decryptApiKey(connection)
   if (!apiKey) throw new Error('Saved desktop API key could not be read.')
   const searchApiKey = decryptSearchApiKey(connection)
@@ -3462,9 +3507,11 @@ async function startGateway(): Promise<GatewayState> {
     {
       cwd: runtime.cwd,
       env: childEnv,
+      detached: runtime.mode === 'dev' && process.platform !== 'win32',
     }
   )
   gatewayProcess = child
+  if (runtime.mode === 'dev') gatewayProcessTreeChildren.add(child)
 
   let gatewayOutputTail = ''
   let childExitMessage: string | null = null
@@ -3477,7 +3524,9 @@ async function startGateway(): Promise<GatewayState> {
   child.stderr.pipe(logStream, { end: false })
   child.once('exit', (code, signal) => {
     const message = `gateway exited code=${code ?? 'null'} signal=${signal ?? 'null'}`
-    const classifiedMessage = classifyGatewayExitMessage(message, gatewayOutputTail)
+    const portConflictExit = gatewayExitLooksLikePortInUse(gatewayOutputTail)
+    const exitMessage = portConflictExit ? `${message}\nGateway port is already in use.` : message
+    const classifiedMessage = classifyGatewayExitMessage(exitMessage, gatewayOutputTail)
     const isCurrentGateway = gatewayProcess === child
     if (isCurrentGateway) gatewayProcess = null
     logStream.write(`\n[desktop] ${message}\n`)
@@ -3489,6 +3538,11 @@ async function startGateway(): Promise<GatewayState> {
     gatewayState.status = 'error'
     gatewayState.error = classifiedMessage
     childExitMessage = classifiedMessage
+    if (portConflictExit && !hasExplicitGatewayPort()) {
+      gatewayState.status = 'stopped'
+      gatewayState.error = undefined
+      return
+    }
     sendBootError(gatewayState.error)
   })
 
@@ -3498,6 +3552,22 @@ async function startGateway(): Promise<GatewayState> {
   sendBootStatus('control')
   gatewayState.status = 'ready'
   return gatewayState
+}
+
+async function startGatewayWithPortRecovery(): Promise<GatewayState> {
+  const maxAttempts = hasExplicitGatewayPort() ? 1 : GATEWAY_PORT_LAST - GATEWAY_PORT_FIRST + 1
+  let lastError: unknown = null
+  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+    try {
+      return await startGateway()
+    } catch (err) {
+      lastError = err
+      const message = err instanceof Error ? err.message : String(err)
+      if (hasExplicitGatewayPort() || !gatewayExitLooksLikePortInUse(message)) throw err
+      desktopLog('gateway_port_retry', { attempt: attempt + 1 })
+    }
+  }
+  throw lastError instanceof Error ? lastError : new Error(String(lastError || 'Gateway port retry exhausted.'))
 }
 
 async function loadControlUi(window: BrowserWindow, gatewayUrl: string): Promise<void> {
@@ -3586,7 +3656,7 @@ function currentMainWindow(): BrowserWindow | null {
 function ensureGatewayStarted(): Promise<GatewayState> {
   if (!gatewayStartPromise) {
     sendBootStatus('profile')
-    gatewayStartPromise = startGateway().finally(() => {
+    gatewayStartPromise = startGatewayWithPortRecovery().finally(() => {
       gatewayStartPromise = null
     })
   }
@@ -3617,7 +3687,7 @@ async function openOrResumeDesktopApp(): Promise<void> {
   focusMainWindow()
 
   try {
-    const reusableGateway = await reuseHealthyGatewayState()
+    const reusableGateway = forceOnboardingOnNextStartup ? null : await reuseHealthyGatewayState()
     const gateway = reusableGateway ?? await ensureGatewayStarted()
     await loadControlUiIntoCurrentWindow(gateway.url)
   } catch (error) {
@@ -3659,6 +3729,51 @@ async function requestGatewayShutdown(url: string): Promise<boolean> {
   }
 }
 
+async function clearKnownOwnedGatewayPidFile(): Promise<void> {
+  // Leave gateway.pid.lock in place. The persistent lock path is the authority
+  // shared by all contenders; deleting it can create split-brain locks.
+  await rm(join(desktopStateDir(), 'gateway.pid'), { force: true }).catch(() => null)
+}
+
+function hardTerminateGatewayProcess(
+  child: ChildProcessWithoutNullStreams,
+  backstopMs = GATEWAY_HARD_KILL_BACKSTOP_MS,
+): void {
+  if (hasGatewayProcessExited(child)) return
+  terminateGatewayProcess(child, 'SIGTERM')
+  if (process.platform === 'win32') void clearKnownOwnedGatewayPidFile()
+  setTimeout(() => {
+    if (!hasGatewayProcessExited(child)) {
+      terminateGatewayProcess(child, 'SIGKILL')
+      if (process.platform === 'win32') void clearKnownOwnedGatewayPidFile()
+    }
+  }, backstopMs).unref()
+}
+
+function terminateGatewayProcess(
+  child: ChildProcessWithoutNullStreams,
+  signal: NodeJS.Signals,
+): void {
+  const pid = child.pid
+  if (pid && gatewayProcessTreeChildren.has(child)) {
+    if (process.platform === 'win32') {
+      const result = spawnSync('taskkill', ['/pid', String(pid), '/t', '/f'], {
+        stdio: 'ignore',
+        windowsHide: true,
+      })
+      if (result.status === 0) return
+    } else {
+      try {
+        process.kill(-pid, signal)
+        return
+      } catch {
+        // Fall back to signaling the direct child below.
+      }
+    }
+  }
+  child.kill(signal)
+}
+
 function stopGateway(): void {
   if (!gatewayProcess || !gatewayState.owned) return
   const child = gatewayProcess
@@ -3666,11 +3781,7 @@ function stopGateway(): void {
   gatewayProcess = null
 
   const hardTerminate = () => {
-    if (hasGatewayProcessExited(child)) return
-    child.kill('SIGTERM')
-    setTimeout(() => {
-      if (!hasGatewayProcessExited(child)) child.kill('SIGKILL')
-    }, GATEWAY_HARD_KILL_BACKSTOP_MS).unref()
+    hardTerminateGatewayProcess(child)
   }
 
   // The Windows HTTP graceful path is async (fetch + timers) and only works
@@ -3701,10 +3812,7 @@ function stopGateway(): void {
   // child drains and exits on its own after the main process is gone).
   // Windows-on-quit: SIGTERM maps to a synchronous TerminateProcess, killing the
   // child before the main process exits — no drain, but no orphan either.
-  child.kill('SIGTERM')
-  setTimeout(() => {
-    if (!hasGatewayProcessExited(child)) child.kill('SIGKILL')
-  }, GATEWAY_SHUTDOWN_KILL_AFTER_MS).unref()
+  hardTerminateGatewayProcess(child, GATEWAY_SHUTDOWN_KILL_AFTER_MS)
 }
 
 // ── Auto-update (electron-updater) ──────────────────────────────────────────
@@ -4242,7 +4350,10 @@ function gatewayProcessForUpdateInstall(): ChildProcessWithoutNullStreams | null
   return null
 }
 
-async function waitForGatewayProcessExit(child: ChildProcessWithoutNullStreams): Promise<boolean> {
+async function waitForGatewayProcessExit(
+  child: ChildProcessWithoutNullStreams,
+  timeoutMs = UPDATE_GATEWAY_EXIT_TIMEOUT_MS,
+): Promise<boolean> {
   if (hasGatewayProcessExited(child)) return true
   return new Promise<boolean>((resolve) => {
     let settled = false
@@ -4254,7 +4365,7 @@ async function waitForGatewayProcessExit(child: ChildProcessWithoutNullStreams):
     child.once('exit', () => finish(true))
     setTimeout(() => {
       finish(hasGatewayProcessExited(child))
-    }, UPDATE_GATEWAY_EXIT_TIMEOUT_MS).unref()
+    }, timeoutMs).unref()
   })
 }
 
@@ -4383,6 +4494,13 @@ ipcMain.handle('desktop:settings:get', async () => loadDesktopSettings())
 ipcMain.handle('desktop:settings:save', async (_event, payload: DesktopSettingsPayload) => saveDesktopSettings(payload))
 ipcMain.handle('desktop:settings:reset', async () => {
   await resetDesktopSettings()
+  forceOnboardingOnNextStartup = true
+  const child = gatewayProcess && gatewayState.owned ? gatewayProcess : null
+  if (child) {
+    stopGateway()
+    await waitForGatewayProcessExit(child)
+  }
+  clearReusableGatewayState()
   return { ok: true }
 })
 ipcMain.handle('desktop:artifact:open', async (_event, payload: ArtifactOpenRequest) => openArtifactWithDefaultApp(payload))
@@ -4584,9 +4702,23 @@ app.on('before-quit', (event) => {
       try {
         const accepted = await requestGatewayShutdown(gatewayState.url || '')
         desktopLog('quit_gateway_shutdown_requested', { accepted })
-        const exited = await waitForGatewayProcessExit(child)
-        desktopLog('quit_gateway_exit', { exited })
-        if (!exited) stopGateway()
+        let hardTerminated = false
+        let exited = false
+        if (!accepted) {
+          hardTerminated = true
+          hardTerminateGatewayProcess(child)
+          exited = await waitForGatewayProcessExit(child, GATEWAY_HARD_KILL_BACKSTOP_MS)
+          await clearKnownOwnedGatewayPidFile()
+        } else {
+          exited = await waitForGatewayProcessExit(child)
+          if (!exited) {
+            hardTerminated = true
+            hardTerminateGatewayProcess(child)
+            exited = await waitForGatewayProcessExit(child, GATEWAY_HARD_KILL_BACKSTOP_MS)
+            await clearKnownOwnedGatewayPidFile()
+          }
+        }
+        desktopLog('quit_gateway_exit', { exited, hardTerminated })
       } finally {
         windowsQuitDrainDone = true
         app.exit(0)

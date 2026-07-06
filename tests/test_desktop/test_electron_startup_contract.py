@@ -25,7 +25,7 @@ def test_desktop_resume_is_visible_first_and_single_flight() -> None:
     assert "let gatewayStartPromise: Promise<GatewayState> | null = null" in main_ts
     assert "startupInProgress" not in main_ts
     assert "function ensureGatewayStarted(): Promise<GatewayState>" in main_ts
-    assert "gatewayStartPromise = startGateway().finally" in main_ts
+    assert "gatewayStartPromise = startGatewayWithPortRecovery().finally" in main_ts
     assert "gatewayStartPromise = null" in main_ts
     assert (
         "function isCurrentWindowAtControlUi(window: BrowserWindow, gatewayUrl: string): boolean"
@@ -89,6 +89,144 @@ def test_desktop_activation_retry_and_second_instance_share_resume_helper() -> N
     assert "void openOrResumeDesktopApp()" in retry
 
 
+def test_boot_error_panel_exposes_reset_setup_recovery() -> None:
+    boot_html = _read("desktop/electron/src/boot.html")
+    reset_flow = _section(
+        boot_html,
+        "async function resetSetup()",
+        "setInterval",
+    )
+
+    assert 'id="resetSetup"' in boot_html
+    assert "Reset setup" in boot_html
+    assert 'data-i18n="resetSetup"' in boot_html
+    assert "function resetSetup()" in boot_html
+    assert "api.resetDesktopSettings" in boot_html
+    assert "window.confirm(" in boot_html
+    assert "msg.resetConfirm" in boot_html
+    assert "msg.resetPhase" in boot_html
+    assert "msg.resetProgress" in boot_html
+    assert "msg.resetFailed" in boot_html
+    assert "saved desktop credential and generated gateway config" in boot_html
+    assert "await api.resetDesktopSettings()" in reset_flow
+    assert "await api.retryStartup()" in reset_flow
+    assert reset_flow.index("await api.resetDesktopSettings()") < reset_flow.index(
+        "await api.retryStartup()"
+    )
+    assert "errorPanel.classList.add('visible')" in reset_flow
+
+
+def test_reset_desktop_settings_forces_onboarding_before_gateway_reuse() -> None:
+    main_ts = _read("desktop/electron/src/main.ts")
+    start = _section(
+        main_ts,
+        "async function startGateway",
+        "async function loadControlUi",
+    )
+    resume = _section(
+        main_ts,
+        "async function openOrResumeDesktopApp",
+        "function stopGateway",
+    )
+    reset = _section(
+        main_ts,
+        "ipcMain.handle('desktop:settings:reset'",
+        "ipcMain.handle('desktop:artifact:open'",
+    )
+
+    assert "let forceOnboardingOnNextStartup = false" in main_ts
+    assert "function clearReusableGatewayState(): void" in main_ts
+    reuse_guard = (
+        "const reusableGateway = forceOnboardingOnNextStartup ? null : "
+        "await reuseHealthyGatewayState()"
+    )
+    assert reuse_guard in start
+    assert "forceOnboardingOnNextStartup = false" in start
+    assert reuse_guard in resume
+    assert "forceOnboardingOnNextStartup = true" in reset
+    assert "const child = gatewayProcess && gatewayState.owned ? gatewayProcess : null" in reset
+    assert "await waitForGatewayProcessExit(child)" in reset
+    assert "clearReusableGatewayState()" in reset
+
+
+def test_desktop_gateway_port_selection_is_bind_aware_and_bounded() -> None:
+    main_ts = _read("desktop/electron/src/main.ts")
+    port_selection = _section(
+        main_ts,
+        "const GATEWAY_PORT_FIRST = 18791",
+        "async function healthCheck",
+    )
+    recovery = _section(
+        main_ts,
+        "async function startGatewayWithPortRecovery",
+        "async function loadControlUi",
+    )
+    start = _section(
+        main_ts,
+        "async function startGateway",
+        "async function loadControlUi",
+    )
+
+    assert "const GATEWAY_PORT_LAST = 18830" in port_selection
+    assert "function isPortBindable(port: number): Promise<boolean>" in port_selection
+    assert "net.createServer()" in port_selection
+    assert "server.listen({ host: '127.0.0.1', port, exclusive: true })" in port_selection
+    assert "await isPortBindable(port)" in port_selection
+    assert "gatewayPortCursor = nextGatewayPortAfter(port)" in port_selection
+    assert "OPENSQUILLA_DESKTOP_GATEWAY_PORT" in port_selection
+    assert "function gatewayExitLooksLikePortInUse(output: string): boolean" in main_ts
+    assert "OPENSQUILLA_GATEWAY_PORT_IN_USE" in main_ts
+    assert "gateway port is already in use" in main_ts
+    assert (
+        "const maxAttempts = hasExplicitGatewayPort() ? 1 : "
+        "GATEWAY_PORT_LAST - GATEWAY_PORT_FIRST + 1"
+    ) in recovery
+    assert "gatewayExitLooksLikePortInUse(message)" in recovery
+    assert "desktopLog('gateway_port_retry'" in recovery
+    assert "if (portConflictExit && !hasExplicitGatewayPort())" in start
+    assert "sendBootError(gatewayState.error)" in start
+
+
+def test_windows_gateway_hard_terminate_clears_pid_without_unlinking_lock() -> None:
+    main_ts = _read("desktop/electron/src/main.ts")
+    cleanup = _section(
+        main_ts,
+        "async function clearKnownOwnedGatewayPidFile",
+        "function stopGateway",
+    )
+
+    assert "gateway.pid.lock" in cleanup
+    assert "join(desktopStateDir(), 'gateway.pid')" in cleanup
+    assert "join(desktopStateDir(), 'gateway.pid.lock')" not in cleanup
+    assert "void clearKnownOwnedGatewayPidFile()" in cleanup
+
+
+def test_windows_quit_rejected_shutdown_uses_short_hard_kill_backstop() -> None:
+    main_ts = _read("desktop/electron/src/main.ts")
+    before_quit = _section(
+        main_ts,
+        "app.on('before-quit'",
+        "function shutdownFromSignal",
+    )
+
+    rejected = _section(
+        before_quit,
+        "if (!accepted)",
+        "} else {",
+    )
+
+    assert "hardTerminateGatewayProcess(child)" in rejected
+    assert "GATEWAY_HARD_KILL_BACKSTOP_MS" in rejected
+    assert "await clearKnownOwnedGatewayPidFile()" in rejected
+    assert "UPDATE_GATEWAY_EXIT_TIMEOUT_MS" not in rejected
+
+
+def test_windows_uninstall_can_clear_app_data() -> None:
+    package_json = json.loads(_read("desktop/electron/package.json"))
+
+    assert package_json["build"]["nsis"]["deleteAppDataOnUninstall"] is True
+
+
 def test_desktop_onboarding_is_owned_modal_child_of_main_window() -> None:
     main_ts = _read("desktop/electron/src/main.ts")
     onboarding = _section(
@@ -134,10 +272,12 @@ def test_start_gateway_reuses_healthy_gateway_before_spawn() -> None:
 
     assert "await healthCheck(gatewayState.url)" in reuse
     assert "gatewayState.status = 'ready'" in reuse
-    assert "const reusableGateway = await reuseHealthyGatewayState()" in start
-    assert start.index("const reusableGateway = await reuseHealthyGatewayState()") < start.index(
-        "const overrideUrl"
+    reuse_guard = (
+        "const reusableGateway = forceOnboardingOnNextStartup ? null : "
+        "await reuseHealthyGatewayState()"
     )
+    assert reuse_guard in start
+    assert start.index(reuse_guard) < start.index("const overrideUrl")
     assert "if (reusableGateway) return reusableGateway" in start
     assert "hasGatewayProcessExited(gatewayProcess)" in start
     assert "stopGateway()" in start
@@ -204,7 +344,7 @@ def test_desktop_gateway_exit_classifies_newer_config_validation_errors() -> Non
     assert "let gatewayOutputTail = ''" in start
     assert "let childExitMessage: string | null = null" in start
     assert "appendGatewayOutputTail(gatewayOutputTail, chunk)" in start
-    assert "classifyGatewayExitMessage(message, gatewayOutputTail)" in start
+    assert "classifyGatewayExitMessage(exitMessage, gatewayOutputTail)" in start
     assert "await waitForGateway(url, () => childExitMessage)" in start
     assert "earlyExitMessage?: () => string | null" in wait
     assert "if (earlyExit) throw new Error(earlyExit)" in wait
@@ -251,13 +391,43 @@ def test_stop_gateway_sigkill_fallback_uses_real_child_exit_state() -> None:
         "function stopGateway(): void",
         "// ── Auto-update",
     )
+    hard_terminate = _section(
+        main_ts,
+        "function hardTerminateGatewayProcess",
+        "function stopGateway",
+    )
 
     assert "child.killed" not in stop
-    assert "hasGatewayProcessExited(child)" in stop
-    assert "if (hasGatewayProcessExited(child)) return" in stop
-    assert "if (!hasGatewayProcessExited(child)) child.kill('SIGKILL')" in stop
+    assert "hasGatewayProcessExited(child)" in hard_terminate
+    assert "if (hasGatewayProcessExited(child)) return" in hard_terminate
+    assert "if (!hasGatewayProcessExited(child))" in hard_terminate
+    assert "terminateGatewayProcess(child, 'SIGKILL')" in hard_terminate
+    assert "child.kill(signal)" in hard_terminate
     assert "let exited = false" in stop
     assert "child.once('exit', () => {\n      exited = true\n    })" in stop
+
+
+def test_dev_gateway_runtime_is_process_tree_aware_on_termination() -> None:
+    main_ts = _read("desktop/electron/src/main.ts")
+    start = _section(
+        main_ts,
+        "async function startGateway",
+        "async function startGatewayWithPortRecovery",
+    )
+    terminate = _section(
+        main_ts,
+        "function terminateGatewayProcess",
+        "function stopGateway",
+    )
+
+    assert "mode: 'dev'" in main_ts
+    assert "const gatewayProcessTreeChildren = new WeakSet" in main_ts
+    assert "detached: runtime.mode === 'dev' && process.platform !== 'win32'" in start
+    assert "if (runtime.mode === 'dev') gatewayProcessTreeChildren.add(child)" in start
+    assert "gatewayProcessTreeChildren.has(child)" in terminate
+    assert "spawnSync('taskkill', ['/pid', String(pid), '/t', '/f']" in terminate
+    assert "process.kill(-pid, signal)" in terminate
+    assert "child.kill(signal)" in terminate
 
 
 def test_desktop_update_menu_exposes_pending_downloaded_update_relaunch() -> None:

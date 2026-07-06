@@ -450,8 +450,8 @@ def test_list_models_rows_match_retired_known_models_table() -> None:
             display_name="Claude Opus 4.6",
             context_window=200000,
             max_output_tokens=32000,
-            input_cost_per_1k=0.015,
-            output_cost_per_1k=0.075,
+            input_cost_per_1k=0.005,
+            output_cost_per_1k=0.025,
         ),
         ModelInfo(
             provider="anthropic",
@@ -468,8 +468,8 @@ def test_list_models_rows_match_retired_known_models_table() -> None:
             display_name="Claude Haiku 4.5",
             context_window=200000,
             max_output_tokens=8192,
-            input_cost_per_1k=0.00025,
-            output_cost_per_1k=0.00125,
+            input_cost_per_1k=0.001,
+            output_cost_per_1k=0.005,
         ),
     ]
 

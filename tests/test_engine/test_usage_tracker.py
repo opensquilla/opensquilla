@@ -371,6 +371,25 @@ def test_session_total_cost_mixes_billed_and_estimate() -> None:
     assert breakdown_sum == pytest.approx(usage.total_cost, abs=1e-6)
 
 
+def test_session_total_cost_same_model_mixed_calls_adds_estimate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """One model, one billed call plus one unbilled call: total_cost must be
+    billed + estimate-of-unbilled, not the old billed-only collapse. The
+    breakdown row flips to 'mixed' and still sums to total_cost."""
+    monkeypatch.setenv("OPENSQUILLA_OPENROUTER_LIVE_PRICING", "0")
+    usage = SessionUsage()
+    usage.add(1000, 50, "claude-opus-4-7", billed_cost=0.05)
+    usage.add(2000, 80, "claude-opus-4-7")  # provider returned no cost
+
+    # $15/M in + $75/M out (static table): (2000 * 15 + 80 * 75) / 1e6 = 0.036
+    assert usage.total_cost == pytest.approx(0.05 + 0.036)
+    [row] = usage.model_breakdown
+    assert row["costSource"] == "mixed"
+    assert row["billedCostUsd"] == pytest.approx(0.05)
+    assert row["costUsd"] == pytest.approx(usage.total_cost, abs=1e-6)
+
+
 def test_session_total_cost_falls_back_to_estimate_when_no_billed() -> None:
     """No billed anywhere → total_cost == cost (pure estimate)."""
     usage = SessionUsage()

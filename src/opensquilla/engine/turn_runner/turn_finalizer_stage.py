@@ -298,6 +298,9 @@ def _turn_usage_payload(
         "cache_hit_active": bool(done_event.cache_hit_active),
         "total_savings_pct": float(done_event.total_savings_pct or 0.0),
         "total_savings_usd": float(done_event.total_savings_usd or 0.0),
+        # Additive: quality label of the estimate behind cost_usd
+        # ("cache_aware" | "cache_blind" | "free" | None).
+        "estimate_basis": getattr(done_event, "estimate_basis", None),
     }
     optional_fields = {
         "image_route_reason": getattr(done_event, "image_route_reason", None),

@@ -7,7 +7,7 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
 
-from .pricing import lookup_price
+from .pricing import CostEstimate, estimate_cost, lookup_price, resolve_model_price
 
 _current_usage_scope: ContextVar[str | None] = ContextVar(
     "opensquilla_usage_scope",
@@ -47,13 +47,47 @@ class ModelUsage:
     # existing positional ModelUsage(model_id, in, out) callers aligned. Local
     # providers are free, so the estimate must not apply the cloud default.
     provider: str = ""
+    # UNBILLED token buckets: accumulated only for calls where the provider
+    # returned no billed cost (billed_cost <= 0). Pure counters — pricing stays
+    # lazy in the cost properties/serializers so ``add()`` never does a price
+    # lookup (no network on the event loop, and per-turn deltas stay exact via
+    # clone subtraction). Appended at the end for positional-caller safety.
+    unbilled_input_tokens: int = 0
+    unbilled_output_tokens: int = 0
+    unbilled_cache_read_tokens: int = 0
+    unbilled_cache_write_tokens: int = 0
 
     @property
     def cost(self) -> float:
+        """Cache-aware pricing-table estimate over ALL of this model's tokens.
+
+        Billed-blind by design: this is the "what would it cost at list
+        price" figure. ``total_cost`` mixes in real billed data instead.
+        """
         price = lookup_price(self.model_id, self.provider)
-        return (
-            self.input_tokens * price.input_per_m + self.output_tokens * price.output_per_m
-        ) / 1_000_000
+        return estimate_cost(
+            input_tokens=self.input_tokens,
+            output_tokens=self.output_tokens,
+            cache_read_tokens=self.cache_read_tokens,
+            cache_write_tokens=self.cache_write_tokens,
+            price=price,
+        ).cost_usd
+
+    def unbilled_estimate(self) -> CostEstimate:
+        """Cache-aware estimate of only the unbilled token buckets."""
+        price = lookup_price(self.model_id, self.provider)
+        return estimate_cost(
+            input_tokens=self.unbilled_input_tokens,
+            output_tokens=self.unbilled_output_tokens,
+            cache_read_tokens=self.unbilled_cache_read_tokens,
+            cache_write_tokens=self.unbilled_cache_write_tokens,
+            price=price,
+        )
+
+    @property
+    def total_cost(self) -> float:
+        """Canonical cost: real billed spend plus the estimate of unbilled calls."""
+        return max(0.0, float(self.billed_cost or 0.0)) + self.unbilled_estimate().cost_usd
 
 
 @dataclass
@@ -72,13 +106,17 @@ class SessionUsage:
 
     @property
     def cost(self) -> float:
-        """Calculate cost in USD based on pricing table."""
+        """Cache-aware pricing-table estimate over the session's tokens."""
         if self._per_model:
             return sum(m.cost for m in self._per_model.values())
         price = lookup_price(self.model_id, self.provider)
-        input_cost = self.input_tokens * price.input_per_m
-        output_cost = self.output_tokens * price.output_per_m
-        return (input_cost + output_cost) / 1_000_000
+        return estimate_cost(
+            input_tokens=self.input_tokens,
+            output_tokens=self.output_tokens,
+            cache_read_tokens=self.cache_read_tokens,
+            cache_write_tokens=self.cache_write_tokens,
+            price=price,
+        ).cost_usd
 
     @property
     def billed_cost(self) -> float:
@@ -95,20 +133,18 @@ class SessionUsage:
 
     @property
     def total_cost(self) -> float:
-        """Best per-session cost: real billed where available, estimate elsewhere.
+        """Best per-session cost: real billed spend plus estimated unbilled spend.
 
         Mixed-source sessions need this so the row total doesn't under-report
-        the unbilled portion. For each model: prefer ``mu.billed_cost`` when
-        > 0, otherwise contribute the pricing-table estimate ``mu.cost``.
-        Sum equals the breakdown's per-model ``costUsd`` sum by construction
+        the unbilled portion. Each model contributes its billed total plus the
+        cache-aware estimate of its unbilled token buckets — a model mixing
+        billed and unbilled calls no longer collapses to billed-only. Sum
+        equals the breakdown's per-model ``costUsd`` sum by construction
         (since the breakdown serializer makes the same per-model decision).
         """
         if not self._per_model:
             return self.cost
-        return sum(
-            (float(getattr(m, "billed_cost", 0.0) or 0.0) or m.cost)
-            for m in self._per_model.values()
-        )
+        return sum(m.total_cost for m in self._per_model.values())
 
     @property
     def cost_source(self) -> str:
@@ -172,6 +208,13 @@ class SessionUsage:
             mu.cache_read_tokens += cache_read_tokens
             mu.cache_write_tokens += cache_write_tokens
             mu.billed_cost += billed_cost
+            if billed_cost <= 0.0:
+                # Pure counters only — pricing stays lazy in the cost
+                # properties/serializers so add() never blocks the event loop.
+                mu.unbilled_input_tokens += input_tokens
+                mu.unbilled_output_tokens += output_tokens
+                mu.unbilled_cache_read_tokens += cache_read_tokens
+                mu.unbilled_cache_write_tokens += cache_write_tokens
             if provider:
                 mu.provider = provider
 
@@ -179,9 +222,10 @@ class SessionUsage:
     def _breakdown_cost_fields(mu_or_self: ModelUsage | SessionUsage) -> dict:
         """Pick the canonical cost + source for a single breakdown row.
 
-        Prefer the real provider-billed cost when present; otherwise fall back
-        to the local pricing-table estimate. This is what lets the WebUI show
-        per-model values that actually sum to the row total without prorating.
+        Billed spend is the source of truth where present; unbilled calls
+        contribute the cache-aware estimate of their token buckets. This is
+        what lets the WebUI show per-model values that actually sum to the
+        row total without prorating.
         """
         fields = model_usage_cost_fields(
             model_id=getattr(mu_or_self, "model_id", ""),
@@ -189,12 +233,23 @@ class SessionUsage:
             output_tokens=int(getattr(mu_or_self, "output_tokens", 0) or 0),
             billed_cost=float(getattr(mu_or_self, "billed_cost", 0.0) or 0.0),
             provider=str(getattr(mu_or_self, "provider", "") or ""),
+            cache_read_tokens=int(getattr(mu_or_self, "cache_read_tokens", 0) or 0),
+            cache_write_tokens=int(getattr(mu_or_self, "cache_write_tokens", 0) or 0),
+            unbilled_input_tokens=getattr(mu_or_self, "unbilled_input_tokens", None),
+            unbilled_output_tokens=getattr(mu_or_self, "unbilled_output_tokens", None),
+            unbilled_cache_read_tokens=getattr(mu_or_self, "unbilled_cache_read_tokens", None),
+            unbilled_cache_write_tokens=getattr(mu_or_self, "unbilled_cache_write_tokens", None),
         )
         return {
             "costUsd": fields["costUsd"],
             "billedCostUsd": fields["billedCostUsd"],
             "estimatedCostUsd": fields["estimatedCostUsd"],
             "costSource": fields["costSource"],
+            # Additive provenance keys (dual-case like the other cost fields).
+            "estimateBasis": fields["estimateBasis"],
+            "estimate_basis": fields["estimate_basis"],
+            "priceSource": fields["priceSource"],
+            "price_source": fields["price_source"],
         }
 
     @property
@@ -222,12 +277,12 @@ class SessionUsage:
                 "cacheWriteTokens": mu.cache_write_tokens,
                 **SessionUsage._breakdown_cost_fields(mu),
             }
-            # Sort by the canonical cost (billed when present, estimate otherwise)
-            # so the row order stays predictable even when some models lack
+            # Sort by the canonical cost (billed plus estimate-of-unbilled) so
+            # the row order stays predictable even when some models lack
             # billed data.
             for mu in sorted(
                 self._per_model.values(),
-                key=lambda m: float(getattr(m, "billed_cost", 0.0) or 0.0) or m.cost,
+                key=lambda m: m.total_cost,
                 reverse=True,
             )
         ]
@@ -252,6 +307,10 @@ def _clone_session_usage(usage: SessionUsage) -> SessionUsage:
                 cache_write_tokens=mu.cache_write_tokens,
                 billed_cost=mu.billed_cost,
                 provider=mu.provider,
+                unbilled_input_tokens=mu.unbilled_input_tokens,
+                unbilled_output_tokens=mu.unbilled_output_tokens,
+                unbilled_cache_read_tokens=mu.unbilled_cache_read_tokens,
+                unbilled_cache_write_tokens=mu.unbilled_cache_write_tokens,
             )
             for mid, mu in usage._per_model.items()
         }
@@ -261,15 +320,24 @@ def _clone_session_usage(usage: SessionUsage) -> SessionUsage:
 def _model_delta_cost(
     *,
     model_id: str,
-    input_tokens: int,
-    output_tokens: int,
     billed_cost: float,
     provider: str = "",
+    unbilled_input_tokens: int = 0,
+    unbilled_output_tokens: int = 0,
+    unbilled_cache_read_tokens: int = 0,
+    unbilled_cache_write_tokens: int = 0,
 ) -> float:
-    if billed_cost > 0.0:
-        return billed_cost
-    price = lookup_price(model_id, provider)
-    return (input_tokens * price.input_per_m + output_tokens * price.output_per_m) / 1_000_000
+    """Cost of one model's per-turn delta: billed delta plus the cache-aware
+    estimate of the unbilled delta. A billed call no longer collapses the
+    same model's unbilled calls to $0."""
+    estimate = estimate_cost(
+        input_tokens=unbilled_input_tokens,
+        output_tokens=unbilled_output_tokens,
+        cache_read_tokens=unbilled_cache_read_tokens,
+        cache_write_tokens=unbilled_cache_write_tokens,
+        price=resolve_model_price(model_id, provider).entry,
+    )
+    return max(0.0, float(billed_cost or 0.0)) + estimate.cost_usd
 
 
 def model_usage_cost_fields(
@@ -279,27 +347,66 @@ def model_usage_cost_fields(
     output_tokens: int,
     billed_cost: float,
     provider: str = "",
-) -> dict[str, float | str]:
+    cache_read_tokens: int = 0,
+    cache_write_tokens: int = 0,
+    unbilled_input_tokens: int | None = None,
+    unbilled_output_tokens: int | None = None,
+    unbilled_cache_read_tokens: int | None = None,
+    unbilled_cache_write_tokens: int | None = None,
+) -> dict[str, float | str | None]:
     """Return canonical cost fields for a per-model usage row.
 
-    Provider-billed cost remains the source of truth when present. When a
-    provider returns token counts but no billed cost for an individual call, use
-    the same local pricing estimate that powers session totals so model-level
-    breakdowns do not look like free requests.
+    Provider-billed cost remains the source of truth for billed calls; the
+    unbilled token buckets are priced with the cache-aware estimator at the
+    layered-resolver price, so ``costUsd = billed + estimate`` and a model
+    mixing billed and unbilled calls reports ``mixed`` instead of collapsing
+    to billed-only.
+
+    When the caller has no per-call billed/unbilled split (all ``unbilled_*``
+    left as ``None``), the split is inferred from ``billed_cost``: a billed
+    row's tokens are covered by the billed figure, an unbilled row estimates
+    everything.
+
+    Additive provenance keys: ``estimateBasis``/``estimate_basis`` disclose
+    the estimator's quality label (``None`` when nothing was estimated) and
+    ``priceSource``/``price_source`` name the resolver layer that priced the
+    model.
     """
 
     billed = max(0.0, float(billed_cost or 0.0))
-    price = lookup_price(model_id, provider)
-    estimate = (
-        max(0, int(input_tokens or 0)) * price.input_per_m
-        + max(0, int(output_tokens or 0)) * price.output_per_m
-    ) / 1_000_000
-    if billed > 0.0:
-        cost = billed
-        source = "provider_billed"
+    if unbilled_input_tokens is None:
+        if billed > 0.0:
+            unb_input = unb_output = unb_read = unb_write = 0
+        else:
+            unb_input = max(0, int(input_tokens or 0))
+            unb_output = max(0, int(output_tokens or 0))
+            unb_read = max(0, int(cache_read_tokens or 0))
+            unb_write = max(0, int(cache_write_tokens or 0))
     else:
-        cost = estimate
-        source = "opensquilla_estimate" if estimate > 0.0 else "unavailable"
+        unb_input = max(0, int(unbilled_input_tokens or 0))
+        unb_output = max(0, int(unbilled_output_tokens or 0))
+        unb_read = max(0, int(unbilled_cache_read_tokens or 0))
+        unb_write = max(0, int(unbilled_cache_write_tokens or 0))
+
+    resolved = resolve_model_price(model_id, provider)
+    est = estimate_cost(
+        input_tokens=unb_input,
+        output_tokens=unb_output,
+        cache_read_tokens=unb_read,
+        cache_write_tokens=unb_write,
+        price=resolved.entry,
+    )
+    estimate = est.cost_usd
+    cost = billed + estimate
+    if billed > 0.0 and estimate > 0.0:
+        source = "mixed"
+    elif billed > 0.0:
+        source = "provider_billed"
+    elif estimate > 0.0:
+        source = "opensquilla_estimate"
+    else:
+        source = "unavailable"
+    estimate_basis = est.basis if (unb_input or unb_output or unb_read or unb_write) else None
 
     rounded_cost = round(cost, 6)
     rounded_billed = round(billed, 6)
@@ -313,6 +420,10 @@ def model_usage_cost_fields(
         "estimated_cost_usd": rounded_estimate,
         "costSource": source,
         "cost_source": source,
+        "estimateBasis": estimate_basis,
+        "estimate_basis": estimate_basis,
+        "priceSource": resolved.source,
+        "price_source": resolved.source,
     }
 
 
@@ -459,24 +570,50 @@ class UsageTracker:
             before_models = checkpoint._per_model if checkpoint and checkpoint._per_model else {}
             for mid, mu in usage._per_model.items():
                 before = before_models.get(mid) if before_models else None
-                delta_input = mu.input_tokens - (before.input_tokens if before else 0)
-                delta_output = mu.output_tokens - (before.output_tokens if before else 0)
                 delta_billed = mu.billed_cost - (before.billed_cost if before else 0.0)
-                if delta_input or delta_output or delta_billed:
+                delta_unb_input = mu.unbilled_input_tokens - (
+                    before.unbilled_input_tokens if before else 0
+                )
+                delta_unb_output = mu.unbilled_output_tokens - (
+                    before.unbilled_output_tokens if before else 0
+                )
+                delta_unb_read = mu.unbilled_cache_read_tokens - (
+                    before.unbilled_cache_read_tokens if before else 0
+                )
+                delta_unb_write = mu.unbilled_cache_write_tokens - (
+                    before.unbilled_cache_write_tokens if before else 0
+                )
+                if (
+                    delta_billed
+                    or delta_unb_input
+                    or delta_unb_output
+                    or delta_unb_read
+                    or delta_unb_write
+                ):
                     cost_usd += _model_delta_cost(
                         model_id=mid,
-                        input_tokens=max(0, delta_input),
-                        output_tokens=max(0, delta_output),
                         billed_cost=max(0.0, delta_billed),
                         provider=mu.provider,
+                        unbilled_input_tokens=max(0, delta_unb_input),
+                        unbilled_output_tokens=max(0, delta_unb_output),
+                        unbilled_cache_read_tokens=max(0, delta_unb_read),
+                        unbilled_cache_write_tokens=max(0, delta_unb_write),
                     )
         else:
+            # No per-model split (model_id never provided): infer the
+            # billed/unbilled split from the billed delta, matching
+            # model_usage_cost_fields' legacy-caller behavior.
+            billed_delta = max(0.0, billed_cost)
             cost_usd = _model_delta_cost(
                 model_id=usage.model_id,
-                input_tokens=max(0, input_tokens),
-                output_tokens=max(0, output_tokens),
-                billed_cost=max(0.0, billed_cost),
+                billed_cost=billed_delta,
                 provider=usage.provider,
+                unbilled_input_tokens=0 if billed_delta > 0.0 else max(0, input_tokens),
+                unbilled_output_tokens=0 if billed_delta > 0.0 else max(0, output_tokens),
+                unbilled_cache_read_tokens=0 if billed_delta > 0.0 else max(0, cache_read_tokens),
+                unbilled_cache_write_tokens=(
+                    0 if billed_delta > 0.0 else max(0, cache_write_tokens)
+                ),
             )
 
         return SessionTotalsSnapshot(

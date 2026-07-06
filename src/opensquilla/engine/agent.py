@@ -4079,21 +4079,35 @@ class Agent:
                 done_model = su.model_id
         if not done_model:
             done_model = self.config.model_id or ""
-        from opensquilla.engine.pricing import lookup_price
+        from opensquilla.engine.pricing import estimate_cost, resolve_model_price
 
-        price = lookup_price(done_model, self.config.provider_id)
-        estimated_cost = (
-            total_input_tokens * price.input_per_m + total_output_tokens * price.output_per_m
-        ) / 1_000_000
+        turn_estimate = estimate_cost(
+            input_tokens=total_input_tokens,
+            output_tokens=total_output_tokens,
+            cache_read_tokens=total_cached_tokens,
+            cache_write_tokens=total_cache_write_tokens,
+            price=resolve_model_price(done_model, self.config.provider_id).entry,
+        )
+        estimated_cost = turn_estimate.cost_usd
+        estimate_basis: str | None
         if total_billed_cost > 0.0:
             done_cost = total_billed_cost
             cost_source = "provider_billed"
+            estimate_basis = None
         elif estimated_cost > 0.0:
             done_cost = estimated_cost
             cost_source = "opensquilla_static_estimate"
+            estimate_basis = turn_estimate.basis
         else:
             done_cost = 0.0
             cost_source = "unavailable"
+            has_turn_tokens = bool(
+                total_input_tokens
+                or total_output_tokens
+                or total_cached_tokens
+                or total_cache_write_tokens
+            )
+            estimate_basis = "free" if turn_estimate.basis == "free" and has_turn_tokens else None
 
         session_totals = (
             self._usage_tracker.session_snapshot(self._session_key)
@@ -4125,6 +4139,15 @@ class Agent:
             done_cost = turn_usage_delta.cost_usd
             done_billed_cost = turn_usage_delta.billed_cost
             cost_source = _cost_source_for_usage(done_cost, done_billed_cost)
+            if cost_source == "provider_billed":
+                estimate_basis = None
+            elif cost_source in {"mixed", "opensquilla_estimate"}:
+                # The delta includes an estimated component; disclose the
+                # turn-level estimator basis for it.
+                estimate_basis = turn_estimate.basis
+            elif estimate_basis != "free":
+                # "unavailable": no estimated dollars in the reported cost.
+                estimate_basis = None
 
         has_usage = bool(
             done_input_tokens
@@ -4165,6 +4188,7 @@ class Agent:
                 session_totals=session_totals,
                 model_usage_breakdown=summarized_model_usage_breakdown,
                 ensemble_trace=final_ensemble_trace,
+                estimate_basis=estimate_basis,
             )
         # Reset for next turn
         self._state = AgentState.IDLE

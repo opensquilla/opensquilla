@@ -198,6 +198,10 @@ class DoneEvent:
     vision_followup_fallback: str | None = None
     model_usage_breakdown: list[dict[str, Any]] = field(default_factory=list)
     ensemble_trace: dict[str, Any] | None = None
+    # Quality label of the estimate component behind cost_usd:
+    # "cache_aware" | "cache_blind" | "free" | None (None when the reported
+    # cost has no estimated component, e.g. fully provider-billed turns).
+    estimate_basis: str | None = None
 
     @property
     def upstream_cost_usd(self) -> float:

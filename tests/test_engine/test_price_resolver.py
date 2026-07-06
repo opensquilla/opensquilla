@@ -35,9 +35,27 @@ def test_user_catalog_override_wins_over_static(monkeypatch: pytest.MonkeyPatch)
         set_shared_catalog(None)
 
 
-def test_static_table_fallback_with_source(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_catalog_snapshot_wins_over_static_table_with_source(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The refreshed models.dev snapshot now vendors deepseek-v4-pro's own
+    cost keys, so a provider-qualified lookup resolves through the catalog
+    layer (matching the static table's official rate) instead of falling
+    all the way to the static table."""
     monkeypatch.setenv("OPENSQUILLA_OPENROUTER_LIVE_PRICING", "0")
     r = resolve_model_price("deepseek/deepseek-v4-pro", provider="deepseek")
+    assert r.source == "catalog"
+    assert r.entry.input_per_m == pytest.approx(0.435)
+    assert r.entry.cache_read_per_m == pytest.approx(0.003625)
+
+
+def test_static_table_fallback_with_source(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A model+provider pair verified ABSENT from the snapshot (a dated
+    suffix models.dev does not carry) still falls through to the static
+    table — the catalog-first change above only wins when the snapshot
+    actually knows the exact (provider, model)."""
+    monkeypatch.setenv("OPENSQUILLA_OPENROUTER_LIVE_PRICING", "0")
+    r = resolve_model_price("deepseek/deepseek-v4-pro-20260423", provider="deepseek")
     assert r.source == "static_table"
     assert r.entry.input_per_m == pytest.approx(0.435)
 

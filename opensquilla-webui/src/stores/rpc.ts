@@ -4,23 +4,31 @@ import { RpcClient, type RpcEventHandler } from '@/lib/rpc'
 
 const WS_URL_KEY = 'opensquilla.wsUrl'
 const WS_TOKEN_KEY = 'opensquilla.wsToken'
+const CACHED_AUTH_KEY = 'opensquilla.cachedAuth'
+const CHAT_DRAFT_PREFIX = 'opensquilla.chat.draft:'
 
 function getDefaultRpcUrl(): string {
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:'
   return `${proto}//${location.host}/ws`
 }
 
-function clearOpenSquillaStorage(storage: Storage): void {
+function clearStoragePrefix(storage: Storage, prefix: string): void {
   try {
     for (const key of Object.keys(storage)) {
-      if (key.startsWith('opensquilla.')) storage.removeItem(key)
+      if (key.startsWith(prefix)) storage.removeItem(key)
     }
   } catch {}
 }
 
-function clearOpenSquillaBrowserState(): void {
-  try { clearOpenSquillaStorage(localStorage) } catch {}
-  try { clearOpenSquillaStorage(sessionStorage) } catch {}
+function clearLinkTokenBrowserState(): void {
+  try {
+    localStorage.removeItem(WS_URL_KEY)
+    clearStoragePrefix(localStorage, CHAT_DRAFT_PREFIX)
+  } catch {}
+  try {
+    sessionStorage.removeItem(WS_TOKEN_KEY)
+    sessionStorage.removeItem(CACHED_AUTH_KEY)
+  } catch {}
 }
 
 function consumeLinkTokenFromUrl(): { url: string; token: string } | null {
@@ -33,7 +41,7 @@ function consumeLinkTokenFromUrl(): { url: string; token: string } | null {
   const token = (url.searchParams.get('token') || '').trim()
   if (!token) return null
 
-  clearOpenSquillaBrowserState()
+  clearLinkTokenBrowserState()
   const rpcUrl = getDefaultRpcUrl()
   saveConnectionSettings(rpcUrl, token)
 
@@ -110,6 +118,8 @@ export const useRpcStore = defineStore('rpc', () => {
     if (client.value) {
       client.value.disconnect()
       error.value = null
+      policy.value = null
+      auth.value = null
       client.value.connect(settings.url, settings.token)
     }
     return true

@@ -108,6 +108,7 @@ METHOD_SCOPES: dict[str, str] = {
     "logs.status": READ_SCOPE,
     "logs.tail": READ_SCOPE,
     "logs.trace": READ_SCOPE,
+    "knowledge.collections": READ_SCOPE,
     "knowledge.get": READ_SCOPE,
     "knowledge.questions": READ_SCOPE,
     "knowledge.search": READ_SCOPE,
@@ -275,6 +276,7 @@ METHOD_SCOPES: dict[str, str] = {
     # model the same way). The read peek is classified above.
     "routing.hold.set": ADMIN_SCOPE,
     "routing.hold.clear": ADMIN_SCOPE,
+    "knowledge.ingest": ADMIN_SCOPE,
     "knowledge.prepare_sample": ADMIN_SCOPE,
     "knowledge.judgment": WRITE_SCOPE,
     "memory.index": ADMIN_SCOPE,

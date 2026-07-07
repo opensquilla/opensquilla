@@ -33,11 +33,19 @@ async def _handle_knowledge_status(params: dict | None, ctx: RpcContext) -> dict
     return _manager(ctx).status()
 
 
+@_d.method("knowledge.collections", scope="operator.read")
+async def _handle_knowledge_collections(params: dict | None, ctx: RpcContext) -> dict[str, Any]:
+    if params is not None and not isinstance(params, dict):
+        raise ValueError("params must be an object")
+    return _manager(ctx).collections()
+
+
 @_d.method("knowledge.prepare_sample", scope="operator.admin")
 async def _handle_knowledge_prepare_sample(params: dict | None, ctx: RpcContext) -> dict[str, Any]:
     if not isinstance(params, dict):
         raise ValueError("params must be an object")
     source_root = params.get("sourceRoot") or params.get("source_root")
+    collection_name = params.get("collectionName") or params.get("collection_name")
     limit = params.get("limit", 60)
     try:
         parsed_limit = int(limit)
@@ -46,6 +54,31 @@ async def _handle_knowledge_prepare_sample(params: dict | None, ctx: RpcContext)
     return _manager(ctx).prepare_sample(
         source_root=Path(str(source_root)) if source_root else None,
         limit=parsed_limit,
+        collection_name=str(collection_name) if collection_name else None,
+    )
+
+
+@_d.method("knowledge.ingest", scope="operator.admin")
+async def _handle_knowledge_ingest(params: dict | None, ctx: RpcContext) -> dict[str, Any]:
+    if not isinstance(params, dict):
+        raise ValueError("params must be an object")
+    source_root = params.get("sourceRoot") or params.get("source_root") or params.get("archivePath")
+    collection_name = params.get("collectionName") or params.get("collection_name")
+    collection_id = params.get("collectionId") or params.get("collection_id")
+    index_profiles = params.get("indexProfiles") or params.get("index_profiles")
+    if index_profiles is not None and not isinstance(index_profiles, list):
+        raise ValueError("params.indexProfiles must be an array")
+    limit = params.get("limit", 60)
+    try:
+        parsed_limit = int(limit)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("params.limit must be an integer") from exc
+    return _manager(ctx).ingest_collection(
+        source_root=Path(str(source_root)) if source_root else None,
+        limit=parsed_limit,
+        collection_name=str(collection_name) if collection_name else None,
+        collection_id=str(collection_id) if collection_id else None,
+        index_profiles=[str(item) for item in index_profiles] if index_profiles else None,
     )
 
 
@@ -59,6 +92,14 @@ async def _handle_knowledge_search(params: dict | None, ctx: RpcContext) -> dict
     filters = params.get("filters")
     if filters is not None and not isinstance(filters, dict):
         raise ValueError("params.filters must be an object")
+    if params.get("collectionId") and isinstance(filters, dict):
+        filters = {**filters, "collectionId": params.get("collectionId")}
+    elif params.get("collectionId"):
+        filters = {"collectionId": params.get("collectionId")}
+    if params.get("retrievalProfile") and isinstance(filters, dict):
+        filters = {**filters, "retrievalProfile": params.get("retrievalProfile")}
+    elif params.get("retrievalProfile"):
+        filters = {"retrievalProfile": params.get("retrievalProfile")}
     return _manager(ctx).search(query, top_k=_top_k(params), filters=filters)
 
 

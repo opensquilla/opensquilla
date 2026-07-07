@@ -22,7 +22,7 @@
           @click="prepareSample"
         >
           <Icon name="plus" :size="16" />
-          <span class="mobile-action-strip__label">{{ preparing ? '构建中' : '构建样本' }}</span>
+          <span class="mobile-action-strip__label">{{ preparing ? '构建中' : '构建知识库' }}</span>
         </button>
       </div>
     </header>
@@ -48,7 +48,7 @@
           <LoadingSpinner v-if="preparing" />
           <span v-else class="rag-dot rag-dot--ok"></span>
           <div>
-            <strong>{{ preparing ? 'Building sample index' : 'Judgment saved' }}</strong>
+            <strong>{{ preparing ? 'Building collection index' : 'Judgment saved' }}</strong>
             <small>{{ preparing ? sourceRoot : judgmentPath }}</small>
           </div>
         </div>
@@ -63,7 +63,7 @@
         <div class="control-panel__head">
           <div>
             <span class="control-panel__eyebrow">Source</span>
-            <h2 class="control-panel__title">Local knowledge base</h2>
+            <h2 class="control-panel__title">Collection ingest</h2>
           </div>
           <span class="control-pill" :class="hasIndex ? 'control-pill--ok' : 'control-pill--warn'">
             {{ hasIndex ? 'Indexed' : 'Pending' }}
@@ -71,6 +71,16 @@
         </div>
 
         <div class="rag-form-grid">
+          <label class="rag-field">
+            <span>Collection</span>
+            <input v-model="collectionName" class="control-input" autocomplete="off" :disabled="preparing" />
+          </label>
+          <label class="rag-field">
+            <span>Retrieval</span>
+            <select v-model="retrievalProfile" class="control-input">
+              <option value="sqlite_fts5_default">SQLite FTS5</option>
+            </select>
+          </label>
           <label class="rag-field rag-field--wide">
             <span>资料根目录</span>
             <input v-model="sourceRoot" class="control-input" autocomplete="off" :disabled="preparing" />
@@ -97,7 +107,7 @@
             <strong>{{ sourceLabel }}</strong>
             <small>{{ status?.rootDir || sourceRoot }}</small>
           </div>
-          <span class="control-pill">SQLite FTS5</span>
+          <span class="control-pill">{{ activeIndexProfile }}</span>
         </div>
 
         <div class="rag-panel-actions">
@@ -107,7 +117,7 @@
           </button>
           <button class="btn btn--primary" type="button" :disabled="preparing" @click="prepareSample">
             <Icon name="regenerate" :size="16" />
-            <span>{{ preparing ? 'Building' : 'Build sample' }}</span>
+            <span>{{ preparing ? 'Building' : 'Build collection' }}</span>
           </button>
         </div>
       </section>
@@ -204,6 +214,7 @@
               <div class="rag-result__topline">
                 <span class="control-pill control-pill--accent">chunk</span>
                 <span class="control-pill">{{ result.languageBucket || 'text' }}</span>
+                <span class="control-pill">{{ result.chunkingStrategy || 'chunker' }}</span>
                 <span class="rag-result__score">
                   lexical {{ fixed(result.score) }}
                 </span>
@@ -218,6 +229,7 @@
               <div class="rag-result__meta">
                 <span><strong>Citation</strong>{{ result.citation }}</span>
                 <span><strong>Source</strong>{{ result.source }}</span>
+                <span><strong>Retrieval</strong>{{ result.retrievalProfile || retrievalProfile }}</span>
                 <span v-if="result.pageStart"><strong>Page</strong>{{ result.pageStart }}</span>
                 <span v-if="result.bm25Rank !== null && result.bm25Rank !== undefined">
                   <strong>BM25</strong>{{ fixed(result.bm25Rank) }}
@@ -253,6 +265,15 @@
                   <span class="control-pill">{{ selectedDetail.citation }}</span>
                 </div>
                 <pre>{{ selectedDetail.text }}</pre>
+                <div v-if="selectedDetail.lineage?.length" class="rag-lineage">
+                  <span
+                    v-for="step in selectedDetail.lineage"
+                    :key="`${selectedDetail.chunkId}-${step.stepOrdinal}`"
+                    class="control-pill"
+                  >
+                    {{ step.stepOrdinal }} · {{ step.operation }}
+                  </span>
+                </div>
               </div>
             </div>
           </article>
@@ -275,6 +296,15 @@
           <strong>{{ selectedDetail.title }}</strong>
           <small>{{ selectedDetail.citation }}</small>
           <pre>{{ selectedDetail.text }}</pre>
+          <div v-if="selectedDetail.lineage?.length" class="rag-lineage">
+            <span
+              v-for="step in selectedDetail.lineage"
+              :key="`${selectedDetail.chunkId}-aside-${step.stepOrdinal}`"
+              class="control-pill"
+            >
+              {{ step.operation }}
+            </span>
+          </div>
         </div>
         <div v-else class="control-empty rag-evidence-empty">
           <Icon class="control-empty__icon" name="fileText" :size="28" />
@@ -332,6 +362,15 @@ interface KnowledgeStatus {
   rootDir: string
   documentsIndexed: number
   chunksIndexed: number
+  filesIndexed?: number
+  pipeline?: string
+  indexProfiles?: string[]
+  latestJob?: {
+    status: string
+    filesSeen: number
+    filesReady: number
+    filesFailed: number
+  }
 }
 
 interface KnowledgeQuestion {
@@ -358,18 +397,31 @@ interface KnowledgeResult {
   citation: string
   languageBucket: string
   pairId?: string | null
+  collectionId?: string
+  retrievalProfile?: string
+  chunkingStrategy?: string | null
 }
 
 interface KnowledgeDetail {
   chunkId: string
   documentId: string
+  collectionId?: string
   title: string
   text: string
   citation: string
+  preprocessorStrategy?: string | null
+  chunkingStrategy?: string | null
+  lineage?: Array<{
+    stepOrdinal: number
+    operation: string
+    reversible: boolean
+  }>
 }
 
 const rpc = useRpcStore()
-const sourceRoot = ref('/Users/chengsiyang/Downloads/研报')
+const sourceRoot = ref('/mnt/data/datasets')
+const collectionName = ref('default')
+const retrievalProfile = ref('sqlite_fts5_default')
 const sampleLimit = ref(30)
 const topK = ref(8)
 const query = ref('')
@@ -400,6 +452,12 @@ const toolCount = computed(() => toolNames.value.filter((name) => name.startsWit
 const hasIndex = computed(() => Number(status.value?.chunksIndexed || 0) > 0)
 const sourceLabel = computed(() => basename(status.value?.rootDir || sourceRoot.value) || 'local')
 const searchLimitLabel = computed(() => `top ${Number(topK.value || 0) || 8}`)
+const activeIndexProfile = computed(() => status.value?.indexProfiles?.[0] || retrievalProfile.value)
+const latestJobHint = computed(() => {
+  const job = status.value?.latestJob
+  if (!job) return 'Analyzed files'
+  return `${job.status}: ${formatCount(job.filesReady)}/${formatCount(job.filesSeen)} ready`
+})
 
 const statusMetrics = computed(() => [
   {
@@ -409,9 +467,9 @@ const statusMetrics = computed(() => [
     className: hasIndex.value ? 'control-stat--accent' : 'control-stat--warn',
   },
   {
-    label: 'Documents',
-    value: formatCount(status.value?.documentsIndexed),
-    hint: 'Indexed files',
+    label: 'Files',
+    value: formatCount(status.value?.filesIndexed),
+    hint: latestJobHint.value,
     className: '',
   },
   {
@@ -434,8 +492,8 @@ const statusMetrics = computed(() => [
   },
   {
     label: 'Index',
-    value: 'FTS5',
-    hint: 'SQLite local store',
+    value: activeIndexProfile.value.replace('sqlite_', '').toUpperCase(),
+    hint: status.value?.pipeline || 'Local SQLite store',
     className: '',
   },
 ])
@@ -489,9 +547,12 @@ async function prepareSample(): Promise<void> {
   judgmentPath.value = ''
   try {
     await rpc.waitForConnection()
-    await rpc.call('knowledge.prepare_sample', {
+    await rpc.call('knowledge.ingest', {
       sourceRoot: sourceRoot.value,
       limit: Number(sampleLimit.value || 30),
+      collectionName: collectionName.value || 'default',
+      collectionId: 'default',
+      indexProfiles: [retrievalProfile.value],
     })
     await refreshAll()
   } catch (err) {
@@ -518,6 +579,8 @@ async function runSearch(): Promise<void> {
     const payload = await rpc.call<{ results: KnowledgeResult[] }>('knowledge.search', {
       query: cleanQuery,
       topK: Number(topK.value || 8),
+      collectionId: 'default',
+      retrievalProfile: retrievalProfile.value,
     })
     results.value = payload.results || []
   } catch (err) {
@@ -918,6 +981,15 @@ onMounted(() => {
 
 .rag-expanded__loading {
   padding: var(--sp-4);
+}
+
+.rag-lineage {
+  align-items: center;
+  border-top: 1px solid var(--border);
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+  padding: var(--sp-3);
 }
 
 .rag-evidence {

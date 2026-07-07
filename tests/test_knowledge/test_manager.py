@@ -45,6 +45,40 @@ def test_manager_prepares_markdown_sample_and_eval_questions(tmp_path: Path) -> 
     assert all("question" in row for row in questions)
 
 
+def test_manager_records_pipeline_plan_lineage_and_html(tmp_path: Path) -> None:
+    source_root = tmp_path / "source"
+    source_root.mkdir()
+    (source_root / "report.md").write_text(
+        "# AI 玻璃材料\n\n康宁公司的 AI 基建玻璃材料需求正在提升。",
+        encoding="utf-8",
+    )
+    (source_root / "brief.html").write_text(
+        "<html><head><title>光模块简报</title></head>"
+        "<body><main><h1>光模块</h1><p>光模块需求受 AI 算力建设带动。</p></main></body></html>",
+        encoding="utf-8",
+    )
+    manager = KnowledgeManager(tmp_path / "knowledge")
+
+    summary = manager.prepare_sample(source_root=source_root, limit=10, collection_name="research")
+
+    assert summary["collectionId"] == "default"
+    assert summary["documentsIndexed"] == 2
+    collections = manager.collections()["collections"]
+    assert collections[0]["documentsIndexed"] == 2
+
+    html_results = manager.search("光模块 AI 算力", top_k=5)["results"]
+    assert html_results
+    html_detail = manager.get(chunk_id=html_results[0]["chunkId"])
+    assert html_detail is not None
+    assert html_detail["preprocessorStrategy"] in {"html_readability_v1", "markdown_text_v1"}
+    assert html_detail["lineage"]
+    assert {step["operation"] for step in html_detail["lineage"]} >= {
+        "preprocess",
+        "chunk",
+        "index",
+    }
+
+
 def test_manager_records_judgment_jsonl(tmp_path: Path) -> None:
     manager = KnowledgeManager(tmp_path / "knowledge")
 

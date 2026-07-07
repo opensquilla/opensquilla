@@ -41,6 +41,11 @@ async def test_knowledge_rpc_prepare_search_and_judgment(tmp_path: Path) -> None
     assert search.ok is True
     assert search.payload["results"]
     assert search.payload["results"][0]["citation"]
+    assert search.payload["results"][0]["collectionId"] == "default"
+
+    collections = await dispatcher.dispatch("2b", "knowledge.collections", {}, ctx)
+    assert collections.ok is True
+    assert collections.payload["collections"][0]["collectionId"] == "default"
 
     questions = await dispatcher.dispatch("3", "knowledge.questions", {}, ctx)
     assert questions.ok is True

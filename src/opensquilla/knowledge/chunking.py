@@ -2,12 +2,27 @@ from __future__ import annotations
 
 import re
 from collections.abc import Iterable
+from typing import Any
 
 from opensquilla.knowledge.models import KnowledgeChunk
 
 _CJK_RE = re.compile(r"[\u3400-\u9fff]")
 _LATIN_RE = re.compile(r"[A-Za-z]")
 _HEADING_RE = re.compile(r"^\s{0,3}#{1,6}\s+(.+?)\s*$")
+
+
+def count_markdown_headings(text: str) -> int:
+    return sum(1 for line in text.splitlines() if _HEADING_RE.match(line.strip()))
+
+
+def chunker_candidates(text: str, *, suffix: str = "") -> list[str]:
+    suffix = suffix.lower()
+    candidates: list[str] = []
+    if suffix in {".md", ".markdown"} or count_markdown_headings(text) > 0:
+        candidates.append("markdown_heading_v1")
+    candidates.append("paragraph_window_v1")
+    candidates.append("sentence_window_v1")
+    return candidates
 
 
 def detect_language_bucket(text: str) -> str:
@@ -78,6 +93,12 @@ def chunk_text(
     target_chars: int = 1200,
     overlap_chars: int = 120,
     pair_id: str | None = None,
+    collection_id: str = "default",
+    source_file_id: str | None = None,
+    artifact_id: str | None = None,
+    plan_id: str | None = None,
+    strategy: str = "paragraph_window_v1",
+    metadata: dict[str, Any] | None = None,
 ) -> list[KnowledgeChunk]:
     """Split one normalized document into citation-preserving chunks."""
 
@@ -105,6 +126,12 @@ def chunk_text(
                 section=section,
                 language_bucket=detect_language_bucket(body),
                 pair_id=pair_id,
+                collection_id=collection_id,
+                source_file_id=source_file_id,
+                artifact_id=artifact_id,
+                plan_id=plan_id,
+                chunking_strategy=strategy,
+                metadata=metadata or {},
             )
         )
         current = _trim_overlap(body, overlap_chars)

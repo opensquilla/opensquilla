@@ -146,7 +146,8 @@ if (scenario === "full") {
     model: "openai/big-model",
     route: "c2 91%",
     saving: "62%",
-    context: "12% · 9.4k",
+    context: "12%",
+    io: "34.6k/548",
   });
 } else if (scenario === "reasoning") {
   promptEcho("prove the Collatz conjecture");

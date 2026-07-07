@@ -500,6 +500,7 @@ export function createComposer(deps) {
     source: "",
     routingApplied: true,
     rolloutPhase: "full",
+    io: "", // last turn's in/out token pair ("34.6k/548"); empty before any turn
   };
 
   const turnStatus = {
@@ -1108,6 +1109,9 @@ export function createComposer(deps) {
     field("route", "route", routerRouteValue(), styleFg ?? THEME.routeText);
     field("saving", "save", routerState.saving, styleFg ?? THEME.metricPositive);
     field("context", "ctx", routerState.context, styleFg ?? THEME.warning);
+    // Token traffic is its own field so "ctx" can stay a pure pressure value —
+    // "ctx 34.6k/548" read like a fraction of a 548-token window.
+    if (routerState.io) field("io", "io", routerState.io, styleFg ?? THEME.detailText);
     inputBox.add(routerStrip);
     renderCompletionMenu();
     // The theme picker shares the overlay layer, so a footer re-render (pulse
@@ -1685,6 +1689,7 @@ export function createComposer(deps) {
       source: String(message.source ?? routerState.source),
       routingApplied: message.routing_applied ?? routerState.routingApplied,
       rolloutPhase: String(message.rollout_phase ?? routerState.rolloutPhase),
+      io: String(message.io ?? routerState.io),
     });
     rerenderInputRegion();
   }

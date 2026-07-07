@@ -461,6 +461,7 @@ def _router_plugin_state_from_toolbar(toolbar: dict[str, object]) -> RouterPlugi
     label = str(toolbar.get("router_hud") or "")
     style = str(toolbar.get("router_hud_style") or "dim")
     context = _router_context_from_toolbar(toolbar)
+    io = _router_io_from_toolbar(toolbar)
     baseline_model = str(toolbar.get("router_baseline_model") or "")
     source = str(toolbar.get("router_source") or "")
     routing_applied = bool(toolbar.get("router_routing_applied", True))
@@ -479,6 +480,7 @@ def _router_plugin_state_from_toolbar(toolbar: dict[str, object]) -> RouterPlugi
             source=source,
             routing_applied=routing_applied,
             rollout_phase=rollout_phase,
+            io=io,
         )
 
     fallback = _FALLBACK_LABEL_RE.match(label)
@@ -493,6 +495,7 @@ def _router_plugin_state_from_toolbar(toolbar: dict[str, object]) -> RouterPlugi
             source=source or "fallback",
             routing_applied=routing_applied,
             rollout_phase=rollout_phase,
+            io=io,
         )
 
     return RouterPluginState(
@@ -501,23 +504,31 @@ def _router_plugin_state_from_toolbar(toolbar: dict[str, object]) -> RouterPlugi
         saving="-",
         context=context,
         style="dim",
+        io=io,
     )
 
 
 def _router_context_from_toolbar(toolbar: dict[str, object]) -> str:
-    usage = toolbar.get("router_usage")
-    if not usage:
-        return "-"
+    """Context PRESSURE only ("12%"), or "-" when the window is unknown.
 
-    usage_text = str(usage)
+    The last turn's in/out token pair travels separately (see
+    ``_router_io_from_toolbar``): packing it in here made the field read like
+    "34.6k used of a 548-token window" whenever the percent was unavailable.
+    """
     session_input = _coerce_nonnegative_int(toolbar.get("router_session_input"))
     context_window = _coerce_positive_int(toolbar.get("router_context_window"))
     if session_input is None or context_window is None:
-        return usage_text
+        return "-"
 
     pressure = min(max(session_input / context_window, 0.0), 1.0)
     percent = int(pressure * 100 + 0.5)
-    return f"{percent}% · {usage_text}"
+    return f"{percent}%"
+
+
+def _router_io_from_toolbar(toolbar: dict[str, object]) -> str:
+    """Last turn's token traffic ("34.6k/548" = in/out), or "" before any turn."""
+    usage = toolbar.get("router_usage")
+    return str(usage) if usage else ""
 
 
 def _coerce_nonnegative_int(value: object | None) -> int | None:

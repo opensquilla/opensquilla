@@ -657,7 +657,8 @@ def test_router_plugin_state_carries_observe_source_and_usage() -> None:
     assert payload["source"] == "observe"
     assert payload["routing_applied"] is False
     assert payload["rollout_phase"] == "observe"
-    assert payload["context"] == "1.2k/856"
+    assert payload["context"] == "-"
+    assert payload["io"] == "1.2k/856"
 
 
 def test_router_plugin_state_formats_cumulative_context_usage_percent() -> None:
@@ -672,7 +673,8 @@ def test_router_plugin_state_formats_cumulative_context_usage_percent() -> None:
     output.invalidate()
 
     (_, payload) = bridge.sent[0]
-    assert payload["context"] == "42% · 1/2"
+    assert payload["context"] == "42%"
+    assert payload["io"] == "1/2"
 
 
 @pytest.mark.parametrize(
@@ -682,10 +684,13 @@ def test_router_plugin_state_formats_cumulative_context_usage_percent() -> None:
         (84_000, None),
     ],
 )
-def test_router_plugin_state_falls_back_to_turn_usage_without_context_data(
+def test_router_plugin_state_reports_no_pressure_without_context_data(
     session_input: int | None,
     context_window: int | None,
 ) -> None:
+    """Without a known context window there is no honest pressure value: ctx
+    shows "-" and the io field still carries the turn's token pair (the old
+    fallback packed the pair into ctx, reading like "1/2 of a window")."""
     bridge = FakeOpenTuiBridge()
     output = OpenTuiOutputHandle(bridge, approval_surface=Surface.CLI_GATEWAY)
 
@@ -697,10 +702,13 @@ def test_router_plugin_state_falls_back_to_turn_usage_without_context_data(
     output.invalidate()
 
     (_, payload) = bridge.sent[0]
-    assert payload["context"] == "1/2"
+    assert payload["context"] == "-"
+    assert payload["io"] == "1/2"
 
 
-def test_router_plugin_state_context_stays_pending_without_usage() -> None:
+def test_router_plugin_state_reports_pressure_even_before_turn_usage() -> None:
+    """Pressure derives from session input vs window and no longer waits on a
+    turn-usage pair; io stays empty until a turn reports traffic."""
     bridge = FakeOpenTuiBridge()
     output = OpenTuiOutputHandle(bridge, approval_surface=Surface.CLI_GATEWAY)
 
@@ -709,7 +717,8 @@ def test_router_plugin_state_context_stays_pending_without_usage() -> None:
     output.invalidate()
 
     (_, payload) = bridge.sent[0]
-    assert payload["context"] == "-"
+    assert payload["context"] == "42%"
+    assert payload["io"] == ""
 
 
 def test_router_plugin_state_clamps_context_usage_percent() -> None:
@@ -724,7 +733,8 @@ def test_router_plugin_state_clamps_context_usage_percent() -> None:
     output.invalidate()
 
     (_, payload) = bridge.sent[0]
-    assert payload["context"] == "100% · 1.2k/856"
+    assert payload["context"] == "100%"
+    assert payload["io"] == "1.2k/856"
 
 
 def test_router_plugin_state_fallback_keeps_defaults_and_usage() -> None:
@@ -741,7 +751,8 @@ def test_router_plugin_state_fallback_keeps_defaults_and_usage() -> None:
     assert payload["model"] == "fake-terminal"
     assert payload["route"] == "fallback"
     assert payload["source"] == "fallback"
-    assert payload["context"] == "856/12"
+    assert payload["context"] == "-"
+    assert payload["io"] == "856/12"
     assert payload["style"] == "warning"
 
 

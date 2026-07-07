@@ -22,6 +22,9 @@ class RouterPluginState:
     source: str = ""
     routing_applied: bool = True
     rollout_phase: str = "full"
+    # Last turn's token traffic ("34.6k/548" = in/out), displayed as its own
+    # "io" strip field so the ctx field can stay a pure context-pressure value.
+    io: str = ""
 
 
 @dataclass(frozen=True)

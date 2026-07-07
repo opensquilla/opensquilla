@@ -82,6 +82,17 @@ slog = structlog.get_logger(__name__)
 _CJK_RE = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]")
 
 
+async def _to_thread(fn: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
+    """Run a sync MetaRunWriter call off the event loop.
+
+    The writer commits SQLite transactions with ``busy_timeout=5000``; a
+    contended commit executed on the loop would stall every surface for up
+    to five seconds. Offloading keeps the module docstring's executor
+    contract honest for every async caller in this file.
+    """
+    return await asyncio.to_thread(fn, *args, **kwargs)
+
+
 def _preflight_confirmation_run_id(inputs: dict[str, Any]) -> str:
     marker_present = bool(
         inputs.get("meta_preflight_confirmed")
@@ -544,7 +555,8 @@ class MetaOrchestrator:
             step = next((s for s in plan.steps if s.id == step_id), None)
             if step is None:
                 return
-            writer.begin_step_sync(
+            await _to_thread(
+                writer.begin_step_sync,
                 run_id=run_id,
                 step=step,
                 effective_skill=effective_skill,
@@ -563,7 +575,8 @@ class MetaOrchestrator:
                 usage_scope_prefix=usage_scope_prefix,
                 step_id=step_id,
             )
-            writer.finish_step_sync(
+            await _to_thread(
+                writer.finish_step_sync,
                 run_id=run_id,
                 step_id=step_id,
                 status=cast(Literal["ok", "failed", "substituted"], status),
@@ -583,7 +596,8 @@ class MetaOrchestrator:
                 usage_scope_prefix=usage_scope_prefix,
                 step_id=failed_step_id,
             )
-            writer.on_step_failover_sync(
+            await _to_thread(
+                writer.on_step_failover_sync,
                 run_id=run_id,
                 failed_step_id=failed_step_id,
                 substitute_step_id=substitute_step_id,
@@ -593,7 +607,7 @@ class MetaOrchestrator:
 
         return on_step_begin, on_step_finish, on_step_failover
 
-    def _finish_resumed_awaiting_step(
+    async def _finish_resumed_awaiting_step(
         self,
         *,
         writer: MetaRunWriter | None,
@@ -603,7 +617,8 @@ class MetaOrchestrator:
     ) -> None:
         if writer is None or not step_id:
             return
-        writer.finish_step_sync(
+        await _to_thread(
+            writer.finish_step_sync,
             run_id=run_id,
             step_id=step_id,
             status="ok",
@@ -639,7 +654,7 @@ class MetaOrchestrator:
         When ``run_writer`` was injected at construction the wrapper also
         opens an audit run on entry, bridges the scheduler's three
         lifecycle hooks (begin / finish / failover) to the writer via
-        ``run_in_executor`` (the writer is sync sqlite, callbacks fire
+        ``asyncio.to_thread`` (the writer is sync sqlite, callbacks fire
         from the event loop), and finalises the run in the ``finally``
         block — ``cancelled`` if the consumer cancelled mid-stream,
         ``ok`` / ``failed`` otherwise based on the terminal
@@ -665,12 +680,6 @@ class MetaOrchestrator:
             )
 
         run_id: str | None = (match.run_id or "").strip() or None
-        async def _to_thread(fn: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
-            # Persistence writes are small sqlite calls guarded by
-            # MetaRunWriter's own lock. Keeping them synchronous avoids
-            # executor wake-up stalls on native-hook/App surfaces while
-            # preserving the async hook contract.
-            return fn(*args, **kwargs)
 
         if self._run_writer is not None:
             if run_id is not None:
@@ -1144,7 +1153,8 @@ class MetaOrchestrator:
                 error="MetaOrchestrator has no DAO; resume requires PR2",
             )
 
-        payload = self._dao.try_claim_resume(
+        payload = await _to_thread(
+            self._dao.try_claim_resume,
             run_id=run_id,
             session_id=session_id,
         )
@@ -1222,7 +1232,7 @@ class MetaOrchestrator:
         outputs[payload.awaiting_step_id] = render_clarify_summary(
             schema=cfg, filled=filled_clean,
         )
-        self._finish_resumed_awaiting_step(
+        await self._finish_resumed_awaiting_step(
             writer=self._dao,
             run_id=run_id,
             step_id=payload.awaiting_step_id,
@@ -1270,7 +1280,8 @@ class MetaOrchestrator:
             finish_status: Literal["ok", "failed", "cancelled"] = (
                 "ok" if final.ok else "failed"
             )
-            self._dao.finish_run_sync(
+            await _to_thread(
+                self._dao.finish_run_sync,
                 run_id=run_id,
                 result=final,
                 status=finish_status,
@@ -1339,7 +1350,7 @@ class MetaOrchestrator:
         outputs[payload.awaiting_step_id] = render_clarify_summary(
             schema=cfg, filled=filled_clean,
         )
-        self._finish_resumed_awaiting_step(
+        await self._finish_resumed_awaiting_step(
             writer=self._dao,
             run_id=run_id,
             step_id=payload.awaiting_step_id,
@@ -1416,7 +1427,8 @@ class MetaOrchestrator:
             finish_status: Literal["ok", "failed", "cancelled"] = (
                 "ok" if final.ok else "failed"
             )
-            self._dao.finish_run_sync(
+            await _to_thread(
+                self._dao.finish_run_sync,
                 run_id=run_id,
                 result=final,
                 status=finish_status,

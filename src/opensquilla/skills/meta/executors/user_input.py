@@ -12,10 +12,10 @@ Behavior (design §8.1):
      substitute may then fire.
 
 The executor itself is async to fit the scheduler's contract; DAO calls
-are sync (MetaRunWriter holds a sync sqlite3 connection) and run off
-the short sqlite CAS directly; the writer owns locking, and keeping the
-call in the current task avoids thread-pool wake-up stalls on App/native-hook
-surfaces.
+are sync (MetaRunWriter holds a sync sqlite3 connection) and are routed
+through ``asyncio.to_thread`` so the CAS's SQLite commit (which can block
+for up to ``busy_timeout=5000`` ms under contention) never runs on the
+event loop. The writer owns locking.
 """
 
 from __future__ import annotations
@@ -368,7 +368,8 @@ async def run_user_input_step(
     # no broad ``TypeError`` swallow here, otherwise a legitimate
     # call-site signature mismatch silently dumps the prefill.
     try:
-        claimed = dao.try_claim_awaiting(
+        claimed = await asyncio.to_thread(
+            dao.try_claim_awaiting,
             run_id=run_id,
             step_id=step.id,
             schema_json=schema_json,
@@ -383,7 +384,8 @@ async def run_user_input_step(
 
     if not claimed:
         raise RuntimeError(
-            _claim_failure_message(
+            await asyncio.to_thread(
+                _claim_failure_message,
                 dao,
                 run_id=run_id,
                 step_id=step.id,

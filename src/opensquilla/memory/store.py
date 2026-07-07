@@ -396,6 +396,7 @@ class LongTermMemoryStore:
         await self._db.execute(DDL_CHUNKS)
         await self._db.execute(DDL_EMBEDDING_CACHE)
         await self._db.execute(DDL_META)
+        await self._migrate_schema_version_columns()
 
         # Migrate old external-content FTS to contentless mode
         async with self._db.execute(
@@ -462,6 +463,29 @@ class LongTermMemoryStore:
             (META_KEY, SCHEMA_VERSION),
         )
 
+        await self._db.commit()
+
+    async def _migrate_schema_version_columns(self) -> None:
+        """Idempotently add ``schema_version`` in place on legacy memory tables.
+
+        Databases created before the column existed carry ``files``,
+        ``chunks``, ``embedding_cache``, and ``meta`` without it. The yoyo
+        back-fill (migrations/V004__memory_schema_version.py) only ever runs
+        against the session DB, never against per-agent ``memory.db`` files,
+        so the column must be added here at connect time — otherwise every
+        ``embedding_cache`` INSERT on a legacy database fails with
+        "no column named schema_version" and the cache silently never works.
+        Column DDL matches V004 exactly.
+        """
+        assert self._db is not None
+        for table in ("files", "chunks", "embedding_cache", "meta"):
+            async with self._db.execute(f"PRAGMA table_info({table})") as cur:
+                columns = {row[1] for row in await cur.fetchall()}
+            if not columns or "schema_version" in columns:
+                continue
+            await self._db.execute(
+                f"ALTER TABLE {table} ADD COLUMN schema_version INTEGER NOT NULL DEFAULT 1"
+            )
         await self._db.commit()
 
     async def _probe_vec_extension(self) -> None:

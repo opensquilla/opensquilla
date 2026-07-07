@@ -197,6 +197,17 @@ def _resolve_migrations_dir() -> Path:
         candidate = Path(env_dir)
         if any(candidate.glob("V*.py")):
             return candidate
+        # A pinned-but-unusable override silently falling through to a
+        # different migration set is a misconfiguration operators must see.
+        log.warning(
+            "resolve_migrations_dir.env_override_ignored",
+            path=str(candidate),
+            reason=(
+                "directory does not exist"
+                if not candidate.is_dir()
+                else "no V*.py migration files found"
+            ),
+        )
 
     try:
         from importlib import resources as importlib_resources
@@ -640,10 +651,15 @@ class ServiceContainer:
             # closed connection (same pattern as set_shared_catalog below).
             try:
                 from opensquilla.engine.steps.router_decision_record import (
+                    drain_pending_flushes,
                     set_decision_writer,
                 )
 
                 set_decision_writer(None)
+                # Turns finishing near shutdown may still hold in-flight
+                # fire-and-forget flush tasks; give them a moment to land
+                # before the connection goes away.
+                await drain_pending_flushes()
             except Exception:
                 pass
             try:
@@ -1874,7 +1890,12 @@ async def build_services(
         from opensquilla.persistence.migrator import apply_pending
 
         if "://" not in session_db_path:
-            Path(session_db_path).expanduser().parent.mkdir(parents=True, exist_ok=True)
+            # 0o700: session transcripts are sensitive — keep a freshly created
+            # state directory owner-only (umask-masked; no-op on Windows and on
+            # pre-existing directories).
+            Path(session_db_path).expanduser().parent.mkdir(
+                mode=0o700, parents=True, exist_ok=True
+            )
         migrations_dir = _resolve_migrations_dir()
         applied = apply_pending(session_db_path, migrations_dir)
         if applied:
@@ -1891,7 +1912,7 @@ async def build_services(
         from opensquilla.session.manager import SessionManager
         from opensquilla.session.storage import SessionStorage
 
-        Path(session_db_path).parent.mkdir(parents=True, exist_ok=True)
+        Path(session_db_path).parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         storage = SessionStorage(session_db_path)
         await storage.connect()
         session_manager = SessionManager(
@@ -2308,8 +2329,12 @@ async def build_services(
                 meta_run_writer = open_meta_run_writer(db_path)
                 if meta_storage is not None and hasattr(meta_storage, "_meta_run_writer"):
                     meta_storage._meta_run_writer = meta_run_writer
-                meta_run_writer.mark_orphans_failed(
-                    age_ms=int(getattr(persistence_cfg, "orphan_cleanup_age_seconds", 3600)) * 1000,
+                # Synchronous SQLite commit — run off the loop even at boot so a
+                # contended WAL write cannot stall service startup wiring.
+                await asyncio.to_thread(
+                    meta_run_writer.mark_orphans_failed,
+                    age_ms=int(getattr(persistence_cfg, "orphan_cleanup_age_seconds", 3600))
+                    * 1000,
                 )
     except Exception as e:  # noqa: BLE001 - meta traces must not block boot.
         log.warning("build_services.meta_run_writer_failed", error=str(e))

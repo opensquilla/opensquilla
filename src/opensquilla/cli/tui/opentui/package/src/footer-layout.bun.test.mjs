@@ -17,6 +17,7 @@ import { createTestRenderer } from "@opentui/core/testing";
 import { BoxRenderable, TextRenderable } from "@opentui/core";
 
 import { createComposer } from "./composer.mjs";
+import { DOUBLE_CTRL_C_MS, createCtrlCExitHatch } from "./main.mjs";
 import { THEME } from "./theme.mjs";
 
 const FOOTER_HEIGHT = 6;
@@ -162,4 +163,91 @@ test("the router model renders on the strip, never on the composer/caret rows", 
   for (const r of [HEIGHT - FOOTER_HEIGHT + 1, HEIGHT - FOOTER_HEIGHT + 2, HEIGHT - 1]) {
     expect(rowText(frame, r).includes("deepseek-v4-pro")).toBe(false);
   }
+});
+
+test("double Ctrl+C exits only on two consecutive interrupt-path presses", async () => {
+  // The host-local escape hatch must never hard-kill a healthy session on the
+  // routine clear-then-cancel double press: a Ctrl+C the composer consumed to
+  // clear a draft (or that a modal overlay is up for) disarms the chord; only
+  // presses that actually reached the interrupt path (input.cancel sent, no
+  // overlay) count, and only within the chord window.
+  const setup = await createTestRenderer({ width: 60, height: HEIGHT });
+  const { renderer } = setup;
+  const conversationBox = new BoxRenderable(renderer, {
+    id: "conversation", position: "absolute", left: 0, top: 0, right: 0,
+    height: HEIGHT - FOOTER_HEIGHT,
+  });
+  renderer.root.add(conversationBox);
+  const inputBox = new BoxRenderable(renderer, {
+    id: "input-region", position: "absolute", left: 0, right: 0, bottom: 0,
+    height: FOOTER_HEIGHT, backgroundColor: THEME.footerBg,
+  });
+  renderer.root.add(inputBox);
+  const overlayLayer = new BoxRenderable(renderer, {
+    id: "overlay-layer", position: "absolute", left: 0, top: 0, right: 0, bottom: 0,
+    zIndex: 1000, shouldFill: false, visible: false,
+  });
+  renderer.root.add(overlayLayer);
+
+  const sent = [];
+  const exits = [];
+  let clock = 10_000;
+  // Mirror main.mjs's wiring order exactly: hatch first (its per-press reset
+  // listener must run ahead of the composer's handler), composer.install(),
+  // then hatch.install() so the chord check sees what the composer did.
+  const hatch = createCtrlCExitHatch({
+    keyInput: renderer.keyInput,
+    isOverlayOpen: () => Boolean(overlayLayer.visible),
+    onExit: () => exits.push(clock),
+    now: () => clock,
+  });
+  const composer = createComposer({
+    renderer, BoxRenderable, TextRenderable, conversationBox, inputBox, overlayLayer,
+    footerHeight: FOOTER_HEIGHT,
+    sendHostMessage: (m) => { hatch.noteHostMessage(m); sent.push(m); },
+  });
+  try {
+    composer.install();
+  } catch {
+    composer.rerender();
+  }
+  hatch.install();
+
+  const cancels = () => sent.filter((m) => m.type === "input.cancel").length;
+  const ctrlC = () => renderer.keyInput.emit("keypress", { name: "c", ctrl: true });
+  const type = (c) => renderer.keyInput.emit("keypress", { name: c, sequence: c });
+
+  // Clear-then-cancel: the first press clears the draft (composer-consumed),
+  // the second — now empty — interrupts the turn. No exit, ever.
+  type("h");
+  type("i");
+  ctrlC();
+  expect(cancels()).toBe(0); // the clear press never reached the interrupt path
+  clock += 200;
+  ctrlC();
+  expect(cancels()).toBe(1); // the cancel went out…
+  expect(exits.length).toBe(0); // …and only ARMED the chord
+
+  // The second consecutive interrupt press within the window is the hatch.
+  clock += 200;
+  ctrlC();
+  expect(exits.length).toBe(1);
+
+  // Interrupt presses spaced beyond the window never chord.
+  clock += DOUBLE_CTRL_C_MS + 1;
+  ctrlC();
+  clock += DOUBLE_CTRL_C_MS + 1;
+  ctrlC();
+  expect(exits.length).toBe(1);
+
+  // A modal overlay up: Ctrl+C still interrupts (the approval overlay passes
+  // it through by design) but the chord stays disarmed.
+  composer.openApprovalOverlay({ id: "appr-1", tool: "shell", summary: "touch demo.txt" });
+  clock += 200;
+  ctrlC();
+  clock += 200;
+  ctrlC();
+  expect(cancels()).toBeGreaterThan(1);
+  expect(exits.length).toBe(1); // unchanged
+  renderer.destroy?.();
 });

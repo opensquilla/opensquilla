@@ -35,5 +35,7 @@ export function createReasoningBlock(ctx) {
       node = null;
       renderer.requestRender?.();
     },
+    // Live /theme switch: re-point the mounted marker at the updated accent.
+    recolor() { if (node) node.fg = THEME.thinkingAccent; },
   };
 }

@@ -6,13 +6,15 @@
   "scripts": {
     "start": "bun src/main.mjs",
     "smoke": "bun src/main.mjs --help",
-    "test": "node --test --test-force-exit $(ls src/*.test.mjs | grep -v '\\.bun\\.test\\.mjs')",
-    "test:bun": "bun test src/*.bun.test.mjs"
+    "test": "node --test --test-force-exit $(find src -name '*.test.mjs' ! -name '*.bun.test.mjs')",
+    "test:bun": "bun test src/*.bun.test.mjs",
+    "test:all": "npm run test && npm run test:bun"
   },
   "dependencies": {
     "@opentui/core": "0.3.0"
   },
   "engines": {
-    "bun": ">=1.0.0"
+    "bun": ">=1.0.0",
+    "node": ">=20.14"
   }
 }

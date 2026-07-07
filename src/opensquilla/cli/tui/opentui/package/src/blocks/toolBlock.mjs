@@ -11,6 +11,7 @@ export function createToolBlock(ctx) {
   const { renderer, TextRenderable, box, idPrefix } = ctx;
   let node = null;        // the invocation line (glyph + name + args [+ duration])
   let resultNode = null;  // the single "└ …" result-preview corner, if any
+  let resultRaw = "";     // the unclipped preview text, so a resize can re-clip
   let name = "";
   let tail = "";          // " <args>" inline after the name
   let durationTail = "";  // " · <duration>" appended on completion
@@ -22,6 +23,11 @@ export function createToolBlock(ctx) {
   }
   function setGlyph(glyph) {
     if (node) node.content = lineContent(glyph);
+  }
+  function resultContent() {
+    const prefix = `${TOOL_INDENT}${RESULT_CORNER}`;
+    const avail = timelineAvailCells(prefix, renderer.terminalWidth);
+    return `${prefix}${clipToCells(resultRaw, avail)}`;
   }
 
   return {
@@ -41,10 +47,8 @@ export function createToolBlock(ctx) {
       // already collapses the result to a single preview line).
       if (resultAdded) return;
       resultAdded = true;
-      const prefix = `${TOOL_INDENT}${RESULT_CORNER}`;
-      const avail = timelineAvailCells(prefix, renderer.terminalWidth);
-      const content = `${prefix}${clipToCells(stripTerminalControls(String(delta)), avail)}`;
-      resultNode = new TextRenderable(renderer, { id: `${idPrefix}-result`, content, fg: STATUS.detail });
+      resultRaw = stripTerminalControls(String(delta));
+      resultNode = new TextRenderable(renderer, { id: `${idPrefix}-result`, content: resultContent(), fg: STATUS.detail });
       box.add(resultNode);
       renderer.requestRender?.();
     },
@@ -60,6 +64,12 @@ export function createToolBlock(ctx) {
       renderer.requestRender?.();
     },
     end() { if (node) node._done = true; },
+    // Re-clip the result preview to the current terminal width on resize; the
+    // clip was baked at stream time and would otherwise stay sized to the old
+    // width (a stranded "…" after growing, wrapped fragments after shrinking).
+    relayout() {
+      if (resultNode) resultNode.content = resultContent();
+    },
     // Live /theme switch: re-derive the run-state colors from the (in-place
     // updated) STATUS palette for the current state.
     recolor() {

@@ -6,6 +6,7 @@ import { createTestRenderer } from "@opentui/core/testing";
 import { BoxRenderable, MarkdownRenderable, TextRenderable } from "@opentui/core";
 
 import { createTurnView } from "./turnView.mjs";
+import { createThinkingBlock } from "./blocks/thinkingBlock.mjs";
 import { STATUS_PULSE_FRAMES } from "./theme.mjs";
 
 function flatText(frame) {
@@ -96,6 +97,124 @@ test("intermediate narration keeps the timeline rail on every rendered line", as
     }
     expect(narrationLines[1].trimStart().startsWith("│")).toBe(true);
     expect(narrationLines[2].trimStart().startsWith("│")).toBe(true);
+  } finally {
+    renderer.destroy?.();
+  }
+});
+
+async function mountThinking({ width, height = 14 }) {
+  const setup = await createTestRenderer({ width, height });
+  const { renderer } = setup;
+  const box = new BoxRenderable(renderer, {
+    id: "turn",
+    position: "absolute",
+    left: 0,
+    top: 0,
+    right: 0,
+    bottom: 0,
+    flexDirection: "column",
+  });
+  renderer.root.add(box);
+  const block = createThinkingBlock({ renderer, TextRenderable, box, idPrefix: "blk" });
+  return { ...setup, block };
+}
+
+test("long narration soft-wraps into continuation rows with no content loss", async () => {
+  const { renderer, renderOnce, captureSpans, block } = await mountThinking({ width: 36 });
+  try {
+    block.append("alpha bravo charlie delta echo foxtrot golf hotel india juliett");
+    await renderOnce();
+    const text = flatText(captureSpans());
+    // Every word survives (no one-row "…" clip) …
+    for (const word of ["alpha", "charlie", "foxtrot", "india", "juliett"]) {
+      expect(text).toContain(word);
+    }
+    expect(text).not.toContain("…");
+    // … across multiple rows: the first carries the ✻ marker, continuations
+    // indent under it.
+    const rows = visibleLines(text);
+    expect(rows.length).toBeGreaterThan(1);
+    expect(rows[0].trimStart().startsWith("✻")).toBe(true);
+    for (const row of rows.slice(1)) {
+      expect(row.startsWith("   ")).toBe(true);
+    }
+  } finally {
+    renderer.destroy?.();
+  }
+});
+
+test("a resize re-wraps narration from the raw text at the new width", async () => {
+  const { renderer, renderOnce, captureSpans, resize, block } = await mountThinking({
+    width: 90,
+  });
+  const doResize = resize || ((w, h) => renderer.resize(w, h));
+  try {
+    block.append("one two three four five six seven eight nine ten eleven twelve");
+    await renderOnce();
+    const wide = visibleLines(flatText(captureSpans()));
+    expect(wide.length).toBe(1);
+
+    // Shrink: the single baked row must re-wrap into indented rows, keeping
+    // every word visible (not stay clipped/wrapped to the stale 90-cell width).
+    await doResize(40, 14);
+    block.relayout();
+    await renderOnce();
+    const narrowText = flatText(captureSpans());
+    const narrow = visibleLines(narrowText);
+    expect(narrow.length).toBeGreaterThan(1);
+    for (const word of ["one", "six", "twelve"]) {
+      expect(narrowText).toContain(word);
+    }
+    for (const row of narrow.slice(1)) {
+      expect(row.startsWith("   ")).toBe(true);
+    }
+
+    // Grow back: the continuation rows collapse into the original single row
+    // (stale extra nodes are dropped, nothing stays clipped to 40 cells).
+    await doResize(90, 14);
+    block.relayout();
+    await renderOnce();
+    const wideAgain = visibleLines(flatText(captureSpans()));
+    expect(wideAgain).toEqual(wide);
+  } finally {
+    renderer.destroy?.();
+  }
+});
+
+test("a shrink relayout keeps every narration row above a later tool row", async () => {
+  // The thinking block shares the turn's card body with every later in-card
+  // block. A shrink re-wrap grows the narration's row count AFTER a tool row
+  // was mounted below it — the new continuation rows must be inserted after
+  // their predecessor row, not appended to the end of the card body, or the
+  // narration renders split around the tool row.
+  const { renderer, renderOnce, captureSpans, resize, turn } = await createTurnHarness({
+    width: 90,
+    height: 16,
+  });
+  const doResize = resize || ((w, h) => renderer.resize(w, h));
+  try {
+    turn.begin("think1", "thinking", {});
+    turn.append("think1", "one two three four five six seven eight nine ten eleven twelve");
+    turn.end("think1");
+    turn.begin("tool1", "tool", { name: "web_search", args: "" });
+    turn.update("tool1", { status: "ok" });
+    turn.end("tool1");
+    await renderOnce();
+
+    await doResize(40, 16);
+    turn.relayout();
+    await renderOnce();
+
+    const lines = flatText(captureSpans()).split("\n");
+    const toolRow = lines.findIndex((line) => line.includes("web_search"));
+    expect(toolRow).toBeGreaterThan(0);
+    const narrationRows = [...lines.keys()].filter((r) =>
+      ["one", "six", "eleven", "twelve"].some((w) => lines[r].includes(w)),
+    );
+    expect(narrationRows.length).toBeGreaterThan(1); // the shrink did re-wrap
+    for (const r of narrationRows) {
+      expect(r).toBeLessThan(toolRow); // never split around the tool row
+    }
   } finally {
     renderer.destroy?.();
   }

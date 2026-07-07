@@ -55,11 +55,12 @@ export const PALETTES = Object.freeze({
     accent: "#FF8A1F", accentSecondary: "#FFB266",
     ok: "#3DF0A8", warn: "#FFD24A", danger: "#FF5C5C", info: "#5AC8FF", queued: "#BB9CFF",
   },
-  // Nordic polar night — recognizable cool palette with the brand accent.
+  // Nordic polar night — recognizable cool palette with the brand accent
+  // (brightened so it clears 4.5:1 as status-pill TEXT on bgSurface).
   nord: {
     bg: "#2E3440", bgSurface: "#3B4252", bgElevated: "#434C5E",
     text: "#ECEFF4", textMuted: "#C0C7D4", textDim: "#B6BDC9",
-    accent: "#EE7C35", accentSecondary: "#FFA86A",
+    accent: "#FF9446", accentSecondary: "#FFA86A",
     ok: "#A3BE8C", warn: "#EBCB8B", danger: "#D89FA5", info: "#88C0D0", queued: "#B690AF",
   },
   // Near-monochrome — the orange accent is the only saturated hue.

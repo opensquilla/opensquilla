@@ -106,3 +106,48 @@ test("a failed tool flips to ✗ and recolors to error in place", async () => {
     renderer.destroy?.();
   }
 });
+
+test("a resize re-clips the └ result corner to the new width from the raw text", async () => {
+  const setup = await createTestRenderer({ width: 100, height: HEIGHT });
+  const { renderer, renderOnce, captureSpans, resize } = setup;
+  const doResize = resize || ((w, h) => renderer.resize(w, h));
+  const box = new BoxRenderable(renderer, {
+    id: "turn",
+    position: "absolute",
+    left: 0,
+    top: 0,
+    right: 0,
+    bottom: 0,
+    flexDirection: "column",
+  });
+  renderer.root.add(box);
+  const tool = createToolBlock({ renderer, TextRenderable, box, idPrefix: "blk" });
+  tool.begin({ name: "read_file", args: "big.txt" });
+  try {
+    tool.append("0123456789".repeat(12)); // 120 cells: clipped at any width here
+    await renderOnce();
+    const cornerRow = (frame) =>
+      frame.lines.map((l) => l.spans.map((s) => s.text).join("")).find((l) => l.includes("└"));
+    const wide = cornerRow(captureSpans());
+    expect(wide.trimEnd().endsWith("…")).toBe(true);
+
+    // Shrink: the baked clip must re-derive from the RAW preview at 60 cells —
+    // one row that still fits, not the stale 100-cell string wrapping over.
+    await doResize(60, HEIGHT);
+    tool.relayout();
+    await renderOnce();
+    const narrow = cornerRow(captureSpans());
+    expect(narrow.trimEnd().length).toBeLessThanOrEqual(60);
+    expect(narrow.trimEnd().endsWith("…")).toBe(true);
+    expect(narrow.trimEnd().length).toBeLessThan(wide.trimEnd().length);
+
+    // Grow back: the corner regains the wide clip (re-clipped from the raw
+    // text, not from the already-truncated narrow string).
+    await doResize(100, HEIGHT);
+    tool.relayout();
+    await renderOnce();
+    expect(cornerRow(captureSpans()).trimEnd()).toBe(wide.trimEnd());
+  } finally {
+    renderer.destroy?.();
+  }
+});

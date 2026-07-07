@@ -108,3 +108,40 @@ test("picker survives footer re-renders (pulse tick) instead of flashing away", 
   expect(text).toContain("midnight"); // theme rows still present after re-renders
   renderer.destroy?.();
 });
+
+test("paste while the picker is open never reaches the composer draft", async () => {
+  // The picker is modal for keypresses; bracketed paste must be modal too, or
+  // pasted text lands invisibly in the draft while the user previews themes.
+  applyTheme("opensquilla-dark");
+  const sent = [];
+  const { renderer } = await createTestRenderer({ width: 50, height: 20 });
+  const conversationBox = new BoxRenderable(renderer, {
+    id: "conversation", position: "absolute", left: 0, top: 0, right: 0, height: 14,
+  });
+  renderer.root.add(conversationBox);
+  const inputBox = new BoxRenderable(renderer, {
+    id: "input-region", position: "absolute", left: 0, right: 0, bottom: 0, height: 6,
+  });
+  renderer.root.add(inputBox);
+  const overlayLayer = new BoxRenderable(renderer, {
+    id: "overlay-layer", position: "absolute", left: 0, top: 0, right: 0, bottom: 0,
+    zIndex: 1000, shouldFill: false, visible: false,
+  });
+  renderer.root.add(overlayLayer);
+  const composer = createComposer({
+    renderer, BoxRenderable, TextRenderable, conversationBox, inputBox, overlayLayer,
+    footerHeight: 6, sendHostMessage: (m) => sent.push(m),
+  });
+  try {
+    composer.install();
+  } catch {
+    composer.rerender();
+  }
+
+  composer.openThemePicker();
+  renderer.keyInput.emit("paste", { bytes: new TextEncoder().encode("sneaky") });
+  renderer.keyInput.emit("keypress", { name: "return" }); // keep theme, close picker
+  renderer.keyInput.emit("keypress", { name: "return" }); // submit the draft
+  expect(sent.find((m) => m.type === "input.submit")?.text).toBe(""); // untouched
+  renderer.destroy?.();
+});

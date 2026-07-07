@@ -58,3 +58,36 @@ test("onThemeApplied fires listeners after THEME is repopulated, and unsubscribe
   applyTheme("opensquilla-dark");
   expect(seen).toBe("midnight"); // listener removed -> not called again
 });
+
+test("the markdown grammar's dotted captures resolve to registered theme styles", async () => {
+  // The bundled tree-sitter markdown grammar emits markup.heading.1…6,
+  // markup.link.label/url, markup.raw.block and markup.list.(un)checked, and
+  // the style lookup falls back only to the FIRST dotted segment ("markup",
+  // unregistered) — so each emitted name must resolve on its own or headings
+  // and links render as plain body text.
+  await createTestRenderer({ width: 10, height: 4 });
+  const s = SyntaxStyle.create();
+  applyTheme("opensquilla-dark");
+  registerThemeStyles(s, THEME);
+
+  const rgb = (c) => [c.r, c.g, c.b];
+  const heading = s.getStyle("markup.heading");
+  for (let level = 1; level <= 6; level += 1) {
+    const st = s.getStyle(`markup.heading.${level}`);
+    expect(st, `markup.heading.${level}`).toBeDefined();
+    expect(rgb(st.fg)).toEqual(rgb(heading.fg));
+  }
+  const link = s.getStyle("markup.link");
+  for (const name of ["markup.link.label", "markup.link.url"]) {
+    const st = s.getStyle(name);
+    expect(st, name).toBeDefined();
+    expect(rgb(st.fg)).toEqual(rgb(link.fg));
+  }
+  const raw = s.getStyle("markup.raw");
+  const rawBlock = s.getStyle("markup.raw.block");
+  expect(rawBlock).toBeDefined();
+  expect(rgb(rawBlock.fg)).toEqual(rgb(raw.fg));
+  for (const name of ["markup.list.unchecked", "markup.list.checked"]) {
+    expect(s.getStyle(name), name).toBeDefined();
+  }
+});

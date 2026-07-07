@@ -3,9 +3,12 @@ import test, { afterEach } from "node:test";
 
 import { applyTheme, STATUS, THEME } from "./theme.mjs";
 import { createTurnView } from "./turnView.mjs";
+import { createBlock } from "./blockRegistry.mjs";
 import { createPromptBlock } from "./blocks/promptBlock.mjs";
 import { createToolBlock } from "./blocks/toolBlock.mjs";
 import { createThinkingBlock } from "./blocks/thinkingBlock.mjs";
+import { createReasoningBlock } from "./blocks/reasoningBlock.mjs";
+import { createAnswerBlock } from "./blocks/answerBlock.mjs";
 
 // A live /theme switch mutates THEME/STATUS in place. Renderables captured their
 // fg at creation, so a dark→light switch would leave prior transcript unreadable
@@ -42,20 +45,27 @@ function findById(node, id) {
 
 afterEach(() => applyTheme("opensquilla-dark"));
 
-test("prompt block recolors every node to the new theme accent", () => {
+test("prompt block recolors every node and the body rail to the new theme accent", () => {
   applyTheme("opensquilla-dark");
   const box = new FakeNode();
-  const block = createPromptBlock({ renderer, TextRenderable: FakeNode, box, idPrefix: "p" });
+  const block = createPromptBlock({
+    renderer, BoxRenderable: FakeNode, TextRenderable: FakeNode, box, idPrefix: "p",
+  });
   block.begin({ text: "line one\nline two" });
 
   const dark = THEME.promptAccent;
-  assert.ok(box.children.length >= 3);
-  assert.ok(box.children.every((n) => n.fg === dark));
+  const body = findById(box, "p-body");
+  assert.ok(body);
+  assert.equal(body.borderColor, dark);
+  assert.equal(body.children.length, 2);
+  const textNodes = [findById(box, "p-top"), ...body.children, findById(box, "p-bot")];
+  assert.ok(textNodes.every((n) => n && n.fg === dark));
 
   applyTheme("opensquilla-light");
   block.recolor();
   assert.notStrictEqual(THEME.promptAccent, dark); // the two themes genuinely differ
-  assert.ok(box.children.every((n) => n.fg === THEME.promptAccent));
+  assert.ok(textNodes.every((n) => n.fg === THEME.promptAccent));
+  assert.equal(body.borderColor, THEME.promptAccent);
 });
 
 test("tool block recolor re-derives the run-state color for its current state", () => {
@@ -91,6 +101,75 @@ test("thinking block recolors in place without recreating its nodes", () => {
   // re-append the lines after later blocks in a shared card body).
   assert.deepEqual(box.children.map((n) => n.id), before);
   assert.ok(box.children.every((n) => n.fg === THEME.thinkingAccent));
+});
+
+test("a streamed thinking delta reuses existing line nodes instead of recreating them", () => {
+  applyTheme("opensquilla-dark");
+  const box = new FakeNode();
+  const block = createThinkingBlock({ renderer, TextRenderable: FakeNode, box, idPrefix: "th" });
+  block.append("line one\nline tw");
+  const firstNode = box.children[0];
+  const lastNode = box.children[1];
+
+  block.append("o grows");
+  // The unchanged first line and the growing last line keep their node objects
+  // and order — no per-delta remove()+add() churn or transcript reordering.
+  assert.strictEqual(box.children[0], firstNode);
+  assert.strictEqual(box.children[1], lastNode);
+  assert.ok(lastNode.content.includes("line two grows"));
+});
+
+test("reasoning marker recolors to the new theme accent while mounted", () => {
+  applyTheme("opensquilla-dark");
+  const box = new FakeNode();
+  const block = createReasoningBlock({ renderer, TextRenderable: FakeNode, box, idPrefix: "r" });
+  block.begin({});
+  const node = box.children[0];
+  const dark = THEME.thinkingAccent;
+  assert.equal(node.fg, dark);
+
+  applyTheme("opensquilla-light");
+  block.recolor();
+  assert.notStrictEqual(THEME.thinkingAccent, dark);
+  assert.equal(node.fg, THEME.thinkingAccent);
+});
+
+test("answer block recolor explicitly refreshes the baked syntax spans", () => {
+  applyTheme("opensquilla-dark");
+  const box = new FakeNode();
+  let refreshed = 0;
+  class FakeMarkdown extends FakeNode {
+    refreshStyles() { refreshed += 1; }
+  }
+  const block = createAnswerBlock({
+    renderer, MarkdownRenderable: FakeMarkdown, syntaxStyle: {}, box, idPrefix: "a",
+  });
+  block.begin({});
+  block.append("body text");
+
+  applyTheme("opensquilla-light");
+  block.recolor();
+  const md = box.children[0];
+  assert.equal(md.fg, THEME.text);
+  // Chunk colors are resolved at build time, so recolor must force a span
+  // rebuild explicitly — not rely on the base fg happening to differ between
+  // the two themes.
+  assert.equal(refreshed, 1);
+});
+
+test("an unknown block kind degrades to a dim recolorable fallback text block", () => {
+  applyTheme("opensquilla-dark");
+  const box = new FakeNode();
+  const block = createBlock("holo-frame", { renderer, TextRenderable: FakeNode, box, idPrefix: "u" });
+  block.begin({ text: "future content" });
+  block.append(" plus\x1b[31m more");
+  const node = box.children[0];
+  assert.ok(node.content.includes("future content plus more"));
+  assert.equal(node.fg, THEME.detailText);
+
+  applyTheme("opensquilla-light");
+  block.recolor();
+  assert.equal(node.fg, THEME.detailText);
 });
 
 test("recolor preserves block order in the shared card body", () => {

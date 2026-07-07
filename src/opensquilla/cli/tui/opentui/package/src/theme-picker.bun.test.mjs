@@ -60,6 +60,10 @@ test("openThemePicker renders a titled panel listing every theme, active one mar
     .join("\n");
 
   for (const name of THEME_NAMES) expect(text).toContain(name); // every theme listed
+  // The grayscale degradation palette is a first-class pick in ANY color mode,
+  // not only the forced NO_COLOR fallback — pin it by name so a registry
+  // reshuffle can never drop it from the panel.
+  expect(text).toContain("monochrome");
   expect(text).toContain("theme"); // panel title
   expect(text).toContain("› opensquilla-dark"); // active theme marked
   expect(text.toLowerCase()).toContain("preview"); // the key hint

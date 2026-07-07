@@ -2059,6 +2059,14 @@ async def build_services(
     except Exception as e:
         log.warning("build_services.memory_tools_failed", error=str(e))
 
+    try:
+        from opensquilla.tools.builtin.knowledge_tools import create_knowledge_tools
+
+        create_knowledge_tools(config=config, registry=tool_registry)
+        log.info("build_services.knowledge_tools_registered")
+    except Exception as e:
+        log.warning("build_services.knowledge_tools_failed", error=str(e))
+
     # ── Skill loader (boot order 19) ────────────────────────────────
     skill_loader = None
     try:

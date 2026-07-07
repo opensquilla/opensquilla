@@ -391,7 +391,7 @@ async def test_ensemble_resolves_max_tokens_per_openrouter_member(
     by_model = {call["model"]: call["config"].max_tokens for call in registry.calls}
     assert by_model == {
         "deepseek/deepseek-v4-pro": 384000,
-        "z-ai/glm-5.2": 32768,
+        "z-ai/glm-5.2": 131072,
         "moonshotai/kimi-k2.7-code": 16384,
         "qwen/qwen3.7-max": 65536,
         "agg": 123,

@@ -1,6 +1,7 @@
-import { readdirSync, readFileSync, statSync } from 'node:fs'
+import { readFileSync } from 'node:fs'
 import { join, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { walkFiles } from './lib/fs-walk.mjs'
 
 // Every control-UI surface must round its corners with the radius token ladder
 // defined in src/assets/base.css: the primitives --radius-none/xs/sm/md/lg/xl/
@@ -29,17 +30,7 @@ const lengthLiteral = /\b\d*\.?\d+(?:px|rem|em)\b/g
 // Raw length literals that are explicitly allowed even inside a radius decl.
 const allowedLength = /^(?:0px|999px|9999px)$/
 
-function walk(path, files = []) {
-  const stat = statSync(path)
-  if (stat.isDirectory()) {
-    for (const entry of readdirSync(path)) walk(join(path, entry), files)
-  } else if (/\.(vue|css)$/.test(path)) {
-    files.push(path)
-  }
-  return files
-}
-
-const files = walk(srcDir)
+const files = walkFiles(srcDir, /\.(vue|css)$/)
 
 // In .vue files only <style> blocks carry CSS; template class strings can
 // contain the word "radius" and must not be scanned.

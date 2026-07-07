@@ -1,13 +1,7 @@
 import { test, expect } from '@playwright/test'
+import { relativeLuminance } from './utils'
 
 const CONTROL_URL = '/control/'
-
-function relativeLuminance(color: string): number {
-  const match = color.match(/rgba?\(\s*([\d.]+)[,\s]+([\d.]+)[,\s]+([\d.]+)/)
-  if (!match) throw new Error(`Unexpected computed color: ${color}`)
-  const [r, g, b] = [Number(match[1]), Number(match[2]), Number(match[3])]
-  return (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255
-}
 
 async function chatBackground(page: import('@playwright/test').Page): Promise<string> {
   return page.evaluate(() => {

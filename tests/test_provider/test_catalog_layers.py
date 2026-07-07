@@ -44,7 +44,10 @@ def test_cold_instance_resolves_snapshot_known_model() -> None:
     assert entry.supports_vision is True
     # The snapshot never knows the streaming dialect.
     assert entry.reasoning_format == "none"
-    assert entry.input_cost_per_mtok is None
+    # The snapshot vendors models.dev cost keys verbatim.
+    assert entry.input_cost_per_mtok == pytest.approx(5.0)
+    assert entry.output_cost_per_mtok == pytest.approx(30.0)
+    assert entry.cache_read_cost_per_mtok == pytest.approx(0.5)
 
 
 def test_cold_instance_synthesizes_unknown_model() -> None:
@@ -347,15 +350,27 @@ def test_anthropic_listing_models_priced_via_packaged_corrections() -> None:
     # The corrections rows are the canonical metadata for the SKUs the
     # Anthropic adapter lists (the adapter's _KNOWN_MODELS table has been
     # retired; list_models resolves these rows through the shared catalog).
-    # Literals pin the retired table's values, with per-1k costs converted
-    # to the canonical per-Mtok unit (x1000).
+    # Values are verified against Anthropic's published per-model pricing
+    # page (input/output per Mtok). The opus-4-6 and sonnet-4-6 rows carry
+    # no cache pricing, so their cache_read/write fall through to the
+    # snapshot's vendored models.dev cache rates for the same SKU; the
+    # haiku-4-5 row now carries its own cache rates directly.
     listing_rows = (
-        ("claude-opus-4-6", "Claude Opus 4.6", 200_000, 32_000, 15.0, 75.0),
-        ("claude-sonnet-4-6", "Claude Sonnet 4.6", 200_000, 16_000, 3.0, 15.0),
-        ("claude-haiku-4-5-20251001", "Claude Haiku 4.5", 200_000, 8_192, 0.25, 1.25),
+        ("claude-opus-4-6", "Claude Opus 4.6", 200_000, 32_000, 5.0, 25.0, 0.5, 6.25),
+        ("claude-sonnet-4-6", "Claude Sonnet 4.6", 200_000, 16_000, 3.0, 15.0, 0.3, 3.75),
+        ("claude-haiku-4-5-20251001", "Claude Haiku 4.5", 200_000, 8_192, 1.0, 5.0, 0.1, 1.25),
     )
     catalog = ModelCatalog()
-    for model_id, display_name, context_window, max_output, in_mtok, out_mtok in listing_rows:
+    for (
+        model_id,
+        display_name,
+        context_window,
+        max_output,
+        in_mtok,
+        out_mtok,
+        cr_mtok,
+        cw_mtok,
+    ) in listing_rows:
         entry = catalog.resolve_entry(model_id, provider="anthropic")
         assert entry.source == "corrections", model_id
         assert entry.display_name == display_name, model_id
@@ -364,9 +379,10 @@ def test_anthropic_listing_models_priced_via_packaged_corrections() -> None:
         assert entry.max_output_tokens == max_output, model_id
         assert entry.input_cost_per_mtok == pytest.approx(in_mtok)
         assert entry.output_cost_per_mtok == pytest.approx(out_mtok)
-        # The retired table carried no cache pricing — those stay unknown.
-        assert entry.cache_read_cost_per_mtok is None
-        assert entry.cache_write_cost_per_mtok is None
+        # The retired table carried no cache pricing — corrections stays
+        # silent on it, so the snapshot's vendored rate fills the gap.
+        assert entry.cache_read_cost_per_mtok == pytest.approx(cr_mtok)
+        assert entry.cache_write_cost_per_mtok == pytest.approx(cw_mtok)
 
 
 # ---------------------------------------------------------------------------
@@ -514,7 +530,7 @@ _LEGACY_LIMITS: dict[tuple[str, str], tuple[int, int]] = {
     ("kimi-k2.5", "moonshot"): (8_192, 262_144),
     ("glm-5", "zhipu"): (131_072, 204_800),
     ("glm-5", "zai"): (16_384, 202_752),
-    ("z-ai/glm-5.2", ""): (32_768, 1_000_000),
+    ("z-ai/glm-5.2", ""): (128_000, 1_000_000),
     ("gemini-3.5-flash", "gemini"): (65_536, 1_048_576),
     ("minimax-m2.7", ""): (131_072, 204_800),
     ("step-3.5-flash", ""): (16_384, 256_000),
@@ -571,7 +587,8 @@ def test_parity_legacy_capabilities_unchanged() -> None:
 
 def test_full_entry_literals_snapshot_and_transcribed_ladder() -> None:
     # Full-literal entry pins (frozen-dataclass equality covers every field,
-    # including the four cost fields staying None). openai has NO ladder
+    # including the four cost fields — the snapshot now vendors models.dev
+    # cost keys, so these are no longer all None). openai has NO ladder
     # rows — the api.openai.com branch is host-guarded and stays code — so
     # its snapshot resolution is byte-identical to the pre-ladder tree:
     # supports_reasoning is snapshot data but reasoning_format stays "none"
@@ -579,7 +596,8 @@ def test_full_entry_literals_snapshot_and_transcribed_ladder() -> None:
     # layer the transcribed capability-ladder rows (reasoning_format,
     # ladder-scoped capability booleans) over snapshot windows, so their
     # source moved to "corrections" — deliberately, as part of the
-    # capability-ladder migration.
+    # capability-ladder migration; the corrections rows carry no cost
+    # fields, so cost still comes from the snapshot layer underneath.
     catalog = ModelCatalog()
     expected_entries = (
         ModelCatalogEntry(
@@ -590,6 +608,9 @@ def test_full_entry_literals_snapshot_and_transcribed_ladder() -> None:
             supports_reasoning=True,
             supports_tools=True,
             supports_vision=True,
+            input_cost_per_mtok=5.0,
+            output_cost_per_mtok=30.0,
+            cache_read_cost_per_mtok=0.5,
             source="snapshot",
         ),
         ModelCatalogEntry(
@@ -603,6 +624,9 @@ def test_full_entry_literals_snapshot_and_transcribed_ladder() -> None:
             supports_tools=True,
             supports_vision=False,
             reasoning_format="deepseek",
+            input_cost_per_mtok=0.14,
+            output_cost_per_mtok=0.28,
+            cache_read_cost_per_mtok=0.0028,
             source="corrections",
         ),
         ModelCatalogEntry(
@@ -614,6 +638,9 @@ def test_full_entry_literals_snapshot_and_transcribed_ladder() -> None:
             supports_tools=True,
             supports_vision=True,
             reasoning_format="gemini",
+            input_cost_per_mtok=1.25,
+            output_cost_per_mtok=10.0,
+            cache_read_cost_per_mtok=0.125,
             source="corrections",
         ),
         ModelCatalogEntry(
@@ -627,6 +654,10 @@ def test_full_entry_literals_snapshot_and_transcribed_ladder() -> None:
             supports_tools=True,
             supports_vision=False,
             reasoning_format="none",
+            input_cost_per_mtok=0.6,
+            output_cost_per_mtok=2.2,
+            cache_read_cost_per_mtok=0.11,
+            cache_write_cost_per_mtok=0.0,
             source="corrections",
         ),
     )

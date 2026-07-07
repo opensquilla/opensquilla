@@ -666,6 +666,14 @@ def _session_accumulated_spend(ctx: TurnContext) -> tuple[float | None, str]:
     present at all — a fresh session with no billed total yet — so the gate
     suspends rather than acting on missing data. Keys present but all zero are
     a known-zero spend, not an unknown one.
+
+    The returned source records the spend's cost basis. A positive billed total
+    is ``"billed"``. Estimate-based spend is refined with the session's seeded
+    rollup label (``session_cost_source``): a ``"mixed"`` rollup — billed and
+    estimated components together — becomes ``"estimate_mixed"``, while a pure
+    ``"opensquilla_estimate"``, an absent label, or anything else collapses to
+    the plain ``"estimate"`` the gate already understood. ``"none"`` (known-zero
+    spend) and ``"unknown"`` (no signal) semantics are unchanged.
     """
     metadata = getattr(ctx, "metadata", {}) or {}
     if not any(key in metadata for key in _BUDGET_SPEND_KEYS):
@@ -673,12 +681,14 @@ def _session_accumulated_spend(ctx: TurnContext) -> tuple[float | None, str]:
     billed = _budget_cost_value(metadata.get("session_billed_cost_usd"))
     if billed is not None and billed > 0:
         return billed, "billed"
+    label = str(metadata.get("session_cost_source", "") or "").strip().lower()
+    estimate_source = "estimate_mixed" if label == "mixed" else "estimate"
     total = _budget_cost_value(metadata.get("session_total_cost_usd"))
     if total is not None and total > 0:
-        return total, "estimate"
+        return total, estimate_source
     estimated = _budget_cost_value(metadata.get("session_estimated_cost_usd"))
     if estimated is not None and estimated > 0:
-        return estimated, "estimate"
+        return estimated, estimate_source
     return 0.0, "none"
 
 
@@ -766,6 +776,7 @@ def _log_budget_outcome(ctx: TurnContext) -> None:
             spend_usd=ctx.metadata.get("router_budget_spend_usd"),
             limit_usd=ctx.metadata.get("router_budget_limit_usd"),
             action=ctx.metadata.get("router_budget_action"),
+            spend_source=ctx.metadata.get("router_budget_spend_source"),
         )
     elif outcome == "cap":
         log.warning(
@@ -774,6 +785,7 @@ def _log_budget_outcome(ctx: TurnContext) -> None:
             spend_usd=ctx.metadata.get("router_budget_spend_usd"),
             limit_usd=ctx.metadata.get("router_budget_limit_usd"),
             action=ctx.metadata.get("router_budget_action"),
+            spend_source=ctx.metadata.get("router_budget_spend_source"),
             from_tier=ctx.metadata.get("router_budget_from_tier"),
             to_tier=ctx.metadata.get("router_budget_to_tier"),
         )

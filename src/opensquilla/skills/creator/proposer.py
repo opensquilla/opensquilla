@@ -279,7 +279,7 @@ def _call_llm_for_slots(prompt: str, **kwargs: Any) -> str:
     provider = build_provider(
         provider=provider_name, model=effective_model, api_key=api_key, base_url=base_url,
     )
-    base_config = AgentConfig(model_id=effective_model)
+    base_config = AgentConfig(model_id=effective_model, provider_id=provider_name)
     # 4096 tokens: this call has a ~13k-char prompt and must produce a JSON
     # blob (slots schema for the chosen pattern, often 500-1500 tokens). On
     # reasoning models (deepseek-v4-flash) the chain-of-thought is counted

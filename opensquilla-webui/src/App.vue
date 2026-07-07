@@ -277,14 +277,31 @@
               @click="pickTheme(opt.mode)"
             >
               <Icon :name="opt.icon" :size="15" />
-              <span>{{ t('chrome.themeMode.' + opt.mode) }}</span>
+              <span>{{ opt.labelKey ? t(opt.labelKey) : opt.label }}</span>
               <Icon v-if="appStore.theme === opt.mode" class="theme-menu__check" name="check" :size="14" />
+            </button>
+            <button
+              type="button"
+              class="theme-menu__item theme-menu__item--more"
+              role="menuitem"
+              :title="t('chrome.moreThemesHint')"
+              @click="openMoreThemes"
+            >
+              <Icon name="chevronRight" :size="15" />
+              <span>{{ t('chrome.moreThemes') }}</span>
+              <Icon v-if="isCustomThemeActive" class="theme-menu__check" name="check" :size="14" />
             </button>
           </div>
         </div>
       </div>
     </header>
-    <main class="content" :class="{ 'content--chat': isChatRoute }" id="content">
+    <main
+      class="content"
+      :class="{ 'content--chat': isChatRoute }"
+      :data-skin="skinId || undefined"
+      :data-skin-variant="variants || undefined"
+      id="content"
+    >
       <ErrorBoundary>
         <router-view v-slot="{ Component, route }">
           <!-- out-in: one view in the DOM at a time, so pages never overlap (no
@@ -395,6 +412,8 @@ import { useDocumentEvent } from './composables/useDocumentEvent'
 import { useAgentOptions } from './composables/useAgentOptions'
 import { useToasts } from './composables/useToasts'
 import { useNavigation } from './app/useNavigation'
+import { useSurfaceSkin } from './themes/useSurfaceSkin'
+import { themePickerOptions, getManifest } from './themes/registry'
 import { normalizeAgentId } from './utils/chat/sessionKeys'
 import { installSessionNavigationDiagConsole, recordSessionNavigationDiag } from './utils/chat/sessionNavigationDiag'
 import type { RpcEventHandler } from '@/lib/rpc'
@@ -438,6 +457,8 @@ watch(() => appStore.locale, () => {
 })
 const { allSessions, sessionListError, isLoading, loadSessions } = useSessions()
 const { moreSections, bottomRoutes, workNav } = useNavigation()
+// Axis-B: the active expressive skin for the routed content area (meta.skin).
+const { skinId, variants } = useSurfaceSkin()
 const { pushToast } = useToasts()
 const webConfigEnabled = getPlatform().capabilities.hasWebConfig
 
@@ -470,7 +491,8 @@ const newChatHint = computed(() =>
 
 const themeIconName = computed(() => {
   if (appStore.theme === 'system') return 'monitor'
-  return appStore.resolvedTheme === 'dark' ? 'moon' : 'sun'
+  const active = getManifest(appStore.resolvedTheme)
+  return active?.icon ?? (appStore.resolvedTheme === 'dark' ? 'moon' : 'sun')
 })
 
 const themeMenuOpen = ref(false)
@@ -561,16 +583,29 @@ function syncTopbarReserve() {
     : mainRect.right - cluster.getBoundingClientRect().left + gap
   main.style.setProperty('--topbar-right-reserve', `${Math.max(0, Math.round(reserve))}px`)
 }
-const themeOptions = [
-  { mode: 'light', label: 'Light', icon: 'sun' },
-  { mode: 'dark', label: 'Dark', icon: 'moon' },
-  { mode: 'system', label: 'System', icon: 'monitor' },
-] as const
+// The compact topbar menu deliberately lists only the basic modes (Light / Dark
+// / System). Custom value themes live in Settings → Appearance, reached via the
+// "More themes…" action below — see themePickerOptions({ scope }) in registry.ts.
+const themeOptions = themePickerOptions({ scope: 'basic' })
+
+// A custom value theme (chosen in Settings) is active but not shown in the basic
+// topbar menu; mark "More themes…" instead of leaving no selection indicator.
+const isCustomThemeActive = computed(
+  () => !themeOptions.some((o) => o.mode === appStore.theme),
+)
 
 function pickTheme(mode: ThemeMode) {
   appStore.setTheme(mode)
   themeMenuOpen.value = false
   themeButtonRef.value?.focus()
+}
+
+// "More themes…": the full theme list lives in Settings → Appearance. Close the
+// menu and deep-link straight to that section.
+function openMoreThemes() {
+  themeMenuOpen.value = false
+  handleNavClick()
+  router.push('/settings/appearance')
 }
 
 useDocumentEvent('click', (e) => {
@@ -825,12 +860,10 @@ function onPaletteOpenSettings() {
 }
 
 function onPaletteToggleTheme() {
-  // Cycle the appearance MODE (light → dark → system) so the palette keeps
-  // parity with the topbar's 3-way picker instead of collapsing to binary and
-  // silently dropping the "system" follow option.
-  const order: ThemeMode[] = ['light', 'dark', 'system']
-  const next = order[(order.indexOf(appStore.theme) + 1) % order.length]
-  appStore.setTheme(next)
+  // Cycle the appearance mode through the same registry-driven order as the
+  // topbar picker (every selectable value theme + system), so the palette
+  // never resets a custom theme back to 'light'.
+  appStore.cycleTheme()
 }
 
 function onPaletteSelectSession(key: string) {

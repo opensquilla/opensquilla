@@ -1110,6 +1110,7 @@ const chatHistory = useChatHistory({
   lastHeaderRole,
   lastHeaderDay,
   preserveLiveTail: preserveHistoryLiveTail,
+  autoScroll,
   stripTimePrefix,
   scrollToBottom,
 })

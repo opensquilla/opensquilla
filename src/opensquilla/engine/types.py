@@ -198,6 +198,10 @@ class DoneEvent:
     vision_followup_fallback: str | None = None
     model_usage_breakdown: list[dict[str, Any]] = field(default_factory=list)
     ensemble_trace: dict[str, Any] | None = None
+    # Quality label of the estimate component behind cost_usd:
+    # "cache_aware" | "cache_blind" | "free" | None (None when the reported
+    # cost has no estimated component, e.g. fully provider-billed turns).
+    estimate_basis: str | None = None
 
     @property
     def upstream_cost_usd(self) -> float:
@@ -432,6 +436,10 @@ class AgentConfig:
     max_turn_input_tokens: int = 0
     max_turn_output_tokens: int = 0
     max_turn_billed_cost_usd: float = 0.0
+    # Estimate-backed cousin of max_turn_billed_cost_usd: falls back to
+    # estimate_cost() for calls with no provider-reported billed_cost, so the
+    # gate works even on providers/paths that never report real dollars.
+    max_turn_cost_usd: float = 0.0
     max_turn_tool_errors: int = 0
     temperature: float | None = None
     thinking: bool | ThinkingLevel = False
@@ -440,6 +448,11 @@ class AgentConfig:
     extra_system_prompt: str | None = None
     workspace_dir: str | None = None
     model_id: str | None = None
+    # CONFIGURED provider id (e.g. "vllm", "lm_studio"), sourced from
+    # config.llm.provider — NOT the adapter class name (openai_compat
+    # deployments all report provider_name == "openai"). Threaded into usage
+    # tracking so the layered price resolver can treat local runtimes as free.
+    provider_id: str = ""
     stop_sequences: list[str] = field(default_factory=list)
     context_window_tokens: int = 200000
     context_overflow_threshold: float = 0.85  # trigger at 85%

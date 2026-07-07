@@ -129,6 +129,8 @@ const AUTH_FAILURE_KINDS = new Set(['auth_invalid'])
 // the connection verdict is about credentials + endpoint, not the model id.)
 const CONNECTION_FIELDS = new Set(['api_key', 'api_key_env', 'base_url', 'proxy'])
 
+export const PROVIDER_CREDENTIAL_REVEAL_TIMEOUT_MS = 30_000
+
 function freshConnection(providerId: string): ConnectionState {
   return {
     phase: providerId ? 'unverified' : 'unconfigured',
@@ -191,6 +193,7 @@ export function useSetupProviderForm() {
   const revealedCredential = ref('')
   const revealError = ref('')
   const selectedProvider = computed(() => providerSelected.value)
+  let revealTimer: ReturnType<typeof setTimeout> | null = null
 
   const serialized = computed(() => JSON.stringify({ p: providerSelected.value, v: providerFieldValues.value }))
   // Seed from the initial state so the pristine form is never dirty while config loads.
@@ -211,7 +214,20 @@ export function useSetupProviderForm() {
     connection.value = freshConnection(providerSelected.value)
   }
 
+  function clearRevealTimer() {
+    if (revealTimer) {
+      clearTimeout(revealTimer)
+      revealTimer = null
+    }
+  }
+
+  function clearRevealedCredential() {
+    clearRevealTimer()
+    revealedCredential.value = ''
+  }
+
   function resetCredentialUiState() {
+    clearRevealTimer()
     replacingCredential.value = false
     revealedCredential.value = ''
     revealError.value = ''
@@ -368,7 +384,7 @@ export function useSetupProviderForm() {
       else if (name === 'api_key_env') providerFieldValues.value.api_key = ''
     }
     if (name === 'api_key' || name === 'api_key_env') {
-      revealedCredential.value = ''
+      clearRevealedCredential()
       revealError.value = ''
     }
     // A credential/endpoint edit invalidates any earned connection verdict
@@ -378,24 +394,31 @@ export function useSetupProviderForm() {
 
   function startCredentialReplace() {
     replacingCredential.value = true
-    revealedCredential.value = ''
+    clearRevealedCredential()
     revealError.value = ''
   }
 
   function cancelCredentialReplace() {
     replacingCredential.value = false
     providerFieldValues.value.api_key = ''
-    revealedCredential.value = ''
+    clearRevealedCredential()
     revealError.value = ''
   }
 
   function setRevealedCredential(value: string) {
+    clearRevealTimer()
     revealedCredential.value = value
     revealError.value = ''
+    if (value) {
+      revealTimer = setTimeout(() => {
+        revealedCredential.value = ''
+        revealTimer = null
+      }, PROVIDER_CREDENTIAL_REVEAL_TIMEOUT_MS)
+    }
   }
 
   function setRevealError(value: string) {
-    revealedCredential.value = ''
+    clearRevealedCredential()
     revealError.value = value
   }
 

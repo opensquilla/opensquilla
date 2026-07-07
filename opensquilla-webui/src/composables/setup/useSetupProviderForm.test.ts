@@ -1,5 +1,10 @@
-import { beforeEach, describe, it, expect, vi } from 'vitest'
-import { useSetupProviderForm, buildProviderPayload, hasEffectiveProvider } from './useSetupProviderForm'
+import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest'
+import {
+  PROVIDER_CREDENTIAL_REVEAL_TIMEOUT_MS,
+  useSetupProviderForm,
+  buildProviderPayload,
+  hasEffectiveProvider,
+} from './useSetupProviderForm'
 
 // The connection state machine talks to the gateway through the rpc store —
 // stub it at the module seam (the pattern useSetupCatalog tests use).
@@ -10,6 +15,10 @@ vi.mock('@/stores/rpc', () => ({
 
 beforeEach(() => {
   callMock.mockReset()
+})
+
+afterEach(() => {
+  vi.useRealTimers()
 })
 
 describe('buildProviderPayload', () => {
@@ -204,6 +213,21 @@ describe('useSetupProviderForm — provider credential state', () => {
     f.setRevealedCredential('shown-key')
     expect(f.revealedCredential.value).toBe('shown-key')
     expect(f.revealError.value).toBe('')
+  })
+
+  it('expires revealed credentials after a limited display window', () => {
+    vi.useFakeTimers()
+    const f = useSetupProviderForm()
+
+    f.setRevealedCredential('shown-key')
+
+    expect(f.revealedCredential.value).toBe('shown-key')
+
+    vi.advanceTimersByTime(PROVIDER_CREDENTIAL_REVEAL_TIMEOUT_MS - 1)
+    expect(f.revealedCredential.value).toBe('shown-key')
+
+    vi.advanceTimersByTime(1)
+    expect(f.revealedCredential.value).toBe('')
   })
 
   it('clears revealed credentials when credential inputs change', () => {

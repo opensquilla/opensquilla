@@ -1746,6 +1746,41 @@ async def preload_squilla_router_runtime(config: GatewayConfig) -> None:
         )
 
 
+def model_override_entries(config: GatewayConfig) -> dict[str, dict[str, Any]]:
+    """Flatten ``[models.<provider>."<model>"]`` overrides for the catalog.
+
+    Produces the ``ModelCatalog.set_user_overrides`` key shape: lowercased
+    ``"provider/model"`` keys mapping to only the fields the operator
+    actually set (``None`` fields are "no override" and must not flow
+    through). ``thinking_level_map`` is config-only metadata, not a catalog
+    entry field, so it is dropped here rather than rejected downstream.
+    """
+    entries: dict[str, dict[str, Any]] = {}
+    for provider_id, models in (config.models or {}).items():
+        for model_id, override in models.items():
+            fields = override.model_dump(exclude_none=True)
+            fields.pop("thinking_level_map", None)  # not a catalog entry field
+            if fields:
+                entries[f"{provider_id}/{model_id}".lower()] = fields
+    return entries
+
+
+def apply_model_catalog_overrides(catalog: ModelCatalog, config: GatewayConfig) -> None:
+    """Apply ``[models.*]`` cost/metadata overrides onto ``catalog``.
+
+    Overrides are operator-authored TOML; a malformed value must not crash
+    boot or a live config hot-apply (``config.set``/``patch``/``apply``/
+    ``reload`` — see ``rpc_config._sync_model_catalog_overrides``). On
+    rejection ``ModelCatalog.set_user_overrides`` leaves the previously
+    installed overrides in place, and this logs a warning naming the bad
+    value rather than dropping it silently.
+    """
+    try:
+        catalog.set_user_overrides(model_override_entries(config))
+    except ValueError as exc:
+        log.warning("model_catalog.user_override_rejected", error=str(exc))
+
+
 async def build_services(
     config: GatewayConfig | None = None,
     session_manager: Any = None,
@@ -1938,6 +1973,11 @@ async def build_services(
     # usage RPC context windows, ensemble member wiring) resolve against
     # live data instead of cold snapshot/static-only copies.
     set_shared_catalog(model_catalog)
+    # [models.*] cost/metadata overrides (schema: ModelOverrideConfig) become
+    # the catalog's highest-authority resolution layer as soon as the shared
+    # instance exists, so resolve_model_price/get_capabilities honor them
+    # from the first turn onward.
+    apply_model_catalog_overrides(model_catalog, config)
 
     async def _warm_model_catalog_and_pricing() -> None:
         if not (api_key and config.llm.provider == "openrouter"):
@@ -2970,6 +3010,7 @@ async def start_gateway_server(
 
             base_config = AgentConfig(
                 model_id=auto_model_id,
+                provider_id=getattr(provider_selector, "active_provider_id", ""),
                 workspace_dir=workspace_str,
                 metadata=auto_metadata,
             )

@@ -2,12 +2,19 @@ import { app, BrowserWindow, dialog, Menu, ipcMain, nativeTheme, safeStorage, sh
 import electronUpdater from 'electron-updater'
 import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
-import { appendFileSync, createWriteStream, existsSync, mkdirSync, readFileSync } from 'node:fs'
-import { access, constants, readFile, readdir, rm, stat, unlink, writeFile } from 'node:fs/promises'
+import { appendFileSync, createWriteStream, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
+import { access, constants, readFile, readdir, rename, rm, stat, unlink, writeFile } from 'node:fs/promises'
 import net from 'node:net'
 import { basename, dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { secretStorageBackendForPolicy, shouldUseChromiumMockKeychainForPolicy } from './secret-storage-policy.js'
+import {
+  GITHUB_UPDATE_OWNER,
+  GITHUB_UPDATE_REPO,
+  parseOpenSquillaReleaseTag,
+  selectMacPrereleaseCandidate,
+  type ReleaseSummary,
+} from './update-feed-resolver.js'
 
 interface GatewayState {
   url: string
@@ -84,6 +91,7 @@ interface OnboardingPayload {
   searchProvider?: unknown
   searchApiKey?: unknown
   disableNetworkObservability?: unknown
+  locale?: unknown
 }
 
 interface DesktopSettingsPayload extends OnboardingPayload {}
@@ -144,6 +152,10 @@ let mainWindow: BrowserWindow | null = null
 let onboardingWindow: BrowserWindow | null = null
 let gatewayProcess: ChildProcessWithoutNullStreams | null = null
 let isQuitting = false
+// Opt stopGateway into the Windows HTTP graceful-drain path even while isQuitting
+// is set, for the update/uninstall flows that keep the main process alive and
+// await the child's exit (so the fire-and-forget drain is not racing app teardown).
+let allowGracefulShutdownWhileQuitting = false
 
 // Main-process lifecycle log (distinct from the gateway child's gateway.log).
 // Records launch, single-instance-lock acquisition, and quit phases so a
@@ -172,6 +184,8 @@ let bootStatus: BootStatus = {
   at: new Date().toISOString(),
 }
 let bootError: BootError | null = null
+let forceOnboardingOnNextStartup = false
+const gatewayProcessTreeChildren = new WeakSet<ChildProcessWithoutNullStreams>()
 
 const gatewayState: GatewayState = {
   url: '',
@@ -204,9 +218,14 @@ function bootPagePath(): string {
 }
 
 function appIconPath(): string {
+  // Only icon.icns (macOS) and icon.ico (Windows) ship in assets/ — there is no
+  // icon.png, so the previous path resolved to a missing file everywhere. On
+  // macOS BrowserWindow.icon is ignored (the bundle icon is used), so pointing at
+  // the platform icon that exists is correct for the surfaces that do read it.
+  const iconFile = process.platform === 'win32' ? 'icon.ico' : 'icon.icns'
   return app.isPackaged
-    ? join(process.resourcesPath, 'app.asar', 'assets', 'icon.png')
-    : join(packageRoot, 'assets', 'icon.png')
+    ? join(process.resourcesPath, 'app.asar', 'assets', iconFile)
+    : join(packageRoot, 'assets', iconFile)
 }
 
 const MAC_APP_TRANSLOCATION_SEGMENT = '/AppTranslocation/'
@@ -614,6 +633,11 @@ function normalizeRouterTiers(raw: unknown, fallback: Record<string, RouterTier>
   for (const [rawName, value] of Object.entries(source)) {
     if (!value || typeof value !== 'object') continue
     const name = canonicalTierKey(rawName)
+    // Tier keys are emitted raw into TOML table headers ([squilla_router.tiers.NAME]),
+    // so a key that is not a TOML bare key (spaces, dots, quotes, brackets, newlines)
+    // would produce an unparseable config the gateway rejects on every boot. Drop
+    // such keys and fall back to the profile defaults instead.
+    if (!/^[A-Za-z0-9_-]+$/.test(name)) continue
     const tier = value as Record<string, unknown>
     const provider = String(tier.provider || out[name]?.provider || '').trim()
     const model = String(tier.model || out[name]?.model || '').trim()
@@ -839,6 +863,21 @@ function normalizeDesktopCredential(parsed: Partial<DesktopConnection>): Desktop
   }
 }
 
+// Write via a temp file + atomic rename so a crash, power loss, or full disk
+// mid-write cannot leave a truncated credential (silent re-onboarding + lost
+// key) or a truncated config.toml (which, since it is only reseeded when
+// missing, would wedge boot on every launch).
+async function atomicWriteFile(filePath: string, data: string, mode: number): Promise<void> {
+  const tmpPath = `${filePath}.${randomUUID()}.tmp`
+  try {
+    await writeFile(tmpPath, data, { mode })
+    await rename(tmpPath, filePath)
+  } catch (err) {
+    await rm(tmpPath, { force: true }).catch(() => null)
+    throw err
+  }
+}
+
 async function loadDesktopCredential(): Promise<DesktopConnection | null> {
   try {
     const raw = await readFile(credentialPath(), 'utf8')
@@ -921,23 +960,82 @@ async function saveDesktopCredential(payload: OnboardingPayload): Promise<Deskto
   }
 
   mkdirSync(app.getPath('userData'), { recursive: true })
-  await writeFile(credentialPath(), JSON.stringify(credential, null, 2), { mode: 0o600 })
+  await atomicWriteFile(credentialPath(), JSON.stringify(credential, null, 2), 0o600)
   await writeDesktopConfig(credential)
   return credential
+}
+
+// Sections the desktop config template owns and regenerates from the credential
+// on every write. Everything else in config.toml is treated as foreign
+// (Control-UI/RPC-owned) and preserved verbatim across regenerations.
+const DESKTOP_OWNED_CONFIG_SECTIONS = ['llm', 'squilla_router', 'llm_ensemble', 'privacy', 'control_ui']
+// Top-level (pre-section) keys the desktop template emits itself. Any OTHER
+// top-level key present in config.toml was written by the Control UI / RPC (which
+// serializes the whole GatewayConfig, so scalar fields like
+// llm_request_timeout_seconds land in the TOML preamble) and must be preserved.
+const DESKTOP_OWNED_CONFIG_PREAMBLE_KEYS = ['state_dir', 'search_provider', 'search_api_key_env']
+
+function isDesktopOwnedConfigSection(header: string): boolean {
+  const name = header.trim()
+  return DESKTOP_OWNED_CONFIG_SECTIONS.some((owned) => name === owned || name.startsWith(`${owned}.`))
+}
+
+// Return the lines of every top-level section that the desktop template does not
+// own, so they survive a config regeneration. Line-based (like the privacy-config
+// reader) to avoid taking on a TOML parser dependency.
+function foreignConfigSectionLines(raw: string): string[] {
+  const out: string[] = []
+  let keeping = false
+  for (const rawLine of raw.split(/\r?\n/)) {
+    const header = rawLine.trim().match(/^\[+\s*([^\]]+?)\s*\]+$/)
+    if (header) keeping = !isDesktopOwnedConfigSection(header[1] ?? '')
+    if (keeping) out.push(rawLine)
+  }
+  while (out.length && out[out.length - 1].trim() === '') out.pop()
+  return out
+}
+
+// Return the top-level (pre-first-section) key lines the desktop template does
+// NOT emit itself, so RPC-written global scalars (llm_request_timeout_seconds,
+// log_level, workspace_dir, diagnostics_enabled, …) survive a regeneration. These
+// must be re-emitted in the preamble (before any [section]) to stay top-level.
+function foreignConfigPreambleLines(raw: string): string[] {
+  const out: string[] = []
+  for (const rawLine of raw.split(/\r?\n/)) {
+    if (/^\s*\[/.test(rawLine)) break // reached the first section header
+    const key = rawLine.match(/^\s*([A-Za-z0-9_-]+)\s*=/)
+    if (!key) continue // blank line or comment
+    if (DESKTOP_OWNED_CONFIG_PREAMBLE_KEYS.includes(key[1] ?? '')) continue
+    out.push(rawLine)
+  }
+  return out
 }
 
 async function writeDesktopConfig(credential: DesktopConnection): Promise<void> {
   mkdirSync(desktopHome(), { recursive: true })
   mkdirSync(desktopStateDir(), { recursive: true })
+  // Only the desktop-owned sections/keys are regenerated from the credential; any
+  // other sections (channels, memory, sandbox, mcp, scheduler, …) AND top-level
+  // scalar keys (llm_request_timeout_seconds, log_level, …) the Control UI wrote
+  // via RPC are read back and preserved, so a settings save no longer wipes live
+  // configuration.
+  let preservedForeignSections: string[] = []
+  let preservedForeignPreamble: string[] = []
+  try {
+    const existingRaw = readFileSync(desktopConfigPath(), 'utf8')
+    preservedForeignSections = foreignConfigSectionLines(existingRaw)
+    preservedForeignPreamble = foreignConfigPreambleLines(existingRaw)
+  } catch {
+    // No existing config to preserve (fresh install) or unreadable.
+  }
   const config = [
     `state_dir = ${tomlString(desktopStateDir())}`,
     `search_provider = ${tomlString(credential.searchProvider)}`,
     ...(credential.searchApiKeyEnv ? [`search_api_key_env = ${tomlString(credential.searchApiKeyEnv)}`] : []),
     // search_max_results is intentionally omitted so the gateway's own default
-    // governs instead of pinning it to a hardcoded value. Note this writer
-    // regenerates the whole config file, so it still does not preserve a value
-    // set through the control UI — that broader limitation of the desktop config
-    // writer is tracked separately.
+    // governs instead of pinning it to a hardcoded value.
+    // Preserved RPC-written top-level keys stay in the preamble (before any table).
+    ...preservedForeignPreamble,
     '',
     '[llm]',
     `provider = ${tomlString(credential.provider)}`,
@@ -953,8 +1051,9 @@ async function writeDesktopConfig(credential: DesktopConnection): Promise<void> 
     'enabled = true',
     'base_path = "/control"',
     '',
+    ...(preservedForeignSections.length ? [...preservedForeignSections, ''] : []),
   ].join('\n')
-  await writeFile(desktopConfigPath(), config, { mode: 0o600 })
+  await atomicWriteFile(desktopConfigPath(), config, 0o600)
 }
 
 function settingsSnapshot(connection: DesktopConnection | null): DesktopSettingsSnapshot {
@@ -1008,6 +1107,14 @@ async function resetDesktopSettings(): Promise<void> {
   await rm(desktopConfigPath(), { force: true })
 }
 
+function clearReusableGatewayState(): void {
+  gatewayState.url = ''
+  gatewayState.port = 0
+  gatewayState.owned = false
+  gatewayState.status = 'stopped'
+  gatewayState.error = undefined
+}
+
 interface ArtifactOpenRequest {
   data?: ArrayBuffer | Uint8Array
   name?: unknown
@@ -1047,23 +1154,35 @@ function artifactMimeKey(mime: unknown): string {
   return String(mime ?? '').split(';', 1)[0].trim().toLowerCase()
 }
 
-// When the name carries no extension, fall back to one implied by the MIME type
-// so shell.openPath can still associate a default application.
+// Append an extension implied by the MIME type unless the name already ends with
+// a recognized document/image extension. The previous "any .xxx suffix counts as
+// an extension" heuristic misclassified version/date suffixes (report.v2,
+// plan.rev3), so the authoritative MIME extension was dropped and shell.openPath
+// hit a missing/incorrect OS association.
 function artifactExtension(name: string, mime: unknown): string {
-  if (/\.[A-Za-z0-9]{1,8}$/.test(name)) return ''
+  const lower = name.toLowerCase()
+  if (Object.values(MIME_EXTENSIONS).some((ext) => lower.endsWith(ext))) return ''
   return MIME_EXTENSIONS[artifactMimeKey(mime)] || ''
 }
 
+// Artifacts opened this session, so the prune never deletes a file that an
+// external viewer (Preview, Excel, a browser) still has open — deleting it out
+// from under the app loses the document and any unsaved edits made there.
+const openedArtifactPaths = new Set<string>()
+
 // Best-effort prune so opened artifacts do not accumulate unboundedly in temp.
+// Skips files opened this session and only removes prior-session leftovers older
+// than a day, so a document a user is actively viewing is never yanked away.
 async function pruneArtifactCache(dir: string): Promise<void> {
   try {
     const now = Date.now()
     const entries = await readdir(dir)
     await Promise.all(entries.map(async (entry) => {
       const full = join(dir, entry)
+      if (openedArtifactPaths.has(full)) return
       try {
         const info = await stat(full)
-        if (now - info.mtimeMs > 60 * 60 * 1000) await unlink(full)
+        if (now - info.mtimeMs > 24 * 60 * 60 * 1000) await unlink(full)
       } catch {}
     }))
   } catch {}
@@ -1073,6 +1192,9 @@ async function openArtifactWithDefaultApp(payload: ArtifactOpenRequest): Promise
   const raw = payload?.data
   if (!raw) return { ok: false, message: 'No artifact data to open.' }
   try {
+    // Reuse the received bytes directly; fs.writeFile accepts a Uint8Array, so
+    // Buffer.from() here would just memcpy a second full copy of the payload
+    // (hundreds of MB for media artifacts) into the main process.
     const bytes = raw instanceof Uint8Array ? raw : new Uint8Array(raw)
     const dir = join(app.getPath('temp'), 'opensquilla-artifacts')
     mkdirSync(dir, { recursive: true, mode: 0o700 })
@@ -1081,7 +1203,8 @@ async function openArtifactWithDefaultApp(payload: ArtifactOpenRequest): Promise
     // A random prefix guarantees a unique, non-colliding, non-dotfile path even
     // for two opens in the same millisecond.
     const filePath = join(dir, `${randomUUID()}-${name}${artifactExtension(name, payload?.mime)}`)
-    await writeFile(filePath, Buffer.from(bytes), { mode: 0o600 })
+    await writeFile(filePath, bytes, { mode: 0o600 })
+    openedArtifactPaths.add(filePath)
     const error = await shell.openPath(filePath)
     if (error) return { ok: false, message: error }
     return { ok: true }
@@ -1194,6 +1317,55 @@ const PROVIDER_NOTE_MESSAGES: Record<DesktopLocale, Record<string, string>> = {
   },
 }
 
+// Localized descriptive notes for the search providers, mirroring
+// PROVIDER_NOTE_MESSAGES. Without these the onboarding search cards always
+// rendered the hardcoded English catalog notes, so their localized fallbacks
+// were unreachable in every non-English locale.
+const SEARCH_PROVIDER_NOTE_MESSAGES: Record<DesktopLocale, Record<string, string>> = {
+  en: {
+    duckduckgo: 'No key required. Good default for getting started.',
+    bocha: 'Web search with inline summaries and freshness support.',
+    brave: 'Managed search access with freshness support.',
+    tavily: 'Freshness-oriented web search for current research.',
+    exa: 'Semantic and content-oriented search for research workflows.',
+  },
+  'zh-Hans': {
+    duckduckgo: '无需密钥。适合入门的默认选项。',
+    bocha: '带内联摘要和时效性支持的网络搜索。',
+    brave: '带时效性支持的托管搜索访问。',
+    tavily: '面向时效性的网络搜索，适合最新研究。',
+    exa: '面向语义和内容的搜索，适合研究工作流。',
+  },
+  ja: {
+    duckduckgo: 'キー不要。始めるのに適したデフォルトです。',
+    bocha: 'インライン要約と鮮度対応を備えたウェブ検索です。',
+    brave: '鮮度対応を備えたマネージド検索アクセスです。',
+    tavily: '最新の調査向けの、鮮度重視のウェブ検索です。',
+    exa: '調査ワークフロー向けのセマンティック／コンテンツ指向検索です。',
+  },
+  fr: {
+    duckduckgo: 'Aucune clé requise. Bon choix par défaut pour démarrer.',
+    bocha: 'Recherche web avec résumés en ligne et prise en charge de la fraîcheur.',
+    brave: 'Accès de recherche géré avec prise en charge de la fraîcheur.',
+    tavily: 'Recherche web axée sur la fraîcheur pour la recherche actuelle.',
+    exa: 'Recherche sémantique et orientée contenu pour les flux de recherche.',
+  },
+  de: {
+    duckduckgo: 'Kein Schlüssel erforderlich. Gute Voreinstellung für den Einstieg.',
+    bocha: 'Websuche mit Inline-Zusammenfassungen und Aktualitätsunterstützung.',
+    brave: 'Verwalteter Suchzugriff mit Aktualitätsunterstützung.',
+    tavily: 'Aktualitätsorientierte Websuche für aktuelle Recherche.',
+    exa: 'Semantische und inhaltsorientierte Suche für Recherche-Workflows.',
+  },
+  es: {
+    duckduckgo: 'No se requiere clave. Buena opción predeterminada para empezar.',
+    bocha: 'Búsqueda web con resúmenes en línea y soporte de actualidad.',
+    brave: 'Acceso de búsqueda gestionado con soporte de actualidad.',
+    tavily: 'Búsqueda web orientada a la actualidad para investigación actual.',
+    exa: 'Búsqueda semántica y orientada a contenido para flujos de investigación.',
+  },
+}
+
 function resolveDesktopLocale(): DesktopLocale {
   const preferred = typeof app.getPreferredSystemLanguages === 'function'
     ? app.getPreferredSystemLanguages()
@@ -1201,12 +1373,53 @@ function resolveDesktopLocale(): DesktopLocale {
   for (const raw of [...preferred, app.getLocale()]) {
     if (typeof raw !== 'string') continue
     const t = raw.toLowerCase()
-    if (t.startsWith('zh')) return 'zh-Hans'
+    if (t.startsWith('zh')) {
+      // Only Simplified Chinese is bundled. Route Traditional variants
+      // (zh-Hant / zh-TW / zh-HK / zh-MO) to the English fallback rather than
+      // forcing Simplified text a Traditional reader may not want.
+      if (t.includes('hant') || /-(tw|hk|mo)\b/.test(t)) continue
+      return 'zh-Hans'
+    }
     for (const code of ['ja', 'fr', 'de', 'es'] as const) {
       if (t === code || t.startsWith(code + '-')) return code
     }
   }
   return 'en'
+}
+
+function desktopLocalePath(): string {
+  return join(app.getPath('userData'), 'desktop-locale')
+}
+
+// Persist the locale the user picked during onboarding so every main-process
+// surface (menu, dialogs, boot splash, next onboarding) honors it across
+// launches instead of reverting to the OS locale.
+function loadPersistedDesktopLocale(): DesktopLocale | null {
+  try {
+    const raw = readFileSync(desktopLocalePath(), 'utf8').trim()
+    return DESKTOP_LOCALES.includes(raw as DesktopLocale) ? (raw as DesktopLocale) : null
+  } catch {
+    return null
+  }
+}
+
+function persistDesktopLocale(locale: DesktopLocale): void {
+  try {
+    mkdirSync(app.getPath('userData'), { recursive: true })
+    writeFileSync(desktopLocalePath(), locale, 'utf8')
+  } catch {
+    // Best-effort; a failed persist just means the next launch re-resolves the OS locale.
+  }
+}
+
+function applyDesktopLocaleChoice(raw: unknown): void {
+  const requested = String(raw ?? '')
+  if (!DESKTOP_LOCALES.includes(requested as DesktopLocale)) return
+  if (requested !== desktopLocale) {
+    desktopLocale = requested as DesktopLocale
+    createApplicationMenu()
+  }
+  persistDesktopLocale(desktopLocale)
 }
 
 const DESKTOP_MESSAGES: Record<DesktopLocale, Record<string, string>> = {
@@ -1230,6 +1443,13 @@ const DESKTOP_MESSAGES: Record<DesktopLocale, Record<string, string>> = {
     'update.gatewayShutdownTimeout': 'OpenSquilla could not stop the local runtime. Try relaunching to update again.',
     'update.mockInstallTitle': 'Mock update restart',
     'update.mockInstallDetail': 'Mock mode: OpenSquilla would restart now to install {version}. No files were changed.',
+    'uninstall.confirmTitle': 'Delete local OpenSquilla desktop data?',
+    'uninstall.confirmMessage': 'This permanently deletes the local desktop profile on this machine.',
+    'uninstall.confirmDetail': 'Sessions, configuration, and secrets will be removed. The installed app itself will remain; remove it through your OS after the app closes.',
+    'uninstall.cancel': 'Cancel',
+    'uninstall.deleteEverything': 'Delete everything',
+    'launch.alreadyRunningTitle': 'OpenSquilla is already running',
+    'launch.alreadyRunningMessage': 'Another OpenSquilla window is already open on this machine. Bringing it to the front.',
     'window.onboarding': 'Set up OpenSquilla',
     'boot.profile': 'Preparing desktop profile',
     'boot.gateway-start': 'Starting local runtime',
@@ -1314,6 +1534,13 @@ const DESKTOP_MESSAGES: Record<DesktopLocale, Record<string, string>> = {
     'update.gatewayShutdownTimeout': 'OpenSquilla 无法停止本地运行时。请再次尝试重启以更新。',
     'update.mockInstallTitle': '模拟重启更新',
     'update.mockInstallDetail': '模拟模式：OpenSquilla 现在会重启并安装 {version}。没有修改任何文件。',
+    'uninstall.confirmTitle': '删除本地 OpenSquilla 桌面数据？',
+    'uninstall.confirmMessage': '这将永久删除本机上的本地桌面配置。',
+    'uninstall.confirmDetail': '会话、配置和密钥都将被移除。已安装的应用本身会保留；应用关闭后请通过操作系统将其卸载。',
+    'uninstall.cancel': '取消',
+    'uninstall.deleteEverything': '全部删除',
+    'launch.alreadyRunningTitle': 'OpenSquilla 已在运行',
+    'launch.alreadyRunningMessage': '本机已打开另一个 OpenSquilla 窗口。正在将其置于前台。',
     'window.onboarding': '设置 OpenSquilla',
     'boot.profile': '正在准备桌面配置',
     'boot.gateway-start': '正在启动本地运行时',
@@ -1396,6 +1623,13 @@ const DESKTOP_MESSAGES: Record<DesktopLocale, Record<string, string>> = {
     'update.errorTitle': 'アップデートの確認に失敗しました',
     'update.moveToApplications': '自動アップデートを有効にするには、OpenSquilla を「アプリケーション」フォルダに移動してから再試行してください。',
     'update.gatewayShutdownTimeout': 'ローカルランタイムを停止できませんでした。もう一度、再起動してアップデートをお試しください。',
+    'uninstall.confirmTitle': 'ローカルの OpenSquilla デスクトップデータを削除しますか？',
+    'uninstall.confirmMessage': 'このマシン上のローカルデスクトッププロファイルを完全に削除します。',
+    'uninstall.confirmDetail': 'セッション、設定、シークレットが削除されます。インストール済みのアプリ自体は残ります。アプリを閉じた後、OS から削除してください。',
+    'uninstall.cancel': 'キャンセル',
+    'uninstall.deleteEverything': 'すべて削除',
+    'launch.alreadyRunningTitle': 'OpenSquilla はすでに実行中です',
+    'launch.alreadyRunningMessage': 'このマシンでは別の OpenSquilla ウィンドウがすでに開いています。前面に表示します。',
     'window.onboarding': 'OpenSquilla をセットアップ',
     'boot.profile': 'デスクトッププロファイルを準備しています',
     'boot.gateway-start': 'ローカルランタイムを起動しています',
@@ -1438,6 +1672,15 @@ const DESKTOP_MESSAGES: Record<DesktopLocale, Record<string, string>> = {
     'onboarding.step2.directModel': '直接モデル',
     'onboarding.step2.back': '戻る',
     'onboarding.step2.next': '次へ',
+    'onboarding.nav.routing.title': 'ルーティング',
+    'onboarding.nav.routing.sub': 'モード',
+    'onboarding.aria.modelRoutingMode': 'ルーティングモード',
+    'onboarding.step3.badge': '詳細',
+    'onboarding.step3.heading': 'ルーティングモードを選択',
+    'onboarding.step3.subtitle': 'OpenSquilla が Smart Router のティアを使うか、固定モデルを 1 つ呼び出すか、OpenRouter アンサンブルを使うかを選びます。',
+    'onboarding.step3.back': '戻る',
+    'onboarding.step3.next': '次へ',
+    'onboarding.step3.directModel': '直接モデル',
     'onboarding.step4.badge': 'モデル',
     'onboarding.step4.heading': 'ティアのモデルを確認',
     'onboarding.step4.subtitle': 'デフォルトのテキストティアを選んで CLI のデフォルトを維持するか、起動前にモデル id をカスタマイズします。',
@@ -1469,6 +1712,13 @@ const DESKTOP_MESSAGES: Record<DesktopLocale, Record<string, string>> = {
     'update.errorTitle': 'Échec de la recherche de mises à jour',
     'update.moveToApplications': 'Déplacez OpenSquilla dans votre dossier Applications pour activer les mises à jour automatiques, puis réessayez.',
     'update.gatewayShutdownTimeout': 'OpenSquilla n\'a pas pu arrêter le runtime local. Réessayez de relancer la mise à jour.',
+    'uninstall.confirmTitle': 'Supprimer les données locales du bureau OpenSquilla ?',
+    'uninstall.confirmMessage': 'Cela supprime définitivement le profil de bureau local sur cette machine.',
+    'uninstall.confirmDetail': 'Les sessions, la configuration et les secrets seront supprimés. L’application installée elle-même sera conservée ; supprimez-la via votre système d’exploitation après la fermeture de l’application.',
+    'uninstall.cancel': 'Annuler',
+    'uninstall.deleteEverything': 'Tout supprimer',
+    'launch.alreadyRunningTitle': 'OpenSquilla est déjà en cours d’exécution',
+    'launch.alreadyRunningMessage': 'Une autre fenêtre OpenSquilla est déjà ouverte sur cette machine. Elle va être mise au premier plan.',
     'window.onboarding': 'Configurer OpenSquilla',
     'boot.profile': 'Préparation du profil de bureau',
     'boot.gateway-start': 'Démarrage du runtime local',
@@ -1511,6 +1761,15 @@ const DESKTOP_MESSAGES: Record<DesktopLocale, Record<string, string>> = {
     'onboarding.step2.directModel': 'Modèle direct',
     'onboarding.step2.back': 'Retour',
     'onboarding.step2.next': 'Suivant',
+    'onboarding.nav.routing.title': 'Routage',
+    'onboarding.nav.routing.sub': 'Mode',
+    'onboarding.aria.modelRoutingMode': 'Mode de routage',
+    'onboarding.step3.badge': 'Avancé',
+    'onboarding.step3.heading': 'Choisir le mode de routage',
+    'onboarding.step3.subtitle': "Décidez si OpenSquilla doit utiliser les niveaux du Smart Router, appeler un seul modèle fixe, ou utiliser l'ensemble OpenRouter.",
+    'onboarding.step3.back': 'Retour',
+    'onboarding.step3.next': 'Suivant',
+    'onboarding.step3.directModel': 'Modèle direct',
     'onboarding.step4.badge': 'Modèles',
     'onboarding.step4.heading': 'Examiner les modèles par niveau',
     'onboarding.step4.subtitle': 'Choisissez le niveau de texte par défaut et conservez les valeurs par défaut de la CLI, ou personnalisez les id de modèle avant le démarrage.',
@@ -1542,6 +1801,13 @@ const DESKTOP_MESSAGES: Record<DesktopLocale, Record<string, string>> = {
     'update.errorTitle': 'Update-Prüfung fehlgeschlagen',
     'update.moveToApplications': 'Verschieben Sie OpenSquilla in Ihren Programme-Ordner, um automatische Updates zu aktivieren, und versuchen Sie es erneut.',
     'update.gatewayShutdownTimeout': 'OpenSquilla konnte die lokale Laufzeitumgebung nicht stoppen. Versuchen Sie erneut, zum Aktualisieren neu zu starten.',
+    'uninstall.confirmTitle': 'Lokale OpenSquilla-Desktop-Daten löschen?',
+    'uninstall.confirmMessage': 'Dies löscht das lokale Desktop-Profil auf diesem Gerät dauerhaft.',
+    'uninstall.confirmDetail': 'Sitzungen, Konfiguration und Secrets werden entfernt. Die installierte App selbst bleibt erhalten; entfernen Sie sie nach dem Schließen der App über Ihr Betriebssystem.',
+    'uninstall.cancel': 'Abbrechen',
+    'uninstall.deleteEverything': 'Alles löschen',
+    'launch.alreadyRunningTitle': 'OpenSquilla läuft bereits',
+    'launch.alreadyRunningMessage': 'Auf diesem Gerät ist bereits ein anderes OpenSquilla-Fenster geöffnet. Es wird in den Vordergrund geholt.',
     'window.onboarding': 'OpenSquilla einrichten',
     'boot.profile': 'Desktop-Profil wird vorbereitet',
     'boot.gateway-start': 'Lokale Laufzeitumgebung wird gestartet',
@@ -1584,6 +1850,15 @@ const DESKTOP_MESSAGES: Record<DesktopLocale, Record<string, string>> = {
     'onboarding.step2.directModel': 'Direktes Modell',
     'onboarding.step2.back': 'Zurück',
     'onboarding.step2.next': 'Weiter',
+    'onboarding.nav.routing.title': 'Routing',
+    'onboarding.nav.routing.sub': 'Modus',
+    'onboarding.aria.modelRoutingMode': 'Routing-Modus',
+    'onboarding.step3.badge': 'Erweitert',
+    'onboarding.step3.heading': 'Routing-Modus wählen',
+    'onboarding.step3.subtitle': 'Legen Sie fest, ob OpenSquilla die Smart-Router-Stufen verwenden, ein festes Modell aufrufen oder das OpenRouter-Ensemble nutzen soll.',
+    'onboarding.step3.back': 'Zurück',
+    'onboarding.step3.next': 'Weiter',
+    'onboarding.step3.directModel': 'Direktes Modell',
     'onboarding.step4.badge': 'Modelle',
     'onboarding.step4.heading': 'Stufenmodelle prüfen',
     'onboarding.step4.subtitle': 'Wählen Sie die Standard-Textstufe und behalten Sie die CLI-Standards bei, oder passen Sie die Modell-ids vor dem Start an.',
@@ -1615,6 +1890,13 @@ const DESKTOP_MESSAGES: Record<DesktopLocale, Record<string, string>> = {
     'update.errorTitle': 'Error al buscar actualizaciones',
     'update.moveToApplications': 'Mueve OpenSquilla a tu carpeta de Aplicaciones para habilitar las actualizaciones automáticas e inténtalo de nuevo.',
     'update.gatewayShutdownTimeout': 'OpenSquilla no pudo detener el runtime local. Intenta reiniciar para actualizar de nuevo.',
+    'uninstall.confirmTitle': '¿Eliminar los datos locales de escritorio de OpenSquilla?',
+    'uninstall.confirmMessage': 'Esto elimina permanentemente el perfil de escritorio local en esta máquina.',
+    'uninstall.confirmDetail': 'Se eliminarán las sesiones, la configuración y los secretos. La aplicación instalada en sí permanecerá; elimínala a través de tu sistema operativo después de cerrar la aplicación.',
+    'uninstall.cancel': 'Cancelar',
+    'uninstall.deleteEverything': 'Eliminar todo',
+    'launch.alreadyRunningTitle': 'OpenSquilla ya se está ejecutando',
+    'launch.alreadyRunningMessage': 'Ya hay otra ventana de OpenSquilla abierta en esta máquina. Se traerá al frente.',
     'window.onboarding': 'Configurar OpenSquilla',
     'boot.profile': 'Preparando el perfil de escritorio',
     'boot.gateway-start': 'Iniciando el runtime local',
@@ -1657,6 +1939,15 @@ const DESKTOP_MESSAGES: Record<DesktopLocale, Record<string, string>> = {
     'onboarding.step2.directModel': 'Modelo directo',
     'onboarding.step2.back': 'Atrás',
     'onboarding.step2.next': 'Siguiente',
+    'onboarding.nav.routing.title': 'Enrutamiento',
+    'onboarding.nav.routing.sub': 'Modo',
+    'onboarding.aria.modelRoutingMode': 'Modo de enrutamiento',
+    'onboarding.step3.badge': 'Avanzado',
+    'onboarding.step3.heading': 'Elige el modo de enrutamiento',
+    'onboarding.step3.subtitle': 'Decide si OpenSquilla debe usar los niveles del Smart Router, llamar a un único modelo fijo o usar el ensemble de OpenRouter.',
+    'onboarding.step3.back': 'Atrás',
+    'onboarding.step3.next': 'Siguiente',
+    'onboarding.step3.directModel': 'Modelo directo',
     'onboarding.step4.badge': 'Modelos',
     'onboarding.step4.heading': 'Revisa los modelos por nivel',
     'onboarding.step4.subtitle': 'Elige el nivel de texto predeterminado y mantén los valores predeterminados de la CLI, o personaliza los id de modelo antes del inicio.',
@@ -1738,6 +2029,16 @@ const ONBOARDING_SCRIPT_MESSAGES: Record<DesktopLocale, Record<string, string>> 
   },
   ja: {
     tierDefaultsAvailable: 'ティアのデフォルトを利用できます。',
+    modeSmartRouterTitle: 'Smart Router',
+    modeSmartRouterDesc: 'このプロバイダー向けの既存の階層化された Squilla Router のデフォルトを使用します。',
+    modeDirectTitle: '直接単一モデル',
+    modeDirectDesc: 'すべてのリクエストを、ティアルーティングやアンサンブルなしで 1 つのプロバイダーモデルに送信します。',
+    modeEnsembleTitle: 'アンサンブル',
+    modeEnsembleDesc: 'OpenRouter の static B5 アンサンブルを使用し、ティア表をスキップします。',
+    modeSmartRouterUnavailable: 'このプロバイダーにはまだデスクトップ用のティアデフォルトがありません。',
+    modeEnsembleUnavailable: 'アンサンブルの設定には現在 OpenRouter が必要です。',
+    directModelPrompt: 'リクエストはこのモデルを直接使用します。',
+    directModelRequiredDirect: '直接単一モデルモードには直接モデルが必要です。',
     directModelLabel: '直接モデル',
     noModel: 'モデルなし',
     directModelNote: 'Smart Router はオフです。すべてのリクエストでこのモデルを直接使用します。',
@@ -1757,6 +2058,16 @@ const ONBOARDING_SCRIPT_MESSAGES: Record<DesktopLocale, Record<string, string>> 
   },
   fr: {
     tierDefaultsAvailable: 'Valeurs de niveau par défaut disponibles.',
+    modeSmartRouterTitle: 'Smart Router',
+    modeSmartRouterDesc: 'Utiliser les valeurs par défaut existantes du Squilla Router en couches pour ce fournisseur.',
+    modeDirectTitle: 'Modèle unique direct',
+    modeDirectDesc: 'Envoyer chaque requête à un seul modèle du fournisseur, sans routage par niveaux ni ensemble.',
+    modeEnsembleTitle: 'Ensemble',
+    modeEnsembleDesc: "Utiliser l'ensemble statique B5 d'OpenRouter et ignorer le tableau des niveaux.",
+    modeSmartRouterUnavailable: "Ce fournisseur n'a pas encore de niveaux par défaut pour le bureau.",
+    modeEnsembleUnavailable: "La configuration de l'ensemble nécessite actuellement OpenRouter.",
+    directModelPrompt: 'Les requêtes utiliseront directement ce modèle.',
+    directModelRequiredDirect: 'Un modèle direct est requis pour le mode Modèle unique direct.',
     directModelLabel: 'Modèle direct',
     noModel: 'Aucun modèle',
     directModelNote: 'Smart Router est désactivé. Chaque requête utilise directement ce modèle.',
@@ -1776,6 +2087,16 @@ const ONBOARDING_SCRIPT_MESSAGES: Record<DesktopLocale, Record<string, string>> 
   },
   de: {
     tierDefaultsAvailable: 'Stufenstandards verfügbar.',
+    modeSmartRouterTitle: 'Smart Router',
+    modeSmartRouterDesc: 'Die vorhandenen mehrstufigen Squilla-Router-Standards für diesen Anbieter verwenden.',
+    modeDirectTitle: 'Einzelnes Direktmodell',
+    modeDirectDesc: 'Jede Anfrage an ein einzelnes Anbietermodell senden, ohne Stufenrouting oder Ensemble.',
+    modeEnsembleTitle: 'Ensemble',
+    modeEnsembleDesc: 'Das statische B5-Ensemble von OpenRouter verwenden und die Stufentabelle überspringen.',
+    modeSmartRouterUnavailable: 'Dieser Anbieter hat noch keine Desktop-Stufenstandards.',
+    modeEnsembleUnavailable: 'Die Ensemble-Einrichtung erfordert derzeit OpenRouter.',
+    directModelPrompt: 'Anfragen verwenden dieses Modell direkt.',
+    directModelRequiredDirect: 'Für den Modus „Einzelnes Direktmodell“ ist ein direktes Modell erforderlich.',
     directModelLabel: 'Direktes Modell',
     noModel: 'Kein Modell',
     directModelNote: 'Smart Router ist aus. Jede Anfrage verwendet dieses Modell direkt.',
@@ -1795,6 +2116,16 @@ const ONBOARDING_SCRIPT_MESSAGES: Record<DesktopLocale, Record<string, string>> 
   },
   es: {
     tierDefaultsAvailable: 'Valores de nivel predeterminados disponibles.',
+    modeSmartRouterTitle: 'Smart Router',
+    modeSmartRouterDesc: 'Usar los valores predeterminados por niveles existentes del Squilla Router para este proveedor.',
+    modeDirectTitle: 'Modelo único directo',
+    modeDirectDesc: 'Enviar cada solicitud a un único modelo del proveedor, sin enrutamiento por niveles ni ensemble.',
+    modeEnsembleTitle: 'Ensemble',
+    modeEnsembleDesc: 'Usar el ensemble estático B5 de OpenRouter y omitir la tabla de niveles.',
+    modeSmartRouterUnavailable: 'Este proveedor aún no tiene valores de nivel predeterminados para el escritorio.',
+    modeEnsembleUnavailable: 'La configuración del ensemble requiere actualmente OpenRouter.',
+    directModelPrompt: 'Las solicitudes usarán este modelo directamente.',
+    directModelRequiredDirect: 'Se requiere un modelo directo para el modo Modelo único directo.',
     directModelLabel: 'Modelo directo',
     noModel: 'Sin modelo',
     directModelNote: 'Smart Router está desactivado. Cada solicitud usa este modelo directamente.',
@@ -1865,8 +2196,11 @@ function createApplicationMenu(): void {
     {
       label: desktopT('menu.view'),
       submenu: [
-        { role: 'reload' },
-        { role: 'forceReload' },
+        // Disable reload while the onboarding wizard is open: its state lives only
+        // in the renderer of a one-shot data: URL, so a reload would silently wipe
+        // the in-progress setup (typed key, provider, step, tier edits).
+        { role: 'reload', enabled: currentOnboardingWindow() === null },
+        { role: 'forceReload', enabled: currentOnboardingWindow() === null },
         { role: 'toggleDevTools' },
         { type: 'separator' },
         { role: 'resetZoom' },
@@ -2693,6 +3027,7 @@ function onboardingHtml(): string {
     const desktopMessages = ${JSON.stringify(DESKTOP_MESSAGES)};
     const onboardingMessageCatalog = ${JSON.stringify(ONBOARDING_SCRIPT_MESSAGES)};
     const providerNoteCatalog = ${JSON.stringify(PROVIDER_NOTE_MESSAGES)};
+    const searchNoteCatalog = ${JSON.stringify(SEARCH_PROVIDER_NOTE_MESSAGES)};
     let activeLocale = ${JSON.stringify(desktopLocale)};
     let t = messagesFor(activeLocale);
     function messagesFor(locale) {
@@ -2795,7 +3130,11 @@ function onboardingHtml(): string {
         '<span class="provider-tag">' + escapeHtml(t.providerField) + '</span><strong>' + escapeHtml(item.label) + '</strong><small>' + escapeHtml(item.routerSupported ? t.tierDefaultsAvailable : providerNote(item)) + '</small></button>'
       )).join('');
       function selectProvider(nextProvider) {
-	        provider.value = nextProvider || 'openrouter';
+	        const next = nextProvider || 'openrouter';
+	        // Re-clicking the already-active provider must not reset base URL, model,
+	        // routing mode, and customized tiers back to catalog defaults.
+	        if (next === provider.value) return;
+	        provider.value = next;
 	        errorBox.textContent = '';
 	        syncProviderDefaults(true);
 	        renderProviderGrid();
@@ -2918,10 +3257,16 @@ function onboardingHtml(): string {
     function currentSearchProvider() {
       return searchProviders.find((item) => item.providerId === searchProvider.value) || searchProviders[0];
     }
+    function searchProviderNote(item) {
+      return (searchNoteCatalog[activeLocale] && searchNoteCatalog[activeLocale][item.providerId])
+        || (searchNoteCatalog.en && searchNoteCatalog.en[item.providerId])
+        || item.note
+        || (item.requiresApiKey ? t.requiresApiKey : t.noKeyRequired);
+    }
     function renderSearchProviderGrid() {
       searchProviderGrid.innerHTML = searchProviders.map((item) => (
         '<button class="choice' + (item.providerId === searchProvider.value ? ' active' : '') + '" type="button" data-search-provider="' + escapeAttr(item.providerId) + '">' +
-        '<strong>' + escapeHtml(item.label) + '</strong><small>' + escapeHtml(item.note || (item.requiresApiKey ? t.requiresApiKey : t.noKeyRequired)) + '</small></button>'
+        '<strong>' + escapeHtml(item.label) + '</strong><small>' + escapeHtml(searchProviderNote(item)) + '</small></button>'
       )).join('');
       searchProviderGrid.querySelectorAll('[data-search-provider]').forEach((button) => {
         button.addEventListener('click', () => {
@@ -2936,7 +3281,7 @@ function onboardingHtml(): string {
       searchKeyLabel.hidden = !selected.requiresApiKey;
       const input = document.getElementById('searchApiKey');
       if (input) input.placeholder = selected.keyPlaceholder || selected.envKey || 'SEARCH_API_KEY';
-      searchHint.textContent = selected.note || (selected.requiresApiKey ? fmt('searchAvailable', { label: selected.label }) : t.searchHintDefault);
+      searchHint.textContent = searchProviderNote(selected);
     }
     function isSimpleSetup() {
       return setupMode.value === 'simple';
@@ -3039,7 +3384,14 @@ function onboardingHtml(): string {
       const selected = currentProvider();
       const selectedSearch = currentSearchProvider();
       if (step === 1 && selected.requiresApiKey && !document.getElementById('apiKey').value.trim()) return fmt('apiKeyRequired', { label: selected.label });
-      if (step === 2 && modelRoutingMode.value === 'direct' && !model.value.trim()) return t.directModelRequiredDirect;
+      // Direct mode needs a model. In Simple setup the routing screen (step 2) is
+      // not in the route, so the model is entered on the provider screen (step 1);
+      // validate on whichever step is actually reachable, or the check silently
+      // never runs and the save fails late with a raw main-process error.
+      if (modelRoutingMode.value === 'direct' && !model.value.trim()) {
+        if (isSimpleSetup() && step === 1) return t.directModelRequiredDirect;
+        if (!isSimpleSetup() && step === 2) return t.directModelRequiredDirect;
+      }
       if (step === 3 && modelRoutingMode.value === 'squilla_router') {
         const defaultTier = document.getElementById('routerDefaultTier')?.value || 'c1';
         if (!routerTiers[defaultTier] || !routerTiers[defaultTier].model) return t.defaultTierRequiresModel;
@@ -3086,6 +3438,7 @@ function onboardingHtml(): string {
           routerTiers,
           searchProvider: searchProvider.value,
           searchApiKey: document.getElementById('searchApiKey').value,
+          locale: activeLocale,
         });
       } catch (error) {
         errorBox.textContent = error && error.message ? error.message : String(error);
@@ -3102,6 +3455,22 @@ function onboardingHtml(): string {
 
 async function runOnboarding(): Promise<DesktopConnection> {
   const existing = await loadDesktopCredential()
+  // A saved credential encrypted with the OS keychain that this session cannot
+  // read (keychain locked or unavailable) must not be treated as "no credential":
+  // silently re-onboarding would re-save the key as plaintext. Surface an
+  // actionable error so the user can unlock and retry, or Reset setup.
+  if (
+    existing
+    && existing.encryptedApiKey
+    && existing.encryption === 'safeStorage'
+    && desktopSecretStorageBackend() !== 'safeStorage'
+  ) {
+    throw new Error(
+      'Your saved OpenSquilla credential is stored in the OS keychain, which is '
+      + 'currently unavailable (locked or inaccessible). Unlock it and reopen '
+      + 'OpenSquilla, or use "Reset setup" to start over.'
+    )
+  }
   if (existing && isConnectionReady(existing)) {
     // Seed the gateway config from the saved credential only when it does not
     // exist yet. Once it exists the Control UI owns it via RPC, so regenerating
@@ -3139,6 +3508,20 @@ async function runOnboarding(): Promise<DesktopConnection> {
     })
     installEditingContextMenu(onboardingWindow)
 
+    // The wizard is a single data: URL page; block any renderer-initiated
+    // top-frame navigation (e.g. a dropped file/link) so it can't replace the
+    // onboarding UI — which holds the preload IPC bridge — with a foreign document.
+    const guardOnboardingNavigation = (event: Electron.Event, targetUrl: string) => {
+      event.preventDefault()
+      if (/^https?:\/\//i.test(targetUrl) || targetUrl.startsWith('mailto:')) {
+        void shell.openExternal(targetUrl)
+      }
+    }
+    onboardingWindow.webContents.on('will-navigate', guardOnboardingNavigation)
+    onboardingWindow.webContents.on('will-redirect', guardOnboardingNavigation)
+    // Rebuild the app menu so View → Reload is disabled while onboarding is open.
+    createApplicationMenu()
+
     onboardingWindow.once('ready-to-show', () => {
       if (!onboardingWindow || onboardingWindow.isDestroyed()) return
       onboardingWindow.show()
@@ -3146,6 +3529,8 @@ async function runOnboarding(): Promise<DesktopConnection> {
     })
     onboardingWindow.on('closed', () => {
       onboardingWindow = null
+      // Re-enable View → Reload now that the wizard is gone.
+      createApplicationMenu()
       if (rejectOnboarding) {
         const reject = rejectOnboarding
         resolveOnboarding = null
@@ -3264,28 +3649,55 @@ async function resolveGatewayRuntime(): Promise<RuntimeLaunch> {
   }
 }
 
-function isPortOpen(port: number): Promise<boolean> {
-  return new Promise((resolveOpen) => {
-    const socket = net.createConnection({ host: '127.0.0.1', port })
-    socket.setTimeout(350)
-    socket.on('connect', () => {
-      socket.destroy()
-      resolveOpen(true)
-    })
-    socket.on('timeout', () => {
-      socket.destroy()
-      resolveOpen(false)
-    })
-    socket.on('error', () => resolveOpen(false))
+const GATEWAY_PORT_FIRST = 18791
+const GATEWAY_PORT_LAST = 18830
+let gatewayPortCursor = GATEWAY_PORT_FIRST
+
+function explicitGatewayPort(): number | null {
+  const envPort = Number(process.env.OPENSQUILLA_DESKTOP_GATEWAY_PORT || '')
+  return Number.isInteger(envPort) && envPort > 0 ? envPort : null
+}
+
+function hasExplicitGatewayPort(): boolean {
+  return explicitGatewayPort() !== null
+}
+
+function nextGatewayPortAfter(port: number): number {
+  return port >= GATEWAY_PORT_LAST ? GATEWAY_PORT_FIRST : port + 1
+}
+
+function isPortBindable(port: number): Promise<boolean> {
+  return new Promise((resolveBindable) => {
+    const server = net.createServer()
+    let settled = false
+    const settle = (bindable: boolean) => {
+      if (settled) return
+      settled = true
+      server.removeAllListeners()
+      if (server.listening) {
+        server.close(() => resolveBindable(bindable))
+      } else {
+        resolveBindable(bindable)
+      }
+    }
+    server.once('error', () => settle(false))
+    server.once('listening', () => settle(true))
+    server.listen({ host: '127.0.0.1', port, exclusive: true })
   })
 }
 
 async function findGatewayPort(): Promise<number> {
-  const envPort = Number(process.env.OPENSQUILLA_DESKTOP_GATEWAY_PORT || '')
-  if (Number.isInteger(envPort) && envPort > 0) return envPort
+  const envPort = explicitGatewayPort()
+  if (envPort !== null) return envPort
 
-  for (let port = 18791; port <= 18830; port += 1) {
-    if (!(await isPortOpen(port))) return port
+  const portCount = GATEWAY_PORT_LAST - GATEWAY_PORT_FIRST + 1
+  const startPort = Math.min(Math.max(gatewayPortCursor, GATEWAY_PORT_FIRST), GATEWAY_PORT_LAST)
+  for (let offset = 0; offset < portCount; offset += 1) {
+    const port = GATEWAY_PORT_FIRST + ((startPort - GATEWAY_PORT_FIRST + offset) % portCount)
+    if (await isPortBindable(port)) {
+      gatewayPortCursor = nextGatewayPortAfter(port)
+      return port
+    }
   }
   throw new Error('No free OpenSquilla desktop gateway port found in 18791-18830.')
 }
@@ -3324,12 +3736,19 @@ function gatewayExitLooksLikeNewerConfig(output: string): boolean {
   return hasValidationSignal && NEWER_CONFIG_DIAGNOSTIC_FIELDS.some((field) => normalized.includes(field))
 }
 
+function gatewayExitLooksLikePortInUse(output: string): boolean {
+  return /OPENSQUILLA_GATEWAY_PORT_IN_USE/i.test(output)
+    || /gateway could not start:.*is already in use/i.test(output)
+    || /gateway port is already in use/i.test(output)
+    || /:\d+\s+is already in use/i.test(output)
+}
+
 function classifyGatewayExitMessage(message: string, outputTail: string): string {
   if (!gatewayExitLooksLikeNewerConfig(outputTail)) return message
   return (
     message +
     '\n\nOpenSquilla could not read this config because it contains settings written by a newer OpenSquilla version. ' +
-    'Reopen OpenSquilla 0.5.0 Preview 1, or reset the desktop config before running an older version. ' +
+    `Reopen the newer OpenSquilla version that created it, or reset the desktop config before running this version (${app.getVersion()}). ` +
     'Use Reveal log for details.'
   )
 }
@@ -3347,9 +3766,11 @@ async function waitForGateway(url: string, earlyExitMessage?: () => string | nul
   throw new Error(`Gateway did not become healthy at ${url}`)
 }
 
-async function waitForControlUi(url: string): Promise<void> {
+async function waitForControlUi(url: string, earlyExitMessage?: () => string | null): Promise<void> {
   const startedAt = Date.now()
   while (Date.now() - startedAt < 45_000) {
+    const earlyExit = earlyExitMessage?.()
+    if (earlyExit) throw new Error(earlyExit)
     try {
       const response = await fetch(`${url}/control/`, { signal: AbortSignal.timeout(1500) })
       if (response.ok) return
@@ -3358,6 +3779,8 @@ async function waitForControlUi(url: string): Promise<void> {
     }
     await new Promise((resolveWait) => setTimeout(resolveWait, 500))
   }
+  const earlyExit = earlyExitMessage?.()
+  if (earlyExit) throw new Error(earlyExit)
   throw new Error(`Control UI did not become reachable at ${url}/control/`)
 }
 
@@ -3384,7 +3807,7 @@ async function reuseHealthyGatewayState(): Promise<GatewayState | null> {
 }
 
 async function startGateway(): Promise<GatewayState> {
-  const reusableGateway = await reuseHealthyGatewayState()
+  const reusableGateway = forceOnboardingOnNextStartup ? null : await reuseHealthyGatewayState()
   if (reusableGateway) return reusableGateway
 
   assertSupportedMacInstallLocation()
@@ -3393,7 +3816,14 @@ async function startGateway(): Promise<GatewayState> {
     if (hasGatewayProcessExited(gatewayProcess)) {
       gatewayProcess = null
     } else {
+      // Wait for the old child to actually exit before spawning a replacement.
+      // stopGateway() only initiates termination; the gateway drains for several
+      // seconds and holds gateway.pid.lock until it exits, so respawning
+      // immediately makes the new gateway abort on the held lock and the restart
+      // fails with an unclassified error.
+      const previousChild = gatewayProcess
       stopGateway()
+      await waitForGatewayProcessExit(previousChild)
     }
     gatewayState.status = 'stopped'
     gatewayState.error = undefined
@@ -3414,8 +3844,14 @@ async function startGateway(): Promise<GatewayState> {
 
   sendBootStatus('profile')
   const connection = await runOnboarding()
+  forceOnboardingOnNextStartup = false
   const apiKey = decryptApiKey(connection)
-  if (!apiKey) throw new Error('Saved desktop API key could not be read.')
+  // Keyless providers (e.g. Ollama) ship requiresApiKey=false and are accepted
+  // by onboarding without a key, so only treat a missing key as fatal when the
+  // provider actually needs one — otherwise every keyless credential wedges boot.
+  if (providerDefaults(connection.provider).requiresApiKey && !apiKey) {
+    throw new Error('Saved desktop API key could not be read.')
+  }
   const searchApiKey = decryptSearchApiKey(connection)
   // Config is seeded (when missing) inside runOnboarding / the onboarding save,
   // and is otherwise the RPC-owned source of truth — so it is intentionally NOT
@@ -3430,6 +3866,19 @@ async function startGateway(): Promise<GatewayState> {
   mkdirSync(logDir, { recursive: true })
   const logPath = join(logDir, 'gateway.log')
   const logStream = createWriteStream(logPath, { flags: 'a' })
+  // Node can emit both 'error' and 'exit' for one child, and each handler closes
+  // the stream — so guard writes/close to be idempotent, and swallow any late
+  // write-after-end/EPIPE rather than letting it crash the main process.
+  let logStreamClosed = false
+  logStream.on('error', () => {})
+  const writeLogLine = (text: string) => {
+    if (!logStreamClosed) logStream.write(text)
+  }
+  const closeLogStream = () => {
+    if (logStreamClosed) return
+    logStreamClosed = true
+    logStream.end()
+  }
 
   gatewayState.url = url
   gatewayState.port = port
@@ -3443,7 +3892,7 @@ async function startGateway(): Promise<GatewayState> {
     ...process.env,
     PATH: childPath,
     ...(process.platform === 'win32' ? { Path: childPath } : {}),
-    [connection.apiKeyEnv]: apiKey,
+    ...(connection.apiKeyEnv && apiKey ? { [connection.apiKeyEnv]: apiKey } : {}),
     ...(connection.searchApiKeyEnv && searchApiKey ? { [connection.searchApiKeyEnv]: searchApiKey } : {}),
     OPENSQUILLA_DESKTOP: '1',
     OPENSQUILLA_INSTALL_METHOD: 'desktop',
@@ -3462,9 +3911,14 @@ async function startGateway(): Promise<GatewayState> {
     {
       cwd: runtime.cwd,
       env: childEnv,
+      detached: runtime.mode === 'dev' && process.platform !== 'win32',
+      // The bundled gateway is a console-subsystem binary; without this Windows
+      // allocates a stray console window whose closure would kill the gateway.
+      windowsHide: true,
     }
   )
   gatewayProcess = child
+  if (runtime.mode === 'dev') gatewayProcessTreeChildren.add(child)
 
   let gatewayOutputTail = ''
   let childExitMessage: string | null = null
@@ -3477,10 +3931,15 @@ async function startGateway(): Promise<GatewayState> {
   child.stderr.pipe(logStream, { end: false })
   child.once('exit', (code, signal) => {
     const message = `gateway exited code=${code ?? 'null'} signal=${signal ?? 'null'}`
-    const classifiedMessage = classifyGatewayExitMessage(message, gatewayOutputTail)
+    const portConflictExit = gatewayExitLooksLikePortInUse(gatewayOutputTail)
+    const exitMessage = portConflictExit ? `${message}\nGateway port is already in use.` : message
+    const classifiedMessage = classifyGatewayExitMessage(exitMessage, gatewayOutputTail)
     const isCurrentGateway = gatewayProcess === child
     if (isCurrentGateway) gatewayProcess = null
-    logStream.write(`\n[desktop] ${message}\n`)
+    writeLogLine(`\n[desktop] ${message}\n`)
+    // Release the append fd; without this every (re)start leaks one open handle
+    // to gateway.log for the lifetime of the main process.
+    closeLogStream()
     if (!isCurrentGateway) return
     if (isQuitting) {
       gatewayState.status = 'stopped'
@@ -3489,15 +3948,74 @@ async function startGateway(): Promise<GatewayState> {
     gatewayState.status = 'error'
     gatewayState.error = classifiedMessage
     childExitMessage = classifiedMessage
+    if (portConflictExit && !hasExplicitGatewayPort()) {
+      gatewayState.status = 'stopped'
+      gatewayState.error = undefined
+      return
+    }
     sendBootError(gatewayState.error)
+    // After boot the window is on the gateway-served Control UI, which never
+    // listens for boot:error. Restore the boot splash so the crash message and
+    // the Retry/Reset recovery affordances are visible instead of a dead origin.
+    void restoreMainWindowToBootPage()
+  })
+
+  // A failed spawn (uv missing in dev, non-executable bundled binary) emits
+  // 'error' and never 'exit'; without a listener Node rethrows it as an uncaught
+  // main-process exception (raw Electron crash dialog) and the boot wait hangs.
+  child.once('error', (err) => {
+    const message = `gateway failed to start: ${err instanceof Error ? err.message : String(err)}`
+    const isCurrentGateway = gatewayProcess === child
+    if (isCurrentGateway) gatewayProcess = null
+    closeLogStream()
+    if (!isCurrentGateway) return
+    childExitMessage = message
+    if (isQuitting) {
+      gatewayState.status = 'stopped'
+      return
+    }
+    gatewayState.status = 'error'
+    gatewayState.error = message
+    sendBootError(message)
   })
 
   sendBootStatus('gateway-health')
   await waitForGateway(url, () => childExitMessage)
-  await waitForControlUi(url)
+  await waitForControlUi(url, () => childExitMessage)
+  // Guard against adopting a foreign gateway that won the probe→bind race: if our
+  // spawned child has already exited, it lost the exclusive bind and the healthy
+  // endpoint belongs to someone else (e.g. a CLI `opensquilla gateway run` on the
+  // same port). Surface it as a port conflict so recovery advances to the next
+  // port instead of silently attaching the window to the wrong profile.
+  if (hasGatewayProcessExited(child) || gatewayProcess !== child) {
+    throw new Error(childExitMessage
+      || 'OPENSQUILLA_GATEWAY_PORT_IN_USE: desktop gateway did not keep the port bind.')
+  }
   sendBootStatus('control')
   gatewayState.status = 'ready'
   return gatewayState
+}
+
+async function startGatewayWithPortRecovery(): Promise<GatewayState> {
+  // Begin each fresh recovery sequence at the first port so a previously-used
+  // port that is now free is reused. The cursor still advances within this loop
+  // to skip a port whose bind lost a post-probe race, but it must not persist
+  // across separate starts — otherwise every in-session restart hops to a new
+  // 127.0.0.1:<port> origin and silently drops the Control UI's per-origin state.
+  if (!hasExplicitGatewayPort()) gatewayPortCursor = GATEWAY_PORT_FIRST
+  const maxAttempts = hasExplicitGatewayPort() ? 1 : GATEWAY_PORT_LAST - GATEWAY_PORT_FIRST + 1
+  let lastError: unknown = null
+  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+    try {
+      return await startGateway()
+    } catch (err) {
+      lastError = err
+      const message = err instanceof Error ? err.message : String(err)
+      if (hasExplicitGatewayPort() || !gatewayExitLooksLikePortInUse(message)) throw err
+      desktopLog('gateway_port_retry', { attempt: attempt + 1 })
+    }
+  }
+  throw lastError instanceof Error ? lastError : new Error(String(lastError || 'Gateway port retry exhausted.'))
 }
 
 async function loadControlUi(window: BrowserWindow, gatewayUrl: string): Promise<void> {
@@ -3513,6 +4031,25 @@ async function loadControlUi(window: BrowserWindow, gatewayUrl: string): Promise
     }
   }
   throw lastError ?? new Error(`Failed to load ${url}`)
+}
+
+// The main window is only ever meant to sit on the gateway-served Control UI
+// origin (its /control paths). Anything else — a dropped file:// document, an
+// off-origin redirect — is a foreign navigation and must be blocked. The boot
+// splash is loaded programmatically (loadFile), which does not go through the
+// navigation guard, so it needs no allow-entry here.
+function isAllowedMainWindowNavigation(targetUrl: string): boolean {
+  if (!gatewayState.url) return false
+  try {
+    const target = new URL(targetUrl)
+    const gateway = new URL(gatewayState.url)
+    return (
+      target.origin === gateway.origin
+      && (target.pathname === '/control' || target.pathname.startsWith('/control/'))
+    )
+  } catch {
+    return false
+  }
 }
 
 function isCurrentWindowAtControlUi(window: BrowserWindow, gatewayUrl: string): boolean {
@@ -3567,6 +4104,22 @@ async function createMainWindow(): Promise<BrowserWindow> {
     return { action: 'deny' }
   })
 
+  // Top-frame navigation guard. Programmatic loadFile/loadURL from the main
+  // process do NOT emit these, so this only blocks renderer-initiated top-frame
+  // navigations: a dropped file/link (Chromium's default drop action) or an
+  // in-content redirect that would replace the Control UI with a foreign document
+  // while keeping the full opensquillaDesktop IPC bridge. SPA route changes use
+  // history.pushState and are unaffected.
+  const guardMainWindowNavigation = (event: Electron.Event, targetUrl: string) => {
+    if (isAllowedMainWindowNavigation(targetUrl)) return
+    event.preventDefault()
+    if (/^https?:\/\//i.test(targetUrl) || targetUrl.startsWith('mailto:')) {
+      void shell.openExternal(targetUrl)
+    }
+  }
+  window.webContents.on('will-navigate', guardMainWindowNavigation)
+  window.webContents.on('will-redirect', guardMainWindowNavigation)
+
   window.once('ready-to-show', () => {
     if (!window.isDestroyed()) window.show()
   })
@@ -3586,7 +4139,7 @@ function currentMainWindow(): BrowserWindow | null {
 function ensureGatewayStarted(): Promise<GatewayState> {
   if (!gatewayStartPromise) {
     sendBootStatus('profile')
-    gatewayStartPromise = startGateway().finally(() => {
+    gatewayStartPromise = startGatewayWithPortRecovery().finally(() => {
       gatewayStartPromise = null
     })
   }
@@ -3612,12 +4165,30 @@ async function loadControlUiIntoCurrentWindow(gatewayUrl: string): Promise<void>
   sendBootStatus('ready')
 }
 
+// Bring the main window back to the boot splash when a gateway failure happens
+// while the window is showing the gateway-served Control UI. The splash owns the
+// boot:error listener plus the Retry/Reset recovery buttons, so this is what
+// turns an otherwise-dead Control UI origin back into a recoverable state.
+async function restoreMainWindowToBootPage(): Promise<void> {
+  const window = currentMainWindow()
+  if (!window) return
+  // Already on the boot splash (initial boot); its own onBootError handler will
+  // render the error. Only navigate back when the window left for the Control UI.
+  if (window.webContents.getURL().startsWith('file:')) return
+  try {
+    await window.loadFile(bootPagePath())
+  } catch {
+    // Best-effort: the diagnostic log and gatewayState still record the failure.
+  }
+}
+
 async function openOrResumeDesktopApp(): Promise<void> {
+  if (isQuitting) return
   await createMainWindow()
   focusMainWindow()
 
   try {
-    const reusableGateway = await reuseHealthyGatewayState()
+    const reusableGateway = forceOnboardingOnNextStartup ? null : await reuseHealthyGatewayState()
     const gateway = reusableGateway ?? await ensureGatewayStarted()
     await loadControlUiIntoCurrentWindow(gateway.url)
   } catch (error) {
@@ -3659,6 +4230,51 @@ async function requestGatewayShutdown(url: string): Promise<boolean> {
   }
 }
 
+async function clearKnownOwnedGatewayPidFile(): Promise<void> {
+  // Leave gateway.pid.lock in place. The persistent lock path is the authority
+  // shared by all contenders; deleting it can create split-brain locks.
+  await rm(join(desktopStateDir(), 'gateway.pid'), { force: true }).catch(() => null)
+}
+
+function hardTerminateGatewayProcess(
+  child: ChildProcessWithoutNullStreams,
+  backstopMs = GATEWAY_HARD_KILL_BACKSTOP_MS,
+): void {
+  if (hasGatewayProcessExited(child)) return
+  terminateGatewayProcess(child, 'SIGTERM')
+  if (process.platform === 'win32') void clearKnownOwnedGatewayPidFile()
+  setTimeout(() => {
+    if (!hasGatewayProcessExited(child)) {
+      terminateGatewayProcess(child, 'SIGKILL')
+      if (process.platform === 'win32') void clearKnownOwnedGatewayPidFile()
+    }
+  }, backstopMs).unref()
+}
+
+function terminateGatewayProcess(
+  child: ChildProcessWithoutNullStreams,
+  signal: NodeJS.Signals,
+): void {
+  const pid = child.pid
+  if (pid && gatewayProcessTreeChildren.has(child)) {
+    if (process.platform === 'win32') {
+      const result = spawnSync('taskkill', ['/pid', String(pid), '/t', '/f'], {
+        stdio: 'ignore',
+        windowsHide: true,
+      })
+      if (result.status === 0) return
+    } else {
+      try {
+        process.kill(-pid, signal)
+        return
+      } catch {
+        // Fall back to signaling the direct child below.
+      }
+    }
+  }
+  child.kill(signal)
+}
+
 function stopGateway(): void {
   if (!gatewayProcess || !gatewayState.owned) return
   const child = gatewayProcess
@@ -3666,11 +4282,7 @@ function stopGateway(): void {
   gatewayProcess = null
 
   const hardTerminate = () => {
-    if (hasGatewayProcessExited(child)) return
-    child.kill('SIGTERM')
-    setTimeout(() => {
-      if (!hasGatewayProcessExited(child)) child.kill('SIGKILL')
-    }, GATEWAY_HARD_KILL_BACKSTOP_MS).unref()
+    hardTerminateGatewayProcess(child)
   }
 
   // The Windows HTTP graceful path is async (fetch + timers) and only works
@@ -3679,7 +4291,7 @@ function stopGateway(): void {
   // and orphan the child — leaving it holding the listen port + PID lock and
   // breaking the next launch. So only take the graceful path when NOT quitting;
   // on quit, fall through to a synchronous TerminateProcess.
-  if (process.platform === 'win32' && !isQuitting) {
+  if (process.platform === 'win32' && (!isQuitting || allowGracefulShutdownWhileQuitting)) {
     // Windows has no real SIGTERM — child.kill('SIGTERM') maps to an immediate
     // TerminateProcess that skips the drain. Trigger the HTTP graceful path,
     // wait for the child to exit on its own, and only force-terminate if it
@@ -3701,10 +4313,7 @@ function stopGateway(): void {
   // child drains and exits on its own after the main process is gone).
   // Windows-on-quit: SIGTERM maps to a synchronous TerminateProcess, killing the
   // child before the main process exits — no drain, but no orphan either.
-  child.kill('SIGTERM')
-  setTimeout(() => {
-    if (!hasGatewayProcessExited(child)) child.kill('SIGKILL')
-  }, GATEWAY_SHUTDOWN_KILL_AFTER_MS).unref()
+  hardTerminateGatewayProcess(child, GATEWAY_SHUTDOWN_KILL_AFTER_MS)
 }
 
 // ── Auto-update (electron-updater) ──────────────────────────────────────────
@@ -3774,12 +4383,24 @@ const NETWORK_OBSERVABILITY_DISABLE_ENV_KEYS = [
   'OPENSQUILLA_UPDATE_CHECK_DISABLED',
 ] as const
 
+// mtime-keyed caches so the update-state publish path (which runs on every
+// download-progress tick) does not re-read + JSON.parse the credential and
+// re-scan config.toml on every call. Invalidated automatically when the file
+// changes — atomicWriteFile's rename bumps mtime, and deletion falls through the
+// existsSync guard.
+let persistedNetObsCache: { mtime: number; value: boolean } | null = null
+let configNetObsCache: { mtime: number; value: boolean | null } | null = null
+
 function desktopPersistedNetworkObservabilityDisabled(): boolean {
   try {
     const path = credentialPath()
     if (!existsSync(path)) return false
+    const mtime = statSync(path).mtimeMs
+    if (persistedNetObsCache && persistedNetObsCache.mtime === mtime) return persistedNetObsCache.value
     const raw = readFileSync(path, 'utf8')
-    return normalizeDesktopCredential(JSON.parse(raw) as Partial<DesktopConnection>).disableNetworkObservability
+    const value = normalizeDesktopCredential(JSON.parse(raw) as Partial<DesktopConnection>).disableNetworkObservability
+    persistedNetObsCache = { mtime, value }
+    return value
   } catch {
     return true
   }
@@ -3810,8 +4431,12 @@ function readDesktopConfigNetworkObservabilitySetting(): boolean | null {
   try {
     const path = desktopConfigPath()
     if (!existsSync(path)) return null
+    const mtime = statSync(path).mtimeMs
+    if (configNetObsCache && configNetObsCache.mtime === mtime) return configNetObsCache.value
     const raw = readFileSync(path, 'utf8')
-    return parseDesktopNetworkObservabilityPrivacyConfig(raw)
+    const value = parseDesktopNetworkObservabilityPrivacyConfig(raw)
+    configNetObsCache = { mtime, value }
+    return value
   } catch {
     return true
   }
@@ -4003,6 +4628,12 @@ function showUpdateError(err: unknown): void {
   manualUpdateCheck = false
   updateDownloadInProgress = false
   if (!shouldNotify) {
+    // electron-updater delivers each failure twice (it emits 'error' AND rejects
+    // the promise our try/catch awaits). The first delivery publishes the visible
+    // error and clears the notify flags; without this guard the second, now-silent
+    // delivery would clobber that error back to idle and wipe the known
+    // latestVersion. Leave an already-published error in place.
+    if (desktopUpdateStatus === 'error') return
     setDesktopUpdateState({
       status: downloadedUpdateVersion ? 'downloaded' : 'idle',
       latestVersion: downloadedUpdateVersion,
@@ -4178,6 +4809,52 @@ function initAutoUpdater(): void {
   })
 }
 
+// ── macOS prerelease update discovery ───────────────────────────────────────
+// The tag-parsing + candidate-selection logic lives in ./update-feed-resolver so
+// it can be unit-tested without Electron; the pieces below are the Electron-bound
+// glue (current version, GitHub fetch, feed wiring).
+
+// The running app version if it is a prerelease we can resolve upgrades for.
+function currentPrereleaseReleaseTarget(): { base: string; rc: number } | null {
+  const parsed = parseOpenSquillaReleaseTag(app.getVersion())
+  return parsed && parsed.rc !== null ? { base: parsed.base, rc: parsed.rc } : null
+}
+
+async function fetchGithubReleaseSummaries(): Promise<ReleaseSummary[]> {
+  const url = `https://api.github.com/repos/${GITHUB_UPDATE_OWNER}/${GITHUB_UPDATE_REPO}/releases?per_page=50`
+  const response = await fetch(url, {
+    headers: { Accept: 'application/vnd.github+json', 'User-Agent': 'OpenSquilla-Desktop' },
+    signal: AbortSignal.timeout(8000),
+  })
+  if (!response.ok) throw new Error(`GitHub releases request failed: ${response.status}`)
+  const data = await response.json()
+  return Array.isArray(data) ? (data as ReleaseSummary[]) : []
+}
+
+// Returns 'default' to leave the built-in GitHub provider in place (stable
+// builds, non-macOS, dev), 'configured' after pointing a generic feed at the
+// resolved candidate, or 'up-to-date' when no newer same-base release exists.
+async function configureDesktopUpdateFeed(): Promise<'default' | 'configured' | 'up-to-date'> {
+  // Default (stable builds, GitHub provider path): never silently downgrade.
+  autoUpdater.allowDowngrade = false
+  if (process.platform !== 'darwin' || !app.isPackaged) return 'default'
+  const current = currentPrereleaseReleaseTarget()
+  if (!current) return 'default'
+  const candidate = selectMacPrereleaseCandidate(current, await fetchGithubReleaseSummaries())
+  if (!candidate) return 'up-to-date'
+  // Generic provider + channel 'latest' fetches latest-mac.yml from this exact
+  // release; the yml's version is then gated by electron-updater's isUpdateAvailable.
+  autoUpdater.setFeedURL({ provider: 'generic', url: candidate.feedUrl, channel: 'latest' })
+  // The resolver already decided this candidate is the correct forward move by
+  // NUMERIC rc order. electron-updater's gate uses semver.gt, which sorts rc
+  // identifiers as strings — so 0.5.0-rc10 ranks BELOW 0.5.0-rc9/rc2 and the
+  // update would be wrongly rejected. Allow the "downgrade": we only ever point
+  // the feed at a genuinely newer release, never an older one.
+  autoUpdater.allowDowngrade = true
+  desktopLog('update_feed_resolved', { tag: candidate.tag, version: candidate.version })
+  return 'configured'
+}
+
 async function checkForUpdates(manual: boolean): Promise<void> {
   if (updateDownloadInProgress || updateApplying) return
 
@@ -4227,6 +4904,21 @@ async function checkForUpdates(manual: boolean): Promise<void> {
     error: null,
   })
   try {
+    const feed = await configureDesktopUpdateFeed()
+    if (feed === 'up-to-date') {
+      // A packaged macOS prerelease with no newer same-base release. Report
+      // up-to-date directly — the default GitHub provider would find nothing
+      // (the rc tags are PEP440, not npm semver) and raise a spurious error.
+      manualUpdateCheck = false
+      setDesktopUpdateState({
+        status: 'not-available',
+        latestVersion: app.getVersion(),
+        progress: null,
+        checkedAt: new Date().toISOString(),
+        error: null,
+      })
+      return
+    }
     await autoUpdater.checkForUpdates()
   } catch (err) {
     console.error('[updater] checkForUpdates failed', err)
@@ -4242,7 +4934,10 @@ function gatewayProcessForUpdateInstall(): ChildProcessWithoutNullStreams | null
   return null
 }
 
-async function waitForGatewayProcessExit(child: ChildProcessWithoutNullStreams): Promise<boolean> {
+async function waitForGatewayProcessExit(
+  child: ChildProcessWithoutNullStreams,
+  timeoutMs = UPDATE_GATEWAY_EXIT_TIMEOUT_MS,
+): Promise<boolean> {
   if (hasGatewayProcessExited(child)) return true
   return new Promise<boolean>((resolve) => {
     let settled = false
@@ -4254,7 +4949,7 @@ async function waitForGatewayProcessExit(child: ChildProcessWithoutNullStreams):
     child.once('exit', () => finish(true))
     setTimeout(() => {
       finish(hasGatewayProcessExited(child))
-    }, UPDATE_GATEWAY_EXIT_TIMEOUT_MS).unref()
+    }, timeoutMs).unref()
   })
 }
 
@@ -4323,7 +5018,14 @@ async function applyDownloadedUpdate(): Promise<void> {
   if (child) {
     if (gatewayProcess === child && gatewayState.owned) {
       updateGatewayShutdownProcess = child
-      stopGateway()
+      // We stay alive and await the exit below, so let the gateway take its
+      // Windows HTTP graceful drain instead of an immediate TerminateProcess.
+      allowGracefulShutdownWhileQuitting = true
+      try {
+        stopGateway()
+      } finally {
+        allowGracefulShutdownWhileQuitting = false
+      }
     }
     const exited = await waitForGatewayProcessExit(child)
     if (!exited) {
@@ -4352,6 +5054,11 @@ async function applyDownloadedUpdate(): Promise<void> {
       message: desktopT('update.errorTitle'),
       detail: String(err instanceof Error ? err.message : err ?? ''),
     })
+    // The owned gateway was stopped for the (now-failed) handoff and its exit was
+    // swallowed as intentional (isQuitting was true). restoreDownloadedUpdateRetryState
+    // cleared isQuitting, so bring the runtime back up instead of leaving the
+    // window stranded on the dead gateway's Control UI.
+    void openOrResumeDesktopApp()
   }
 }
 
@@ -4375,14 +5082,40 @@ ipcMain.handle('desktop:update:dismiss', async () => dismissDesktopUpdate())
 ipcMain.handle('desktop:os-locale', () => desktopLocale)
 ipcMain.handle('gateway:status', () => ({ ...gatewayState }))
 ipcMain.handle('gateway:reveal-log', async () => {
-  if (!gatewayState.logPath) return false
-  await shell.showItemInFolder(gatewayState.logPath)
-  return true
+  if (gatewayState.logPath) {
+    await shell.showItemInFolder(gatewayState.logPath)
+    return true
+  }
+  // Startup can fail before the gateway log path is assigned (e.g. onboarding or
+  // port selection error), so Reveal log would otherwise be a dead button on the
+  // error panel. Fall back to the always-present desktop lifecycle log.
+  const desktopLogPath = join(app.getPath('userData'), 'logs', 'desktop.log')
+  if (existsSync(desktopLogPath)) {
+    await shell.showItemInFolder(desktopLogPath)
+    return true
+  }
+  await shell.openPath(join(app.getPath('userData'), 'logs')).catch(() => null)
+  return false
 })
 ipcMain.handle('desktop:settings:get', async () => loadDesktopSettings())
 ipcMain.handle('desktop:settings:save', async (_event, payload: DesktopSettingsPayload) => saveDesktopSettings(payload))
 ipcMain.handle('desktop:settings:reset', async () => {
   await resetDesktopSettings()
+  forceOnboardingOnNextStartup = true
+  const child = gatewayProcess && gatewayState.owned ? gatewayProcess : null
+  if (child) {
+    stopGateway()
+    await waitForGatewayProcessExit(child)
+  }
+  clearReusableGatewayState()
+  // This IPC is also reachable from the live Control UI (Settings → Runtime),
+  // which stays on the now-dead gateway after the reset. Return the window to the
+  // boot splash and re-run startup so onboarding re-runs, instead of stranding
+  // the user on a dead page. (The boot.html caller also calls retryStartup; the
+  // in-flight start is joined, not double-started.)
+  bootError = null
+  await currentMainWindow()?.loadFile(bootPagePath()).catch(() => null)
+  void openOrResumeDesktopApp()
   return { ok: true }
 })
 ipcMain.handle('desktop:artifact:open', async (_event, payload: ArtifactOpenRequest) => openArtifactWithDefaultApp(payload))
@@ -4405,6 +5138,7 @@ async function runUninstallCli(
   const prefix = runtime.args.slice(0, -2) // drop the trailing ['gateway','run']
   const child = spawn(runtime.command, [...prefix, 'uninstall', ...extraArgs], {
     cwd: runtime.cwd,
+    windowsHide: true,
     env: {
       ...process.env,
       OPENSQUILLA_DESKTOP: '1',
@@ -4448,12 +5182,12 @@ ipcMain.handle('desktop:uninstall:run', async (_event, payload?: { purgeData?: b
   if (purgeData) {
     const { response } = await dialog.showMessageBox({
       type: 'warning',
-      buttons: ['Cancel', 'Delete everything'],
+      buttons: [desktopT('uninstall.cancel'), desktopT('uninstall.deleteEverything')],
       defaultId: 0,
       cancelId: 0,
-      title: 'Delete local OpenSquilla desktop data?',
-      message: 'This permanently deletes the local desktop profile on this machine.',
-      detail: 'Sessions, configuration, and secrets will be removed. The installed app itself will remain; remove it through your OS after the app closes.',
+      title: desktopT('uninstall.confirmTitle'),
+      message: desktopT('uninstall.confirmMessage'),
+      detail: desktopT('uninstall.confirmDetail'),
     })
     if (response !== 1) return { ok: false, aborted: true, detail: 'cancelled' }
   }
@@ -4464,7 +5198,14 @@ ipcMain.handle('desktop:uninstall:run', async (_event, payload?: { purgeData?: b
   isQuitting = true
   if (gatewayProcess && gatewayState.owned) {
     const child = gatewayProcess
-    stopGateway()
+    // We stay alive and await the exit, so let the gateway take its Windows HTTP
+    // graceful drain instead of an immediate TerminateProcess.
+    allowGracefulShutdownWhileQuitting = true
+    try {
+      stopGateway()
+    } finally {
+      allowGracefulShutdownWhileQuitting = false
+    }
     await new Promise<void>((res) => {
       if (child.exitCode !== null || child.signalCode !== null) return res()
       child.once('exit', () => res())
@@ -4501,6 +5242,10 @@ ipcMain.handle('desktop:uninstall:run', async (_event, payload?: { purgeData?: b
     await rm(credentialPath(), { force: true }).catch(() => null)
     await rm(join(app.getPath('userData'), 'logs'), { recursive: true, force: true }).catch(() => null)
   }
+  // The app keeps running after a successful data cleanup (the user closes it
+  // later), so clear the quit latch — otherwise it stays true and silently
+  // suppresses reporting of any later gateway crash.
+  isQuitting = false
   return result
 })
 ipcMain.handle('desktop:boot:state', () => ({
@@ -4509,18 +5254,28 @@ ipcMain.handle('desktop:boot:state', () => ({
   gateway: { ...gatewayState },
 }))
 ipcMain.handle('desktop:boot:retry', async () => {
-  const ready = gatewayState.status === 'ready' && gatewayState.url
-    ? await healthCheck(gatewayState.url)
-    : false
+  // Backs both the boot-error "Retry" button and the Control UI "Restart
+  // runtime" action. If a start attempt is already in flight, join it and clear
+  // the stale bootError so the reloaded splash shows live progress instead of
+  // instantly re-rendering the previous error panel.
+  if (gatewayStartPromise) {
+    bootError = null
+    void openOrResumeDesktopApp()
+    return { ok: true }
+  }
 
-  if (!gatewayStartPromise && !ready && gatewayProcess && gatewayState.owned) {
+  // Otherwise force a real runtime restart. "Restart runtime" must relaunch the
+  // child even when the current gateway is healthy, so always tear an owned
+  // gateway down and wait for it to release its port + PID lock before
+  // openOrResumeDesktopApp respawns it — never reuse the existing one here.
+  if (gatewayProcess && gatewayState.owned) {
+    const previousChild = gatewayProcess
     stopGateway()
+    await waitForGatewayProcessExit(previousChild)
   }
-  if (!ready) {
-    gatewayState.status = 'stopped'
-    gatewayState.error = undefined
-    await currentMainWindow()?.loadFile(bootPagePath()).catch(() => null)
-  }
+  clearReusableGatewayState()
+  bootError = null
+  await currentMainWindow()?.loadFile(bootPagePath()).catch(() => null)
 
   void openOrResumeDesktopApp()
   return { ok: true }
@@ -4541,7 +5296,13 @@ ipcMain.handle('desktop:onboarding:defaults', () => ({
   },
 }))
 ipcMain.handle('desktop:onboarding:save', async (_event, payload: OnboardingPayload) => {
+  // Only honor this while an onboarding flow is actually awaiting a result. The
+  // same preload bridge is attached to the Control UI window, so without this
+  // guard any script on the gateway-served page could rewrite the credential and
+  // regenerate config.toml outside onboarding.
+  if (!resolveOnboarding) return { ok: false, error: 'No onboarding in progress.' }
   const credential = await saveDesktopCredential(payload)
+  applyDesktopLocaleChoice(payload.locale)
   const resolve = resolveOnboarding
   resolveOnboarding = null
   rejectOnboarding = null
@@ -4555,6 +5316,9 @@ ipcMain.handle('desktop:onboarding:cancel', () => {
   rejectOnboarding = null
   onboardingWindow?.close()
   reject?.(new Error('OpenSquilla setup was cancelled.'))
+  // The onboarding "Quit" button routes here; it is a deliberate exit, so quit
+  // the app instead of surfacing the cancellation as a boot failure panel.
+  app.quit()
   return { ok: true }
 })
 
@@ -4584,9 +5348,23 @@ app.on('before-quit', (event) => {
       try {
         const accepted = await requestGatewayShutdown(gatewayState.url || '')
         desktopLog('quit_gateway_shutdown_requested', { accepted })
-        const exited = await waitForGatewayProcessExit(child)
-        desktopLog('quit_gateway_exit', { exited })
-        if (!exited) stopGateway()
+        let hardTerminated = false
+        let exited = false
+        if (!accepted) {
+          hardTerminated = true
+          hardTerminateGatewayProcess(child)
+          exited = await waitForGatewayProcessExit(child, GATEWAY_HARD_KILL_BACKSTOP_MS)
+          await clearKnownOwnedGatewayPidFile()
+        } else {
+          exited = await waitForGatewayProcessExit(child)
+          if (!exited) {
+            hardTerminated = true
+            hardTerminateGatewayProcess(child)
+            exited = await waitForGatewayProcessExit(child, GATEWAY_HARD_KILL_BACKSTOP_MS)
+            await clearKnownOwnedGatewayPidFile()
+          }
+        }
+        desktopLog('quit_gateway_exit', { exited, hardTerminated })
       } finally {
         windowsQuitDrainDone = true
         app.exit(0)
@@ -4624,6 +5402,11 @@ configureChromiumKeychainPolicy()
 // unavailable — surface an explicit error instead of exiting silently.
 function acquireSingleInstanceLockWithRetry(): boolean {
   const deadline = Date.now() + 5_000
+  // Atomics.wait blocks this thread without an event loop (app.whenReady has not
+  // fired) and, unlike a Date.now() spin, does not peg a CPU core. Larger sleep
+  // slices also cut the retry count — each failed requestSingleInstanceLock
+  // notifies the running instance (firing its second-instance handler).
+  const sleepSignal = new Int32Array(new SharedArrayBuffer(4))
   let attempt = 0
   for (;;) {
     attempt += 1
@@ -4631,16 +5414,12 @@ function acquireSingleInstanceLockWithRetry(): boolean {
       desktopLog('single_instance_lock_acquired', { attempt })
       return true
     }
-    if (Date.now() >= deadline) {
+    const remaining = deadline - Date.now()
+    if (remaining <= 0) {
       desktopLog('single_instance_lock_unavailable', { attempt })
       return false
     }
-    // Synchronous busy-wait bounded by the deadline: app.whenReady has not
-    // fired yet, so there is no event loop to await on and the window is short.
-    const spinUntil = Math.min(deadline, Date.now() + 150)
-    while (Date.now() < spinUntil) {
-      /* brief spin before the next lock attempt */
-    }
+    Atomics.wait(sleepSignal, 0, 0, Math.min(400, remaining))
   }
 }
 
@@ -4654,9 +5433,12 @@ if (!gotSingleInstanceLock) {
   // silent no-op, then quit.
   desktopLog('launch_aborted_lock_held')
   try {
+    // This runs before app.whenReady, so app.getLocale() is unreliable; fall back
+    // to the persisted onboarding locale (a plain file read) for this dialog.
+    desktopLocale = loadPersistedDesktopLocale() ?? desktopLocale
     dialog.showErrorBox(
-      'OpenSquilla is already running',
-      'Another OpenSquilla window is already open on this machine. Bringing it to the front.',
+      desktopT('launch.alreadyRunningTitle'),
+      desktopT('launch.alreadyRunningMessage'),
     )
   } catch {
     // Dialog is best-effort; the diagnostic log is the durable record.
@@ -4670,7 +5452,7 @@ if (!gotSingleInstanceLock) {
 
   void app.whenReady().then(async () => {
     app.name = 'OpenSquilla'
-    desktopLocale = resolveDesktopLocale()
+    desktopLocale = loadPersistedDesktopLocale() ?? resolveDesktopLocale()
     createApplicationMenu()
     void openOrResumeDesktopApp()
     initAutoUpdater()

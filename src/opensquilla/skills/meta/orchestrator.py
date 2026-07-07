@@ -1775,6 +1775,7 @@ def make_agent_runner_from_parent(
 
         sub_config = AgentConfig(
             model_id=getattr(base_config, "model_id", None),
+            provider_id=getattr(base_config, "provider_id", ""),
             max_iterations=min(getattr(base_config, "max_iterations", 30), 30),
             system_prompt=sub_system_prompt,
             extra_system_prompt=None,

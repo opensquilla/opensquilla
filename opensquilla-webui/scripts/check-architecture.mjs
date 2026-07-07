@@ -1,6 +1,7 @@
-import { readdirSync, readFileSync, statSync } from 'node:fs'
+import { readFileSync } from 'node:fs'
 import { join, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { walkFiles } from './lib/fs-walk.mjs'
 
 const root = fileURLToPath(new URL('..', import.meta.url))
 const srcRoot = join(root, 'src')
@@ -46,19 +47,8 @@ function isTestFile(entry) {
   return /\.(test|spec)\.(ts|tsx)$/.test(entry)
 }
 
-function walk(dir, files = []) {
-  for (const entry of readdirSync(dir)) {
-    if (entry === 'node_modules' || entry === 'dist') continue
-    const path = join(dir, entry)
-    const stat = statSync(path)
-    if (stat.isDirectory()) walk(path, files)
-    else if (/\.(ts|vue|d\.ts)$/.test(entry) && !isTestFile(entry)) files.push(path)
-  }
-  return files
-}
-
 const failures = []
-for (const file of walk(srcRoot)) {
+for (const file of walkFiles(srcRoot, /\.(ts|vue)$/, { skipFile: isTestFile })) {
   const rel = relative(root, file).replace(/\\/g, '/')
   const body = readFileSync(file, 'utf8')
   for (const rule of bannedPatterns) {

@@ -13,6 +13,7 @@ release_changed=false
 windows_full_required=false
 frontend_changed=false
 tui_changed=false
+desktop_changed=false
 python_changed=false
 platform_sensitive_changed=false
 build_wheel_required=false
@@ -65,6 +66,11 @@ mark_tui_changed() {
   tui_changed=true
 }
 
+mark_desktop_changed() {
+  mark_non_docs_changed
+  desktop_changed=true
+}
+
 mark_platform_sensitive_changed() {
   mark_non_docs_changed
   platform_sensitive_changed=true
@@ -81,6 +87,7 @@ mark_full_required() {
   windows_full_required=true
   frontend_changed=true
   tui_changed=true
+  desktop_changed=true
   python_changed=true
   platform_sensitive_changed=true
   build_wheel_required=true
@@ -135,6 +142,7 @@ while IFS= read -r path || [[ -n "${path}" ]]; do
       ;;
     desktop/*)
       mark_platform_sensitive_changed
+      mark_desktop_changed
       ;;
     src/opensquilla/sandbox/* | src/opensquilla/tools/boundary.py | src/opensquilla/tools/builtin/code_exec.py | src/opensquilla/tools/builtin/filesystem.py | src/opensquilla/tools/builtin/git.py | src/opensquilla/tools/builtin/shell.py | src/opensquilla/tools/builtin/shell_policy.py | src/opensquilla/tools/path_* | src/opensquilla/tools/policy* | src/opensquilla/tools/write_*)
       mark_runtime_changed
@@ -165,6 +173,7 @@ fi
   printf 'windows_full_required=%s\n' "${windows_full_required}"
   printf 'frontend_changed=%s\n' "${frontend_changed}"
   printf 'tui_changed=%s\n' "${tui_changed}"
+  printf 'desktop_changed=%s\n' "${desktop_changed}"
   printf 'python_changed=%s\n' "${python_changed}"
   printf 'platform_sensitive_changed=%s\n' "${platform_sensitive_changed}"
   printf 'build_wheel_required=%s\n' "${build_wheel_required}"

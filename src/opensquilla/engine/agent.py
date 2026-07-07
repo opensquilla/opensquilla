@@ -208,6 +208,11 @@ def _with_model_usage_cost_fields(rows: list[dict[str, Any]]) -> list[dict[str, 
         item = dict(row)
         model_id = str(item.get("model") or "")
         if model_id:
+            cache_read = (
+                item.get("cache_read_tokens")
+                if "cache_read_tokens" in item
+                else item.get("cached_tokens")
+            )
             item.update(
                 model_usage_cost_fields(
                     model_id=model_id,
@@ -221,6 +226,12 @@ def _with_model_usage_cost_fields(rows: list[dict[str, Any]]) -> list[dict[str, 
                         or item.get("billed_cost_usd")
                         or item.get("billedCostUsd")
                     ),
+                    # Unbilled rows must be priced with their own cache counts,
+                    # not cache-blind — otherwise the legacy-inference path in
+                    # model_usage_cost_fields treats every cache token as fresh
+                    # input while still labeling the estimate "cache_aware".
+                    cache_read_tokens=_usage_int(cache_read or 0),
+                    cache_write_tokens=_usage_int(item.get("cache_write_tokens") or 0),
                 )
             )
         enriched.append(item)
@@ -2077,6 +2088,14 @@ class Agent:
         _thinking_fallback_done = False
 
         _log = structlog.get_logger("opensquilla.engine.agent")
+
+        def _positive_float(value: Any) -> float | None:
+            try:
+                parsed = float(value)
+            except (TypeError, ValueError):
+                return None
+            return parsed if parsed > 0 else None
+
         iterations = 0
         overflow_retries = 0
         # Keep lifetime usage separate from the live context-window gauge.
@@ -2088,6 +2107,19 @@ class Agent:
         total_cached_tokens = 0
         total_cache_write_tokens = 0
         total_billed_cost = 0.0
+        # Estimate-backed accumulator for max_turn_cost_usd: billed cost when a
+        # call reported one, otherwise the layered-resolver estimate — unlike
+        # total_billed_cost, this never sits at 0.0 for a cost-blind provider.
+        # Computed once so the (potentially network-blocking) price resolver is
+        # only ever touched when the gate is actually enabled.
+        turn_cost_budget_enabled = (
+            _positive_float(getattr(self.config, "max_turn_cost_usd", 0.0)) is not None
+        )
+        total_cost_usd_accum = 0.0
+        # Tracks whether any component of total_cost_usd_accum came from the
+        # estimator (as opposed to a provider-reported billed cost), so the
+        # gate's error message can report "billed" / "estimated" / "mixed".
+        total_cost_usd_accum_has_estimate = False
         usage_turn_baseline = (
             self._usage_tracker.session_checkpoint(self._session_key)
             if self._usage_tracker and self._session_key
@@ -2126,13 +2158,6 @@ class Agent:
         if not tools_supported:
             provider_tool_definitions = None
 
-        def _positive_float(value: Any) -> float | None:
-            try:
-                parsed = float(value)
-            except (TypeError, ValueError):
-                return None
-            return parsed if parsed > 0 else None
-
         def _turn_budget_error() -> ErrorEvent | None:
             max_llm_calls = self._positive_int(getattr(self.config, "max_turn_llm_calls", 0))
             if max_llm_calls is not None and turn_llm_calls > max_llm_calls:
@@ -2169,6 +2194,22 @@ class Agent:
                         f"(max_turn_billed_cost_usd=${max_cost:.6f})."
                     ),
                     code="turn_billed_cost_budget_exceeded",
+                )
+            max_total = _positive_float(getattr(self.config, "max_turn_cost_usd", 0.0))
+            if max_total is not None and total_cost_usd_accum > max_total:
+                if total_billed_cost > 0 and total_cost_usd_accum_has_estimate:
+                    cost_basis = "mixed"
+                elif total_cost_usd_accum_has_estimate:
+                    cost_basis = "estimated"
+                else:
+                    cost_basis = "billed"
+                return ErrorEvent(
+                    message=(
+                        f"Turn stopped after ${total_cost_usd_accum:.6f} "
+                        f"({cost_basis} cost basis; "
+                        f"max_turn_cost_usd=${max_total:.6f})."
+                    ),
+                    code="turn_cost_budget_exceeded",
                 )
             max_tool_errors = self._positive_int(getattr(self.config, "max_turn_tool_errors", 0))
             if max_tool_errors is not None and turn_tool_errors >= max_tool_errors:
@@ -2618,6 +2659,26 @@ class Agent:
                                 total_reasoning_tokens += raw_ev.reasoning_tokens
                                 total_cached_tokens += raw_ev.cached_tokens
                                 total_cache_write_tokens += raw_ev.cache_write_tokens
+                                if turn_cost_budget_enabled:
+                                    if raw_ev.billed_cost > 0:
+                                        total_cost_usd_accum += raw_ev.billed_cost
+                                    else:
+                                        from opensquilla.engine.pricing import (
+                                            estimate_cost,
+                                            resolve_model_price,
+                                        )
+
+                                        total_cost_usd_accum += estimate_cost(
+                                            input_tokens=raw_ev.input_tokens,
+                                            output_tokens=raw_ev.output_tokens,
+                                            cache_read_tokens=raw_ev.cached_tokens,
+                                            cache_write_tokens=raw_ev.cache_write_tokens,
+                                            price=resolve_model_price(
+                                                raw_ev.model or self.config.model_id or "",
+                                                self.config.provider_id,
+                                            ).entry,
+                                        ).cost_usd
+                                        total_cost_usd_accum_has_estimate = True
                                 if raw_ev.model:
                                     last_actual_model = raw_ev.model
                                 # Usage/cost accounting is billed-attempt based: discarded
@@ -2677,6 +2738,7 @@ class Agent:
                                                 ),
                                                 provider=str(
                                                     usage_row.get("provider")
+                                                    or self.config.provider_id
                                                     or getattr(self.provider, "provider_name", "")
                                                     or ""
                                                 ),
@@ -2690,7 +2752,10 @@ class Agent:
                                             cache_read_tokens=raw_ev.cached_tokens,
                                             cache_write_tokens=raw_ev.cache_write_tokens,
                                             billed_cost=raw_ev.billed_cost,
-                                            provider=getattr(self.provider, "provider_name", ""),
+                                            provider=(
+                                                self.config.provider_id
+                                                or getattr(self.provider, "provider_name", "")
+                                            ),
                                         )
                                 ensemble_trace = getattr(raw_ev, "ensemble_trace", None)
                                 if isinstance(ensemble_trace, dict):
@@ -4075,21 +4140,35 @@ class Agent:
                 done_model = su.model_id
         if not done_model:
             done_model = self.config.model_id or ""
-        from opensquilla.engine.pricing import lookup_price
+        from opensquilla.engine.pricing import estimate_cost, resolve_model_price
 
-        price = lookup_price(done_model)
-        estimated_cost = (
-            total_input_tokens * price.input_per_m + total_output_tokens * price.output_per_m
-        ) / 1_000_000
+        turn_estimate = estimate_cost(
+            input_tokens=total_input_tokens,
+            output_tokens=total_output_tokens,
+            cache_read_tokens=total_cached_tokens,
+            cache_write_tokens=total_cache_write_tokens,
+            price=resolve_model_price(done_model, self.config.provider_id).entry,
+        )
+        estimated_cost = turn_estimate.cost_usd
+        estimate_basis: str | None
         if total_billed_cost > 0.0:
             done_cost = total_billed_cost
             cost_source = "provider_billed"
+            estimate_basis = None
         elif estimated_cost > 0.0:
             done_cost = estimated_cost
             cost_source = "opensquilla_static_estimate"
+            estimate_basis = turn_estimate.basis
         else:
             done_cost = 0.0
             cost_source = "unavailable"
+            has_turn_tokens = bool(
+                total_input_tokens
+                or total_output_tokens
+                or total_cached_tokens
+                or total_cache_write_tokens
+            )
+            estimate_basis = "free" if turn_estimate.basis == "free" and has_turn_tokens else None
 
         session_totals = (
             self._usage_tracker.session_snapshot(self._session_key)
@@ -4121,6 +4200,15 @@ class Agent:
             done_cost = turn_usage_delta.cost_usd
             done_billed_cost = turn_usage_delta.billed_cost
             cost_source = _cost_source_for_usage(done_cost, done_billed_cost)
+            if cost_source == "provider_billed":
+                estimate_basis = None
+            elif cost_source in {"mixed", "opensquilla_estimate"}:
+                # The delta includes an estimated component; disclose the
+                # turn-level estimator basis for it.
+                estimate_basis = turn_estimate.basis
+            elif estimate_basis != "free":
+                # "unavailable": no estimated dollars in the reported cost.
+                estimate_basis = None
 
         has_usage = bool(
             done_input_tokens
@@ -4161,6 +4249,7 @@ class Agent:
                 session_totals=session_totals,
                 model_usage_breakdown=summarized_model_usage_breakdown,
                 ensemble_trace=final_ensemble_trace,
+                estimate_basis=estimate_basis,
             )
         # Reset for next turn
         self._state = AgentState.IDLE
@@ -6639,11 +6728,13 @@ class Agent:
         child_cfg = AgentConfig(
             max_iterations=spec.max_iterations,
             timeout=spec.timeout,
+            provider_id=self.config.provider_id,
             max_tokens=self.config.max_tokens,
             max_turn_llm_calls=self.config.max_turn_llm_calls,
             max_turn_input_tokens=self.config.max_turn_input_tokens,
             max_turn_output_tokens=self.config.max_turn_output_tokens,
             max_turn_billed_cost_usd=self.config.max_turn_billed_cost_usd,
+            max_turn_cost_usd=self.config.max_turn_cost_usd,
             max_turn_tool_errors=self.config.max_turn_tool_errors,
             length_capped_continuations=self.config.length_capped_continuations,
             context_window_tokens=self.config.context_window_tokens,

@@ -9,7 +9,14 @@ import { useUsageModelCards } from '@/composables/usage/useUsageModelCards'
 import { useUsageSessionRows } from '@/composables/usage/useUsageSessionRows'
 import { downloadText } from '@/utils/browser'
 import i18n from '@/i18n'
-import type { BreakdownRow, ModelBreakdownItem, SessionRow, TableColumn, UsageStatusData } from '@/types/usage'
+import type {
+  BreakdownRow,
+  ModelBreakdownItem,
+  ModelCard,
+  SessionRow,
+  TableColumn,
+  UsageStatusData,
+} from '@/types/usage'
 
 const t = i18n.global.t
 
@@ -368,6 +375,22 @@ function costSourceTooltipForBreakdown(m: BreakdownRow): string {
   return costSourceTooltip(m as unknown as ModelBreakdownItem)
 }
 
+function costSourceClassesForModelCard(m: ModelCard): Record<string, boolean> {
+  return costSourceClasses(m as unknown as ModelBreakdownItem)
+}
+
+function costSourceLabelForModelCard(m: ModelCard): string {
+  return costSourceLabel(m as unknown as ModelBreakdownItem)
+}
+
+function costSourceTooltipForModelCard(m: ModelCard): string {
+  const base = costSourceTooltip(m as unknown as ModelBreakdownItem)
+  if (m.anyCacheBlind) {
+    return `${base} ${t('usageLogs.costSource.cacheBlindHint')}`
+  }
+  return base
+}
+
 function sourceCompositionHint(rows: SessionRow[]): string {
   const order = ['actual', 'estimated', 'mixed', 'unpriced', 'ephemeral']
   const counts: Record<string, number> = { actual: 0, estimated: 0, mixed: 0, unpriced: 0, ephemeral: 0 }
@@ -501,6 +524,9 @@ function download(filename: string, mime: string, content: string) {
     costSourceClassesForBreakdown,
     costSourceLabelForBreakdown,
     costSourceTooltipForBreakdown,
+    costSourceClassesForModelCard,
+    costSourceLabelForModelCard,
+    costSourceTooltipForModelCard,
     sourceCompositionHint,
     modelDisplayLabel,
     rowKey,

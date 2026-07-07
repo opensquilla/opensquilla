@@ -19,15 +19,17 @@ def reset_pricing_cache() -> Iterator[None]:
     reset_live_price_cache_for_tests()
 
 
-def test_deepseek_v4_pro_uses_non_discount_price_when_live_pricing_is_off(
+def test_deepseek_v4_pro_static_price_matches_current_official(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """Official price since 2026-05-31: $0.435/M in (miss), $0.87/M out, $0.003625/M cache hit."""
     monkeypatch.setenv("OPENSQUILLA_OPENROUTER_LIVE_PRICING", "0")
 
     price = lookup_price("deepseek/deepseek-v4-pro")
 
-    assert price.input_per_m == pytest.approx(1.74)
-    assert price.output_per_m == pytest.approx(3.48)
+    assert price.input_per_m == pytest.approx(0.435)
+    assert price.output_per_m == pytest.approx(0.87)
+    assert price.cache_read_per_m == pytest.approx(0.003625)
 
 
 @pytest.mark.asyncio
@@ -76,41 +78,61 @@ async def test_pricing_cache_refresh_adds_openrouter_app_attribution() -> None:
     assert price.output_per_token == 0.00001
 
 
-def test_deepseek_v4_pro_override_wins_over_discounted_live_cache(
+def test_deepseek_v4_pro_live_price_wins_over_static(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """The hardcoded pin must no longer block live-price self-correction."""
     monkeypatch.setenv("OPENSQUILLA_OPENROUTER_LIVE_PRICING", "1")
-    seed_live_price_cache_for_tests("deepseek/deepseek-v4-pro", PriceEntry(0.435, 0.87))
+    reset_live_price_cache_for_tests()
+    seed_live_price_cache_for_tests("deepseek/deepseek-v4-pro", PriceEntry(0.5, 1.0))
 
     price = lookup_price("deepseek/deepseek-v4-pro")
 
-    assert price.input_per_m == pytest.approx(1.74)
-    assert price.output_per_m == pytest.approx(3.48)
+    assert price.input_per_m == pytest.approx(0.5)
+    assert price.output_per_m == pytest.approx(1.0)
 
 
-def test_deepseek_v4_pro_override_covers_versioned_openrouter_model_ids(
+def test_versioned_deepseek_id_prefix_matches_static_entry(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("OPENSQUILLA_OPENROUTER_LIVE_PRICING", "1")
-    seed_live_price_cache_for_tests(
-        "deepseek/deepseek-v4-pro-20260423",
-        PriceEntry(0.435, 0.87),
-    )
+    monkeypatch.setenv("OPENSQUILLA_OPENROUTER_LIVE_PRICING", "0")
 
     price = lookup_price("deepseek/deepseek-v4-pro-20260423")
 
-    assert price.input_per_m == pytest.approx(1.74)
-    assert price.output_per_m == pytest.approx(3.48)
+    assert price.input_per_m == pytest.approx(0.435)
 
 
-def test_pricing_cache_returns_non_discount_deepseek_v4_pro_price() -> None:
-    cache = PricingCache(api_key="test")
+def test_price_entry_cache_fields_default_none() -> None:
+    entry = PriceEntry(3.0, 15.0)
+    assert entry.cache_read_per_m is None
+    assert entry.cache_write_per_m is None
 
-    price = cache.get_price_sync("deepseek/deepseek-v4-pro")
 
-    assert price is not None
-    assert price.input_per_token == pytest.approx(1.74 / 1_000_000)
-    assert price.output_per_token == pytest.approx(3.48 / 1_000_000)
+@pytest.mark.parametrize(
+    ("model", "input_per_m", "output_per_m"),
+    [
+        ("moonshotai/kimi-k2.7-code-20260612", 0.95, 4.0),
+        ("kimi-k2.7-code", 0.95, 4.0),
+        ("claude-haiku-4-5-20251001", 1.0, 5.0),
+        ("deepseek-chat", 0.14, 0.28),
+        ("deepseek-reasoner", 0.26, 0.38),
+        ("glm-5.2", 1.40, 4.40),
+        ("qwen3.7-max", 1.25, 3.75),
+        ("qwen3.7-plus", 0.40, 1.60),
+    ],
+)
+def test_previously_missing_ids_now_have_static_entries(
+    monkeypatch: pytest.MonkeyPatch,
+    model: str,
+    input_per_m: float,
+    output_per_m: float,
+) -> None:
+    monkeypatch.setenv("OPENSQUILLA_OPENROUTER_LIVE_PRICING", "0")
+
+    price = lookup_price(model)
+
+    assert price.input_per_m == pytest.approx(input_per_m)
+    assert price.output_per_m == pytest.approx(output_per_m)
 
 
 @pytest.mark.parametrize("model", ["z-ai/glm-5.1", "z-ai/glm-5.2"])

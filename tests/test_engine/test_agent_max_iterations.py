@@ -564,13 +564,15 @@ async def test_agent_enriches_model_usage_breakdown_with_estimated_costs() -> No
     events = [event async for event in agent.run_turn("hello")]
     done = next(event for event in events if event.kind == "done")
 
+    # deepseek/deepseek-v4-pro static price is $0.435/M in, $0.87/M out (see
+    # engine/pricing.py): (1000 * 0.435 + 1000 * 0.87) / 1e6 == 0.001305.
     assert done.cost_source == "mixed"
-    assert done.cost_usd == pytest.approx(0.01522)
+    assert done.cost_usd == pytest.approx(0.011305)
     assert done.billed_cost == pytest.approx(0.01)
     deepseek_row = done.model_usage_breakdown[0]
     assert deepseek_row["model"] == "deepseek/deepseek-v4-pro-20260423"
-    assert deepseek_row["cost_usd"] == pytest.approx(0.00522)
-    assert deepseek_row["estimated_cost_usd"] == pytest.approx(0.00522)
+    assert deepseek_row["cost_usd"] == pytest.approx(0.001305)
+    assert deepseek_row["estimated_cost_usd"] == pytest.approx(0.001305)
     assert deepseek_row["billed_cost_usd"] == 0.0
     assert deepseek_row["cost_source"] == "opensquilla_estimate"
     aggregator_row = done.model_usage_breakdown[1]

@@ -1,5 +1,6 @@
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
+import { hexToRgb, stripAllComments } from './lib/css-utils.mjs'
 
 // Cross-surface brand-accent guard.
 //
@@ -28,9 +29,10 @@ const CANONICAL = new Set([
   '255,122,46', // #FF7A2E  accent-hover (dark)
   '217,90,17', //  #D95A11  accent-deep (dark) / onboarding hover
   '255,138,76', // #FF8A4C  accent-secondary
-  '218,90,18', //  #DA5A12  accent (light)
-  '194,78,14', //  #C24E0E  accent-hover (light)
-  '163,67,9', //   #A34309  accent-deep (light)
+  '186,77,15', //  #BA4D0F  accent (light)
+  '165,68,12', //  #A5440C  accent-hover (light)
+  '142,58,10', //  #8E3A0A  accent-deep (light)
+  '182,80,28', //  #B6501C  accent-secondary (light)
 ])
 
 // Files that make up the desktop launch sequence.
@@ -38,12 +40,6 @@ const targets = [
   'desktop/electron/src/boot.html',
   'desktop/electron/src/main.ts',
 ]
-
-function hexToRgb(hex) {
-  let h = hex.replace('#', '')
-  if (h.length === 3) h = h.split('').map((c) => c + c).join('')
-  return [parseInt(h.slice(0, 2), 16), parseInt(h.slice(2, 4), 16), parseInt(h.slice(4, 6), 16)]
-}
 
 // Is this rgb a saturated orange — i.e. a brand-accent candidate?
 function isBrandOrange([r, g, b]) {
@@ -63,14 +59,6 @@ function isBrandOrange([r, g, b]) {
   return hue >= 16 && hue <= 46 && s >= 0.4 && l >= 0.18 && l <= 0.72
 }
 
-// Strip HTML/JS/CSS comments so hexes named in comments don't trip the guard.
-function stripComments(text) {
-  return text
-    .replace(/<!--[\s\S]*?-->/g, '')
-    .replace(/\/\*[\s\S]*?\*\//g, '')
-    .replace(/(^|[^:])\/\/[^\n]*/g, '$1') // // line comments, but not the // in http://
-}
-
 const hexRe = /#[0-9a-fA-F]{6}\b|#[0-9a-fA-F]{3}\b/g
 const rgbRe = /rgba?\(\s*(\d{1,3})\s*,\s*(\d{1,3})\s*,\s*(\d{1,3})/g
 
@@ -83,7 +71,8 @@ for (const rel of targets) {
     console.warn(`[cross-surface] skipped (not found): ${rel}`)
     continue
   }
-  const lines = stripComments(text).split('\n')
+  // Comments are stripped so hexes named in them don't trip the guard.
+  const lines = stripAllComments(text).split('\n')
   lines.forEach((line, i) => {
     const found = []
     for (const m of line.matchAll(hexRe)) found.push({ raw: m[0], rgb: hexToRgb(m[0]) })

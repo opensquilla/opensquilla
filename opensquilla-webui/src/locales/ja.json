@@ -81,6 +81,8 @@
     "controlNav": "ナビゲーションの操作",
     "primaryNav": "メイン",
     "primaryMobile": "メイン（モバイル）",
+    "moreThemes": "その他のテーマ…",
+    "moreThemesHint": "追加のテーマは外観設定で利用できます",
     "themeMode": {
       "light": "ライト",
       "dark": "ダーク",
@@ -1561,7 +1563,8 @@
         "label": "一時的",
         "tooltip": "一時的なセッション — コストはまだ永続化されていません",
         "short": "一時的"
-      }
+      },
+      "cacheBlindHint": "キャッシュされたトークンを通常の入力料金で計算した推定値を含みます — 上限の目安としてご利用ください。"
     },
     "relTime": {
       "justNow": "たった今",

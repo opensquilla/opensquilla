@@ -7,6 +7,7 @@ import { useAppStore } from './stores/app'
 import { useRpcStore } from './stores/rpc'
 import 'katex/dist/katex.min.css'
 import './assets/base.css'
+import './themes/tokens' // eagerly bundles every value theme's token block
 import './styles/control-visual-system.css'
 import './styles/route-fx.css'
 import './styles/chat-markdown.css'

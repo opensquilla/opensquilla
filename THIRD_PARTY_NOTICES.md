@@ -12,6 +12,8 @@ It covers:
   `src/opensquilla/squilla_router/models/v4.2_phase3_inference/`.
 - Static frontend vendor assets and fonts distributed with the gateway Control
   UI and generated Web UI assets.
+- The Web UI "Arctic" theme color palette, adapted from the Nord palette under
+  the MIT license; see the dedicated section below.
 - The built-in tokenjuice tool-result projection backend and bundled
   reduction rules under `src/opensquilla/plugins/tokenjuice/`.
 - The cron prompt-injection scanner was reviewed against Hermes Agent
@@ -133,6 +135,46 @@ INCLUDING ANY GENERAL, SPECIAL, INDIRECT, INCIDENTAL, OR CONSEQUENTIAL
 DAMAGES, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
 FROM, OUT OF THE USE OR INABILITY TO USE THE FONT SOFTWARE OR FROM
 OTHER DEALINGS IN THE FONT SOFTWARE.
+```
+
+## Arctic theme color palette (Nord)
+
+- Component: Web UI "Arctic" value theme color palette in
+  `opensquilla-webui/src/themes/arctic/tokens.css` (and its generated Web UI CSS
+  assets).
+- Upstream project: https://www.nordtheme.com
+- License: MIT
+- Copyright notice: Copyright (c) Sven Greb and the Nord contributors
+
+The "Arctic" theme's color values are adapted from the Nord palette. OpenSquilla
+is not affiliated with, sponsored by, or endorsed by the Nord project; the
+palette is reused under the MIT license solely for its color values, with a
+matching attribution header reproduced at the top of the theme's `tokens.css`.
+Some values are lightened from the upstream palette so the theme passes
+OpenSquilla's WCAG contrast guards. The MIT license text is reproduced below.
+
+```
+MIT License
+
+Copyright (c) Sven Greb and the Nord contributors
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
 ```
 
 ## npm and Python dependency packaging strategy

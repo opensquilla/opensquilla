@@ -586,7 +586,7 @@ class BudgetGateInput:
     spend_usd: float | None
     estimate_usd: float | None = None
     cap_tier: str | None = None
-    spend_source: str = "unknown"  # "billed" | "estimate" | "none" | "unknown"
+    spend_source: str = "unknown"  # "billed" | "estimate" | "estimate_mixed" | "none" | "unknown"
     session_key: str | None = None
 
 
@@ -676,6 +676,7 @@ def record_budget_gate_trail(extra: dict, result: BudgetGateResult) -> None:
         "rule": result.outcome,
         "spend_usd": result.spend_usd,
         "limit_usd": result.limit_usd,
+        "spend_source": result.spend_source,
     }
     if result.outcome == "cap":
         entry["from_tier"] = result.from_tier

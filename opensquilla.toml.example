@@ -239,8 +239,10 @@ all_failed_policy = "fallback_single"
 # #                   dashscope | moonshot | volcengine | none
 # reasoning_format = "openrouter"
 # supports_reasoning = true
-# input_cost_per_mtok = 0.5    # USD per million input tokens (example value)
-# output_cost_per_mtok = 2.0   # USD per million output tokens (example value)
+# input_cost_per_mtok = 0.5        # USD per million input tokens (example value)
+# output_cost_per_mtok = 2.0       # USD per million output tokens (example value)
+# cache_read_cost_per_mtok = 0.05  # USD per million cached-prompt-read tokens (example value)
+# cache_write_cost_per_mtok = 0.6  # USD per million cached-prompt-write tokens (example value)
 # thinking_level_map = { high = "high", medium = "medium" }
 
 [memory]

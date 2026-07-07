@@ -1,0 +1,85 @@
+/* Theme: light (value) — L1 token block. Split out of base.css (P0).
+   Values unchanged. See src/themes/light/manifest.ts. */
+/* Light theme — neutral paper: white cards on a faintly-grey off-white field
+   (achromatic, the daylight analogue of the graphite dark). Spectrum darkened
+   for contrast on the light surface. */
+[data-theme="light"] {
+  /* Instrument light — a cool neutral off-white (faint graphite cast, not cream).
+     Cards are the brightest plane; separation comes from the --elev shadow +
+     the graduated border, not tint. */
+  --bg: #F4F5F7;
+  --bg-surface: #FFFFFF;
+  --bg-surface-2: #EDEFF2;
+  --bg-elevated: #FFFFFF;
+  --bg-hover: #E2E6EB;
+  --text: #15181C;
+  --text-muted: #565D66;
+  --text-dim: #6C737C;
+  --border: #D5D9DE;
+  --border-strong: #B9BFC7;
+  --border-focus: #9AA1AA;
+  --card: #FFFFFF;
+  --hairline: #E4E7EB;
+
+  /* Strike darkened for AA (4.5:1) as text on the light canvas — accent is used
+     as `color:` for links/nav/inline status in 100+ sites, not only as a fill. */
+  --accent: #BA4D0F;
+  --accent-hover: #A5440C;
+  --accent-deep: #8E3A0A;
+  --accent-secondary: #B6501C;
+  --accent-foreground: #FFFFFF;
+
+  /* Machined elevation (light) — soft neutral shadows + a graduated border do
+     the lifting; drop the inner white highlight (it reads as glare on paper). */
+  --elev-highlight: rgba(255,255,255,0.9);
+  --elev-1: 0 0 0 1px var(--border), 0 1px 2px rgba(16,20,26,0.05), 0 4px 12px -4px rgba(16,20,26,0.10);
+  --elev-1-hover: 0 0 0 1px var(--border-strong), 0 2px 4px rgba(16,20,26,0.08), 0 10px 22px -6px rgba(16,20,26,0.14);
+  --elev-2: 0 0 0 1px var(--border-strong), 0 8px 24px -6px rgba(16,20,26,0.16);
+  --elev-3: 0 0 0 1px var(--border-strong), 0 16px 40px -10px rgba(16,20,26,0.22);
+  --ok: #0E7A52;
+  --warn: #8A6410;
+  /* Light fills: a true amber that reads as "warn" at small sizes, where the
+     text-AA-tuned dark --warn looks like olive/brown. */
+  --warn-fill: #B2820B;
+  --danger: #C2382E;
+  --info: #1E6E8C;
+  --queued: #5A48C0;
+
+  /* Syntax highlighting (chat code blocks) */
+  --syntax-comment: #5F6B7A;
+  --syntax-keyword: #8E24AA;
+  --syntax-string: #2E7D32;
+  --syntax-literal: #8A5700;
+  --syntax-title: #1E55C7;
+  --syntax-attr: #0E7490;
+
+  --shadow: rgba(0,0,0,0.10);
+  --shadow-color: rgba(0,0,0,0.10);
+  --scrim: rgba(0, 0, 0, 0.40);
+  --grain-opacity: 0.03;
+
+  --sidebar-bg: #F2F2F3;
+  --sidebar-control-bg: #FFFFFF;
+  --sidebar-control-hover: #F0F0F2;
+  --sidebar-item-hover: #ECECEE;
+  --sidebar-item-active: #E7E7EA;
+  --sidebar-text-strong: #18181A;
+  --sidebar-text: #56565A;
+  --sidebar-text-soft: #6C6C70;
+  --sidebar-border: #E4E4E7;
+}
+
+/* Structural identity — light explicitly re-asserts the foundation type + radius
+   so a nested [data-theme="light"] island (the share-export stage) fully escapes
+   an active theme's structural remaps (terminal's mono type, hard corners, …).
+   Custom properties inherit, so without these declarations the island would keep
+   the outer theme's fonts/radii even though its palette re-resolves. */
+[data-theme="light"] {
+  --font-sans: var(--font-sans-default);
+  --font-display: var(--font-display-default);
+  --radius-control: var(--radius-md);
+  --radius-card: var(--radius-lg);
+  --radius-panel: var(--radius-xl);
+  --radius-modal: var(--radius-2xl);
+  --radius-pill: var(--radius-full);
+}

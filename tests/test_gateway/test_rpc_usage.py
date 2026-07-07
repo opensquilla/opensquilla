@@ -3,6 +3,8 @@
 import asyncio
 from types import SimpleNamespace
 
+import pytest
+
 from opensquilla.engine.usage import UsageTracker
 from opensquilla.gateway import rpc_usage
 from opensquilla.gateway.rpc.registry import RpcContext
@@ -128,7 +130,7 @@ def test_usage_status_tracker_row_source_mixed_when_some_models_unbilled() -> No
     # (for billed models) + estimate (for unbilled models). Setting this to
     # billed_cost only under-reports by the unbilled portion.
     breakdown_sum = sum(item["costUsd"] for item in row["modelBreakdown"])
-    assert row["costUsd"] == breakdown_sum
+    assert row["costUsd"] == pytest.approx(breakdown_sum)
     # And the unbilled model contributed a non-zero estimate.
     assert row["costUsd"] > 0.05
 
@@ -349,6 +351,89 @@ def test_usage_status_exposes_persisted_cost_components_and_source() -> None:
     assert row["costSource"] == "mixed"
     assert row["missingCostEntries"] == 0
     assert row["cost_ephemeral"] is False
+
+
+def test_usage_status_exposes_estimate_basis_and_price_source_when_present() -> None:
+    """Session-row provenance keys are additive: present (dual-case) when the
+    persisted session record carries them, without disturbing any existing
+    cost field or value."""
+    session = SimpleNamespace(
+        session_key="agent:webchat:provenance",
+        status="running",
+        input_tokens=1000,
+        output_tokens=50,
+        total_cost_usd=0.02,
+        billed_cost_usd=0.0,
+        estimated_cost_component_usd=0.02,
+        cost_source="opensquilla_estimate",
+        missing_cost_entries=0,
+        estimate_basis="cache_blind",
+        price_source="config_override",
+        model="claude-opus-4-7",
+    )
+    sm = _FakeSessionManager([session])
+
+    ctx = _ctx(session_manager=sm, usage_tracker=UsageTracker())
+    payload = asyncio.run(_handle_usage_status(None, ctx))
+
+    [row] = payload["sessions"]
+    assert row["estimateBasis"] == "cache_blind"
+    assert row["estimate_basis"] == "cache_blind"
+    assert row["priceSource"] == "config_override"
+    assert row["price_source"] == "config_override"
+    # The new additive keys must not disturb any existing cost field.
+    assert row["costUsd"] == 0.02
+    assert row["costSource"] == "opensquilla_estimate"
+
+
+def test_usage_status_estimate_basis_and_price_source_default_none_when_absent() -> None:
+    """Persisted rows that predate provenance tracking must not error — the
+    new keys default to ``None`` rather than being omitted or raising."""
+    session = SimpleNamespace(
+        session_key="agent:webchat:no-provenance",
+        status="running",
+        input_tokens=500,
+        output_tokens=20,
+        estimated_cost_usd=0.01,
+        model="claude-opus-4-7",
+    )
+    sm = _FakeSessionManager([session])
+
+    ctx = _ctx(session_manager=sm, usage_tracker=UsageTracker())
+    payload = asyncio.run(_handle_usage_status(None, ctx))
+
+    [row] = payload["sessions"]
+    assert row["estimateBasis"] is None
+    assert row["estimate_basis"] is None
+    assert row["priceSource"] is None
+    assert row["price_source"] is None
+
+
+def test_usage_status_tracker_breakdown_items_carry_provenance_keys_unchanged() -> None:
+    """Per-model breakdown items already carry costSource/estimateBasis/priceSource
+    dual-case keys from the tracker's cost-field helper — the RPC layer must
+    spread them through untouched rather than stripping or renaming them."""
+    tracker = UsageTracker()
+    tracker.add(
+        "agent:webchat:breakdown-provenance",
+        input_tokens=1000,
+        output_tokens=50,
+        model_id="claude-opus-4-7",
+        cache_read_tokens=200,
+        cache_write_tokens=80,
+    )
+
+    ctx = _ctx(session_manager=None, usage_tracker=tracker)
+    payload = asyncio.run(_handle_usage_status(None, ctx))
+
+    [row] = payload["sessions"]
+    [item] = row["modelBreakdown"]
+    assert "estimateBasis" in item
+    assert "estimate_basis" in item
+    assert "priceSource" in item
+    assert "price_source" in item
+    assert item["estimateBasis"] == item["estimate_basis"]
+    assert item["priceSource"] == item["price_source"]
 
 
 def test_usage_status_merges_tracker_and_session_manager_cache_totals() -> None:

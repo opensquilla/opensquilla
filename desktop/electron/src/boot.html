@@ -123,6 +123,13 @@
       width: 38%;
     }
 
+    /* On a startup failure the splash is paused, not working — freeze the
+       indeterminate sweep so it doesn't contradict the "Startup paused" state. */
+    body.errored .status-line::before {
+      animation: none;
+      opacity: 0.2;
+    }
+
     .status-copy {
       align-items: baseline;
       display: flex;
@@ -276,6 +283,7 @@
         <p id="errorMessage" data-i18n="errorDefault">The gateway did not finish starting.</p>
         <div class="actions">
           <button id="revealLog" type="button" data-i18n="revealLog">Reveal log</button>
+          <button id="resetSetup" type="button" data-i18n="resetSetup">Reset setup</button>
           <button id="quit" type="button" data-i18n="quit">Quit</button>
           <button id="retry" class="primary" type="button" data-i18n="retry">Retry</button>
         </div>
@@ -296,8 +304,12 @@
         stepProfile: 'Profile', stepGateway: 'Gateway', stepControl: 'Control',
         errorTitle: 'Startup needs attention',
         errorDefault: 'The gateway did not finish starting.',
-        revealLog: 'Reveal log', quit: 'Quit', retry: 'Retry',
+        revealLog: 'Reveal log', resetSetup: 'Reset setup', quit: 'Quit', retry: 'Retry',
         startupPaused: 'Startup paused',
+        resetConfirm: 'Reset desktop setup? This clears the saved desktop credential and generated gateway config, then reopens onboarding.',
+        resetPhase: 'Resetting desktop setup',
+        resetProgress: 'Clearing saved setup and restarting onboarding.',
+        resetFailed: 'Reset failed',
       },
       'zh-Hans': {
         title: '正在启动 OpenSquilla', bootAria: 'OpenSquilla 启动',
@@ -306,8 +318,12 @@
         stepProfile: '配置', stepGateway: '网关', stepControl: '控制',
         errorTitle: '启动需要处理',
         errorDefault: '网关未能完成启动。',
-        revealLog: '显示日志', quit: '退出', retry: '重试',
+        revealLog: '显示日志', resetSetup: '重新配置', quit: '退出', retry: '重试',
         startupPaused: '启动已暂停',
+        resetConfirm: '要重置桌面设置吗？这会清除已保存的桌面凭据和生成的网关配置，然后重新进入引导。',
+        resetPhase: '正在重置桌面设置',
+        resetProgress: '正在清除已保存的设置并重新启动引导。',
+        resetFailed: '重置失败',
       },
       ja: {
         title: 'OpenSquilla を起動しています', bootAria: 'OpenSquilla の起動',
@@ -316,8 +332,12 @@
         stepProfile: 'プロファイル', stepGateway: 'ゲートウェイ', stepControl: 'コントロール',
         errorTitle: '起動の確認が必要です',
         errorDefault: 'ゲートウェイの起動が完了しませんでした。',
-        revealLog: 'ログを表示', quit: '終了', retry: '再試行',
+        revealLog: 'ログを表示', resetSetup: '設定をリセット', quit: '終了', retry: '再試行',
         startupPaused: '起動を一時停止しました',
+        resetConfirm: 'デスクトップ設定をリセットしますか？保存済みのデスクトップ認証情報と生成済みのゲートウェイ設定を消去し、オンボーディングを再開します。',
+        resetPhase: 'デスクトップ設定をリセットしています',
+        resetProgress: '保存済み設定を消去し、オンボーディングを再開しています。',
+        resetFailed: 'リセットに失敗しました',
       },
       fr: {
         title: 'Démarrage d\'OpenSquilla', bootAria: 'Démarrage d\'OpenSquilla',
@@ -326,8 +346,12 @@
         stepProfile: 'Profil', stepGateway: 'Passerelle', stepControl: 'Contrôle',
         errorTitle: 'Le démarrage nécessite votre attention',
         errorDefault: 'La passerelle n\'a pas terminé son démarrage.',
-        revealLog: 'Afficher le journal', quit: 'Quitter', retry: 'Réessayer',
+        revealLog: 'Afficher le journal', resetSetup: 'Réinitialiser', quit: 'Quitter', retry: 'Réessayer',
         startupPaused: 'Démarrage en pause',
+        resetConfirm: 'Réinitialiser la configuration du bureau ? Cela efface les identifiants de bureau enregistrés et la configuration de passerelle générée, puis relance l’onboarding.',
+        resetPhase: 'Réinitialisation de la configuration du bureau',
+        resetProgress: 'Suppression de la configuration enregistrée et relance de l’onboarding.',
+        resetFailed: 'Échec de la réinitialisation',
       },
       de: {
         title: 'OpenSquilla wird gestartet', bootAria: 'OpenSquilla-Start',
@@ -336,8 +360,12 @@
         stepProfile: 'Profil', stepGateway: 'Gateway', stepControl: 'Control',
         errorTitle: 'Der Start erfordert Ihre Aufmerksamkeit',
         errorDefault: 'Das Gateway hat den Start nicht abgeschlossen.',
-        revealLog: 'Protokoll anzeigen', quit: 'Beenden', retry: 'Wiederholen',
+        revealLog: 'Protokoll anzeigen', resetSetup: 'Zurücksetzen', quit: 'Beenden', retry: 'Wiederholen',
         startupPaused: 'Start angehalten',
+        resetConfirm: 'Desktop-Einrichtung zurücksetzen? Dadurch werden gespeicherte Desktop-Anmeldedaten und die generierte Gateway-Konfiguration gelöscht; danach startet das Onboarding erneut.',
+        resetPhase: 'Desktop-Einrichtung wird zurückgesetzt',
+        resetProgress: 'Gespeicherte Einrichtung wird gelöscht und Onboarding neu gestartet.',
+        resetFailed: 'Zurücksetzen fehlgeschlagen',
       },
       es: {
         title: 'Iniciando OpenSquilla', bootAria: 'Inicio de OpenSquilla',
@@ -346,8 +374,12 @@
         stepProfile: 'Perfil', stepGateway: 'Pasarela', stepControl: 'Control',
         errorTitle: 'El inicio necesita atención',
         errorDefault: 'La pasarela no terminó de iniciarse.',
-        revealLog: 'Mostrar registro', quit: 'Salir', retry: 'Reintentar',
+        revealLog: 'Mostrar registro', resetSetup: 'Restablecer', quit: 'Salir', retry: 'Reintentar',
         startupPaused: 'Inicio en pausa',
+        resetConfirm: '¿Restablecer la configuración de escritorio? Esto borra la credencial de escritorio guardada y la configuración de pasarela generada, y vuelve a abrir la incorporación.',
+        resetPhase: 'Restableciendo configuración de escritorio',
+        resetProgress: 'Borrando la configuración guardada y reiniciando la incorporación.',
+        resetFailed: 'Error al restablecer',
       },
     };
     let msg = MESSAGES.en;
@@ -405,6 +437,9 @@
       // local default phase string only when no label was provided.
       phase.textContent = payload && payload.label ? String(payload.label) : msg.phaseDefault;
       errorPanel.classList.remove('visible');
+      // Leaving the error state: resume the sweep and the elapsed timer.
+      document.body.classList.remove('errored');
+      if (!timerInterval) timerInterval = setInterval(updateTimer, 100);
       setStepState(stepMap[phaseId] || 'profile', phaseId === 'ready');
     }
 
@@ -413,11 +448,37 @@
       phase.textContent = msg.startupPaused;
       errorMessage.textContent = message;
       errorPanel.classList.add('visible');
+      // Stop signalling progress: freeze the elapsed timer, pause the sweep (via
+      // the .errored class), and drop the active step highlight so a failed phase
+      // is not shown as still running.
+      document.body.classList.add('errored');
+      if (timerInterval) { clearInterval(timerInterval); timerInterval = null; }
+      for (const step of Object.values(steps)) {
+        if (step) step.classList.remove('active');
+      }
     }
 
-    setInterval(() => {
+    async function resetSetup() {
+      if (!api || typeof api.resetDesktopSettings !== 'function') return;
+      const ok = window.confirm(msg.resetConfirm);
+      if (!ok) return;
+      phase.textContent = msg.resetPhase;
+      errorMessage.textContent = msg.resetProgress;
+      try {
+        await api.resetDesktopSettings();
+        await api.retryStartup();
+      } catch (err) {
+        const message = err && err.message ? err.message : String(err);
+        phase.textContent = msg.startupPaused;
+        errorMessage.textContent = `${msg.resetFailed}: ${message}`;
+        errorPanel.classList.add('visible');
+      }
+    }
+
+    function updateTimer() {
       timer.textContent = `${((performance.now() - started) / 1000).toFixed(1).padStart(4, '0')}s`;
-    }, 100);
+    }
+    let timerInterval = setInterval(updateTimer, 100);
 
     const api = window.opensquillaDesktop;
     if (api) {
@@ -433,6 +494,12 @@
       document.getElementById('retry').addEventListener('click', () => api.retryStartup());
       document.getElementById('revealLog').addEventListener('click', () => api.revealGatewayLog());
       document.getElementById('quit').addEventListener('click', () => api.quitApp());
+      const resetButton = document.getElementById('resetSetup');
+      if (typeof api.resetDesktopSettings === 'function') {
+        resetButton.addEventListener('click', () => resetSetup());
+      } else {
+        resetButton.style.display = 'none';
+      }
     }
   </script>
 </body>

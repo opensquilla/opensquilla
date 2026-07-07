@@ -78,7 +78,12 @@ opensquilla agent --max-iterations 20 --timeout 600 -m "Bounded task"
 
 ## Notes and Limits
 
-- Cost is an estimate based on recorded runtime usage and configured pricing.
+- Cost is an estimate based on recorded runtime usage and configured pricing,
+  unless the provider itself reports a billed amount. Each row's `costSource`
+  (`provider_billed` / `opensquilla_estimate` / `mixed` / `unavailable`) says
+  which kind of number you are looking at; see
+  [`providers-and-models.md`](providers-and-models.md#pricing-and-cost-estimation)
+  for the full pricing and provenance model.
 - Provider bills remain the source of truth for actual charges.
 - Tool compression and routing can reduce model context cost, but they should
   be checked against task success, not only token totals.

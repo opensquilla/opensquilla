@@ -4848,6 +4848,9 @@ class TurnRunner:
                 initial_metadata["session_estimated_cost_usd"] = float(
                     getattr(budget_session, "estimated_cost_usd", 0.0) or 0.0
                 )
+                initial_metadata["session_cost_source"] = str(
+                    getattr(budget_session, "cost_source", "") or ""
+                )
 
         turn = TurnContext(
             message=message,

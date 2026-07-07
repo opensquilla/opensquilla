@@ -287,6 +287,83 @@ class _ConfigCapturingProvider:
         return []
 
 
+class _NoBilledCostUsageProvider:
+    provider_name = "fake"
+
+    def __init__(self, *, input_tokens: int = 1, output_tokens: int = 1) -> None:
+        self.input_tokens = input_tokens
+        self.output_tokens = output_tokens
+        self.calls: list[list[Message]] = []
+
+    def chat(
+        self,
+        messages: list[Message],
+        tools: list[Any] | None = None,
+        config: ChatConfig | None = None,
+    ) -> AsyncIterator[Any]:
+        self.calls.append(messages)
+        return self._stream()
+
+    async def _stream(self) -> AsyncIterator[Any]:
+        yield ProviderText(text="done")
+        yield ProviderDone(
+            stop_reason="stop",
+            input_tokens=self.input_tokens,
+            output_tokens=self.output_tokens,
+            billed_cost=0.0,
+        )
+
+    async def list_models(self) -> list[Any]:
+        return []
+
+
+class _MixedBilledAndEstimatedCostProvider:
+    provider_name = "fake"
+
+    def __init__(self) -> None:
+        self.calls: list[list[Message]] = []
+
+    def chat(
+        self,
+        messages: list[Message],
+        tools: list[Any] | None = None,
+        config: ChatConfig | None = None,
+    ) -> AsyncIterator[Any]:
+        self.calls.append(messages)
+        return self._stream(len(self.calls))
+
+    async def _stream(self, call_number: int) -> AsyncIterator[Any]:
+        if call_number == 1:
+            # First call reports a real billed cost, small enough to stay
+            # under budget on its own.
+            tool_use_id = "tool-1"
+            yield ProviderToolUseStart(tool_use_id=tool_use_id, tool_name="exec_command")
+            yield ProviderToolUseEnd(
+                tool_use_id=tool_use_id,
+                tool_name="exec_command",
+                arguments={"command": "echo hi"},
+            )
+            yield ProviderDone(
+                stop_reason="tool_calls",
+                input_tokens=1,
+                output_tokens=1,
+                billed_cost=0.0005,
+            )
+            return
+        # Second call is cost-blind (billed_cost=0.0), forcing the estimator
+        # to supply the remaining component that tips the turn over budget.
+        yield ProviderText(text="done")
+        yield ProviderDone(
+            stop_reason="stop",
+            input_tokens=1000,
+            output_tokens=1000,
+            billed_cost=0.0,
+        )
+
+    async def list_models(self) -> list[Any]:
+        return []
+
+
 class _CompactingErrorSessionManager:
     def __init__(self, *, compact_raises: bool = False) -> None:
         self.calls: list[tuple[str, str]] = []
@@ -670,6 +747,144 @@ def test_agent_child_config_inherits_context_and_flush_budget_policy() -> None:
     assert child.config.flush_backoff_max_seconds == 30.0
     assert child.config.flush_archive_max_bytes == 999_999
     assert child.config.flush_compaction_requires_safe_receipt is False
+
+
+def test_agent_config_max_turn_cost_usd_defaults_to_disabled() -> None:
+    assert AgentConfig().max_turn_cost_usd == 0.0
+
+
+@pytest.mark.asyncio
+async def test_agent_skips_price_resolution_per_event_when_turn_cost_budget_disabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # max_turn_cost_usd left at its disabled default (0.0): the turn-cost
+    # accumulator in the per-event ProviderDoneEvent branch must never touch
+    # the (potentially network-blocking) price resolver, even across several
+    # cost-blind LLM calls in the same turn. A single call to
+    # resolve_model_price still happens once, at the very end of the turn,
+    # for the pre-existing DoneEvent cost-reporting computation (out of scope
+    # for this gate) — so this asserts the count does *not* scale with the
+    # number of LLM calls, rather than asserting zero calls overall.
+    import opensquilla.engine.pricing as pricing_module
+
+    calls: list[tuple[str, str]] = []
+    real_resolve_model_price = pricing_module.resolve_model_price
+
+    def _counting_resolve_model_price(model_id: str, provider: str = "") -> Any:
+        calls.append((model_id, provider))
+        return real_resolve_model_price(model_id, provider)
+
+    monkeypatch.setattr(pricing_module, "resolve_model_price", _counting_resolve_model_price)
+
+    provider = _HighUsageToolLoopProvider(tool_rounds=3, input_tokens_per_call=1000)
+
+    async def _tool(call: Any) -> ToolResult:
+        return ToolResult(tool_use_id=call.tool_use_id, tool_name=call.tool_name, content="ok")
+
+    agent = Agent(
+        provider=provider,
+        config=AgentConfig(
+            model_id="deepseek/deepseek-v4-pro-20260423",
+            flush_enabled=False,
+        ),
+        tool_handler=_tool,
+    )
+
+    events = [event async for event in agent.run_turn("hello")]
+
+    assert len(provider.calls) == 4
+    assert not any(event.kind == "error" for event in events)
+    assert any(event.kind == "done" for event in events)
+    # Exactly one call: the end-of-turn DoneEvent cost estimate. None of the
+    # four per-event ProviderDoneEvent accumulation passes should have called
+    # the resolver while the gate is disabled.
+    assert len(calls) == 1
+
+
+def test_agent_child_config_inherits_max_turn_cost_usd() -> None:
+    agent = Agent(
+        provider=_ContextOverflowProvider(success_after=1),
+        config=AgentConfig(max_turn_cost_usd=0.42),
+    )
+
+    child = agent._make_child_agent(SubagentSpec(task="child task"), depth=1)
+
+    assert child.config.max_turn_cost_usd == 0.42
+
+
+@pytest.mark.asyncio
+async def test_agent_stops_when_turn_estimated_cost_budget_is_exceeded() -> None:
+    # No provider-billed cost at all (billed_cost=0.0 on every call), so the
+    # gate must fall back to the estimator to know it is over budget.
+    provider = _NoBilledCostUsageProvider(input_tokens=1000, output_tokens=1000)
+    agent = Agent(
+        provider=provider,
+        config=AgentConfig(
+            model_id="deepseek/deepseek-v4-pro-20260423",
+            max_turn_cost_usd=0.001,
+        ),
+    )
+
+    events = [event async for event in agent.run_turn("hello")]
+
+    assert len(provider.calls) == 1
+    error = next(
+        event
+        for event in events
+        if event.kind == "error" and event.code == "turn_cost_budget_exceeded"
+    )
+    assert "estimated cost basis" in error.message
+
+
+@pytest.mark.asyncio
+async def test_agent_labels_turn_cost_budget_error_as_mixed_when_billed_and_estimated() -> None:
+    # Turn mixes a real billed cost (call 1) with an estimated cost (call 2,
+    # cost-blind) — the gate's basis label must reflect both contributions.
+    provider = _MixedBilledAndEstimatedCostProvider()
+
+    async def _tool(call: Any) -> ToolResult:
+        return ToolResult(tool_use_id=call.tool_use_id, tool_name=call.tool_name, content="ok")
+
+    agent = Agent(
+        provider=provider,
+        config=AgentConfig(
+            model_id="deepseek/deepseek-v4-pro-20260423",
+            max_turn_cost_usd=0.001,
+        ),
+        tool_handler=_tool,
+    )
+
+    events = [event async for event in agent.run_turn("hello")]
+
+    assert len(provider.calls) == 2
+    error = next(
+        event
+        for event in events
+        if event.kind == "error" and event.code == "turn_cost_budget_exceeded"
+    )
+    assert "mixed cost basis" in error.message
+
+
+def test_with_model_usage_cost_fields_prices_unbilled_cache_reads_cache_aware() -> None:
+    from opensquilla.engine import agent as agent_module
+
+    blind_row = {
+        "model": "deepseek/deepseek-v4-pro-20260423",
+        "input_tokens": 1000,
+        "output_tokens": 0,
+        "billed_cost": 0.0,
+    }
+    cached_row = dict(blind_row, cache_read_tokens=800)
+
+    blind = agent_module._with_model_usage_cost_fields([blind_row])[0]
+    cached = agent_module._with_model_usage_cost_fields([cached_row])[0]
+
+    assert blind["estimate_basis"] == "cache_aware"
+    assert cached["estimate_basis"] == "cache_aware"
+    # (200 * 0.435 + 800 * 0.003625) / 1e6 == 0.0000899, rounded to 6dp by
+    # model_usage_cost_fields.
+    assert cached["cost_usd"] == pytest.approx(0.00009)
+    assert cached["cost_usd"] < blind["cost_usd"]
 
 
 class _BudgetCheckingProvider:

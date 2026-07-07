@@ -81,6 +81,8 @@
     "controlNav": "控制台导航",
     "primaryNav": "主导航",
     "primaryMobile": "移动端主导航",
+    "moreThemes": "更多主题…",
+    "moreThemesHint": "更多主题可在外观设置中选择",
     "themeMode": {
       "light": "浅色",
       "dark": "深色",
@@ -1561,7 +1563,8 @@
         "label": "临时",
         "tooltip": "临时会话 — 成本尚未持久化",
         "short": "临时"
-      }
+      },
+      "cacheBlindHint": "包含按全价输入费率计价缓存令牌的估算 — 视为上限。"
     },
     "relTime": {
       "justNow": "刚刚",

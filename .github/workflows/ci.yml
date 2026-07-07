@@ -31,6 +31,7 @@ jobs:
       windows_full_required: ${{ steps.classify.outputs.windows_full_required }}
       frontend_changed: ${{ steps.classify.outputs.frontend_changed }}
       tui_changed: ${{ steps.classify.outputs.tui_changed }}
+      desktop_changed: ${{ steps.classify.outputs.desktop_changed }}
       python_changed: ${{ steps.classify.outputs.python_changed }}
       platform_sensitive_changed: ${{ steps.classify.outputs.platform_sensitive_changed }}
       build_wheel_required: ${{ steps.classify.outputs.build_wheel_required }}
@@ -159,6 +160,42 @@ jobs:
       - name: Run OpenTUI Bun tests
         working-directory: src/opensquilla/cli/tui/opentui/package
         run: bun run test:bun
+
+  desktop-check:
+    name: Desktop Electron unit tests
+    needs: classify-changes
+    if: ${{ needs.classify-changes.outputs.desktop_changed == 'true' || needs.classify-changes.outputs.full_required == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      # The pure-logic unit tests run against the compiled dist and never launch
+      # Electron, so skip the heavy Electron/Playwright binary downloads.
+      ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
+      PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: '1'
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20.19.0'
+          cache: 'npm'
+          cache-dependency-path: desktop/electron/package-lock.json
+
+      - name: Install desktop dependencies
+        working-directory: desktop/electron
+        run: npm ci
+
+      - name: Build desktop TypeScript
+        working-directory: desktop/electron
+        run: npm run build
+
+      - name: Run desktop unit tests
+        working-directory: desktop/electron
+        run: |
+          node scripts/test-secret-storage-policy.mjs
+          node scripts/test-update-resolver.mjs
 
   ubuntu-quality:
     name: Lint, test, and build (ubuntu-latest, 3.12)
@@ -437,6 +474,7 @@ jobs:
       - readme-locale-check
       - frontend-check
       - tui-check
+      - desktop-check
       - ubuntu-quality
       - windows-compat
       - windows-full
@@ -455,6 +493,7 @@ jobs:
           readme_locale_result="${{ needs.readme-locale-check.result }}"
           frontend_result="${{ needs.frontend-check.result }}"
           tui_result="${{ needs.tui-check.result }}"
+          desktop_result="${{ needs.desktop-check.result }}"
           ubuntu_result="${{ needs.ubuntu-quality.result }}"
           windows_smoke_result="${{ needs.windows-compat.result }}"
           windows_full_result="${{ needs.windows-full.result }}"
@@ -468,6 +507,7 @@ jobs:
           windows_full_required="${{ needs.classify-changes.outputs.windows_full_required }}"
           frontend_changed="${{ needs.classify-changes.outputs.frontend_changed }}"
           tui_changed="${{ needs.classify-changes.outputs.tui_changed }}"
+          desktop_changed="${{ needs.classify-changes.outputs.desktop_changed }}"
           python_changed="${{ needs.classify-changes.outputs.python_changed }}"
           platform_sensitive_changed="${{ needs.classify-changes.outputs.platform_sensitive_changed }}"
           build_wheel_required="${{ needs.classify-changes.outputs.build_wheel_required }}"
@@ -496,6 +536,7 @@ jobs:
           printf 'readme-locale-check: %s\n' "${readme_locale_result}"
           printf 'frontend-check: %s\n' "${frontend_result}"
           printf 'tui-check: %s\n' "${tui_result}"
+          printf 'desktop-check: %s\n' "${desktop_result}"
           printf 'ubuntu-quality: %s\n' "${ubuntu_result}"
           printf 'windows-compat-smoke: %s\n' "${windows_smoke_result}"
           printf 'windows-full: %s\n' "${windows_full_result}"
@@ -517,6 +558,12 @@ jobs:
             require_success "${tui_result}" "OpenTUI package tests"
           else
             allow_success_or_skipped "${tui_result}" "OpenTUI package tests"
+          fi
+
+          if [[ "${desktop_changed}" == "true" || "${full_required}" == "true" ]]; then
+            require_success "${desktop_result}" "Desktop Electron unit tests"
+          else
+            allow_success_or_skipped "${desktop_result}" "Desktop Electron unit tests"
           fi
 
           if [[ "${python_changed}" == "true" || "${full_required}" == "true" ]]; then

@@ -162,6 +162,8 @@ def _resolved_session_cost_fields(
 
     missing_entries = _field(source, "missing_cost_entries", 0) or 0
     cost_source = _field(source, "cost_source")
+    estimate_basis = _first_field(source, "estimate_basis", "estimateBasis")
+    price_source = _first_field(source, "price_source", "priceSource")
     if total_cost is None:
         total_cost = legacy_total
     if (
@@ -196,6 +198,13 @@ def _resolved_session_cost_fields(
         "cost_source": cost_source,
         "missing_cost_entries": int(missing_entries or 0),
         "cost_ephemeral": bool(ephemeral),
+        # Additive provenance keys, sourced from the session record when
+        # present; ``None`` when the persisted row predates them or never
+        # carried per-model breakdown provenance. ``_usage_row`` fans these
+        # snake_case values out to both key cases, matching the other cost
+        # fields returned here.
+        "estimate_basis": estimate_basis,
+        "price_source": price_source,
     }
 
 
@@ -211,6 +220,8 @@ def _usage_row(
     cost_source: str = "none",
     missing_cost_entries: int = 0,
     cost_ephemeral: bool = False,
+    estimate_basis: str | None = None,
+    price_source: str | None = None,
     cache_read_tokens: int = 0,
     cache_write_tokens: int = 0,
     created_at: int | None = None,
@@ -233,6 +244,10 @@ def _usage_row(
         "costSource": cost_source,
         "missingCostEntries": missing_cost_entries,
         "costEphemeral": cost_ephemeral,
+        # Additive provenance keys — None when the source has no per-model
+        # breakdown to derive them from (see _resolved_session_cost_fields).
+        "estimateBasis": estimate_basis,
+        "priceSource": price_source,
         "cacheReadTokens": cache_read_tokens,
         "cacheWriteTokens": cache_write_tokens,
         "createdAt": created_at,
@@ -252,6 +267,8 @@ def _usage_row(
         "cost_source": cost_source,
         "missing_cost_entries": missing_cost_entries,
         "cost_ephemeral": cost_ephemeral,
+        "estimate_basis": estimate_basis,
+        "price_source": price_source,
         "cache_read_tokens": cache_read_tokens,
         "cache_write_tokens": cache_write_tokens,
         "created_at": created_at,

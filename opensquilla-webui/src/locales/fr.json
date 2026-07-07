@@ -81,6 +81,8 @@
     "controlNav": "Navigation de contrôle",
     "primaryNav": "Principale",
     "primaryMobile": "Principale mobile",
+    "moreThemes": "Plus de thèmes…",
+    "moreThemesHint": "Des thèmes supplémentaires sont disponibles dans les paramètres d'Apparence",
     "themeMode": {
       "light": "Clair",
       "dark": "Sombre",
@@ -1561,7 +1563,8 @@
         "label": "Éphémère",
         "tooltip": "Session éphémère — coût pas encore persisté",
         "short": "éphémère"
-      }
+      },
+      "cacheBlindHint": "Inclut des estimations qui tarifient les jetons en cache au tarif d'entrée plein — à considérer comme un plafond."
     },
     "relTime": {
       "justNow": "à l'instant",

@@ -24,5 +24,10 @@ declare module 'vue-router' {
      *  and RPC fan-out on every navigation. Reserved for poll-heavy observe
      *  views; chat is excluded (it re-inits per session). */
     keepAlive?: boolean
+    /** Axis-B expressive skin (a registered `kind:'expressive'` theme id) to
+     *  apply to this route's content area only. Composes over the active
+     *  light/dark ground; never applies to the console shell. Reserved for
+     *  narrative surfaces (changelog, design pages) — never operational views. */
+    skin?: string
   }
 }

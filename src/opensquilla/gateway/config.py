@@ -1682,6 +1682,8 @@ class ModelOverrideConfig(BaseModel):
     supports_vision: bool | None = None
     input_cost_per_mtok: float | None = Field(default=None, ge=0)
     output_cost_per_mtok: float | None = Field(default=None, ge=0)
+    cache_read_cost_per_mtok: float | None = Field(default=None, ge=0)
+    cache_write_cost_per_mtok: float | None = Field(default=None, ge=0)
     thinking_level_map: dict[str, str] | None = None
 
     @field_validator("reasoning_format")

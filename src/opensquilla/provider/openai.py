@@ -256,7 +256,8 @@ def _first_present(*sources: tuple[Mapping[str, Any], str]) -> int:
     Truthiness chains via ``or`` would skip an explicit ``0`` from the canonical
     field and silently fall through to a less-canonical one — e.g. an
     ``cache_creation_input_tokens=0`` getting overwritten by a non-zero
-    ``prompt_cache_miss_tokens``. Use ``in`` instead so a real zero wins.
+    ``prompt_tokens_details.cache_write_tokens``. Use ``in`` instead so a real
+    zero wins.
     """
     for src, key in sources:
         if isinstance(src, Mapping) and key in src:
@@ -287,14 +288,11 @@ def _usage_fields(usage: Mapping[str, Any] | None) -> tuple[int, int, int, int, 
     #   - usage.cache_creation_input_tokens          — Anthropic-via-OpenRouter passthrough.
     #   - prompt_tokens_details.cache_write_tokens   — OpenRouter documented field.
     #   - usage.cache_write_tokens                   — top-level alias some proxies use.
-    #   - usage.prompt_cache_miss_tokens             — DeepSeek (miss == write under their
-    #     prompt-cache pricing model).
     #   - prompt_tokens_details.cache_creation_tokens — defensive fallback.
     cache_write_tokens = _first_present(
         (usage, "cache_creation_input_tokens"),
         (prompt_details, "cache_write_tokens"),
         (usage, "cache_write_tokens"),
-        (usage, "prompt_cache_miss_tokens"),
         (prompt_details, "cache_creation_tokens"),
     )
 

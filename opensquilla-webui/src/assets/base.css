@@ -1,328 +1,14 @@
-/* OpenSquilla Web UI — Base styles & CSS custom properties.
-   Aesthetic: "Stomatopod" — abyssal teal-ink surfaces, a calibrated
-   6-channel spectral status language, instrument typography, and orange
-   #F56600 reserved strictly for "the strike" (action / CTA / focus /
-   running pulse). The spectrum encodes run state; orange never competes
-   with it. */
-
-/* ── Self-hosted instrument typography ───────────────────────────────────
-   Space Grotesk (display & numerals) · IBM Plex Sans (UI) · IBM Plex Mono
-   (IDs, logs, the readout). Latin woff2 only, font-display:swap. Files live
-   in ./fonts and are fingerprinted by the bundler at build time. */
-@font-face {
-  font-family: "Space Grotesk";
-  font-style: normal;
-  font-weight: 400;
-  font-display: swap;
-  src: url("./fonts/space-grotesk-400.woff2") format("woff2");
-}
-@font-face {
-  font-family: "Space Grotesk";
-  font-style: normal;
-  font-weight: 500;
-  font-display: swap;
-  src: url("./fonts/space-grotesk-500.woff2") format("woff2");
-}
-@font-face {
-  font-family: "Space Grotesk";
-  font-style: normal;
-  font-weight: 700;
-  font-display: swap;
-  src: url("./fonts/space-grotesk-700.woff2") format("woff2");
-}
-@font-face {
-  font-family: "IBM Plex Sans";
-  font-style: normal;
-  font-weight: 400;
-  font-display: swap;
-  src: url("./fonts/ibm-plex-sans-400.woff2") format("woff2");
-}
-@font-face {
-  font-family: "IBM Plex Sans";
-  font-style: normal;
-  font-weight: 500;
-  font-display: swap;
-  src: url("./fonts/ibm-plex-sans-500.woff2") format("woff2");
-}
-@font-face {
-  font-family: "IBM Plex Sans";
-  font-style: normal;
-  font-weight: 600;
-  font-display: swap;
-  src: url("./fonts/ibm-plex-sans-600.woff2") format("woff2");
-}
-@font-face {
-  font-family: "IBM Plex Mono";
-  font-style: normal;
-  font-weight: 400;
-  font-display: swap;
-  src: url("./fonts/ibm-plex-mono-400.woff2") format("woff2");
-}
-@font-face {
-  font-family: "IBM Plex Mono";
-  font-style: normal;
-  font-weight: 500;
-  font-display: swap;
-  src: url("./fonts/ibm-plex-mono-500.woff2") format("woff2");
-}
-
-*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-
-:root {
-  /* Typography — self-hosted instrument stack (see @font-face above). */
-  /* CJK fallback families (PingFang SC, Hiragino Sans, Microsoft YaHei, Yu
-     Gothic) are appended to every stack so Chinese/Japanese render with native
-     platform fonts — no bundled Noto, zero added weight to the committed dist.
-     <html lang> (set on locale switch) lets the browser pick region-correct Han
-     glyphs. */
-  --font-sans: "IBM Plex Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", "Hiragino Sans", "Microsoft YaHei", "Yu Gothic", sans-serif;
-  --font-display: "Space Grotesk", "IBM Plex Sans", system-ui, "PingFang SC", "Hiragino Sans", "Microsoft YaHei", "Yu Gothic", sans-serif;
-  --font-mono: "IBM Plex Mono", ui-monospace, "JetBrains Mono", Menlo, "PingFang SC", "Hiragino Sans", "Microsoft YaHei", "Yu Gothic", monospace;
-  --fs-xs: 0.8125rem;   /* 13px (was 12) */
-  --fs-sm: 0.875rem;    /* 14px (was 13) */
-  --fs-md: 1rem;        /* 16px (was 15) */
-  --fs-lg: 1.1875rem;   /* 19px (was 18) */
-  --fs-xl: 1.625rem;    /* 26px (was 24) */
-  --fs-2xl: 2rem;
-
-  --track-display: 0;
-  --track-tabular: 0.01em;
-  /* One unified eyebrow idiom (control-panel / control-section / sidebar nav
-     groups all read these), and one "quiet" weight for demoted metric labels. */
-  --eyebrow-track: 0.12em;
-  --fw-eyebrow: 600;
-  --fw-quiet: 500;
-
-  /* Radius — a hierarchy-tied ladder (0 / 4 / 8 / 12 / 16 / 20 + pill). Each tier
-     maps to a role so a corner encodes rank; components should prefer the
-     semantic aliases below over the raw steps. (Direction: "Instrument".) */
-  --radius-none: 0;
-  --radius-xs: 2px;
-  --radius-sm: 4px;
-  --radius-md: 8px;
-  --radius-lg: 12px;
-  --radius-xl: 16px;
-  --radius-2xl: 20px;
-  --radius-full: 999px;
-  --radius-control: var(--radius-md);   /* buttons, inputs, menus, segmented */
-  --radius-card: var(--radius-lg);      /* cards, stats, standing panels */
-  --radius-panel: var(--radius-xl);     /* full-bleed panels, sheets, drawers */
-  --radius-modal: var(--radius-2xl);    /* modals, dialogs, the chat composer */
-  --radius-pill: var(--radius-full);    /* pills, toggles, avatars, filter chips */
-
-  /* Spacing */
-  --sp-1: 4px;
-  --sp-2: 8px;
-  --sp-3: 12px;
-  --sp-4: 16px;
-  --sp-5: 20px;
-  --sp-6: 24px;
-  --sp-8: 32px;
-
-  /* Mobile shell */
-  --mobile-tabbar-h: 56px;
-
-  /* Motion — one shared vocabulary so every surface moves with the same hand.
-     Durations: exits should run one tier faster than their entrance.
-     Easings: standard for in/out, out (decelerate) for entrances/reveals,
-     in (accelerate) for exits, spring for the one sanctioned overshoot. */
-  --dur-fast: 120ms;    /* hover, color, focus, press feedback */
-  --dur-base: 200ms;    /* default UI transitions, reveals, small slides */
-  --dur-enter: 280ms;   /* entrances, drawers, modals */
-  --dur-pulse: 1800ms;  /* the single ambient "alive/working" loop period */
-  --ease-standard: cubic-bezier(.2, 0, 0, 1);
-  --ease-out: cubic-bezier(.2, .7, .2, 1);
-  --ease-in: cubic-bezier(.4, 0, 1, 1);
-  --ease-spring: cubic-bezier(.34, 1.56, .64, 1);
-  /* Back-compat aliases — existing rules read these. */
-  --transition: var(--dur-fast) var(--ease-standard);
-  --ease-press: var(--ease-out);
-
-  /* Shadows */
-  --shadow-color: rgba(0,0,0,0.1);
-  --shadow-xs: 0 1px 2px 0 var(--shadow-color);
-  --shadow-sm: 0 1px 3px 0 var(--shadow-color), 0 1px 2px -1px var(--shadow-color);
-  --shadow-md: 0 4px 6px -1px var(--shadow-color), 0 2px 4px -2px var(--shadow-color);
-  --shadow-lg: 0 10px 15px -3px var(--shadow-color), 0 4px 6px -4px var(--shadow-color);
-  --shadow-xl: 0 20px 25px -5px var(--shadow-color), 0 8px 10px -6px var(--shadow-color);
-
-  /* Structural-label idiom (borrowed from the "Terminal" study): uppercase,
-     tracked mono for pane titles, column headers and eyebrows — the instrument
-     texture. Prose and field labels stay --font-sans. */
-  --label-font: var(--font-mono);
-  --label-track: 0.12em;
-
-  /* One canonical focus ring + one disabled opacity, replacing the ad-hoc
-     per-component variants. --focus-ring reads the active-theme --accent.
-     Use --focus-ring for standalone controls, --focus-ring-inset for controls
-     inside an overflow:hidden/clipped container (segmented, table cells, rows)
-     where an outer glow would be clipped. */
-  --focus-ring: 0 0 0 3px color-mix(in srgb, var(--accent) 40%, transparent);
-  --focus-ring-inset: inset 0 0 0 2px color-mix(in srgb, var(--accent) 55%, transparent);
-  --focus-ring-offset: 2px;
-  --state-disabled-opacity: 0.5;
-
-  /* Atmospheric grain */
-  --grain: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='160' height='160' viewBox='0 0 160 160'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0 0 0 0.55 0'/></filter><rect width='100%25' height='100%25' filter='url(%23n)'/></svg>");
-}
+/* OpenSquilla Web UI — component & layout styles.
+   Design tokens are layered and imported first so the built cascade order is
+   identical to the previous single-file base.css: foundation (L0, theme-
+   invariant) then the per-theme L1 blocks (dark default on :root, then light).
+   Adding a theme = a folder under src/themes/; see the theme architecture spec. */
+@import "./foundation.css";
+/* Value-theme L1 token blocks ([data-theme=<id>]) are bundled eagerly by
+   src/themes/tokens.ts (import.meta.glob) so every theme folder loads
+   automatically — see main.ts. */
 
 .hidden { display: none !important; }
-
-/* Dark theme — neutral graphite: achromatic charcoal surfaces (hierarchy by
-   lightness, like the leading agent consoles) with the orange strike + the
-   6-channel spectral status language (default). */
-[data-theme="dark"], :root {
-  /* Instrument — cool graphite: a 5-step luminance ladder (bg < surface <
-     surface-2 < elevated < hover) so surfaces separate by lightness AND by the
-     machined --elev shadow below. Deeper/cooler than the old #121212 so raised
-     surfaces read as lit. */
-  --bg: #0E0F11;
-  --bg-surface: #161719;
-  --bg-surface-2: #1C1E21;
-  --bg-elevated: #232529;
-  --bg-hover: #2C2E33;
-  --text: #EEF0F2;
-  --text-muted: #A6ABB3;
-  --text-dim: #868C95;
-  --border: #2E3138;
-  --border-strong: #42464D;
-  --border-focus: #4A4F57;
-  --card: #161719;
-  --hairline: #202327;
-
-  /* One disciplined strike — refined off the old #EC6A1A for AA on the deeper
-     canvas. Reserved for the primary action, focus and running-state only. */
-  --accent: #F26A1B;
-  --accent-hover: #FF7A2E;
-  --accent-deep: #D95A11;
-  --accent-secondary: #FF8A4C;
-  --accent-foreground: #160B02;
-
-  /* Machined elevation (dark) — resting shadow + a 1px inset top highlight so
-     cards catch light. Tiers climb card -> popover -> modal. */
-  --elev-highlight: rgba(255,255,255,0.06);
-  --elev-1: 0 0 0 1px var(--border), inset 0 1px 0 0 var(--elev-highlight), 0 1px 2px rgba(0,0,0,0.30), 0 5px 12px -4px rgba(0,0,0,0.34);
-  --elev-1-hover: 0 0 0 1px var(--border-strong), inset 0 1px 0 0 var(--elev-highlight), 0 3px 6px rgba(0,0,0,0.34), 0 12px 22px -6px rgba(0,0,0,0.42);
-  --elev-2: 0 0 0 1px var(--border-strong), inset 0 1px 0 0 var(--elev-highlight), 0 6px 16px -4px rgba(0,0,0,0.50);
-  --elev-3: 0 0 0 1px var(--border-strong), inset 0 1px 0 0 rgba(255,255,255,0.10), 0 16px 32px -8px rgba(0,0,0,0.50), 0 40px 64px -16px rgba(0,0,0,0.55);
-  /* The spectrum — six calibrated channels (keep the existing semantic names;
-     --queued is the new sixth). Used only to encode run state, never decor. */
-  --ok: #39D7A2;
-  --warn: #E8B23A;
-  /* Brighter amber for small non-text fills (status dots, badge fills) where the
-     text-tuned --warn would read muddy. Keep --warn for any warn *text*. */
-  --warn-fill: #E8B23A;
-  --danger: #FF6B6B;
-  --info: #56C2E6;
-  --queued: #8C7DF2;
-  /* Data-viz only: a second series that separates from --accent by lightness
-     (not hue), so it never collides with the reserved run-state spectrum. */
-  --chart-2: color-mix(in srgb, var(--accent) 42%, var(--bg-surface));
-
-  /* Syntax highlighting (chat code blocks) */
-  --syntax-comment: #8B93A6;
-  --syntax-keyword: #C792EA;
-  --syntax-string: #9ECE6A;
-  --syntax-literal: #E5C07B;
-  --syntax-title: #7AA2F7;
-  --syntax-attr: #56B6C2;
-
-  --shadow: rgba(0, 0, 0, 0.5);
-  --shadow-color: rgba(0,0,0,0.5);
-  --scrim: rgba(0, 0, 0, 0.6);
-  --grain-opacity: 0.05;
-
-  --surface-2: var(--bg-elevated);
-  --surface-3: var(--bg-hover);
-  --color-green: var(--ok);
-  --color-red: var(--danger);
-  --color-blue: var(--info);
-  --text-secondary: var(--text-muted);
-  --sidebar-bg: var(--bg-surface);
-  --sidebar-control-bg: var(--bg-hover);
-  --sidebar-control-hover: var(--bg-elevated);
-  --sidebar-item-hover: var(--bg-hover);
-  --sidebar-item-active: var(--bg-hover);
-  --sidebar-text-strong: var(--text);
-  --sidebar-text: var(--text-muted);
-  --sidebar-text-soft: var(--text-dim);
-  --sidebar-border: var(--border);
-}
-
-/* Light theme — neutral paper: white cards on a faintly-grey off-white field
-   (achromatic, the daylight analogue of the graphite dark). Spectrum darkened
-   for contrast on the light surface. */
-[data-theme="light"] {
-  /* Instrument light — a cool neutral off-white (faint graphite cast, not cream).
-     Cards are the brightest plane; separation comes from the --elev shadow +
-     the graduated border, not tint. */
-  --bg: #F4F5F7;
-  --bg-surface: #FFFFFF;
-  --bg-surface-2: #EDEFF2;
-  --bg-elevated: #FFFFFF;
-  --bg-hover: #E2E6EB;
-  --text: #15181C;
-  --text-muted: #565D66;
-  --text-dim: #6C737C;
-  --border: #D5D9DE;
-  --border-strong: #B9BFC7;
-  --border-focus: #9AA1AA;
-  --card: #FFFFFF;
-  --hairline: #E4E7EB;
-
-  /* Strike darkened for AA on the light canvas. */
-  --accent: #DA5A12;
-  --accent-hover: #C24E0E;
-  --accent-deep: #A34309;
-  --accent-secondary: #DD6224;
-  --accent-foreground: #FFFFFF;
-
-  /* Machined elevation (light) — soft neutral shadows + a graduated border do
-     the lifting; drop the inner white highlight (it reads as glare on paper). */
-  --elev-highlight: rgba(255,255,255,0.9);
-  --elev-1: 0 0 0 1px var(--border), 0 1px 2px rgba(16,20,26,0.05), 0 4px 12px -4px rgba(16,20,26,0.10);
-  --elev-1-hover: 0 0 0 1px var(--border-strong), 0 2px 4px rgba(16,20,26,0.08), 0 10px 22px -6px rgba(16,20,26,0.14);
-  --elev-2: 0 0 0 1px var(--border-strong), 0 8px 24px -6px rgba(16,20,26,0.16);
-  --elev-3: 0 0 0 1px var(--border-strong), 0 16px 40px -10px rgba(16,20,26,0.22);
-  --ok: #0E7A52;
-  --warn: #8A6410;
-  /* Light fills: a true amber that reads as "warn" at small sizes, where the
-     text-AA-tuned dark --warn looks like olive/brown. */
-  --warn-fill: #B8860B;
-  --danger: #C2382E;
-  --info: #1E6E8C;
-  --queued: #5A48C0;
-  --chart-2: color-mix(in srgb, var(--accent) 42%, var(--bg-surface));
-
-  /* Syntax highlighting (chat code blocks) */
-  --syntax-comment: #5F6B7A;
-  --syntax-keyword: #8E24AA;
-  --syntax-string: #2E7D32;
-  --syntax-literal: #8A5700;
-  --syntax-title: #1E55C7;
-  --syntax-attr: #0E7490;
-
-  --shadow: rgba(0,0,0,0.10);
-  --shadow-color: rgba(0,0,0,0.10);
-  --scrim: rgba(0, 0, 0, 0.40);
-  --grain-opacity: 0.03;
-
-  --surface-2: var(--bg-elevated);
-  --surface-3: var(--bg-hover);
-  --color-green: var(--ok);
-  --color-red: var(--danger);
-  --color-blue: var(--info);
-  --text-secondary: var(--text-muted);
-  --sidebar-bg: #F2F2F3;
-  --sidebar-control-bg: #FFFFFF;
-  --sidebar-control-hover: #F0F0F2;
-  --sidebar-item-hover: #ECECEE;
-  --sidebar-item-active: #E7E7EA;
-  --sidebar-text-strong: #18181A;
-  --sidebar-text: #56565A;
-  --sidebar-text-soft: #6C6C70;
-  --sidebar-border: #E4E4E7;
-}
 
 html, body {
   height: 100%;
@@ -1590,6 +1276,15 @@ pre {
   color: var(--accent);
 }
 
+/* "More themes…" — a navigation action to Settings → Appearance, set off from
+   the basic light/dark/system rows by a hairline divider. */
+.theme-menu__item--more {
+  margin-top: var(--sp-1);
+  padding-top: 9px;
+  border-top: 1px solid var(--hairline);
+  border-radius: 0 0 var(--radius-sm) var(--radius-sm);
+}
+
 .sidebar-toggle.btn {
   display: inline-flex;
   width: 36px;
@@ -1890,5 +1585,29 @@ pre {
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important; /* motion-allow: reduced-motion kill-switch, not a token */
     scroll-behavior: auto !important;
+  }
+}
+
+/* ── Forced colors (Windows High Contrast) ───────────────────────────────
+   The OS strips box-shadow, so every box-shadow-based focus ring (on .btn,
+   .control-segmented__btn, summary rows, chat-share, thinking-fold, deliv-preview
+   and any future control) vanishes, leaving keyboard focus with no cue. Force a
+   real outline on ANY keyboard-focused element — the UA recolours it to a system
+   colour — so focus stays visible (WCAG 2.4.7). Enumerating each control rots and
+   inevitably misses some, so use the universal :focus-visible with !important: the
+   idiomatic forced-colors escape hatch, which must beat each control's
+   `outline: none` regardless of selector specificity. Form fields also show focus
+   on click (via :focus), so cover those too. Inert outside High Contrast, and
+   inherited by every theme/world. */
+@media (forced-colors: active) {
+  :focus-visible {
+    outline: 2px solid CanvasText !important;
+    outline-offset: 2px;
+  }
+  input:not([type="radio"]):not([type="checkbox"]):focus,
+  textarea:focus,
+  select:focus {
+    outline: 2px solid CanvasText !important;
+    outline-offset: 2px;
   }
 }

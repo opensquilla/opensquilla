@@ -12,6 +12,7 @@ const LogsView = () => import('@/views/LogsView.vue')
 const SessionsView = () => import('@/views/SessionsView.vue')
 const UsageView = () => import('@/views/UsageView.vue')
 const SkillsView = () => import('@/views/SkillsView.vue')
+const ChangelogView = () => import('@/views/ChangelogView.vue')
 
 export function defaultRootRedirect(): string {
   if (detectPlatformId() === 'desktop') return '/chat'
@@ -43,6 +44,9 @@ export const sharedRoutes: RouteRecordRaw[] = [
   { path: '/overview',  name: 'overview',  component: OverviewView,  meta: { title: 'Overview', group: 'Observe', icon: 'home', nav: 'primary', navOrder: 80, platforms: ['web', 'desktop'], keepAlive: true } },
   { path: '/usage',     name: 'usage',     component: UsageView,     meta: { title: 'Usage', group: 'Observe', icon: 'usage', nav: 'primary', navOrder: 90, platforms: ['web', 'desktop'], keepAlive: true } },
   { path: '/logs',      name: 'logs',      component: LogsView,      meta: { title: 'Logs', group: 'Observe', icon: 'logs', nav: 'primary', navOrder: 100, platforms: ['web', 'desktop'], keepAlive: true } },
+  // Editorial surface (read, not operated): the first route to opt into an
+  // Axis-B expressive skin. Not in the primary nav — reached by URL / links.
+  { path: '/changelog', name: 'changelog', component: ChangelogView, meta: { title: 'Changelog', platforms: ['web', 'desktop'], skin: 'out-of-register' } },
   // Readiness/doctor moved inline into Overview; the old deep link stays valid.
   { path: '/health',    redirect: '/overview' },
 ]

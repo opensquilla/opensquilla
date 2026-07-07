@@ -113,6 +113,7 @@ def _expected_classifier_outputs(**overrides: str) -> dict[str, str]:
         "windows_full_required": "false",
         "frontend_changed": "false",
         "tui_changed": "false",
+        "desktop_changed": "false",
         "python_changed": "false",
         "platform_sensitive_changed": "false",
         "build_wheel_required": "false",
@@ -203,6 +204,7 @@ def test_default_ci_blocks_pull_requests_and_main_pushes() -> None:
     assert "windows_full_required" in text
     assert "frontend_changed" in text
     assert "tui_changed" in text
+    assert "desktop_changed" in text
     assert "python_changed" in text
     assert "platform_sensitive_changed" in text
     assert "build_wheel_required" in text
@@ -544,6 +546,21 @@ def test_ci_change_classifier_tracks_platform_sensitive_changes(tmp_path: Path) 
     )
 
 
+def test_ci_change_classifier_tracks_desktop_changes(tmp_path: Path) -> None:
+    outputs = _classify_changed_files(
+        tmp_path,
+        ["desktop/electron/src/main.ts"],
+    )
+
+    # A desktop change gates the desktop-check Node tests and, as a platform-
+    # sensitive surface, the Windows full suite — but not the Python quality gate.
+    assert outputs == _expected_classifier_outputs(
+        desktop_changed="true",
+        platform_sensitive_changed="true",
+        windows_full_required="true",
+    )
+
+
 def test_ci_change_classifier_run_all_requires_full_ci(tmp_path: Path) -> None:
     outputs = _classify_changed_files(tmp_path, [".ci/run-all"])
 
@@ -556,6 +573,7 @@ def test_ci_change_classifier_run_all_requires_full_ci(tmp_path: Path) -> None:
         windows_full_required="true",
         frontend_changed="true",
         tui_changed="true",
+        desktop_changed="true",
         python_changed="true",
         platform_sensitive_changed="true",
         build_wheel_required="true",
@@ -571,11 +589,13 @@ def test_default_ci_uses_layered_job_conditions() -> None:
     assert "frontend_changed == 'true'" in jobs["frontend-check"]["if"]
     assert "full_required == 'true'" in jobs["frontend-check"]["if"]
     assert "tui_changed == 'true'" in jobs["tui-check"]["if"]
+    assert "desktop_changed == 'true'" in jobs["desktop-check"]["if"]
     assert "python_changed == 'true'" in jobs["ubuntu-quality"]["if"]
     assert "platform_sensitive_changed == 'true'" in jobs["windows-compat"]["if"]
     assert "windows_full_required == 'true'" in jobs["windows-full"]["if"]
     assert "release_changed == 'true'" in jobs["release-packaging"]["if"]
     assert "tui-check" in jobs["ci-result"]["needs"]
+    assert "desktop-check" in jobs["ci-result"]["needs"]
 
 
 def test_windows_smoke_does_not_install_bun_by_default() -> None:

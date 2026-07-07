@@ -108,17 +108,74 @@ class PricingCache:
 
 @dataclass
 class PriceEntry:
-    """Pricing per 1M tokens in USD."""
+    """Pricing per 1M tokens in USD. Cache rates are None when unknown —
+    the estimator then falls back to the cache-blind formula and labels it."""
 
     input_per_m: float
     output_per_m: float
+    cache_read_per_m: float | None = None
+    cache_write_per_m: float | None = None
+
+
+@dataclass(frozen=True)
+class ResolvedModelPrice:
+    """A PriceEntry plus which layer decided it (user_override > catalog >
+    live_openrouter > static_table > default; local_free short-circuits)."""
+
+    entry: PriceEntry
+    source: str
+
+
+@dataclass(frozen=True)
+class CostEstimate:
+    """One priced token set. ``basis`` discloses estimate quality:
+    cache_aware — four-bucket math with known cache rates;
+    cache_blind — cache tokens present but a needed rate is unknown, so the
+    legacy input*rate formula was used (conservative upper bound);
+    free — zero-priced (local runtime or known-free model)."""
+
+    cost_usd: float
+    basis: str
+
+
+def estimate_cost(
+    *,
+    input_tokens: int,
+    output_tokens: int,
+    cache_read_tokens: int = 0,
+    cache_write_tokens: int = 0,
+    price: PriceEntry,
+) -> CostEstimate:
+    """Price four token buckets. ``input_tokens`` is the normalized total that
+    already INCLUDES cache read/write tokens (adapter contract; see
+    provider/anthropic.py and provider/openai.py usage normalization)."""
+    inp = max(0, int(input_tokens or 0))
+    out = max(0, int(output_tokens or 0))
+    read = min(max(0, int(cache_read_tokens or 0)), inp)
+    write = min(max(0, int(cache_write_tokens or 0)), inp - read)
+
+    if not any(
+        (price.input_per_m, price.output_per_m, price.cache_read_per_m, price.cache_write_per_m)
+    ):
+        return CostEstimate(0.0, "free")
+    if (read and price.cache_read_per_m is None) or (write and price.cache_write_per_m is None):
+        blind = (inp * price.input_per_m + out * price.output_per_m) / 1_000_000
+        return CostEstimate(blind, "cache_blind")
+    fresh = inp - read - write
+    cost = (
+        fresh * price.input_per_m
+        + read * (price.cache_read_per_m or 0.0)
+        + write * (price.cache_write_per_m or 0.0)
+        + out * price.output_per_m
+    ) / 1_000_000
+    return CostEstimate(cost, "cache_aware")
 
 
 # Canonical non-discount prices that must override OpenRouter's promotional or routed
-# discounted prices. Values are USD per 1M tokens from official provider pricing.
-_PRICE_OVERRIDES: list[tuple[str, PriceEntry]] = [
-    ("deepseek/deepseek-v4-pro", PriceEntry(1.74, 3.48)),
-]
+# discounted prices. Empty unless a provider's live-quoted price is genuinely wrong
+# (e.g. a routed/promotional discount OpenRouter does not expose via its discount
+# field); ordinary price refreshes belong in the static table below, not here.
+_PRICE_OVERRIDES: list[tuple[str, PriceEntry]] = []
 
 
 _PRICE_LOCK = threading.RLock()
@@ -174,8 +231,7 @@ def _float_or_none(value: object) -> float | None:
 def _apply_discount_inverse(price_per_token: float, discount: float) -> float:
     """Return the non-discounted token price when OpenRouter reports a discount.
 
-    OpenRouter endpoint pricing also includes cache-read rates. Those are not
-    used here: Squilla Router savings and OpenSquilla estimates must use the normal
+    Squilla Router savings and OpenSquilla estimates use the normal
     prompt/completion price, then remove any explicit endpoint discount.
     """
     if discount <= 0:
@@ -193,9 +249,13 @@ def _endpoint_price(entry: dict) -> PriceEntry | None:
     if prompt is None or completion is None:
         return None
     discount = _float_or_none(pricing.get("discount")) or 0.0
+    cache_read = _float_or_none(pricing.get("input_cache_read"))
+    cache_write = _float_or_none(pricing.get("input_cache_write"))
     return PriceEntry(
         input_per_m=_apply_discount_inverse(prompt, discount) * 1_000_000,
         output_per_m=_apply_discount_inverse(completion, discount) * 1_000_000,
+        cache_read_per_m=None if cache_read is None else cache_read * 1_000_000,
+        cache_write_per_m=None if cache_write is None else cache_write * 1_000_000,
     )
 
 
@@ -321,8 +381,14 @@ def seed_live_price_cache_for_tests(model_id: str, price: PriceEntry) -> None:
 # Built-in pricing table: model_prefix → (input_per_M, output_per_M)
 _PRICING_TABLE: list[tuple[str, PriceEntry]] = [
     # Offline fallback for Squilla Router tier models.
-    ("anthropic/claude-opus-4.8", PriceEntry(5.0, 25.0)),
-    ("anthropic/claude-sonnet-4.6", PriceEntry(3.0, 15.0)),
+    (
+        "anthropic/claude-opus-4.8",
+        PriceEntry(5.0, 25.0, cache_read_per_m=0.5, cache_write_per_m=6.25),
+    ),
+    (
+        "anthropic/claude-sonnet-4.6",
+        PriceEntry(3.0, 15.0, cache_read_per_m=0.3, cache_write_per_m=3.75),
+    ),
     ("google/gemini-3.5-flash", PriceEntry(1.5, 9.0)),
     ("openai/gpt-5.4-mini", PriceEntry(0.75, 4.5)),
     ("openai/gpt-5.5", PriceEntry(5.0, 30.0)),
@@ -335,14 +401,15 @@ _PRICING_TABLE: list[tuple[str, PriceEntry]] = [
     ("stepfun/step-3.5-flash", PriceEntry(0.10, 0.30)),
     ("z-ai/glm-4.5-air", PriceEntry(0.13, 0.85)),
     ("minimax/minimax-m2.5", PriceEntry(0.118, 0.99)),
-    ("deepseek/deepseek-v4-flash", PriceEntry(0.14, 0.28)),
-    ("deepseek/deepseek-v4-pro", PriceEntry(1.74, 3.48)),
+    ("deepseek/deepseek-v4-flash", PriceEntry(0.14, 0.28, cache_read_per_m=0.0028)),
+    ("deepseek/deepseek-v4-pro", PriceEntry(0.435, 0.87, cache_read_per_m=0.003625)),
     ("deepseek/deepseek-v3.2", PriceEntry(0.26, 0.38)),
     ("google/gemini-3-flash-preview", PriceEntry(0.50, 3.0)),
     ("qwen/qwen3.7-plus", PriceEntry(0.40, 1.60)),
     ("z-ai/glm-5.2", PriceEntry(1.40, 4.40)),
     ("z-ai/glm-5.1", PriceEntry(1.40, 4.40)),
     ("z-ai/glm-5", PriceEntry(0.72, 2.30)),
+    ("moonshotai/kimi-k2.7-code", PriceEntry(0.95, 4.0, cache_read_per_m=0.19)),
     ("moonshotai/kimi-k2.6", PriceEntry(0.95, 4.0)),
     ("moonshotai/kimi-k2.5", PriceEntry(0.3827, 1.72)),
     # Direct provider smoke estimates.
@@ -359,11 +426,18 @@ _PRICING_TABLE: list[tuple[str, PriceEntry]] = [
     ("gpt-5.4-nano", PriceEntry(0.20, 1.25)),
     ("gpt-5.4-mini", PriceEntry(0.75, 4.50)),
     ("gpt-5.5", PriceEntry(5.0, 30.0)),
+    ("glm-5.2", PriceEntry(1.40, 4.40, cache_read_per_m=0.26)),
     ("glm-5.1", PriceEntry(1.40, 4.40)),
     ("glm-5", PriceEntry(0.72, 2.30)),
+    ("kimi-k2.7-code", PriceEntry(0.95, 4.0, cache_read_per_m=0.19)),
     ("kimi-k2.5", PriceEntry(0.3827, 1.72)),
-    ("deepseek-v4-flash", PriceEntry(0.14, 0.28)),
-    ("deepseek-v4-pro", PriceEntry(1.74, 3.48)),
+    ("claude-haiku-4-5", PriceEntry(1.0, 5.0, cache_read_per_m=0.1, cache_write_per_m=1.25)),
+    ("deepseek-v4-flash", PriceEntry(0.14, 0.28, cache_read_per_m=0.0028)),
+    ("deepseek-v4-pro", PriceEntry(0.435, 0.87, cache_read_per_m=0.003625)),
+    ("deepseek-chat", PriceEntry(0.14, 0.28, cache_read_per_m=0.0028)),
+    ("deepseek-reasoner", PriceEntry(0.26, 0.38)),
+    ("qwen3.7-max", PriceEntry(1.25, 3.75)),
+    ("qwen3.7-plus", PriceEntry(0.40, 1.60)),
     ("gemini-2.5-flash-lite", PriceEntry(0.10, 0.40)),
     ("gemini-2.5-flash", PriceEntry(0.15, 0.60)),
     ("gemini-2.5-pro", PriceEntry(1.25, 10.0)),
@@ -399,23 +473,60 @@ _PRICING_TABLE: list[tuple[str, PriceEntry]] = [
     ("o3-mini", PriceEntry(1.10, 4.40)),
     ("o1-mini", PriceEntry(3.0, 12.0)),
     ("o1", PriceEntry(15.0, 60.0)),
-    # Anthropic Claude.
-    ("anthropic/claude-opus-4.8", PriceEntry(5.0, 25.0)),
-    ("anthropic/claude-opus-4.5", PriceEntry(5.0, 25.0)),
-    ("anthropic/claude-opus-4", PriceEntry(15.0, 75.0)),
-    ("anthropic/claude-sonnet-4", PriceEntry(3.0, 15.0)),
-    ("anthropic/claude-3-5-sonnet", PriceEntry(3.0, 15.0)),
-    ("anthropic/claude-3-5-haiku", PriceEntry(0.80, 4.0)),
-    ("anthropic/claude-3-opus", PriceEntry(15.0, 75.0)),
-    ("anthropic/claude-3-sonnet", PriceEntry(3.0, 15.0)),
-    ("anthropic/claude-3-haiku", PriceEntry(0.25, 1.25)),
-    ("claude-opus-4", PriceEntry(15.0, 75.0)),
-    ("claude-sonnet-4", PriceEntry(3.0, 15.0)),
-    ("claude-3-5-sonnet", PriceEntry(3.0, 15.0)),
-    ("claude-3-5-haiku", PriceEntry(0.80, 4.0)),
-    ("claude-3-opus", PriceEntry(15.0, 75.0)),
-    ("claude-3-sonnet", PriceEntry(3.0, 15.0)),
-    ("claude-3-haiku", PriceEntry(0.25, 1.25)),
+    # Anthropic Claude. Cache rates are 0.1x (read) / 1.25x (write) of each row's
+    # own input price, matching Anthropic's standard 5-minute prompt-cache pricing.
+    (
+        "anthropic/claude-opus-4.8",
+        PriceEntry(5.0, 25.0, cache_read_per_m=0.5, cache_write_per_m=6.25),
+    ),
+    (
+        "anthropic/claude-opus-4.5",
+        PriceEntry(5.0, 25.0, cache_read_per_m=0.5, cache_write_per_m=6.25),
+    ),
+    (
+        "anthropic/claude-opus-4",
+        PriceEntry(15.0, 75.0, cache_read_per_m=1.5, cache_write_per_m=18.75),
+    ),
+    (
+        "anthropic/claude-sonnet-4",
+        PriceEntry(3.0, 15.0, cache_read_per_m=0.3, cache_write_per_m=3.75),
+    ),
+    (
+        "anthropic/claude-3-5-sonnet",
+        PriceEntry(3.0, 15.0, cache_read_per_m=0.3, cache_write_per_m=3.75),
+    ),
+    (
+        "anthropic/claude-3-5-haiku",
+        PriceEntry(0.80, 4.0, cache_read_per_m=0.08, cache_write_per_m=1.0),
+    ),
+    (
+        "anthropic/claude-3-opus",
+        PriceEntry(15.0, 75.0, cache_read_per_m=1.5, cache_write_per_m=18.75),
+    ),
+    (
+        "anthropic/claude-3-sonnet",
+        PriceEntry(3.0, 15.0, cache_read_per_m=0.3, cache_write_per_m=3.75),
+    ),
+    (
+        "anthropic/claude-3-haiku",
+        PriceEntry(0.25, 1.25, cache_read_per_m=0.025, cache_write_per_m=0.3125),
+    ),
+    ("claude-opus-4", PriceEntry(15.0, 75.0, cache_read_per_m=1.5, cache_write_per_m=18.75)),
+    ("claude-sonnet-4", PriceEntry(3.0, 15.0, cache_read_per_m=0.3, cache_write_per_m=3.75)),
+    (
+        "claude-3-5-sonnet",
+        PriceEntry(3.0, 15.0, cache_read_per_m=0.3, cache_write_per_m=3.75),
+    ),
+    (
+        "claude-3-5-haiku",
+        PriceEntry(0.80, 4.0, cache_read_per_m=0.08, cache_write_per_m=1.0),
+    ),
+    ("claude-3-opus", PriceEntry(15.0, 75.0, cache_read_per_m=1.5, cache_write_per_m=18.75)),
+    ("claude-3-sonnet", PriceEntry(3.0, 15.0, cache_read_per_m=0.3, cache_write_per_m=3.75)),
+    (
+        "claude-3-haiku",
+        PriceEntry(0.25, 1.25, cache_read_per_m=0.025, cache_write_per_m=0.3125),
+    ),
     # Google Gemini.
     ("google/gemini-2.5-flash", PriceEntry(0.15, 0.60)),
     ("google/gemini-2.5-pro", PriceEntry(1.25, 10.0)),
@@ -446,15 +557,24 @@ _DEFAULT_PRICING = PriceEntry(3.0, 15.0)
 _LOCAL_FREE_PROVIDERS = frozenset({"ollama", "lm_studio", "ovms", "vllm", "local"})
 
 
-def _lookup_static_price(model_id: str) -> PriceEntry:
+def _lookup_static_price_ex(model_id: str) -> tuple[PriceEntry, bool]:
+    """Static-table price plus whether a row actually matched.
+
+    Returns ``(_DEFAULT_PRICING, False)`` on fall-through so callers can label
+    an unmatched model ``default`` instead of ``static_table``.
+    """
     override = _lookup_price_override(model_id)
     if override is not None:
-        return override
+        return override, True
     model_lower = model_id.lower()
     for prefix, entry in _PRICING_TABLE:
         if model_lower.startswith(prefix):
-            return entry
-    return _DEFAULT_PRICING
+            return entry, True
+    return _DEFAULT_PRICING, False
+
+
+def _lookup_static_price(model_id: str) -> PriceEntry:
+    return _lookup_static_price_ex(model_id)[0]
 
 
 def _should_fetch_live_price(model_id: str) -> bool:
@@ -468,26 +588,46 @@ def _should_fetch_live_price(model_id: str) -> bool:
     return True
 
 
-def lookup_price(model_id: str, provider: str = "") -> PriceEntry:
-    """Look up pricing, preferring live OpenRouter endpoint prices.
+# Providers whose model ids may be priced from the OpenRouter marketplace. A
+# blank provider is the legacy default (caller did not qualify the model). Any
+# other provider names a first-party runtime whose ids must NOT be looked up
+# against OpenRouter's routed catalog.
+_LIVE_PRICE_PROVIDERS = frozenset({"", "openrouter"})
 
-    Live lookup uses ``prompt``/``completion`` endpoint prices, explicitly not
-    cache-read prices. If OpenRouter is unreachable, the static table is only a
-    fail-open fallback so cost estimation keeps working offline.
 
-    ``provider`` is the configured provider id. Local runtimes (Ollama, …) are
-    free regardless of the model id, which is otherwise unqualified (e.g.
-    ``qwen3:4b``) and would fall through to the cloud default estimate.
+def _catalog_price(model_id: str, provider: str) -> ResolvedModelPrice | None:
+    """Cost from the shared model catalog (user overrides > live > snapshot).
+
+    Returns ``None`` when the catalog carries no input/output cost for the
+    model, so pricing falls through to the live/static layers. ``source`` is
+    ``user_override`` when the catalog entry came from the user layer, else
+    ``catalog``.
     """
-    if provider and provider.strip().lower() in _LOCAL_FREE_PROVIDERS:
-        return PriceEntry(0.0, 0.0)
-    model_id = str(model_id or "").strip()
-    override = _lookup_price_override(model_id)
-    if override is not None:
-        return override
-    if not _should_fetch_live_price(model_id):
-        return _lookup_static_price(model_id)
+    try:
+        from opensquilla.provider.model_catalog import shared_catalog
 
+        entry = shared_catalog().resolve_entry(model_id, provider=provider)
+    except Exception:  # noqa: BLE001 - catalog problems must never break pricing
+        return None
+    if entry.input_cost_per_mtok is None or entry.output_cost_per_mtok is None:
+        return None
+    price = PriceEntry(
+        input_per_m=float(entry.input_cost_per_mtok),
+        output_per_m=float(entry.output_cost_per_mtok),
+        cache_read_per_m=entry.cache_read_cost_per_mtok,
+        cache_write_per_m=entry.cache_write_cost_per_mtok,
+    )
+    source = "user_override" if entry.source == "user" else "catalog"
+    return ResolvedModelPrice(price, source)
+
+
+def _cached_or_fetch_live(model_id: str) -> PriceEntry | None:
+    """Return a live OpenRouter endpoint price, using the process cache.
+
+    Returns ``None`` (so the caller falls back to the static table) when the
+    price is uncached and a recent miss is still within the negative-cache TTL,
+    or when a fresh fetch yields nothing.
+    """
     now = time.monotonic()
     key = model_id.lower()
     with _PRICE_LOCK:
@@ -497,14 +637,51 @@ def lookup_price(model_id: str, provider: str = "") -> PriceEntry:
             return cached
         miss_at = _LIVE_PRICE_MISS_AT.get(key, 0.0)
         if miss_at and now - miss_at <= _LIVE_PRICE_MISS_TTL:
-            return _lookup_static_price(model_id)
+            return None
 
     price = _fetch_live_openrouter_price(model_id)
     with _PRICE_LOCK:
         if price is None:
             _LIVE_PRICE_MISS_AT[key] = time.monotonic()
-            return _lookup_static_price(model_id)
+            return None
         _LIVE_PRICE_CACHE[key] = price
         _LIVE_PRICE_FETCHED_AT[key] = time.monotonic()
         _LIVE_PRICE_MISS_AT.pop(key, None)
         return price
+
+
+def resolve_model_price(model_id: str, provider: str = "") -> ResolvedModelPrice:
+    """Resolve a model's price and name the layer that decided it.
+
+    Authority order: ``local_free`` (short-circuit for local runtimes) >
+    static-table overrides > user/catalog cost data > live OpenRouter endpoint
+    price > static table > ``default``. Live lookup runs only for OpenRouter
+    (or an unqualified provider); first-party provider ids never query the
+    OpenRouter marketplace. If OpenRouter is unreachable, the static table is a
+    fail-open fallback so cost estimation keeps working offline.
+
+    ``provider`` is the configured provider id. Local runtimes (Ollama, …) are
+    free regardless of the model id, which is otherwise unqualified (e.g.
+    ``qwen3:4b``) and would fall through to the cloud default estimate.
+    """
+    prov = (provider or "").strip().lower()
+    if prov in _LOCAL_FREE_PROVIDERS:
+        return ResolvedModelPrice(PriceEntry(0.0, 0.0, 0.0, 0.0), "local_free")
+    model_id = str(model_id or "").strip()
+    override = _lookup_price_override(model_id)
+    if override is not None:
+        return ResolvedModelPrice(override, "static_table")
+    from_catalog = _catalog_price(model_id, prov)
+    if from_catalog is not None:
+        return from_catalog
+    if prov in _LIVE_PRICE_PROVIDERS and _should_fetch_live_price(model_id):
+        live = _cached_or_fetch_live(model_id)
+        if live is not None:
+            return ResolvedModelPrice(live, "live_openrouter")
+    static, matched = _lookup_static_price_ex(model_id)
+    return ResolvedModelPrice(static, "static_table" if matched else "default")
+
+
+def lookup_price(model_id: str, provider: str = "") -> PriceEntry:
+    """Look up pricing through the layered resolver (see resolve_model_price)."""
+    return resolve_model_price(model_id, provider).entry

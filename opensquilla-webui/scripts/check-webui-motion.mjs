@@ -1,6 +1,7 @@
-import { readdirSync, readFileSync, statSync } from 'node:fs'
+import { readFileSync } from 'node:fs'
 import { join, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { walkFiles } from './lib/fs-walk.mjs'
 
 // Every control-UI surface must move with the shared motion vocabulary defined in
 // src/assets/base.css: durations --dur-fast/base/enter/pulse and easings
@@ -22,17 +23,7 @@ const easingKeyword = /\b(?:ease-in-out|ease-in|ease-out|ease)\b/
 const durationLiteral = /\b\d*\.?\d+m?s\b/g
 const isZero = (v) => /^0(?:\.0+)?m?s$/.test(v)
 
-function walk(path, files = []) {
-  const stat = statSync(path)
-  if (stat.isDirectory()) {
-    for (const entry of readdirSync(path)) walk(join(path, entry), files)
-  } else if (/\.(vue|css)$/.test(path)) {
-    files.push(path)
-  }
-  return files
-}
-
-const files = walk(srcDir)
+const files = walkFiles(srcDir, /\.(vue|css)$/)
 const failures = []
 
 // In .vue files only <style> blocks carry CSS; script/template lines (timer

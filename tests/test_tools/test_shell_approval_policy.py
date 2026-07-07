@@ -839,6 +839,7 @@ async def test_workspace_write_deny_globs_block_shell_redirection(tmp_path: Path
 
 
 @pytest.mark.asyncio
+@pytest.mark.skipif(os.name != "posix", reason="heredoc redirection is POSIX-specific")
 async def test_workspace_write_deny_globs_allow_shell_redirection_after_cd_to_scratch(
     tmp_path: Path,
 ) -> None:

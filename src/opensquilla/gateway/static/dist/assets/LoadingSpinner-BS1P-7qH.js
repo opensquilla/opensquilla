@@ -1,2 +1,0 @@
-import{E as e,S as t,lt as n,t as r,z as i}from"./_plugin-vue_export-helper-cKlaaufF.js";import{r as a}from"./Icon-Cn6usN7x.js";var o=[`aria-label`],s=r(e({__name:`LoadingSpinner`,setup(e){let{t:r}=a();return(e,a)=>(i(),t(`span`,{class:`loading-spinner`,"aria-label":n(r)(`shared.loading`),role:`status`},null,8,o))}}),[[`__scopeId`,`data-v-e378e3da`]]);export{s as t};
-//# sourceMappingURL=LoadingSpinner-BS1P-7qH.js.map

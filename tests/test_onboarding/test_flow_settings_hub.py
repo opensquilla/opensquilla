@@ -327,6 +327,21 @@ def test_rerun_fork_start_fresh_backs_up_config_and_restarts_walk(
     assert not target.exists() or "sk-dummy-hub-test" not in target.read_text()
 
 
+def test_start_fresh_backs_up_symlink_target_without_replacing_link(tmp_path):
+    real = tmp_path / "real-config.toml"
+    link = tmp_path / "config.toml"
+    real.write_text("port = 18791\n")
+    link.symlink_to(real)
+
+    flow._backup_and_reset_config(link)
+
+    assert link.is_symlink()
+    assert not real.exists()
+    backups = list(tmp_path.glob("real-config.toml.bak-*"))
+    assert len(backups) == 1
+    assert backups[0].read_text() == "port = 18791\n"
+
+
 def test_rerun_fork_decline_reset_falls_back_to_update(tmp_path, monkeypatch):
     target = tmp_path / "c.toml"
     _seed_configured_install(target)

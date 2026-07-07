@@ -2522,15 +2522,16 @@ def _backup_and_reset_config(config_path: str | Path | None) -> None:
     import time as _time
 
     resolved, _source = resolve_config_path(config_path)
-    if not resolved.exists():
+    target = resolved.resolve() if resolved.is_symlink() else resolved
+    if not target.exists():
         return
     stamp = _time.strftime("%Y%m%d-%H%M%S")
-    backup = resolved.with_name(f"{resolved.name}.bak-{stamp}")
+    backup = target.with_name(f"{target.name}.bak-{stamp}")
     counter = 0
     while backup.exists():
         counter += 1
-        backup = resolved.with_name(f"{resolved.name}.bak-{stamp}-{counter}")
-    os.replace(resolved, backup)
+        backup = target.with_name(f"{target.name}.bak-{stamp}-{counter}")
+    os.replace(target, backup)
     console.print(
         f"[dim]Backed up existing config to {markup_escape(str(backup))}[/dim]"
     )

@@ -787,6 +787,51 @@ def test_onboard_if_needed_names_unfinished_sections(tmp_path, monkeypatch):
     assert "Provider" in result.stdout
 
 
+def test_bare_configure_hub_exit_without_changes_is_success(tmp_path, monkeypatch):
+    import sys
+    import types
+
+    target = tmp_path / "c.toml"
+    monkeypatch.setenv("OPENSQUILLA_GATEWAY_CONFIG_PATH", str(target))
+
+    from opensquilla.onboarding import flow
+
+    monkeypatch.setattr(flow, "_is_tty", lambda: True)
+
+    class _Answer:
+        def __init__(self, value):
+            self.value = value
+
+        def ask(self):
+            return self.value
+
+    class _Questionary(types.SimpleNamespace):
+        def select(self, message: str, **kwargs):
+            assert message == "Section"
+            assert kwargs["choices"][-1] == "Exit (nothing changed)"
+            return _Answer("Exit (nothing changed)")
+
+        def text(self, message: str, **_kwargs):
+            raise AssertionError(f"unexpected text prompt: {message}")
+
+        def confirm(self, message: str, **_kwargs):
+            raise AssertionError(f"unexpected confirm prompt: {message}")
+
+        def password(self, message: str, **_kwargs):
+            raise AssertionError(f"unexpected password prompt: {message}")
+
+        def checkbox(self, message: str, **_kwargs):
+            raise AssertionError(f"unexpected checkbox prompt: {message}")
+
+    monkeypatch.setitem(sys.modules, "questionary", _Questionary())
+
+    result = runner.invoke(app, ["onboard", "configure"])
+
+    assert result.exit_code == 0, result.output
+    assert "requires a TTY" not in result.stdout
+    assert not target.exists()
+
+
 # ---------------------------------------------------------------------------
 # B2-9: router tier ids in the CLI stay sourced from the router_tiers
 # helpers instead of raw tuples/literals.

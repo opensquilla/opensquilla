@@ -1696,6 +1696,14 @@ def configure_command(
         _print_saved_path(interactive_result.path)
         _print_restart_guidance(interactive_result, config_path)
         return
+    if not selected:
+        # Bare interactive `onboard configure` can exit the hub without changes
+        # via "Exit (nothing changed)"; that is a successful no-op, not the
+        # non-TTY error path below.
+        from opensquilla.onboarding.flow import _is_tty
+
+        if _is_tty():
+            return
     # ``run_interactive_configure`` returns ``None`` only after printing the
     # non-TTY hint; exit 2 like bare `onboard` so scripts see the failure.
     raise typer.Exit(code=2)

@@ -90,4 +90,3 @@ def write_secret_env_file(env_path: Path, lines: list[str]) -> None:
         except OSError:
             pass
         raise
-

@@ -108,14 +108,19 @@ def _sse_body(events: list[dict]) -> bytes:
     [
         ("minimax", "https://api.minimaxi.com/anthropic"),
         ("minimax_global", "https://api.minimax.io/anthropic"),
+        ("volcengine_coding_plan_anthropic", "https://ark.cn-beijing.volces.com/api/coding"),
+        (
+            "byteplus_coding_plan_anthropic",
+            "https://ark.ap-southeast.bytepluses.com/api/coding",
+        ),
     ],
 )
-def test_minimax_anthropic_endpoints_use_authorization_bearer(
+def test_anthropic_compatible_endpoints_use_authorization_bearer(
     monkeypatch,
     provider_id: str,
     expected_base_url: str,
 ) -> None:
-    """Registry-built MiniMax providers sign with Authorization: Bearer.
+    """Registry-built Anthropic-compatible providers sign with Authorization: Bearer.
 
     The auth style comes from the ProviderSpec (auth_header_style) rather
     than a base-url sniff, so the proof drives the production build path.

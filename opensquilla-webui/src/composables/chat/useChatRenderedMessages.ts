@@ -55,7 +55,7 @@ export interface NormalizedRouterDecision extends Record<string, unknown> {
 }
 
 export interface UseChatRenderedMessagesOptions {
-  messages: Ref<ChatMessage[]>
+  messages: Readonly<Ref<ChatMessage[]>>
   interruptState?: Ref<ReadonlyMap<string, InterruptViewState>>
   sessionKey: Ref<string>
   routerSlots: Ref<string[]>
@@ -258,6 +258,7 @@ export function useChatRenderedMessages(options: UseChatRenderedMessagesOptions)
         reasoning: msg.role === 'assistant' ? msg.reasoning : undefined,
         interrupted: msg.interrupted,
         provenanceKind: msg.provenanceKind,
+        stopNotice: msg.stopNotice,
         errorCode: msg.errorCode,
       }
       // Additive: derive discriminated parts from the finished rendered

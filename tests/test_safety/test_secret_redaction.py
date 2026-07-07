@@ -20,6 +20,32 @@ def test_redact_secret_text_masks_env_assignments_and_provider_keys() -> None:
     assert "Authorization: Bearer [REDACTED]" in redacted
 
 
+def test_redact_secret_text_masks_quoted_assignment_values() -> None:
+    text = (
+        'password: "hunter2hunter2" '
+        "token = 'abcdefabcdef' "
+        'api_key="quoted with spaces inside" '
+        "client_secret: 'unterminated"
+    )
+
+    redacted = redact_secret_text(text)
+
+    assert "hunter2hunter2" not in redacted
+    assert "abcdefabcdef" not in redacted
+    assert "quoted with spaces inside" not in redacted
+    assert "unterminated" not in redacted
+    assert "password:[REDACTED]" in redacted
+    assert "token=[REDACTED]" in redacted
+    assert "api_key=[REDACTED]" in redacted
+    assert "client_secret:[REDACTED]" in redacted
+
+
+def test_redact_secret_text_keeps_quoted_values_for_non_secret_keys() -> None:
+    text = 'name: "alice" retry_count = \'3\''
+
+    assert redact_secret_text(text) == text
+
+
 def test_redact_secret_text_does_not_mask_token_counters() -> None:
     assert redact_secret_text("total_tokens=123 cached_tokens:100") == (
         "total_tokens=123 cached_tokens:100"

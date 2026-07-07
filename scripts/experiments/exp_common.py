@@ -357,7 +357,7 @@ def exp_dir(root: Path, exp_id: str) -> Path:
 # ---------------------------------------------------------------------------
 #
 # ``contaminations.json`` at the ledger root maps a contamination class (e.g.
-# ``qwen_scaffold_infra_compaction_leak``) to the artifact batch names whose
+# ``tool_result_compaction_defect``) to the artifact batch names whose
 # results are confounded by an infra defect. Baseline and A/B tooling must
 # exclude quarantined artifacts; ``exp_status`` warns when a recorded
 # baseline references one.

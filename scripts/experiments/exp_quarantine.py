@@ -37,7 +37,7 @@ from exp_common import (
     read_json,
 )
 
-CLASS_NAME_RE_HELP = "lowercase snake_case, e.g. qwen_scaffold_infra_compaction_leak"
+CLASS_NAME_RE_HELP = "lowercase snake_case, e.g. tool_result_compaction_defect"
 
 
 def build_parser() -> argparse.ArgumentParser:

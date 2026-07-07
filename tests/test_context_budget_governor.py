@@ -54,8 +54,8 @@ def test_context_budget_governor_honors_explicit_overrides() -> None:
     assert governor.tool_result_provider_chars_for(ContextBudgetClass.LOCAL) == 54_321
 
 
-def test_context_budget_governor_glm_derived_proof_budget_matches_g1() -> None:
-    """G1 anchor: the GLM window with the xhigh output reserve derives 339,945."""
+def test_context_budget_governor_glm_derived_proof_budget_anchor() -> None:
+    """Anchor: the GLM window with the xhigh output reserve derives 339,945."""
     budget = ContextBudgetGovernor.from_values(
         context_window_tokens=202_752,
         max_output_tokens=32_768,

@@ -16,6 +16,15 @@ _AUTH_BEARER_RE = re.compile(r"(?i)(authorization\s*:\s*bearer\s+)[^\s,;'\")}\]]
 _SECRET_ASSIGNMENT_RE = re.compile(
     r"(?i)\b([A-Za-z0-9_.-]+)\s*([:=])\s*([^\s,;'\")}\]]+)"
 )
+# Second pass: values that start with a quote are invisible to the pattern above
+# (its value class excludes quotes so nested assignments inside quoted strings can
+# still be redacted individually). Match whole quoted values here so
+# ``password: "hunter2"`` is masked; the trailing ``["']\S*`` arm covers
+# unterminated quotes.
+_SECRET_QUOTED_ASSIGNMENT_RE = re.compile(
+    r"(?i)\b([A-Za-z0-9_.-]+)\s*([:=])\s*"
+    r"(\"(?:\\.|[^\"\\])*\"|'(?:\\.|[^'\\])*'|[\"']\S*)"
+)
 
 _SECRET_KEY_PARTS = (
     "authorization",
@@ -59,6 +68,7 @@ def redact_secret_text(text: str) -> str:
     redacted = text
     redacted = _AUTH_BEARER_RE.sub(lambda m: f"{m.group(1)}{_REDACTED}", redacted)
     redacted = _SECRET_ASSIGNMENT_RE.sub(_redact_assignment, redacted)
+    redacted = _SECRET_QUOTED_ASSIGNMENT_RE.sub(_redact_assignment, redacted)
     for pattern in _SECRET_TOKEN_PATTERNS:
         redacted = pattern.sub(_REDACTED, redacted)
     return redacted

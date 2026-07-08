@@ -148,6 +148,179 @@ def test_system_prompt_describes_managed_execution_run_mode() -> None:
     assert install_guidance in prompt
 
 
+def test_headless_repo_coding_scaffold_edit_prompt_matches_visible_tools() -> None:
+    prompt = assemble_system_prompt(
+        AgentProfile(agent_id="main", prompt_mode="headless_repo_coding_scaffold"),
+        tools=[
+            "exec_command",
+            "read_file",
+            "edit_file",
+            "write_file",
+            "grep_search",
+            "glob_search",
+            "list_dir",
+            "git_status",
+            "git_diff",
+            "retrieve_tool_result",
+        ],
+    )
+
+    assert "## Repository Coding Scaffold" in prompt
+    assert "`grep_search`" in prompt
+    assert "`glob_search`" in prompt
+    assert "`list_dir`" in prompt
+    assert "`read_file`" in prompt
+    assert "`edit_file`" in prompt
+    assert "`write_file`" in prompt
+    assert "`apply_patch`" not in prompt
+    assert "`exec_command`" in prompt
+    assert "`git_status`" in prompt
+    assert "`git_diff`" in prompt
+    assert "## Product Identity" not in prompt
+    assert "read_source" not in prompt
+    assert "edit_source" not in prompt
+    assert "source_symbols" not in prompt
+
+
+def test_headless_repo_coding_scaffold_patch_prompt_matches_visible_tools() -> None:
+    prompt = assemble_system_prompt(
+        AgentProfile(agent_id="main", prompt_mode="headless_repo_coding_scaffold"),
+        tools=[
+            "exec_command",
+            "read_file",
+            "edit_file",
+            "write_file",
+            "apply_patch",
+            "grep_search",
+            "glob_search",
+            "list_dir",
+            "git_status",
+            "git_diff",
+            "retrieve_tool_result",
+        ],
+    )
+
+    assert "## Repository Coding Scaffold" in prompt
+    assert "`grep_search`" in prompt
+    assert "`glob_search`" in prompt
+    assert "`list_dir`" in prompt
+    assert "`read_file`" in prompt
+    assert "`edit_file`" in prompt
+    assert "`write_file`" in prompt
+    assert "`apply_patch`" in prompt
+    assert "`exec_command`" in prompt
+    assert "`git_status`" in prompt
+    assert "`git_diff`" in prompt
+    assert "## Product Identity" not in prompt
+    assert "read_source" not in prompt
+    assert "edit_source" not in prompt
+    assert "source_symbols" not in prompt
+
+
+def test_patch_evidence_protocol_renders_when_enabled_in_scaffold_mode() -> None:
+    prompt = assemble_system_prompt(
+        AgentProfile(
+            agent_id="main",
+            prompt_mode="headless_repo_coding_scaffold",
+            patch_evidence_protocol=True,
+        ),
+        tools=[
+            "exec_command",
+            "read_file",
+            "edit_file",
+            "write_file",
+            "grep_search",
+            "glob_search",
+            "list_dir",
+            "git_status",
+            "git_diff",
+        ],
+    )
+
+    assert "## Patch Evidence Protocol" in prompt
+    assert "## Repository Coding Scaffold" in prompt
+    assert "not sufficient final evidence by itself" in prompt
+    assert "Do not modify existing test expectations" in prompt
+    assert "change hypothesis or inspect a different implementation layer" in prompt
+    assert "neighboring existing test" in prompt
+    assert "strongest command/output evidence" in prompt
+
+
+def test_patch_evidence_protocol_absent_by_default() -> None:
+    scaffold_prompt = assemble_system_prompt(
+        AgentProfile(agent_id="main", prompt_mode="headless_repo_coding_scaffold"),
+        tools=["exec_command", "read_file", "edit_file", "git_diff"],
+    )
+    full_prompt = assemble_system_prompt(
+        AgentProfile(agent_id="main", prompt_mode="full"),
+        tools=["exec_command", "read_file", "edit_file", "git_diff"],
+    )
+
+    assert "## Patch Evidence Protocol" not in scaffold_prompt
+    assert "## Patch Evidence Protocol" not in full_prompt
+
+
+def test_patch_evidence_protocol_requires_tools() -> None:
+    prompt = assemble_system_prompt(
+        AgentProfile(
+            agent_id="main",
+            prompt_mode="headless_repo_coding_scaffold",
+            patch_evidence_protocol=True,
+        ),
+        tools=None,
+    )
+
+    assert "## Patch Evidence Protocol" not in prompt
+
+
+def test_finalize_evidence_gate_section_renders_when_enabled() -> None:
+    prompt = assemble_system_prompt(
+        AgentProfile(
+            agent_id="main",
+            prompt_mode="headless_repo_coding_scaffold",
+            finalize_evidence_gate=True,
+        ),
+        tools=["exec_command", "read_file", "edit_file", "git_diff"],
+    )
+
+    assert "## Reproduction Evidence" in prompt
+    assert "binding evidence that the issue is not fixed yet" in prompt
+    assert "exits non-zero while the bug is present" in prompt
+    assert "re-run your reproduction and the most relevant existing test" in prompt
+    # The section must not contain minimality directives or wording that
+    # devalues reproduction evidence.
+    section = prompt.split("## Reproduction Evidence", 1)[1].split("## ", 1)[0]
+    assert "minimal" not in section.lower()
+    assert "not sufficient" not in section.lower()
+
+
+def test_finalize_evidence_gate_section_absent_by_default() -> None:
+    scaffold_prompt = assemble_system_prompt(
+        AgentProfile(agent_id="main", prompt_mode="headless_repo_coding_scaffold"),
+        tools=["exec_command", "read_file", "edit_file", "git_diff"],
+    )
+    full_prompt = assemble_system_prompt(
+        AgentProfile(agent_id="main", prompt_mode="full"),
+        tools=["exec_command", "read_file", "edit_file", "git_diff"],
+    )
+
+    assert "## Reproduction Evidence" not in scaffold_prompt
+    assert "## Reproduction Evidence" not in full_prompt
+
+
+def test_finalize_evidence_gate_section_requires_tools() -> None:
+    prompt = assemble_system_prompt(
+        AgentProfile(
+            agent_id="main",
+            prompt_mode="headless_repo_coding_scaffold",
+            finalize_evidence_gate=True,
+        ),
+        tools=None,
+    )
+
+    assert "## Reproduction Evidence" not in prompt
+
+
 def test_system_prompt_disambiguates_session_send_from_channel_message() -> None:
     prompt = assemble_system_prompt(
         AgentProfile(agent_id="main", prompt_mode="full"),
@@ -253,3 +426,43 @@ def test_template_no_longer_renders_duplicate_skills_section() -> None:
 
     assert "## Skills (mandatory)" not in prompt
     assert "Available skills:" not in prompt
+
+
+def test_headless_source_edit_prompt_is_source_edit_focused() -> None:
+    prompt = assemble_system_prompt(
+        AgentProfile(agent_id="main", prompt_mode="headless_source_edit"),
+        tools=[
+            "read_source",
+            "edit_source",
+            "create_source",
+            "write_scratch",
+            "source_symbols",
+            "grep_search",
+            "glob_search",
+            "read_file",
+            "list_dir",
+            "exec_command",
+            "git_diff",
+            "git_status",
+            "retrieve_tool_result",
+        ],
+        runtime_info={
+            "workspace_dir": "/testbed",
+            "os": "Linux",
+            "shell": "/bin/bash",
+        },
+    )
+
+    assert "## Source Edit Contract" in prompt
+    assert "Use `grep_search`, `glob_search`, and `source_symbols`" in prompt
+    assert "Use `read_source`" in prompt
+    assert "Use `edit_source`" in prompt
+    assert "Use `create_source`" in prompt
+    assert "Use `write_scratch`" in prompt
+    assert "Use `exec_command` mainly for tests" in prompt
+    assert "Inspect the final source diff with `git_diff`" in prompt
+    assert "Working directory: /testbed" in prompt
+    assert "## Product Identity" not in prompt
+    assert "## Tool Call Style" not in prompt
+    assert "## OpenSquilla CLI Quick Reference" not in prompt
+    assert "## Runtime" not in prompt

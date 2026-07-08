@@ -469,8 +469,20 @@ class _WarningHandler:
     def __init__(self, transformer: WarningTransformer) -> None:
         self._transformer = transformer
 
-    def handle(self, event: WarningEvent) -> WarningEvent:
+    def handle(self, event: WarningEvent, state: _StreamState) -> WarningEvent:
+        if event.code == "workspace_diff_recovery":
+            self._discard_superseded_current_text(state)
         return self._transformer(event)
+
+    @staticmethod
+    def _discard_superseded_current_text(state: _StreamState) -> None:
+        current_text = "".join(state.current_text_parts)
+        if not current_text:
+            return
+        accumulated_text = "".join(state.final_text_parts)
+        if accumulated_text.endswith(current_text):
+            state.final_text_parts[:] = [accumulated_text[: -len(current_text)]]
+        state.current_text_parts[:] = []
 
 class _DoneHandler:
     """Apply routing-tier metadata, savings, normalize text, emit notices.
@@ -1017,7 +1029,7 @@ class StreamConsumerStage:
             elif isinstance(event, ErrorEvent):
                 transformed = self._error_handler.handle(event, state)
             elif isinstance(event, WarningEvent):
-                transformed = self._warning_handler.handle(event)
+                transformed = self._warning_handler.handle(event, state)
             elif isinstance(event, DoneEvent):
                 transformed, extra_yields = self._done_handler.handle(
                     event, inp, state

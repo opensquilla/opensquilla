@@ -32,6 +32,7 @@ class AgentRunResult:
     workspace: str | None = None
     workspace_strict: bool = False
     workspace_lockdown: bool = False
+    workspace_write_deny_globs: list[str] | None = None
     scratch_dir: str | None = None
     thinking: str | None = None
     transcript_path: str | None = None
@@ -85,6 +86,37 @@ def _unwrap_typer_default(value: Any) -> Any:
     return value
 
 
+def _parse_workspace_write_deny_globs(value: Any) -> list[str]:
+    if value is None:
+        return []
+    values = [value] if isinstance(value, str) else list(value)
+    patterns: list[str] = []
+    for raw in values:
+        for part in str(raw).split(","):
+            pattern = part.strip()
+            if pattern:
+                patterns.append(pattern)
+    return patterns
+
+
+def _apply_config_tool_policy_to_context(
+    tool_ctx: Any,
+    *,
+    config: Any,
+    tool_registry: Any,
+) -> Any:
+    list_names = getattr(tool_registry, "list_names", None)
+    if not callable(list_names):
+        return tool_ctx
+    from opensquilla.tools.policy import apply_tool_policy_from_config
+
+    return apply_tool_policy_from_config(
+        tool_ctx,
+        available_tools=list(list_names()),
+        config=config,
+    )
+
+
 async def run_agent_once(
     *,
     message: str,
@@ -113,6 +145,7 @@ async def run_agent_once(
     stateless_keep_project_rules: bool = False,
     scratch_dir: str | None = None,
     workspace_lockdown: bool = False,
+    workspace_write_deny_globs: list[str] | tuple[str, ...] | None = None,
     permissions: str | None = None,
 ) -> AgentRunResult:
     """Run a single agent turn through build_services() and TurnRunner.run()."""
@@ -185,6 +218,9 @@ async def run_agent_once(
         raise ValueError(
             "workspace_lockdown requires --workspace, configured workspace_dir, or --scratch-dir"
         )
+    effective_workspace_write_deny_globs = _parse_workspace_write_deny_globs(
+        workspace_write_deny_globs
+    )
 
     # Hand the runtime agent_id to build_services so its memory store /
     # retriever / sync manager / turn capture are pre-built for that agent.
@@ -266,6 +302,12 @@ async def run_agent_once(
         )
         tool_ctx.scratch_dir = effective_scratch_dir
         tool_ctx.workspace_lockdown = workspace_lockdown
+        tool_ctx.workspace_write_deny_globs = list(effective_workspace_write_deny_globs)
+        tool_ctx = _apply_config_tool_policy_to_context(
+            tool_ctx,
+            config=service_cfg,
+            tool_registry=getattr(svc, "tool_registry", None),
+        )
 
         runner = build_turn_runner_from_services(svc)
         bootstrap_context_mode = _bootstrap_context_mode(
@@ -321,6 +363,7 @@ async def run_agent_once(
         workspace=tool_workspace_dir,
         workspace_strict=effective_workspace_strict,
         workspace_lockdown=workspace_lockdown,
+        workspace_write_deny_globs=list(tool_ctx.workspace_write_deny_globs),
         scratch_dir=effective_scratch_dir,
         thinking=thinking or getattr(getattr(service_cfg, "llm", None), "thinking", None),
         transcript_path=transcript_path,
@@ -546,6 +589,14 @@ def _to_benchmark_transcript(
                                 if isinstance(segment.get("execution_status"), dict)
                                 else None
                             ),
+                            result_truncated=(
+                                True if segment.get("result_truncated") is True else None
+                            ),
+                            result_original_chars=(
+                                segment.get("result_original_chars")
+                                if isinstance(segment.get("result_original_chars"), int)
+                                else None
+                            ),
                         )
                     )
             if assistant_blocks:
@@ -577,6 +628,8 @@ def _message_event(
     tool_name: str | None = None,
     is_error: bool | None = None,
     execution_status: dict[str, Any] | None = None,
+    result_truncated: bool | None = None,
+    result_original_chars: int | None = None,
 ) -> dict[str, Any]:
     event: dict[str, Any] = {"type": "message", "message": {"role": role, "content": content}}
     message = event["message"]
@@ -588,6 +641,10 @@ def _message_event(
         message["isError"] = is_error
     if execution_status is not None:
         message["executionStatus"] = execution_status
+    if result_truncated is not None:
+        message["resultTruncated"] = result_truncated
+    if result_original_chars is not None:
+        message["resultOriginalChars"] = result_original_chars
     if timestamp:
         event["timestamp"] = timestamp
     return event
@@ -677,6 +734,14 @@ def run_agent_command(
         help=(
             "Opt in to automation write containment: writes must stay under "
             "--workspace or --scratch-dir."
+        ),
+    ),
+    workspace_lockdown_deny_paths: list[str] = typer.Option(
+        [],
+        "--workspace-lockdown-deny-paths",
+        help=(
+            "Workspace-relative write deny glob(s) for automation containment; "
+            "repeat or comma-separate."
         ),
     ),
     scratch_dir: str = typer.Option(
@@ -786,6 +851,7 @@ def run_agent_command(
     workspace = _unwrap_typer_default(workspace)
     workspace_strict = _unwrap_typer_default(workspace_strict)
     workspace_lockdown = _unwrap_typer_default(workspace_lockdown)
+    workspace_lockdown_deny_paths = _unwrap_typer_default(workspace_lockdown_deny_paths)
     scratch_dir = _unwrap_typer_default(scratch_dir)
     timeout = _unwrap_typer_default(timeout)
     max_iterations = _unwrap_typer_default(max_iterations)
@@ -806,6 +872,9 @@ def run_agent_command(
     stateless_keep_project_rules = _unwrap_typer_default(stateless_keep_project_rules)
     permissions = _unwrap_typer_default(permissions)
     json_output = _unwrap_typer_default(json_output)
+    workspace_write_deny_globs = _parse_workspace_write_deny_globs(
+        workspace_lockdown_deny_paths
+    )
 
     result = asyncio.run(
         run_agent_once(
@@ -816,6 +885,7 @@ def run_agent_command(
             workspace=workspace or None,
             workspace_strict=workspace_strict,
             workspace_lockdown=workspace_lockdown,
+            workspace_write_deny_globs=workspace_write_deny_globs,
             scratch_dir=scratch_dir or None,
             thinking=thinking or None,
             timeout=timeout,
@@ -847,6 +917,7 @@ def run_agent_command(
         "workspace": result.workspace,
         "workspace_strict": result.workspace_strict,
         "workspace_lockdown": result.workspace_lockdown,
+        "workspace_write_deny_globs": result.workspace_write_deny_globs or [],
         "scratch_dir": result.scratch_dir,
         "routing": result.routing,
         "thinking": result.thinking,

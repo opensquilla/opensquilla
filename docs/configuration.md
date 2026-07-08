@@ -86,6 +86,29 @@ Supported sections:
 | Inspect current values | `opensquilla config get` |
 | Persist an advanced key | `opensquilla config set <key> <value> --config <path>` |
 
+## Tool Policy
+
+Advanced scripted runs can narrow the model-visible tool surface with `[tools]`.
+To compare tool surfaces across otherwise identical runs, keep the calling
+harness unchanged and express the tool difference in config:
+
+```toml
+[tools]
+profile = "coding"
+also_allow = ["retrieve_tool_result"]
+deny = ["execute_code", "background_process", "process"]
+file_edit_requires_fresh_read = true
+file_edit_flexible_recovery = true
+```
+
+`profile = "coding"` keeps filesystem, search, shell, session, and memory tools
+available, and enables fresh `read_file` context before existing workspace file
+edits. The `deny` list above removes the extra Python/background process
+surfaces for a narrowed run; omit it for the default coding surface.
+`file_edit_flexible_recovery` defaults to `true`: after an exact `old_text`
+miss, `edit_file` may apply a unique whitespace/indentation recovery and records
+used or rejected recovery events for diagnostics.
+
 ## Provider Configuration
 
 Inspect provider support:

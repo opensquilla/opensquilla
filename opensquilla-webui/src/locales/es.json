@@ -1381,6 +1381,8 @@
       "installVia": "Instalar mediante {kind}",
       "installing": "Instalando...",
       "homepage": "Página de inicio",
+      "loadingContent": "Cargando SKILL.md...",
+      "emptyContent": "No hay contenido de SKILL.md disponible.",
       "removing": "Eliminando...",
       "remove": "Eliminar"
     },

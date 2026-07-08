@@ -108,6 +108,89 @@ _TOOL_GROUPS: Mapping[str, frozenset[str]] = {
     ),
 }
 
+_REPO_CODING_SOURCE_EDIT_TOOLS: frozenset[str] = frozenset(
+    {
+        "read_source",
+        "edit_source",
+        "read_file",
+        "grep_search",
+        "glob_search",
+        "list_dir",
+        "git_status",
+        "git_diff",
+        "retrieve_tool_result",
+        "exec_command",
+    }
+)
+
+_REPO_CODING_SOURCE_EDIT_STRICT_TOOLS: frozenset[str] = frozenset(
+    {
+        "read_source",
+        "edit_source",
+        "grep_search",
+        "glob_search",
+        "git_status",
+        "git_diff",
+        "retrieve_tool_result",
+        "exec_command",
+    }
+)
+
+_REPO_CODING_SOURCE_EDIT_V2_TOOLS: frozenset[str] = frozenset(
+    {
+        "read_source",
+        "edit_source",
+        "source_symbols",
+        "grep_search",
+        "glob_search",
+        "git_status",
+        "git_diff",
+        "retrieve_tool_result",
+        "exec_command",
+    }
+)
+
+_REPO_CODING_SOURCE_EDIT_BALANCED_TOOLS: frozenset[str] = frozenset(
+    {
+        "read_source",
+        "edit_source",
+        "create_source",
+        "write_scratch",
+        "source_symbols",
+        "read_file",
+        "grep_search",
+        "glob_search",
+        "list_dir",
+        "git_status",
+        "git_diff",
+        "retrieve_tool_result",
+        "exec_command",
+    }
+)
+
+_REPO_CODING_SOURCE_EDIT_PATCH_FALLBACK_TOOLS: frozenset[str] = (
+    _REPO_CODING_SOURCE_EDIT_BALANCED_TOOLS | frozenset({"apply_patch"})
+)
+
+_REPO_CODING_SCAFFOLD_EDIT_TOOLS: frozenset[str] = frozenset(
+    {
+        "exec_command",
+        "read_file",
+        "edit_file",
+        "write_file",
+        "glob_search",
+        "grep_search",
+        "list_dir",
+        "git_status",
+        "git_diff",
+        "retrieve_tool_result",
+    }
+)
+
+_REPO_CODING_SCAFFOLD_PATCH_TOOLS: frozenset[str] = (
+    _REPO_CODING_SCAFFOLD_EDIT_TOOLS | frozenset({"apply_patch"})
+)
+
 _TOOL_PROFILES: Mapping[str, frozenset[str] | None] = {
     "full": None,
     "minimal": frozenset({"session_status"}),
@@ -118,6 +201,13 @@ _TOOL_PROFILES: Mapping[str, frozenset[str] | None] = {
         | _TOOL_GROUPS["group:sessions"]
         | _TOOL_GROUPS["group:memory"]
     ),
+    "repo_coding_source_edit": _REPO_CODING_SOURCE_EDIT_TOOLS,
+    "repo_coding_source_edit_strict": _REPO_CODING_SOURCE_EDIT_STRICT_TOOLS,
+    "repo_coding_source_edit_v2": _REPO_CODING_SOURCE_EDIT_V2_TOOLS,
+    "repo_coding_source_edit_balanced": _REPO_CODING_SOURCE_EDIT_BALANCED_TOOLS,
+    "repo_coding_source_edit_patch_fallback": _REPO_CODING_SOURCE_EDIT_PATCH_FALLBACK_TOOLS,
+    "repo_coding_scaffold_edit": _REPO_CODING_SCAFFOLD_EDIT_TOOLS,
+    "repo_coding_scaffold_patch": _REPO_CODING_SCAFFOLD_PATCH_TOOLS,
     "messaging": _TOOL_GROUPS["group:messaging"]
     | frozenset({"sessions_list", "sessions_history", "sessions_send", "session_status"}),
 }
@@ -140,6 +230,8 @@ class ToolPolicy:
     deny: frozenset[str] = frozenset()
     also_allow: frozenset[str] = frozenset()
     workspace_write_deny_globs: frozenset[str] = frozenset()
+    file_edit_requires_fresh_read: bool | None = None
+    file_edit_flexible_recovery: bool | None = None
     by_sender: Mapping[str, ToolPolicy] = field(default_factory=dict)
 
 
@@ -264,6 +356,40 @@ def string_set(value: object) -> frozenset[str]:
     return frozenset()
 
 
+def optional_bool(value: object) -> bool | None:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "off"}:
+            return False
+    return bool(value)
+
+
+def _file_edit_requires_fresh_read_from_config(value: object) -> bool | None:
+    return optional_bool(
+        get_field(
+            value,
+            "fileEditRequiresFreshRead",
+            get_field(value, "file_edit_requires_fresh_read"),
+        )
+    )
+
+
+def _file_edit_flexible_recovery_from_config(value: object) -> bool | None:
+    return optional_bool(
+        get_field(
+            value,
+            "fileEditFlexibleRecovery",
+            get_field(value, "file_edit_flexible_recovery"),
+        )
+    )
+
+
 def policy_from_config(value: object) -> ToolPolicy | None:
     if value is None:
         return None
@@ -275,6 +401,8 @@ def policy_from_config(value: object) -> ToolPolicy | None:
     if tools_value is not None:
         base = policy_from_config(tools_value) or ToolPolicy()
         wrapper_by_sender = sender_policies_from_config(sender_value)
+        fresh_read = _file_edit_requires_fresh_read_from_config(value)
+        flexible_recovery = _file_edit_flexible_recovery_from_config(value)
         return ToolPolicy(
             profile=base.profile,
             allow=base.allow,
@@ -287,6 +415,14 @@ def policy_from_config(value: object) -> ToolPolicy | None:
                     "workspaceWriteDenyGlobs",
                     get_field(value, "workspace_write_deny_globs"),
                 )
+            ),
+            file_edit_requires_fresh_read=(
+                fresh_read if fresh_read is not None else base.file_edit_requires_fresh_read
+            ),
+            file_edit_flexible_recovery=(
+                flexible_recovery
+                if flexible_recovery is not None
+                else base.file_edit_flexible_recovery
             ),
             by_sender={**base.by_sender, **wrapper_by_sender},
         )
@@ -304,6 +440,8 @@ def policy_from_config(value: object) -> ToolPolicy | None:
                 get_field(value, "workspace_write_deny_globs"),
             )
         ),
+        file_edit_requires_fresh_read=_file_edit_requires_fresh_read_from_config(value),
+        file_edit_flexible_recovery=_file_edit_flexible_recovery_from_config(value),
         by_sender=sender_policies_from_config(
             sender_value
             if sender_value is not None

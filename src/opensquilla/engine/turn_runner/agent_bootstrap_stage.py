@@ -19,8 +19,14 @@ future AgentConfig-validation early-yield branch.
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal, Protocol, runtime_checkable
+
+from opensquilla.engine.runtime_recovery import (
+    normalize_reasoning_prefill_recovery_mode,
+    normalize_runtime_recovery_mode,
+)
 
 if TYPE_CHECKING:
     from opensquilla.engine.agent import Agent, ToolHandler
@@ -31,10 +37,182 @@ if TYPE_CHECKING:
     from opensquilla.provider.types import ModelCapabilities
     from opensquilla.tools.types import ToolContext
 
+_PROGRESS_WATCHDOG_MODES = frozenset({"off", "log", "warn_model", "block"})
+_TOOL_LOOP_OBSERVER_MODES = frozenset({"off", "log"})
+_SOURCE_DIFF_PRESERVATION_MODES = frozenset({"off", "log", "block"})
+_SOURCE_DIFF_CANDIDATE_MODES = frozenset({"off", "log", "warn_model"})
+_RUNTIME_STATE_CAPSULE_MODES = frozenset({"off", "log", "inject"})
+_TRUE_ENV_VALUES = frozenset({"1", "true", "yes", "on", "enabled"})
+
+
+def _progress_watchdog_mode_from_env() -> Literal["off", "log", "warn_model", "block"]:
+    raw = os.environ.get("OPENSQUILLA_PROGRESS_WATCHDOG_MODE", "off").strip().lower()
+    if raw in _PROGRESS_WATCHDOG_MODES:
+        return raw  # type: ignore[return-value]
+    return "off"
+
+
+def _tool_loop_observer_mode_from_env() -> Literal["off", "log"]:
+    raw = os.environ.get("OPENSQUILLA_TOOL_LOOP_OBSERVER_MODE", "off").strip().lower()
+    if raw in _TOOL_LOOP_OBSERVER_MODES:
+        return raw  # type: ignore[return-value]
+    return "off"
+
+
+def _runtime_recovery_mode_from_env() -> Literal["off", "log", "warn_model"]:
+    return normalize_runtime_recovery_mode(os.environ.get("OPENSQUILLA_RUNTIME_RECOVERY_MODE"))
+
+
+def _final_diff_contract_mode_from_env() -> Literal["off", "log", "warn_model"]:
+    return normalize_runtime_recovery_mode(
+        os.environ.get("OPENSQUILLA_FINAL_DIFF_CONTRACT_MODE")
+    )
+
+
+def _normalize_source_diff_preservation_mode(
+    raw: str | None,
+    *,
+    default: Literal["off", "log", "block"] = "log",
+) -> Literal["off", "log", "block"]:
+    if raw is None:
+        return default
+    normalized = raw.strip().lower()
+    if normalized in _SOURCE_DIFF_PRESERVATION_MODES:
+        return normalized  # type: ignore[return-value]
+    return default
+
+
+def _source_diff_preservation_mode_from_env(
+    config_value: str | None = None,
+) -> Literal["off", "log", "block"]:
+    raw = os.environ.get("OPENSQUILLA_SOURCE_DIFF_PRESERVATION_MODE")
+    if raw is not None:
+        return _normalize_source_diff_preservation_mode(raw)
+    return _normalize_source_diff_preservation_mode(config_value)
+
+
+def _normalize_source_diff_candidate_mode(
+    raw: str | None,
+    *,
+    default: Literal["off", "log", "warn_model"] = "log",
+) -> Literal["off", "log", "warn_model"]:
+    if raw is None:
+        return default
+    normalized = raw.strip().lower()
+    if normalized in _SOURCE_DIFF_CANDIDATE_MODES:
+        return normalized  # type: ignore[return-value]
+    return default
+
+
+def _source_diff_candidate_mode_from_env(
+    config_value: str | None = None,
+) -> Literal["off", "log", "warn_model"]:
+    raw = os.environ.get("OPENSQUILLA_SOURCE_DIFF_CANDIDATE_MODE")
+    if raw is not None:
+        return _normalize_source_diff_candidate_mode(raw)
+    return _normalize_source_diff_candidate_mode(config_value)
+
+
+def _runtime_state_capsule_mode_from_env(
+    config_value: str | None = None,
+) -> Literal["off", "log", "inject"]:
+    raw = os.environ.get("OPENSQUILLA_RUNTIME_STATE_CAPSULE_MODE")
+    if raw is None:
+        raw = config_value
+    if raw is None:
+        return "off"
+    normalized = raw.strip().lower()
+    if normalized in _RUNTIME_STATE_CAPSULE_MODES:
+        return normalized  # type: ignore[return-value]
+    return "off"
+
+
+def _post_tool_empty_recovery_mode_from_env() -> Literal["off", "log", "warn_model"]:
+    return normalize_runtime_recovery_mode(
+        os.environ.get("OPENSQUILLA_POST_TOOL_EMPTY_RECOVERY_MODE")
+    )
+
+
+def _text_only_tool_recovery_mode_from_env(
+    config_value: str | None = None,
+) -> Literal["off", "log", "warn_model"]:
+    raw = os.environ.get("OPENSQUILLA_TEXT_ONLY_TOOL_RECOVERY_MODE")
+    if raw is None:
+        raw = config_value
+    return normalize_runtime_recovery_mode(raw, default="off")
+
+
+def _reasoning_prefill_recovery_mode_from_env() -> Literal["off", "log", "recover"]:
+    return normalize_reasoning_prefill_recovery_mode(
+        os.environ.get("OPENSQUILLA_REASONING_PREFILL_RECOVERY_MODE")
+    )
+
+
+_FINALIZE_EVIDENCE_GATE_ENV = "OPENSQUILLA_FINALIZE_EVIDENCE_GATE"
+_FINALIZE_EVIDENCE_GATE_ON = frozenset({"on", "1", "true", "yes"})
+_FINALIZE_EVIDENCE_GATE_OFF = frozenset({"off", "0", "false", "no"})
+
+
+def _finalize_evidence_gate_from_env(config_value: bool = False) -> bool:
+    """Resolve the opt-in finalize-time red-evidence gate flag.
+
+    Default off. A non-blank ``OPENSQUILLA_FINALIZE_EVIDENCE_GATE`` overrides
+    ``config_value`` (gateway ``prompt.finalize_evidence_gate``), mirroring
+    ``runtime._resolve_finalize_evidence_gate`` so the loop-side gate and the
+    system-prompt section can never disagree. Unrecognized env values raise
+    instead of being silently ignored so a run manifest cannot record an
+    override the run did not actually apply.
+    """
+    raw = os.environ.get(_FINALIZE_EVIDENCE_GATE_ENV, "").strip().lower()
+    if not raw:
+        return bool(config_value)
+    if raw in _FINALIZE_EVIDENCE_GATE_ON:
+        return True
+    if raw in _FINALIZE_EVIDENCE_GATE_OFF:
+        return False
+    raise ValueError(
+        f"{_FINALIZE_EVIDENCE_GATE_ENV} must be one of: "
+        + ", ".join(sorted(_FINALIZE_EVIDENCE_GATE_ON | _FINALIZE_EVIDENCE_GATE_OFF))
+    )
+
+
+def _positive_int_from_env(name: str, default: int) -> int:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    try:
+        return max(1, int(raw))
+    except ValueError:
+        return default
+
+
+def _nonnegative_int_from_env(name: str, default: int) -> int:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    try:
+        return max(0, int(raw))
+    except ValueError:
+        return default
+
+
+def _bool_from_env(name: str, default: bool = False) -> bool:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in _TRUE_ENV_VALUES
+
+
+def _name_tuple_from_env(name: str) -> tuple[str, ...]:
+    raw = os.environ.get(name, "")
+    return tuple(item.strip() for item in raw.split(",") if item.strip())
+
+
 # ---------------------------------------------------------------------------
 # Value objects returned by the ports — typed frozen tuples that collapse
 # the multi-call slice into declarative single-call shapes.
 # ---------------------------------------------------------------------------
+
 
 @dataclass(frozen=True)
 class _ResolvedBudgets:
@@ -48,13 +226,19 @@ class _ResolvedBudgets:
     request_timeout: float
     max_provider_retries: int
 
+
 @dataclass(frozen=True)
 class _ResolvedCatalog:
-    """Three-field frozen value returned by ``ModelCatalogPort.lookup``."""
+    """Frozen resolved-model value returned by ``ModelCatalogPort.lookup``."""
 
     max_tokens: int
     context_window: int
     capabilities: ModelCapabilities | None
+    temperature: float | None = None
+    top_p: float | None = None
+    # Explicit provider-request proof budget (chars); 0 keeps the derived path.
+    provider_request_proof_max_chars: int = 0
+
 
 @dataclass(frozen=True)
 class _AgentConfigAuxiliaries:
@@ -84,9 +268,22 @@ class _AgentConfigAuxiliaries:
     compaction_protected_recent_messages: int
     # Agent-token-cfg-derived
     tool_result_projection_max_inline_chars: int
+    tool_result_fresh_diagnostic_policy_enabled: bool
+    tool_result_diagnostic_retrieval_gate_enabled: bool
+    tool_result_fresh_diagnostic_inline_max_chars: int
+    tool_result_dispatch_max_chars: int
+    tool_result_dispatch_turn_max_chars: int
+    tool_result_store_full_trace: bool
     tool_result_store_max_bytes: int
     tool_result_store_disk_budget_bytes: int
     tool_result_store_retention_seconds: int
+    source_diff_preservation_mode: Literal["off", "log", "block"] | None
+    source_diff_candidate_mode: Literal["off", "log", "warn_model"] | None
+    runtime_state_capsule_mode: Literal["off", "log", "inject"] | None
+    text_only_tool_recovery_mode: Literal["off", "log", "warn_model"] | None
+    # Gateway ``prompt.finalize_evidence_gate`` (env still overrides).
+    finalize_evidence_gate: bool = False
+
 
 @dataclass(frozen=True)
 class _MemorySnapshotResult:
@@ -95,11 +292,13 @@ class _MemorySnapshotResult:
     sync_manager: Any | None
     private_memory_allowed: bool
 
+
 # ---------------------------------------------------------------------------
 # Ports — six narrow Protocols so the stage is unit-testable without the
 # full TurnRunner. The runtime adapters in ``harness.py`` bind these to the
 # concrete TurnRunner methods.
 # ---------------------------------------------------------------------------
+
 
 @runtime_checkable
 class TimeoutBudgetPort(Protocol):
@@ -126,6 +325,7 @@ class TimeoutBudgetPort(Protocol):
         max_provider_retries: int | None,
     ) -> _ResolvedBudgets: ...
 
+
 @runtime_checkable
 class ModelCatalogPort(Protocol):
     """Wraps ``TurnRunner._model_catalog`` lookups defensively.
@@ -142,6 +342,7 @@ class ModelCatalogPort(Protocol):
     """
 
     def lookup(self, model_id: str, provider: str = "") -> _ResolvedCatalog: ...
+
 
 @runtime_checkable
 class AgentConfigBuilderPort(Protocol):
@@ -213,6 +414,7 @@ class MemorySnapshotPort(Protocol):
         session_key: str,
     ) -> _MemorySnapshotResult: ...
 
+
 @runtime_checkable
 class AgentFactoryPort(Protocol):
     """Wraps the typed ``Agent(...)`` constructor.
@@ -236,9 +438,11 @@ class AgentFactoryPort(Protocol):
         tool_context: ToolContext | None,
     ) -> Agent: ...
 
+
 # ---------------------------------------------------------------------------
 # Stage I/O dataclasses (frozen)
 # ---------------------------------------------------------------------------
+
 
 @dataclass(frozen=True)
 class AgentBootstrapStageInput:
@@ -278,6 +482,7 @@ class AgentBootstrapStageInput:
     length_capped_continuations: int | None
     active_provider_id: str = ""
 
+
 @dataclass(frozen=True)
 class AgentBootstrapStageOutput:
     """The pieces of state subsequent stages consume.
@@ -315,9 +520,11 @@ class AgentBootstrapStageOutput:
     private_memory_allowed: bool
     sync_manager: Any | None
 
+
 # ---------------------------------------------------------------------------
 # Stage
 # ---------------------------------------------------------------------------
+
 
 class AgentBootstrapStage:
     """Resolve runtime budgets, build AgentConfig, instantiate the Agent.
@@ -424,7 +631,10 @@ class AgentBootstrapStage:
                 else AgentConfig().length_capped_continuations
             ),
             max_tokens=catalog.max_tokens,
+            temperature=catalog.temperature,
+            top_p=catalog.top_p,
             context_window_tokens=catalog.context_window,
+            provider_request_proof_max_chars=catalog.provider_request_proof_max_chars,
             max_history_turns=_route_max_history_turns(inp.turn.metadata),
             preserve_historical_images=_preserve_historical_images(inp.turn.metadata),
             materialize_historical_attachments=bool(
@@ -438,31 +648,126 @@ class AgentBootstrapStage:
             flush_backoff_initial_seconds=aux.flush_backoff_initial_seconds,
             flush_backoff_max_seconds=aux.flush_backoff_max_seconds,
             flush_archive_max_bytes=aux.flush_archive_max_bytes,
-            flush_compaction_requires_safe_receipt=(
-                aux.flush_compaction_requires_safe_receipt
-            ),
+            flush_compaction_requires_safe_receipt=(aux.flush_compaction_requires_safe_receipt),
             flush_compaction_safety_mode=aux.flush_compaction_safety_mode,
             compaction_profile=aux.compaction_profile,
-            compaction_protected_recent_messages=(
-                aux.compaction_protected_recent_messages
-            ),
+            compaction_protected_recent_messages=(aux.compaction_protected_recent_messages),
             flush_workspace_dir=aux.flush_workspace_dir,
             model_capabilities=catalog.capabilities,
             thinking=aux.thinking,
-            tool_result_projection_max_inline_chars=(
-                aux.tool_result_projection_max_inline_chars
+            tool_result_projection_max_inline_chars=(aux.tool_result_projection_max_inline_chars),
+            tool_result_fresh_diagnostic_policy_enabled=(
+                _bool_from_env(
+                    "OPENSQUILLA_TOOL_RESULT_FRESH_DIAGNOSTIC_POLICY_ENABLED",
+                    aux.tool_result_fresh_diagnostic_policy_enabled,
+                )
             ),
+            tool_result_diagnostic_retrieval_gate_enabled=(
+                _bool_from_env(
+                    "OPENSQUILLA_TOOL_RESULT_DIAGNOSTIC_RETRIEVAL_GATE_ENABLED",
+                    aux.tool_result_diagnostic_retrieval_gate_enabled,
+                )
+            ),
+            tool_result_fresh_diagnostic_inline_max_chars=(
+                _nonnegative_int_from_env(
+                    "OPENSQUILLA_TOOL_RESULT_FRESH_DIAGNOSTIC_INLINE_MAX_CHARS",
+                    aux.tool_result_fresh_diagnostic_inline_max_chars,
+                )
+            ),
+            tool_result_dispatch_max_chars=aux.tool_result_dispatch_max_chars,
+            tool_result_dispatch_turn_max_chars=(aux.tool_result_dispatch_turn_max_chars),
             tool_result_store_dir=aux.tool_result_store_dir,
             tool_result_store_session_id=aux.tool_result_store_session_id,
             tool_result_store_session_key=inp.session_key,
             tool_result_store_agent_id=inp.agent_id,
+            tool_result_store_full_trace=aux.tool_result_store_full_trace,
             tool_result_store_max_bytes=aux.tool_result_store_max_bytes,
-            tool_result_store_disk_budget_bytes=(
-                aux.tool_result_store_disk_budget_bytes
+            tool_result_store_disk_budget_bytes=(aux.tool_result_store_disk_budget_bytes),
+            tool_result_store_retention_seconds=(aux.tool_result_store_retention_seconds),
+            progress_watchdog_mode=_progress_watchdog_mode_from_env(),
+            progress_watchdog_repeated_tool_error_threshold=_positive_int_from_env(
+                "OPENSQUILLA_PROGRESS_WATCHDOG_TOOL_ERROR_THRESHOLD",
+                AgentConfig().progress_watchdog_repeated_tool_error_threshold,
             ),
-            tool_result_store_retention_seconds=(
-                aux.tool_result_store_retention_seconds
+            progress_watchdog_repeated_provider_failure_threshold=_positive_int_from_env(
+                "OPENSQUILLA_PROGRESS_WATCHDOG_PROVIDER_FAILURE_THRESHOLD",
+                AgentConfig().progress_watchdog_repeated_provider_failure_threshold,
             ),
+            progress_watchdog_repeated_failure_anchor_threshold=_positive_int_from_env(
+                "OPENSQUILLA_PROGRESS_WATCHDOG_FAILURE_ANCHOR_THRESHOLD",
+                AgentConfig().progress_watchdog_repeated_failure_anchor_threshold,
+            ),
+            post_write_convergence_enabled=_bool_from_env(
+                "OPENSQUILLA_POST_WRITE_CONVERGENCE",
+                AgentConfig().post_write_convergence_enabled,
+            ),
+            post_write_convergence_warn_threshold=_positive_int_from_env(
+                "OPENSQUILLA_POST_WRITE_CONVERGENCE_WARN_THRESHOLD",
+                AgentConfig().post_write_convergence_warn_threshold,
+            ),
+            post_write_convergence_finalize_after_warning=_positive_int_from_env(
+                "OPENSQUILLA_POST_WRITE_CONVERGENCE_FINALIZE_AFTER_WARNING",
+                AgentConfig().post_write_convergence_finalize_after_warning,
+            ),
+            patch_evidence_ledger_path=(
+                os.environ.get("OPENSQUILLA_PATCH_EVIDENCE_LEDGER_PATH") or None
+            ),
+            finalize_evidence_gate_enabled=_finalize_evidence_gate_from_env(
+                aux.finalize_evidence_gate
+            ),
+            provider_context_block_feedback=_bool_from_env(
+                "OPENSQUILLA_PROVIDER_CONTEXT_BLOCK_FEEDBACK",
+                AgentConfig().provider_context_block_feedback,
+            ),
+            identical_request_loop_break_threshold=_nonnegative_int_from_env(
+                "OPENSQUILLA_IDENTICAL_REQUEST_LOOP_BREAK",
+                AgentConfig().identical_request_loop_break_threshold,
+            ),
+            placeholder_escalation_threshold=_nonnegative_int_from_env(
+                "OPENSQUILLA_PLACEHOLDER_ESCALATION_THRESHOLD",
+                AgentConfig().placeholder_escalation_threshold,
+            ),
+            deadline_wrapup_margin_seconds=_nonnegative_int_from_env(
+                "OPENSQUILLA_DEADLINE_WRAPUP_MARGIN_SECONDS",
+                AgentConfig().deadline_wrapup_margin_seconds,
+            ),
+            repeated_tool_call_recovery_threshold=_nonnegative_int_from_env(
+                "OPENSQUILLA_TOOL_REPEAT_NUDGE_THRESHOLD",
+                AgentConfig().repeated_tool_call_recovery_threshold,
+            ),
+            repeated_tool_call_recovery_extra_tools=_name_tuple_from_env(
+                "OPENSQUILLA_TOOL_REPEAT_NUDGE_TOOLS",
+            ),
+            provider_history_dedup_enabled=_bool_from_env(
+                "OPENSQUILLA_PROVIDER_HISTORY_DEDUP",
+                AgentConfig().provider_history_dedup_enabled,
+            ),
+            provider_history_dedup_min_repeats=_positive_int_from_env(
+                "OPENSQUILLA_PROVIDER_HISTORY_DEDUP_MIN_REPEATS",
+                AgentConfig().provider_history_dedup_min_repeats,
+            ),
+            tool_loop_observer_mode=_tool_loop_observer_mode_from_env(),
+            runtime_recovery_mode=_runtime_recovery_mode_from_env(),
+            runtime_recovery_source_loop_max_nudges=_positive_int_from_env(
+                "OPENSQUILLA_RUNTIME_RECOVERY_SOURCE_LOOP_MAX_NUDGES",
+                AgentConfig().runtime_recovery_source_loop_max_nudges,
+            ),
+            final_diff_contract_mode=_final_diff_contract_mode_from_env(),
+            source_diff_preservation_mode=_source_diff_preservation_mode_from_env(
+                aux.source_diff_preservation_mode
+            ),
+            source_diff_candidate_mode=_source_diff_candidate_mode_from_env(
+                aux.source_diff_candidate_mode
+            ),
+            runtime_state_capsule_mode=_runtime_state_capsule_mode_from_env(
+                aux.runtime_state_capsule_mode
+            ),
+            post_tool_empty_recovery_mode=_post_tool_empty_recovery_mode_from_env(),
+            text_only_tool_recovery_mode=_text_only_tool_recovery_mode_from_env(
+                aux.text_only_tool_recovery_mode
+            ),
+            reasoning_prefill_recovery_mode=_reasoning_prefill_recovery_mode_from_env(),
+            runtime_events_path=(os.environ.get("OPENSQUILLA_RUNTIME_EVENTS_PATH") or None),
             metadata=agent_metadata,
         )
 

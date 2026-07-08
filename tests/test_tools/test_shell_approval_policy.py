@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -567,6 +568,168 @@ async def test_workspace_write_deny_globs_block_file_write(tmp_path: Path) -> No
     assert get_approval_queue().list_pending("exec") == []
 
 
+@pytest.mark.asyncio
+async def test_workspace_write_deny_globs_block_nested_test_file_write(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    target = workspace / "myproj" / "src" / "test" / "java" / "com" / "example"
+    target = target / "SampleTest.java"
+    ctx = current_tool_context.get()
+    assert ctx is not None
+    ctx.interaction_mode = InteractionMode.UNATTENDED
+    ctx.elevated = "bypass"
+    ctx.workspace_dir = str(workspace)
+    ctx.workspace_write_deny_globs = ["**/test/**", "**/*Test.java"]  # type: ignore[attr-defined]
+
+    write_file = filesystem.write_file.__wrapped__.__wrapped__  # type: ignore[attr-defined]
+    with pytest.raises(ToolError, match="workspace write deny policy"):
+        await write_file(str(target), "nope")
+
+    assert not target.exists()
+    assert len(get_approval_queue().list_pending("exec")) == 0
+
+
+@pytest.mark.asyncio
+async def test_workspace_write_deny_globs_allow_configured_scratch_write_file(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    scratch = tmp_path / "scratch"
+    workspace.mkdir()
+    scratch.mkdir()
+    target = scratch / "test_bug.py"
+    ctx = current_tool_context.get()
+    assert ctx is not None
+    ctx.interaction_mode = InteractionMode.UNATTENDED
+    ctx.workspace_dir = str(workspace)
+    ctx.scratch_dir = str(scratch)  # type: ignore[attr-defined]
+    ctx.workspace_lockdown = True  # type: ignore[attr-defined]
+    ctx.workspace_write_deny_globs = ["**/test_*.py"]  # type: ignore[attr-defined]
+
+    write_file = filesystem.write_file.__wrapped__.__wrapped__  # type: ignore[attr-defined]
+    result = await write_file(str(target), "print('scratch')\n")
+
+    assert result.startswith("Written 17 bytes to ")
+    assert target.read_text(encoding="utf-8") == "print('scratch')\n"
+    assert len(get_approval_queue().list_pending("exec")) == 0
+
+
+@pytest.mark.asyncio
+async def test_configured_scratch_dir_blocks_root_debug_workspace_write_file(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    scratch = tmp_path / "scratch"
+    workspace.mkdir()
+    scratch.mkdir()
+    target = workspace / "debug_regex.php"
+    ctx = current_tool_context.get()
+    assert ctx is not None
+    ctx.interaction_mode = InteractionMode.UNATTENDED
+    ctx.elevated = "bypass"
+    ctx.workspace_dir = str(workspace)
+    ctx.scratch_dir = str(scratch)  # type: ignore[attr-defined]
+    ctx.workspace_lockdown = True  # type: ignore[attr-defined]
+
+    write_file = filesystem.write_file.__wrapped__.__wrapped__  # type: ignore[attr-defined]
+    with pytest.raises(ToolError, match="configured scratch directory"):
+        await write_file(str(target), "<?php echo 'debug';\n")
+
+    assert not target.exists()
+
+
+@pytest.mark.asyncio
+async def test_configured_scratch_dir_allows_plain_root_test_source_name(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    scratch = tmp_path / "scratch"
+    workspace.mkdir()
+    scratch.mkdir()
+    target = workspace / "test_api.py"
+    ctx = current_tool_context.get()
+    assert ctx is not None
+    ctx.interaction_mode = InteractionMode.UNATTENDED
+    ctx.elevated = "bypass"
+    ctx.workspace_dir = str(workspace)
+    ctx.scratch_dir = str(scratch)  # type: ignore[attr-defined]
+    ctx.workspace_lockdown = True  # type: ignore[attr-defined]
+
+    write_file = filesystem.write_file.__wrapped__.__wrapped__  # type: ignore[attr-defined]
+    result = await write_file(str(target), "def test_api():\n    assert True\n")
+
+    assert "Written 32 bytes" in result
+    assert str(target) in result
+    assert target.exists()
+
+
+@pytest.mark.asyncio
+async def test_write_file_blocks_large_workspace_file_fragment_overwrite(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    target = workspace / "src" / "main.c"
+    target.parent.mkdir()
+    target.write_text("int keep;\n" * 700, encoding="utf-8")
+    ctx = current_tool_context.get()
+    assert ctx is not None
+    ctx.interaction_mode = InteractionMode.UNATTENDED
+    ctx.elevated = "bypass"
+    ctx.workspace_dir = str(workspace)
+
+    await filesystem.read_file(str(target))
+    write_file = filesystem.write_file.__wrapped__.__wrapped__  # type: ignore[attr-defined]
+    with pytest.raises(ToolError, match="write_file refused to overwrite"):
+        await write_file(str(target), "int replacement_fragment;\n")
+
+    assert target.read_text(encoding="utf-8").startswith("int keep;\n")
+
+
+@pytest.mark.asyncio
+async def test_write_file_allows_scratch_file_fragment_overwrite(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    scratch = tmp_path / "scratch"
+    workspace.mkdir()
+    scratch.mkdir()
+    target = scratch / "debug.c"
+    target.write_text("int keep;\n" * 700, encoding="utf-8")
+    ctx = current_tool_context.get()
+    assert ctx is not None
+    ctx.interaction_mode = InteractionMode.UNATTENDED
+    ctx.elevated = "bypass"
+    ctx.workspace_dir = str(workspace)
+    ctx.scratch_dir = str(scratch)  # type: ignore[attr-defined]
+
+    write_file = filesystem.write_file.__wrapped__.__wrapped__  # type: ignore[attr-defined]
+    result = await write_file(str(target), "int replacement_fragment;\n")
+
+    assert result.startswith("Written 26 bytes to ")
+    assert target.read_text(encoding="utf-8") == "int replacement_fragment;\n"
+
+
+@pytest.mark.asyncio
+async def test_write_file_allows_small_workspace_file_overwrite(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    target = workspace / "README.md"
+    target.write_text("old\n", encoding="utf-8")
+    ctx = current_tool_context.get()
+    assert ctx is not None
+    ctx.interaction_mode = InteractionMode.UNATTENDED
+    ctx.elevated = "bypass"
+    ctx.workspace_dir = str(workspace)
+
+    await filesystem.read_file(str(target))
+    write_file = filesystem.write_file.__wrapped__.__wrapped__  # type: ignore[attr-defined]
+    result = await write_file(str(target), "new\n")
+
+    assert result.startswith("Written 4 bytes to ")
+    assert target.read_text(encoding="utf-8") == "new\n"
+
+
 def test_tool_definitions_include_scratch_guidance_when_configured(tmp_path: Path) -> None:
     from opensquilla.tools.registry import get_default_registry
 
@@ -614,6 +777,49 @@ async def test_workspace_lockdown_blocks_obvious_outside_shell_redirection(
 
 
 @pytest.mark.asyncio
+@pytest.mark.skipif(os.name != "posix", reason="/dev/null redirection is POSIX-specific")
+async def test_workspace_lockdown_allows_dev_null_shell_redirection(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    ctx = current_tool_context.get()
+    assert ctx is not None
+    ctx.interaction_mode = InteractionMode.UNATTENDED
+    ctx.elevated = "bypass"
+    ctx.workspace_dir = str(workspace)
+    ctx.workspace_lockdown = True  # type: ignore[attr-defined]
+
+    result = await shell.exec_command("printf ok 2>/dev/null", workdir=str(workspace))
+
+    assert result == "exit_code=0\nok"
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(os.name != "posix", reason="/dev/null redirection is POSIX-specific")
+async def test_workspace_lockdown_dev_null_does_not_hide_sensitive_operand(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    ctx = current_tool_context.get()
+    assert ctx is not None
+    ctx.interaction_mode = InteractionMode.UNATTENDED
+    ctx.elevated = "bypass"
+    ctx.workspace_dir = str(workspace)
+    ctx.workspace_lockdown = True  # type: ignore[attr-defined]
+
+    result = await shell.exec_command(
+        "cat /dev/sda 2>/dev/null",
+        workdir=str(workspace),
+    )
+    payload = json.loads(result)
+
+    assert payload["status"] == "blocked"
+    assert payload["reason"] == "sensitive_path"
+
+
+@pytest.mark.asyncio
 async def test_workspace_write_deny_globs_block_shell_redirection(tmp_path: Path) -> None:
     workspace = tmp_path / "workspace"
     workspace.mkdir()
@@ -630,6 +836,64 @@ async def test_workspace_write_deny_globs_block_shell_redirection(tmp_path: Path
     assert payload["status"] == "blocked"
     assert payload["reason"] == "workspace_write_deny"
     assert payload["matched_pattern"] == "reports/*.txt"
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(os.name != "posix", reason="heredoc redirection is POSIX-specific")
+async def test_workspace_write_deny_globs_allow_shell_redirection_after_cd_to_scratch(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    scratch = tmp_path / "scratch"
+    workspace.mkdir()
+    scratch.mkdir()
+    target = scratch / "test_bug.py"
+    ctx = current_tool_context.get()
+    assert ctx is not None
+    ctx.interaction_mode = InteractionMode.UNATTENDED
+    ctx.elevated = "bypass"
+    ctx.workspace_dir = str(workspace)
+    ctx.scratch_dir = str(scratch)  # type: ignore[attr-defined]
+    ctx.workspace_lockdown = True  # type: ignore[attr-defined]
+    ctx.workspace_write_deny_globs = ["**/test_*.py"]  # type: ignore[attr-defined]
+
+    result = await shell.exec_command(
+        f"cd {scratch} && cat > test_bug.py << 'EOF'\nprint('scratch')\nEOF\ncat test_bug.py",
+        workdir=str(workspace),
+    )
+
+    assert result == "exit_code=0\nprint('scratch')\n"
+    assert target.read_text(encoding="utf-8") == "print('scratch')\n"
+    assert not (workspace / "test_bug.py").exists()
+
+
+@pytest.mark.asyncio
+async def test_configured_scratch_dir_blocks_root_test_shell_redirection(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    scratch = tmp_path / "scratch"
+    workspace.mkdir()
+    scratch.mkdir()
+    target = workspace / "test_bug.php"
+    ctx = current_tool_context.get()
+    assert ctx is not None
+    ctx.interaction_mode = InteractionMode.UNATTENDED
+    ctx.elevated = "bypass"
+    ctx.workspace_dir = str(workspace)
+    ctx.scratch_dir = str(scratch)  # type: ignore[attr-defined]
+    ctx.workspace_lockdown = True  # type: ignore[attr-defined]
+
+    result = await shell.exec_command(
+        "cat > test_bug.php << 'EOF'\n<?php echo 'debug';\nEOF\n",
+        workdir=str(workspace),
+    )
+
+    payload = json.loads(result)
+    assert payload["status"] == "blocked"
+    assert payload["reason"] == "workspace_scratch_artifact"
+    assert str(scratch) in payload["message"]
+    assert not target.exists()
 
 
 @pytest.mark.asyncio

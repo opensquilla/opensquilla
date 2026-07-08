@@ -192,7 +192,7 @@ def test_provider_request_proof_blocks_after_one_retry_when_still_oversized() ->
     assert exc_info.value.proof["retry_count"] == 2
 
 
-def test_provider_request_proof_compacts_assistant_tool_call_arguments() -> None:
+def test_provider_request_proof_compacts_large_tool_args_preserving_protocol() -> None:
     large_arguments = json.dumps(
         {
             "cmd": "python build_report.py",
@@ -229,17 +229,28 @@ def test_provider_request_proof_compacts_assistant_tool_call_arguments() -> None
     assert proof is not None
     assert proof["fits"] is True
     assert proof["retry_count"] == 2
-    compacted_arguments = compacted["messages"][1]["tool_calls"][0]["function"][
-        "arguments"
-    ]
-    parsed = json.loads(compacted_arguments)
-    assert parsed["_opensquilla_compacted_tool_arguments"] is True
-    assert parsed["original_chars"] == len(large_arguments)
+    assistant_message = compacted["messages"][1]
+    tool_calls = assistant_message["tool_calls"]
+    assert len(tool_calls) == 1
+    assert tool_calls[0]["id"] == "call_1"
+    assert tool_calls[0]["function"]["name"] == "exec_command"
+    compacted_arguments = tool_calls[0]["function"]["arguments"]
     assert compacted_arguments != large_arguments
+    parsed_arguments = json.loads(compacted_arguments)
+    assert parsed_arguments["cmd"] == "python build_report.py"
+    assert "provider_request_tool_input_compacted" in parsed_arguments["script"]
+    tool_result_message = compacted["messages"][2]
+    assert tool_result_message["role"] == "tool"
+    assert tool_result_message["tool_call_id"] == "call_1"
+    assert tool_result_message["content"] == "ok"
+    serialized = json.dumps(compacted, ensure_ascii=False)
+    assert "_opensquilla_compacted_tool_arguments" not in serialized
+    assert "_invalid_provider_context_arguments" not in serialized
+    assert "Historical tool call omitted" not in serialized
     assert payload["messages"][1]["tool_calls"][0]["function"]["arguments"] == large_arguments
 
 
-def test_provider_request_proof_compacts_aggregate_current_turn_tool_arguments() -> None:
+def test_provider_request_proof_preserves_aggregate_tool_call_protocol() -> None:
     tool_calls = []
     original_arguments: list[str] = []
     for index in range(36):
@@ -286,18 +297,25 @@ def test_provider_request_proof_compacts_aggregate_current_turn_tool_arguments()
     assert proof["aggregate_tool_arguments_compacted"] is True
     assert set(compacted) == {"messages"}
     compacted_arguments = [
-        call["function"]["arguments"] for call in compacted["messages"][1]["tool_calls"]
+        call["function"]["arguments"]
+        for call in compacted["messages"][1].get("tool_calls", [])
     ]
-    assert any(
-        argument != original
-        for argument, original in zip(compacted_arguments, original_arguments)
-    )
-    assert any(
-        "_opensquilla_compacted_tool_arguments" in argument
-        for argument in compacted_arguments
-    )
-    assert any('"path":"generated/file-0.html"' in argument for argument in compacted_arguments)
-    assert any('"argument_keys":["content","path"]' in argument for argument in compacted_arguments)
+    assert len(compacted_arguments) == 36
+    assert compacted_arguments[0] != original_arguments[0]
+    parsed_first = json.loads(compacted_arguments[0])
+    assert parsed_first["path"] == "generated/file-0.html"
+    assert "provider_request_tool_input_compacted" in parsed_first["content"]
+    assistant_message = compacted["messages"][1]
+    assert "tool_calls" in assistant_message
+    assert [call["id"] for call in assistant_message["tool_calls"][:3]] == [
+        "call_0",
+        "call_1",
+        "call_2",
+    ]
+    serialized = json.dumps(compacted, ensure_ascii=False)
+    assert "_opensquilla_compacted_tool_arguments" not in serialized
+    assert "_invalid_provider_context_arguments" not in serialized
+    assert "Historical tool call omitted" not in serialized
     assert payload["messages"][1]["tool_calls"][0]["function"]["arguments"] == original_arguments[0]
 
 
@@ -406,6 +424,54 @@ def test_provider_request_proof_compacts_leaked_provider_compacted_tool_argument
     compacted_arguments = compacted["messages"][1]["tool_calls"][0]["function"][
         "arguments"
     ]
+    assert "_opensquilla_compacted_tool_arguments" not in compacted_arguments
+    assert "command" not in compacted_arguments
+    assert payload["messages"][1]["tool_calls"][0]["function"]["arguments"] == original_arguments
+
+
+def test_provider_request_proof_compacts_string_provider_context_markers() -> None:
+    original_arguments = json.dumps(
+        {
+            "_opensquilla_compacted_tool_arguments": "true",
+            "original_chars": "549",
+            "sha256": "0" * 64,
+            "argument_keys": '["command", "timeout"]',
+        },
+        separators=(",", ":"),
+    )
+    payload = {
+        "messages": [
+            {"role": "user", "content": "open in chrome"},
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {
+                        "id": "call_compacted",
+                        "type": "function",
+                        "function": {
+                            "name": "exec_command",
+                            "arguments": original_arguments,
+                        },
+                    }
+                ],
+            },
+            {"role": "tool", "tool_call_id": "call_compacted", "content": "error"},
+        ]
+    }
+
+    compacted, proof = prove_or_compact_provider_payload(
+        payload,
+        projection_adapter="openrouter",
+        proof_budget=2200,
+        status_projection_mode="content_envelope",
+    )
+
+    assert proof is not None
+    compacted_arguments = compacted["messages"][1]["tool_calls"][0]["function"][
+        "arguments"
+    ]
+    parsed = json.loads(compacted_arguments)
+    assert parsed["_invalid_provider_context_arguments"] is True
     assert "_opensquilla_compacted_tool_arguments" not in compacted_arguments
     assert "command" not in compacted_arguments
     assert payload["messages"][1]["tool_calls"][0]["function"]["arguments"] == original_arguments
@@ -543,6 +609,8 @@ def test_provider_request_proof_reports_recent_tail_after_tail_compaction_fails(
     assert proof["fits"] is False
     assert proof["retry_count"] == 2
     assert proof["recent_tail_too_large"] is True
+    # All 4 escalating compaction tiers were exhausted before this raise.
+    assert proof["compaction_tier"] == 4
 
 
 def test_provider_request_proof_emergency_compacts_many_current_turn_tool_results() -> None:
@@ -702,14 +770,22 @@ def test_provider_request_proof_hard_cap_compacts_leaked_tool_arguments() -> Non
     assert proof is not None
     assert proof["fits"] is True
     assert proof["final_hard_cap_compacted"] is True
-    compacted_arguments = compacted["messages"][2]["tool_calls"][0]["function"][
-        "arguments"
-    ]
-    assert "[tool_use_argument_projection]" not in compacted_arguments
-    assert "tool_argument_handle: tr-fedcba0987654321" not in compacted_arguments
-    assert "head:" not in compacted_arguments
-    assert "_invalid_provider_context_arguments" in compacted_arguments
-    assert "_opensquilla_compacted_tool_arguments" not in compacted_arguments
+    assistant_message = compacted["messages"][2]
+    tool_calls = assistant_message["tool_calls"]
+    assert len(tool_calls) == 307
+    assert tool_calls[0]["id"] == "call_projected"
+    assert tool_calls[0]["function"]["name"] == "write_file"
+    projected_compacted_arguments = json.loads(
+        tool_calls[0]["function"]["arguments"]
+    )
+    assert projected_compacted_arguments["_invalid_provider_context_arguments"] is True
+    assert compacted["messages"][3]["role"] == "tool"
+    assert compacted["messages"][3]["tool_call_id"] == "call_projected"
+    serialized = json.dumps(compacted, ensure_ascii=False)
+    assert "[tool_use_argument_projection]" not in serialized
+    assert "tool_argument_handle: tr-fedcba0987654321" not in serialized
+    assert "head:" not in serialized
+    assert "_opensquilla_compacted_tool_arguments" not in serialized
 
 
 def test_provider_request_proof_emergency_compacts_oversized_request_context() -> None:

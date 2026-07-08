@@ -58,3 +58,78 @@ def test_agent_factory_adapter_passes_runner_tool_registry(monkeypatch) -> None:
     )
 
     assert captured["tool_registry"] is registry
+
+
+def _catalog_runner(
+    *, llm: SimpleNamespace | None, model_catalog: Any = None
+) -> SimpleNamespace:
+    return SimpleNamespace(
+        _config=SimpleNamespace(llm=llm) if llm is not None else None,
+        _model_catalog=model_catalog,
+    )
+
+
+def test_model_catalog_adapter_defaults_to_200k_without_override() -> None:
+    from opensquilla.engine.turn_runner.harness import _TurnRunnerModelCatalogAdapter
+
+    llm = SimpleNamespace(max_tokens=32768, temperature=None, top_p=None)
+    adapter = _TurnRunnerModelCatalogAdapter(_catalog_runner(llm=llm))
+
+    resolved = adapter.lookup("qwen3.6-flash")
+
+    assert resolved.context_window == 200_000
+    assert resolved.max_tokens == 32768
+
+
+def test_model_catalog_adapter_honors_context_window_tokens_override() -> None:
+    from opensquilla.engine.turn_runner.harness import _TurnRunnerModelCatalogAdapter
+
+    llm = SimpleNamespace(
+        max_tokens=32768,
+        context_window_tokens=1_000_000,
+        temperature=None,
+        top_p=None,
+    )
+    adapter = _TurnRunnerModelCatalogAdapter(_catalog_runner(llm=llm))
+
+    resolved = adapter.lookup("qwen3.6-flash")
+
+    assert resolved.context_window == 1_000_000
+    assert resolved.max_tokens == 32768
+
+
+def test_model_catalog_adapter_override_beats_catalog_resolution() -> None:
+    from opensquilla.engine.turn_runner.harness import _TurnRunnerModelCatalogAdapter
+    from opensquilla.provider.model_catalog import ModelCatalog
+
+    llm = SimpleNamespace(
+        provider="openrouter",
+        base_url="https://openrouter.ai/api/v1",
+        max_tokens=32768,
+        context_window_tokens=202_752,
+        temperature=None,
+        top_p=None,
+    )
+    adapter = _TurnRunnerModelCatalogAdapter(
+        _catalog_runner(llm=llm, model_catalog=ModelCatalog())
+    )
+
+    # glm-5.1 resolves to 200_000 via the static fallback; the explicit config
+    # override must win so the compaction ladder budgets against the real window.
+    resolved = adapter.lookup("glm-5.1")
+
+    assert resolved.context_window == 202_752
+
+
+def test_model_catalog_adapter_ignores_junk_context_window_values() -> None:
+    from opensquilla.engine.turn_runner.harness import _TurnRunnerModelCatalogAdapter
+
+    for junk in ("not-a-number", -5, 0, None):
+        llm = SimpleNamespace(
+            max_tokens=0,
+            context_window_tokens=junk,
+            temperature=None,
+            top_p=None,
+        )
+        adapter = _TurnRunnerModelCatalogAdapter(_catalog_runner(llm=llm))
+        assert adapter.lookup("some-model").context_window == 200_000

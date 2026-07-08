@@ -98,6 +98,24 @@ def apply_tool_policy(
             channel_policy,
             policy_config.sender_policy(channel_policy, ctx.sender_id),
         ),
+        file_edit_requires_fresh_read=_merged_file_edit_requires_fresh_read(
+            ctx,
+            global_policy,
+            agent_policy,
+            default_channel_policy,
+            policy_config.sender_policy(default_channel_policy, ctx.sender_id),
+            channel_policy,
+            policy_config.sender_policy(channel_policy, ctx.sender_id),
+        ),
+        file_edit_flexible_recovery=_merged_file_edit_flexible_recovery(
+            ctx,
+            global_policy,
+            agent_policy,
+            default_channel_policy,
+            policy_config.sender_policy(default_channel_policy, ctx.sender_id),
+            channel_policy,
+            policy_config.sender_policy(channel_policy, ctx.sender_id),
+        ),
     )
 
 
@@ -137,6 +155,8 @@ def apply_tool_policy_layer(
         allowed_tools=allowed_tools,
         denied_tools=denied_tools,
         workspace_write_deny_globs=_merged_workspace_write_deny_globs(ctx, parsed),
+        file_edit_requires_fresh_read=_merged_file_edit_requires_fresh_read(ctx, parsed),
+        file_edit_flexible_recovery=_merged_file_edit_flexible_recovery(ctx, parsed),
     )
 
 
@@ -155,6 +175,34 @@ def _merged_workspace_write_deny_globs(
             merged.append(pattern)
             seen.add(pattern)
     return merged
+
+
+def _merged_file_edit_requires_fresh_read(
+    ctx: ToolContext,
+    *policies: ToolPolicy | None,
+) -> bool:
+    enabled = ctx.file_edit_requires_fresh_read
+    for policy in policies:
+        if policy is None:
+            continue
+        if policy.profile and policy.profile.strip().lower() == "coding":
+            enabled = True
+        if policy.file_edit_requires_fresh_read is not None:
+            enabled = policy.file_edit_requires_fresh_read
+    return enabled
+
+
+def _merged_file_edit_flexible_recovery(
+    ctx: ToolContext,
+    *policies: ToolPolicy | None,
+) -> bool:
+    enabled = ctx.file_edit_flexible_recovery
+    for policy in policies:
+        if policy is None:
+            continue
+        if policy.file_edit_flexible_recovery is not None:
+            enabled = policy.file_edit_flexible_recovery
+    return enabled
 
 
 def apply_tool_policy_from_config(

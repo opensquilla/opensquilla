@@ -70,6 +70,11 @@ class ProviderContextProfile:
     # the table is non-empty, cache-breakpoint support follows the resolved
     # level (only explicit-cache models accept cache_control breakpoints).
     prompt_cache_model_prefix_table: tuple[tuple[str, PromptCacheSupport], ...] = ()
+    # Optional per-model-name hook: like the prefix table above, but matched
+    # against the model BASENAME (id after stripping any "vendor/" prefix),
+    # and consulted only when the full-id prefix table misses. First match
+    # wins; ``prompt_cache`` remains the fallback for unmatched models.
+    prompt_cache_model_name_prefix_table: tuple[tuple[str, PromptCacheSupport], ...] = ()
 
 
 ANTHROPIC_CONTEXT_PROFILE = ProviderContextProfile(
@@ -96,6 +101,11 @@ OPENROUTER_CONTEXT_PROFILE = ProviderContextProfile(
         ("deepseek/", PromptCacheSupport.EXPLICIT),
         ("x-ai/", PromptCacheSupport.EXPLICIT),
         ("z-ai/", PromptCacheSupport.IMPLICIT),
+    ),
+    prompt_cache_model_name_prefix_table=(
+        ("qwen3.6-flash", PromptCacheSupport.EXPLICIT),
+        ("qwen3.5-flash", PromptCacheSupport.EXPLICIT),
+        ("qwen3-coder", PromptCacheSupport.EXPLICIT),
     ),
 )
 
@@ -140,6 +150,16 @@ def _profile_prompt_cache(profile: ProviderContextProfile, model_l: str) -> Prom
     for prefix, support in profile.prompt_cache_model_prefix_table:
         if model_l.startswith(prefix):
             return support
+    # Basename table is consulted only after the full-id prefix table misses.
+    # getattr keeps profiles built without the field working.
+    name_table: tuple[tuple[str, PromptCacheSupport], ...] = getattr(
+        profile, "prompt_cache_model_name_prefix_table", ()
+    )
+    if name_table:
+        model_name = model_l.rsplit("/", 1)[-1]
+        for prefix, support in name_table:
+            if model_name.startswith(prefix):
+                return support
     return profile.prompt_cache
 
 
@@ -152,7 +172,9 @@ def _capabilities_from_profile(
 ) -> ProviderContextCapabilities:
     prompt_cache = profile.prompt_cache
     supports_cache_breakpoints = profile.supports_cache_breakpoints
-    if profile.prompt_cache_model_prefix_table:
+    if profile.prompt_cache_model_prefix_table or getattr(
+        profile, "prompt_cache_model_name_prefix_table", ()
+    ):
         prompt_cache = _profile_prompt_cache(profile, model_l)
         # Per-model resolution: only explicit-cache models accept
         # cache_control breakpoints.

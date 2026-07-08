@@ -2081,6 +2081,107 @@ def _claims_image_without_tool_use(
     return any(p.lower() in lowered for p in _IMAGE_CLAIM_PATTERNS)
 
 
+def _resolve_identity_prompt_mode(config: object) -> str:
+    """Resolve the identity/system prompt mode from gateway config.
+
+    ``auto`` preserves the historical behavior: full prompt by default, with
+    memory-only tool surfaces using the minimal prompt. Any explicit prompt
+    mode overrides that compatibility logic.
+    """
+    allowed_modes = {
+        "auto",
+        "full",
+        "minimal",
+        "none",
+        "headless_source_edit",
+        "headless_repo_coding_scaffold",
+    }
+    env_prompt_mode = os.environ.get("OPENSQUILLA_PROMPT_MODE", "").strip()
+    if env_prompt_mode:
+        if env_prompt_mode not in allowed_modes:
+            raise ValueError(
+                "OPENSQUILLA_PROMPT_MODE must be one of: "
+                + ", ".join(sorted(allowed_modes))
+            )
+        return env_prompt_mode
+
+    prompt_cfg = getattr(config, "prompt", None)
+    prompt_mode = str(getattr(prompt_cfg, "mode", "auto") or "auto")
+    if prompt_mode not in allowed_modes:
+        raise ValueError(
+            "prompt.mode must be one of: " + ", ".join(sorted(allowed_modes))
+        )
+    if prompt_mode != "auto":
+        return prompt_mode
+
+    tools_cfg = getattr(config, "tools", None)
+    if getattr(tools_cfg, "profile", None) == "memory_only":
+        return "minimal"
+    return "full"
+
+
+_PATCH_EVIDENCE_PROTOCOL_ENV = "OPENSQUILLA_PATCH_EVIDENCE_PROTOCOL"
+_PATCH_EVIDENCE_PROTOCOL_ON = {"on", "1", "true", "yes"}
+_PATCH_EVIDENCE_PROTOCOL_OFF = {"off", "0", "false", "no"}
+
+
+def _resolve_patch_evidence_protocol(config: object) -> bool:
+    """Resolve the opt-in Patch Evidence Protocol prompt flag.
+
+    ``OPENSQUILLA_PATCH_EVIDENCE_PROTOCOL`` ("on"/"off") overrides
+    ``prompt.patch_evidence_protocol`` from gateway config; default is off.
+    Unrecognized env values raise instead of being silently ignored so a
+    run manifest cannot record an override the run did not actually apply.
+    """
+    env_value = os.environ.get(_PATCH_EVIDENCE_PROTOCOL_ENV, "").strip().lower()
+    if env_value:
+        if env_value in _PATCH_EVIDENCE_PROTOCOL_ON:
+            return True
+        if env_value in _PATCH_EVIDENCE_PROTOCOL_OFF:
+            return False
+        raise ValueError(
+            f"{_PATCH_EVIDENCE_PROTOCOL_ENV} must be one of: "
+            + ", ".join(
+                sorted(_PATCH_EVIDENCE_PROTOCOL_ON | _PATCH_EVIDENCE_PROTOCOL_OFF)
+            )
+        )
+
+    prompt_cfg = getattr(config, "prompt", None)
+    return bool(getattr(prompt_cfg, "patch_evidence_protocol", False))
+
+
+_FINALIZE_EVIDENCE_GATE_ENV = "OPENSQUILLA_FINALIZE_EVIDENCE_GATE"
+_FINALIZE_EVIDENCE_GATE_ON = {"on", "1", "true", "yes"}
+_FINALIZE_EVIDENCE_GATE_OFF = {"off", "0", "false", "no"}
+
+
+def _resolve_finalize_evidence_gate(config: object) -> bool:
+    """Resolve the opt-in finalize-time red-evidence gate prompt flag.
+
+    ``OPENSQUILLA_FINALIZE_EVIDENCE_GATE`` ("on"/"off") overrides
+    ``prompt.finalize_evidence_gate`` from gateway config; default is off.
+    The same env var also enables the loop-side gate (see
+    engine.turn_runner.agent_bootstrap_stage). Unrecognized env values raise
+    instead of being silently ignored so a run manifest cannot record an
+    override the run did not actually apply.
+    """
+    env_value = os.environ.get(_FINALIZE_EVIDENCE_GATE_ENV, "").strip().lower()
+    if env_value:
+        if env_value in _FINALIZE_EVIDENCE_GATE_ON:
+            return True
+        if env_value in _FINALIZE_EVIDENCE_GATE_OFF:
+            return False
+        raise ValueError(
+            f"{_FINALIZE_EVIDENCE_GATE_ENV} must be one of: "
+            + ", ".join(
+                sorted(_FINALIZE_EVIDENCE_GATE_ON | _FINALIZE_EVIDENCE_GATE_OFF)
+            )
+        )
+
+    prompt_cfg = getattr(config, "prompt", None)
+    return bool(getattr(prompt_cfg, "finalize_evidence_gate", False))
+
+
 class TurnRunner:
     """Orchestrates a complete agent turn: provider → tools → prompt → pipeline → Agent.
 
@@ -2374,6 +2475,8 @@ class TurnRunner:
             session_key=session_key,
             artifact_media_root=str(media_root),
             artifact_session_id=session_id,
+            tool_result_store_dir=str(media_root / "tool-results"),
+            tool_result_store_session_id=session_id,
             workspace_file_writes=[],
             artifact_max_bytes=getattr(attachments_cfg, "artifact_max_bytes", None),
             artifact_disk_budget_bytes=getattr(
@@ -4417,10 +4520,9 @@ class TurnRunner:
         )
         if agent_name is None and identity_fields is not None:
             agent_name = identity_fields.name
-        prompt_mode = "full"
-        tools_cfg = getattr(self._config, "tools", None)
-        if getattr(tools_cfg, "profile", None) == "memory_only":
-            prompt_mode = "minimal"
+        prompt_mode = _resolve_identity_prompt_mode(self._config)
+        patch_evidence_protocol = _resolve_patch_evidence_protocol(self._config)
+        finalize_evidence_gate = _resolve_finalize_evidence_gate(self._config)
 
         agent_profile = AgentProfile(
             agent_id=agent_id,
@@ -4435,6 +4537,8 @@ class TurnRunner:
             agents_doc=agents_doc,
             workspace_files=workspace_files,
             prompt_mode=prompt_mode,
+            patch_evidence_protocol=patch_evidence_protocol,
+            finalize_evidence_gate=finalize_evidence_gate,
         )
         os_name = os.uname().sysname if hasattr(os, "uname") else platform.system()
         runtime_info = {

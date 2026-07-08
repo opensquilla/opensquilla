@@ -5,7 +5,7 @@ import json
 import httpx
 
 from opensquilla.tools.envelope import build_tool_failure_envelope
-from opensquilla.tools.types import SafeToolError
+from opensquilla.tools.types import RetryableToolInputError, SafeToolError
 
 
 def test_type_error_tool_failure_is_model_retriable_without_raw_traceback() -> None:
@@ -99,6 +99,27 @@ def test_safe_tool_error_instance_message_preserves_five_key_shape() -> None:
     assert envelope["error_class"] == "SafeToolError"
     assert "PDF file not found" in envelope["user_message"]
     assert "secret" not in envelope["user_message"]
+
+
+def test_retryable_tool_input_error_marks_model_correctable_failures() -> None:
+    envelope = build_tool_failure_envelope(
+        RetryableToolInputError(
+            "edit_file could not find old_text. Read the file and retry with exact text."
+        ),
+        "edit_file",
+    )
+
+    assert set(envelope) == {
+        "status",
+        "tool",
+        "error_class",
+        "user_message",
+        "retry_allowed",
+    }
+    assert envelope["tool"] == "edit_file"
+    assert envelope["error_class"] == "RetryableToolInputError"
+    assert envelope["retry_allowed"] is True
+    assert "retry with exact text" in envelope["user_message"]
 
 
 def test_image_attachment_path_safe_tool_error_is_not_generic_internal_error() -> None:

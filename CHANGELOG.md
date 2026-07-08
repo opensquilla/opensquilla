@@ -8,9 +8,45 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Added
 
+- Added a runtime development branch sync: request-proof budgeting with
+  deterministic compaction, DashScope provider profile with prompt-cache
+  markers and thinking-mode plumbing, an optional LLM trace recorder,
+  tool-result store compression, sandbox-descriptor integration for
+  filesystem tools, and a family of default-off, env-lever-controlled
+  runtime recovery modules.
+
 ### Changed
 
+- Provider retry handling: responses that stop at the length limit without
+  visible text or tool calls now enter the reasoning-only retry path instead
+  of the length-capped continuation path, and a thinking-related provider
+  stream error now disables thinking for the next call only (one-shot)
+  instead of the rest of the turn.
+- Context compaction: `read_file` and `git_diff` results are preserved
+  verbatim (exempt from semantic projection and aggregate compaction), tool
+  results already shown in full are no longer retroactively compacted under
+  context pressure, and compaction placeholders gained `preview_complete`
+  plus retrieval hints.
+- Tool dispatch: a preflight validation pipeline now rejects malformed tool
+  calls before execution and reports invalid tool arguments as retryable;
+  `write_file` refuses destructive overwrites that would shrink an existing
+  large workspace file by more than half; `grep_search` output gained a
+  header, offset paging, VCS-directory exclusion, and binary-file skipping;
+  `edit_file` accepts single-edit shorthand and recovers from near-miss
+  matches by default; `apply_patch` accepts `@@` hunks with optional counts.
+- The `coding` tool profile now enforces fresh workspace reads before edits.
+- `match_workspace_write_deny` deny patterns now apply only to
+  workspace-contained paths (previously they could match paths outside the
+  workspace).
+- Request-proof compaction marks compacted tool arguments with inline
+  `[provider_request_tool_input_compacted: ...]` markers instead of a JSON
+  envelope.
+
 ### Fixed
+
+- Fixed secret redaction missing assignment values that start with a quote
+  (for example `password: "..."`); quoted values are now masked in memory
+  persistence and trace capture paths.
 
 ## [0.5.0rc2] - 2026-07-06
 

@@ -65,6 +65,26 @@ def _build_toml_with_deprecated(tmp_path: Path) -> Path:
     return toml_path
 
 
+def test_prompt_mode_defaults_to_auto() -> None:
+    cfg = GatewayConfig()
+
+    assert cfg.prompt.mode == "auto"
+
+
+def test_prompt_mode_accepts_headless_source_edit() -> None:
+    cfg = GatewayConfig.model_validate({"prompt": {"mode": "headless_source_edit"}})
+
+    assert cfg.prompt.mode == "headless_source_edit"
+
+
+def test_prompt_mode_accepts_headless_repo_coding_scaffold() -> None:
+    cfg = GatewayConfig.model_validate(
+        {"prompt": {"mode": "headless_repo_coding_scaffold"}}
+    )
+
+    assert cfg.prompt.mode == "headless_repo_coding_scaffold"
+
+
 # ---------------------------------------------------------------------------
 # AC#1 / AC#4: loading does not raise
 # ---------------------------------------------------------------------------
@@ -435,3 +455,86 @@ class TestMetaSkillConfig:
 
         # No exceptions during validation
         GatewayConfig(**data)
+
+
+def test_gateway_config_accepts_repo_coding_source_edit_tool_profile() -> None:
+    cfg = GatewayConfig.model_validate(
+        {"tools": {"profile": "repo_coding_source_edit"}}
+    )
+
+    assert cfg.tools.profile == "repo_coding_source_edit"
+
+
+def test_gateway_config_accepts_repo_coding_source_edit_strict_tool_profile() -> None:
+    cfg = GatewayConfig.model_validate(
+        {"tools": {"profile": "repo_coding_source_edit_strict"}}
+    )
+
+    assert cfg.tools.profile == "repo_coding_source_edit_strict"
+
+
+def test_gateway_config_accepts_repo_coding_source_edit_v2_tool_profile() -> None:
+    cfg = GatewayConfig.model_validate(
+        {"tools": {"profile": "repo_coding_source_edit_v2"}}
+    )
+
+    assert cfg.tools.profile == "repo_coding_source_edit_v2"
+
+
+def test_gateway_config_accepts_repo_coding_source_edit_balanced_tool_profile() -> None:
+    cfg = GatewayConfig.model_validate(
+        {"tools": {"profile": "repo_coding_source_edit_balanced"}}
+    )
+
+    assert cfg.tools.profile == "repo_coding_source_edit_balanced"
+
+
+def test_gateway_config_accepts_repo_coding_source_edit_patch_fallback_tool_profile() -> None:
+    cfg = GatewayConfig.model_validate(
+        {"tools": {"profile": "repo_coding_source_edit_patch_fallback"}}
+    )
+
+    assert cfg.tools.profile == "repo_coding_source_edit_patch_fallback"
+
+
+def test_gateway_config_accepts_repo_coding_scaffold_tool_profiles() -> None:
+    edit_cfg = GatewayConfig.model_validate(
+        {"tools": {"profile": "repo_coding_scaffold_edit"}}
+    )
+    patch_cfg = GatewayConfig.model_validate(
+        {"tools": {"profile": "repo_coding_scaffold_patch"}}
+    )
+
+    assert edit_cfg.tools.profile == "repo_coding_scaffold_edit"
+    assert patch_cfg.tools.profile == "repo_coding_scaffold_patch"
+
+
+def test_gateway_config_accepts_llm_sampling_controls() -> None:
+    cfg = GatewayConfig.model_validate({"llm": {"temperature": 1.0, "top_p": 0.95}})
+
+    assert cfg.llm.temperature == 1.0
+    assert cfg.llm.top_p == 0.95
+
+
+def test_gateway_config_accepts_source_diff_preservation_mode() -> None:
+    cfg = GatewayConfig.model_validate({"source_diff_preservation_mode": "block"})
+
+    assert cfg.source_diff_preservation_mode == "block"
+
+
+def test_gateway_config_accepts_source_diff_candidate_mode() -> None:
+    cfg = GatewayConfig.model_validate({"source_diff_candidate_mode": "warn_model"})
+
+    assert cfg.source_diff_candidate_mode == "warn_model"
+
+
+def test_gateway_config_accepts_runtime_state_capsule_mode() -> None:
+    cfg = GatewayConfig.model_validate({"runtime_state_capsule_mode": "inject"})
+
+    assert cfg.runtime_state_capsule_mode == "inject"
+
+
+def test_gateway_config_accepts_text_only_tool_recovery_mode() -> None:
+    cfg = GatewayConfig.model_validate({"text_only_tool_recovery_mode": "warn_model"})
+
+    assert cfg.text_only_tool_recovery_mode == "warn_model"

@@ -64,4 +64,54 @@ describe('RunTrace code block copy control', () => {
     expect(copyTextWithFallback).toHaveBeenCalledWith('console.log("late")')
     app.unmount()
   })
+  it('compacts long tool input sections into a short summary', async () => {
+    const prompt = Array.from({ length: 12 }, (_, index) => `line ${index + 1}: detailed image prompt`).join('\n')
+    const inputRaw = JSON.stringify({
+      filename: 'octopus-3d-clay.png',
+      prompt,
+      provider: 'openrouter',
+    }, null, 2)
+
+    const { app, el } = await mountRunTrace([
+      {
+        type: 'tool-group',
+        key: 'image-generate-group',
+        group: {
+          groupId: 'image-generate-group',
+          operationKey: 'image_generate',
+          label: 'image_generate',
+          iconName: 'gear',
+          secondary: '',
+          isRunning: false,
+          isError: false,
+          status: 'success',
+          calls: [
+            {
+              toolId: 'tool-1',
+              renderKey: 'tool-1',
+              name: 'image_generate',
+              displayName: 'image_generate',
+              inputRaw,
+              inputPreview: inputRaw.slice(0, 200),
+              isRunning: false,
+              status: 'success',
+              isError: false,
+              result: '{"status":"ok"}',
+              resultPreview: '{"status":"ok"}',
+              isOpen: false,
+            },
+          ],
+        },
+      },
+    ])
+
+    const inputSection = el.querySelector<HTMLElement>('.tool-row-section')
+    expect(inputSection?.querySelector('.tool-row-section__compact')).not.toBeNull()
+    expect(inputSection?.querySelector('pre')).toBeNull()
+    expect(inputSection?.textContent).toContain('JSON')
+    expect(inputSection?.textContent).toContain('octopus-3d-clay.png')
+    expect(inputSection?.textContent).toContain('view full')
+
+    app.unmount()
+  })
 })

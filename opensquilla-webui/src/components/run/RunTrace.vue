@@ -154,6 +154,9 @@ import { useI18n } from 'vue-i18n'
 import type { ChatToolCallRenderItem } from '@/types/chat'
 
 const SECTION_PREVIEW_LIMIT = 200
+const COMPACT_SECTION_CHAR_LIMIT = 360
+const COMPACT_SECTION_LINE_LIMIT = 6
+const COMPACT_SNIPPET_LIMIT = 150
 
 function parseToolResultRecord(raw: string): Record<string, unknown> | null {
   const text = String(raw || '').trim()
@@ -176,6 +179,55 @@ function asRecord(value: unknown): Record<string, unknown> | null {
 
 function asNumber(value: unknown): number | null {
   return typeof value === 'number' && Number.isFinite(value) ? value : null
+}
+
+function contentLineCount(value: string): number {
+  if (!value) return 0
+  return value.split(/\r\n|\r|\n/).length
+}
+
+function shouldCompactSection(full: string, preview: string): boolean {
+  const text = full || preview || ''
+  return text.length > COMPACT_SECTION_CHAR_LIMIT || contentLineCount(text) > COMPACT_SECTION_LINE_LIMIT
+}
+
+function truncateInline(value: string, limit = COMPACT_SNIPPET_LIMIT): string {
+  const text = value.replace(/\s+/g, ' ').trim()
+  return text.length > limit ? `${text.slice(0, limit).trimEnd()}...` : text
+}
+
+function compactKind(value: string): string {
+  const text = value.trim()
+  if (!text) return 'text'
+  if (text.startsWith('{') || text.startsWith('[')) return 'JSON'
+  return 'text'
+}
+
+function compactSnippet(value: string): string {
+  const text = value.trim()
+  if (!text) return ''
+  try {
+    const parsed = JSON.parse(text)
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      const pairs = Object.entries(parsed as Record<string, unknown>)
+        .slice(0, 4)
+        .map(([key, entry]) => `${key}: ${truncateInline(String(entry), 44)}`)
+      if (pairs.length) return truncateInline(pairs.join(', '))
+    }
+  } catch {
+    // Fall back to the first line for non-JSON or partial JSON.
+  }
+  return truncateInline(text.split(/\r\n|\r|\n/).find(line => line.trim()) || text)
+}
+
+function compactMeta(value: string): string {
+  const chars = value.length
+  const lines = contentLineCount(value)
+  const kind = compactKind(value)
+  const parts = [kind]
+  if (lines > 1) parts.push(`${lines} lines`)
+  parts.push(`${chars.toLocaleString()} chars`)
+  return parts.join(' | ')
 }
 
 function webDiagnosticsSummary(raw: string): string {
@@ -230,10 +282,17 @@ const ToolRowSections = defineComponent({
       const sections = []
       if (call.inputPreview) {
         const fullInput = call.inputRaw || ''
+        const inputContent = fullInput || call.inputPreview
+        const compact = shouldCompactSection(inputContent, call.inputPreview)
         sections.push(h('section', { class: 'tool-row-section' }, [
           h('div', { class: 'tool-row-section__label' }, t('shared.runTrace.sectionInput')),
-          h('pre', { class: 'tool-row-section__pre' }, call.inputPreview),
-          fullInput.length > SECTION_PREVIEW_LIMIT
+          compact
+            ? h('div', { class: 'tool-row-section__compact' }, [
+                h('span', { class: 'tool-row-section__compact-meta' }, compactMeta(inputContent)),
+                h('span', { class: 'tool-row-section__compact-snippet' }, compactSnippet(inputContent)),
+              ])
+            : h('pre', { class: 'tool-row-section__pre' }, call.inputPreview),
+          fullInput.length > SECTION_PREVIEW_LIMIT || compact
             ? h('button', {
                 type: 'button',
                 class: 'step-view-btn',
@@ -256,12 +315,19 @@ const ToolRowSections = defineComponent({
         const kindLabel = call.isError
           ? t('shared.runTrace.sectionError')
           : t('shared.runTrace.sectionResult')
+        const resultContent = call.result || call.resultPreview
+        const compact = shouldCompactSection(resultContent, call.resultPreview)
         sections.push(h('section', {
           class: ['tool-row-section', { 'tool-row-section--error': call.isError }],
         }, [
           h('div', { class: 'tool-row-section__label' }, kindLabel),
-          h('pre', { class: 'tool-row-section__pre' }, call.resultPreview),
-          call.result.length > SECTION_PREVIEW_LIMIT
+          compact
+            ? h('div', { class: 'tool-row-section__compact' }, [
+                h('span', { class: 'tool-row-section__compact-meta' }, compactMeta(resultContent)),
+                h('span', { class: 'tool-row-section__compact-snippet' }, compactSnippet(resultContent)),
+              ])
+            : h('pre', { class: 'tool-row-section__pre' }, call.resultPreview),
+          call.result.length > SECTION_PREVIEW_LIMIT || compact
             ? h('button', {
                 type: 'button',
                 class: 'step-view-btn',
@@ -1167,6 +1233,30 @@ function fmtTok(n?: number | null): string {
   max-height: 100px;
   overflow-y: auto;
   margin: 0;
+}
+
+.tool-row-section__compact {
+  display: grid;
+  gap: 0.25rem;
+  min-width: 0;
+}
+
+.tool-row-section__compact-meta {
+  color: var(--text-dim);
+  font-family: var(--font-mono);
+  font-size: 0.6875rem;
+  line-height: 1.35;
+}
+
+.tool-row-section__compact-snippet {
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: 0.71875rem;
+  line-height: 1.45;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .step-view-btn {

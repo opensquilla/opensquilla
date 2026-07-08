@@ -4092,3 +4092,75 @@ def test_gemini_stream_multiple_tool_calls_without_indexes_stay_separate(
         ("call_lookup", "lookup", {"q": "hi"}),
         ("call_save", "save", {"value": 1}),
     ]
+
+
+def test_openrouter_routing_pin_strict_env_sends_only_without_fallbacks(
+    monkeypatch: Any,
+) -> None:
+    captured: dict[str, Any] = {}
+    chunks = [
+        {
+            "model": "deepseek/deepseek-v4-flash",
+            "choices": [{"delta": {"content": "ok"}, "finish_reason": None}],
+        },
+        {
+            "model": "deepseek/deepseek-v4-flash",
+            "choices": [{"delta": {}, "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": 2, "completion_tokens": 1},
+        },
+    ]
+    body = b"".join(f"data: {json.dumps(chunk)}\n\n".encode() for chunk in chunks)
+    body += b"data: [DONE]\n\n"
+    _patch_transport_body(monkeypatch, captured, body)
+    monkeypatch.setenv("OPENSQUILLA_PROVIDER_ROUTING_STRICT", "on")
+    provider = OpenAIProvider(
+        api_key="test",
+        model="deepseek/deepseek-v4-flash",
+        base_url="https://openrouter.ai/api/v1",
+        provider_kind="openrouter",
+        provider_routing={"deepseek/deepseek-v4-flash": "deepseek"},
+    )
+
+    done = _collect(provider, ChatConfig())
+
+    assert captured["payload"]["provider"] == {
+        "only": ["deepseek"],
+        "allow_fallbacks": False,
+    }
+    assert done.stop_reason == "stop"
+
+
+def test_openrouter_routing_pin_default_keeps_order_with_fallbacks(
+    monkeypatch: Any,
+) -> None:
+    captured: dict[str, Any] = {}
+    chunks = [
+        {
+            "model": "deepseek/deepseek-v4-flash",
+            "choices": [{"delta": {"content": "ok"}, "finish_reason": None}],
+        },
+        {
+            "model": "deepseek/deepseek-v4-flash",
+            "choices": [{"delta": {}, "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": 2, "completion_tokens": 1},
+        },
+    ]
+    body = b"".join(f"data: {json.dumps(chunk)}\n\n".encode() for chunk in chunks)
+    body += b"data: [DONE]\n\n"
+    _patch_transport_body(monkeypatch, captured, body)
+    monkeypatch.delenv("OPENSQUILLA_PROVIDER_ROUTING_STRICT", raising=False)
+    provider = OpenAIProvider(
+        api_key="test",
+        model="deepseek/deepseek-v4-flash",
+        base_url="https://openrouter.ai/api/v1",
+        provider_kind="openrouter",
+        provider_routing={"deepseek/deepseek-v4-flash": "deepseek"},
+    )
+
+    done = _collect(provider, ChatConfig())
+
+    assert captured["payload"]["provider"] == {
+        "order": ["deepseek"],
+        "allow_fallbacks": True,
+    }
+    assert done.stop_reason == "stop"

@@ -1885,6 +1885,14 @@ class OpenAIProvider:
         self._compat = compat or compat_policy_for_kind(self._provider_kind)
         self._replay_provider_state = replay_provider_state
         self._provider_routing: Mapping[str, str] = provider_routing or {}
+        # Strict routing pin: send {"only": [...], "allow_fallbacks": false}
+        # instead of the default {"order": [...], "allow_fallbacks": true},
+        # so requests fail rather than silently reroute when the pinned
+        # upstream is unavailable. Off by default.
+        self._provider_routing_strict = (
+            os.environ.get("OPENSQUILLA_PROVIDER_ROUTING_STRICT", "").strip().lower()
+            in {"1", "true", "yes", "on", "enabled"}
+        )
 
     @property
     def model(self) -> str:
@@ -2063,10 +2071,16 @@ class OpenAIProvider:
         if self._compat.supports_provider_routing_pin:
             pinned_provider = self._provider_routing.get(self._model)
             if pinned_provider:
-                payload["provider"] = {
-                    "order": [pinned_provider],
-                    "allow_fallbacks": True,
-                }
+                if self._provider_routing_strict:
+                    payload["provider"] = {
+                        "only": [pinned_provider],
+                        "allow_fallbacks": False,
+                    }
+                else:
+                    payload["provider"] = {
+                        "order": [pinned_provider],
+                        "allow_fallbacks": True,
+                    }
 
         # Reasoning injection (gated on thinking being enabled). Gating —
         # which model/capability profile triggers a payload at all — lives

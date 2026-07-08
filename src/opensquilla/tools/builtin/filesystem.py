@@ -16,7 +16,6 @@ from pathlib import Path
 from typing import Any
 from xml.etree import ElementTree as ET
 
-from opensquilla.identity.workspace import BOOTSTRAP_FILENAMES
 from opensquilla.sandbox.escalation import (
     build_path_approval_params,
     current_tool_mounts,
@@ -32,6 +31,10 @@ from opensquilla.sandbox.operation_runtime import (
     SandboxToolDescriptor,
 )
 from opensquilla.sandbox.path_validation import MountDecision, decide_path_access
+from opensquilla.tools.mutation_receipts import (
+    fingerprint_path,
+    record_semantic_mutation_receipt,
+)
 from opensquilla.tools.path_policy import reject_foreign_host_path
 from opensquilla.tools.registry import tool
 from opensquilla.tools.run_mode import (
@@ -39,8 +42,30 @@ from opensquilla.tools.run_mode import (
     full_host_access_active,
     trusted_sandbox_active,
 )
-from opensquilla.tools.types import ToolError, WorkspaceAccessError, current_tool_context
-from opensquilla.tools.write_tracking import record_workspace_file_write
+from opensquilla.tools.source_edit_contract import (
+    SourceEditContractError,
+    apply_line_edits,
+    build_diff_summary,
+    build_line_receipt,
+    source_revision_for_path,
+)
+from opensquilla.tools.types import (
+    RetryableToolInputError,
+    SafeToolError,
+    ToolError,
+    WorkspaceAccessError,
+    current_tool_context,
+)
+from opensquilla.tools.write_tracking import (
+    record_scratch_file_write,
+    record_workspace_file_read,
+    record_workspace_file_write,
+    refresh_workspace_file_read_state,
+    require_fresh_workspace_file_read,
+    scratch_only_progress_note,
+    workspace_write_note,
+    workspace_write_progress_note,
+)
 
 _SPREADSHEET_EXTENSIONS = {".csv", ".tsv", ".xlsx"}
 _OFFICE_BINARY_EXTENSIONS = {".doc", ".docx", ".ppt", ".pptx", ".xls", ".xlsx"}
@@ -56,10 +81,169 @@ _BINARY_EXTENSIONS = {
     ".zip",
     *_OFFICE_BINARY_EXTENSIONS,
 }
+_SEARCH_EXCLUDED_DIR_NAMES = frozenset({".git", ".hg", ".svn"})
 _XLSX_MAIN_NS = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
 _XLSX_PACKAGE_REL_NS = "http://schemas.openxmlformats.org/package/2006/relationships"
 _XLSX_OFFICE_REL_NS = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
-_BOOTSTRAP_SOURCE_FILENAMES = frozenset(BOOTSTRAP_FILENAMES)
+_BOOTSTRAP_SOURCE_FILENAMES_FALLBACK = frozenset(
+    {
+        "AGENTS.md",
+        "SOUL.md",
+        "IDENTITY.md",
+        "TOOLS.md",
+        "USER.md",
+        "BOOTSTRAP.md",
+        "HEARTBEAT.md",
+    }
+)
+_GREP_DEFAULT_MAX_RESULTS = 100
+_GREP_MAX_RESULTS = 1000
+_GREP_MAX_MATCH_LINE_CHARS = 2000
+_SOURCE_SYMBOL_DEFAULT_MAX_RESULTS = 80
+_SOURCE_SYMBOL_MAX_RESULTS = 200
+_SOURCE_SYMBOL_MAX_FILE_BYTES = 1_000_000
+_SOURCE_SYMBOL_EXTENSIONS = frozenset(
+    {
+        ".c",
+        ".cc",
+        ".cpp",
+        ".cxx",
+        ".cs",
+        ".go",
+        ".h",
+        ".hh",
+        ".hpp",
+        ".java",
+        ".js",
+        ".jsx",
+        ".kt",
+        ".kts",
+        ".m",
+        ".mm",
+        ".php",
+        ".py",
+        ".pyi",
+        ".rb",
+        ".rs",
+        ".scala",
+        ".swift",
+        ".ts",
+        ".tsx",
+    }
+)
+_SOURCE_SYMBOL_REGEXES: tuple[tuple[frozenset[str], str, re.Pattern[str]], ...] = (
+    (
+        frozenset({".py", ".pyi"}),
+        "class",
+        re.compile(r"^\s*class\s+([A-Za-z_][A-Za-z0-9_]*)\b"),
+    ),
+    (
+        frozenset({".py", ".pyi"}),
+        "function",
+        re.compile(r"^\s*(?:async\s+)?def\s+([A-Za-z_][A-Za-z0-9_]*)\s*\("),
+    ),
+    (
+        frozenset({".js", ".jsx", ".ts", ".tsx"}),
+        "class",
+        re.compile(r"^\s*(?:export\s+default\s+|export\s+)?class\s+([A-Za-z_$][\w$]*)\b"),
+    ),
+    (
+        frozenset({".js", ".jsx", ".ts", ".tsx"}),
+        "function",
+        re.compile(r"^\s*(?:export\s+)?(?:async\s+)?function\s+([A-Za-z_$][\w$]*)\s*\("),
+    ),
+    (
+        frozenset({".js", ".jsx", ".ts", ".tsx"}),
+        "function",
+        re.compile(
+            r"^\s*(?:export\s+)?(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*="
+            r"\s*(?:async\s*)?(?:\([^)]*\)|[A-Za-z_$][\w$]*)\s*=>"
+        ),
+    ),
+    (
+        frozenset({".java", ".cs", ".kt", ".kts", ".scala"}),
+        "class",
+        re.compile(
+            r"^\s*(?:public|private|protected|internal|abstract|final|sealed|open|"
+            r"static|\s)*(?:class|interface|enum|record|object)\s+([A-Za-z_][A-Za-z0-9_]*)\b"
+        ),
+    ),
+    (
+        frozenset({".java", ".cs", ".kt", ".kts", ".scala"}),
+        "function",
+        re.compile(
+            r"^\s*(?:public|private|protected|internal|static|final|abstract|open|"
+            r"override|async|suspend|\s)+[A-Za-z_<>\[\].?,\s]+\s+([A-Za-z_][A-Za-z0-9_]*)\s*\("
+        ),
+    ),
+    (
+        frozenset({".go"}),
+        "function",
+        re.compile(r"^\s*func\s+(?:\([^)]+\)\s*)?([A-Za-z_][A-Za-z0-9_]*)\s*\("),
+    ),
+    (
+        frozenset({".rs"}),
+        "function",
+        re.compile(r"^\s*(?:pub(?:\([^)]*\))?\s+)?(?:async\s+)?fn\s+([A-Za-z_][A-Za-z0-9_]*)\b"),
+    ),
+    (
+        frozenset({".rs"}),
+        "class",
+        re.compile(
+            r"^\s*(?:pub(?:\([^)]*\))?\s+)?(?:struct|enum|trait|impl)\s+([A-Za-z_][A-Za-z0-9_]*)\b"
+        ),
+    ),
+    (
+        frozenset({".rb"}),
+        "class",
+        re.compile(r"^\s*(?:class|module)\s+([A-Za-z_][A-Za-z0-9_:]*)\b"),
+    ),
+    (
+        frozenset({".rb"}),
+        "function",
+        re.compile(r"^\s*def\s+(?:self\.)?([A-Za-z_][A-Za-z0-9_!?=]*)\b"),
+    ),
+    (
+        frozenset({".php"}),
+        "class",
+        re.compile(
+            r"^\s*(?:abstract\s+|final\s+)?(?:class|interface|trait|enum)\s+([A-Za-z_][A-Za-z0-9_]*)\b"
+        ),
+    ),
+    (
+        frozenset({".php"}),
+        "function",
+        re.compile(
+            r"^\s*(?:public|private|protected|static|final|abstract|\s)*function\s+"
+            r"([A-Za-z_][A-Za-z0-9_]*)\s*\("
+        ),
+    ),
+    (
+        frozenset({".c", ".cc", ".cpp", ".cxx", ".h", ".hh", ".hpp", ".m", ".mm"}),
+        "class",
+        re.compile(r"^\s*(?:class|struct|enum)\s+([A-Za-z_][A-Za-z0-9_]*)\b"),
+    ),
+    (
+        frozenset({".c", ".cc", ".cpp", ".cxx", ".h", ".hh", ".hpp", ".m", ".mm"}),
+        "function",
+        re.compile(
+            r"^\s*(?:[A-Za-z_][\w:<>,~*&\s]+\s+)+([A-Za-z_][A-Za-z0-9_]*)\s*"
+            r"\([^;{}]*\)\s*(?:const\s*)?(?:\{|$)"
+        ),
+    ),
+)
+_SOURCE_SYMBOL_IGNORED_NAMES = frozenset(
+    {
+        "if",
+        "for",
+        "while",
+        "switch",
+        "catch",
+        "return",
+        "sizeof",
+        "function",
+    }
+)
 
 
 def _tool_path_request(args: Mapping[str, Any]) -> FilesystemOperationRequest:
@@ -161,6 +345,20 @@ def _resolve_base(path: str | None) -> Path:
     return root if root is not None else Path.cwd()
 
 
+def _workspace_display_path_for_root(path: Path, original_path: str, root: Path | None) -> str:
+    resolved = path.resolve(strict=False)
+    if root is None:
+        return original_path
+    try:
+        return resolved.relative_to(root).as_posix()
+    except ValueError:
+        return original_path
+
+
+def _workspace_display_path(path: Path, original_path: str) -> str:
+    return _workspace_display_path_for_root(path, original_path, _workspace_root())
+
+
 def _memory_source_rel_path(path: Path) -> str | None:
     resolved = path.resolve(strict=False)
     for root in _memory_roots():
@@ -186,7 +384,14 @@ def _bootstrap_source_rel_path(path: Path) -> str | None:
     except ValueError:
         return None
     rel_path = rel.as_posix()
-    if len(rel.parts) == 1 and rel_path in _BOOTSTRAP_SOURCE_FILENAMES:
+    try:
+        from opensquilla.identity.workspace import BOOTSTRAP_FILENAMES
+
+        bootstrap_source_filenames = frozenset(BOOTSTRAP_FILENAMES)
+    except Exception:
+        bootstrap_source_filenames = _BOOTSTRAP_SOURCE_FILENAMES_FALLBACK
+
+    if len(rel.parts) == 1 and rel_path in bootstrap_source_filenames:
         return rel_path
     return None
 
@@ -236,6 +441,10 @@ def _read_binary_sample(p: Path, size: int = 8192) -> bytes:
         return fh.read(size)
 
 
+def _is_search_excluded_path(path: Path) -> bool:
+    return any(part in _SEARCH_EXCLUDED_DIR_NAMES for part in path.parts)
+
+
 def _stream_numbered_lines_from_file(
     p: Path,
     original_path: str,
@@ -265,6 +474,49 @@ def _stream_numbered_lines_from_file(
     except UnicodeDecodeError as exc:
         raise _binary_file_error(original_path, p, reason="not valid UTF-8") from exc
     return "".join(selected)
+
+
+def _bounded_positive_int(value: int | None, *, default: int, maximum: int) -> int:
+    try:
+        parsed = int(value) if value is not None else default
+    except (TypeError, ValueError):
+        parsed = default
+    return max(1, min(parsed, maximum))
+
+
+def _bounded_non_negative_int(
+    value: int | None,
+    *,
+    default: int,
+    maximum: int | None = None,
+) -> int:
+    try:
+        parsed = int(value) if value is not None else default
+    except (TypeError, ValueError):
+        parsed = default
+    parsed = max(0, parsed)
+    return min(parsed, maximum) if maximum is not None else parsed
+
+
+def _format_grep_match(
+    fp: Path,
+    lineno: int,
+    line: str,
+    *,
+    include_line_numbers: bool = True,
+    workspace_root: Path | None = None,
+) -> str:
+    text = line.rstrip()
+    if len(text) > _GREP_MAX_MATCH_LINE_CHARS:
+        omitted = len(text) - _GREP_MAX_MATCH_LINE_CHARS
+        text = (
+            text[:_GREP_MAX_MATCH_LINE_CHARS].rstrip()
+            + f"... [line truncated: omitted_chars={omitted}]"
+        )
+    display_path = _workspace_display_path_for_root(fp, str(fp), workspace_root)
+    if include_line_numbers:
+        return f"{display_path}:{lineno}: {text}"
+    return f"{display_path}: {text}"
 
 
 def _is_outside_workspace(resolved: Path) -> bool:
@@ -450,6 +702,34 @@ def _filesystem_operation_workspace() -> Path | None:
     return None
 
 
+def _is_under_root(path: Path, root: Path) -> bool:
+    try:
+        path.resolve(strict=False).relative_to(root.resolve(strict=False))
+        return True
+    except ValueError:
+        return False
+
+
+def _write_scope_suffix(path: Path) -> str:
+    ctx = current_tool_context.get()
+    if ctx is not None and ctx.scratch_dir:
+        scratch_root = Path(ctx.scratch_dir).expanduser()
+        if _is_under_root(path, scratch_root):
+            return (
+                " (scratch file: temporary workspace for scripts, logs, debug "
+                "output, and experiments; not a substitute for requested project changes)"
+                f"{scratch_only_progress_note()}"
+            )
+    workspace_root = _workspace_root()
+    if workspace_root is not None and _is_under_root(path, workspace_root):
+        return (
+            " (workspace file: part of the project working tree)"
+            + workspace_write_note(path)
+            + workspace_write_progress_note()
+        )
+    return ""
+
+
 def _strict_read_workspace_root() -> Path | None:
     """Return the read-containment root when workspace-strict mode is active.
 
@@ -598,8 +878,7 @@ def _workspace_strict_read_block(
             "workspace": str(roots[0]),
             "allowed_roots": [str(root) for root in roots],
             "message": (
-                f"{tool_name} blocked: {candidate} is outside active read roots "
-                f"({root_labels})."
+                f"{tool_name} blocked: {candidate} is outside active read roots ({root_labels})."
             ),
             "retryable": False,
         }
@@ -685,12 +964,24 @@ def _inside_any_root(candidate: Path, roots: list[Path]) -> bool:
     return False
 
 
+def _is_under_configured_scratch_dir(resolved: Path) -> bool:
+    ctx = current_tool_context.get()
+    if ctx is None or not ctx.scratch_dir:
+        return False
+    scratch = Path(ctx.scratch_dir).expanduser().resolve(strict=False)
+    try:
+        resolved.expanduser().resolve(strict=False).relative_to(scratch)
+        return True
+    except ValueError:
+        return False
+
+
 def _gate_workspace_lockdown_write(tool_name: str, resolved: Path, original_path: str) -> None:
     roots = _workspace_lockdown_roots()
     if not roots or _inside_any_root(resolved, roots):
         return
     allowed = ", ".join(str(root) for root in roots)
-    raise ToolError(
+    raise SafeToolError(
         f"{tool_name} blocked by workspace lockdown: {original_path} resolves to "
         f"{resolved}, outside allowed roots: {allowed}."
     )
@@ -729,8 +1020,17 @@ async def _gate_out_of_workspace_write(
         return path_access
 
     _gate_workspace_lockdown_write(tool_name, resolved, original_path)
-    from opensquilla.tools.write_policy import gate_workspace_write_deny
+    from opensquilla.tools.write_policy import (
+        gate_workspace_scratch_artifact,
+        gate_workspace_write_deny,
+    )
 
+    gate_workspace_scratch_artifact(
+        tool_name,
+        resolved,
+        original_path=original_path,
+        workspace=_workspace_root(),
+    )
     gate_workspace_write_deny(
         tool_name,
         resolved,
@@ -755,7 +1055,10 @@ async def _gate_out_of_workspace_write(
     name="read_file",
     description=(
         "Read UTF-8 text file contents with line numbers. Supports offset and limit. "
-        "For CSV/TSV/Excel workbook data, use read_spreadsheet."
+        "Before modifying an existing workspace file with edit_file or write_file, "
+        "read it once without offset or limit to establish fresh edit context. "
+        "Use offset/limit for inspection windows only. For CSV/TSV/Excel workbook "
+        "data, use read_spreadsheet."
     ),
     params={
         "path": {"type": "string", "description": "Absolute path to the file."},
@@ -802,21 +1105,113 @@ async def read_file(path: str, offset: int | None = None, limit: int | None = No
             )
         )
         if sandbox_result is not None:
+            record_workspace_file_read(
+                p,
+                operation="read_file",
+                offset=offset,
+                limit=limit,
+                complete=limit is None and (offset is None or offset <= 1),
+            )
             return str(getattr(sandbox_result, "message"))
 
     loop = asyncio.get_event_loop()
     sample: bytes = await loop.run_in_executor(None, _read_binary_sample, p)
     if not sample:
+        record_workspace_file_read(
+            p,
+            operation="read_file",
+            offset=offset,
+            limit=limit,
+            complete=limit is None and (offset is None or offset <= 1),
+        )
         return ""
 
     binary_reason = _looks_binary(sample, p)
     if binary_reason:
         raise _binary_file_error(path, p, reason=binary_reason)
 
-    return await loop.run_in_executor(
+    output = await loop.run_in_executor(
         None,
         lambda: _stream_numbered_lines_from_file(p, path, offset=offset, limit=limit),
     )
+    record_workspace_file_read(
+        p,
+        operation="read_file",
+        offset=offset,
+        limit=limit,
+        complete=limit is None and (offset is None or offset <= 1),
+    )
+    return output
+
+
+@tool(
+    name="read_source",
+    description=(
+        "Read a UTF-8 workspace source line range and return a JSON revision receipt. "
+        "Use the returned revision as edit_source.expected_revision before editing "
+        "that file. Returned lines are plain text without read_file line-number prefixes."
+    ),
+    params={
+        "path": {
+            "type": "string",
+            "description": "Workspace-relative or absolute path to the source file.",
+        },
+        "start_line": {
+            "type": "integer",
+            "description": "Inclusive 1-based first source line to read (default 1).",
+        },
+        "end_line": {
+            "type": "integer",
+            "description": (
+                "Inclusive 1-based last source line to read. If omitted, read up to "
+                "200 lines from start_line or until end of file."
+            ),
+        },
+    },
+    required=["path"],
+    exposed_by_default=False,
+)
+async def read_source(path: str, start_line: int = 1, end_line: int | None = None) -> str:
+    p = _resolve_path(path)
+    blocked = _sensitive_access_block("read_source", p, path)
+    if blocked is not None:
+        return json.dumps(blocked)
+    path_access = _sandbox_path_access_envelope(p, write=False)
+    if path_access is not None:
+        return json.dumps(path_access)
+    _gate_workspace_strict_read("read_source", p, path)
+    if not p.exists():
+        raise FileNotFoundError(f"File not found: {path}")
+    if not p.is_file():
+        raise IsADirectoryError(f"Path is a directory: {path}")
+
+    loop = asyncio.get_event_loop()
+    sample: bytes = await loop.run_in_executor(None, _read_binary_sample, p)
+    if sample:
+        binary_reason = _looks_binary(sample, p)
+        if binary_reason:
+            raise _binary_file_error(path, p, reason=binary_reason)
+    try:
+        receipt = await loop.run_in_executor(
+            None,
+            lambda: build_line_receipt(
+                p,
+                start_line=start_line,
+                end_line=end_line,
+                display_path=_workspace_display_path(p, path),
+            ),
+        )
+    except UnicodeDecodeError as exc:
+        raise _binary_file_error(path, p, reason="not valid UTF-8") from exc
+
+    record_workspace_file_read(
+        p,
+        operation="read_source",
+        offset=receipt["range"][0],
+        limit=receipt["range"][1] - receipt["range"][0] + 1,
+        complete=(receipt["range"][0] == 1 and receipt["range"][1] == receipt["total_lines"]),
+    )
+    return json.dumps(receipt, ensure_ascii=False)
 
 
 @tool(
@@ -869,6 +1264,7 @@ async def read_spreadsheet(
     if not p.is_file():
         raise IsADirectoryError(f"Path is a directory: {path}")
 
+    record_workspace_file_read(p, operation="read_spreadsheet", offset=offset, limit=limit)
     ext = p.suffix.lower()
     row_offset = offset if offset and offset > 0 else 1
     row_limit = limit if limit and limit > 0 else 200
@@ -1048,18 +1444,25 @@ def _format_spreadsheet(
         if start + limit < len(rows):
             end = start + len(selected)
             parts.append(
-                f"(Showing rows {offset}-{end} of {len(rows)}. "
-                f"Use offset={end + 1} to continue.)"
+                f"(Showing rows {offset}-{end} of {len(rows)}. Use offset={end + 1} to continue.)"
             )
     return "\n".join(parts)
 
 
 @tool(
     name="write_file",
-    description="Write content to a file, creating directories as needed.",
+    description=(
+        "Write full file content, creating directories as needed. Best for new "
+        "files and scratch files. For existing workspace source files, first use "
+        "read_file without offset or limit, then prefer edit_file for exact "
+        "replacements or apply_patch for multi-line hunks."
+    ),
     params={
         "path": {"type": "string", "description": "Absolute path to write to."},
-        "content": {"type": "string", "description": "File content to write."},
+        "content": {
+            "type": "string",
+            "description": "Complete file content to write; not a patch fragment.",
+        },
         "approval_id": {
             "type": "string",
             "description": "Sandbox path approval record for writes outside the workspace.",
@@ -1078,6 +1481,13 @@ async def write_file(path: str, content: str, approval_id: str | None = None) ->
     approval = await _gate_out_of_workspace_write("write_file", p, path, approval_id)
     if approval is not None:
         return json.dumps(approval)
+
+    loop = asyncio.get_event_loop()
+    created = not p.exists()
+    if not created:
+        require_fresh_workspace_file_read(p, tool_name="write_file", original_path=path)
+        _gate_write_file_destructive_overwrite(p, content, original_path=path)
+    before_fingerprint = fingerprint_path(p)
     workspace = _filesystem_operation_workspace()
     if workspace is not None:
         sandbox_result = await _run_sandbox_operation_if_required(
@@ -1091,40 +1501,359 @@ async def write_file(path: str, content: str, approval_id: str | None = None) ->
             )
         )
         if sandbox_result is not None:
-            if getattr(sandbox_result, "created", False):
-                record_workspace_file_write(p)
+            created = bool(getattr(sandbox_result, "created", created))
+            after_fingerprint = fingerprint_path(p)
+            record_semantic_mutation_receipt(
+                tool_name="write_file",
+                path=p,
+                operation="write_file",
+                before=before_fingerprint,
+                after=after_fingerprint,
+                partial=False,
+                metadata={"created": created},
+            )
+            record_workspace_file_write(p, operation="write_file", created=created)
+            refresh_workspace_file_read_state(p, operation="write_file")
+            record_scratch_file_write(p)
             _notify_memory_source_write(p)
             _notify_bootstrap_source_write(p)
             return str(getattr(sandbox_result, "message"))
-
-    loop = asyncio.get_event_loop()
-    created = not p.exists()
 
     def _write() -> None:
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(content, encoding="utf-8")
 
     await loop.run_in_executor(None, _write)
-    if created:
-        record_workspace_file_write(p)
+    after_fingerprint = fingerprint_path(p)
+    record_semantic_mutation_receipt(
+        tool_name="write_file",
+        path=p,
+        operation="write_file",
+        before=before_fingerprint,
+        after=after_fingerprint,
+        partial=False,
+        metadata={"created": created},
+    )
+    record_workspace_file_write(p, operation="write_file", created=created)
+    refresh_workspace_file_read_state(p, operation="write_file")
+    record_scratch_file_write(p)
     _notify_memory_source_write(p)
     _notify_bootstrap_source_write(p)
-    return f"Written {len(content)} bytes to {p}"
+    return f"Written {len(content)} bytes to {p}{_write_scope_suffix(p)}"
+
+
+def _resolve_scratch_write_path(path: str) -> tuple[Path, str]:
+    ctx = current_tool_context.get()
+    if ctx is None or not ctx.scratch_dir:
+        raise ToolError("write_scratch requires a configured scratch_dir.")
+    scratch = Path(ctx.scratch_dir).expanduser().resolve(strict=False)
+    raw = Path(path).expanduser()
+    resolved = (
+        raw.resolve(strict=False)
+        if raw.is_absolute()
+        else (scratch / raw).resolve(strict=False)
+    )
+    try:
+        relative_path = resolved.relative_to(scratch).as_posix()
+    except ValueError as exc:
+        raise ToolError(
+            f"write_scratch only writes inside the configured scratch directory: {path}"
+        ) from exc
+    if not relative_path or relative_path == ".":
+        raise ToolError("write_scratch requires a file path inside the scratch directory.")
+    return resolved, relative_path
+
+
+@tool(
+    name="write_scratch",
+    description=(
+        "Write a temporary scratch file for reproduction scripts, logs, debug output, "
+        "or experiments. This tool only writes inside the configured scratch directory "
+        "and is not a substitute for repository source changes."
+    ),
+    params={
+        "path": {
+            "type": "string",
+            "description": (
+                "Scratch-relative path, or an absolute path under the scratch directory."
+            ),
+        },
+        "content": {
+            "type": "string",
+            "description": "Complete scratch file content to write.",
+        },
+    },
+    required=["path", "content"],
+    exposed_by_default=False,
+    sandbox=SandboxToolDescriptor.filesystem(
+        kind="fs.write",
+        argv_factory=lambda a: ("fs.write_scratch", str(a.get("path", ""))),
+        request_factory=_tool_path_request,
+        record_payload=False,
+    ),
+)
+async def write_scratch(path: str, content: str) -> str:
+    p, relative_path = _resolve_scratch_write_path(path)
+    blocked = _sensitive_access_block("write_scratch", p, path)
+    if blocked is not None:
+        return json.dumps(blocked)
+
+    loop = asyncio.get_event_loop()
+    before_fingerprint = fingerprint_path(p)
+
+    def _write() -> None:
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(content, encoding="utf-8")
+
+    await loop.run_in_executor(None, _write)
+    after_fingerprint = fingerprint_path(p)
+    record_scratch_file_write(p)
+    result = {
+        "status": "written",
+        "path": relative_path,
+        "scratch": True,
+        "changed": before_fingerprint.get("sha256") != after_fingerprint.get("sha256")
+        or before_fingerprint.get("exists") != after_fingerprint.get("exists"),
+        "bytes": len(content.encode("utf-8")),
+        "sha256": after_fingerprint.get("sha256"),
+    }
+    return json.dumps(result, ensure_ascii=False)
+
+
+@tool(
+    name="create_source",
+    description=(
+        "Create a new UTF-8 production workspace file. Use this for new source, "
+        "configuration, or documentation files that should appear in the final git diff. "
+        "It refuses to overwrite existing files; use read_source/edit_source for existing files."
+    ),
+    params={
+        "path": {
+            "type": "string",
+            "description": "Workspace-relative or absolute path for the new repository file.",
+        },
+        "content": {
+            "type": "string",
+            "description": "Complete file content to create.",
+        },
+        "approval_id": {
+            "type": "string",
+            "description": (
+                "Reserved for compatibility; create_source only writes inside the workspace."
+            ),
+        },
+    },
+    required=["path", "content"],
+    exposed_by_default=False,
+    sandbox=SandboxToolDescriptor.filesystem(
+        kind="fs.write",
+        argv_factory=lambda a: ("fs.create_source", str(a.get("path", ""))),
+        request_factory=_tool_path_request,
+        record_payload=False,
+    ),
+)
+async def create_source(path: str, content: str, approval_id: str | None = None) -> str:
+    p = _resolve_path(path)
+    blocked = _sensitive_access_block("create_source", p, path)
+    if blocked is not None:
+        return json.dumps(blocked)
+    _gate_workspace_lockdown_write("create_source", p, path)
+    workspace = _workspace_root()
+    if workspace is None:
+        raise ToolError("create_source requires an active workspace_dir.")
+    if _is_outside_workspace(p):
+        raise WorkspaceAccessError(
+            f"create_source only writes inside the active workspace: {path}"
+        )
+    if _is_under_configured_scratch_dir(p):
+        raise ToolError("create_source refused a scratch path; use write_scratch instead.")
+    if p.exists():
+        raise RetryableToolInputError(
+            f"create_source refused because the file already exists: {path}. "
+            "Use read_source/edit_source for existing files."
+        )
+
+    loop = asyncio.get_event_loop()
+    before_fingerprint = fingerprint_path(p)
+
+    def _write() -> None:
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(content, encoding="utf-8")
+
+    await loop.run_in_executor(None, _write)
+    after_fingerprint = fingerprint_path(p)
+    after_revision = source_revision_for_path(p)
+    display_path = _workspace_display_path(p, path)
+    receipt = record_semantic_mutation_receipt(
+        tool_name="create_source",
+        path=p,
+        operation="create_source",
+        before=before_fingerprint,
+        after=after_fingerprint,
+        partial=False,
+        metadata={
+            "after_revision": after_revision,
+            "created": True,
+            "contract": "source_create_v1",
+        },
+    )
+    workspace_epoch = receipt["workspace_epoch"] if receipt is not None else None
+    record_workspace_file_write(p, operation="create_source", created=True)
+    refresh_workspace_file_read_state(p, operation="create_source")
+    _notify_memory_source_write(p)
+    _notify_bootstrap_source_write(p)
+    result = {
+        "status": "created",
+        "path": display_path,
+        "changed": True,
+        "after_revision": after_revision,
+        "workspace_epoch": workspace_epoch,
+        "diff_summary": build_diff_summary("", content, path=display_path),
+    }
+    return json.dumps(result, ensure_ascii=False)
+
+
+def _gate_write_file_destructive_overwrite(
+    path: Path,
+    content: str,
+    *,
+    original_path: str,
+) -> None:
+    """Block likely accidental whole-file truncation through write_file.
+
+    `write_file` is useful for new files and scratch files, but LLMs sometimes
+    use it with a replacement fragment for an existing source file. That turns
+    a local edit into a full-file overwrite and often leaves the worktree
+    unusable. Large existing workspace files should be edited with
+    `edit_file` or `apply_patch` instead.
+    """
+
+    workspace = _workspace_root()
+    if workspace is None or _is_outside_workspace(path):
+        return
+    ctx = current_tool_context.get()
+    if ctx is not None and ctx.scratch_dir:
+        scratch = Path(ctx.scratch_dir).expanduser().resolve(strict=False)
+        try:
+            path.relative_to(scratch)
+            return
+        except ValueError:
+            pass
+
+    try:
+        old_bytes = path.read_bytes()
+    except OSError:
+        return
+    old_size = len(old_bytes)
+    new_size = len(content.encode("utf-8"))
+    if old_size < 4096:
+        return
+    if new_size >= max(2048, old_size // 2):
+        return
+
+    alternatives = _existing_file_edit_alternatives()
+    if alternatives:
+        guidance = (
+            f"If you are editing an existing file, use {' or '.join(alternatives)} "
+            "with a precise edit instead of replacing the whole file."
+        )
+    else:
+        guidance = (
+            "If you are editing an existing file, only rewrite the whole file "
+            "when the complete replacement content is intended."
+        )
+    raise SafeToolError(
+        "write_file refused to overwrite an existing workspace file with much "
+        f"smaller content: {original_path} would shrink from {old_size} bytes "
+        f"to {new_size} bytes. {guidance}"
+    )
+
+
+def _tool_visible_in_current_context(name: str) -> bool:
+    ctx = current_tool_context.get()
+    if ctx is None:
+        return True
+    if name in ctx.denied_tools:
+        return False
+    if ctx.allowed_tools is not None and name not in ctx.allowed_tools:
+        return False
+    return True
+
+
+def _existing_file_edit_alternatives() -> list[str]:
+    return [
+        name
+        for name in ("edit_file", "apply_patch")
+        if _tool_visible_in_current_context(name)
+    ]
+
+
+def _edit_file_retry_guidance(*, duplicate_match: bool = False) -> str:
+    if _tool_visible_in_current_context("apply_patch"):
+        if duplicate_match:
+            return "or use apply_patch with a line-specific hunk."
+        return "or use apply_patch with a precise hunk."
+    if duplicate_match:
+        return "or retry with a longer unique exact old_text/new_text replacement."
+    return "or retry with a smaller exact old_text/new_text replacement."
 
 
 @tool(
     name="edit_file",
-    description="Edit a file by replacing old_text with new_text (exact string replacement).",
+    description=(
+        "Edit one existing workspace file using exact text replacement after reading "
+        "the current file with read_file without offset or limit. For one change, "
+        "pass old_text and new_text. For multiple non-overlapping replacements in "
+        "the same file, pass edits[] with old_text/new_text or oldText/newText "
+        "entries. old_text must match file contents exactly and must not include "
+        "read_file line-number prefixes such as '12\\t'. For large or line-oriented "
+        "changes, prefer apply_patch with a small hunk."
+    ),
     params={
         "path": {"type": "string", "description": "Absolute path to the file to edit."},
-        "old_text": {"type": "string", "description": "Text to find and replace."},
+        "old_text": {
+            "type": "string",
+            "description": (
+                "Exact text to find and replace for a single edit. Do not include "
+                "read_file line-number prefixes."
+            ),
+        },
         "new_text": {"type": "string", "description": "Replacement text."},
+        "edits": {
+            "type": "array",
+            "description": (
+                "Multiple exact replacements matched against the original file. "
+                "Each edits[].old_text must be unique and non-overlapping. Merge "
+                "nearby or overlapping changes into one edit."
+            ),
+            "items": {
+                "type": "object",
+                "properties": {
+                    "old_text": {
+                        "type": "string",
+                        "description": "Exact text to replace.",
+                    },
+                    "new_text": {
+                        "type": "string",
+                        "description": "Replacement text.",
+                    },
+                    "oldText": {
+                        "type": "string",
+                        "description": "Compatibility alias for old_text.",
+                    },
+                    "newText": {
+                        "type": "string",
+                        "description": "Compatibility alias for new_text.",
+                    },
+                },
+            },
+        },
         "approval_id": {
             "type": "string",
             "description": "Sandbox path approval record for edits outside the workspace.",
         },
     },
-    required=["path", "old_text", "new_text"],
+    required=["path"],
     sandbox=SandboxToolDescriptor.filesystem(
         kind="fs.edit",
         argv_factory=lambda a: ("fs.edit", str(a.get("path", ""))),
@@ -1133,51 +1862,621 @@ async def write_file(path: str, content: str, approval_id: str | None = None) ->
     ),
 )
 async def edit_file(
-    path: str, old_text: str, new_text: str, approval_id: str | None = None
+    path: str,
+    old_text: str | None = None,
+    new_text: str | None = None,
+    approval_id: str | None = None,
+    edits: list[dict[str, Any]] | str | None = None,
 ) -> str:
     p = _resolve_path(path)
     approval = await _gate_out_of_workspace_write("edit_file", p, path, approval_id)
     if approval is not None:
         return json.dumps(approval)
+    replacements = _normalize_edit_replacements(
+        path=path,
+        old_text=old_text,
+        new_text=new_text,
+        edits=edits,
+    )
+    require_fresh_workspace_file_read(p, tool_name="edit_file", original_path=path)
     workspace = _filesystem_operation_workspace()
     if workspace is not None:
-        sandbox_result = await _run_sandbox_operation_if_required(
-            SandboxOperation.filesystem(
-                kind="edit_text",
-                workspace=workspace,
-                run_mode=_active_filesystem_run_mode(),
-                path=p,
-                paths=(p,),
-                old_text=old_text,
-                new_text=new_text,
+        if len(replacements) == 1:
+            sandbox_replacement = replacements[0]
+            before_fingerprint = fingerprint_path(p)
+            sandbox_result = await _run_sandbox_operation_if_required(
+                SandboxOperation.filesystem(
+                    kind="edit_text",
+                    workspace=workspace,
+                    run_mode=_active_filesystem_run_mode(),
+                    path=p,
+                    paths=(p,),
+                    old_text=sandbox_replacement.old_text,
+                    new_text=sandbox_replacement.new_text,
+                )
             )
-        )
-        if sandbox_result is not None:
-            _notify_memory_source_write(p)
-            _notify_bootstrap_source_write(p)
-            return str(getattr(sandbox_result, "message"))
+            if sandbox_result is not None:
+                after_fingerprint = fingerprint_path(p)
+                record_semantic_mutation_receipt(
+                    tool_name="edit_file",
+                    path=p,
+                    operation="edit_file",
+                    before=before_fingerprint,
+                    after=after_fingerprint,
+                    partial=False,
+                    metadata={"replacement_count": len(replacements)},
+                )
+                record_workspace_file_write(p, operation="edit_file", created=False)
+                refresh_workspace_file_read_state(p, operation="edit_file")
+                record_scratch_file_write(p)
+                _notify_memory_source_write(p)
+                _notify_bootstrap_source_write(p)
+                return str(getattr(sandbox_result, "message"))
+        elif _sandbox_path_access_enabled():
+            raise RetryableToolInputError(
+                "edit_file accepts only one replacement per call when edits are "
+                "dispatched through the sandbox runtime. Retry with a single "
+                "old_text/new_text edit at a time."
+            )
     if not p.exists():
         raise FileNotFoundError(f"File not found: {path}")
 
     loop = asyncio.get_event_loop()
     original = await loop.run_in_executor(None, p.read_text, "utf-8")
+    before_fingerprint = fingerprint_path(p)
 
-    if old_text not in original:
-        raise ValueError(f"old_text not found in {path}")
-
-    count = original.count(old_text)
-    if count > 1:
-        raise ValueError(f"old_text matches {count} locations in {path}; be more specific")
-
-    updated = original.replace(old_text, new_text, 1)
+    updated = _apply_edit_replacements(original, replacements, path=path)
 
     def _write() -> None:
         p.write_text(updated, encoding="utf-8")
 
     await loop.run_in_executor(None, _write)
+    after_fingerprint = fingerprint_path(p)
+    record_semantic_mutation_receipt(
+        tool_name="edit_file",
+        path=p,
+        operation="edit_file",
+        before=before_fingerprint,
+        after=after_fingerprint,
+        partial=False,
+        metadata={"replacement_count": len(replacements)},
+    )
+    record_workspace_file_write(p, operation="edit_file", created=False)
+    refresh_workspace_file_read_state(p, operation="edit_file")
+    record_scratch_file_write(p)
     _notify_memory_source_write(p)
     _notify_bootstrap_source_write(p)
-    return f"Edited {p}: replaced {len(old_text)} chars with {len(new_text)} chars"
+    if len(replacements) == 1:
+        replacement = replacements[0]
+        return (
+            f"Edited {p}: replaced {len(replacement.old_text)} chars with "
+            f"{len(replacement.new_text)} chars{_write_scope_suffix(p)}"
+        )
+    return f"Edited {p}: applied {len(replacements)} replacements{_write_scope_suffix(p)}"
+
+
+@tool(
+    name="edit_source",
+    description=(
+        "Atomically edit an existing UTF-8 source file using line ranges from a prior "
+        "read_source receipt. Requires expected_revision from read_source; if the file "
+        "changed since that read, the edit is rejected and must be retried after a new "
+        "read_source call."
+    ),
+    params={
+        "path": {
+            "type": "string",
+            "description": "Workspace-relative or absolute path to the source file.",
+        },
+        "expected_revision": {
+            "type": "string",
+            "description": "The revision returned by the latest read_source call for this file.",
+        },
+        "edits": {
+            "type": "array",
+            "description": (
+                "Non-overlapping inclusive line-range edits against the revision. "
+                "Each replacement is complete source text for that range."
+            ),
+            "items": {
+                "type": "object",
+                "properties": {
+                    "start_line": {
+                        "type": "integer",
+                        "description": "Inclusive 1-based first line to replace.",
+                    },
+                    "end_line": {
+                        "type": "integer",
+                        "description": "Inclusive 1-based last line to replace.",
+                    },
+                    "replacement": {
+                        "type": "string",
+                        "description": "Replacement source text for the full line range.",
+                    },
+                },
+                "required": ["start_line", "end_line", "replacement"],
+                "additionalProperties": False,
+            },
+        },
+        "approval_id": {
+            "type": "string",
+            "description": "Approval record to consume for edits outside the workspace.",
+        },
+    },
+    required=["path", "expected_revision", "edits"],
+    exposed_by_default=False,
+    sandbox=SandboxToolDescriptor.filesystem(
+        kind="fs.edit",
+        argv_factory=lambda a: ("fs.edit", str(a.get("path", ""))),
+        request_factory=_tool_path_request,
+        record_payload=False,
+    ),
+)
+async def edit_source(
+    path: str,
+    expected_revision: str,
+    edits: list[dict[str, Any]],
+    approval_id: str | None = None,
+) -> str:
+    p = _resolve_path(path)
+    approval = await _gate_out_of_workspace_write("edit_source", p, path, approval_id)
+    if approval is not None:
+        return json.dumps(approval)
+    if not p.exists():
+        raise FileNotFoundError(f"File not found: {path}")
+    if not p.is_file():
+        raise IsADirectoryError(f"Path is a directory: {path}")
+
+    loop = asyncio.get_event_loop()
+    try:
+        original = await loop.run_in_executor(None, p.read_text, "utf-8")
+    except UnicodeDecodeError as exc:
+        raise _binary_file_error(path, p, reason="not valid UTF-8") from exc
+
+    before_revision = source_revision_for_path(p)
+    if before_revision != expected_revision:
+        raise RetryableToolInputError(
+            "revision_conflict: edit_source expected "
+            f"{expected_revision}, but current revision is {before_revision}. "
+            "Call read_source for the current file range and retry with the new revision."
+        )
+
+    try:
+        updated = apply_line_edits(original, edits)
+    except SourceEditContractError as exc:
+        raise RetryableToolInputError(str(exc)) from exc
+
+    before_fingerprint = fingerprint_path(p)
+    display_path = _workspace_display_path(p, path)
+    if updated != original:
+
+        def _write() -> None:
+            p.write_text(updated, encoding="utf-8")
+
+        await loop.run_in_executor(None, _write)
+
+    after_fingerprint = fingerprint_path(p)
+    after_revision = source_revision_for_path(p)
+    receipt = record_semantic_mutation_receipt(
+        tool_name="edit_source",
+        path=p,
+        operation="edit_source",
+        before=before_fingerprint,
+        after=after_fingerprint,
+        partial=False,
+        metadata={
+            "before_revision": before_revision,
+            "after_revision": after_revision,
+            "edit_count": len(edits),
+            "contract": "source_revision_line_edit_v1",
+        },
+    )
+    workspace_epoch = receipt["workspace_epoch"] if receipt is not None else None
+
+    if updated != original:
+        record_workspace_file_write(p, operation="edit_source", created=False)
+        refresh_workspace_file_read_state(p, operation="edit_source")
+        record_scratch_file_write(p)
+        _notify_memory_source_write(p)
+        _notify_bootstrap_source_write(p)
+
+    result = {
+        "status": "applied",
+        "path": display_path,
+        "changed": updated != original,
+        "before_revision": before_revision,
+        "after_revision": after_revision,
+        "workspace_epoch": workspace_epoch,
+        "diff_summary": build_diff_summary(original, updated, path=display_path),
+    }
+    return json.dumps(result, ensure_ascii=False)
+
+
+class _EditReplacement:
+    def __init__(self, *, old_text: str, new_text: str, label: str) -> None:
+        self.old_text = old_text
+        self.new_text = new_text
+        self.label = label
+
+
+def _first_string_field(item: dict[str, Any], *names: str) -> str | None:
+    for name in names:
+        value = item.get(name)
+        if isinstance(value, str):
+            return value
+    return None
+
+
+def _normalize_edit_replacements(
+    *,
+    path: str,
+    old_text: str | None,
+    new_text: str | None,
+    edits: list[dict[str, Any]] | str | None,
+) -> list[_EditReplacement]:
+    replacements: list[_EditReplacement] = []
+    if edits is not None:
+        parsed_edits: Any = edits
+        if isinstance(edits, str):
+            try:
+                parsed_edits = json.loads(edits)
+            except json.JSONDecodeError as exc:
+                raise RetryableToolInputError(
+                    "edit_file edits must be an array or JSON array string. "
+                    "Retry with edits[] entries containing old_text/new_text."
+                ) from exc
+        if not isinstance(parsed_edits, list):
+            raise RetryableToolInputError(
+                "edit_file edits must be an array of replacements. "
+                "Retry with edits[] entries containing old_text/new_text."
+            )
+        for index, item in enumerate(parsed_edits):
+            if not isinstance(item, dict):
+                raise RetryableToolInputError(
+                    f"edit_file edits[{index}] must be an object with old_text/new_text."
+                )
+            edit_old_text = _first_string_field(
+                item,
+                "old_text",
+                "oldText",
+                "old_string",
+                "oldString",
+            )
+            edit_new_text = _first_string_field(
+                item,
+                "new_text",
+                "newText",
+                "new_string",
+                "newString",
+            )
+            if edit_old_text is None or edit_new_text is None:
+                raise RetryableToolInputError(
+                    f"edit_file edits[{index}] is missing old_text/new_text. "
+                    "Retry with exact old_text and replacement new_text."
+                )
+            replacements.append(
+                _EditReplacement(
+                    old_text=edit_old_text,
+                    new_text=edit_new_text,
+                    label=f"edits[{index}].old_text",
+                )
+            )
+
+    if old_text is not None or new_text is not None:
+        if old_text is None or new_text is None:
+            raise RetryableToolInputError(
+                "edit_file requires both old_text and new_text for a single edit. "
+                "Retry with both fields or use edits[]."
+            )
+        replacements.append(
+            _EditReplacement(
+                old_text=old_text,
+                new_text=new_text,
+                label="old_text",
+            )
+        )
+
+    if not replacements:
+        raise RetryableToolInputError(
+            f"edit_file requires old_text/new_text or non-empty edits[] for {path}. "
+            "Read the current file content, then retry with exact text from that file."
+        )
+    for replacement in replacements:
+        if replacement.old_text == "":
+            raise RetryableToolInputError(
+                f"edit_file {replacement.label} must not be empty. "
+                "Retry with exact non-empty text from the file."
+            )
+    return replacements
+
+
+def _apply_edit_replacements(
+    original: str,
+    replacements: list[_EditReplacement],
+    *,
+    path: str,
+) -> str:
+    spans: list[tuple[int, int, str, _EditReplacement]] = []
+    for replacement in replacements:
+        count = original.count(replacement.old_text)
+        if count == 0:
+            recovered = _recover_edit_replacement(
+                original,
+                replacement,
+                path=path,
+            )
+            if recovered is None:
+                raise RetryableToolInputError(
+                    f"edit_file could not find {replacement.label} in {path}. "
+                    "Read the current file content, then retry with exact text from that file. "
+                    "Do not include read_file line-number prefixes like '12\\t', "
+                    f"{_edit_file_retry_guidance()}"
+                )
+            start, end, replacement_text = recovered
+            spans.append((start, end, replacement_text, replacement))
+            continue
+        if count > 1:
+            raise RetryableToolInputError(
+                f"edit_file {replacement.label} matches {count} locations in {path}. "
+                "Retry with a longer old_text that includes unique surrounding context, "
+                f"{_edit_file_retry_guidance(duplicate_match=True)}"
+            )
+        start = original.index(replacement.old_text)
+        spans.append((start, start + len(replacement.old_text), replacement.new_text, replacement))
+
+    spans.sort(key=lambda item: item[0])
+    previous_end = -1
+    for start, end, _replacement_text, replacement in spans:
+        if start < previous_end:
+            raise RetryableToolInputError(
+                f"edit_file {replacement.label} overlaps another edits[] replacement in {path}. "
+                "Merge nearby or overlapping changes into one old_text/new_text entry."
+            )
+        previous_end = end
+
+    chunks: list[str] = []
+    cursor = 0
+    for start, end, replacement_text, _replacement in spans:
+        chunks.append(original[cursor:start])
+        chunks.append(replacement_text)
+        cursor = end
+    chunks.append(original[cursor:])
+    return "".join(chunks)
+
+
+def _recover_edit_replacement(
+    original: str,
+    replacement: _EditReplacement,
+    *,
+    path: str,
+) -> tuple[int, int, str] | None:
+    ctx = current_tool_context.get()
+    if ctx is not None and not ctx.file_edit_flexible_recovery:
+        _record_edit_recovery_event(
+            name="edit_file.flexible_match_rejected",
+            path=path,
+            replacement=replacement,
+            outcome="rejected",
+            reason="disabled",
+            matches=0,
+        )
+        return None
+
+    candidates = [replacement.old_text]
+    unescaped = _unescape_edit_search_text(replacement.old_text)
+    if unescaped != replacement.old_text:
+        candidates.append(unescaped)
+
+    for index, candidate in enumerate(candidates):
+        if index > 0:
+            count = original.count(candidate)
+            if count == 1:
+                _record_edit_recovery_event(
+                    name="edit_file.unescape_repair_used",
+                    path=path,
+                    replacement=replacement,
+                    outcome="used",
+                    reason="exact_match_after_unescape",
+                    matches=count,
+                )
+                start = original.index(candidate)
+                return start, start + len(candidate), replacement.new_text
+            if count > 1:
+                _record_edit_recovery_event(
+                    name="edit_file.flexible_match_rejected",
+                    path=path,
+                    replacement=replacement,
+                    outcome="rejected",
+                    reason="multiple_matches_after_unescape",
+                    matches=count,
+                )
+                return None
+
+        flexible = _find_unique_flexible_edit_match(
+            original,
+            candidate,
+            replacement.new_text,
+        )
+        if flexible is None:
+            continue
+        if len(flexible) != 4 or flexible[0] != "ok":
+            _record_edit_recovery_event(
+                name="edit_file.flexible_match_rejected",
+                path=path,
+                replacement=replacement,
+                outcome="rejected",
+                reason=flexible[0],
+                matches=flexible[1],
+            )
+            return None
+        _tag, start, end, replacement_text = flexible
+        if index > 0:
+            _record_edit_recovery_event(
+                name="edit_file.unescape_repair_used",
+                path=path,
+                replacement=replacement,
+                outcome="used",
+                reason="flexible_match_after_unescape",
+                matches=1,
+            )
+        _record_edit_recovery_event(
+            name="edit_file.flexible_match_used",
+            path=path,
+            replacement=replacement,
+            outcome="used",
+            reason="unique_trim_window",
+            matches=1,
+        )
+        return start, end, replacement_text
+
+    _record_edit_recovery_event(
+        name="edit_file.flexible_match_rejected",
+        path=path,
+        replacement=replacement,
+        outcome="rejected",
+        reason="no_match",
+        matches=0,
+    )
+    return None
+
+
+def _find_unique_flexible_edit_match(
+    original: str,
+    old_text: str,
+    new_text: str,
+) -> tuple[str, int, int, str] | tuple[str, int] | None:
+    normalized_old = old_text.replace("\r\n", "\n")
+    normalized_new = new_text.replace("\r\n", "\n")
+    if not normalized_old:
+        return None
+    search_lines = normalized_old.splitlines(keepends=True)
+    if not search_lines:
+        return None
+    stripped_search = [line.strip() for line in search_lines]
+    if not any(stripped_search):
+        return None
+
+    source_lines = original.replace("\r\n", "\n").splitlines(keepends=True)
+    if len(search_lines) > len(source_lines):
+        return None
+
+    line_starts: list[int] = []
+    cursor = 0
+    for line in source_lines:
+        line_starts.append(cursor)
+        cursor += len(line)
+
+    matches: list[tuple[int, int, str]] = []
+    width = len(search_lines)
+    for index in range(0, len(source_lines) - width + 1):
+        window = source_lines[index : index + width]
+        if [line.strip() for line in window] != stripped_search:
+            continue
+        start = line_starts[index]
+        end = line_starts[index + width - 1] + len(window[-1])
+        indent = _leading_indent(window[0])
+        replacement_text = _apply_replacement_indentation(
+            normalized_new,
+            indent,
+            preserve_trailing_newline=window[-1].endswith("\n"),
+        )
+        matches.append((start, end, replacement_text))
+
+    if len(matches) == 1:
+        start, end, replacement_text = matches[0]
+        return "ok", start, end, replacement_text
+    if len(matches) > 1:
+        return "multiple_matches", len(matches)
+    return None
+
+
+def _apply_replacement_indentation(
+    replacement_text: str,
+    indentation: str,
+    *,
+    preserve_trailing_newline: bool,
+) -> str:
+    lines = replacement_text.split("\n")
+    if not lines:
+        return replacement_text
+    reference_indent = _leading_indent(lines[0])
+    indented: list[str] = []
+    for line in lines:
+        if line.strip() == "":
+            indented.append("")
+        elif line.startswith(reference_indent):
+            indented.append(indentation + line[len(reference_indent) :])
+        else:
+            indented.append(indentation + line.lstrip(" \t"))
+    result = "\n".join(indented)
+    if replacement_text and preserve_trailing_newline and not result.endswith("\n"):
+        result += "\n"
+    return result
+
+
+def _leading_indent(line: str) -> str:
+    return line[: len(line) - len(line.lstrip(" \t"))]
+
+
+def _unescape_edit_search_text(value: str) -> str:
+    output: list[str] = []
+    index = 0
+    replacements = {
+        "n": "\n",
+        "t": "\t",
+        "r": "\r",
+        '"': '"',
+        "'": "'",
+        "`": "`",
+        "\\": "\\",
+    }
+    while index < len(value):
+        char = value[index]
+        if char != "\\" or index + 1 >= len(value):
+            output.append(char)
+            index += 1
+            continue
+        next_char = value[index + 1]
+        replacement = replacements.get(next_char)
+        if replacement is None:
+            output.append(char)
+            index += 1
+            continue
+        output.append(replacement)
+        index += 2
+    return "".join(output)
+
+
+def _record_edit_recovery_event(
+    *,
+    name: str,
+    path: str,
+    replacement: _EditReplacement,
+    outcome: str,
+    reason: str,
+    matches: int,
+) -> None:
+    ctx = current_tool_context.get()
+    callback = getattr(ctx, "on_runtime_event", None) if ctx is not None else None
+    if callback is None:
+        return
+    event = {
+        "feature": "edit_file_recovery",
+        "name": name,
+        "tool": "edit_file",
+        "tool_name": "edit_file",
+        "path": path,
+        "label": replacement.label,
+        "outcome": outcome,
+        "reason": reason,
+        "matches": matches,
+        "agent_id": getattr(ctx, "agent_id", None),
+        "session_key": getattr(ctx, "session_key", None),
+    }
+    try:
+        callback(event)
+    except Exception:
+        return
 
 
 @tool(
@@ -1316,6 +2615,12 @@ async def glob_search(pattern: str, path: str | None = None) -> str:
     def _glob() -> list[str]:
         matches: list[str] = []
         for candidate in sorted(base.glob(pattern), key=lambda item: str(item)):
+            try:
+                relative_candidate = candidate.relative_to(base)
+            except ValueError:
+                relative_candidate = candidate
+            if _is_search_excluded_path(relative_candidate):
+                continue
             marker = _workspace_strict_candidate_marker(
                 "glob_search",
                 candidate,
@@ -1326,7 +2631,9 @@ async def glob_search(pattern: str, path: str | None = None) -> str:
                 continue
             if _is_sensitive_access_path(candidate.resolve(strict=False), workspace=workspace_root):
                 continue
-            matches.append(str(candidate))
+            matches.append(
+                _workspace_display_path_for_root(candidate, str(candidate), workspace_root)
+            )
         return matches
 
     # Preserve the tool context (run mode / full-host access) inside the worker
@@ -1335,6 +2642,214 @@ async def glob_search(pattern: str, path: str | None = None) -> str:
     if not matches:
         return f"No files matched pattern '{pattern}' in {base}"
     return "\n".join(matches)
+
+
+def _source_symbol_files(
+    base: Path,
+    *,
+    include: str | None,
+    strict_roots: tuple[Path, ...],
+    workspace_root: Path | None,
+) -> list[Path]:
+    def should_include(candidate: Path) -> bool:
+        if _is_sensitive_access_path(candidate.resolve(strict=False), workspace=workspace_root):
+            return False
+        marker = _workspace_strict_candidate_marker(
+            "source_symbols",
+            candidate,
+            strict_roots=strict_roots,
+        )
+        if marker is not None:
+            return False
+        if not candidate.is_file():
+            return False
+        if candidate.suffix.casefold() not in _SOURCE_SYMBOL_EXTENSIONS:
+            return False
+        if include:
+            display_path = _workspace_display_path_for_root(
+                candidate,
+                str(candidate),
+                workspace_root,
+            )
+            if not (
+                fnmatch.fnmatch(candidate.name, include) or fnmatch.fnmatch(display_path, include)
+            ):
+                return False
+        try:
+            if candidate.stat().st_size > _SOURCE_SYMBOL_MAX_FILE_BYTES:
+                return False
+            if _looks_binary(_read_binary_sample(candidate), candidate):
+                return False
+        except OSError:
+            return False
+        return True
+
+    if base.is_file():
+        return [base] if should_include(base) else []
+
+    files: list[Path] = []
+    for candidate in sorted(base.rglob("*"), key=lambda item: str(item)):
+        try:
+            relative_candidate = candidate.relative_to(base)
+        except ValueError:
+            relative_candidate = candidate
+        if _is_search_excluded_path(relative_candidate):
+            continue
+        if should_include(candidate):
+            files.append(candidate)
+    return files
+
+
+def _source_symbol_matches_line(path: Path, line: str) -> list[tuple[str, str]]:
+    extension = path.suffix.casefold()
+    matches: list[tuple[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for extensions, kind, regex in _SOURCE_SYMBOL_REGEXES:
+        if extension not in extensions:
+            continue
+        match = regex.search(line)
+        if match is None:
+            continue
+        name = match.group(1)
+        if name in _SOURCE_SYMBOL_IGNORED_NAMES:
+            continue
+        key = (kind, name)
+        if key in seen:
+            continue
+        matches.append(key)
+        seen.add(key)
+    return matches
+
+
+def _source_symbol_query_matches(
+    *,
+    query: str | None,
+    path: str,
+    name: str,
+    preview: str,
+) -> bool:
+    if not query:
+        return True
+    needle = query.casefold()
+    return needle in name.casefold() or needle in path.casefold() or needle in preview.casefold()
+
+
+@tool(
+    name="source_symbols",
+    description=(
+        "Find likely source symbols using read-only repository scanning. Returns JSON "
+        "workspace-relative symbol receipts with path, line, kind, name, and preview. "
+        "Use this to localize candidate files before read_source/edit_source."
+    ),
+    params={
+        "query": {
+            "type": "string",
+            "description": "Optional case-insensitive symbol, path, or preview filter.",
+        },
+        "path": {
+            "type": "string",
+            "description": "Optional file or directory to scan (default: workspace/cwd).",
+        },
+        "include": {
+            "type": "string",
+            "description": "Optional glob filter for file names or workspace-relative paths.",
+        },
+        "max_results": {
+            "type": "integer",
+            "description": "Maximum symbols to return (default 80, max 200).",
+        },
+    },
+    required=[],
+    exposed_by_default=False,
+)
+async def source_symbols(
+    query: str | None = None,
+    path: str | None = None,
+    include: str | None = None,
+    max_results: int | None = None,
+) -> str:
+    base = _resolve_base(path)
+    blocked = _sensitive_access_block("source_symbols", base, path or str(base))
+    if blocked is not None:
+        return json.dumps(blocked)
+    path_access = _sandbox_path_access_envelope(base, write=False)
+    if path_access is not None:
+        return json.dumps(path_access)
+    _gate_workspace_strict_read("source_symbols", base, path or str(base))
+    if not base.exists():
+        raise FileNotFoundError(f"Path not found: {path or base}")
+
+    limit = _bounded_positive_int(
+        max_results,
+        default=_SOURCE_SYMBOL_DEFAULT_MAX_RESULTS,
+        maximum=_SOURCE_SYMBOL_MAX_RESULTS,
+    )
+    loop = asyncio.get_event_loop()
+    strict_roots = _strict_read_roots()
+    workspace_root = _workspace_root()
+
+    def _scan() -> dict[str, Any]:
+        results: list[dict[str, Any]] = []
+        searched_files = 0
+        truncated = False
+        for candidate in _source_symbol_files(
+            base,
+            include=include,
+            strict_roots=strict_roots,
+            workspace_root=workspace_root,
+        ):
+            searched_files += 1
+            display_path = _workspace_display_path_for_root(
+                candidate,
+                str(candidate),
+                workspace_root,
+            )
+            try:
+                with candidate.open(encoding="utf-8") as fh:
+                    for line_number, line in enumerate(fh, start=1):
+                        preview = line.strip()
+                        for kind, name in _source_symbol_matches_line(candidate, line):
+                            if not _source_symbol_query_matches(
+                                query=query,
+                                path=display_path,
+                                name=name,
+                                preview=preview,
+                            ):
+                                continue
+                            if len(results) >= limit:
+                                truncated = True
+                                return {
+                                    "results": results,
+                                    "searched_files": searched_files,
+                                    "truncated": truncated,
+                                }
+                            results.append(
+                                {
+                                    "path": display_path,
+                                    "line": line_number,
+                                    "kind": kind,
+                                    "name": name,
+                                    "preview": preview,
+                                }
+                            )
+            except (PermissionError, OSError, UnicodeDecodeError):
+                continue
+        return {
+            "results": results,
+            "searched_files": searched_files,
+            "truncated": truncated,
+        }
+
+    scanned = await loop.run_in_executor(None, _scan)
+    payload = {
+        "status": "success",
+        "query": query or "",
+        "path": _workspace_display_path_for_root(base, path or str(base), workspace_root),
+        "include": include or "",
+        "max_results": limit,
+        **scanned,
+    }
+    return json.dumps(payload, ensure_ascii=False)
 
 
 @tool(
@@ -1346,7 +2861,18 @@ async def glob_search(pattern: str, path: str | None = None) -> str:
         "include": {"type": "string", "description": "Glob pattern to filter files (e.g. '*.py')."},
         "max_results": {
             "type": "integer",
-            "description": "Maximum number of matches to return (default 100).",
+            "description": (
+                "Maximum number of matches to return (default 100, max 1000). "
+                "Use 0 for an explicit unlimited search."
+            ),
+        },
+        "offset": {
+            "type": "integer",
+            "description": "Number of matches to skip before returning results.",
+        },
+        "include_line_numbers": {
+            "type": "boolean",
+            "description": "Whether returned matches include line numbers (default true).",
         },
     },
     required=["pattern"],
@@ -1367,6 +2893,8 @@ async def grep_search(
     path: str | None = None,
     include: str | None = None,
     max_results: int = 100,
+    offset: int = 0,
+    include_line_numbers: bool = True,
 ) -> str:
     base = _resolve_base(path)
     blocked = _sensitive_access_block("grep_search", base, path or str(base))
@@ -1399,16 +2927,58 @@ async def grep_search(
     loop = asyncio.get_event_loop()
     strict_roots = _strict_read_roots()
     workspace_root = _workspace_root()
+    requested_max_results = _bounded_non_negative_int(
+        max_results,
+        default=_GREP_DEFAULT_MAX_RESULTS,
+    )
+    unlimited = requested_max_results == 0
+    effective_max_results = (
+        0
+        if unlimited
+        else _bounded_positive_int(
+            requested_max_results,
+            default=_GREP_DEFAULT_MAX_RESULTS,
+            maximum=_GREP_MAX_RESULTS,
+        )
+    )
+    effective_offset = _bounded_non_negative_int(offset, default=0)
+    stop_after_match_count = None if unlimited else effective_offset + effective_max_results + 1
 
-    def _search() -> list[str]:
+    def _search() -> tuple[list[str], int, bool]:
         try:
             regex = re.compile(pattern)
         except re.error as e:
             raise ValueError(f"Invalid regex pattern: {e}") from e
 
         results: list[str] = []
+        match_count = 0
+        has_more = False
+
+        def add_match(fp: Path, lineno: int, line: str) -> None:
+            nonlocal has_more, match_count
+            if stop_after_match_count is not None and match_count >= stop_after_match_count:
+                has_more = True
+                return
+            if match_count >= effective_offset and (
+                unlimited or len(results) < effective_max_results
+            ):
+                results.append(
+                    _format_grep_match(
+                        fp,
+                        lineno,
+                        line,
+                        include_line_numbers=include_line_numbers,
+                        workspace_root=workspace_root,
+                    )
+                )
+            elif not unlimited and match_count >= effective_offset + effective_max_results:
+                has_more = True
+            match_count += 1
 
         def search_file(fp: Path) -> None:
+            nonlocal has_more
+            if has_more and not unlimited:
+                return
             marker = _sandbox_path_access_marker(fp, write=False)
             if marker is not None:
                 results.append(marker)
@@ -1416,21 +2986,29 @@ async def grep_search(
             if _is_sensitive_access_path(fp.resolve(strict=False), workspace=workspace_root):
                 return
             try:
-                text = fp.read_text(encoding="utf-8", errors="replace")
-                for lineno, line in enumerate(text.splitlines(), 1):
-                    if regex.search(line):
-                        results.append(f"{fp}:{lineno}: {line.rstrip()}")
-                        if len(results) >= max_results:
+                if _looks_binary(_read_binary_sample(fp), fp):
+                    return
+                with fp.open(encoding="utf-8") as fh:
+                    for lineno, line in enumerate(fh, 1):
+                        if has_more and not unlimited:
                             return
-            except (PermissionError, OSError):
+                        if regex.search(line):
+                            add_match(fp, lineno, line)
+            except (PermissionError, OSError, UnicodeDecodeError):
                 pass
 
         if base.is_file():
             search_file(base)
         else:
             for fp in base.rglob("*"):
-                if len(results) >= max_results:
+                if has_more and not unlimited:
                     break
+                try:
+                    relative_fp = fp.relative_to(base)
+                except ValueError:
+                    relative_fp = fp
+                if _is_search_excluded_path(relative_fp):
+                    continue
                 marker = _workspace_strict_candidate_marker(
                     "grep_search",
                     fp,
@@ -1445,14 +3023,26 @@ async def grep_search(
                     continue
                 search_file(fp)
 
-        return results
+        return results, match_count, has_more
 
     # search_file classifies each file via _sandbox_path_access_marker and
     # _is_sensitive_access_path, both of which read the current run mode from
     # the tool-context contextvar. run_in_executor runs on a worker thread that
     # does not inherit contextvars, so copy the context in; otherwise every file
     # is judged as if full-host access were off and gets falsely marked blocked.
-    matches = await loop.run_in_executor(None, contextvars.copy_context().run, _search)
+    matches, match_count, has_more = await loop.run_in_executor(
+        None, contextvars.copy_context().run, _search
+    )
+    limit_text = "unlimited" if unlimited else str(effective_max_results)
+    header = (
+        "[grep_search]\n"
+        f"returned: {len(matches)}\n"
+        f"offset: {effective_offset}\n"
+        f"limit: {limit_text}\n"
+        f"has_more: {str(has_more).lower()}\n"
+        f"matches_scanned: {match_count}\n"
+        "---\n"
+    )
     if not matches:
-        return f"No matches for '{pattern}'"
-    return "\n".join(matches)
+        return header + f"No matches for '{pattern}'"
+    return header + "\n".join(matches)

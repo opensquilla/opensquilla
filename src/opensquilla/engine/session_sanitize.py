@@ -47,6 +47,15 @@ _HISTORICAL_TOOL_ARGUMENT_FIELD_MAX_CHARS = 2048
 _HISTORICAL_TOOL_ARGUMENT_TOTAL_MAX_CHARS = 4096
 _HISTORICAL_TOOL_RESULT_MAX_CHARS = 4096
 _HISTORICAL_TOOL_RESULT_PREVIEW_CHARS = 480
+_TOOL_RESULT_PROJECTION_PREFIX = "[tool_result_projection]\n"
+_TOOL_RESULT_PROJECTION_HEADER_PREFIXES = (
+    "tool_result_handle:",
+    "sha256:",
+    "original_chars:",
+    "preview_complete:",
+    "retrieve_hint:",
+    "search_hints:",
+)
 
 
 @dataclass(frozen=True)
@@ -265,6 +274,20 @@ def _project_historical_tool_result(
     content = block.content if isinstance(block.content, str) else _json_text(block.content)
     if len(content) <= _HISTORICAL_TOOL_RESULT_MAX_CHARS:
         return block, False
+    if content.startswith(_TOOL_RESULT_PROJECTION_PREFIX):
+        compacted = _compact_historical_tool_result_projection(
+            content,
+            tool_use_id=block.tool_use_id,
+        )
+        return (
+            ContentBlockToolResult(
+                tool_use_id=block.tool_use_id,
+                content=compacted,
+                is_error=block.is_error,
+                execution_status=block.execution_status,
+            ),
+            True,
+        )
     compacted = _compact_historical_text(
         content,
         label="historical_tool_result",
@@ -278,6 +301,36 @@ def _project_historical_tool_result(
             execution_status=block.execution_status,
         ),
         True,
+    )
+
+
+def _compact_historical_tool_result_projection(text: str, *, tool_use_id: str) -> str:
+    digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
+    lines = text.splitlines()
+    preserved: list[str] = [_TOOL_RESULT_PROJECTION_PREFIX.rstrip("\n")]
+    for line in lines[1:]:
+        stripped = line.strip()
+        if any(stripped.startswith(prefix) for prefix in _TOOL_RESULT_PROJECTION_HEADER_PREFIXES):
+            preserved.append(line)
+            continue
+        if stripped.startswith("- L"):
+            preserved.append(line)
+            continue
+    compacted_body = _compact_historical_text(
+        text,
+        label="historical_tool_result_projection_body",
+        metadata={"tool_use_id": tool_use_id},
+    )
+    return "\n".join(
+        [
+            *preserved,
+            (
+                "historical_replay_projection: recoverability header preserved; "
+                "projected body compacted."
+            ),
+            f"historical_replay_sha256: {digest}",
+            compacted_body,
+        ]
     )
 
 

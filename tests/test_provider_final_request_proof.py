@@ -6,6 +6,7 @@ from typing import Any
 
 import httpx
 
+from opensquilla.provider import openai as openai_module
 from opensquilla.provider.anthropic import AnthropicProvider
 from opensquilla.provider.openai import OpenAIProvider
 from opensquilla.provider.types import (
@@ -363,12 +364,22 @@ def test_openai_final_request_proof_compacts_adapter_payload_with_tools(
         return real_async_client(*args, **kwargs)
 
     monkeypatch.setattr("opensquilla.provider.openai.httpx.AsyncClient", patched_async_client)
-    monkeypatch.setattr(
-        "opensquilla.provider.openai.log.info",
-        lambda event, **kwargs: (
-            proofs.append(kwargs) if event == "provider.request_proof" else None
-        ),
-    )
+    real_log = openai_module.log
+
+    class _ProofLogShim:
+        # Swap the module's ``log`` attribute wholesale instead of patching
+        # ``log.info``: getattr on the BoundLoggerLazyProxy (which monkeypatch's
+        # save step performs) binds an ephemeral logger to the processor list of
+        # that moment, and teardown would install that frozen bound method on
+        # the proxy permanently, breaking capture_logs for later tests.
+        def info(self, event: str, **kwargs: Any) -> None:
+            if event == "provider.request_proof":
+                proofs.append(kwargs)
+
+        def __getattr__(self, name: str) -> Any:
+            return getattr(real_log, name)
+
+    monkeypatch.setattr(openai_module, "log", _ProofLogShim())
     provider = OpenAIProvider(api_key="test", model="gpt-test")
     messages = [
         Message(

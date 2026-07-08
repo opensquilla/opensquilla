@@ -87,6 +87,7 @@ APPROVED_PACKAGE_IMPORTS: frozenset[tuple[str, str]] = frozenset({
     ("memory", "gateway"),
     ("memory", "identity"),
     ("memory", "provider"),
+    ("memory", "safety"),
     ("memory", "session"),
     ("memory", "tools"),
     ("migration", "gateway"),
@@ -98,6 +99,9 @@ APPROVED_PACKAGE_IMPORTS: frozenset[tuple[str, str]] = frozenset({
     ("permissions.py", "sandbox"),
     ("persistence", "skills"),
     ("provider", "engine"),
+    ("provider", "safety"),
+    # Provider argument repair reuses the tool alias/schema helpers (lazy import).
+    ("provider", "tools"),
     ("result_budget.py", "search"),
     ("router_control.py", "engine"),
     ("sandbox", "application"),

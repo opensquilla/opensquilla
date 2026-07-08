@@ -339,7 +339,7 @@ jobs:
     needs: classify-changes
     if: ${{ needs.classify-changes.outputs.windows_full_required == 'true' || needs.classify-changes.outputs.full_required == 'true' }}
     runs-on: windows-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
 
     env:
       UV_PYTHON: "3.12"

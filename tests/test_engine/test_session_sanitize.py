@@ -224,6 +224,57 @@ class TextThenCompactedToolArgumentsProvider(ToolLoopCapturingProvider):
         yield ProviderDone(stop_reason="end_turn", input_tokens=4, output_tokens=1)
 
 
+class ProviderRequestCompactedArgumentStringProvider(ToolLoopCapturingProvider):
+    async def _stream(self, call_number: int) -> AsyncIterator[Any]:
+        if call_number == 1:
+            yield ProviderToolUseStart(
+                tool_use_id="tool-provider-request",
+                tool_name="exec_command",
+            )
+            yield ProviderToolUseEnd(
+                tool_use_id="tool-provider-request",
+                tool_name="exec_command",
+                arguments={
+                    "command": (
+                        "[provider_request_tool_input_compacted: original_chars=987; "
+                        "sha256=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa]"
+                    ),
+                },
+            )
+            yield ProviderDone(stop_reason="tool_use", input_tokens=3, output_tokens=1)
+            return
+        yield ProviderText(text="done")
+        yield ProviderDone(stop_reason="end_turn", input_tokens=4, output_tokens=1)
+
+
+class MidStringCompactedArgumentStringProvider(ToolLoopCapturingProvider):
+    async def _stream(self, call_number: int) -> AsyncIterator[Any]:
+        if call_number == 1:
+            yield ProviderToolUseStart(
+                tool_use_id="tool-mid-string",
+                tool_name="edit_file",
+            )
+            yield ProviderToolUseEnd(
+                tool_use_id="tool-mid-string",
+                tool_name="edit_file",
+                arguments={
+                    "path": "src/example.py",
+                    "old_text": (
+                        "def load(self):\n"
+                        "    [provider_request_tool_result_compacted: omitted 4210 "
+                        "chars; original_chars=4655; sha256="
+                        + "b" * 64
+                        + "]\n\n    return data\n"
+                    ),
+                    "new_text": "def load(self):\n    return data\n",
+                },
+            )
+            yield ProviderDone(stop_reason="tool_use", input_tokens=3, output_tokens=1)
+            return
+        yield ProviderText(text="done")
+        yield ProviderDone(stop_reason="end_turn", input_tokens=4, output_tokens=1)
+
+
 class CapturingTurnLog:
     def __init__(self) -> None:
         self.records: list[dict[str, Any]] = []
@@ -302,6 +353,50 @@ def test_historical_replay_projection_compacts_tool_payloads_and_reasoning() -> 
     assert large_result not in str(tool_result.content)
     assert messages[0].reasoning_content is not None
     assert messages[0].content[0].input["content"] == large_argument
+
+
+def test_historical_replay_projection_preserves_tool_result_projection_envelope() -> None:
+    projection = (
+        "[tool_result_projection]\n"
+        "tool_result_handle: tr-abc123\n"
+        "sha256: " + ("a" * 64) + "\n"
+        "original_chars: 50000\n"
+        "preview_complete: false\n"
+        "retrieve_hint: use retrieve_tool_result with this tool_result_handle.\n"
+        + ("body line before hints\n" * 80)
+        + "search_hints:\n"
+        "- L42: FAILED tests/test_api.py::test_bad - AssertionError\n"
+        + ("large projected body\n" * 2000)
+    )
+    messages = [
+        Message(
+            role="user",
+            content=[
+                ContentBlockToolResult(
+                    tool_use_id="tool-1",
+                    content=projection,
+                    is_error=True,
+                )
+            ],
+        )
+    ]
+
+    projected, result = project_historical_tool_payloads(messages)
+
+    assert result.tool_results_projected == 1
+    tool_result = projected[0].content[0]
+    assert isinstance(tool_result, ContentBlockToolResult)
+    assert isinstance(tool_result.content, str)
+    assert tool_result.content.startswith("[tool_result_projection]\n")
+    assert "tool_result_handle: tr-abc123" in tool_result.content
+    assert "sha256: " + ("a" * 64) in tool_result.content
+    assert "original_chars: 50000" in tool_result.content
+    assert "preview_complete: false" in tool_result.content
+    assert "retrieve_hint:" in tool_result.content
+    assert "search_hints:" in tool_result.content
+    assert "FAILED tests/test_api.py::test_bad" in tool_result.content
+    assert "[historical_tool_result_projection_body_compacted]" in tool_result.content
+    assert tool_result.content.count("large projected body") < 50
 
 
 def test_historical_replay_projection_compacts_nested_tool_payloads() -> None:
@@ -578,6 +673,88 @@ async def test_agent_tool_result_projection_never_writes_raw_store(
     assert not list((tmp_path / "tool-results").rglob("content.txt"))
 
 
+def test_agent_provider_backstop_preserves_historical_read_file_source_context() -> None:
+    agent = Agent(
+        provider=CapturingProvider(),
+        config=AgentConfig(
+            context_window_tokens=1_000_000,
+            tool_result_provider_request_max_chars=1000,
+        ),
+    )
+    source = "\n".join(f"{index}: important implementation detail" for index in range(600))
+    messages = [
+        Message(
+            role="assistant",
+            content=[
+                ContentBlockToolUse(
+                    id="read-1",
+                    name="read_file",
+                    input={"path": "src/lib.rs"},
+                )
+            ],
+        ),
+        Message(
+            role="user",
+            content=[
+                ContentBlockToolResult(
+                    tool_use_id="read-1",
+                    content=source,
+                    is_error=False,
+                )
+            ],
+        ),
+    ]
+
+    compacted = agent._compact_aggregate_tool_results_for_provider(messages)
+    result = compacted[1].content[0]
+    assert isinstance(result, ContentBlockToolResult)
+    assert result.content == source
+    assert "[tool_result_projection]" not in result.content
+    assert agent.config.metadata["tool_provider_projection_semantic_preserves"] == 1
+    assert "tool_provider_guard_projection_applied" not in agent.config.metadata
+
+
+def test_agent_provider_backstop_preserves_historical_exec_source_context() -> None:
+    agent = Agent(
+        provider=CapturingProvider(),
+        config=AgentConfig(
+            context_window_tokens=1_000_000,
+            tool_result_provider_request_max_chars=1000,
+        ),
+    )
+    source = "\n".join(f"{index}: fn important_{index}() {{}}" for index in range(500))
+    messages = [
+        Message(
+            role="assistant",
+            content=[
+                ContentBlockToolUse(
+                    id="exec-1",
+                    name="exec_command",
+                    input={"command": "sed -n '1,500p' src/lib.rs"},
+                )
+            ],
+        ),
+        Message(
+            role="user",
+            content=[
+                ContentBlockToolResult(
+                    tool_use_id="exec-1",
+                    content=source,
+                    is_error=False,
+                )
+            ],
+        ),
+    ]
+
+    compacted = agent._compact_aggregate_tool_results_for_provider(messages)
+    result = compacted[1].content[0]
+    assert isinstance(result, ContentBlockToolResult)
+    assert result.content == source
+    assert "[tool_result_projection]" not in result.content
+    assert agent.config.metadata["tool_provider_projection_semantic_preserves"] == 1
+    assert "tool_provider_guard_projection_applied" not in agent.config.metadata
+
+
 def test_agent_aggregate_tool_result_budget_uses_total_not_single_result_size() -> None:
     agent = Agent(
         provider=CapturingProvider(),
@@ -620,6 +797,121 @@ def test_agent_aggregate_tool_result_budget_uses_total_not_single_result_size() 
     ]
     assert any("aggregate_tool_result_compacted" in content for content in compacted_contents)
     assert "recent output" not in "\n".join(compacted_contents)
+
+
+def test_agent_aggregate_projection_preserves_historical_read_file_source_context() -> None:
+    agent = Agent(
+        provider=CapturingProvider(),
+        config=AgentConfig(
+            context_window_tokens=1200,
+            tool_result_provider_request_max_chars=1_000_000,
+        ),
+    )
+    source = "\n".join(f"{index}: important source line" for index in range(500))
+    messages: list[Message] = [
+        Message(
+            role="assistant",
+            content=[
+                ContentBlockToolUse(
+                    id="read-1",
+                    name="read_file",
+                    input={"path": "src/lib.rs"},
+                )
+            ],
+        ),
+        Message(
+            role="user",
+            content=[ContentBlockToolResult(tool_use_id="read-1", content=source)],
+        ),
+    ]
+    for index in range(5):
+        tool_id = f"tool-{index}"
+        messages.extend(
+            [
+                Message(
+                    role="assistant",
+                    content=[
+                        ContentBlockToolUse(id=tool_id, name="execute_code", input={}),
+                    ],
+                ),
+                Message(
+                    role="user",
+                    content=[
+                        ContentBlockToolResult(
+                            tool_use_id=tool_id,
+                            content=f"chunk {index}\n" + ("x" * 800),
+                            is_error=False,
+                        )
+                    ],
+                ),
+            ]
+        )
+
+    compacted = agent._compact_aggregate_tool_results_for_provider(messages)
+    projected_contents = [
+        block.content
+        for message in compacted
+        if isinstance(message.content, list)
+        for block in message.content
+        if isinstance(block, ContentBlockToolResult)
+    ]
+
+    assert projected_contents[0] == source
+    assert "[tool_result_projection]" not in projected_contents[0]
+    assert any("aggregate_tool_result_compacted" in content for content in projected_contents[1:])
+    assert agent.config.metadata["tool_provider_projection_semantic_preserves"] >= 1
+
+
+def test_agent_aggregate_tool_result_budget_keeps_projected_history_stable() -> None:
+    agent = Agent(
+        provider=CapturingProvider(),
+        config=AgentConfig(
+            context_window_tokens=1200,
+        ),
+    )
+    messages: list[Message] = []
+    original_contents: dict[str, str] = {}
+    for index in range(5):
+        tool_id = f"tool-{index}"
+        content = (
+            "[tool_result_projection]\n"
+            f"tool_use_id: {tool_id}\n"
+            f"sha256: {hashlib.sha256(tool_id.encode()).hexdigest()}\n"
+            f"head:\nprojected chunk {index}\n"
+            + ("x" * 800)
+        )
+        original_contents[tool_id] = content
+        messages.extend(
+            [
+                Message(
+                    role="assistant",
+                    content=[
+                        ContentBlockToolUse(id=tool_id, name="execute_code", input={}),
+                    ],
+                ),
+                Message(
+                    role="user",
+                    content=[
+                        ContentBlockToolResult(
+                            tool_use_id=tool_id,
+                            content=content,
+                            is_error=False,
+                        )
+                    ],
+                ),
+            ]
+        )
+
+    compacted = agent._compact_aggregate_tool_results_for_provider(messages)
+
+    projected_contents = {
+        block.tool_use_id: block.content
+        for message in compacted
+        if isinstance(message.content, list)
+        for block in message.content
+        if isinstance(block, ContentBlockToolResult)
+    }
+    assert projected_contents == original_contents
 
 
 def test_agent_provider_backstop_classifies_external_results_from_tool_use_names() -> None:
@@ -1772,6 +2064,181 @@ def test_agent_provider_request_messages_project_overflow_retry_tool_results() -
     assert len(request_result.content) < len(raw_output)
 
 
+def test_agent_provider_request_guard_reuses_stable_tool_result_projection() -> None:
+    agent = Agent(
+        provider=CapturingProvider(),
+        config=AgentConfig(
+            context_window_tokens=200,
+        ),
+    )
+    raw_output = "overflow retry bulky output\n" + ("x" * 8000)
+    messages = [
+        Message(
+            role="assistant",
+            content=[ContentBlockToolUse(id="tool-1", name="execute_code", input={})],
+        ),
+        Message(
+            role="user",
+            content=[ContentBlockToolResult(tool_use_id="tool-1", content=raw_output)],
+        ),
+    ]
+
+    first_request = agent._provider_request_messages(
+        messages,
+        request_context_message=None,
+        request_context_insert_index=0,
+        runtime_context_message=Message(role="user", content="[Runtime context]"),
+        runtime_context_insert_index=len(messages),
+    )
+    second_request = agent._provider_request_messages(
+        messages,
+        request_context_message=None,
+        request_context_insert_index=0,
+        runtime_context_message=Message(role="user", content="[Runtime context]"),
+        runtime_context_insert_index=len(messages),
+    )
+
+    def _result_content(request_messages: list[Message]) -> str:
+        return next(
+            block.content
+            for message in request_messages
+            if message.role == "user" and isinstance(message.content, list)
+            for block in message.content
+            if isinstance(block, ContentBlockToolResult) and block.tool_use_id == "tool-1"
+        )
+
+    first_content = _result_content(first_request)
+    second_content = _result_content(second_request)
+    assert first_content == second_content
+    assert first_content != raw_output
+    assert "[tool_result_projection]" in first_content
+    assert agent._provider_tool_result_overrides["tool-1"].content == first_content
+
+
+def test_agent_provider_request_reapplies_frozen_projection_after_turn_reset() -> None:
+    agent = Agent(
+        provider=CapturingProvider(),
+        config=AgentConfig(
+            context_window_tokens=200,
+        ),
+    )
+    raw_output = "overflow retry bulky output\n" + ("x" * 8000)
+    messages = [
+        Message(
+            role="assistant",
+            content=[ContentBlockToolUse(id="tool-1", name="execute_code", input={})],
+        ),
+        Message(
+            role="user",
+            content=[ContentBlockToolResult(tool_use_id="tool-1", content=raw_output)],
+        ),
+    ]
+
+    first_request = agent._provider_request_messages(
+        messages,
+        request_context_message=None,
+        request_context_insert_index=0,
+        runtime_context_message=Message(role="user", content="[Runtime context]"),
+        runtime_context_insert_index=len(messages),
+    )
+    agent._provider_tool_result_overrides = {}
+    second_request = agent._provider_request_messages(
+        messages,
+        request_context_message=None,
+        request_context_insert_index=0,
+        runtime_context_message=Message(role="user", content="[Runtime context]"),
+        runtime_context_insert_index=len(messages),
+    )
+
+    def _result_content(request_messages: list[Message]) -> str:
+        return next(
+            block.content
+            for message in request_messages
+            if message.role == "user" and isinstance(message.content, list)
+            for block in message.content
+            if isinstance(block, ContentBlockToolResult) and block.tool_use_id == "tool-1"
+        )
+
+    assert _result_content(first_request) == _result_content(second_request)
+    assert "[tool_result_projection]" in _result_content(second_request)
+
+
+def test_agent_provider_request_does_not_project_previously_full_visible_result() -> None:
+    agent = Agent(
+        provider=CapturingProvider(),
+        config=AgentConfig(
+            context_window_tokens=200,
+        ),
+    )
+    first_raw = "first result stays full"
+    first_messages = [
+        Message(
+            role="assistant",
+            content=[ContentBlockToolUse(id="tool-1", name="execute_code", input={})],
+        ),
+        Message(
+            role="user",
+            content=[ContentBlockToolResult(tool_use_id="tool-1", content=first_raw)],
+        ),
+    ]
+
+    first_request = agent._provider_request_messages(
+        first_messages,
+        request_context_message=None,
+        request_context_insert_index=0,
+        runtime_context_message=Message(role="user", content="[Runtime context]"),
+        runtime_context_insert_index=len(first_messages),
+    )
+    assert next(
+        block.content
+        for message in first_request
+        if message.role == "user" and isinstance(message.content, list)
+        for block in message.content
+        if isinstance(block, ContentBlockToolResult) and block.tool_use_id == "tool-1"
+    ) == first_raw
+
+    bulky = "later bulky output\n" + ("x" * 8000)
+    later_messages = [
+        Message(
+            role="assistant",
+            content=[
+                ContentBlockToolUse(id="tool-1", name="execute_code", input={}),
+                ContentBlockToolUse(id="tool-2", name="execute_code", input={}),
+                ContentBlockToolUse(id="tool-3", name="execute_code", input={}),
+            ],
+        ),
+        Message(
+            role="user",
+            content=[
+                ContentBlockToolResult(tool_use_id="tool-1", content=first_raw),
+                ContentBlockToolResult(tool_use_id="tool-2", content=bulky),
+                ContentBlockToolResult(tool_use_id="tool-3", content=bulky),
+            ],
+        ),
+    ]
+    later_request = agent._provider_request_messages(
+        later_messages,
+        request_context_message=None,
+        request_context_insert_index=0,
+        runtime_context_message=Message(role="user", content="[Runtime context]"),
+        runtime_context_insert_index=len(later_messages),
+    )
+    contents = {
+        block.tool_use_id: block.content
+        for message in later_request
+        if message.role == "user" and isinstance(message.content, list)
+        for block in message.content
+        if isinstance(block, ContentBlockToolResult)
+    }
+
+    assert contents["tool-1"] == first_raw
+    assert any(
+        "[tool_result_projection]" in value
+        for key, value in contents.items()
+        if key != "tool-1"
+    )
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "strict_flush_config",
@@ -2097,6 +2564,83 @@ async def test_agent_refuses_copied_provider_compacted_tool_arguments(tmp_path) 
 
 
 @pytest.mark.asyncio
+async def test_agent_refuses_copied_provider_request_compacted_argument_string(
+    tmp_path,
+) -> None:
+    provider = ProviderRequestCompactedArgumentStringProvider()
+    dispatched: list[dict[str, Any]] = []
+
+    async def tool_handler(call: Any) -> ToolResult:
+        dispatched.append(call.arguments)
+        return ToolResult(
+            tool_use_id=call.tool_use_id,
+            tool_name=call.tool_name,
+            content="tool ok",
+        )
+
+    agent = Agent(
+        provider=provider,
+        config=AgentConfig(
+            max_iterations=2,
+        ),
+        tool_handler=tool_handler,
+    )
+
+    events = [event async for event in agent.run_turn("continue")]
+
+    assert any(event.kind == "done" for event in events)
+    assert dispatched == []
+    result_event = next(
+        event
+        for event in events
+        if isinstance(event, ToolResultEvent) and event.tool_use_id == "tool-provider-request"
+    )
+    assert result_event.is_error is True
+    assert result_event.execution_status is not None
+    assert result_event.execution_status["reason"] == "provider_context_projection_reused"
+    assert "compaction placeholder" in result_event.result
+
+
+@pytest.mark.asyncio
+async def test_agent_refuses_mid_string_compacted_marker_in_tool_argument(
+    tmp_path,
+) -> None:
+    provider = MidStringCompactedArgumentStringProvider()
+    dispatched: list[dict[str, Any]] = []
+
+    async def tool_handler(call: Any) -> ToolResult:
+        dispatched.append(call.arguments)
+        return ToolResult(
+            tool_use_id=call.tool_use_id,
+            tool_name=call.tool_name,
+            content="tool ok",
+        )
+
+    agent = Agent(
+        provider=provider,
+        config=AgentConfig(
+            max_iterations=2,
+        ),
+        tool_handler=tool_handler,
+    )
+
+    events = [event async for event in agent.run_turn("continue")]
+
+    assert any(event.kind == "done" for event in events)
+    assert dispatched == []
+    result_event = next(
+        event
+        for event in events
+        if isinstance(event, ToolResultEvent) and event.tool_use_id == "tool-mid-string"
+    )
+    assert result_event.is_error is True
+    assert result_event.execution_status is not None
+    assert result_event.execution_status["reason"] == "provider_context_projection_reused"
+    assert "compaction placeholder" in result_event.result
+    assert "re-read" in result_event.result.lower()
+
+
+@pytest.mark.asyncio
 async def test_agent_repair_prompt_keeps_provider_request_from_ending_on_assistant(
     tmp_path,
 ) -> None:
@@ -2165,6 +2709,48 @@ def test_agent_repair_prompt_handles_tool_use_without_tool_result() -> None:
     )
     assert "tool-compact" not in replay_payload
     assert "provider_context_omitted" not in replay_payload
+
+
+def test_agent_strips_string_provider_context_marker_replay() -> None:
+    agent = Agent(provider=CapturingProvider(), config=AgentConfig())
+    messages = [
+        Message(role="user", content="inspect the repo"),
+        Message(
+            role="assistant",
+            content=[
+                ContentBlockText(text="I will inspect the repo."),
+                ContentBlockToolUse(
+                    id="tool-compact-string",
+                    name="exec_command",
+                    input={
+                        "_opensquilla_compacted_tool_arguments": "true",
+                        "original_chars": "50",
+                        "argument_keys": '["command"]',
+                    },
+                ),
+            ],
+        ),
+        Message(
+            role="user",
+            content=[
+                ContentBlockToolResult(
+                    tool_use_id="tool-compact-string",
+                    content="missing required argument command",
+                    is_error=True,
+                )
+            ],
+        ),
+    ]
+
+    stripped = agent._strip_provider_context_marker_replay_for_provider(messages)
+
+    replay_payload = json.dumps(
+        [message.model_dump(mode="json") for message in stripped],
+        ensure_ascii=False,
+    )
+    assert "tool-compact-string" not in replay_payload
+    assert "_opensquilla_compacted_tool_arguments" not in replay_payload
+    assert "missing required argument command" not in replay_payload
 
 
 @pytest.mark.asyncio
@@ -2303,6 +2889,41 @@ async def test_agent_preserves_direct_deepseek_v4_reasoning_without_capabilities
     assert provider.calls
     sent_assistant = provider.calls[0]["messages"][1]
     assert sent_assistant.reasoning_content == "I reasoned before answering."
+
+
+@pytest.mark.asyncio
+async def test_agent_preserves_reasoning_content_for_dashscope_qwen_replay() -> None:
+    provider = CapturingProvider()
+    agent = Agent(
+        provider=provider,
+        config=AgentConfig(
+            max_iterations=1,
+            thinking=ThinkingLevel.HIGH,
+            model_id="qwen3.6-flash",
+            model_capabilities=ModelCapabilities(
+                supports_reasoning=True,
+                supports_tools=True,
+                reasoning_format="dashscope",
+            ),
+        ),
+    )
+    agent.set_history(
+        [
+            Message(role="user", content="old question"),
+            Message(
+                role="assistant",
+                content=[ContentBlockText(text="old answer")],
+                reasoning_content="I reasoned before answering with Qwen.",
+            ),
+        ]
+    )
+
+    events = [event async for event in agent.run_turn("continue")]
+
+    assert any(event.kind == "done" for event in events)
+    assert provider.calls
+    sent_assistant = provider.calls[0]["messages"][1]
+    assert sent_assistant.reasoning_content == "I reasoned before answering with Qwen."
 
 
 @pytest.mark.asyncio

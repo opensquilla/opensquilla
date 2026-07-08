@@ -30,6 +30,11 @@ from opensquilla.subprocess_encoding import apply_utf8_child_env, decode_subproc
 from opensquilla.tools.registry import tool
 from opensquilla.tools.run_mode import full_host_access_active, trusted_sandbox_active
 from opensquilla.tools.types import ToolError, current_tool_context
+from opensquilla.tools.write_tracking import (
+    mutation_ledger_text_hash,
+    record_observed_workspace_mutations,
+    snapshot_current_workspace_mutations,
+)
 
 # Destructive Python patterns that must be surfaced to the unified sandbox gate.
 # Matching is intentionally shallow (regex, not AST): the goal is to classify
@@ -326,7 +331,8 @@ def _resolve_python_bin(*, sandbox_enabled: bool) -> str:
         "Execute Python code in an isolated subprocess and return stdout/stderr. "
         "When an active workspace is configured, code runs with that workspace "
         "as cwd; otherwise each invocation runs in a fresh temporary directory. "
-        "Use for calculations, data processing, and validation."
+        "Use for calculations, data processing, and validation. Prefer the file "
+        "editing tools for project file changes."
     ),
     params={
         "code": {
@@ -428,6 +434,15 @@ async def execute_code(
         needs_network=_code_needs_network(code),
         high_impact=destructive_warning is not None,
     )
+    mutation_before = snapshot_current_workspace_mutations()
+
+    def finish(output: str) -> str:
+        record_observed_workspace_mutations(
+            tool_name="execute_code",
+            before=mutation_before,
+            metadata={"code_hash": mutation_ledger_text_hash(code)},
+        )
+        return output
 
     if runtime is None or (runtime.effective.sandbox_enabled and not host_execution):
         decision, _policy, request = await gate_action(
@@ -438,7 +453,7 @@ async def execute_code(
             hints=hints,
         )
         if isinstance(decision, DenialResult):
-            return json.dumps(decision.to_dict())
+            return finish(json.dumps(decision.to_dict()))
         backend_request = SandboxRequest(
             argv=(python_bin, "-c", code),
             cwd=request.cwd,
@@ -452,45 +467,51 @@ async def execute_code(
         if runtime is not None:
             preflight = await preflight_subprocess_managed_network(backend_request, runtime)
             if isinstance(preflight, DenialResult):
-                return json.dumps(preflight.to_dict())
+                return finish(json.dumps(preflight.to_dict()))
             if isinstance(preflight, dict):
-                return json.dumps(preflight)
+                return finish(json.dumps(preflight))
         try:
             sandbox_result = await _run_backend_with_managed_network_if_needed(
                 backend_request,
                 runtime=runtime,
             )
         except Exception as exc:
-            return _execution_result_json(
-                returncode=-1,
-                stdout="",
-                stderr=f"Execution error: {exc}",
-                timed_out=False,
-                elapsed_ms=0,
+            return finish(
+                _execution_result_json(
+                    returncode=-1,
+                    stdout="",
+                    stderr=f"Execution error: {exc}",
+                    timed_out=False,
+                    elapsed_ms=0,
+                )
             )
         if sandbox_result.backend_notes:
             escalation = await escalate_backend_denial(
                 sandbox_result, request, _policy, runtime=runtime
             )
             if isinstance(escalation, DenialResult):
-                return json.dumps(escalation.to_dict())
-            return _execution_result_json(
-                returncode=-1,
-                stdout="",
-                stderr="Sandboxed code execution denied; host fallback disabled",
-                timed_out=False,
-                elapsed_ms=0,
+                return finish(json.dumps(escalation.to_dict()))
+            return finish(
+                _execution_result_json(
+                    returncode=-1,
+                    stdout="",
+                    stderr="Sandboxed code execution denied; host fallback disabled",
+                    timed_out=False,
+                    elapsed_ms=0,
+                )
             )
         elapsed_ms = (time.monotonic_ns() - start_ns) // 1_000_000
         stdout = sandbox_result.stdout
         stderr = sandbox_result.stderr
         stderr = _append_code_exec_sandbox_network_hint(stdout=stdout, stderr=stderr)
-        return _execution_result_json(
-            returncode=sandbox_result.returncode,
-            stdout=stdout,
-            stderr=stderr,
-            timed_out=sandbox_result.timed_out,
-            elapsed_ms=elapsed_ms,
+        return finish(
+            _execution_result_json(
+                returncode=sandbox_result.returncode,
+                stdout=stdout,
+                stderr=stderr,
+                timed_out=sandbox_result.timed_out,
+                elapsed_ms=elapsed_ms,
+            )
         )
 
     try:
@@ -509,32 +530,38 @@ async def execute_code(
             proc.kill()
             await proc.communicate()
             elapsed_ms = (time.monotonic_ns() - start_ns) // 1_000_000
-            return _execution_result_json(
-                returncode=-1,
-                stdout="",
-                stderr=f"Execution timed out after {timeout}s",
-                timed_out=True,
-                elapsed_ms=elapsed_ms,
+            return finish(
+                _execution_result_json(
+                    returncode=-1,
+                    stdout="",
+                    stderr=f"Execution timed out after {timeout}s",
+                    timed_out=True,
+                    elapsed_ms=elapsed_ms,
+                )
             )
 
         elapsed_ms = (time.monotonic_ns() - start_ns) // 1_000_000
         stdout = decode_subprocess_output(stdout_bytes)
         stderr = decode_subprocess_output(stderr_bytes)
 
-        return _execution_result_json(
-            returncode=proc.returncode if proc.returncode is not None else -1,
-            stdout=stdout,
-            stderr=stderr,
-            timed_out=False,
-            elapsed_ms=elapsed_ms,
+        return finish(
+            _execution_result_json(
+                returncode=proc.returncode if proc.returncode is not None else -1,
+                stdout=stdout,
+                stderr=stderr,
+                timed_out=False,
+                elapsed_ms=elapsed_ms,
+            )
         )
     except Exception as exc:
-        return _execution_result_json(
-            returncode=-1,
-            stdout="",
-            stderr=f"Execution error: {exc}",
-            timed_out=False,
-            elapsed_ms=0,
+        return finish(
+            _execution_result_json(
+                returncode=-1,
+                stdout="",
+                stderr=f"Execution error: {exc}",
+                timed_out=False,
+                elapsed_ms=0,
+            )
         )
     finally:
         if cleanup_dir:

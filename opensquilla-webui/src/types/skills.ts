@@ -23,6 +23,7 @@ export interface Skill {
   install?: SkillInstall[]
   homepage?: string
   file_path?: string
+  content?: string
 }
 
 export interface Proposal {

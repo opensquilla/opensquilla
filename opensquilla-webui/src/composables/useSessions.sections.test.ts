@@ -47,6 +47,43 @@ describe('arrangeSidebarSections — family bucketing', () => {
   })
 })
 
+describe('arrangeSidebarSections cancel stop labels', () => {
+  it('shows how long a cancelled turn ran when task timing is available', () => {
+    const sections = arrangeSidebarSections([
+      session({
+        key: 'agent:main:webchat:stopped',
+        title: 'Stopped chat',
+        updatedAt: 100,
+        runStatus: 'cancelled',
+        last_task: {
+          status: 'cancelled',
+          started_at: 1_000,
+          finished_at: 2_240,
+        },
+      }),
+    ])
+
+    const [row] = sectionFor(sections, 'chats').rows
+    expect(row.runStatus).toBe('cancelled')
+    expect(row.runLabel).toBe('Stopped after 1s')
+  })
+
+  it('falls back to an interrupted-output label when a cancelled turn has no timing', () => {
+    const sections = arrangeSidebarSections([
+      session({
+        key: 'agent:main:webchat:stopped',
+        title: 'Stopped chat',
+        updatedAt: 100,
+        runStatus: 'cancelled',
+        last_task: { status: 'cancelled' },
+      }),
+    ])
+
+    const [row] = sectionFor(sections, 'chats').rows
+    expect(row.runLabel).toBe('Output interrupted')
+  })
+})
+
 describe('arrangeSidebarSections — subagent nesting', () => {
   it('nests a subagent under its parent chat at depth 1', () => {
     const parentKey = 'agent:main:webchat:parent'

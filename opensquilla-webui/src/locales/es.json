@@ -699,6 +699,8 @@
       "timeout": "Tiempo agotado",
       "interrupted": "Interrumpida",
       "cancelled": "Cancelada",
+      "outputInterrupted": "Salida interrumpida",
+      "stoppedAfterSeconds": "Detenido tras {seconds} s",
       "idle": "Inactiva"
     },
     "relTime": {
@@ -1381,6 +1383,8 @@
       "installVia": "Instalar mediante {kind}",
       "installing": "Instalando...",
       "homepage": "Página de inicio",
+      "loadingContent": "Cargando SKILL.md...",
+      "emptyContent": "No hay contenido de SKILL.md disponible.",
       "removing": "Eliminando...",
       "remove": "Eliminar"
     },

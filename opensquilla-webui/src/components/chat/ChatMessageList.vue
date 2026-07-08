@@ -116,7 +116,7 @@ defineEmits<{
 // fork action only renders on the thread's last assistant message.
 const lastAssistantIndex = computed(() => {
   for (let i = props.messages.length - 1; i >= 0; i--) {
-    if (props.messages[i].displayRole === 'assistant') return i
+    if (props.messages[i].displayRole === 'assistant' && !props.messages[i].stopNotice) return i
   }
   return -1
 })

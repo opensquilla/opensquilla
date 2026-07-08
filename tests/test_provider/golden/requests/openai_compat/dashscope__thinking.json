@@ -2,7 +2,7 @@
   "auth_style": "bearer",
   "body": {
     "enable_thinking": true,
-    "max_tokens": 16384,
+    "max_completion_tokens": 16384,
     "messages": [
       {
         "content": "You are a synthetic assistant used to freeze provider request payloads.",

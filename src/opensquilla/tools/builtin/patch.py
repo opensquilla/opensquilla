@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import os
 from collections.abc import Mapping
@@ -16,11 +17,22 @@ from opensquilla.sandbox.operation_runtime import (
     SandboxOperation,
     SandboxToolDescriptor,
 )
+from opensquilla.tools.mutation_receipts import (
+    fingerprint_path,
+    record_semantic_mutation_receipt,
+)
 from opensquilla.tools.path_policy import reject_foreign_host_path
 from opensquilla.tools.registry import tool
 from opensquilla.tools.run_mode import full_host_access_active
-from opensquilla.tools.types import current_tool_context
-from opensquilla.tools.write_tracking import record_workspace_file_write
+from opensquilla.tools.types import (
+    RetryableToolInputError,
+    current_tool_context,
+)
+from opensquilla.tools.write_tracking import (
+    record_workspace_file_write,
+    summarize_workspace_write_notes,
+    workspace_write_progress_note,
+)
 
 # ---------------------------------------------------------------------------
 # Data structures
@@ -58,7 +70,61 @@ _BOOTSTRAP_SOURCE_FILENAMES = frozenset(BOOTSTRAP_FILENAMES)
 
 
 def _patch_request(args: Mapping[str, Any]) -> FilesystemOperationRequest:
-    return FilesystemOperationRequest(patch=str(args.get("patch", "") or ""))
+    """Build the sandbox request, carrying resolved patch target paths for policy checks."""
+    patch_text = str(args.get("patch", "") or "")
+    root = _default_patch_root()
+    raw_path = args.get("path")
+    if not patch_text.strip() and raw_path:
+        try:
+            patch_text = _read_patch_text_from_file(str(raw_path), root)
+        except Exception:
+            patch_text = str(args.get("patch", "") or "")
+    resolved_paths: list[Path] = []
+    try:
+        for op in _parse_patch(patch_text):
+            resolved = _validate_path(op.path, root)
+            if resolved not in resolved_paths:
+                resolved_paths.append(resolved)
+    except Exception:
+        resolved_paths = []
+    return FilesystemOperationRequest(
+        path=resolved_paths[0] if resolved_paths else None,
+        paths=tuple(resolved_paths),
+        patch=patch_text,
+        root=root,
+    )
+
+
+@dataclass
+class PlannedPatchWrite:
+    path: str
+    resolved: Path
+    before: dict[str, Any]
+    after_content: str | None
+    operation: str
+
+
+@dataclass
+class AggregatedPatchWrite:
+    path: str
+    resolved: Path
+    before: dict[str, Any]
+    after_content: str | None
+    operation: str
+    operations: list[str] = field(default_factory=list)
+
+
+_BOOTSTRAP_SOURCE_FILENAMES_FALLBACK = frozenset(
+    {
+        "AGENTS.md",
+        "SOUL.md",
+        "IDENTITY.md",
+        "TOOLS.md",
+        "USER.md",
+        "BOOTSTRAP.md",
+        "HEARTBEAT.md",
+    }
+)
 
 
 # ---------------------------------------------------------------------------
@@ -72,9 +138,15 @@ def _parse_patch(patch_text: str) -> list[PatchOp]:
 
     # Validate markers
     if not any(line.strip() == "*** Begin Patch" for line in lines):
-        raise ValueError("Missing '*** Begin Patch' marker")
+        raise RetryableToolInputError(
+            "apply_patch needs a patch beginning with '*** Begin Patch'. "
+            "Retry with the exact Begin/End Patch wrapper."
+        )
     if not any(line.strip() == "*** End Patch" for line in lines):
-        raise ValueError("Missing '*** End Patch' marker")
+        raise RetryableToolInputError(
+            "apply_patch needs a patch ending with '*** End Patch'. "
+            "Retry with the exact Begin/End Patch wrapper."
+        )
 
     # Trim to content between markers
     start_idx = next(i for i, ln in enumerate(lines) if ln.strip() == "*** Begin Patch")
@@ -104,12 +176,12 @@ def _parse_patch(patch_text: str) -> list[PatchOp]:
             hunks: list[Hunk] = []
             while i < len(body) and not body[i].startswith("*** "):
                 hunk_line = body[i]
-                if hunk_line.startswith("@@@ "):
+                if _is_hunk_header(hunk_line):
                     hunk = _parse_hunk_header(hunk_line)
                     i += 1
                     while (
                         i < len(body)
-                        and not body[i].startswith("@@@ ")
+                        and not _is_hunk_header(body[i])
                         and not body[i].startswith("*** ")
                     ):
                         hunk.lines.append(body[i])
@@ -117,6 +189,12 @@ def _parse_patch(patch_text: str) -> list[PatchOp]:
                     hunks.append(hunk)
                 else:
                     i += 1
+            if not hunks:
+                raise RetryableToolInputError(
+                    f"Update File patch for {path!r} did not contain any hunk headers. "
+                    "Use a standard unified hunk like '@@ -1,1 +1,1 @@' or "
+                    "OpenSquilla's '@@@ -1,1 +1,1 @@@' format."
+                )
             ops.append(UpdateFile(path=path, hunks=hunks))
 
         elif line.startswith("*** Delete File: "):
@@ -127,22 +205,38 @@ def _parse_patch(patch_text: str) -> list[PatchOp]:
         else:
             i += 1
 
+    if not ops:
+        raise RetryableToolInputError(
+            "apply_patch did not find any file operations. Include at least one "
+            "'*** Add File:', '*** Update File:', or '*** Delete File:' section."
+        )
+
     return ops
 
 
+def _is_hunk_header(line: str) -> bool:
+    stripped = line.strip()
+    return stripped.startswith("@@ ") or stripped.startswith("@@@ ")
+
+
 def _parse_hunk_header(header: str) -> Hunk:
-    """Parse '@@@ -old_start,old_count +new_start,new_count @@@'."""
-    # Format: @@@ -10,3 +10,4 @@@
+    """Parse '@@ -old,count +new,count @@' or '@@@ -old,count +new,count @@@'."""
     import re
 
-    m = re.match(r"@@@\s+-(\d+),(\d+)\s+\+(\d+),(\d+)\s+@@@", header.strip())
+    m = re.match(
+        r"@@@?\s+-(\d+)(?:,(\d+))?\s+\+(\d+)(?:,(\d+))?\s+@@@?",
+        header.strip(),
+    )
     if not m:
-        raise ValueError(f"Invalid hunk header: {header!r}")
+        raise RetryableToolInputError(
+            "Invalid apply_patch hunk header. Use '@@ -old,count +new,count @@' "
+            "or '@@@ -old,count +new,count @@@'."
+        )
     return Hunk(
         old_start=int(m.group(1)),
-        old_count=int(m.group(2)),
+        old_count=int(m.group(2) or "1"),
         new_start=int(m.group(3)),
-        new_count=int(m.group(4)),
+        new_count=int(m.group(4) or "1"),
     )
 
 
@@ -156,6 +250,37 @@ def _default_patch_root() -> Path:
     if ctx and ctx.workspace_dir:
         return Path(ctx.workspace_dir).expanduser().resolve()
     return Path.cwd().resolve()
+
+
+def _patch_file_read_roots(root: Path) -> list[Path]:
+    roots = [root]
+    ctx = current_tool_context.get()
+    scratch_dir = getattr(ctx, "scratch_dir", None) if ctx is not None else None
+    if scratch_dir:
+        roots.append(Path(scratch_dir).expanduser().resolve(strict=False))
+    return roots
+
+
+def _read_patch_text_from_file(path: str, root: Path) -> str:
+    raw = Path(path).expanduser()
+    resolved = (
+        (root / raw).resolve(strict=False)
+        if not raw.is_absolute()
+        else raw.resolve(strict=False)
+    )
+    allowed_roots = _patch_file_read_roots(root)
+    if not any(resolved.is_relative_to(allowed_root) for allowed_root in allowed_roots):
+        allowed = ", ".join(str(allowed_root) for allowed_root in allowed_roots)
+        raise RetryableToolInputError(
+            "apply_patch path must point to a UTF-8 patch file under the workspace "
+            f"or configured scratch directory. Allowed roots: {allowed}."
+        )
+    if not resolved.is_file():
+        raise RetryableToolInputError(
+            f"apply_patch path does not exist or is not a file: {path}. "
+            "Retry with patch text or a valid patch file path."
+        )
+    return resolved.read_text(encoding="utf-8")
 
 
 def _validate_path(path: str, root: Path | None = None) -> Path:
@@ -190,7 +315,14 @@ def _bootstrap_source_rel_path(path: str, root: Path) -> str | None:
     except ValueError:
         return None
     rel_path = rel.as_posix()
-    if len(rel.parts) == 1 and rel_path in _BOOTSTRAP_SOURCE_FILENAMES:
+    try:
+        from opensquilla.identity.workspace import BOOTSTRAP_FILENAMES
+
+        bootstrap_source_filenames = frozenset(BOOTSTRAP_FILENAMES)
+    except Exception:
+        bootstrap_source_filenames = _BOOTSTRAP_SOURCE_FILENAMES_FALLBACK
+
+    if len(rel.parts) == 1 and rel_path in bootstrap_source_filenames:
         return rel_path
     return None
 
@@ -226,7 +358,28 @@ def _notify_bootstrap_source_writes(ops: list[PatchOp], root: Path) -> None:
 def _record_workspace_file_writes(ops: list[PatchOp], root: Path) -> None:
     for op in ops:
         if isinstance(op, AddFile):
-            record_workspace_file_write(_validate_path(op.path, root))
+            record_workspace_file_write(
+                _validate_path(op.path, root),
+                operation="apply_patch_add",
+                created=True,
+            )
+        elif isinstance(op, UpdateFile):
+            record_workspace_file_write(
+                _validate_path(op.path, root),
+                operation="apply_patch_update",
+                created=False,
+            )
+        elif isinstance(op, DeleteFile):
+            record_workspace_file_write(
+                _validate_path(op.path, root),
+                operation="apply_patch_delete",
+                created=False,
+            )
+
+
+def _workspace_write_note_summary(ops: list[PatchOp], root: Path) -> str:
+    paths = [_validate_path(op.path, root) for op in ops]
+    return summarize_workspace_write_notes(paths)
 
 
 def _gate_patch_ops(
@@ -312,13 +465,18 @@ def _apply_hunk(file_lines: list[str], hunk: Hunk) -> list[str]:
         content = raw[1:]
         if prefix in (" ", "-"):
             if check_pos >= len(result):
-                raise ValueError(f"Hunk context/delete at line {check_pos + 1} exceeds file length")
+                raise RetryableToolInputError(
+                    "apply_patch hunk context/delete exceeds file length at "
+                    f"line {check_pos + 1}. Read the current file content and retry "
+                    "with hunk line numbers and context that match the file."
+                )
             actual = result[check_pos].rstrip("\n")
             expected = content.rstrip("\n")
             if actual != expected:
-                raise ValueError(
-                    f"Context mismatch at line {check_pos + 1}: "
-                    f"expected {expected!r}, got {actual!r}"
+                raise RetryableToolInputError(
+                    f"apply_patch context mismatch at line {check_pos + 1}: "
+                    f"expected {expected!r}, got {actual!r}. Read the current file "
+                    "content and retry with exact surrounding context."
                 )
             check_pos += 1
 
@@ -346,50 +504,236 @@ def _apply_hunk(file_lines: list[str], hunk: Hunk) -> list[str]:
     return result[:pos] + new_lines + result[pos + hunk.old_count :]
 
 
-def _apply_update(path: str, hunks: list[Hunk], root: Path | None = None) -> None:
-    resolved = _validate_path(path, root)
-    if not resolved.exists():
-        raise FileNotFoundError(f"File not found for update: {path}")
+def _fingerprint_content(content: str | None) -> dict[str, Any]:
+    if content is None:
+        return {"exists": False, "size": 0, "sha256": None}
+    data = content.encode("utf-8")
+    return {
+        "exists": True,
+        "size": len(data),
+        "sha256": hashlib.sha256(data).hexdigest(),
+    }
 
-    text = resolved.read_text(encoding="utf-8")
-    lines = text.splitlines(keepends=True)
+
+def _apply_update_content(content: str, hunks: list[Hunk]) -> str:
+    lines = content.splitlines(keepends=True)
 
     # Apply hunks in reverse order so earlier line numbers stay valid
     for hunk in sorted(hunks, key=lambda h: h.old_start, reverse=True):
         lines = _apply_hunk(lines, hunk)
 
-    resolved.write_text("".join(lines), encoding="utf-8")
+    return "".join(lines)
 
 
-def _apply_add(path: str, content: str, root: Path | None = None) -> None:
-    resolved = _validate_path(path, root)
+def _plan_add(op: AddFile, root: Path | None = None) -> PlannedPatchWrite:
+    resolved = _validate_path(op.path, root)
     if resolved.exists():
-        raise FileExistsError(f"File already exists: {path}")
-    resolved.parent.mkdir(parents=True, exist_ok=True)
-    resolved.write_text(content, encoding="utf-8")
+        raise RetryableToolInputError(
+            f"apply_patch Add File target already exists: {op.path}. "
+            "Retry with Update File for existing files."
+        )
+    return PlannedPatchWrite(
+        path=op.path,
+        resolved=resolved,
+        before=fingerprint_path(resolved),
+        after_content=op.content,
+        operation="apply_patch_add",
+    )
 
 
-def _apply_delete(path: str, root: Path | None = None) -> None:
-    resolved = _validate_path(path, root)
+def _plan_update(op: UpdateFile, root: Path | None = None) -> PlannedPatchWrite:
+    resolved = _validate_path(op.path, root)
     if not resolved.exists():
-        raise FileNotFoundError(f"File not found for deletion: {path}")
-    resolved.unlink()
+        raise RetryableToolInputError(
+            f"apply_patch could not find file to update: {op.path}. "
+            "Check the target path, then retry with an existing file or use Add File."
+        )
+
+    before = fingerprint_path(resolved)
+    text = resolved.read_text(encoding="utf-8")
+
+    return PlannedPatchWrite(
+        path=op.path,
+        resolved=resolved,
+        before=before,
+        after_content=_apply_update_content(text, op.hunks),
+        operation="apply_patch_update",
+    )
 
 
-def _apply_ops(ops: list[PatchOp], root: Path | None = None) -> tuple[int, int, int]:
-    """Execute all patch operations. Returns (added, modified, deleted) counts."""
-    added = modified = deleted = 0
+def _plan_delete(op: DeleteFile, root: Path | None = None) -> PlannedPatchWrite:
+    resolved = _validate_path(op.path, root)
+    if not resolved.exists():
+        raise RetryableToolInputError(
+            f"apply_patch could not find file to delete: {op.path}. "
+            "Check the target path or remove this Delete File operation."
+        )
+    return PlannedPatchWrite(
+        path=op.path,
+        resolved=resolved,
+        before=fingerprint_path(resolved),
+        after_content=None,
+        operation="apply_patch_delete",
+    )
+
+
+def _plan_ops(ops: list[PatchOp], root: Path | None = None) -> list[PlannedPatchWrite]:
+    planned: list[PlannedPatchWrite] = []
+    virtual_content: dict[Path, str | None] = {}
     for op in ops:
-        if isinstance(op, AddFile):
-            _apply_add(op.path, op.content, root)
-            added += 1
-        elif isinstance(op, UpdateFile):
-            _apply_update(op.path, op.hunks, root)
-            modified += 1
-        elif isinstance(op, DeleteFile):
-            _apply_delete(op.path, root)
+        resolved = _validate_path(op.path, root)
+        if resolved not in virtual_content:
+            if isinstance(op, AddFile):
+                item = _plan_add(op, root)
+            elif isinstance(op, UpdateFile):
+                item = _plan_update(op, root)
+            else:
+                item = _plan_delete(op, root)
+        else:
+            current_content = virtual_content[resolved]
+            before = _fingerprint_content(current_content)
+            if isinstance(op, AddFile):
+                if current_content is not None:
+                    raise RetryableToolInputError(
+                        f"apply_patch Add File target already exists: {op.path}. "
+                        "Retry with Update File for existing files."
+                    )
+                item = PlannedPatchWrite(
+                    path=op.path,
+                    resolved=resolved,
+                    before=before,
+                    after_content=op.content,
+                    operation="apply_patch_add",
+                )
+            elif isinstance(op, UpdateFile):
+                if current_content is None:
+                    raise RetryableToolInputError(
+                        f"apply_patch could not find file to update: {op.path}. "
+                        "Check the target path, then retry with an existing file or use "
+                        "Add File."
+                    )
+                item = PlannedPatchWrite(
+                    path=op.path,
+                    resolved=resolved,
+                    before=before,
+                    after_content=_apply_update_content(current_content, op.hunks),
+                    operation="apply_patch_update",
+                )
+            else:
+                if current_content is None:
+                    raise RetryableToolInputError(
+                        f"apply_patch could not find file to delete: {op.path}. "
+                        "Check the target path or remove this Delete File operation."
+                    )
+                item = PlannedPatchWrite(
+                    path=op.path,
+                    resolved=resolved,
+                    before=before,
+                    after_content=None,
+                    operation="apply_patch_delete",
+                )
+        planned.append(item)
+        virtual_content[item.resolved] = item.after_content
+    return planned
+
+
+def _path_ancestors(path: Path) -> list[Path]:
+    ancestors: list[Path] = []
+    current = path
+    while current != current.parent:
+        ancestors.append(current)
+        current = current.parent
+    ancestors.append(current)
+    return list(reversed(ancestors))
+
+
+def _preflight_write_parent(path: Path, states: dict[Path, str]) -> None:
+    for ancestor in _path_ancestors(path.parent):
+        state = states.get(ancestor)
+        if state == "file":
+            raise FileExistsError(str(ancestor))
+        if state == "dir":
+            continue
+        if state is None and ancestor.exists() and not ancestor.is_dir():
+            raise FileExistsError(str(ancestor))
+        states[ancestor] = "dir"
+
+
+def _preflight_planned_writes(planned: list[PlannedPatchWrite]) -> None:
+    states: dict[Path, str] = {}
+    for item in planned:
+        state = states.get(item.resolved)
+        if item.after_content is None:
+            if state is None:
+                if not item.resolved.exists():
+                    raise FileNotFoundError(str(item.resolved))
+                if item.resolved.is_dir() and not item.resolved.is_symlink():
+                    raise IsADirectoryError(str(item.resolved))
+            elif state == "absent":
+                raise FileNotFoundError(str(item.resolved))
+            elif state == "dir":
+                raise IsADirectoryError(str(item.resolved))
+            states[item.resolved] = "absent"
+            continue
+
+        _preflight_write_parent(item.resolved, states)
+        state = states.get(item.resolved)
+        if state == "dir":
+            raise IsADirectoryError(str(item.resolved))
+        if state is None and item.resolved.is_dir() and not item.resolved.is_symlink():
+            raise IsADirectoryError(str(item.resolved))
+        states[item.resolved] = "file"
+
+
+def _aggregate_planned_writes(
+    planned: list[PlannedPatchWrite],
+) -> list[AggregatedPatchWrite]:
+    aggregated: dict[Path, AggregatedPatchWrite] = {}
+    ordered: list[AggregatedPatchWrite] = []
+    for item in planned:
+        existing = aggregated.get(item.resolved)
+        if existing is None:
+            existing = AggregatedPatchWrite(
+                path=item.path,
+                resolved=item.resolved,
+                before=item.before,
+                after_content=item.after_content,
+                operation="apply_patch",
+                operations=[item.operation],
+            )
+            aggregated[item.resolved] = existing
+            ordered.append(existing)
+        else:
+            existing.after_content = item.after_content
+            existing.operations.append(item.operation)
+    return ordered
+
+
+def _commit_planned_writes(planned: list[PlannedPatchWrite]) -> tuple[int, int, int]:
+    _preflight_planned_writes(planned)
+    added = modified = deleted = 0
+    for item in planned:
+        if item.after_content is None:
+            item.resolved.unlink()
             deleted += 1
+        else:
+            item.resolved.parent.mkdir(parents=True, exist_ok=True)
+            item.resolved.write_text(item.after_content, encoding="utf-8")
+            if item.operation == "apply_patch_add":
+                added += 1
+            else:
+                modified += 1
     return added, modified, deleted
+
+
+def _apply_ops(
+    ops: list[PatchOp],
+    root: Path | None = None,
+) -> tuple[int, int, int, list[PlannedPatchWrite]]:
+    """Execute all patch operations after planning them in memory."""
+    planned = _plan_ops(ops, root)
+    added, modified, deleted = _commit_planned_writes(planned)
+    return added, modified, deleted, planned
 
 
 # ---------------------------------------------------------------------------
@@ -401,7 +745,9 @@ def _apply_ops(ops: list[PatchOp], root: Path | None = None) -> tuple[int, int, 
     name="apply_patch",
     description=(
         "Apply a structured patch to files. Supports adding, modifying, and deleting files "
-        "using Begin Patch / End Patch markers with @@@ hunk headers."
+        "using Begin Patch / End Patch markers with unified @@ or @@@ hunk headers. "
+        "Prefer this for multi-line or larger source edits where edit_file JSON would "
+        "be long or fragile."
     ),
     params={
         "patch": {
@@ -409,8 +755,16 @@ def _apply_ops(ops: list[PatchOp], root: Path | None = None) -> tuple[int, int, 
             "description": (
                 "Patch text in Begin Patch format. "
                 "Use '*** Begin Patch' / '*** End Patch' markers. "
-                "Sections: '*** Add File: path', '*** Update File: path' with @@@ hunks, "
-                "'*** Delete File: path'."
+                "Sections: '*** Add File: path', '*** Update File: path' with "
+                "standard @@ hunks or @@@ hunks, and '*** Delete File: path'."
+            ),
+        },
+        "path": {
+            "type": "string",
+            "description": (
+                "Optional path to a UTF-8 file containing patch text. "
+                "The file must be under the active workspace or configured scratch directory. "
+                "Use this only when patch text was already written to a scratch file."
             ),
         },
         "approval_id": {
@@ -418,17 +772,33 @@ def _apply_ops(ops: list[PatchOp], root: Path | None = None) -> tuple[int, int, 
             "description": "Sandbox path approval record for patch writes outside the workspace.",
         },
     },
-    required=["patch"],
+    required=[],
     sandbox=SandboxToolDescriptor.filesystem(
         kind="patch.apply",
-        argv_factory=lambda a: ("patch.apply", str(len(a.get("patch", "") or ""))),
+        argv_factory=lambda a: (
+            "patch.apply",
+            str(len(a.get("patch", "") or "")),
+            "path" if a.get("path") else "inline",
+        ),
         request_factory=_patch_request,
         record_payload=False,
     ),
 )
-async def apply_patch(patch: str, approval_id: str | None = None) -> str:
+async def apply_patch(
+    patch: str | None = None,
+    approval_id: str | None = None,
+    path: str | None = None,
+) -> str:
     loop = asyncio.get_event_loop()
     root = _default_patch_root()
+    if (patch is None or not patch.strip()) and path:
+        patch = _read_patch_text_from_file(path, root)
+    if patch is None or not patch.strip():
+        raise RetryableToolInputError(
+            "apply_patch requires either patch text or path to a UTF-8 patch file. "
+            "Retry with the `patch` argument, or write the patch under the scratch "
+            "directory and pass its `path`."
+        )
     ops = _parse_patch(patch)
     blocked = _gate_patch_ops(ops, root, approval_id)
     if blocked is not None:
@@ -452,11 +822,30 @@ async def apply_patch(patch: str, approval_id: str | None = None) -> str:
         _notify_bootstrap_source_writes(ops, root)
         return str(getattr(sandbox_result, "message"))
 
-    def _run() -> tuple[int, int, int]:
+    def _run() -> tuple[int, int, int, list[PlannedPatchWrite]]:
         return _apply_ops(ops, root)
 
-    added, modified, deleted = await loop.run_in_executor(None, _run)
+    added, modified, deleted, planned = await loop.run_in_executor(None, _run)
     _record_workspace_file_writes(ops, root)
+    write_note_summary = _workspace_write_note_summary(ops, root)
+    ctx = current_tool_context.get()
+    write_progress_note = (
+        workspace_write_progress_note() if ctx is not None and ctx.is_owner else ""
+    )
+    for item in _aggregate_planned_writes(planned):
+        record_semantic_mutation_receipt(
+            tool_name="apply_patch",
+            path=item.resolved,
+            operation=item.operation,
+            before=item.before,
+            after=fingerprint_path(item.resolved),
+            partial=False,
+            metadata={
+                "patch_path": item.path,
+                "operations": item.operations,
+                "operation_count": len(item.operations),
+            },
+        )
     _notify_memory_source_writes(ops, root)
     _notify_bootstrap_source_writes(ops, root)
     parts = []
@@ -467,4 +856,8 @@ async def apply_patch(patch: str, approval_id: str | None = None) -> str:
     if deleted:
         parts.append(f"{deleted} file(s) deleted")
     summary = ", ".join(parts) if parts else "no changes"
-    return f"Applied patch: {summary}"
+    return (
+        f"Applied patch: {summary}"
+        f"{write_note_summary}"
+        f"{write_progress_note}"
+    )

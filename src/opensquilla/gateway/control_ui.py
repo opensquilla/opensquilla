@@ -6,7 +6,7 @@ import json
 import os
 import re
 import time
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from starlette.requests import Request
 from starlette.responses import HTMLResponse
@@ -28,23 +28,71 @@ from opensquilla.gateway.config import GatewayConfig
 # untouched.
 _STATIC_CACHE_CONTROL = "public, max-age=2592000"
 
+# Content-Types for the static assets the Control UI ships, keyed by lowercase
+# extension. Starlette derives Content-Type from ``mimetypes.guess_type``, which
+# seeds itself from the host OS MIME database. On Windows machines whose
+# ``HKEY_CLASSES_ROOT\\.js`` registry entry has been rewritten to ``text/plain``
+# (a common side effect of some third-party installers), every ``.js`` asset is
+# served as ``text/plain``; Chromium's strict MIME check then refuses to execute
+# the Vite ``<script type="module">`` entry and the console renders blank even
+# though gateway boot and health checks pass. We therefore pin the Content-Type
+# for these extensions at the serving boundary rather than trusting the
+# environment. Extensions not listed here keep flowing through Starlette's own
+# guess.
+#
+# For most extensions the pinned value equals what a correctly configured host
+# already produces. A few are deliberately more correct than a bare host would
+# emit: ``.map``/``.woff``/``.woff2``/``.ttf`` are absent from CPython's built-in
+# table (so a host with no OS MIME registry falls back to ``text/plain``), and
+# ``.ico`` resolves to ``image/vnd.microsoft.icon`` in the stdlib. Pinning
+# normalizes these to their standard types on every host. All values are
+# browser-accepted, so the change is safe on clean machines.
+_PINNED_CONTENT_TYPES = {
+    ".js": "text/javascript",
+    ".mjs": "text/javascript",
+    ".css": "text/css",
+    ".json": "application/json",
+    ".map": "application/json",
+    ".svg": "image/svg+xml",
+    ".wasm": "application/wasm",
+    ".woff": "font/woff",
+    ".woff2": "font/woff2",
+    ".ttf": "font/ttf",
+    ".html": "text/html",
+    ".htm": "text/html",
+    ".png": "image/png",
+    ".ico": "image/x-icon",
+}
+
 
 class _CachedStaticFiles(StaticFiles):
-    """StaticFiles subclass that attaches Cache-Control to 200 responses.
+    """StaticFiles subclass that attaches Cache-Control to 200 responses and
+    pins Content-Type for known code assets.
 
     Source maps (.map) are excluded from long-term caching since they are
     only used for debugging and should not be aggressively cached.
+
+    Content-Type is forced from ``_PINNED_CONTENT_TYPES`` for extensions the
+    console depends on, so a host with a corrupt MIME database cannot mislabel
+    JavaScript (which browsers refuse to execute under strict MIME checking).
     """
 
     async def get_response(self, path: str, scope):  # type: ignore[override]
         response = await super().get_response(path, scope)
-        if response.status_code == 200 and not os.environ.get(
-            "OPENSQUILLA_STATIC_NO_CACHE"
-        ):
+        if response.status_code != 200:
+            return response
+        if not os.environ.get("OPENSQUILLA_STATIC_NO_CACHE"):
             # Skip cache-control for source maps — debug files should not be
             # cached aggressively (or served in production at all).
             if not path.endswith(".map"):
                 response.headers.setdefault("Cache-Control", _STATIC_CACHE_CONTROL)
+        pinned = _PINNED_CONTENT_TYPES.get(PurePosixPath(path).suffix.lower())
+        if pinned is not None:
+            if pinned.startswith("text/"):
+                # Match Starlette's charset convention for text/* types so
+                # headers on healthy hosts stay byte-identical.
+                pinned = f"{pinned}; charset=utf-8"
+            response.headers["content-type"] = pinned
         return response
 
 

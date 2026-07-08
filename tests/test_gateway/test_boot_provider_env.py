@@ -42,7 +42,7 @@ def test_boot_resolves_direct_provider_env_key_and_base_url(
     assert cfg.llm.base_url == "https://ark.example/api/v3"
 
 
-def test_boot_uses_explicit_key_before_standard_env(monkeypatch) -> None:
+def test_boot_uses_explicit_key_and_base_url_before_standard_env(monkeypatch) -> None:
     monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
     monkeypatch.setenv("OPENROUTER_BASE_URL", "https://openrouter.example/api/v1")
     monkeypatch.setenv("VOLCENGINE_API_KEY", "volc-key")
@@ -58,7 +58,10 @@ def test_boot_uses_explicit_key_before_standard_env(monkeypatch) -> None:
 
     assert runtime.api_key == "config-key"
     assert runtime.api_key_from_env is False
-    assert runtime.base_url == "https://openrouter.example/api/v1"
+    # An operator-chosen endpoint beats the derived env var, mirroring the
+    # explicit-key rule above (#484).
+    assert runtime.base_url == "https://config.example/api/v1"
+    assert runtime.base_url_from_env is False
 
 
 def test_openrouter_runtime_uses_default_provider_routing() -> None:

@@ -62,8 +62,41 @@ def _resolve_provider_routing(provider: str, configured: Any) -> dict[str, str]:
     return {**OPENROUTER_DEFAULT_PROVIDER_ROUTING, **routing}
 
 
+def _field_default_base_url() -> str:
+    from opensquilla.gateway.config import LlmProviderConfig
+
+    return str(LlmProviderConfig.model_fields["base_url"].default or "")
+
+
+def _is_explicit_base_url(stored: str, spec: Any, env_base_url: str) -> bool:
+    """Whether ``stored`` names an operator-chosen endpoint.
+
+    Value-vs-baseline, the same attribution rule ``provider.resolution``
+    documents for these fields (in-place env materialization poisons
+    ``model_fields_set``, so presence tracking cannot answer this): a value
+    equal to the pydantic field default, the provider spec default, or the
+    current derived env value is derived, not chosen. The env baseline is
+    what keeps repeated in-process resolves idempotent — the first resolve
+    writes the env URL into the model, and the second must not promote it to
+    an explicit choice — and it also stops env URLs persisted by pre-#484
+    releases from pinning the endpoint after the operator unsets the var.
+    """
+    if not stored:
+        return False
+    baselines = {_field_default_base_url()}
+    if spec is not None and spec.default_base_url:
+        baselines.add(spec.default_base_url)
+    if env_base_url:
+        baselines.add(env_base_url)
+    return stored not in baselines
+
+
 def resolve_llm_runtime_config(config: Any) -> LlmRuntimeConfig:
-    """Resolve provider credentials from provider-specific env before config.
+    """Resolve provider credentials: explicit config, then env, then defaults.
+
+    Both api_key and base_url resolve explicit-config-first; the derived env
+    var (``<PROVIDER>_API_KEY`` / ``<PROVIDER>_BASE_URL``) fills in only when
+    the config never chose a value, and the spec default is the last resort.
 
     An unset or unregistered provider id must not crash the boot: the gateway
     starts degraded (no spec-derived env key or default base URL) and the
@@ -89,7 +122,22 @@ def resolve_llm_runtime_config(config: Any) -> LlmRuntimeConfig:
     env_api_key = os.environ.get(api_key_env_name, "") if api_key_env_name else ""
     env_base_url = os.environ.get(base_url_env_name, "") if base_url_env_name else ""
     api_key = explicit_api_key or env_api_key or llm.api_key
-    base_url = env_base_url or llm.base_url or (spec.default_base_url if spec else "")
+    # Explicit config > derived env > spec default, mirroring the api_key
+    # rule (#484): a base_url the operator chose must not be overridden by
+    # OPENAI_BASE_URL-style vars on the next boot/reload. Derived stored
+    # values (field default from a minimal TOML, the spec default the Web UI
+    # seeds into its endpoint field, a previously materialized env value)
+    # keep env-first behavior so a fleet-wide env override still applies to
+    # configs that never chose an endpoint. Evaluated BEFORE the in-place
+    # materialization below — afterwards llm.base_url holds the resolution
+    # result and the distinction is gone.
+    stored_base_url = str(llm.base_url or "")
+    explicit_base_url = _is_explicit_base_url(stored_base_url, spec, env_base_url)
+    if explicit_base_url:
+        base_url = stored_base_url
+    else:
+        base_url = env_base_url or (spec.default_base_url if spec else stored_base_url)
+    base_url_from_env = bool(env_base_url) and base_url == env_base_url
     proxy = os.environ.get("OPENSQUILLA_LLM_PROXY", "") or getattr(llm, "proxy", "")
 
     # Record runtime provenance BEFORE mutating the live model: values
@@ -98,7 +146,6 @@ def resolve_llm_runtime_config(config: Any) -> LlmRuntimeConfig:
     # the runtime-secret mark; base_url/proxy get the override record that
     # onboarding.config_store restores at persist time.
     if hasattr(config, "record_runtime_override"):
-        stored_base_url = llm.base_url
         if base_url != stored_base_url:
             config.record_runtime_override("llm.base_url", stored_base_url, base_url)
         stored_proxy = getattr(llm, "proxy", "")
@@ -123,7 +170,7 @@ def resolve_llm_runtime_config(config: Any) -> LlmRuntimeConfig:
             getattr(llm, "provider_routing", {}),
         ),
         api_key_from_env=bool(env_api_key),
-        base_url_from_env=bool(env_base_url),
+        base_url_from_env=base_url_from_env,
     )
 
 

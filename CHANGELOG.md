@@ -39,6 +39,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Changed
 
+- An explicitly configured `llm.base_url` now wins over the provider's
+  derived environment variable (`OPENAI_BASE_URL`, `OPENROUTER_BASE_URL`, …),
+  mirroring the existing api_key rule. Previously the env var silently
+  overrode a custom endpoint saved in the Web UI or via `config.set` on
+  every boot/reload, reverting it to the env value (#484). Endpoints that
+  were never explicitly chosen — a config without `base_url`, or one holding
+  the provider's default URL — still follow the env var, so fleet-wide
+  `*_BASE_URL` overrides keep working, and `OPENSQUILLA_LLM_BASE_URL`
+  (the settings layer) still fills an unset `base_url` and then counts as
+  explicit. As a side effect, a minimal config such as
+  `provider = "openai"` without `base_url` now resolves to that provider's
+  own default endpoint instead of leaking the OpenRouter URL from the model
+  field default.
 - **Security:** the gateway no longer emits CORS headers by default —
   `cors.allowed_origins` now defaults to `[]` instead of `"*"`. The Web UI
   (served same-origin from the gateway), the CLI, curl, and the desktop app

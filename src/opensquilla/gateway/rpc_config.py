@@ -59,10 +59,18 @@ def _persist_config(config: Any) -> None:
 
     import tomli_w  # TOML writer (tomllib is read-only)
 
+    from opensquilla.onboarding.config_store import restore_runtime_overrides
+
+    payload = config.to_toml_dict()
+    # Undo boot/reload-time env materializations (llm.base_url, llm.proxy,
+    # CLI --listen/--port/--debug) before writing, exactly like the sparse
+    # persister: this dump is the full model, and without the restore an
+    # unrelated config.set would bake the env value into config.toml.
+    restore_runtime_overrides(payload, config)
     path = Path(config.config_path)
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "wb") as f:
-        tomli_w.dump(config.to_toml_dict(), f)
+        tomli_w.dump(payload, f)
 
 
 def _strip_public_derived_config_fields(payload: dict[str, Any]) -> dict[str, Any]:

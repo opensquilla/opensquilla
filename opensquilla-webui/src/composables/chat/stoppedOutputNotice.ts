@@ -52,21 +52,54 @@ function messagesWithInteriorStoppedOutputNotices(
   messages: ChatMessage[],
   label: string,
 ): ChatMessage[] {
-  const result: ChatMessage[] = []
+  const noticesByInsertionIndex = new Map<number, ChatMessage[]>()
   let changed = false
 
   for (let i = 0; i < messages.length; i++) {
     const message = messages[i]
-    result.push(message)
     if (message?.role !== 'user') continue
     if (!turnEndsBeforeAnotherUser(messages, i)) continue
     if (turnHasVisibleOutputBeforeNextUser(messages, i)) continue
 
-    result.push(interiorStoppedOutputNotice(message, i, label))
+    const insertionIndex = interiorStoppedOutputNoticeInsertionIndex(messages, i)
+    const notices = noticesByInsertionIndex.get(insertionIndex) || []
+    notices.push(interiorStoppedOutputNotice(message, i, label))
+    noticesByInsertionIndex.set(insertionIndex, notices)
     changed = true
   }
 
-  return changed ? result : messages
+  if (!changed) return messages
+
+  const result: ChatMessage[] = []
+  for (let i = 0; i < messages.length; i++) {
+    const notices = noticesByInsertionIndex.get(i)
+    if (notices) result.push(...notices)
+    result.push(messages[i])
+  }
+  const trailingNotices = noticesByInsertionIndex.get(messages.length)
+  if (trailingNotices) result.push(...trailingNotices)
+  return result
+}
+
+function interiorStoppedOutputNoticeInsertionIndex(messages: ChatMessage[], userIndex: number): number {
+  let index = userIndex + 1
+  while (index < messages.length) {
+    const message = messages[index]
+    if (!message) {
+      index++
+      continue
+    }
+    if (message.role === 'router') {
+      index++
+      continue
+    }
+    if (message.role === 'assistant' && !assistantMessageHasVisibleOutput(message)) {
+      index++
+      continue
+    }
+    break
+  }
+  return index
 }
 
 function turnEndsBeforeAnotherUser(messages: ChatMessage[], userIndex: number): boolean {

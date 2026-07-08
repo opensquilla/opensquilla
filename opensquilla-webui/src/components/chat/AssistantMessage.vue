@@ -7,8 +7,8 @@
       'msg-ai--stop-notice': message.stopNotice,
     }"
     :data-message-id="message.messageId"
-    :data-share-message-id="shareMessageId"
-    :data-share-selected="shareSelected ? 'true' : undefined"
+    :data-share-message-id="message.stopNotice ? undefined : shareMessageId"
+    :data-share-selected="shareSelected && !message.stopNotice ? 'true' : undefined"
     @click="onMessageClick"
   >
     <button
@@ -404,6 +404,7 @@ const legacyTimelineItems = computed<ChatStreamTimelineItem[]>(() => {
 
 function onMessageClick(event: MouseEvent) {
   if (!props.shareMode) return
+  if (props.message.stopNotice) return
   if ((event.target as HTMLElement | null)?.closest('button,a,input,textarea,select')) return
   emit('toggleShare', props.shareMessageId)
 }

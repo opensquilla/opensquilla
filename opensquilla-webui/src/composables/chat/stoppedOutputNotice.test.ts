@@ -82,6 +82,24 @@ describe('messagesWithStoppedOutputNotice', () => {
     expect(result.filter(message => message.stopNotice)).toHaveLength(3)
   })
 
+  it('places interior stopped-output notices after router-only metadata', () => {
+    const messages: ChatMessage[] = [
+      { role: 'user', text: 'route then stop', ts: 1_000, messageId: 'user-1' },
+      { role: 'router', text: '', ts: 1_050, messageId: 'router-1' },
+      { role: 'user', text: 'next question', ts: 2_000, messageId: 'user-2' },
+    ]
+
+    const result = messagesWithStoppedOutputNotice(messages, stoppedStatus, 'Output interrupted')
+
+    expect(result.map(message => [message.role, message.text])).toEqual([
+      ['user', 'route then stop'],
+      ['router', ''],
+      ['assistant', 'Output interrupted'],
+      ['user', 'next question'],
+      ['assistant', 'Stopped after 1s'],
+    ])
+  })
+
   it('renders the notice in the assistant output path', () => {
     const messages = ref<ChatMessage[]>(messagesWithStoppedOutputNotice([
       { role: 'user', text: 'start and stop quickly', ts: 1_000, messageId: 'user-1' },

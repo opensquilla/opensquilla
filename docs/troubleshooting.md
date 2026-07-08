@@ -78,6 +78,36 @@ finish starting or stop the process cleanly. Do not remove `yoyo_lock` rows or
 run yoyo break-lock unless you have verified the recorded process is no longer
 running.
 
+## Collecting Diagnostics for a Bug Report
+
+One action collects everything a maintainer needs:
+
+- **CLI:** `opensquilla bundle` — works even when the gateway will not start.
+- **Web UI:** Logs page → **Diagnostics** button.
+- **Desktop app:** application menu → **Download Diagnostics…** (if the app
+  cannot reach its gateway, this opens the logs folder instead).
+
+The bundle is a single zip containing gateway logs, recent error records,
+router decision and trace slices, an offline health report, and your
+configuration with all secrets redacted. Local paths are normalized to `~` and
+conversation content is **excluded** unless you explicitly opt in
+(`--include-content` or the dialog checkbox). Attach the zip to your GitHub
+issue.
+
+When a turn fails, the error message ends with a reference code like
+`(ref: a1b2c3d4)`. Quote that code in your report — it joins your description
+directly to the recorded error inside the bundle.
+
+### Where logs live
+
+- CLI/gateway installs: `~/.opensquilla/logs/` (`debug.log` is the rotating
+  gateway log; `gateway.log` captures daemonized stdout).
+- Desktop app (macOS): `~/Library/Application Support/OpenSquilla/logs/`
+  (packaged builds) or `~/Library/Application Support/@opensquilla/desktop-electron/logs/`
+  (development builds) — `desktop.log` is the app lifecycle log and
+  `gateway.log` the embedded gateway's output. The gateway's own state lives
+  under `opensquilla/state/` next to them.
+
 ## Port Already In Use
 
 Use another port:

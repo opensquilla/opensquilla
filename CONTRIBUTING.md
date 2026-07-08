@@ -24,6 +24,14 @@ can follow GitHub's normal closing flow. Maintainers may use `has-linked-pr`
 while work is still under review. If a linked pull request is closed without
 merging, the automation removes `has-linked-pr`.
 
+## Reporting Bugs
+
+Use the bug-report issue template. Attach a diagnostics bundle
+(`opensquilla bundle`, or the Web UI / desktop download button — see
+`docs/troubleshooting.md`); it is redacted by default and safe to share. Quote
+any `(ref: …)` code from the error message you saw. For suspected
+vulnerabilities use SECURITY.md instead.
+
 ## Attribution On Squash Or Replay
 
 When maintainer cleanup, replay, or squash merging collapses contributor

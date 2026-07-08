@@ -24,6 +24,8 @@ from collections.abc import Callable, Coroutine
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
+import structlog
+
 if TYPE_CHECKING:
     from opensquilla.engine.runtime import TurnRunner
 
@@ -45,6 +47,8 @@ from opensquilla.gateway.scopes import (
     resolve_required_scope,
 )
 from opensquilla.gateway.session_services import get_session_storage
+
+log = structlog.get_logger(__name__)
 
 # Handler type: (params, context) -> payload or raises
 RpcHandlerFn = Callable[[Any, "RpcContext"], Coroutine[Any, Any, Any]]
@@ -242,6 +246,12 @@ class RpcRegistry:
         except KeyError as exc:
             return make_error_res(req_id, "NOT_FOUND", str(exc))
         except Exception as exc:
+            log.error(
+                "rpc.dispatch_failed",
+                method=method,
+                error=str(exc),
+                exc_info=True,
+            )
             return make_error_res(req_id, "INTERNAL_ERROR", str(exc))
 
 

@@ -6,12 +6,15 @@ import time
 from collections import defaultdict
 from collections.abc import Callable
 
+import structlog
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 from starlette.types import ASGIApp
 
 from opensquilla.gateway.config import GatewayConfig
+
+log = structlog.get_logger(__name__)
 
 
 class AuthMiddleware(BaseHTTPMiddleware):
@@ -121,6 +124,13 @@ class ErrorHandlingMiddleware(BaseHTTPMiddleware):
         try:
             return await call_next(request)  # type: ignore[no-any-return]
         except Exception as exc:
+            log.error(
+                "http.request_failed",
+                path=request.url.path,
+                method=request.method,
+                error=str(exc),
+                exc_info=True,
+            )
             return JSONResponse(
                 {"error": str(exc), "code": "INTERNAL_ERROR"},
                 status_code=500,

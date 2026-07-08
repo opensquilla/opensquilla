@@ -211,6 +211,11 @@ async def finalize(
             session_key=ctx.session_key if ctx else None,
             error_class=envelope["error_class"],
             retry_allowed=envelope["retry_allowed"],
+            # ``finalize`` runs from the dispatcher's ``finally`` block after the
+            # ``except`` clause has already handled the exception, so
+            # ``sys.exc_info()`` is empty here — pass the exception object
+            # explicitly so the traceback reaches debug.log.
+            exc_info=exception,
         )
         status = {
             "version": 1,

@@ -207,19 +207,29 @@ def test_file_command_accepts_unknown_utf8_text_as_plain(tmp_path: Path) -> None
     assert base64.b64decode(att["data"]) == body
 
 
-def test_file_command_rejects_large_text_family_before_upload(tmp_path: Path) -> None:
+def test_file_command_stages_large_text_family(tmp_path: Path) -> None:
+    # Text above the inline threshold routes through the staged upload path
+    # instead of dead-ending on the old text-family rejection.
     path = _write(tmp_path, "large.csv", b"a" * (CLI_TEXT_ATTACHMENT_BYTES + 1))
-    called = False
+    captured: dict[str, Any] = {}
 
     def fake_upload(local_path: Path, mime: str, name: str) -> str:
-        nonlocal called
-        called = True
-        return "u-should-not-upload"
+        captured.update({"local_path": local_path, "mime": mime, "name": name})
+        return "u-large-text"
 
-    with pytest.raises(ValueError, match=r"text-family|/path|too large"):
-        _file_prompt_and_attachments(f"/file {path}", upload_callable=fake_upload)
+    _prompt, attachments = _file_prompt_and_attachments(
+        f"/file {path}", upload_callable=fake_upload
+    )
 
-    assert called is False
+    assert captured["mime"] == "text/csv"
+    assert attachments == [
+        {
+            "type": "text/csv",
+            "file_uuid": "u-large-text",
+            "name": "large.csv",
+            "mime": "text/csv",
+        }
+    ]
 
 
 def test_file_command_stages_large_image_within_image_cap(tmp_path: Path) -> None:

@@ -13,11 +13,11 @@ from opensquilla.channels.discord import DiscordChannel, DiscordChannelConfig
 from opensquilla.channels.matrix import MatrixChannel, MatrixChannelConfig
 from opensquilla.channels.telegram import TelegramChannel, TelegramChannelConfig
 from opensquilla.channels.types import Attachment
+from opensquilla.contracts.attachments import MAX_STAGED_TEXT_BYTES
 from opensquilla.gateway.attachment_ingest import (
     IMAGE_ATTACHMENT_BYTES,
     MAX_ATTACHMENT_BYTES,
     MAX_STAGED_PDF_BYTES,
-    TEXT_ATTACHMENT_BYTES,
 )
 
 
@@ -27,7 +27,9 @@ def test_generic_download_content_type_preserves_declared_allowed_mime() -> None
 
 
 def test_channel_attachment_limit_uses_declared_mime_policy() -> None:
-    assert attachment_limit_for_mime("text/plain") == TEXT_ATTACHMENT_BYTES
+    # Channel downloads feed the staged ingest path, so text uses the staged
+    # text ceiling rather than the 2MB inline cap.
+    assert attachment_limit_for_mime("text/plain") == MAX_STAGED_TEXT_BYTES
     assert attachment_limit_for_mime("image/png") == IMAGE_ATTACHMENT_BYTES
     assert attachment_limit_for_mime("application/pdf") == MAX_STAGED_PDF_BYTES
     assert attachment_limit_for_mime(None) == MAX_ATTACHMENT_BYTES
@@ -39,7 +41,7 @@ def test_channel_attachment_limit_uses_declared_mime_policy() -> None:
     )
     with pytest.raises(ValueError, match="exceeds"):
         ensure_declared_size_within_limit(
-            TEXT_ATTACHMENT_BYTES + 1,
+            MAX_STAGED_TEXT_BYTES + 1,
             name="large.txt",
             limit=attachment_limit_for_mime("text/plain"),
         )
@@ -280,7 +282,7 @@ async def test_telegram_oversize_declared_attachment_skips_get_file() -> None:
             Attachment(
                 name="huge.txt",
                 mime_type="text/plain",
-                size=TEXT_ATTACHMENT_BYTES + 1,
+                size=MAX_STAGED_TEXT_BYTES + 1,
                 metadata={"telegram_file_id": "file-1"},
             )
         )
@@ -301,7 +303,7 @@ async def test_matrix_oversize_declared_attachment_skips_download() -> None:
                 name="huge.txt",
                 mime_type="text/plain",
                 url="mxc://example.test/media",
-                size=TEXT_ATTACHMENT_BYTES + 1,
+                size=MAX_STAGED_TEXT_BYTES + 1,
                 metadata={"matrix_mxc_url": "mxc://example.test/media"},
             )
         )

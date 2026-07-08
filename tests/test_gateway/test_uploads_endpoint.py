@@ -21,6 +21,7 @@ from typing import Any
 
 import pytest
 
+from opensquilla.contracts.attachments import MAX_STAGED_TEXT_BYTES
 from opensquilla.gateway.attachment_ingest import (
     IMAGE_ATTACHMENT_BYTES,
     MAX_STAGED_PDF_BYTES,
@@ -87,12 +88,14 @@ def test_upload_too_large_30mb_plus_rejected(store: UploadStore) -> None:
         asyncio.run(store.put("big.pdf", "application/pdf", too_big))
 
 
-def test_upload_text_family_uses_two_million_byte_cap(store: UploadStore) -> None:
-    ok_uuid = asyncio.run(store.put("ok.txt", "text/plain", b"a" * TEXT_ATTACHMENT_BYTES))
+def test_upload_text_family_uses_staged_text_cap(store: UploadStore) -> None:
+    ok_uuid = asyncio.run(store.put("ok.txt", "text/plain", b"a" * (TEXT_ATTACHMENT_BYTES + 1)))
     assert ok_uuid.startswith("u-")
 
     with pytest.raises(UploadOversizeError):
-        asyncio.run(store.put("too-large.txt", "text/plain", b"a" * (TEXT_ATTACHMENT_BYTES + 1)))
+        asyncio.run(
+            store.put("too-large.txt", "text/plain", b"a" * (MAX_STAGED_TEXT_BYTES + 1))
+        )
 
 
 def test_upload_image_uses_five_mib_cap(store: UploadStore) -> None:
@@ -350,7 +353,11 @@ def test_file_uuid_resolution_rejects_large_staged_image() -> None:
         )
 
 
-def test_file_uuid_resolution_rejects_large_staged_text_family() -> None:
+def test_file_uuid_resolution_accepts_staged_text_above_inline_threshold(
+    tmp_path: Path,
+) -> None:
+    # Text is stageable: a clean-UTF-8 text file above the 2MB inline threshold
+    # resolves instead of dead-ending (the inline cap only bounds inline sends).
     from opensquilla.gateway.rpc_sessions import (
         _resolve_attachments,
         _validate_attachments,
@@ -374,15 +381,17 @@ def test_file_uuid_resolution_rejects_large_staged_text_family() -> None:
     validated = _validate_attachments(
         [{"file_uuid": "u-large-text", "mime": "text/csv", "name": "large.csv"}]
     )
-    with pytest.raises(ValueError, match="exceeds"):
-        asyncio.run(
-            _resolve_attachments(
-                validated,
-                store=store,
-                material_root=Path.cwd(),
-                session_id="s1",
-            )
+    resolved = asyncio.run(
+        _resolve_attachments(
+            validated,
+            store=store,
+            material_root=tmp_path,
+            session_id="s1",
         )
+    )
+    assert resolved[0]["kind"] == "attachment_ref"
+    assert resolved[0]["mime"] == "text/csv"
+    assert resolved[0]["size"] == len(payload)
 
 
 def test_file_uuid_resolution_rejects_aggregate_raw_bytes_above_cap(tmp_path: Path) -> None:
@@ -501,7 +510,9 @@ def test_post_restart_expired_marker_is_not_reported_as_lost(tmp_path: Path) -> 
 # ---------------------------------------------------------------------------
 
 
-def test_upload_route_rejects_oversize_text_family() -> None:
+def test_upload_route_accepts_text_above_inline_threshold() -> None:
+    # The staged path exists precisely so text larger than the inline threshold
+    # can upload; only the staged text ceiling rejects.
     pytest.importorskip("starlette.testclient")
     from starlette.applications import Starlette
     from starlette.testclient import TestClient
@@ -517,6 +528,30 @@ def test_upload_route_rejects_oversize_text_family() -> None:
         response = client.post(
             "/api/v1/files/upload",
             files={"file": ("big.txt", b"a" * (TEXT_ATTACHMENT_BYTES + 1), "text/plain")},
+        )
+
+    assert response.status_code == 200
+    assert response.json()["mime"] == "text/plain"
+
+
+def test_upload_route_rejects_text_above_staged_ceiling() -> None:
+    pytest.importorskip("starlette.testclient")
+    from starlette.applications import Starlette
+    from starlette.testclient import TestClient
+
+    from opensquilla.gateway.config import GatewayConfig
+    from opensquilla.gateway.uploads import UploadStore, register_upload_routes
+
+    store = UploadStore(
+        marker_dir=None, ttl_seconds=600, max_file_bytes=MAX_STAGED_TEXT_BYTES + 1024
+    )
+    app = Starlette(debug=False)
+    register_upload_routes(app, config=GatewayConfig(), store=store)
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/v1/files/upload",
+            files={"file": ("big.txt", b"a" * (MAX_STAGED_TEXT_BYTES + 1), "text/plain")},
         )
 
     assert response.status_code == 413

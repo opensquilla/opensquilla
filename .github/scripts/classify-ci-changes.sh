@@ -130,6 +130,18 @@ while IFS= read -r path || [[ -n "${path}" ]]; do
       mark_test_changed
       mark_platform_sensitive_changed
       ;;
+    tests/test_persistence/*)
+      mark_test_changed
+      mark_platform_sensitive_changed
+      ;;
+    tests/test_onboarding/* | tests/test_provider/* | tests/test_provider*.py)
+      mark_test_changed
+      mark_platform_sensitive_changed
+      ;;
+    tests/functional/test_gateway_*_e2e.py)
+      mark_test_changed
+      mark_platform_sensitive_changed
+      ;;
     tests/*)
       mark_test_changed
       ;;
@@ -144,11 +156,19 @@ while IFS= read -r path || [[ -n "${path}" ]]; do
       mark_platform_sensitive_changed
       mark_desktop_changed
       ;;
-    src/opensquilla/sandbox/* | src/opensquilla/tools/boundary.py | src/opensquilla/tools/builtin/code_exec.py | src/opensquilla/tools/builtin/filesystem.py | src/opensquilla/tools/builtin/git.py | src/opensquilla/tools/builtin/shell.py | src/opensquilla/tools/builtin/shell_policy.py | src/opensquilla/tools/path_* | src/opensquilla/tools/policy* | src/opensquilla/tools/write_*)
+    src/opensquilla/persistence/* | src/opensquilla/sandbox/* | src/opensquilla/tools/boundary.py | src/opensquilla/tools/builtin/code_exec.py | src/opensquilla/tools/builtin/filesystem.py | src/opensquilla/tools/builtin/git.py | src/opensquilla/tools/builtin/shell.py | src/opensquilla/tools/builtin/shell_policy.py | src/opensquilla/tools/path_* | src/opensquilla/tools/policy* | src/opensquilla/tools/write_*)
       mark_runtime_changed
       mark_platform_sensitive_changed
       ;;
-    src/* | scripts/* | migrations/*)
+    src/opensquilla/onboarding/* | src/opensquilla/provider/*)
+      mark_runtime_changed
+      mark_platform_sensitive_changed
+      ;;
+    migrations/*)
+      mark_runtime_changed
+      mark_platform_sensitive_changed
+      ;;
+    src/* | scripts/*)
       mark_runtime_changed
       ;;
     docs/* | README.md | README.*.md | CHANGELOG.md | CODE_OF_CONDUCT.md | CONTRIBUTING.md | MIGRATION.md | SECURITY.md | SUPPORT.md | THIRD_PARTY_NOTICES.md | META_SKILL_GUIDE.md | .github/pull_request_template.md | .github/ISSUE_TEMPLATE/*)

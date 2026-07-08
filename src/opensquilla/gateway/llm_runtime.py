@@ -92,6 +92,19 @@ def resolve_llm_runtime_config(config: Any) -> LlmRuntimeConfig:
     base_url = env_base_url or llm.base_url or (spec.default_base_url if spec else "")
     proxy = os.environ.get("OPENSQUILLA_LLM_PROXY", "") or getattr(llm, "proxy", "")
 
+    # Record runtime provenance BEFORE mutating the live model: values
+    # resolved from the environment (or spec defaults) here must never be
+    # baked into config.toml by a later unrelated persist. Only api_key has
+    # the runtime-secret mark; base_url/proxy get the override record that
+    # onboarding.config_store restores at persist time.
+    if hasattr(config, "record_runtime_override"):
+        stored_base_url = llm.base_url
+        if base_url != stored_base_url:
+            config.record_runtime_override("llm.base_url", stored_base_url, base_url)
+        stored_proxy = getattr(llm, "proxy", "")
+        if proxy != stored_proxy:
+            config.record_runtime_override("llm.proxy", stored_proxy, proxy)
+
     llm.provider = provider
     llm.api_key = api_key
     llm.base_url = base_url

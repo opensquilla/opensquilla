@@ -34,8 +34,11 @@ def _write_store_record(
     content: str,
 ) -> None:
     record_dir.mkdir(parents=True)
-    (record_dir / "content.txt").write_text(content, encoding="utf-8")
     payload = content.encode("utf-8")
+    # The raw-store contract is byte-oriented (the analyzer reads content.txt
+    # with read_bytes and hashes the raw payload). Write bytes so text-mode
+    # newline translation on Windows cannot skew the sha256/char counts below.
+    (record_dir / "content.txt").write_bytes(payload)
     _write_json(
         record_dir / "meta.json",
         {

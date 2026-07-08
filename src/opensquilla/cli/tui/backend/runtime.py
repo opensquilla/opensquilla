@@ -19,6 +19,10 @@ from opensquilla.cli.tui.backend.contracts import (
 from opensquilla.cli.tui.backend.events import TuiEvent, TuiEventKind, TuiEventSink
 from opensquilla.cli.tui.backend.state import TuiRuntimeState
 
+# Ceiling on the shutdown drain of in-flight abort RPCs: a wedged gateway
+# that never answers the abort must not hang TUI exit indefinitely.
+_ABORT_DRAIN_TIMEOUT_S = 5.0
+
 
 def _emit(event_sink: TuiEventSink | None, event: TuiEvent) -> None:
     if event_sink is not None:
@@ -39,6 +43,10 @@ async def run_tui_runtime(
         if hooks.expose_surface is not None:
             hooks.expose_surface(tui_surface)
         turn_task: asyncio.Task[bool] | None = None
+        # Abort tasks are held (and drained on shutdown) so a fire-and-forget
+        # cancel RPC is never garbage-collected mid-flight or abandoned while
+        # still pending when the runtime returns.
+        abort_tasks: set[asyncio.Task[None]] = set()
 
         async def _schedule_abort(abort_turn: Awaitable[None]) -> None:
             with contextlib.suppress(Exception):
@@ -52,6 +60,14 @@ async def run_tui_runtime(
                 suffix = "" if count == 1 else "s"
                 hooks.notice(f"[yellow]Discarded {count} queued message{suffix}.[/yellow]")
 
+        def _notice_turn_failed(exc: Exception) -> None:
+            if hooks.notice is not None:
+                hooks.notice(f"[red]Turn failed: {_escape(str(exc))}[/red]")
+
+        def _notice_surface_error(exc: Exception) -> None:
+            if hooks.notice is not None:
+                hooks.notice(f"[red]Input surface error: {_escape(str(exc))}[/red]")
+
         def _cancel_inflight_turn() -> asyncio.Task[None] | None:
             task = turn_task
             if task is not None and not task.done():
@@ -60,6 +76,8 @@ async def run_tui_runtime(
                 with contextlib.suppress(Exception):
                     abort_turn = hooks.on_cancel_active_turn()
                     abort_task = asyncio.create_task(_schedule_abort(abort_turn))
+                    abort_tasks.add(abort_task)
+                    abort_task.add_done_callback(abort_tasks.discard)
                 task.cancel()
                 return abort_task
             return None
@@ -110,6 +128,13 @@ async def run_tui_runtime(
                 if hooks.notice is not None:
                     hooks.notice("[yellow]Cancelled.[/yellow]")
                 keep_going = True
+            except Exception as exc:
+                # A dispatch failure (gateway restart, provider error, renderer
+                # write) ends the turn, not the session: surface it and keep
+                # reading input. Loop teardown is reserved for surface read
+                # failures.
+                _notice_turn_failed(exc)
+                keep_going = True
             finally:
                 turn_task = None
             return keep_going
@@ -120,7 +145,11 @@ async def run_tui_runtime(
                 queued = runtime_state.promote_next()
                 if queued is None:
                     break
-                await hooks.on_queued_turn_start(tui_surface)
+                try:
+                    await hooks.on_queued_turn_start(tui_surface)
+                except Exception as exc:
+                    _notice_surface_error(exc)
+                    return False
                 _emit(
                     config.event_sink,
                     TuiEvent(TuiEventKind.QUEUED_INPUT_PROMOTED, input_text=queued),
@@ -179,7 +208,11 @@ async def run_tui_runtime(
                         return runtime_state
                     queued = runtime_state.promote_next()
                     if queued is not None:
-                        await hooks.on_queued_turn_start(tui_surface)
+                        try:
+                            await hooks.on_queued_turn_start(tui_surface)
+                        except Exception as exc:
+                            _notice_surface_error(exc)
+                            return runtime_state
                         _emit(
                             config.event_sink,
                             TuiEvent(TuiEventKind.QUEUED_INPUT_PROMOTED, input_text=queued),
@@ -203,11 +236,10 @@ async def run_tui_runtime(
                     next_line_task = None
                     if turn_task is not None and not turn_task.done():
                         turn_task.cancel()
-                        with contextlib.suppress(asyncio.CancelledError):
+                        with contextlib.suppress(Exception, asyncio.CancelledError):
                             await turn_task
                         turn_task = None
-                    if hooks.notice is not None:
-                        hooks.notice(f"[red]Input surface error: {_escape(str(exc))}[/red]")
+                    _notice_surface_error(exc)
                     return runtime_state
                 next_line_task = None
 
@@ -216,13 +248,22 @@ async def run_tui_runtime(
                         try:
                             await turn_task
                         except asyncio.CancelledError:
-                            pass
+                            _emit(config.event_sink, TuiEvent(TuiEventKind.TURN_CANCELLED))
+                        except Exception as exc:
+                            _notice_turn_failed(exc)
                         turn_task = None
                     if not await _run_shutdown_drain():
                         return runtime_state
                     if hooks.notice is not None:
                         hooks.notice("[yellow]Goodbye.[/yellow]")
                     return runtime_state
+
+                # A blank line is never a message: dispatching it would echo an
+                # empty prompt card and queue a phantom entry behind a running
+                # turn. Surfaces guard this too; this is the backend's defense
+                # for every frontend.
+                if not user_input.strip():
+                    continue
 
                 category = config.classify_input(user_input)
 
@@ -231,7 +272,11 @@ async def run_tui_runtime(
                     # loop, with no prompt echo and no queue — the in-flight turn
                     # keeps streaming. A single host IPC frame is atomic, so it
                     # cannot interleave with the streaming turn.
-                    keep_going = await dispatch(user_input)
+                    try:
+                        keep_going = await dispatch(user_input)
+                    except Exception as exc:
+                        _notice_turn_failed(exc)
+                        continue
                     if not keep_going:
                         return runtime_state
                     continue
@@ -254,7 +299,19 @@ async def run_tui_runtime(
                         )
                     continue
 
-                await hooks.on_user_input_echo(tui_surface, user_input)
+                try:
+                    await hooks.on_user_input_echo(tui_surface, user_input)
+                except Exception as exc:
+                    # An echo failure means the surface itself is broken (the
+                    # write goes through host IPC), so degrade like a read
+                    # failure: cancel the in-flight turn and shut down cleanly.
+                    if turn_task is not None and not turn_task.done():
+                        turn_task.cancel()
+                        with contextlib.suppress(Exception, asyncio.CancelledError):
+                            await turn_task
+                        turn_task = None
+                    _notice_surface_error(exc)
+                    return runtime_state
                 _emit(
                     config.event_sink,
                     TuiEvent(TuiEventKind.USER_INPUT_ACCEPTED, input_text=user_input),
@@ -268,10 +325,17 @@ async def run_tui_runtime(
                             await turn_task
                         except asyncio.CancelledError:
                             hooks.clear_current_cancel()
+                            _emit(config.event_sink, TuiEvent(TuiEventKind.TURN_CANCELLED))
+                        except Exception as exc:
+                            _notice_turn_failed(exc)
                         if abort_task is not None:
                             await abort_task
                         turn_task = None
-                    keep_going = await _run_dispatch(user_input)
+                    try:
+                        keep_going = await _run_dispatch(user_input)
+                    except Exception as exc:
+                        _notice_turn_failed(exc)
+                        keep_going = True
                     if not keep_going:
                         return runtime_state
                     continue
@@ -282,10 +346,19 @@ async def run_tui_runtime(
                             await turn_task
                         except asyncio.CancelledError:
                             hooks.clear_current_cancel()
+                            _emit(config.event_sink, TuiEvent(TuiEventKind.TURN_CANCELLED))
+                        except Exception as exc:
+                            _notice_turn_failed(exc)
                         turn_task = None
                     if not await _run_shutdown_drain():
                         return runtime_state
-                    keep_going = await _run_dispatch(user_input)
+                    try:
+                        keep_going = await _run_dispatch(user_input)
+                    except Exception as exc:
+                        # The user asked to leave: a failing exit dispatch must
+                        # not trap them in the loop.
+                        _notice_turn_failed(exc)
+                        keep_going = False
                     if not keep_going:
                         return runtime_state
                     continue
@@ -314,5 +387,15 @@ async def run_tui_runtime(
             tui_surface.set_cancel_callback(None)
             tui_surface.set_shutdown_callback(None)
             await _drop_next_line()
+            if abort_tasks:
+                # Drain in-flight abort RPCs so a cancel-then-exit still
+                # reaches the backend before the client connection closes.
+                # The drain is bounded: a gateway that never answers the
+                # abort must not hang exit, so stragglers are cancelled.
+                _, stragglers = await asyncio.wait(
+                    set(abort_tasks), timeout=_ABORT_DRAIN_TIMEOUT_S
+                )
+                for straggler in stragglers:
+                    straggler.cancel()
             with contextlib.suppress(Exception):
                 uninstall_signals()

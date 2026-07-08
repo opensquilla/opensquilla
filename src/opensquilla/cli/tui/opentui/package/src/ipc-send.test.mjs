@@ -65,3 +65,36 @@ test("send() still writes a complete line on the normal path", async () => {
   assert.equal(got, '{"type":"ready"}\n{"type":"resize","width":80,"height":24}\n');
   try { fs.unlinkSync(fifo); fs.unlinkSync(out); } catch { /* best effort */ }
 });
+
+test("start() survives a malformed inbound line, reports it, and keeps dispatching", async () => {
+  const base = path.join(os.tmpdir(), `ipc-start-test-${process.pid}-${Math.random().toString(36).slice(2)}`);
+  const inPath = `${base}.in`;
+  const outPath = `${base}.out`;
+  fs.writeFileSync(inPath, 'not json\n{"type":"ready"}\n');
+  const rfd = fs.openSync(inPath, "r");
+  const wfd = fs.openSync(outPath, "w");
+  const ipc = createIpc({ fromFd: rfd, toFd: wfd });
+  const seen = [];
+  await new Promise((resolve) => ipc.start((m) => seen.push(m), resolve));
+  fs.closeSync(wfd);
+  // The valid line after the garbage still dispatched — the host survived.
+  assert.deepEqual(seen, [{ type: "ready" }]);
+  // The parse failure was reported back to Python instead of crashing.
+  const written = fs.readFileSync(outPath, "utf8").trim().split("\n").map((line) => JSON.parse(line));
+  assert.equal(written.length, 1);
+  assert.equal(written[0].type, "error");
+  try { fs.closeSync(rfd); } catch { /* already closed */ }
+  try { fs.unlinkSync(inPath); fs.unlinkSync(outPath); } catch { /* best effort */ }
+});
+
+test("start() routes a read-stream error to onClose so the host can tear down", async () => {
+  // A dead read fd (e.g. a parent-less launch) emits 'error', never 'close';
+  // it must take the same clean shutdown path as EOF instead of wedging the
+  // full-screen UI alive. Grab-and-close an fd so the number is known-invalid.
+  const probe = fs.openSync("/dev/null", "r");
+  fs.closeSync(probe);
+  const { start } = createIpc({ fromFd: probe, toFd: probe });
+  const closed = new Promise((resolve) => start(() => {}, () => resolve(true)));
+  const timeout = new Promise((resolve) => setTimeout(resolve, 2000, false));
+  assert.equal(await Promise.race([closed, timeout]), true);
+});

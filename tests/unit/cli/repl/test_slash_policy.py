@@ -39,17 +39,36 @@ from opensquilla.cli.repl.slash_policy import (
         "/compact",
         "/cmp",
         "/clear   ",
-        "/reset trailing-junk",
-        "/compact extra args",
     ],
 )
 def test_classify_destructive(command: str) -> None:
-    """Destructive commands return DESTRUCTIVE regardless of trailing args.
+    """Exact bare destructive words return DESTRUCTIVE.
 
-    Trailing tokens after the destructive head word do not change the
-    routing — the dispatch table only looks at the head word.
+    Only the exact bare lowercase word qualifies: the slash handlers match
+    exact strings, so anything else must not purge queued work and then
+    fall through to "Unknown command".
     """
     assert classify(command) is SlashCategory.DESTRUCTIVE
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "/reset trailing-junk",
+        "/compact extra args",
+        "/CLEAR",
+        "/Clear",
+    ],
+)
+def test_classify_destructive_requires_exact_bare_word(command: str) -> None:
+    """Case slips and stray arguments never classify as DESTRUCTIVE.
+
+    Destructive routing purges the pending queue and cancels the in-flight
+    turn BEFORE dispatch, while the handlers only match the exact bare
+    lowercase word — so these variants must enqueue instead, letting the
+    handler chain surface "Unknown command" without destroying work.
+    """
+    assert classify(command) is not SlashCategory.DESTRUCTIVE
 
 
 def test_destructive_set_matches_plan_lock() -> None:
@@ -74,16 +93,25 @@ def test_destructive_set_matches_plan_lock() -> None:
         "/exit",
         "/quit",
         "/exit  ",
-        "/quit now",
     ],
 )
 def test_classify_exit(command: str) -> None:
-    """Exit commands return EXIT.
+    """Exact bare exit words return EXIT.
 
     ``/exit`` and ``/quit`` are NOT destructive — they drain the pending
     queue first so queued user work still runs.
     """
     assert classify(command) is SlashCategory.EXIT
+
+
+@pytest.mark.parametrize("command", ["/quit now", "/Exit", "/EXIT stuff"])
+def test_classify_exit_requires_exact_bare_word(command: str) -> None:
+    """Case slips and stray arguments never classify as EXIT.
+
+    EXIT drains the queue and terminates the loop before dispatch; a
+    variant the handlers would reject must enqueue instead.
+    """
+    assert classify(command) is not SlashCategory.EXIT
 
 
 def test_exit_set_matches_plan_lock() -> None:
@@ -183,27 +211,27 @@ def test_classify_empty_input_is_non_slash() -> None:
     [
         "  /clear  ",
         "\t/reset",
-        "  /compact extra",
     ],
 )
 def test_classify_handles_leading_whitespace(command: str) -> None:
-    """Leading whitespace must not change classification.
+    """Surrounding whitespace must not change classification.
 
     Users typing into the REPL may have trailing or leading spaces from a
-    history edit; the classifier strips before tokenizing.
+    history edit; the classifier strips before matching the bare word.
     """
     assert classify(command) is SlashCategory.DESTRUCTIVE
 
 
-def test_classify_is_case_insensitive() -> None:
-    """Slash words classify regardless of input case.
+def test_classify_destructive_and_exit_are_case_sensitive() -> None:
+    """DESTRUCTIVE/EXIT match only the exact lowercase spelling.
 
-    The user can type ``/CLEAR`` and the policy still routes it as
-    destructive — matching the existing slash-handler chain which
-    lowercases the head before dispatch.
+    The handlers match exact lowercase strings, so ``/CLEAR`` must not
+    purge the queue and cancel the turn only to land on "Unknown
+    command". Enqueue categories keep matching case-insensitively via the
+    lowercased head word.
     """
-    assert classify("/CLEAR") is SlashCategory.DESTRUCTIVE
-    assert classify("/Exit") is SlashCategory.EXIT
+    assert classify("/CLEAR") is not SlashCategory.DESTRUCTIVE
+    assert classify("/Exit") is not SlashCategory.EXIT
     assert classify("/Help") in {SlashCategory.PURE_INFO, SlashCategory.STATE_MUTATION}
 
 

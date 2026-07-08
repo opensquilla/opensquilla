@@ -2,10 +2,10 @@
 import process from "node:process";
 import { THEME, applyTheme, onThemeApplied } from "./theme.mjs";
 import { registerThemeStyles } from "./syntaxTheme.mjs";
-import { parseNotice, isStructuredLine, NOTICE_LEVELS } from "./ansiNotice.mjs";
-import { TOOL_INDENT, clampFooterHeight, copySelectionToClipboard, isPinnedToBottom, stripTerminalControls } from "./primitives.mjs";
+import { noticeContent, recolorNoticeNodes } from "./ansiNotice.mjs";
+import { clampFooterHeight, copySelectionToClipboard, isPinnedToBottom, stripTerminalControls } from "./primitives.mjs";
 import { createComposer } from "./composer.mjs";
-import { createTurnView } from "./turnView.mjs";
+import { createTurnFlow, createTurnView } from "./turnView.mjs";
 import { createIpc, createDispatcher } from "./ipc.mjs";
 
 const HELP = `OpenSquilla OpenTUI footer host
@@ -17,7 +17,7 @@ IPC:
   reads Python JSON lines from fd 3 and writes host JSON lines to fd 4.
 `;
 
-if (process.argv.includes("--help") || process.argv.includes("-h")) {
+if (import.meta.main && (process.argv.includes("--help") || process.argv.includes("-h"))) {
   process.stdout.write(HELP);
   process.exit(0);
 }
@@ -27,6 +27,68 @@ const TO_PYTHON_FD = Number(process.env.OPENSQUILLA_OPENTUI_TO_PYTHON_FD ?? "4")
 const FOOTER_HEIGHT = 6;
 // Footer height clamped to the terminal so a very short pane never overflows it.
 const footerRows = (h) => clampFooterHeight(FOOTER_HEIGHT, h);
+
+// Decide, BEFORE a transcript mutation, whether the view should snap back to
+// the bottom after it. Being verifiably at the bottom always re-engages
+// following: the ScrollBox flags EVERY wheel event in _hasManualScroll — even
+// the wheel-down that lands exactly on the bottom row — and its own reengage
+// check only clears the flag when a layout pass grows content by at most one
+// row, so trusting a stale flag would leave the rest of a streaming turn
+// below the fold after the user wheels back down. Clearing it here treats a
+// verified return to the bottom as re-consent to follow, while a wheel-up
+// hold (not at bottom) leaves the flag untouched. Exported for the bun
+// contract tests.
+export function shouldFollowBottom(scrollBox) {
+  const atBottom = isPinnedToBottom(scrollBox.scrollTop, scrollBox.scrollHeight, scrollBox.height, 0);
+  if (atBottom) scrollBox._hasManualScroll = false;
+  return atBottom;
+}
+
+// Host-local escape hatch. Every quit key normally routes over IPC (Ctrl+C ->
+// input.cancel, Ctrl+D -> input.eof) and Python drives shutdown — but a
+// wedged or absent parent would otherwise trap the user in the alternate
+// screen with raw mode on. Two Ctrl+C presses in quick succession tear the
+// host down locally and exit 130 — but ONLY presses the composer routed to
+// the interrupt path (empty input, no modal overlay) count toward the chord:
+// a press consumed to clear a draft, or swallowed by the theme picker, must
+// disarm it, or the routine clear-then-cancel double-press would hard-kill a
+// healthy session. Construct BEFORE composer.install() so the per-press reset
+// listener runs ahead of the composer's handler, and call install() after it
+// so the chord check observes what the composer did with the press.
+export const DOUBLE_CTRL_C_MS = 1200;
+export function createCtrlCExitHatch({ keyInput, isOverlayOpen, onExit, windowMs = DOUBLE_CTRL_C_MS, now = Date.now }) {
+  let sentCancel = false; // did the composer forward THIS press as input.cancel?
+  let lastCtrlCAt = 0;
+  keyInput?.on?.("keypress", (key) => {
+    if (key?.ctrl && key?.name === "c") sentCancel = false;
+  });
+  return {
+    // Route the composer's outbound frames through here so the hatch can see
+    // which Ctrl+C presses actually reached the interrupt path.
+    noteHostMessage(m) {
+      if (m?.type === "input.cancel") sentCancel = true;
+    },
+    install() {
+      keyInput?.on?.("keypress", (key) => {
+        if (!key?.ctrl || key?.name !== "c") return;
+        if (!sentCancel || isOverlayOpen()) {
+          lastCtrlCAt = 0; // a consumed press disarms the chord entirely
+          return;
+        }
+        const at = now();
+        if (at - lastCtrlCAt <= windowMs) {
+          onExit();
+          return;
+        }
+        lastCtrlCAt = at;
+      });
+    },
+  };
+}
+
+// The live renderer, exposed to main().catch: a failure after the renderer
+// enters the alternate screen must still restore the terminal on exit.
+let bootRenderer = null;
 
 async function main() {
   // Resolve the active theme before anything reads THEME (unknown names fall
@@ -46,6 +108,7 @@ async function main() {
     // invisible on light terminals) and the terminal diff always clears cells.
     backgroundColor: THEME.appBg,
   });
+  bootRenderer = renderer;
   // Color the markdown answer body from the active theme. A bare SyntaxStyle has
   // no "default" style, so unstyled paragraph text would fall back to an
   // invisible light foreground on light themes. Register the theme's tokens now
@@ -72,6 +135,12 @@ async function main() {
     viewportCulling: true,
   });
   renderer.root.add(conversationBox);
+  // Keyboard input belongs to the composer alone. A click or drag-select on
+  // the transcript must not focus the ScrollBox: a focused ScrollBox registers
+  // its own keypress handler, and every arrow/PageUp/j/k/h/l press would then
+  // drive the transcript scroller AND the composer at once. Wheel scrolling
+  // dispatches by mouse hit-test, so it keeps working without focus.
+  conversationBox.focusable = false;
 
   const inputBox = new BoxRenderable(renderer, {
     id: "input-region",
@@ -113,6 +182,17 @@ async function main() {
   renderer.root.add(overlayLayer);
 
   const ipc = createIpc({ fromFd: FROM_PYTHON_FD, toFd: TO_PYTHON_FD });
+  // Escape hatch (see createCtrlCExitHatch): created before the composer so
+  // its per-press reset runs first, armed only by presses the composer routed
+  // to the interrupt path, and installed after the composer's own handler.
+  const exitHatch = createCtrlCExitHatch({
+    keyInput: renderer.keyInput,
+    isOverlayOpen: () => Boolean(overlayLayer.visible),
+    onExit: () => {
+      try { renderer.destroy(); } catch { /* exiting regardless */ }
+      process.exit(130);
+    },
+  });
   const composer = createComposer({
     renderer,
     BoxRenderable,
@@ -121,60 +201,61 @@ async function main() {
     inputBox,
     overlayLayer,
     footerHeight: FOOTER_HEIGHT,
-    sendHostMessage: ipc.send,
+    sendHostMessage: (m) => {
+      exitHatch.noteHostMessage(m);
+      ipc.send(m);
+    },
   });
   composer.install();
+  exitHatch.install();
 
-  let activeTurn = null;
-  // Every turn ever created, so a resize can reflow ALL of them (their baked
-  // full-width header rules don't re-rule themselves). The conversation already
-  // retains every turn box, so this only adds a reference, not a copy.
-  const turns = [];
   let scrollbackSeq = 0;
   let statusActive = false;
   let pulseFrame = 0;
 
+  const turnDeps = { renderer, BoxRenderable, TextRenderable, MarkdownRenderable, syntaxStyle, conversationBox };
+  // flow owns which turn view receives each protocol event (queued-prompt
+  // routing, late-block tolerance) and retains every turn ever created so a
+  // resize can reflow ALL of them (their baked full-width header rules don't
+  // re-rule themselves). The conversation already retains every turn box, so
+  // this only adds a reference, not a copy.
+  const flow = createTurnFlow((id) => createTurnView(turnDeps, id ?? scrollbackSeq++));
+  // Scrollback + notice lines live outside any turn view; register each with
+  // the semantic token its color came from so a live /theme switch can
+  // re-point it (renderables capture the color VALUE at creation).
+  const looseNodes = [];
+
   // A live /theme switch mutates THEME/STATUS in place and fires this event.
   // Already-rendered turn nodes captured their fg at creation, so recolor every
-  // turn's chrome + blocks here; the syntaxStyle listener above handles markdown
-  // spans. Force a full repaint so the new background lands cleanly under old
-  // cells. (No turns exist at the initial applyTheme, so this is a no-op then.)
+  // turn's chrome + blocks here — plus the loose scrollback/notice lines; the
+  // syntaxStyle listener above handles markdown spans. Force a full repaint so
+  // the new background lands cleanly under old cells. (No turns exist at the
+  // initial applyTheme, so this is a no-op then.)
   onThemeApplied(() => {
-    for (const t of turns) t.recolor?.();
+    for (const t of flow.turns) t.recolor?.();
+    recolorNoticeNodes(looseNodes, THEME);
     renderer.forceFullRepaintRequested = true;
     renderer.requestRender?.();
   });
-  const turnDeps = { renderer, BoxRenderable, TextRenderable, MarkdownRenderable, syntaxStyle, conversationBox };
-  const ensureTurn = (id) => {
-    if (!activeTurn || activeTurn.ended) {
-      activeTurn = createTurnView(turnDeps, id ?? scrollbackSeq++);
-      turns.push(activeTurn);
-    }
-    return activeTurn;
-  };
 
   // Keep the conversation pinned to the newest content as it grows. stickyScroll
   // does not re-follow while a child (e.g. a streaming answer) grows in place, so
-  // we explicitly snap to the bottom after a mutation — but ONLY if the user was
-  // already at the bottom, so scrolling up to read history is never yanked away.
-  const SCROLL_PIN_SLACK = 2;
+  // we explicitly snap to the bottom after a mutation — but never while the user
+  // has scrolled away: shouldFollowBottom holds while they read history and
+  // re-consents the engine's manual-scroll flag once they wheel back down to
+  // the bottom, so following always resumes there.
   function scrollConversationToBottom() {
     conversationBox.scrollTop = conversationBox.scrollHeight;
   }
   function withBottomFollow(mutate) {
-    const pinned = isPinnedToBottom(
-      conversationBox.scrollTop,
-      conversationBox.scrollHeight,
-      conversationBox.height,
-      SCROLL_PIN_SLACK,
-    );
+    const pinned = shouldFollowBottom(conversationBox);
     mutate();
     if (pinned) scrollConversationToBottom();
   }
 
   const dispatch = createDispatcher({
-    turnBegin: (m) => { ensureTurn(m.id); },
-    turnEnd: () => { if (activeTurn) { activeTurn.finish?.(); activeTurn.ended = true; } },
+    turnBegin: (m) => { flow.ensure(m.id); },
+    turnEnd: (m) => flow.endTurn(Boolean(m?.cancelled)),
     turnStatus: (m) => {
       statusActive = Boolean(m.active ?? statusActive);
       composer.setTurnStatus(m);
@@ -183,16 +264,17 @@ async function main() {
     completionContext: (m) => composer.setCompletionContext(m),
     completionResponse: (m) => composer.applyCompletionResponse(m),
     routerUpdate: (m) => composer.setRouterState(m),
-    blockBegin: (m) => withBottomFollow(() => ensureTurn().begin(m.id, m.kind, m.meta)),
-    blockAppend: (m) => withBottomFollow(() => activeTurn?.append(m.id, m.delta)),
-    blockUpdate: (m) => withBottomFollow(() => activeTurn?.update(m.id, m.patch)),
-    blockEnd: (m) => activeTurn?.end(m.id),
+    blockBegin: (m) => withBottomFollow(() => flow.turnForBlock().begin(m.id, m.kind, m.meta)),
+    blockAppend: (m) => withBottomFollow(() => flow.active()?.append(m.id, m.delta)),
+    blockUpdate: (m) => withBottomFollow(() => flow.active()?.update(m.id, m.patch)),
+    blockEnd: (m) => flow.active()?.end(m.id),
     // prompt.echo arrives BEFORE turn.begin (it is emitted by the input-echo
-    // hook). ensureTurn here starts the turn view; the following turn.begin
-    // reuses it because activeTurn is set and not ended. Render the user's
-    // submitted text as a prompt block.
+    // hook) — and it also fires immediately for a submission QUEUED behind a
+    // still-streaming turn. The flow gives a queued echo its own view (reusing
+    // the live turn would close its card mid-stream and glue its usage line to
+    // the new prompt) and adopts that view when its turn.begin arrives.
     promptEcho: (m) => {
-      const turn = ensureTurn(m.id);
+      const turn = flow.turnForPrompt();
       turn.begin(`prompt-${scrollbackSeq++}`, "prompt", { text: String(m.text ?? "") });
       // The user just submitted — always snap to the bottom so they see their
       // message and the incoming response, even if they had scrolled up.
@@ -202,7 +284,7 @@ async function main() {
     // ✻) by seeding a thinking block and flushing it immediately on end.
     modelText: (m) => {
       withBottomFollow(() => {
-        const turn = ensureTurn();
+        const turn = flow.ensure();
         const id = `note-${scrollbackSeq++}`;
         turn.begin(id, "thinking", {});
         turn.append(id, String(m.text ?? ""));
@@ -214,6 +296,13 @@ async function main() {
     // owned surface; new content picks up THEME automatically.
     themeSet: (m) => composer.applyHostTheme(m.name),
     themePick: () => composer.openThemePicker(),
+    // Tool-approval prompt from the Python side: the composer mounts a modal
+    // overlay and answers with one approval.response frame when the user
+    // decides (Python treats no answer as a deny after its own timeout).
+    approvalRequest: (m) => composer.openApprovalOverlay(m),
+    // Python stopped waiting on a request (timeout / turn cancel): close the
+    // matching overlay so a stale modal cannot swallow the next keypress.
+    approvalDismiss: (m) => composer.dismissApprovalOverlay(m.id),
     // scrollback is a lifecycle-less raw line dump (no begin/end); rendered inline
     // here rather than as a block — the only orchestration-layer rendering exception.
     scrollback: (m) => {
@@ -222,6 +311,7 @@ async function main() {
         content: stripTerminalControls(String(m.text ?? "")),
         fg: THEME.muted,
       });
+      looseNodes.push({ node, token: "muted" });
       withBottomFollow(() => conversationBox.add(node));
       renderer.requestRender?.();
     },
@@ -230,21 +320,23 @@ async function main() {
     // them INSIDE the conversation in the active theme's semantic color (never on
     // the terminal, so they can no longer bleed over or clip against the host).
     notice: (m) => {
-      const { text, level } = parseNotice(String(m.text ?? ""));
-      if (!text.trim()) return; // drop blank spacer lines
-      const spec = NOTICE_LEVELS[level] ?? NOTICE_LEVELS.detail;
-      const fg = THEME[spec.token] ?? THEME.detailText;
-      // Plain status lines get a severity glyph; table/panel borders render as-is
-      // so their box-drawing stays aligned.
-      const content = isStructuredLine(text)
-        ? `${TOOL_INDENT}${text}`
-        : `${TOOL_INDENT}${spec.glyph} ${text}`;
-      const node = new TextRenderable(renderer, { id: `notice-${scrollbackSeq++}`, content, fg });
+      const spec = noticeContent(m.text);
+      if (!spec) return; // drop blank spacer lines
+      const node = new TextRenderable(renderer, {
+        id: `notice-${scrollbackSeq++}`,
+        content: spec.content,
+        fg: THEME[spec.token] ?? THEME.detailText,
+      });
+      looseNodes.push({ node, token: spec.token });
       withBottomFollow(() => conversationBox.add(node));
       renderer.requestRender?.();
     },
     shutdown: () => { renderer.destroy(); process.exit(0); },
-    unknown: (m) => ipc.send({ type: "error", message: `Unknown Python message type: ${m.type}` }),
+    // An unknown inbound type is a protocol gap (a newer Python against an
+    // older host), not a host failure: reply with a dedicated frame instead of
+    // an error, which the Python side treats as fatal. Older Python skips
+    // unknown host frames tolerantly, so this degrades gracefully everywhere.
+    unknown: (m) => ipc.send({ type: "protocol.unknown", messageType: m.type }),
   });
 
   // Select-to-copy. A mouse-capturing TUI never receives the terminal's
@@ -264,7 +356,8 @@ async function main() {
     composer.onResize();
     // Reflow every existing turn's full-width header rule to the new width, so a
     // resize re-rules the cards instead of leaving baked rules to wrap or strand.
-    for (const t of turns) t.relayout?.();
+    // (Each turn skips itself when its ruled width is already current.)
+    for (const t of flow.turns) t.relayout?.();
     // Force a FULL repaint after a resize. OpenTUI's standard (alternate-screen)
     // resize path renders a DIFF, so cells the old — wider/taller — layout
     // occupied are left uncleared: e.g. the router box's previous position and
@@ -283,7 +376,7 @@ async function main() {
     if (!statusActive) return;
     pulseFrame += 1;
     try {
-      activeTurn?.refreshPulse(pulseFrame);
+      flow.active()?.refreshPulse(pulseFrame);
       composer.tickPulse(pulseFrame);
       renderer.requestRender?.();
     } catch {
@@ -306,7 +399,18 @@ async function main() {
   );
 }
 
-main().catch((error) => {
-  process.stderr.write(`${error?.message ?? error}\n`);
-  process.exit(1);
-});
+// Boot only when run as the entry script (`bun src/main.mjs`, how the Python
+// bridge always spawns the host): the exported helpers above are imported by
+// the bun contract tests, and importing this module must never start a
+// renderer or enter the alternate screen.
+if (import.meta.main) {
+  main().catch((error) => {
+    // A failure after the renderer entered the alternate screen must restore the
+    // terminal (leave alt screen, raw mode + mouse tracking off) before exiting:
+    // process.exit never emits beforeExit, so the engine's own restore hook does
+    // not run, and the error itself goes to a pipe the user cannot see.
+    try { bootRenderer?.destroy(); } catch { /* best-effort restore */ }
+    process.stderr.write(`${error?.message ?? error}\n`);
+    process.exit(1);
+  });
+}

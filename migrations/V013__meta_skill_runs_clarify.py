@@ -121,6 +121,37 @@ def _table_exists(conn, table: str) -> bool:
     return cur.fetchone() is not None
 
 
+def _has_column(conn, table: str, column: str) -> bool:
+    cur = conn.cursor()
+    cur.execute(f"PRAGMA table_info({table})")
+    return any(row[1] == column for row in cur.fetchall())
+
+
+def _assert_fk_enforcement_off(conn) -> None:
+    """Fail loudly if foreign-key enforcement is live on this connection.
+
+    yoyo wraps every Python step in an explicit transaction, and
+    ``PRAGMA foreign_keys`` is a documented no-op inside a transaction, so
+    the OFF/ON bracket around the rebuild cannot take effect there. The
+    rebuild is only safe because SQLite defaults foreign_keys to OFF: with
+    enforcement enabled (e.g. an SQLITE_DEFAULT_FOREIGN_KEYS=1 build),
+    ``DROP TABLE meta_skill_runs`` would run an implicit DELETE that
+    CASCADE-wipes every meta_skill_run_steps row — and the subsequent
+    ``foreign_key_check`` would still pass. Refuse instead of losing data.
+    """
+    cur = conn.cursor()
+    cur.execute("PRAGMA foreign_keys")
+    row = cur.fetchone()
+    if row is not None and row[0]:
+        raise RuntimeError(
+            "V013: PRAGMA foreign_keys is enabled on the migration "
+            "connection; rebuilding meta_skill_runs would cascade-delete "
+            "its meta_skill_run_steps child rows. Refusing to proceed — "
+            "run migrations on a connection with foreign-key enforcement "
+            "disabled."
+        )
+
+
 _PRE_EXISTING_INDEXES = [
     "CREATE INDEX idx_meta_runs_name_started "
     "ON meta_skill_runs(meta_skill_name, started_at_ms DESC)",
@@ -136,7 +167,19 @@ _PRE_EXISTING_INDEXES = [
 def apply_step(conn) -> None:
     if not _table_exists(conn, "meta_skill_runs"):
         return
+    if _has_column(conn, "meta_skill_runs", "awaiting_step_id"):
+        # Re-run guard (yoyo's apply-then-mark crash window, or operator
+        # reapply): the clarify columns already exist. Re-running the copy
+        # below would re-populate only the 16 pre-clarify columns and
+        # silently NULL awaiting_step_id / awaiting_schema_json /
+        # awaiting_since / awaiting_filled_json / step_outputs_json /
+        # parse_failure_count — permanently breaking resume for any parked
+        # awaiting_user run. Skip instead.
+        return
+    _assert_fk_enforcement_off(conn)
     cur = conn.cursor()
+    # Inert inside yoyo's step transaction (see _assert_fk_enforcement_off);
+    # kept because it is harmless and correct outside a transaction.
     cur.execute("PRAGMA foreign_keys = OFF")
     try:
         cur.execute(_new_table_sql(_NEW_STATUS_VALUES))
@@ -176,6 +219,9 @@ def rollback_step(conn) -> None:
             f"awaiting_user/expired must be transitioned to a legacy status "
             f"(cancelled/ok/failed) first.",
         )
+    _assert_fk_enforcement_off(conn)
+    # Inert inside yoyo's step transaction (see _assert_fk_enforcement_off);
+    # kept because it is harmless and correct outside a transaction.
     cur.execute("PRAGMA foreign_keys = OFF")
     try:
         cur.execute(_OLD_TABLE_SQL)
@@ -185,6 +231,11 @@ def rollback_step(conn) -> None:
         for idx_sql in _PRE_EXISTING_INDEXES:
             cur.execute(idx_sql)
         cur.execute("PRAGMA foreign_key_check")
+        bad = cur.fetchall()
+        if bad:
+            raise RuntimeError(
+                f"V013 foreign_key_check found orphans after rollback: {bad}"
+            )
     finally:
         cur.execute("PRAGMA foreign_keys = ON")
 

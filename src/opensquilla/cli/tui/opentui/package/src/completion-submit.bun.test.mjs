@@ -40,7 +40,11 @@ async function setupComposer() {
     composer.rerender();
   }
   composer.setCompletionContext({
-    catalog: [{ label: "/theme", insert_text: "/theme ", description: "List or switch the OpenTUI color theme." }],
+    catalog: [
+      { label: "/theme", insert_text: "/theme ", description: "List or switch the OpenTUI color theme.", category: "command" },
+      { label: "/html-coder", insert_text: "use the html-coder skill: ", description: "HTML skill.", category: "skill" },
+    ],
+    files: ["src/app.mjs"],
   });
   return { renderer, composer, sent };
 }
@@ -69,5 +73,54 @@ test("Tab on the /theme suggestion completes without submitting", async () => {
 
   // Tab completes (for typing arguments) — it must NOT submit on its own.
   expect(sent.some((m) => m.type === "input.submit")).toBe(false);
+  renderer.destroy?.();
+});
+
+test("Enter on a skill suggestion completes the prefix without submitting it", async () => {
+  const { renderer, sent } = await setupComposer();
+  type(renderer, "/html");
+  press(renderer, "return");
+
+  // The insert text is a prompt PREFIX that still needs a task after it, so the
+  // first Enter must only complete; the follow-up Enter submits the full line.
+  expect(sent.some((m) => m.type === "input.submit")).toBe(false);
+  type(renderer, "build a page");
+  press(renderer, "return");
+  const submit = sent.find((m) => m.type === "input.submit");
+  expect(submit?.text).toBe("use the html-coder skill: build a page");
+  renderer.destroy?.();
+});
+
+test("Alt+Enter with a slash menu open inserts a newline, never accept-submits", async () => {
+  const { renderer, sent } = await setupComposer();
+  type(renderer, "/theme"); // menu open with /theme highlighted
+  renderer.keyInput.emit("keypress", { name: "return", meta: true });
+
+  expect(sent.some((m) => m.type === "input.submit")).toBe(false);
+  type(renderer, "x");
+  press(renderer, "return");
+  expect(sent.find((m) => m.type === "input.submit")?.text).toBe("/theme\nx");
+  renderer.destroy?.();
+});
+
+test("fast typing coalesces file-completion requests and drops stale responses", async () => {
+  const { renderer, composer, sent } = await setupComposer();
+  type(renderer, "@src"); // 4 keystrokes, each re-arming the 120ms debounce
+  await new Promise((resolve) => setTimeout(resolve, 200));
+
+  const requests = sent.filter((m) => m.type === "completion.request");
+  expect(requests.length).toBe(1); // coalesced into one request...
+  expect(requests[0].request_id).toBe(4); // ...carrying the LATEST sequence
+
+  // A stale response (an earlier request_id) must not clobber the menu.
+  composer.applyCompletionResponse({
+    kind: "file",
+    request_id: 2,
+    items: [{ label: "STALE", insert_text: "@STALE ", category: "file" }],
+  });
+  press(renderer, "tab"); // accept the (cached) match, not the stale item
+  press(renderer, "return");
+  const submit = sent.find((m) => m.type === "input.submit");
+  expect(submit?.text).toBe("@src/app.mjs ");
   renderer.destroy?.();
 });

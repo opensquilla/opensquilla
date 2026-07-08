@@ -699,6 +699,8 @@
       "timeout": "已超时",
       "interrupted": "已中断",
       "cancelled": "已取消",
+      "outputInterrupted": "输出被中断",
+      "stoppedAfterSeconds": "运行 {seconds}秒后停止",
       "idle": "空闲"
     },
     "relTime": {
@@ -1381,6 +1383,8 @@
       "installVia": "通过 {kind} 安装",
       "installing": "安装中...",
       "homepage": "主页",
+      "loadingContent": "正在加载 SKILL.md...",
+      "emptyContent": "没有可用的 SKILL.md 内容。",
       "removing": "移除中...",
       "remove": "移除"
     },

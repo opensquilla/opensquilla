@@ -150,6 +150,26 @@ const repoRoot = process.env.OPENSQUILLA_DESKTOP_REPO_ROOT
 
 let mainWindow: BrowserWindow | null = null
 let onboardingWindow: BrowserWindow | null = null
+
+type DesktopNativeThemeSource = 'light' | 'dark' | 'system'
+
+function normalizeDesktopNativeThemeSource(payload: unknown): DesktopNativeThemeSource {
+  const source = typeof payload === 'string'
+    ? payload
+    : payload && typeof payload === 'object' && 'source' in payload
+      ? (payload as { source?: unknown }).source
+      : undefined
+  return source === 'light' || source === 'dark' || source === 'system' ? source : 'system'
+}
+
+function applyDesktopNativeTheme(source: DesktopNativeThemeSource): { source: DesktopNativeThemeSource; shouldUseDarkColors: boolean } {
+  nativeTheme.themeSource = source
+  const backgroundColor = nativeTheme.shouldUseDarkColors ? '#08080A' : '#F7F6F3'
+  for (const window of [mainWindow, onboardingWindow]) {
+    if (window && !window.isDestroyed()) window.setBackgroundColor(backgroundColor)
+  }
+  return { source, shouldUseDarkColors: nativeTheme.shouldUseDarkColors }
+}
 let gatewayProcess: ChildProcessWithoutNullStreams | null = null
 let isQuitting = false
 // Opt stopGateway into the Windows HTTP graceful-drain path even while isQuitting
@@ -5144,6 +5164,9 @@ ipcMain.handle('desktop:update:relaunch', async () => {
 })
 ipcMain.handle('desktop:update:dismiss', async () => dismissDesktopUpdate())
 ipcMain.handle('desktop:os-locale', () => desktopLocale)
+ipcMain.handle('desktop:theme:set', (_event, payload: unknown) => (
+  applyDesktopNativeTheme(normalizeDesktopNativeThemeSource(payload))
+))
 ipcMain.handle('gateway:status', () => ({ ...gatewayState }))
 ipcMain.handle('gateway:reveal-log', async () => {
   if (gatewayState.logPath) {

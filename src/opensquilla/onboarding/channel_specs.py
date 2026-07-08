@@ -220,8 +220,12 @@ def _wecom_spec() -> ChannelSetupSpec:
         ),
         fields=(
             *_common_fields(),
+            # The default must mirror ``WeComChannelEntry.connection_mode``:
+            # a headless entry that omits connection_mode is validated in the
+            # pydantic default mode, so an advertised minimal setup seeded
+            # from a diverging spec default would always fail validation.
             ChannelSetupField("connection_mode", "Connection mode", "select",
-                              required=False, default="websocket",
+                              required=False, default="webhook",
                               choices=("websocket", "webhook")),
             ChannelSetupField("bot_id", "Bot ID", "text", required=True,
                               group="credentials",

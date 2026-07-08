@@ -1,0 +1,304 @@
+"""Wire-contract pins for onboarding mutation RPC semantics.
+
+The CLI onboarding hardening pass widened several mutation signatures to
+``None`` = keep-current and made re-saves state-dependent. Those semantics
+are reachable from the unmodified gateway RPC handlers
+(``onboarding.provider.configure``, ``onboarding.router.configure``,
+``onboarding.search.configure``, ``onboarding.channel.probe``/``upsert``),
+so this module is the explicit sign-off: each test pins one wire-visible
+behavior so any future change to it is a conscious contract decision.
+
+Pinned here:
+
+- **Keep-current re-saves** (deliberate change): a same-provider re-save
+  carries over stored ``provider_routing``/``max_tokens``, a blank
+  ``apiKey`` keeps the stored key, and an operator-authored inline router
+  ladder survives a provider save. ``onboarding.router.configure`` with
+  ``mode=disabled`` keeps the effective ladder stored inline for re-enable.
+- **Explicit JSON null = legacy default** (compatibility): a client sending
+  ``null`` for ``model``/``proxy``/``maxResults``/... gets the pre-widening
+  reset/derive behavior, not keep-current.
+- **Blank required channel secrets hard-fail** (deliberate change): probe
+  and upsert reject a genuinely blank secret; with a stored entry both are
+  merge-aware, so blank-means-keep round-trips.
+
+All configs are synthetic; no network or credentials involved.
+"""
+
+from __future__ import annotations
+
+import tomllib
+
+import pytest
+
+import opensquilla.gateway.rpc_onboarding  # noqa: F401  ensures registration
+from opensquilla.gateway.auth import Principal
+from opensquilla.gateway.rpc import RpcContext, get_dispatcher
+
+
+def _admin_ctx() -> RpcContext:
+    return RpcContext(
+        conn_id="contract",
+        principal=Principal(
+            role="operator",
+            scopes=frozenset({"operator.admin"}),
+            is_owner=True,
+            authenticated=True,
+        ),
+    )
+
+
+async def _dispatch(method: str, params: dict):
+    return await get_dispatcher().dispatch("r1", method, params, _admin_ctx())
+
+
+@pytest.fixture()
+def config_file(tmp_path, monkeypatch):
+    target = tmp_path / "c.toml"
+    monkeypatch.setenv("OPENSQUILLA_GATEWAY_CONFIG_PATH", str(target))
+    return target
+
+
+# ---------------------------------------------------------------------------
+# Keep-current re-save semantics (deliberate wire-visible change).
+# ---------------------------------------------------------------------------
+
+
+async def test_provider_resave_keeps_stored_provider_routing_and_max_tokens(
+    config_file,
+):
+    config_file.write_text(
+        "[llm]\n"
+        'provider = "openrouter"\n'
+        'model = "custom/model-x"\n'
+        'api_key = "sk-old"\n'
+        "max_tokens = 4096\n"
+        "[llm.provider_routing]\n"
+        '"custom/model-x" = "custom-upstream"\n',
+        encoding="utf-8",
+    )
+
+    res = await _dispatch(
+        "onboarding.provider.configure",
+        {"providerId": "openrouter", "model": "custom/model-x", "apiKey": "sk-new"},
+    )
+
+    assert res.error is None, res.error
+    # providerRouting was never sent: the stored table is carried over
+    # (legacy behavior reset it to {}); max_tokens rides the stored section.
+    assert res.payload["entry"]["provider_routing"] == {
+        "custom/model-x": "custom-upstream"
+    }
+    data = tomllib.loads(config_file.read_text())
+    assert data["llm"]["provider_routing"] == {"custom/model-x": "custom-upstream"}
+    assert data["llm"]["max_tokens"] == 4096
+
+
+async def test_provider_resave_blank_api_key_keeps_stored_key(config_file):
+    config_file.write_text(
+        '[llm]\nprovider = "openrouter"\nmodel = "custom/model-x"\napi_key = "sk-stored"\n',
+        encoding="utf-8",
+    )
+
+    res = await _dispatch(
+        "onboarding.provider.configure",
+        {"providerId": "openrouter", "model": "custom/model-x", "apiKey": ""},
+    )
+
+    # Legacy behavior raised "requires an api_key"; blank now keeps stored.
+    assert res.error is None, res.error
+    data = tomllib.loads(config_file.read_text())
+    assert data["llm"]["api_key"] == "sk-stored"
+
+
+async def test_provider_resave_keeps_operator_authored_router_ladder(config_file):
+    config_file.write_text(
+        "[llm]\n"
+        'provider = "openrouter"\n'
+        'model = "custom/model-x"\n'
+        'api_key = "sk-old"\n'
+        "[squilla_router]\n"
+        "enabled = true\n"
+        "[squilla_router.tiers.c0]\n"
+        'provider = "openrouter"\n'
+        'model = "custom/cheap"\n'
+        "[squilla_router.tiers.c1]\n"
+        'provider = "openrouter"\n'
+        'model = "custom/model-x"\n'
+        "[squilla_router.tiers.c2]\n"
+        'provider = "openrouter"\n'
+        'model = "custom/mid"\n'
+        "[squilla_router.tiers.c3]\n"
+        'provider = "openrouter"\n'
+        'model = "custom/big"\n',
+        encoding="utf-8",
+    )
+
+    res = await _dispatch(
+        "onboarding.provider.configure",
+        {"providerId": "openrouter", "model": "custom/model-x", "apiKey": "sk-new"},
+    )
+
+    assert res.error is None, res.error
+    data = tomllib.loads(config_file.read_text())
+    # Legacy behavior reverted the ladder to the packaged openrouter profile.
+    assert data["squilla_router"]["tiers"]["c0"]["model"] == "custom/cheap"
+    assert data["squilla_router"]["tiers"]["c3"]["model"] == "custom/big"
+    assert "tier_profile" not in data["squilla_router"]
+
+
+async def test_router_disable_keeps_effective_ladder_inline(config_file):
+    config_file.write_text(
+        "[llm]\n"
+        'provider = "openrouter"\n'
+        'model = "custom/model-x"\n'
+        'api_key = "sk"\n'
+        "[squilla_router]\n"
+        "enabled = true\n"
+        "[squilla_router.tiers.c0]\n"
+        'provider = "openrouter"\n'
+        'model = "custom/cheap"\n'
+        "[squilla_router.tiers.c1]\n"
+        'provider = "openrouter"\n'
+        'model = "custom/model-x"\n'
+        "[squilla_router.tiers.c2]\n"
+        'provider = "openrouter"\n'
+        'model = "custom/mid"\n'
+        "[squilla_router.tiers.c3]\n"
+        'provider = "openrouter"\n'
+        'model = "custom/big"\n',
+        encoding="utf-8",
+    )
+
+    res = await _dispatch("onboarding.router.configure", {"mode": "disabled"})
+
+    assert res.error is None, res.error
+    assert res.payload["entry"]["mode"] == "disabled"
+    data = tomllib.loads(config_file.read_text())
+    assert data["squilla_router"]["enabled"] is False
+    # The operator's ladder stays stored inline so a re-enable can restore
+    # it (legacy behavior reset it to the packaged profile).
+    assert data["squilla_router"]["tiers"]["c0"]["model"] == "custom/cheap"
+    assert data["squilla_router"]["tiers"]["c3"]["model"] == "custom/big"
+
+
+# ---------------------------------------------------------------------------
+# Explicit JSON null keeps the LEGACY defaults (compatibility pin).
+# ---------------------------------------------------------------------------
+
+
+async def test_provider_configure_null_model_resets_to_derived_default(config_file):
+    config_file.write_text(
+        '[llm]\nprovider = "deepseek"\nmodel = "custom-stored-model"\napi_key = "sk-old"\n',
+        encoding="utf-8",
+    )
+
+    res = await _dispatch(
+        "onboarding.provider.configure",
+        {"providerId": "deepseek", "model": None, "apiKey": "sk-new"},
+    )
+
+    assert res.error is None, res.error
+    # null must behave like the legacy empty string: derive the router
+    # profile default, NOT keep the stored custom model.
+    assert res.payload["entry"]["model"] != "custom-stored-model"
+    assert res.payload["entry"]["model"]
+
+
+async def test_search_configure_null_params_reset_to_legacy_defaults(config_file):
+    from opensquilla.search.types import DEFAULT_SEARCH_MAX_RESULTS
+
+    config_file.write_text(
+        'search_provider = "duckduckgo"\n'
+        "search_max_results = 9\n"
+        'search_proxy = "http://127.0.0.1:7890"\n'
+        'search_fallback_policy = "network"\n'
+        "search_diagnostics = true\n",
+        encoding="utf-8",
+    )
+
+    res = await _dispatch(
+        "onboarding.search.configure",
+        {
+            "providerId": "duckduckgo",
+            "maxResults": None,
+            "proxy": None,
+            "useEnvProxy": None,
+            "fallbackPolicy": None,
+            "diagnostics": None,
+        },
+    )
+
+    assert res.error is None, res.error
+    entry = res.payload["entry"]
+    assert entry["max_results"] == DEFAULT_SEARCH_MAX_RESULTS
+    assert entry["proxy"] == ""
+    assert entry["fallback_policy"] == "off"
+    assert entry["diagnostics"] is False
+
+
+async def test_search_configure_absent_params_also_reset_to_legacy_defaults(
+    config_file,
+):
+    """Over RPC, ABSENT optional search params keep the legacy reset
+    semantics (the keep-current widening is CLI-only); pinned so the two
+    surfaces cannot drift apart silently."""
+    from opensquilla.search.types import DEFAULT_SEARCH_MAX_RESULTS
+
+    config_file.write_text(
+        'search_provider = "duckduckgo"\nsearch_max_results = 9\n', encoding="utf-8"
+    )
+
+    res = await _dispatch(
+        "onboarding.search.configure", {"providerId": "duckduckgo"}
+    )
+
+    assert res.error is None, res.error
+    assert res.payload["entry"]["max_results"] == DEFAULT_SEARCH_MAX_RESULTS
+
+
+# ---------------------------------------------------------------------------
+# Blank required channel secrets: hard-fail without a stored entry,
+# merge-aware with one (probe mirrors upsert).
+# ---------------------------------------------------------------------------
+
+
+async def test_channel_probe_blank_secret_without_stored_entry_fails(config_file):
+    res = await _dispatch(
+        "onboarding.channel.probe",
+        {"entry": {"type": "telegram", "name": "t1", "token": ""}},
+    )
+
+    assert res.error is not None
+    assert res.error.code == "onboarding.channel.invalid"
+    assert "token" in res.error.message
+
+
+async def test_channel_upsert_blank_secret_without_stored_entry_fails(config_file):
+    res = await _dispatch(
+        "onboarding.channel.upsert",
+        {"entry": {"type": "telegram", "name": "t1", "token": ""}},
+    )
+
+    assert res.error is not None
+    assert res.error.code == "onboarding.channel.invalid"
+
+
+async def test_channel_probe_blank_secret_merges_stored_entry(config_file):
+    config_file.write_text(
+        "[[channels.channels]]\n"
+        'type = "telegram"\n'
+        'name = "t1"\n'
+        'token = "tg-stored"\n',
+        encoding="utf-8",
+    )
+
+    res = await _dispatch(
+        "onboarding.channel.probe",
+        {"entry": {"type": "telegram", "name": "t1", "token": ""}},
+    )
+
+    assert res.error is None, res.error
+    assert res.payload["status"] == "ready"
+    # Secrets never round-trip in the probe response.
+    assert res.payload["entry"]["token"] != "tg-stored"

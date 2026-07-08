@@ -1,17 +1,25 @@
-"""V004 - schema_version column on memory tables.
+"""V004 - schema_version column on memory tables (wrong-database no-op).
 
-Older databases created by :mod:`opensquilla.memory.store` carry four
-tables - ``files``, ``chunks``, ``embedding_cache``, ``meta`` - WITHOUT
-the ``schema_version INTEGER NOT NULL DEFAULT 1`` column. Fresh installs
-pick up the column via the module DDL directly, but on-disk databases
-from prior releases must be migrated in place.
+The four target tables — ``files``, ``chunks``, ``embedding_cache``,
+``meta`` — live in the per-agent ``memory.db`` files owned by
+:mod:`opensquilla.memory.store` (``resolve_agent_memory_db`` in
+``agents/scope.py``), NOT in ``sessions.db``. Gateway boot only ever runs
+``apply_pending`` against ``sessions.db``, so on real split-database
+deployments none of these tables exist on the migration connection and
+every step below no-ops: the migration is recorded in the sessions.db
+ledger without ever touching memory data. The in-place backfill this
+module originally described cannot run there.
 
-This migration is idempotent: it checks ``PRAGMA table_info`` on each
-target table and adds the column only if missing. Fresh-install runs
-therefore no-op on every table. Rollback drops the column where the
-SQLite version supports ``DROP COLUMN`` (3.35+) and otherwise falls
-back to a safe no-op so the migration does not hold back a rollback on
-older runtimes - the column is idempotent-add on re-apply anyway.
+The real upgrade happens in the owning subsystem at connect time:
+``LongTermMemoryStore.initialize()`` (``memory/store.py``) creates the
+tables with ``schema_version`` already in the DDL and handles shape
+mismatches through its own versioned rebuild.
+
+The table/column guards below are kept so the steps stay harmless and
+idempotent on databases where these tables do share a file with the
+session store (e.g. ad-hoc test setups). Rollback drops the column where
+the SQLite version supports ``DROP COLUMN`` (3.35+) and otherwise falls
+back to a safe no-op - the column is idempotent-add on re-apply anyway.
 """
 
 from __future__ import annotations

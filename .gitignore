@@ -17,6 +17,10 @@ opensquilla.toml
 *.sqlite
 *.sqlite-shm
 *.sqlite-wal
+# Pre-migration database snapshots written by the schema migrator
+# (<dbname>.pre-<migration_id>.bak) — same runtime-data class as *.db.
+*.db.pre-*.bak
+*.sqlite.pre-*.bak
 .DS_Store
 .*/
 !.github/

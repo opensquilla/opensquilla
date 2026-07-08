@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import asyncio
+import io
+import sys
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
@@ -194,6 +197,72 @@ async def test_opentui_chat_runtime_uses_footer_native_echo_hooks(
     assert "prompt.echo:hello opentui" in joined_writes
     assert "中文输入 CJK混合ASCII" in joined_writes
     assert "running queued input" in joined_writes
+
+
+@pytest.mark.asyncio
+async def test_opentui_chat_runtime_reprints_exit_notices_to_real_stderr(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The surface-error notice carries the only copy of a sidecar crash
+    reason, and the Goodbye notice is emitted with the bridge already doomed.
+    Both must reach the real terminal stderr after teardown instead of dying
+    with the captured console."""
+    from opensquilla.cli.tui.opentui import runtime as opentui_runtime
+
+    scope: dict[str, Any] = {"model": "model-a", "session_key": "session-a"}
+    fake_surface = _FakeOpenTuiSurface()
+
+    @asynccontextmanager
+    async def fake_open_opentui_surface(**_kwargs: Any):
+        yield fake_surface
+
+    async def fake_run_tui_runtime(**kwargs: Any):
+        hooks = kwargs["hooks"]
+        hooks.notice("[red]Input surface error: OpenTUI host exited with code 7[/red]")
+        hooks.notice("[yellow]Goodbye.[/yellow]")
+        return object()
+
+    monkeypatch.setattr(opentui_runtime, "open_opentui_surface", fake_open_opentui_surface)
+    monkeypatch.setattr(opentui_runtime, "run_tui_runtime", fake_run_tui_runtime)
+
+    fake_stderr = io.StringIO()
+    monkeypatch.setattr(sys, "stderr", fake_stderr)
+
+    async def fake_dispatch(_value: str) -> bool:
+        return True
+
+    await opentui_runtime.run_opentui_chat_runtime(
+        surface=Surface.CLI_GATEWAY,
+        scope=scope,
+        dispatch=fake_dispatch,
+        queue_max_size=8,
+    )
+
+    output = fake_stderr.getvalue()
+    assert "Input surface error: OpenTUI host exited with code 7" in output
+    assert "Goodbye" in output
+
+
+@pytest.mark.asyncio
+async def test_forward_console_notice_prunes_completed_pending_tasks() -> None:
+    """The session-scoped pending set must shed tasks as their sends finish —
+    every captured console line schedules one, so retaining completed tasks
+    grows without bound over a long interactive session."""
+    from opensquilla.cli.tui.backend.output_binding import TuiOutputBinding
+    from opensquilla.cli.tui.opentui import runtime as opentui_runtime
+
+    scope: dict[str, Any] = {}
+    TuiOutputBinding(scope).expose(_FakeOutputHandle())
+    pending: set[asyncio.Task[None]] = set()
+
+    for index in range(5):
+        opentui_runtime.forward_console_notice(scope, f"line-{index}", pending_tasks=pending)
+    assert len(pending) == 5
+
+    await asyncio.gather(*pending)
+    # Done callbacks run one call_soon hop after completion.
+    await asyncio.sleep(0)
+    assert pending == set()
 
 
 def test_opentui_notice_renders_through_captured_console() -> None:

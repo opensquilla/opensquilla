@@ -20,9 +20,18 @@ THEME_NAMES: tuple[str, ...] = (
     "high-contrast",
     "nord",
     "mono",
+    "monochrome",
 )
 DEFAULT_THEME = "opensquilla-dark"
+# Read by the JS host as ``process.env.OPENSQUILLA_TUI_THEME`` (main.mjs); the
+# literal on both sides is pinned by
+# tests/unit/cli/tui/test_opentui_themes.py::test_theme_env_var_matches_js_host.
 THEME_ENV_VAR = "OPENSQUILLA_TUI_THEME"
+# Read by the JS host in ``detectColorMode`` (theme.mjs) to force a color mode
+# ("truecolor" | "16" | "mono"); overrides NO_COLOR per the NO_COLOR spec. The
+# literal on both sides is pinned by
+# tests/unit/cli/tui/test_opentui_themes.py::test_color_env_var_matches_js_host.
+COLOR_ENV_VAR = "OPENSQUILLA_TUI_COLOR"
 
 
 async def handle_theme_command(cmd: str, tui_output: object | None) -> None:

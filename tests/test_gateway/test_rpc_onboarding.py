@@ -620,7 +620,9 @@ async def test_image_generation_configure_can_use_custom_env_reference(
     assert res.payload["entry"]["api_key_env"] == "OPENSQUILLA_TEST_IMAGE_KEY"
     data = tomllib.loads(target.read_text())
     provider = data["image_generation"]["providers"]["openrouter"]
-    assert provider["api_key"] == ""
+    # Sparse persistence omits the default empty api_key; either way the
+    # key material must not be baked into the file.
+    assert provider.get("api_key", "") == ""
     assert provider["api_key_env"] == "OPENSQUILLA_TEST_IMAGE_KEY"
 
 
@@ -650,7 +652,9 @@ async def test_image_generation_configure_can_save_missing_custom_env_reference(
     assert res.payload["entry"]["api_key_env"] == "OPENSQUILLA_TEST_IMAGE_KEY"
     data = tomllib.loads(target.read_text())
     provider = data["image_generation"]["providers"]["openrouter"]
-    assert provider["api_key"] == ""
+    # Sparse persistence omits the default empty api_key; either way the
+    # key material must not be baked into the file.
+    assert provider.get("api_key", "") == ""
     assert provider["api_key_env"] == "OPENSQUILLA_TEST_IMAGE_KEY"
 
 
@@ -679,7 +683,9 @@ async def test_image_generation_configure_can_disable_without_visible_key(
     assert res.payload["entry"]["api_key_source"] == "none"
 
     data = tomllib.loads(target.read_text())
-    assert data["image_generation"]["enabled"] is False
+    # Sparse persistence omits enabled=False (the built-in default); if the
+    # key is present it must record the disabled state.
+    assert data["image_generation"].get("enabled", False) is False
 
 
 @pytest.mark.asyncio
@@ -784,7 +790,10 @@ async def test_image_generation_configure_can_enable_llm_fallback(tmp_path, monk
 
     data = tomllib.loads(target.read_text())
     assert data["image_generation"]["enabled"] is True
-    assert data["image_generation"]["providers"]["openrouter"]["api_key"] == ""
+    # Sparse persistence omits untouched provider entries; either way no
+    # key material may be baked into the file for the llm_fallback source.
+    providers = data["image_generation"].get("providers", {})
+    assert providers.get("openrouter", {}).get("api_key", "") == ""
 
 
 @pytest.mark.asyncio

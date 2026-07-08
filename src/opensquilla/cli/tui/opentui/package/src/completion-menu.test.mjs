@@ -166,6 +166,50 @@ test("menuKeyAction lets Enter submit when the menu has no matches", () => {
   assert.equal(tab.action, "close");
 });
 
+test("menuKeyAction passes Up/Down through when the menu shows no matches", () => {
+  const empty = { active: true, kind: "file", filtered: [], selected: 0 };
+  // There is nothing to navigate — swallowing the arrows would block vertical
+  // caret movement and history recall behind an empty "no matches" shell.
+  assert.equal(menuKeyAction(empty, "up").handled, false);
+  assert.equal(menuKeyAction(empty, "down").handled, false);
+});
+
+test("Enter on a skill suggestion completes without submitting the prompt prefix", () => {
+  const menu = {
+    active: true,
+    kind: "slash",
+    selected: 0,
+    filtered: [
+      {
+        label: "/html-coder",
+        insert_text: "use the html-coder skill: ",
+        category: "skill",
+      },
+    ],
+  };
+  // The insert text is a prefix that still needs a task typed after it, so
+  // Enter must behave like Tab (accept), never accept_submit.
+  assert.equal(menuKeyAction(menu, "return").action, "accept");
+  assert.equal(menuKeyAction(menu, "tab").action, "accept");
+});
+
+test("Enter still runs command and setting entries in one keystroke", () => {
+  const command = {
+    active: true,
+    kind: "slash",
+    selected: 0,
+    filtered: [{ label: "/compact", insert_text: "/compact ", category: "command" }],
+  };
+  const setting = {
+    active: true,
+    kind: "slash",
+    selected: 0,
+    filtered: [{ label: "/cost", insert_text: "/cost", category: "setting" }],
+  };
+  assert.equal(menuKeyAction(command, "return").action, "accept_submit");
+  assert.equal(menuKeyAction(setting, "return").action, "accept_submit");
+});
+
 test("ipc dispatcher routes completion responses", () => {
   let seen = null;
   const dispatch = createDispatcher({

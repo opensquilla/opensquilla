@@ -3,7 +3,9 @@
 The squilla-router step stages one sanitized decision record per routed user
 message (``stage_router_decision``); the turn runner flushes it to the
 registered :class:`~opensquilla.persistence.router_decision_writer.RouterDecisionWriter`
-when the per-turn decision log is emitted (``flush_router_decision``). The
+when the per-turn decision log is emitted (``schedule_router_decision_flush``,
+which hands the SQLite insert to a worker thread so the event loop never
+blocks on a contended WAL commit). The
 flush is deliberately late so the persisted ``executed_kind`` /
 ``ensemble_profile`` / ``fallback_hops`` describe what actually executed —
 a record must never name a model that did not run.
@@ -22,12 +24,15 @@ record — and the writer re-sanitizes every JSON column on insert.
 
 from __future__ import annotations
 
+import asyncio
 import time
 import uuid
 from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any
 
 import structlog
+
+from opensquilla.asyncio_utils import create_background_task
 
 if TYPE_CHECKING:
     from opensquilla.persistence.router_decision_writer import RouterDecisionWriter
@@ -42,6 +47,11 @@ FALLBACK_HOPS_METADATA_KEY = "router_fallback_hops"
 
 _decision_writer: RouterDecisionWriter | None = None
 
+# In-flight fire-and-forget flush tasks. Tracked so shutdown can drain them
+# before the writer's connection closes — otherwise a turn finishing near
+# shutdown loses its record (task cancelled) or writes on a closed connection.
+_pending_flush_tasks: set[asyncio.Task[None]] = set()
+
 
 def set_decision_writer(writer: RouterDecisionWriter | None) -> None:
     """Install (or, with ``None``, clear) the process-wide decision writer."""
@@ -51,6 +61,28 @@ def set_decision_writer(writer: RouterDecisionWriter | None) -> None:
 
 def get_decision_writer() -> RouterDecisionWriter | None:
     return _decision_writer
+
+
+async def drain_pending_flushes(timeout: float = 2.0) -> None:
+    """Wait briefly for in-flight decision flushes, cancelling stragglers.
+
+    Called at gateway shutdown before the writer's connection is closed.
+    Best-effort like the flushes themselves: a straggler past *timeout* is
+    cancelled (its record is lost, which the fail-open contract permits)
+    rather than left to race the connection close.
+    """
+    pending = {task for task in _pending_flush_tasks if not task.done()}
+    if not pending:
+        return
+    done, still_pending = await asyncio.wait(pending, timeout=timeout)
+    for task in still_pending:
+        task.cancel()
+    if still_pending:
+        log.warning(
+            "router_decision_record.drain_timeout",
+            cancelled=len(still_pending),
+            flushed=len(done),
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -206,28 +238,25 @@ def stage_router_decision(
         log.warning("router_decision_record.stage_failed", exc_info=True)
 
 
-def flush_router_decision(
+def _complete_pending_record(
     metadata: dict[str, Any],
     *,
     ensemble_trace: Mapping[str, Any] | None = None,
-) -> None:
-    """Complete the staged record with executed facts and hand it to the writer.
+) -> tuple[dict[str, Any], RouterDecisionWriter] | None:
+    """Pop the staged record and stamp executed facts (cheap dict work only).
 
-    ``executed_kind`` is ``"ensemble"`` only when the runtime actually wrapped
-    the turn (``metadata["ensemble_enabled"]``, stamped in
-    ``engine/runtime.py`` next to ``routed_model_before_ensemble``);
-    ``ensemble_profile`` comes from the ensemble trace of the final
-    ``DoneEvent``. ``fallback_hops`` counts selector fallbacks actually taken.
-    Never raises; a pop-once guard makes repeated calls no-ops.
+    Returns ``(record, writer)`` ready for the SQLite insert, or ``None``
+    when nothing was staged or no writer is registered. Never raises; the
+    pop-once guard makes repeated calls no-ops.
     """
     record: Any = None
     try:
         record = metadata.pop(PENDING_RECORD_KEY, None)
     except Exception:  # noqa: BLE001 — tolerate read-only mappings
-        return
+        return None
     writer = _decision_writer
     if not isinstance(record, dict) or writer is None:
-        return
+        return None
     try:
         ensemble_enabled = bool(metadata.get("ensemble_enabled"))
         record["executed_kind"] = "ensemble" if ensemble_enabled else "single"
@@ -242,9 +271,84 @@ def flush_router_decision(
             executed_model = _token(metadata.get("routed_model"))
             if executed_model is not None:
                 record["model"] = executed_model
+    except Exception:  # noqa: BLE001 — decision records must never fail a turn
+        log.warning("router_decision_record.flush_failed", exc_info=True)
+        return None
+    return record, writer
+
+
+def _write_record(writer: RouterDecisionWriter, record: dict[str, Any]) -> None:
+    try:
         writer.record_decision(record)
     except Exception:  # noqa: BLE001 — decision records must never fail a turn
         log.warning("router_decision_record.flush_failed", exc_info=True)
+
+
+async def _write_record_off_loop(writer: RouterDecisionWriter, record: dict[str, Any]) -> None:
+    try:
+        await asyncio.to_thread(writer.record_decision, record)
+    except Exception:  # noqa: BLE001 — decision records must never fail a turn
+        log.warning("router_decision_record.flush_failed", exc_info=True)
+
+
+def flush_router_decision(
+    metadata: dict[str, Any],
+    *,
+    ensemble_trace: Mapping[str, Any] | None = None,
+) -> None:
+    """Complete the staged record with executed facts and hand it to the writer.
+
+    ``executed_kind`` is ``"ensemble"`` only when the runtime actually wrapped
+    the turn (``metadata["ensemble_enabled"]``, stamped in
+    ``engine/runtime.py`` next to ``routed_model_before_ensemble``);
+    ``ensemble_profile`` comes from the ensemble trace of the final
+    ``DoneEvent``. ``fallback_hops`` counts selector fallbacks actually taken.
+    Never raises; a pop-once guard makes repeated calls no-ops.
+
+    The SQLite insert runs inline on the calling thread. Event-loop callers
+    must use :func:`schedule_router_decision_flush` instead — the writer
+    commits under ``busy_timeout=5000`` and a contended WAL write would
+    otherwise stall the whole loop.
+    """
+    completed = _complete_pending_record(metadata, ensemble_trace=ensemble_trace)
+    if completed is None:
+        return
+    record, writer = completed
+    _write_record(writer, record)
+
+
+def schedule_router_decision_flush(
+    metadata: dict[str, Any],
+    *,
+    ensemble_trace: Mapping[str, Any] | None = None,
+) -> asyncio.Task[None] | None:
+    """Flush like :func:`flush_router_decision`, but keep SQLite off the loop.
+
+    The staged record is completed synchronously (pop-once semantics are
+    identical), then the insert — a WAL commit under ``busy_timeout=5000``
+    plus the periodic retention DELETE — is handed to a worker thread as a
+    fire-and-forget background task, so a contended write can never freeze
+    the turn-finalize path. Persistence stays best-effort: failures are
+    logged, never raised. Returns the scheduled task so tests can await it;
+    returns ``None`` when nothing was staged or, with no running loop, after
+    falling back to the inline write.
+    """
+    completed = _complete_pending_record(metadata, ensemble_trace=ensemble_trace)
+    if completed is None:
+        return None
+    record, writer = completed
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        # No event loop to protect (sync CLI/standalone callers): write inline.
+        _write_record(writer, record)
+        return None
+    task = create_background_task(_write_record_off_loop(writer, record))
+    if isinstance(task, asyncio.Task):
+        _pending_flush_tasks.add(task)
+        task.add_done_callback(_pending_flush_tasks.discard)
+        return task
+    return None
 
 
 # ---------------------------------------------------------------------------

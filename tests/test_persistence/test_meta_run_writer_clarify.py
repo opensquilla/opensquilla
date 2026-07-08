@@ -277,3 +277,42 @@ def test_update_awaiting_partial_rejects_non_awaiting(writer):
         run_id="r9", filled_json="{}", awaiting_since=0.0,
     )
     assert ok is False
+
+
+def test_increment_parse_failures_is_portable_no_returning_clause():
+    """SQLite < 3.35 (RHEL 8 / Ubuntu 20.04 system builds) has no
+    ``UPDATE ... RETURNING``; the fail-open handler used to convert the
+    syntax error into a permanent 0, so the parse-failure limit never
+    triggered. Pin the portable UPDATE-then-SELECT form by asserting no
+    SQL string literal in the method body uses the clause."""
+    import ast
+    import inspect
+    import textwrap
+
+    src = textwrap.dedent(inspect.getsource(MetaRunWriter.increment_parse_failures))
+    fn = ast.parse(src).body[0]
+    body = list(fn.body)
+    if (
+        body
+        and isinstance(body[0], ast.Expr)
+        and isinstance(body[0].value, ast.Constant)
+    ):
+        body = body[1:]  # drop the docstring — SQL literals only
+    literals = [
+        node.value
+        for stmt in body
+        for node in ast.walk(stmt)
+        if isinstance(node, ast.Constant) and isinstance(node.value, str)
+    ]
+    assert literals, "expected SQL literals in increment_parse_failures"
+    assert not any("returning" in literal.lower() for literal in literals)
+
+
+def test_increment_parse_failures_survives_and_counts_after_partial_update(writer):
+    """Increment keeps returning the fresh value across repeated calls and
+    drops back to 0 once the run leaves awaiting_user."""
+    _seed_awaiting(writer, run_id="r1", session_key="S1")
+    assert writer.increment_parse_failures(run_id="r1") == 1
+    assert writer.increment_parse_failures(run_id="r1") == 2
+    writer.mark_cancelled(run_id="r1", reason="parse_failure_limit")
+    assert writer.increment_parse_failures(run_id="r1") == 0

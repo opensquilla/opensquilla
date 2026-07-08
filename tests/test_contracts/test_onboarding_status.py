@@ -199,3 +199,44 @@ async def test_env_recovery_command_rows_are_frozen(
     assert commands, "missing_env must surface a recovery command"
     for command in commands:
         assert set(command) == ENV_RECOVERY_COMMAND_KEYS
+
+
+# Every value ``llmSource`` may carry over the wire. ``unsupported`` is a
+# deliberate additive extension: registered-but-runtime-unsupported providers
+# (e.g. coding-plan stubs) used to report ``not_required``, which read as a
+# satisfied credential state for a provider nothing can run against. Client
+# authors switching on llmSource must treat unknown values as
+# not-configured; extending this set here is the conscious decision the
+# freeze forces.
+LLM_SOURCE_VALUES = frozenset(
+    {"explicit", "env", "missing_env", "none", "not_required", "unsupported"}
+)
+
+
+async def test_llm_source_value_space_is_frozen(tmp_path) -> None:
+    payload = _status_payload(
+        RpcContext(conn_id="contract", config=_synthetic_config(tmp_path))
+    )
+    assert payload["llmSource"] in LLM_SOURCE_VALUES
+
+
+async def test_unsupported_provider_source_is_consistent_across_the_payload(
+    tmp_path,
+) -> None:
+    """llmSource and llmCredentialStatus.source must agree for a registered
+    but runtime-unsupported provider: both say "unsupported" (never a
+    satisfied "not_required") and the credential is not available."""
+    cfg = _synthetic_config(
+        tmp_path,
+        llm=LlmProviderConfig(provider="github_copilot", model="stub-model"),
+    )
+
+    payload = _status_payload(RpcContext(conn_id="contract", config=cfg))
+
+    assert payload["llmSource"] == "unsupported"
+    credential = payload["llmCredentialStatus"]
+    assert credential["source"] == "unsupported"
+    assert credential["available"] is False
+    assert payload["sectionDetails"]["llm"]["detail"] == (
+        "registered but not runtime-supported"
+    )

@@ -55,7 +55,13 @@ jobs:
                 "${{ github.event.pull_request.head.sha }}" > "${changed_files}"
               ;;
             push)
-              printf '.ci/run-all\n' > "${changed_files}"
+              before="${{ github.event.before }}"
+              after="${{ github.event.after }}"
+              if [[ -n "${before}" && "${before}" != "0000000000000000000000000000000000000000" ]]; then
+                git diff --name-only "${before}" "${after}" > "${changed_files}"
+              else
+                printf '.ci/run-all\n' > "${changed_files}"
+              fi
               ;;
             *)
               printf '.ci/run-all\n' > "${changed_files}"
@@ -339,7 +345,7 @@ jobs:
     needs: classify-changes
     if: ${{ needs.classify-changes.outputs.windows_full_required == 'true' || needs.classify-changes.outputs.full_required == 'true' }}
     runs-on: windows-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
 
     env:
       UV_PYTHON: "3.12"
@@ -390,7 +396,7 @@ jobs:
           markers="not llm and not live_search and not live_channel and not webui_browser and not tui_real_terminal and not local_golden and not agent_context_boundary and not llm_router_acc"
 
           if [[ "${{ needs.classify-changes.outputs.full_required }}" == "true" ]]; then
-            uv run pytest tests -q -m "${markers}" --durations=50
+            uv run pytest tests -q -m "${markers}" --durations=50 --maxfail=1
           else
             uv run pytest \
               tests/test_artifacts.py \

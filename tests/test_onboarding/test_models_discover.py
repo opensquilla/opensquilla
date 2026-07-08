@@ -35,6 +35,22 @@ def _patch_response(monkeypatch: Any, response_factory) -> list[httpx.Request]:
     return seen
 
 
+def _patch_transport_error(monkeypatch: Any, exc: Exception) -> None:
+    """Route provider HTTP through a transport that always fails to connect."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise exc
+
+    transport = httpx.MockTransport(handler)
+    real_async_client = httpx.AsyncClient
+
+    def patched_async_client(*args: Any, **kwargs: Any) -> httpx.AsyncClient:
+        kwargs["transport"] = transport
+        return real_async_client(*args, **kwargs)
+
+    monkeypatch.setattr("opensquilla.provider.openai.httpx.AsyncClient", patched_async_client)
+
+
 def _models_response() -> httpx.Response:
     return httpx.Response(
         200,
@@ -89,6 +105,50 @@ def test_discover_resolves_key_from_provider_env(monkeypatch: Any) -> None:
     result = _discover(provider_id="openai")
     assert result.ok is True
     assert seen[0].headers["authorization"] == "Bearer sk-from-env"
+
+
+def test_discover_classifies_rejected_key_as_auth_failure(monkeypatch: Any) -> None:
+    """A 401 during listing is a wrong key, never ok=True/source='none'."""
+    _patch_response(
+        monkeypatch,
+        lambda: httpx.Response(
+            401,
+            headers={"content-type": "application/json"},
+            content=b'{"error": {"message": "Incorrect API key provided"}}',
+        ),
+    )
+    result = _discover(provider_id="openai", api_key="sk-bad")
+    assert result.ok is False
+    assert result.failure_kind == ProviderFailureKind.AUTH_INVALID.value
+    assert result.source == "none"
+    assert result.models == []
+
+
+def test_discover_classifies_connection_failure_as_transport_transient(
+    monkeypatch: Any,
+) -> None:
+    _patch_transport_error(monkeypatch, httpx.ConnectError("connection refused"))
+    result = _discover(provider_id="openai", api_key="sk-test")
+    assert result.ok is False
+    assert result.failure_kind == ProviderFailureKind.TRANSPORT_TRANSIENT.value
+    assert result.models == []
+
+
+def test_discover_empty_catalog_stays_ok_with_no_live_source(monkeypatch: Any) -> None:
+    # Distinguishable from the auth failure above: the provider answered
+    # successfully but lists nothing.
+    _patch_response(
+        monkeypatch,
+        lambda: httpx.Response(
+            200,
+            headers={"content-type": "application/json"},
+            content=b'{"data": []}',
+        ),
+    )
+    result = _discover(provider_id="openai", api_key="sk-test")
+    assert result.ok is True
+    assert result.source == "none"
+    assert result.models == []
 
 
 async def test_discover_rpc_reuses_stored_credentials_when_blank(

@@ -1,5 +1,4 @@
 export const TOOL_INDENT = " ";
-export const CARD_RULE_SHORT = "─".repeat(8);
 export const TIMELINE_WRAP_GUARD_CELLS = 6;
 // A single codex-style result-preview corner under a tool row, and the dim
 // separator before a completed tool's duration (e.g. "✓ grep foo · 0.2s").
@@ -12,19 +11,6 @@ export const DURATION_SEP = " · ";
 export function clampFooterHeight(footerHeight, terminalHeight) {
   return Math.max(1, Math.min(footerHeight, Number(terminalHeight) || footerHeight));
 }
-// Turn boxes pad 1 cell each side; card headers/bodies start at content column 0.
-const CARD_CONTENT_INSET = 2;
-
-// A card header rule ("╭─ <label> ───…") that fills to the turn's content width so
-// it aligns with the full-width card body below it, instead of a fixed length that
-// looks stranded on wide terminals and overflows narrow ones. (textWidth is a
-// hoisted function declaration below.)
-export function cardHeaderRule(label, terminalWidth) {
-  const prefix = `╭─ ${label} `;
-  const width = Math.max(textWidth(prefix) + 4, (terminalWidth ?? 80) - CARD_CONTENT_INSET);
-  return prefix + "─".repeat(width - textWidth(prefix));
-}
-
 // True when a scroll position is within `slack` rows of the bottom — i.e. the
 // view should keep following new content as it streams in. When the user has
 // scrolled up to read history this is false, so auto-follow never yanks them
@@ -46,27 +32,48 @@ export function copySelectionToClipboard(renderer, selection) {
   return renderer.copyToClipboardOSC52?.(text) ?? false;
 }
 
-export function cellWidth(char) {
-  return /[ᄀ-ᅟ〈〉⺀-꓏가-힣豈-﫿︐-︙︰-﹯＀-｠￠-￦]/u.test(char)
-    ? 2
-    : 1;
+// Zero-width: combining marks attach to the previous cell, and the
+// ZWSP/ZWNJ/ZWJ joiners and variation selectors are invisible — none of
+// them advance the terminal cursor, so counting them as 1 would drift the
+// caret on composed text (e+U+0301, emoji families, flag pairs).
+const ZERO_WIDTH_RE = /[\p{Mn}\p{Me}\u200b-\u200d\ufe00-\ufe0f]/u;
+// Double-width: the East Asian wide/fullwidth ranges plus pictographs that
+// DEFAULT to emoji presentation (mainstream terminals render those over two
+// cells, wcwidth-style). Text-presentation pictographs (© ® ™ ↔ ♥ ⚠ …) render
+// in ONE cell unless an explicit VS16 follows, so the broader
+// Extended_Pictographic class would count them a cell wider than the terminal
+// draws them and drift the caret.
+const WIDE_RE =
+  /[ᄀ-ᅟ〈〉⺀-꓏가-힣豈-﫿︐-︙︰-﹯＀-｠￠-￦]|\p{Emoji_Presentation}|[\u{1f300}-\u{1faff}]/u;
+// VS16 (U+FE0F) forces emoji presentation: a narrow pictograph followed by it
+// renders wide. The selector itself stays zero-width (ZERO_WIDTH_RE); the
+// extra cell is charged to the base character via the `next` lookahead.
+const VS16 = "\ufe0f";
+const PICTOGRAPH_RE = /\p{Extended_Pictographic}/u;
+
+export function cellWidth(char, next) {
+  if (ZERO_WIDTH_RE.test(char)) return 0;
+  if (WIDE_RE.test(char)) return 2;
+  return next === VS16 && PICTOGRAPH_RE.test(char) ? 2 : 1;
 }
 
 export function textWidth(text) {
+  const chars = Array.from(text);
   let width = 0;
-  for (const char of Array.from(text)) width += cellWidth(char);
+  for (let i = 0; i < chars.length; i += 1) width += cellWidth(chars[i], chars[i + 1]);
   return width;
 }
 
 export function clipToCells(text, cells) {
   if (textWidth(text) <= cells) return text;
+  const chars = Array.from(text);
   const budget = Math.max(1, cells - 1); // reserve one cell for the ellipsis
   let out = "";
   let used = 0;
-  for (const char of Array.from(text)) {
-    const w = cellWidth(char);
+  for (let i = 0; i < chars.length; i += 1) {
+    const w = cellWidth(chars[i], chars[i + 1]);
     if (used + w > budget) break;
-    out += char;
+    out += chars[i];
     used += w;
   }
   return `${out}…`;

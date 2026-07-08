@@ -10700,7 +10700,8 @@ class Agent:
             # form" hint.
             if self._meta_run_writer is not None and self._session_key:
                 try:
-                    existing_awaiting = self._meta_run_writer.peek_awaiting(
+                    existing_awaiting = await asyncio.to_thread(
+                        self._meta_run_writer.peek_awaiting,
                         session_id=self._session_key,
                     )
                 except Exception:  # noqa: BLE001 — fail-open
@@ -11136,7 +11137,8 @@ class Agent:
         # while a prior run is waiting for input (avoids the opaque CAS error).
         if self._session_key:
             try:
-                existing_awaiting = self._meta_run_writer.peek_awaiting(
+                existing_awaiting = await asyncio.to_thread(
+                    self._meta_run_writer.peek_awaiting,
                     session_id=self._session_key,
                 )
             except Exception:  # noqa: BLE001 — fail-open

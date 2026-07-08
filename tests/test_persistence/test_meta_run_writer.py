@@ -584,3 +584,297 @@ def test_list_runs_filtering_and_ordering(writer: MetaRunWriter) -> None:
 
     by_session = writer.list_runs(session_key="s0")
     assert len(by_session) == 3
+
+
+# ---------------------------------------------------------------------------
+# Retention prune (opportunistic, write-time)
+# ---------------------------------------------------------------------------
+
+_DAY_MS = 24 * 60 * 60 * 1000
+
+
+def _open_clocked_writer(
+    tmp_path: Path,
+    *,
+    retention_days: int = 90,
+    prune_every: int = 1,
+) -> tuple[MetaRunWriter, dict[str, int]]:
+    """Migrated writer with a mutable fake clock for retention tests."""
+    import sqlite3
+
+    db = str(tmp_path / "retention.db")
+    apply_pending(db, MIGRATIONS_DIR)
+    clock = {"now_ms": 0}
+    conn = sqlite3.connect(db, check_same_thread=False, isolation_level=None)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
+    writer = MetaRunWriter(
+        conn,
+        retention_days=retention_days,
+        prune_every=prune_every,
+        clock=lambda: clock["now_ms"],
+    )
+    return writer, clock
+
+
+def _begin(writer: MetaRunWriter, *, session_key: str | None) -> str:
+    plan = _make_plan()
+    run_id = writer.begin_run_sync(
+        meta_skill_name=plan.name, meta_plan=plan,
+        triggered_by="auto_cron", inputs={},
+        session_key=session_key, turn_id=None,
+    )
+    assert run_id is not None
+    return run_id
+
+
+def test_retention_prunes_old_terminal_runs_and_cascades_steps(tmp_path: Path) -> None:
+    writer, clock = _open_clocked_writer(tmp_path, retention_days=90, prune_every=1)
+    try:
+        plan = _make_plan()
+        old_ok = _begin(writer, session_key="s-old-ok")
+        writer.begin_step_sync(
+            run_id=old_ok, step=plan.steps[0], effective_skill="alpha", rendered_inputs={},
+        )
+        writer.finish_step_sync(run_id=old_ok, step_id="s1", status="ok", output_text="x")
+        writer.finish_run_sync(run_id=old_ok, status="ok", result=None)
+
+        old_failed = _begin(writer, session_key="s-old-failed")
+        writer.finish_run_sync(
+            run_id=old_failed, status="failed",
+            result=MetaResult(ok=False, error="boom"),
+        )
+
+        # Live/parked rows must survive regardless of age.
+        old_running = _begin(writer, session_key="s-old-running")
+        old_awaiting = _begin(writer, session_key="s-old-awaiting")
+        assert writer.try_claim_awaiting(
+            run_id=old_awaiting, step_id="collect", schema_json="{}",
+            session_id="s-old-awaiting", inputs_json="{}",
+            step_outputs_json="{}", awaiting_since=1.0,
+        )
+
+        clock["now_ms"] = 91 * _DAY_MS
+        fresh = _begin(writer, session_key="s-fresh")  # prune_every=1 → prunes now
+
+        assert writer.get_run(old_ok) is None
+        assert writer.get_steps(old_ok) == []  # FK CASCADE removed the steps
+        assert writer.get_run(old_failed) is None
+        running = writer.get_run(old_running)
+        assert running is not None and running.status == "running"
+        awaiting = writer.get_run(old_awaiting)
+        assert awaiting is not None and awaiting.status == "awaiting_user"
+        assert writer.get_run(fresh) is not None
+    finally:
+        writer.close()
+
+
+def test_retention_keeps_terminal_runs_inside_window(tmp_path: Path) -> None:
+    writer, clock = _open_clocked_writer(tmp_path, retention_days=90, prune_every=1)
+    try:
+        recent_ok = _begin(writer, session_key="s-recent")
+        writer.finish_run_sync(run_id=recent_ok, status="ok", result=None)
+
+        clock["now_ms"] = 89 * _DAY_MS
+        _begin(writer, session_key="s-trigger")
+
+        assert writer.get_run(recent_ok) is not None
+    finally:
+        writer.close()
+
+
+def test_retention_prune_cadence_honours_prune_every(tmp_path: Path) -> None:
+    writer, clock = _open_clocked_writer(tmp_path, retention_days=90, prune_every=3)
+    try:
+        old = _begin(writer, session_key="s-old")  # begin #1 — no prune
+        writer.finish_run_sync(run_id=old, status="ok", result=None)
+
+        clock["now_ms"] = 200 * _DAY_MS
+        _begin(writer, session_key="s-2")  # begin #2 — still no prune
+        assert writer.get_run(old) is not None
+
+        _begin(writer, session_key="s-3")  # begin #3 — prune fires
+        assert writer.get_run(old) is None
+    finally:
+        writer.close()
+
+
+def test_retention_defaults_via_open_meta_run_writer_kwargs(tmp_path: Path) -> None:
+    db = str(tmp_path / "kwargs.db")
+    apply_pending(db, MIGRATIONS_DIR)
+    w = open_meta_run_writer(db, retention_days=7, prune_every=16)
+    try:
+        assert w._retention_days == 7
+        assert w._prune_every == 16
+    finally:
+        w.close()
+    # Backward-compatible positional-only call keeps working with defaults.
+    w2 = open_meta_run_writer(db)
+    try:
+        assert w2._retention_days == 90
+        assert w2._prune_every == 64
+    finally:
+        w2.close()
+
+
+# ---------------------------------------------------------------------------
+# finish_run_sync status guard
+# ---------------------------------------------------------------------------
+
+
+def test_finish_run_sync_cannot_clobber_awaiting_user(writer: MetaRunWriter) -> None:
+    plan = _make_plan()
+    run_id = writer.begin_run_sync(
+        meta_skill_name=plan.name, meta_plan=plan,
+        triggered_by="soft_meta_invoke", inputs={},
+        session_key="s-guard", turn_id=None,
+    )
+    assert writer.try_claim_awaiting(
+        run_id=run_id, step_id="collect", schema_json="{}",
+        session_id="s-guard", inputs_json="{}",
+        step_outputs_json="{}", awaiting_since=1.0,
+    )
+
+    # Late finalize (e.g. a stale stream teardown) must lose the race.
+    writer.finish_run_sync(
+        run_id=run_id, status="ok",
+        result=MetaResult(ok=True, final_text="late finalize"),
+    )
+
+    record = writer.get_run(run_id)
+    assert record is not None
+    assert record.status == "awaiting_user"
+    assert record.final_text is None
+
+
+def test_finish_run_sync_running_to_terminal_still_works(writer: MetaRunWriter) -> None:
+    plan = _make_plan()
+    run_id = writer.begin_run_sync(
+        meta_skill_name=plan.name, meta_plan=plan,
+        triggered_by="soft_meta_invoke", inputs={},
+        session_key="s-normal", turn_id=None,
+    )
+    writer.finish_run_sync(
+        run_id=run_id, status="ok",
+        result=MetaResult(ok=True, final_text="done"),
+    )
+    record = writer.get_run(run_id)
+    assert record is not None
+    assert record.status == "ok"
+    assert record.final_text == "done"
+
+
+def test_finish_run_sync_allows_confirmed_preflight_rerun(writer: MetaRunWriter) -> None:
+    """The preflight-confirmation flow re-runs a row parked as
+    cancelled/preflight_required (see _is_confirmable_preflight_run) and
+    must still be able to finalize it."""
+    plan = _make_plan()
+    run_id = writer.begin_run_sync(
+        meta_skill_name=plan.name, meta_plan=plan,
+        triggered_by="soft_meta_invoke", inputs={},
+        session_key="s-preflight", turn_id=None,
+    )
+    writer.finish_run_sync(
+        run_id=run_id, status="cancelled",
+        result=MetaResult(ok=False, error="preflight_required"),
+    )
+    writer.finish_run_sync(
+        run_id=run_id, status="ok",
+        result=MetaResult(ok=True, final_text="confirmed run"),
+    )
+    record = writer.get_run(run_id)
+    assert record is not None
+    assert record.status == "ok"
+    assert record.final_text == "confirmed run"
+
+
+def test_finish_run_sync_does_not_clobber_user_cancelled(writer: MetaRunWriter) -> None:
+    plan = _make_plan()
+    run_id = writer.begin_run_sync(
+        meta_skill_name=plan.name, meta_plan=plan,
+        triggered_by="soft_meta_invoke", inputs={},
+        session_key="s-cancel", turn_id=None,
+    )
+    assert writer.try_claim_awaiting(
+        run_id=run_id, step_id="collect", schema_json="{}",
+        session_id="s-cancel", inputs_json="{}",
+        step_outputs_json="{}", awaiting_since=1.0,
+    )
+    writer.mark_cancelled(run_id=run_id, reason="user_cancel")
+
+    writer.finish_run_sync(run_id=run_id, status="ok", result=None)
+
+    record = writer.get_run(run_id)
+    assert record is not None
+    assert record.status == "cancelled"
+    assert record.error == "cancelled:user_cancel"
+
+
+def test_finish_run_sweeps_steps_left_running(writer: MetaRunWriter) -> None:
+    """A cancelled turn can abandon an offloaded step write; finalizing the
+    run must sweep still-running step rows so the record never reports
+    in-flight work under a terminal run."""
+    plan = _make_plan()
+    run_id = writer.begin_run_sync(
+        meta_skill_name=plan.name,
+        meta_plan=plan,
+        triggered_by="soft_meta_invoke",
+        inputs={},
+        session_key="sess-sweep",
+        turn_id=None,
+    )
+    assert run_id is not None
+    done_step, abandoned_step = plan.steps[0], plan.steps[1]
+    writer.begin_step_sync(
+        run_id=run_id, step=done_step, effective_skill=done_step.skill, rendered_inputs={},
+    )
+    writer.finish_step_sync(
+        run_id=run_id, step_id=done_step.id, status="ok", output_text="fine",
+    )
+    writer.begin_step_sync(
+        run_id=run_id,
+        step=abandoned_step,
+        effective_skill=abandoned_step.skill,
+        rendered_inputs={},
+    )
+
+    writer.finish_run_sync(run_id=run_id, status="cancelled", result=None)
+
+    steps = {step.step_id: step for step in writer.get_steps(run_id)}
+    assert steps[done_step.id].status == "ok"  # completed steps untouched
+    swept = steps[abandoned_step.id]
+    assert swept.status == "failed"
+    assert swept.error == "run finalized before step completed"
+    assert swept.ended_at_ms is not None
+
+
+def test_mark_orphans_repairs_running_steps_under_terminal_runs(
+    writer: MetaRunWriter,
+) -> None:
+    """A step INSERT abandoned by a cancelled turn can land after the run's
+    finalize sweep; the boot cleanup must repair it. Parked awaiting_user
+    runs keep their in-flight step untouched."""
+    plan = _make_plan()
+    run_id = writer.begin_run_sync(
+        meta_skill_name=plan.name,
+        meta_plan=plan,
+        triggered_by="soft_meta_invoke",
+        inputs={},
+        session_key="sess-orphan-step",
+        turn_id=None,
+    )
+    assert run_id is not None
+    writer.finish_run_sync(run_id=run_id, status="cancelled", result=None)
+    # Simulate the late, abandoned begin_step INSERT landing post-finalize.
+    late_step = plan.steps[0]
+    writer.begin_step_sync(
+        run_id=run_id, step=late_step, effective_skill=late_step.skill, rendered_inputs={},
+    )
+    assert writer.get_steps(run_id)[0].status == "running"
+
+    writer.mark_orphans_failed()
+
+    swept = writer.get_steps(run_id)[0]
+    assert swept.status == "failed"
+    assert swept.error == "run finalized before step completed"
+    assert swept.ended_at_ms is not None

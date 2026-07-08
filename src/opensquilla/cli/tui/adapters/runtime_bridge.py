@@ -117,17 +117,20 @@ def standalone_slash_services_from_runtime(
     return _standalone_runtime.standalone_slash_services_from_runtime(svc)
 
 
-def _turn_stream_dependencies() -> Any:
-    from opensquilla.cli.tui import turn_bridge as _turn_bridge
+def renderer_factory_for_selected_backend() -> Any:
+    """Pick the stream renderer that matches the active TUI backend."""
     from opensquilla.cli.tui.native.renderer import NativeStreamRenderer
     from opensquilla.cli.tui.opentui.renderer import OpenTuiStreamRenderer
 
     backend_id = validate_tui_backend_selection()
-    renderer_factory = (
-        OpenTuiStreamRenderer if backend_id == "opentui" else NativeStreamRenderer
-    )
+    return OpenTuiStreamRenderer if backend_id == "opentui" else NativeStreamRenderer
+
+
+def _turn_stream_dependencies() -> Any:
+    from opensquilla.cli.tui import turn_bridge as _turn_bridge
+
     return _turn_bridge.default_turn_stream_dependencies(
-        renderer_factory=renderer_factory
+        renderer_factory=renderer_factory_for_selected_backend()
     )
 
 
@@ -422,6 +425,7 @@ async def run_standalone_chat(
             sync_slash_adapter_io=_sync_slash_adapter_io,
             get_tui_output=get_tui_output,
             output_console=active_console,
+            error_panel_factory=active_error_panel,
         ),
     )
 

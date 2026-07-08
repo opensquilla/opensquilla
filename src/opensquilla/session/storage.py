@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from datetime import UTC, datetime
@@ -752,7 +753,9 @@ class SessionStorage:
         # there is no SQL FK to rely on — explicit purge is required.
         if self._meta_run_writer is not None:
             try:
-                self._meta_run_writer.purge_for_session(session_key)
+                # The writer commits synchronously (busy_timeout=5000); keep the
+                # delete off the event loop like every other writer call site.
+                await asyncio.to_thread(self._meta_run_writer.purge_for_session, session_key)
             except Exception as exc:  # noqa: BLE001
                 log.warning("session_delete.purge_meta_runs_failed: %s", exc)
 

@@ -10,6 +10,8 @@ from typing import Any
 from opensquilla.cli.tui.backend.domain_events import (
     KIND_DONE,
     KIND_ERROR,
+    KIND_REASONING_DELTA,
+    KIND_REASONING_FLUSH,
     KIND_ROUTER_DECISION,
     KIND_STATUS,
     KIND_TEXT_DELTA,
@@ -25,6 +27,8 @@ from opensquilla.cli.tui.backend.domain_events import (
 __all__ = [
     "KIND_DONE",
     "KIND_ERROR",
+    "KIND_REASONING_DELTA",
+    "KIND_REASONING_FLUSH",
     "KIND_ROUTER_DECISION",
     "KIND_STATUS",
     "KIND_TEXT_DELTA",
@@ -42,6 +46,14 @@ __all__ = [
 
 
 class TuiEventKind(Enum):
+    """Lifecycle events observable through ``TuiRuntimeConfig.event_sink``.
+
+    The backend runtime currently emits USER_INPUT_ACCEPTED,
+    QUEUED_INPUT_PROMOTED, TURN_STARTED, TURN_CANCELLED, and TURN_FINISHED.
+    The remaining kinds are reserved for adapter/renderer emitters and have
+    no emitter yet — consumers must not assume every kind is produced.
+    """
+
     USER_INPUT_ACCEPTED = "user_input_accepted"
     QUEUED_INPUT_PROMOTED = "queued_input_promoted"
     TURN_STARTED = "turn_started"

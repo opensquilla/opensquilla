@@ -14,7 +14,6 @@ from opensquilla.cli.tui.adapters.runtime_helpers import (
     ChatRuntimeScope,
     classify_chat_input,
     clear_current_cancel,
-    default_tui_plugin_manager,
     get_tui_output,
     surface_task_name,
 )
@@ -23,8 +22,11 @@ from opensquilla.cli.tui.backend.contracts import (
     TuiRuntimeHooks,
     TuiSurface,
 )
+from opensquilla.cli.tui.backend.plugins import TuiPluginManager
 from opensquilla.cli.tui.backend.runtime import run_tui_runtime
 from opensquilla.cli.tui.backend.state import TuiRuntimeState
+from opensquilla.cli.tui.native.renderer import status_markup
+from opensquilla.cli.tui.plugins.router_hud import RouterHudPlugin, RouterHudSnapshot
 from opensquilla.engine.commands import Surface
 
 
@@ -43,12 +45,11 @@ async def run_native_chat_runtime(
     abort_active_turn: ChatAbortTurn | None = None,
 ) -> None:
     """Compose a Python-native terminal surface with the TUI backend runtime."""
-    context = NativeChatRuntimeContext(
-        surface=surface,
-        scope=scope,
-        plugin_manager=default_tui_plugin_manager(),
-        abort_active_turn=abort_active_turn,
-    )
+    # Strong references to in-flight notice writes: the event loop only holds
+    # weak references to scheduled tasks, and exit-path notices (Goodbye,
+    # discarded-queue warnings) are scheduled with no further await before
+    # teardown, so they are drained in the finally block below.
+    notice_tasks: set[asyncio.Task[None]] = set()
 
     def _notice(payload: str) -> None:
         output = get_tui_output(scope)
@@ -64,7 +65,21 @@ async def run_native_chat_runtime(
         except RuntimeError:
             asyncio.run(_write())
             return
-        loop.create_task(_write())
+        task = loop.create_task(_write())
+        notice_tasks.add(task)
+        task.add_done_callback(notice_tasks.discard)
+
+    def _router_status(snapshot: RouterHudSnapshot) -> None:
+        # The plain terminal has no toolbar, so router decisions surface as a
+        # one-line status instead of the toolbar HUD the OpenTUI host renders.
+        _notice(status_markup(snapshot.label, style=snapshot.style))
+
+    context = NativeChatRuntimeContext(
+        surface=surface,
+        scope=scope,
+        plugin_manager=TuiPluginManager([RouterHudPlugin(on_snapshot=_router_status)]),
+        abort_active_turn=abort_active_turn,
+    )
 
     runtime_state = TuiRuntimeState()
     scope["pending_input_provider"] = runtime_state
@@ -90,3 +105,7 @@ async def run_native_chat_runtime(
     finally:
         if scope.get("pending_input_provider") is runtime_state:
             scope.pop("pending_input_provider", None)
+        if notice_tasks:
+            # Exit-path notices are scheduled with no further await before
+            # teardown; drive them here so none dies with the event loop.
+            await asyncio.gather(*notice_tasks, return_exceptions=True)

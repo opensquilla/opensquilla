@@ -1,12 +1,20 @@
-"""V002 - scheduler session-forward fields.
+"""V002 - scheduler session-forward fields (wrong-database no-op).
 
 Adds ``origin_session_key`` to ``scheduler_jobs`` so the scheduler can
 carry the scheduling session identity through to delivery-time fan-out.
-The column is idempotent: a row set that already carries
-``origin_session_key`` (via ``JobStore._migrate``'s in-process ADD COLUMN
-pass) is a no-op here.
 
-Rollback drops the column (SQLite 3.35+ supports DROP COLUMN natively).
+``scheduler_jobs`` lives in ``scheduler.db`` (``JobStore`` opened from
+``gateway/boot.py``), NOT in ``sessions.db`` — and ``apply_pending`` only
+ever runs against ``sessions.db``. On real split-database deployments the
+table is therefore absent from the migration connection and this step
+no-ops, recorded in the sessions.db ledger without touching scheduler
+data. The real in-place upgrade is ``JobStore._migrate``'s connect-time
+ADD COLUMN pass (``scheduler/persistence.py``).
+
+The guards below keep the step harmless and idempotent on databases
+where ``scheduler_jobs`` does share a file with the session store (e.g.
+ad-hoc test setups). Rollback drops the column (SQLite 3.35+ supports
+DROP COLUMN natively).
 """
 
 from __future__ import annotations

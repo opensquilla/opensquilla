@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import logging
 import os
+import sys
 from pathlib import Path
 
 from opensquilla.paths import default_opensquilla_home
@@ -22,6 +23,10 @@ log = logging.getLogger(__name__)
 
 _TRUTHY = {"1", "true", "yes", "on"}
 _PROXY_ENV_VARS = ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy")
+
+# Paths already reported as unloadable, so repeated load_env calls (the CLI
+# loads env at import time and again in the app callback) warn only once.
+_warned_unloadable_files: set[str] = set()
 
 
 def trust_env() -> bool:
@@ -50,11 +55,33 @@ def warn_if_proxy_ignored() -> None:
 
 
 def _parse_env_file(path: Path) -> dict[str, str]:
-    """Parse a .env file into a dict. Skips comments and blank lines."""
+    """Parse a .env file into a dict. Skips comments and blank lines.
+
+    A file that cannot be read or decoded is skipped with a warning instead
+    of raising: ``load_env`` runs at CLI import time, so one bad byte in
+    ``~/.opensquilla/.env`` must not kill every command (including the
+    onboarding wizard that could repair the file).
+    """
     if not path.is_file():
         return {}
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except (UnicodeDecodeError, OSError) as exc:
+        if str(path) not in _warned_unloadable_files:
+            _warned_unloadable_files.add(str(path))
+            reason = (
+                "not valid UTF-8 (re-save the file as UTF-8)"
+                if isinstance(exc, UnicodeDecodeError)
+                else str(exc)
+            )
+            # stderr only: load_env runs at CLI import time, before any
+            # logging is configured. An unconfigured structlog logger would
+            # print to stdout and corrupt machine-readable command output
+            # (e.g. `onboard status --json`).
+            sys.stderr.write(f"opensquilla: skipping env file {path}: {reason}\n")
+        return {}
     entries: dict[str, str] = {}
-    for line in path.read_text(encoding="utf-8").splitlines():
+    for line in raw.splitlines():
         line = line.strip()
         if not line or line.startswith("#"):
             continue

@@ -7,6 +7,7 @@ import signal
 import sys
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
+from typing import Any
 
 from opensquilla.cli.tui.adapters.runtime_helpers import (
     ChatRuntimeScope,
@@ -29,7 +30,10 @@ class NativeTerminalOutputHandle:
         # Rich markup stays enabled so backend notices (e.g. "[yellow]…[/yellow]")
         # render styled. Callers passing untrusted model/tool text must escape it
         # first; NativeStreamRenderer does this for all assistant output.
-        console.print(payload, end="")
+        # ``soft_wrap`` keeps Rich from word-wrapping each streamed fragment as if
+        # the cursor were at column 0: mid-turn flushes land mid-line, so Rich's
+        # own wraps would misalign and break paragraphs. The terminal wraps.
+        console.print(payload, end="", soft_wrap=True)
 
     def stream_output(self) -> AbstractAsyncContextManager[Callable[[str], None]]:
         return _native_stream_output()
@@ -47,6 +51,8 @@ class NativeTerminalSurface:
         self._cancel_callback: Callable[[], None] | None = None
         self._shutdown_callback: Callable[[], None] | None = None
         self._sigint_installed = False
+        self._signal_fallback_installed = False
+        self._previous_sigint_handler: Any = None
         self._output_handle = NativeTerminalOutputHandle(
             approval_surface=approval_surface,
         )
@@ -65,19 +71,51 @@ class NativeTerminalSurface:
             cancel()
 
     def install_interrupt_handler(self) -> None:
-        if self._sigint_installed:
+        if self._sigint_installed or self._signal_fallback_installed:
             return
         try:
             loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        try:
             loop.add_signal_handler(signal.SIGINT, self._on_sigint)
         except (RuntimeError, NotImplementedError, ValueError):
-            # No running loop, or signal handlers unsupported here (e.g. Windows,
-            # or a non-main thread): fall back to next_line's KeyboardInterrupt
-            # handling below, which cancels-and-reprompts rather than exiting.
+            # Loop-level signal handlers are unsupported here (e.g. Windows, or
+            # a non-main thread). Without one, asyncio.run's default SIGINT
+            # handling cancels the whole chat task, so Ctrl+C would quit the
+            # session. Own the process-level handler for the session instead.
+            self._install_signal_fallback(loop)
             return
         self._sigint_installed = True
 
+    def _install_signal_fallback(self, loop: asyncio.AbstractEventLoop) -> None:
+        def _handle_sigint(_signum: int, _frame: object | None) -> None:
+            # Raw signal handlers run between bytecodes in the main thread;
+            # defer to the loop so the cancel callback runs in normal
+            # event-loop context instead of mid-iteration.
+            loop.call_soon_threadsafe(self._on_sigint)
+
+        previous = signal.getsignal(signal.SIGINT)
+        try:
+            signal.signal(signal.SIGINT, _handle_sigint)
+        except (ValueError, OSError):
+            # Not the main thread (or SIGINT unsupported): next_line's
+            # KeyboardInterrupt fallback below stays the last resort.
+            return
+        self._previous_sigint_handler = previous
+        self._signal_fallback_installed = True
+
     def remove_interrupt_handler(self) -> None:
+        if self._signal_fallback_installed:
+            self._signal_fallback_installed = False
+            previous = self._previous_sigint_handler
+            self._previous_sigint_handler = None
+            restore = previous if previous is not None else signal.default_int_handler
+            try:
+                signal.signal(signal.SIGINT, restore)
+            except (ValueError, OSError):
+                pass
+            return
         if not self._sigint_installed:
             return
         self._sigint_installed = False
@@ -100,9 +138,10 @@ class NativeTerminalSurface:
                     self._shutdown_callback()
                 return None
             except KeyboardInterrupt:
-                # Reached only where the SIGINT handler is unavailable (e.g.
-                # Windows): cancel any in-flight turn and re-prompt instead of
-                # exiting, so Ctrl+C is never an accidental quit.
+                # Reached when an interrupted console read raises in the input
+                # worker thread (Windows aborts the read directly): cancel any
+                # in-flight turn and re-prompt instead of exiting, so Ctrl+C is
+                # never an accidental quit.
                 if self._cancel_callback is not None:
                     self._cancel_callback()
                 continue

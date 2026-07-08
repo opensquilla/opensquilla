@@ -3,16 +3,19 @@
 Implements the async TUI renderer protocol by emitting one structured timeline
 message per call so the JS host can render each block by type. The renderer's
 lifetime equals one turn, so turn.begin/status/end are driven by
-enter/method-calls/afinalize.
+enter/method-calls/afinalize, with aclose as the teardown safety net for turns
+that end on an error path without reaching afinalize.
 """
 
 from __future__ import annotations
 
+import contextlib
 import time
 from dataclasses import asdict
 from itertools import count
 from typing import Any, Literal
 
+from opensquilla.cli.tui.backend.directives import StreamDirectiveFilter
 from opensquilla.cli.tui.backend.render_summary import summarize_args, summarize_result
 from opensquilla.cli.tui.opentui.messages import (
     BlockAppend,
@@ -36,7 +39,10 @@ class OpenTuiStreamRenderer:
         self.buffer = ""
         self._turn_id = ""
         self._began = False
-        self._saw_output = False
+        self._finalized = False
+        # Phase currently shown on the composer pill; None after a transient
+        # status label so the next delta restores the phase label.
+        self._pill_phase: str | None = None
         self._block_seq = 0
         self._open_text_id: str | None = None
         self._open_text_presentation: str = "answer"
@@ -47,6 +53,18 @@ class OpenTuiStreamRenderer:
         # Per-tool start times so atool_finished can surface a " · 0.2s" duration
         # like opencode/codex even when the caller does not pass `elapsed`.
         self._tool_start_times: dict[str, float] = {}
+        # Strips [[reply_to_current]]-style routing directives from streamed
+        # text; per open text block, reset on block close.
+        self._directive_filter = StreamDirectiveFilter()
+
+    async def aturn_started(self) -> None:
+        """Announce the turn before the first provider event.
+
+        The stream loop calls this right after the renderer is created, so the
+        pill flips to a pulsing "thinking" the moment the user submits instead
+        of the UI sitting visibly dead until the first token arrives.
+        """
+        await self._ensure_begin()
 
     async def _emit(self, message_type: str, payload: Any) -> None:
         await self._emit_raw(message_type, asdict(payload))
@@ -71,6 +89,7 @@ class OpenTuiStreamRenderer:
         await self._emit(
             "turn.status", TurnStatusState(phase="thinking", label="thinking", active=True)
         )
+        self._pill_phase = "thinking"
         await self._emit_raw("composer.set", {"disabled": True})
 
     def __enter__(self) -> OpenTuiStreamRenderer:
@@ -96,8 +115,10 @@ class OpenTuiStreamRenderer:
         if not delta:
             return
         await self._ensure_begin()
-        if not self._saw_output:
-            self._saw_output = True
+        if self._pill_phase != "output":
+            # Re-emitted whenever text resumes (e.g. the final answer streaming
+            # after a tool call) so the pill never sticks on a finished tool.
+            self._pill_phase = "output"
             await self._emit(
                 "turn.status", TurnStatusState(phase="output", label="output", active=True)
             )
@@ -118,21 +139,27 @@ class OpenTuiStreamRenderer:
         if self._open_text_id is not None and self._open_text_presentation != kind:
             await self._close_text()
         self.buffer += delta
+        # Routing directives are for channel delivery, not the transcript; a
+        # tag-only delta opens no block at all (blocking an empty card).
+        visible = self._directive_filter.feed(delta)
+        if not visible:
+            return
         if self._open_text_id is None:
             self._open_text_id = self._next_block_id()
             self._open_text_presentation = kind
             await self._emit(
                 "block.begin", BlockBegin(id=self._open_text_id, kind=kind, meta={})
             )
-        await self._emit("block.append", BlockAppend(id=self._open_text_id, delta=delta))
+        await self._emit("block.append", BlockAppend(id=self._open_text_id, delta=visible))
 
     async def aappend_reasoning(self, delta: str) -> None:
-        # Reasoning is the model's internal extended-thinking PROCESS, not a
-        # result the user asked to see. We deliberately do not stream its text
-        # onto the timeline; instead the first reasoning delta opens a single
-        # collapsed "reasoning" marker block (a "Thinking…" affordance) so the
-        # user knows the model is reasoning, while the verbatim process stays
-        # hidden. Subsequent deltas are swallowed — the marker is already shown.
+        # Reasoning is the model's extended-thinking PROCESS. The first delta
+        # opens a "reasoning" block whose header pulses "Thinking · Ns"; the
+        # text itself streams as block.append so the host can show a live,
+        # dim rolling peek of the latest reasoning lines. When the stream ends
+        # the host collapses the block to a one-line "Thought for Ns" record,
+        # so the process is visible while it happens without cluttering the
+        # finished transcript.
         if not delta:
             return
         await self._ensure_begin()
@@ -142,11 +169,27 @@ class OpenTuiStreamRenderer:
                 "block.begin",
                 BlockBegin(id=self._open_reasoning_id, kind="reasoning", meta={}),
             )
+        await self._emit(
+            "block.append", BlockAppend(id=self._open_reasoning_id, delta=delta)
+        )
 
     async def _close_text(self) -> None:
+        # A held tail that never completed into a directive tag is ordinary
+        # text and belongs to this segment — even when the segment consisted
+        # of nothing else (no block opened yet).
+        tail = self._directive_filter.flush()
+        self._directive_filter = StreamDirectiveFilter()
+        if self._open_text_id is None and tail:
+            self._open_text_id = self._next_block_id()
+            await self._emit(
+                "block.begin",
+                BlockBegin(id=self._open_text_id, kind=self._open_text_presentation, meta={}),
+            )
         if self._open_text_id is None:
             return
         block_id = self._open_text_id
+        if tail:
+            await self._emit("block.append", BlockAppend(id=block_id, delta=tail))
         self._open_text_id = None
         await self._emit("block.end", BlockEnd(id=block_id))
 
@@ -158,11 +201,25 @@ class OpenTuiStreamRenderer:
         await self._emit("block.end", BlockEnd(id=block_id))
 
     async def astatus(self, message: str, *, style: str = "dim") -> None:
-        # status messages drive only the pill, not a content block: they are
-        # transient progress notes, not model output, so the block protocol
-        # deliberately emits nothing onto the timeline for them.
+        # Status lines carry real user-facing information (artifact saved, task
+        # group progress, warnings): mirror the native backend by rendering a
+        # dim in-card line, and surface the message transiently on the pill.
+        # The pill phase is cleared so the next delta restores the phase label.
         await self._ensure_begin()
-        return None
+        text = message.strip()
+        if not text:
+            return
+        await self._emit(
+            "turn.status",
+            TurnStatusState(phase=self._pill_phase or "thinking", label=text, active=True),
+        )
+        self._pill_phase = None
+        block_id = self._next_block_id()
+        await self._emit(
+            "block.begin",
+            BlockBegin(id=block_id, kind="status", meta={"text": text, "style": style}),
+        )
+        await self._emit("block.end", BlockEnd(id=block_id))
 
     async def atool_start(
         self,
@@ -182,6 +239,7 @@ class OpenTuiStreamRenderer:
         await self._emit(
             "turn.status", TurnStatusState(phase="tool", label=name, active=True)
         )
+        self._pill_phase = "tool"
         await self._emit(
             "block.begin",
             BlockBegin(id=block_id, kind="tool", meta={"name": name, "args": summary}),
@@ -234,6 +292,7 @@ class OpenTuiStreamRenderer:
         await self._emit("block.end", BlockEnd(id=block_id))
 
     async def afinalize(self, usage: Any | None = None, *, cancelled: bool = False) -> None:
+        self._finalized = True
         await self._ensure_begin()
         await self._close_reasoning()
         await self._close_text()
@@ -256,6 +315,7 @@ class OpenTuiStreamRenderer:
         await self._emit(
             "turn.status", TurnStatusState(phase="idle", label="ready", active=False)
         )
+        self._pill_phase = "idle"
         await self._emit_raw("composer.set", {"disabled": False})
         self._publish_usage_to_router_toolbar(usage)
 
@@ -288,7 +348,31 @@ class OpenTuiStreamRenderer:
             invalidate()
 
     async def aclose(self) -> None:
-        return None
+        # The stream callers guarantee aclose via finally even on error paths
+        # that never reach afinalize (provider errors, timeouts, error frames).
+        # Without teardown the host pill would pulse forever, the composer
+        # would stay disabled-colored, and the next turn would merge into the
+        # unfinished card — so emit the minimal turn-teardown sequence here.
+        if not self._began or self._finalized:
+            return
+        self._finalized = True
+        # Best-effort: the bridge may already be gone, and teardown must never
+        # mask the error that ended the turn.
+        with contextlib.suppress(Exception):
+            await self._close_reasoning()
+            await self._close_text()
+            for block_id in list(self._open_tool_ids):
+                await self._emit(
+                    "block.update", BlockUpdate(id=block_id, patch={"status": "error"})
+                )
+                await self._emit("block.end", BlockEnd(id=block_id))
+            self._open_tool_ids.clear()
+            await self._emit("turn.end", TurnEnd(id=self._turn_id))
+            await self._emit(
+                "turn.status", TurnStatusState(phase="idle", label="ready", active=False)
+            )
+            self._pill_phase = "idle"
+            await self._emit_raw("composer.set", {"disabled": False})
 
 
 def _format_tokens(value: Any) -> str:

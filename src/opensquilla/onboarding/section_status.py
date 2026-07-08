@@ -24,7 +24,7 @@ from collections.abc import Callable, Collection
 from enum import StrEnum
 from typing import Any, cast
 
-from opensquilla.gateway.config import GatewayConfig
+from opensquilla.gateway.config import GatewayConfig, ImageGenerationConfig
 from opensquilla.onboarding.audio_specs import get_audio_provider_setup_spec
 from opensquilla.onboarding.image_generation_specs import (
     get_image_generation_provider_setup_spec,
@@ -34,6 +34,13 @@ from opensquilla.onboarding.provider_specs import get_provider_setup_spec
 from opensquilla.onboarding.search_specs import get_search_provider_setup_spec
 
 FIRST_RUN_REQUIRED_SECTIONS = frozenset({"llm"})
+
+# The packaged default image-generation primary model, read straight from the
+# pydantic field default so onboarding provider resolution can never drift
+# from what ``GatewayConfig`` actually ships.
+DEFAULT_IMAGE_GENERATION_PRIMARY: str = str(
+    ImageGenerationConfig.model_fields["primary"].default
+)
 
 
 class SectionStatus(StrEnum):
@@ -51,6 +58,19 @@ class SectionStatus(StrEnum):
     DEGRADED = "degraded"
     OPTIONAL = "optional"
     UNKNOWN = "unknown"
+
+
+# Single source of truth for the operator-facing status words. Every CLI
+# renderer (the ``onboard status`` table and the next-steps capability
+# summary) must display a section state through this mapping so the wording
+# can never drift between surfaces.
+SECTION_STATUS_DISPLAY: dict[SectionStatus, str] = {
+    SectionStatus.OK: "Ready",
+    SectionStatus.OPTIONAL: "Later",
+    SectionStatus.MISSING: "Missing",
+    SectionStatus.DEGRADED: "Needs action",
+    SectionStatus.UNKNOWN: "Check",
+}
 
 
 def _str(cfg: object, name: str) -> str:
@@ -343,11 +363,18 @@ def needs_onboarding(
 
 
 def _configured_image_generation_provider_ids(cfg: GatewayConfig) -> list[str]:
+    """Resolve which image-generation providers the config points at.
+
+    Shared by the section verifier above and by ``status.py``'s annotation
+    derivation — keep this the only implementation of the resolution order
+    (operator credentials beat model routing beats spec defaults).
+    """
     image_cfg = cfg.image_generation
     primary = getattr(image_cfg, "primary", "")
     fallbacks = list(getattr(image_cfg, "fallbacks", []) or [])
-    default_primary = "openai/gpt-image-1"
-    explicit_routing = bool(fallbacks) or bool(primary and primary != default_primary)
+    explicit_routing = bool(fallbacks) or bool(
+        primary and primary != DEFAULT_IMAGE_GENERATION_PRIMARY
+    )
     specs = [
         spec
         for spec in list_image_generation_provider_setup_specs()

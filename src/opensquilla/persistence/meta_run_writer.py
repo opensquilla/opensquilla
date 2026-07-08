@@ -1,7 +1,7 @@
 """MetaRunWriter — persistence facade for meta-skill execution traces.
 
 G4 traceable and auditable ledger. Thread-safe sync writer over a long-lived
-SQLite connection; the orchestrator wraps calls in ``loop.run_in_executor()``.
+SQLite connection; the orchestrator wraps calls in ``asyncio.to_thread()``.
 
 Connection contract:
     * ``check_same_thread=False`` — allows cross-thread access.
@@ -11,6 +11,13 @@ Connection contract:
 
 Fail-open: persistence is observability; all writes are try/except → log.warning
 so a writer failure cannot fail a meta-skill turn.
+
+Retention: every ``prune_every`` (default 64) ``begin_run_sync`` calls the
+writer runs one opportunistic ``DELETE FROM meta_skill_runs WHERE
+started_at_ms < now - retention_days AND status NOT IN ('running',
+'awaiting_user')`` so the table stays bounded without a background job.
+Live (``running``) and parked (``awaiting_user``) runs are never pruned
+regardless of age; step rows follow their run via FK ``ON DELETE CASCADE``.
 """
 
 from __future__ import annotations
@@ -35,6 +42,11 @@ log = logging.getLogger(__name__)
 _DEFAULT_MAX_FIELD_BYTES = 64 * 1024
 # 4 KiB per-string clip for redactor; small enough to discourage secrets
 _REDACTOR_PER_STRING_BYTES = 4 * 1024
+# Retention defaults — mirror the RouterDecisionWriter contract: an
+# opportunistic write-time prune, no background job, no config keys.
+_DEFAULT_RETENTION_DAYS = 90
+_DEFAULT_PRUNE_EVERY = 64
+_DAY_MS = 24 * 60 * 60 * 1000
 
 _SECRET_KEY_RE = re.compile(
     r"(?i)(api_?key|access_?key|secret|token|password|passwd|auth(?:_?header)?|bearer)"
@@ -454,7 +466,8 @@ class MetaRunWriter:
     Caller responsibilities:
     * Construct via :func:`open_meta_run_writer` (sets PRAGMAs).
     * Call ``close()`` at shutdown.
-    * Wrap async calls in ``loop.run_in_executor()`` if used from async code.
+    * Wrap calls in ``asyncio.to_thread()`` / ``loop.run_in_executor()``
+      if used from async code.
     """
 
     def __init__(
@@ -462,6 +475,8 @@ class MetaRunWriter:
         connection: sqlite3.Connection,
         *,
         max_field_bytes: int = _DEFAULT_MAX_FIELD_BYTES,
+        retention_days: int = _DEFAULT_RETENTION_DAYS,
+        prune_every: int = _DEFAULT_PRUNE_EVERY,
         clock: Callable[[], int] = lambda: int(time.time() * 1000),
         id_gen: Callable[[], str] = _gen_ulid,
         pid_fn: Callable[[], int] = os.getpid,
@@ -469,6 +484,9 @@ class MetaRunWriter:
         self._conn = connection
         self._lock = threading.Lock()
         self._max_field_bytes = max_field_bytes
+        self._retention_days = max(1, int(retention_days))
+        self._prune_every = max(1, int(prune_every))
+        self._begin_run_count = 0
         self._clock = clock
         self._id_gen = id_gen
         self._pid_fn = pid_fn
@@ -523,10 +541,40 @@ class MetaRunWriter:
                     ),
                 )
                 self._conn.commit()
+                self._begin_run_count += 1
+                should_prune = self._begin_run_count % self._prune_every == 0
         except Exception as exc:  # noqa: BLE001
             log.warning("meta_run_writer.begin_run_failed: %s", exc)
             return None
+        if should_prune:
+            self._prune()
         return run_id
+
+    def _prune(self) -> None:
+        """Opportunistic retention prune (fail-open, write-time only).
+
+        Deletes terminal runs older than ``retention_days``; ``running`` and
+        ``awaiting_user`` rows are never deleted regardless of age. Step rows
+        cascade via the FK on ``meta_skill_run_steps.run_id``.
+        """
+        cutoff = self._clock() - self._retention_days * _DAY_MS
+        try:
+            with self._lock:
+                cur = self._conn.execute(
+                    "DELETE FROM meta_skill_runs "
+                    "WHERE started_at_ms < ? "
+                    "AND status NOT IN ('running', 'awaiting_user')",
+                    (cutoff,),
+                )
+                self._conn.commit()
+            if cur.rowcount:
+                log.info(
+                    "meta_run_writer.pruned rows=%s retention_days=%s",
+                    cur.rowcount,
+                    self._retention_days,
+                )
+        except Exception as exc:  # noqa: BLE001
+            log.warning("meta_run_writer.prune_failed: %s", exc)
 
     def begin_step_sync(
         self,
@@ -631,6 +679,19 @@ class MetaRunWriter:
         status: Literal["ok", "failed", "cancelled"],
         result: MetaResult | None,
     ) -> None:
+        """Finalize a run row with a terminal status.
+
+        Status-guarded like the sibling transitions: only ``running`` rows
+        (plus ``cancelled`` preflight gates, whose confirmed re-run reuses
+        the row — see ``_is_confirmable_preflight_run``) may be finalized.
+        A late finalize can therefore never clobber a committed
+        ``awaiting_user`` row; lost races are logged at debug level.
+        Step rows still ``running`` are swept to ``failed`` in the same
+        explicit transaction (``BEGIN IMMEDIATE`` — the connection is
+        otherwise autocommit) so the finalize and the sweep land atomically.
+        A step INSERT abandoned by a cancelled turn can still commit after
+        the sweep; :meth:`mark_orphans_failed` repairs those at next boot.
+        """
         truncated: list[str] = []
         final_text: str | None = None
         failed_step_id: str | None = None
@@ -646,20 +707,46 @@ class MetaRunWriter:
             error = result.error
         try:
             with self._lock:
-                self._conn.execute(
-                    """
-                    UPDATE meta_skill_runs
-                       SET status=?, ended_at_ms=?, final_text=?,
-                           failed_step_id=?, error=?, truncated_fields=?
-                     WHERE run_id=?
-                    """,
-                    (
-                        status, self._clock(), final_text,
-                        failed_step_id, error, ",".join(truncated),
-                        run_id,
-                    ),
-                )
-                self._conn.commit()
+                self._conn.execute("BEGIN IMMEDIATE")
+                try:
+                    cur = self._conn.execute(
+                        """
+                        UPDATE meta_skill_runs
+                           SET status=?, ended_at_ms=?, final_text=?,
+                               failed_step_id=?, error=?, truncated_fields=?
+                         WHERE run_id=?
+                           AND (status='running'
+                                OR (status='cancelled' AND error='preflight_required'))
+                        """,
+                        (
+                            status, self._clock(), final_text,
+                            failed_step_id, error, ",".join(truncated),
+                            run_id,
+                        ),
+                    )
+                    if cur.rowcount == 0:
+                        self._conn.rollback()
+                        log.debug(
+                            "meta_run_writer.finish_run_skipped run=%s status=%s "
+                            "(row not in a finalizable status)",
+                            run_id,
+                            status,
+                        )
+                        return
+                    self._conn.execute(
+                        """
+                        UPDATE meta_skill_run_steps
+                           SET status='failed', ended_at_ms=?,
+                               error='run finalized before step completed'
+                         WHERE run_id=? AND status='running'
+                        """,
+                        (self._clock(), run_id),
+                    )
+                    self._conn.commit()
+                except Exception:
+                    # Never leave a transaction open on the shared connection.
+                    self._conn.rollback()
+                    raise
         except Exception as exc:  # noqa: BLE001
             log.warning("meta_run_writer.finish_run_failed: %s", exc)
 
@@ -973,10 +1060,16 @@ class MetaRunWriter:
             log.warning("meta_run_writer.mark_cancelled_failed: %s", exc)
 
     def increment_parse_failures(self, *, run_id: str) -> int:
-        """Atomically increment parse_failure_count; return new value.
+        """Increment parse_failure_count for an awaiting run; return new value.
 
         Returns 0 if the row is not in 'awaiting_user' (no-op sentinel).
-        Uses UPDATE ... RETURNING for atomicity across multiple connections.
+
+        Atomicity comes from this writer's single-connection contract: the
+        ``threading.Lock`` serializes the status-guarded UPDATE and the
+        follow-up SELECT so no other call on this writer can interleave.
+        (An earlier ``UPDATE ... RETURNING`` form required SQLite >= 3.35;
+        on older system builds the syntax error was swallowed by the
+        fail-open handler and the parse-failure limit never triggered.)
         """
         try:
             with self._lock:
@@ -985,15 +1078,19 @@ class MetaRunWriter:
                     UPDATE meta_skill_runs
                        SET parse_failure_count = parse_failure_count + 1
                      WHERE run_id=? AND status='awaiting_user'
-                     RETURNING parse_failure_count
                     """,
                     (run_id,),
                 )
-                row = cur.fetchone()
-                if row is None:
+                if cur.rowcount == 0:
                     self._conn.rollback()
                     return 0
+                row = self._conn.execute(
+                    "SELECT parse_failure_count FROM meta_skill_runs WHERE run_id=?",
+                    (run_id,),
+                ).fetchone()
                 self._conn.commit()
+                if row is None:
+                    return 0
                 if isinstance(row, sqlite3.Row):
                     return int(row["parse_failure_count"])
                 return int(row[0])
@@ -1043,23 +1140,50 @@ class MetaRunWriter:
             return 0
 
     def mark_orphans_failed(self, *, age_ms: int = 3_600_000) -> int:
-        """W6: boot cleanup. Only marks rows owned by other-or-null pid AND aged."""
+        """W6: boot cleanup. Only marks rows owned by other-or-null pid AND aged.
+
+        Also repairs step rows left ``running`` under a terminal run — a step
+        INSERT abandoned by a cancelled turn can land after the run's
+        finalize sweep, and expired/cancelled awaiting runs park their
+        ``user_input`` step as ``running``; neither is repairable at the time
+        it happens, so the next boot sweeps them here. Returns the number of
+        run rows (not step rows) marked failed, matching the historical
+        contract.
+        """
         current_pid = self._pid_fn()
         cutoff = self._clock() - age_ms
         try:
             with self._lock:
-                cur = self._conn.execute(
-                    """
-                    UPDATE meta_skill_runs
-                       SET status='failed', ended_at_ms=?, error='gateway restart'
-                     WHERE status='running'
-                       AND (owner_pid IS NULL OR owner_pid != ?)
-                       AND started_at_ms < ?
-                    """,
-                    (self._clock(), current_pid, cutoff),
-                )
-                self._conn.commit()
-                return cur.rowcount or 0
+                self._conn.execute("BEGIN IMMEDIATE")
+                try:
+                    cur = self._conn.execute(
+                        """
+                        UPDATE meta_skill_runs
+                           SET status='failed', ended_at_ms=?, error='gateway restart'
+                         WHERE status='running'
+                           AND (owner_pid IS NULL OR owner_pid != ?)
+                           AND started_at_ms < ?
+                        """,
+                        (self._clock(), current_pid, cutoff),
+                    )
+                    self._conn.execute(
+                        """
+                        UPDATE meta_skill_run_steps
+                           SET status='failed', ended_at_ms=?,
+                               error='run finalized before step completed'
+                         WHERE status='running'
+                           AND run_id IN (
+                               SELECT run_id FROM meta_skill_runs
+                                WHERE status NOT IN ('running', 'awaiting_user')
+                           )
+                        """,
+                        (self._clock(),),
+                    )
+                    self._conn.commit()
+                    return cur.rowcount or 0
+                except Exception:
+                    self._conn.rollback()
+                    raise
         except Exception as exc:  # noqa: BLE001
             log.warning("meta_run_writer.mark_orphans_failed: %s", exc)
             return 0
@@ -1120,8 +1244,18 @@ class MetaRunWriter:
 # ---------------------------------------------------------------------------
 
 
-def open_meta_run_writer(db_path: str) -> MetaRunWriter:
-    """Open writer with PRAGMA contract (C2 + W1 v2)."""
+def open_meta_run_writer(
+    db_path: str,
+    *,
+    retention_days: int = _DEFAULT_RETENTION_DAYS,
+    prune_every: int = _DEFAULT_PRUNE_EVERY,
+) -> MetaRunWriter:
+    """Open writer with PRAGMA contract (C2 + W1 v2).
+
+    ``retention_days`` / ``prune_every`` tune the opportunistic write-time
+    retention prune (see module docstring); defaults keep 90 days and prune
+    on every 64th ``begin_run_sync``.
+    """
     conn = sqlite3.connect(
         db_path,
         check_same_thread=False,  # W1 — orchestrator runs us in executor threads
@@ -1132,4 +1266,8 @@ def open_meta_run_writer(db_path: str) -> MetaRunWriter:
     conn.execute("PRAGMA journal_mode = WAL")
     conn.execute("PRAGMA synchronous = NORMAL")
     conn.execute("PRAGMA busy_timeout = 5000")
-    return MetaRunWriter(conn)
+    return MetaRunWriter(
+        conn,
+        retention_days=retention_days,
+        prune_every=prune_every,
+    )

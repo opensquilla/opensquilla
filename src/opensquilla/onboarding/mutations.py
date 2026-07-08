@@ -18,6 +18,7 @@ from opensquilla.gateway.config import (
     LlmProviderConfig,
     MemoryEmbeddingConfig,
     SquillaRouterConfig,
+    _default_tiers,
     _router_tier_profile_defaults,
 )
 from opensquilla.gateway.config_secrets import (
@@ -32,6 +33,7 @@ from opensquilla.onboarding.provider_specs import get_provider_setup_spec
 from opensquilla.onboarding.redaction import (
     redact_audio_payload,
     redact_channel_entry,
+    redact_error_text,
     redact_image_generation_payload,
     redact_memory_embedding_payload,
     redact_provider_payload,
@@ -45,7 +47,7 @@ from opensquilla.router_tiers import (
     TEXT_TIERS,
     normalize_text_tier,
 )
-from opensquilla.search.types import DEFAULT_SEARCH_MAX_RESULTS, MAX_SEARCH_RESULTS
+from opensquilla.search.types import MAX_SEARCH_RESULTS
 from opensquilla.secrets import clean_header_secret
 
 SearchFallbackPolicy = Literal["off", "network"]
@@ -223,6 +225,49 @@ def _tiers_equal_after_canonical_normalization(
     return _canonical_tier_map(candidate) == _canonical_tier_map(preset_tiers)
 
 
+def _router_tiers_hand_customized(config: GatewayConfig, *, explicit_model: str = "") -> bool:
+    """True when squilla_router carries an inline, hand-edited tier ladder.
+
+    A set ``tier_profile`` means the ladder is profile-derived (reconciling
+    rewrites the same compact form, which is not destructive). Inline tiers
+    that canonically equal the model default or the active provider's preset
+    seeded with a machine-known model are reconcile-refreshable states a
+    previous save produced — only anything else is an operator-authored
+    ladder that a same-provider re-save must not overwrite.
+
+    The seeded comparison runs against several candidate models, not just
+    the currently stored ``llm.model``: after an out-of-band ``llm.model``
+    change (config.set RPC, TOML hand-edit) the stored ladder still carries
+    the model of the save that seeded it, so testing the save's explicit
+    model and each model the ladder itself names keeps machine-seeded
+    ladders recognizable — otherwise a re-save naming the new model would
+    skip reconciliation and leave every tier pinned to the old model.
+    """
+    router = config.squilla_router
+    if getattr(router, "tier_profile", None):
+        return False
+    tiers = getattr(router, "tiers", {}) or {}
+    if not tiers:
+        return False
+    if _tiers_equal_after_canonical_normalization(tiers, _default_tiers()):
+        return False
+    provider = str(getattr(config.llm, "provider", "") or "").strip().lower()
+    preset = get_preset(provider)
+    if preset is not None:
+        candidate_models = {
+            str(getattr(config.llm, "model", "") or "").strip(),
+            str(explicit_model or "").strip(),
+        }
+        for tier in tiers.values():
+            if isinstance(tier, Mapping):
+                candidate_models.add(str(tier.get("model") or "").strip())
+        for candidate in sorted(candidate_models):
+            seeded = _preset_tiers_with_model(preset, candidate)
+            if _tiers_equal_after_canonical_normalization(tiers, seeded):
+                return False
+    return True
+
+
 def _validate_router_tiers(tiers: dict[str, Any], default_tier: str) -> None:
     if default_tier not in _TEXT_ROUTER_TIERS:
         raise ValueError("defaultTier must reference a text tier")
@@ -369,21 +414,48 @@ def upsert_llm_provider(
     config: GatewayConfig,
     *,
     provider_id: str,
-    model: str = "",
-    api_key: str = "",
-    api_key_env: str = "",
-    base_url: str = "",
-    proxy: str = "",
+    model: str | None = None,
+    api_key: str | None = None,
+    api_key_env: str | None = None,
+    base_url: str | None = None,
+    proxy: str | None = None,
     provider_routing: dict[str, str] | None = None,
-    preset_id: str = "",
+    preset_id: str | None = None,
 ) -> MutationResult:
+    """Save the active LLM provider configuration.
+
+    Keep-current contract (``None`` = "not passed"): when re-saving the
+    provider that is already active (``config.llm.provider == provider_id``,
+    e.g. a key rotation), every optional field left at ``None`` keeps its
+    stored value — ``model``, ``base_url``, ``proxy``, ``provider_routing``,
+    plus parameterless fields such as ``max_tokens`` and ``thinking``, which
+    are always carried over verbatim on a same-provider re-save. Explicit
+    values always win, and an explicit empty string keeps its legacy
+    meaning: ``model=""``/``base_url=""`` fall back to derived defaults
+    (preset/tier model, spec base URL) and ``proxy=""`` clears the proxy.
+    On a provider switch nothing is carried over except the caller's values
+    (and the documented api_key keep-current never crosses providers).
+
+    A same-provider re-save also never overwrites an operator-authored
+    inline router ladder: the router profile is reconciled only when the
+    provider id actually changes or when the current router state is one a
+    previous save produced (compact ``tier_profile`` form, the packaged
+    default, or the provider preset seeded with the stored model).
+    """
     spec = get_provider_setup_spec(provider_id)
     if not spec.runtime_supported:
         raise ValueError(
             f"provider {provider_id!r} is not runtime-supported and cannot be configured"
         )
-    preset = _resolve_provider_preset(preset_id, provider_id)
+    api_key = api_key or ""
+    api_key_env = api_key_env or ""
+    preset = _resolve_provider_preset(preset_id or "", provider_id)
+    same_provider = config.llm.provider == provider_id
     model_clean = _clean_optional_str(model)
+    if not model_clean and model is None and same_provider:
+        # Not passed at all: keep the stored model on a same-provider
+        # re-save instead of resetting it to a derived default.
+        model_clean = str(config.llm.model or "").strip()
     if not model_clean and preset is not None:
         # Explicit preset application: the preset's default model fills the
         # provider's direct model when the caller gave none.
@@ -403,40 +475,82 @@ def upsert_llm_provider(
     if api_key and api_key_env.strip():
         raise ValueError("configure either api_key or api_key_env, not both")
     effective_api_key_env = "" if api_key else api_key_env.strip()
-    if not api_key and not effective_api_key_env and config.llm.provider == provider_id:
+    if not api_key and not effective_api_key_env and same_provider:
         effective_api_key_env = getattr(config.llm, "api_key_env", "").strip()
     if (
         not effective_api_key
         and spec.requires_api_key
         and not api_key_env
-        and config.llm.provider == provider_id
+        and same_provider
         and config.llm.api_key
     ):
         effective_api_key = config.llm.api_key
     if spec.requires_api_key and not effective_api_key and not effective_api_key_env:
         raise ValueError(f"provider {provider_id!r} requires an api_key")
-    effective_base_url = base_url or spec.default_base_url
+    effective_base_url = base_url or ""
+    if not effective_base_url and base_url is None and same_provider:
+        effective_base_url = str(config.llm.base_url or "")
+    if not effective_base_url:
+        effective_base_url = spec.default_base_url
     if spec.requires_base_url and not effective_base_url:
         raise ValueError(f"provider {provider_id!r} requires a base_url")
+    if proxy is None:
+        effective_proxy = str(config.llm.proxy or "") if same_provider else ""
+    else:
+        effective_proxy = proxy
+    if provider_routing is None:
+        effective_provider_routing = (
+            dict(config.llm.provider_routing or {}) if same_provider else {}
+        )
+    else:
+        effective_provider_routing = dict(provider_routing)
 
     new_cfg = _clone(config)
-    new_cfg.llm = LlmProviderConfig(
-        provider=provider_id,
-        model=model_clean,
-        api_key=effective_api_key,
-        api_key_env=effective_api_key_env,
-        base_url=effective_base_url,
-        proxy=proxy,
-        provider_routing=dict(provider_routing or {}),
+    # Seed from the stored section on a same-provider re-save so fields
+    # without a parameter here (max_tokens, thinking, future additions) keep
+    # their values instead of silently resetting to model defaults.
+    llm_payload: dict[str, Any] = (
+        config.llm.model_dump(mode="python") if same_provider else {}
     )
+    llm_payload.update(
+        {
+            "provider": provider_id,
+            "model": model_clean,
+            "api_key": effective_api_key,
+            "api_key_env": effective_api_key_env,
+            "base_url": effective_base_url,
+            "proxy": effective_proxy,
+            "provider_routing": effective_provider_routing,
+        }
+    )
+    new_cfg.llm = LlmProviderConfig(**llm_payload)
     if preset is not None:
         # Explicit user action only — a plain save (no presetId) must keep
         # today's reconcile behavior byte-for-byte (D18).
         _apply_provider_preset(new_cfg, preset, model_clean)
+    elif same_provider and _router_tiers_hand_customized(
+        config, explicit_model=model_clean
+    ):
+        # Same-provider re-save over a hand-edited inline ladder: the router
+        # state already belongs to this provider, and reconciling would only
+        # replace the operator's tiers with the packaged profile. Leave it.
+        pass
     else:
         _reconcile_router_profile_for_provider(new_cfg, provider_id)
     if api_key:
         clear_runtime_secret_paths(new_cfg, {"llm.api_key"})
+    # Explicit endpoint/proxy values override any boot-time env resolution:
+    # drop the runtime-override record so the persist layer writes exactly
+    # what the operator passed even when it equals the env value. Only a
+    # genuinely explicit NON-EMPTY value counts: ``None`` is keep-current and
+    # the empty string is the legacy RPC reset sentinel ("derive default"),
+    # so neither names an operator endpoint — clearing the record for them
+    # would let a boot-time env value get baked into config.toml by a plain
+    # re-save (e.g. a WebUI key rotation that sends baseUrl="").
+    if base_url:
+        new_cfg.clear_runtime_override("llm.base_url")
+    if proxy:
+        new_cfg.clear_runtime_override("llm.proxy")
 
     payload = {
         "provider": provider_id,
@@ -447,8 +561,8 @@ def upsert_llm_provider(
             "explicit" if effective_api_key else ("env" if effective_api_key_env else "none")
         ),
         "base_url": effective_base_url,
-        "proxy": proxy,
-        "provider_routing": dict(provider_routing or {}),
+        "proxy": effective_proxy,
+        "provider_routing": effective_provider_routing,
     }
     return MutationResult(
         config=new_cfg,
@@ -495,6 +609,13 @@ def upsert_router(
     if router_mode == "disabled":
         router_payload["enabled"] = False
         router_payload["tier_profile"] = None
+        # Keep the effective ladder stored inline while disabled so a later
+        # re-enable can restore an operator-authored tier ladder instead of
+        # silently resetting it to the packaged defaults.
+        router_payload["tiers"] = {
+            name: (dict(tier) if isinstance(tier, dict) else tier)
+            for name, tier in (getattr(config.squilla_router, "tiers", {}) or {}).items()
+        }
         public_payload["mode"] = "disabled"
         public_payload.update({"enabled": False, "tier_profile": None})
     else:
@@ -510,7 +631,39 @@ def upsert_router(
             source_tiers = (
                 tiers if tiers is not None else getattr(config.squilla_router, "tiers", {})
             )
+        elif router_mode == "custom" and tiers is None:
+            # No tiers passed: an inline (possibly hand-edited) ladder —
+            # including one preserved across a disable — is the effective
+            # state, so keep it rather than resetting to the preset base.
+            stored_tiers = getattr(config.squilla_router, "tiers", {}) or {}
+            if (
+                getattr(config.squilla_router, "tier_profile", None) is None
+                and stored_tiers
+                and not _tiers_equal_after_canonical_normalization(
+                    stored_tiers, _default_tiers()
+                )
+            ):
+                source_tiers = stored_tiers
         merged_tiers = _merge_router_tiers(base_tiers, source_tiers)
+        if preset is None:
+            # A hand-edited, non-registry llm.provider has no packaged
+            # profile to seed tiers from; unless the caller supplied a full
+            # ladder, the advertised router one-liner would otherwise die on
+            # the cryptic "router tier 'c0' must be an object".
+            missing_tiers = [
+                tier_name
+                for tier_name in _TEXT_ROUTER_TIERS
+                if not isinstance(merged_tiers.get(tier_name), dict)
+            ]
+            if missing_tiers:
+                raise ValueError(
+                    f"llm.provider {provider!r} is not a registered provider, so no "
+                    f"packaged router profile can seed tiers "
+                    f"{', '.join(missing_tiers)}. Configure a registered provider "
+                    f"first (opensquilla onboard configure provider --provider "
+                    f"<id>) or disable the router (opensquilla onboard configure "
+                    f"router --router disabled)."
+                )
         writes_packaged_profile = (
             router_mode in {"recommended", "openrouter-mix"}
             and preset is not None
@@ -638,6 +791,12 @@ def upsert_llm_ensemble(
 
     new_cfg = _clone(config)
     new_cfg.llm_ensemble = new_ensemble
+    if enabled is not None:
+        # An explicit enabled/disabled decision must be visible in the file
+        # even when it equals the model default — otherwise a headless
+        # `configure ensemble --disabled` on a fresh config persists nothing
+        # and is indistinguishable from a silent no-op.
+        new_cfg.mark_force_persist("llm_ensemble.enabled")
 
     payload: dict[str, Any] = {
         "enabled": new_ensemble.enabled,
@@ -664,28 +823,53 @@ def upsert_search_provider(
     config: GatewayConfig,
     *,
     provider_id: str,
-    api_key: str = "",
-    api_key_env: str = "",
-    max_results: int | str = DEFAULT_SEARCH_MAX_RESULTS,
-    proxy: str = "",
-    use_env_proxy: bool = False,
-    fallback_policy: str = "off",
-    diagnostics: bool = False,
+    api_key: str | None = None,
+    api_key_env: str | None = None,
+    max_results: int | str | None = None,
+    proxy: str | None = None,
+    use_env_proxy: bool | None = None,
+    fallback_policy: str | None = None,
+    diagnostics: bool | None = None,
 ) -> MutationResult:
+    """Save the web search provider configuration.
+
+    Keep-current contract (``None`` = "not passed"): ``max_results``,
+    ``proxy``, ``use_env_proxy``, ``fallback_policy``, and ``diagnostics``
+    keep their currently stored values when omitted — these are global
+    search settings, so keep-current applies even when ``provider_id``
+    changes. Explicit values always win (``proxy=""`` clears the proxy).
+    A blank ``api_key`` keeps the stored key when re-saving the provider
+    that is already active.
+    """
     spec = get_search_provider_setup_spec(provider_id)
     if not spec.runtime_supported:
         raise ValueError(
             f"search provider {provider_id!r} is not runtime-supported and cannot be configured"
         )
-    # Cap the write side to the same ceiling the config field enforces so an
-    # over-range request is clamped here with a clear path rather than failing
-    # late with a raw validation error at persist time.
-    effective_max_results = min(
-        _positive_int(max_results, label="max_results"), MAX_SEARCH_RESULTS
+    api_key = api_key or ""
+    api_key_env = api_key_env or ""
+    if max_results is None:
+        effective_max_results = int(config.search_max_results)
+    else:
+        # Cap the write side to the same ceiling the config field enforces so
+        # an over-range request is clamped here with a clear path rather than
+        # failing late with a raw validation error at persist time.
+        effective_max_results = min(
+            _positive_int(max_results, label="max_results"), MAX_SEARCH_RESULTS
+        )
+    if fallback_policy is None:
+        fallback_policy_value = cast(SearchFallbackPolicy, config.search_fallback_policy)
+    else:
+        if fallback_policy not in {"off", "network"}:
+            raise ValueError("fallback_policy must be 'off' or 'network'")
+        fallback_policy_value = cast(SearchFallbackPolicy, fallback_policy)
+    effective_proxy = str(config.search_proxy or "") if proxy is None else proxy
+    effective_use_env_proxy = (
+        bool(config.search_use_env_proxy) if use_env_proxy is None else bool(use_env_proxy)
     )
-    if fallback_policy not in {"off", "network"}:
-        raise ValueError("fallback_policy must be 'off' or 'network'")
-    fallback_policy_value = cast(SearchFallbackPolicy, fallback_policy)
+    effective_diagnostics = (
+        bool(config.search_diagnostics) if diagnostics is None else bool(diagnostics)
+    )
 
     effective_api_key = (
         clean_header_secret(api_key, label="Search API key")
@@ -713,10 +897,10 @@ def upsert_search_provider(
     new_cfg.search_api_key = effective_api_key
     new_cfg.search_api_key_env = effective_api_key_env
     new_cfg.search_max_results = effective_max_results
-    new_cfg.search_proxy = proxy
-    new_cfg.search_use_env_proxy = bool(use_env_proxy)
+    new_cfg.search_proxy = effective_proxy
+    new_cfg.search_use_env_proxy = effective_use_env_proxy
     new_cfg.search_fallback_policy = fallback_policy_value
-    new_cfg.search_diagnostics = bool(diagnostics)
+    new_cfg.search_diagnostics = effective_diagnostics
     if api_key:
         clear_runtime_secret_paths(new_cfg, {"search_api_key"})
 
@@ -729,10 +913,10 @@ def upsert_search_provider(
         "api_key_env": effective_api_key_env,
         "api_key_source": api_key_source,
         "max_results": effective_max_results,
-        "proxy": proxy,
-        "use_env_proxy": bool(use_env_proxy),
+        "proxy": effective_proxy,
+        "use_env_proxy": effective_use_env_proxy,
         "fallback_policy": fallback_policy_value,
-        "diagnostics": bool(diagnostics),
+        "diagnostics": effective_diagnostics,
     }
     return MutationResult(
         config=new_cfg,
@@ -860,6 +1044,12 @@ def upsert_image_generation_provider(
 
     new_cfg = _clone(config)
     new_cfg.image_generation.enabled = bool(enabled)
+    # The enabled decision is explicit at this layer (callers resolve
+    # keep-current before invoking): force it into the file even when it
+    # equals the model default, otherwise a first-time enabled=false is
+    # dropped by the sparse persist and a later key rotation flips the tool
+    # back on via the legacy configure-implies-enable fallback.
+    new_cfg.mark_force_persist("image_generation.enabled")
     new_cfg.image_generation.primary = primary_model
     new_cfg.image_generation.size = effective_size
     new_cfg.image_generation.output_format = cast(ImageOutputFormat, effective_output_format)
@@ -897,6 +1087,10 @@ def upsert_image_generation_provider(
 def disable_image_generation(config: GatewayConfig) -> MutationResult:
     new_cfg = _clone(config)
     new_cfg.image_generation.enabled = False
+    # Explicit off switch: must land in the file even on a fresh config where
+    # it equals the model default, so a later provider save that omits the
+    # flag keeps it off instead of re-enabling via configure-implies-enable.
+    new_cfg.mark_force_persist("image_generation.enabled")
     return MutationResult(
         config=new_cfg,
         changed=True,
@@ -1130,6 +1324,52 @@ def list_channel_entries(config: GatewayConfig) -> list[dict[str, Any]]:
     return [redact_channel_entry(d.get("type", ""), d) for d in _channel_entries_as_dicts(config)]
 
 
+def _format_channel_validation_error(exc: ValidationError) -> str:
+    """Render a channel-entry ValidationError as a field-naming summary.
+
+    Never echoes pydantic's ``input_value`` dump: channel payloads carry
+    credentials (bot tokens, app secrets) and this message surfaces on
+    stderr and RPC error responses. Only field paths and validator messages
+    are included, with the free-text redactor as a final guard.
+    """
+    parts: list[str] = []
+    for error in exc.errors(include_url=False, include_context=False, include_input=False):
+        loc = ".".join(str(item) for item in error.get("loc", ()) or ())
+        msg = str(error.get("msg") or "invalid value")
+        parts.append(f"{loc}: {msg}" if loc else msg)
+    detail = "; ".join(parts) or "invalid value"
+    return f"invalid channel entry: {redact_error_text(detail, max_len=500)}"
+
+
+def _require_non_blank_secret_fields(type_name: str, entry: Mapping[str, Any]) -> None:
+    """Reject blank required credential fields at mutation time.
+
+    An empty or whitespace-only secret (e.g. ``--field token=``) would
+    otherwise persist cleanly and only fail much later at gateway start.
+    Fields gated by ``show_when`` are checked only when their condition
+    matches the normalized entry.
+    """
+    from opensquilla.onboarding.channel_specs import get_channel_setup_spec
+
+    try:
+        spec = get_channel_setup_spec(type_name)
+    except KeyError:
+        return
+    for field_spec in spec.fields:
+        if not (field_spec.required and field_spec.secret):
+            continue
+        if field_spec.show_when and not all(
+            str(entry.get(key, "")) == str(expected)
+            for key, expected in field_spec.show_when.items()
+        ):
+            continue
+        value = entry.get(field_spec.name)
+        if value is None or not str(value).strip():
+            raise ValueError(
+                f"channel field {field_spec.name!r} requires a non-empty value"
+            )
+
+
 def validate_channel_entry(payload: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(payload, dict):
         raise TypeError("channel entry payload must be a dict")
@@ -1142,14 +1382,16 @@ def validate_channel_entry(payload: dict[str, Any]) -> dict[str, Any]:
     try:
         entry = parse_channel_entry(full)
     except ValidationError as exc:
-        raise ValueError(str(exc)) from exc
+        raise ValueError(_format_channel_validation_error(exc)) from exc
+    normalized = entry.model_dump(mode="python")
+    _require_non_blank_secret_fields(type_name, normalized)
     if (
         type_name == "slack"
         and getattr(entry, "connection_mode", "webhook") == "webhook"
         and not str(getattr(entry, "signing_secret", "") or "").strip()
     ):
         raise ValueError("slack webhook channels require signing_secret")
-    return entry.model_dump(mode="python")
+    return normalized
 
 
 def upsert_channel(
@@ -1215,9 +1457,25 @@ def _merge_with_existing_secrets(
     for f in spec.fields:
         if not f.secret:
             continue
-        if merged.get(f.name) in ("", None) and existing.get(f.name):
+        provided = merged.get(f.name)
+        blank = provided is None or (isinstance(provided, str) and not provided.strip())
+        if blank and existing.get(f.name):
             merged[f.name] = existing[f.name]
     return merged
+
+
+def merge_channel_entry_secrets(
+    config: GatewayConfig, payload: dict[str, Any]
+) -> dict[str, Any]:
+    """Public wrapper over the blank-secret keep-current merge.
+
+    Lets validation-only surfaces (gateway ``onboarding.channel.probe``)
+    resolve blank secrets against the stored entry exactly the way
+    ``upsert_channel`` does, so a probe of a keep-current payload does not
+    hard-fail on the non-blank-secret requirement that the subsequent upsert
+    would satisfy via the merge.
+    """
+    return _merge_with_existing_secrets(config, payload)
 
 
 def remove_channel(

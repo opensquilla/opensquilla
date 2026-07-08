@@ -281,8 +281,10 @@ def test_persist_omits_runtime_secret_paths(tmp_path):
     target = tmp_path / "config.toml"
     persist_config(cfg, path=target)
 
-    data = tomllib.loads(target.read_text())
-    assert "api_key" not in data["llm"]
+    text = target.read_text()
+    data = tomllib.loads(text)
+    assert "api_key" not in data.get("llm", {})
+    assert "from-env" not in text
 
 
 def test_env_sourced_llm_key_is_not_persisted(tmp_path, monkeypatch):

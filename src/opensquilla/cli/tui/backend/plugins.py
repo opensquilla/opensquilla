@@ -2,11 +2,21 @@
 
 from __future__ import annotations
 
+import collections
 from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Protocol
 
+import structlog
+
 from opensquilla.cli.tui.backend.domain_events import TuiDomainEvent
+
+log = structlog.get_logger(__name__)
+
+# Errors are recorded per event dispatch, which can run tens of times per
+# second during streaming — the ledger must stay bounded for the lifetime of
+# a long session.
+_MAX_RECORDED_ERRORS = 100
 
 
 @dataclass(frozen=True)
@@ -18,7 +28,10 @@ class TuiPluginError:
 class TuiPluginContext:
     def __init__(self) -> None:
         self._state: dict[str, object] = {}
-        self._errors: list[TuiPluginError] = []
+        self._errors: collections.deque[TuiPluginError] = collections.deque(
+            maxlen=_MAX_RECORDED_ERRORS
+        )
+        self._warned_plugin_ids: set[str] = set()
 
     def set_state(self, key: str, value: object) -> None:
         self._state[key] = value
@@ -28,6 +41,11 @@ class TuiPluginContext:
 
     def record_error(self, plugin_id: str, message: str) -> None:
         self._errors.append(TuiPluginError(plugin_id=plugin_id, message=message))
+        # One warning per plugin per session: enough for operators to notice a
+        # broken plugin without flooding the log on every streamed event.
+        if plugin_id not in self._warned_plugin_ids:
+            self._warned_plugin_ids.add(plugin_id)
+            log.warning("tui_plugin.error", plugin_id=plugin_id, error=message)
 
     @property
     def errors(self) -> tuple[TuiPluginError, ...]:

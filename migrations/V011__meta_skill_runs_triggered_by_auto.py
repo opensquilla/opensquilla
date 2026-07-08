@@ -13,17 +13,27 @@ SQLite-recommended recipe
 breaking the child-table foreign-key references that point at
 ``meta_skill_runs``:
 
-1. PRAGMA foreign_keys = OFF
-2. CREATE TABLE meta_skill_runs__new with the relaxed CHECK
-3. INSERT INTO meta_skill_runs__new SELECT * FROM meta_skill_runs
-4. DROP TABLE meta_skill_runs
-5. ALTER TABLE meta_skill_runs__new RENAME TO meta_skill_runs
-6. recreate indexes
-7. PRAGMA foreign_key_check (verify no orphans introduced)
-8. PRAGMA foreign_keys = ON
+1. CREATE TABLE meta_skill_runs__new with the relaxed CHECK
+2. INSERT INTO meta_skill_runs__new SELECT * FROM meta_skill_runs
+3. DROP TABLE meta_skill_runs
+4. ALTER TABLE meta_skill_runs__new RENAME TO meta_skill_runs
+5. recreate indexes
+6. PRAGMA foreign_key_check (verify no orphans introduced)
 
-Renaming the NEW table (step 5) is safe; renaming the OLD table is
+Renaming the NEW table (step 4) is safe; renaming the OLD table is
 what corrupts child FK refs and was the original bug.
+
+Note on ``PRAGMA foreign_keys``: yoyo wraps every Python step in an
+explicit transaction, and ``PRAGMA foreign_keys`` is a documented
+no-op inside a transaction — so the OFF/ON bracket around the rebuild
+does NOT take effect here. Child rows survive the parent DROP only
+because SQLite ships with foreign-key enforcement off by default on
+the migration connection. The recreate helper therefore checks
+``PRAGMA foreign_keys`` first and refuses to run if enforcement is
+live (the DROP would otherwise cascade-delete every step row while
+``foreign_key_check`` still passed). The OFF/ON pragmas are kept:
+they are harmless, and correct if the step ever runs outside a
+transaction.
 
 Rollback restores the original (stricter) CHECK; rows whose
 ``triggered_by`` already contains ``auto_*`` would block the rollback
@@ -99,13 +109,51 @@ def _table_exists(conn, table: str) -> bool:
     return cur.fetchone() is not None
 
 
+def _table_sql(conn, table: str) -> str:
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name=?",
+        (table,),
+    )
+    row = cur.fetchone()
+    return row[0] if row and row[0] else ""
+
+
+def _assert_fk_enforcement_off(conn) -> None:
+    """Fail loudly if foreign-key enforcement is live on this connection.
+
+    yoyo wraps every Python step in an explicit transaction, and
+    ``PRAGMA foreign_keys`` is a documented no-op inside a transaction, so
+    the OFF/ON bracket in the recreate below cannot take effect there. The
+    rebuild is only safe because SQLite defaults foreign_keys to OFF: with
+    enforcement enabled (e.g. an SQLITE_DEFAULT_FOREIGN_KEYS=1 build),
+    ``DROP TABLE meta_skill_runs`` would run an implicit DELETE that
+    CASCADE-wipes every meta_skill_run_steps row — and the subsequent
+    ``foreign_key_check`` would still pass. Refuse instead of losing data.
+    """
+    cur = conn.cursor()
+    cur.execute("PRAGMA foreign_keys")
+    row = cur.fetchone()
+    if row is not None and row[0]:
+        raise RuntimeError(
+            "V011: PRAGMA foreign_keys is enabled on the migration "
+            "connection; rebuilding meta_skill_runs would cascade-delete "
+            "its meta_skill_run_steps child rows. Refusing to proceed — "
+            "run migrations on a connection with foreign-key enforcement "
+            "disabled."
+        )
+
+
 def _recreate_runs_table(conn, triggered_by_values: tuple[str, ...]) -> None:
     """Follow SQLite's recommended recreate procedure (section 7 of
     lang_altertable.html). Build the NEW table under a temporary name,
     copy rows, drop the OLD table, then rename NEW to the canonical
     name. This order keeps child-table FK references intact — renaming
     the OLD table first would orphan them."""
+    _assert_fk_enforcement_off(conn)
     cur = conn.cursor()
+    # Inert inside yoyo's step transaction (see _assert_fk_enforcement_off);
+    # kept because it is harmless and correct outside a transaction.
     cur.execute("PRAGMA foreign_keys = OFF")
     try:
         cur.execute(_create_table_sql(triggered_by_values, "meta_skill_runs__new"))
@@ -133,6 +181,12 @@ def apply_step(conn) -> None:
     if not _table_exists(conn, "meta_skill_runs"):
         # V010 hasn't been applied — nothing to relax. yoyo's __depends__
         # should prevent this, but be defensive against manual rollbacks.
+        return
+    if "auto_cron" in _table_sql(conn, "meta_skill_runs"):
+        # Re-run guard (yoyo's apply-then-mark crash window, or operator
+        # reapply): the relaxed CHECK is already in place. Re-running the
+        # recreate against a later schema (V013 added six clarify columns)
+        # would fail on the column-count mismatch — skip instead.
         return
     _recreate_runs_table(conn, _NEW_TRIGGERED_BY_VALUES)
 

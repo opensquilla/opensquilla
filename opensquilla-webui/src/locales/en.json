@@ -699,6 +699,8 @@
       "timeout": "Timed out",
       "interrupted": "Interrupted",
       "cancelled": "Cancelled",
+      "outputInterrupted": "Output interrupted",
+      "stoppedAfterSeconds": "Stopped after {seconds}s",
       "idle": "Idle"
     },
     "relTime": {
@@ -1381,6 +1383,8 @@
       "installVia": "Install via {kind}",
       "installing": "Installing...",
       "homepage": "Homepage",
+      "loadingContent": "Loading SKILL.md...",
+      "emptyContent": "No SKILL.md content available.",
       "removing": "Removing...",
       "remove": "Remove"
     },

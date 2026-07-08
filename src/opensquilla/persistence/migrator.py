@@ -8,17 +8,33 @@ from __future__ import annotations
 
 import builtins
 import contextlib
+import getpass
+import glob
 import logging
 import os
 import sqlite3
 from collections.abc import Iterator
 from datetime import datetime
 from pathlib import Path
-from urllib.parse import unquote, urlparse
+from typing import Any
+from urllib.parse import quote, unquote, urlparse
 
 from yoyo import exceptions, get_backend, read_migrations
+from yoyo import migrations as yoyo_migrations
 
 log = logging.getLogger(__name__)
+
+#: PROCESS_QUERY_LIMITED_INFORMATION — the minimal access right needed to
+#: probe whether a Windows process exists.
+_PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+#: ERROR_ACCESS_DENIED — the probed process exists but belongs to another user.
+_ERROR_ACCESS_DENIED = 5
+#: STILL_ACTIVE — Windows process exit code while the process is still running.
+_STILL_ACTIVE = 259
+#: How many pre-migration snapshot files to keep per database.
+_BACKUP_KEEP = 2
+#: Username recorded in yoyo's audit log when the environment has none.
+_FALLBACK_AUDIT_USER = "opensquilla"
 
 
 class SchemaAheadError(RuntimeError):
@@ -46,7 +62,13 @@ def _to_yoyo_url(db_url: str) -> str:
     """Normalise a local SQLite path or URL into a yoyo-compatible URL.
 
     Accepts: ``path/to.db``, ``:memory:``, or a pre-formed ``sqlite:///…`` URL.
-    Returns a URL yoyo ``get_backend`` understands.
+    Returns a URL yoyo ``get_backend`` understands. Bare paths are
+    percent-encoded because yoyo splits the URL with ``urlsplit`` (so a raw
+    ``#`` truncates the path as a fragment and ``?`` as a query) and sqlite's
+    URI parser percent-DECODES the result — without encoding, yoyo would
+    silently migrate a different file than the one the inspection helpers
+    (which use ``Path.as_uri()``) examine. ``:`` stays unescaped so Windows
+    drive letters survive.
     """
     if "://" in db_url:
         return db_url
@@ -54,7 +76,7 @@ def _to_yoyo_url(db_url: str) -> str:
         return "sqlite:///:memory:"
     # bare filesystem path — normalise to absolute so yoyo opens the same db
     # regardless of the worker cwd.
-    return "sqlite:///" + os.path.abspath(db_url)
+    return "sqlite:///" + quote(Path(db_url).expanduser().resolve().as_posix(), safe="/:")
 
 
 def _sqlite_path_from_db_url(db_url: str) -> Path | None:
@@ -72,24 +94,59 @@ def _sqlite_path_from_db_url(db_url: str) -> Path | None:
         return None
 
     path = unquote(parsed.path)
+    if os.name == "nt" and len(path) >= 3 and path[0] == "/" and path[2] == ":":
+        path = path[1:]
     if os.name != "nt" and path.startswith("//") and not path.startswith("///"):
         path = path[1:]
     return Path(path).expanduser().resolve()
+
+
+def _is_pid_alive_windows(pid: int, ctypes_module: Any = None) -> bool:
+    """Return whether *pid* is a live process on Windows.
+
+    ``use_last_error=True`` makes ctypes capture ``GetLastError()`` in
+    thread-local storage immediately after the foreign call; reading it
+    through a separate ``windll.kernel32.GetLastError()`` invocation can
+    observe a value clobbered by intervening ctypes machinery, flipping the
+    access-denied verdict in either direction (a wedged boot, or a live lock
+    treated as stale).
+    """
+    if ctypes_module is None:
+        import ctypes
+
+        ctypes_module = ctypes
+    kernel32 = ctypes_module.WinDLL("kernel32", use_last_error=True)
+    kernel32.OpenProcess.restype = ctypes_module.c_void_p
+    kernel32.OpenProcess.argtypes = (
+        ctypes_module.c_uint32,
+        ctypes_module.c_int,
+        ctypes_module.c_uint32,
+    )
+    kernel32.CloseHandle.argtypes = (ctypes_module.c_void_p,)
+    kernel32.CloseHandle.restype = ctypes_module.c_int
+    kernel32.GetExitCodeProcess.argtypes = (
+        ctypes_module.c_void_p,
+        ctypes_module.c_void_p,
+    )
+    kernel32.GetExitCodeProcess.restype = ctypes_module.c_int
+    handle = kernel32.OpenProcess(_PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+    last_error = int(ctypes_module.get_last_error())
+    if handle:
+        exit_code = ctypes_module.c_uint32()
+        if not kernel32.GetExitCodeProcess(handle, ctypes_module.byref(exit_code)):
+            kernel32.CloseHandle(handle)
+            return True
+        kernel32.CloseHandle(handle)
+        return int(exit_code.value) == _STILL_ACTIVE
+    # Access denied: the process exists but is owned by someone else.
+    return last_error == _ERROR_ACCESS_DENIED
 
 
 def _is_pid_alive(pid: int) -> bool:
     if pid <= 0:
         return False
     if os.name == "nt":
-        import ctypes
-
-        kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
-        handle = kernel32.OpenProcess(0x1000, False, pid)
-        if handle:
-            kernel32.CloseHandle(handle)
-            return True
-        last_error = int(kernel32.GetLastError())
-        return last_error == 5
+        return _is_pid_alive_windows(pid)
 
     try:
         os.kill(pid, 0)
@@ -132,10 +189,25 @@ def _read_yoyo_lock_pids(db_path: Path) -> list[int] | None:
     return pids
 
 
-def _clear_yoyo_lock(db_path: Path) -> bool:
+def _clear_yoyo_lock(db_path: Path, dead_pids: list[int]) -> bool:
+    """Delete only the lock rows owned by *dead_pids* — never a blanket delete.
+
+    Between the pid-liveness read and this delete another process can release
+    and reacquire the lock; an unscoped ``DELETE FROM yoyo_lock`` would then
+    erase a live owner's lock and let two migrators run concurrently. Scoping
+    the delete to verified-dead pids makes that impossible, and the caller
+    retries regardless of how many rows were removed — the retry serializes on
+    yoyo's own lock, so a lost race merely times out again.
+    """
+    if not dead_pids:
+        return True
+    placeholders = ",".join("?" for _ in dead_pids)
     try:
         with sqlite3.connect(db_path) as connection:
-            connection.execute("DELETE FROM yoyo_lock")
+            connection.execute(
+                f"DELETE FROM yoyo_lock WHERE pid IN ({placeholders})",
+                tuple(dead_pids),
+            )
     except sqlite3.Error as exc:
         log.warning(
             "migrator.stale_lock_clear_failed",
@@ -152,8 +224,18 @@ def _recover_stale_yoyo_lock(db_url: str, error: exceptions.LockTimeout) -> bool
         return False
 
     pids = _read_yoyo_lock_pids(db_path)
-    if not pids:
+    if pids is None:
+        # Uninspectable database — nothing safe to do, let the timeout stand.
         return False
+    if not pids:
+        # The lock row was released between yoyo's timeout and this
+        # inspection; the lock is free now, so a straight retry should
+        # succeed.
+        log.info(
+            "migrator.lock_released_between_checks",
+            extra={"db_path": str(db_path)},
+        )
+        return True
 
     live_pids = [pid for pid in pids if _is_pid_alive(pid)]
     if live_pids:
@@ -164,14 +246,18 @@ def _recover_stale_yoyo_lock(db_url: str, error: exceptions.LockTimeout) -> bool
         pid_text = ", ".join(str(pid) for pid in live_pids)
         raise exceptions.LockTimeout(
             f"Gateway migration database is locked by live process pid={pid_text} "
-            f"at {db_path}"
+            f"at {db_path}. Stop the other OpenSquilla process and try again. If "
+            "you are certain no other OpenSquilla instance is running, delete the "
+            "lock row from the yoyo_lock table (or run 'yoyo break-lock' against "
+            "this database) and restart the gateway."
         ) from error
 
-    if not _clear_yoyo_lock(db_path):
+    dead_pids = [pid for pid in pids if pid not in live_pids]
+    if not _clear_yoyo_lock(db_path, dead_pids):
         return False
     log.warning(
         "migrator.stale_lock_cleared",
-        extra={"db_path": str(db_path), "pids": pids},
+        extra={"db_path": str(db_path), "pids": dead_pids},
     )
     return True
 
@@ -183,8 +269,11 @@ def _yoyo_utf8_open() -> Iterator[None]:
     Why: yoyo's ``Migration.load`` calls ``open(self.path, "r")`` without an
     explicit encoding, so on Windows locales whose default codec is not UTF-8
     (e.g. zh-CN → GBK), any migration file containing non-ASCII docstrings
-    (em-dashes, Chinese, etc.) raises UnicodeDecodeError at gateway boot. Patch
-    the builtin scoped to the yoyo call window only.
+    (em-dashes, Chinese, etc.) raises UnicodeDecodeError at gateway boot.
+
+    The shim is installed as a module global on ``yoyo.migrations`` — a module
+    global shadows the builtin for code defined in that module only — so no
+    other module or concurrent thread ever observes a patched ``open``.
     """
     real_open = builtins.open
 
@@ -193,11 +282,41 @@ def _yoyo_utf8_open() -> Iterator[None]:
             kwargs["encoding"] = "utf-8"
         return real_open(file, mode, *args, **kwargs)
 
-    builtins.open = utf8_open  # type: ignore[assignment]
+    yoyo_migrations.open = utf8_open
     try:
         yield
     finally:
-        builtins.open = real_open  # type: ignore[assignment]
+        try:
+            del yoyo_migrations.open
+        except AttributeError:
+            pass
+
+
+def _has_migration_files(migrations_dir: Path) -> bool:
+    try:
+        entries = list(migrations_dir.iterdir())
+    except OSError:
+        return False
+    return any(entry.name.startswith("V") and entry.suffix == ".py" for entry in entries)
+
+
+def _discover_migrations(migrations_dir: Path) -> Any:
+    """Read migrations with the directory path shielded from glob expansion.
+
+    yoyo's ``read_migrations`` glob-expands its raw source strings, so a path
+    containing ``[``, ``]``, ``*`` or ``?`` silently discovers ZERO migrations
+    — boot would then proceed unmigrated, or the downgrade guard would raise a
+    spurious :class:`SchemaAheadError`. Escape the path, and fail loudly if
+    migration files are visibly present but discovery still returned nothing.
+    """
+    migrations = read_migrations(glob.escape(str(migrations_dir)))
+    if not migrations and _has_migration_files(migrations_dir):
+        raise RuntimeError(
+            f"Migration discovery returned zero migrations for {migrations_dir} "
+            "even though the directory contains V*.py migration files; refusing "
+            "to proceed with an unmigrated schema."
+        )
+    return migrations
 
 
 def _read_applied_migration_ids(db_path: Path) -> set[str] | None:
@@ -220,7 +339,11 @@ def _read_applied_migration_ids(db_path: Path) -> set[str] | None:
                 "SELECT name FROM sqlite_master WHERE type='table' "
                 "AND name LIKE '%yoyo_migration'"
             ).fetchall()
-        except sqlite3.Error:
+        except sqlite3.Error as exc:
+            log.warning(
+                "migrator.applied_inspect_failed",
+                extra={"db_path": str(db_path), "error": str(exc)},
+            )
             return None
         table = next(
             (
@@ -232,9 +355,23 @@ def _read_applied_migration_ids(db_path: Path) -> set[str] | None:
         )
         if table is None:
             return set()
-        rows = connection.execute(f'SELECT migration_id FROM "{table}"').fetchall()
-    except sqlite3.OperationalError:
-        return set()
+        try:
+            rows = connection.execute(f'SELECT migration_id FROM "{table}"').fetchall()
+        except sqlite3.OperationalError as exc:
+            log.warning(
+                "migrator.applied_inspect_failed",
+                extra={"db_path": str(db_path), "error": str(exc)},
+            )
+            message = str(exc).lower()
+            if "locked" in message or "busy" in message:
+                # Transient contention — "uninspectable", tolerated by the
+                # post-apply verifier rather than failing a healthy boot.
+                return None
+            # Structural: the table exists but its rows cannot be read (e.g.
+            # a future yoyo release renaming migration_id). Report "readable
+            # but records nothing" so the post-apply verifier fails closed
+            # instead of running forever with a blind downgrade guard.
+            return set()
     finally:
         connection.close()
     return {str(migration_id) for (migration_id,) in rows if migration_id}
@@ -259,7 +396,7 @@ def assert_schema_not_ahead(db_url: str, migrations_dir: Path) -> None:
     if not applied:
         return
     with _yoyo_utf8_open():
-        known = {migration.id for migration in read_migrations(str(path))}
+        known = {migration.id for migration in _discover_migrations(path)}
     unknown = sorted(applied - known)
     if not unknown:
         return
@@ -275,6 +412,146 @@ def assert_schema_not_ahead(db_url: str, migrations_dir: Path) -> None:
     )
 
 
+def _ensure_yoyo_audit_user() -> None:
+    """Guarantee yoyo's audit logging can resolve a username.
+
+    yoyo calls ``getpass.getuser()`` between committing a migration's steps
+    and marking the migration applied. Under a container UID with no passwd
+    entry and none of LOGNAME/USER/LNAME/USERNAME set (``docker run --user
+    12345``, K8s ``runAsUser``), that lookup raises and crashes every boot in
+    the worst possible window. Pre-seed a stable fallback instead.
+    """
+    try:
+        getpass.getuser()
+    except (ImportError, KeyError, OSError):
+        # getuser() ignores empty env values, so a plain setdefault is not
+        # enough when e.g. LOGNAME is set but empty.
+        if not os.environ.get("LOGNAME"):
+            os.environ["LOGNAME"] = _FALLBACK_AUDIT_USER
+        if not os.environ.get("USERNAME"):
+            os.environ["USERNAME"] = _FALLBACK_AUDIT_USER
+        log.info(
+            "migrator.audit_user_fallback",
+            extra={"user": _FALLBACK_AUDIT_USER},
+        )
+
+
+def _restrict_db_file_permissions(db_path: Path | None) -> None:
+    """Restrict the database file (and WAL siblings) to the owning user.
+
+    Called only for databases this boot creates: the migrator is the first
+    creator of the session database on fresh installs, and without this the
+    default umask commonly leaves transcripts world-readable. Pre-existing
+    databases are left untouched so deliberate operator permissions survive.
+    POSIX only — Windows ACLs are out of scope here.
+    """
+    if db_path is None or os.name == "nt":
+        return
+    for candidate in (
+        db_path,
+        db_path.with_name(db_path.name + "-wal"),
+        db_path.with_name(db_path.name + "-shm"),
+    ):
+        try:
+            if candidate.exists():
+                os.chmod(candidate, 0o600)
+        except OSError as exc:
+            log.debug(
+                "migrator.chmod_failed",
+                extra={"path": str(candidate), "error": str(exc)},
+            )
+
+
+def _prune_old_backups(db_path: Path) -> None:
+    """Keep only the newest pre-migration snapshots for *db_path*."""
+    prefix = db_path.name + ".pre-"
+    try:
+        backups = [
+            entry
+            for entry in db_path.parent.iterdir()
+            if entry.is_file() and entry.name.startswith(prefix) and entry.name.endswith(".bak")
+        ]
+        backups.sort(key=lambda entry: (entry.stat().st_mtime, entry.name))
+        for stale in backups[:-_BACKUP_KEEP]:
+            stale.unlink(missing_ok=True)
+    except OSError as exc:
+        log.debug(
+            "migrator.backup_prune_failed",
+            extra={"db_path": str(db_path), "error": str(exc)},
+        )
+
+
+def _snapshot_before_apply(db_path: Path, first_pending_id: str) -> None:
+    """Snapshot *db_path* before applying migrations; failure never aborts boot.
+
+    Several migrations in the chain recreate-and-copy whole tables, and yoyo
+    commits each migration's steps before marking it applied, so a crash in
+    that window can leave a half-migrated database. The downgrade guard also
+    tells users to "restore a backup taken with this version" — this is what
+    creates one. Uses the sqlite3 backup API so a consistent copy is taken
+    even with the migration connection open.
+    """
+    backup_path = db_path.with_name(f"{db_path.name}.pre-{first_pending_id}.bak")
+    try:
+        source = sqlite3.connect(db_path)
+        try:
+            target = sqlite3.connect(backup_path)
+            try:
+                source.backup(target)
+            finally:
+                target.close()
+        finally:
+            source.close()
+    except (sqlite3.Error, OSError) as exc:
+        log.warning(
+            "migrator.backup_failed",
+            extra={
+                "db_path": str(db_path),
+                "backup_path": str(backup_path),
+                "error": str(exc),
+            },
+        )
+        return
+    log.info(
+        "migrator.backup_created",
+        extra={"db_path": str(db_path), "backup_path": str(backup_path)},
+    )
+    # The snapshot exists from here on; permission tightening and rotation are
+    # best-effort extras and must not relabel a good backup as failed or skip
+    # pruning (filesystems that reject chmod would otherwise accumulate
+    # full-size backups forever).
+    if os.name != "nt":
+        with contextlib.suppress(OSError):
+            os.chmod(backup_path, 0o600)
+    _prune_old_backups(db_path)
+
+
+def _verify_ledger_after_apply(db_path: Path | None, applied_ids: list[str]) -> None:
+    """Fail closed when the ledger no longer records what was just applied.
+
+    :func:`_read_applied_migration_ids` locates yoyo's private
+    ``_yoyo_migration`` table by name, so a future yoyo internal rename would
+    make it return an empty set and silently disable the downgrade guard. If
+    the ledger is readable but missing ids we know were just applied, raise
+    instead of continuing with a blind guard. ``None`` (transient lock
+    contention or an unopenable file) stays tolerated — that is an
+    environment problem, not a schema-tracking one.
+    """
+    if db_path is None or not db_path.exists():
+        return
+    recorded = _read_applied_migration_ids(db_path)
+    if recorded is None:
+        return
+    missing = [migration_id for migration_id in applied_ids if migration_id not in recorded]
+    if missing:
+        raise RuntimeError(
+            f"Migrations {', '.join(missing)} were applied to {db_path} but the "
+            "migration ledger does not record them — the ledger has become "
+            "unreadable to this build (possibly a yoyo internal schema change). "
+            "Refusing to continue with the downgrade guard disabled."
+        )
+
+
 def apply_pending(db_url: str, migrations_dir: Path) -> list[str]:
     """Apply every migration in *migrations_dir* not yet recorded in *db_url*.
 
@@ -283,7 +560,10 @@ def apply_pending(db_url: str, migrations_dir: Path) -> list[str]:
     should log the return value for audit.
 
     Raises :class:`SchemaAheadError` first if the database records migrations
-    unknown to this build (i.e. a downgrade onto newer data).
+    unknown to this build (i.e. a downgrade onto newer data). When migrations
+    are pending against an existing local database file, a pre-apply snapshot
+    (``<dbname>.pre-<first_pending_id>.bak``) is written next to it before any
+    schema change runs; snapshot failures are logged but never abort boot.
     """
     path = Path(migrations_dir)
     if not path.is_dir():
@@ -293,36 +573,73 @@ def apply_pending(db_url: str, migrations_dir: Path) -> list[str]:
     assert_schema_not_ahead(db_url, path)
 
     _ensure_sqlite_datetime_adapter()
+    _ensure_yoyo_audit_user()
+
+    db_path = _sqlite_path_from_db_url(db_url)
+    db_preexisted = db_path is not None and db_path.exists()
+    backup_db_path = db_path if db_preexisted else None
+    # Only tighten permissions on files this boot creates: pre-existing
+    # databases may carry deliberate operator permissions (group readers,
+    # split-user setups) that silently reverting every boot would break.
+    tighten_new_db = db_path is not None and not db_preexisted
+
     try:
-        ids = _apply_pending_once(db_url, path)
+        ids = _apply_pending_once(
+            db_url, path, backup_db_path=backup_db_path, tighten_new_db=tighten_new_db
+        )
     except exceptions.LockTimeout as exc:
         if not _recover_stale_yoyo_lock(db_url, exc):
             raise
         try:
-            ids = _apply_pending_once(db_url, path)
+            ids = _apply_pending_once(
+                db_url, path, backup_db_path=backup_db_path, tighten_new_db=tighten_new_db
+            )
         except exceptions.LockTimeout:
             log.warning("migrator.stale_lock_retry_failed", extra={"db_url": db_url})
             raise
 
     if ids:
         log.info("migrator.applied", extra={"count": len(ids), "ids": ids})
+        _verify_ledger_after_apply(db_path, ids)
     return ids
 
 
-def _apply_pending_once(db_url: str, migrations_dir: Path) -> list[str]:
+def _apply_pending_once(
+    db_url: str,
+    migrations_dir: Path,
+    *,
+    backup_db_path: Path | None = None,
+    tighten_new_db: bool = False,
+) -> list[str]:
     backend = get_backend(_to_yoyo_url(db_url))
     try:
+        if tighten_new_db:
+            _restrict_db_file_permissions(_sqlite_path_from_db_url(db_url))
         with _yoyo_utf8_open():
-            migrations = read_migrations(str(migrations_dir))
-            pending = backend.to_apply(migrations)
-            ids = [m.id for m in pending]
-            if not ids:
-                return []
-
+            migrations = _discover_migrations(migrations_dir)
+            # The pending plan MUST be computed inside yoyo's lock: yoyo's
+            # apply path never re-checks appliedness, so a plan computed
+            # before the lock can re-apply migrations a concurrent process
+            # just finished — a ledger IntegrityError at best, silently
+            # re-running recreate-and-copy migrations (dropping later-added
+            # columns) at worst.
             with backend.lock():
+                pending = backend.to_apply(migrations)
+                ids = [m.id for m in pending]
+                if not ids:
+                    return []
+                if backup_db_path is not None:
+                    _snapshot_before_apply(backup_db_path, ids[0])
                 backend.apply_migrations(pending)
         return ids
     finally:
-        close = getattr(backend, "close", None)
-        if close is not None:
-            close()
+        # yoyo backends expose no close(); the connection object is the only
+        # cleanup surface. Leaking it would pin the (shared-cache) sqlite
+        # connection for the process lifetime.
+        try:
+            backend.connection.close()
+        except sqlite3.Error as exc:
+            log.warning(
+                "migrator.backend_close_failed",
+                extra={"db_url": db_url, "error": str(exc)},
+            )

@@ -6,6 +6,7 @@ import os
 import platform
 import signal
 import sys
+import tomllib
 from types import SimpleNamespace
 from urllib.error import URLError
 
@@ -21,9 +22,11 @@ runner = CliRunner()
 Manager = gateway_lifecycle.GatewayLifecycleManager
 
 
-def _env_hint(env_key: str) -> str:
+def _env_command(env_key: str) -> str:
+    # Mirrors next_steps.set_env_command: recovery ``command`` fields are the
+    # bare command on every platform (no "PowerShell:" label).
     if platform.system().lower().startswith("win"):
-        return f'PowerShell: $env:{env_key} = "<your-key>"'
+        return f'$env:{env_key} = "<your-key>"'
     return f'export {env_key}="<your-key>"'
 
 
@@ -129,7 +132,7 @@ def test_gateway_run_turns_missing_onboarding_env_into_recovery_hint(
     compact = "".join(output.split())
     assert "Gateway could not start" in output
     assert (
-        f"Set memory key: {_env_hint('OPENAI_EMBEDDINGS_API_KEY')}".replace(" ", "")
+        f"Set memory key: {_env_command('OPENAI_EMBEDDINGS_API_KEY')}".replace(" ", "")
         in compact
     )
     expected_config = str(target).replace("\\", "/")
@@ -140,6 +143,49 @@ def test_gateway_run_turns_missing_onboarding_env_into_recovery_hint(
         expected_config
     )
     assert "Traceback" not in output
+
+
+def test_gateway_run_memory_recovery_command_is_bare_on_windows(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    """The recovery ``command`` field is machine-shaped on every surface: the
+    gateway-run fallback entry must carry the bare set-env command on Windows
+    (no "PowerShell:" label), matching env_recovery_commands."""
+    from opensquilla.onboarding import next_steps
+
+    target = tmp_path / "custom.toml"
+    target.write_text(
+        '[llm]\n'
+        'provider = "openrouter"\n'
+        'model = "dummy/model"\n'
+        'api_key = "sk-dummy"\n'
+        '\n'
+        '[memory.embedding.remote]\n'
+        'api_key_env = "DUMMY_UNSET_EMBED_KEY"\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("OPENSQUILLA_STATE_DIR", str(tmp_path / "home"))
+    monkeypatch.delenv("DUMMY_UNSET_EMBED_KEY", raising=False)
+    monkeypatch.setattr(next_steps, "_is_windows", lambda: True)
+
+    async def fail_start_gateway_server(**_kwargs):
+        raise ValueError(
+            "memory.embedding.provider='openai' requires "
+            "memory.embedding.remote.api_key"
+        )
+
+    monkeypatch.setattr(gateway_cmd, "_gateway_bind_available", lambda *_args: True)
+    monkeypatch.setattr(gateway_cmd, "start_gateway_server", fail_start_gateway_server)
+
+    result = runner.invoke(app, ["gateway", "run", "--config", str(target)])
+
+    assert result.exit_code == 1
+    output = result.stdout + (result.stderr or "")
+    compact = "".join(output.split())
+    expected = 'Set memory key: $env:DUMMY_UNSET_EMBED_KEY = "<your-key>"'
+    assert expected.replace(" ", "") in compact
+    assert "PowerShell" not in output
 
 
 def test_gateway_lifecycle_paths_use_state_root(tmp_path, monkeypatch) -> None:
@@ -429,6 +475,112 @@ def test_gateway_run_uses_config_host_port_when_flags_are_omitted(
 
     assert captured["config"].host == "127.0.0.2"
     assert captured["config"].port == 19999
+
+
+def test_gateway_run_records_cli_flags_as_runtime_overrides(
+    tmp_path, monkeypatch
+) -> None:
+    """Boot-time --listen/--port/--debug are runtime state, not operator
+    config edits: run_gateway must record runtime provenance for the fields
+    it mutates so the sparse persister can keep them out of config.toml."""
+    custom_config = tmp_path / "custom.toml"
+    custom_config.write_text('host = "127.0.0.1"\nport = 18791\n', encoding="utf-8")
+    captured = {}
+
+    class FakeServer:
+        def __init__(self, task):
+            self._task = task
+
+        async def close(self, _reason):
+            return None
+
+    async def fake_start_gateway_server(*, config, subscription_manager, run):
+        captured["config"] = config
+
+        async def done():
+            return None
+
+        return FakeServer(asyncio.ensure_future(done()))
+
+    monkeypatch.setattr(gateway_cmd, "_gateway_bind_available", lambda *_args: True)
+    monkeypatch.setattr(gateway_cmd, "start_gateway_server", fake_start_gateway_server)
+
+    gateway_cmd.run_gateway(
+        port=18888,
+        bind=None,
+        listen="0.0.0.0",
+        debug=True,
+        config_path=str(custom_config),
+    )
+
+    overrides = captured["config"].runtime_field_overrides()
+    assert overrides["host"] == ("127.0.0.1", "0.0.0.0")
+    assert overrides["port"] == (18791, 18888)
+    assert overrides["debug"] == (False, True)
+
+
+def test_gateway_run_flags_do_not_leak_into_config_via_unrelated_persist(
+    tmp_path, monkeypatch
+) -> None:
+    """F4 regression: `gateway run --listen 0.0.0.0 --debug` for a one-off
+    session followed by an onboarding-surface save of an unrelated section
+    must not bake host/debug into config.toml permanently."""
+    from opensquilla.onboarding.config_store import load_config, persist_config
+    from opensquilla.onboarding.mutations import upsert_search_provider
+
+    custom_config = tmp_path / "custom.toml"
+    custom_config.write_text('host = "127.0.0.1"\nport = 18791\n', encoding="utf-8")
+    captured = {}
+
+    class FakeServer:
+        def __init__(self, task):
+            self._task = task
+
+        async def close(self, _reason):
+            return None
+
+    async def fake_start_gateway_server(*, config, subscription_manager, run):
+        captured["config"] = config
+
+        async def done():
+            return None
+
+        return FakeServer(asyncio.ensure_future(done()))
+
+    monkeypatch.setattr(gateway_cmd, "_gateway_bind_available", lambda *_args: True)
+    monkeypatch.setattr(gateway_cmd, "start_gateway_server", fake_start_gateway_server)
+
+    gateway_cmd.run_gateway(
+        port=None,
+        bind=None,
+        listen="0.0.0.0",
+        debug=True,
+        config_path=str(custom_config),
+    )
+
+    boot_config = captured["config"]
+    assert boot_config.host == "0.0.0.0"
+    assert boot_config.debug is True
+
+    # Web-UI save of an unrelated onboarding section: the mutation clone
+    # inherits the boot config's provenance and is what the RPC layer
+    # persists (rpc_onboarding._persist -> persist_config).
+    res = upsert_search_provider(
+        boot_config, provider_id="tavily", api_key="tvly-synthetic-run"
+    )
+    persist_config(res.config, path=custom_config)
+
+    data = tomllib.loads(custom_config.read_text())
+    assert data["search_api_key"] == "tvly-synthetic-run"
+    assert data["host"] == "127.0.0.1"  # transient --listen never lands
+    assert data.get("debug", False) is False  # transient --debug never lands
+    assert data.get("port", 18791) == 18791
+
+    # The file is still what the operator wrote plus the search save: a
+    # fresh load must not come up publicly bound or in debug mode.
+    reloaded = load_config(custom_config)
+    assert reloaded.host == "127.0.0.1"
+    assert reloaded.debug is False
 
 
 def test_gateway_run_keeps_missing_explicit_config_path_for_setup(

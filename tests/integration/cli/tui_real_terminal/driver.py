@@ -241,6 +241,19 @@ class TmuxTerminalSession(_BaseTerminalSession):
         self._append_log(f"\n--- {checkpoint} scrollback ---\n{frame.text}")
         return frame
 
+    def alternate_screen_active(self) -> bool:
+        # tmux tracks the pane's alternate-screen mode itself, so this probes
+        # real terminal state rather than inferring it from captured text: an
+        # app that exited without leaving the alternate screen still shows
+        # later shell output, just drawn over the stale alternate screen.
+        result = subprocess.run(
+            ["tmux", "display-message", "-p", "-t", self.run_id, "#{alternate_on}"],
+            check=True,
+            text=True,
+            stdout=subprocess.PIPE,
+        )
+        return result.stdout.strip() == "1"
+
     def wait_for_text(
         self,
         needle: str,

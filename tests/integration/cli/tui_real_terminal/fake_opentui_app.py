@@ -86,10 +86,17 @@ async def _render_response(
     elif scenario_id == "architecture_prompt":
         usage = await replay_architecture_prompt(renderer, output)
     elif scenario_id == "terminal_changes":
+        # Echo the submitted input back so the harness can prove a multi-line
+        # paste survived the composer round-trip. The line count and each line
+        # render as their own short markdown paragraphs, so narrow-terminal
+        # word wrap can never split an asserted needle across rows.
+        lines = user_input.split("\n")
         await renderer.aappend_text(
-            "terminal-change-response CJK混合ASCII multiline-paste ctrl-c-recovery "
-            "wide-and-narrow-layout"
+            f"terminal-change-response lines={len(lines)}\n\n"
+            "CJK混合ASCII multiline-paste ctrl-c-recovery wide-and-narrow-layout"
         )
+        for index, line in enumerate(lines):
+            await renderer.aappend_text(f"\n\necho-line-{index}:{line}")
     else:
         await renderer.aappend_text(f"fake-response:{user_input}")
     await renderer.afinalize(usage)

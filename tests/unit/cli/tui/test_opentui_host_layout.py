@@ -51,9 +51,9 @@ def test_host_split_into_block_modules() -> None:
         assert (SRC / f).exists(), f"missing host module {f}"
 
 
-def test_registry_covers_six_kinds() -> None:
+def test_registry_covers_seven_kinds() -> None:
     reg = _read("blockRegistry.mjs")
-    for kind in ["prompt", "thinking", "tool", "answer", "usage", "error"]:
+    for kind in ["prompt", "thinking", "reasoning", "tool", "answer", "usage", "error"]:
         assert f"{kind}:" in reg, f"registry missing kind {kind}"
     assert "createBlock" in reg
 
@@ -63,13 +63,17 @@ def test_turn_card_owns_one_continuous_gutter() -> None:
     # unbroken through narration + tool calls, so the timeline reads as one
     # assistant block (opencode/codex style). That gutter is the turn card's
     # border (answerFrame) owned by turnView — in-card blocks no longer redraw
-    # their own "│" rail nodes.
+    # their own "│" rail nodes. The chrome is width-independent: a short
+    # "╭ squilla" label on top and a bare "╰ …" footer, never a full-width rule
+    # (which wraps a stray dash when the scrollbar steals a viewport column).
     tv = _read("turnView.mjs")
     tool = _read("blocks/toolBlock.mjs")
     thinking = _read("blocks/thinkingBlock.mjs")
     assert 'border: ["left"]' in tv
     assert "borderColor: THEME.answerFrame" in tv
-    assert 'cardHeaderRule("squilla"' in tv
+    assert '"╭ squilla"' in tv
+    assert "╰" in tv
+    assert "cardHeaderRule" not in tv
     # the card opens once and closes once per turn (header + footer drawn once)
     assert "openCard" in tv and "closeCard" in tv
     # in-card blocks defer the gutter to the turn card — no per-block rail node
@@ -83,10 +87,10 @@ def test_answer_block_is_streaming_markdown_in_the_turn_card() -> None:
     assert "streaming: true" in answer
     # streaming stops on end()
     assert "md.streaming = false" in answer
-    # the card chrome (left border, header rule, footer) now belongs to the TURN,
+    # the card chrome (left border, header label, footer) now belongs to the TURN,
     # not the answer block — the answer is purely the streamed markdown body.
     assert 'border: ["left"]' not in answer
-    assert "cardHeaderRule" not in answer
+    assert "╭" not in answer and "╰" not in answer
     # the retype mechanism is gone: no teardown contract with turnView
     assert "teardown" not in answer
 
@@ -126,8 +130,12 @@ def test_prompt_and_usage_and_error_blocks() -> None:
     prompt = _read("blocks/promptBlock.mjs")
     usage = _read("blocks/usageBlock.mjs")
     error = _read("blocks/errorBlock.mjs")
-    assert 'cardHeaderRule("prompt"' in prompt
+    # the prompt is a compact chrome-free row set: a border-left rail box with
+    # one muted text node per line — no header rule, no footer
+    assert 'border: ["left"]' in prompt
     assert "THEME.promptAccent" in prompt
+    assert "THEME.muted" in prompt
+    assert "╭" not in prompt and "╰" not in prompt
     assert "·" in usage
     assert "THEME.muted" in usage
     assert "✗" in error
@@ -156,12 +164,18 @@ def test_dispatcher_routes_block_and_legacy_messages() -> None:
         "turn.status",
         "composer.set",
         "completion.context",
+        "completion.response",
         "router.update",
         "block.begin",
         "block.append",
         "block.update",
         "block.end",
         "prompt.echo",
+        "model.text",
+        "scrollback.write",
+        "notice.write",
+        "theme.set",
+        "theme.pick",
         "shutdown",
     ]:
         assert f'"{t}"' in ipc, f"dispatcher missing case {t}"
@@ -171,7 +185,7 @@ def test_composer_input_region_behaviors() -> None:
     composer = _read("composer.mjs")
     assert "createComposer" in composer
     assert "inputHistory" in composer
-    assert "cursorVisible" in composer
+    assert "syncTerminalCursorToCaret" in composer
     assert "scrollBy" in composer
     # esc cancels the turn; ctrl+C clears-or-eofs; option/meta+return inserts newline
     assert '"escape"' in composer
@@ -201,22 +215,33 @@ def test_composer_router_model_downgrade_keeps_target_model_visible() -> None:
         "./src/opensquilla/cli/tui/opentui/package/src/"
         "composer.mjs"
     )
+    prim_path = (
+        "./src/opensquilla/cli/tui/opentui/package/src/"
+        "primitives.mjs"
+    )
     data = _node_json(
         f"""
-        const mod = await import("{module_path}");
-        const {{ fixedRouterRow, formatRouterModelValue }} = mod;
-        const target = "anthropic/claude-sonnet-4.6";
-        const baseline = "anthropic/claude-opus-4.7";
+        const {{ routerStripValue, formatRouterModelValue }} = await import("{module_path}");
+        const {{ textWidth }} = await import("{prim_path}");
+        const target = "vendor/small-fast";
+        const baseline = "vendor/big-heavy";
         const downgrade = formatRouterModelValue(target, baseline);
         const unchanged = formatRouterModelValue(target, target);
-        const row = fixedRouterRow("model", downgrade);
-        console.log(JSON.stringify({{ downgrade, unchanged, row }}));
+        const row = routerStripValue(downgrade);
+        const clippedLong = routerStripValue("x".repeat(30));
+        console.log(JSON.stringify({{
+          downgrade, unchanged, row,
+          clippedLong, clippedWidth: textWidth(clippedLong),
+        }}));
         """
     )
-    assert data["downgrade"] == "↓ claude-sonnet-4.6"
-    assert data["unchanged"] == "claude-sonnet-4.6"
-    assert "claude-sonnet-4.6" in data["row"]
-    assert "claude-opus-4.7" not in data["row"]
+    assert data["downgrade"] == "↓ small-fast"
+    assert data["unchanged"] == "small-fast"
+    assert "small-fast" in data["row"]
+    assert "big-heavy" not in data["row"]
+    # The live strip clips every value cell to 18 display cells.
+    assert data["clippedLong"].endswith("…")
+    assert data["clippedWidth"] <= 18
 
 
 def test_main_is_thin_entry_with_mouse_and_alt_screen() -> None:
@@ -235,17 +260,21 @@ def test_main_is_thin_entry_with_mouse_and_alt_screen() -> None:
     assert "answer.demote" not in main
 
 
-def test_resize_reflows_existing_card_headers() -> None:
-    # Baked full-width header rules ("╭─ squilla ─…" / "╭─ prompt ─…") must
-    # re-rule to the new width on resize instead of wrapping (shrink) or
-    # stranding (grow). main tracks every turn and reflows them; turnView and
-    # promptBlock expose relayout() that recomputes their header rule.
+def test_resize_reflows_width_clipped_block_content() -> None:
+    # The card chrome is width-independent, so a resize only re-clips block
+    # content (tool result corners, narration wraps): main tracks every turn
+    # and calls relayout(), which skips entirely on a height-only resize and
+    # otherwise defers to each block. No module bakes a width-dependent header
+    # rule anymore.
     main = _read("main.mjs")
     turn = _read("turnView.mjs")
+    tool = _read("blocks/toolBlock.mjs")
     prompt = _read("blocks/promptBlock.mjs")
     assert "turns" in main and "relayout" in main
-    assert "relayout()" in turn and 'cardHeaderRule("squilla"' in turn
-    assert "relayout()" in prompt and 'cardHeaderRule("prompt"' in prompt
+    assert "relayout()" in turn and "lastRelayoutWidth" in turn
+    assert "relayout()" in tool
+    # the compact prompt has nothing width-dependent left to reflow
+    assert "relayout()" not in prompt
     # A resize must force a FULL repaint, else OpenTUI's diff-render leaves the old
     # (wider) layout's cells uncleared — the router box bleeds through as stale
     # glyphs when the window shrinks.

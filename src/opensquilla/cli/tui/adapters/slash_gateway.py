@@ -19,6 +19,23 @@ import opensquilla.cli.tui.adapters.input_bridge as _input_bridge
 from opensquilla.cli.chat.session_state import ChatSessionState, messages_to_markdown
 from opensquilla.cli.chat.turn import TurnResult
 from opensquilla.cli.tui.adapters.commands import render_help_table
+from opensquilla.cli.tui.adapters.slash_common import (
+    compact_skipped_line,
+    compact_success_line,
+    compact_summary_stats,
+    compact_token_stats,
+    dispatch_theme_command,
+    record_turn,
+    registry_handler_words,
+    resolve_transcript_target,
+    save_transcript_markdown,
+)
+from opensquilla.cli.tui.adapters.slash_common import (
+    slash_parts as _slash_parts,
+)
+from opensquilla.cli.tui.adapters.slash_common import (
+    slash_parts_any as _slash_parts_any,
+)
 from opensquilla.cli.tui.backend.contracts import TuiOutputHandle
 from opensquilla.cli.ui import ACCENT, ACCENT_HEADER, console, error_panel
 from opensquilla.engine.commands import Surface
@@ -27,37 +44,9 @@ _CLI_ALLOWED_FILE_MIMES = _input_bridge.CLI_ALLOWED_FILE_MIMES
 _CLI_INLINE_THRESHOLD_BYTES = _input_bridge.CLI_INLINE_THRESHOLD_BYTES
 _PATH_REMOTE_GATEWAY_MESSAGE = _input_bridge.PATH_REMOTE_GATEWAY_MESSAGE
 
-GATEWAY_SLASH_HANDLER_WORDS = frozenset(
-    {
-        "/approvals",
-        "/clear",
-        "/compact",
-        "/cmp",
-        "/cost",
-        "/delete",
-        "/elevated",
-        "/exit",
-        "/file",
-        "/forget",
-        "/help",
-        "/image",
-        "/meta",
-        "/model",
-        "/models",
-        "/new",
-        "/path",
-        "/permissions",
-        "/quit",
-        "/reset",
-        "/resume",
-        "/session",
-        "/sessions",
-        "/save",
-        "/status",
-        "/theme",
-        "/usage",
-    }
-)
+# Derived from the engine registry so a new slash command only has to be
+# declared once; the dispatch chain below is pinned to this set by tests.
+GATEWAY_SLASH_HANDLER_WORDS = registry_handler_words(Surface.CLI_GATEWAY)
 
 
 class GatewayClientLike(Protocol):
@@ -110,6 +99,14 @@ class GatewayClientLike(Protocol):
 
     async def abort_session(self, key: str) -> dict[str, Any]: ...
 
+    async def session_history(self, session_key: str, limit: int = 1000) -> dict[str, Any]: ...
+
+    async def forget_approvals(self, target: str | None = None) -> dict[str, Any]: ...
+
+    async def approvals_snapshot(self) -> dict[str, Any]: ...
+
+    async def set_approval_mode(self, mode: str) -> dict[str, Any]: ...
+
 
 class GatewayStreamResponse(Protocol):
     async def __call__(
@@ -144,28 +141,69 @@ class GatewaySlashContext:
     elevated_state: dict[str, str | None]
     tui_output: TuiOutputHandle | None = None
     stream_response: GatewayStreamResponse | None = None
-
-
-def _slash_parts(cmd: str, name: str) -> list[str] | None:
-    if cmd == name or cmd.startswith(f"{name} "):
-        return cmd.split(maxsplit=1)
-    return None
-
-
-def _slash_parts_any(cmd: str, *names: str) -> list[str] | None:
-    for name in names:
-        parts = _slash_parts(cmd, name)
-        if parts is not None:
-            return parts
-    return None
+    # The model the user explicitly requested (--model at launch or the last
+    # /model choice). Kept apart from state.model, which tracks the model that
+    # last ran and may be a router pick that must not leak into session pins.
+    requested_model: str | None = None
 
 
 async def handle_gateway_slash_command(
     cmd: str,
     context: GatewaySlashContext,
 ) -> bool:
-    """Handle gateway-mode slash commands. Returns False for unknown commands."""
+    """Handle gateway-mode slash commands.
 
+    Returns ``True`` when the command was handled (including handled failures
+    such as a lost gateway connection) and ``False`` for unknown commands so
+    the runtime can render its unknown-command notice. Exit commands are owned
+    by the runtime loop, which intercepts them before slash dispatch.
+    """
+    try:
+        return await _dispatch_gateway_slash_command(cmd, context)
+    except (ConnectionError, OSError) as exc:
+        console.print(error_panel(str(exc), title="Gateway command failed"))
+        console.print(
+            "[dim]Check the gateway with[/dim] [bold]opensquilla gateway status[/bold] "
+            "[dim]and start it with[/dim] [bold]opensquilla gateway run[/bold] "
+            "[dim]if it is down, then retry the command.[/dim]"
+        )
+        return True
+
+
+async def _requested_session_model(context: GatewaySlashContext) -> str | None:
+    """Return the explicitly requested model for new sessions, if any.
+
+    ``state.model`` is display bookkeeping: after a routed turn it holds the
+    router's pick, and pinning a fresh session to it would silently replace
+    routing. The explicit request is the in-context ``/model`` choice or,
+    failing that, the model stored on the current session (set from
+    ``--model`` at creation or an earlier ``/model`` patch).
+    """
+    if context.requested_model:
+        return context.requested_model
+    try:
+        payload = await asyncio.wait_for(
+            context.client.resolve_session(context.state.session_key),
+            timeout=2.0,
+        )
+    except Exception:  # noqa: BLE001 - best-effort read; default to routing
+        # The read itself failed (slow/erroring gateway), which is different
+        # from "no pin stored". Warn so the user is not surprised that the new
+        # session falls back to the router default, and can re-pin explicitly.
+        console.print(
+            "[yellow]Could not read the current session's model pin; the new "
+            "session will use the router default. Re-pin with[/yellow] "
+            "[bold]/model <id>[/bold][yellow] if needed.[/yellow]"
+        )
+        return None
+    model = payload.get("model")
+    return str(model) if model else None
+
+
+async def _dispatch_gateway_slash_command(
+    cmd: str,
+    context: GatewaySlashContext,
+) -> bool:
     state = context.state
     client = context.client
     elevated_state = context.elevated_state
@@ -177,14 +215,13 @@ async def handle_gateway_slash_command(
         return True
 
     if _slash_parts(cmd, "/theme"):
-        from opensquilla.cli.tui.opentui.themes import handle_theme_command  # noqa: PLC0415
-
-        await handle_theme_command(cmd, tui_output)
+        await dispatch_theme_command(cmd, tui_output)
         return True
 
     if parts := _slash_parts(cmd, "/new"):
         title = parts[1].strip() if len(parts) > 1 else None
-        session_key = await client.create_session(model=state.model, display_name=title)
+        requested_model = await _requested_session_model(context)
+        session_key = await client.create_session(model=requested_model, display_name=title)
         state.session_key = session_key
         state.transcript.clear()
         state.usage.reset()
@@ -237,6 +274,7 @@ async def handle_gateway_slash_command(
         target = cmd.split(maxsplit=1)[1].strip()
         resolved = await client.resolve_session(target)
         session_key = resolved.get("session_key") or resolved.get("key") or target
+        deleting_active = session_key == state.session_key
         payload = await client.delete_sessions([session_key])
         errors = [str(item) for item in payload.get("errors") or []]
         deleted = [str(item) for item in payload.get("deleted") or []]
@@ -244,6 +282,30 @@ async def handle_gateway_slash_command(
             console.print(error_panel("\n".join(errors), title="Delete failed"))
         elif deleted:
             console.print(f"[yellow]Deleted session:[/yellow] {deleted[0]}")
+            if deleting_active:
+                # The REPL must not keep sending turns to a deleted key; move
+                # to a fresh session that keeps the user's explicit model pin.
+                replacement_model = (
+                    context.requested_model or resolved.get("model") or None
+                )
+                new_key = await client.create_session(model=replacement_model)
+                state.session_key = new_key
+                state.transcript.clear()
+                state.usage.reset()
+                # Refresh the display model like /new does, so /status and the
+                # HUD reflect the replacement session's actual pin instead of
+                # the deleted session's stale model.
+                try:
+                    _resolved = await asyncio.wait_for(
+                        client.resolve_session(new_key), timeout=2.0
+                    )
+                    state.model = _resolved.get("model") or replacement_model or state.model
+                except Exception:  # noqa: BLE001 - network/timeout; non-fatal
+                    state.model = replacement_model or state.model
+                console.print(
+                    "[yellow]The deleted session was active; switched to a new "
+                    f"session:[/yellow] {new_key}"
+                )
         else:
             console.print(error_panel("No session was deleted.", title="Delete failed"))
         return True
@@ -268,16 +330,13 @@ async def handle_gateway_slash_command(
             remaining = int(payload.get("remaining_budget_tokens") or 0)
             source = payload.get("summary_source") or "unknown"
             token_stats = (
-                f"{before} -> {after} tokens, {remaining} remaining, {source}"
+                compact_token_stats(before, after, remaining, source)
                 if before or after
-                else f"summary {payload.get('summary_len', 0)} chars"
+                else compact_summary_stats(payload.get("summary_len", 0))
             )
-            console.print(f"[{ACCENT}]compacted[/] [dim]{token_stats}[/dim]")
+            console.print(compact_success_line(token_stats))
         else:
-            console.print(
-                f"[{ACCENT}]compact skipped[/] "
-                "[dim]already within context budget; no compact was applied[/dim]"
-            )
+            console.print(compact_skipped_line())
         return True
 
     if parts := _slash_parts(cmd, "/models"):
@@ -295,6 +354,7 @@ async def handle_gateway_slash_command(
             new_model = parts[1].strip()
             await client.patch_session(state.session_key, model=new_model)
             state.model = new_model
+            context.requested_model = new_model
             console.print(f"[green]model:[/green] {new_model}")
         return True
 
@@ -332,9 +392,7 @@ async def handle_gateway_slash_command(
             attachments=attachments,
             tui_output=tui_output,
         )
-        state.transcript.add("user", prompt)
-        state.transcript.add("assistant", result.text)
-        state.usage.apply(result.usage)
+        record_turn(state, prompt, result)
         return True
 
     if parts := _slash_parts(cmd, "/meta"):
@@ -358,9 +416,7 @@ async def handle_gateway_slash_command(
             elevated_state,
             tui_output=tui_output,
         )
-        state.transcript.add("user", prompt)
-        state.transcript.add("assistant", result.text)
-        state.usage.apply(result.usage)
+        record_turn(state, prompt, result)
         return True
 
     if parts := _slash_parts(cmd, "/path"):
@@ -383,9 +439,7 @@ async def handle_gateway_slash_command(
             attachments=attachments,
             tui_output=tui_output,
         )
-        state.transcript.add("user", prompt)
-        state.transcript.add("assistant", result.text)
-        state.usage.apply(result.usage)
+        record_turn(state, prompt, result)
         return True
 
     if parts := _slash_parts(cmd, "/file"):
@@ -411,9 +465,7 @@ async def handle_gateway_slash_command(
             attachments=attachments,
             tui_output=tui_output,
         )
-        state.transcript.add("user", prompt)
-        state.transcript.add("assistant", result.text)
-        state.usage.apply(result.usage)
+        record_turn(state, prompt, result)
         return True
 
     if _slash_parts_any(cmd, "/permissions", "/elevated"):
@@ -430,66 +482,6 @@ async def handle_gateway_slash_command(
         return True
 
     return False
-
-
-async def _handle_tool_compress_command(
-    cmd: str,
-    *,
-    config: object | None = None,
-    client: object | None = None,
-) -> None:
-    parts = cmd.split()
-    arg = parts[1].lower() if len(parts) > 1 else "status"
-    aliases = {"on": "truncate", "trim": "truncate", "summary": "summarize"}
-    mode_arg = aliases.get(arg, arg)
-    modes = {"off", "truncate", "summarize", "tokenjuice", "status"}
-    if len(parts) > 2 or mode_arg not in modes:
-        console.print("[red]Usage: /tool-compress [off|truncate|summarize|tokenjuice|status][/red]")
-        return
-
-    enabled_path = "agent_token_saving.tool_result_compression_enabled"
-    mode_path = "agent_token_saving.tool_result_compression_mode"
-    model_path = "agent_token_saving.tool_result_compression_summary_model"
-    if client is not None:
-        from opensquilla.cli.gateway_client import GatewayClient
-
-        assert isinstance(client, GatewayClient)
-        if mode_arg == "status":
-            mode = await client.get_config(mode_path)
-            enabled = bool(await client.get_config(enabled_path))
-            model = await client.get_config(model_path)
-            mode = mode if mode in {"off", "truncate", "summarize", "tokenjuice"} else None
-            resolved_mode = str(mode or ("truncate" if enabled else "off"))
-        else:
-            resolved_mode = mode_arg
-            await client.patch_config_safe(
-                {
-                    mode_path: resolved_mode,
-                    enabled_path: resolved_mode != "off",
-                }
-            )
-            model = await client.get_config(model_path) if resolved_mode == "summarize" else None
-    else:
-        cfg = getattr(config, "agent_token_saving", None)
-        if cfg is None:
-            console.print("[yellow]Tool result compression config is unavailable.[/yellow]")
-            return
-        if mode_arg == "status":
-            mode = getattr(cfg, "tool_result_compression_mode", None)
-            enabled = bool(getattr(cfg, "tool_result_compression_enabled", True))
-            model = getattr(cfg, "tool_result_compression_summary_model", None)
-            if mode in {"off", "truncate", "summarize", "tokenjuice"}:
-                resolved_mode = str(mode)
-            else:
-                resolved_mode = "truncate" if enabled else "off"
-        else:
-            resolved_mode = mode_arg
-            setattr(cfg, "tool_result_compression_mode", resolved_mode)
-            setattr(cfg, "tool_result_compression_enabled", resolved_mode != "off")
-            model = getattr(cfg, "tool_result_compression_summary_model", None)
-
-    model_suffix = f" [dim]model={model}[/dim]" if resolved_mode == "summarize" and model else ""
-    console.print(f"[{ACCENT}]tool result compression:[/] {resolved_mode.upper()}{model_suffix}")
 
 
 def _print_sessions_table(rows: list[dict[str, Any]]) -> None:
@@ -549,25 +541,20 @@ def _print_models_table(rows: list[dict[str, Any]]) -> None:
 
 
 async def _save_gateway_transcript_command(
-    cmd: str, state: ChatSessionState, client: object
+    cmd: str, state: ChatSessionState, client: GatewayClientLike
 ) -> None:
-    from opensquilla.cli.gateway_client import GatewayClient
-
-    assert isinstance(client, GatewayClient)
-    parts = cmd.split(maxsplit=1)
-    if len(parts) > 1:
-        target = Path(parts[1]).expanduser()
-    else:
-        suffix = state.session_key.replace(":", "-")
-        target = Path(f"opensquilla-chat-{suffix}.md")
-
+    target = resolve_transcript_target(cmd, state.session_key)
     history = await client.session_history(state.session_key, limit=1000)
     messages = history.get("messages") or []
     markdown = messages_to_markdown(messages) if isinstance(messages, list) else ""
     if not markdown.strip():
         markdown = state.transcript.to_markdown()
-    target.write_text(markdown, encoding="utf-8")
-    console.print(f"[green]Saved transcript:[/green] {target}")
+    save_transcript_markdown(
+        target,
+        markdown,
+        output_console=console,
+        error_panel_factory=error_panel,
+    )
 
 
 def _image_prompt_from_command(command: str) -> str:
@@ -616,12 +603,11 @@ async def _async_file_prompt_and_attachments(
     )
 
 
-async def _forget_server_approvals(client: object | None, target: str | None = None) -> bool:
+async def _forget_server_approvals(
+    client: GatewayClientLike | None, target: str | None = None
+) -> bool:
     """Compatibility no-op for the removed intent approval cache."""
     if client is not None:
-        from opensquilla.cli.gateway_client import GatewayClient
-
-        assert isinstance(client, GatewayClient)
         try:
             await client.forget_approvals(target)
             return True
@@ -640,7 +626,9 @@ async def _forget_server_approvals(client: object | None, target: str | None = N
     return True
 
 
-async def _handle_approvals_command(cmd: str, client: object | None = None) -> None:
+async def _handle_approvals_command(
+    cmd: str, client: GatewayClientLike | None = None
+) -> None:
     """Diagnostic view / reset for the approval queue."""
     parts = cmd.split()
     arg = parts[1].lower() if len(parts) > 1 else "status"
@@ -655,10 +643,6 @@ async def _handle_approvals_command(cmd: str, client: object | None = None) -> N
             return
         console.print(f"[{ACCENT}]mode:[/] {queue.get_settings().mode}")
         return
-
-    from opensquilla.cli.gateway_client import GatewayClient
-
-    assert isinstance(client, GatewayClient)
 
     if arg == "reset":
         try:
@@ -679,7 +663,9 @@ async def _handle_approvals_command(cmd: str, client: object | None = None) -> N
     console.print(f"[{ACCENT}]mode:[/] {snap.get('mode')}")
 
 
-async def _handle_forget_command(cmd: str, client: object | None = None) -> None:
+async def _handle_forget_command(
+    cmd: str, client: GatewayClientLike | None = None
+) -> None:
     """Compatibility no-op for removed approval cache."""
     parts = cmd.split(maxsplit=1)
     if len(parts) < 2:
@@ -694,7 +680,7 @@ async def _handle_forget_command(cmd: str, client: object | None = None) -> None
 async def _handle_elevated_command(
     cmd: str,
     state: dict[str, str | None],
-    client: object | None = None,
+    client: GatewayClientLike | None = None,
 ) -> None:
     """Interpret ``/permissions`` / ``/elevated`` and mutate state in place."""
     parts = cmd.split()
@@ -715,9 +701,6 @@ async def _handle_elevated_command(
     queue_mode_reset_warning = ""
     if arg == "off":
         if client is not None:
-            from opensquilla.cli.gateway_client import GatewayClient
-
-            assert isinstance(client, GatewayClient)
             try:
                 await client.set_approval_mode("prompt")
             except Exception as exc:

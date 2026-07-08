@@ -1,8 +1,16 @@
-"""V003 - heartbeat_ticks table for the S8 heartbeat runner.
+"""V003 - heartbeat_ticks table for the S8 heartbeat runner (wrong-database no-op).
 
 Creates the ``heartbeat_ticks`` table that :class:`HeartbeatStore` writes into.
 The table carries ``schema_version`` per S-MIGRATE discipline so any future
 shape change goes through a migration rather than an in-product ALTER TABLE.
+
+``heartbeat_ticks`` lives in the scheduler-owned database a
+``HeartbeatStore`` is opened against (``scheduler/heartbeat.py``), NOT in
+``sessions.db`` — and ``apply_pending`` only ever runs against
+``sessions.db``. On real split-database deployments this migration
+therefore creates the table in a database no heartbeat code reads,
+recorded in the sessions.db ledger. The real table is created in place by
+``HeartbeatStore.open()``'s ``CREATE TABLE IF NOT EXISTS`` DDL.
 
 Rollback drops the table outright (no data preservation - ticks are
 observability records, not source of truth).

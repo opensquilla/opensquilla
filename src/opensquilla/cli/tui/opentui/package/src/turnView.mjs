@@ -1,14 +1,21 @@
 import { createBlock } from "./blockRegistry.mjs";
 import { STATUS_PULSE_FRAMES, THEME } from "./theme.mjs";
-import { TOOL_INDENT, CARD_RULE_SHORT, cardHeaderRule } from "./primitives.mjs";
+import { TOOL_INDENT, stripTerminalControls } from "./primitives.mjs";
 
-// Block kinds that live INSIDE the assistant's single per-turn card. Answer
-// markdown, intermediate narration, tool calls, the reasoning marker and errors
-// all share ONE continuous left-border gutter so a multi-step turn reads as one
-// assistant block (opencode/codex style) instead of a stack of repeated
-// "╭─ answer ─ squilla ─ … ╰─" cards. The prompt is the user's own card and the
-// usage line is a trailing summary, so neither joins the assistant card.
-const IN_CARD_KINDS = new Set(["answer", "thinking", "tool", "reasoning", "error"]);
+// Block kinds that render OUTSIDE the assistant's single per-turn card: the
+// prompt is the user's own compact row and the usage summary folds into the
+// card footer. Everything else — answer markdown, intermediate narration, tool
+// calls, the reasoning marker, errors, and any kind this host does not know yet
+// (a newer Python may add block kinds) — shares ONE continuous left-border
+// gutter so a multi-step turn reads as one assistant block (opencode/codex
+// style) instead of a stack of repeated cards. Unknown kinds default INTO the
+// card so a protocol addition can never seal it mid-turn; only the known
+// trailing kind (usage) closes it.
+const OUT_OF_CARD_KINDS = new Set(["prompt", "usage"]);
+
+export function isOutOfCardKind(kind) {
+  return OUT_OF_CARD_KINDS.has(kind);
+}
 
 export function createTurnView(deps, id) {
   const { renderer, BoxRenderable, TextRenderable, MarkdownRenderable, syntaxStyle, conversationBox } = deps;
@@ -20,36 +27,89 @@ export function createTurnView(deps, id) {
   const runningTools = new Set(); // toolBlock renderers animating
   const runningReasoning = new Set(); // reasoning markers animating
 
-  // One card per assistant turn: a single header rule, a single left-border
-  // gutter that runs unbroken through narration and tool calls, and a single
-  // footer. The card opens lazily on the first in-card block so a turn that only
-  // emits e.g. a usage summary never draws an empty card, and closes once on
-  // turn end (or when a trailing out-of-card block such as usage begins).
+  // One card per assistant turn: a short "╭ squilla" label, a single
+  // left-border gutter that runs unbroken through narration and tool calls, and
+  // a "╰ …" footer that carries the usage summary. The chrome is deliberately
+  // width-INDEPENDENT — a full-width header rule wraps a stray dash onto the
+  // next row the moment the scrollbar steals a viewport column, so no rule may
+  // depend on the terminal width. The card opens lazily on the first in-card
+  // block so a turn that only echoes a prompt never draws an empty card.
   let cardBody = null;
-  let cardTop = null; // the "╭─ squilla ─…" header rule (width-dependent)
-  let cardGap = null; // the leading "│" gap row above the header
-  let cardBot = null; // the "╰────" footer rule
+  let cardTop = null; // the "╭ squilla" header label
+  let cardBot = null; // the "╰ …" footer (usage summary / cancelled marker)
+  let cancelNode = null; // "⚠ cancelled" fallback for card-less views (queued prompts)
+  let usageText = null; // trailing usage summary, folded into the footer
   const gapRows = []; // prose<->procedure spacer rows (detailText)
   let cardOpen = false;
   let cardClosed = false;
+  let cardCancelled = false;
   let lastInCardKind = null; // for prose<->procedure spacing inside the card
   let gapSeq = 0;
+  let lastRelayoutWidth = renderer.terminalWidth; // block content is clipped at this width
 
   function openCard() {
     if (cardOpen) return;
     cardOpen = true;
-    cardGap = new TextRenderable(renderer, { id: `turn-${id}-cardgap`, content: `${TOOL_INDENT}│`, fg: THEME.detailText });
-    box.add(cardGap);
-    cardTop = new TextRenderable(renderer, { id: `turn-${id}-cardtop`, content: cardHeaderRule("squilla", renderer.terminalWidth), fg: THEME.answerFrame });
+    cardTop = new TextRenderable(renderer, { id: `turn-${id}-cardtop`, content: "╭ squilla", fg: THEME.answerFrame });
     box.add(cardTop);
     cardBody = new BoxRenderable(renderer, { id: `turn-${id}-cardbody`, width: "100%", flexDirection: "column", border: ["left"], borderColor: THEME.answerFrame, paddingLeft: 1, flexShrink: 0 });
     box.add(cardBody);
   }
 
+  function footerContent() {
+    if (cardCancelled) {
+      return usageText ? `╰ ⚠ cancelled · ${usageText}` : "╰ ⚠ cancelled";
+    }
+    return usageText ? `╰ ${usageText}` : "╰";
+  }
+
+  function footerColor() {
+    if (cardCancelled) return THEME.warning;
+    return usageText ? THEME.muted : THEME.answerFrame;
+  }
+
+  function standaloneUsageRow() {
+    if (!usageText) return;
+    const row = new TextRenderable(renderer, { id: `turn-${id}-usage`, content: `${TOOL_INDENT}${usageText}`, fg: THEME.muted });
+    box.add(row);
+  }
+
   function closeCard() {
-    if (!cardOpen || cardClosed) return;
+    if (!cardOpen) {
+      // No card to close (e.g. a turn that only echoed a prompt): a usage
+      // summary still deserves its receipt row.
+      standaloneUsageRow();
+      usageText = null;
+      return;
+    }
+    if (cardClosed) {
+      // Already closed: a late usage/cancel still refreshes the footer text.
+      if (cardBot) {
+        cardBot.content = footerContent();
+        cardBot.fg = footerColor();
+        renderer.requestRender?.();
+      }
+      return;
+    }
+    // A body that kept no children would close into an empty "╭ squilla … ╰"
+    // shell (e.g. a turn cancelled during extended thinking: the transient
+    // Thinking… marker removes itself when the reasoning block ends). Drop the
+    // chrome instead — keeping any usage receipt as a plain row — and let a
+    // later in-card block simply re-open a fresh card.
+    const kept = cardBody?.getChildrenCount?.() ?? cardBody?.getChildren?.().length ?? 0;
+    if (kept === 0) {
+      box.remove?.(cardTop.id);
+      box.remove?.(cardBody.id);
+      cardTop = cardBody = null;
+      cardOpen = false;
+      lastInCardKind = null;
+      standaloneUsageRow();
+      usageText = null;
+      renderer.requestRender?.();
+      return;
+    }
     cardClosed = true;
-    cardBot = new TextRenderable(renderer, { id: `turn-${id}-cardbot`, content: `╰${CARD_RULE_SHORT}`, fg: THEME.answerFrame });
+    cardBot = new TextRenderable(renderer, { id: `turn-${id}-cardbot`, content: footerContent(), fg: footerColor() });
     box.add(cardBot);
     renderer.requestRender?.();
   }
@@ -57,7 +117,7 @@ export function createTurnView(deps, id) {
   function ctxFor(blockId, kind) {
     // In-card blocks draw into the shared bordered body so the gutter stays
     // continuous; everything else draws straight into the turn box.
-    const target = IN_CARD_KINDS.has(kind) && cardBody ? cardBody : box;
+    const target = !isOutOfCardKind(kind) && cardBody ? cardBody : box;
     return { renderer, BoxRenderable, TextRenderable, MarkdownRenderable, syntaxStyle, box: target, idPrefix: `turn-${id}-${blockId}` };
   }
 
@@ -65,7 +125,15 @@ export function createTurnView(deps, id) {
     box,
     ended: false,
     begin(blockId, kind, meta) {
-      if (IN_CARD_KINDS.has(kind)) {
+      if (kind === "usage") {
+        // The usage summary is the card's own trailing line, not a block: fold
+        // it into the "╰ …" footer so the card closes into its receipt instead
+        // of a floating row. append/update/end for this id stay safe no-ops.
+        usageText = stripTerminalControls(String(meta?.text ?? "")).trim() || null;
+        closeCard();
+        return;
+      }
+      if (!isOutOfCardKind(kind)) {
         openCard();
         // Separate the markdown answer (prose) from procedure rows (tools and
         // narration) with one blank gutter row, but pack consecutive procedure
@@ -77,8 +145,6 @@ export function createTurnView(deps, id) {
           gapRows.push(gap);
         }
         lastInCardKind = kind;
-      } else {
-        closeCard(); // a trailing out-of-card block (usage) sits below the footer
       }
       const r = createBlock(kind, ctxFor(blockId, kind));
       blocks.set(blockId, { kind, r });
@@ -101,15 +167,28 @@ export function createTurnView(deps, id) {
       if (entry.kind === "reasoning") runningReasoning.delete(entry.r);
     },
     // Close the single per-turn card once the turn is over (the runtime calls
-    // this on turn.end). Idempotent and a no-op when no card ever opened.
-    finish() { closeCard(); },
-    // Reflow width-dependent chrome to the current terminal width on resize, so
-    // existing cards re-rule instead of leaving their baked full-width header to
-    // wrap (shrink) or strand (grow). Markdown bodies and text lines already
-    // re-wrap at layout time; only the rule strings must be recomputed. The
-    // prompt block reflows its own header via the per-block relayout() below.
+    // this on turn.end). Idempotent and a no-op when no card ever opened. A
+    // cancelled turn (Esc mid-stream) closes into a "╰ ⚠ cancelled" footer so
+    // the transcript records that this answer was cut short; a card-less view
+    // (a discarded queued prompt) gets a standalone marker row instead.
+    finish(cancelled) {
+      if (cancelled) cardCancelled = true;
+      closeCard();
+      if (cancelled && !cardOpen && !cancelNode) {
+        cancelNode = new TextRenderable(renderer, { id: `turn-${id}-cancelled`, content: `${TOOL_INDENT}⚠ cancelled`, fg: THEME.warning });
+        box.add(cancelNode);
+        renderer.requestRender?.();
+      }
+    },
+    // Re-clip width-clipped block content to the current terminal width on
+    // resize. The card chrome itself is width-independent by design, so only
+    // the blocks (tool corners, narration wraps) need reflow work — and a
+    // height-only resize skips even that, so a long session does not pay
+    // O(turns) text-buffer work per resize frame.
     relayout() {
-      if (cardTop) cardTop.content = cardHeaderRule("squilla", renderer.terminalWidth);
+      const width = renderer.terminalWidth;
+      if (width === lastRelayoutWidth) return;
+      lastRelayoutWidth = width;
       for (const entry of blocks.values()) entry.r.relayout?.();
       renderer.requestRender?.();
     },
@@ -118,10 +197,10 @@ export function createTurnView(deps, id) {
     // renderables captured their fg at creation, so without this a dark→light
     // switch leaves prior transcript unreadable on the new background.
     recolor() {
-      if (cardGap) cardGap.fg = THEME.detailText;
       if (cardTop) cardTop.fg = THEME.answerFrame;
       if (cardBody) cardBody.borderColor = THEME.answerFrame;
-      if (cardBot) cardBot.fg = THEME.answerFrame;
+      if (cardBot) cardBot.fg = footerColor();
+      if (cancelNode) cancelNode.fg = THEME.warning;
       for (const gap of gapRows) gap.fg = THEME.detailText;
       for (const entry of blocks.values()) entry.r.recolor?.();
     },
@@ -130,6 +209,68 @@ export function createTurnView(deps, id) {
       const thinkingGlyph = STATUS_PULSE_FRAMES.thinking[frame % STATUS_PULSE_FRAMES.thinking.length];
       for (const r of runningTools) r.setGlyph(toolGlyph);
       for (const r of runningReasoning) r.setGlyph(thinkingGlyph);
+    },
+  };
+}
+
+// Decides which turn view receives each protocol event. Kept apart from the
+// renderer wiring so queued-prompt routing and late-block tolerance are plain
+// logic: newView(id) creates a view (createTurnView bound to real deps).
+export function createTurnFlow(newView) {
+  const turns = []; // every view ever created, for resize reflow + theme recolor
+  const pending = []; // queued-prompt views waiting for their turn.begin (FIFO)
+  let active = null;
+
+  function create(id) {
+    const view = newView(id);
+    turns.push(view);
+    return view;
+  }
+
+  function ensure(id) {
+    if (!active || active.ended) active = pending.shift() ?? create(id);
+    return active;
+  }
+
+  return {
+    turns,
+    active: () => active,
+    ensure,
+    // block.begin after turn.end is a late straggler (e.g. a trailing usage
+    // line) that belongs to the turn that just ended. Routing it there keeps
+    // it from spawning a fresh un-ended turn that would absorb the next
+    // prompt.echo into the same box.
+    turnForBlock(id) {
+      return active && active.ended ? active : ensure(id);
+    },
+    // prompt.echo while a turn is still streaming means the submission was
+    // QUEUED behind it: give the echo its own view — reusing the live turn
+    // would seal its card mid-stream and glue its usage line to the new
+    // prompt. ensure() then adopts queued views in order as their turns begin.
+    turnForPrompt(id) {
+      if (active && !active.ended) {
+        const view = create(id);
+        pending.push(view);
+        return view;
+      }
+      return ensure(id);
+    },
+    endTurn(cancelled = false) {
+      // A cancelled turn.end only comes from the cancel path (Esc / empty
+      // Ctrl+C), which already discarded every queued submission server-side.
+      // Invalidate their views too, or ensure() would adopt a stale discarded
+      // prompt's box for the NEXT real submission — fusing the new prompt and
+      // its whole answer under a dead prompt card. Marking each flushed view
+      // cancelled makes the discarded prompt visibly unanswered.
+      if (cancelled) {
+        for (const view of pending.splice(0)) {
+          view.finish?.(true);
+          view.ended = true;
+        }
+      }
+      if (!active) return;
+      active.finish?.(cancelled);
+      active.ended = true;
     },
   };
 }

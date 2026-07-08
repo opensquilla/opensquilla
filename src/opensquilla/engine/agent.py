@@ -3823,6 +3823,7 @@ class Agent:
         placeholder_offense_iterations = 0
         deadline_wrapup_armed = False
         deadline_wrapup_message: Message | None = None
+        deadline_thinking_off_armed = False
         workspace_diff_recovery_attempted = False
         failed_tool_finalization_recovery_keys: set[str] = set()
         post_tool_empty_recovery_attempted = False
@@ -4178,6 +4179,36 @@ class Agent:
                             margin_seconds=wrapup_margin_seconds,
                         )
 
+                # Pre-deadline thinking cutoff: once remaining wall clock drops
+                # below the configured margin, thinking stays off for every
+                # remaining provider call so the final stretch is spent on tool
+                # calls rather than a single long reasoning stream.
+                thinking_off_margin_seconds = max(
+                    0,
+                    int(
+                        getattr(self.config, "deadline_thinking_off_margin_seconds", 0)
+                        or 0
+                    ),
+                )
+                if (
+                    thinking_off_margin_seconds > 0
+                    and _total_deadline is not None
+                    and not deadline_thinking_off_armed
+                    and _loop.time() > _total_deadline - thinking_off_margin_seconds
+                ):
+                    deadline_thinking_off_armed = True
+                    self._write_turn_call_log(
+                        "turn_policy_decision",
+                        action="deadline_thinking_off",
+                        reason="deadline_margin",
+                        code="deadline_thinking_off",
+                        iteration=iterations,
+                        remaining_seconds=int(
+                            max(0.0, _total_deadline - _loop.time())
+                        ),
+                        margin_seconds=thinking_off_margin_seconds,
+                    )
+
                 iterations += 1
 
                 # ------ THINKING → STREAMING ------
@@ -4402,6 +4433,8 @@ class Agent:
                     if _disable_thinking_for_next_provider_call:
                         call_chat_cfg = _chat_config_with_thinking_disabled(call_chat_cfg)
                         _disable_thinking_for_next_provider_call = False
+                    if deadline_thinking_off_armed:
+                        call_chat_cfg = _chat_config_with_thinking_disabled(call_chat_cfg)
 
                     self._write_turn_call_log(
                         "llm_request",
@@ -5185,13 +5218,26 @@ class Agent:
                             )
                         ):
                             _attempt_retries_used[_ProviderAttemptKind.REASONING_ONLY] += 1
-                            yield WarningEvent(
-                                code="provider_reasoning_only_retry",
-                                message=(
-                                    "The provider returned reasoning without visible content; "
-                                    "retrying once to request visible content."
-                                ),
-                            )
+                            if getattr(
+                                self.config, "reasoning_only_thinking_fallback", False
+                            ):
+                                _thinking_fallback_done = True
+                                _disable_thinking_for_next_provider_call = True
+                                yield WarningEvent(
+                                    code="provider_reasoning_only_retry",
+                                    message=(
+                                        "The provider returned reasoning without visible "
+                                        "content; retrying once with thinking disabled."
+                                    ),
+                                )
+                            else:
+                                yield WarningEvent(
+                                    code="provider_reasoning_only_retry",
+                                    message=(
+                                        "The provider returned reasoning without visible content; "
+                                        "retrying once to request visible content."
+                                    ),
+                                )
                             _call_attempt += 1
                             continue
 
@@ -11654,6 +11700,10 @@ class Agent:
             ),
             placeholder_escalation_threshold=self.config.placeholder_escalation_threshold,
             deadline_wrapup_margin_seconds=self.config.deadline_wrapup_margin_seconds,
+            reasoning_only_thinking_fallback=self.config.reasoning_only_thinking_fallback,
+            deadline_thinking_off_margin_seconds=(
+                self.config.deadline_thinking_off_margin_seconds
+            ),
             repeated_tool_call_recovery_threshold=(
                 self.config.repeated_tool_call_recovery_threshold
             ),

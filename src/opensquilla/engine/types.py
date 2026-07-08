@@ -567,6 +567,17 @@ class AgentConfig:
     # so the model can still apply and verify its final changes. Set via
     # OPENSQUILLA_DEADLINE_WRAPUP_MARGIN_SECONDS.
     deadline_wrapup_margin_seconds: int = 0
+    # Retry the reasoning-only provider failure with thinking disabled instead
+    # of re-requesting visible content with thinking still enabled. Off by
+    # default (the retry keeps thinking on). Set via
+    # OPENSQUILLA_REASONING_ONLY_THINKING_FALLBACK.
+    reasoning_only_thinking_fallback: bool = False
+    # Force thinking off for every provider call once remaining wall-clock
+    # time drops below this many seconds. 0 = off. Complements the wrap-up
+    # directive: the nudge alone leaves thinking enabled, so the model can
+    # still spend the entire margin inside a single reasoning stream. Set via
+    # OPENSQUILLA_DEADLINE_THINKING_OFF_MARGIN_SECONDS.
+    deadline_thinking_off_margin_seconds: int = 0
     # Provider-view dedup of byte-identical repeated tool results. Off by
     # default. When enabled, older duplicate tool_result payloads (same content
     # emitted N+ times across iterations) are replaced in the provider request

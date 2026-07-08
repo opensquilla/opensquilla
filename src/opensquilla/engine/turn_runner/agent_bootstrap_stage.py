@@ -731,6 +731,14 @@ class AgentBootstrapStage:
                 "OPENSQUILLA_DEADLINE_WRAPUP_MARGIN_SECONDS",
                 AgentConfig().deadline_wrapup_margin_seconds,
             ),
+            reasoning_only_thinking_fallback=_bool_from_env(
+                "OPENSQUILLA_REASONING_ONLY_THINKING_FALLBACK",
+                AgentConfig().reasoning_only_thinking_fallback,
+            ),
+            deadline_thinking_off_margin_seconds=_nonnegative_int_from_env(
+                "OPENSQUILLA_DEADLINE_THINKING_OFF_MARGIN_SECONDS",
+                AgentConfig().deadline_thinking_off_margin_seconds,
+            ),
             repeated_tool_call_recovery_threshold=_nonnegative_int_from_env(
                 "OPENSQUILLA_TOOL_REPEAT_NUDGE_THRESHOLD",
                 AgentConfig().repeated_tool_call_recovery_threshold,

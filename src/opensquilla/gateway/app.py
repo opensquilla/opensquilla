@@ -600,11 +600,18 @@ def create_gateway_app(
     # replace the default in-memory-only singleton; respect a test-injected store.
     _upload_store = get_upload_store()
     if getattr(_upload_store, "marker_dir", None) is None:
+        from opensquilla.gateway.uploads import (  # noqa: PLC0415
+            _DEFAULT_MAX_TOTAL_BYTES as _UPLOAD_STORE_DEFAULT_TOTAL,
+        )
         from opensquilla.paths import media_root_from_config  # noqa: PLC0415
 
+        _store_total_cap = getattr(config.attachments, "upload_store_max_total_bytes", None)
+        if not isinstance(_store_total_cap, int) or _store_total_cap <= 0:
+            _store_total_cap = _UPLOAD_STORE_DEFAULT_TOTAL
         _upload_store = UploadStore(
             marker_dir=media_root_from_config(config) / "uploads",
             accept_opaque=bool(getattr(config.attachments, "accept_opaque", True)),
+            max_total_bytes=_store_total_cap,
         )
         set_upload_store(_upload_store)
     register_upload_routes(app, config=config, store=_upload_store)

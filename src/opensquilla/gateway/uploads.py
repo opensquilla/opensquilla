@@ -53,6 +53,7 @@ log = logging.getLogger(__name__)
 _ALLOWED_MIMES: frozenset[str] = ALLOWED_MEDIA_TYPES
 
 _DEFAULT_MAX_FILE_BYTES = 30 * 1024 * 1024
+_DEFAULT_MAX_TOTAL_BYTES = 300 * 1024 * 1024
 _DEFAULT_TTL_SECONDS = 10 * 60
 
 
@@ -66,6 +67,14 @@ class UploadOversizeError(UploadStoreError):
 
 class UploadUnsupportedMimeError(UploadStoreError):
     pass
+
+
+class UploadStoreFullError(UploadStoreError):
+    """Admitting the payload would push staged bytes past the aggregate cap.
+
+    Raised instead of evicting: staged uuids carry a TTL promise to clients,
+    so the store rejects new work rather than breaking outstanding uploads.
+    """
 
 
 class AttachmentNotFoundError(UploadStoreError):
@@ -103,11 +112,14 @@ class UploadStore:
         ttl_seconds: float = _DEFAULT_TTL_SECONDS,
         max_file_bytes: int = _DEFAULT_MAX_FILE_BYTES,
         accept_opaque: bool = True,
+        *,
+        max_total_bytes: int = _DEFAULT_MAX_TOTAL_BYTES,
     ) -> None:
         self.marker_dir: Path | None = Path(marker_dir) if marker_dir is not None else None
         self.ttl_seconds = ttl_seconds
         self.max_file_bytes = max_file_bytes
         self.accept_opaque = accept_opaque
+        self.max_total_bytes = max_total_bytes
         self._entries: dict[str, _Entry] = {}
         self._locks: dict[str, asyncio.Lock] = {}
         self._lock_for_locks = asyncio.Lock()
@@ -221,17 +233,43 @@ class UploadStore:
         await self._sweep_expired_locked()
 
         lock = await self._get_uuid_lock(file_uuid)
+        admitted = False
         async with lock:
-            self._entries[file_uuid] = entry
-            self._write_marker(
-                file_uuid,
-                {
-                    "sha256": sha,
-                    "mime": normalized_mime,
-                    "name": name,
-                    "size": len(payload),
-                    "expires_at": expires_at,
-                },
+            # Aggregate cap, computed over ALL held entries (expired entries a
+            # concurrent resolver keeps locked past the sweep still occupy
+            # RAM). The check and the insert sit in one zero-await stretch, so
+            # concurrent puts cannot interleave between them and overshoot.
+            staged_total = sum(e.size for e in self._entries.values())
+            if staged_total + entry.size > self.max_total_bytes:
+                log.warning(
+                    "uploads.store_full staged=%d incoming=%d cap=%d",
+                    staged_total,
+                    entry.size,
+                    self.max_total_bytes,
+                )
+            else:
+                admitted = True
+                self._entries[file_uuid] = entry
+                self._write_marker(
+                    file_uuid,
+                    {
+                        "sha256": sha,
+                        "mime": normalized_mime,
+                        "name": name,
+                        "size": len(payload),
+                        "expires_at": expires_at,
+                    },
+                )
+        if not admitted:
+            # Drop the per-uuid lock minted for this rejected upload so bursts
+            # of rejections cannot grow the lock dict without bound.
+            async with self._lock_for_locks:
+                self._locks.pop(file_uuid, None)
+            raise UploadStoreFullError(
+                f"upload store is full ({staged_total} of {self.max_total_bytes} "
+                f"bytes staged); staged uploads expire within "
+                f"{int(self.ttl_seconds)}s — retry shortly or send pending "
+                "attachments first"
             )
         return file_uuid, expires_at
 
@@ -425,6 +463,12 @@ def register_upload_routes(
         except UploadUnsupportedMimeError as exc:
             return JSONResponse(
                 {"error": str(exc), "code": "UNSUPPORTED_MEDIA_TYPE"}, status_code=415
+            )
+        except UploadStoreFullError as exc:
+            # Retryable capacity condition (staged entries expire within the
+            # TTL), distinct from per-file 413 and rate-limit 429.
+            return JSONResponse(
+                {"error": str(exc), "code": "UPLOAD_STORE_FULL"}, status_code=507
             )
 
         return JSONResponse(

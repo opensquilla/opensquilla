@@ -33,6 +33,7 @@ from opensquilla.gateway.uploads import (
     AttachmentNotFoundError,
     UploadOversizeError,
     UploadStore,
+    UploadStoreFullError,
     UploadUnsupportedMimeError,
 )
 
@@ -818,7 +819,11 @@ def test_app_factory_wires_strict_admission_into_route_and_store(tmp_path: Path)
     set_upload_store(None)
     try:
         config = GatewayConfig(
-            attachments={"accept_opaque": False, "media_root": str(tmp_path / "media")},
+            attachments={
+                "accept_opaque": False,
+                "media_root": str(tmp_path / "media"),
+                "upload_store_max_total_bytes": 7 * 1024 * 1024,
+            },
         )
         app = create_gateway_app(config)
         with TestClient(app) as client:
@@ -829,6 +834,7 @@ def test_app_factory_wires_strict_admission_into_route_and_store(tmp_path: Path)
         assert response.status_code == 415
         assert response.json()["code"] == "UNSUPPORTED_MEDIA_TYPE"
         assert get_upload_store().accept_opaque is False
+        assert get_upload_store().max_total_bytes == 7 * 1024 * 1024
     finally:
         set_upload_store(original_store)
 
@@ -870,3 +876,81 @@ def test_file_uuid_opaque_reference_resolves_with_store_mime(tmp_path: Path) -> 
     assert resolved[0]["kind"] == "attachment_ref"
     assert resolved[0]["mime"] == "application/zip"
     assert resolved[0]["size"] == len(payload)
+
+
+# ---------------------------------------------------------------------------
+# Aggregate RAM cap: reject-on-full, never evict.
+# ---------------------------------------------------------------------------
+
+
+def _capped_store(tmp_path: Path, max_total_bytes: int, ttl_seconds: float = 600) -> UploadStore:
+    return UploadStore(
+        marker_dir=tmp_path / "inbound",
+        ttl_seconds=ttl_seconds,
+        max_file_bytes=30 * 1024 * 1024,
+        max_total_bytes=max_total_bytes,
+    )
+
+
+def test_store_full_rejects_without_insert_or_marker(tmp_path: Path) -> None:
+    store = _capped_store(tmp_path, max_total_bytes=1024)
+    ok_uuid = asyncio.run(store.put("a.txt", "text/plain", b"a" * 900))
+
+    with pytest.raises(UploadStoreFullError, match="upload store is full"):
+        asyncio.run(store.put("b.txt", "text/plain", b"b" * 200))
+
+    # The staged entry is untouched (reject, never evict) and the rejected
+    # upload left neither a marker nor a stranded per-uuid lock behind.
+    payload, _meta = asyncio.run(store.get(ok_uuid))
+    assert payload == b"a" * 900
+    markers = list((tmp_path / "inbound").glob("*.meta"))
+    assert [m.stem for m in markers] == [ok_uuid]
+    assert set(store._locks) <= {ok_uuid}
+
+
+def test_store_full_recovers_after_ttl_sweep(tmp_path: Path) -> None:
+    store = _capped_store(tmp_path, max_total_bytes=1024, ttl_seconds=0.01)
+    asyncio.run(store.put("a.txt", "text/plain", b"a" * 900))
+    time.sleep(0.05)
+
+    # The pre-insert sweep frees the expired entry, so the same-size payload
+    # is admitted again.
+    ok_uuid = asyncio.run(store.put("b.txt", "text/plain", b"b" * 900))
+    assert ok_uuid.startswith("u-")
+
+
+def test_store_full_boundary_admits_exact_fit(tmp_path: Path) -> None:
+    store = _capped_store(tmp_path, max_total_bytes=1000)
+    asyncio.run(store.put("a.txt", "text/plain", b"a" * 600))
+    ok_uuid = asyncio.run(store.put("b.txt", "text/plain", b"b" * 400))
+    assert ok_uuid.startswith("u-")
+    with pytest.raises(UploadStoreFullError):
+        asyncio.run(store.put("c.txt", "text/plain", b"c"))
+
+
+def test_upload_route_returns_507_when_store_full(tmp_path: Path) -> None:
+    store = _capped_store(tmp_path, max_total_bytes=64)
+    with _route_client(store=store) as client:
+        response = client.post(
+            "/api/v1/files/upload",
+            files={"file": ("big.txt", b"a" * 128, "text/plain")},
+        )
+
+    assert response.status_code == 507
+    body = response.json()
+    assert body["code"] == "UPLOAD_STORE_FULL"
+    assert "retry" in body["error"]
+
+
+def test_strict_mime_rejection_takes_precedence_over_full_store(tmp_path: Path) -> None:
+    # Validation precedes the capacity check, so strict mode keeps its
+    # documented 415 error precedence even when the store is at capacity.
+    strict = UploadStore(
+        marker_dir=tmp_path / "inbound",
+        ttl_seconds=600,
+        max_file_bytes=30 * 1024 * 1024,
+        accept_opaque=False,
+        max_total_bytes=1,
+    )
+    with pytest.raises(UploadUnsupportedMimeError):
+        asyncio.run(strict.put("x.sh", "application/x-shellscript", b"#!/bin/sh\n"))

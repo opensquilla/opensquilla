@@ -145,3 +145,35 @@ def test_source_install_pins_python_312_and_refuses_below() -> None:
     # Windows pip fallback also gated; self-check targets code-task, not just --version
     assert "sys.version_info >= (3, 12)" in ps1
     assert "code-task --help" in sh
+
+
+def test_windows_installer_verifies_entry_point_is_on_path() -> None:
+    # Regression for #500: install_source.ps1 used to succeed silently and
+    # leave `opensquilla` unresolvable on a fresh Windows host, because uv
+    # drops entry points in ~/.local/bin (not on PATH by default). The POSIX
+    # installer already smoke-checks this; the PowerShell installer must
+    # reach parity by locating the entry point and warning when its dir is
+    # not on PATH.
+    ps1 = SOURCE_PS1.read_text(encoding="utf-8")
+
+    assert "function Resolve-EntrypointDir" in ps1
+    assert "function Test-DirOnUserPath" in ps1
+    assert "function Write-PathHint" in ps1
+    # Invoked after a real install (dry-run exits before this point).
+    assert "Write-PathHint\n" in ps1
+    # Same probe install_source.sh uses to locate the uv bin dir.
+    assert "uv tool dir --bin" in ps1
+    # Recommended remediation, matching troubleshooting.md and quickstart.
+    assert "uv tool update-shell" in ps1
+    # Clear failure output when the dir is missing from PATH.
+    assert "entry points are NOT on PATH" in ps1
+
+
+def test_install_scripts_both_locate_entry_point_by_absolute_path() -> None:
+    # Parity: both installers probe `uv tool dir --bin` instead of trusting
+    # PATH, so a fresh install can be smoke-checked regardless of whether
+    # the user's shell has been reconfigured yet.
+    sh = SOURCE_SH.read_text(encoding="utf-8")
+    ps1 = SOURCE_PS1.read_text(encoding="utf-8")
+    assert "uv tool dir --bin" in sh
+    assert "uv tool dir --bin" in ps1

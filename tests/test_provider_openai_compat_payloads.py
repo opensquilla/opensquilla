@@ -4262,3 +4262,185 @@ def test_stream_error_frame_without_code_uses_stream_error(monkeypatch: Any) -> 
     assert error.code == "stream_error"
     assert "upstream reset" in error.message
     assert not any(isinstance(event, DoneEvent) for event in events)
+
+
+def _reasoning_echo_provider(monkeypatch: Any, captured: dict[str, Any]) -> OpenAIProvider:
+    _patch_transport(monkeypatch, captured)
+    return OpenAIProvider(
+        api_key="test",
+        model="anthropic/claude-sonnet-4.5",
+        base_url="https://openrouter.ai/api/v1",
+        provider_kind="openrouter",
+    )
+
+
+_REASONING_ECHO_MESSAGES = [
+    Message(role="assistant", content="answer one", reasoning_content="thinking one"),
+    Message(role="user", content="next"),
+    Message(role="assistant", content="answer two", reasoning_content="thinking two"),
+    Message(role="user", content="next again"),
+    Message(role="assistant", content="answer three", reasoning_content="thinking three"),
+    Message(role="user", content="continue"),
+]
+
+_REASONING_ECHO_CFG = ChatConfig(
+    thinking=True,
+    model_capabilities=ModelCapabilities(
+        supports_reasoning=True,
+        supports_tools=True,
+        reasoning_format="openrouter",
+    ),
+)
+
+
+def _run_reasoning_echo_chat(provider: OpenAIProvider) -> None:
+    async def _run() -> None:
+        async for _ in provider.chat(_REASONING_ECHO_MESSAGES, config=_REASONING_ECHO_CFG):
+            pass
+
+    asyncio.run(_run())
+
+
+def test_reasoning_echo_default_replays_all_assistant_messages(monkeypatch: Any) -> None:
+    monkeypatch.delenv("OPENSQUILLA_REASONING_ECHO_TURNS", raising=False)
+    captured: dict[str, Any] = {}
+    provider = _reasoning_echo_provider(monkeypatch, captured)
+
+    _run_reasoning_echo_chat(provider)
+
+    payload_messages = captured["payload"]["messages"]
+    assert payload_messages[0]["reasoning_content"] == "thinking one"
+    assert payload_messages[2]["reasoning_content"] == "thinking two"
+    assert payload_messages[4]["reasoning_content"] == "thinking three"
+
+
+def test_reasoning_echo_all_matches_default(monkeypatch: Any) -> None:
+    monkeypatch.setenv("OPENSQUILLA_REASONING_ECHO_TURNS", "all")
+    captured: dict[str, Any] = {}
+    provider = _reasoning_echo_provider(monkeypatch, captured)
+
+    _run_reasoning_echo_chat(provider)
+
+    payload_messages = captured["payload"]["messages"]
+    assert payload_messages[0]["reasoning_content"] == "thinking one"
+    assert payload_messages[2]["reasoning_content"] == "thinking two"
+    assert payload_messages[4]["reasoning_content"] == "thinking three"
+
+
+def test_reasoning_echo_turns_keeps_only_last_n(monkeypatch: Any) -> None:
+    monkeypatch.setenv("OPENSQUILLA_REASONING_ECHO_TURNS", "1")
+    captured: dict[str, Any] = {}
+    provider = _reasoning_echo_provider(monkeypatch, captured)
+
+    _run_reasoning_echo_chat(provider)
+
+    payload_messages = captured["payload"]["messages"]
+    assert "reasoning_content" not in payload_messages[0]
+    assert "reasoning_content" not in payload_messages[2]
+    assert payload_messages[4]["reasoning_content"] == "thinking three"
+
+
+def test_reasoning_echo_turns_zero_drops_all(monkeypatch: Any) -> None:
+    monkeypatch.setenv("OPENSQUILLA_REASONING_ECHO_TURNS", "0")
+    captured: dict[str, Any] = {}
+    provider = _reasoning_echo_provider(monkeypatch, captured)
+
+    _run_reasoning_echo_chat(provider)
+
+    payload_messages = captured["payload"]["messages"]
+    for payload_message in payload_messages:
+        assert "reasoning_content" not in payload_message
+
+
+def test_reasoning_echo_turns_larger_than_history_keeps_all(monkeypatch: Any) -> None:
+    monkeypatch.setenv("OPENSQUILLA_REASONING_ECHO_TURNS", "99")
+    captured: dict[str, Any] = {}
+    provider = _reasoning_echo_provider(monkeypatch, captured)
+
+    _run_reasoning_echo_chat(provider)
+
+    payload_messages = captured["payload"]["messages"]
+    assert payload_messages[0]["reasoning_content"] == "thinking one"
+    assert payload_messages[4]["reasoning_content"] == "thinking three"
+
+
+def test_reasoning_echo_turns_rejects_unrecognized_value(monkeypatch: Any) -> None:
+    monkeypatch.setenv("OPENSQUILLA_REASONING_ECHO_TURNS", "some")
+
+    with pytest.raises(ValueError, match="OPENSQUILLA_REASONING_ECHO_TURNS"):
+        OpenAIProvider(
+            api_key="test",
+            model="anthropic/claude-sonnet-4.5",
+            base_url="https://openrouter.ai/api/v1",
+            provider_kind="openrouter",
+        )
+
+
+def test_reasoning_echo_truncation_keeps_required_empty_key(monkeypatch: Any) -> None:
+    monkeypatch.setenv("OPENSQUILLA_REASONING_ECHO_TURNS", "1")
+    captured: dict[str, Any] = {}
+    _patch_transport(monkeypatch, captured)
+    provider = OpenAIProvider(
+        api_key="test",
+        model="deepseek-v4-flash",
+        base_url="https://api.deepseek.com",
+        provider_kind="deepseek",
+    )
+    messages = [
+        Message(role="assistant", content="answer one", reasoning_content="thinking one"),
+        Message(role="user", content="next"),
+        Message(role="assistant", content="answer two", reasoning_content="thinking two"),
+        Message(role="user", content="continue"),
+    ]
+    cfg = ChatConfig(
+        thinking=True,
+        model_capabilities=ModelCapabilities(
+            supports_reasoning=True,
+            supports_tools=True,
+            reasoning_format="deepseek",
+        ),
+    )
+
+    async def _run() -> None:
+        async for _ in provider.chat(messages, config=cfg):
+            pass
+
+    asyncio.run(_run())
+
+    payload_messages = captured["payload"]["messages"]
+    # The required-key model must keep reasoning_content on every assistant
+    # message: truncated turns carry "" instead of losing the key.
+    assert payload_messages[0]["reasoning_content"] == ""
+    assert payload_messages[2]["reasoning_content"] == "thinking two"
+
+
+def test_reasoning_echo_env_is_inert_for_non_replay_model(monkeypatch: Any) -> None:
+    monkeypatch.setenv("OPENSQUILLA_REASONING_ECHO_TURNS", "1")
+    captured: dict[str, Any] = {}
+    _patch_transport(monkeypatch, captured)
+    provider = OpenAIProvider(
+        api_key="test",
+        model="gemini-2.5-pro",
+        base_url="https://generativelanguage.googleapis.com/v1beta/openai",
+        provider_kind="gemini",
+    )
+    messages = [
+        Message(role="assistant", content="prior", reasoning_content="never replayed"),
+        Message(role="user", content="continue"),
+    ]
+    cfg = ChatConfig(
+        thinking=True,
+        model_capabilities=ModelCapabilities(
+            supports_reasoning=True,
+            supports_tools=True,
+            reasoning_format="gemini",
+        ),
+    )
+
+    async def _run() -> None:
+        async for _ in provider.chat(messages, config=cfg):
+            pass
+
+    asyncio.run(_run())
+
+    assert "reasoning_content" not in captured["payload"]["messages"][0]

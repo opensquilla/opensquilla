@@ -1702,13 +1702,54 @@ def _attach_reasoning_content(
 ) -> dict[str, Any]:
     if include_reasoning_content and msg.role == "assistant" and msg.reasoning_content:
         payload["reasoning_content"] = msg.reasoning_content
-    elif (
-        include_reasoning_content
-        and require_assistant_reasoning_content
-        and msg.role == "assistant"
-    ):
+    elif require_assistant_reasoning_content and msg.role == "assistant":
+        # Models that require the key on every assistant message get an
+        # empty string whenever the actual reasoning is absent or withheld
+        # (e.g. reasoning-echo truncation of older messages).
         payload["reasoning_content"] = ""
     return payload
+
+
+_REASONING_ECHO_TURNS_ENV = "OPENSQUILLA_REASONING_ECHO_TURNS"
+
+
+def _resolve_reasoning_echo_turns() -> int | None:
+    """Resolve the opt-in reasoning-echo truncation lever.
+
+    ``OPENSQUILLA_REASONING_ECHO_TURNS`` limits how many of the most recent
+    assistant messages replay their ``reasoning_content`` when the compat
+    policy replays reasoning at all: a non-negative integer keeps only the
+    last N assistant messages' reasoning (0 drops every echo), and unset or
+    "all" keeps the replay-all behavior byte-identical. Unrecognized values
+    raise instead of being silently ignored so a run manifest cannot record
+    an override the run did not actually apply.
+    """
+    env_value = os.environ.get(_REASONING_ECHO_TURNS_ENV, "").strip().lower()
+    if not env_value or env_value == "all":
+        return None
+    if env_value.isdigit():
+        return int(env_value)
+    raise ValueError(
+        f'{_REASONING_ECHO_TURNS_ENV} must be a non-negative integer or "all"'
+    )
+
+
+def _reasoning_echo_allowed_indexes(
+    messages: list[Message],
+    echo_turns: int | None,
+) -> set[int] | None:
+    """Indexes of assistant messages allowed to replay reasoning_content.
+
+    Returns ``None`` when the lever is unset (no per-message gating).
+    """
+    if echo_turns is None:
+        return None
+    assistant_indexes = [
+        index for index, message in enumerate(messages) if message.role == "assistant"
+    ]
+    if echo_turns <= 0:
+        return set()
+    return set(assistant_indexes[-echo_turns:])
 
 
 def _requires_assistant_reasoning_content(policy: OpenAICompatPolicy, model: str) -> bool:
@@ -1904,6 +1945,12 @@ class OpenAIProvider:
             os.environ.get("OPENSQUILLA_PROVIDER_STREAM_ERROR_FRAMES", "").strip().lower()
             in {"1", "true", "yes", "on", "enabled"}
         )
+        # Opt-in reasoning-echo truncation: when a compat policy replays
+        # assistant reasoning_content, every historical assistant message
+        # carries its full reasoning bytes on every request. Limiting the
+        # echo to the last N assistant messages caps that growth. None
+        # (unset) keeps the replay-all behavior.
+        self._reasoning_echo_turns = _resolve_reasoning_echo_turns()
 
     @property
     def model(self) -> str:
@@ -1986,11 +2033,20 @@ class OpenAIProvider:
                 openai_messages.append({"role": "system", "content": content_blocks})
             else:
                 openai_messages.append({"role": "system", "content": cfg.system})
-        for m in messages:
+        reasoning_echo_allowed = (
+            _reasoning_echo_allowed_indexes(messages, self._reasoning_echo_turns)
+            if include_reasoning_content
+            else None
+        )
+        for message_index, m in enumerate(messages):
             openai_messages.extend(
                 _build_openai_messages(
                     m,
-                    include_reasoning_content=include_reasoning_content,
+                    include_reasoning_content=(
+                        include_reasoning_content
+                        if reasoning_echo_allowed is None
+                        else message_index in reasoning_echo_allowed
+                    ),
                     require_assistant_reasoning_content=(
                         _requires_assistant_reasoning_content(self._compat, self._model)
                     ),

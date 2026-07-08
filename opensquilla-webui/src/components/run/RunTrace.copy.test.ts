@@ -64,4 +64,133 @@ describe('RunTrace code block copy control', () => {
     expect(copyTextWithFallback).toHaveBeenCalledWith('console.log("late")')
     app.unmount()
   })
+  it('compacts long tool input sections into a short summary', async () => {
+    const prompt = Array.from({ length: 12 }, (_, index) => `line ${index + 1}: detailed image prompt`).join('\n')
+    const inputRaw = JSON.stringify({
+      filename: 'octopus-3d-clay.png',
+      prompt,
+      provider: 'openrouter',
+    }, null, 2)
+
+    const { app, el } = await mountRunTrace([
+      {
+        type: 'tool-group',
+        key: 'image-generate-group',
+        group: {
+          groupId: 'image-generate-group',
+          operationKey: 'image_generate',
+          label: 'image_generate',
+          iconName: 'gear',
+          secondary: '',
+          isRunning: false,
+          isError: false,
+          status: 'success',
+          calls: [
+            {
+              toolId: 'tool-1',
+              renderKey: 'tool-1',
+              name: 'image_generate',
+              displayName: 'image_generate',
+              inputRaw,
+              inputPreview: inputRaw.slice(0, 200),
+              isRunning: false,
+              status: 'success',
+              isError: false,
+              result: '{"status":"ok"}',
+              resultPreview: '{"status":"ok"}',
+              isOpen: false,
+            },
+          ],
+        },
+      },
+    ])
+
+    const inputSection = el.querySelector<HTMLElement>('.tool-row-section')
+    expect(inputSection?.querySelector('.tool-row-section__compact')).not.toBeNull()
+    expect(inputSection?.querySelector('pre')).toBeNull()
+    expect(inputSection?.textContent).toContain('JSON')
+    expect(inputSection?.textContent).toContain('octopus-3d-clay.png')
+    expect(inputSection?.textContent).toContain('view full')
+
+    app.unmount()
+  })
+  it('uses shell-specific summaries for compacted command input and stdout output', async () => {
+    const command = [
+      "python - <<'PY'",
+      'import json',
+      'payload = {',
+      '  "filename": "octopus-3d-clay.png",',
+      '  "provider": "openrouter",',
+      '  "prompt": "\\n".join([',
+      '    f"line {i}: detailed image prompt with many style details and lighting constraints"',
+      '    for i in range(1, 28)',
+      '  ]),',
+      '}',
+      'print(json.dumps(payload, indent=2))',
+      '# keep this fixture long enough to exercise the compact shell summary',
+      '# line 01: extra command context that would otherwise crowd the run trace',
+      '# line 02: extra command context that would otherwise crowd the run trace',
+      '# line 03: extra command context that would otherwise crowd the run trace',
+      '# line 04: extra command context that would otherwise crowd the run trace',
+      'PY',
+    ].join('\n')
+    const inputRaw = JSON.stringify({ command }, null, 2)
+    const result = [
+      'exit_code=0',
+      '{',
+      '  "filename": "octopus-3d-clay.png",',
+      '  "artifact": {',
+      '    "path": "/tmp/octopus-3d-clay.png",',
+      '    "mime": "image/png"',
+      '  }',
+      '}',
+    ].join('\n')
+
+    const { app, el } = await mountRunTrace([
+      {
+        type: 'tool-group',
+        key: 'shell-group',
+        group: {
+          groupId: 'shell-group',
+          operationKey: 'shell',
+          label: '运行命令',
+          iconName: 'gear',
+          secondary: '',
+          isRunning: false,
+          isError: false,
+          status: 'success',
+          calls: [
+            {
+              toolId: 'tool-1',
+              renderKey: 'tool-1',
+              name: 'shell',
+              displayName: '运行命令',
+              inputRaw,
+              inputPreview: inputRaw.slice(0, 200),
+              isRunning: false,
+              status: 'success',
+              isError: false,
+              result,
+              resultPreview: result.slice(0, 200),
+              isOpen: false,
+            },
+          ],
+        },
+      },
+    ])
+
+    const sections = el.querySelectorAll<HTMLElement>('.tool-row-section')
+    expect(sections[0]?.querySelector('.tool-row-section__compact')).not.toBeNull()
+    expect(sections[0]?.textContent).toContain('shell command')
+    expect(sections[0]?.textContent).toContain("command: python - <<'PY'")
+
+    expect(sections[1]?.querySelector('.tool-row-section__compact')).not.toBeNull()
+    expect(sections[1]?.textContent).toContain('shell result')
+    expect(sections[1]?.textContent).toContain('exit_code=0')
+    expect(sections[1]?.textContent).toContain('output: filename: octopus-3d-clay.png')
+    expect(sections[1]?.textContent).toContain('artifact: { path: /tmp/octopus-3d-clay.png, mime: image/png }')
+    expect(sections[1]?.textContent).not.toContain('[object Object]')
+
+    app.unmount()
+  })
 })

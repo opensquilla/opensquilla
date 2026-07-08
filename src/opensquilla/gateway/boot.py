@@ -7,6 +7,7 @@ import inspect
 import logging
 import os
 import secrets
+import sys
 import time
 from collections.abc import Callable, Mapping, MutableMapping
 from dataclasses import dataclass, field
@@ -1347,7 +1348,7 @@ def _setup_file_logging(config: GatewayConfig | None = None) -> None:
     # runs. Wrapped so a logging misconfiguration can never block gateway boot.
     try:
         _bridge_structlog_to_stdlib()
-        console_handler = logging.StreamHandler()
+        console_handler = logging.StreamHandler(sys.stdout)
         setattr(console_handler, _CONSOLE_HANDLER_ATTR, True)
         console_handler.setLevel(_resolve_log_level(config))
         console_handler.setFormatter(

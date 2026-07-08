@@ -27,6 +27,7 @@ def _remove_console_handlers() -> None:
 
 def test_setup_file_logging_uses_rotation_without_forcing_root_debug(tmp_path, monkeypatch) -> None:
     _remove_debug_handlers()
+    _remove_console_handlers()
     root = logging.getLogger()
     opensquilla_logger = logging.getLogger("opensquilla")
     original_root_level = root.level
@@ -59,12 +60,14 @@ def test_setup_file_logging_uses_rotation_without_forcing_root_debug(tmp_path, m
         assert opensquilla_logger.level == logging.INFO
     finally:
         _remove_debug_handlers()
+        _remove_console_handlers()
         root.setLevel(original_root_level)
         opensquilla_logger.setLevel(original_opensquilla_level)
 
 
 def test_setup_file_logging_can_be_disabled(tmp_path, monkeypatch) -> None:
     _remove_debug_handlers()
+    _remove_console_handlers()
     opensquilla_logger = logging.getLogger("opensquilla")
     original_opensquilla_level = opensquilla_logger.level
     monkeypatch.setenv("OPENSQUILLA_LOG_DIR", str(tmp_path))

@@ -11,7 +11,7 @@ from opensquilla.onboarding.search_specs import (
 
 def test_search_catalog_includes_known_providers():
     ids = {s.provider_id for s in list_search_provider_setup_specs()}
-    assert {"bocha", "brave", "duckduckgo", "tavily", "exa", "perplexity"} <= ids
+    assert {"bocha", "brave", "duckduckgo", "iqs", "tavily", "exa", "perplexity"} <= ids
 
 
 def test_search_catalog_marks_runtime_providers_supported():
@@ -19,6 +19,7 @@ def test_search_catalog_marks_runtime_providers_supported():
     assert specs["bocha"].runtime_supported is True
     assert specs["brave"].runtime_supported is True
     assert specs["duckduckgo"].runtime_supported is True
+    assert specs["iqs"].runtime_supported is True
     assert specs["tavily"].runtime_supported is True
     assert specs["exa"].runtime_supported is True
     assert specs["perplexity"].runtime_supported is False
@@ -36,6 +37,16 @@ def test_brave_search_spec_requires_api_key():
     spec = get_search_provider_setup_spec("brave")
     assert spec.requires_api_key is True
     assert spec.env_key == "BRAVE_SEARCH_API_KEY"
+
+
+def test_iqs_search_spec_requires_api_key():
+    spec = get_search_provider_setup_spec("iqs")
+    assert spec.requires_api_key is True
+    assert spec.env_key == "IQS_SEARCH_API_KEY"
+    assert spec.label == "Alibaba Cloud IQS"
+    assert "content" in spec.capabilities
+    assert "freshness" in spec.capabilities
+    assert "domain_filter" in spec.capabilities
 
 
 def test_tavily_search_spec_requires_api_key():

@@ -363,7 +363,7 @@ def _apply_acl_refresh(plan: dict[str, Any], *, apply_deny_write: bool = True) -
         if not isinstance(path, str) or access not in {"RX", "RWX"} or not isinstance(sid, str):
             raise SystemExit("invalid windows_default ACL grant shape")
         grant_path = Path(path)
-        if grant.get("kind") == "expansion" and not grant_path.exists():
+        if grant.get("kind") in {"policy", "expansion"} and not grant_path.exists():
             continue
         _grant_path_to_sid(grant_path, access, sid)
         if normal_access_sid is not None and access == "RWX":
@@ -371,7 +371,7 @@ def _apply_acl_refresh(plan: dict[str, Any], *, apply_deny_write: bool = True) -
             if key in normal_access_seen:
                 continue
             normal_access_seen.add(key)
-            _grant_path_to_sid(grant_path, access, normal_access_sid)
+            _grant_path_to_sid(grant_path, "HOST_RWX", normal_access_sid)
     deny_write_paths = plan.get("denyWritePaths", []) if apply_deny_write else []
     if deny_write_paths and not plan.get("capabilitySids"):
         raise SystemExit("invalid windows_default ACL plan: denyWritePaths require capabilitySids")
@@ -678,6 +678,7 @@ def _grant_path_to_sid_native(path: Path, access: str, sid: str) -> None:
     CONTAINER_INHERIT_ACE = 0x2
 
     DELETE = 0x00010000
+    WRITE_DAC = 0x00040000
     FILE_DELETE_CHILD = 0x00000040
     FILE_GENERIC_READ = 0x00120089
     FILE_GENERIC_WRITE = 0x00120116
@@ -716,7 +717,7 @@ def _grant_path_to_sid_native(path: Path, access: str, sid: str) -> None:
 
     if access == "RX":
         allow_mask = FILE_GENERIC_READ | FILE_GENERIC_EXECUTE
-    elif access == "RWX":
+    elif access in {"RWX", "HOST_RWX"}:
         allow_mask = (
             FILE_GENERIC_READ
             | FILE_GENERIC_WRITE
@@ -724,6 +725,8 @@ def _grant_path_to_sid_native(path: Path, access: str, sid: str) -> None:
             | DELETE
             | FILE_DELETE_CHILD
         )
+        if access == "HOST_RWX":
+            allow_mask |= WRITE_DAC
     else:
         raise OSError(0, f"unsupported ACL access mode: {access!r}")
 

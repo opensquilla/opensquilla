@@ -44,6 +44,7 @@ _SEARCH_PROVIDER_LABELS: dict[str, str] = {
     "bocha": "Bocha",
     "brave": "Brave Search",
     "duckduckgo": "DuckDuckGo",
+    "iqs": "Alibaba Cloud IQS",
     "tavily": "Tavily",
     "exa": "Exa",
     "perplexity": "Perplexity",

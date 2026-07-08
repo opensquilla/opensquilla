@@ -16,7 +16,7 @@ CACHE_ENV_PATHS: dict[str, tuple[str, ...]] = {
     "XDG_CONFIG_HOME": ("home", ".config"),
     "PIP_CACHE_DIR": ("pip",),
     "UV_CACHE_DIR": ("uv",),
-    "npm_config_cache": ("npm",),
+    "npm_config_cache": ("npm-cache",),
     "npm_config_prefix": ("npm", "prefix"),
     "PNPM_HOME": ("pnpm", "home"),
     "PNPM_STORE_DIR": ("pnpm", "store"),

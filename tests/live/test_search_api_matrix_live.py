@@ -118,6 +118,26 @@ async def test_live_brave_provider_accepts_recency_filter() -> None:
 
 
 @pytest.mark.asyncio
+async def test_live_iqs_provider_accepts_recency_and_domain_filters() -> None:
+    _require_live_matrix()
+    _require_env("IQS_SEARCH_API_KEY")
+
+    from opensquilla.search.providers.iqs import IqsSearchProvider
+
+    results = await IqsSearchProvider().search(
+        _QUERY,
+        max_results=3,
+        recency="year",
+        include_domains=(_PYTHON_DOMAIN,),
+    )
+
+    assert results
+    assert all(isinstance(result, SearchResult) for result in results)
+    assert results[0].provider == "iqs"
+    assert results[0].url.startswith("http")
+
+
+@pytest.mark.asyncio
 async def test_live_exa_canonical_web_search_returns_content_metadata() -> None:
     _require_live_matrix()
     _require_env("EXA_API_KEY")

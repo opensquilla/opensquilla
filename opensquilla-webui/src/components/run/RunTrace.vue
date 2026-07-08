@@ -154,6 +154,9 @@ import { useI18n } from 'vue-i18n'
 import type { ChatToolCallRenderItem } from '@/types/chat'
 
 const SECTION_PREVIEW_LIMIT = 200
+const COMPACT_SECTION_CHAR_LIMIT = 360
+const COMPACT_SECTION_LINE_LIMIT = 6
+const COMPACT_SNIPPET_LIMIT = 150
 
 function parseToolResultRecord(raw: string): Record<string, unknown> | null {
   const text = String(raw || '').trim()
@@ -176,6 +179,125 @@ function asRecord(value: unknown): Record<string, unknown> | null {
 
 function asNumber(value: unknown): number | null {
   return typeof value === 'number' && Number.isFinite(value) ? value : null
+}
+
+function contentLineCount(value: string): number {
+  if (!value) return 0
+  return value.split(/\r\n|\r|\n/).length
+}
+
+function shouldCompactSection(full: string, preview: string): boolean {
+  const text = full || preview || ''
+  return text.length > COMPACT_SECTION_CHAR_LIMIT || contentLineCount(text) > COMPACT_SECTION_LINE_LIMIT
+}
+
+function truncateInline(value: string, limit = COMPACT_SNIPPET_LIMIT): string {
+  const text = value.replace(/\s+/g, ' ').trim()
+  return text.length > limit ? `${text.slice(0, limit).trimEnd()}...` : text
+}
+
+function firstNonEmptyLine(value: string): string {
+  return value.split(/\r\n|\r|\n/).find(line => line.trim()) || ''
+}
+
+function compactJsonValue(value: unknown, limit = 44): string {
+  if (typeof value === 'string') return truncateInline(value, limit)
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value)
+  if (value === null) return 'null'
+  if (Array.isArray(value)) return `[${value.length} items]`
+  const record = asRecord(value)
+  if (record) {
+    const entries = Object.entries(record)
+      .slice(0, 2)
+      .map(([key, entry]) => `${key}: ${compactJsonValue(entry, 32)}`)
+    return entries.length ? `{ ${entries.join(', ')}${Object.keys(record).length > 2 ? ', ...' : ''} }` : '{}'
+  }
+  return truncateInline(String(value), limit)
+}
+
+function jsonObjectSnippet(record: Record<string, unknown>): string {
+  const pairs = Object.entries(record)
+    .slice(0, 4)
+    .map(([key, entry]) => `${key}: ${compactJsonValue(entry)}`)
+  return pairs.length ? truncateInline(pairs.join(', ')) : ''
+}
+
+function shellCommandFromRecord(record: Record<string, unknown> | null): string {
+  return typeof record?.command === 'string' ? record.command : ''
+}
+
+function shellResultBlock(lines: string[], key: string): string {
+  const start = lines.findIndex(line => line.trimStart().startsWith(key))
+  if (start < 0) return ''
+
+  const block = [lines[start].trimStart().slice(key.length)]
+  for (const line of lines.slice(start + 1)) {
+    if (/^(exit_code|stdout|stderr|timed_out|duration|stdout_truncated|stderr_truncated)=/.test(line.trimStart())) {
+      break
+    }
+    block.push(line)
+  }
+  return block.join('\n').trim()
+}
+
+function shellResultSnippet(value: string): string {
+  const lines = value.split(/\r\n|\r|\n/)
+  const exitLineIndex = lines.findIndex(line => line.trim())
+  const exitLine = exitLineIndex >= 0 ? lines[exitLineIndex].trim() : ''
+  if (!/^exit_code=/.test(exitLine)) return ''
+
+  let outputLabel = 'stdout'
+  let output = shellResultBlock(lines, 'stdout=')
+  if (!output && exitLineIndex >= 0) {
+    outputLabel = 'output'
+    output = lines.slice(exitLineIndex + 1).join('\n').trim()
+  }
+
+  const parts = [exitLine]
+  if (output) {
+    const outputRecord = parseToolResultRecord(output)
+    const outputPreview = outputRecord
+      ? jsonObjectSnippet(outputRecord)
+      : truncateInline(firstNonEmptyLine(output) || output, 90)
+    if (outputPreview) parts.push(`${outputLabel}: ${outputPreview}`)
+  }
+  return truncateInline(parts.join(', '))
+}
+
+function compactKind(value: string): string {
+  const text = value.trim()
+  if (!text) return 'text'
+  const record = parseToolResultRecord(text)
+  if (shellCommandFromRecord(record)) return 'shell command'
+  if (shellResultSnippet(text)) return 'shell result'
+  if (text.startsWith('{') || text.startsWith('[')) return 'JSON'
+  return 'text'
+}
+
+function compactSnippet(value: string): string {
+  const text = value.trim()
+  if (!text) return ''
+  const record = parseToolResultRecord(text)
+  const command = shellCommandFromRecord(record)
+  if (command) return truncateInline(`command: ${command}`)
+  if (record) return jsonObjectSnippet(record)
+
+  const shellSnippet = shellResultSnippet(text)
+  if (shellSnippet) return shellSnippet
+
+  return truncateInline(firstNonEmptyLine(text) || text)
+}
+
+function compactMeta(value: string): string {
+  const command = shellCommandFromRecord(parseToolResultRecord(value.trim()))
+  const measured = command || value
+  const chars = measured.length
+  const lines = contentLineCount(measured)
+  const kind = compactKind(value)
+  const parts = [kind]
+  if (lines > 1) parts.push(`${lines} lines`)
+  parts.push(`${chars.toLocaleString()} chars`)
+  return parts.join(' | ')
 }
 
 function webDiagnosticsSummary(raw: string): string {
@@ -230,10 +352,17 @@ const ToolRowSections = defineComponent({
       const sections = []
       if (call.inputPreview) {
         const fullInput = call.inputRaw || ''
+        const inputContent = fullInput || call.inputPreview
+        const compact = shouldCompactSection(inputContent, call.inputPreview)
         sections.push(h('section', { class: 'tool-row-section' }, [
           h('div', { class: 'tool-row-section__label' }, t('shared.runTrace.sectionInput')),
-          h('pre', { class: 'tool-row-section__pre' }, call.inputPreview),
-          fullInput.length > SECTION_PREVIEW_LIMIT
+          compact
+            ? h('div', { class: 'tool-row-section__compact' }, [
+                h('span', { class: 'tool-row-section__compact-meta' }, compactMeta(inputContent)),
+                h('span', { class: 'tool-row-section__compact-snippet' }, compactSnippet(inputContent)),
+              ])
+            : h('pre', { class: 'tool-row-section__pre' }, call.inputPreview),
+          fullInput.length > SECTION_PREVIEW_LIMIT || compact
             ? h('button', {
                 type: 'button',
                 class: 'step-view-btn',
@@ -256,12 +385,19 @@ const ToolRowSections = defineComponent({
         const kindLabel = call.isError
           ? t('shared.runTrace.sectionError')
           : t('shared.runTrace.sectionResult')
+        const resultContent = call.result || call.resultPreview
+        const compact = shouldCompactSection(resultContent, call.resultPreview)
         sections.push(h('section', {
           class: ['tool-row-section', { 'tool-row-section--error': call.isError }],
         }, [
           h('div', { class: 'tool-row-section__label' }, kindLabel),
-          h('pre', { class: 'tool-row-section__pre' }, call.resultPreview),
-          call.result.length > SECTION_PREVIEW_LIMIT
+          compact
+            ? h('div', { class: 'tool-row-section__compact' }, [
+                h('span', { class: 'tool-row-section__compact-meta' }, compactMeta(resultContent)),
+                h('span', { class: 'tool-row-section__compact-snippet' }, compactSnippet(resultContent)),
+              ])
+            : h('pre', { class: 'tool-row-section__pre' }, call.resultPreview),
+          call.result.length > SECTION_PREVIEW_LIMIT || compact
             ? h('button', {
                 type: 'button',
                 class: 'step-view-btn',
@@ -1167,6 +1303,30 @@ function fmtTok(n?: number | null): string {
   max-height: 100px;
   overflow-y: auto;
   margin: 0;
+}
+
+.tool-row-section__compact {
+  display: grid;
+  gap: 0.25rem;
+  min-width: 0;
+}
+
+.tool-row-section__compact-meta {
+  color: var(--text-dim);
+  font-family: var(--font-mono);
+  font-size: 0.6875rem;
+  line-height: 1.35;
+}
+
+.tool-row-section__compact-snippet {
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: 0.71875rem;
+  line-height: 1.45;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .step-view-btn {

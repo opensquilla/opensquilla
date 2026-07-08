@@ -2202,9 +2202,11 @@ async def build_services(
     # ── Search provider runtime ────────────────────────────────────
     async def _configure_search_provider() -> None:
         try:
+            import opensquilla.search.providers.bocha  # noqa: F401 — registers provider
             import opensquilla.search.providers.brave  # noqa: F401 — registers provider
             import opensquilla.search.providers.duckduckgo  # noqa: F401 — registers provider
             import opensquilla.search.providers.exa  # noqa: F401 — registers provider
+            import opensquilla.search.providers.iqs  # noqa: F401 — registers provider
             import opensquilla.search.providers.tavily  # noqa: F401 — registers provider
             from opensquilla.tools.builtin.web import configure_search
 

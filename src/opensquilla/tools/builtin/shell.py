@@ -241,6 +241,37 @@ _WINDOWS_SHELL_VALUE_FLAGS = frozenset(
 _WINDOWS_SHELL_CREATE_COMMANDS = frozenset({"md", "mkdir", "new-item", "ni"})
 _WINDOWS_SHELL_CONTENT_COMMANDS = frozenset({"add-content", "out-file", "set-content"})
 _WINDOWS_SHELL_REMOVE_COMMANDS = frozenset({"del", "erase", "remove-item", "rm"})
+_WINDOWS_SHELL_READ_COMMANDS = frozenset(
+    {
+        "cat",
+        "dir",
+        "gc",
+        "gci",
+        "get-childitem",
+        "get-content",
+        "ls",
+        "test-path",
+        "type",
+    }
+)
+_WINDOWS_CMD_PATHLESS_SWITCHES = frozenset(
+    {
+        "/a",
+        "/b",
+        "/c",
+        "/d",
+        "/l",
+        "/n",
+        "/o",
+        "/p",
+        "/q",
+        "/r",
+        "/s",
+        "/t",
+        "/w",
+        "/x",
+    }
+)
 _MASKED_PIPELINE_FAILURE_WARNING = (
     "[shell_warning:masked_pipeline_failure]\n"
     "This command returned exit_code=0, but the output contains failure markers "
@@ -2159,12 +2190,23 @@ def _windows_shell_token_looks_like_path(token: str) -> bool:
     )
 
 
-def _windows_paths_from_tokens(tokens: list[str], *, positional: bool = True) -> list[str]:
+def _windows_paths_from_tokens(
+    tokens: list[str],
+    *,
+    positional: bool = True,
+    skip_pathless_switches: bool = False,
+) -> list[str]:
     paths: list[str] = []
     index = 1
     while index < len(tokens):
         token = tokens[index]
         lowered = token.lower()
+        if skip_pathless_switches and any(
+            lowered == switch or lowered.startswith(f"{switch}:")
+            for switch in _WINDOWS_CMD_PATHLESS_SWITCHES
+        ):
+            index += 1
+            continue
         if lowered in _WINDOWS_SHELL_PATH_FLAGS and index + 1 < len(tokens):
             paths.append(tokens[index + 1])
             index += 2
@@ -2183,6 +2225,28 @@ def _windows_paths_from_tokens(tokens: list[str], *, positional: bool = True) ->
             paths.append(token)
         index += 1
     return paths
+
+
+def _windows_shell_read_targets(command: str) -> list[str]:
+    targets: list[str] = []
+    for statement in _windows_split_statements(command):
+        tokens = _windows_shell_tokens(statement)
+        if not tokens:
+            continue
+        command_name = _windows_shell_command_name(tokens[0])
+        nested: str | None = _windows_nested_powershell_command(tokens)
+        if nested is None and command_name == "cmd":
+            nested = _windows_shell_command_after_option(tokens, frozenset({"/c", "/k"}))
+        if nested is not None:
+            for target in _windows_shell_read_targets(_windows_strip_outer_quotes(nested)):
+                if target not in targets:
+                    targets.append(target)
+            continue
+        if command_name in _WINDOWS_SHELL_READ_COMMANDS:
+            for target in _windows_paths_from_tokens(tokens, skip_pathless_switches=True):
+                if target not in targets:
+                    targets.append(target)
+    return targets
 
 
 def _windows_python_venv_targets(tokens: list[str]) -> list[str]:
@@ -2410,12 +2474,14 @@ def _sandbox_read_path_access_envelope(
     profile: OperationProfile,
     workdir: str | None,
     *,
+    command: str = "",
     approval_id: str | None = None,
     allow_trusted_auto_mount: bool = True,
 ) -> dict[str, object] | None:
-    if not profile.requested_paths or not _sandbox_path_access_enabled():
+    read_paths = _shell_read_access_targets(command, profile)
+    if not read_paths or not _sandbox_path_access_enabled():
         return None
-    for raw_path in profile.requested_paths:
+    for raw_path in read_paths:
         decision = decide_path_access(
             _resolve_shell_write_target(raw_path, workdir),
             workspace=_workspace_root_for_path_access(),
@@ -2434,6 +2500,22 @@ def _sandbox_read_path_access_envelope(
             continue
         return _path_access_required_envelope(decision, approval_id=approval_id)
     return None
+
+
+def _shell_read_access_targets(
+    command: str,
+    profile: OperationProfile,
+) -> tuple[str, ...]:
+    targets: list[str] = []
+    for target in (
+        *getattr(profile, "requested_paths", ()),
+        *_windows_shell_read_targets(command),
+    ):
+        if _is_special_shell_write_target(target):
+            continue
+        if target not in targets:
+            targets.append(target)
+    return tuple(targets)
 
 
 def _sandbox_write_path_access_envelope(
@@ -2499,6 +2581,7 @@ def _auto_host_shell_policy_envelope(
     path_access = _sandbox_read_path_access_envelope(
         profile,
         workdir,
+        command=command,
         approval_id=approval_id,
         allow_trusted_auto_mount=False,
     )
@@ -3871,7 +3954,12 @@ async def exec_command(
         )
         if path_access is not None:
             return json.dumps(path_access, ensure_ascii=False)
-        path_access = _sandbox_read_path_access_envelope(profile, cwd, approval_id=approval_id)
+        path_access = _sandbox_read_path_access_envelope(
+            profile,
+            cwd,
+            command=command,
+            approval_id=approval_id,
+        )
         if path_access is not None:
             return json.dumps(path_access, ensure_ascii=False)
         protected_block = _protected_metadata_write_block(
@@ -4130,7 +4218,12 @@ async def background_process(
         )
         if path_access is not None:
             return json.dumps(path_access, ensure_ascii=False)
-        path_access = _sandbox_read_path_access_envelope(profile, cwd, approval_id=approval_id)
+        path_access = _sandbox_read_path_access_envelope(
+            profile,
+            cwd,
+            command=command,
+            approval_id=approval_id,
+        )
         if path_access is not None:
             return json.dumps(path_access, ensure_ascii=False)
         protected_block = _protected_metadata_write_block(

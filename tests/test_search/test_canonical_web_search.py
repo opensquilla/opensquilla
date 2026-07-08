@@ -372,6 +372,7 @@ async def test_canonical_web_search_no_key_auto_skips_known_missing_key_provider
         "TAVILY_API_KEY",
         "EXA_API_KEY",
         "BOCHA_SEARCH_API_KEY",
+        "IQS_SEARCH_API_KEY",
     ):
         monkeypatch.delenv(key, raising=False)
 
@@ -399,6 +400,7 @@ async def test_canonical_web_search_no_key_default_uses_duckduckgo_directly(monk
         "TAVILY_API_KEY",
         "EXA_API_KEY",
         "BOCHA_SEARCH_API_KEY",
+        "IQS_SEARCH_API_KEY",
     ):
         monkeypatch.delenv(key, raising=False)
     attempted: list[str] = []
@@ -747,6 +749,7 @@ async def test_canonical_web_search_no_key_auto_recency_uses_duckduckgo_soft_deg
         "TAVILY_API_KEY",
         "EXA_API_KEY",
         "BOCHA_SEARCH_API_KEY",
+        "IQS_SEARCH_API_KEY",
     ):
         monkeypatch.delenv(key, raising=False)
     calls: list[tuple[str, str, int]] = []

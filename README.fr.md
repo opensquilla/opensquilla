@@ -536,7 +536,18 @@ cloud autorise le trafic TCP entrant sur ce port. N'exposez pas la passerelle av
 
 **Docker**
 
-La voie compose exécute une image `opensquilla:local` que vous construisez vous-même.
+Des images multi-architecture préconstruites (`amd64`/`arm64`) sont publiées sur
+`ghcr.io/opensquilla/opensquilla` à chaque tag de release —
+[`docs/docker.md`](docs/docker.md) est le guide conteneur complet
+(serveurs domestiques et NAS, exposition LAN avec authentification par jeton,
+mises à niveau) :
+
+```sh
+OPENSQUILLA_GATEWAY_IMAGE=ghcr.io/opensquilla/opensquilla:latest docker compose up -d
+```
+
+Sans `OPENSQUILLA_GATEWAY_IMAGE`, la voie compose exécute une image
+`opensquilla:local` que vous construisez vous-même.
 Construisez-la à partir d'un dépôt source dont les ressources de routeur Git LFS ont été
 récupérées (voir [Installation depuis les sources](#install-from-source) pour le clone
 et `git lfs pull`) :

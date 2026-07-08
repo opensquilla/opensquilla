@@ -414,7 +414,13 @@ opensquilla gateway run --listen 0.0.0.0 --port 18791
 
 **Docker**
 
-compose 経路は、自分でビルドした `opensquilla:local` イメージを実行します。Git LFS のルーターアセットを取得済みのソースチェックアウトからビルドしてください（クローンと `git lfs pull` については[ソースからのインストール](#install-from-source)を参照）:
+ビルド済みのマルチアーキテクチャイメージ（`amd64`/`arm64`）は、リリースタグごとに `ghcr.io/opensquilla/opensquilla` に公開されます。コンテナ配備の完全なガイド（ホームサーバー/NAS、トークン認証つきの LAN 公開、アップグレード）は [`docs/docker.md`](docs/docker.md) を参照してください:
+
+```sh
+OPENSQUILLA_GATEWAY_IMAGE=ghcr.io/opensquilla/opensquilla:latest docker compose up -d
+```
+
+`OPENSQUILLA_GATEWAY_IMAGE` を設定しない場合、compose 経路は自分でビルドした `opensquilla:local` イメージを実行します。Git LFS のルーターアセットを取得済みのソースチェックアウトからビルドしてください（クローンと `git lfs pull` については[ソースからのインストール](#install-from-source)を参照）:
 
 ```sh
 docker build -t opensquilla:local .

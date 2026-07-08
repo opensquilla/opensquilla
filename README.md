@@ -569,8 +569,18 @@ to allow inbound TCP on that port. Do not expose the gateway with
 
 **Docker**
 
-The compose path runs an `opensquilla:local` image you build yourself.
-Build it from a source checkout with the Git LFS router assets pulled
+Prebuilt multi-arch images (`amd64`/`arm64`) are published to
+`ghcr.io/opensquilla/opensquilla` on release tags —
+[`docs/docker.md`](docs/docker.md) is the full container guide
+(home servers and NAS, LAN exposure with token auth, upgrades):
+
+```sh
+OPENSQUILLA_GATEWAY_IMAGE=ghcr.io/opensquilla/opensquilla:latest docker compose up -d
+```
+
+Without `OPENSQUILLA_GATEWAY_IMAGE`, the compose path runs an
+`opensquilla:local` image you build yourself. Build it from a source
+checkout with the Git LFS router assets pulled
 (see [Install from source](#install-from-source) for the clone and
 `git lfs pull`):
 

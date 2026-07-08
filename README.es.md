@@ -407,7 +407,13 @@ El acceso público también requiere que el firewall del host o el grupo de segu
 
 **Docker**
 
-La ruta de compose ejecuta una imagen `opensquilla:local` que construyes tú mismo. Constrúyela a partir de un checkout del código fuente con los recursos del enrutador de Git LFS descargados (consulta [Instalar desde el código fuente](#install-from-source) para el clon y `git lfs pull`):
+Se publican imágenes multiarquitectura preconstruidas (`amd64`/`arm64`) en `ghcr.io/opensquilla/opensquilla` con cada etiqueta de release; [`docs/docker.md`](docs/docker.md) es la guía completa de contenedores (servidores domésticos y NAS, exposición en la LAN con autenticación por token, actualizaciones):
+
+```sh
+OPENSQUILLA_GATEWAY_IMAGE=ghcr.io/opensquilla/opensquilla:latest docker compose up -d
+```
+
+Sin `OPENSQUILLA_GATEWAY_IMAGE`, la ruta de compose ejecuta una imagen `opensquilla:local` que construyes tú mismo. Constrúyela a partir de un checkout del código fuente con los recursos del enrutador de Git LFS descargados (consulta [Instalar desde el código fuente](#install-from-source) para el clon y `git lfs pull`):
 
 ```sh
 docker build -t opensquilla:local .

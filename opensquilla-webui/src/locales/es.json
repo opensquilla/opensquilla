@@ -1583,7 +1583,7 @@
     "logs": {
       "eyebrow": "Control · Registros",
       "title": "Registros",
-      "subtitle": "Flujo de registros en vivo de la puerta de enlace: filtra, sigue y exporta.",
+      "subtitle": "Flujo de registros en vivo de la puerta de enlace: filtra y sigue.",
       "statusUnavailable": "Estado de los registros no disponible",
       "statusUnavailableAria": "Estado de los registros no disponible; el seguimiento de registros aún puede funcionar.",
       "statusUnavailableTitle": "logs.status no está disponible; el seguimiento de registros aún puede funcionar.",
@@ -1602,8 +1602,7 @@
       "diagnosticsRaw": "Diagnósticos crudos",
       "diagnosticsStandard": "Diagnósticos estándar",
       "diagnosticsOff": "Diagnósticos desactivados",
-      "exportTitle": "Descargar las líneas de registro filtradas",
-      "bundleButton": "Diagnósticos",
+      "bundleButton": "Paquete de diagnóstico",
       "bundleButtonTitle": "Descargar un paquete de diagnóstico depurado",
       "bundleTitle": "Descargar paquete de diagnóstico",
       "bundleBody": "Reúne los registros de la puerta de enlace, los registros de errores y la configuración depurada en un único zip que puedes adjuntar a un informe de errores. Los secretos y las claves de API se eliminan; el contenido de las conversaciones queda excluido salvo que lo actives abajo.",

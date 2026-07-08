@@ -70,7 +70,7 @@ body:
       label: Diagnostic bundle and error reference
       description: >-
         Attach a diagnostics bundle if you can: run `opensquilla bundle`, or use
-        the Diagnostics button on the Web UI Logs page, or the desktop app menu
+        the Diagnostic bundle button on the Web UI Logs page, or the desktop app menu
         "Download Diagnostics…". The bundle is redacted by default (secrets
         removed, paths normalized, no conversation content) and safe to attach.
         If your error message showed a reference code like `(ref: a1b2c3d4)`,

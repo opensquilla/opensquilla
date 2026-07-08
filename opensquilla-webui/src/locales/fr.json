@@ -1583,7 +1583,7 @@
     "logs": {
       "eyebrow": "Contrôle · Journaux",
       "title": "Journaux",
-      "subtitle": "Flux de journaux de passerelle en direct — filtrez, suivez et exportez.",
+      "subtitle": "Flux de journaux de passerelle en direct — filtrez et suivez.",
       "statusUnavailable": "État des journaux indisponible",
       "statusUnavailableAria": "État des journaux indisponible ; le suivi des journaux peut toujours fonctionner.",
       "statusUnavailableTitle": "logs.status est indisponible ; le suivi des journaux peut toujours fonctionner.",
@@ -1602,8 +1602,7 @@
       "diagnosticsRaw": "Diagnostics bruts",
       "diagnosticsStandard": "Diagnostics standard",
       "diagnosticsOff": "Diagnostics désactivés",
-      "exportTitle": "Télécharger les lignes de journal filtrées",
-      "bundleButton": "Diagnostics",
+      "bundleButton": "Paquet de diagnostic",
       "bundleButtonTitle": "Télécharger un paquet de diagnostic expurgé",
       "bundleTitle": "Télécharger le paquet de diagnostic",
       "bundleBody": "Rassemble les journaux de la passerelle, les erreurs enregistrées et la configuration expurgée dans un zip que vous pouvez joindre à un rapport de bug. Les secrets et les clés API sont supprimés ; le contenu des conversations est exclu, sauf si vous l'incluez ci-dessous.",

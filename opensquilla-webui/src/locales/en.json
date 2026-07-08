@@ -1583,7 +1583,7 @@
     "logs": {
       "eyebrow": "Control · Logs",
       "title": "Logs",
-      "subtitle": "Live gateway log stream — filter, follow, and export.",
+      "subtitle": "Live gateway log stream — filter and follow.",
       "statusUnavailable": "Log status unavailable",
       "statusUnavailableAria": "Log status unavailable; log tailing can still work.",
       "statusUnavailableTitle": "logs.status is unavailable; log tailing can still work.",
@@ -1602,8 +1602,7 @@
       "diagnosticsRaw": "Diagnostics raw",
       "diagnosticsStandard": "Diagnostics standard",
       "diagnosticsOff": "Diagnostics off",
-      "exportTitle": "Download filtered log lines",
-      "bundleButton": "Diagnostics",
+      "bundleButton": "Diagnostic bundle",
       "bundleButtonTitle": "Download a redacted diagnostics bundle",
       "bundleTitle": "Download diagnostics bundle",
       "bundleBody": "Collects gateway logs, error records, and redacted configuration into one zip you can attach to a bug report. Secrets and API keys are removed; conversation content is excluded unless you opt in below.",

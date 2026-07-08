@@ -1583,7 +1583,7 @@
     "logs": {
       "eyebrow": "Steuerung · Protokolle",
       "title": "Protokolle",
-      "subtitle": "Live-Stream der Gateway-Protokolle — filtern, verfolgen und exportieren.",
+      "subtitle": "Live-Stream der Gateway-Protokolle — filtern und verfolgen.",
       "statusUnavailable": "Protokollstatus nicht verfügbar",
       "statusUnavailableAria": "Protokollstatus nicht verfügbar; das Verfolgen von Protokollen kann dennoch funktionieren.",
       "statusUnavailableTitle": "logs.status ist nicht verfügbar; das Verfolgen von Protokollen kann dennoch funktionieren.",
@@ -1602,8 +1602,7 @@
       "diagnosticsRaw": "Diagnose roh",
       "diagnosticsStandard": "Diagnose standard",
       "diagnosticsOff": "Diagnose aus",
-      "exportTitle": "Gefilterte Protokollzeilen herunterladen",
-      "bundleButton": "Diagnose",
+      "bundleButton": "Diagnosepaket",
       "bundleButtonTitle": "Ein bereinigtes Diagnosepaket herunterladen",
       "bundleTitle": "Diagnosepaket herunterladen",
       "bundleBody": "Sammelt Gateway-Protokolle, Fehlereinträge und bereinigte Konfiguration in einer Zip-Datei, die Sie einem Fehlerbericht anhängen können. Geheimnisse und API-Schlüssel werden entfernt; Unterhaltungsinhalte bleiben ausgeschlossen, sofern Sie sie unten nicht ausdrücklich einbeziehen.",

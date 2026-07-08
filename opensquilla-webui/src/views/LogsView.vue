@@ -36,10 +36,6 @@
             >{{ diagnosticsLabel }}</span>
           </template>
         </div>
-        <button class="btn btn--ghost" :title="t('usageLogs.logs.exportTitle')" @click="exportLogs">
-          <Icon name="download" :size="16" />
-          <span>{{ t('usageLogs.usage.export') }}</span>
-        </button>
         <button
           class="btn btn--ghost"
           :title="t('usageLogs.logs.bundleButtonTitle')"
@@ -204,7 +200,7 @@ import { useI18n } from 'vue-i18n'
 import { useRpcStore } from '@/stores/rpc'
 import { useFixedWindow } from '@/composables/useFixedWindow'
 import { useToasts } from '@/composables/useToasts'
-import { downloadText, downloadBlob, filenameFromContentDisposition } from '@/utils/browser'
+import { downloadBlob, filenameFromContentDisposition } from '@/utils/browser'
 import Icon from '@/components/Icon.vue'
 import ControlSwitch from '@/components/ControlSwitch.vue'
 import DiagnosticsBundleDialog from '@/components/DiagnosticsBundleDialog.vue'
@@ -554,14 +550,6 @@ function toggleLevel(level: string) {
     next.add(level)
   }
   activeLevels.value = next
-}
-
-function exportLogs() {
-  const text = filteredLines.value.map(line => {
-    const ts = line.ts ? String(line.ts).slice(0, 23) + ' ' : ''
-    return `${ts}[${line.level}] ${line.message}`
-  }).join('\n')
-  downloadText('opensquilla-logs.txt', 'text/plain', text)
 }
 
 async function downloadBundle(options: { includeContent: boolean }) {

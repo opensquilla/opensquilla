@@ -1583,7 +1583,7 @@
     "logs": {
       "eyebrow": "操作 · ログ",
       "title": "ログ",
-      "subtitle": "ライブのゲートウェイログストリームです — フィルター、追従、エクスポートができます。",
+      "subtitle": "ライブのゲートウェイログストリームです — フィルターと追従ができます。",
       "statusUnavailable": "ログの状態を利用できません",
       "statusUnavailableAria": "ログの状態を利用できません。ログの追従は引き続き動作します。",
       "statusUnavailableTitle": "logs.status は利用できません。ログの追従は引き続き動作します。",
@@ -1602,8 +1602,7 @@
       "diagnosticsRaw": "診断 raw",
       "diagnosticsStandard": "診断 標準",
       "diagnosticsOff": "診断 オフ",
-      "exportTitle": "フィルター済みのログ行をダウンロード",
-      "bundleButton": "診断",
+      "bundleButton": "診断バンドル",
       "bundleButtonTitle": "機密情報を除去した診断バンドルをダウンロード",
       "bundleTitle": "診断バンドルをダウンロード",
       "bundleBody": "ゲートウェイのログ、エラー記録、機密情報を除去した設定を 1 つの zip にまとめ、バグ報告に添付できます。シークレットと API キーは削除されます。会話内容は、下でオプトインしない限り含まれません。",

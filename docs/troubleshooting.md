@@ -83,7 +83,7 @@ running.
 One action collects everything a maintainer needs:
 
 - **CLI:** `opensquilla bundle` — works even when the gateway will not start.
-- **Web UI:** Logs page → **Diagnostics** button.
+- **Web UI:** Logs page → **Diagnostic bundle** button.
 - **Desktop app:** application menu → **Download Diagnostics…** (if the app
   cannot reach its gateway, this opens the logs folder instead).
 

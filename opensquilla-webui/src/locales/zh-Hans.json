@@ -1583,7 +1583,7 @@
     "logs": {
       "eyebrow": "控制 · 日志",
       "title": "日志",
-      "subtitle": "实时网关日志流 — 过滤、跟随并导出。",
+      "subtitle": "实时网关日志流 — 过滤并跟随。",
       "statusUnavailable": "日志状态不可用",
       "statusUnavailableAria": "日志状态不可用；日志跟踪仍可正常工作。",
       "statusUnavailableTitle": "logs.status 不可用；日志跟踪仍可正常工作。",
@@ -1602,8 +1602,7 @@
       "diagnosticsRaw": "诊断 原始",
       "diagnosticsStandard": "诊断 标准",
       "diagnosticsOff": "诊断 关闭",
-      "exportTitle": "下载已过滤的日志行",
-      "bundleButton": "诊断",
+      "bundleButton": "诊断包",
       "bundleButtonTitle": "下载已脱敏的诊断包",
       "bundleTitle": "下载诊断包",
       "bundleBody": "将网关日志、错误记录和脱敏后的配置打包为一个 zip 文件，可附加到错误报告中。机密信息和 API 密钥会被移除；除非你在下方选择加入，否则不会包含对话内容。",

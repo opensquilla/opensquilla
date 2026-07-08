@@ -285,6 +285,82 @@ WARNING: you have selected network-exposed default - ensure you
 "@ | Write-Host
 }
 
+# --- post-install PATH sanity (parity with install_source.sh) --------------
+
+function Resolve-EntrypointDir {
+    # Determine where the just-installed `opensquilla`/`gateway` entry points
+    # landed, so we can warn when that directory is not on PATH. uv tool
+    # install drops entry points in `uv tool dir --bin`; pip --user puts them
+    # in the interpreter's Scripts dir. Both live outside the default PATH on
+    # a clean Windows host - the exact failure mode `opensquilla onboard`
+    # hits right after a "successful" install. Parity with install_source.sh,
+    # which does the same absolute-path lookup on POSIX.
+    if ($installer -eq 'uv') {
+        $uvBin = $null
+        try {
+            $line = (& uv tool dir --bin 2>$null | Select-Object -First 1)
+            if ($line) { $uvBin = $line.Trim() }
+        } catch { }
+        if ($uvBin -and (Test-Path (Join-Path $uvBin 'opensquilla.exe') -PathType Leaf)) {
+            return $uvBin
+        }
+        $fallback = Join-Path $HOME '.local\bin'
+        if (Test-Path (Join-Path $fallback 'opensquilla.exe') -PathType Leaf) {
+            return $fallback
+        }
+        return $null
+    } else {
+        $scriptsDir = $null
+        try {
+            $line = (& python -c "import sysconfig; print(sysconfig.get_path('scripts'))" 2>$null | Select-Object -First 1)
+            if ($line) { $scriptsDir = $line.Trim() }
+        } catch { }
+        if ($scriptsDir -and (Test-Path (Join-Path $scriptsDir 'opensquilla.exe') -PathType Leaf)) {
+            return $scriptsDir
+        }
+        return $null
+    }
+}
+
+function Test-DirOnUserPath {
+    param([string]$Dir)
+    if (-not $Dir) { return $false }
+    $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
+    if (-not $userPath) { return $false }
+    $target = $Dir.TrimEnd('\')
+    foreach ($entry in ($userPath -split ';')) {
+        if ([string]::IsNullOrWhiteSpace($entry)) { continue }
+        if ([string]::Equals($entry.TrimEnd('\'), $target, [System.StringComparison]::OrdinalIgnoreCase)) {
+            return $true
+        }
+    }
+    return $false
+}
+
+function Write-PathHint {
+    # Verify the just-installed entry point is reachable from a fresh shell.
+    # install_source.sh runs the same smoke check on POSIX; this brings the
+    # PowerShell installer to parity so a "successful" install does not leave
+    # the user with an unresolvable `opensquilla` command (see issue #500).
+    $entryDir = Resolve-EntrypointDir
+    if (-not $entryDir) {
+        Write-Warning 'install_source.ps1: could not locate the installed `opensquilla` entry point to verify PATH.'
+        Write-Warning "install_source.ps1: if `opensquilla` is not recognized, run 'uv tool update-shell' and open a new terminal."
+        return
+    }
+    if (Test-DirOnUserPath -Dir $entryDir) {
+        Write-Host "install_source.ps1: entry points are on PATH ($entryDir)."
+        return
+    }
+    Write-Warning "install_source.ps1: entry points are NOT on PATH: $entryDir"
+    Write-Warning 'install_source.ps1: `opensquilla` will not be found in a new terminal until this is fixed.'
+    Write-Warning 'install_source.ps1: fix it with one of:'
+    Write-Warning '    uv tool update-shell               # uv official PATH configurator (recommended)'
+    $oneLiner = '[Environment]::SetEnvironmentVariable(''Path'', [Environment]::GetEnvironmentVariable(''Path'',''User'') + '';{0}'', ''User'')' -f $entryDir
+    Write-Warning "    $oneLiner   # or add this dir to user PATH manually"
+    Write-Warning "install_source.ps1: then open a new terminal and run 'opensquilla onboard'."
+}
+
 if ($dryRun) {
     Write-Host "install_source.ps1: dry-run — would run: $installCmd"
     Write-Host "install_source.ps1: dry-run — prefix: $prefix"
@@ -331,6 +407,10 @@ try {
 } catch {
     # Receipt is optional; never fail the install over it.
 }
+
+# Smoke-check the just-installed entry point is reachable from a fresh shell.
+# Runs after install only (dry-run exits above), matching install_source.sh.
+Write-PathHint
 
 Write-Banner
 if ($env:OPENSQUILLA_LISTEN -eq '0.0.0.0') {

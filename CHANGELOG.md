@@ -8,6 +8,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Added
 
+- Attachment resource ceilings: the in-memory staged-upload store now has an
+  aggregate RAM cap (`attachments.upload_store_max_total_bytes`, default
+  300 MiB) — when reached, new uploads are rejected with the additive HTTP
+  507 `UPLOAD_STORE_FULL` (retryable; staged entries expire within the TTL)
+  instead of evicting staged uploads — and attachment copies materialized
+  into agent workspaces are bounded by a disk budget
+  (`attachments.workspace_attachment_disk_budget_bytes`, default 1 GiB) that
+  degrades new materializations to an unavailable marker without evicting
+  existing files.
+
 - Added Tencent TokenHub providers for the Hunyuan hy3 family:
   `tencent_tokenhub` (OpenAI-compatible mainland endpoint,
   `TENCENT_TOKENHUB_API_KEY`), `tencent_tokenhub_anthropic` (the same

@@ -86,6 +86,8 @@ frontend = "vue"
 # [attachments]
 # accept_opaque = true          # false = legacy rendered-types-only admission
 # opaque_max_bytes = 31457280   # 30 MiB per-file ceiling for opaque types
+# upload_store_max_total_bytes = 314572800   # 300 MiB staged-upload RAM ceiling
+# workspace_attachment_disk_budget_bytes = 1073741824  # 1 GiB workspace copies
 # persist_transcripts = true
 # transcript_disk_budget_bytes = 2147483648
 # artifact_max_bytes = 31457280

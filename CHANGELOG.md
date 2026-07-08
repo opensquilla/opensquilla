@@ -17,9 +17,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   tool-result store compression, sandbox-descriptor integration for
   filesystem tools, and a family of default-off, env-lever-controlled
   runtime recovery modules.
+- Prebuilt multi-arch (`linux/amd64` + `linux/arm64`) container images are
+  published to GHCR (`ghcr.io/opensquilla/opensquilla`) on release tags,
+  with a manual dispatch mode that validates the build without publishing.
+- `docs/docker.md`: a container deployment guide for home servers and NAS
+  (Debian 12 walkthrough, prebuilt images, LAN exposure with token auth,
+  bind-mount ownership, upgrades and rollback).
 
 ### Changed
 
+- `compose.yaml` now documents prebuilt-image selection, safe LAN exposure,
+  and Web UI token auth, and the troubleshooting guide covers common Docker
+  deployment failures.
 - Provider retry handling: responses that stop at the length limit without
   visible text or tool calls now enter the reasoning-only retry path instead
   of the length-capped continuation path, and a thinking-related provider

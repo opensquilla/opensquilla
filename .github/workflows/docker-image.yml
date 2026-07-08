@@ -1,0 +1,132 @@
+name: Container Images
+
+# Builds the multi-arch (linux/amd64 + linux/arm64) gateway image and
+# publishes it to GHCR so home-server/NAS users can `docker pull` a release
+# instead of building from a source checkout. See docs/docker.md.
+#
+# Publishing model:
+#   * Pushing a release tag (v0.5.0rc2, v0.6.0, ...) publishes
+#     ghcr.io/<owner>/<repo>:<tag> and moves :latest to it. :latest tracks
+#     the most recently pushed release tag — including prereleases and
+#     backports; if a backport repoints it, re-run this workflow from the
+#     newest tag.
+#   * workflow_dispatch validates the full multi-arch build without
+#     publishing; set publish=true to push the result as :edge.
+#
+# The GITHUB_TOKEN with job-level `packages: write` is the only credential.
+# First-time note for maintainers: a new GHCR package is created private —
+# flip ghcr.io/<owner>/<repo> to public in the package settings once.
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: Push the built image to GHCR as the edge tag (leave off to only validate the build)
+        type: boolean
+        required: false
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: container-images-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build-and-publish:
+    name: Build multi-arch gateway image
+    runs-on: ubuntu-latest
+    # The arm64 leg runs under QEMU emulation. All compiled dependencies
+    # install from prebuilt aarch64 wheels, so this is emulated pip time,
+    # not source builds — slow but bounded.
+    timeout-minutes: 120
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Validate release tag
+        if: github.event_name == 'push'
+        run: |
+          if [[ ! "${GITHUB_REF_NAME}" =~ ^v[0-9]+[.][0-9]+[.][0-9]+.*$ ]]; then
+            echo "Release tag must look like v0.2.0rc1 or v0.2.0: ${GITHUB_REF_NAME}" >&2
+            exit 1
+          fi
+
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          lfs: true
+          persist-credentials: false
+
+      - name: Hydrate router assets
+        run: git lfs pull --include="src/opensquilla/squilla_router/models/**"
+
+      # The Dockerfile hard-fails on LFS pointer files; failing here first
+      # gives a clearer error than a mid-build SystemExit.
+      - name: Verify router assets are hydrated
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          root = Path("src/opensquilla/squilla_router/models/v4.2_phase3_inference")
+          required = [
+              root / "PROVENANCE.md",
+              root / "artifact_manifest.json",
+              root / "bge_onnx" / "model.onnx",
+              root / "features" / "tfidf.pkl",
+              root / "lgbm_main.bin",
+              root / "mlp" / "model.onnx",
+              root / "router.runtime.yaml",
+          ]
+          for path in required:
+              assert path.is_file(), f"missing router asset: {path}"
+              prefix = path.read_bytes()[:80]
+              assert not prefix.startswith(b"version https://git-lfs.github.com/spec/v1"), (
+                  f"Git LFS pointer file is not hydrated: {path}"
+              )
+          PY
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        if: ${{ github.event_name == 'push' || inputs.publish == true }}
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Release tags are PEP 440 (v0.5.0rc2), not strict semver, so the git
+      # tag is mapped through as-is instead of via type=semver.
+      - name: Compute image metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=ref,event=tag,enable=${{ github.event_name == 'push' }}
+            type=raw,value=latest,enable=${{ github.event_name == 'push' }}
+            type=raw,value=edge,enable=${{ github.event_name == 'workflow_dispatch' }}
+          flavor: |
+            latest=false
+
+      - name: Build multi-arch image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: ${{ github.event_name == 'push' || inputs.publish == true }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          # Keep the pushed artifact a plain two-entry manifest list; the
+          # default provenance attestation adds an unknown/unknown entry that
+          # confuses registry UIs and `docker pull` inspection.
+          provenance: false

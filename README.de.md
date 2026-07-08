@@ -562,7 +562,18 @@ konfiguriere Token-Authentifizierung, bevor du an `0.0.0.0` bindest.
 
 **Docker**
 
-Der Compose-Weg führt ein `opensquilla:local`-Image aus, das du selbst
+Vorgebaute Multi-Arch-Images (`amd64`/`arm64`) werden mit jedem
+Release-Tag auf `ghcr.io/opensquilla/opensquilla` veröffentlicht —
+[`docs/docker.md`](docs/docker.md) ist der vollständige
+Container-Leitfaden (Heimserver und NAS, LAN-Zugriff mit
+Token-Authentifizierung, Upgrades):
+
+```sh
+OPENSQUILLA_GATEWAY_IMAGE=ghcr.io/opensquilla/opensquilla:latest docker compose up -d
+```
+
+Ohne `OPENSQUILLA_GATEWAY_IMAGE` führt der Compose-Weg ein
+`opensquilla:local`-Image aus, das du selbst
 baust. Baue es aus einem Quellcode-Checkout mit den per Git LFS
 geholten Router-Assets (Klon und `git lfs pull` siehe
 [Aus Quellcode installieren](#install-from-source)):

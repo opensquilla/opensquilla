@@ -477,7 +477,16 @@ opensquilla gateway run --listen 0.0.0.0 --port 18791
 
 **Docker**
 
-compose 路径运行一个你自己构建的 `opensquilla:local` 镜像。请从一份已拉取 Git LFS 路由
+预构建的多架构镜像(`amd64`/`arm64`)会随每个发布标签发布到
+`ghcr.io/opensquilla/opensquilla`——完整的容器部署指南见
+[`docs/docker.md`](docs/docker.md)(家庭服务器与 NAS、带 token 认证的局域网访问、升级):
+
+```sh
+OPENSQUILLA_GATEWAY_IMAGE=ghcr.io/opensquilla/opensquilla:latest docker compose up -d
+```
+
+不设置 `OPENSQUILLA_GATEWAY_IMAGE` 时,compose 路径运行一个你自己构建的
+`opensquilla:local` 镜像。请从一份已拉取 Git LFS 路由
 资源的源码检出来构建它(克隆与 `git lfs pull` 见[从源码安装](#install-from-source)):
 
 ```sh

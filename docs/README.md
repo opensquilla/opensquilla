@@ -65,6 +65,8 @@ root release README with task-oriented guides.
   real-terminal TUI integration harness and evidence capture.
 - [`experiments.md`](experiments.md) - opt-in runtime toggle conventions and
   the delivery-verification tooling in `scripts/experiments/`.
+- [`docker.md`](docker.md) - Docker/Compose deployment on home servers and
+  NAS: prebuilt GHCR images, LAN exposure with token auth, and upgrades.
 - [`operations.md`](operations.md) - sessions, cron, usage, diagnostics,
   migration, MCP server, and install inventory commands.
 - [`troubleshooting.md`](troubleshooting.md) - common install/runtime issues.

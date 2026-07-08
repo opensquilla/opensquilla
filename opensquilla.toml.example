@@ -78,6 +78,19 @@ frontend = "vue"
 # [tools]
 # trusted_fake_ip_cidrs = ["198.18.0.0/15"]
 
+# Attachment ingestion. Any file type is accepted by default: rendered
+# families (images, PDF, text, Office, email) are extracted or inlined for
+# the model; everything else stages as an opaque agent-workspace file whose
+# bytes are never parsed or inlined into a prompt.
+# Env prefix: OPENSQUILLA_ATTACHMENTS_
+# [attachments]
+# accept_opaque = true          # false = legacy rendered-types-only admission
+# opaque_max_bytes = 31457280   # 30 MiB per-file ceiling for opaque types
+# persist_transcripts = true
+# transcript_disk_budget_bytes = 2147483648
+# artifact_max_bytes = 31457280
+# artifact_disk_budget_bytes = 536870912
+
 [llm]
 provider = "openrouter"
 model = "deepseek/deepseek-v4-pro"

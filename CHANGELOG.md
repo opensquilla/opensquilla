@@ -21,6 +21,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   `api.lkeap.cloud.tencent.com/plan/v3`) and `tencent_token_plan_anthropic`
   (Anthropic Messages at `/plan/anthropic`, bearer auth), both reading the
   dedicated `TENCENT_TOKEN_PLAN_API_KEY` (`sk-tp-…`) plan credential.
+- Attachments now accept **any file type** on every surface (Web UI, desktop,
+  CLI `/file`, channels, RPC). Rendered families (images, PDF, text, Office,
+  email) keep their extraction and anti-forgery behavior; everything else is
+  admitted as an *opaque* attachment staged into the agent workspace — the
+  bytes are never parsed, decompressed, or inlined into a provider prompt, and
+  the model receives an escaped metadata envelope plus the workspace path.
+  New config: `attachments.accept_opaque` (default `true`; `false` restores
+  the legacy fail-closed admission gate) and `attachments.opaque_max_bytes`
+  (default 30 MiB).
+- Text attachments above the 2 MB inline threshold now stage through the
+  upload endpoint up to 30 MiB when the whole payload is proven UTF-8, so
+  large LaTeX sources and logs no longer dead-end at "file too large".
+- Channel file downloads (Telegram, Discord, Feishu, Matrix) now use staged
+  per-category ceilings, so archives, voice notes, and videos up to 30 MiB
+  ingest instead of being silently skipped at a flat 5 MiB unknown-type cap.
+
 - Added Alibaba Cloud IQS (`iqs`) as a runtime-supported web search provider:
   unified-search endpoint with freshness, site include/exclude filters, inline
   main-text content, and rerank scores, configured via `IQS_SEARCH_API_KEY`.
@@ -56,6 +72,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - `compose.yaml` now documents prebuilt-image selection, safe LAN exposure,
   and Web UI token auth, and the troubleshooting guide covers common Docker
   deployment failures.
+- The Web UI composer's file picker no longer sets an `accept=` filter, so
+  native file dialogs (notably on Windows) show all files instead of hiding
+  types like `.tex` (#472). The attach-button tooltip in all six locales now
+  describes the any-type policy.
+- Under the default `attachments.accept_opaque = true`, the upload endpoint
+  no longer returns HTTP 415 `UNSUPPORTED_MEDIA_TYPE` for type reasons and
+  `sessions.send` no longer raises `unsupported_mime` for unrendered types;
+  the codes and message formats are unchanged for strict deployments that
+  disable the flag. Clients that string-matched the "must be one of [...]"
+  detail should rely on the typed codes instead.
+- Transcripts written by this version may contain opaque attachment
+  envelopes; older builds replay such history with the attachment silently
+  omitted (current builds emit an omission marker).
+
 - Provider retry handling: responses that stop at the length limit without
   visible text or tool calls now enter the reasoning-only retry path instead
   of the length-capped continuation path, and a thinking-related provider
@@ -88,6 +118,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   blocked under the managed-network sandbox. All runtime search providers now
   have system domain grants and default search-allowlist entries, enforced by
   a contract test.
+- Byte-level text sniffing no longer misclassifies clean UTF-8 payloads as
+  binary when a multibyte character straddles the sniff peek window (affected
+  CJK plain-text uploads with unrendered MIME claims).
+
 - Fixed secret redaction missing assignment values that start with a quote
   (for example `password: "..."`); quoted values are now masked in memory
   persistence and trace capture paths.

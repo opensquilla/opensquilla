@@ -179,14 +179,16 @@ opensquilla configure search --search-provider bocha --api-key-env BOCHA_SEARCH_
 opensquilla configure search --search-provider brave --api-key-env BRAVE_SEARCH_API_KEY
 opensquilla configure search --search-provider tavily --api-key-env TAVILY_API_KEY
 opensquilla configure search --search-provider exa --api-key-env EXA_API_KEY
+opensquilla configure search --search-provider iqs --api-key-env IQS_SEARCH_API_KEY
 ```
 
 Runtime-supported search providers in this build include DuckDuckGo, Bocha,
-Brave Search, Tavily, and Exa. DuckDuckGo is the no-key path. A partial-key
-setup can configure only one keyed provider; an all-key setup can expose
-`BOCHA_SEARCH_API_KEY`, `BRAVE_SEARCH_API_KEY`, `TAVILY_API_KEY`, and
-`EXA_API_KEY` so runtime provider selection can choose by mode and capability
-unless a request names an explicit provider. `search_provider` is the credential
+Brave Search, Alibaba Cloud IQS, Tavily, and Exa. DuckDuckGo is the no-key path.
+A partial-key setup can configure only one keyed provider; an all-key setup can
+expose `BOCHA_SEARCH_API_KEY`, `BRAVE_SEARCH_API_KEY`, `IQS_SEARCH_API_KEY`,
+`TAVILY_API_KEY`, and `EXA_API_KEY` so runtime provider selection can choose by
+mode and capability unless a request names an explicit provider.
+`search_provider` is the credential
 anchor for `search_api_key` and `search_api_key_env`; it is not a hard routing
 promise for automatic searches.
 Additional provider metadata may be present for future or

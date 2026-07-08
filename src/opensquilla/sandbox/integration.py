@@ -111,6 +111,7 @@ _IN_PROCESS_NETWORK_TAGS: frozenset[str] = frozenset(
 _SEARCH_PROVIDER_SYSTEM_DOMAINS: dict[str, tuple[str, ...]] = {
     "brave": ("api.search.brave.com",),
     "duckduckgo": ("html.duckduckgo.com",),
+    "iqs": ("cloud-iqs.aliyuncs.com",),
 }
 
 

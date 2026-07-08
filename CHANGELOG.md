@@ -8,6 +8,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Added
 
+- Added Alibaba Cloud IQS (`iqs`) as a runtime-supported web search provider:
+  unified-search endpoint with freshness, site include/exclude filters, inline
+  main-text content, and rerank scores, configured via `IQS_SEARCH_API_KEY`.
 - Added a runtime development branch sync: request-proof budgeting with
   deterministic compaction, DashScope provider profile with prompt-cache
   markers and thinking-mode plumbing, an optional LLM trace recorder,

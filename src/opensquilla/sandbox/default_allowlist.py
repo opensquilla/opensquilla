@@ -22,6 +22,7 @@ DEFAULT_ALLOWLIST: dict[str, tuple[str, ...]] = {
         "api.search.brave.com",
         "html.duckduckgo.com",
         "duckduckgo.com",
+        "cloud-iqs.aliyuncs.com",
         "www.google.com",
         "www.bing.com",
     ),

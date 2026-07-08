@@ -1,4 +1,5 @@
 // @vitest-environment happy-dom
+import { nextTick } from 'vue'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { createPinia, setActivePinia } from 'pinia'
 import { useAppStore } from './app'
@@ -22,6 +23,7 @@ describe('app store — theme persistence + legacy id migration', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
     localStorage.clear()
+    ;(window as unknown as { opensquillaDesktop?: unknown }).opensquillaDesktop = undefined
     // Default OS preference to light so an unmigrated fallback would resolve to
     // 'light' (distinct from the renamed dark themes under test).
     stubMatchMedia(false)
@@ -64,6 +66,25 @@ describe('app store — theme persistence + legacy id migration', () => {
     store.initTheme()
     expect(store.theme).toBe('system')
     expect(localStorage.getItem(THEME_KEY)).toBeNull()
+    store.destroyTheme()
+  })
+
+  it('syncs the Electron native shell theme when the app theme changes', async () => {
+    const setNativeTheme = vi.fn(async () => undefined)
+    ;(window as unknown as { opensquillaDesktop?: { setNativeTheme: typeof setNativeTheme } }).opensquillaDesktop = {
+      setNativeTheme,
+    }
+
+    localStorage.setItem(THEME_KEY, 'dark')
+    const store = useAppStore()
+    store.initTheme()
+    await nextTick()
+    expect(setNativeTheme).toHaveBeenLastCalledWith({ source: 'dark' })
+
+    store.setTheme('light')
+    await nextTick()
+    expect(setNativeTheme).toHaveBeenLastCalledWith({ source: 'light' })
+
     store.destroyTheme()
   })
 })

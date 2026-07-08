@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "npm run typecheck && vite build && node scripts/check-theme-bundle.mjs",
+    "build": "npm run typecheck && vite build && node scripts/normalize-dist.mjs && node scripts/check-theme-bundle.mjs",
     "preview": "vite preview",
     "check:architecture": "node scripts/check-architecture.mjs && node scripts/check-chat-security.mjs && node scripts/check-webui-colors.mjs && node scripts/check-webui-motion.mjs && node scripts/check-webui-radius.mjs && node scripts/check-theme-contract.mjs && node scripts/check-theme-scope.mjs && node scripts/check-cross-surface-tokens.mjs && node scripts/check-i18n.mjs && node scripts/check-readme-locales.mjs",
     "check:readme-locales": "node scripts/check-readme-locales.mjs",

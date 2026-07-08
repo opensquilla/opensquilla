@@ -7,7 +7,7 @@ import i18n, {
   isSupportedLocale,
   type LocaleCode,
 } from '@/i18n'
-import { isValueThemeId, normalizeThemeId, themePickerOptions } from '@/themes/registry'
+import { getManifest, isValueThemeId, normalizeThemeId, themePickerOptions } from '@/themes/registry'
 import { ensureThemeWorld } from '@/themes/apply'
 
 // 'system' or any registered value-theme id. The string branch keeps custom
@@ -66,15 +66,24 @@ export const useAppStore = defineStore('app', () => {
     return systemDark.value ? 'dark' : 'light'
   })
 
+  const desktopNativeThemeSource = computed<'light' | 'dark'>(() => {
+    const colorScheme = getManifest(resolvedTheme.value)?.capabilities.colorScheme
+    if (colorScheme === 'light') return 'light'
+    if (colorScheme === 'dark') return 'dark'
+    return systemDark.value ? 'dark' : 'light'
+  })
+
   let mq: MediaQueryList | null = null
   let mqHandler: ((e: MediaQueryListEvent) => void) | null = null
   let themeWatchStop: (() => void) | null = null
 
   function applyTheme() {
+    const platform = getPlatform()
     document.documentElement.setAttribute('data-theme', resolvedTheme.value)
     // Lazily bring in the theme's global "world" layer (structure/type/texture)
     // if it has one; flat value themes have no world and this is a no-op.
     void ensureThemeWorld(resolvedTheme.value)
+    void platform.setNativeTheme({ source: desktopNativeThemeSource.value })
   }
 
   function initTheme() {

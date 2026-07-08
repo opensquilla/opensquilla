@@ -1412,6 +1412,7 @@ async def _handle_sessions_send(params: dict | None, ctx: RpcContext) -> dict:
     )
     generate_title = await _should_auto_title(ctx, storage, session, key, session_id)
     disk_budget = getattr(attachments_cfg, "transcript_disk_budget_bytes", None)
+    opaque_cap = getattr(attachments_cfg, "opaque_max_bytes", None)
     try:
         ingested_attachments = await _attachment_ingest.ingest_attachments(
             message_text,
@@ -1420,6 +1421,8 @@ async def _handle_sessions_send(params: dict | None, ctx: RpcContext) -> dict:
             material_root=media_root,
             session_id=session_id,
             disk_budget_bytes=disk_budget if isinstance(disk_budget, int) else None,
+            accept_opaque=bool(getattr(attachments_cfg, "accept_opaque", True)),
+            opaque_limit_bytes=opaque_cap if isinstance(opaque_cap, int) else None,
         )
     except _attachment_ingest.AttachmentResolutionError as exc:
         # A staged upload expired / was lost before this send. Surface a typed,

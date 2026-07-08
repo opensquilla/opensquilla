@@ -16,6 +16,9 @@ import inspect
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
+from opensquilla.attachment_workspace import (
+    workspace_attachment_budget_from_config,
+)
 from opensquilla.engine.turn_runner.agent_bootstrap_stage import (
     AgentConfigBuilderPort,
     AgentFactoryPort,
@@ -1024,6 +1027,9 @@ class _TurnRunnerAttachmentMessageBuilderAdapter(AttachmentMessageBuilderPort):
             workspace_dir=workspace_dir
             or getattr(self._runner._config, "workspace_dir", None),
             session_id=session_id,
+            workspace_attachment_budget_bytes=(
+                workspace_attachment_budget_from_config(self._runner._config)
+            ),
         )
 
 

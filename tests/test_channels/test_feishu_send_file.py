@@ -8,7 +8,7 @@ import pytest
 
 from opensquilla.channels.feishu import FeishuChannel, FeishuChannelConfig, _TokenState
 from opensquilla.channels.stream_policy import resolve_channel_stream_policy
-from opensquilla.gateway.attachment_ingest import MAX_ATTACHMENT_BYTES
+from opensquilla.contracts.attachments import OPAQUE_ATTACHMENT_BYTES
 
 
 @pytest.mark.asyncio
@@ -294,7 +294,9 @@ async def test_resolve_inbound_attachment_downloads_feishu_resource() -> None:
 @pytest.mark.asyncio
 async def test_resolve_inbound_attachment_rejects_oversize_header_before_body_read() -> None:
     class FakeResponse:
-        headers = {"content-length": str(MAX_ATTACHMENT_BYTES + 1)}
+        # Opaque inbound files use the staged opaque ceiling; the header must
+        # exceed it for the pre-body rejection to fire.
+        headers = {"content-length": str(OPAQUE_ATTACHMENT_BYTES + 1)}
 
         async def __aenter__(self):
             return self
@@ -343,7 +345,7 @@ async def test_resolve_inbound_attachment_rejects_oversize_header_before_body_re
                                     {
                                         "file_key": "file-key",
                                         "file_name": "huge.bin",
-                                        "file_size": MAX_ATTACHMENT_BYTES,
+                                        "file_size": OPAQUE_ATTACHMENT_BYTES,
                                     }
                                 ),
                             },

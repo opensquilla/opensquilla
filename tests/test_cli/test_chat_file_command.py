@@ -182,11 +182,48 @@ def test_file_command_unreachable_bridge_falls_back_to_inline_for_small_file(
     assert "data" in attachments[0]
 
 
-def test_file_command_rejects_unsupported_binary_mime(tmp_path: Path) -> None:
-    # Unknown extension + binary content (NUL byte) stays fail-closed.
+def test_file_command_accepts_unknown_binary_as_opaque(tmp_path: Path) -> None:
+    # Unknown extension + binary content attaches as an opaque item: the bytes
+    # land in the agent workspace, never in the provider prompt.
     path = _write(tmp_path, "x.bin", b"\x00\x01\x02\x03 binary blob")
-    with pytest.raises(ValueError, match=r"(unsupported|not allowed|format)"):
-        _file_prompt_and_attachments(f"/file {path}", upload_callable=None)
+    prompt, attachments = _file_prompt_and_attachments(
+        f"/file {path}", upload_callable=None
+    )
+    assert prompt == "Read this file"
+    att = attachments[0]
+    assert att["type"] == "application/octet-stream"
+    assert base64.b64decode(att["data"]) == b"\x00\x01\x02\x03 binary blob"
+
+
+def test_file_command_stages_zip_archive(tmp_path: Path) -> None:
+    import io
+    import zipfile
+
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        archive.writestr("paper/main.tex", "x" * (CLI_INLINE_THRESHOLD_BYTES + 64))
+    payload = buffer.getvalue()
+    assert len(payload) > CLI_INLINE_THRESHOLD_BYTES
+    path = _write(tmp_path, "paper.zip", payload)
+    captured: dict[str, Any] = {}
+
+    def fake_upload(local_path: Path, mime: str, name: str) -> str:
+        captured.update({"mime": mime, "name": name})
+        return "u-zip"
+
+    _prompt, attachments = _file_prompt_and_attachments(
+        f"/file {path}", upload_callable=fake_upload
+    )
+
+    assert captured["mime"] == "application/zip"
+    assert attachments == [
+        {
+            "type": "application/zip",
+            "file_uuid": "u-zip",
+            "name": "paper.zip",
+            "mime": "application/zip",
+        }
+    ]
 
 
 def test_file_command_accepts_unknown_utf8_text_as_plain(tmp_path: Path) -> None:
@@ -207,19 +244,29 @@ def test_file_command_accepts_unknown_utf8_text_as_plain(tmp_path: Path) -> None
     assert base64.b64decode(att["data"]) == body
 
 
-def test_file_command_rejects_large_text_family_before_upload(tmp_path: Path) -> None:
+def test_file_command_stages_large_text_family(tmp_path: Path) -> None:
+    # Text above the inline threshold routes through the staged upload path
+    # instead of dead-ending on the old text-family rejection.
     path = _write(tmp_path, "large.csv", b"a" * (CLI_TEXT_ATTACHMENT_BYTES + 1))
-    called = False
+    captured: dict[str, Any] = {}
 
     def fake_upload(local_path: Path, mime: str, name: str) -> str:
-        nonlocal called
-        called = True
-        return "u-should-not-upload"
+        captured.update({"local_path": local_path, "mime": mime, "name": name})
+        return "u-large-text"
 
-    with pytest.raises(ValueError, match=r"text-family|/path|too large"):
-        _file_prompt_and_attachments(f"/file {path}", upload_callable=fake_upload)
+    _prompt, attachments = _file_prompt_and_attachments(
+        f"/file {path}", upload_callable=fake_upload
+    )
 
-    assert called is False
+    assert captured["mime"] == "text/csv"
+    assert attachments == [
+        {
+            "type": "text/csv",
+            "file_uuid": "u-large-text",
+            "name": "large.csv",
+            "mime": "text/csv",
+        }
+    ]
 
 
 def test_file_command_stages_large_image_within_image_cap(tmp_path: Path) -> None:

@@ -1647,7 +1647,7 @@
     "removeAttachment": "Remove attachment",
     "remove": "Remove",
     "attachFiles": "Attach files",
-    "attachFilesTitle": "Attach files: PNG, JPEG, GIF, WEBP, PDF, TXT, MD, HTML, CSV, JSON",
+    "attachFilesTitle": "Attach files: any file type (images, PDF, Office, and text are read directly; other files go to the agent workspace)",
     "dropOverlayTitle": "Drop to attach",
     "dropOverlayHint": "Files will be added to the composer",
     "composerSettings": "Composer settings",

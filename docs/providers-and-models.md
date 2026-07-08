@@ -52,6 +52,27 @@ opensquilla configure provider --provider ollama --model llama3.1
 Prefer environment-variable references for API keys so secrets are not written
 directly into configuration files.
 
+### Endpoint (base URL) resolution
+
+`llm.base_url` resolves **explicit config → derived env var → provider
+default**:
+
+- A custom endpoint you saved (Web UI advanced options, `config.set`, or a
+  hand-written `base_url` in the TOML) always wins.
+- If the config never chose an endpoint — no `base_url`, or the field still
+  holds the provider's own default URL — the derived environment variable
+  (`OPENAI_BASE_URL`, `OPENROUTER_BASE_URL`, `<PROVIDER>_BASE_URL`) applies.
+  This is the lever for pointing a whole fleet at a corporate proxy without
+  touching each config file.
+- `OPENSQUILLA_LLM_BASE_URL` enters at config-model construction (the
+  `OPENSQUILLA_LLM_*` settings layer): it fills `base_url` whenever the TOML
+  does not set one, and the resolver then treats it as an explicit value —
+  so it beats the provider-derived vars above, while a `base_url` written in
+  the TOML still beats it.
+
+API keys follow the same explicit-config-first rule via `api_key` /
+`api_key_env`.
+
 ## Onboarding-Verified Providers
 
 This build exposes onboarding support for:

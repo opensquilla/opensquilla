@@ -48,6 +48,12 @@ CLOSING_KEYWORDS = frozenset(
         "resolved",
     }
 )
+#: Mutation statuses that describe the target's state or the token's scope on
+#: that one target (labeling a pull request needs pull-requests write scope
+#: this workflow does not request; locked or deleted issues answer 403/410)
+#: rather than a broken sync setup — the affected action is logged and
+#: skipped instead of failing every remaining action in the job.
+TOLERATED_MUTATION_STATUSES = frozenset({403, 404, 410})
 REFERENCE_KEYWORDS = frozenset({"ref", "refs", "reference", "references"})
 OPEN_PR_ACTIONS = frozenset({"opened", "reopened", "edited"})
 KEYWORD_RE = re.compile(
@@ -129,6 +135,19 @@ class GitHubClient:
             return None
         return json.loads(raw.decode("utf-8"))
 
+    def get_issue(self, issue_number: int) -> dict[str, Any] | None:
+        """Fetch an issue, or None when it is missing or unreadable.
+
+        Pull requests are returned too (the REST issues endpoint covers
+        both) — callers use the ``pull_request`` key to tell them apart.
+        """
+        found = self.request_json(
+            "GET",
+            f"/issues/{issue_number}",
+            ignore_statuses=TOLERATED_MUTATION_STATUSES,
+        )
+        return found if isinstance(found, dict) else None
+
     def ensure_label(self, name: str) -> None:
         definition = LABEL_DEFINITIONS[name]
         label_name = quote(name, safe="")
@@ -147,6 +166,8 @@ class GitHubClient:
                 "color": definition["color"],
                 "description": definition["description"],
             },
+            # 422: another run created the label between the GET and here.
+            ignore_statuses=TOLERATED_MUTATION_STATUSES | {422},
         )
 
     def add_labels(self, issue_number: int, labels: list[str]) -> None:
@@ -156,6 +177,7 @@ class GitHubClient:
             "POST",
             f"/issues/{issue_number}/labels",
             payload={"labels": labels},
+            ignore_statuses=TOLERATED_MUTATION_STATUSES,
         )
 
     def remove_label(self, issue_number: int, label: str) -> None:
@@ -163,7 +185,7 @@ class GitHubClient:
         self.request_json(
             "DELETE",
             f"/issues/{issue_number}/labels/{label_name}",
-            ignore_statuses={404},
+            ignore_statuses=TOLERATED_MUTATION_STATUSES,
         )
 
     def list_comments(self, issue_number: int) -> list[dict[str, Any]]:
@@ -186,6 +208,9 @@ class GitHubClient:
             "POST",
             f"/issues/{issue_number}/comments",
             payload={"body": body},
+            # Locked conversations reject comments with 403; the labels above
+            # still applied, so the sync outcome is preserved.
+            ignore_statuses=TOLERATED_MUTATION_STATUSES,
         )
 
 
@@ -346,6 +371,24 @@ def apply_action(client: GitHubClient, action: IssueSyncAction) -> None:
     raise ValueError(f"Unsupported issue sync action: {action.kind}")
 
 
+def classify_sync_target(client: GitHubClient, issue_number: int) -> str:
+    """Classify a parsed ``#N`` reference before mutating it.
+
+    ``#N`` is textual and shares one number space between issues and pull
+    requests, so a PR body saying "the main path was fixed in #535" parses as
+    an issue link even though 535 is a pull request. Labeling a PR needs a
+    scope this workflow does not hold (and is not the sync's job), so only
+    ``"issue"`` targets are acted on; ``"pull_request"`` and ``"missing"``
+    are skipped by the caller.
+    """
+    found = client.get_issue(issue_number)
+    if found is None:
+        return "missing"
+    if found.get("pull_request"):
+        return "pull_request"
+    return "issue"
+
+
 def _load_event(path: str) -> dict[str, Any]:
     with open(path, encoding="utf-8") as handle:
         return json.load(handle)
@@ -374,6 +417,13 @@ def main() -> int:
 
     client = GitHubClient(token=token, repository=repository)
     for action in actions:
+        target_kind = classify_sync_target(client, action.issue_number)
+        if target_kind != "issue":
+            print(
+                f"Skipping {action.kind} for #{action.issue_number} "
+                f"from PR #{action.pr_number}: target is {target_kind}."
+            )
+            continue
         print(
             f"Applying {action.kind} for issue #{action.issue_number} "
             f"from PR #{action.pr_number}."

@@ -25,6 +25,7 @@ def test_attachment_builder_adapter_prefers_resolved_workspace(tmp_path: Path) -
             media_root: Path | None = None,
             workspace_dir: str | Path | None = None,
             session_id: str | None = None,
+            workspace_attachment_budget_bytes: int | None = None,
         ) -> None:
             calls.append(
                 {
@@ -33,6 +34,7 @@ def test_attachment_builder_adapter_prefers_resolved_workspace(tmp_path: Path) -
                     "media_root": media_root,
                     "workspace_dir": workspace_dir,
                     "session_id": session_id,
+                    "workspace_attachment_budget_bytes": workspace_attachment_budget_bytes,
                 }
             )
             return None
@@ -54,5 +56,8 @@ def test_attachment_builder_adapter_prefers_resolved_workspace(tmp_path: Path) -
             "media_root": tmp_path / "media",
             "workspace_dir": agent_workspace,
             "session_id": "session-a",
+            # The fake config has no attachments section, so the budget
+            # resolver falls back to unbounded.
+            "workspace_attachment_budget_bytes": None,
         }
     ]

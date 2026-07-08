@@ -98,6 +98,21 @@ class AttachmentsConfig(BaseSettings):
     transcript_disk_budget_bytes: int = 2 * 1024 * 1024 * 1024  # 2 GB
     artifact_max_bytes: int = 30 * 1024 * 1024
     artifact_disk_budget_bytes: int = 512 * 1024 * 1024
+    # Admission policy for opaque attachment types (archives, binaries,
+    # audio/video, unknown formats). Opaque bytes are never parsed or inlined
+    # into a provider prompt — they are staged into the agent workspace for
+    # tool access only. False restores the rendered-types-only admission gate.
+    accept_opaque: bool = True
+    opaque_max_bytes: int = 30 * 1024 * 1024
+    # Aggregate RAM ceiling for the in-memory staged-upload store. When
+    # reached, new uploads are rejected (HTTP 507 UPLOAD_STORE_FULL) instead
+    # of evicting staged entries, preserving the file_uuid TTL promise.
+    # Applied at gateway construction; changing it requires a restart.
+    upload_store_max_total_bytes: int = 300 * 1024 * 1024
+    # Disk budget for attachment copies materialized into an agent workspace
+    # (<workspace>/.opensquilla/attachments). When exceeded, new
+    # materializations degrade to an unavailable marker; nothing is evicted.
+    workspace_attachment_disk_budget_bytes: int = 1024 * 1024 * 1024
 
 
 class RateLimitConfig(BaseSettings):

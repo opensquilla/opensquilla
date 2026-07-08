@@ -13,8 +13,16 @@ function stagedPdf(name = 'paper.pdf') {
   return new File([new Uint8Array(2_000_001)], name, { type: 'application/pdf' })
 }
 
-function unsupportedBinary(name = 'bad.bin') {
-  return new File([new Uint8Array([0])], name, { type: 'application/octet-stream' })
+function stagedBinary(name = 'bad.bin') {
+  const bytes = new Uint8Array(2_000_001)
+  bytes[1] = 0xff
+  return new File([bytes], name, { type: 'application/octet-stream' })
+}
+
+function stagedZip(name = 'paper.zip') {
+  const bytes = new Uint8Array(2_000_001)
+  bytes.set([0x50, 0x4b, 0x03, 0x04])
+  return new File([bytes], name, { type: 'application/zip' })
 }
 
 function successfulUploadResponse(fileUuid = 'file-1') {
@@ -42,22 +50,51 @@ describe('useChatAttachments', () => {
     vi.unstubAllGlobals()
   })
 
-  it('keeps valid files from a mixed batch when another file is rejected', async () => {
+  it('accepts every file type in a mixed batch (opaque binaries included)', async () => {
     const fetchMock = vi.fn().mockResolvedValue(successfulUploadResponse('file-valid'))
     vi.stubGlobal('fetch', fetchMock)
 
     const attachments = useChatAttachments()
 
-    await attachments.addAttachments([stagedPdf('valid.pdf'), unsupportedBinary()])
+    await attachments.addAttachments([stagedPdf('valid.pdf'), stagedBinary()])
     await flushUpload()
 
     expect(attachments.pendingAttachments.value).toMatchObject([
       { kind: 'staged', name: 'valid.pdf', file_uuid: 'file-valid' },
+      { kind: 'staged', name: 'bad.bin', mime: 'application/octet-stream', file_uuid: 'file-valid' },
     ])
-    expect(pushToast).toHaveBeenCalledWith(
-      expect.stringContaining('Unsupported file: bad.bin'),
-      { tone: 'danger' },
-    )
+    expect(pushToast).not.toHaveBeenCalled()
+  })
+
+  it('stages a zip archive above the inline threshold under its own mime', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(successfulUploadResponse('file-zip'))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const attachments = useChatAttachments()
+
+    await attachments.addAttachment(stagedZip())
+    await flushUpload()
+
+    expect(attachments.pendingAttachments.value).toMatchObject([
+      { kind: 'staged', name: 'paper.zip', mime: 'application/zip', file_uuid: 'file-zip' },
+    ])
+    const form = fetchMock.mock.calls[0][1].body as FormData
+    expect(form.get('mime')).toBe('application/zip')
+  })
+
+  it('stages large text files instead of rejecting them at the inline cap', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(successfulUploadResponse('file-text'))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const attachments = useChatAttachments()
+    const bigText = new File(['a'.repeat(2_000_001)], 'huge.tex', { type: '' })
+
+    await attachments.addAttachment(bigText)
+    await flushUpload()
+
+    expect(attachments.pendingAttachments.value).toMatchObject([
+      { kind: 'staged', name: 'huge.tex', mime: 'text/plain', file_uuid: 'file-text' },
+    ])
   })
 
   it('rejects zero-byte files before read or upload work starts', async () => {

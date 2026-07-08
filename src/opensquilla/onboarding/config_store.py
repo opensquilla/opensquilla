@@ -243,8 +243,8 @@ def _set_dotted(obj: dict[str, Any], path: str, value: Any) -> None:
     current[parts[-1]] = value
 
 
-def _restore_runtime_overrides(dump: dict[str, Any], config: GatewayConfig) -> None:
-    """Undo in-place runtime env resolutions before diffing for persist.
+def restore_runtime_overrides(dump: dict[str, Any], config: GatewayConfig) -> None:
+    """Undo in-place runtime env resolutions before persisting ``dump``.
 
     ``resolve_llm_runtime_config`` writes provider env overrides (e.g.
     ``OPENAI_BASE_URL`` -> ``llm.base_url``, ``OPENSQUILLA_LLM_PROXY`` ->
@@ -252,6 +252,8 @@ def _restore_runtime_overrides(dump: dict[str, Any], config: GatewayConfig) -> N
     never be baked into config.toml by an unrelated save, so each recorded
     override is restored to its stored value — but only while the field
     still equals the applied env value; an operator edit since boot wins.
+    Shared by the sparse persister here and the gateway RPC full-dump
+    persist (``rpc_config._persist_config``).
     """
     overrides = getattr(config, "runtime_field_overrides", None)
     if overrides is None:
@@ -431,7 +433,7 @@ def persist_config(
 
     baseline_dump, merged = _persist_plan(target, config, use_instance_baseline=same_path)
     current_dump = _model_toml_payload(config)
-    _restore_runtime_overrides(current_dump, config)
+    restore_runtime_overrides(current_dump, config)
     diff = _diff_payload(current_dump, baseline_dump, GatewayConfig)
     for provenance_key in _NON_PERSISTED_TOP_LEVEL_FIELDS:
         diff.pop(provenance_key, None)

@@ -2676,11 +2676,38 @@ class TestSessionsSend:
         assert (tmp_path / "transcripts" / session.session_id / sha).read_bytes() == payload
 
     @pytest.mark.asyncio
-    async def test_send_rejects_invalid_attachment_media_type(
+    async def test_send_admits_opaque_attachment_by_default(
         self, dispatcher, ctx_with_sessions, session
     ):
-        # text/plain is in the allow-list. Use a MIME that is genuinely
-        # outside the allow-list to keep this regression honest.
+        # Default config: an unrendered binary attachment is admitted as an
+        # opaque item instead of failing the send with INVALID_REQUEST.
+        res = await dispatcher.dispatch(
+            "r1",
+            "sessions.send",
+            {
+                "key": session.session_key,
+                "message": "hi",
+                "attachments": [
+                    {"type": "application/x-shellscript", "data": "AA==", "name": "x.sh"}
+                ],
+            },
+            ctx_with_sessions,
+        )
+        assert res.ok is True
+
+    @pytest.mark.asyncio
+    async def test_send_rejects_opaque_attachment_when_admission_disabled(
+        self, dispatcher, session
+    ):
+        # attachments.accept_opaque=false restores the legacy fail-closed
+        # admission gate for unrendered media types end-to-end.
+        ctx = make_ctx(
+            session_manager=FakeSessionManager([session]),
+            config=GatewayConfig(
+                memory={"flush_enabled": False},
+                attachments={"accept_opaque": False},
+            ),
+        )
         res = await dispatcher.dispatch(
             "r1",
             "sessions.send",
@@ -2691,7 +2718,7 @@ class TestSessionsSend:
                     {"type": "application/x-shellscript", "data": "AA=="}
                 ],
             },
-            ctx_with_sessions,
+            ctx,
         )
         assert res.ok is False
         assert res.error.code == "INVALID_REQUEST"

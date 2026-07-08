@@ -21,6 +21,7 @@ from typing import Any
 
 import pytest
 
+from opensquilla.contracts.attachments import MAX_STAGED_TEXT_BYTES
 from opensquilla.gateway.attachment_ingest import (
     IMAGE_ATTACHMENT_BYTES,
     MAX_STAGED_PDF_BYTES,
@@ -32,6 +33,7 @@ from opensquilla.gateway.uploads import (
     AttachmentNotFoundError,
     UploadOversizeError,
     UploadStore,
+    UploadStoreFullError,
     UploadUnsupportedMimeError,
 )
 
@@ -87,12 +89,14 @@ def test_upload_too_large_30mb_plus_rejected(store: UploadStore) -> None:
         asyncio.run(store.put("big.pdf", "application/pdf", too_big))
 
 
-def test_upload_text_family_uses_two_million_byte_cap(store: UploadStore) -> None:
-    ok_uuid = asyncio.run(store.put("ok.txt", "text/plain", b"a" * TEXT_ATTACHMENT_BYTES))
+def test_upload_text_family_uses_staged_text_cap(store: UploadStore) -> None:
+    ok_uuid = asyncio.run(store.put("ok.txt", "text/plain", b"a" * (TEXT_ATTACHMENT_BYTES + 1)))
     assert ok_uuid.startswith("u-")
 
     with pytest.raises(UploadOversizeError):
-        asyncio.run(store.put("too-large.txt", "text/plain", b"a" * (TEXT_ATTACHMENT_BYTES + 1)))
+        asyncio.run(
+            store.put("too-large.txt", "text/plain", b"a" * (MAX_STAGED_TEXT_BYTES + 1))
+        )
 
 
 def test_upload_image_uses_five_mib_cap(store: UploadStore) -> None:
@@ -119,11 +123,30 @@ def test_upload_normalizes_content_type_parameters(store: UploadStore) -> None:
     assert meta["mime"] == "text/plain"
 
 
-def test_upload_rejects_disallowed_mime_pre_resolution(store: UploadStore) -> None:
-    # Allow-list is enforced inside the store so the upload never lands on
-    # disk for a disallowed MIME — defence in depth alongside the route handler.
+def test_upload_store_accepts_opaque_mime(store: UploadStore) -> None:
+    # Any normalizable mime stages; opaque bytes are workspace-only downstream.
+    file_uuid = asyncio.run(store.put("x.sh", "application/x-shellscript", b"#!/bin/sh\n"))
+    assert file_uuid.startswith("u-")
+    _payload, meta = asyncio.run(store.get(file_uuid))
+    assert meta["mime"] == "application/x-shellscript"
+
+
+def test_upload_store_rejects_opaque_mime_when_admission_disabled(tmp_path: Path) -> None:
+    # accept_opaque=False keeps the store as the legacy fail-closed second
+    # layer so a disallowed MIME never lands in memory or on disk.
+    strict = UploadStore(
+        marker_dir=tmp_path / "strict-inbound",
+        ttl_seconds=600,
+        max_file_bytes=30 * 1024 * 1024,
+        accept_opaque=False,
+    )
     with pytest.raises(UploadUnsupportedMimeError):
-        asyncio.run(store.put("x.sh", "application/x-shellscript", b"#!/bin/sh\n"))
+        asyncio.run(strict.put("x.sh", "application/x-shellscript", b"#!/bin/sh\n"))
+
+
+def test_upload_store_rejects_unnormalizable_mime(store: UploadStore) -> None:
+    with pytest.raises(UploadUnsupportedMimeError):
+        asyncio.run(store.put("x.bin", "   ", b"\x00\x01"))
 
 
 def test_failed_upload_does_not_leak_uuid(store: UploadStore) -> None:
@@ -350,7 +373,11 @@ def test_file_uuid_resolution_rejects_large_staged_image() -> None:
         )
 
 
-def test_file_uuid_resolution_rejects_large_staged_text_family() -> None:
+def test_file_uuid_resolution_accepts_staged_text_above_inline_threshold(
+    tmp_path: Path,
+) -> None:
+    # Text is stageable: a clean-UTF-8 text file above the 2MB inline threshold
+    # resolves instead of dead-ending (the inline cap only bounds inline sends).
     from opensquilla.gateway.rpc_sessions import (
         _resolve_attachments,
         _validate_attachments,
@@ -374,15 +401,17 @@ def test_file_uuid_resolution_rejects_large_staged_text_family() -> None:
     validated = _validate_attachments(
         [{"file_uuid": "u-large-text", "mime": "text/csv", "name": "large.csv"}]
     )
-    with pytest.raises(ValueError, match="exceeds"):
-        asyncio.run(
-            _resolve_attachments(
-                validated,
-                store=store,
-                material_root=Path.cwd(),
-                session_id="s1",
-            )
+    resolved = asyncio.run(
+        _resolve_attachments(
+            validated,
+            store=store,
+            material_root=tmp_path,
+            session_id="s1",
         )
+    )
+    assert resolved[0]["kind"] == "attachment_ref"
+    assert resolved[0]["mime"] == "text/csv"
+    assert resolved[0]["size"] == len(payload)
 
 
 def test_file_uuid_resolution_rejects_aggregate_raw_bytes_above_cap(tmp_path: Path) -> None:
@@ -501,7 +530,9 @@ def test_post_restart_expired_marker_is_not_reported_as_lost(tmp_path: Path) -> 
 # ---------------------------------------------------------------------------
 
 
-def test_upload_route_rejects_oversize_text_family() -> None:
+def test_upload_route_accepts_text_above_inline_threshold() -> None:
+    # The staged path exists precisely so text larger than the inline threshold
+    # can upload; only the staged text ceiling rejects.
     pytest.importorskip("starlette.testclient")
     from starlette.applications import Starlette
     from starlette.testclient import TestClient
@@ -519,8 +550,142 @@ def test_upload_route_rejects_oversize_text_family() -> None:
             files={"file": ("big.txt", b"a" * (TEXT_ATTACHMENT_BYTES + 1), "text/plain")},
         )
 
+    assert response.status_code == 200
+    assert response.json()["mime"] == "text/plain"
+
+
+def test_upload_route_rejects_text_above_staged_ceiling() -> None:
+    pytest.importorskip("starlette.testclient")
+    from starlette.applications import Starlette
+    from starlette.testclient import TestClient
+
+    from opensquilla.gateway.config import GatewayConfig
+    from opensquilla.gateway.uploads import UploadStore, register_upload_routes
+
+    store = UploadStore(
+        marker_dir=None, ttl_seconds=600, max_file_bytes=MAX_STAGED_TEXT_BYTES + 1024
+    )
+    app = Starlette(debug=False)
+    register_upload_routes(app, config=GatewayConfig(), store=store)
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/v1/files/upload",
+            files={"file": ("big.txt", b"a" * (MAX_STAGED_TEXT_BYTES + 1), "text/plain")},
+        )
+
     assert response.status_code == 413
     assert response.json()["code"] == "TOO_LARGE"
+
+
+def _route_client(config=None, store=None):
+    pytest.importorskip("starlette.testclient")
+    from starlette.applications import Starlette
+    from starlette.testclient import TestClient
+
+    from opensquilla.gateway.config import GatewayConfig
+    from opensquilla.gateway.uploads import UploadStore, register_upload_routes
+
+    store = store or UploadStore(marker_dir=None, ttl_seconds=600, max_file_bytes=30 * 1024 * 1024)
+    app = Starlette(debug=False)
+    register_upload_routes(app, config=config or GatewayConfig(), store=store)
+    return TestClient(app)
+
+
+def _zip_bytes() -> bytes:
+    import io
+    import zipfile
+
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        archive.writestr("paper/main.tex", "\\documentclass{article}")
+    return buffer.getvalue()
+
+
+def test_upload_route_accepts_zip_as_opaque() -> None:
+    with _route_client() as client:
+        response = client.post(
+            "/api/v1/files/upload",
+            files={"file": ("paper.zip", _zip_bytes(), "application/zip")},
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["mime"] == "application/zip"
+    assert body["file_uuid"].startswith("u-")
+
+
+def test_upload_route_normalizes_windows_zip_spelling() -> None:
+    with _route_client() as client:
+        response = client.post(
+            "/api/v1/files/upload",
+            files={"file": ("paper.zip", _zip_bytes(), "application/x-zip-compressed")},
+        )
+
+    assert response.status_code == 200
+    assert response.json()["mime"] == "application/zip"
+
+
+def test_upload_route_sniffs_rendered_type_for_generic_claim() -> None:
+    png = b"\x89PNG\r\n\x1a\n" + b"fake image body"
+    with _route_client() as client:
+        response = client.post(
+            "/api/v1/files/upload",
+            files={"file": ("shot", png, "application/octet-stream")},
+        )
+
+    assert response.status_code == 200
+    assert response.json()["mime"] == "image/png"
+
+
+def test_upload_route_sniffs_text_for_missing_claim() -> None:
+    # A .tex with no browser-reported content type resolves via the whole
+    # payload UTF-8 sniff instead of 400-ing on the missing mime.
+    with _route_client() as client:
+        response = client.post(
+            "/api/v1/files/upload",
+            files={"file": ("main.tex", b"\\documentclass{article}\n", "")},
+        )
+
+    assert response.status_code == 200
+    assert response.json()["mime"] == "text/plain"
+
+
+def test_upload_route_caps_opaque_via_config() -> None:
+    from opensquilla.gateway.config import GatewayConfig
+
+    config = GatewayConfig(attachments={"opaque_max_bytes": 1024})
+    with _route_client(config=config) as client:
+        response = client.post(
+            "/api/v1/files/upload",
+            files={"file": ("x.bin", b"\x00" + b"a" * 4096, "application/x-unknown")},
+        )
+
+    assert response.status_code == 413
+    assert response.json()["code"] == "TOO_LARGE"
+
+
+def test_upload_route_strict_mode_rejects_zip_and_missing_mime() -> None:
+    from opensquilla.gateway.config import GatewayConfig
+    from opensquilla.gateway.uploads import UploadStore
+
+    config = GatewayConfig(attachments={"accept_opaque": False})
+    strict_store = UploadStore(
+        marker_dir=None, ttl_seconds=600, max_file_bytes=30 * 1024 * 1024, accept_opaque=False
+    )
+    with _route_client(config=config, store=strict_store) as client:
+        rejected = client.post(
+            "/api/v1/files/upload",
+            files={"file": ("paper.zip", _zip_bytes(), "application/zip")},
+        )
+        missing = client.post(
+            "/api/v1/files/upload",
+            files={"file": ("main.tex", b"\\documentclass{article}\n", "")},
+        )
+
+    assert rejected.status_code == 415
+    assert rejected.json()["code"] == "UNSUPPORTED_MEDIA_TYPE"
+    assert missing.status_code == 400
 
 
 def test_upload_unauthenticated_rejected() -> None:
@@ -610,3 +775,226 @@ def test_upload_route_response_exposes_expires_at_and_ttl() -> None:
     assert body["ttl_seconds"] == 600
     assert isinstance(body["expires_at"], (int, float))
     assert body["expires_at"] > time.time()
+
+
+def test_upload_route_sniffs_png_for_empty_claim() -> None:
+    png = b"\x89PNG\r\n\x1a\n" + b"fake image body"
+    with _route_client() as client:
+        response = client.post(
+            "/api/v1/files/upload",
+            files={"file": ("shot", png, "")},
+        )
+
+    assert response.status_code == 200
+    assert response.json()["mime"] == "image/png"
+
+
+def test_strict_store_keeps_staged_text_at_inline_cap(tmp_path: Path) -> None:
+    # accept_opaque=False restores the legacy stageable set, so text keeps the
+    # 2MB inline cap on the staged path instead of the 30MiB staged ceiling.
+    strict = UploadStore(
+        marker_dir=tmp_path / "strict-inbound",
+        ttl_seconds=600,
+        max_file_bytes=30 * 1024 * 1024,
+        accept_opaque=False,
+    )
+    with pytest.raises(UploadOversizeError):
+        asyncio.run(strict.put("big.txt", "text/plain", b"a" * (TEXT_ATTACHMENT_BYTES + 1)))
+
+    ok_uuid = asyncio.run(strict.put("ok.txt", "text/plain", b"a" * TEXT_ATTACHMENT_BYTES))
+    assert ok_uuid.startswith("u-")
+
+
+def test_app_factory_wires_strict_admission_into_route_and_store(tmp_path: Path) -> None:
+    # Boot the real app factory with accept_opaque=False and verify the
+    # end-to-end strict behavior: the route 415s a zip upload.
+    pytest.importorskip("starlette.testclient")
+    from starlette.testclient import TestClient
+
+    from opensquilla.gateway.app import create_gateway_app
+    from opensquilla.gateway.config import GatewayConfig
+    from opensquilla.gateway.uploads import get_upload_store, set_upload_store
+
+    original_store = get_upload_store()
+    set_upload_store(None)
+    try:
+        config = GatewayConfig(
+            attachments={
+                "accept_opaque": False,
+                "media_root": str(tmp_path / "media"),
+                "upload_store_max_total_bytes": 7 * 1024 * 1024,
+            },
+        )
+        app = create_gateway_app(config)
+        with TestClient(app) as client:
+            response = client.post(
+                "/api/v1/files/upload",
+                files={"file": ("paper.zip", _zip_bytes(), "application/zip")},
+            )
+        assert response.status_code == 415
+        assert response.json()["code"] == "UNSUPPORTED_MEDIA_TYPE"
+        assert get_upload_store().accept_opaque is False
+        assert get_upload_store().max_total_bytes == 7 * 1024 * 1024
+    finally:
+        set_upload_store(original_store)
+
+
+def test_file_uuid_opaque_reference_resolves_with_store_mime(tmp_path: Path) -> None:
+    # An opaque staged upload referenced WITHOUT a declared mime resolves via
+    # the store's own metadata into a content-addressed attachment_ref.
+    from opensquilla.gateway.rpc_sessions import (
+        _resolve_attachments,
+        _validate_attachments,
+    )
+
+    payload = b"PK\x03\x04" + b"\x00" * 128
+    store = _FakeUploadStore(
+        {
+            "u-zip": (
+                payload,
+                {
+                    "mime": "application/zip",
+                    "name": "paper.zip",
+                    "sha256": "x",
+                    "size": len(payload),
+                },
+            )
+        }
+    )
+
+    validated = _validate_attachments([{"file_uuid": "u-zip", "name": "paper.zip"}])
+    assert validated[0].get("type") is None
+
+    resolved = asyncio.run(
+        _resolve_attachments(
+            validated,
+            store=store,
+            material_root=tmp_path,
+            session_id="s1",
+        )
+    )
+    assert resolved[0]["kind"] == "attachment_ref"
+    assert resolved[0]["mime"] == "application/zip"
+    assert resolved[0]["size"] == len(payload)
+
+
+# ---------------------------------------------------------------------------
+# Aggregate RAM cap: reject-on-full, never evict.
+# ---------------------------------------------------------------------------
+
+
+def _capped_store(tmp_path: Path, max_total_bytes: int, ttl_seconds: float = 600) -> UploadStore:
+    return UploadStore(
+        marker_dir=tmp_path / "inbound",
+        ttl_seconds=ttl_seconds,
+        max_file_bytes=30 * 1024 * 1024,
+        max_total_bytes=max_total_bytes,
+    )
+
+
+def test_store_full_rejects_without_insert_or_marker(tmp_path: Path) -> None:
+    store = _capped_store(tmp_path, max_total_bytes=1024)
+    ok_uuid = asyncio.run(store.put("a.txt", "text/plain", b"a" * 900))
+
+    with pytest.raises(UploadStoreFullError, match="upload store is full"):
+        asyncio.run(store.put("b.txt", "text/plain", b"b" * 200))
+
+    # The staged entry is untouched (reject, never evict) and the rejected
+    # upload left neither a marker nor a stranded per-uuid lock behind.
+    payload, _meta = asyncio.run(store.get(ok_uuid))
+    assert payload == b"a" * 900
+    markers = list((tmp_path / "inbound").glob("*.meta"))
+    assert [m.stem for m in markers] == [ok_uuid]
+    assert set(store._locks) <= {ok_uuid}
+
+
+def test_store_full_recovers_after_ttl_sweep(tmp_path: Path) -> None:
+    store = _capped_store(tmp_path, max_total_bytes=1024, ttl_seconds=0.01)
+    asyncio.run(store.put("a.txt", "text/plain", b"a" * 900))
+    time.sleep(0.05)
+
+    # The pre-insert sweep frees the expired entry, so the same-size payload
+    # is admitted again.
+    ok_uuid = asyncio.run(store.put("b.txt", "text/plain", b"b" * 900))
+    assert ok_uuid.startswith("u-")
+
+
+def test_store_full_boundary_admits_exact_fit(tmp_path: Path) -> None:
+    store = _capped_store(tmp_path, max_total_bytes=1000)
+    asyncio.run(store.put("a.txt", "text/plain", b"a" * 600))
+    ok_uuid = asyncio.run(store.put("b.txt", "text/plain", b"b" * 400))
+    assert ok_uuid.startswith("u-")
+    with pytest.raises(UploadStoreFullError):
+        asyncio.run(store.put("c.txt", "text/plain", b"c"))
+
+
+def test_upload_route_returns_507_when_store_full(tmp_path: Path) -> None:
+    # A genuinely transient condition: the payload fits the cap on its own,
+    # but not while earlier staged entries are still alive.
+    store = _capped_store(tmp_path, max_total_bytes=1024)
+    asyncio.run(store.put("staged.txt", "text/plain", b"a" * 900))
+    with _route_client(store=store) as client:
+        response = client.post(
+            "/api/v1/files/upload",
+            files={"file": ("next.txt", b"b" * 200, "text/plain")},
+        )
+
+    assert response.status_code == 507
+    body = response.json()
+    assert body["code"] == "UPLOAD_STORE_FULL"
+    assert "retry" in body["error"]
+
+
+def test_payload_larger_than_total_cap_is_permanent_413(tmp_path: Path) -> None:
+    # A payload that can NEVER fit the aggregate cap is a permanent per-payload
+    # condition: 413 TOO_LARGE, not the retryable 507.
+    store = _capped_store(tmp_path, max_total_bytes=64)
+    with _route_client(store=store) as client:
+        response = client.post(
+            "/api/v1/files/upload",
+            files={"file": ("big.txt", b"a" * 128, "text/plain")},
+        )
+
+    assert response.status_code == 413
+    assert response.json()["code"] == "TOO_LARGE"
+
+
+def test_non_positive_total_cap_falls_back_to_default(tmp_path: Path) -> None:
+    # The RAM cap can be raised but not disabled: a non-positive config value
+    # falls back to the default at app construction (with a boot warning).
+    pytest.importorskip("starlette.testclient")
+    from opensquilla.gateway.app import create_gateway_app
+    from opensquilla.gateway.config import GatewayConfig
+    from opensquilla.gateway.uploads import (
+        _DEFAULT_MAX_TOTAL_BYTES,
+        get_upload_store,
+        set_upload_store,
+    )
+
+    original_store = get_upload_store()
+    set_upload_store(None)
+    try:
+        config = GatewayConfig(
+            attachments={
+                "upload_store_max_total_bytes": 0,
+                "media_root": str(tmp_path / "media"),
+            },
+        )
+        create_gateway_app(config)
+        assert get_upload_store().max_total_bytes == _DEFAULT_MAX_TOTAL_BYTES
+    finally:
+        set_upload_store(original_store)
+
+
+def test_strict_mime_rejection_takes_precedence_over_full_store(tmp_path: Path) -> None:
+    # Validation precedes the capacity check, so strict mode keeps its
+    # documented 415 error precedence even when the store is at capacity.
+    strict = UploadStore(
+        marker_dir=tmp_path / "inbound",
+        ttl_seconds=600,
+        max_file_bytes=30 * 1024 * 1024,
+        accept_opaque=False,
+        max_total_bytes=1,
+    )
+    with pytest.raises(UploadUnsupportedMimeError):
+        asyncio.run(strict.put("x.sh", "application/x-shellscript", b"#!/bin/sh\n"))

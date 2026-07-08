@@ -1647,7 +1647,7 @@
     "removeAttachment": "添付を削除",
     "remove": "削除",
     "attachFiles": "ファイルを添付",
-    "attachFilesTitle": "ファイルを添付: PNG、JPEG、GIF、WEBP、PDF、TXT、MD、HTML、CSV、JSON",
+    "attachFilesTitle": "ファイルを添付: 任意のファイル形式（画像、PDF、Office、テキストは直接読み取り、その他のファイルはエージェントのワークスペースへ）",
     "dropOverlayTitle": "離して添付",
     "dropOverlayHint": "ファイルは入力欄に追加されます",
     "composerSettings": "入力欄の設定",

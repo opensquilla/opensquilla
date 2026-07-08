@@ -1647,7 +1647,7 @@
     "removeAttachment": "Anhang entfernen",
     "remove": "Entfernen",
     "attachFiles": "Dateien anhängen",
-    "attachFilesTitle": "Dateien anhängen: PNG, JPEG, GIF, WEBP, PDF, TXT, MD, HTML, CSV, JSON",
+    "attachFilesTitle": "Dateien anhängen: beliebiger Dateityp (Bilder, PDF, Office und Text werden direkt gelesen; andere Dateien landen im Agent-Arbeitsbereich)",
     "dropOverlayTitle": "Zum Anhängen loslassen",
     "dropOverlayHint": "Dateien werden dem Verfasser hinzugefügt",
     "composerSettings": "Verfasser-Einstellungen",

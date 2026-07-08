@@ -1647,7 +1647,7 @@
     "removeAttachment": "移除附件",
     "remove": "移除",
     "attachFiles": "添加文件",
-    "attachFilesTitle": "添加文件：PNG、JPEG、GIF、WEBP、PDF、TXT、MD、HTML、CSV、JSON",
+    "attachFilesTitle": "添加文件：支持任意文件类型（图片、PDF、Office 和文本会被直接读取；其他文件会进入代理工作区）",
     "dropOverlayTitle": "松开即可附加",
     "dropOverlayHint": "文件会添加到输入框",
     "composerSettings": "输入框设置",

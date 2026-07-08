@@ -21,6 +21,31 @@ export async function copyTextWithFallback(text: string): Promise<void> {
   if (!ok) throw new Error('Copy failed')
 }
 
+// Extract the filename from a Content-Disposition header value. Prefers the
+// RFC 5987 `filename*=charset''percent-encoded` form (it carries non-ASCII
+// names), then falls back to the plain quoted/unquoted `filename=` parameter.
+// Returns null when the header is absent or carries no usable filename, and
+// strips any path segments so a hostile header cannot suggest a traversal.
+export function filenameFromContentDisposition(header: string | null): string | null {
+  if (!header) return null
+  let name: string | null = null
+  const extended = header.match(/filename\*\s*=\s*[^']*'[^']*'([^;]+)/i)
+  if (extended) {
+    try {
+      name = decodeURIComponent(extended[1].trim())
+    } catch {
+      name = null
+    }
+  }
+  if (!name) {
+    const plain = header.match(/filename\s*=\s*(?:"([^"]*)"|([^;]+))/i)
+    if (plain) name = (plain[1] ?? plain[2] ?? '').trim()
+  }
+  if (!name) return null
+  const basename = name.split(/[/\\]/).pop() ?? ''
+  return basename && basename !== '.' && basename !== '..' ? basename : null
+}
+
 export function downloadBlob(blob: Blob, filename: string): void {
   const url = URL.createObjectURL(blob)
   const anchor = document.createElement('a')

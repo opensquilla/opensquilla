@@ -40,6 +40,14 @@
           <Icon name="download" :size="16" />
           <span>{{ t('usageLogs.usage.export') }}</span>
         </button>
+        <button
+          class="btn btn--ghost"
+          :title="t('usageLogs.logs.bundleButtonTitle')"
+          @click="bundleDialogOpen = true"
+        >
+          <Icon name="download" :size="16" />
+          <span>{{ t('usageLogs.logs.bundleButton') }}</span>
+        </button>
       </div>
     </header>
 
@@ -181,6 +189,12 @@
       </aside>
     </div>
     </Transition>
+
+    <DiagnosticsBundleDialog
+      :open="bundleDialogOpen"
+      @close="bundleDialogOpen = false"
+      @confirm="downloadBundle"
+    />
   </div>
 </template>
 
@@ -189,9 +203,11 @@ import { ref, computed, onMounted, onUnmounted, onActivated, onDeactivated, watc
 import { useI18n } from 'vue-i18n'
 import { useRpcStore } from '@/stores/rpc'
 import { useFixedWindow } from '@/composables/useFixedWindow'
-import { downloadText } from '@/utils/browser'
+import { useToasts } from '@/composables/useToasts'
+import { downloadText, downloadBlob, filenameFromContentDisposition } from '@/utils/browser'
 import Icon from '@/components/Icon.vue'
 import ControlSwitch from '@/components/ControlSwitch.vue'
+import DiagnosticsBundleDialog from '@/components/DiagnosticsBundleDialog.vue'
 import RunTrace from '@/components/run/RunTrace.vue'
 import { useRunTrace } from '@/composables/run/useRunTrace'
 import { nodeStepsFromHistoryMessage } from '@/components/run/runTrace'
@@ -263,6 +279,9 @@ const WINDOW_MIN_WIDTH = '(min-width: 481px)'
 
 const { t } = useI18n()
 const rpc = useRpcStore()
+const { pushToast } = useToasts()
+const bundleDialogOpen = ref(false)
+const bundleInFlight = ref(false)
 const allLines = ref<LogLine[]>([])
 const cursor = ref(0)
 const searchText = ref('')
@@ -543,6 +562,41 @@ function exportLogs() {
     return `${ts}[${line.level}] ${line.message}`
   }).join('\n')
   downloadText('opensquilla-logs.txt', 'text/plain', text)
+}
+
+async function downloadBundle(options: { includeContent: boolean }) {
+  bundleDialogOpen.value = false
+  if (bundleInFlight.value) return
+  bundleInFlight.value = true
+  try {
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+    // Same-key Bearer auth as the approvals REST calls; sessionStorage access
+    // can throw in hardened/embedded contexts, so it is guarded.
+    let token = ''
+    try { token = sessionStorage.getItem('opensquilla.wsToken') || '' } catch {}
+    if (token) headers['Authorization'] = `Bearer ${token}`
+    const response = await fetch('/api/v1/diagnostics/bundle', {
+      method: 'POST',
+      headers,
+      credentials: 'same-origin',
+      // The gateway strict-checks `include_content is True`, so this must be a
+      // real JSON boolean — never a string.
+      body: JSON.stringify({ include_content: options.includeContent }),
+    })
+    if (!response.ok) {
+      pushToast(t('usageLogs.logs.bundleFailed'), { tone: 'danger' })
+      return
+    }
+    const blob = await response.blob()
+    const disposition = response.headers.get('content-disposition')
+    const filename = filenameFromContentDisposition(disposition) || 'opensquilla-bundle.zip'
+    downloadBlob(blob, filename)
+    pushToast(t('usageLogs.logs.bundleReady'), { tone: 'ok' })
+  } catch {
+    pushToast(t('usageLogs.logs.bundleFailed'), { tone: 'danger' })
+  } finally {
+    bundleInFlight.value = false
+  }
 }
 
 function openDetail(line: LogLine) {

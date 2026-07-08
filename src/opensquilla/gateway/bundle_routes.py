@@ -10,6 +10,7 @@ requires an owner principal so open-mode remote peers are rejected.
 from __future__ import annotations
 
 import asyncio
+import math
 import os
 import shutil
 import tempfile
@@ -57,6 +58,8 @@ def _request_principal_is_owner(config: GatewayConfig, request: Request) -> bool
 def _clamped_days(value: object) -> int:
     if isinstance(value, bool) or not isinstance(value, int | float):
         return _DEFAULT_DAYS
+    if isinstance(value, float) and not math.isfinite(value):
+        return _DEFAULT_DAYS
     return max(_MIN_DAYS, min(int(value), _MAX_DAYS))
 
 
@@ -75,7 +78,7 @@ def register_bundle_routes(app: Starlette, *, config: GatewayConfig) -> None:
             body = {}
         if not isinstance(body, dict):
             body = {}
-        include_content = bool(body.get("include_content", False))
+        include_content = body.get("include_content") is True
         days = _clamped_days(body.get("days", _DEFAULT_DAYS))
 
         # Imported at call time so the gateway app boots without pulling in

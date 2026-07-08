@@ -86,6 +86,20 @@ def test_bundle_route_honors_include_content(monkeypatch, tmp_path) -> None:
     assert manifest["content_tier"] is True
 
 
+def test_bundle_route_include_content_requires_json_true(monkeypatch, tmp_path) -> None:
+    # A JSON string like "false" is truthy in Python; it must NOT enable the
+    # conversation-content tier. Only JSON `true` may.
+    with _client(monkeypatch, tmp_path) as client:
+        response = client.post(
+            "/api/v1/diagnostics/bundle", json={"include_content": "false"}
+        )
+
+    assert response.status_code == 200
+    with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
+        manifest = json.loads(archive.read("manifest.json"))
+    assert manifest["content_tier"] is False
+
+
 def test_bundle_route_defaults_to_metadata_tier(monkeypatch, tmp_path) -> None:
     # include_content must come from an explicit JSON body key, never default on.
     with _client(monkeypatch, tmp_path) as client:
@@ -108,6 +122,22 @@ def test_bundle_route_clamps_days(monkeypatch, tmp_path) -> None:
         with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
             manifest = json.loads(archive.read("manifest.json"))
         assert manifest["days"] == expected
+
+
+def test_bundle_route_non_finite_days_uses_default(monkeypatch, tmp_path) -> None:
+    # Strict JSON has no NaN literal, so TestClient's json= kwarg can't send
+    # it; post the raw body Python's lenient json.loads still accepts.
+    with _client(monkeypatch, tmp_path) as client:
+        response = client.post(
+            "/api/v1/diagnostics/bundle",
+            content='{"days": NaN}',
+            headers={"Content-Type": "application/json"},
+        )
+
+    assert response.status_code == 200
+    with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
+        manifest = json.loads(archive.read("manifest.json"))
+    assert manifest["days"] == 3
 
 
 def test_bundle_route_rejects_non_owner(monkeypatch, tmp_path) -> None:

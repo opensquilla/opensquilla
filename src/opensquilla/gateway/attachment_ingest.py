@@ -257,24 +257,35 @@ def sniff_mime_from_bytes(raw: bytes) -> str | None:
         # degrades gracefully if it turns out to be another OLE format.
         return MSG_MIME
 
+    text: str | None
     try:
         text = head.decode("utf-8")
-    except UnicodeDecodeError:
-        return None
+    except UnicodeDecodeError as exc:
+        if len(raw) > len(head) and exc.end >= len(head):
+            # A multibyte sequence straddles the peek boundary; the complete
+            # prefix is still clean, so head-based sniffs can run and the
+            # whole-payload check below decides text-ness.
+            text = head[: exc.start].decode("utf-8")
+        else:
+            # Genuinely undecodable head: skip the head-based sniffs but still
+            # fall through to the whole-payload check rather than declaring
+            # binary from the peek window alone.
+            text = None
 
-    email_mime = _sniff_email_mime(text)
-    if email_mime is not None:
-        return email_mime
+    if text is not None:
+        email_mime = _sniff_email_mime(text)
+        if email_mime is not None:
+            return email_mime
 
-    stripped = text.lstrip()
-    if stripped.startswith("{") or stripped.startswith("["):
-        try:
-            import json as _json
+        stripped = text.lstrip()
+        if stripped.startswith("{") or stripped.startswith("["):
+            try:
+                import json as _json
 
-            _json.loads(raw.decode("utf-8"))
-            return "application/json"
-        except (UnicodeDecodeError, ValueError):
-            pass
+                _json.loads(raw.decode("utf-8"))
+                return "application/json"
+            except (UnicodeDecodeError, ValueError):
+                pass
 
     # Last resort: a fully clean-UTF-8, NUL-free payload is treated as plain
     # text so unknown-but-textual uploads degrade to readable context instead of

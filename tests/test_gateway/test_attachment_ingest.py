@@ -195,6 +195,36 @@ async def test_unknown_text_head_with_binary_tail_rejected() -> None:
 
 
 @pytest.mark.asyncio
+async def test_multibyte_char_straddling_peek_boundary_still_text() -> None:
+    # A multibyte character split by the sniff peek window must not classify an
+    # otherwise clean UTF-8 payload as binary.
+    payload = b"a" * (SNIFF_PEEK_BYTES - 1) + "中文正文，跨越窥探窗口。".encode()
+    result = await ingest_attachments(
+        "read it",
+        [{"name": "notes.tex", "mime_type": "application/x-tex", "data": payload}],
+        failure_mode="mark",
+    )
+
+    assert result.failures == []
+    assert result.attachments[0]["type"] == "text/plain"
+
+
+@pytest.mark.asyncio
+async def test_undecodable_head_with_valid_utf8_payload_is_not_misread() -> None:
+    # An invalid-UTF-8 head must not be sniffed as text even when the bytes
+    # after it are clean: the whole-payload check stays authoritative.
+    payload = b"\xff\xfe" + b"clean tail " * 8
+    result = await ingest_attachments(
+        "read it",
+        [{"name": "blob.bin", "mime_type": "application/x-unknown", "data": payload}],
+        failure_mode="mark",
+    )
+
+    assert result.attachments == []
+    assert result.failures[0].reason == "unsupported_mime"
+
+
+@pytest.mark.asyncio
 async def test_text_fallback_does_not_override_claimed_type() -> None:
     # CSV content sniffs as text/plain, but the weak fallback must not downgrade
     # the more specific claimed text/csv type.

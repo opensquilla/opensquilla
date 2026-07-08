@@ -4267,6 +4267,10 @@ async function downloadDiagnostics(): Promise<void> {
       await shell.openPath(join(app.getPath('userData'), 'logs')).catch(() => null)
       return
     }
+    // Read the body before showing the modal save dialog: the 60s abort signal
+    // keeps counting while the dialog is open, and a slow deliberation would
+    // otherwise abort the already-successful response.
+    const bytes = Buffer.from(await response.arrayBuffer())
     const stamp = new Date().toISOString().replace(/[:.]/g, '-')
     const win = currentMainWindow()
     const defaultPath = join(
@@ -4281,7 +4285,6 @@ async function downloadDiagnostics(): Promise<void> {
       ? await dialog.showSaveDialog(win, saveOptions)
       : await dialog.showSaveDialog(saveOptions)
     if (result.canceled || !result.filePath) return
-    const bytes = Buffer.from(await response.arrayBuffer())
     await writeFile(result.filePath, bytes)
     desktopLog('diagnostics_download_saved', { bytes: bytes.length })
     await shell.showItemInFolder(result.filePath)

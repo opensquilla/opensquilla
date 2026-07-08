@@ -140,6 +140,51 @@ def test_bundle_route_non_finite_days_uses_default(monkeypatch, tmp_path) -> Non
     assert manifest["days"] == 3
 
 
+def test_bundle_route_rejects_cross_origin_browser_request(monkeypatch, tmp_path) -> None:
+    # Drive-by exfiltration guard: a hostile page's fetch always carries its
+    # Origin. Even though the victim's browser connects from loopback (and so
+    # resolves as owner in open mode), the request must be refused before the
+    # bundle is ever generated.
+    with _client(monkeypatch, tmp_path) as client:
+        response = client.post(
+            "/api/v1/diagnostics/bundle",
+            json={"include_content": True},
+            headers={"Origin": "https://evil.example"},
+        )
+
+    assert response.status_code == 403
+    payload = response.json()
+    assert payload["code"] == "FORBIDDEN_ORIGIN"
+    assert payload["error"]
+
+
+def test_bundle_route_rejects_same_host_different_port_origin(monkeypatch, tmp_path) -> None:
+    # Same hostname on another port is a different web origin.
+    with _client(monkeypatch, tmp_path) as client:
+        response = client.post(
+            "/api/v1/diagnostics/bundle",
+            json={},
+            headers={"Origin": "http://testserver:8080"},
+        )
+
+    assert response.status_code == 403
+    assert response.json()["code"] == "FORBIDDEN_ORIGIN"
+
+
+def test_bundle_route_allows_same_origin_request(monkeypatch, tmp_path) -> None:
+    # The Web UI is served by the gateway itself, so its Origin matches the
+    # request's own host and must keep working.
+    with _client(monkeypatch, tmp_path) as client:
+        response = client.post(
+            "/api/v1/diagnostics/bundle",
+            json={},
+            headers={"Origin": "http://testserver"},
+        )
+
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "application/zip"
+
+
 def test_bundle_route_rejects_non_owner(monkeypatch, tmp_path) -> None:
     import opensquilla.gateway.bundle_routes as bundle_routes
 
@@ -181,7 +226,7 @@ def test_bundle_route_generation_failure_returns_500_and_cleans_temp(
     import opensquilla.observability.bundle as bundle_mod
 
     def _boom(*args: object, **kwargs: object) -> None:
-        raise RuntimeError("secret /Users/nobody/.opensquilla detail")
+        raise RuntimeError("secret /srv/fake-opensquilla/state detail")
 
     monkeypatch.setattr(bundle_mod, "collect_bundle", _boom)
     created = _track_mkdtemp(monkeypatch)

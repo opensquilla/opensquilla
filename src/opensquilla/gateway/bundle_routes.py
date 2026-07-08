@@ -16,6 +16,7 @@ import shutil
 import tempfile
 from datetime import UTC, datetime
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import structlog
 from starlette.applications import Starlette
@@ -55,6 +56,43 @@ def _request_principal_is_owner(config: GatewayConfig, request: Request) -> bool
     return bool(principal and principal.is_owner)
 
 
+_DEFAULT_SCHEME_PORTS = {"http": 80, "https": 443, "ws": 80, "wss": 443}
+
+
+def _effective_port(scheme: str, port: int | None) -> int | None:
+    if port is not None:
+        return port
+    return _DEFAULT_SCHEME_PORTS.get(scheme)
+
+
+def _request_origin_allowed(request: Request) -> bool:
+    """Reject browser requests whose Origin is not the gateway itself.
+
+    A hostile web page can make a loopback victim's browser POST here (the
+    permissive default CORS policy would even let it read the zip), so the
+    owner check alone is not enough. Browsers always attach ``Origin`` to
+    cross-origin fetches; the gateway-served Web UI is same-origin so its
+    ``Origin`` matches the request's own host. Requests without an ``Origin``
+    header (curl, the desktop node client) are not browser-mediated and pass.
+    """
+    origin = request.headers.get("origin")
+    if origin is None:
+        return True
+    try:
+        parsed = urlsplit(origin)
+    except ValueError:
+        return False
+    request_url = request.url
+    if not parsed.scheme or parsed.hostname is None or request_url.hostname is None:
+        return False  # includes the opaque "null" origin
+    return (
+        parsed.scheme == request_url.scheme
+        and parsed.hostname == request_url.hostname
+        and _effective_port(parsed.scheme, parsed.port)
+        == _effective_port(request_url.scheme, request_url.port)
+    )
+
+
 def _clamped_days(value: object) -> int:
     if isinstance(value, bool) or not isinstance(value, int | float):
         return _DEFAULT_DAYS
@@ -67,6 +105,11 @@ def register_bundle_routes(app: Starlette, *, config: GatewayConfig) -> None:
     """Register POST /api/v1/diagnostics/bundle on the given Starlette app."""
 
     async def bundle_handler(request: Request) -> FileResponse | JSONResponse:
+        if not _request_origin_allowed(request):
+            return JSONResponse(
+                {"error": "cross-origin requests are not allowed", "code": "FORBIDDEN_ORIGIN"},
+                status_code=403,
+            )
         if not _request_principal_is_owner(config, request):
             return JSONResponse(
                 {"error": "Owner privileges required", "code": "OWNER_REQUIRED"},

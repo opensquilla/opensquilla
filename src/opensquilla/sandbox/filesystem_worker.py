@@ -223,7 +223,7 @@ def _apply_patch(payload: dict[str, Any]) -> dict[str, object]:
     patch = _required_string(payload, "patch")
     root = _required_path(payload, "root")
     ops = patch_tool._parse_patch(patch)
-    added, modified, deleted = patch_tool._apply_ops(ops, root)
+    added, modified, deleted, _planned = patch_tool._apply_ops(ops, root)
     return {
         "message": _patch_summary(added=added, modified=modified, deleted=deleted),
         "created": added > 0,

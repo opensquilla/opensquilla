@@ -29,6 +29,30 @@ from opensquilla.tools.types import (
 )
 
 
+def _assert_invalid_attempt_result(
+    result,
+    *,
+    tool: str,
+    reason_code: str,
+    received_keys: list[str],
+) -> dict[str, object]:
+    assert result is not None
+    assert result.is_error is True
+    assert result.execution_status is not None
+    assert result.execution_status["status"] == "error"
+    assert result.execution_status["reason"] == "invalid_tool_arguments"
+    assert result.execution_status["preflight_rejected"] is True
+    assert result.execution_status["reason_code"] == reason_code
+    payload = json.loads(result.content)
+    assert payload["status"] == "rejected"
+    assert payload["reason_code"] == reason_code
+    assert payload["tool"] == tool
+    assert payload["received_keys"] == received_keys
+    assert payload["retry_allowed"] is True
+    assert payload["error_class"] == "InvalidToolArgumentsError"
+    return payload
+
+
 @pytest.mark.asyncio
 async def test_preflight_blocks_unknown_tool() -> None:
     """preflight rejects a tool not in the registry with ToolNotFound."""
@@ -71,6 +95,383 @@ async def test_preflight_passes_for_allowed_tool() -> None:
         tool_call=tool_call,
     )
     assert result is None, f"expected None for allowed tool, got {result!r}"
+
+
+@pytest.mark.asyncio
+async def test_preflight_emits_runtime_event_for_missing_required_arguments() -> None:
+    registry = ToolRegistry()
+    events = []
+
+    async def _edit_file(path: str, old_text: str, new_text: str) -> str:
+        return f"{path}:{old_text}->{new_text}"
+
+    registry.register(
+        ToolSpec(
+            name="edit_file",
+            description="edit file",
+            parameters={
+                "path": {"type": "string"},
+                "old_text": {"type": "string"},
+                "new_text": {"type": "string"},
+            },
+            required=["path", "old_text", "new_text"],
+        ),
+        _edit_file,
+    )
+    ctx = ToolContext(
+        on_runtime_event=events.append,
+        session_key="agent:main:test",
+    )
+
+    result = await preflight_tool_call(
+        registry=registry,
+        ctx=ctx,
+        tool_call=ToolCall(
+            tool_use_id="u1",
+            tool_name="edit_file",
+            arguments={"path": "src/a.py", "": "ignored"},
+        ),
+    )
+
+    assert result is not None
+    payload = _assert_invalid_attempt_result(
+        result,
+        tool="edit_file",
+        reason_code="missing_required_arguments",
+        received_keys=["path"],
+    )
+    assert payload["missing_keys"] == ["old_text", "new_text"]
+    matching = [
+        event
+        for event in events
+        if event.get("name") == "dispatch.invalid_tool_arguments"
+    ]
+    assert len(matching) == 1
+    event = matching[0]
+    assert event["feature"] == "tool_arguments"
+    assert event["tool"] == "edit_file"
+    assert event["tool_name"] == "edit_file"
+    assert event["tool_use_id"] == "u1"
+    assert event["reason"] == "missing_required_arguments"
+    assert event["argument_keys"] == ["path"]
+    assert event["missing"] == ["old_text", "new_text"]
+    assert event["executed"] is False
+
+
+@pytest.mark.asyncio
+async def test_preflight_emits_runtime_event_for_schema_validation_failed() -> None:
+    registry = ToolRegistry()
+    events = []
+
+    async def _echo(value: str) -> str:
+        return value
+
+    registry.register(
+        ToolSpec(
+            name="typed_echo",
+            description="typed echo",
+            parameters={
+                "type": "object",
+                "properties": {"value": {"type": "string"}},
+                "required": ["value"],
+                "additionalProperties": False,
+            },
+        ),
+        _echo,
+    )
+    ctx = ToolContext(on_runtime_event=events.append)
+
+    result = await preflight_tool_call(
+        registry=registry,
+        ctx=ctx,
+        tool_call=ToolCall(
+            tool_use_id="u1",
+            tool_name="typed_echo",
+            arguments={"value": 123},
+        ),
+    )
+
+    assert result is not None
+    _assert_invalid_attempt_result(
+        result,
+        tool="typed_echo",
+        reason_code="schema_validation_failed",
+        received_keys=["value"],
+    )
+    matching = [
+        event
+        for event in events
+        if event.get("name") == "dispatch.invalid_tool_arguments"
+    ]
+    assert len(matching) == 1
+    event = matching[0]
+    assert event["reason"] == "schema_validation_failed"
+    assert event["argument_keys"] == ["value"]
+    assert any("value" in error for error in event["errors"])
+
+
+@pytest.mark.asyncio
+async def test_preflight_rejects_unparsed_raw_tool_arguments() -> None:
+    registry = ToolRegistry()
+
+    async def _echo(value: str = "") -> str:
+        return value
+
+    registry.register(
+        ToolSpec(
+            name="echo",
+            description="echo",
+            parameters={"value": {"type": "string"}},
+        ),
+        _echo,
+    )
+
+    result = await preflight_tool_call(
+        registry=registry,
+        ctx=ToolContext(),
+        tool_call=ToolCall(
+            tool_use_id="u1",
+            tool_name="echo",
+            arguments={"_raw": '{"value": "unescaped " quote"}'},
+        ),
+    )
+
+    payload = _assert_invalid_attempt_result(
+        result,
+        tool="echo",
+        reason_code="unparsed_raw_arguments",
+        received_keys=["_raw"],
+    )
+    assert "valid JSON" in payload["user_message"]
+
+
+@pytest.mark.asyncio
+async def test_preflight_rejects_schema_invalid_argument_type() -> None:
+    registry = ToolRegistry()
+
+    async def _echo(value: str) -> str:
+        return value
+
+    registry.register(
+        ToolSpec(
+            name="typed_echo",
+            description="typed echo",
+            parameters={"value": {"type": "string"}},
+            required=["value"],
+        ),
+        _echo,
+    )
+
+    result = await preflight_tool_call(
+        registry=registry,
+        ctx=ToolContext(),
+        tool_call=ToolCall(
+            tool_use_id="u1",
+            tool_name="typed_echo",
+            arguments={"value": 123},
+        ),
+    )
+
+    payload = _assert_invalid_attempt_result(
+        result,
+        tool="typed_echo",
+        reason_code="schema_validation_failed",
+        received_keys=["value"],
+    )
+    assert "value" in payload["user_message"]
+    assert "string" in payload["user_message"]
+
+
+@pytest.mark.asyncio
+async def test_preflight_rejects_schema_invalid_enum_and_nested_array_item() -> None:
+    registry = ToolRegistry()
+
+    async def _configure(mode: str, cases: list[dict[str, str]]) -> str:
+        return f"{mode}:{len(cases)}"
+
+    registry.register(
+        ToolSpec(
+            name="configure",
+            description="configure",
+            parameters={
+                "mode": {"type": "string", "enum": ["safe", "fast"]},
+                "cases": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {"name": {"type": "string"}},
+                        "required": ["name"],
+                        "additionalProperties": False,
+                    },
+                },
+            },
+            required=["mode", "cases"],
+        ),
+        _configure,
+    )
+
+    result = await preflight_tool_call(
+        registry=registry,
+        ctx=ToolContext(),
+        tool_call=ToolCall(
+            tool_use_id="u1",
+            tool_name="configure",
+            arguments={
+                "mode": "unsafe",
+                "cases": [{"name": 123, "extra": "nope"}],
+            },
+        ),
+    )
+
+    payload = _assert_invalid_attempt_result(
+        result,
+        tool="configure",
+        reason_code="schema_validation_failed",
+        received_keys=["cases", "mode"],
+    )
+    assert "mode" in payload["user_message"]
+    assert "cases[0].name" in payload["user_message"]
+
+
+@pytest.mark.asyncio
+async def test_preflight_rejects_conflicting_edit_file_alias_arguments() -> None:
+    registry = ToolRegistry()
+
+    async def _edit_file(path: str, old_text: str, new_text: str) -> str:
+        return f"{path}:{old_text}->{new_text}"
+
+    registry.register(
+        ToolSpec(
+            name="edit_file",
+            description="edit file",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string"},
+                    "old_text": {"type": "string"},
+                    "new_text": {"type": "string"},
+                },
+                "required": ["path", "old_text", "new_text"],
+                "additionalProperties": False,
+            },
+        ),
+        _edit_file,
+    )
+
+    result = await preflight_tool_call(
+        registry=registry,
+        ctx=ToolContext(),
+        tool_call=ToolCall(
+            tool_use_id="u1",
+            tool_name="edit_file",
+            arguments={
+                "path": "src/a.py",
+                "filePath": "src/b.py",
+                "old_text": "old",
+                "new_text": "new",
+            },
+        ),
+    )
+
+    payload = _assert_invalid_attempt_result(
+        result,
+        tool="edit_file",
+        reason_code="alias_conflict",
+        received_keys=["filePath", "new_text", "old_text", "path"],
+    )
+    assert "filePath" in payload["user_message"]
+    assert "path" in payload["user_message"]
+
+
+@pytest.mark.asyncio
+async def test_build_tool_handler_canonicalizes_edit_file_alias_arguments() -> None:
+    registry = ToolRegistry()
+    received: dict[str, str] = {}
+
+    async def _edit_file(path: str, old_text: str, new_text: str) -> str:
+        received.update({"path": path, "old_text": old_text, "new_text": new_text})
+        return f"{path}:{old_text}->{new_text}"
+
+    registry.register(
+        ToolSpec(
+            name="edit_file",
+            description="edit file",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string"},
+                    "old_text": {"type": "string"},
+                    "new_text": {"type": "string"},
+                },
+                "required": ["path", "old_text", "new_text"],
+                "additionalProperties": False,
+            },
+        ),
+        _edit_file,
+    )
+
+    handler = build_tool_handler(registry, ToolContext())
+    result = await handler(
+        ToolCall(
+            tool_use_id="u1",
+            tool_name="edit_file",
+            arguments={
+                "filePath": "src/a.py",
+                "oldString": "old",
+                "newString": "new",
+            },
+        )
+    )
+
+    assert result.is_error is False
+    assert received == {"path": "src/a.py", "old_text": "old", "new_text": "new"}
+
+
+@pytest.mark.asyncio
+async def test_build_tool_handler_removes_matching_edit_file_alias_arguments() -> None:
+    registry = ToolRegistry()
+    received: dict[str, str] = {}
+
+    async def _edit_file(path: str, old_text: str, new_text: str) -> str:
+        received.update({"path": path, "old_text": old_text, "new_text": new_text})
+        return f"{path}:{old_text}->{new_text}"
+
+    registry.register(
+        ToolSpec(
+            name="edit_file",
+            description="edit file",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string"},
+                    "old_text": {"type": "string"},
+                    "new_text": {"type": "string"},
+                },
+                "required": ["path", "old_text", "new_text"],
+                "additionalProperties": False,
+            },
+        ),
+        _edit_file,
+    )
+
+    handler = build_tool_handler(registry, ToolContext())
+    result = await handler(
+        ToolCall(
+            tool_use_id="u1",
+            tool_name="edit_file",
+            arguments={
+                "path": "src/a.py",
+                "filePath": "src/a.py",
+                "old_text": "old",
+                "oldString": "old",
+                "new_text": "new",
+                "newString": "new",
+            },
+        )
+    )
+
+    assert result.is_error is False
+    assert received == {"path": "src/a.py", "old_text": "old", "new_text": "new"}
 
 
 @pytest.mark.asyncio

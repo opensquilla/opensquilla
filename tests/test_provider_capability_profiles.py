@@ -202,6 +202,18 @@ def test_openrouter_context_capability_profile_centralizes_prompt_cache_decision
     assert zai.native_compaction == NativeCompactionSupport.NONE
 
 
+def test_openrouter_qwen_context_capability_uses_explicit_prompt_cache() -> None:
+    for model in ("qwen/qwen3.6-flash", "qwen3.6-flash"):
+        caps = provider_context_capabilities(
+            provider_kind="openrouter",
+            model=model,
+        )
+
+        assert caps.prompt_cache == PromptCacheSupport.EXPLICIT
+        assert caps.supports_cache_breakpoints is True
+        assert caps.native_compaction == NativeCompactionSupport.NONE
+
+
 def test_anthropic_context_capability_does_not_claim_native_compaction() -> None:
     caps = provider_context_capabilities(
         provider_kind="anthropic",

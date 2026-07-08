@@ -18,6 +18,7 @@ from typing import Any
 
 import structlog
 
+from opensquilla.engine.tool_result_store import ToolResultStore, ToolResultStoreBudgetError
 from opensquilla.execution_status import (
     derive_is_error,
     execution_status_for_tool_result,
@@ -30,6 +31,7 @@ from opensquilla.result_budget import (
     resolve_budget_class,
 )
 from opensquilla.router_control import router_control_payload_terminates_turn
+from opensquilla.safety.secret_redaction import redact_secret_value
 from opensquilla.tool_boundary import ToolCall, ToolResult
 from opensquilla.tools.envelope import build_tool_failure_envelope, is_denial_payload
 from opensquilla.tools.types import InteractionMode, ToolContext
@@ -39,6 +41,85 @@ log = structlog.get_logger("opensquilla.tools.dispatch")
 _PENDING_APPROVAL_STATUSES: frozenset[str] = frozenset(
     {"approval_required", "approval_pending"}
 )
+
+
+_DISPATCH_TRUNCATION_RETRIEVE_HINT = (
+    "This tool result was truncated before entering model context. "
+    "Use retrieve_tool_result with tool_result_handle to inspect the original raw output."
+)
+
+
+def _store_dispatch_truncated_snapshot(
+    *,
+    ctx: ToolContext | None,
+    call: ToolCall,
+    content: str,
+) -> dict[str, Any] | None:
+    """Persist raw output that dispatch-level result budgets truncated."""
+    if ctx is None or not ctx.tool_result_store_dir:
+        return None
+
+    session_id = (
+        ctx.tool_result_store_session_id
+        or ctx.artifact_session_id
+        or ctx.session_key
+    )
+    session_key = ctx.session_key or session_id
+    agent_id = ctx.agent_id or "main"
+    if not session_id or not session_key or not agent_id:
+        return None
+
+    try:
+        record = ToolResultStore(ctx.tool_result_store_dir).write(
+            content,
+            tool_use_id=call.tool_use_id,
+            tool_name=call.tool_name,
+            session_id=session_id,
+            session_key=session_key,
+            agent_id=agent_id,
+        )
+    except ToolResultStoreBudgetError as exc:
+        log.info(
+            "dispatch.truncated_raw_snapshot_skipped",
+            tool=call.tool_name,
+            tool_use_id=call.tool_use_id,
+            reason=str(exc),
+        )
+        return None
+    except Exception as exc:  # pragma: no cover - tracing must not break tools
+        log.warning(
+            "dispatch.truncated_raw_snapshot_failed",
+            tool=call.tool_name,
+            tool_use_id=call.tool_use_id,
+            error=str(exc),
+        )
+        return None
+
+    return {
+        "tool_result_handle": record.handle,
+        "tool_result_sha256": record.sha256,
+        "tool_result_storage_encoding": record.storage_encoding,
+        "tool_result_stored_size_bytes": record.stored_size_bytes,
+        "retrieve_hint": _DISPATCH_TRUNCATION_RETRIEVE_HINT,
+    }
+
+
+def _attach_dispatch_truncated_snapshot(
+    *,
+    content: str,
+    snapshot: dict[str, Any] | None,
+) -> str:
+    if not snapshot:
+        return content
+    try:
+        payload = json.loads(content)
+    except (TypeError, ValueError):
+        return content
+    if not isinstance(payload, dict) or payload.get("result_truncated") is not True:
+        return content
+    payload.update(snapshot)
+    return json.dumps(payload, ensure_ascii=False)
+
 
 def _extract_pending_approval(content: Any) -> dict[str, Any] | None:
     """Return the payload when ``content`` carries a pending-approval status."""
@@ -119,7 +200,9 @@ async def finalize(
                 execution_status=normalize_execution_status(status),
             )
 
-        envelope = build_tool_failure_envelope(exception, call.tool_name)
+        envelope = redact_secret_value(
+            build_tool_failure_envelope(exception, call.tool_name)
+        )
         log.warning(
             "dispatch.tool_failed",
             tool=call.tool_name,
@@ -147,7 +230,7 @@ async def finalize(
             execution_status=normalize_execution_status(status),
         )
 
-    result = raw_result
+    result = redact_secret_value(raw_result)
 
     # ---------------- Approval-on-unsupported-surface branch ----------------
     if not _has_live_approval_surface(ctx):
@@ -244,13 +327,24 @@ async def finalize(
             call.tool_name,
             registered.spec.result_budget_class,
         )
+        raw_budget_content = result if isinstance(result, str) else str(result)
         budgeted = await budget_tracker.normalize(
             tool_name=call.tool_name,
-            content=result,
+            content=raw_budget_content,
             budget_class=budget_class,
             is_error=is_error,
+            arguments=call.arguments,
         )
         content = budgeted.content
+        if budgeted.changed:
+            content = _attach_dispatch_truncated_snapshot(
+                content=content,
+                snapshot=_store_dispatch_truncated_snapshot(
+                    ctx=ctx,
+                    call=call,
+                    content=raw_budget_content,
+                ),
+            )
         if budgeted.changed and execution_status is not None:
             execution_status = mark_execution_status_truncated(execution_status)
     return ToolResult(

@@ -13,6 +13,7 @@ from opensquilla.tools.path_policy import reject_foreign_host_path
 from opensquilla.tools.registry import tool
 from opensquilla.tools.run_mode import full_host_access_active
 from opensquilla.tools.types import current_tool_context
+from opensquilla.tools.write_tracking import summarize_patch_hygiene_warning
 
 
 def _effective_workdir(workdir: str | None) -> str | None:
@@ -105,6 +106,48 @@ def build_request_for_git(args: tuple[str, ...], cwd: Path, action_kind: str, po
     )
 
 
+def _append_patch_hygiene_warning(output: str, paths: list[str], cwd: str | None) -> str:
+    if not paths or cwd is None:
+        return output
+    repo = Path(cwd).expanduser().resolve(strict=False)
+    resolved_paths = [
+        path if path.is_absolute() else repo / path
+        for raw in paths
+        if (path := Path(raw.replace("\\", "/")))
+    ]
+    warning = summarize_patch_hygiene_warning(resolved_paths)
+    if not warning:
+        return output
+    return f"{warning}\n{output}"
+
+
+def _diff_paths(output: str, explicit_path: str | None = None) -> list[str]:
+    if explicit_path:
+        return [explicit_path]
+    paths: list[str] = []
+    for line in output.splitlines():
+        if not line.startswith("diff --git "):
+            continue
+        try:
+            paths.append(line.split(" b/", 1)[1])
+        except IndexError:
+            continue
+    return paths
+
+
+def _status_paths(output: str) -> list[str]:
+    paths: list[str] = []
+    for line in output.splitlines():
+        if not line or line.startswith("##") or len(line) < 4:
+            continue
+        raw = line[3:].strip()
+        if " -> " in raw:
+            raw = raw.rsplit(" -> ", 1)[1]
+        if raw:
+            paths.append(raw)
+    return paths
+
+
 @tool(
     name="git_status",
     description="Show the working tree status.",
@@ -119,7 +162,9 @@ def build_request_for_git(args: tuple[str, ...], cwd: Path, action_kind: str, po
     ),
 )
 async def git_status(workdir: str | None = None) -> str:
-    return await _run_git("status", "--short", "--branch", cwd=_effective_workdir(workdir))
+    cwd = _effective_workdir(workdir)
+    output = await _run_git("status", "--short", "--branch", cwd=cwd)
+    return _append_patch_hygiene_warning(output, _status_paths(output), cwd)
 
 
 @tool(
@@ -153,7 +198,9 @@ async def git_diff(
     if path:
         _reject_foreign_git_path(path)
         args += ["--", path]
-    return await _run_git(*args, cwd=_effective_workdir(workdir))
+    cwd = _effective_workdir(workdir)
+    output = await _run_git(*args, cwd=cwd)
+    return _append_patch_hygiene_warning(output, _diff_paths(output, path), cwd)
 
 
 @tool(

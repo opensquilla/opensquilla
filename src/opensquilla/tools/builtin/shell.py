@@ -101,10 +101,18 @@ from opensquilla.tools.run_mode import (
     full_host_access_active,
     trusted_sandbox_active,
 )
+from opensquilla.tools.source_diff_preservation import source_diff_preservation_block_json
 from opensquilla.tools.types import (
     CallerKind,
     ToolError,
     current_tool_context,
+)
+from opensquilla.tools.write_tracking import (
+    classify_workspace_path,
+    mutation_ledger_text_hash,
+    record_observed_workspace_mutations,
+    snapshot_current_workspace_mutations,
+    summarize_patch_hygiene_warning,
 )
 
 log = structlog.get_logger(__name__)
@@ -233,6 +241,75 @@ _WINDOWS_SHELL_VALUE_FLAGS = frozenset(
 _WINDOWS_SHELL_CREATE_COMMANDS = frozenset({"md", "mkdir", "new-item", "ni"})
 _WINDOWS_SHELL_CONTENT_COMMANDS = frozenset({"add-content", "out-file", "set-content"})
 _WINDOWS_SHELL_REMOVE_COMMANDS = frozenset({"del", "erase", "remove-item", "rm"})
+_MASKED_PIPELINE_FAILURE_WARNING = (
+    "[shell_warning:masked_pipeline_failure]\n"
+    "This command returned exit_code=0, but the output contains failure markers "
+    "and the command uses a shell pipeline. The pipeline may have hidden an "
+    "upstream failure. Treat this result as failed; rerun without the pipe or "
+    "with pipefail before relying on it."
+)
+_PIPELINE_RE = re.compile(r"(?<!\|)\|(?!\|)")
+_PIPELINE_FAILURE_MARKERS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"BUILD FAILURE", re.IGNORECASE),
+    re.compile(r"FAILURES!!!", re.IGNORECASE),
+    re.compile(r"(?:^|\n)FAILED\s+\S+", re.IGNORECASE),
+    re.compile(r"(?:^|\n)FAIL\s+\S+", re.IGNORECASE),
+    re.compile(r"\b\d+\s+failed(?:,|\s|$)", re.IGNORECASE),
+    re.compile(r"FAILED \((?:failures|errors)=\d+", re.IGNORECASE),
+    re.compile(r"(?:^|\n)\s*(?:Test Suites|Tests):\s+\d+\s+failed", re.IGNORECASE),
+    re.compile(r"Failed to execute goal", re.IGNORECASE),
+    re.compile(r"Traceback \(most recent call last\)", re.IGNORECASE),
+    re.compile(r"(?:^|\n)\s*(?:/bin/)?(?:ba)?sh: .*: not found", re.IGNORECASE),
+    re.compile(r"(?:^|\n)\s*command not found", re.IGNORECASE),
+    re.compile(r"No such file or directory", re.IGNORECASE),
+    re.compile(r"cannot find symbol", re.IGNORECASE),
+    re.compile(r"Compilation failed", re.IGNORECASE),
+    re.compile(r"(?:^|\n)\s*error\[[A-Z0-9]+\]:", re.IGNORECASE),
+    re.compile(r"(?:^|\n)\s*\[ERROR\]\s+", re.IGNORECASE),
+)
+_SHELL_SOURCE_EXTENSIONS = frozenset(
+    {
+        ".c",
+        ".cc",
+        ".cpp",
+        ".cxx",
+        ".cs",
+        ".go",
+        ".h",
+        ".hh",
+        ".hpp",
+        ".java",
+        ".js",
+        ".jsx",
+        ".kt",
+        ".kts",
+        ".m",
+        ".mm",
+        ".php",
+        ".py",
+        ".pyi",
+        ".rb",
+        ".rs",
+        ".scala",
+        ".swift",
+        ".ts",
+        ".tsx",
+    }
+)
+_SHELL_SOURCE_MUTATION_REQUIRED_TOOLS = frozenset(
+    {"read_source", "edit_source", "source_symbols", "exec_command"}
+)
+_SHELL_SOURCE_MUTATION_FORBIDDEN_TOOLS = frozenset(
+    {"read_file", "write_file", "edit_file", "apply_patch", "execute_code"}
+)
+_PYTHON_OPEN_WRITE_PATH_RE = re.compile(
+    r"open\(\s*(['\"])(?P<path>[^'\"]+)\1\s*,\s*(['\"])[wa][^'\"]*\3",
+    re.DOTALL,
+)
+_PYTHON_PATH_WRITE_PATH_RE = re.compile(
+    r"Path\(\s*(['\"])(?P<path>[^'\"]+)\1\s*\)\.(?:write_text|write_bytes)\(",
+    re.DOTALL,
+)
 PROCESS_ACTIONS: frozenset[str] = frozenset(
     {"eof", "kill", "list", "log", "poll", "remove", "submit", "wait", "write"}
 )
@@ -311,6 +388,92 @@ def _level_hints_for_shell_profile(
         needs_network=profile.needs_network,
         high_impact=profile.high_impact and not trusted_warnlist_auto_handled,
     )
+
+
+def _looks_like_masked_pipeline_failure(command: str, returncode: int | None, output: str) -> bool:
+    if returncode != 0:
+        return False
+    if _MASKED_PIPELINE_FAILURE_WARNING in output:
+        return False
+    if not _PIPELINE_RE.search(command):
+        return False
+    if "||" in command:
+        return False
+    return any(pattern.search(output) for pattern in _PIPELINE_FAILURE_MARKERS)
+
+
+def _append_masked_pipeline_failure_warning(
+    command: str,
+    returncode: int | None,
+    output: str,
+) -> str:
+    if not _looks_like_masked_pipeline_failure(command, returncode, output):
+        return output
+    if output:
+        return f"{_MASKED_PIPELINE_FAILURE_WARNING}\n{output}"
+    return _MASKED_PIPELINE_FAILURE_WARNING + "\n"
+
+
+def _append_patch_hygiene_warning(command: str, cwd: str | None, output: str) -> str:
+    paths = _git_paths_from_shell_result(command, output)
+    if not paths or cwd is None:
+        return output
+    repo = Path(cwd).expanduser().resolve(strict=False)
+    resolved_paths = [
+        candidate if candidate.is_absolute() else repo / candidate
+        for raw in paths
+        if (candidate := Path(raw.replace("\\", "/")))
+    ]
+    warning = summarize_patch_hygiene_warning(resolved_paths)
+    if not warning or warning in output:
+        return output
+    return f"{warning}\n{output}"
+
+
+def _git_paths_from_shell_result(command: str, output: str) -> list[str]:
+    lowered = command.casefold()
+    if "git diff" in lowered:
+        if "--name-only" in lowered:
+            return _git_name_only_paths(output)
+        return _git_diff_paths(output)
+    if "git status" in lowered:
+        return _git_status_paths(output)
+    return []
+
+
+def _git_diff_paths(output: str) -> list[str]:
+    paths: list[str] = []
+    for line in output.splitlines():
+        if not line.startswith("diff --git "):
+            continue
+        try:
+            paths.append(line.split(" b/", 1)[1])
+        except IndexError:
+            continue
+    return paths
+
+
+def _git_name_only_paths(output: str) -> list[str]:
+    paths: list[str] = []
+    for line in output.splitlines():
+        candidate = line.strip()
+        if not candidate or candidate.startswith(("fatal:", "warning:", "error:")):
+            continue
+        paths.append(candidate)
+    return paths
+
+
+def _git_status_paths(output: str) -> list[str]:
+    paths: list[str] = []
+    for line in output.splitlines():
+        if not line or line.startswith("##") or len(line) < 4:
+            continue
+        candidate = line[3:].strip()
+        if " -> " in candidate:
+            candidate = candidate.rsplit(" -> ", 1)[1]
+        if candidate:
+            paths.append(candidate)
+    return paths
 
 
 def _sandbox_effectively_off() -> bool:
@@ -2501,6 +2664,27 @@ def _is_special_shell_write_target(raw_target: object) -> bool:
     return _is_windows_dos_device_target(raw_target)
 
 
+_LEADING_CD_RE = re.compile(r"^\s*cd\s+((?:'[^']*')|(?:\"[^\"]*\")|(?:[^;&|]+?))\s*(?:&&|;)")
+
+
+def _shell_redirection_workdir(command: str, workdir: str | None) -> str | None:
+    match = _LEADING_CD_RE.match(command)
+    if match is None:
+        return workdir
+    raw_target = match.group(1).strip()
+    if len(raw_target) >= 2 and raw_target[0] == raw_target[-1] and raw_target[0] in {"'", '"'}:
+        raw_target = raw_target[1:-1]
+    path = Path(raw_target).expanduser()
+    if not path.is_absolute():
+        base = Path(workdir).expanduser() if workdir else Path.cwd()
+        path = base / path
+    return str(path.resolve(strict=False))
+
+
+def _is_shell_null_write_target(raw_target: str) -> bool:
+    return raw_target.strip().strip("'\"") == os.devnull
+
+
 def _basic_shell_write_targets(command: str) -> list[str]:
     targets: list[str] = []
     redirection_pattern = r"(?:^|\s)(?:\d?>{1,2}|&>{1,2})\s*(['\"]?)([^'\"\s|&;]+)\1"
@@ -2550,6 +2734,141 @@ def _shell_workdir_requires_write(
     return False
 
 
+def _shell_workspace_relative_path(path: Path) -> str | None:
+    ctx = current_tool_context.get()
+    if ctx is None or not ctx.workspace_dir:
+        return None
+    workspace = Path(ctx.workspace_dir).expanduser().resolve(strict=False)
+    try:
+        return path.resolve(strict=False).relative_to(workspace).as_posix()
+    except ValueError:
+        return None
+
+
+def _source_like_shell_target(raw_target: str, workdir: str | None) -> str | None:
+    if _is_shell_null_write_target(raw_target):
+        return None
+    resolved = _resolve_shell_write_target(raw_target, workdir)
+    relative_path = _shell_workspace_relative_path(resolved)
+    if relative_path is None:
+        return None
+    if Path(relative_path).suffix.casefold() not in _SHELL_SOURCE_EXTENSIONS:
+        return None
+    if classify_workspace_path(relative_path) != "source":
+        return None
+    return relative_path
+
+
+def _shell_tokens(command: str) -> list[str]:
+    try:
+        return shlex.split(command)
+    except ValueError:
+        return []
+
+
+def _inplace_shell_source_targets(command: str, workdir: str | None) -> list[str]:
+    tokens = _shell_tokens(command)
+    if not tokens:
+        return []
+    if not any(token in {"sed", "perl"} or token.endswith(("/sed", "/perl")) for token in tokens):
+        return []
+    if not any(
+        token == "-i" or token.startswith("-i") or token.startswith("-pi") for token in tokens
+    ):
+        return []
+
+    targets: list[str] = []
+    for token in tokens:
+        if token.startswith("-") or token in {"sed", "perl", "&&", ";", "|"}:
+            continue
+        if Path(token.strip("'\"")).suffix.casefold() not in _SHELL_SOURCE_EXTENSIONS:
+            continue
+        target = _source_like_shell_target(token, workdir)
+        if target is not None:
+            targets.append(target)
+    return sorted(set(targets))
+
+
+def _python_shell_source_targets(command: str, workdir: str | None) -> list[str]:
+    if "python" not in command and "Path(" not in command and "open(" not in command:
+        return []
+    targets: list[str] = []
+    for regex in (_PYTHON_OPEN_WRITE_PATH_RE, _PYTHON_PATH_WRITE_PATH_RE):
+        for match in regex.finditer(command):
+            raw_target = match.group("path")
+            target = _source_like_shell_target(raw_target, workdir)
+            if target is not None:
+                targets.append(target)
+    return sorted(set(targets))
+
+
+def _shell_source_mutation_signal(command: str, workdir: str | None) -> dict[str, Any] | None:
+    target_workdir = _shell_redirection_workdir(command, workdir)
+    redirection_targets = [
+        target
+        for raw_target in _shell_write_targets(command)
+        if (target := _source_like_shell_target(raw_target, target_workdir)) is not None
+    ]
+    inplace_targets = _inplace_shell_source_targets(command, target_workdir)
+    python_targets = _python_shell_source_targets(command, target_workdir)
+
+    reasons: list[str] = []
+    if redirection_targets:
+        reasons.append("redirection_or_tee")
+    if inplace_targets:
+        reasons.append("inplace_editor")
+    if python_targets:
+        reasons.append("python_write")
+
+    targets = sorted(set(redirection_targets + inplace_targets + python_targets))
+    if not targets:
+        return None
+    return {
+        "shell_source_mutation_suspected": True,
+        "shell_source_mutation_reason": ",".join(reasons),
+        "shell_source_mutation_targets": targets[:20],
+        "shell_source_mutation_target_count": len(targets),
+    }
+
+
+def _shell_source_mutation_telemetry_enabled() -> bool:
+    ctx = current_tool_context.get()
+    if ctx is None or ctx.allowed_tools is None:
+        return False
+    allowed = set(ctx.allowed_tools)
+    return _SHELL_SOURCE_MUTATION_REQUIRED_TOOLS <= allowed and not (
+        _SHELL_SOURCE_MUTATION_FORBIDDEN_TOOLS & allowed
+    )
+
+
+def _emit_shell_source_mutation_signal(
+    *,
+    tool_name: str,
+    command: str,
+    signal_payload: dict[str, Any] | None,
+) -> None:
+    if not signal_payload:
+        return
+    ctx = current_tool_context.get()
+    callback = getattr(ctx, "on_runtime_event", None) if ctx is not None else None
+    if callback is None:
+        return
+    event = {
+        "feature": "shell_source_mutation",
+        "name": "shell.source_mutation_suspected",
+        "tool": tool_name,
+        "tool_name": tool_name,
+        "command_hash": mutation_ledger_text_hash(command),
+        "agent_id": getattr(ctx, "agent_id", None),
+        "session_key": getattr(ctx, "session_key", None),
+        **signal_payload,
+    }
+    try:
+        callback(event)
+    except Exception:
+        return
+
+
 def _workspace_lockdown_shell_block(
     tool_name: str,
     command: str,
@@ -2560,8 +2879,11 @@ def _workspace_lockdown_shell_block(
     roots = _workspace_lockdown_roots()
     if not roots:
         return None
+    target_workdir = _shell_redirection_workdir(command, workdir)
     for target in _shell_write_targets_from_inputs(command, stdin):
-        resolved = _resolve_shell_write_target(target, workdir)
+        if _is_shell_null_write_target(target):
+            continue
+        resolved = _resolve_shell_write_target(target, target_workdir)
         if _path_inside_any_root(resolved, roots):
             continue
         return {
@@ -2909,8 +3231,9 @@ def _workspace_write_deny_shell_block(
         if ctx is not None and ctx.workspace_dir
         else None
     )
+    target_workdir = _shell_redirection_workdir(command, workdir)
     for target in _shell_write_targets_from_inputs(command, stdin):
-        resolved = _resolve_shell_write_target(target, workdir)
+        resolved = _resolve_shell_write_target(target, target_workdir)
         deny_match = match_workspace_write_deny(
             resolved,
             original_path=target,
@@ -2919,6 +3242,64 @@ def _workspace_write_deny_shell_block(
         )
         if deny_match is not None:
             return workspace_write_deny_block(tool_name, deny_match, command=command)
+    return None
+
+
+def _workspace_scratch_artifact_shell_block(
+    tool_name: str,
+    command: str,
+    workdir: str | None,
+) -> dict[str, object] | None:
+    from opensquilla.tools.write_policy import (
+        match_workspace_scratch_artifact,
+        workspace_scratch_artifact_block,
+    )
+
+    ctx = current_tool_context.get()
+    workspace = (
+        Path(ctx.workspace_dir).expanduser().resolve(strict=False)
+        if ctx is not None and ctx.workspace_dir
+        else None
+    )
+    target_workdir = _shell_redirection_workdir(command, workdir)
+    for target in _shell_write_targets(command):
+        resolved = _resolve_shell_write_target(target, target_workdir)
+        scratch_match = match_workspace_scratch_artifact(
+            resolved,
+            original_path=target,
+            workspace=workspace,
+            ctx=ctx,
+        )
+        if scratch_match is not None:
+            return workspace_scratch_artifact_block(
+                tool_name,
+                scratch_match,
+                command=command,
+            )
+    return None
+
+
+def _source_diff_preservation_shell_block(
+    command: str,
+    workdir: str | None,
+    *,
+    stdin: str | None = None,
+) -> str | None:
+    source_diff_block = source_diff_preservation_block_json(
+        command=command,
+        workdir=workdir,
+    )
+    if source_diff_block is not None:
+        return source_diff_block
+    if stdin is None:
+        return None
+    for stdin_chunk in _iter_stdin_guard_chunks(stdin):
+        source_diff_block = source_diff_preservation_block_json(
+            command=stdin_chunk,
+            workdir=workdir,
+        )
+        if source_diff_block is not None:
+            return source_diff_block
     return None
 
 
@@ -3367,7 +3748,10 @@ async def _run_host_shell_command(
 @tool(
     name="exec_command",
     description=(
-        "Execute a shell command and return stdout/stderr with exit code. "
+        "Execute a shell command and return stdout/stderr with exit code. Use for "
+        "repository inspection, builds, tests, and command-line tools. For workspace "
+        "source changes, prefer read_source followed by edit_source so edits stay "
+        "revision-gated, structured, and reviewable. "
         "On Windows, commands run in PowerShell; use PowerShell syntax such as "
         "Set-Location -LiteralPath, or wrap cmd.exe syntax such as cd /d with cmd /c."
     ),
@@ -3473,6 +3857,12 @@ async def exec_command(
     )
     if approval_denial is not None:
         return json.dumps(approval_denial, ensure_ascii=False)
+    scratch_block = _workspace_scratch_artifact_shell_block("exec_command", command, cwd)
+    if scratch_block is not None:
+        return json.dumps(scratch_block, ensure_ascii=False)
+    source_diff_block = _source_diff_preservation_shell_block(command, cwd, stdin=stdin)
+    if source_diff_block is not None:
+        return source_diff_block
     if not host_execution:
         path_access = _sandbox_workdir_access_envelope(
             cwd,
@@ -3517,6 +3907,28 @@ async def exec_command(
     merged_env = _dedupe_windows_env_keys(merged_env)
     effective_timeout = _resolve_exec_timeout(timeout)
     stdin_bytes = stdin.encode("utf-8") if stdin is not None else None
+    mutation_before = snapshot_current_workspace_mutations()
+    source_mutation_signal = (
+        _shell_source_mutation_signal(command, cwd)
+        if _shell_source_mutation_telemetry_enabled()
+        else None
+    )
+
+    def finish(output: str) -> str:
+        metadata: dict[str, Any] = {"command_hash": mutation_ledger_text_hash(command)}
+        if source_mutation_signal is not None:
+            metadata.update(source_mutation_signal)
+            _emit_shell_source_mutation_signal(
+                tool_name="exec_command",
+                command=command,
+                signal_payload=source_mutation_signal,
+            )
+        record_observed_workspace_mutations(
+            tool_name="exec_command",
+            before=mutation_before,
+            metadata=metadata,
+        )
+        return output
 
     if runtime is not None and runtime.effective.sandbox_enabled and not host_execution:
         if windows_process_sandbox:
@@ -3532,7 +3944,7 @@ async def exec_command(
             ),
         )
         if isinstance(decision, DenialResult):
-            return json.dumps(decision.to_dict())
+            return finish(json.dumps(decision.to_dict()))
         backend_cwd = _sandbox_shell_backend_cwd(cwd, request)
         backend_policy = request.policy
         backend_policy = _policy_with_active_tool_mounts(backend_policy)
@@ -3552,9 +3964,9 @@ async def exec_command(
         )
         preflight = await preflight_subprocess_managed_network(backend_request, runtime)
         if isinstance(preflight, DenialResult):
-            return json.dumps(preflight.to_dict())
+            return finish(json.dumps(preflight.to_dict()))
         if isinstance(preflight, dict):
-            return json.dumps(preflight)
+            return finish(json.dumps(preflight))
         try:
             sandbox_result = await _run_backend_with_managed_network(
                 backend_request,
@@ -3567,13 +3979,19 @@ async def exec_command(
                 sandbox_result, request, policy, runtime=runtime
             )
             if isinstance(escalation, DenialResult):
-                return json.dumps(escalation.to_dict())
+                return finish(json.dumps(escalation.to_dict()))
             raise ToolError("Sandboxed shell execution denied; host fallback disabled")
         output = sandbox_result.stdout
         if sandbox_result.stderr:
             output += sandbox_result.stderr
         output = _append_sandbox_network_hint(output)
-        return f"exit_code={sandbox_result.returncode}\n{output}"
+        output = _append_patch_hygiene_warning(command, cwd, output)
+        output = _append_masked_pipeline_failure_warning(
+            command,
+            sandbox_result.returncode,
+            output,
+        )
+        return finish(f"exit_code={sandbox_result.returncode}\n{output}")
 
     if host_execution:
         log.info(
@@ -3585,13 +4003,25 @@ async def exec_command(
         )
         merged_env = _host_shell_env(merged_env)
 
-    return await _run_host_shell_command(
+    host_output = await _run_host_shell_command(
         command,
         cwd=cwd,
         env=merged_env,
         stdin_bytes=stdin_bytes,
         effective_timeout=effective_timeout,
     )
+    exit_code_match = re.match(r"exit_code=(-?\d+)\n", host_output)
+    if exit_code_match is None:
+        return finish(host_output)
+    returncode = int(exit_code_match.group(1))
+    output = host_output[exit_code_match.end() :]
+    output = _append_patch_hygiene_warning(command, cwd, output)
+    output = _append_masked_pipeline_failure_warning(
+        command,
+        returncode,
+        output,
+    )
+    return finish(f"exit_code={returncode}\n{output}")
 
 
 @tool(
@@ -3682,6 +4112,16 @@ async def background_process(
     )
     if approval_denial is not None:
         return json.dumps(approval_denial, ensure_ascii=False)
+    scratch_block = _workspace_scratch_artifact_shell_block(
+        "background_process",
+        command,
+        cwd,
+    )
+    if scratch_block is not None:
+        return json.dumps(scratch_block, ensure_ascii=False)
+    source_diff_block = _source_diff_preservation_shell_block(command, cwd)
+    if source_diff_block is not None:
+        return source_diff_block
     if not host_execution:
         path_access = _sandbox_workdir_access_envelope(
             cwd,

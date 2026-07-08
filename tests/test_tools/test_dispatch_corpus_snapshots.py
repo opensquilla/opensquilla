@@ -35,8 +35,8 @@ def _stable_envelope(result: ToolResult) -> dict[str, Any]:
     Dynamic fields (tool_use_id) are normalised; content is parsed as JSON
     when possible so diffs are human-readable.
 
-    The ``preview`` field produced by explicit strict result compaction is
-    stripped.  The preview is a raw content slice whose exact byte count is
+    The ``preview``/``tail`` fields produced by explicit strict result compaction
+    are stripped.  They are raw content slices whose exact byte counts are
     sensitive to per-test ToolResultBudgetPolicy settings.  What matters is
     that ``result_truncated``, ``result_original_chars``, and
     ``execution_status.truncated`` are correct; those fields are retained.
@@ -47,9 +47,9 @@ def _stable_envelope(result: ToolResult) -> dict[str, Any]:
     except (TypeError, ValueError):
         content = result.content
 
-    # Strip the raw preview slice from compacted results — see docstring.
+    # Strip raw content slices from compacted results — see docstring.
     if isinstance(content, dict) and content.get("result_truncated") is True:
-        content = {k: v for k, v in content.items() if k != "preview"}
+        content = {k: v for k, v in content.items() if k not in {"preview", "tail"}}
 
     status: dict[str, Any] | None = None
     if result.execution_status is not None:

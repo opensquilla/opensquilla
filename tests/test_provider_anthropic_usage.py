@@ -283,6 +283,77 @@ def test_anthropic_done_event_carries_cache_write_tokens(monkeypatch) -> None:
     assert done.cache_write_tokens == 500
 
 
+def test_anthropic_provider_writes_llm_trace(monkeypatch, tmp_path) -> None:
+    trace_path = tmp_path / "anthropic-llm-calls.jsonl"
+    monkeypatch.setenv("OPENSQUILLA_LLM_TRACE_RECORDER", "full")
+    monkeypatch.setenv("OPENSQUILLA_LLM_TRACE_PATH", str(trace_path))
+    sse_events = [
+        {
+            "type": "message_start",
+            "message": {
+                "id": "msg_1",
+                "model": "claude-opus-4-7",
+                "usage": {"input_tokens": 10},
+            },
+        },
+        {
+            "type": "content_block_start",
+            "index": 0,
+            "content_block": {"type": "text", "text": ""},
+        },
+        {
+            "type": "content_block_delta",
+            "index": 0,
+            "delta": {"type": "text_delta", "text": "ok"},
+        },
+        {"type": "content_block_stop", "index": 0},
+        {
+            "type": "message_delta",
+            "delta": {"stop_reason": "end_turn"},
+            "usage": {"output_tokens": 5},
+        },
+        {"type": "message_stop"},
+    ]
+    body = _sse_body(sse_events)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/event-stream"},
+            content=body,
+        )
+
+    transport = httpx.MockTransport(handler)
+    real_async_client = httpx.AsyncClient
+
+    def patched_async_client(*args, **kwargs):
+        kwargs["transport"] = transport
+        return real_async_client(*args, **kwargs)
+
+    monkeypatch.setattr("opensquilla.provider.anthropic.httpx.AsyncClient", patched_async_client)
+    provider = AnthropicProvider(api_key="test", model="claude-opus-4-7")
+
+    async def _collect() -> list[object]:
+        return [
+            event
+            async for event in provider.chat(
+                [Message(role="user", content="hi")],
+                config=ChatConfig(),
+            )
+        ]
+
+    events = asyncio.run(_collect())
+
+    assert any(isinstance(event, DoneEvent) for event in events)
+    rows = [json.loads(line) for line in trace_path.read_text(encoding="utf-8").splitlines()]
+    assert rows[0]["event"] == "llm.request"
+    assert rows[0]["headers"]["x-api-key"] == "[REDACTED]"
+    assert any(row["event"] == "llm.response_chunk" for row in rows)
+    assert rows[-1]["event"] == "llm.response"
+    assert rows[-1]["assistant_text"] == "ok"
+    assert rows[-1]["response_ids"] == ["msg_1"]
+
+
 def test_anthropic_done_event_includes_compaction_iteration_usage(monkeypatch) -> None:
     sse_events = [
         {

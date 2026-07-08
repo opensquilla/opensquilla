@@ -17,6 +17,17 @@ def test_usage_fields_returns_zero_when_usage_missing() -> None:
     assert _usage_fields({}) == (0, 0, 0, 0, 0, 0.0)
 
 
+def test_usage_fields_ignores_malformed_token_details() -> None:
+    usage = {
+        "prompt_tokens": 100,
+        "completion_tokens": 10,
+        "prompt_tokens_details": ["not", "a", "mapping"],
+        "completion_tokens_details": ["not", "a", "mapping"],
+    }
+
+    assert _usage_fields(usage) == (100, 10, 0, 0, 0, 0.0)
+
+
 def test_deepseek_prompt_cache_miss_tokens_are_not_cache_writes() -> None:
     """DeepSeek's prompt_cache_miss_tokens is fresh input already billed inside
     prompt_tokens at the standard rate — it carries no write premium and must
@@ -104,6 +115,19 @@ def test_usage_fields_handles_only_cached_tokens_no_writes() -> None:
     assert cache_write_t == 0
 
 
+def test_usage_fields_extracts_top_level_cached_tokens_alias() -> None:
+    usage = {
+        "prompt_tokens": 1000,
+        "completion_tokens": 20,
+        "cached_tokens": 777,
+    }
+
+    *_, cached_t, cache_write_t, _ = _usage_fields(usage)
+
+    assert cached_t == 777
+    assert cache_write_t == 0
+
+
 # ---------------------------------------------------------------------------
 # Documented OpenRouter / DeepSeek shapes and zero-precedence safety.
 # ---------------------------------------------------------------------------
@@ -153,6 +177,54 @@ def test_usage_fields_extracts_openrouter_cache_write_tokens() -> None:
     }
 
     *_, cache_write_t, _ = _usage_fields(usage)
+    assert cache_write_t == 350
+
+
+def test_usage_fields_extracts_dashscope_nested_cache_creation_input_tokens() -> None:
+    usage = {
+        "prompt_tokens": 2000,
+        "completion_tokens": 100,
+        "prompt_tokens_details": {
+            "cached_tokens": 0,
+            "cache_creation_input_tokens": 1500,
+            "cache_type": "ephemeral",
+        },
+    }
+
+    *_, cached_t, cache_write_t, _ = _usage_fields(usage)
+
+    assert cached_t == 0
+    assert cache_write_t == 1500
+
+
+def test_usage_fields_extracts_dashscope_cache_creation_object_tokens() -> None:
+    usage = {
+        "prompt_tokens": 2000,
+        "completion_tokens": 100,
+        "prompt_tokens_details": {
+            "cached_tokens": 0,
+            "cache_creation": {"ephemeral_5m_input_tokens": 1500},
+        },
+    }
+
+    *_, cache_write_t, _ = _usage_fields(usage)
+
+    assert cache_write_t == 1500
+
+
+def test_usage_fields_existing_cache_write_field_beats_dashscope_nested_creation() -> None:
+    usage = {
+        "prompt_tokens": 2000,
+        "completion_tokens": 100,
+        "prompt_tokens_details": {
+            "cached_tokens": 0,
+            "cache_write_tokens": 350,
+            "cache_creation_input_tokens": 1500,
+        },
+    }
+
+    *_, cache_write_t, _ = _usage_fields(usage)
+
     assert cache_write_t == 350
 
 

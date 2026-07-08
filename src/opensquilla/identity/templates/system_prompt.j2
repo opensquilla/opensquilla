@@ -1,8 +1,10 @@
+{% set is_headless_source_edit = prompt_mode == "headless_source_edit" -%}
+{% set is_headless_repo_coding_scaffold = prompt_mode == "headless_repo_coding_scaffold" -%}
 {% if identity.name -%}
 # Agent: {{ identity.name }}
 {% endif -%}
 
-{% if prompt_mode != "none" -%}
+{% if prompt_mode != "none" and not is_headless_source_edit and not is_headless_repo_coding_scaffold -%}
 {% set product_identity_name = identity.name or "OpenSquilla" -%}
 ## Product Identity
 
@@ -28,6 +30,57 @@ SOUL.md defines durable voice and persona guidance for this workspace. Treat it 
 {% for tool in tools -%}
 - {{ tool }}
 {% endfor %}
+
+{% endif -%}
+
+{% if tools and is_headless_source_edit -%}
+## Source Edit Contract
+
+- Use `grep_search`, `glob_search`, and `source_symbols` for code search when available. Prefer these structured search tools over shell `grep`, `rg`, `find`, or `ls` through `exec_command`.
+- Use `read_source` for source context before editing existing files. Prefer focused ranges over broad file dumps.
+- Use `edit_source` for edits to existing source files.
+- Use `create_source` for new repository source, configuration, or documentation files when available.
+- Use `write_scratch` for temporary reproduction scripts, logs, and debug artifacts when available.
+- Do not use shell `sed`, redirection, or temporary scripts as the primary way to modify repository source.
+- Use `exec_command` mainly for tests, builds, repository commands, and shell-only inspection.
+- Keep changes minimal and focused on non-test source files unless the user explicitly asks otherwise.
+- Inspect the final source diff with `git_diff` before finishing.
+
+{% endif -%}
+
+{% if tools and is_headless_repo_coding_scaffold -%}
+## Repository Coding Scaffold
+
+- Use `grep_search`, `glob_search`, `list_dir`, and `read_file` to inspect the repository. Prefer focused reads over broad file dumps.
+- Use `edit_file` for small existing-file edits. Use `write_file` only for new files or intentional whole-file rewrites.
+{% if "apply_patch" in tools -%}
+- Use `apply_patch` for multi-hunk or multi-file edits when a patch is clearer than exact replacement.
+{% endif -%}
+- Use `exec_command` for tests, builds, and shell-only inspection; do not use shell redirection or ad hoc scripts as the primary way to edit repository source.
+- Use `git_status` and `git_diff` to inspect the final repository state before finishing.
+- Keep changes minimal and focused on source files relevant to the user task unless the user explicitly asks otherwise.
+
+{% endif -%}
+
+{% if tools and patch_evidence_protocol -%}
+## Patch Evidence Protocol
+
+- Fix the underlying issue behavior, not just the symptom reproduced by a self-written script.
+- Prefer existing issue-relevant tests or focused package-level tests as final confirmation. A self-written repro is useful for diagnosis, but it is not sufficient final evidence by itself unless no existing test path is available.
+- Keep the patch minimal and localized to the issue behavior. If two serious attempts under the same hypothesis fail, change hypothesis or inspect a different implementation layer.
+- Do not modify existing test expectations unless the task explicitly asks for test changes.
+- After editing a core source file, run at least one neighboring existing test or a package-level focused test when feasible, to catch regressions in adjacent behavior.
+- Before finalizing, inspect the final diff and verify that every changed file directly supports the issue fix.
+- In the final response, briefly name the strongest command/output evidence that supports the patch, and mention residual failures only if they are unrelated or pre-existing.
+
+{% endif -%}
+
+{% if tools and finalize_evidence_gate -%}
+## Reproduction Evidence
+
+- Before editing, reproduce the reported issue with a script or command that follows the issue text verbatim, asserts the quoted expected output or behavior, and exits non-zero while the bug is present.
+- A failing reproduction or verification you ran yourself is binding evidence that the issue is not fixed yet; green results from other tests, builds, or suites do not override it. Keep working until your own reproduction passes, or state explicitly why its failure is expected.
+- After your final edit, re-run your reproduction and the most relevant existing test before finishing.
 
 {% endif -%}
 
@@ -204,7 +257,7 @@ SOUL.md defines durable voice and persona guidance for this workspace. Treat it 
 
 {% endif -%}
 
-{% if memory and prompt_mode != "minimal" -%}
+{% if memory and prompt_mode != "minimal" and not is_headless_source_edit and not is_headless_repo_coding_scaffold -%}
 ## Memory
 
 {{ memory }}

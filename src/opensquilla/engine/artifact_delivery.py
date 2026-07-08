@@ -96,6 +96,10 @@ def auto_publish_omitted_workspace_artifacts(
     known_artifact_keys = _published_artifact_keys(ctx)
 
     for record in records:
+        if not record.get("created"):
+            # Publish only files created during this turn; edits to existing
+            # files are tracked for diagnostics and are not deliverables.
+            continue
         target = Path(str(record.get("path") or "")).expanduser().resolve(strict=False)
         if target in seen_paths:
             continue

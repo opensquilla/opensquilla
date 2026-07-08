@@ -12,6 +12,8 @@ import pytest
 from opensquilla.attachment_refs import write_transcript_material
 from opensquilla.engine.types import ToolCall
 from opensquilla.sandbox import sensitive_paths
+from opensquilla.sandbox.config import SandboxSettings
+from opensquilla.sandbox.integration import configure_runtime, reset_runtime
 from opensquilla.tools.builtin import filesystem as fs
 from opensquilla.tools.dispatch import build_tool_handler
 from opensquilla.tools.registry import get_default_registry
@@ -100,6 +102,112 @@ async def test_workspace_strict_allows_inside_workspace(tmp_path: Path) -> None:
         assert "inside.txt" in await fs.list_dir(str(tmp_path))
         assert "inside.txt" in await fs.glob_search("*.txt", path=str(tmp_path))
         assert "needle" in await fs.grep_search("needle", path=str(tmp_path))
+
+
+@pytest.mark.asyncio
+async def test_grep_search_skips_vcs_metadata_but_keeps_github(
+    tmp_path: Path,
+) -> None:
+    git_dir = tmp_path / ".git"
+    git_dir.mkdir()
+    (git_dir / "index").write_text("needle hidden metadata\n", encoding="utf-8")
+    github_dir = tmp_path / ".github"
+    github_dir.mkdir()
+    (github_dir / "workflow.yml").write_text("needle workflow\n", encoding="utf-8")
+    (tmp_path / "src.py").write_text("needle source\n", encoding="utf-8")
+
+    with tool_context(tmp_path):
+        grepped = await fs.grep_search("needle", path=str(tmp_path))
+        globbed = await fs.glob_search("**/*", path=str(tmp_path))
+
+    assert ".git/index" not in grepped
+    assert ".git/index" not in globbed
+    assert "workflow.yml:1: needle workflow" in grepped
+    assert "src.py:1: needle source" in grepped
+
+
+@pytest.mark.asyncio
+async def test_grep_search_skips_binary_and_invalid_utf8_files(tmp_path: Path) -> None:
+    (tmp_path / "source.txt").write_text("needle source\n", encoding="utf-8")
+    (tmp_path / "archive.zip").write_bytes(b"needle binary payload")
+    (tmp_path / "invalid.txt").write_bytes(b"needle \xff invalid utf8")
+
+    with tool_context(tmp_path):
+        grepped = await fs.grep_search("needle", path=str(tmp_path))
+
+    assert "source.txt:1: needle source" in grepped
+    assert "archive.zip" not in grepped
+    assert "invalid.txt" not in grepped
+
+
+@pytest.mark.asyncio
+async def test_grep_search_truncates_long_matching_lines(tmp_path: Path) -> None:
+    long_tail = "x" * 3000
+    (tmp_path / "source.txt").write_text(f"needle {long_tail}\n", encoding="utf-8")
+
+    with tool_context(tmp_path):
+        grepped = await fs.grep_search("needle", path=str(tmp_path))
+
+    assert "source.txt:1: needle " in grepped
+    assert "line truncated" in grepped
+    assert "omitted_chars=" in grepped
+    assert long_tail not in grepped
+
+
+@pytest.mark.asyncio
+async def test_grep_search_clamps_large_max_results(tmp_path: Path) -> None:
+    lines = [f"needle {i}" for i in range(1100)]
+    (tmp_path / "source.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    with tool_context(tmp_path):
+        grepped = await fs.grep_search("needle", path=str(tmp_path), max_results=5000)
+
+    assert "limit: 1000" in grepped
+    assert "has_more: true" in grepped
+    result_lines = grepped.split("---\n", 1)[1].splitlines()
+    assert len(result_lines) == 1000
+    assert "needle 999" in result_lines[-1]
+    assert "needle 1000" not in grepped
+
+
+@pytest.mark.asyncio
+async def test_grep_search_supports_offset_and_has_more(tmp_path: Path) -> None:
+    lines = [f"needle {i}" for i in range(5)]
+    (tmp_path / "source.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    with tool_context(tmp_path):
+        grepped = await fs.grep_search("needle", path=str(tmp_path), max_results=2, offset=2)
+
+    assert "returned: 2" in grepped
+    assert "offset: 2" in grepped
+    assert "limit: 2" in grepped
+    assert "has_more: true" in grepped
+    body = grepped.split("---\n", 1)[1]
+    assert "needle 2" in body
+    assert "needle 3" in body
+    assert "needle 1" not in body
+    assert "needle 4" not in body
+
+
+@pytest.mark.asyncio
+async def test_grep_search_allows_explicit_unlimited_and_hidden_line_numbers(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "source.txt").write_text("needle a\nneedle b\n", encoding="utf-8")
+
+    with tool_context(tmp_path):
+        grepped = await fs.grep_search(
+            "needle",
+            path=str(tmp_path),
+            max_results=0,
+            include_line_numbers=False,
+        )
+
+    assert "limit: unlimited" in grepped
+    assert "has_more: false" in grepped
+    body = grepped.split("---\n", 1)[1]
+    assert "source.txt: needle a" in body
+    assert "source.txt:1:" not in body
 
 
 @pytest.mark.asyncio
@@ -298,6 +406,54 @@ async def test_workspace_strict_block_is_actionable_in_tool_failure_envelope(
     assert "outside active read roots" in envelope["user_message"]
     assert "internal error" not in envelope["user_message"]
     assert envelope["retry_allowed"] is False
+
+
+@pytest.mark.asyncio
+async def test_workspace_write_deny_block_is_actionable_in_tool_failure_envelope(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    configure_runtime(
+        SandboxSettings(sandbox=False, security_grading=False, allow_legacy_mode=True),
+        workspace=workspace,
+    )
+    handler = build_tool_handler(get_default_registry())
+    token = current_tool_context.set(
+        ToolContext(
+            is_owner=True,
+            caller_kind=CallerKind.CLI,
+            channel_kind="cli",
+            channel_id="cli:test",
+            elevated="bypass",
+            workspace_dir=str(workspace),
+            workspace_write_deny_globs=["**/test_*.py"],
+        )
+    )
+    try:
+        result = await handler(
+            ToolCall(
+                tool_use_id="tc-write-deny",
+                tool_name="write_file",
+                arguments={
+                    "path": str(workspace / "test_bug.py"),
+                    "content": "print('nope')\n",
+                },
+            )
+        )
+    finally:
+        current_tool_context.reset(token)
+        reset_runtime()
+
+    envelope = json.loads(result.content)
+
+    assert result.is_error is True
+    assert envelope["status"] == "error"
+    assert envelope["tool"] == "write_file"
+    assert "workspace write deny policy" in envelope["user_message"]
+    assert "internal error" not in envelope["user_message"]
+    assert envelope["retry_allowed"] is False
+    assert not (workspace / "test_bug.py").exists()
 
 
 @pytest.mark.asyncio

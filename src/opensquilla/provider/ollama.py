@@ -13,6 +13,7 @@ from opensquilla.env import trust_env as _trust_env
 from opensquilla.secrets import clean_header_secret
 
 from .stream_assembly import ToolStreamAccumulator
+from .trace_recorder import LLMTraceRecorder
 from .types import (
     ChatConfig,
     DoneEvent,
@@ -184,9 +185,22 @@ class OllamaProvider:
         }
         if tools:
             payload["tools"] = [_build_ollama_tool(t) for t in tools]
+        endpoint = f"{self._base_url}/api/chat"
+        trace = LLMTraceRecorder(
+            provider="ollama",
+            model=self._model,
+            base_url=self._base_url,
+            endpoint=endpoint,
+            stream=True,
+        )
+        trace.record_request(
+            payload=payload,
+            metadata={"timeout_seconds": cfg.timeout, "tools_count": len(tools or [])},
+        )
 
         input_tokens = 0
         output_tokens = 0
+        assistant_text_parts: list[str] = []
         # Ollama tool calls accumulate in the full response (not streamed per-chunk)
         pending_tool_calls: list[dict[str, Any]] = []
 
@@ -198,17 +212,21 @@ class OllamaProvider:
             ) as client:
                 async with client.stream(
                     "POST",
-                    f"{self._base_url}/api/chat",
+                    endpoint,
                     json=payload,
                     headers=self._headers(),
                 ) as response:
                     if response.status_code != 200:
                         body = await response.aread()
+                        body_text = body.decode("utf-8", errors="replace")
+                        trace.record_error(
+                            code=str(response.status_code),
+                            message=f"HTTP {response.status_code}: {body_text}",
+                            status_code=response.status_code,
+                            response_body=body_text,
+                        )
                         yield ErrorEvent(
-                            message=(
-                                f"HTTP {response.status_code}: "
-                                f"{body.decode('utf-8', errors='replace')}"
-                            ),
+                            message=f"HTTP {response.status_code}: {body_text}",
                             code=str(response.status_code),
                         )
                         return
@@ -221,11 +239,13 @@ class OllamaProvider:
                         except json.JSONDecodeError:
                             continue
 
+                        trace.record_chunk(chunk)
                         msg_chunk = chunk.get("message", {})
 
                         # Text content
                         text = msg_chunk.get("content", "")
                         if text:
+                            assistant_text_parts.append(text)
                             yield TextDeltaEvent(text=text)
 
                         # Ollama delivers tool_calls in a single chunk (non-streaming)
@@ -263,6 +283,24 @@ class OllamaProvider:
                         ):
                             yield tool_event
 
+                    trace.record_response(
+                        usage={
+                            "input_tokens": input_tokens,
+                            "output_tokens": output_tokens,
+                        },
+                        stop_reason="stop",
+                        actual_model=self._model,
+                        assistant_text="".join(assistant_text_parts),
+                        tool_calls=[
+                            {
+                                "id": call["id"],
+                                "name": call["name"],
+                                "arguments": call["arguments"],
+                                "arguments_json_valid": True,
+                            }
+                            for call in pending_tool_calls
+                        ],
+                    )
                     yield DoneEvent(
                         stop_reason="stop",
                         input_tokens=input_tokens,
@@ -270,14 +308,20 @@ class OllamaProvider:
                     )
 
         except httpx.TimeoutException as exc:
+            trace.record_error(code="timeout", message=f"Request timed out: {exc}")
             yield ErrorEvent(message=f"Request timed out: {exc}", code="timeout")
         except httpx.RequestError as exc:
+            trace.record_error(code="request_error", message=f"Request error: {exc}")
             yield ErrorEvent(message=f"Request error: {exc}", code="request_error")
         except Exception as exc:  # noqa: BLE001 - chat() contract: ErrorEvent instead of raising
             log.exception(
                 "provider.stream_internal_error",
                 provider=self.provider_name,
                 model=self._model,
+            )
+            trace.record_error(
+                code="provider_internal",
+                message=f"Provider response handling failed: {exc}",
             )
             yield ErrorEvent(
                 message=f"Provider response handling failed: {exc}",

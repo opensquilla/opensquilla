@@ -56,6 +56,13 @@
         <div v-if="skill.homepage" class="sk-detail__section">
           <a :href="skill.homepage" target="_blank" rel="noopener" class="sk-detail__link">{{ t('cronSkills.skillDetail.homepage') }}</a>
         </div>
+
+        <div class="sk-detail__section">
+          <div class="sk-detail__section-title">SKILL.md</div>
+          <div v-if="loadingContent" class="sk-detail__content-state">{{ t('cronSkills.skillDetail.loadingContent') }}</div>
+          <div v-else-if="contentError" class="sk-detail__content-state sk-detail__content-state--error">{{ contentError }}</div>
+          <pre v-else class="sk-detail__pre">{{ skill.content || t('cronSkills.skillDetail.emptyContent') }}</pre>
+        </div>
       </section>
       <footer class="sk-detail__foot">
         <small v-if="skill.file_path" class="sk-dim sk-detail__path">{{ skill.file_path }}</small>
@@ -88,6 +95,8 @@ const { t } = useI18n()
 const props = defineProps<{
   skill: Skill | null
   proposal: Proposal | null
+  loadingContent: boolean
+  contentError: string
   installingDepsId: string | null
   uninstallingName: string | null
 }>()

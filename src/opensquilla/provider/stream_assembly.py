@@ -166,6 +166,20 @@ class ToolStreamAccumulator:
                 return value
         return None
 
+    def pending_raw_arguments(self) -> list[tuple[Any, str, str, str]]:
+        """Return ``(key, tool_use_id, tool_name, raw_argument_text)`` per open call.
+
+        Providers that post-process argument JSON before closing (e.g.
+        dialect-specific repair of malformed fragments) read the accumulated
+        raw text here and close each call via ``finish_with_arguments``,
+        instead of reaching into private state.
+        """
+        return [
+            (key, call.tool_use_id, call.tool_name, "".join(call.json_parts))
+            for key, call in self._calls.items()
+            if key not in self._closed
+        ]
+
     # -- lifecycle --------------------------------------------------------
 
     def start(

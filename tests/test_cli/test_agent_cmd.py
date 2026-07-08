@@ -90,6 +90,64 @@ def test_benchmark_transcript_preserves_tool_result_execution_status() -> None:
     assert transcript[1]["message"]["executionStatus"] == status
 
 
+def test_benchmark_transcript_preserves_result_truncated() -> None:
+    entry = SimpleNamespace(
+        role="assistant",
+        content="",
+        created_at=None,
+        tool_calls=[
+            {
+                "type": "tool_use",
+                "tool_use_id": "call-1",
+                "name": "exec_command",
+                "input": {"cmd": "cat big.log"},
+            },
+            {
+                "type": "tool_result",
+                "tool_use_id": "call-1",
+                "name": "exec_command",
+                "result": "head of output ...",
+                "is_error": False,
+                "result_truncated": True,
+                "result_original_chars": 48210,
+            },
+        ],
+    )
+
+    transcript = _to_benchmark_transcript([entry])
+
+    assert transcript[1]["message"]["resultTruncated"] is True
+    assert transcript[1]["message"]["resultOriginalChars"] == 48210
+
+
+def test_benchmark_transcript_omits_truncation_fields_when_absent() -> None:
+    entry = SimpleNamespace(
+        role="assistant",
+        content="",
+        created_at=None,
+        tool_calls=[
+            {
+                "type": "tool_use",
+                "tool_use_id": "call-1",
+                "name": "exec_command",
+                "input": {"cmd": "true"},
+            },
+            {
+                "type": "tool_result",
+                "tool_use_id": "call-1",
+                "name": "exec_command",
+                "result": "",
+                "is_error": False,
+            },
+        ],
+    )
+
+    transcript = _to_benchmark_transcript([entry])
+
+    assert "resultTruncated" not in transcript[1]["message"]
+    assert "resultOriginalChars" not in transcript[1]["message"]
+
+
 @pytest.mark.asyncio
 async def test_run_agent_once_uses_agent_registry_model_when_model_not_explicit(
     monkeypatch: pytest.MonkeyPatch,
@@ -277,6 +335,7 @@ def test_run_agent_command_direct_call_normalizes_typer_defaults(
     assert captured["workspace"] is None
     assert captured["workspace_strict"] is None
     assert captured["workspace_lockdown"] is False
+    assert captured["workspace_write_deny_globs"] == []
     assert captured["scratch_dir"] is None
     assert captured["timeout"] is None
     assert captured["max_iterations"] is None
@@ -882,11 +941,101 @@ async def test_run_agent_once_passes_scratch_and_lockdown_to_tool_context(
         config=GatewayConfig(),
         scratch_dir=str(scratch_dir),
         workspace_lockdown=True,
+        workspace_write_deny_globs=["reports/*.txt, tmp/**", "generated/**"],
     )
 
     ctx = captured["tool_context"]
     assert ctx.scratch_dir == str(scratch_dir)
     assert ctx.workspace_lockdown is True
+    assert ctx.workspace_write_deny_globs == ["reports/*.txt", "tmp/**", "generated/**"]
+
+
+@pytest.mark.asyncio
+async def test_run_agent_once_merges_config_workspace_write_deny_globs(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    captured: dict[str, Any] = {}
+
+    class FakeRegistry:
+        def list_names(self) -> list[str]:
+            return ["write_file", "exec_command", "apply_patch"]
+
+    class FakeTurnRunner:
+        def __init__(self, **kwargs: Any) -> None:
+            pass
+
+        async def run(self, message: str, session_key: str, **kwargs: Any):
+            captured["tool_context"] = kwargs.get("tool_context")
+            yield DoneEvent(text="ok", model=kwargs.get("model") or "")
+
+    async def fake_build_services(*, config: GatewayConfig, **kwargs: Any) -> _FakeServices:
+        services = _FakeServices(config)
+        services.tool_registry = FakeRegistry()
+        return services
+
+    monkeypatch.setattr("opensquilla.engine.runtime.TurnRunner", FakeTurnRunner)
+    monkeypatch.setattr("opensquilla.gateway.build_services", fake_build_services)
+
+    scratch_dir = tmp_path / "scratch"
+    result = await run_agent_once(
+        message="hello",
+        config=GatewayConfig(
+            tools={
+                "workspace_write_deny_globs": [
+                    "**/test/**",
+                    "**/*Test.java",
+                ]
+            }
+        ),
+        scratch_dir=str(scratch_dir),
+        workspace_lockdown=True,
+        workspace_write_deny_globs=["reports/*.txt", "**/test/**"],
+    )
+
+    ctx = captured["tool_context"]
+    assert ctx.workspace_write_deny_globs[0] == "reports/*.txt"
+    assert set(ctx.workspace_write_deny_globs) == {
+        "reports/*.txt",
+        "**/test/**",
+        "**/*Test.java",
+    }
+    assert len(ctx.workspace_write_deny_globs) == 3
+    assert set(result.workspace_write_deny_globs or []) == {
+        "reports/*.txt",
+        "**/test/**",
+        "**/*Test.java",
+    }
+
+
+def test_run_agent_command_forwards_workspace_lockdown_deny_paths(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, Any] = {}
+
+    async def fake_run_agent_once(**kwargs: Any) -> AgentRunResult:
+        captured.update(kwargs)
+        return AgentRunResult(
+            status="ok",
+            agent_id="main",
+            session_key="agent:main:main",
+            text="ok",
+            usage={},
+            errors=[],
+        )
+
+    monkeypatch.setattr("opensquilla.cli.agent_cmd.run_agent_once", fake_run_agent_once)
+
+    run_agent_command(
+        message="hello",
+        workspace_lockdown_deny_paths=["reports/*.txt, tmp/**", "generated/**"],
+    )
+
+    assert captured["workspace_write_deny_globs"] == [
+        "reports/*.txt",
+        "tmp/**",
+        "generated/**",
+    ]
 
 
 @pytest.mark.asyncio
@@ -1121,6 +1270,10 @@ def test_top_level_agent_command_accepts_automation_options(
             "--scratch-dir",
             "scratch",
             "--workspace-lockdown",
+            "--workspace-lockdown-deny-paths",
+            "reports/*.txt, tmp/**",
+            "--workspace-lockdown-deny-paths",
+            "generated/**",
         ],
     )
 
@@ -1129,6 +1282,10 @@ def test_top_level_agent_command_accepts_automation_options(
     assert captured["stateless_keep_project_rules"] is True
     assert captured["scratch_dir"] == "scratch"
     assert captured["workspace_lockdown"] is True
+    assert captured["workspace_lockdown_deny_paths"] == [
+        "reports/*.txt, tmp/**",
+        "generated/**",
+    ]
 
 
 def test_top_level_agent_command_accepts_length_capped_continuations(

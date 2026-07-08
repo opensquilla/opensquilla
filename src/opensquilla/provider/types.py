@@ -184,7 +184,7 @@ StreamEvent = (
 # Tool definition (Pydantic BaseModel — external API boundary)
 # ---------------------------------------------------------------------------
 
-from pydantic import BaseModel  # noqa: E402
+from pydantic import BaseModel, ConfigDict, Field  # noqa: E402
 
 
 class ToolParam(BaseModel):
@@ -198,9 +198,15 @@ class ToolParam(BaseModel):
 class ToolInputSchema(BaseModel):
     """JSON schema for tool inputs."""
 
+    model_config = ConfigDict(populate_by_name=True)
+
     type: Literal["object"] = "object"
     properties: dict[str, Any] = {}
     required: list[str] = []
+    additional_properties: bool | dict[str, Any] | None = Field(
+        default=None,
+        alias="additionalProperties",
+    )
 
 
 class ToolDefinition(BaseModel):
@@ -245,10 +251,12 @@ class ChatConfig(BaseModel):
 
     max_tokens: int = 16384
     temperature: float | None = None
+    top_p: float | None = None
     system: str | None = None
     stop_sequences: list[str] = []
     thinking: bool = False
     thinking_budget_tokens: int = 5000
+    thinking_budget_explicit: bool | None = None
     timeout: float = 120.0
     # Prompt caching: when set, system prompt is split into cached/dynamic blocks
     cache_breakpoints: list[dict[str, str]] | None = None
@@ -257,6 +265,12 @@ class ChatConfig(BaseModel):
     thinking_level: Any | None = None
     provider_request_max_chars: int = 0
     tool_choice: Any | None = None
+
+    def model_post_init(self, __context: Any) -> None:
+        if self.thinking_budget_explicit is None:
+            self.thinking_budget_explicit = (
+                "thinking_budget_tokens" in self.model_fields_set
+            )
 
 
 # ---------------------------------------------------------------------------

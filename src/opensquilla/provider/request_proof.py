@@ -24,6 +24,39 @@ _COMPACTED_TOOL_ARGUMENT_MARKERS = frozenset(
         "_opensquilla_compacted_tool_input",
     }
 )
+# Opt-in compaction safety levers (both off by default). The tiny guard stops
+# every marker producer from replacing a string that is shorter than the
+# marker it would emit; recent-assistant protection keeps the model's
+# just-emitted turn out of tier 2+ compaction so fresh work is never
+# destroyed in the same request cycle that produced it.
+_TINY_COMPACTION_GUARD_ENV = "OPENSQUILLA_PROVIDER_COMPACTION_TINY_GUARD_CHARS"
+_PROTECT_RECENT_ASSISTANT_ENV = "OPENSQUILLA_PROVIDER_COMPACTION_PROTECT_RECENT_ASSISTANT"
+_TRUE_ENV_VALUES = frozenset({"1", "true", "yes", "on", "enabled"})
+
+
+def _tiny_compaction_guard_chars() -> int:
+    raw = os.environ.get(_TINY_COMPACTION_GUARD_ENV, "").strip()
+    if not raw:
+        return 0
+    try:
+        return max(0, int(raw))
+    except ValueError:
+        return 0
+
+
+def _protect_recent_assistant_enabled() -> bool:
+    raw = os.environ.get(_PROTECT_RECENT_ASSISTANT_ENV, "").strip().lower()
+    return raw in _TRUE_ENV_VALUES
+
+
+def _protected_recent_assistant_index(messages: Any) -> int | None:
+    if not _protect_recent_assistant_enabled() or not isinstance(messages, list):
+        return None
+    for index in range(len(messages) - 1, -1, -1):
+        message = messages[index]
+        if isinstance(message, dict) and message.get("role") == "assistant":
+            return index
+    return None
 
 
 class ProviderRequestBudgetExceededError(RuntimeError):
@@ -138,6 +171,8 @@ def _compact_string(value: str) -> str:
 def _compact_tail_string(value: str, *, label: str) -> str:
     if len(value) <= _COMPACTED_TAIL_STRING_MAX_CHARS:
         return value
+    if len(value) <= _tiny_compaction_guard_chars():
+        return value
     head = value[:420]
     tail = value[-120:]
     omitted = len(value) - len(head) - len(tail)
@@ -152,6 +187,8 @@ def _compact_tail_string(value: str, *, label: str) -> str:
 
 def _emergency_compact_string(value: str, *, label: str) -> str:
     if len(value) <= 320:
+        return value
+    if len(value) <= _tiny_compaction_guard_chars():
         return value
     head = value[:180]
     tail = value[-40:]
@@ -168,30 +205,211 @@ def _emergency_compact_string(value: str, *, label: str) -> str:
 def _hard_compact_string(value: str, *, label: str) -> str:
     if len(value) <= 96:
         return value
+    if len(value) <= _tiny_compaction_guard_chars():
+        return value
     digest = hashlib.sha256(value.encode("utf-8")).hexdigest()[:16]
     return f"[opensquilla_compacted:{label}:{len(value)}:{digest}]"
+
+
+def _compact_argument_string(value: str, *, preview: bool = True) -> str:
+    if preview:
+        return _compact_tail_string(value, label="tool_input")
+    if len(value) <= _tiny_compaction_guard_chars():
+        return value
+    digest = hashlib.sha256(value.encode("utf-8")).hexdigest()
+    return (
+        "[provider_request_tool_input_compacted: "
+        f"original_chars={len(value)}; sha256={digest}]"
+    )
 
 
 def _compact_tool_arguments(value: str, *, preview: bool = True) -> str:
     if preview and len(value) <= _COMPACTED_TAIL_STRING_MAX_CHARS:
         return value
-    digest = hashlib.sha256(value.encode("utf-8")).hexdigest()
-    compacted = {
-        "_opensquilla_compacted_tool_arguments": True,
-        "original_chars": len(value),
-        "sha256": digest,
-    }
     with contextlib.suppress(json.JSONDecodeError):
         parsed = json.loads(value)
         if isinstance(parsed, dict):
-            compacted["argument_keys"] = sorted(str(key) for key in parsed)
-            path = parsed.get("path")
-            if isinstance(path, str):
-                compacted["path"] = path
-    if preview:
-        compacted["head"] = value[:_COMPACTED_ARGUMENT_PREVIEW_CHARS]
-        compacted["tail"] = value[-_COMPACTED_ARGUMENT_TAIL_CHARS:]
-    return json.dumps(compacted, ensure_ascii=False, separators=(",", ":"))
+            compacted: dict[str, Any] = {}
+            changed = False
+            force_string_compaction = not preview
+            for key, item in parsed.items():
+                if isinstance(item, str):
+                    if key == "path" and not preview:
+                        compacted[key] = item
+                        continue
+                    next_item = _compact_argument_string(
+                        item,
+                        preview=preview and not force_string_compaction,
+                    )
+                    compacted[key] = next_item
+                    changed = changed or next_item != item
+                else:
+                    compacted[key] = item
+            if changed or not preview:
+                return json.dumps(compacted, ensure_ascii=False, separators=(",", ":"))
+    if len(value) <= _tiny_compaction_guard_chars():
+        return value
+    digest = hashlib.sha256(value.encode("utf-8")).hexdigest()
+    return json.dumps(
+        {
+            "note": "historical tool arguments omitted for provider context budget",
+            "original_chars": len(value),
+            "sha256": digest,
+        },
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+
+
+def _first_cache_control(content: Any) -> dict[str, Any] | None:
+    if not isinstance(content, list):
+        return None
+    for block in content:
+        if not isinstance(block, dict):
+            continue
+        cache_control = block.get("cache_control")
+        if isinstance(cache_control, dict):
+            return dict(cache_control)
+    return None
+
+
+def _text_content(text: str, *, cache_control: dict[str, Any] | None = None) -> Any:
+    if cache_control:
+        return [
+            {
+                "type": "text",
+                "text": text,
+                "cache_control": dict(cache_control),
+            }
+        ]
+    return text
+
+
+def _summary_value(value: str, *, max_chars: int = 160) -> str:
+    value = value.replace("\n", "\\n")
+    if len(value) <= max_chars:
+        return value
+    return f"{value[: max_chars - 3]}..."
+
+
+def _tool_call_context_summary(tool_calls: list[dict[str, Any]]) -> str:
+    lines = [
+        "Historical tool call omitted for provider context budget.",
+        f"omitted_tool_calls: {len(tool_calls)}",
+    ]
+    for tool_call in tool_calls[:8]:
+        if not isinstance(tool_call, dict):
+            continue
+        function = tool_call.get("function")
+        if not isinstance(function, dict):
+            continue
+        name = function.get("name")
+        name_text = str(name) if name else "unknown"
+        arguments = function.get("arguments")
+        details: list[str] = []
+        if isinstance(arguments, str):
+            parsed = _parsed_tool_arguments(arguments)
+            if isinstance(parsed, dict):
+                path = parsed.get("path")
+                if isinstance(path, str) and path:
+                    details.append(f"path={_summary_value(path)}")
+                workdir = parsed.get("workdir")
+                if isinstance(workdir, str) and workdir:
+                    details.append(f"workdir={_summary_value(workdir)}")
+                command = parsed.get("command")
+                if isinstance(command, str) and command:
+                    details.append("command=omitted")
+        suffix = f" ({', '.join(details)})" if details else ""
+        lines.append(f"- {name_text}{suffix}")
+    if len(tool_calls) > 8:
+        lines.append(f"- ... {len(tool_calls) - 8} more omitted tool calls")
+    return "\n".join(lines)
+
+
+def _tool_result_summary_content(tool_name: str, content: Any) -> str:
+    if isinstance(content, str):
+        result_text = _compact_string(content)
+    else:
+        result_text = json.dumps(
+            _hard_compact_content_for_provider(content, label="tool_result"),
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+    return f"Historical tool result for omitted {tool_name} call:\n{result_text}"
+
+
+def _summarize_tool_call_arguments_for_provider(
+    payload: dict[str, Any],
+    *,
+    aggregate_tool_arguments: bool,
+) -> tuple[dict[str, Any], bool]:
+    messages = payload.get("messages")
+    if not isinstance(messages, list):
+        return payload, False
+
+    omitted_tool_names_by_id: dict[str, str] = {}
+    changed = False
+    for message in messages:
+        if not isinstance(message, dict) or message.get("role") != "assistant":
+            continue
+        tool_calls = message.get("tool_calls")
+        if not isinstance(tool_calls, list) or not tool_calls:
+            continue
+        should_summarize = aggregate_tool_arguments
+        if not should_summarize:
+            for tool_call in tool_calls:
+                if not isinstance(tool_call, dict):
+                    continue
+                function = tool_call.get("function")
+                if not isinstance(function, dict):
+                    continue
+                arguments = function.get("arguments")
+                if isinstance(arguments, str) and len(arguments) > _COMPACTED_TAIL_STRING_MAX_CHARS:
+                    should_summarize = True
+                    break
+        if not should_summarize:
+            continue
+
+        for tool_call in tool_calls:
+            if not isinstance(tool_call, dict):
+                continue
+            tool_id = tool_call.get("id")
+            function = tool_call.get("function")
+            tool_name = (
+                str(function.get("name"))
+                if isinstance(function, dict) and function.get("name")
+                else "tool"
+            )
+            if isinstance(tool_id, str) and tool_id:
+                omitted_tool_names_by_id[tool_id] = tool_name
+
+        cache_control = _first_cache_control(message.get("content"))
+        summary = _tool_call_context_summary(tool_calls)
+        existing_content = message.get("content")
+        if isinstance(existing_content, str) and existing_content.strip():
+            summary = f"{existing_content.rstrip()}\n\n{summary}"
+        message["content"] = _text_content(summary, cache_control=cache_control)
+        message.pop("tool_calls", None)
+        changed = True
+
+    if not omitted_tool_names_by_id:
+        return payload, changed
+
+    for message in messages:
+        if not isinstance(message, dict) or message.get("role") != "tool":
+            continue
+        tool_call_id = message.get("tool_call_id")
+        if not isinstance(tool_call_id, str) or tool_call_id not in omitted_tool_names_by_id:
+            continue
+        tool_name = omitted_tool_names_by_id[tool_call_id]
+        cache_control = _first_cache_control(message.get("content"))
+        content = _tool_result_summary_content(tool_name, message.get("content"))
+        message.clear()
+        message["role"] = "user"
+        message["content"] = _text_content(content, cache_control=cache_control)
+        changed = True
+
+    return payload, changed
 
 
 def _invalid_provider_context_arguments(value: str | dict[str, Any]) -> dict[str, Any]:
@@ -201,10 +419,21 @@ def _invalid_provider_context_arguments(value: str | dict[str, Any]) -> dict[str
     }
 
 
+def _is_provider_context_marker_value(value: Any) -> bool:
+    if value is True:
+        return True
+    if isinstance(value, str):
+        return value.strip().lower() in {"true", "1", "yes", "on"}
+    return False
+
+
 def _has_provider_context_argument_marker(value: dict[str, Any]) -> bool:
     return (
-        value.get(_INVALID_PROVIDER_CONTEXT_ARGUMENTS_KEY) is True
-        or any(value.get(marker) is True for marker in _COMPACTED_TOOL_ARGUMENT_MARKERS)
+        _is_provider_context_marker_value(value.get(_INVALID_PROVIDER_CONTEXT_ARGUMENTS_KEY))
+        or any(
+            _is_provider_context_marker_value(value.get(marker))
+            for marker in _COMPACTED_TOOL_ARGUMENT_MARKERS
+        )
     )
 
 
@@ -220,7 +449,9 @@ def _tool_arguments_are_invalid_provider_context(arguments: str) -> bool:
     parsed = _parsed_tool_arguments(arguments)
     return (
         isinstance(parsed, dict)
-        and parsed.get(_INVALID_PROVIDER_CONTEXT_ARGUMENTS_KEY) is True
+        and _is_provider_context_marker_value(
+            parsed.get(_INVALID_PROVIDER_CONTEXT_ARGUMENTS_KEY)
+        )
     )
 
 
@@ -228,7 +459,10 @@ def _tool_arguments_have_compacted_marker(arguments: str) -> bool:
     parsed = _parsed_tool_arguments(arguments)
     return (
         isinstance(parsed, dict)
-        and any(parsed.get(marker) is True for marker in _COMPACTED_TOOL_ARGUMENT_MARKERS)
+        and any(
+            _is_provider_context_marker_value(parsed.get(marker))
+            for marker in _COMPACTED_TOOL_ARGUMENT_MARKERS
+        )
     )
 
 
@@ -244,6 +478,8 @@ def _compact_tool_input(value: Any) -> Any:
     ):
         return _invalid_provider_context_arguments(value)
     if len(raw) <= _COMPACTED_TAIL_STRING_MAX_CHARS:
+        return value
+    if len(raw) <= _tiny_compaction_guard_chars():
         return value
     compacted = dict(value)
     changed = False
@@ -499,10 +735,13 @@ def _compact_recent_tail_payload_once(
     payload: dict[str, Any],
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     compacted = deepcopy(payload)
+    protected_index = _protected_recent_assistant_index(compacted.get("messages"))
     tool_argument_refs: list[tuple[dict[str, Any], str]] = []
     total_tool_argument_chars = 0
-    for message in compacted.get("messages", []):
+    for index, message in enumerate(compacted.get("messages", [])):
         if not isinstance(message, dict) or message.get("role") != "assistant":
+            continue
+        if index == protected_index:
             continue
         tool_calls = message.get("tool_calls")
         if not isinstance(tool_calls, list):
@@ -521,8 +760,11 @@ def _compact_recent_tail_payload_once(
         len(tool_argument_refs) > 1
         and total_tool_argument_chars > _COMPACTED_TAIL_STRING_MAX_CHARS * 4
     )
-    for message in compacted.get("messages", []):
+    tool_call_arguments_summarized = False
+    for index, message in enumerate(compacted.get("messages", [])):
         if not isinstance(message, dict):
+            continue
+        if index == protected_index:
             continue
         if message.get("role") == "assistant":
             reasoning_content = message.get("reasoning_content")
@@ -565,12 +807,64 @@ def _compact_recent_tail_payload_once(
                 )
             elif message.get("role") == "assistant" and block.get("type") == "text":
                 _compact_text_block(block)
-    return compacted, {"aggregate_tool_arguments_compacted": aggregate_tool_arguments}
+    return compacted, {
+        "aggregate_tool_arguments_compacted": aggregate_tool_arguments,
+        "tool_call_arguments_summarized": tool_call_arguments_summarized,
+    }
+
+
+def _emergency_compact_assistant_message(message: dict[str, Any]) -> None:
+    """Apply tier-3 emergency compaction to a single assistant message."""
+    content = message.get("content")
+    if isinstance(content, str):
+        message["content"] = _emergency_compact_string(
+            content,
+            label="assistant_content",
+        )
+    reasoning_content = message.get("reasoning_content")
+    if isinstance(reasoning_content, str):
+        message["reasoning_content"] = _emergency_compact_string(
+            reasoning_content,
+            label="reasoning_content",
+        )
+    tool_calls = message.get("tool_calls")
+    if isinstance(tool_calls, list):
+        for tool_call in tool_calls:
+            if not isinstance(tool_call, dict):
+                continue
+            function = tool_call.get("function")
+            if not isinstance(function, dict):
+                continue
+            arguments = function.get("arguments")
+            if isinstance(arguments, str):
+                normalized = _provider_context_arguments_json(arguments)
+                function["arguments"] = (
+                    normalized
+                    if normalized is not None
+                    else _emergency_compact_string(
+                        arguments,
+                        label="tool_arguments",
+                    )
+                )
+    content = message.get("content")
+    if not isinstance(content, list):
+        return
+    for block in content:
+        if not isinstance(block, dict):
+            continue
+        if block.get("type") == "thinking" and isinstance(block.get("thinking"), str):
+            block["thinking"] = _emergency_compact_string(
+                block["thinking"],
+                label="thinking_block",
+            )
+        elif block.get("type") == "text":
+            _compact_text_block(block, emergency=True)
 
 
 def _emergency_compact_current_turn_payload_once(payload: dict[str, Any]) -> dict[str, Any]:
     compacted = deepcopy(payload)
     messages = compacted.get("messages", [])
+    protected_index = _protected_recent_assistant_index(messages)
     last_user_index = None
     if isinstance(messages, list):
         for index, message in enumerate(messages):
@@ -578,6 +872,8 @@ def _emergency_compact_current_turn_payload_once(payload: dict[str, Any]) -> dic
                 last_user_index = index
     for index, message in enumerate(messages):
         if not isinstance(message, dict):
+            continue
+        if index == protected_index:
             continue
         role = message.get("role")
         content = message.get("content")
@@ -647,6 +943,7 @@ def _emergency_compact_current_turn_payload_once(payload: dict[str, Any]) -> dic
 def _final_hard_cap_payload_once(payload: dict[str, Any]) -> dict[str, Any]:
     compacted = deepcopy(payload)
     messages = compacted.get("messages", [])
+    protected_index = _protected_recent_assistant_index(messages)
     latest_user_index = None
     if isinstance(messages, list):
         for index, message in enumerate(messages):
@@ -654,6 +951,13 @@ def _final_hard_cap_payload_once(payload: dict[str, Any]) -> dict[str, Any]:
                 latest_user_index = index
     for index, message in enumerate(messages if isinstance(messages, list) else []):
         if not isinstance(message, dict):
+            continue
+        if index == protected_index:
+            # The most recent assistant turn is protected from tier 2+ so the
+            # model's just-emitted work is never destroyed. At the hard cap it
+            # still receives bounded emergency compaction rather than the
+            # sha-only placeholder used for older turns.
+            _emergency_compact_assistant_message(message)
             continue
         role = message.get("role")
         content = message.get("content")
@@ -772,6 +1076,9 @@ def prove_provider_payload(
         "proof_headroom_chars": headroom_chars,
         "fits": fits,
         "compact_needed": not fits,
+        "compaction_tier": 0,
+        "compaction_tiny_guard_chars": _tiny_compaction_guard_chars(),
+        "compaction_protect_recent_assistant": _protect_recent_assistant_enabled(),
         "recent_tail_too_large": False,
         "compaction_not_smaller": False,
         "provider_window_mismatch": False,
@@ -831,6 +1138,7 @@ def prove_or_compact_provider_payload(
     else:
         proof["retry_count"] = 1
         proof["compact_needed"] = True
+        proof["compaction_tier"] = 1
         proof["compaction_not_smaller"] = tool_compacted_chars >= first_chars
         proof["recent_tail_too_large"] = False
         return tool_compacted, proof
@@ -872,6 +1180,7 @@ def prove_or_compact_provider_payload(
             else:
                 proof["retry_count"] = 4
                 proof["compact_needed"] = True
+                proof["compaction_tier"] = 4
                 proof["tool_payload_compaction_not_smaller"] = (
                     tool_compacted_chars >= first_chars
                 )
@@ -892,6 +1201,7 @@ def prove_or_compact_provider_payload(
                 return hard_compacted, proof
             exc.proof["retry_count"] = 2
             exc.proof["compact_needed"] = True
+            exc.proof["compaction_tier"] = 4
             exc.proof["tool_payload_compaction_not_smaller"] = (
                 tool_compacted_chars >= first_chars
             )
@@ -911,6 +1221,7 @@ def prove_or_compact_provider_payload(
             raise
         proof["retry_count"] = 3
         proof["compact_needed"] = True
+        proof["compaction_tier"] = 3
         proof["tool_payload_compaction_not_smaller"] = tool_compacted_chars >= first_chars
         proof["tail_compaction_not_smaller"] = tail_compacted_chars >= tool_compacted_chars
         proof["emergency_current_turn_compacted"] = True
@@ -923,6 +1234,7 @@ def prove_or_compact_provider_payload(
         return emergency_compacted, proof
     proof["retry_count"] = 2
     proof["compact_needed"] = True
+    proof["compaction_tier"] = 2
     proof["tool_payload_compaction_not_smaller"] = tool_compacted_chars >= first_chars
     proof["tail_compaction_not_smaller"] = tail_compacted_chars >= tool_compacted_chars
     proof["compaction_not_smaller"] = tail_compacted_chars >= first_chars

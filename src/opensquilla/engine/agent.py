@@ -7,15 +7,19 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import functools
 import hashlib
 import json
+import re
+import subprocess
 import time
 import uuid
 from collections.abc import AsyncIterator, Mapping
 from contextvars import ContextVar
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from enum import StrEnum
+from pathlib import Path
 from typing import Any
 
 import structlog
@@ -29,8 +33,47 @@ from opensquilla.engine.cache_break_monitor import (
     record_prompt_state,
 )
 from opensquilla.engine.fallback import FallbackPolicy, backoff_sleep
+from opensquilla.engine.final_diff_contract import (
+    FinalDiffContractObservation,
+    build_final_diff_contract_observation,
+    final_diff_contract_recovery_message,
+)
+from opensquilla.engine.finalize_evidence_gate import (
+    EXECUTION_TOOL_NAMES as _GATE_EXECUTION_TOOL_NAMES,
+)
+from opensquilla.engine.finalize_evidence_gate import (
+    FINALIZE_EVIDENCE_GATE_CHALLENGE_LIMIT,
+    FinalizeEvidenceTracker,
+    execution_signals_from_result,
+    finalize_evidence_challenge_message,
+    finalize_evidence_gate_key,
+)
+from opensquilla.engine.finalize_evidence_gate import (
+    WRITE_TOOL_NAMES as _GATE_WRITE_TOOL_NAMES,
+)
 from opensquilla.engine.history import limit_turns, repair_tool_pairing
+from opensquilla.engine.patch_evidence_ledger import PatchEvidenceLedger
+from opensquilla.engine.post_write_convergence import (
+    PostWriteConvergenceDecision,
+    PostWriteConvergenceObservation,
+    PostWriteConvergenceTracker,
+)
 from opensquilla.engine.progress_watchdog import ProgressObservation, ProgressWatchdog
+from opensquilla.engine.runtime_diagnostics import RuntimeDiagnosticsObserver
+from opensquilla.engine.runtime_events import append_runtime_event
+from opensquilla.engine.runtime_recovery import (
+    RuntimeRecoveryDecision,
+    RuntimeRecoveryMode,
+    post_tool_empty_decision,
+    reasoning_continuation_decision,
+    reasoning_prefill_decision,
+    source_loop_recovery_decision,
+    supports_reasoning_prefill_replay,
+)
+from opensquilla.engine.runtime_state_capsule import (
+    build_runtime_state_capsule,
+    runtime_state_capsule_message,
+)
 from opensquilla.engine.session_sanitize import (
     SessionSanitizeResult,
     project_historical_tool_payloads,
@@ -40,6 +83,7 @@ from opensquilla.engine.session_sanitize import (
 from opensquilla.engine.thinking import drop_reasoning
 from opensquilla.engine.tokenjuice_adapter import reduce_tool_result_with_tokenjuice
 from opensquilla.engine.tool_result_store import (
+    TOOL_RESULT_META_NAME,
     ToolResultRecord,
     ToolResultStore,
     ToolResultStoreBudgetError,
@@ -86,10 +130,14 @@ from opensquilla.provider.types import (
 )
 from opensquilla.result_budget import (
     ToolResultBudgetClass,
+    ToolResultBudgetPolicy,
     compact_tool_result_content,
+    exec_command_invokes_git_diff,
+    exec_command_invokes_source_context_read,
     resolve_budget_class,
 )
 from opensquilla.router_control import router_control_replay_event_from_payload
+from opensquilla.safety.secret_redaction import redact_secret_value
 from opensquilla.session.compaction import (
     CompactionConfig,
     CompactionRequest,
@@ -111,12 +159,14 @@ from opensquilla.session.compaction_lifecycle import (
 )
 from opensquilla.session.terminal_reply import build_terminal_reply
 from opensquilla.tool_boundary import AgentToolHandler as ToolHandler
+from opensquilla.tools.projected_arguments import find_projected_tool_argument
 from opensquilla.tools.registry import ToolRegistry
 from opensquilla.tools.types import ToolContext, current_tool_context
 
 from .context import ContextAssembly
 from .subagent import SubagentManager, SubagentSpec
 from .types import (
+    _THINKING_BUDGET_DEFAULT,
     AgentConfig,
     AgentEvent,
     AgentState,
@@ -157,13 +207,285 @@ _PROVIDER_OUTPUT_CONTINUE_PROMPT = (
     "been written. If a tool call was interrupted or incomplete, regenerate a complete "
     "tool call from scratch."
 )
-
-_meta_invoke_depth: ContextVar[int] = ContextVar(
-    "opensquilla_meta_invoke_depth", default=0
+_TEXT_ONLY_TOOL_RECOVERY_LIMIT = 2
+_TEXT_ONLY_TOOL_RECOVERY_MESSAGE = (
+    "[Runtime recovery]\n"
+    "Previous assistant turn had text only and no tool calls. If the task still "
+    "requires repo inspection, editing, or verification, call the appropriate tool "
+    "now; if complete, answer briefly."
 )
+
+_SOURCE_CONTEXT_TOOL_NAMES: frozenset[str] = frozenset(
+    {
+        "glob_search",
+        "grep_search",
+        "list_dir",
+        "read_file",
+        "git_diff",
+        "git_log",
+        "git_show",
+        "git_status",
+    }
+)
+_REPEATED_TOOL_CALL_RECOVERY_TOOL_NAMES: frozenset[str] = frozenset(
+    {"exec_command", "glob_search", "grep_search", "list_dir"}
+)
+_EXECUTION_TOOL_NAMES: frozenset[str] = frozenset(
+    {"background_process", "exec_command", "execute_code"}
+)
+_FOCUSED_VERIFICATION_MARKERS: tuple[str, ...] = (
+    "pytest",
+    " unittest",
+    "python -m unittest",
+    "ruff check",
+    "cargo test",
+    "cargo build",
+    "cargo check",
+    "go test",
+    "npm test",
+    "pnpm test",
+    "yarn test",
+    "mvn test",
+    "gradle test",
+    "ctest",
+    "rspec",
+    "tox",
+    " make check",
+    " make test",
+    " run-tests.py",
+    " ./run-tests.py",
+    " tests/jqtest",
+)
+_CLEAN_TEST_SUMMARY_RE = re.compile(
+    r"\btests run:\s*\d+,\s*failures:\s*0,\s*errors:\s*0"
+    r"(?:,\s*skipped:\s*\d+)?\b",
+    re.IGNORECASE,
+)
+_CLEAN_PASSED_FAILED_SUMMARY_RE = re.compile(
+    r"\b\d+\s+passed\b[^\n\r;]*(?:;|,)?[^\n\r]*\b0\s+failed\b",
+    re.IGNORECASE,
+)
+_PLAIN_PASSED_SUMMARY_RE = re.compile(r"\b\d+\s+passed\b", re.IGNORECASE)
+_CLEAN_ERROR_COUNT_RE = re.compile(r"\b0\s+error\(s\)(?:\W|$)", re.IGNORECASE)
+_FAILED_FINALIZATION_RECOVERY_LIMIT = 3
+_CODE_CHANGE_TASK_MARKERS: tuple[str, ...] = (
+    "bug",
+    "fix",
+    "failing",
+    "failure",
+    "implement",
+    "patch",
+    "traceback",
+    "error",
+    "exception",
+    "regression",
+    "test",
+)
+_NO_CHANGE_FINAL_MARKERS: tuple[str, ...] = (
+    "no code change",
+    "no file change",
+    "no changes are required",
+    "no changes needed",
+    "diff should remain empty",
+    "repository diff should remain empty",
+)
+_ROOT_SCRATCH_ARTIFACT_NAMES: frozenset[str] = frozenset(
+    {
+        "actual.json",
+        "bug.py",
+        "bug_test.py",
+        "check.py",
+        "data.json",
+        "debug.py",
+        "expected.json",
+        "input.json",
+        "fix.patch",
+        "minimal.py",
+        "minimal_bug.py",
+        "output.json",
+        "repro.json",
+        "repro.py",
+        "reproduction.py",
+        "sample.json",
+        "sample2.json",
+        "scratch.py",
+        "test_case.py",
+        "test_issue.py",
+        "tmp.py",
+        "verify.py",
+        "works.py",
+    }
+)
+_ROOT_SCRATCH_ARTIFACT_PREFIXES: tuple[str, ...] = (
+    "actual_",
+    "data_",
+    "debug_",
+    "expected_",
+    "input_",
+    "minimal_",
+    "output_",
+    "repro_",
+    "sample_",
+    "scratch_",
+    "test_",
+    "tmp_",
+    "verify_",
+)
+_ROOT_SCRATCH_ARTIFACT_SUFFIXES: frozenset[str] = frozenset(
+    {".json", ".js", ".log", ".out", ".py", ".sh", ".ts", ".txt"}
+)
+_SUSPICIOUS_NEW_WORKSPACE_WRITE_PREFIXES: tuple[str, ...] = (
+    "debug_marker",
+    "guard_unlock",
+    "runtime_guard",
+    "temp_marker",
+)
+_SUSPICIOUS_NEW_WORKSPACE_WRITE_CONTENT_MARKERS: tuple[str, ...] = (
+    "debug marker",
+    "guard unlock",
+    "placeholder for runtime guard",
+    "runtime guard unlock",
+    "satisfy the runtime guard",
+    "temp marker",
+)
+_NO_WORKSPACE_WRITE_REASONS: frozenset[str] = frozenset(
+    {
+        "source_context_without_workspace_write",
+        "source_context_exploration_without_workspace_write",
+        "repeated_failure_anchor_without_workspace_write",
+        "tool_activity_without_workspace_write",
+    }
+)
+_WORKSPACE_EDIT_TOOL_NAMES: frozenset[str] = frozenset(
+    {
+        "apply_patch",
+        "edit_file",
+        "write_file",
+    }
+)
+_DIAGNOSTIC_RETRIEVAL_GATED_TOOL_NAMES: frozenset[str] = frozenset(
+    {
+        *_WORKSPACE_EDIT_TOOL_NAMES,
+        "finalize",
+    }
+)
+
+_meta_invoke_depth: ContextVar[int] = ContextVar("opensquilla_meta_invoke_depth", default=0)
 _meta_invoke_turn_count: ContextVar[int] = ContextVar(
     "opensquilla_meta_invoke_turn_count", default=0
 )
+
+
+def _progress_watchdog_guidance_message(reason: str, details: Mapping[str, Any]) -> str:
+    no_workspace_write_reason = reason in _NO_WORKSPACE_WRITE_REASONS
+    if reason == "repeated_provider_failure":
+        signal = "repeated provider failures"
+    elif reason == "repeated_tool_error":
+        signal = "repeated tool errors"
+    elif reason == "repeated_failure_anchor_without_workspace_write":
+        signal = "the same failure anchor repeating without a new workspace edit"
+    elif reason in {
+        "source_context_without_workspace_write",
+        "source_context_exploration_without_workspace_write",
+        "source_context_after_workspace_write",
+    }:
+        signal = (
+            "source-context exploration continuing after repository edits"
+            if reason == "source_context_after_workspace_write"
+            else "source-context exploration continuing without clear patch progress"
+        )
+    elif reason == "tool_activity_without_workspace_write":
+        signal = "tool activity continuing without a real workspace edit"
+    elif reason == "verified_workspace_diff_continued_tool_activity":
+        signal = "continued tool activity after a workspace diff and focused verification"
+    else:
+        signal = "repeated no-progress activity"
+
+    count = details.get("count")
+    count_text = f" Count: {count}." if isinstance(count, int) and count > 0 else ""
+    workspace_change_likely_required = bool(
+        details.get("workspace_change_likely_required")
+    )
+    failure_summary = str(details.get("failure_anchor_summary") or "").strip()
+    if len(failure_summary) > 700:
+        failure_summary = failure_summary[:697].rstrip() + "..."
+    failure_text = f" Recent failure anchor(s): {failure_summary}." if failure_summary else ""
+    if no_workspace_write_reason and workspace_change_likely_required:
+        next_step_text = (
+            "This task appears to require a repository patch, but no tracked "
+            "workspace source file has been changed yet. Avoid repeating broad "
+            "exploration or writing more scratch notes. If the exact edit is not "
+            "localized yet, use targeted source reads/searches; once localized, use "
+            "an available source-edit tool on the real project source file allowed "
+            "by the workspace write policy, then run one focused validation command."
+        )
+    elif reason in {
+        "source_context_after_workspace_write",
+        "verified_workspace_diff_continued_tool_activity",
+    }:
+        if isinstance(count, int) and count >= 6:
+            next_step_text = (
+                "You already have repository edits and have received this warning "
+                "again. Do not call read_file, grep_search, glob_search, list_dir, "
+                "or write more scratch files next. Use the current context: make a "
+                "source edit, run one focused validation command, or finalize if "
+                "validation is clean."
+            )
+        else:
+            next_step_text = (
+                "You already have repository edits. Stop broad source exploration. "
+                "Use the current diff and latest verification result: either fix the "
+                "patch, run one focused validation command, or finalize if validation "
+                "is clean."
+            )
+    else:
+        next_step_text = (
+            "Do not repeat the same action unchanged. Change approach, inspect the "
+            "current workspace diff and the latest failure signal, make the smallest "
+            "justified source edit if one is available, or explain the concrete blocker."
+        )
+    return (
+        "[Runtime progress warning]\n"
+        f"The runtime observed {signal}.{count_text}{failure_text} "
+        f"{next_step_text}"
+    )
+
+
+def _post_write_convergence_message(
+    decision: PostWriteConvergenceDecision,
+) -> str:
+    details = decision.details
+    stable_count = details.get("stable_count")
+    count_text = (
+        f" for {stable_count} post-verification tool turn(s)"
+        if isinstance(stable_count, int) and stable_count > 0
+        else ""
+    )
+    paths = details.get("diff_paths")
+    if isinstance(paths, list) and paths:
+        path_text = ", ".join(str(path) for path in paths[:5])
+        if len(paths) > 5:
+            path_text += ", ..."
+        path_text = f" Current diff paths: {path_text}."
+    else:
+        path_text = ""
+    if decision.action == "finalize":
+        next_step = (
+            "Do not call tools. Provide the final answer from the current patch and "
+            "latest clean validation result. Only mention a blocker if the current "
+            "diff is known to be incomplete."
+        )
+    else:
+        next_step = (
+            "Stop broad source exploration. Use the current diff and latest clean "
+            "validation result: finalize if the patch is ready, or make one small "
+            "source edit only if the validation evidence requires it."
+        )
+    return (
+        "[Runtime post-write convergence]\n"
+        f"The current diff has stayed unchanged{count_text} after a successful "
+        f"focused validation.{path_text} {next_step}"
+    )
 
 
 def _cost_source_for_usage(cost_usd: float, billed_cost: float) -> str:
@@ -350,12 +672,68 @@ _HISTORICAL_TOOL_ARGUMENT_PROJECTION_PREFIX = "[historical_tool_argument_omitted
 _INVALID_PROVIDER_CONTEXT_PROJECTION_PREFIX = "[invalid_provider_context_projection:"
 _INVALID_PROVIDER_CONTEXT_ARGUMENTS_KEY = "_invalid_provider_context_arguments"
 _AGGREGATE_TOOL_RESULT_MAX_SHARE = 0.25
+# Below this size a duplicate tool result is not worth eliding: the dedup stub
+# itself costs ~200 chars, so tiny repeated payloads would grow, not shrink.
+_PROVIDER_HISTORY_DEDUP_MIN_CHARS = 400
 _TOOL_ARGUMENT_HEARTBEAT_CHARS = 4096
 _PROVIDER_CONTEXT_PROJECTION_REUSED_REASON = "provider_context_projection_reused"
+_SEMANTIC_TOOL_RESULT_PROJECTION_SKIP_TOOLS = frozenset({"read_file", "git_diff"})
+_TOOL_RESULT_RETRIEVE_HINT = (
+    "retrieve_hint: this result is incomplete. If the next diagnosis, patch, "
+    "or validation step depends on omitted details, first call "
+    "retrieve_tool_result with this tool_result_handle. Prefer mode=query with "
+    "an L<num> from search_hints, a failing test name, file path, or error "
+    "phrase; use mode=head_tail for orientation, and mode=raw_slice with "
+    "offset/limit only when focused query retrieval is insufficient. If "
+    "retrieve_tool_result returns continuation.next_call, prefer that exact "
+    "follow-up. Do not infer omitted diagnostics from this projection.\n"
+)
+_TOOL_RESULT_HINT_LINE_MAX_CHARS = 180
+_TOOL_RESULT_HINT_MAX_LINES = 8
+_TOOL_RESULT_HINT_MAX_CHARS = 900
+_TOOL_RESULT_HINT_SCAN_MAX_CHARS = 2048
+_TOOL_PROJECTION_EVENT_ARGUMENT_KEYS = frozenset(
+    {"command", "cmd", "workdir", "cwd", "path", "paths"}
+)
+_TOOL_PROJECTION_EVENT_ARGUMENT_MAX_CHARS = 4096
+_TOOL_RESULT_HINT_PATTERN = re.compile(
+    r"\b("
+    r"assert(?:ion)?s?|"
+    r"error|errors|exception|fatal|"
+    r"fail(?:ed|ing|ure|ures|s)?|"
+    r"mismatch|panic(?:ked|king|s)?|"
+    r"traceback|expected|actual"
+    r")\b",
+    re.IGNORECASE,
+)
+_TOOL_RESULT_HINT_PATH_PATTERN = re.compile(
+    r"(?:[A-Za-z]:)?[./\\]?[A-Za-z0-9_.-]+(?:[/\\][A-Za-z0-9_.-]+)+(?::\d+)?"
+)
 _PROVIDER_CONTEXT_REPAIR_PROMPT = (
     "A previous tool call was rejected because it reused provider-only compacted "
     "tool arguments. Regenerate the complete tool arguments from the available "
     "source context and retry the tool call. Do not copy compacted placeholders."
+)
+_IDENTICAL_REQUEST_LOOP_NUDGE = (
+    "The last several requests were identical: the conversation is stuck "
+    "repeating the same rejected or failed action. Do not repeat the previous "
+    "tool call. Change approach now: re-read the relevant files or re-run the "
+    "command to rebuild tool arguments from real content, try a different tool "
+    "or target, or finalize with your best current answer."
+)
+_PLACEHOLDER_ESCALATION_DIRECTIVE = (
+    "STOP: multiple tool calls this turn reused compacted placeholder text and "
+    "were rejected without running. Reissuing that call will never work. Before "
+    "your next tool call, re-open the target file or re-run the underlying "
+    "command to get its real current content, then rebuild the tool arguments "
+    "from that fresh output. Never retype or paraphrase placeholder text."
+)
+_DEADLINE_WRAPUP_DIRECTIVE_TEMPLATE = (
+    "Time check: roughly {minutes} minute(s) of wall-clock budget remain for "
+    "this task. Stop exploring and converge now: apply your best current "
+    "changes, verify them quickly if you can, and finish with a complete "
+    "final answer. Finishing your best-supported work now is better than "
+    "further investigation that the clock will cut off."
 )
 _LARGE_CONTEXT_INVALID_RESPONSE_INPUT_TOKENS = 30_000
 _COMPACTED_TOOL_ARGUMENT_MARKERS = frozenset(
@@ -364,6 +742,61 @@ _COMPACTED_TOOL_ARGUMENT_MARKERS = frozenset(
         "_opensquilla_compacted_tool_input",
     }
 )
+
+
+def _tool_result_search_hints(content: str) -> str:
+    lines: list[str] = []
+    candidates: list[tuple[int, int, str]] = []
+    used_chars = 0
+    seen: set[str] = set()
+    for line_number, line in enumerate(content.splitlines(), start=1):
+        stripped = line.strip()
+        if not stripped:
+            continue
+        scan_line = line[:_TOOL_RESULT_HINT_SCAN_MAX_CHARS]
+        has_diagnostic = bool(_TOOL_RESULT_HINT_PATTERN.search(scan_line))
+        has_path = bool(_TOOL_RESULT_HINT_PATH_PATTERN.search(scan_line))
+        if not has_diagnostic and not has_path:
+            continue
+        snippet = scan_line[:_TOOL_RESULT_HINT_LINE_MAX_CHARS]
+        normalized = snippet.casefold()
+        if normalized in seen:
+            continue
+        rendered = f"- L{line_number}: {snippet}"
+        score = (10 if has_diagnostic else 0) + (1 if has_path else 0)
+        if used_chars + len(rendered) > _TOOL_RESULT_HINT_MAX_CHARS:
+            continue
+        seen.add(normalized)
+        candidates.append((-score, line_number, rendered))
+    for _score, _line_number, rendered in sorted(candidates):
+        if used_chars + len(rendered) > _TOOL_RESULT_HINT_MAX_CHARS:
+            continue
+        lines.append(rendered)
+        used_chars += len(rendered)
+        if len(lines) >= _TOOL_RESULT_HINT_MAX_LINES:
+            break
+    if not lines:
+        return ""
+    return "search_hints:\n" + "\n".join(lines) + "\n"
+
+
+def _projection_event_argument_value(value: Any, *, key: str) -> Any:
+    redacted = redact_secret_value(value, key=key)
+    if isinstance(redacted, str) and len(redacted) > _TOOL_PROJECTION_EVENT_ARGUMENT_MAX_CHARS:
+        omitted = len(redacted) - _TOOL_PROJECTION_EVENT_ARGUMENT_MAX_CHARS
+        prefix = redacted[:_TOOL_PROJECTION_EVENT_ARGUMENT_MAX_CHARS]
+        return f"{prefix}...[truncated {omitted} chars]"
+    return redacted
+
+
+def _projection_event_arguments(arguments: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not isinstance(arguments, dict):
+        return None
+    selected: dict[str, Any] = {}
+    for key in sorted(_TOOL_PROJECTION_EVENT_ARGUMENT_KEYS):
+        if key in arguments:
+            selected[key] = _projection_event_argument_value(arguments[key], key=key)
+    return selected or None
 
 
 def _large_json_field_replacement(value: str) -> dict[str, object]:
@@ -460,6 +893,7 @@ async def _wait_for_pending_approval_resolution(
         return
 
 
+@functools.lru_cache(maxsize=4096)
 def _tool_result_content_has_artifact(content: str) -> bool:
     try:
         payload = json.loads(content)
@@ -470,6 +904,16 @@ def _tool_result_content_has_artifact(content: str) -> bool:
     if isinstance(payload.get("artifact"), dict) or isinstance(payload.get("artifacts"), list):
         return True
     return payload.get("status") in {"published", "already_published"}
+
+
+def _tool_result_content_is_provider_projection(content: str) -> bool:
+    return content.startswith(
+        (
+            "[tool_result_projection]\n",
+            "[aggregate_tool_result_compacted]\n",
+            "[duplicate_tool_result_elided]\n",
+        )
+    )
 
 
 def _tool_result_budget_tokens(content: str) -> int:
@@ -533,6 +977,76 @@ def _tail_has_tool_result(messages: list[Message], *, lookback: int = 2) -> bool
     if not messages:
         return False
     return any(_message_has_tool_result(message) for message in messages[-lookback:])
+
+
+def _message_has_visible_text(message: Message) -> bool:
+    if isinstance(message.content, str):
+        return bool(message.content.strip())
+    if not isinstance(message.content, list):
+        return False
+    return any(
+        isinstance(block, ContentBlockText) and bool(block.text.strip())
+        for block in message.content
+    )
+
+
+def _message_has_tool_use(message: Message) -> bool:
+    if not isinstance(message.content, list):
+        return False
+    return any(isinstance(block, ContentBlockToolUse) for block in message.content)
+
+
+def _build_reasoning_prefill_message(
+    *,
+    reasoning_content: str,
+    thinking_signature: str | None,
+) -> Message:
+    content: list[Any] = []
+    if thinking_signature:
+        content.append(
+            ContentBlockThinking(
+                thinking=reasoning_content,
+                signature=thinking_signature,
+            )
+        )
+    else:
+        content.append(ContentBlockText(text=""))
+    return Message(
+        role="assistant",
+        content=content,
+        reasoning_content=reasoning_content,
+    )
+
+
+def _drop_runtime_recovery_scaffolding(messages: list[Message]) -> list[Message]:
+    cleaned = list(messages)
+    while cleaned:
+        last = cleaned[-1]
+        if (
+            last.role == "user"
+            and isinstance(last.content, str)
+            and last.content.startswith("[Runtime recovery]")
+        ):
+            cleaned.pop()
+            if cleaned:
+                previous = cleaned[-1]
+                if (
+                    previous.role == "assistant"
+                    and not _message_has_visible_text(previous)
+                    and not _message_has_tool_use(previous)
+                ):
+                    cleaned.pop()
+            continue
+        if (
+            last.role == "assistant"
+            and last.reasoning_content
+            and not _message_has_visible_text(last)
+            and not _message_has_tool_use(last)
+        ):
+            cleaned.pop()
+            continue
+        break
+    return cleaned
 
 
 def _append_length_capped_continuation(
@@ -666,6 +1180,18 @@ def _classify_provider_attempt(
             stop_reason=stop_reason,
             user_visible_emitted=user_visible_emitted,
         )
+    if (stop_reason or "").lower() == "length" and not visible_text and not tool_calls:
+        if (reasoning_content and reasoning_content.strip()) or reasoning_tokens > 0:
+            return _ProviderAttemptClassification(
+                _ProviderAttemptKind.REASONING_ONLY,
+                stop_reason=stop_reason,
+                user_visible_emitted=user_visible_emitted,
+            )
+        return _ProviderAttemptClassification(
+            _ProviderAttemptKind.MALFORMED_EMPTY,
+            stop_reason=stop_reason,
+            user_visible_emitted=user_visible_emitted,
+        )
     if (stop_reason or "").lower() == "length":
         return _ProviderAttemptClassification(
             _ProviderAttemptKind.LENGTH_CAPPED,
@@ -695,9 +1221,11 @@ def _chat_config_with_thinking_disabled(chat_cfg: ChatConfig) -> ChatConfig:
     return ChatConfig(
         max_tokens=chat_cfg.max_tokens,
         temperature=chat_cfg.temperature,
+        top_p=chat_cfg.top_p,
         system=chat_cfg.system,
         thinking=False,
         thinking_budget_tokens=0,
+        thinking_budget_explicit=False,
         timeout=chat_cfg.timeout,
         stop_sequences=chat_cfg.stop_sequences,
         cache_breakpoints=chat_cfg.cache_breakpoints,
@@ -802,12 +1330,50 @@ class Agent:
         self._session_key = session_key
         self._turn_call_logger = turn_call_logger
         self._tool_registry: ToolRegistry | None = tool_registry
+        if (
+            tool_context is not None
+            and self.config.runtime_events_path
+            and tool_context.on_runtime_event is None
+        ):
+            # The tool handler may already have closed over this ToolContext
+            # before Agent construction. Preserve object identity so tool
+            # internals that read current_tool_context can emit events.
+            tool_context.on_runtime_event = self._record_tool_context_runtime_event
+        if tool_context is not None and self.config.tool_result_store_dir:
+            tool_context = replace(
+                tool_context,
+                tool_result_store_dir=self.config.tool_result_store_dir,
+                tool_result_store_session_id=(
+                    self.config.tool_result_store_session_id
+                    or tool_context.tool_result_store_session_id
+                    or tool_context.artifact_session_id
+                    or self._session_key
+                ),
+            )
+        if tool_context is not None and (
+            tool_context.source_diff_preservation_mode
+            != self.config.source_diff_preservation_mode
+            or tool_context.source_diff_candidate_mode
+            != self.config.source_diff_candidate_mode
+        ):
+            tool_context = replace(
+                tool_context,
+                source_diff_preservation_mode=self.config.source_diff_preservation_mode,
+                source_diff_candidate_mode=self.config.source_diff_candidate_mode,
+            )
+        if tool_context is not None:
+            tool_context = self._apply_configured_tool_result_budget(tool_context)
         self._tool_context: ToolContext | None = tool_context
         # Test-only offline failure seam. ``None`` on every production path,
         # so the provider chat call below stays byte-identical to before when
         # it is unset; a test passes an explicit FailureInjector to script the
         # retry/rotate/fallback chain without a network or a real provider.
         self._failure_injector: FailureInjector | None = failure_injector
+        if self.tool_handler is not None and self._tool_context is not None:
+            self.tool_handler = self._bind_tool_handler_context(
+                self.tool_handler,
+                self._tool_context,
+            )
         self._meta_run_writer = (self.config.metadata or {}).get("meta_run_writer")
         self._pending_warnings: list[WarningEvent] = []
 
@@ -828,7 +1394,25 @@ class Agent:
         self._session_flush_service = session_flush_service
         self._last_compaction_refusal_reason: str | None = None
         self._tool_failure_loop_counts: dict[tuple[str, str], int] = {}
+        self._identical_request_last_sha: str | None = None
+        self._identical_request_streak: int = 0
         self._provider_tool_result_overrides: dict[str, ContentBlockToolResult] = {}
+        self._provider_tool_result_frozen_overrides: dict[str, ContentBlockToolResult] = {}
+        self._provider_tool_result_frozen_full_ids: set[str] = set()
+        self._provider_history_dedup_survivor_ids: set[str] = set()
+        self._projected_diagnostic_evidence: dict[str, dict[str, Any]] = {}
+        self._focused_retrieved_tool_result_handles: set[str] = set()
+        self._tool_result_snapshot_cache: dict[
+            tuple[str, str, str, str, str, str], ToolResultRecord
+        ] = {}
+        self._patch_evidence_ledger: PatchEvidenceLedger | None = None
+        if self.config.patch_evidence_ledger_path:
+            self._patch_evidence_ledger = PatchEvidenceLedger(
+                path=self.config.patch_evidence_ledger_path,
+                workspace_dir=self.config.workspace_dir,
+                session_key=session_key,
+                agent_id=getattr(tool_context, "agent_id", None) if tool_context else None,
+            )
 
     def _context_overflow_error(self) -> ErrorEvent:
         reason = self._last_compaction_refusal_reason
@@ -927,6 +1511,49 @@ class Agent:
         except (TypeError, ValueError):
             return None
         return parsed if parsed > 0 else None
+
+    def _configured_tool_result_budget_policy(self) -> ToolResultBudgetPolicy | None:
+        single_limit = self._positive_int(
+            getattr(self.config, "tool_result_dispatch_max_chars", 0)
+        )
+        turn_limit = self._positive_int(
+            getattr(self.config, "tool_result_dispatch_turn_max_chars", 0)
+        )
+        if single_limit is None and turn_limit is None:
+            return None
+        return ToolResultBudgetPolicy(
+            max_single_execution_result_chars=single_limit,
+            max_execution_tool_result_chars_per_turn=turn_limit,
+        )
+
+    def _apply_configured_tool_result_budget(
+        self,
+        tool_context: ToolContext,
+    ) -> ToolContext:
+        policy = self._configured_tool_result_budget_policy()
+        if policy is None:
+            return tool_context
+        return replace(
+            tool_context,
+            tool_result_budget_policy=policy,
+        )
+
+    def _bind_tool_handler_context(
+        self,
+        tool_handler: ToolHandler,
+        tool_context: ToolContext,
+    ) -> ToolHandler:
+        async def _handler(tc: ToolCall) -> ToolResult:
+            active = current_tool_context.get()
+            if active is not None and getattr(active, "on_runtime_event", None) is not None:
+                return await tool_handler(tc)
+            token = current_tool_context.set(tool_context)
+            try:
+                return await tool_handler(tc)
+            finally:
+                current_tool_context.reset(token)
+
+        return _handler
 
     def _provider_budget_compaction_window_tokens(
         self,
@@ -1096,6 +1723,219 @@ class Agent:
             return max(1, int(fallback))
         return max(1, int(self.config.tool_result_projection_max_inline_chars))
 
+    def _fresh_diagnostic_policy_enabled(self) -> bool:
+        return bool(
+            getattr(
+                self.config,
+                "tool_result_fresh_diagnostic_policy_enabled",
+                False,
+            )
+        )
+
+    def _diagnostic_retrieval_gate_enabled(self) -> bool:
+        return bool(
+            getattr(
+                self.config,
+                "tool_result_diagnostic_retrieval_gate_enabled",
+                False,
+            )
+        )
+
+    def _fresh_diagnostic_inline_max_chars(self) -> int:
+        if not self._fresh_diagnostic_policy_enabled():
+            return 0
+        return max(
+            0,
+            int(
+                getattr(
+                    self.config,
+                    "tool_result_fresh_diagnostic_inline_max_chars",
+                    64_000,
+                )
+                or 0
+            ),
+        )
+
+    @staticmethod
+    def _tool_result_diagnostic_reason(result: ToolResult, content: str) -> str | None:
+        if result.is_error:
+            return "is_error"
+        status: Mapping[str, Any] = result.execution_status or {}
+        if isinstance(status, Mapping):
+            preservation_class = str(status.get("preservation_class") or "")
+            if preservation_class == "diagnostic":
+                return "diagnostic_preservation_class"
+            if str(status.get("status") or "") in {"error", "timeout", "cancelled"}:
+                return "diagnostic_execution_status"
+        scan = content[:_TOOL_RESULT_HINT_SCAN_MAX_CHARS]
+        if (
+            _TOOL_RESULT_HINT_PATTERN.search(scan)
+            and not _CLEAN_TEST_SUMMARY_RE.search(scan)
+            and not _CLEAN_PASSED_FAILED_SUMMARY_RE.search(scan)
+            and not _CLEAN_ERROR_COUNT_RE.search(scan)
+        ):
+            return "failure_anchor"
+        return None
+
+    def _record_fresh_diagnostic_result(
+        self,
+        *,
+        reason: str,
+        tool_name: str,
+        tool_use_id: str,
+        original_chars: int,
+    ) -> None:
+        self.config.metadata["tool_projection_fresh_diagnostic_results"] = (
+            self.config.metadata.get("tool_projection_fresh_diagnostic_results", 0) + 1
+        )
+        self._write_turn_call_log(
+            "tool_projection_fresh_diagnostic",
+            tool_use_id=tool_use_id,
+            name=tool_name,
+            reason=reason,
+            original_chars=original_chars,
+        )
+
+    def _record_projected_diagnostic_evidence(
+        self,
+        *,
+        handle: str | None,
+        tool_name: str,
+        tool_use_id: str,
+        reason: str,
+        original_chars: int,
+        projected_chars: int,
+    ) -> None:
+        self.config.metadata["tool_projection_fresh_diagnostic_projections"] = (
+            self.config.metadata.get("tool_projection_fresh_diagnostic_projections", 0) + 1
+        )
+        append_runtime_event(
+            self.config.runtime_events_path,
+            {
+                "feature": "tool_result_projection",
+                "name": "tool_projection_fresh_diagnostic",
+                "action": "projected",
+                "reason": reason,
+                "session_key": self._session_key,
+                "agent_id": self.config.tool_result_store_agent_id
+                or self.config.metadata.get("agent_id"),
+                "tool_name": tool_name,
+                "tool_use_id": tool_use_id,
+                "tool_result_handle": handle,
+                "tool_result_handle_present": bool(handle),
+                "original_chars": original_chars,
+                "projected_chars": projected_chars,
+            },
+        )
+        if not self._diagnostic_retrieval_gate_enabled():
+            return
+        if not handle:
+            return
+        self._projected_diagnostic_evidence[handle] = {
+            "tool_name": tool_name,
+            "tool_use_id": tool_use_id,
+            "reason": reason,
+            "original_chars": original_chars,
+            "projected_chars": projected_chars,
+        }
+
+    @staticmethod
+    def _retrieval_tool_call_handle(tc: ToolCall) -> str | None:
+        if tc.tool_name != "retrieve_tool_result":
+            return None
+        raw_handle = tc.arguments.get("handle")
+        if not isinstance(raw_handle, str):
+            return None
+        handle = raw_handle.strip()
+        return handle or None
+
+    @staticmethod
+    def _retrieval_tool_call_is_focused(tc: ToolCall) -> bool:
+        if tc.tool_name != "retrieve_tool_result":
+            return False
+        raw_mode = tc.arguments.get("mode")
+        mode = raw_mode.strip().lower() if isinstance(raw_mode, str) else ""
+        if mode in {"query", "grep", "slice", "head_tail", "raw_slice"}:
+            return True
+        return any(
+            isinstance(tc.arguments.get(key), str) and str(tc.arguments.get(key)).strip()
+            for key in ("query", "pattern")
+        ) or any(tc.arguments.get(key) is not None for key in ("start_line", "end_line", "offset"))
+
+    def _record_focused_diagnostic_retrieval(
+        self,
+        tc: ToolCall,
+        result: ToolResult,
+    ) -> None:
+        if result.is_error or not self._retrieval_tool_call_is_focused(tc):
+            return
+        handle = self._retrieval_tool_call_handle(tc)
+        if handle is None or handle not in self._projected_diagnostic_evidence:
+            return
+        self._focused_retrieved_tool_result_handles.add(handle)
+        self.config.metadata["tool_projection_diagnostic_retrievals"] = (
+            self.config.metadata.get("tool_projection_diagnostic_retrievals", 0) + 1
+        )
+        append_runtime_event(
+            self.config.runtime_events_path,
+            {
+                "feature": "tool_result_retrieval",
+                "name": "tool_projection_diagnostic_retrieval",
+                "session_key": self._session_key,
+                "agent_id": self.config.tool_result_store_agent_id
+                or self.config.metadata.get("agent_id"),
+                "tool_use_id": tc.tool_use_id,
+                "tool_name": tc.tool_name,
+                "tool_result_handle": handle,
+                "mode": tc.arguments.get("mode"),
+                "query": tc.arguments.get("query"),
+            },
+        )
+        self._write_turn_call_log(
+            "tool_projection_diagnostic_retrieval",
+            tool_use_id=tc.tool_use_id,
+            name=tc.tool_name,
+            tool_result_handle=handle,
+            mode=tc.arguments.get("mode"),
+            query=tc.arguments.get("query"),
+        )
+
+    def _projected_diagnostic_retrieval_gate_tool_result(self, tc: ToolCall) -> ToolResult | None:
+        if not self._diagnostic_retrieval_gate_enabled():
+            return None
+        if tc.tool_name not in _DIAGNOSTIC_RETRIEVAL_GATED_TOOL_NAMES:
+            return None
+        pending = [
+            (handle, details)
+            for handle, details in self._projected_diagnostic_evidence.items()
+            if handle not in self._focused_retrieved_tool_result_handles
+        ]
+        if not pending:
+            return None
+        handle, details = pending[-1]
+        self.config.metadata["tool_projection_diagnostic_retrieval_gate_blocks"] = (
+            self.config.metadata.get("tool_projection_diagnostic_retrieval_gate_blocks", 0) + 1
+        )
+        tool_name = str(details.get("tool_name") or "tool")
+        reason = str(details.get("reason") or "diagnostic")
+        return ToolResult(
+            tool_use_id=tc.tool_use_id,
+            tool_name=tc.tool_name,
+            content=(
+                "Runtime guard: this action depends on incomplete diagnostic evidence. "
+                f"The recent {tool_name} result was projected with preview_complete=false "
+                f"for reason {reason!r}. Before calling {tc.tool_name}, use "
+                "retrieve_tool_result with the projected tool_result_handle and a focused "
+                "query, grep, line slice, or raw_slice for the failing test, traceback, "
+                f"line reference, or error phrase. tool_result_handle: {handle}"
+            ),
+            is_error=True,
+            execution_status=runtime_execution_status(
+                "error",
+                reason="projected_diagnostic_requires_retrieval",
+            ),
+        )
+
     def _tokenjuice_tool_reduction(
         self,
         *,
@@ -1125,6 +1965,148 @@ class Agent:
             self.config.metadata["tool_projection_tokenjuice_reducer"] = reduction.reducer
         return reduction.inline_text
 
+    def _semantic_tool_result_projection_skip_reason(
+        self,
+        result: ToolResult,
+        *,
+        tool_call: ToolCall | None = None,
+    ) -> str | None:
+        if result.is_error:
+            return None
+        if result.tool_name in _SEMANTIC_TOOL_RESULT_PROJECTION_SKIP_TOOLS:
+            return f"semantic_{result.tool_name}_preserved"
+        if result.tool_name == "exec_command" and exec_command_invokes_git_diff(
+            self._tool_call_string_arg(tool_call, "command")
+        ):
+            return "semantic_git_diff_preserved"
+        if result.tool_name == "exec_command" and exec_command_invokes_source_context_read(
+            self._tool_call_string_arg(tool_call, "command"),
+            content=result.content,
+        ):
+            return "semantic_source_context_preserved"
+        return None
+
+    @staticmethod
+    def _tool_definition_schema_payload(tool: ToolDefinition) -> dict[str, Any]:
+        try:
+            return tool.model_dump(mode="json", exclude_none=True)
+        except Exception:
+            return {
+                "name": getattr(tool, "name", ""),
+                "description": getattr(tool, "description", ""),
+                "input_schema": getattr(tool, "input_schema", None),
+            }
+
+    @staticmethod
+    def _sha256_short(value: str) -> str:
+        return hashlib.sha256(value.encode("utf-8")).hexdigest()[:16]
+
+    def _record_provider_tool_schema_event(
+        self,
+        *,
+        tools: list[ToolDefinition] | None,
+        iteration: int,
+        attempt: int,
+        call_id: str,
+        tools_supported: bool,
+    ) -> None:
+        if not self.config.runtime_events_path:
+            return
+        tool_names = [tool.name for tool in tools or []]
+        target_names = ["retrieve_tool_result"]
+        target_schemas: dict[str, dict[str, Any]] = {}
+        schema_hashes: dict[str, str] = {}
+        for tool in tools or []:
+            payload = self._tool_definition_schema_payload(tool)
+            payload_json = json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str)
+            schema_hashes[tool.name] = self._sha256_short(payload_json)
+            if tool.name in target_names:
+                input_schema = payload.get("input_schema") or {}
+                properties = (
+                    input_schema.get("properties")
+                    if isinstance(input_schema, dict)
+                    else {}
+                )
+                target_schemas[tool.name] = {
+                    "schema_hash": schema_hashes[tool.name],
+                    "description_sha256": self._sha256_short(str(payload.get("description") or "")),
+                    "description_chars": len(str(payload.get("description") or "")),
+                    "parameter_names": sorted((properties or {}).keys()),
+                    "required": list(input_schema.get("required") or [])
+                    if isinstance(input_schema, dict)
+                    else [],
+                }
+        append_runtime_event(
+            self.config.runtime_events_path,
+            {
+                "feature": "provider_tool_schema",
+                "mechanism": "tool_visibility_observer",
+                "mode": "log",
+                "reason": "provider_request_tools",
+                "session_key": self._session_key,
+                "agent_id": self.config.tool_result_store_agent_id
+                or self.config.metadata.get("agent_id"),
+                "iteration": iteration,
+                "attempt": attempt,
+                "call_id": call_id,
+                "tools_supported": tools_supported,
+                "sent_to_provider": bool(tools),
+                "tool_count": len(tool_names),
+                "tool_names": tool_names,
+                "target_tool_visible": {
+                    name: name in set(tool_names) for name in target_names
+                },
+                "target_schemas": target_schemas,
+                "schema_hashes": schema_hashes,
+            },
+        )
+
+    def _record_tool_projection_runtime_event(
+        self,
+        *,
+        outcome: str,
+        tool_name: str,
+        tool_use_id: str,
+        original_chars: int,
+        projected_chars: int | None = None,
+        reducer: str | None = None,
+        tool_result_handle: str | None = None,
+        arguments: dict[str, Any] | None = None,
+        is_error: bool = False,
+        json_guard_applied: bool = False,
+        reason: str | None = None,
+    ) -> None:
+        if not self.config.runtime_events_path:
+            return
+        event: dict[str, Any] = {
+            "feature": "tool_result_projection",
+            "mechanism": "tokenjuice",
+            "mode": "log",
+            "reason": reason or outcome,
+            "session_key": self._session_key,
+            "agent_id": self.config.tool_result_store_agent_id
+            or self.config.metadata.get("agent_id"),
+            "tool_name": tool_name,
+            "tool_use_id": tool_use_id,
+            "outcome": outcome,
+            "is_error": is_error,
+            "original_chars": original_chars,
+            "projected_chars": projected_chars,
+            "reducer": reducer,
+            "tool_result_handle": tool_result_handle,
+            "tool_result_handle_present": bool(tool_result_handle),
+            "json_guard_applied": json_guard_applied,
+        }
+        event_arguments = _projection_event_arguments(arguments)
+        if event_arguments is not None:
+            event["tool_arguments"] = event_arguments
+            command = event_arguments.get("command") or event_arguments.get("cmd")
+            if isinstance(command, str):
+                event["command"] = command
+        if projected_chars is not None:
+            event["saved_chars"] = max(0, original_chars - projected_chars)
+        append_runtime_event(self.config.runtime_events_path, event)
+
     @staticmethod
     def _count_image_blocks(messages: list[Message]) -> int:
         count = 0
@@ -1133,6 +2115,135 @@ class Agent:
                 continue
             count += sum(1 for block in message.content if isinstance(block, ContentBlockImage))
         return count
+
+    def _dedup_repeated_tool_results_for_provider(
+        self,
+        messages: list[Message],
+    ) -> list[Message]:
+        """Elide older byte-identical tool results in the provider view only.
+
+        Long single-turn episodes re-run the same read/grep/diff commands many
+        times, and full-history replay resends every identical payload on every
+        iteration. When ``provider_history_dedup_enabled`` is on, the newest
+        occurrence of each repeated result stays full and older duplicates are
+        replaced by a short stub naming the surviving ``tool_use_id``. The pass
+        never mutates persisted history; error results, artifact results, the
+        two most recent results, frozen-full results, and existing provider
+        projections are left untouched.
+        """
+        self._provider_history_dedup_survivor_ids = set()
+        if not getattr(self.config, "provider_history_dedup_enabled", False):
+            return messages
+        min_repeats = max(
+            2, int(getattr(self.config, "provider_history_dedup_min_repeats", 2) or 2)
+        )
+
+        tool_result_refs: list[tuple[int, int, ContentBlockToolResult]] = []
+        for message_index, message in enumerate(messages):
+            if not isinstance(message.content, list):
+                continue
+            for block_index, block in enumerate(message.content):
+                if isinstance(block, ContentBlockToolResult):
+                    tool_result_refs.append((message_index, block_index, block))
+        if len(tool_result_refs) < min_repeats:
+            return messages
+
+        recent_ids = {id(block) for _m, _b, block in tool_result_refs[-2:]}
+        by_digest: dict[str, list[tuple[int, int, ContentBlockToolResult, str]]] = {}
+        for message_index, block_index, block in tool_result_refs:
+            if not isinstance(block.content, str):
+                continue
+            content = block.content
+            if (
+                len(content) < _PROVIDER_HISTORY_DEDUP_MIN_CHARS
+                or block.is_error
+                or _tool_result_content_has_artifact(content)
+                or _tool_result_content_is_provider_projection(content)
+            ):
+                continue
+            digest = hashlib.sha256(content.encode("utf-8")).hexdigest()
+            by_digest.setdefault(digest, []).append(
+                (message_index, block_index, block, content)
+            )
+
+        replacements: dict[tuple[int, int], ContentBlockToolResult] = {}
+        survivor_ids: set[str] = set()
+        chars_saved = 0
+        for digest, occurrences in by_digest.items():
+            if len(occurrences) < min_repeats:
+                continue
+            survivor = occurrences[-1][2]
+            for message_index, block_index, block, content in occurrences[:-1]:
+                if id(block) in recent_ids:
+                    continue
+                if block.tool_use_id in self._provider_tool_result_frozen_full_ids:
+                    # Already shown to the model as final full content on a
+                    # prior request — never retroactively downgrade it, but
+                    # still counted above so newer duplicates get elided.
+                    continue
+                stub = (
+                    "[duplicate_tool_result_elided]\n"
+                    f"tool_use_id: {block.tool_use_id}\n"
+                    f"original_chars: {len(content)}\n"
+                    f"sha256: {digest}\n"
+                    f"identical_to_tool_use_id: {survivor.tool_use_id}\n"
+                    "reason: byte-identical content appears again at the newer "
+                    "tool result above; read it there instead of re-running the "
+                    "same command.\n"
+                )
+                replacements[(message_index, block_index)] = ContentBlockToolResult(
+                    tool_use_id=block.tool_use_id,
+                    content=stub,
+                    is_error=block.is_error,
+                )
+                chars_saved += max(0, len(content) - len(stub))
+                survivor_ids.add(survivor.tool_use_id)
+
+        if not replacements:
+            return messages
+
+        self._provider_history_dedup_survivor_ids = survivor_ids
+
+        projected: list[Message] = []
+        for message_index, message in enumerate(messages):
+            if not isinstance(message.content, list):
+                projected.append(message)
+                continue
+            next_content: list[Any] = []
+            message_changed = False
+            for block_index, block in enumerate(message.content):
+                replacement = replacements.get((message_index, block_index))
+                if replacement is None:
+                    next_content.append(block)
+                    continue
+                next_content.append(replacement)
+                message_changed = True
+            if not message_changed:
+                projected.append(message)
+                continue
+            projected.append(
+                Message(
+                    role=message.role,
+                    content=next_content,
+                    reasoning_content=getattr(message, "reasoning_content", None),
+                )
+            )
+
+        self.config.metadata["provider_history_dedup_applied"] = True
+        self.config.metadata["provider_history_dedup_elided"] = (
+            self.config.metadata.get("provider_history_dedup_elided", 0)
+            + len(replacements)
+        )
+        self.config.metadata["provider_history_dedup_chars_saved"] = (
+            self.config.metadata.get("provider_history_dedup_chars_saved", 0)
+            + chars_saved
+        )
+        self._write_turn_call_log(
+            "provider_history_dedup",
+            elided_tool_results=len(replacements),
+            chars_saved=chars_saved,
+        )
+        return projected
 
     def _compact_aggregate_tool_results_for_provider(
         self,
@@ -1148,6 +2259,7 @@ class Agent:
         """
 
         tool_name_by_use_id: dict[str, str] = {}
+        tool_input_by_use_id: dict[str, dict[str, Any]] = {}
         tool_result_refs: list[tuple[int, int, ContentBlockToolResult]] = []
         for message_index, message in enumerate(messages):
             if not isinstance(message.content, list):
@@ -1155,6 +2267,8 @@ class Agent:
             for block_index, block in enumerate(message.content):
                 if isinstance(block, ContentBlockToolUse):
                     tool_name_by_use_id[block.id] = block.name
+                    if isinstance(block.input, dict):
+                        tool_input_by_use_id[block.id] = dict(block.input)
                 elif isinstance(block, ContentBlockToolResult):
                     tool_result_refs.append((message_index, block_index, block))
 
@@ -1162,6 +2276,7 @@ class Agent:
             messages,
             tool_result_refs,
             tool_name_by_use_id,
+            tool_input_by_use_id,
         )
         tool_result_refs = []
         for message_index, message in enumerate(messages):
@@ -1175,24 +2290,49 @@ class Agent:
             return messages
 
         recent_ids = {id(block) for _message_index, _block_index, block in tool_result_refs[-2:]}
-        budget_tokens = int(
-            self.config.context_window_tokens * _AGGREGATE_TOOL_RESULT_MAX_SHARE
-        )
+        budget_tokens = int(self.config.context_window_tokens * _AGGREGATE_TOOL_RESULT_MAX_SHARE)
         eligible_refs: list[tuple[int, int, ContentBlockToolResult, str, int]] = []
+        semantic_preserve_refs: list[tuple[str, str, int, str]] = []
         total_tool_result_tokens = 0
         for message_index, block_index, block in tool_result_refs:
             content = block.content if isinstance(block.content, str) else str(block.content)
             tokens = _tool_result_budget_tokens(content)
             total_tool_result_tokens += tokens
+            tool_name = tool_name_by_use_id.get(block.tool_use_id, "tool")
+            semantic_skip_reason = self._semantic_provider_tool_result_projection_skip_reason(
+                tool_use_id=block.tool_use_id,
+                tool_name=tool_name,
+                content=content,
+                is_error=block.is_error,
+                arguments=tool_input_by_use_id.get(block.tool_use_id),
+            )
             if (
                 id(block) in recent_ids
                 or block.is_error
                 or _tool_result_content_has_artifact(content)
+                or _tool_result_content_is_provider_projection(content)
+                or semantic_skip_reason is not None
+                or block.tool_use_id in self._provider_tool_result_frozen_full_ids
+                or block.tool_use_id in self._provider_history_dedup_survivor_ids
             ):
+                if semantic_skip_reason is not None:
+                    semantic_preserve_refs.append(
+                        (block.tool_use_id, tool_name, len(content), semantic_skip_reason)
+                    )
                 continue
             eligible_refs.append((message_index, block_index, block, content, tokens))
 
-        if total_tool_result_tokens <= budget_tokens or not eligible_refs:
+        if total_tool_result_tokens <= budget_tokens:
+            return messages
+        for tool_use_id, tool_name, original_chars, reason in semantic_preserve_refs:
+            self._record_provider_tool_result_semantic_preserve(
+                tool_use_id=tool_use_id,
+                tool_name=tool_name,
+                original_chars=original_chars,
+                reason=reason,
+                mechanism="aggregate",
+            )
+        if not eligible_refs:
             return messages
 
         replacements: dict[tuple[int, int], ContentBlockToolResult] = {}
@@ -1207,12 +2347,16 @@ class Agent:
                 tool_use_id=block.tool_use_id,
                 tool_name=tool_name_by_use_id.get(block.tool_use_id, "tool"),
             )
+            if stored is None and self.config.tool_result_store_dir:
+                continue
             if stored is not None:
                 stored_handles.append(stored.handle)
             head = content[:240]
             tail = content[-240:] if len(content) > 240 else ""
             omitted = max(0, len(content) - len(head) - len(tail))
             handle_line = f"tool_result_handle: {stored.handle}\n" if stored is not None else ""
+            retrieve_hint = _TOOL_RESULT_RETRIEVE_HINT if stored is not None else ""
+            search_hints = _tool_result_search_hints(content) if stored is not None else ""
             compacted = (
                 "[aggregate_tool_result_compacted]\n"
                 f"tool_use_id: {block.tool_use_id}\n"
@@ -1220,17 +2364,23 @@ class Agent:
                 f"original_tokens_estimate: {_tool_result_budget_tokens(content)}\n"
                 f"sha256: {digest}\n"
                 f"{handle_line}"
+                f"{retrieve_hint}"
+                f"{search_hints}"
                 f"omitted_chars: {omitted}\n"
+                f"preview_complete: {str(omitted == 0).lower()}\n"
                 "reason: older non-error tool result compacted for provider context budget.\n"
                 f"head:\n{head}"
             )
             if tail and tail != head:
                 compacted += f"\n...\ntail:\n{tail}"
-            replacements[(message_index, block_index)] = ContentBlockToolResult(
+            replacement: ContentBlockToolResult | None
+            replacement = ContentBlockToolResult(
                 tool_use_id=block.tool_use_id,
                 content=compacted,
                 is_error=block.is_error,
             )
+            replacements[(message_index, block_index)] = replacement
+            self._freeze_provider_tool_result_projection(replacement)
             replacement_tokens = _tool_result_budget_tokens(compacted)
             total_tool_result_tokens -= max(0, original_tokens - replacement_tokens)
 
@@ -1317,6 +2467,7 @@ class Agent:
         messages: list[Message],
         tool_result_refs: list[tuple[int, int, ContentBlockToolResult]],
         tool_name_by_use_id: dict[str, str],
+        tool_input_by_use_id: dict[str, dict[str, Any]],
     ) -> list[Message]:
         cap = self._tool_result_provider_request_max_chars(ToolResultBudgetClass.LOCAL)
         if cap <= 0 or not tool_result_refs:
@@ -1358,6 +2509,26 @@ class Agent:
             content = _content(block)
             tool_name = tool_name_by_use_id.get(block.tool_use_id, "")
             budget_class = resolve_budget_class(tool_name)
+            if _tool_result_content_is_provider_projection(content):
+                continue
+            if block.tool_use_id in self._provider_tool_result_frozen_full_ids:
+                continue
+            semantic_skip_reason = self._semantic_provider_tool_result_projection_skip_reason(
+                tool_use_id=block.tool_use_id,
+                tool_name=tool_name or "tool",
+                content=content,
+                is_error=block.is_error,
+                arguments=tool_input_by_use_id.get(block.tool_use_id),
+            )
+            if semantic_skip_reason is not None:
+                self._record_provider_tool_result_semantic_preserve(
+                    tool_use_id=block.tool_use_id,
+                    tool_name=tool_name or "tool",
+                    original_chars=len(content),
+                    reason=semantic_skip_reason,
+                    mechanism="absolute",
+                )
+                continue
             result_cap = self._tool_result_provider_request_max_chars(budget_class)
             single_over_budget = result_cap > 0 and len(content) > result_cap
             replacement_content: str | None = None
@@ -1400,11 +2571,14 @@ class Agent:
 
             if replacement_content is None or len(replacement_content) >= len(content):
                 continue
-            replacements[(message_index, block_index)] = ContentBlockToolResult(
+            replacement: ContentBlockToolResult | None
+            replacement = ContentBlockToolResult(
                 tool_use_id=block.tool_use_id,
                 content=replacement_content,
                 is_error=block.is_error,
             )
+            replacements[(message_index, block_index)] = replacement
+            self._freeze_provider_tool_result_projection(replacement)
             saved_chars = len(content) - len(replacement_content)
             total_chars -= saved_chars
             if budget_class is ToolResultBudgetClass.EXTERNAL:
@@ -1448,6 +2622,55 @@ class Agent:
         ) + len(replacements)
         return compacted_messages
 
+    def _semantic_provider_tool_result_projection_skip_reason(
+        self,
+        *,
+        tool_use_id: str,
+        tool_name: str,
+        content: str,
+        is_error: bool,
+        arguments: dict[str, Any] | None,
+    ) -> str | None:
+        tool_call = (
+            ToolCall(
+                tool_use_id=tool_use_id,
+                tool_name=tool_name,
+                arguments=arguments,
+            )
+            if arguments is not None
+            else None
+        )
+        return self._semantic_tool_result_projection_skip_reason(
+            ToolResult(
+                tool_use_id=tool_use_id,
+                tool_name=tool_name,
+                content=content,
+                is_error=is_error,
+            ),
+            tool_call=tool_call,
+        )
+
+    def _record_provider_tool_result_semantic_preserve(
+        self,
+        *,
+        tool_use_id: str,
+        tool_name: str,
+        original_chars: int,
+        reason: str,
+        mechanism: str,
+    ) -> None:
+        self.config.metadata["tool_provider_projection_semantic_preserves"] = (
+            self.config.metadata.get("tool_provider_projection_semantic_preserves", 0) + 1
+        )
+        self._write_turn_call_log(
+            "tool_provider_projection_noop",
+            tool_use_id=tool_use_id,
+            name=tool_name,
+            original_chars=original_chars,
+            reason=reason,
+            mechanism=mechanism,
+        )
+
     def _tool_result_projection_for_provider(
         self,
         content: str,
@@ -1456,7 +2679,7 @@ class Agent:
         tool_name: str,
         reason: str,
         max_preview_chars: int,
-    ) -> str:
+    ) -> str | None:
         max_preview_chars = max(0, int(max_preview_chars))
         if max_preview_chars > 0:
             max_preview_chars = max(1, min(max_preview_chars, 4_000))
@@ -1466,7 +2689,11 @@ class Agent:
             tool_use_id=tool_use_id,
             tool_name=tool_name,
         )
+        if stored is None and self.config.tool_result_store_dir:
+            return None
         handle_line = f"tool_result_handle: {stored.handle}\n" if stored is not None else ""
+        retrieve_hint = _TOOL_RESULT_RETRIEVE_HINT if stored is not None else ""
+        search_hints = _tool_result_search_hints(content) if stored is not None else ""
         if max_preview_chars <= 0:
             head = ""
             tail = ""
@@ -1486,7 +2713,10 @@ class Agent:
             f"original_chars: {len(content)}\n"
             f"sha256: {digest}\n"
             f"{handle_line}"
+            f"{retrieve_hint}"
+            f"{search_hints}"
             f"omitted_chars: {omitted}\n"
+            f"preview_complete: {str(omitted == 0).lower()}\n"
             f"reason: {reason}.\n"
             f"head:\n{head}"
         )
@@ -1604,8 +2834,26 @@ class Agent:
                 self.config.metadata.get("tool_result_store_skips", 0) + 1
             )
             return None
+        sha = hashlib.sha256(content.encode("utf-8")).hexdigest()
+        cache_key = (session_id, session_key, agent_id, tool_use_id, tool_name, sha)
+        store = ToolResultStore(self.config.tool_result_store_dir)
+        cached = self._tool_result_snapshot_cache.get(cache_key)
+        if cached is not None:
+            try:
+                meta_path = (
+                    store._record_dir(cached.handle, session_id=session_id)
+                    / TOOL_RESULT_META_NAME
+                )
+            except ValueError:
+                meta_path = None
+            if meta_path is not None and meta_path.exists():
+                self.config.metadata["tool_result_store_cache_hits"] = (
+                    self.config.metadata.get("tool_result_store_cache_hits", 0) + 1
+                )
+                return cached
+            self._tool_result_snapshot_cache.pop(cache_key, None)
         try:
-            record = ToolResultStore(self.config.tool_result_store_dir).write(
+            record = store.write(
                 content,
                 tool_use_id=tool_use_id,
                 tool_name=tool_name,
@@ -1638,7 +2886,132 @@ class Agent:
         self.config.metadata["tool_result_store_writes"] = (
             self.config.metadata.get("tool_result_store_writes", 0) + 1
         )
+        self._tool_result_snapshot_cache[cache_key] = record
         return record
+
+    @staticmethod
+    def _tool_result_projection_payload(
+        stored: ToolResultRecord,
+        *,
+        raw_content: str,
+        projected_content: str,
+    ) -> str:
+        return (
+            "[tool_result_projection]\n"
+            f"tool_result_handle: {stored.handle}\n"
+            f"sha256: {stored.sha256}\n"
+            f"original_chars: {stored.chars}\n"
+            "preview_complete: false\n"
+            f"{_TOOL_RESULT_RETRIEVE_HINT}"
+            f"{_tool_result_search_hints(raw_content)}"
+            f"{projected_content}"
+        )
+
+    def _tool_result_projection_store_unavailable_noop(
+        self,
+        result: ToolResult,
+        *,
+        reason: str,
+        arguments: dict[str, Any] | None = None,
+        projected_chars: int | None = None,
+        reducer: str | None = None,
+        json_guard_applied: bool = False,
+    ) -> ToolResult:
+        self.config.metadata["tool_projection_noops"] = (
+            self.config.metadata.get("tool_projection_noops", 0) + 1
+        )
+        self._write_turn_call_log(
+            "tool_projection_noop",
+            tool_use_id=result.tool_use_id,
+            name=result.tool_name,
+            original_chars=len(result.content),
+            projected_chars=projected_chars,
+            reason=reason,
+        )
+        self._record_tool_projection_runtime_event(
+            outcome="noop",
+            reason=reason,
+            tool_name=result.tool_name,
+            tool_use_id=result.tool_use_id,
+            original_chars=len(result.content),
+            projected_chars=projected_chars,
+            reducer=reducer,
+            tool_result_handle=None,
+            arguments=arguments,
+            is_error=result.is_error,
+            json_guard_applied=json_guard_applied,
+        )
+        return result
+
+    def _json_guard_projection_result(
+        self,
+        *,
+        original_result: ToolResult,
+        guarded_result: ToolResult,
+        stored: ToolResultRecord,
+        raw_content: str,
+        arguments: dict[str, Any] | None = None,
+    ) -> ToolResult:
+        projected_content = self._tool_result_projection_payload(
+            stored,
+            raw_content=raw_content,
+            projected_content=guarded_result.content,
+        )
+        if len(projected_content) >= len(raw_content):
+            return self._tool_result_projection_store_unavailable_noop(
+                original_result,
+                reason="json_guard_non_shrinking_after_envelope",
+                arguments=arguments,
+                projected_chars=len(projected_content),
+                json_guard_applied=True,
+            )
+
+        tokens_before = get_approx_tokens(raw_content)
+        tokens_after = get_approx_tokens(projected_content)
+        self.config.metadata["tool_projection_applied"] = True
+        self.config.metadata["tool_projection_calls"] = (
+            self.config.metadata.get("tool_projection_calls", 0) + 1
+        )
+        self.config.metadata["tool_projection_tokens_before"] = (
+            self.config.metadata.get("tool_projection_tokens_before", 0) + tokens_before
+        )
+        self.config.metadata["tool_projection_tokens_after"] = (
+            self.config.metadata.get("tool_projection_tokens_after", 0) + tokens_after
+        )
+        self.config.metadata["tool_projection_tokens_saved"] = self.config.metadata.get(
+            "tool_projection_tokens_saved", 0
+        ) + max(0, tokens_before - tokens_after)
+        self._write_turn_call_log(
+            "tool_projection_applied",
+            tool_use_id=guarded_result.tool_use_id,
+            name=guarded_result.tool_name,
+            tool_result_handle=stored.handle,
+            original_chars=len(raw_content),
+            projected_chars=len(projected_content),
+            reason="json_guard",
+        )
+        self._record_tool_projection_runtime_event(
+            outcome="applied",
+            reason="json_guard",
+            tool_name=guarded_result.tool_name,
+            tool_use_id=guarded_result.tool_use_id,
+            original_chars=len(raw_content),
+            projected_chars=len(projected_content),
+            reducer="json_guard",
+            tool_result_handle=stored.handle,
+            arguments=arguments,
+            is_error=guarded_result.is_error,
+            json_guard_applied=True,
+        )
+        return ToolResult(
+            tool_use_id=guarded_result.tool_use_id,
+            tool_name=guarded_result.tool_name,
+            content=projected_content,
+            is_error=guarded_result.is_error,
+            artifacts=list(guarded_result.artifacts),
+            execution_status=guarded_result.execution_status,
+            terminates_turn=guarded_result.terminates_turn,
+        )
 
     async def _project_tool_result_for_llm(
         self,
@@ -1646,8 +3019,46 @@ class Agent:
         *,
         tool_call: ToolCall | None = None,
     ) -> ToolResult:
+        original_result = result
+        projection_arguments = (
+            dict(tool_call.arguments)
+            if tool_call is not None and isinstance(tool_call.arguments, dict)
+            else None
+        )
+        raw_snapshot_content = result.content
+        raw_snapshot_record: ToolResultRecord | None = None
+        raw_snapshot_store_attempted = False
+        if self.config.tool_result_store_full_trace and self.config.tool_result_store_dir:
+            raw_snapshot_store_attempted = True
+            # The snapshot write does blocking filesystem work — including a store-wide
+            # cleanup scan — so run it in a worker thread to keep the gateway event loop
+            # responsive while the store grows (issue #305).
+            raw_snapshot_record = await asyncio.to_thread(
+                self._store_tool_result_snapshot,
+                raw_snapshot_content,
+                tool_use_id=result.tool_use_id,
+                tool_name=result.tool_name,
+            )
+        json_guard_record: ToolResultRecord | None = None
         guarded_content, guarded = _omit_large_json_tool_fields(result.content)
         if guarded:
+            if self.config.tool_result_store_dir:
+                json_guard_record = raw_snapshot_record
+                if json_guard_record is None and not raw_snapshot_store_attempted:
+                    json_guard_record = await asyncio.to_thread(
+                        self._store_tool_result_snapshot,
+                        result.content,
+                        tool_use_id=result.tool_use_id,
+                        tool_name=result.tool_name,
+                    )
+                if json_guard_record is None:
+                    return self._tool_result_projection_store_unavailable_noop(
+                        original_result,
+                        reason="json_guard_store_unavailable",
+                        arguments=projection_arguments,
+                        projected_chars=len(guarded_content),
+                        json_guard_applied=True,
+                    )
             result = ToolResult(
                 tool_use_id=result.tool_use_id,
                 tool_name=result.tool_name,
@@ -1665,11 +3076,108 @@ class Agent:
             self.config.metadata["tool_json_guard_calls"] = (
                 self.config.metadata.get("tool_json_guard_calls", 0) + 1
             )
+        json_guard_applied = guarded
 
         self.config.metadata["tool_projection_attempts"] = (
             self.config.metadata.get("tool_projection_attempts", 0) + 1
         )
-        projected_content = self._tokenjuice_tool_reduction(
+        diagnostic_reason = self._tool_result_diagnostic_reason(result, raw_snapshot_content)
+        if diagnostic_reason is not None:
+            self._record_fresh_diagnostic_result(
+                reason=diagnostic_reason,
+                tool_name=result.tool_name,
+                tool_use_id=result.tool_use_id,
+                original_chars=len(raw_snapshot_content),
+            )
+        semantic_skip_reason = self._semantic_tool_result_projection_skip_reason(
+            result,
+            tool_call=tool_call,
+        )
+        if semantic_skip_reason is not None:
+            if json_guard_record is not None:
+                return self._json_guard_projection_result(
+                    original_result=original_result,
+                    guarded_result=result,
+                    stored=json_guard_record,
+                    raw_content=raw_snapshot_content,
+                    arguments=projection_arguments,
+                )
+            self.config.metadata["tool_projection_noops"] = (
+                self.config.metadata.get("tool_projection_noops", 0) + 1
+            )
+            self.config.metadata["tool_projection_semantic_preserves"] = (
+                self.config.metadata.get("tool_projection_semantic_preserves", 0) + 1
+            )
+            self._write_turn_call_log(
+                "tool_projection_noop",
+                tool_use_id=result.tool_use_id,
+                name=result.tool_name,
+                original_chars=len(result.content),
+                reason=semantic_skip_reason,
+            )
+            self._record_tool_projection_runtime_event(
+                outcome="noop",
+                reason=semantic_skip_reason,
+                tool_name=result.tool_name,
+                tool_use_id=result.tool_use_id,
+                original_chars=len(result.content),
+                arguments=projection_arguments,
+                is_error=result.is_error,
+                json_guard_applied=json_guard_applied,
+            )
+            return result
+        fresh_diagnostic_cap = self._fresh_diagnostic_inline_max_chars()
+        if (
+            diagnostic_reason is not None
+            and fresh_diagnostic_cap > 0
+            and len(raw_snapshot_content) <= fresh_diagnostic_cap
+            and not json_guard_applied
+        ):
+            self.config.metadata["tool_projection_noops"] = (
+                self.config.metadata.get("tool_projection_noops", 0) + 1
+            )
+            self.config.metadata["tool_projection_fresh_diagnostic_one_hop_preserves"] = (
+                self.config.metadata.get(
+                    "tool_projection_fresh_diagnostic_one_hop_preserves",
+                    0,
+                )
+                + 1
+            )
+            append_runtime_event(
+                self.config.runtime_events_path,
+                {
+                    "feature": "tool_result_projection",
+                    "name": "tool_projection_fresh_diagnostic",
+                    "action": "one_hop_preserved",
+                    "reason": diagnostic_reason,
+                    "session_key": self._session_key,
+                    "agent_id": self.config.tool_result_store_agent_id
+                    or self.config.metadata.get("agent_id"),
+                    "tool_name": result.tool_name,
+                    "tool_use_id": result.tool_use_id,
+                    "original_chars": len(raw_snapshot_content),
+                },
+            )
+            self._write_turn_call_log(
+                "tool_projection_noop",
+                tool_use_id=result.tool_use_id,
+                name=result.tool_name,
+                original_chars=len(raw_snapshot_content),
+                reason="fresh_diagnostic_one_hop_preserved",
+                diagnostic_reason=diagnostic_reason,
+            )
+            self._record_tool_projection_runtime_event(
+                outcome="noop",
+                reason="fresh_diagnostic_one_hop_preserved",
+                tool_name=result.tool_name,
+                tool_use_id=result.tool_use_id,
+                original_chars=len(raw_snapshot_content),
+                arguments=projection_arguments,
+                is_error=result.is_error,
+                json_guard_applied=json_guard_applied,
+            )
+            return original_result
+        reduction = reduce_tool_result_with_tokenjuice(
             tool_name=result.tool_name,
             content=result.content,
             is_error=result.is_error,
@@ -1677,8 +3185,17 @@ class Agent:
             arguments=tool_call.arguments if tool_call is not None else None,
             command=self._tool_call_string_arg(tool_call, "command"),
             cwd=self._tool_call_string_arg(tool_call, "workdir", "cwd"),
+            max_inline_chars=self._tokenjuice_max_inline_chars(),
         )
-        if projected_content is None:
+        if reduction is None:
+            if json_guard_record is not None:
+                return self._json_guard_projection_result(
+                    original_result=original_result,
+                    guarded_result=result,
+                    stored=json_guard_record,
+                    raw_content=raw_snapshot_content,
+                    arguments=projection_arguments,
+                )
             self.config.metadata["tool_projection_noops"] = (
                 self.config.metadata.get("tool_projection_noops", 0) + 1
             )
@@ -1688,28 +3205,116 @@ class Agent:
                 name=result.tool_name,
                 original_chars=len(result.content),
             )
+            self._record_tool_projection_runtime_event(
+                outcome="noop",
+                reason="no_reduction",
+                tool_name=result.tool_name,
+                tool_use_id=result.tool_use_id,
+                original_chars=len(result.content),
+                arguments=projection_arguments,
+                is_error=result.is_error,
+                json_guard_applied=json_guard_applied,
+            )
             return result
+        self.config.metadata["tool_projection_backend"] = "tokenjuice"
+        if reduction.reducer:
+            self.config.metadata["tool_projection_tokenjuice_reducer"] = reduction.reducer
+        projected_content = reduction.inline_text
 
-        # The snapshot write does blocking filesystem work — including a store-wide
-        # cleanup scan — so run it in a worker thread to keep the gateway event loop
-        # responsive while the store grows (issue #305).
-        stored = await asyncio.to_thread(
-            self._store_tool_result_snapshot,
-            result.content,
-            tool_use_id=result.tool_use_id,
-            tool_name=result.tool_name,
-        )
-        stored_handle = stored.handle if stored is not None else None
-        if stored is not None:
-            projected_content = (
+        stored: ToolResultRecord | None = None
+        stored_handle: str | None = None
+        if self.config.tool_result_store_dir:
+            placeholder_handle = "tr-" + ("0" * 32)
+            candidate_with_envelope = (
                 "[tool_result_projection]\n"
-                f"tool_result_handle: {stored.handle}\n"
-                f"sha256: {stored.sha256}\n"
-                f"original_chars: {stored.chars}\n"
+                f"tool_result_handle: {placeholder_handle}\n"
+                f"sha256: {hashlib.sha256(raw_snapshot_content.encode('utf-8')).hexdigest()}\n"
+                f"original_chars: {len(raw_snapshot_content)}\n"
+                f"{_TOOL_RESULT_RETRIEVE_HINT}"
+                f"{_tool_result_search_hints(raw_snapshot_content)}"
                 f"{projected_content}"
             )
+            if len(candidate_with_envelope) >= len(raw_snapshot_content):
+                self.config.metadata["tool_projection_noops"] = (
+                    self.config.metadata.get("tool_projection_noops", 0) + 1
+                )
+                self._write_turn_call_log(
+                    "tool_projection_noop",
+                    tool_use_id=result.tool_use_id,
+                    name=result.tool_name,
+                    original_chars=len(raw_snapshot_content),
+                    projected_chars=len(candidate_with_envelope),
+                    reason="non_shrinking_after_envelope",
+                )
+                self._record_tool_projection_runtime_event(
+                    outcome="noop",
+                    reason="non_shrinking_after_envelope",
+                    tool_name=result.tool_name,
+                    tool_use_id=result.tool_use_id,
+                    original_chars=len(raw_snapshot_content),
+                    projected_chars=len(candidate_with_envelope),
+                    reducer=reduction.reducer,
+                    tool_result_handle=None,
+                    arguments=projection_arguments,
+                    is_error=result.is_error,
+                    json_guard_applied=json_guard_applied,
+                )
+                return original_result
+            stored = json_guard_record
+            if stored is None:
+                stored = raw_snapshot_record
+            if stored is None and not raw_snapshot_store_attempted:
+                stored = await asyncio.to_thread(
+                    self._store_tool_result_snapshot,
+                    raw_snapshot_content,
+                    tool_use_id=result.tool_use_id,
+                    tool_name=result.tool_name,
+                )
+            stored_handle = stored.handle if stored is not None else None
+            if stored is None:
+                return self._tool_result_projection_store_unavailable_noop(
+                    original_result,
+                    reason="tool_result_store_unavailable",
+                    arguments=projection_arguments,
+                    projected_chars=len(projected_content),
+                    reducer=reduction.reducer,
+                    json_guard_applied=json_guard_applied,
+                )
+        if stored is not None:
+            projected_content = self._tool_result_projection_payload(
+                stored,
+                raw_content=raw_snapshot_content,
+                projected_content=projected_content,
+            )
 
-        tokens_before = get_approx_tokens(result.content)
+        if len(projected_content) >= len(raw_snapshot_content):
+            self.config.metadata["tool_projection_noops"] = (
+                self.config.metadata.get("tool_projection_noops", 0) + 1
+            )
+            self._write_turn_call_log(
+                "tool_projection_noop",
+                tool_use_id=result.tool_use_id,
+                name=result.tool_name,
+                original_chars=len(raw_snapshot_content),
+                projected_chars=len(projected_content),
+                reason="non_shrinking_after_envelope",
+            )
+            self._record_tool_projection_runtime_event(
+                outcome="noop",
+                reason="non_shrinking_after_envelope",
+                tool_name=result.tool_name,
+                tool_use_id=result.tool_use_id,
+                original_chars=len(raw_snapshot_content),
+                projected_chars=len(projected_content),
+                reducer=reduction.reducer,
+                tool_result_handle=stored_handle,
+                arguments=projection_arguments,
+                is_error=result.is_error,
+                json_guard_applied=json_guard_applied,
+            )
+            return original_result
+
+        tokens_before = get_approx_tokens(raw_snapshot_content)
         tokens_after = get_approx_tokens(projected_content)
         self.config.metadata["tool_projection_applied"] = True
         self.config.metadata["tool_projection_calls"] = (
@@ -1730,9 +3335,30 @@ class Agent:
             tool_use_id=result.tool_use_id,
             name=result.tool_name,
             tool_result_handle=stored_handle,
-            original_chars=len(result.content),
+            original_chars=len(raw_snapshot_content),
             projected_chars=len(projected_content),
         )
+        self._record_tool_projection_runtime_event(
+            outcome="applied",
+            tool_name=result.tool_name,
+            tool_use_id=result.tool_use_id,
+            original_chars=len(raw_snapshot_content),
+            projected_chars=len(projected_content),
+            reducer=reduction.reducer,
+            tool_result_handle=stored_handle,
+            arguments=projection_arguments,
+            is_error=result.is_error,
+            json_guard_applied=json_guard_applied,
+        )
+        if diagnostic_reason is not None:
+            self._record_projected_diagnostic_evidence(
+                handle=stored_handle,
+                tool_name=result.tool_name,
+                tool_use_id=result.tool_use_id,
+                reason=diagnostic_reason,
+                original_chars=len(raw_snapshot_content),
+                projected_chars=len(projected_content),
+            )
         return ToolResult(
             tool_use_id=result.tool_use_id,
             tool_name=result.tool_name,
@@ -1757,14 +3383,58 @@ class Agent:
         projected_result: ToolResult,
     ) -> None:
         if projected_result.content != result.content:
-            self._provider_tool_result_overrides[result.tool_use_id] = ContentBlockToolResult(
-                tool_use_id=projected_result.tool_use_id,
-                content=projected_result.content,
-                is_error=projected_result.is_error,
-                execution_status=projected_result.execution_status,
+            self._freeze_provider_tool_result_projection(
+                ContentBlockToolResult(
+                    tool_use_id=projected_result.tool_use_id,
+                    content=projected_result.content,
+                    is_error=projected_result.is_error,
+                    execution_status=projected_result.execution_status,
+                )
             )
             return
         self._provider_tool_result_overrides.pop(result.tool_use_id, None)
+        if not _tool_result_content_is_provider_projection(result.content):
+            self._provider_tool_result_frozen_full_ids.add(result.tool_use_id)
+
+    def _freeze_provider_tool_result_projection(self, replacement: ContentBlockToolResult) -> None:
+        self._provider_tool_result_frozen_full_ids.discard(replacement.tool_use_id)
+        self._provider_tool_result_overrides[replacement.tool_use_id] = replacement
+        self._provider_tool_result_frozen_overrides.setdefault(
+            replacement.tool_use_id,
+            ContentBlockToolResult(
+                tool_use_id=replacement.tool_use_id,
+                content=replacement.content,
+                is_error=replacement.is_error,
+                execution_status=replacement.execution_status,
+            ),
+        )
+
+    def _remember_provider_visible_tool_results(self, messages: list[Message]) -> None:
+        for message in messages:
+            if not isinstance(message.content, list):
+                continue
+            for block in message.content:
+                if not isinstance(block, ContentBlockToolResult):
+                    continue
+                if block.tool_use_id in self._provider_tool_result_frozen_overrides:
+                    continue
+                content = block.content if isinstance(block.content, str) else str(block.content)
+                if content.startswith("[duplicate_tool_result_elided]\n"):
+                    # Dedup elision depends on another block's current state
+                    # (its survivor), not solely on this block's own content —
+                    # never freeze it; let dedup recompute it every request.
+                    continue
+                if _tool_result_content_is_provider_projection(content):
+                    self._freeze_provider_tool_result_projection(
+                        ContentBlockToolResult(
+                            tool_use_id=block.tool_use_id,
+                            content=content,
+                            is_error=block.is_error,
+                            execution_status=block.execution_status,
+                        )
+                    )
+                    continue
+                self._provider_tool_result_frozen_full_ids.add(block.tool_use_id)
 
     async def _project_tool_result_for_delivery(
         self,
@@ -1924,6 +3594,8 @@ class Agent:
     ) -> AsyncIterator[AgentEvent]:
         """Async generator that drives the state machine."""
         self._provider_tool_result_overrides = {}
+        self._projected_diagnostic_evidence = {}
+        self._focused_retrieved_tool_result_handles = set()
         self._current_turn_message = message
         _meta_invoke_turn_count.set(0)
 
@@ -1988,6 +3660,7 @@ class Agent:
                 and caps_reasoning_format == "deepseek"
                 and _is_deepseek_model_id(self.config.model_id)
             )
+            or (thinking_enabled and caps_reasoning_format == "dashscope")
         )
         loaded_history = list(self._history)
         self._write_context_stage("session:loaded", loaded_history)
@@ -2069,9 +3742,13 @@ class Agent:
         chat_cfg = ChatConfig(
             max_tokens=self.config.max_tokens,
             temperature=self.config.temperature,
+            top_p=self.config.top_p,
             system=self._context.system_prompt,
             thinking=thinking_enabled,
             thinking_budget_tokens=thinking_budget,
+            thinking_budget_explicit=(
+                self.config.thinking_budget_tokens != _THINKING_BUDGET_DEFAULT
+            ),
             timeout=self.config.request_timeout,
             stop_sequences=self.config.stop_sequences,
             cache_breakpoints=self._cache_breakpoints_without_runtime_context(
@@ -2086,6 +3763,7 @@ class Agent:
             tool_choice=None,
         )
         _thinking_fallback_done = False
+        _disable_thinking_for_next_provider_call = False
 
         _log = structlog.get_logger("opensquilla.engine.agent")
 
@@ -2140,7 +3818,122 @@ class Agent:
         max_iterations_finalization_attempted = False
         max_iterations_finalization_pending = False
         max_iterations_finalization_message: Message | None = None
-        progress_watchdog = ProgressWatchdog(observe_only=True)
+        post_write_convergence_finalization_pending = False
+        post_write_convergence_finalization_message: Message | None = None
+        placeholder_offense_iterations = 0
+        deadline_wrapup_armed = False
+        deadline_wrapup_message: Message | None = None
+        workspace_diff_recovery_attempted = False
+        failed_tool_finalization_recovery_keys: set[str] = set()
+        post_tool_empty_recovery_attempted = False
+        text_only_tool_recovery_injections = 0
+        text_only_tool_recovery_pending = False
+        reasoning_prefill_recovery_attempted = False
+        final_diff_contract_recovery_attempted = False
+        source_loop_recovery_attempted_keys: set[str] = set()
+        workspace_edit_gate_details: dict[str, Any] | None = None
+        workspace_edit_gate_recovery_read_paths: set[str] = set()
+        workspace_edit_gate_recovery_reads_remaining = 0
+        runtime_recovery_scaffolding_pending = False
+        repeated_tool_call_key: tuple[str, str] | None = None
+        repeated_tool_call_count = 0
+        repeated_tool_call_workspace_write_count = len(self._effective_workspace_write_records())
+        repeated_tool_call_last_result_is_error = False
+        last_executed_results: list[ToolResult] = []
+        last_post_write_progress_count = self._post_write_progress_count()
+        post_write_focused_verification_observed = False
+        post_write_focused_verification_success_observed = False
+        last_post_write_failed_verification: dict[str, Any] | None = None
+        finalize_evidence_tracker = (
+            FinalizeEvidenceTracker()
+            if bool(getattr(self.config, "finalize_evidence_gate_enabled", False))
+            else None
+        )
+        finalize_evidence_gate_keys: set[str] = set()
+        recent_failure_anchor_summaries: list[str] = []
+        progress_watchdog_mode = getattr(self.config, "progress_watchdog_mode", "log")
+        progress_watchdog = ProgressWatchdog(
+            repeated_tool_error_threshold=max(
+                1,
+                int(
+                    getattr(
+                        self.config,
+                        "progress_watchdog_repeated_tool_error_threshold",
+                        3,
+                    )
+                    or 3
+                ),
+            ),
+            repeated_provider_failure_threshold=max(
+                1,
+                int(
+                    getattr(
+                        self.config,
+                        "progress_watchdog_repeated_provider_failure_threshold",
+                        2,
+                    )
+                    or 2
+                ),
+            ),
+            repeated_failure_anchor_threshold=max(
+                1,
+                int(
+                    getattr(
+                        self.config,
+                        "progress_watchdog_repeated_failure_anchor_threshold",
+                        3,
+                    )
+                    or 3
+                ),
+            ),
+            observe_only=progress_watchdog_mode != "block",
+        )
+        post_write_convergence_tracker = (
+            PostWriteConvergenceTracker(
+                warn_threshold=max(
+                    1,
+                    int(
+                        getattr(
+                            self.config,
+                            "post_write_convergence_warn_threshold",
+                            3,
+                        )
+                        or 3
+                    ),
+                ),
+                finalize_after_warning=max(
+                    1,
+                    int(
+                        getattr(
+                            self.config,
+                            "post_write_convergence_finalize_after_warning",
+                            3,
+                        )
+                        or 3
+                    ),
+                ),
+            )
+            if bool(getattr(self.config, "post_write_convergence_enabled", False))
+            else None
+        )
+        runtime_recovery_mode: RuntimeRecoveryMode = getattr(
+            self.config, "runtime_recovery_mode", "log"
+        )
+        runtime_recovery_source_loop_max_nudges = max(
+            1,
+            int(getattr(self.config, "runtime_recovery_source_loop_max_nudges", 1) or 1),
+        )
+        runtime_diagnostics = (
+            RuntimeDiagnosticsObserver(
+                session_key=self._session_key,
+                agent_id=(
+                    self.config.tool_result_store_agent_id
+                    or self.config.metadata.get("agent_id")
+                ),
+            )
+            if self.config.runtime_events_path or runtime_recovery_mode == "warn_model"
+            else None
+        )
         _fallback = FallbackPolicy(
             max_retries=self.config.max_provider_retries,
             base_backoff_ms=self.config.retry_base_backoff_ms,
@@ -2280,14 +4073,9 @@ class Agent:
 
         try:
             while True:
-                if (
-                    self.config.max_iterations > 0
-                    and iterations >= self.config.max_iterations
-                ):
+                if self.config.max_iterations > 0 and iterations >= self.config.max_iterations:
                     max_iterations_source = str(
-                        self.config.metadata.get(
-                            "agent_max_iterations_source", "agent_config"
-                        )
+                        self.config.metadata.get("agent_max_iterations_source", "agent_config")
                     )
                     if max_iterations_source == "session config":
                         max_iterations_guidance = (
@@ -2299,13 +4087,11 @@ class Agent:
                         )
                     elif max_iterations_source.startswith("env "):
                         max_iterations_guidance = (
-                            "Set OPENSQUILLA_AGENT_MAX_ITERATIONS=0 "
-                            "for unlimited tasks."
+                            "Set OPENSQUILLA_AGENT_MAX_ITERATIONS=0 for unlimited tasks."
                         )
                     elif max_iterations_source == "explicit argument":
                         max_iterations_guidance = (
-                            "Pass --max-iterations 0 or max_iterations=0 "
-                            "for unlimited tasks."
+                            "Pass --max-iterations 0 or max_iterations=0 for unlimited tasks."
                         )
                     else:
                         max_iterations_guidance = (
@@ -2355,6 +4141,42 @@ class Agent:
                 # Check total turn deadline (if configured)
                 if _total_deadline is not None and _loop.time() > _total_deadline:
                     raise TimeoutError(f"Agent total timeout after {self.config.timeout}s")
+
+                # Pre-deadline wrap-up: arm once when remaining wall clock drops
+                # below the configured margin. The directive is spliced into
+                # every subsequent provider request and rebuilt each iteration
+                # so the remaining-time figure stays current; tools stay
+                # available so the model can still apply and verify a final fix.
+                wrapup_margin_seconds = max(
+                    0,
+                    int(getattr(self.config, "deadline_wrapup_margin_seconds", 0) or 0),
+                )
+                if (
+                    wrapup_margin_seconds > 0
+                    and _total_deadline is not None
+                    and (
+                        deadline_wrapup_armed
+                        or _loop.time() > _total_deadline - wrapup_margin_seconds
+                    )
+                ):
+                    remaining_seconds = max(0.0, _total_deadline - _loop.time())
+                    deadline_wrapup_message = Message(
+                        role="user",
+                        content=_DEADLINE_WRAPUP_DIRECTIVE_TEMPLATE.format(
+                            minutes=max(1, int(remaining_seconds // 60)),
+                        ),
+                    )
+                    if not deadline_wrapup_armed:
+                        deadline_wrapup_armed = True
+                        self._write_turn_call_log(
+                            "turn_policy_decision",
+                            action="deadline_wrapup",
+                            reason="deadline_margin",
+                            code="deadline_wrapup",
+                            iteration=iterations,
+                            remaining_seconds=int(remaining_seconds),
+                            margin_seconds=wrapup_margin_seconds,
+                        )
 
                 iterations += 1
 
@@ -2407,23 +4229,55 @@ class Agent:
                         if (
                             artifact_delivery_final_response_pending
                             or max_iterations_finalization_pending
+                            or post_write_convergence_finalization_pending
                         )
                         else provider_tool_definitions
+                    )
+                    provider_tools_for_call = self._workspace_edit_gate_tool_definitions(
+                        provider_tools_for_call,
+                        workspace_edit_gate_details,
+                        recovery_read_paths=workspace_edit_gate_recovery_read_paths,
+                        recovery_reads_remaining=(
+                            workspace_edit_gate_recovery_reads_remaining
+                        ),
                     )
                     tools_supported_for_call = (
                         tools_supported
                         and not artifact_delivery_final_response_pending
                         and not max_iterations_finalization_pending
+                        and not post_write_convergence_finalization_pending
                     )
                     ignored_post_delivery_tool_use = False
-                    request_turn_messages = (
-                        [*turn_messages, max_iterations_finalization_message]
-                        if (
-                            max_iterations_finalization_pending
-                            and max_iterations_finalization_message is not None
-                        )
-                        else turn_messages
-                    )
+                    if (
+                        post_write_convergence_finalization_pending
+                        and post_write_convergence_finalization_message is not None
+                    ):
+                        request_turn_messages = [
+                            *turn_messages,
+                            post_write_convergence_finalization_message,
+                        ]
+                    elif (
+                        max_iterations_finalization_pending
+                        and max_iterations_finalization_message is not None
+                    ):
+                        request_turn_messages = [
+                            *turn_messages,
+                            max_iterations_finalization_message,
+                        ]
+                    elif deadline_wrapup_message is not None and (
+                        not turn_messages or turn_messages[-1].role != "assistant"
+                    ):
+                        # Wrap-up defers to the finalization messages above,
+                        # which already demand a final answer, and is withheld
+                        # while the turn ends on an assistant message: the
+                        # reasoning-prefill continuation requires the assistant
+                        # tail to stay the last request message.
+                        request_turn_messages = [
+                            *turn_messages,
+                            deadline_wrapup_message,
+                        ]
+                    else:
+                        request_turn_messages = turn_messages
                     (
                         request_messages,
                         request_sanitize_result,
@@ -2435,6 +4289,60 @@ class Agent:
                         runtime_context_insert_index=runtime_context_insert_index,
                         turn_objective_message=turn_objective_message,
                     )
+                    identical_request_action = self._identical_request_loop_break_action(
+                        request_messages,
+                        first_attempt=_call_attempt == 0,
+                    )
+                    if identical_request_action == "abort":
+                        terminal_error = ErrorEvent(
+                            message=(
+                                "Turn stopped after "
+                                f"{self._identical_request_streak} consecutive "
+                                "byte-identical provider requests "
+                                "(identical_request_loop_break_threshold="
+                                f"{self.config.identical_request_loop_break_threshold})."
+                            ),
+                            code="identical_request_loop_abort",
+                        )
+                        self._write_turn_call_log(
+                            "turn_policy_decision",
+                            action=(
+                                "artifact_degraded_finish"
+                                if artifact_delivery_final_response_pending
+                                else "stop"
+                            ),
+                            reason=terminal_error.message,
+                            code=terminal_error.code,
+                            identical_request_streak=self._identical_request_streak,
+                            iteration=iterations,
+                            attempt=_call_attempt,
+                        )
+                        if artifact_delivery_final_response_pending:
+                            yield _finish_artifact_delivery_degraded(
+                                reason=terminal_error.message,
+                                code=terminal_error.code,
+                            )
+                            terminal_error = None
+                        else:
+                            yield self._transition(AgentState.ERROR)
+                            yield terminal_error
+                        break
+                    if identical_request_action == "perturb":
+                        request_messages = self._append_identical_request_loop_nudge(
+                            request_messages
+                        )
+                        if _call_attempt == 0:
+                            self.config.metadata["identical_request_loop_perturbations"] = (
+                                self.config.metadata.get(
+                                    "identical_request_loop_perturbations", 0
+                                )
+                                + 1
+                            )
+                            self._write_turn_call_log(
+                                "identical_request_loop_perturbed",
+                                identical_request_streak=self._identical_request_streak,
+                                iteration=iterations,
+                            )
                     self._write_context_stage(
                         "stream:context",
                         request_messages,
@@ -2471,17 +4379,29 @@ class Agent:
                             yield terminal_error
                         break
 
-                    call_chat_cfg = chat_cfg
+                    call_chat_cfg = self._workspace_edit_gate_chat_config(
+                        chat_cfg,
+                        workspace_edit_gate_details,
+                        provider_tools_for_call,
+                        recovery_read_paths=workspace_edit_gate_recovery_read_paths,
+                        recovery_reads_remaining=(
+                            workspace_edit_gate_recovery_reads_remaining
+                        ),
+                    )
                     forced_tool_choice = self.config.metadata.get("meta_match_tool_choice")
                     if (
                         forced_tool_choice is not None
+                        and workspace_edit_gate_details is None
                         and provider_tools_for_call
                         and request_messages
                         and not _tail_has_tool_result(request_messages)
                     ):
-                        call_chat_cfg = chat_cfg.model_copy(
+                        call_chat_cfg = call_chat_cfg.model_copy(
                             update={"tool_choice": forced_tool_choice}
                         )
+                    if _disable_thinking_for_next_provider_call:
+                        call_chat_cfg = _chat_config_with_thinking_disabled(call_chat_cfg)
+                        _disable_thinking_for_next_provider_call = False
 
                     self._write_turn_call_log(
                         "llm_request",
@@ -2491,6 +4411,13 @@ class Agent:
                         messages=request_messages,
                         tools=provider_tools_for_call,
                         config=call_chat_cfg,
+                    )
+                    self._record_provider_tool_schema_event(
+                        tools=provider_tools_for_call,
+                        iteration=iterations,
+                        attempt=_call_attempt,
+                        call_id=call_id,
+                        tools_supported=tools_supported_for_call,
                     )
                     turn_llm_calls += 1
                     cache_prompt_snapshot = None
@@ -2563,6 +4490,7 @@ class Agent:
                                     if (
                                         artifact_delivery_final_response_pending
                                         or max_iterations_finalization_pending
+                                        or post_write_convergence_finalization_pending
                                     ):
                                         ignored_post_delivery_tool_use = True
                                     continue
@@ -2620,6 +4548,7 @@ class Agent:
                                     if (
                                         artifact_delivery_final_response_pending
                                         or max_iterations_finalization_pending
+                                        or post_write_convergence_finalization_pending
                                     ):
                                         ignored_post_delivery_tool_use = True
                                     continue
@@ -2774,9 +4703,7 @@ class Agent:
                                     and ("thinking" in _err_lower or "reasoning" in _err_lower)
                                 ):
                                     _thinking_fallback_done = True
-                                    thinking_enabled = False
-                                    thinking_budget = 0
-                                    chat_cfg = _chat_config_with_thinking_disabled(chat_cfg)
+                                    _disable_thinking_for_next_provider_call = True
                                     _got_error = True
                                     break  # break stream, retry
 
@@ -2898,11 +4825,28 @@ class Agent:
                                 "I reached the configured iteration limit after completing "
                                 "the available tool step. Here is the best partial result so far."
                             )
+                        elif post_write_convergence_finalization_pending:
+                            response_text = (
+                                "The workspace diff stayed stable after clean validation. "
+                                "Here is the current validated patch state."
+                            )
                         if response_text:
                             assistant_text_parts.append(response_text)
                             attempt_user_visible_emitted = True
                             yield TextDeltaEvent(text=response_text)
                     post_tool_turn = _tail_has_tool_result(request_messages)
+                    if (
+                        not post_tool_turn
+                        and deadline_wrapup_message is not None
+                        and request_turn_messages
+                        and request_turn_messages[-1] is deadline_wrapup_message
+                    ):
+                        # The spliced wrap-up directive is not conversation
+                        # history; empty-response recovery must still see the
+                        # post-tool shape of the underlying turn.
+                        post_tool_turn = bool(turn_messages) and _message_has_tool_result(
+                            turn_messages[-1]
+                        )
                     stop_reason = (
                         getattr(provider_done_for_log, "stop_reason", None)
                         if provider_done_for_log is not None
@@ -2918,6 +4862,24 @@ class Agent:
                         reasoning_tokens=iter_reasoning_tokens,
                         user_visible_emitted=attempt_user_visible_emitted,
                     )
+                    if attempt_classification.kind != _ProviderAttemptKind.OK:
+                        self._record_tool_loop_runtime_event(
+                            reason=attempt_classification.kind.value,
+                            iteration=iterations,
+                            provider_call_count=turn_llm_calls,
+                            call_attempt=_call_attempt,
+                            provider_retry_attempt=_retry_attempt,
+                            post_tool_turn=post_tool_turn,
+                            got_done_event=_got_done_event,
+                            stop_reason=stop_reason,
+                            tool_call_count=len(tool_calls),
+                            pending_tool_count=len(pending_tools),
+                            visible_text_chars=len(response_text.strip()),
+                            reasoning_chars=len(iter_reasoning_content or ""),
+                            reasoning_tokens=iter_reasoning_tokens,
+                            input_tokens=iter_input_tokens,
+                            output_tokens=iter_output_tokens,
+                        )
                     if not _got_error and attempt_classification.kind != _ProviderAttemptKind.OK:
                         logger.warning(
                             "provider.invalid_response",
@@ -2941,6 +4903,208 @@ class Agent:
                             attempt_classification.kind,
                             input_tokens=iter_input_tokens,
                         )
+                        supports_reasoning_replay = supports_reasoning_prefill_replay(
+                            model_capabilities=self.config.model_capabilities,
+                            reasoning_content=iter_reasoning_content,
+                            thinking_signature=iter_thinking_signature,
+                        )
+                        reasoning_prefill = reasoning_prefill_decision(
+                            global_mode=getattr(
+                                self.config,
+                                "runtime_recovery_mode",
+                                "log",
+                            ),
+                            mode=getattr(
+                                self.config,
+                                "reasoning_prefill_recovery_mode",
+                                "log",
+                            ),
+                            attempt_kind=attempt_classification.kind.value,
+                            attempted=reasoning_prefill_recovery_attempted,
+                            supports_replay=supports_reasoning_replay,
+                            reasoning_chars=len(iter_reasoning_content or ""),
+                            reasoning_tokens=iter_reasoning_tokens,
+                        )
+                        if reasoning_prefill is not None:
+                            self._record_runtime_recovery_event(
+                                reasoning_prefill,
+                                iteration=iterations,
+                                provider_call_count=turn_llm_calls,
+                                call_attempt=_call_attempt,
+                                stop_reason=stop_reason,
+                                input_tokens=iter_input_tokens,
+                                output_tokens=iter_output_tokens,
+                            )
+                            if reasoning_prefill.action == "prefill" and iter_reasoning_content:
+                                turn_messages.append(
+                                    _build_reasoning_prefill_message(
+                                        reasoning_content=iter_reasoning_content,
+                                        thinking_signature=iter_thinking_signature,
+                                    )
+                                )
+                                runtime_recovery_scaffolding_pending = True
+                                reasoning_prefill_recovery_attempted = True
+                                self.config.metadata["reasoning_prefill_recoveries"] = (
+                                    self.config.metadata.get(
+                                        "reasoning_prefill_recoveries",
+                                        0,
+                                    )
+                                    + 1
+                                )
+                                self._write_turn_call_log(
+                                    "runtime_recovery",
+                                    action="prefill",
+                                    mode=reasoning_prefill.mode,
+                                    reason=reasoning_prefill.reason,
+                                    details=reasoning_prefill.details,
+                                )
+                                yield WarningEvent(
+                                    code="provider_reasoning_prefill_continue",
+                                    message=(
+                                        "The provider returned reasoning without visible "
+                                        "content; continuing once with the reasoning "
+                                        "prefilled."
+                                    ),
+                                )
+                                _call_attempt += 1
+                                continue
+
+                        reasoning_continuation = reasoning_continuation_decision(
+                            global_mode=getattr(
+                                self.config,
+                                "runtime_recovery_mode",
+                                "log",
+                            ),
+                            mode=getattr(
+                                self.config,
+                                "reasoning_prefill_recovery_mode",
+                                "log",
+                            ),
+                            attempt_kind=attempt_classification.kind.value,
+                            attempted=reasoning_prefill_recovery_attempted,
+                            supports_replay=supports_reasoning_replay,
+                            provider_reasoning_format=(
+                                self.config.model_capabilities.reasoning_format
+                                if self.config.model_capabilities
+                                else None
+                            ),
+                            reasoning_chars=len(iter_reasoning_content or ""),
+                            reasoning_tokens=iter_reasoning_tokens,
+                        )
+                        if reasoning_continuation is not None:
+                            self._record_runtime_recovery_event(
+                                reasoning_continuation,
+                                iteration=iterations,
+                                provider_call_count=turn_llm_calls,
+                                call_attempt=_call_attempt,
+                                stop_reason=stop_reason,
+                                input_tokens=iter_input_tokens,
+                                output_tokens=iter_output_tokens,
+                            )
+                            if (
+                                reasoning_continuation.action == "nudge"
+                                and reasoning_continuation.message
+                            ):
+                                turn_messages.append(
+                                    Message(
+                                        role="assistant",
+                                        content=[ContentBlockText(text="")],
+                                    )
+                                )
+                                turn_messages.append(
+                                    Message(
+                                        role="user",
+                                        content=reasoning_continuation.message,
+                                    )
+                                )
+                                runtime_recovery_scaffolding_pending = True
+                                reasoning_prefill_recovery_attempted = True
+                                self.config.metadata["reasoning_continuation_recoveries"] = (
+                                    self.config.metadata.get(
+                                        "reasoning_continuation_recoveries",
+                                        0,
+                                    )
+                                    + 1
+                                )
+                                self._write_turn_call_log(
+                                    "runtime_recovery",
+                                    action="nudge",
+                                    mode=reasoning_continuation.mode,
+                                    reason=reasoning_continuation.reason,
+                                    details=reasoning_continuation.details,
+                                )
+                                yield WarningEvent(
+                                    code="provider_reasoning_continuation",
+                                    message=(
+                                        "The provider returned reasoning without visible "
+                                        "content; asking it to continue once without "
+                                        "replaying hidden reasoning."
+                                    ),
+                                )
+                                _call_attempt += 1
+                                continue
+
+                        post_tool_empty = post_tool_empty_decision(
+                            global_mode=getattr(
+                                self.config,
+                                "runtime_recovery_mode",
+                                "log",
+                            ),
+                            mode=getattr(
+                                self.config,
+                                "post_tool_empty_recovery_mode",
+                                "log",
+                            ),
+                            attempt_kind=attempt_classification.kind.value,
+                            post_tool_turn=post_tool_turn,
+                            attempted=post_tool_empty_recovery_attempted,
+                            reasoning_present=bool(
+                                (iter_reasoning_content and iter_reasoning_content.strip())
+                                or iter_reasoning_tokens > 0
+                            ),
+                        )
+                        if post_tool_empty is not None:
+                            self._record_runtime_recovery_event(
+                                post_tool_empty,
+                                iteration=iterations,
+                                provider_call_count=turn_llm_calls,
+                                call_attempt=_call_attempt,
+                                stop_reason=stop_reason,
+                                input_tokens=iter_input_tokens,
+                                output_tokens=iter_output_tokens,
+                            )
+                            if post_tool_empty.action == "nudge" and post_tool_empty.message:
+                                turn_messages.append(
+                                    Message(
+                                        role="assistant",
+                                        content=[ContentBlockText(text="")],
+                                    )
+                                )
+                                turn_messages.append(
+                                    Message(role="user", content=post_tool_empty.message)
+                                )
+                                runtime_recovery_scaffolding_pending = True
+                                post_tool_empty_recovery_attempted = True
+                                self.config.metadata["post_tool_empty_recoveries"] = (
+                                    self.config.metadata.get("post_tool_empty_recoveries", 0) + 1
+                                )
+                                self._write_turn_call_log(
+                                    "runtime_recovery",
+                                    action="nudge",
+                                    mode=post_tool_empty.mode,
+                                    reason=post_tool_empty.reason,
+                                    details=post_tool_empty.details,
+                                )
+                                yield WarningEvent(
+                                    code="post_tool_empty_recovery",
+                                    message=(
+                                        "The provider returned an empty response after "
+                                        "tool results; asking it to continue once."
+                                    ),
+                                )
+                                _call_attempt += 1
+                                continue
+
                         if large_context_invalid:
                             if (
                                 not _invalid_response_fallback_done
@@ -2960,10 +5124,8 @@ class Agent:
                                 continue
 
                             if (
-                                attempt_classification.kind
-                                == _ProviderAttemptKind.REASONING_ONLY
+                                attempt_classification.kind == _ProviderAttemptKind.REASONING_ONLY
                                 and thinking_enabled
-                                and not _thinking_fallback_done
                                 and _retry_policy.can_retry_attempt(
                                     _ProviderAttemptKind.REASONING_ONLY,
                                     _attempt_retries_used,
@@ -2971,9 +5133,7 @@ class Agent:
                             ):
                                 _attempt_retries_used[_ProviderAttemptKind.REASONING_ONLY] += 1
                                 _thinking_fallback_done = True
-                                thinking_enabled = False
-                                thinking_budget = 0
-                                chat_cfg = _chat_config_with_thinking_disabled(chat_cfg)
+                                _disable_thinking_for_next_provider_call = True
                                 logger.warning(
                                     "provider.large_context_visible_retry",
                                     session_key=self._session_key,
@@ -3212,6 +5372,20 @@ class Agent:
                             iter_reasoning_tokens=iter_reasoning_tokens,
                             reasoning_chars=len(iter_reasoning_content or ""),
                         )
+                        self._record_tool_loop_runtime_event(
+                            reason="provider_empty_response_terminal",
+                            iteration=iterations,
+                            provider_call_count=turn_llm_calls,
+                            call_attempt=_call_attempt,
+                            provider_retry_attempt=_retry_attempt,
+                            post_tool_turn=post_tool_turn,
+                            got_done_event=_got_done_event,
+                            stop_reason=stop_reason,
+                            input_tokens=iter_input_tokens,
+                            output_tokens=iter_output_tokens,
+                            reasoning_tokens=iter_reasoning_tokens,
+                            reasoning_chars=len(iter_reasoning_content or ""),
+                        )
                         terminal_error = ErrorEvent(
                             message="Provider returned an empty response",
                             code="empty_response",
@@ -3256,9 +5430,7 @@ class Agent:
 
                     if provider_error is not None:
                         provider_error_status_code = (
-                            int(provider_error.code)
-                            if str(provider_error.code).isdigit()
-                            else None
+                            int(provider_error.code) if str(provider_error.code).isdigit() else None
                         )
                         failure_kind = classify_provider_error(
                             provider_name=getattr(self.provider, "provider_name", ""),
@@ -3298,6 +5470,26 @@ class Agent:
                             )
                             yield TextDeltaEvent(text=response_text)
                             break
+                        if post_write_convergence_finalization_pending:
+                            response_text = (
+                                "The workspace diff was stable after clean validation, "
+                                "and the provider could not generate an additional wrap-up. "
+                                "Returning the current validated patch state."
+                            )
+                            assistant_text_parts.append(response_text)
+                            provider_done_for_log = ProviderDoneEvent(stop_reason="stop")
+                            _got_done_event = True
+                            _got_error = False
+                            post_write_convergence_finalization_pending = False
+                            self._write_turn_call_log(
+                                "turn_policy_decision",
+                                action="partial_after_finalization_provider_error",
+                                reason="post_write_convergence",
+                                code="post_write_convergence",
+                                provider_error_code=provider_error.code,
+                            )
+                            yield TextDeltaEvent(text=response_text)
+                            break
                         if (
                             failure_kind == ProviderFailureKind.EMPTY_RESPONSE
                             and _retry_policy.can_retry_provider_failure(
@@ -3306,6 +5498,16 @@ class Agent:
                                 provider_retry_attempt=_retry_attempt,
                             )
                         ):
+                            self._record_tool_loop_runtime_event(
+                                reason="provider_empty_response_after_tool",
+                                iteration=iterations,
+                                provider_call_count=turn_llm_calls,
+                                call_attempt=_call_attempt,
+                                provider_retry_attempt=_retry_attempt,
+                                post_tool_turn=post_tool_turn,
+                                provider_error_code=provider_error.code,
+                                retrying=True,
+                            )
                             delay = backoff_sleep(
                                 _retry_attempt,
                                 _fallback.base_backoff_ms,
@@ -3471,6 +5673,45 @@ class Agent:
                     user_visible_emitted=attempt_user_visible_emitted,
                 )
                 if final_classification.kind != _ProviderAttemptKind.OK:
+                    if text_only_tool_recovery_pending:
+                        text_only_mode = getattr(
+                            self.config,
+                            "text_only_tool_recovery_mode",
+                            "off",
+                        )
+                        self.config.metadata[
+                            "text_only_tool_recovery_next_action_errors"
+                        ] = (
+                            self.config.metadata.get(
+                                "text_only_tool_recovery_next_action_errors",
+                                0,
+                            )
+                            + 1
+                        )
+                        decision = RuntimeRecoveryDecision(
+                            action="observe",
+                            mechanism="text_only_tool_recovery",
+                            reason="next_action_after_recovery",
+                            mode=str(text_only_mode),
+                            injected_to_model=False,
+                            details={
+                                "next_action": "error",
+                                "provider_attempt_kind": final_classification.kind.value,
+                            },
+                        )
+                        self._record_runtime_recovery_event(
+                            decision,
+                            iteration=iterations,
+                            provider_call_count=turn_llm_calls,
+                        )
+                        self._write_turn_call_log(
+                            "runtime_recovery",
+                            action="observe",
+                            mode=text_only_mode,
+                            reason="text_only_next_action",
+                            details=decision.details,
+                        )
+                        text_only_tool_recovery_pending = False
                     logger.warning(
                         "provider.invalid_response_unhandled",
                         session_key=self._session_key,
@@ -3570,9 +5811,11 @@ class Agent:
                     chat_cfg = ChatConfig(
                         max_tokens=chat_cfg.max_tokens,
                         temperature=chat_cfg.temperature,
+                        top_p=chat_cfg.top_p,
                         system=self._context.system_prompt,
                         thinking=thinking_enabled,
                         thinking_budget_tokens=thinking_budget,
+                        thinking_budget_explicit=chat_cfg.thinking_budget_explicit,
                         timeout=chat_cfg.timeout,
                         stop_sequences=chat_cfg.stop_sequences,
                         cache_breakpoints=self._cache_breakpoints_without_runtime_context(
@@ -3594,6 +5837,49 @@ class Agent:
                     assembled_text,
                     [tc.tool_name for tc in tool_calls if tc.synthetic_from_text],
                 )
+                if text_only_tool_recovery_pending:
+                    text_only_mode = getattr(
+                        self.config,
+                        "text_only_tool_recovery_mode",
+                        "off",
+                    )
+                    next_action = (
+                        "tool_call"
+                        if tool_calls
+                        else "text"
+                        if visible_text.strip()
+                        else "empty"
+                    )
+                    metadata_key: str | None
+                    metadata_key = f"text_only_tool_recovery_next_action_{next_action}s"
+                    self.config.metadata[metadata_key] = (
+                        self.config.metadata.get(metadata_key, 0) + 1
+                    )
+                    decision = RuntimeRecoveryDecision(
+                        action="observe",
+                        mechanism="text_only_tool_recovery",
+                        reason="next_action_after_recovery",
+                        mode=str(text_only_mode),
+                        injected_to_model=False,
+                        details={
+                            "next_action": next_action,
+                            "tool_call_count": len(tool_calls),
+                            "visible_text_chars": len(visible_text),
+                        },
+                    )
+                    self._record_runtime_recovery_event(
+                        decision,
+                        iteration=iterations,
+                        provider_call_count=turn_llm_calls,
+                    )
+                    self._write_turn_call_log(
+                        "runtime_recovery",
+                        action="observe",
+                        mode=text_only_mode,
+                        reason="text_only_next_action",
+                        details=decision.details,
+                    )
+                    text_only_tool_recovery_pending = False
                 if visible_text:
                     final_text_parts.append(visible_text)
 
@@ -3611,8 +5897,131 @@ class Agent:
                     resolved_tool_calls.append(resolved)
                 tool_calls = resolved_tool_calls
 
+                if runtime_recovery_scaffolding_pending:
+                    turn_messages = _drop_runtime_recovery_scaffolding(turn_messages)
+                    runtime_recovery_scaffolding_pending = False
+
+                repeated_tool_call_recovery_message: str | None = None
+                repeated_tool_call_recovery_details: dict[str, Any] | None = None
+                repeat_threshold = max(
+                    0,
+                    int(
+                        getattr(
+                            self.config,
+                            "repeated_tool_call_recovery_threshold",
+                            3,
+                        )
+                        or 0
+                    ),
+                )
+                if (
+                    len(tool_calls) == 1
+                    and repeat_threshold > 0
+                    and tool_calls[0].tool_name
+                    in self._repeated_tool_call_recovery_tool_names()
+                ):
+                    current_repeat_key = self._tool_call_repeat_key(tool_calls[0])
+                    current_workspace_write_count = len(self._effective_workspace_write_records())
+                    if (
+                        current_repeat_key == repeated_tool_call_key
+                        and current_workspace_write_count
+                        == repeated_tool_call_workspace_write_count
+                    ):
+                        repeated_tool_call_count += 1
+                    else:
+                        repeated_tool_call_key = current_repeat_key
+                        repeated_tool_call_count = 1
+                        repeated_tool_call_workspace_write_count = current_workspace_write_count
+                        repeated_tool_call_last_result_is_error = False
+                    if repeated_tool_call_count >= repeat_threshold:
+                        # Repeated failed tools already have a separate recovery path
+                        # that returns a ToolResult to the model. This guard is for
+                        # successful no-new-information loops that can trigger provider
+                        # rejection before the model gets another turn.
+                        if not repeated_tool_call_last_result_is_error:
+                            repeated_tool_call_recovery_message = (
+                                self._repeated_tool_call_recovery_message(
+                                    tool_calls[0],
+                                    repeat_count=repeated_tool_call_count,
+                                )
+                            )
+                            repeated_tool_call_recovery_details = {
+                                "tool_name": tool_calls[0].tool_name,
+                                "tool_use_id": tool_calls[0].tool_use_id,
+                                "arguments_hash": current_repeat_key[1],
+                                "arguments_preview": self._tool_call_arguments_preview(
+                                    tool_calls[0]
+                                ),
+                                "repeat_count": repeated_tool_call_count,
+                                "repeat_threshold": repeat_threshold,
+                                "workspace_write_count": current_workspace_write_count,
+                            }
+                elif tool_calls:
+                    repeated_tool_call_key = None
+                    repeated_tool_call_count = 0
+                    repeated_tool_call_workspace_write_count = len(
+                        self._effective_workspace_write_records()
+                    )
+                    repeated_tool_call_last_result_is_error = False
+
+                if repeated_tool_call_recovery_message is not None:
+                    assistant_content: list[Any] = []
+                    if iter_reasoning_content and iter_thinking_signature:
+                        assistant_content.append(
+                            ContentBlockThinking(
+                                thinking=iter_reasoning_content,
+                                signature=iter_thinking_signature,
+                            )
+                        )
+                    if visible_text:
+                        assistant_content.append(ContentBlockText(text=visible_text))
+                    if assistant_content:
+                        turn_messages.append(
+                            Message(
+                                role="assistant",
+                                content=assistant_content,
+                                reasoning_content=iter_reasoning_content,
+                            )
+                        )
+                    turn_messages.append(
+                        Message(role="user", content=repeated_tool_call_recovery_message)
+                    )
+                    runtime_recovery_scaffolding_pending = True
+                    self.config.metadata["repeated_tool_call_recoveries"] = (
+                        self.config.metadata.get("repeated_tool_call_recoveries", 0) + 1
+                    )
+                    recovery_decision = RuntimeRecoveryDecision(
+                        action="nudge",
+                        mechanism="repeated_tool_call_recovery",
+                        reason="repeated_identical_tool_call",
+                        mode="warn_model",
+                        injected_to_model=True,
+                        message=repeated_tool_call_recovery_message,
+                        details=repeated_tool_call_recovery_details or {},
+                    )
+                    self._record_runtime_recovery_event(
+                        recovery_decision,
+                        iteration=iterations,
+                        provider_call_count=turn_llm_calls,
+                    )
+                    self._write_turn_call_log(
+                        "runtime_recovery",
+                        action="nudge",
+                        mode="warn_model",
+                        reason="repeated_identical_tool_call",
+                        details=repeated_tool_call_recovery_details or {},
+                    )
+                    yield WarningEvent(
+                        code="repeated_tool_call_recovery",
+                        message=(
+                            "Runtime skipped a repeated identical tool call and "
+                            "asked the model to change approach."
+                        ),
+                    )
+                    continue
+
                 # Build assistant message for history
-                assistant_content: list[Any] = []
+                assistant_content = []
                 if iter_thinking_signature:
                     assistant_content.append(
                         ContentBlockThinking(
@@ -3661,7 +6070,365 @@ class Agent:
 
                 # No tool calls → we're done
                 if not tool_calls:
+                    text_only_mode = getattr(
+                        self.config,
+                        "text_only_tool_recovery_mode",
+                        "off",
+                    )
+                    tool_choice_none = (
+                        isinstance(call_chat_cfg.tool_choice, str)
+                        and call_chat_cfg.tool_choice.strip().lower() == "none"
+                    )
+                    text_only_candidate = (
+                        text_only_mode != "off"
+                        and bool(visible_text.strip())
+                        and bool(provider_tools_for_call)
+                        and not tool_choice_none
+                        and not last_executed_results
+                        and not max_iterations_finalization_pending
+                        and not artifact_delivery_final_response_pending
+                        and not post_write_convergence_finalization_pending
+                    )
+                    if text_only_candidate:
+                        self.config.metadata["text_only_tool_recovery_detections"] = (
+                            self.config.metadata.get(
+                                "text_only_tool_recovery_detections",
+                                0,
+                            )
+                            + 1
+                        )
+                        should_inject_text_only = (
+                            text_only_mode == "warn_model"
+                            and text_only_tool_recovery_injections
+                            < _TEXT_ONLY_TOOL_RECOVERY_LIMIT
+                        )
+                        decision = RuntimeRecoveryDecision(
+                            action="nudge" if should_inject_text_only else "observe",
+                            mechanism="text_only_tool_recovery",
+                            reason="text_only_no_tool_call",
+                            mode=str(text_only_mode),
+                            injected_to_model=should_inject_text_only,
+                            message=(
+                                _TEXT_ONLY_TOOL_RECOVERY_MESSAGE
+                                if should_inject_text_only
+                                else None
+                            ),
+                            details={
+                                "visible_text_chars": len(visible_text),
+                                "available_tool_count": len(provider_tools_for_call or []),
+                                "recovery_injections": text_only_tool_recovery_injections,
+                                "limit": _TEXT_ONLY_TOOL_RECOVERY_LIMIT,
+                            },
+                        )
+                        self._record_runtime_recovery_event(
+                            decision,
+                            iteration=iterations,
+                            provider_call_count=turn_llm_calls,
+                        )
+                        self._write_turn_call_log(
+                            "runtime_recovery",
+                            action=decision.action,
+                            mode=text_only_mode,
+                            reason=decision.reason,
+                            details=decision.details,
+                        )
+                        if should_inject_text_only:
+                            if visible_text and final_text_parts:
+                                final_text_parts.pop()
+                            turn_messages.append(
+                                Message(role="user", content=_TEXT_ONLY_TOOL_RECOVERY_MESSAGE)
+                            )
+                            runtime_recovery_scaffolding_pending = True
+                            text_only_tool_recovery_pending = True
+                            text_only_tool_recovery_injections += 1
+                            self.config.metadata["text_only_tool_recovery_injections"] = (
+                                self.config.metadata.get(
+                                    "text_only_tool_recovery_injections",
+                                    0,
+                                )
+                                + 1
+                            )
+                            yield WarningEvent(
+                                code="text_only_tool_recovery",
+                                message=(
+                                    "The model returned text without a tool call; "
+                                    "asking it to call tools if the task is not complete."
+                                ),
+                            )
+                            continue
+                    if (
+                        progress_watchdog_mode == "warn_model"
+                        and not max_iterations_finalization_pending
+                        and not artifact_delivery_final_response_pending
+                    ):
+                        failed_tool_finalization = (
+                            await self._failed_tool_finalization_recovery_details(
+                                last_executed_results,
+                                post_write_verification_failure=(
+                                    last_post_write_failed_verification
+                                ),
+                                post_write_verification_success_observed=(
+                                    post_write_focused_verification_success_observed
+                                ),
+                                final_text=visible_text,
+                            )
+                        )
+                        if failed_tool_finalization is not None:
+                            recovery_key = self._failed_tool_finalization_recovery_key(
+                                failed_tool_finalization
+                            )
+                            if (
+                                recovery_key in failed_tool_finalization_recovery_keys
+                                or len(failed_tool_finalization_recovery_keys)
+                                >= _FAILED_FINALIZATION_RECOVERY_LIMIT
+                            ):
+                                failed_tool_finalization = None
+                            else:
+                                failed_tool_finalization_recovery_keys.add(recovery_key)
+                                failed_tool_finalization["recovery_key"] = recovery_key
+                        if failed_tool_finalization is not None:
+                            recovery_message: str | None
+                            recovery_message = (
+                                self._failed_tool_finalization_recovery_message(
+                                    failed_tool_finalization
+                                )
+                            )
+                            self._record_tool_loop_runtime_event(
+                                reason=str(failed_tool_finalization["reason"]),
+                                iteration=iterations,
+                                provider_call_count=turn_llm_calls,
+                                workspace_write_count=len(
+                                    self._effective_workspace_write_records()
+                                ),
+                                injected_to_model=True,
+                                hint_text_sha256=hashlib.sha256(
+                                    recovery_message.encode("utf-8")
+                                ).hexdigest(),
+                                details=failed_tool_finalization,
+                            )
+                            if visible_text and final_text_parts:
+                                final_text_parts.pop()
+                            turn_messages.append(Message(role="user", content=recovery_message))
+                            self.config.metadata["failed_tool_finalization_recoveries"] = (
+                                self.config.metadata.get(
+                                    "failed_tool_finalization_recoveries",
+                                    0,
+                                )
+                                + 1
+                            )
+                            self._write_turn_call_log(
+                                "progress_watchdog",
+                                action="warn",
+                                mode=progress_watchdog_mode,
+                                reason=str(failed_tool_finalization["reason"]),
+                                details=failed_tool_finalization,
+                            )
+                            yield WarningEvent(
+                                code="failed_tool_finalization_recovery",
+                                message=(
+                                    "The model attempted to finish after a failed "
+                                    "tool result with a workspace diff; asking it "
+                                    "to fix or re-validate once."
+                                ),
+                            )
+                            continue
+                    if (
+                        finalize_evidence_tracker is not None
+                        and not max_iterations_finalization_pending
+                        and not artifact_delivery_final_response_pending
+                        and not post_write_convergence_finalization_pending
+                    ):
+                        gate_status = await self._workspace_git_status_porcelain()
+                        gate_observation = finalize_evidence_tracker.build_observation(
+                            has_workspace_diff=bool(gate_status and gate_status.strip()),
+                        )
+                        if gate_observation.should_challenge:
+                            gate_key = finalize_evidence_gate_key(gate_observation)
+                            # Never spend the run's last LLM call or deadline
+                            # slack on a challenge: with no headroom for a
+                            # follow-up call the injection would discard the
+                            # model's final answer and end the turn in a hard
+                            # budget/timeout error instead of a submission.
+                            gate_headroom = _turn_llm_call_budget_error(
+                                turn_llm_calls + 1
+                            ) is None and (
+                                _total_deadline is None or _loop.time() < _total_deadline
+                            )
+                            gate_suppressed = (
+                                gate_key in finalize_evidence_gate_keys
+                                or len(finalize_evidence_gate_keys)
+                                >= FINALIZE_EVIDENCE_GATE_CHALLENGE_LIMIT
+                                or not gate_headroom
+                            )
+                            self.config.metadata["finalize_evidence_gate_detections"] = (
+                                self.config.metadata.get(
+                                    "finalize_evidence_gate_detections",
+                                    0,
+                                )
+                                + 1
+                            )
+                            gate_message = (
+                                None
+                                if gate_suppressed
+                                else finalize_evidence_challenge_message(gate_observation)
+                            )
+                            self._record_runtime_event(
+                                "finalize_evidence_gate.challenge",
+                                feature="finalize_evidence_gate",
+                                reason=gate_observation.primary_reason,
+                                iteration=iterations,
+                                provider_call_count=turn_llm_calls,
+                                injected_to_model=bool(gate_message),
+                                recovery_key=gate_key,
+                                details=gate_observation.to_event_details(),
+                            )
+                            if gate_message is not None:
+                                finalize_evidence_gate_keys.add(gate_key)
+                                if visible_text and final_text_parts:
+                                    final_text_parts.pop()
+                                turn_messages.append(
+                                    Message(role="user", content=gate_message)
+                                )
+                                self.config.metadata[
+                                    "finalize_evidence_gate_recoveries"
+                                ] = (
+                                    self.config.metadata.get(
+                                        "finalize_evidence_gate_recoveries",
+                                        0,
+                                    )
+                                    + 1
+                                )
+                                self._write_turn_call_log(
+                                    "finalize_evidence_gate",
+                                    action="warn",
+                                    mode="on",
+                                    reason=gate_observation.primary_reason,
+                                    details=gate_observation.to_event_details(),
+                                )
+                                yield WarningEvent(
+                                    code="finalize_evidence_gate_recovery",
+                                    message=(
+                                        "The model attempted to finish with "
+                                        "unresolved red execution evidence; asking "
+                                        "it to re-verify once."
+                                    ),
+                                )
+                                continue
+                    if (
+                        progress_watchdog_mode == "warn_model"
+                        and not workspace_diff_recovery_attempted
+                        and not max_iterations_finalization_pending
+                        and not artifact_delivery_final_response_pending
+                    ):
+                        empty_diff_reason = await self._empty_diff_finalization_reason(visible_text)
+                        if empty_diff_reason is not None:
+                            recovery_message = self._empty_diff_recovery_message(empty_diff_reason)
+                            self._record_tool_loop_runtime_event(
+                                reason=empty_diff_reason,
+                                iteration=iterations,
+                                provider_call_count=turn_llm_calls,
+                                workspace_write_count=len(
+                                    self._effective_workspace_write_records()
+                                ),
+                                injected_to_model=True,
+                                hint_text_sha256=hashlib.sha256(
+                                    recovery_message.encode("utf-8")
+                                ).hexdigest(),
+                            )
+                            workspace_diff_recovery_attempted = True
+                            if visible_text and final_text_parts:
+                                final_text_parts.pop()
+                            turn_messages.append(
+                                Message(
+                                    role="user",
+                                    content=recovery_message,
+                                )
+                            )
+                            self.config.metadata["workspace_diff_recoveries"] = (
+                                self.config.metadata.get("workspace_diff_recoveries", 0) + 1
+                            )
+                            self._write_turn_call_log(
+                                "progress_watchdog",
+                                action="warn",
+                                mode=progress_watchdog_mode,
+                                reason=empty_diff_reason,
+                                details={
+                                    "iteration": iterations,
+                                    "provider_call_count": turn_llm_calls,
+                                    "workspace_write_count": len(
+                                        self._effective_workspace_write_records()
+                                    ),
+                                },
+                            )
+                            yield WarningEvent(
+                                code="workspace_diff_recovery",
+                                message=(
+                                    "The model attempted to finish without a clear "
+                                    "workspace diff; asking it to reassess once."
+                                ),
+                            )
+                            continue
+                    final_diff_contract_mode = getattr(
+                        self.config,
+                        "final_diff_contract_mode",
+                        "log",
+                    )
+                    if (
+                        final_diff_contract_mode != "off"
+                        and not max_iterations_finalization_pending
+                        and not artifact_delivery_final_response_pending
+                    ):
+                        final_diff_observation = self._final_diff_contract_observation()
+                        if final_diff_observation is not None and (
+                            final_diff_observation.diff_paths or final_diff_observation.suspicious
+                        ):
+                            should_warn_model = (
+                                final_diff_contract_mode == "warn_model"
+                                and final_diff_observation.suspicious
+                                and not final_diff_contract_recovery_attempted
+                            )
+                            recovery_message = (
+                                final_diff_contract_recovery_message(final_diff_observation)
+                                if should_warn_model
+                                else None
+                            )
+                            self._record_final_diff_contract_event(
+                                final_diff_observation,
+                                iteration=iterations,
+                                provider_call_count=turn_llm_calls,
+                                mode=str(final_diff_contract_mode),
+                                injected_to_model=bool(recovery_message),
+                                hint_text=recovery_message,
+                            )
+                            if recovery_message:
+                                final_diff_contract_recovery_attempted = True
+                                if visible_text and final_text_parts:
+                                    final_text_parts.pop()
+                                turn_messages.append(Message(role="user", content=recovery_message))
+                                self.config.metadata["final_diff_contract_recoveries"] = (
+                                    self.config.metadata.get(
+                                        "final_diff_contract_recoveries",
+                                        0,
+                                    )
+                                    + 1
+                                )
+                                self._write_turn_call_log(
+                                    "final_diff_contract",
+                                    action="warn",
+                                    mode=final_diff_contract_mode,
+                                    reason=final_diff_observation.primary_reason,
+                                    details=final_diff_observation.to_event_details(),
+                                )
+                                yield WarningEvent(
+                                    code="final_diff_contract_recovery",
+                                    message=(
+                                        "Runtime detected a suspicious final diff; "
+                                        "asking the model to reconcile it once."
+                                    ),
+                                )
+                                continue
                     max_iterations_finalization_pending = False
+                    post_write_convergence_finalization_pending = False
                     break
                 tool_calls = [self._coerce_meta_tool_call(tc) for tc in tool_calls]
                 tool_calls = self._force_matched_meta_invoke_tool_calls(tool_calls)
@@ -3693,6 +6460,9 @@ class Agent:
                     return max(0.001, remaining)
 
                 async def _run_one(tc: ToolCall) -> ToolResult:
+                    nonlocal workspace_edit_gate_details
+                    nonlocal workspace_edit_gate_recovery_read_paths
+                    nonlocal workspace_edit_gate_recovery_reads_remaining
                     started = time.monotonic()
                     self._write_turn_call_log(
                         "tool_request",
@@ -3703,7 +6473,47 @@ class Agent:
                     )
                     tool_timeout = _cap_timeout_by_deadlines(self._tool_execution_timeout(tc))
                     preflight_result = preflight_tool_results.get(tc.tool_use_id)
-                    if preflight_result is not None:
+                    gate_recovery_read = self._workspace_edit_gate_allows_recovery_read(
+                        tc,
+                        workspace_edit_gate_recovery_read_paths,
+                    )
+                    gate_result = self._workspace_edit_gate_tool_result(
+                        tc,
+                        workspace_edit_gate_details,
+                        recovery_read_paths=workspace_edit_gate_recovery_read_paths,
+                        recovery_reads_remaining=(
+                            workspace_edit_gate_recovery_reads_remaining
+                        ),
+                    )
+                    diagnostic_retrieval_gate_result = (
+                        self._projected_diagnostic_retrieval_gate_tool_result(tc)
+                    )
+                    if gate_result is not None:
+                        self._record_tool_loop_runtime_event(
+                            reason="workspace_edit_gate_blocked_tool_call",
+                            iteration=iterations,
+                            provider_call_count=turn_llm_calls,
+                            tool_name=tc.tool_name,
+                            gate_details=dict(workspace_edit_gate_details or {}),
+                            workspace_write_count=len(
+                                self._effective_workspace_write_records()
+                            ),
+                            injected_to_model=True,
+                        )
+                        res = gate_result
+                    elif diagnostic_retrieval_gate_result is not None:
+                        self._record_tool_loop_runtime_event(
+                            reason="projected_diagnostic_requires_retrieval",
+                            iteration=iterations,
+                            provider_call_count=turn_llm_calls,
+                            tool_name=tc.tool_name,
+                            workspace_write_count=len(
+                                self._effective_workspace_write_records()
+                            ),
+                            injected_to_model=True,
+                        )
+                        res = diagnostic_retrieval_gate_result
+                    elif preflight_result is not None:
                         res = preflight_result
                     else:
                         try:
@@ -3722,6 +6532,57 @@ class Agent:
                                     timed_out=True,
                                 ),
                             )
+                    duration_ms = int((time.monotonic() - started) * 1000)
+                    self._record_focused_diagnostic_retrieval(tc, res)
+                    if len(self._effective_workspace_write_records()) > 0:
+                        workspace_edit_gate_details = None
+                        workspace_edit_gate_recovery_read_paths.clear()
+                        workspace_edit_gate_recovery_reads_remaining = 0
+                    elif (
+                        workspace_edit_gate_details is not None
+                        and tc.tool_name in {"apply_patch", "edit_file"}
+                        and res.is_error
+                        and self._workspace_edit_gate_edit_error_allows_read(res)
+                    ):
+                        target_paths = self._workspace_edit_gate_target_paths(tc)
+                        if target_paths:
+                            workspace_edit_gate_recovery_read_paths = {
+                                str(path) for path in target_paths
+                            }
+                            workspace_edit_gate_recovery_reads_remaining = min(
+                                2,
+                                len(workspace_edit_gate_recovery_read_paths),
+                            )
+                            self.config.metadata["workspace_edit_gate_patch_recoveries"] = (
+                                self.config.metadata.get(
+                                    "workspace_edit_gate_patch_recoveries",
+                                    0,
+                                )
+                                + 1
+                            )
+                            self._record_tool_loop_runtime_event(
+                                reason="workspace_edit_gate_patch_recovery_enabled",
+                                iteration=iterations,
+                                provider_call_count=turn_llm_calls,
+                                tool_name=tc.tool_name,
+                                target_paths=sorted(
+                                    workspace_edit_gate_recovery_read_paths
+                                ),
+                                injected_to_model=False,
+                            )
+                    elif gate_recovery_read:
+                        workspace_edit_gate_recovery_reads_remaining = max(
+                            0,
+                            workspace_edit_gate_recovery_reads_remaining - 1,
+                        )
+                        if workspace_edit_gate_recovery_reads_remaining <= 0:
+                            workspace_edit_gate_recovery_read_paths.clear()
+                    self._record_patch_evidence_tool_result(
+                        iteration=iterations,
+                        tool_call=tc,
+                        result=res,
+                        duration_ms=duration_ms,
+                    )
                     self._write_turn_call_log(
                         "tool_response",
                         iteration=iterations,
@@ -3730,7 +6591,7 @@ class Agent:
                         result=res.content,
                         result_chars=len(res.content),
                         is_error=res.is_error,
-                        duration_ms=int((time.monotonic() - started) * 1000),
+                        duration_ms=duration_ms,
                     )
                     return res
 
@@ -3904,9 +6765,7 @@ class Agent:
                             yield event
                         parallel_batch = []
                         active_ctx = (
-                            current_tool_context.get()
-                            or self._tool_context
-                            or ToolContext()
+                            current_tool_context.get() or self._tool_context or ToolContext()
                         )
                         async for ev in self._run_one_streaming(tc, active_ctx):
                             if isinstance(ev, ToolResult):
@@ -4013,33 +6872,409 @@ class Agent:
                     (result for result in executed_results if result.is_error),
                     None,
                 )
-                watchdog_decision = progress_watchdog.observe(
-                    ProgressObservation(
+                workspace_write_count = len(self._effective_workspace_write_records())
+                mutation_receipt_counts = self._workspace_mutation_receipt_counts()
+                post_write_progress_count = self._post_write_progress_count(
+                    workspace_write_count=workspace_write_count,
+                    mutation_receipt_counts=mutation_receipt_counts,
+                )
+                if len(tool_calls) == 1:
+                    current_repeat_key = self._tool_call_repeat_key(tool_calls[0])
+                    if current_repeat_key == repeated_tool_call_key:
+                        repeated_tool_call_last_result_is_error = any(
+                            result.is_error for result in executed_results
+                        )
+                        repeated_tool_call_workspace_write_count = workspace_write_count
+                if post_write_progress_count > last_post_write_progress_count:
+                    last_post_write_progress_count = post_write_progress_count
+                    post_write_focused_verification_observed = False
+                    post_write_focused_verification_success_observed = False
+                    last_post_write_failed_verification = None
+                if finalize_evidence_tracker is not None:
+                    for tc, result in zip(tool_calls, executed_results, strict=False):
+                        if tc.tool_name in _GATE_WRITE_TOOL_NAMES:
+                            finalize_evidence_tracker.observe_write(
+                                self._tool_call_string_arg(tc, "path", "file_path"),
+                                is_error=bool(result.is_error),
+                                iteration=iterations,
+                                scratch=(tc.tool_name == "write_scratch"),
+                            )
+                            continue
+                        if tc.tool_name not in _GATE_EXECUTION_TOOL_NAMES:
+                            continue
+                        gate_command = self._execution_command_for_progress(tc)
+                        if not gate_command:
+                            continue
+                        gate_result_text = self._tool_result_text_for_anchor(result.content)
+                        gate_red, gate_exit_code, gate_timed_out, gate_status_reason = (
+                            execution_signals_from_result(
+                                tool_name=result.tool_name,
+                                content_text=gate_result_text,
+                                execution_status=result.execution_status,
+                                is_error=bool(result.is_error),
+                            )
+                        )
+                        finalize_evidence_tracker.observe_execution(
+                            gate_command,
+                            red=gate_red,
+                            exit_code=gate_exit_code,
+                            timed_out=gate_timed_out,
+                            status_reason=gate_status_reason,
+                            failure_anchors=(
+                                self._failure_anchor_lines(gate_result_text)
+                                if gate_red
+                                else []
+                            ),
+                            iteration=iterations,
+                        )
+                focused_verification_success_before_results = (
+                    post_write_focused_verification_success_observed
+                )
+                source_context_signature = self._source_context_signature(
+                    tool_calls,
+                    executed_results,
+                )
+                successful_source_context_tool_result = source_context_signature is not None
+                successful_execution_tool_result = any(
+                    not result.is_error and result.tool_name in _EXECUTION_TOOL_NAMES
+                    for result in executed_results
+                )
+                current_focused_verification_observed = False
+                if post_write_progress_count > 0:
+                    for tc, result in zip(tool_calls, executed_results, strict=False):
+                        if result.tool_name not in _EXECUTION_TOOL_NAMES:
+                            continue
+                        command = self._execution_command_for_progress(tc)
+                        if command and self._command_looks_like_focused_verification(command):
+                            current_focused_verification_observed = True
+                            post_write_focused_verification_observed = True
+                            result_text = self._tool_result_text_for_anchor(result.content)
+                            verification_state = (
+                                self._classify_focused_verification_result(result)
+                            )
+                            self._record_runtime_event(
+                                "focused_verification.classified",
+                                feature="verification",
+                                tool_name=result.tool_name,
+                                command=command[:500],
+                                state=verification_state,
+                                is_error=bool(result.is_error),
+                            )
+                            clean_validation_success = (
+                                self._tool_result_has_validation_success_signal(result_text)
+                                and not self._tool_result_has_failure_signal(result_text)
+                            )
+                            if clean_validation_success:
+                                post_write_focused_verification_success_observed = True
+                                last_post_write_failed_verification = None
+                            elif result.is_error or self._tool_result_has_failure_signal(
+                                result_text
+                            ):
+                                execution_status: Mapping[str, Any] = (
+                                    result.execution_status or {}
+                                )
+                                status_reason = ""
+                                if isinstance(execution_status, Mapping):
+                                    status_reason = str(execution_status.get("reason") or "")
+                                post_write_focused_verification_success_observed = False
+                                last_post_write_failed_verification = {
+                                    "reason": (
+                                        "final_response_after_failed_focused_"
+                                        "verification_with_diff"
+                                    ),
+                                    "tool_name": result.tool_name,
+                                    "command": command[:500],
+                                    "execution_status_reason": status_reason or None,
+                                    "failure_anchors": self._failure_anchor_lines(result_text)[:3],
+                                    "workspace_write_count": workspace_write_count,
+                                    "changed_receipt_count": mutation_receipt_counts[
+                                        "changed_receipt_count"
+                                    ],
+                                }
+                            else:
+                                post_write_focused_verification_success_observed = True
+                                last_post_write_failed_verification = None
+                failure_anchor_summary = self._failure_anchor_summary_from_tool_results(
+                    tool_calls,
+                    executed_results,
+                )
+                if (
+                    failure_anchor_summary
+                    and failure_anchor_summary not in recent_failure_anchor_summaries
+                ):
+                    recent_failure_anchor_summaries.append(failure_anchor_summary)
+                    recent_failure_anchor_summaries[:] = recent_failure_anchor_summaries[-3:]
+                runtime_diff_paths = self._workspace_diff_paths_for_runtime_event()
+                runtime_diff_fingerprint = (
+                    self._workspace_diff_fingerprint_for_runtime_event()
+                )
+                runtime_diagnostic_events: list[dict[str, Any]] = []
+                if runtime_diagnostics is not None:
+                    for runtime_event in runtime_diagnostics.observe_tool_results(
                         iteration=iterations,
                         provider_call_count=turn_llm_calls,
-                        successful_tool_result=any(
-                            not result.is_error for result in executed_results
-                        ),
-                        user_visible_output=bool("".join(final_text_parts).strip()),
-                        artifact_completed=bool(terminal_artifacts),
-                        tool_error_signature=(
-                            None
-                            if first_tool_error is None
-                            else (
-                                f"{first_tool_error.tool_name}:"
-                                f"{str(first_tool_error.content)[:160]}"
+                        tool_calls=tool_calls,
+                        results=executed_results,
+                        read_records=self._workspace_read_records(),
+                        write_records=self._workspace_write_records(),
+                        scratch_records=self._scratch_write_records(),
+                        diff_paths=runtime_diff_paths,
+                        diff_fingerprint=runtime_diff_fingerprint,
+                        failure_anchor_summary=failure_anchor_summary,
+                    ):
+                        runtime_diagnostic_events.append(runtime_event)
+                        append_runtime_event(self.config.runtime_events_path, runtime_event)
+                post_write_convergence_guidance: str | None = None
+                if post_write_convergence_tracker is not None:
+                    continued_activity_after_verification = bool(
+                        (
+                            focused_verification_success_before_results
+                            or (
+                                post_write_focused_verification_success_observed
+                                and not current_focused_verification_observed
                             )
+                        )
+                        and (
+                            successful_execution_tool_result
+                            or successful_source_context_tool_result
+                        )
+                    )
+                    post_write_convergence_decision = (
+                        post_write_convergence_tracker.observe(
+                            PostWriteConvergenceObservation(
+                                iteration=iterations,
+                                provider_call_count=turn_llm_calls,
+                                workspace_write_count=workspace_write_count,
+                                changed_receipt_count=mutation_receipt_counts[
+                                    "changed_receipt_count"
+                                ],
+                                diff_fingerprint=runtime_diff_fingerprint,
+                                diff_paths=runtime_diff_paths,
+                                focused_verification_success_observed=(
+                                    post_write_focused_verification_success_observed
+                                ),
+                                continued_activity_after_verification=(
+                                    continued_activity_after_verification
+                                ),
+                            )
+                        )
+                    )
+                    if (
+                        post_write_convergence_decision.action == "finalize"
+                        and progress_watchdog_mode == "warn_model"
+                    ):
+                        post_write_convergence_finalization_pending = True
+                        post_write_convergence_finalization_message = Message(
+                            role="user",
+                            content=_post_write_convergence_message(
+                                post_write_convergence_decision
+                            ),
+                        )
+                        post_write_convergence_guidance = (
+                            post_write_convergence_finalization_message.content
+                            if isinstance(
+                                post_write_convergence_finalization_message.content,
+                                str,
+                            )
+                            else None
+                        )
+                    elif (
+                        post_write_convergence_decision.action == "warn"
+                        and progress_watchdog_mode == "warn_model"
+                    ):
+                        post_write_convergence_guidance = _post_write_convergence_message(
+                            post_write_convergence_decision
+                        )
+                    if post_write_convergence_decision.action != "observe":
+                        self._record_post_write_convergence_event(
+                            post_write_convergence_decision,
+                            mode=progress_watchdog_mode,
+                            injected_to_model=bool(post_write_convergence_guidance),
+                            hint_text=post_write_convergence_guidance,
+                        )
+                        metadata_key = {
+                            "warn": "post_write_convergence_warnings",
+                            "finalize": "post_write_convergence_finalizations",
+                            "reset": "post_write_convergence_resets",
+                        }.get(post_write_convergence_decision.action)
+                        if metadata_key:
+                            self.config.metadata[metadata_key] = (
+                                self.config.metadata.get(metadata_key, 0) + 1
+                            )
+                        self._write_turn_call_log(
+                            "post_write_convergence",
+                            action=post_write_convergence_decision.action,
+                            mode=progress_watchdog_mode,
+                            reason=post_write_convergence_decision.reason,
+                            details=post_write_convergence_decision.details,
+                        )
+                        if post_write_convergence_guidance:
+                            yield WarningEvent(
+                                code=(
+                                    "post_write_convergence_finalization"
+                                    if post_write_convergence_decision.action == "finalize"
+                                    else "post_write_convergence_warning"
+                                ),
+                                message=(
+                                    "Runtime detected stable post-verification diff "
+                                    "activity and asked the model to converge."
+                                ),
+                            )
+                progress_watchdog_guidance: str | None = None
+                watchdog_decision = None
+                if progress_watchdog_mode != "off" and post_write_convergence_guidance is None:
+                    watchdog_decision = progress_watchdog.observe(
+                        ProgressObservation(
+                            iteration=iterations,
+                            provider_call_count=turn_llm_calls,
+                            successful_tool_result=any(
+                                not result.is_error for result in executed_results
+                            ),
+                            successful_source_context_tool_result=(
+                                successful_source_context_tool_result
+                            ),
+                            successful_execution_tool_result=successful_execution_tool_result,
+                            source_context_signature=source_context_signature,
+                            user_visible_output=bool("".join(final_text_parts).strip()),
+                            artifact_completed=bool(terminal_artifacts),
+                            workspace_write_count=workspace_write_count,
+                            changed_receipt_count=mutation_receipt_counts[
+                                "changed_receipt_count"
+                            ],
+                            noop_receipt_count=mutation_receipt_counts[
+                                "noop_receipt_count"
+                            ],
+                            partial_receipt_count=mutation_receipt_counts[
+                                "partial_receipt_count"
+                            ],
+                            workspace_change_likely_required=(
+                                self._turn_likely_requires_workspace_change("")
+                            ),
+                            scratch_write_count=len(self._scratch_write_records()),
+                            post_write_focused_verification_observed=(
+                                post_write_focused_verification_observed
+                            ),
+                            tool_error_signature=(
+                                None
+                                if first_tool_error is None
+                                else self._tool_error_signature(first_tool_error)
+                            ),
+                            failure_anchor_signature=(
+                                self._failure_anchor_signature(failure_anchor_summary)
+                            ),
+                            failure_anchor_summary=failure_anchor_summary,
+                        )
+                    )
+                if watchdog_decision is not None and watchdog_decision.action != "observe":
+                    watchdog_hint_text: str | None = None
+                    if (
+                        watchdog_decision.action == "warn"
+                        and progress_watchdog_mode == "warn_model"
+                    ):
+                        watchdog_hint_text = _progress_watchdog_guidance_message(
+                            watchdog_decision.reason,
+                            watchdog_decision.details,
+                        )
+                    self._record_tool_loop_runtime_event(
+                        reason=watchdog_decision.reason,
+                        iteration=iterations,
+                        provider_call_count=turn_llm_calls,
+                        watchdog_action=watchdog_decision.action,
+                        watchdog_mode=progress_watchdog_mode,
+                        details=watchdog_decision.details,
+                        workspace_write_count=workspace_write_count,
+                        source_context_signature=source_context_signature,
+                        injected_to_model=bool(watchdog_hint_text),
+                        hint_text_sha256=(
+                            hashlib.sha256(watchdog_hint_text.encode("utf-8")).hexdigest()
+                            if watchdog_hint_text
+                            else None
                         ),
                     )
-                )
-                if watchdog_decision.action != "observe":
                     self._write_turn_call_log(
                         "progress_watchdog",
                         action=watchdog_decision.action,
+                        mode=progress_watchdog_mode,
                         reason=watchdog_decision.reason,
                         details=watchdog_decision.details,
                     )
-                terminal_error = _turn_budget_error()
+                    if watchdog_hint_text:
+                        progress_watchdog_guidance = watchdog_hint_text
+                        gate_details = self._workspace_edit_gate_details(
+                            watchdog_decision.reason,
+                            watchdog_decision.details,
+                        )
+                        if gate_details is not None:
+                            workspace_edit_gate_details = gate_details
+                            workspace_edit_gate_recovery_read_paths.clear()
+                            workspace_edit_gate_recovery_reads_remaining = 0
+                            self.config.metadata["workspace_edit_gate_activations"] = (
+                                self.config.metadata.get(
+                                    "workspace_edit_gate_activations",
+                                    0,
+                                )
+                                + 1
+                            )
+                    elif watchdog_decision.action == "block":
+                        terminal_error = ErrorEvent(
+                            message=(
+                                "Runtime progress watchdog stopped the turn after "
+                                "repeated activity without clear progress."
+                            ),
+                            code="progress_watchdog_blocked",
+                        )
+                source_loop_recovery_guidance: str | None = None
+                if progress_watchdog_guidance is None:
+                    source_loop_recovery = source_loop_recovery_decision(
+                        global_mode=runtime_recovery_mode,
+                        diagnostic_events=runtime_diagnostic_events,
+                        attempted=bool(source_loop_recovery_attempted_keys),
+                        attempted_event_keys=source_loop_recovery_attempted_keys,
+                        max_nudges=runtime_recovery_source_loop_max_nudges,
+                    )
+                    if source_loop_recovery is not None:
+                        self._record_runtime_recovery_event(
+                            source_loop_recovery,
+                            iteration=iterations,
+                            provider_call_count=turn_llm_calls,
+                            workspace_write_count=workspace_write_count,
+                            source_context_signature=source_context_signature,
+                        )
+                        recovery_event_key = source_loop_recovery.details.get(
+                            "recovery_event_key"
+                        )
+                        if isinstance(recovery_event_key, str) and recovery_event_key:
+                            source_loop_recovery_attempted_keys.add(recovery_event_key)
+                        else:
+                            source_loop_recovery_attempted_keys.add(
+                                f"legacy:{len(source_loop_recovery_attempted_keys) + 1}"
+                            )
+                        self._write_turn_call_log(
+                            "runtime_recovery",
+                            action=source_loop_recovery.action,
+                            mode=source_loop_recovery.mode,
+                            reason=source_loop_recovery.reason,
+                            details=source_loop_recovery.details,
+                        )
+                        if (
+                            source_loop_recovery.action == "nudge"
+                            and source_loop_recovery.message
+                        ):
+                            source_loop_recovery_guidance = source_loop_recovery.message
+                            runtime_recovery_scaffolding_pending = True
+                            self.config.metadata["source_loop_recoveries"] = (
+                                self.config.metadata.get("source_loop_recoveries", 0) + 1
+                            )
+                            yield WarningEvent(
+                                code="source_loop_recovery",
+                                message=(
+                                    "Runtime detected repeated source-loop evidence; "
+                                    "asking the model to reassess the current patch once."
+                                ),
+                            )
+                budget_error = _turn_budget_error()
+                if terminal_error is None:
+                    terminal_error = budget_error
                 if terminal_error is not None:
                     if artifact_delivery_final_response_pending:
                         yield _finish_artifact_delivery_degraded(
@@ -4093,15 +7328,61 @@ class Agent:
                                 ],
                             )
                         )
+                if progress_watchdog_guidance is not None:
+                    turn_messages.append(Message(role="user", content=progress_watchdog_guidance))
+                if (
+                    post_write_convergence_guidance is not None
+                    and not post_write_convergence_finalization_pending
+                ):
+                    turn_messages.append(
+                        Message(role="user", content=post_write_convergence_guidance)
+                    )
+                if source_loop_recovery_guidance is not None:
+                    turn_messages.append(
+                        Message(role="user", content=source_loop_recovery_guidance)
+                    )
                 if terminal_projection_preflight_error:
                     self._write_turn_call_log(
                         "tool_argument_projection_rehydrate_recovery",
                         iteration=iterations,
                         tool_use_ids=sorted(preflight_tool_results),
                     )
+                # Count iterations that blocked a compacted-placeholder reuse
+                # (preflight or dispatch path) and escalate the recovery
+                # directive once the configured threshold is reached.
+                if terminal_projection_preflight_error or any(
+                    self._is_provider_context_projection_reuse_result(result)
+                    for result in executed_results
+                ):
+                    placeholder_offense_iterations += 1
+                    placeholder_escalation_threshold = max(
+                        0,
+                        int(
+                            getattr(self.config, "placeholder_escalation_threshold", 0)
+                            or 0
+                        ),
+                    )
+                    if (
+                        placeholder_escalation_threshold > 0
+                        and placeholder_offense_iterations
+                        >= placeholder_escalation_threshold
+                    ):
+                        turn_messages.append(
+                            Message(
+                                role="user",
+                                content=_PLACEHOLDER_ESCALATION_DIRECTIVE,
+                            )
+                        )
+                        self._write_turn_call_log(
+                            "placeholder_offense_escalation",
+                            iteration=iterations,
+                            offense_iterations=placeholder_offense_iterations,
+                            threshold=placeholder_escalation_threshold,
+                        )
                 if terminal_artifacts:
                     _finish_artifact_delivery_without_provider()
                     break
+                last_executed_results = list(executed_results)
                 if turn_yielded:
                     break
 
@@ -4226,6 +7507,45 @@ class Agent:
         )
         if final_ensemble_trace is not None and turn_ensemble_request_count > 0:
             final_ensemble_trace["llm_request_count"] = turn_ensemble_request_count
+        await self._write_patch_evidence_ledger(
+            final_status=(
+                "ok"
+                if terminal_error is None
+                else (terminal_error.code or "agent_error")
+            ),
+            iterations=iterations,
+            provider_call_count=turn_llm_calls,
+        )
+        if runtime_diagnostics is not None and terminal_error is not None:
+            runtime_diff_paths = self._workspace_diff_paths_for_runtime_event()
+            for runtime_event in runtime_diagnostics.observe_finish_error(
+                iteration=iterations,
+                provider_call_count=turn_llm_calls,
+                error_code=terminal_error.code,
+                changed_files=self._relative_paths_from_records(self._workspace_write_records()),
+                diff_paths=runtime_diff_paths,
+                diff_fingerprint=self._workspace_diff_fingerprint_for_runtime_event(),
+            ):
+                append_runtime_event(self.config.runtime_events_path, runtime_event)
+        if terminal_error is not None:
+            final_diff_contract_mode = getattr(
+                self.config,
+                "final_diff_contract_mode",
+                "log",
+            )
+            if final_diff_contract_mode != "off":
+                final_diff_observation = self._final_diff_contract_observation()
+                if final_diff_observation is not None and (
+                    final_diff_observation.diff_paths or final_diff_observation.suspicious
+                ):
+                    self._record_final_diff_contract_event(
+                        final_diff_observation,
+                        iteration=iterations,
+                        provider_call_count=turn_llm_calls,
+                        mode=str(final_diff_contract_mode),
+                        injected_to_model=False,
+                        hint_text=None,
+                    )
         if terminal_error is None or has_usage:
             if terminal_error is None:
                 yield self._transition(AgentState.DONE)
@@ -4257,6 +7577,1348 @@ class Agent:
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
+
+    def _workspace_write_records(self) -> list[dict[str, Any]]:
+        ctx = self._tool_context or current_tool_context.get()
+        if ctx is None:
+            return []
+        records = getattr(ctx, "workspace_file_writes", []) or []
+        return [record for record in records if isinstance(record, dict)]
+
+    def _effective_workspace_write_records(self) -> list[dict[str, Any]]:
+        return [
+            record
+            for record in self._workspace_write_records()
+            if not self._workspace_write_record_looks_synthetic(record)
+        ]
+
+    @staticmethod
+    def _workspace_write_record_looks_synthetic(record: Mapping[str, Any]) -> bool:
+        if not bool(record.get("created")):
+            return False
+        raw_path = str(record.get("relative_path") or record.get("path") or "")
+        normalized = raw_path.replace("\\", "/").lstrip("./")
+        if not normalized:
+            return False
+        name = Path(normalized).name.lower()
+        return any(
+            name == prefix
+            or name.startswith(f"{prefix}.")
+            or name.startswith(f"{prefix}_")
+            for prefix in _SUSPICIOUS_NEW_WORKSPACE_WRITE_PREFIXES
+        )
+
+    def _workspace_read_records(self) -> list[dict[str, Any]]:
+        ctx = self._tool_context or current_tool_context.get()
+        if ctx is None:
+            return []
+        records = getattr(ctx, "workspace_file_reads", []) or []
+        return [record for record in records if isinstance(record, dict)]
+
+    def _scratch_write_records(self) -> list[dict[str, Any]]:
+        ctx = self._tool_context or current_tool_context.get()
+        if ctx is None:
+            return []
+        records = getattr(ctx, "scratch_file_writes", []) or []
+        return [record for record in records if isinstance(record, dict)]
+
+    def _workspace_mutation_records(self) -> list[dict[str, Any]]:
+        ctx = self._tool_context or current_tool_context.get()
+        if ctx is None:
+            return []
+        records = getattr(ctx, "workspace_mutation_records", []) or []
+        return [record for record in records if isinstance(record, dict)]
+
+    def _workspace_mutation_receipts(self) -> list[dict[str, Any]]:
+        ctx = self._tool_context or current_tool_context.get()
+        if ctx is None:
+            return []
+        records = getattr(ctx, "workspace_mutation_receipts", []) or []
+        return [record for record in records if isinstance(record, dict)]
+
+    def _changed_workspace_mutation_receipts(self) -> list[dict[str, Any]]:
+        return [
+            receipt
+            for receipt in self._workspace_mutation_receipts()
+            if receipt.get("changed") is True
+        ]
+
+    def _workspace_mutation_receipt_counts(self) -> dict[str, int]:
+        receipts = self._workspace_mutation_receipts()
+        return {
+            "changed_receipt_count": len(self._changed_workspace_mutation_receipts()),
+            "noop_receipt_count": sum(
+                1 for receipt in receipts if receipt.get("changed") is False
+            ),
+            "partial_receipt_count": sum(
+                1 for receipt in receipts if receipt.get("partial") is True
+            ),
+        }
+
+    def _post_write_progress_count(
+        self,
+        *,
+        workspace_write_count: int | None = None,
+        mutation_receipt_counts: Mapping[str, int] | None = None,
+    ) -> int:
+        if workspace_write_count is None:
+            workspace_write_count = len(self._effective_workspace_write_records())
+        if mutation_receipt_counts is None:
+            mutation_receipt_counts = self._workspace_mutation_receipt_counts()
+        changed_receipts = max(
+            0,
+            int(mutation_receipt_counts.get("changed_receipt_count", 0) or 0),
+        )
+        receipt_count = (
+            changed_receipts
+            + max(0, int(mutation_receipt_counts.get("noop_receipt_count", 0) or 0))
+            + max(0, int(mutation_receipt_counts.get("partial_receipt_count", 0) or 0))
+        )
+        if receipt_count > 0:
+            return changed_receipts
+        return max(0, int(workspace_write_count or 0))
+
+    def _workspace_mutation_receipt_summary(self) -> dict[str, int]:
+        receipts = self._workspace_mutation_receipts()
+        counts = self._workspace_mutation_receipt_counts()
+        return {
+            "workspace_mutation_receipt_count": len(receipts),
+            **counts,
+        }
+
+    def _final_diff_contract_observation(self) -> FinalDiffContractObservation | None:
+        diff_paths = self._workspace_diff_paths_for_final_diff_contract()
+        write_records = self._workspace_write_records()
+        mutation_receipts = self._workspace_mutation_receipts()
+        source_diff_candidates = []
+        if self.config.source_diff_candidate_mode != "off" and self._tool_context:
+            source_diff_candidates = list(
+                getattr(self._tool_context, "source_diff_candidates", []) or []
+            )
+        if not diff_paths:
+            write_records = self._effective_workspace_write_records()
+        if not diff_paths and not write_records and not mutation_receipts:
+            return None
+        return build_final_diff_contract_observation(
+            diff_paths=diff_paths,
+            read_records=self._workspace_read_records(),
+            write_records=write_records,
+            mutation_records=self._workspace_mutation_records(),
+            mutation_receipts=mutation_receipts,
+            source_diff_candidates=source_diff_candidates,
+        )
+
+    def _record_final_diff_contract_event(
+        self,
+        observation: FinalDiffContractObservation,
+        *,
+        iteration: int,
+        provider_call_count: int,
+        mode: str,
+        injected_to_model: bool,
+        hint_text: str | None = None,
+    ) -> None:
+        details = observation.to_event_details()
+        details.update(self._workspace_mutation_receipt_summary())
+        event = {
+            "feature": "final_diff_contract",
+            "name": "final_diff_contract.observed",
+            "mode": mode,
+            "reason": observation.primary_reason,
+            "action": "nudge" if injected_to_model else "observe",
+            "iteration": iteration,
+            "provider_call_count": provider_call_count,
+            "session_key": self._session_key,
+            "agent_id": self.config.tool_result_store_agent_id
+            or self.config.metadata.get("agent_id"),
+            "injected_to_model": injected_to_model,
+            "evidence": details,
+            "details": details,
+            "diff_paths": observation.diff_paths,
+            "read_files": self._relative_paths_from_records(self._workspace_read_records()),
+            "changed_files": self._relative_paths_from_records(self._workspace_write_records()),
+            "mutation_records": self._workspace_mutation_records(),
+            "hint_text_sha256": (
+                hashlib.sha256(hint_text.encode("utf-8")).hexdigest()
+                if hint_text
+                else None
+            ),
+            "trigger_confidence": "final_diff_contract_gate",
+        }
+        append_runtime_event(self.config.runtime_events_path, event)
+
+    def _record_patch_evidence_tool_result(
+        self,
+        *,
+        iteration: int,
+        tool_call: ToolCall,
+        result: ToolResult,
+        duration_ms: int,
+    ) -> None:
+        if self._patch_evidence_ledger is None:
+            return
+        result_text = self._tool_result_text_for_anchor(result.content)
+        command = self._execution_command_for_progress(tool_call) or ""
+        self._patch_evidence_ledger.record_tool_result(
+            iteration=iteration,
+            tool_name=tool_call.tool_name,
+            arguments=tool_call.arguments,
+            result_text=result_text,
+            is_error=result.is_error,
+            duration_ms=duration_ms,
+            failure_anchors=self._failure_anchor_lines(result_text)
+            if result.is_error or self._tool_result_has_failure_signal(result_text)
+            else [],
+            focused_verification=bool(
+                command and self._command_looks_like_focused_verification(command)
+            ),
+        )
+
+    async def _write_patch_evidence_ledger(
+        self,
+        *,
+        final_status: str,
+        iterations: int,
+        provider_call_count: int,
+    ) -> None:
+        if self._patch_evidence_ledger is None:
+            return
+        try:
+            await asyncio.to_thread(
+                self._patch_evidence_ledger.write_final,
+                read_records=self._workspace_read_records(),
+                write_records=self._workspace_write_records(),
+                scratch_records=self._scratch_write_records(),
+                final_status=final_status,
+                iterations=iterations,
+                provider_call_count=provider_call_count,
+            )
+        except Exception as exc:  # noqa: BLE001
+            self.config.metadata["patch_evidence_ledger_write_error"] = str(exc)[:300]
+
+    def _workspace_dir_for_status(self) -> Path | None:
+        ctx = self._tool_context or current_tool_context.get()
+        workspace_dir = getattr(ctx, "workspace_dir", None) if ctx is not None else None
+        if not workspace_dir:
+            return None
+        workspace = Path(workspace_dir).expanduser().resolve(strict=False)
+        if not workspace.exists():
+            return None
+        return workspace
+
+    async def _workspace_git_status_porcelain(self) -> str | None:
+        workspace = self._workspace_dir_for_status()
+        if workspace is None:
+            return None
+
+        def _run_status() -> str | None:
+            try:
+                result = subprocess.run(
+                    [
+                        "git",
+                        "-C",
+                        str(workspace),
+                        "status",
+                        "--porcelain=v1",
+                        "--untracked-files=all",
+                    ],
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    timeout=2.0,
+                    check=False,
+                )
+            except (OSError, subprocess.TimeoutExpired):
+                return None
+            if result.returncode != 0:
+                return None
+            gitlink_paths = self._workspace_gitlink_paths(workspace)
+            return self._filter_ignored_porcelain_status(result.stdout, gitlink_paths)
+
+        return await asyncio.to_thread(_run_status)
+
+    @staticmethod
+    def _porcelain_status_code(line: str) -> str:
+        if len(line) >= 2:
+            return line[:2]
+        return line
+
+    @staticmethod
+    def _porcelain_status_path(line: str) -> str | None:
+        raw_status_line = line.rstrip()
+        if not raw_status_line.strip():
+            return None
+        text = (
+            raw_status_line[3:].strip()
+            if len(raw_status_line) > 3
+            else raw_status_line.strip()
+        )
+        if " -> " in text:
+            text = text.split(" -> ", 1)[1].strip()
+        return text.replace("\\", "/").lstrip("./") or None
+
+    @staticmethod
+    def _porcelain_status_is_new_file(line: str) -> bool:
+        code = Agent._porcelain_status_code(line)
+        return code == "??" or "A" in code
+
+    @staticmethod
+    def _is_root_scratch_artifact_path(path: str | None) -> bool:
+        if not path:
+            return False
+        normalized = path.replace("\\", "/").lstrip("./")
+        if not normalized or "/" in normalized:
+            return False
+        name = Path(normalized).name
+        if name in _ROOT_SCRATCH_ARTIFACT_NAMES:
+            return True
+        suffix = Path(name).suffix.lower()
+        if suffix not in _ROOT_SCRATCH_ARTIFACT_SUFFIXES:
+            return False
+        return any(name.startswith(prefix) for prefix in _ROOT_SCRATCH_ARTIFACT_PREFIXES)
+
+    @staticmethod
+    def _filter_ignored_porcelain_status(status: str, gitlink_paths: set[str]) -> str:
+        if not status:
+            return status
+        kept: list[str] = []
+        for line in status.splitlines():
+            path = Agent._porcelain_status_path(line)
+            if path and path in gitlink_paths:
+                continue
+            if (
+                path
+                and Agent._porcelain_status_is_new_file(line)
+                and Agent._is_root_scratch_artifact_path(path)
+            ):
+                continue
+            kept.append(line)
+        if not kept:
+            return ""
+        return "\n".join(kept) + "\n"
+
+    @staticmethod
+    def _filter_gitlink_porcelain_status(status: str, gitlink_paths: set[str]) -> str:
+        return Agent._filter_ignored_porcelain_status(status, gitlink_paths)
+
+    @staticmethod
+    def _workspace_gitlink_paths(workspace_dir: Path) -> set[str]:
+        try:
+            result = subprocess.run(
+                ["git", "-C", str(workspace_dir), "ls-files", "-s"],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=2.0,
+                check=False,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return set()
+        if result.returncode != 0:
+            return set()
+        paths: set[str] = set()
+        for line in (result.stdout or "").splitlines():
+            parts = line.split(None, 3)
+            if len(parts) == 4 and parts[0] == "160000":
+                paths.add(parts[3].replace("\\", "/").lstrip("./"))
+        return paths
+
+    def _workspace_ignored_diff_paths(self, workspace_dir: Path) -> set[str]:
+        ignored = self._workspace_gitlink_paths(workspace_dir)
+        try:
+            result = subprocess.run(
+                [
+                    "git",
+                    "-C",
+                    str(workspace_dir),
+                    "status",
+                    "--porcelain=v1",
+                    "--untracked-files=all",
+                ],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=2.0,
+                check=False,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return ignored
+        if result.returncode != 0:
+            return ignored
+        for line in (result.stdout or "").splitlines():
+            path = self._porcelain_status_path(line)
+            if (
+                path
+                and self._porcelain_status_is_new_file(line)
+                and self._is_root_scratch_artifact_path(path)
+            ):
+                ignored.add(path)
+        return ignored
+
+    async def _failed_tool_finalization_recovery_details(
+        self,
+        results: list[ToolResult],
+        *,
+        post_write_verification_failure: Mapping[str, Any] | None = None,
+        post_write_verification_success_observed: bool = False,
+        final_text: str = "",
+    ) -> dict[str, Any] | None:
+        status = await self._workspace_git_status_porcelain()
+        if status is None or not status.strip():
+            return None
+        workspace_write_count = len(self._effective_workspace_write_records())
+        mutation_receipt_counts = self._workspace_mutation_receipt_counts()
+        post_write_progress_count = self._post_write_progress_count(
+            workspace_write_count=workspace_write_count,
+            mutation_receipt_counts=mutation_receipt_counts,
+        )
+        base_details: dict[str, Any] = {
+            "workspace_write_count": workspace_write_count,
+            **mutation_receipt_counts,
+            "git_status_porcelain": status[:1000],
+            "diff_fingerprint": self._workspace_diff_fingerprint_for_runtime_event(),
+        }
+        if post_write_verification_failure:
+            details = {
+                **base_details,
+                **dict(post_write_verification_failure),
+            }
+            details["reason"] = "final_response_after_failed_focused_verification_with_diff"
+            return details
+        failed_result = next((result for result in reversed(results) if result.is_error), None)
+        if failed_result is not None:
+            execution_status: Mapping[str, Any] = failed_result.execution_status or {}
+            status_reason = ""
+            if isinstance(execution_status, Mapping):
+                status_reason = str(execution_status.get("reason") or "")
+            reason = (
+                "final_response_after_masked_pipeline_failure_with_diff"
+                if status_reason == "masked_pipeline_failure"
+                else "final_response_after_failed_tool_with_diff"
+            )
+            result_text = self._tool_result_text_for_anchor(failed_result.content)
+            failure_anchors = self._failure_anchor_lines(result_text)
+            return {
+                **base_details,
+                "reason": reason,
+                "tool_name": failed_result.tool_name,
+                "execution_status_reason": status_reason or None,
+                "failure_anchors": failure_anchors[:3],
+            }
+        if (
+            post_write_progress_count > 0
+            and not post_write_verification_success_observed
+            and self._turn_likely_requires_workspace_change(final_text)
+        ):
+            return {
+                **base_details,
+                "reason": "final_response_without_successful_focused_verification",
+                "tool_name": None,
+                "execution_status_reason": None,
+                "failure_anchors": [],
+            }
+        return None
+
+    @staticmethod
+    def _failed_tool_finalization_recovery_key(details: Mapping[str, Any]) -> str:
+        key_payload = {
+            "reason": details.get("reason"),
+            "diff_fingerprint": details.get("diff_fingerprint"),
+            "git_status_porcelain": details.get("git_status_porcelain"),
+            "tool_name": details.get("tool_name"),
+            "command": details.get("command"),
+            "execution_status_reason": details.get("execution_status_reason"),
+            "failure_anchors": details.get("failure_anchors"),
+        }
+        encoded = json.dumps(key_payload, ensure_ascii=False, sort_keys=True, default=str)
+        return hashlib.sha256(encoded.encode("utf-8")).hexdigest()[:16]
+
+    def _failed_tool_finalization_recovery_message(self, details: Mapping[str, Any]) -> str:
+        reason = str(details.get("reason") or "")
+        if reason == "final_response_after_failed_focused_verification_with_diff":
+            command = str(details.get("command") or "a focused validation command").strip()
+            command_text = f" Command: {command}." if command else ""
+            status_reason = str(details.get("execution_status_reason") or "").strip()
+            reason_text = f" Reason: {status_reason}." if status_reason else ""
+            anchors = details.get("failure_anchors")
+            anchor_text = ""
+            if isinstance(anchors, list) and anchors:
+                rendered = " | ".join(str(anchor) for anchor in anchors[:3] if anchor)
+                if rendered:
+                    anchor_text = f" Recent failure signal: {rendered}."
+            return (
+                "[Runtime progress warning]\n"
+                "The model is about to finish after repository edits, but the latest "
+                f"focused validation still failed.{command_text}{reason_text}"
+                f"{anchor_text} Do not "
+                "finalize this patch yet. Use the validation failure to revise the "
+                "source diff, then rerun focused validation. If validation is impossible, "
+                "explain the blocker after checking the changed files."
+            )
+        if reason == "final_response_without_successful_focused_verification":
+            return (
+                "[Runtime progress warning]\n"
+                "The model is about to finish with repository edits before any focused "
+                "validation command succeeded. Do not finalize yet. Run a focused "
+                "validation command for the changed behavior, or explicitly explain why "
+                "validation cannot be run after checking the changed files."
+            )
+        tool_name = str(details.get("tool_name") or "a tool")
+        status_reason = str(details.get("execution_status_reason") or "").strip()
+        reason_text = (
+            f" Reason: {status_reason}."
+            if status_reason
+            else ""
+        )
+        anchors = details.get("failure_anchors")
+        anchor_text = ""
+        if isinstance(anchors, list) and anchors:
+            rendered = " | ".join(str(anchor) for anchor in anchors[:3] if anchor)
+            if rendered:
+                anchor_text = f" Recent failure signal: {rendered}."
+        pipeline_text = (
+            " If the command used a shell pipeline, rerun validation with "
+            "`set -o pipefail` or without `| head`/`| tail` before relying on it."
+            if status_reason == "masked_pipeline_failure"
+            else ""
+        )
+        return (
+            "[Runtime progress warning]\n"
+            "The model is about to finish while the latest tool result failed "
+            f"after repository edits. Latest failed tool: {tool_name}.{reason_text}"
+            f"{anchor_text} Do not finalize this patch yet. Fix the source diff or "
+            "rerun a focused validation command that succeeds cleanly."
+            f"{pipeline_text}"
+        )
+
+    async def _empty_diff_finalization_reason(self, final_text: str) -> str | None:
+        status = await self._workspace_git_status_porcelain()
+        if status is None:
+            return None
+        if self._effective_workspace_write_records() and status == "":
+            return "workspace_writes_without_git_status_changes"
+        if status == "" and self._turn_likely_requires_workspace_change(final_text):
+            return "final_response_without_workspace_diff"
+        return None
+
+    def _empty_diff_recovery_message(self, reason: str) -> str:
+        if reason == "workspace_writes_without_git_status_changes":
+            return (
+                "[Runtime progress warning]\n"
+                "The model is about to finish after recording workspace write "
+                "operations, but `git status --porcelain --untracked-files=all` "
+                "currently shows no repository diff. Inspect the current files and "
+                "tool results. If a code change is required, apply it to the real "
+                "workspace source file now. If no diff is required, explicitly explain "
+                "why the repository should remain unchanged."
+            )
+        return (
+            "[Runtime progress warning]\n"
+            "The model is about to finish a code-fix style task while the repository "
+            "has no visible workspace diff. Do not provide another plan only. Inspect "
+            "the relevant project files, make the smallest justified source edit if "
+            "one is available, or explicitly explain the blocker and why an empty diff "
+            "is correct."
+        )
+
+    def _turn_likely_requires_workspace_change(self, final_text: str) -> bool:
+        final_lower = " ".join((final_text or "").lower().split())
+        if any(marker in final_lower for marker in _NO_CHANGE_FINAL_MARKERS):
+            return False
+        turn_lower = " ".join((getattr(self, "_current_turn_message", "") or "").lower().split())
+        combined = f"{turn_lower}\n{final_lower}"
+        return any(marker in combined for marker in _CODE_CHANGE_TASK_MARKERS)
+
+    @staticmethod
+    def _workspace_edit_gate_details(
+        reason: str,
+        details: Mapping[str, Any],
+    ) -> dict[str, Any] | None:
+        if reason not in _NO_WORKSPACE_WRITE_REASONS:
+            return None
+        if not details.get("workspace_change_likely_required"):
+            return None
+        try:
+            count = int(details.get("count", 0) or 0)
+            threshold = int(details.get("threshold", 0) or 0)
+        except (TypeError, ValueError):
+            return None
+        if threshold <= 0 or count < threshold * 2:
+            return None
+        return {
+            "reason": reason,
+            "count": count,
+            "threshold": threshold,
+            "iteration": details.get("iteration"),
+            "provider_call_count": details.get("provider_call_count"),
+        }
+
+    def _resolve_workspace_path_candidate(self, raw_path: str) -> Path | None:
+        workspace = self._workspace_dir_for_status()
+        try:
+            candidate = Path(raw_path).expanduser()
+            if not candidate.is_absolute() and workspace is not None:
+                candidate = workspace / candidate
+            resolved = candidate.resolve(strict=False)
+        except OSError:
+            return None
+        if workspace is None:
+            return resolved
+        if resolved == workspace or workspace in resolved.parents:
+            return resolved
+        return None
+
+    def _workspace_edit_gate_apply_patch_target_paths(self, tc: ToolCall) -> list[Path]:
+        patch = self._tool_call_string_arg(tc, "patch")
+        if not patch:
+            return []
+        paths: list[Path] = []
+        seen: set[Path] = set()
+        prefixes = (
+            "*** Add File: ",
+            "*** Update File: ",
+            "*** Delete File: ",
+        )
+        for raw_line in patch.splitlines():
+            line = raw_line.strip()
+            for prefix in prefixes:
+                if not line.startswith(prefix):
+                    continue
+                raw_path = line.removeprefix(prefix).strip()
+                if not raw_path:
+                    continue
+                resolved = self._resolve_workspace_path_candidate(raw_path)
+                if resolved is not None and resolved not in seen:
+                    seen.add(resolved)
+                    paths.append(resolved)
+                break
+        return paths
+
+    def _workspace_edit_gate_target_paths(self, tc: ToolCall) -> list[Path]:
+        if tc.tool_name == "apply_patch":
+            return self._workspace_edit_gate_apply_patch_target_paths(tc)
+        if tc.tool_name not in {"edit_file", "write_file"}:
+            return []
+        raw_path = self._tool_call_string_arg(tc, "path")
+        if raw_path is None:
+            return []
+        resolved = self._resolve_workspace_path_candidate(raw_path)
+        return [] if resolved is None else [resolved]
+
+    def _workspace_edit_gate_edit_block_detail(self, tc: ToolCall) -> str | None:
+        if tc.tool_name == "apply_patch":
+            if self._workspace_edit_gate_apply_patch_target_paths(tc):
+                return None
+            return (
+                "The apply_patch call targets '<missing or non-workspace patch target>'. "
+                "apply_patch must use an exact wrapper line '*** Begin Patch' followed "
+                "by a file operation line such as '*** Update File: path/to/source.ext', "
+                "then '@@' hunks, then '*** End Patch'. Do not put the path on the "
+                "Begin Patch or End Patch line."
+            )
+        if tc.tool_name not in {"edit_file", "write_file"}:
+            return None
+        raw_path = self._tool_call_string_arg(tc, "path") or "<missing path>"
+        resolved = self._resolve_workspace_path_candidate(raw_path)
+        if resolved is None:
+            return (
+                f"The {tc.tool_name} call targets {raw_path!r}, which is not a real "
+                "file under the project workspace."
+            )
+        if tc.tool_name == "write_file" and self._workspace_edit_gate_write_looks_synthetic(
+            tc, resolved
+        ):
+            return (
+                f"The write_file call creates {raw_path!r}, which looks like a temporary "
+                "marker or guard-unlock file rather than the requested source fix."
+            )
+        return None
+
+    def _workspace_edit_gate_write_looks_synthetic(
+        self,
+        tc: ToolCall,
+        resolved_path: Path,
+    ) -> bool:
+        if resolved_path.exists():
+            return False
+        name = resolved_path.name.lower()
+        suspicious_name = any(
+            name == prefix
+            or name.startswith(f"{prefix}.")
+            or name.startswith(f"{prefix}_")
+            for prefix in _SUSPICIOUS_NEW_WORKSPACE_WRITE_PREFIXES
+        )
+        content = (self._tool_call_string_arg(tc, "content") or "").lower()
+        suspicious_content = any(
+            marker in content
+            for marker in _SUSPICIOUS_NEW_WORKSPACE_WRITE_CONTENT_MARKERS
+        )
+        return suspicious_name or suspicious_content
+
+    def _tool_call_targets_workspace_path(self, tc: ToolCall) -> bool:
+        if tc.tool_name not in _WORKSPACE_EDIT_TOOL_NAMES:
+            return False
+        return self._workspace_edit_gate_edit_block_detail(tc) is None
+
+    def _workspace_edit_gate_allows_recovery_read(
+        self,
+        tc: ToolCall,
+        recovery_read_paths: set[str],
+    ) -> bool:
+        if tc.tool_name != "read_file" or not recovery_read_paths:
+            return False
+        raw_path = self._tool_call_string_arg(tc, "path")
+        if raw_path is None:
+            return False
+        resolved = self._resolve_workspace_path_candidate(raw_path)
+        return resolved is not None and str(resolved) in recovery_read_paths
+
+    def _workspace_edit_gate_apply_patch_error_allows_read(self, result: ToolResult) -> bool:
+        return self._workspace_edit_gate_edit_error_allows_read(result)
+
+    def _workspace_edit_gate_edit_error_allows_read(self, result: ToolResult) -> bool:
+        if not result.is_error:
+            return False
+        text = self._tool_result_text_for_anchor(result.content).lower()
+        return (
+            "context mismatch" in text
+            or "could not find old_text" in text
+            or "read the current file content" in text
+        )
+
+    def _workspace_edit_gate_tool_result(
+        self,
+        tc: ToolCall,
+        gate_details: Mapping[str, Any] | None,
+        *,
+        recovery_read_paths: set[str],
+        recovery_reads_remaining: int,
+    ) -> ToolResult | None:
+        if gate_details is None:
+            return None
+        if (
+            recovery_reads_remaining > 0
+            and self._workspace_edit_gate_allows_recovery_read(tc, recovery_read_paths)
+        ):
+            return None
+        edit_block_detail = (
+            self._workspace_edit_gate_edit_block_detail(tc)
+            if tc.tool_name in _WORKSPACE_EDIT_TOOL_NAMES
+            else None
+        )
+        if tc.tool_name in _WORKSPACE_EDIT_TOOL_NAMES and edit_block_detail is None:
+            return None
+
+        if tc.tool_name in _WORKSPACE_EDIT_TOOL_NAMES:
+            detail = edit_block_detail or f"The {tc.tool_name} call is not allowed here."
+        elif tc.tool_name == "read_file" and recovery_reads_remaining > 0:
+            detail = (
+                "Only the file targeted by the failed edit call may be read "
+                "during this recovery step."
+            )
+        else:
+            return None
+        return ToolResult(
+            tool_use_id=tc.tool_use_id,
+            tool_name=tc.tool_name,
+            content=(
+                "Runtime guard: this code-fix task appears to require a repository "
+                "patch, but no tracked workspace source file has changed yet. "
+                f"{detail} Use targeted source reads/searches only when needed to "
+                "identify the exact edit. Do not write scratch notes as a substitute "
+                "for a real source change; once localized, use an available "
+                "source-edit tool on a real project source file allowed by the "
+                "workspace write policy."
+            ),
+            is_error=True,
+            execution_status=runtime_execution_status(
+                "error",
+                reason="workspace_edit_required",
+            ),
+        )
+
+    @staticmethod
+    def _workspace_edit_gate_tool_definitions(
+        tools: list[ToolDefinition] | None,
+        gate_details: Mapping[str, Any] | None,
+        *,
+        recovery_read_paths: set[str],
+        recovery_reads_remaining: int,
+    ) -> list[ToolDefinition] | None:
+        if gate_details is None or not tools:
+            return tools
+        return tools
+
+    def _workspace_edit_gate_system_prompt(
+        self,
+        system_prompt: str | None,
+        gate_details: Mapping[str, Any] | None,
+        *,
+        recovery_read_paths: set[str],
+        recovery_reads_remaining: int,
+    ) -> str | None:
+        if gate_details is None:
+            return system_prompt
+        workspace = self._workspace_dir_for_status()
+        workspace_text = str(workspace) if workspace is not None else "the project workspace"
+        if recovery_reads_remaining > 0 and recovery_read_paths:
+            allowed_paths = ", ".join(sorted(recovery_read_paths))
+            action_text = (
+                "A previous source edit failed because its file context did not match. "
+                f"Prioritize a targeted source read for the failed edit target path(s): "
+                f"{allowed_paths}. After that targeted read, use an available "
+                "source-edit tool on the real project source file."
+            )
+        else:
+            action_text = (
+                "Avoid more scratch-only work. If you can form a patch from the "
+                "context already present in the conversation, use an available "
+                "source-edit tool now; otherwise use targeted source reads/searches "
+                "to localize the edit."
+            )
+        restriction = (
+            "## Runtime Patch Progress Guidance\n\n"
+            "This request still has no tracked source diff after repeated tool "
+            f"activity. {action_text} Make the "
+            f"smallest edit to a real project source file under {workspace_text} "
+            "that is allowed by the workspace write policy. Do not edit tests unless "
+            "the original user explicitly asked for test changes."
+        )
+        if not system_prompt:
+            return restriction
+        return f"{system_prompt.rstrip()}\n\n{restriction}"
+
+    def _workspace_edit_gate_chat_config(
+        self,
+        chat_cfg: ChatConfig,
+        gate_details: Mapping[str, Any] | None,
+        tools: list[ToolDefinition] | None,
+        *,
+        recovery_read_paths: set[str],
+        recovery_reads_remaining: int,
+    ) -> ChatConfig:
+        if gate_details is None:
+            return chat_cfg
+        update: dict[str, Any] = {
+            "system": self._workspace_edit_gate_system_prompt(
+                chat_cfg.system,
+                gate_details,
+                recovery_read_paths=recovery_read_paths,
+                recovery_reads_remaining=recovery_reads_remaining,
+            )
+        }
+        return chat_cfg.model_copy(update=update)
+
+    def _execution_command_for_progress(self, tc: ToolCall) -> str | None:
+        if tc.tool_name == "execute_code":
+            return self._tool_call_string_arg(tc, "code")
+        return self._tool_call_string_arg(tc, "command", "cmd")
+
+    def _command_looks_like_focused_verification(self, command: str) -> bool:
+        normalized = " " + " ".join((command or "").lower().split())
+        return any(marker in normalized for marker in _FOCUSED_VERIFICATION_MARKERS)
+
+    def _source_context_signature(
+        self,
+        tool_calls: list[ToolCall],
+        results: list[ToolResult],
+    ) -> str | None:
+        signatures: list[str] = []
+        for tc, result in zip(tool_calls, results, strict=False):
+            if result.is_error:
+                continue
+            command = self._tool_call_string_arg(tc, "command", "cmd")
+            is_source_context_tool = tc.tool_name in _SOURCE_CONTEXT_TOOL_NAMES
+            is_exec_source_context = (
+                tc.tool_name == "exec_command"
+                and exec_command_invokes_source_context_read(
+                    command,
+                    content=result.content,
+                )
+            )
+            if not is_source_context_tool and not is_exec_source_context:
+                continue
+            payload = json.dumps(
+                tc.arguments,
+                ensure_ascii=False,
+                sort_keys=True,
+                default=str,
+            )
+            signatures.append(f"{tc.tool_name}:{command or ''}:{payload}")
+        if not signatures:
+            return None
+        joined = "\n".join(signatures)
+        return hashlib.sha256(joined.encode("utf-8")).hexdigest()
+
+    @staticmethod
+    def _tool_call_repeat_key(tc: ToolCall) -> tuple[str, str]:
+        payload = json.dumps(
+            tc.arguments,
+            ensure_ascii=False,
+            sort_keys=True,
+            default=str,
+        )
+        return (tc.tool_name, hashlib.sha256(payload.encode("utf-8")).hexdigest())
+
+    def _repeated_tool_call_recovery_tool_names(self) -> frozenset[str]:
+        extra_tools = (
+            getattr(self.config, "repeated_tool_call_recovery_extra_tools", None) or ()
+        )
+        if not extra_tools:
+            return _REPEATED_TOOL_CALL_RECOVERY_TOOL_NAMES
+        return _REPEATED_TOOL_CALL_RECOVERY_TOOL_NAMES | {
+            str(name) for name in extra_tools
+        }
+
+    @staticmethod
+    def _tool_call_arguments_preview(tc: ToolCall, *, max_chars: int = 400) -> str:
+        payload = json.dumps(
+            tc.arguments,
+            ensure_ascii=False,
+            sort_keys=True,
+            default=str,
+        )
+        if len(payload) <= max_chars:
+            return payload
+        return payload[: max(0, max_chars - 3)] + "..."
+
+    def _repeated_tool_call_recovery_message(
+        self,
+        tc: ToolCall,
+        *,
+        repeat_count: int,
+    ) -> str:
+        arguments_preview = self._tool_call_arguments_preview(tc)
+        return (
+            "[Runtime recovery]\n"
+            f"The exact same {tc.tool_name} tool call has been requested "
+            f"{repeat_count} times in a row with identical arguments. I skipped "
+            "executing and replaying that duplicate call to avoid provider-side "
+            "rejection for repetitive tool history. Do not call this exact tool "
+            "with the same arguments again. Change the path, pattern, command, or "
+            "arguments; inspect a different source window; use a different tool; "
+            "or move to the patch/final answer if you already have enough evidence.\n"
+            f"Repeated arguments: {arguments_preview}"
+        )
+
+    def _record_tool_context_runtime_event(self, event: dict[str, Any]) -> None:
+        if not self.config.runtime_events_path:
+            return
+        payload = dict(event)
+        if payload.get("session_key") is None:
+            payload["session_key"] = self._session_key
+        if payload.get("agent_id") is None:
+            payload["agent_id"] = (
+                self.config.tool_result_store_agent_id
+                or self.config.metadata.get("agent_id")
+            )
+        append_runtime_event(self.config.runtime_events_path, payload)
+
+    def _record_runtime_event(self, name: str, **details: Any) -> None:
+        if not self.config.runtime_events_path:
+            return
+        event = {
+            "name": name,
+            "session_key": self._session_key,
+            "agent_id": self.config.tool_result_store_agent_id
+            or self.config.metadata.get("agent_id"),
+            **details,
+        }
+        append_runtime_event(self.config.runtime_events_path, event)
+
+    def _record_tool_loop_runtime_event(self, *, reason: str, **details: Any) -> None:
+        if self.config.tool_loop_observer_mode != "log":
+            return
+        iteration = details.get("iteration")
+        hint_text_sha256 = details.pop("hint_text_sha256", None)
+        trigger_confidence = details.pop("trigger_confidence", "observed_runtime_signal")
+        event = {
+            "feature": "runtime_observer",
+            "mechanism": "tool_loop_observer",
+            "mode": self.config.tool_loop_observer_mode,
+            "reason": reason,
+            "iteration": int(iteration) if isinstance(iteration, int) else iteration,
+            "session_key": self._session_key,
+            "agent_id": self.config.tool_result_store_agent_id
+            or self.config.metadata.get("agent_id"),
+            "injected_to_model": bool(details.pop("injected_to_model", False)),
+            "evidence": details,
+            "read_files": self._relative_paths_from_records(self._workspace_read_records()),
+            "changed_files": self._relative_paths_from_records(self._workspace_write_records()),
+            "diff_paths": self._workspace_diff_paths_for_runtime_event(),
+            "verification_commands": self._verification_commands_for_runtime_event(),
+            "hint_text_sha256": hint_text_sha256,
+            "trigger_confidence": trigger_confidence,
+            "details": details,
+        }
+        append_runtime_event(self.config.runtime_events_path, event)
+
+    def _record_runtime_recovery_event(
+        self,
+        decision: RuntimeRecoveryDecision,
+        *,
+        iteration: int,
+        provider_call_count: int,
+        call_attempt: int | None = None,
+        **details: Any,
+    ) -> None:
+        hint_text_sha256 = (
+            hashlib.sha256(decision.message.encode("utf-8")).hexdigest()
+            if decision.message
+            else None
+        )
+        evidence = {
+            **decision.details,
+            **details,
+        }
+        event = {
+            "feature": "runtime_recovery",
+            "mechanism": decision.mechanism,
+            "mode": decision.mode,
+            "reason": decision.reason,
+            "action": decision.action,
+            "iteration": iteration,
+            "provider_call_count": provider_call_count,
+            "call_attempt": call_attempt,
+            "session_key": self._session_key,
+            "agent_id": self.config.tool_result_store_agent_id
+            or self.config.metadata.get("agent_id"),
+            "injected_to_model": decision.injected_to_model,
+            "evidence": evidence,
+            "read_files": self._relative_paths_from_records(self._workspace_read_records()),
+            "changed_files": self._relative_paths_from_records(self._workspace_write_records()),
+            "diff_paths": self._workspace_diff_paths_for_runtime_event(),
+            "verification_commands": self._verification_commands_for_runtime_event(),
+            "hint_text_sha256": hint_text_sha256,
+            "trigger_confidence": "runtime_recovery_gate",
+            "details": evidence,
+        }
+        append_runtime_event(self.config.runtime_events_path, event)
+
+    def _record_post_write_convergence_event(
+        self,
+        decision: PostWriteConvergenceDecision,
+        *,
+        mode: str,
+        injected_to_model: bool,
+        hint_text: str | None = None,
+    ) -> None:
+        event_name = {
+            "warn": "post_write_convergence.warned",
+            "finalize": "post_write_convergence.finalized",
+            "reset": "post_write_convergence.reset_on_diff_change",
+        }.get(decision.action)
+        if event_name is None:
+            return
+        evidence = dict(decision.details)
+        event = {
+            "feature": "post_write_convergence",
+            "mechanism": "stable_verified_workspace_diff",
+            "name": event_name,
+            "mode": mode,
+            "reason": decision.reason,
+            "action": decision.action,
+            "iteration": evidence.get("iteration"),
+            "provider_call_count": evidence.get("provider_call_count"),
+            "session_key": self._session_key,
+            "agent_id": self.config.tool_result_store_agent_id
+            or self.config.metadata.get("agent_id"),
+            "injected_to_model": injected_to_model,
+            "evidence": evidence,
+            "read_files": self._relative_paths_from_records(self._workspace_read_records()),
+            "changed_files": self._relative_paths_from_records(self._workspace_write_records()),
+            "diff_paths": self._workspace_diff_paths_for_runtime_event(),
+            "verification_commands": self._verification_commands_for_runtime_event(),
+            "hint_text_sha256": (
+                hashlib.sha256(hint_text.encode("utf-8")).hexdigest()
+                if hint_text
+                else None
+            ),
+            "trigger_confidence": "post_write_convergence_gate",
+            "details": evidence,
+        }
+        append_runtime_event(self.config.runtime_events_path, event)
+
+    @staticmethod
+    def _relative_paths_from_records(records: list[dict[str, Any]]) -> list[str]:
+        paths: list[str] = []
+        seen: set[str] = set()
+        for record in records:
+            raw = record.get("relative_path")
+            if not isinstance(raw, str) or not raw:
+                continue
+            normalized = raw.replace("\\", "/").lstrip("./")
+            if normalized and normalized not in seen:
+                seen.add(normalized)
+                paths.append(normalized)
+        return paths
+
+    def _workspace_diff_paths_for_runtime_event(self) -> list[str]:
+        workspace_dir = self._workspace_dir_for_status()
+        if workspace_dir is None:
+            return []
+        ignored_paths = self._workspace_ignored_diff_paths(workspace_dir)
+        paths: set[str] = set()
+        for args in (
+            ("diff", "--name-only"),
+            ("diff", "--cached", "--name-only"),
+            ("status", "--porcelain=v1", "--untracked-files=all"),
+        ):
+            try:
+                result = subprocess.run(
+                    ["git", "-C", str(workspace_dir), *args],
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    timeout=2.0,
+                    check=False,
+                )
+            except (OSError, subprocess.SubprocessError):
+                continue
+            for line in (result.stdout or "").splitlines():
+                if args[0] == "status":
+                    text = self._porcelain_status_path(line) or ""
+                else:
+                    text = line.strip()
+                if text:
+                    normalized = text.replace("\\", "/").lstrip("./")
+                    if normalized in ignored_paths:
+                        continue
+                    paths.add(normalized)
+        return sorted(paths)
+
+    def _workspace_diff_paths_for_final_diff_contract(self) -> list[str]:
+        workspace_dir = self._workspace_dir_for_status()
+        if workspace_dir is None:
+            return []
+        ignored_paths = self._workspace_gitlink_paths(workspace_dir) | (
+            self._workspace_internal_diagnostic_paths(workspace_dir)
+        )
+        paths: set[str] = set()
+        for args in (
+            ("diff", "--name-only"),
+            ("diff", "--cached", "--name-only"),
+            ("status", "--porcelain=v1", "--untracked-files=all"),
+        ):
+            try:
+                result = subprocess.run(
+                    ["git", "-C", str(workspace_dir), *args],
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    timeout=2.0,
+                    check=False,
+                )
+            except (OSError, subprocess.SubprocessError):
+                continue
+            for line in (result.stdout or "").splitlines():
+                if args[0] == "status":
+                    text = self._porcelain_status_path(line) or ""
+                else:
+                    text = line.strip()
+                if text:
+                    normalized = text.replace("\\", "/").lstrip("./")
+                    if normalized in ignored_paths:
+                        continue
+                    paths.add(normalized)
+        return sorted(paths)
+
+    def _workspace_internal_diagnostic_paths(self, workspace_dir: Path) -> set[str]:
+        ignored: set[str] = set()
+        for raw_path in (
+            self.config.runtime_events_path,
+            self.config.patch_evidence_ledger_path,
+        ):
+            if not raw_path:
+                continue
+            try:
+                relative = Path(raw_path).expanduser().resolve(strict=False).relative_to(
+                    workspace_dir
+                )
+            except ValueError:
+                continue
+            ignored.add(relative.as_posix())
+        return ignored
+
+    def _workspace_diff_fingerprint_for_runtime_event(self) -> str | None:
+        workspace_dir = self._workspace_dir_for_status()
+        if workspace_dir is None:
+            return None
+        diff_paths = self._workspace_diff_paths_for_runtime_event()
+        if not diff_paths:
+            return None
+        payload_parts: list[str] = []
+        for args in (
+            ("diff", "--no-ext-diff", "--binary", "--", *diff_paths),
+            ("diff", "--cached", "--no-ext-diff", "--binary", "--", *diff_paths),
+            ("status", "--porcelain=v1", "--untracked-files=all"),
+        ):
+            try:
+                result = subprocess.run(
+                    ["git", "-C", str(workspace_dir), *args],
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    timeout=2.0,
+                    check=False,
+                )
+            except (OSError, subprocess.SubprocessError):
+                continue
+            payload_parts.append(f"$ git {' '.join(args)}\n")
+            stdout = result.stdout or ""
+            if args[0] == "status":
+                stdout = self._filter_gitlink_porcelain_status(
+                    stdout,
+                    self._workspace_ignored_diff_paths(workspace_dir),
+                )
+            payload_parts.append(stdout)
+            if result.stderr:
+                payload_parts.append("\n[stderr]\n")
+                payload_parts.append(result.stderr)
+        payload = "\n".join(payload_parts)
+        if not payload.strip():
+            return None
+        return hashlib.sha256(payload.encode("utf-8", "replace")).hexdigest()[:16]
+
+    def _verification_commands_for_runtime_event(self) -> list[dict[str, Any]]:
+        ledger = self._patch_evidence_ledger
+        if ledger is None:
+            return []
+        commands = getattr(ledger, "verification_commands", []) or []
+        return [dict(command) for command in commands if isinstance(command, dict)]
+
+    @staticmethod
+    def _failure_anchor_summary_from_tool_results(
+        tool_calls: list[ToolCall],
+        results: list[ToolResult],
+    ) -> str:
+        summaries: list[str] = []
+        for tool_call, result in zip(tool_calls, results, strict=False):
+            content = Agent._tool_result_text_for_anchor(result.content)
+            if not content:
+                continue
+            if not result.is_error and not Agent._tool_result_has_failure_signal(content):
+                continue
+            anchors = Agent._failure_anchor_lines(content)
+            if not anchors:
+                continue
+            summaries.append(f"{tool_call.tool_name}: " + " | ".join(anchors[:3]))
+            if len(summaries) >= 3:
+                break
+        return "\n".join(summaries)
+
+    @staticmethod
+    def _tool_result_text_for_anchor(content: object) -> str:
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            parts: list[str] = []
+            for item in content:
+                if isinstance(item, ContentBlockText):
+                    parts.append(item.text)
+                elif isinstance(item, Mapping):
+                    text = item.get("text")
+                    if isinstance(text, str):
+                        parts.append(text)
+                else:
+                    parts.append(str(item))
+            return "\n".join(parts)
+        return str(content)
+
+    @staticmethod
+    def _tool_result_has_failure_signal(text: str) -> bool:
+        return bool(Agent._failure_anchor_lines(text))
+
+    @staticmethod
+    def _tool_result_has_validation_success_signal(text: str) -> bool:
+        lowered = (text or "").lower()
+        if not lowered:
+            return False
+        if "build failure" in lowered or "failed to execute goal" in lowered:
+            return False
+        return (
+            "build success" in lowered
+            or "all tests passed" in lowered
+            or bool(_CLEAN_TEST_SUMMARY_RE.search(text))
+            or bool(_CLEAN_PASSED_FAILED_SUMMARY_RE.search(text))
+        )
+
+    @staticmethod
+    def _classify_focused_verification_result(result: ToolResult) -> str:
+        text = Agent._tool_result_text_for_anchor(result.content)
+        if result.is_error or Agent._tool_result_has_failure_signal(text):
+            return "failure"
+        if (
+            Agent._tool_result_has_validation_success_signal(text)
+            or _PLAIN_PASSED_SUMMARY_RE.search(text)
+        ):
+            return "success"
+        return "unknown"
+
+    @staticmethod
+    def _failure_anchor_lines(text: str) -> list[str]:
+        anchors: list[str] = []
+        for raw_line in text.splitlines():
+            line = " ".join(raw_line.strip().split())
+            if not line:
+                continue
+            lowered = line.lower()
+            if (
+                _CLEAN_TEST_SUMMARY_RE.search(line)
+                or _CLEAN_PASSED_FAILED_SUMMARY_RE.search(line)
+                or _CLEAN_ERROR_COUNT_RE.search(line)
+                or "no failures" in lowered
+                or "no errors" in lowered
+            ):
+                continue
+            if not any(
+                marker in lowered
+                for marker in (
+                    "failed",
+                    "failure",
+                    "error",
+                    "exception",
+                    "traceback",
+                    "assert",
+                    "expected",
+                    "actual",
+                )
+            ):
+                continue
+            anchors.append(line[:220])
+            if len(anchors) >= 6:
+                break
+        return anchors
+
+    @staticmethod
+    def _failure_anchor_signature(summary: str) -> str | None:
+        normalized = " ".join((summary or "").strip().lower().split())
+        if not normalized:
+            return None
+        for marker in ("/tmp/", "/var/tmp/"):
+            if marker in normalized:
+                normalized = normalized.replace(marker, f"{marker}<path>/")
+        return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+
+    @staticmethod
+    def _tool_error_signature(result: ToolResult) -> str:
+        tool_name = str(result.tool_name or "tool")
+        status: Mapping[str, Any] = result.execution_status or {}
+        reason = str(status.get("reason") or "")
+        source = str(status.get("source") or "")
+        if tool_name in {"apply_patch", "edit_file", "write_file"} and (
+            reason in {"retryable_tool_input_error", "invalid_arguments"}
+            or "input" in reason
+            or source == "tool_runtime"
+        ):
+            return f"{tool_name}:input_error"
+        return f"{tool_name}:{str(result.content)[:160]}"
 
     async def _stream_provider_events_with_deadline(
         self,
@@ -4335,6 +8997,9 @@ class Agent:
         runtime_context_insert_index: int,
         turn_objective_message: Message | None = None,
     ) -> tuple[list[Message], SessionSanitizeResult]:
+        capsule_message = self._runtime_state_capsule_provider_message()
+        if capsule_message is not None:
+            messages = [*messages, capsule_message]
         source_messages = self._with_request_context_messages(
             messages,
             request_context_message,
@@ -4345,10 +9010,41 @@ class Agent:
         )
         source_messages = self._apply_provider_tool_result_overrides(source_messages)
         source_messages = self._strip_provider_context_marker_replay_for_provider(source_messages)
+        source_messages = self._dedup_repeated_tool_results_for_provider(source_messages)
         source_messages = self._compact_aggregate_tool_results_for_provider(source_messages)
         source_messages = self._sanitize_projected_tool_use_arguments_for_provider(source_messages)
         source_messages = repair_tool_pairing(source_messages)
-        return sanitize_session_messages(source_messages)
+        request_messages, sanitize_result = sanitize_session_messages(source_messages)
+        self._remember_provider_visible_tool_results(request_messages)
+        return request_messages, sanitize_result
+
+    def _runtime_state_capsule_provider_message(self) -> Message | None:
+        mode = str(getattr(self.config, "runtime_state_capsule_mode", "off") or "off")
+        if mode not in {"log", "inject"}:
+            return None
+        ctx = self._tool_context or current_tool_context.get()
+        workspace = (
+            getattr(ctx, "workspace_dir", None)
+            if ctx is not None and getattr(ctx, "workspace_dir", None)
+            else self.config.workspace_dir
+        )
+        capsule = build_runtime_state_capsule(workspace=workspace, tool_context=ctx)
+        self.config.metadata["runtime_state_capsule_observed"] = (
+            self.config.metadata.get("runtime_state_capsule_observed", 0) + 1
+        )
+        self._record_runtime_event(
+            "runtime_state_capsule.observed",
+            feature="runtime_state_capsule",
+            mode=mode,
+            injected_to_model=mode == "inject",
+            capsule=capsule,
+        )
+        if mode != "inject":
+            return None
+        self.config.metadata["runtime_state_capsule_injected"] = (
+            self.config.metadata.get("runtime_state_capsule_injected", 0) + 1
+        )
+        return Message(role="user", content=runtime_state_capsule_message(capsule))
 
     async def _provider_request_messages_with_sanitize_async(
         self,
@@ -4403,7 +9099,10 @@ class Agent:
         return request_messages
 
     def _apply_provider_tool_result_overrides(self, messages: list[Message]) -> list[Message]:
-        if not self._provider_tool_result_overrides:
+        if (
+            not self._provider_tool_result_overrides
+            and not self._provider_tool_result_frozen_overrides
+        ):
             return messages
 
         projected: list[Message] = []
@@ -4416,7 +9115,9 @@ class Agent:
             message_changed = False
             for block in message.content:
                 if isinstance(block, ContentBlockToolResult):
-                    override = self._provider_tool_result_overrides.get(block.tool_use_id)
+                    override = self._provider_tool_result_overrides.get(
+                        block.tool_use_id
+                    ) or self._provider_tool_result_frozen_overrides.get(block.tool_use_id)
                     if override is not None:
                         blocks.append(override)
                         message_changed = True
@@ -4650,9 +9351,7 @@ class Agent:
         if isinstance(value, list | tuple):
             return [Agent._live_request_jsonable(item) for item in value]
         if isinstance(value, dict):
-            return {
-                str(key): Agent._live_request_jsonable(item) for key, item in value.items()
-            }
+            return {str(key): Agent._live_request_jsonable(item) for key, item in value.items()}
         if hasattr(value, "__dict__"):
             return {
                 str(key): Agent._live_request_jsonable(item)
@@ -5216,6 +9915,12 @@ class Agent:
         if not blocked_tool_ids:
             return messages
 
+        if getattr(self.config, "provider_context_block_feedback", False):
+            return self._project_blocked_context_replay_with_feedback(
+                messages,
+                blocked_tool_ids,
+            )
+
         stripped_messages: list[Message] = []
         stripped_blocks = 0
         for message in messages:
@@ -5250,14 +9955,8 @@ class Agent:
                 )
             )
 
-        if (
-            stripped_blocks
-            and stripped_messages
-            and stripped_messages[-1].role == "assistant"
-        ):
-            stripped_messages.append(
-                Message(role="user", content=_PROVIDER_CONTEXT_REPAIR_PROMPT)
-            )
+        if stripped_blocks and stripped_messages and stripped_messages[-1].role == "assistant":
+            stripped_messages.append(Message(role="user", content=_PROVIDER_CONTEXT_REPAIR_PROMPT))
 
         self.config.metadata["tool_argument_projection_replay_stripped"] = (
             self.config.metadata.get("tool_argument_projection_replay_stripped", 0)
@@ -5269,6 +9968,166 @@ class Agent:
             stripped_blocks=stripped_blocks,
         )
         return stripped_messages
+
+    def _project_blocked_context_replay_with_feedback(
+        self,
+        messages: list[Message],
+        blocked_tool_ids: set[str],
+    ) -> list[Message]:
+        """Project blocked compacted-placeholder calls without hiding the rejection.
+
+        Instead of dropping the blocked tool_use and its error tool_result from
+        the provider view (which leaves the model with no rejection signal and
+        produces byte-identical retry loops), keep the pair: the tool_use input
+        becomes the standard compacted-arguments placeholder and the error
+        tool_result carrying the rejection text stays visible. When the
+        rejection is the most recent event, the repair prompt is appended so
+        the model is explicitly told how to recover.
+        """
+        projected_messages: list[Message] = []
+        projected_blocks = 0
+        last_blocked_result_index: int | None = None
+        for message in messages:
+            if not isinstance(message.content, list):
+                projected_messages.append(message)
+                continue
+            next_content: list[Any] = []
+            changed = False
+            has_blocked_result = False
+            for block in message.content:
+                if isinstance(block, ContentBlockToolUse) and block.id in blocked_tool_ids:
+                    projected_blocks += 1
+                    changed = True
+                    next_content.append(
+                        ContentBlockToolUse(
+                            id=block.id,
+                            name=block.name,
+                            input=self._provider_compacted_arguments_placeholder(
+                                block.name,
+                                block.input,
+                            ),
+                        )
+                    )
+                    continue
+                if (
+                    isinstance(block, ContentBlockToolResult)
+                    and block.tool_use_id in blocked_tool_ids
+                ):
+                    has_blocked_result = True
+                next_content.append(block)
+            if changed:
+                projected_messages.append(
+                    Message(
+                        role=message.role,
+                        content=next_content,
+                        reasoning_content=getattr(message, "reasoning_content", None),
+                    )
+                )
+            else:
+                projected_messages.append(message)
+            if has_blocked_result:
+                last_blocked_result_index = len(projected_messages) - 1
+
+        repair_prompt_appended = (
+            last_blocked_result_index is not None
+            and last_blocked_result_index == len(projected_messages) - 1
+        )
+        if repair_prompt_appended:
+            projected_messages.append(
+                Message(role="user", content=_PROVIDER_CONTEXT_REPAIR_PROMPT)
+            )
+
+        self.config.metadata["tool_argument_projection_replay_feedback"] = (
+            self.config.metadata.get("tool_argument_projection_replay_feedback", 0)
+            + projected_blocks
+        )
+        self._write_turn_call_log(
+            "tool_argument_projection_replay_feedback",
+            tool_use_ids=sorted(blocked_tool_ids),
+            projected_blocks=projected_blocks,
+            repair_prompt_appended=repair_prompt_appended,
+        )
+        return projected_messages
+
+    def _identical_request_loop_break_action(
+        self,
+        request_messages: list[Message],
+        *,
+        first_attempt: bool,
+    ) -> str | None:
+        """Opt-in breaker for consecutive byte-identical provider projections.
+
+        Hashes the projected request before any perturbation is appended, so a
+        stuck loop keeps the same base sha and the streak keeps growing across
+        iterations: at ``threshold`` the request is perturbed with a loop
+        nudge, at ``2 * threshold`` the turn aborts. Provider retry attempts
+        (``first_attempt=False``) reuse the current streak without advancing
+        it, so retries of one request never count as a loop.
+        """
+        threshold = self._positive_int(
+            getattr(self.config, "identical_request_loop_break_threshold", 0)
+        )
+        if threshold is None:
+            return None
+        if first_attempt:
+            payload_sha = hashlib.sha256(
+                json.dumps(
+                    [message.model_dump(mode="json") for message in request_messages],
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    default=str,
+                ).encode("utf-8")
+            ).hexdigest()
+            if payload_sha == self._identical_request_last_sha:
+                self._identical_request_streak += 1
+            else:
+                self._identical_request_last_sha = payload_sha
+                self._identical_request_streak = 1
+        if self._identical_request_streak < threshold:
+            return None
+        if self._identical_request_streak >= threshold * 2:
+            return "abort"
+        return "perturb"
+
+    @staticmethod
+    def _append_identical_request_loop_nudge(
+        request_messages: list[Message],
+    ) -> list[Message]:
+        """Append the loop-break nudge without producing back-to-back user turns.
+
+        Most providers require strict user/assistant alternation. The request
+        being perturbed always ends in a user message (the last tool results,
+        or the original prompt), so appending a *new* user message would
+        create two consecutive user turns and get rejected or mishandled by
+        the provider. Merge the nudge into the existing trailing message
+        instead when it is already a user turn.
+        """
+        if request_messages and request_messages[-1].role == "user":
+            last_message = request_messages[-1]
+            if isinstance(last_message.content, list):
+                merged_content: Any = [
+                    *last_message.content,
+                    ContentBlockText(text=_IDENTICAL_REQUEST_LOOP_NUDGE),
+                ]
+            else:
+                existing_text = (
+                    last_message.content
+                    if isinstance(last_message.content, str)
+                    else str(last_message.content)
+                )
+                merged_content = f"{existing_text}\n\n{_IDENTICAL_REQUEST_LOOP_NUDGE}"
+            return [
+                *request_messages[:-1],
+                Message(
+                    role="user",
+                    content=merged_content,
+                    reasoning_content=getattr(last_message, "reasoning_content", None),
+                ),
+            ]
+        return [
+            *request_messages,
+            Message(role="user", content=_IDENTICAL_REQUEST_LOOP_NUDGE),
+        ]
 
     @staticmethod
     def _parse_tool_argument_projection(value: str) -> dict[str, str] | None:
@@ -5293,9 +10152,20 @@ class Agent:
         )
 
     @staticmethod
+    def _is_provider_context_marker_value(value: Any) -> bool:
+        if value is True:
+            return True
+        if isinstance(value, str):
+            return value.strip().lower() in {"true", "1", "yes", "on"}
+        return False
+
+    @staticmethod
     def _has_provider_context_argument_marker(arguments: dict[str, Any]) -> bool:
-        return arguments.get(_INVALID_PROVIDER_CONTEXT_ARGUMENTS_KEY) is True or any(
-            arguments.get(marker) is True for marker in _COMPACTED_TOOL_ARGUMENT_MARKERS
+        return Agent._is_provider_context_marker_value(
+            arguments.get(_INVALID_PROVIDER_CONTEXT_ARGUMENTS_KEY)
+        ) or any(
+            Agent._is_provider_context_marker_value(arguments.get(marker))
+            for marker in _COMPACTED_TOOL_ARGUMENT_MARKERS
         )
 
     @staticmethod
@@ -5324,13 +10194,7 @@ class Agent:
         sanitized = dict(tc.arguments)
         changed = False
         for argument_name, value in tc.arguments.items():
-            if not isinstance(value, str) or not value.startswith(
-                (
-                    _TOOL_ARGUMENT_PROJECTION_PREFIX,
-                    _HISTORICAL_TOOL_ARGUMENT_PROJECTION_PREFIX,
-                    _INVALID_PROVIDER_CONTEXT_PROJECTION_PREFIX,
-                )
-            ):
+            if find_projected_tool_argument(value, path=argument_name) is None:
                 continue
             sanitized[argument_name] = self._provider_projection_placeholder(
                 tc.tool_name,
@@ -5372,9 +10236,12 @@ class Agent:
             tool_use_id=tc.tool_use_id,
             tool_name=tc.tool_name,
             content=(
-                f"The {tc.tool_name}.{field} input was not available in executable "
-                "form. The tool was not run; regenerate the complete argument and "
-                "retry the tool call."
+                f"The {tc.tool_name}.{field} input contains a compaction placeholder "
+                '(text like "[provider_request_..._compacted: ...]"). The tool was not '
+                "run. That placeholder is not real content and the original text cannot "
+                "be recovered by copying or retyping it. Re-read the target file or "
+                "re-run the command to obtain the real content, then reissue the tool "
+                "call with the argument rebuilt from that output."
             ),
             is_error=True,
             execution_status=runtime_execution_status(
@@ -5406,9 +10273,11 @@ class Agent:
             tool_use_id=tc.tool_use_id,
             tool_name=tc.tool_name,
             content=(
-                f"The {tc.tool_name} arguments were not available in executable "
-                "form. The tool was not run; regenerate the complete arguments and "
-                "retry the tool call."
+                f"The {tc.tool_name} arguments were compacted for provider context and "
+                "are not executable. The tool was not run. Do not copy or retype the "
+                "compacted placeholder text; re-read the relevant file or re-run the "
+                "command to obtain the real content, then reissue the tool call with "
+                "complete arguments."
             ),
             is_error=True,
             execution_status=runtime_execution_status(
@@ -5426,19 +10295,12 @@ class Agent:
                 tc,
                 reason="provider_compacted_arguments_reused",
             )
-        for argument_name, value in tc.arguments.items():
-            if not isinstance(value, str) or not value.startswith(
-                (
-                    _TOOL_ARGUMENT_PROJECTION_PREFIX,
-                    _HISTORICAL_TOOL_ARGUMENT_PROJECTION_PREFIX,
-                    _INVALID_PROVIDER_CONTEXT_PROJECTION_PREFIX,
-                )
-            ):
-                continue
+        projected_match = find_projected_tool_argument(tc.arguments)
+        if projected_match is not None:
             return self._projection_rehydrate_error(
                 tc,
-                field=argument_name,
-                reason="provider_projection_reused",
+                field=projected_match.path,
+                reason=projected_match.kind,
             )
         return tc
 
@@ -5769,8 +10631,7 @@ class Agent:
                 tool_use_id=tc.tool_use_id,
                 tool_name="meta_invoke",
                 content=(
-                    f"meta_invoke per-turn invocation limit reached "
-                    f"({MAX_META_INVOKE_PER_TURN})."
+                    f"meta_invoke per-turn invocation limit reached ({MAX_META_INVOKE_PER_TURN})."
                 ),
                 is_error=True,
                 terminates_turn=False,
@@ -5807,8 +10668,7 @@ class Agent:
                     tool_use_id=tc.tool_use_id,
                     tool_name="meta_invoke",
                     content=(
-                        "meta_invoke unavailable: skill_loader missing from "
-                        "AgentConfig.metadata"
+                        "meta_invoke unavailable: skill_loader missing from AgentConfig.metadata"
                     ),
                     is_error=True,
                     terminates_turn=False,
@@ -5838,10 +10698,7 @@ class Agent:
             # the user sees an opaque "awaiting claim rejected" error
             # instead of a clear "please finish or cancel the previous
             # form" hint.
-            if (
-                self._meta_run_writer is not None
-                and self._session_key
-            ):
+            if self._meta_run_writer is not None and self._session_key:
                 try:
                     existing_awaiting = self._meta_run_writer.peek_awaiting(
                         session_id=self._session_key,
@@ -5915,18 +10772,15 @@ class Agent:
                 usage_tracker=self._usage_tracker,
                 session_key=self._session_key,
             )
-            llm_chat = (
-                getattr(self, "_test_llm_chat_override", None)
-                or (
-                    make_llm_chat_from_provider(
-                        provider=self.provider,
-                        base_config=self.config,
-                        usage_tracker=self._usage_tracker,
-                        session_key=self._session_key,
-                    )
-                    if self.provider is not None
-                    else None
+            llm_chat = getattr(self, "_test_llm_chat_override", None) or (
+                make_llm_chat_from_provider(
+                    provider=self.provider,
+                    base_config=self.config,
+                    usage_tracker=self._usage_tracker,
+                    session_key=self._session_key,
                 )
+                if self.provider is not None
+                else None
             )
             tool_invoker = (
                 make_tool_invoker_from_handler(tool_handler=self.tool_handler)
@@ -6049,6 +10903,7 @@ class Agent:
                     render_paused_outcome,
                 )
                 from opensquilla.tools.types import CallerKind
+
                 caller_kind = getattr(self._tool_context, "caller_kind", None)
                 is_rich_surface = caller_kind is CallerKind.WEB
                 if not is_rich_surface:
@@ -6058,9 +10913,7 @@ class Agent:
                 yield ToolResult(
                     tool_use_id=tc.tool_use_id,
                     tool_name="meta_invoke",
-                    content=(
-                        f"meta-skill {name!r} paused awaiting user input."
-                    ),
+                    content=(f"meta-skill {name!r} paused awaiting user input."),
                     is_error=False,
                     terminates_turn=True,
                 )
@@ -6148,18 +11001,15 @@ class Agent:
             usage_tracker=self._usage_tracker,
             session_key=self._session_key,
         )
-        llm_chat = (
-            getattr(self, "_test_llm_chat_override", None)
-            or (
-                make_llm_chat_from_provider(
-                    provider=self.provider,
-                    base_config=self.config,
-                    usage_tracker=self._usage_tracker,
-                    session_key=self._session_key,
-                )
-                if self.provider is not None
-                else None
+        llm_chat = getattr(self, "_test_llm_chat_override", None) or (
+            make_llm_chat_from_provider(
+                provider=self.provider,
+                base_config=self.config,
+                usage_tracker=self._usage_tracker,
+                session_key=self._session_key,
             )
+            if self.provider is not None
+            else None
         )
         tool_invoker = (
             make_tool_invoker_from_handler(tool_handler=self.tool_handler)
@@ -6195,6 +11045,7 @@ class Agent:
                 # ToolResult). Capture text deltas so we can render the
                 # final assistant text for the transcript / Done event.
                 from opensquilla.engine.types import TextDeltaEvent
+
                 if isinstance(ev, TextDeltaEvent) and ev.text:
                     final_text_parts.append(ev.text)
                 yield ev
@@ -6210,6 +11061,7 @@ class Agent:
                 from opensquilla.engine.turn_runner.turn_finalizer_stage import (
                     render_paused_outcome,
                 )
+
                 final_text = render_paused_outcome(result)
             else:
                 final_text = result.final_text or "".join(final_text_parts)
@@ -6218,6 +11070,7 @@ class Agent:
             already_streamed = "".join(final_text_parts)
             if final_text and final_text != already_streamed:
                 from opensquilla.engine.types import TextDeltaEvent
+
                 yield TextDeltaEvent(text=final_text)
         else:
             final_text = "".join(final_text_parts)
@@ -6429,7 +11282,8 @@ class Agent:
         )
 
     def _read_clarify_outcome(
-        self, metadata: dict[str, Any],
+        self,
+        metadata: dict[str, Any],
     ) -> tuple[str, bool] | None:
         """Translate meta_resolution awaiting-branch metadata into the
         user-visible text dictated by spec §10.
@@ -6576,7 +11430,9 @@ class Agent:
         return "，".join(parts)
 
     def _render_clarify_errors(
-        self, errors: Any, awaiting: Any,
+        self,
+        errors: Any,
+        awaiting: Any,
     ) -> str:
         """Build the parse-error feedback block plus a re-rendered form.
 
@@ -6600,7 +11456,7 @@ class Agent:
             lines: list[str] = [
                 "未能解析回复：" if language == "zh" else "I could not parse your reply:",
             ]
-            for err in (errors or []):
+            for err in errors or []:
                 lines.append(f"  - {err}")
             synthetic = MetaResult(
                 ok=False,
@@ -6618,18 +11474,22 @@ class Agent:
                 lines.append(form_text)
         except Exception:  # noqa: BLE001 — best-effort re-render
             lines = ["未能解析回复："]
-            for err in (errors or []):
+            for err in errors or []:
                 lines.append(f"  - {err}")
             lines.append("")
             lines.append("请按上次的表单格式重新回答，或回 '取消' 终止。")
         return "\n".join(lines)
 
     async def _emit_terminal_text(
-        self, text: str, *, iterations: int,
+        self,
+        text: str,
+        *,
+        iterations: int,
     ) -> AsyncIterator[Any]:
         """Yield ``TextDeltaEvent(text)`` + a minimal ``DoneEvent`` so the
         stream consumer + transcript treat this as a full assistant turn."""
         from opensquilla.engine.types import DoneEvent, TextDeltaEvent
+
         if text:
             yield TextDeltaEvent(text=text)
         yield DoneEvent(
@@ -6650,8 +11510,7 @@ class Agent:
     ) -> ToolResult:
         per_step_cap = 1200
         lines: list[str] = [
-            f"Meta-skill `{getattr(plan, 'name', '?')}` failed at step "
-            f"`{result.failed_step_id}`",
+            f"Meta-skill `{getattr(plan, 'name', '?')}` failed at step `{result.failed_step_id}`",
             "",
             f"Error: {result.error}",
             "",
@@ -6702,9 +11561,18 @@ class Agent:
             channel_id=f"subagent:{parent_session_key}",
             sender_id=parent_session_key,
             denied_tools=set(SUBAGENT_TOOL_DENY),
+            tool_result_store_dir=self.config.tool_result_store_dir,
+            tool_result_store_session_id=(
+                self.config.tool_result_store_session_id or parent_session_key
+            ),
+            source_diff_preservation_mode=self.config.source_diff_preservation_mode,
+            source_diff_candidate_mode=self.config.source_diff_candidate_mode,
             tool_run_budget_key=(
                 f"subagent:{parent_session_key}:{subagent_label}:{depth}:{uuid.uuid4().hex}"
             ),
+            on_runtime_event=self._record_tool_context_runtime_event
+            if self.config.runtime_events_path
+            else None,
         )
 
         async def _subagent_tool_handler(tc: ToolCall) -> ToolResult:
@@ -6730,6 +11598,8 @@ class Agent:
             timeout=spec.timeout,
             provider_id=self.config.provider_id,
             max_tokens=self.config.max_tokens,
+            temperature=self.config.temperature,
+            top_p=self.config.top_p,
             max_turn_llm_calls=self.config.max_turn_llm_calls,
             max_turn_input_tokens=self.config.max_turn_input_tokens,
             max_turn_output_tokens=self.config.max_turn_output_tokens,
@@ -6752,11 +11622,22 @@ class Agent:
             ),
             flush_compaction_safety_mode=self.config.flush_compaction_safety_mode,
             compaction_profile=self.config.compaction_profile,
-            compaction_protected_recent_messages=(
-                self.config.compaction_protected_recent_messages
-            ),
+            compaction_protected_recent_messages=(self.config.compaction_protected_recent_messages),
             tool_result_projection_max_inline_chars=(
                 self.config.tool_result_projection_max_inline_chars
+            ),
+            tool_result_fresh_diagnostic_policy_enabled=(
+                self.config.tool_result_fresh_diagnostic_policy_enabled
+            ),
+            tool_result_diagnostic_retrieval_gate_enabled=(
+                self.config.tool_result_diagnostic_retrieval_gate_enabled
+            ),
+            tool_result_fresh_diagnostic_inline_max_chars=(
+                self.config.tool_result_fresh_diagnostic_inline_max_chars
+            ),
+            tool_result_dispatch_max_chars=self.config.tool_result_dispatch_max_chars,
+            tool_result_dispatch_turn_max_chars=(
+                self.config.tool_result_dispatch_turn_max_chars
             ),
             tool_result_provider_request_max_chars=(
                 self.config.tool_result_provider_request_max_chars
@@ -6767,12 +11648,56 @@ class Agent:
             ),
             tool_use_argument_projection_enabled=(self.config.tool_use_argument_projection_enabled),
             tool_failure_loop_block_threshold=(self.config.tool_failure_loop_block_threshold),
+            provider_context_block_feedback=self.config.provider_context_block_feedback,
+            identical_request_loop_break_threshold=(
+                self.config.identical_request_loop_break_threshold
+            ),
+            placeholder_escalation_threshold=self.config.placeholder_escalation_threshold,
+            deadline_wrapup_margin_seconds=self.config.deadline_wrapup_margin_seconds,
+            repeated_tool_call_recovery_threshold=(
+                self.config.repeated_tool_call_recovery_threshold
+            ),
+            repeated_tool_call_recovery_extra_tools=(
+                self.config.repeated_tool_call_recovery_extra_tools
+            ),
+            provider_history_dedup_enabled=self.config.provider_history_dedup_enabled,
+            provider_history_dedup_min_repeats=(
+                self.config.provider_history_dedup_min_repeats
+            ),
+            progress_watchdog_mode=self.config.progress_watchdog_mode,
+            progress_watchdog_repeated_tool_error_threshold=(
+                self.config.progress_watchdog_repeated_tool_error_threshold
+            ),
+            progress_watchdog_repeated_provider_failure_threshold=(
+                self.config.progress_watchdog_repeated_provider_failure_threshold
+            ),
+            progress_watchdog_repeated_failure_anchor_threshold=(
+                self.config.progress_watchdog_repeated_failure_anchor_threshold
+            ),
+            post_write_convergence_enabled=self.config.post_write_convergence_enabled,
+            post_write_convergence_warn_threshold=(
+                self.config.post_write_convergence_warn_threshold
+            ),
+            post_write_convergence_finalize_after_warning=(
+                self.config.post_write_convergence_finalize_after_warning
+            ),
+            tool_loop_observer_mode=self.config.tool_loop_observer_mode,
+            runtime_recovery_mode=self.config.runtime_recovery_mode,
+            runtime_recovery_source_loop_max_nudges=(
+                self.config.runtime_recovery_source_loop_max_nudges
+            ),
+            runtime_state_capsule_mode=self.config.runtime_state_capsule_mode,
+            post_tool_empty_recovery_mode=self.config.post_tool_empty_recovery_mode,
+            text_only_tool_recovery_mode=self.config.text_only_tool_recovery_mode,
+            reasoning_prefill_recovery_mode=self.config.reasoning_prefill_recovery_mode,
+            runtime_events_path=self.config.runtime_events_path,
             max_safe_tool_concurrency=self.config.max_safe_tool_concurrency,
             tool_result_external_keep_recent=self.config.tool_result_external_keep_recent,
             tool_result_store_dir=self.config.tool_result_store_dir,
             tool_result_store_session_id=self.config.tool_result_store_session_id,
             tool_result_store_session_key=self.config.tool_result_store_session_key,
             tool_result_store_agent_id=self.config.tool_result_store_agent_id,
+            tool_result_store_full_trace=self.config.tool_result_store_full_trace,
             tool_result_store_max_bytes=self.config.tool_result_store_max_bytes,
             tool_result_store_disk_budget_bytes=(self.config.tool_result_store_disk_budget_bytes),
             tool_result_store_retention_seconds=(self.config.tool_result_store_retention_seconds),

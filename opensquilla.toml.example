@@ -390,6 +390,21 @@ thinking_level = "medium"
 # [squilla_router]
 # tier_profile = "dashscope"
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Tool policy
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# Optional coding/repo-coding narrowed tool surface. Keep commented unless you
+# are intentionally narrowing the tool surface for a scripted run.
+#
+# [tools]
+# profile = "coding"
+# also_allow = ["retrieve_tool_result"]
+# deny = ["execute_code", "background_process", "process"]
+# file_edit_requires_fresh_read = true
+# file_edit_flexible_recovery = true  # default; records used/rejected recovery events
+# workspace_write_deny_globs = []
+
 [agent_token_saving]
 # Project fresh tool results with the built-in tokenjuice reducer before they
 # are fed back into the model. Raw tool responses remain available through the

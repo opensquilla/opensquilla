@@ -858,6 +858,14 @@ def agent(
             "--workspace or --scratch-dir."
         ),
     ),
+    workspace_lockdown_deny_paths: list[str] = typer.Option(
+        [],
+        "--workspace-lockdown-deny-paths",
+        help=(
+            "Workspace-relative write deny glob(s) for automation containment; "
+            "repeat or comma-separate."
+        ),
+    ),
     scratch_dir: str = typer.Option(
         "",
         "--scratch-dir",
@@ -966,6 +974,7 @@ def agent(
         workspace=workspace,
         workspace_strict=workspace_strict,
         workspace_lockdown=workspace_lockdown,
+        workspace_lockdown_deny_paths=workspace_lockdown_deny_paths,
         scratch_dir=scratch_dir,
         thinking=thinking,
         timeout=timeout,

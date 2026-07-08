@@ -148,7 +148,12 @@ _POLICIES_BY_KIND: dict[str, OpenAICompatPolicy] = {
         require_reasoning_content_model_ids=_DEEPSEEK_V4_MODEL_IDS,
     ),
     "gemini": OpenAICompatPolicy(display_name="Gemini"),
-    "dashscope": OpenAICompatPolicy(display_name="DashScope"),
+    "dashscope": OpenAICompatPolicy(
+        display_name="DashScope",
+        text_tool_synthesis=True,
+        supports_explicit_prompt_cache=True,
+        stream_timeout_fallback=True,
+    ),
     "bailian_coding": OpenAICompatPolicy(display_name="Bailian Coding"),
     "moonshot": OpenAICompatPolicy(
         display_name="Moonshot",

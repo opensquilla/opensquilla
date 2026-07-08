@@ -82,6 +82,7 @@ warn_if_proxy_ignored()
 
 from opensquilla.cli.agent_cmd import run_agent_command  # noqa: E402
 from opensquilla.cli.agents_cmd import agents_app  # noqa: E402
+from opensquilla.cli.bundle_cmd import bundle_command  # noqa: E402
 from opensquilla.cli.channels_cmd import channels_app  # noqa: E402
 from opensquilla.cli.codetask_cmd import codetask_app  # noqa: E402
 from opensquilla.cli.config_cmd import app as config_app  # noqa: E402
@@ -152,6 +153,7 @@ app.add_typer(codetask_app, name="code-task")
 
 app.command("init")(init_command)
 app.command("doctor")(doctor_command)
+app.command("bundle")(bundle_command)
 app.command("uninstall")(uninstall_command)
 app.add_typer(onboard_app, name="onboard")
 app.command("configure")(configure_command)

@@ -2,7 +2,9 @@
 
 Pure disk reader — never requires a running gateway, never mutates state
 (config is read with tomllib directly, NOT via GatewayConfig.load, whose
-migration path rewrites the user's config file). Best-effort per artifact:
+migration path rewrites the user's config file; the doctor collector runs
+against a throwaway temp copy of the config for the same reason). Best-effort
+per artifact:
 a missing file or unreadable DB becomes a manifest ``collection_errors``
 entry, never a failed bundle. Every text artifact passes ``scrub_text``.
 
@@ -17,8 +19,10 @@ import json
 import os
 import platform
 import re
+import shutil
 import sqlite3
 import sys
+import tempfile
 import tomllib
 import zipfile
 from collections.abc import Callable
@@ -70,15 +74,24 @@ def _write_text(archive: zipfile.ZipFile, entry_name: str, text: str) -> None:
     archive.writestr(entry_name, scrub_text(text))
 
 
-def _tail_bytes(path: Path, cap: int = _TAIL_CAP) -> bytes:
-    """Read at most the last *cap* bytes, prefixing a marker when truncated."""
+def _tail_bytes(path: Path, cap: int = _TAIL_CAP) -> tuple[bytes, bool]:
+    """Read at most the last *cap* bytes; return (data, truncated).
+
+    When capped, the seek boundary usually bisects a line, and ``scrub_text``
+    can only recognize a secret in a whole ``key=value`` line — a decapitated
+    value fragment would sail through unmasked. Drop everything through the
+    first newline so the tail always starts on a line boundary, then prefix
+    the truncation marker.
+    """
     size = path.stat().st_size
     with path.open("rb") as fh:
         if size <= cap:
-            return fh.read()
+            return fh.read(), False
         fh.seek(size - cap)
         data = fh.read(cap)
-    return f"[truncated: showing last {cap} bytes]\n".encode() + data
+    # Drop the partial first line (all of it, when no newline exists at all).
+    _partial, _sep, data = data.partition(b"\n")
+    return f"[truncated: showing last {cap} bytes]\n".encode() + data, True
 
 
 def _add_tail(
@@ -89,8 +102,8 @@ def _add_tail(
     cap: int = _TAIL_CAP,
 ) -> None:
     """Write a tail-capped text file, recording a truncation when capped."""
-    data = _tail_bytes(path, cap)
-    if path.stat().st_size > cap:
+    data, truncated = _tail_bytes(path, cap)
+    if truncated:
         truncations.append({"entry": entry_name, "source": str(path), "cap_bytes": cap})
     _write_text(archive, entry_name, data.decode("utf-8", errors="replace"))
 
@@ -152,18 +165,44 @@ def _collect_config() -> tuple[str, str, str]:
 
 
 def _collect_doctor() -> str:
-    """Offline doctor report; the bundle never dials the gateway itself."""
-    from opensquilla.cli.doctor_cmd import _offline_report
+    """Offline doctor report; the bundle never dials the gateway itself.
 
-    report = _offline_report(
-        RuntimeError("bundle offline collection"),
-        gateway_url="ws://localhost:18791/ws",
-    )
+    Doctor's config loader migrates outdated payloads *in place* (rewrite +
+    backup sibling), which would break this module's read-only contract. Run
+    it against a throwaway temp copy of the config so any migration rewrite
+    hits the copy, never the user's file.
+    """
+    from opensquilla.cli.doctor_cmd import _offline_report
+    from opensquilla.onboarding.config_store import resolve_config_path
+
+    config_path, _source = resolve_config_path(None)
+    tmp_dir: str | None = None
+    doctor_config_path: str | None = None
+    try:
+        if config_path.is_file():
+            tmp_dir = tempfile.mkdtemp(prefix="opensquilla-bundle-doctor-")
+            copy_path = Path(tmp_dir) / config_path.name
+            shutil.copyfile(config_path, copy_path)
+            doctor_config_path = str(copy_path)
+        report = _offline_report(
+            RuntimeError("bundle offline collection"),
+            gateway_url="ws://localhost:18791/ws",
+            config_path=doctor_config_path,
+        )
+    finally:
+        if tmp_dir is not None:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
     return json.dumps(report, indent=2, default=str)
 
 
 def _collect_diagnostics_flags() -> str:
-    """Offline reconstruction of the ``logs.status`` RPC payload."""
+    """Offline reconstruction of the ``logs.status`` RPC payload.
+
+    Note: ``_build_logs_status`` reports the *ambient* process environment
+    (env vars, default state paths), not the ``home_dir``/``log_dir``
+    overrides passed to ``collect_bundle`` — the artifact describes what a
+    gateway launched from this environment would see.
+    """
     from opensquilla.gateway.rpc_logs import _build_logs_status
 
     ctx: Any = SimpleNamespace(config=None, diagnostics_state=None)

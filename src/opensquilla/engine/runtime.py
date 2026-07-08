@@ -52,6 +52,9 @@ from opensquilla.contracts.attachments import (
     EMAIL_ATTACHMENT_MIMES as _EMAIL_ATTACHMENT_MIMES,
 )
 from opensquilla.contracts.attachments import (
+    IMAGE_ATTACHMENT_MIMES as _IMAGE_ATTACHMENT_MIMES,
+)
+from opensquilla.contracts.attachments import (
     MAX_ATTACHMENTS as _MAX_ATTACHMENT_COUNT,
 )
 from opensquilla.contracts.attachments import (
@@ -270,10 +273,12 @@ _HOOKS_FEATURE_ENV: Final[str] = "OPENSQUILLA_HOOKS"
 
 
 def _is_materializable_attachment_mime(mime: Any) -> bool:
-    # Every non-image attachment lands in the workspace so the agent's tools
-    # can reach it; images travel to the provider as vision blocks instead.
+    # Everything except rendered images lands in the workspace so the agent's
+    # tools can reach it; rendered images travel to the provider as vision
+    # blocks instead. Non-rendered image labels (image/tiff, image/svg+xml…)
+    # are opaque, so their only representation is the workspace copy.
     normalized = _normalize_attachment_mime(mime)
-    return normalized is not None and not normalized.startswith("image/")
+    return normalized is not None and normalized not in _IMAGE_ATTACHMENT_MIMES
 
 
 def collect_invoked_skills(
@@ -7223,7 +7228,7 @@ class TurnRunner:
             name = att.get("name")
             fallback = "image" if media_type.startswith("image/") else "attachment"
             label = name if isinstance(name, str) and name.strip() else fallback
-            if preserve_image_attachments and media_type.startswith("image/"):
+            if preserve_image_attachments and media_type in _IMAGE_ATTACHMENT_MIMES:
                 from opensquilla.provider.types import ContentBlockImage
 
                 if isinstance(data, str) and data:
@@ -7470,7 +7475,7 @@ class TurnRunner:
                 attachment_blocks.append(ContentBlockText(text=wrapped))
                 continue
 
-            if media_type.startswith("image/"):
+            if media_type in _IMAGE_ATTACHMENT_MIMES:
                 attachment_blocks.append(ContentBlockImage(media_type=media_type, data=data))
             elif media_type == "application/pdf":
                 try:

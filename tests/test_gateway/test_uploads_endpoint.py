@@ -774,3 +774,99 @@ def test_upload_route_response_exposes_expires_at_and_ttl() -> None:
     assert body["ttl_seconds"] == 600
     assert isinstance(body["expires_at"], (int, float))
     assert body["expires_at"] > time.time()
+
+
+def test_upload_route_sniffs_png_for_empty_claim() -> None:
+    png = b"\x89PNG\r\n\x1a\n" + b"fake image body"
+    with _route_client() as client:
+        response = client.post(
+            "/api/v1/files/upload",
+            files={"file": ("shot", png, "")},
+        )
+
+    assert response.status_code == 200
+    assert response.json()["mime"] == "image/png"
+
+
+def test_strict_store_keeps_staged_text_at_inline_cap(tmp_path: Path) -> None:
+    # accept_opaque=False restores the legacy stageable set, so text keeps the
+    # 2MB inline cap on the staged path instead of the 30MiB staged ceiling.
+    strict = UploadStore(
+        marker_dir=tmp_path / "strict-inbound",
+        ttl_seconds=600,
+        max_file_bytes=30 * 1024 * 1024,
+        accept_opaque=False,
+    )
+    with pytest.raises(UploadOversizeError):
+        asyncio.run(strict.put("big.txt", "text/plain", b"a" * (TEXT_ATTACHMENT_BYTES + 1)))
+
+    ok_uuid = asyncio.run(strict.put("ok.txt", "text/plain", b"a" * TEXT_ATTACHMENT_BYTES))
+    assert ok_uuid.startswith("u-")
+
+
+def test_app_factory_wires_strict_admission_into_route_and_store(tmp_path: Path) -> None:
+    # Boot the real app factory with accept_opaque=False and verify the
+    # end-to-end strict behavior: the route 415s a zip upload.
+    pytest.importorskip("starlette.testclient")
+    from starlette.testclient import TestClient
+
+    from opensquilla.gateway.app import create_gateway_app
+    from opensquilla.gateway.config import GatewayConfig
+    from opensquilla.gateway.uploads import get_upload_store, set_upload_store
+
+    original_store = get_upload_store()
+    set_upload_store(None)
+    try:
+        config = GatewayConfig(
+            attachments={"accept_opaque": False, "media_root": str(tmp_path / "media")},
+        )
+        app = create_gateway_app(config)
+        with TestClient(app) as client:
+            response = client.post(
+                "/api/v1/files/upload",
+                files={"file": ("paper.zip", _zip_bytes(), "application/zip")},
+            )
+        assert response.status_code == 415
+        assert response.json()["code"] == "UNSUPPORTED_MEDIA_TYPE"
+        assert get_upload_store().accept_opaque is False
+    finally:
+        set_upload_store(original_store)
+
+
+def test_file_uuid_opaque_reference_resolves_with_store_mime(tmp_path: Path) -> None:
+    # An opaque staged upload referenced WITHOUT a declared mime resolves via
+    # the store's own metadata into a content-addressed attachment_ref.
+    from opensquilla.gateway.rpc_sessions import (
+        _resolve_attachments,
+        _validate_attachments,
+    )
+
+    payload = b"PK\x03\x04" + b"\x00" * 128
+    store = _FakeUploadStore(
+        {
+            "u-zip": (
+                payload,
+                {
+                    "mime": "application/zip",
+                    "name": "paper.zip",
+                    "sha256": "x",
+                    "size": len(payload),
+                },
+            )
+        }
+    )
+
+    validated = _validate_attachments([{"file_uuid": "u-zip", "name": "paper.zip"}])
+    assert validated[0].get("type") is None
+
+    resolved = asyncio.run(
+        _resolve_attachments(
+            validated,
+            store=store,
+            material_root=tmp_path,
+            session_id="s1",
+        )
+    )
+    assert resolved[0]["kind"] == "attachment_ref"
+    assert resolved[0]["mime"] == "application/zip"
+    assert resolved[0]["size"] == len(payload)

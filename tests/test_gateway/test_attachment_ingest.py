@@ -421,3 +421,87 @@ async def test_fake_msg_rejected_on_mime_mismatch() -> None:
 
     assert result.attachments == []
     assert result.failures[0].reason == "mime_mismatch"
+
+
+_OLE_MAGIC = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"
+
+
+@pytest.mark.asyncio
+async def test_ole_payload_with_specific_claim_stays_opaque() -> None:
+    # OLE magic is shared by legacy Office formats: a specific non-Outlook
+    # claim must survive both the claimed-None carve-out and the
+    # mismatch-resolution branch instead of being misfiled as email.
+    result = await ingest_attachments(
+        "read it",
+        [
+            {
+                "name": "legacy.doc",
+                "mime_type": "application/msword",
+                "data": _OLE_MAGIC + b"rest of a word file",
+            }
+        ],
+        failure_mode="mark",
+    )
+
+    assert result.failures == []
+    assert result.attachments[0]["type"] == "application/msword"
+
+
+@pytest.mark.asyncio
+async def test_ole_payload_without_claim_still_sniffs_as_msg() -> None:
+    result = await ingest_attachments(
+        "read it",
+        [{"name": "mystery", "data": _OLE_MAGIC + b"rest of an OLE file"}],
+        failure_mode="mark",
+    )
+
+    assert result.failures == []
+    assert result.attachments[0]["type"] == "application/vnd.ms-outlook"
+
+
+@pytest.mark.asyncio
+async def test_unknown_textual_upload_accepted_when_opaque_admission_disabled() -> None:
+    # Legacy parity is two-sided: strict mode still honors the UTF-8 fallback.
+    result = await ingest_attachments(
+        "read it",
+        [{"name": "trace.log", "mime_type": "application/x-logfile", "data": b"line one\n"}],
+        failure_mode="mark",
+        accept_opaque=False,
+    )
+
+    assert result.failures == []
+    assert result.attachments[0]["type"] == "text/plain"
+
+
+@pytest.mark.asyncio
+async def test_strict_mode_keeps_staged_text_at_inline_cap() -> None:
+    # accept_opaque=False restores the legacy stageable set, so staged text
+    # stays at the 2MB inline cap instead of the 30MiB staged ceiling.
+    from opensquilla.contracts.attachments import TEXT_ATTACHMENT_BYTES
+
+    payload = b"a" * (TEXT_ATTACHMENT_BYTES + 1)
+    result = await ingest_attachments(
+        "read it",
+        [{"name": "big.csv", "mime_type": "text/csv", "data": payload}],
+        failure_mode="mark",
+        mark_bytes_as_staged=True,
+        accept_opaque=False,
+    )
+
+    assert result.attachments == []
+    assert result.failures[0].reason == "oversize"
+
+
+@pytest.mark.asyncio
+async def test_windows_jpeg_alias_admitted_in_strict_mode() -> None:
+    # image/jpg normalizes to image/jpeg via the alias table in every mode —
+    # a deliberate strict-mode improvement over the legacy 415.
+    result = await ingest_attachments(
+        "read it",
+        [{"name": "photo.jpg", "mime_type": "image/jpg", "data": b"\xff\xd8\xff" + b"j" * 32}],
+        failure_mode="mark",
+        accept_opaque=False,
+    )
+
+    assert result.failures == []
+    assert result.attachments[0]["type"] == "image/jpeg"

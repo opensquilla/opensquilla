@@ -2676,6 +2676,26 @@ class TestSessionsSend:
         assert (tmp_path / "transcripts" / session.session_id / sha).read_bytes() == payload
 
     @pytest.mark.asyncio
+    async def test_send_admits_opaque_attachment_by_default(
+        self, dispatcher, ctx_with_sessions, session
+    ):
+        # Default config: an unrendered binary attachment is admitted as an
+        # opaque item instead of failing the send with INVALID_REQUEST.
+        res = await dispatcher.dispatch(
+            "r1",
+            "sessions.send",
+            {
+                "key": session.session_key,
+                "message": "hi",
+                "attachments": [
+                    {"type": "application/x-shellscript", "data": "AA==", "name": "x.sh"}
+                ],
+            },
+            ctx_with_sessions,
+        )
+        assert res.ok is True
+
+    @pytest.mark.asyncio
     async def test_send_rejects_opaque_attachment_when_admission_disabled(
         self, dispatcher, session
     ):

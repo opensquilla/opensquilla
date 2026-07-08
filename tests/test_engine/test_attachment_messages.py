@@ -863,3 +863,43 @@ def test_historical_opaque_attachment_emits_marker_instead_of_silent_drop() -> N
     assert isinstance(replayed, str)
     assert "paper.zip" in replayed
     assert "application/zip" in replayed
+
+
+def test_non_rendered_image_label_is_opaque_not_vision(tmp_path: Path) -> None:
+    # image/tiff is NOT in the rendered vision set: its bytes must never ride a
+    # ContentBlockImage to the provider; it materializes like any opaque file.
+    payload = b"II*\x00" + b"\x00" * 64
+    workspace = tmp_path / "workspace"
+    out = TurnRunner._build_attachment_messages(
+        "inspect",
+        [{"type": "image/tiff", "data": _b64(payload), "name": "scan.tiff"}],
+        workspace_dir=workspace,
+        session_id="s-tiff",
+    )
+
+    assert out is not None
+    assert not [b for b in out[0].content if isinstance(b, ContentBlockImage)]
+    text_blocks = [b for b in out[0].content if isinstance(b, ContentBlockText)]
+    wrapped = next(b for b in text_blocks if b.text.startswith("<file "))
+    assert 'mime="image/tiff"' in wrapped.text
+    assert "content is not inlined" in wrapped.text
+    assert _b64(payload) not in wrapped.text
+    copies = list((workspace / ".opensquilla" / "attachments").glob("**/*.tiff"))
+    assert len(copies) == 1
+
+
+def test_historical_non_rendered_image_is_not_replayed_for_vision() -> None:
+    content = json.dumps(
+        {
+            "text": "earlier",
+            "attachments": [
+                {"type": "image/tiff", "data": _b64(b"II*\x00tiffbytes"), "name": "scan.tiff"}
+            ],
+        }
+    )
+    out = TurnRunner._maybe_unpack_attachments(content, preserve_image_attachments=True)
+    if isinstance(out, list):
+        assert not [b for b in out if isinstance(b, ContentBlockImage)]
+    else:
+        assert isinstance(out, str)
+        assert "scan.tiff" in out

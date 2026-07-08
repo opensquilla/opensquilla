@@ -85,6 +85,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - Transcripts written by this version may contain opaque attachment
   envelopes; older builds replay such history with the attachment silently
   omitted (current builds emit an omission marker).
+- Common non-canonical MIME spellings (`image/jpg`,
+  `application/x-zip-compressed`, `application/x-gzip`) now normalize to
+  their canonical types in every mode, so an `image/jpg` upload is accepted
+  as JPEG even under `accept_opaque = false` where it previously drew a 415.
 
 - Provider retry handling: responses that stop at the length limit without
   visible text or tool calls now enter the reasoning-only retry path instead

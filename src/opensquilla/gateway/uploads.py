@@ -189,11 +189,14 @@ class UploadStore:
         if not self.accept_opaque and normalized_mime not in _ALLOWED_MIMES:
             raise UploadUnsupportedMimeError(f"mime {mime!r} is not allowed")
         # Email stays non-stageable policy-wise, so its cap resolves to the
-        # inline text ceiling even on this staged path.
-        mime_limit = attachment_size_limit_for_mime(
-            normalized_mime,
-            staged=can_stage_attachment_mime(normalized_mime),
-        )
+        # inline text ceiling even on this staged path. Strict deployments
+        # keep the legacy stageable set (pdf/image/office), so text stays at
+        # the 2MB inline cap rather than the 30MiB staged-text ceiling.
+        if self.accept_opaque:
+            staged = can_stage_attachment_mime(normalized_mime)
+        else:
+            staged = attachment_category(normalized_mime) in {"pdf", "image", "office"}
+        mime_limit = attachment_size_limit_for_mime(normalized_mime, staged=staged)
         max_bytes = min(self.max_file_bytes, mime_limit)
         if len(payload) > max_bytes:
             raise UploadOversizeError(
@@ -358,21 +361,30 @@ def register_upload_routes(
         content_type = getattr(upload, "content_type", None) or form.get("mime") or ""
         normalized_mime = normalize_attachment_mime(content_type)
 
+        attachments_cfg = getattr(config, "attachments", None)
+        accept_opaque = bool(getattr(attachments_cfg, "accept_opaque", True))
+
+        # Legacy fail-closed admission rejects a missing/invalid claim before
+        # the payload is read, preserving the strict-mode error precedence.
+        if not accept_opaque and normalized_mime is None:
+            return JSONResponse(
+                {"error": "missing or invalid 'mime' / content-type"}, status_code=400
+            )
+
         payload = await upload.read()
         if not isinstance(payload, bytes) or len(payload) == 0:
             return JSONResponse(
                 {"error": "empty upload"}, status_code=400
             )
 
-        attachments_cfg = getattr(config, "attachments", None)
-        accept_opaque = bool(getattr(attachments_cfg, "accept_opaque", True))
-
         if not accept_opaque:
-            # Legacy fail-closed admission: the claimed mime alone decides.
             if normalized_mime is None:
+                # Unreachable: rejected before the payload read; kept so the
+                # legacy branch below is well-typed.
                 return JSONResponse(
                     {"error": "missing or invalid 'mime' / content-type"}, status_code=400
                 )
+            # Legacy fail-closed admission: the claimed mime alone decides.
             resolved_mime = normalized_mime
         elif normalized_mime in _ALLOWED_MIMES:
             resolved_mime = normalized_mime

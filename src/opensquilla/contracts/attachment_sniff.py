@@ -119,7 +119,11 @@ def sniff_mime_from_bytes(raw: bytes) -> str | None:
     try:
         text = head.decode("utf-8")
     except UnicodeDecodeError as exc:
-        if len(raw) > len(head) and exc.end >= len(head):
+        if (
+            len(raw) > len(head)
+            and exc.end >= len(head)
+            and exc.reason == "unexpected end of data"
+        ):
             # A multibyte sequence straddles the peek boundary; the complete
             # prefix is still clean, so head-based sniffs can run and the
             # whole-payload check below decides text-ness.

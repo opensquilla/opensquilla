@@ -1462,6 +1462,83 @@ async def test_channel_ingest_resolves_adapter_bytes_to_engine_attachment() -> N
 
 
 @pytest.mark.asyncio
+async def test_channel_ingest_honors_strict_admission_config() -> None:
+    from types import SimpleNamespace
+
+    class ResolvingChannel(_FakeChannel):
+        channel_id = "test"
+
+        async def resolve_inbound_attachment(self, attachment: Attachment) -> Attachment:
+            return Attachment(
+                name=attachment.name,
+                mime_type=attachment.mime_type,
+                data=b"\x00\x01binary",
+                size=8,
+            )
+
+    msg = IncomingMessage(
+        sender_id="u1",
+        channel_id="c1",
+        content="read",
+        attachments=[
+            Attachment(
+                name="x.bin",
+                mime_type="application/x-unknown",
+                url="https://example.test/x.bin",
+            )
+        ],
+    )
+    strict = SimpleNamespace(attachments=SimpleNamespace(accept_opaque=False))
+
+    result = await _ingest_channel_message_attachments(
+        channel=ResolvingChannel(), msg=msg, config=strict
+    )
+
+    assert result.attachments == []
+    assert result.failures[0].reason == "unsupported_mime"
+    assert "[attachment unavailable: x.bin: unsupported_mime]" in result.text
+
+
+@pytest.mark.asyncio
+async def test_channel_ingest_honors_opaque_byte_cap_config() -> None:
+    from types import SimpleNamespace
+
+    class ResolvingChannel(_FakeChannel):
+        channel_id = "test"
+
+        async def resolve_inbound_attachment(self, attachment: Attachment) -> Attachment:
+            return Attachment(
+                name=attachment.name,
+                mime_type=attachment.mime_type,
+                data=b"\x00" + b"a" * 4096,
+                size=4097,
+            )
+
+    msg = IncomingMessage(
+        sender_id="u1",
+        channel_id="c1",
+        content="read",
+        attachments=[
+            Attachment(
+                name="x.bin",
+                mime_type="application/x-unknown",
+                url="https://example.test/x.bin",
+            )
+        ],
+    )
+    capped = SimpleNamespace(
+        attachments=SimpleNamespace(accept_opaque=True, opaque_max_bytes=1024)
+    )
+
+    result = await _ingest_channel_message_attachments(
+        channel=ResolvingChannel(), msg=msg, config=capped
+    )
+
+    assert result.attachments == []
+    assert result.failures[0].reason == "oversize"
+
+
+@pytest.mark.asyncio
 async def test_channel_ingest_hard_rejects_aggregate_attachment_cap() -> None:
     one_pdf = _exact_pdf(MAX_TOTAL_ATTACHMENT_BYTES // 3 + 1)
     assert len(one_pdf) < MAX_STAGED_PDF_BYTES

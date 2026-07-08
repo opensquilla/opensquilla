@@ -441,6 +441,11 @@ def validate_attachments(
             # text/plain sniff can only co-occur with a same-cap text claim.
             if sniffed == "text/plain":
                 resolved = claimed
+            elif sniffed == MSG_MIME and claimed not in ALLOWED_MEDIA_TYPES:
+                # OLE magic is shared by legacy Office formats; keep the
+                # specific opaque claim (e.g. application/msword) instead of
+                # misfiling the payload as Outlook mail.
+                resolved = claimed
             else:
                 (logger or log).warning(
                     "attachment.mime_mismatch",
@@ -481,9 +486,14 @@ def validate_attachments(
                 )
                 continue
 
+        # Strict deployments keep the legacy stageable set (pdf/image/office),
+        # so staged text stays at the 2MB inline cap.
+        staged_ok = can_stage_attachment_mime(resolved) and (
+            accept_opaque or attachment_category(resolved) in {"pdf", "image", "office"}
+        )
         max_bytes = attachment_size_limit_for_mime(
             resolved,
-            staged=mark_bytes_as_staged and can_stage_attachment_mime(resolved),
+            staged=mark_bytes_as_staged and staged_ok,
         )
         if opaque_limit_bytes is not None and attachment_category(resolved) == "opaque":
             max_bytes = min(max_bytes, opaque_limit_bytes)

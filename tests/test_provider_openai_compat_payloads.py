@@ -4164,3 +4164,101 @@ def test_openrouter_routing_pin_default_keeps_order_with_fallbacks(
         "allow_fallbacks": True,
     }
     assert done.stop_reason == "stop"
+
+
+def _stream_error_frame_handler(request: httpx.Request) -> httpx.Response:
+    chunks = [
+        {
+            "model": "glm-5.1",
+            "choices": [{"delta": {"content": "partial"}, "finish_reason": None}],
+        },
+        {
+            "error": {"code": 502, "message": "Provider returned error"},
+        },
+        {
+            "model": "glm-5.1",
+            "choices": [{"delta": {}, "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": 4, "completion_tokens": 2},
+        },
+    ]
+    body = b"".join(f"data: {json.dumps(chunk)}\n\n".encode() for chunk in chunks)
+    return httpx.Response(
+        200,
+        headers={"content-type": "text/event-stream"},
+        content=body + b"data: [DONE]\n\n",
+    )
+
+
+def _patch_stream_transport(monkeypatch: Any, handler: Any) -> None:
+    transport = httpx.MockTransport(handler)
+    real_async_client = httpx.AsyncClient
+
+    def patched_async_client(*args: Any, **kwargs: Any) -> httpx.AsyncClient:
+        kwargs["transport"] = transport
+        return real_async_client(*args, **kwargs)
+
+    monkeypatch.setattr("opensquilla.provider.openai.httpx.AsyncClient", patched_async_client)
+
+
+def test_stream_error_frame_skipped_by_default(monkeypatch: Any) -> None:
+    monkeypatch.delenv("OPENSQUILLA_PROVIDER_STREAM_ERROR_FRAMES", raising=False)
+    _patch_stream_transport(monkeypatch, _stream_error_frame_handler)
+    provider = OpenAIProvider(
+        api_key="test",
+        model="glm-5.1",
+        base_url="https://openrouter.ai/api/v1",
+        provider_kind="openrouter",
+    )
+
+    events = _collect_events(provider, ChatConfig())
+
+    assert not any(isinstance(event, ErrorEvent) for event in events)
+    done = next(event for event in events if isinstance(event, DoneEvent))
+    assert done.stop_reason == "stop"
+
+
+def test_stream_error_frame_env_surfaces_error_event(monkeypatch: Any) -> None:
+    monkeypatch.setenv("OPENSQUILLA_PROVIDER_STREAM_ERROR_FRAMES", "1")
+    _patch_stream_transport(monkeypatch, _stream_error_frame_handler)
+    provider = OpenAIProvider(
+        api_key="test",
+        model="glm-5.1",
+        base_url="https://openrouter.ai/api/v1",
+        provider_kind="openrouter",
+    )
+
+    events = _collect_events(provider, ChatConfig())
+
+    error = next(event for event in events if isinstance(event, ErrorEvent))
+    assert error.code == "502"
+    assert "stream error" in error.message
+    assert "Provider returned error" in error.message
+    assert not any(isinstance(event, DoneEvent) for event in events)
+    assert isinstance(events[-1], ErrorEvent)
+
+
+def test_stream_error_frame_without_code_uses_stream_error(monkeypatch: Any) -> None:
+    monkeypatch.setenv("OPENSQUILLA_PROVIDER_STREAM_ERROR_FRAMES", "on")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = f"data: {json.dumps({'error': {'message': 'upstream reset'}})}\n\n".encode()
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/event-stream"},
+            content=body + b"data: [DONE]\n\n",
+        )
+
+    _patch_stream_transport(monkeypatch, handler)
+    provider = OpenAIProvider(
+        api_key="test",
+        model="glm-5.1",
+        base_url="https://openrouter.ai/api/v1",
+        provider_kind="openrouter",
+    )
+
+    events = _collect_events(provider, ChatConfig())
+
+    error = next(event for event in events if isinstance(event, ErrorEvent))
+    assert error.code == "stream_error"
+    assert "upstream reset" in error.message
+    assert not any(isinstance(event, DoneEvent) for event in events)

@@ -1893,6 +1893,17 @@ class OpenAIProvider:
             os.environ.get("OPENSQUILLA_PROVIDER_ROUTING_STRICT", "").strip().lower()
             in {"1", "true", "yes", "on", "enabled"}
         )
+        # Opt-in mid-stream error-frame surfacing: OpenAI-compatible
+        # streams can carry an {"error": {...}} SSE data frame when the
+        # upstream fails after the response has started. Without handling,
+        # the frame is skipped and the call degrades to an empty response
+        # with no error signal. When armed, such frames end the call with
+        # an ErrorEvent so callers see the real failure and can retry.
+        # Off by default.
+        self._stream_error_frames = (
+            os.environ.get("OPENSQUILLA_PROVIDER_STREAM_ERROR_FRAMES", "").strip().lower()
+            in {"1", "true", "yes", "on", "enabled"}
+        )
 
     @property
     def model(self) -> str:
@@ -2347,6 +2358,41 @@ class OpenAIProvider:
                             continue
 
                         trace.record_chunk(chunk)
+                        if self._stream_error_frames and isinstance(chunk, dict):
+                            error_obj = chunk.get("error")
+                            if isinstance(error_obj, Mapping) and error_obj:
+                                err_message = str(
+                                    error_obj.get("message") or "stream error frame"
+                                )
+                                raw_code = error_obj.get("code")
+                                err_code = (
+                                    str(raw_code)
+                                    if raw_code not in (None, "")
+                                    else "stream_error"
+                                )
+                                log.warning(
+                                    "provider.stream_error_frame",
+                                    provider=self._provider_kind,
+                                    model=self._model,
+                                    code=err_code,
+                                    message=err_message,
+                                )
+                                trace.record_error(
+                                    code=err_code,
+                                    message=err_message,
+                                    metadata={
+                                        "phase": "stream",
+                                        "cache_shape": cache_shape,
+                                    },
+                                )
+                                yield ErrorEvent(
+                                    message=(
+                                        f"{self._compat.display_name} stream error: "
+                                        f"{err_message}"
+                                    ),
+                                    code=err_code,
+                                )
+                                return
                         chunk_id = chunk.get("id")
                         if isinstance(chunk_id, str) and chunk_id:
                             response_ids.add(chunk_id)

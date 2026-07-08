@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+import subprocess
 from collections.abc import AsyncIterator
 from types import SimpleNamespace
 from typing import Any
@@ -23,7 +25,9 @@ from opensquilla.provider import ToolUseEndEvent as ProviderToolUseEnd
 from opensquilla.provider import ToolUseStartEvent as ProviderToolUseStart
 from opensquilla.session.manager import SessionManager
 from opensquilla.session.storage import SessionStorage
-from opensquilla.tools.types import CallerKind, ToolContext
+from opensquilla.tools.dispatch import build_tool_handler
+from opensquilla.tools.registry import ToolRegistry
+from opensquilla.tools.types import CallerKind, ToolContext, ToolSpec
 
 
 class _SequenceProvider:
@@ -150,7 +154,7 @@ async def test_reasoning_only_first_turn_retries_without_disabling_thinking() ->
                     output_tokens=5,
                     reasoning_tokens=5,
                     reasoning_content="internal reasoning",
-                    model="z-ai/glm-5.1-20260406",
+                    model="z-ai/glm-5.1",
                 )
             ],
             [
@@ -159,7 +163,7 @@ async def test_reasoning_only_first_turn_retries_without_disabling_thinking() ->
                     stop_reason="stop",
                     input_tokens=11,
                     output_tokens=1,
-                    model="z-ai/glm-5.1-20260406",
+                    model="z-ai/glm-5.1",
                 ),
             ],
         ]
@@ -207,6 +211,394 @@ async def test_reasoning_only_first_turn_retries_without_disabling_thinking() ->
     assert len(assistant_messages) == 1
     assert assistant_messages[0].content[0].text == "ok"
     assert assistant_messages[0].reasoning_content is None
+
+
+@pytest.mark.asyncio
+async def test_reasoning_only_prefill_recovery_cleans_synthetic_history(tmp_path) -> None:
+    provider = _SequenceProvider(
+        [
+            [
+                ProviderDone(
+                    stop_reason="stop",
+                    input_tokens=10,
+                    output_tokens=5,
+                    reasoning_tokens=5,
+                    reasoning_content="internal reasoning",
+                    model="openrouter/test-reasoning",
+                )
+            ],
+            [
+                ProviderText(text="ok"),
+                ProviderDone(
+                    stop_reason="stop",
+                    input_tokens=11,
+                    output_tokens=1,
+                    model="openrouter/test-reasoning",
+                ),
+            ],
+        ]
+    )
+    runtime_events_path = tmp_path / "runtime_events.jsonl"
+    agent = Agent(
+        provider=provider,
+        config=AgentConfig(
+            thinking=ThinkingLevel.MEDIUM,
+            model_capabilities=ModelCapabilities(
+                supports_reasoning=True,
+                supports_tools=True,
+                reasoning_format="openrouter",
+            ),
+            reasoning_prefill_recovery_mode="recover",
+            runtime_events_path=str(runtime_events_path),
+            retry_base_backoff_ms=0,
+            retry_max_backoff_ms=0,
+        ),
+    )
+
+    events = [event async for event in agent.run_turn("hello")]
+
+    assert any(
+        event.kind == "warning" and event.code == "provider_reasoning_prefill_continue"
+        for event in events
+    )
+    assert not any(
+        event.kind == "warning" and event.code == "provider_reasoning_only_retry"
+        for event in events
+    )
+    assert any(event.kind == "done" and event.text == "ok" for event in events)
+    assert len(provider.calls) == 2
+    assert any(
+        msg.role == "assistant" and msg.reasoning_content == "internal reasoning"
+        for msg in provider.calls[1]["messages"]
+    )
+    assistant_messages = [msg for msg in agent._history if msg.role == "assistant"]
+    assert len(assistant_messages) == 1
+    assert assistant_messages[0].content[0].text == "ok"
+    assert assistant_messages[0].reasoning_content is None
+    logged = [json.loads(line) for line in runtime_events_path.read_text().splitlines()]
+    recovery_event = next(
+        event for event in logged if event.get("mechanism") == "reasoning_prefill_recovery"
+    )
+    assert recovery_event["injected_to_model"] is True
+
+
+@pytest.mark.asyncio
+async def test_tool_loop_observer_logs_reasoning_only_runtime_event(tmp_path) -> None:
+    provider = _SequenceProvider(
+        [
+            [
+                ProviderDone(
+                    stop_reason="stop",
+                    input_tokens=10,
+                    output_tokens=5,
+                    reasoning_tokens=5,
+                    reasoning_content="internal reasoning",
+                    model="z-ai/glm-5.1",
+                )
+            ],
+            [
+                ProviderText(text="ok"),
+                ProviderDone(
+                    stop_reason="stop",
+                    input_tokens=11,
+                    output_tokens=1,
+                    model="z-ai/glm-5.1",
+                ),
+            ],
+        ]
+    )
+    runtime_events_path = tmp_path / "runtime_events.jsonl"
+    agent = Agent(
+        provider=provider,
+        config=AgentConfig(
+            thinking=ThinkingLevel.MEDIUM,
+            retry_base_backoff_ms=0,
+            retry_max_backoff_ms=0,
+            tool_loop_observer_mode="log",
+            runtime_events_path=str(runtime_events_path),
+        ),
+        session_key="agent:test:runtime-observer",
+    )
+
+    events = [event async for event in agent.run_turn("hello")]
+
+    assert any(event.kind == "done" for event in events)
+    logged = [json.loads(line) for line in runtime_events_path.read_text().splitlines()]
+    observer_events = [
+        event for event in logged if event.get("mechanism") == "tool_loop_observer"
+    ]
+    assert [event["reason"] for event in observer_events] == ["reasoning_only"]
+    assert observer_events[0]["feature"] == "runtime_observer"
+    assert observer_events[0]["injected_to_model"] is False
+    assert observer_events[0]["iteration"] == 1
+    assert observer_events[0]["session_key"] == "agent:test:runtime-observer"
+    assert observer_events[0]["evidence"]["post_tool_turn"] is False
+    assert observer_events[0]["details"]["post_tool_turn"] is False
+    assert observer_events[0]["details"]["reasoning_tokens"] == 5
+    assert observer_events[0]["read_files"] == []
+    assert observer_events[0]["changed_files"] == []
+    assert observer_events[0]["diff_paths"] == []
+    assert observer_events[0]["verification_commands"] == []
+    assert observer_events[0]["hint_text_sha256"] is None
+    assert observer_events[0]["trigger_confidence"] == "observed_runtime_signal"
+    assert isinstance(observer_events[0]["created_at"], str)
+
+
+@pytest.mark.asyncio
+async def test_post_tool_empty_recovery_nudges_once_and_cleans_history(tmp_path) -> None:
+    provider = _SequenceProvider(
+        [
+            [
+                ProviderToolUseStart(tool_use_id="tool-1", tool_name="echo"),
+                ProviderToolUseEnd(
+                    tool_use_id="tool-1",
+                    tool_name="echo",
+                    arguments={"value": "ok"},
+                ),
+                ProviderDone(stop_reason="tool_use", input_tokens=3, output_tokens=1),
+            ],
+            [ProviderDone(stop_reason="stop", input_tokens=4, output_tokens=0)],
+            [
+                ProviderText(text="done"),
+                ProviderDone(stop_reason="stop", input_tokens=5, output_tokens=1),
+            ],
+        ]
+    )
+
+    async def tool_handler(call: Any) -> ToolResult:
+        return ToolResult(
+            tool_use_id=call.tool_use_id,
+            tool_name=call.tool_name,
+            content="tool ok",
+        )
+
+    runtime_events_path = tmp_path / "runtime_events.jsonl"
+    agent = Agent(
+        provider=provider,
+        config=AgentConfig(
+            max_iterations=3,
+            post_tool_empty_recovery_mode="warn_model",
+            runtime_events_path=str(runtime_events_path),
+            retry_base_backoff_ms=0,
+            retry_max_backoff_ms=0,
+        ),
+        tool_definitions=[
+            ToolDefinition(
+                name="echo",
+                description="Echo.",
+                input_schema=ToolInputSchema(
+                    properties={"value": {"type": "string"}},
+                    required=["value"],
+                ),
+            )
+        ],
+        tool_handler=tool_handler,
+    )
+
+    events = [event async for event in agent.run_turn("hello")]
+
+    assert any(event.kind == "done" and event.text == "done" for event in events)
+    assert any(
+        event.kind == "warning" and event.code == "post_tool_empty_recovery"
+        for event in events
+    )
+    assert len(provider.calls) == 3
+    assert any(
+        msg.role == "user"
+        and isinstance(msg.content, str)
+        and msg.content.startswith("[Runtime recovery]")
+        for msg in provider.calls[2]["messages"]
+    )
+    assert not any(
+        msg.role == "user"
+        and isinstance(msg.content, str)
+        and msg.content.startswith("[Runtime recovery]")
+        for msg in agent._history
+    )
+    assert not any(
+        msg.role == "assistant"
+        and isinstance(msg.content, list)
+        and len(msg.content) == 1
+        and getattr(msg.content[0], "type", None) == "text"
+        and not msg.content[0].text
+        for msg in agent._history
+    )
+    logged = [json.loads(line) for line in runtime_events_path.read_text().splitlines()]
+    recovery_event = next(
+        event for event in logged if event.get("mechanism") == "post_tool_empty_recovery"
+    )
+    assert recovery_event["injected_to_model"] is True
+
+
+def test_tool_loop_observer_diff_paths_preserve_status_path_prefix(tmp_path) -> None:
+    subprocess.run(["git", "init"], cwd=tmp_path, check=True, capture_output=True)
+    src = tmp_path / "src"
+    src.mkdir()
+    file_path = src / "foo.py"
+    file_path.write_text("print('old')\n", encoding="utf-8")
+    subprocess.run(["git", "add", "."], cwd=tmp_path, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "commit", "-m", "initial"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+        env={
+            "GIT_AUTHOR_NAME": "Test",
+            "GIT_AUTHOR_EMAIL": "test@example.com",
+            "GIT_COMMITTER_NAME": "Test",
+            "GIT_COMMITTER_EMAIL": "test@example.com",
+        },
+    )
+    file_path.write_text("print('new')\n", encoding="utf-8")
+    agent = Agent(
+        provider=_SequenceProvider([[ProviderText(text="ok"), ProviderDone(stop_reason="stop")]]),
+        tool_context=ToolContext(workspace_dir=str(tmp_path)),
+    )
+
+    assert agent._workspace_diff_paths_for_runtime_event() == ["src/foo.py"]
+
+
+@pytest.mark.asyncio
+async def test_final_diff_contract_warn_model_reaches_next_provider_request(
+    tmp_path,
+) -> None:
+    subprocess.run(["git", "init"], cwd=tmp_path, check=True, capture_output=True)
+    scratch = tmp_path / "debug_case.php"
+    scratch.write_text("<?php echo 'scratch';\n", encoding="utf-8")
+
+    provider = _SequenceProvider(
+        [
+            [
+                ProviderText(text="ready"),
+                ProviderDone(stop_reason="stop", input_tokens=3, output_tokens=1),
+            ],
+            [
+                ProviderText(text="final"),
+                ProviderDone(stop_reason="stop", input_tokens=4, output_tokens=1),
+            ],
+        ]
+    )
+    runtime_events_path = tmp_path / "runtime_events.jsonl"
+    agent = Agent(
+        provider=provider,
+        config=AgentConfig(
+            max_iterations=2,
+            final_diff_contract_mode="warn_model",
+            runtime_events_path=str(runtime_events_path),
+            retry_base_backoff_ms=0,
+            retry_max_backoff_ms=0,
+        ),
+        session_key="agent:test:final-diff-proof",
+        tool_context=ToolContext(workspace_dir=str(tmp_path)),
+    )
+
+    events = [event async for event in agent.run_turn("finish")]
+
+    assert any(event.kind == "done" and event.text == "final" for event in events)
+    assert any(
+        event.kind == "warning" and event.code == "final_diff_contract_recovery"
+        for event in events
+    )
+    assert len(provider.calls) == 2
+    warning_messages = [
+        msg
+        for msg in provider.calls[1]["messages"]
+        if msg.role == "user"
+        and isinstance(msg.content, str)
+        and msg.content.startswith("[Runtime final-diff check]")
+    ]
+    assert len(warning_messages) == 1
+    assert "debug_case.php" in warning_messages[0].content
+    assert "repository diff looks suspicious" in warning_messages[0].content
+
+    logged = [json.loads(line) for line in runtime_events_path.read_text().splitlines()]
+    contract_event = next(
+        event for event in logged if event.get("feature") == "final_diff_contract"
+    )
+    assert contract_event["injected_to_model"] is True
+    assert contract_event["diff_paths"] == ["debug_case.php"]
+
+
+@pytest.mark.asyncio
+async def test_missing_required_shape_guidance_reaches_next_provider_request() -> None:
+    provider = _SequenceProvider(
+        [
+            [
+                ProviderToolUseStart(tool_use_id="tool-1", tool_name="write_file"),
+                ProviderToolUseEnd(
+                    tool_use_id="tool-1",
+                    tool_name="write_file",
+                    arguments={"content": "print('ok')\n"},
+                ),
+                ProviderDone(stop_reason="tool_use", input_tokens=3, output_tokens=1),
+            ],
+            [
+                ProviderText(text="fixed"),
+                ProviderDone(stop_reason="stop", input_tokens=4, output_tokens=1),
+            ],
+        ]
+    )
+    registry = ToolRegistry()
+
+    async def write_file(path: str, content: str) -> str:
+        raise AssertionError("missing required argument preflight should stop dispatch")
+
+    registry.register(
+        ToolSpec(
+            name="write_file",
+            description="Write a file.",
+            parameters={
+                "path": {"type": "string"},
+                "content": {"type": "string"},
+            },
+            required=["path", "content"],
+        ),
+        write_file,
+    )
+    tool_context = ToolContext(missing_required_argument_shape_guidance=True)
+    agent = Agent(
+        provider=provider,
+        config=AgentConfig(
+            max_iterations=2,
+            retry_base_backoff_ms=0,
+            retry_max_backoff_ms=0,
+        ),
+        tool_definitions=[
+            ToolDefinition(
+                name="write_file",
+                description="Write a file.",
+                input_schema=ToolInputSchema(
+                    properties={
+                        "path": {"type": "string"},
+                        "content": {"type": "string"},
+                    },
+                    required=["path", "content"],
+                ),
+            )
+        ],
+        tool_handler=build_tool_handler(registry, tool_context),
+        tool_context=tool_context,
+    )
+
+    events = [event async for event in agent.run_turn("write the file")]
+
+    assert any(event.kind == "done" and event.text == "fixed" for event in events)
+    assert len(provider.calls) == 2
+    tool_result_contents = [
+        block.content
+        for msg in provider.calls[1]["messages"]
+        if msg.role == "user" and isinstance(msg.content, list)
+        for block in msg.content
+        if getattr(block, "tool_use_id", "") == "tool-1"
+    ]
+    assert len(tool_result_contents) == 1
+    tool_result_payload = json.loads(tool_result_contents[0])
+    assert tool_result_payload["error_class"] == "InvalidToolArgumentsError"
+    assert "You supplied argument(s): `content`." in tool_result_payload["user_message"]
+    assert "Missing argument(s): `path`." in tool_result_payload["user_message"]
+    assert 'Valid write_file shape: {"path":"...","content":"..."}' in tool_result_payload[
+        "user_message"
+    ]
 
 
 @pytest.mark.asyncio
@@ -283,6 +675,82 @@ async def test_reasoning_only_post_tool_turn_retries_without_disabling_thinking(
     assert provider.calls[1]["config"].thinking is True
     assert provider.calls[2]["config"].thinking is True
     assert provider.calls[2]["config"].thinking_level == ThinkingLevel.MEDIUM
+
+
+@pytest.mark.asyncio
+async def test_reasoning_only_retry_restores_thinking_after_retry_call() -> None:
+    provider = _SequenceProvider(
+        [
+            [
+                ProviderToolUseStart(tool_use_id="tool-1", tool_name="echo"),
+                ProviderToolUseEnd(
+                    tool_use_id="tool-1",
+                    tool_name="echo",
+                    arguments={"value": "first"},
+                ),
+                ProviderDone(stop_reason="tool_use", input_tokens=3, output_tokens=1),
+            ],
+            [
+                ProviderDone(
+                    stop_reason="stop",
+                    input_tokens=35_000,
+                    output_tokens=2,
+                    reasoning_tokens=2,
+                    reasoning_content="internal reasoning",
+                )
+            ],
+            [
+                ProviderToolUseStart(tool_use_id="tool-2", tool_name="echo"),
+                ProviderToolUseEnd(
+                    tool_use_id="tool-2",
+                    tool_name="echo",
+                    arguments={"value": "second"},
+                ),
+                ProviderDone(stop_reason="tool_use", input_tokens=5, output_tokens=1),
+            ],
+            [
+                ProviderText(text="done"),
+                ProviderDone(stop_reason="stop", input_tokens=6, output_tokens=1),
+            ],
+        ]
+    )
+
+    async def tool_handler(call: Any) -> ToolResult:
+        return ToolResult(
+            tool_use_id=call.tool_use_id,
+            tool_name=call.tool_name,
+            content=f"tool ok: {call.arguments['value']}",
+        )
+
+    agent = Agent(
+        provider=provider,
+        config=AgentConfig(
+            thinking=ThinkingLevel.MEDIUM,
+            max_iterations=3,
+            retry_base_backoff_ms=0,
+            retry_max_backoff_ms=0,
+        ),
+        tool_definitions=[
+            ToolDefinition(
+                name="echo",
+                description="Echo.",
+                input_schema=ToolInputSchema(
+                    properties={"value": {"type": "string"}},
+                    required=["value"],
+                ),
+            )
+        ],
+        tool_handler=tool_handler,
+    )
+
+    events = [event async for event in agent.run_turn("hello")]
+
+    assert any(event.kind == "done" and event.text == "done" for event in events)
+    assert len(provider.calls) == 4
+    assert provider.calls[0]["config"].thinking is True
+    assert provider.calls[1]["config"].thinking is True
+    assert provider.calls[2]["config"].thinking is False
+    assert provider.calls[3]["config"].thinking is True
 
 
 @pytest.mark.asyncio
@@ -443,6 +911,107 @@ async def test_large_reasoning_only_without_fallback_retries_once_with_thinking_
     assert done.input_tokens == 35_004
     assert done.output_tokens == 3
     assert done.reasoning_tokens == 2
+
+
+@pytest.mark.asyncio
+async def test_large_dashscope_reasoning_only_nudges_before_hard_fail(tmp_path) -> None:
+    provider = _SequenceProvider(
+        [
+            [_large_reasoning_only_done()],
+            [
+                ProviderText(text="ok"),
+                ProviderDone(stop_reason="stop", input_tokens=4, output_tokens=1),
+            ],
+        ]
+    )
+    runtime_events_path = tmp_path / "runtime_events.jsonl"
+    agent = Agent(
+        provider=provider,
+        config=AgentConfig(
+            thinking=ThinkingLevel.MEDIUM,
+            model_capabilities=ModelCapabilities(
+                supports_reasoning=True,
+                supports_tools=True,
+                reasoning_format="dashscope",
+            ),
+            reasoning_prefill_recovery_mode="recover",
+            runtime_events_path=str(runtime_events_path),
+            retry_base_backoff_ms=0,
+            retry_max_backoff_ms=0,
+        ),
+    )
+
+    events = [event async for event in agent.run_turn("hello")]
+
+    assert len(provider.calls) == 2
+    assert any(
+        event.kind == "warning" and event.code == "provider_reasoning_continuation"
+        for event in events
+    )
+    assert not any(
+        event.kind == "warning" and event.code == "provider_reasoning_prefill_continue"
+        for event in events
+    )
+    assert not any(event.kind == "error" for event in events)
+    assert any(event.kind == "done" and event.text == "ok" for event in events)
+    assert not any(
+        msg.reasoning_content == "internal" for msg in provider.calls[1]["messages"]
+    )
+    assert any(
+        msg.role == "user"
+        and isinstance(msg.content, str)
+        and "Continue now with the next concrete tool call" in msg.content
+        for msg in provider.calls[1]["messages"]
+    )
+    logged = [json.loads(line) for line in runtime_events_path.read_text().splitlines()]
+    recovery_event = next(
+        event for event in logged if event.get("mechanism") == "reasoning_continuation_recovery"
+    )
+    assert recovery_event["injected_to_model"] is True
+    assert recovery_event["details"]["provider_reasoning_format"] == "dashscope"
+
+
+@pytest.mark.asyncio
+async def test_repeated_large_dashscope_reasoning_only_disables_thinking_after_nudge() -> None:
+    provider = _SequenceProvider(
+        [
+            [_large_reasoning_only_done()],
+            [_large_reasoning_only_done()],
+            [
+                ProviderText(text="ok"),
+                ProviderDone(stop_reason="stop", input_tokens=4, output_tokens=1),
+            ],
+        ]
+    )
+    agent = Agent(
+        provider=provider,
+        config=AgentConfig(
+            thinking=ThinkingLevel.MEDIUM,
+            model_capabilities=ModelCapabilities(
+                supports_reasoning=True,
+                supports_tools=True,
+                reasoning_format="dashscope",
+            ),
+            reasoning_prefill_recovery_mode="recover",
+            retry_base_backoff_ms=0,
+            retry_max_backoff_ms=0,
+        ),
+    )
+
+    events = [event async for event in agent.run_turn("hello")]
+
+    assert len(provider.calls) == 3
+    assert any(
+        event.kind == "warning" and event.code == "provider_reasoning_continuation"
+        for event in events
+    )
+    assert any(
+        event.kind == "warning" and event.code == "provider_large_context_visible_retry"
+        for event in events
+    )
+    assert not any(event.kind == "error" for event in events)
+    assert any(event.kind == "done" and event.text == "ok" for event in events)
+    assert provider.calls[2]["config"].thinking is False
 
 
 @pytest.mark.asyncio
@@ -766,6 +1335,40 @@ async def test_length_capped_visible_text_uses_default_three_continuation_budget
     assert done.text == "part one part two part three done"
     assert done.input_tokens == 16
     assert done.output_tokens == 20
+
+
+@pytest.mark.asyncio
+async def test_length_capped_reasoning_only_does_not_continue_empty_output() -> None:
+    provider = _SequenceProvider(
+        [
+            [
+                ProviderDone(
+                    stop_reason="length",
+                    input_tokens=17_000,
+                    output_tokens=32_768,
+                    reasoning_tokens=32_000,
+                ),
+            ]
+        ]
+    )
+    agent = Agent(
+        provider=provider,
+        config=AgentConfig(
+            length_capped_continuations=3,
+            max_provider_retries=0,
+            retry_base_backoff_ms=0,
+            retry_max_backoff_ms=0,
+        ),
+    )
+
+    events = [event async for event in agent.run_turn("hello")]
+
+    assert len(provider.calls) == 1
+    assert not any(
+        event.kind == "warning" and event.code == "provider_output_continue"
+        for event in events
+    )
+    assert any(event.kind == "error" and event.code == "empty_response" for event in events)
 
 
 @pytest.mark.asyncio

@@ -391,6 +391,15 @@ class _TurnRunnerTimeoutBudgetAdapter(TimeoutBudgetPort):
             ),
         )
 
+def _positive_int_or_zero(value: Any) -> int:
+    """Coerce a config value to a positive int, treating junk/negatives as 0."""
+    try:
+        coerced = int(value)
+    except (TypeError, ValueError):
+        return 0
+    return coerced if coerced > 0 else 0
+
+
 class _TurnRunnerModelCatalogAdapter(ModelCatalogPort):
     """Bind ``TurnRunner._model_catalog`` lookups with a None-fallback.
 
@@ -405,6 +414,20 @@ class _TurnRunnerModelCatalogAdapter(ModelCatalogPort):
         runner = self._runner
         llm_cfg = getattr(runner._config, "llm", None) if runner._config else None
         user_max_tokens = getattr(llm_cfg, "max_tokens", 0)
+        # Explicit config override for the model context window. Zero (the
+        # default) means "auto-resolve from the catalog". A positive value wins
+        # over the catalog so operators can pin the real window for models the
+        # catalog does not know (e.g. direct DashScope ids) — this feeds the
+        # provider-context budget ladder, so a wrong default here makes
+        # compaction fire far too early or too late.
+        user_context_window = _positive_int_or_zero(
+            getattr(llm_cfg, "context_window_tokens", 0)
+        )
+        # Explicit provider-request proof budget (chars). Positive values bypass
+        # the derived context-budget ladder in ContextBudgetGovernor.from_values.
+        user_proof_max_chars = _positive_int_or_zero(
+            getattr(llm_cfg, "provider_request_proof_max_chars", 0)
+        )
         if runner._model_catalog is not None:
             provider_name = provider or getattr(llm_cfg, "provider", "openrouter")
             base_url = getattr(llm_cfg, "base_url", "")
@@ -421,10 +444,15 @@ class _TurnRunnerModelCatalogAdapter(ModelCatalogPort):
             max_tokens = user_max_tokens if user_max_tokens > 0 else 16384
             context_window = 200_000
             capabilities = None
+        if user_context_window > 0:
+            context_window = user_context_window
         return _ResolvedCatalog(
             max_tokens=max_tokens,
             context_window=context_window,
             capabilities=capabilities,
+            temperature=getattr(llm_cfg, "temperature", None),
+            top_p=getattr(llm_cfg, "top_p", None),
+            provider_request_proof_max_chars=user_proof_max_chars,
         )
 
 class _TurnRunnerAgentConfigBuilderAdapter(AgentConfigBuilderPort):
@@ -514,6 +542,36 @@ class _TurnRunnerAgentConfigBuilderAdapter(AgentConfigBuilderPort):
                 "tool_result_projection_max_inline_chars",
                 60_000,
             ),
+            tool_result_fresh_diagnostic_policy_enabled=getattr(
+                agent_token_cfg,
+                "tool_result_fresh_diagnostic_policy_enabled",
+                False,
+            ),
+            tool_result_diagnostic_retrieval_gate_enabled=getattr(
+                agent_token_cfg,
+                "tool_result_diagnostic_retrieval_gate_enabled",
+                False,
+            ),
+            tool_result_fresh_diagnostic_inline_max_chars=getattr(
+                agent_token_cfg,
+                "tool_result_fresh_diagnostic_inline_max_chars",
+                64_000,
+            ),
+            tool_result_dispatch_max_chars=getattr(
+                agent_token_cfg,
+                "tool_result_dispatch_max_chars",
+                0,
+            ),
+            tool_result_dispatch_turn_max_chars=getattr(
+                agent_token_cfg,
+                "tool_result_dispatch_turn_max_chars",
+                0,
+            ),
+            tool_result_store_full_trace=getattr(
+                agent_token_cfg,
+                "tool_result_store_full_trace",
+                False,
+            ),
             tool_result_store_max_bytes=getattr(
                 agent_token_cfg,
                 "tool_result_store_max_bytes",
@@ -528,6 +586,33 @@ class _TurnRunnerAgentConfigBuilderAdapter(AgentConfigBuilderPort):
                 agent_token_cfg,
                 "tool_result_store_retention_seconds",
                 7 * 24 * 60 * 60,
+            ),
+            source_diff_preservation_mode=getattr(
+                runner._config,
+                "source_diff_preservation_mode",
+                "log",
+            ),
+            source_diff_candidate_mode=getattr(
+                runner._config,
+                "source_diff_candidate_mode",
+                "log",
+            ),
+            runtime_state_capsule_mode=getattr(
+                runner._config,
+                "runtime_state_capsule_mode",
+                "off",
+            ),
+            text_only_tool_recovery_mode=getattr(
+                runner._config,
+                "text_only_tool_recovery_mode",
+                "off",
+            ),
+            finalize_evidence_gate=bool(
+                getattr(
+                    getattr(runner._config, "prompt", None),
+                    "finalize_evidence_gate",
+                    False,
+                )
             ),
         )
 

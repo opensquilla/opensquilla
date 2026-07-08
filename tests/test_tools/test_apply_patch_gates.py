@@ -14,6 +14,7 @@ from opensquilla.tools.builtin import patch as patch_tool
 from opensquilla.tools.registry import get_default_registry
 from opensquilla.tools.types import (
     InteractionMode,
+    RetryableToolInputError,
     ToolContext,
     ToolError,
     current_tool_context,
@@ -54,6 +55,14 @@ def test_apply_patch_schema_exposes_optional_approval_id() -> None:
     assert registered is not None
     assert "approval_id" in registered.spec.parameters
     assert "approval_id" not in registered.spec.required
+
+
+def test_apply_patch_schema_exposes_optional_patch_file_path() -> None:
+    registered = get_default_registry().get("apply_patch")
+
+    assert registered is not None
+    assert "path" in registered.spec.parameters
+    assert "path" not in registered.spec.required
 
 
 @pytest.mark.asyncio
@@ -123,6 +132,147 @@ async def test_apply_patch_blocks_workspace_write_deny_glob(tmp_path: Path) -> N
 
 
 @pytest.mark.asyncio
+async def test_apply_patch_accepts_standard_unified_hunk(tmp_path: Path) -> None:
+    target = tmp_path / "src" / "feature.py"
+    target.parent.mkdir()
+    target.write_text("old = 1\nkeep = True\n", encoding="utf-8")
+    ctx = ToolContext(workspace_dir=str(tmp_path))
+    token = current_tool_context.set(ctx)
+    apply_patch = _original_async(patch_tool.apply_patch)
+    try:
+        result = await apply_patch(
+            """*** Begin Patch
+*** Update File: src/feature.py
+@@ -1,2 +1,2 @@
+-old = 1
++old = 2
+ keep = True
+*** End Patch"""
+        )
+    finally:
+        current_tool_context.reset(token)
+
+    assert result == "Applied patch: 1 file(s) modified"
+    assert target.read_text(encoding="utf-8") == "old = 2\nkeep = True\n"
+    assert [entry["relative_path"] for entry in ctx.workspace_file_writes] == [
+        "src/feature.py"
+    ]
+
+
+@pytest.mark.asyncio
+async def test_apply_patch_accepts_patch_text_from_configured_scratch_file(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "src" / "feature.py"
+    target.parent.mkdir()
+    target.write_text("old = 1\n", encoding="utf-8")
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    patch_file = scratch / "fix.patch"
+    patch_file.write_text(
+        """*** Begin Patch
+*** Update File: src/feature.py
+@@ -1,1 +1,1 @@
+-old = 1
++old = 2
+*** End Patch""",
+        encoding="utf-8",
+    )
+    token = current_tool_context.set(
+        ToolContext(workspace_dir=str(tmp_path), scratch_dir=str(scratch))
+    )
+    apply_patch = _original_async(patch_tool.apply_patch)
+    try:
+        result = await apply_patch(path=str(patch_file))
+    finally:
+        current_tool_context.reset(token)
+
+    assert result == "Applied patch: 1 file(s) modified"
+    assert target.read_text(encoding="utf-8") == "old = 2\n"
+
+
+@pytest.mark.asyncio
+async def test_apply_patch_notes_docs_and_derived_workspace_writes(tmp_path: Path) -> None:
+    docs_target = tmp_path / "docs" / "content" / "manual" / "manual.yml"
+    docs_target.parent.mkdir(parents=True)
+    docs_target.write_text("old docs\n", encoding="utf-8")
+    derived_target = tmp_path / "jq.1.prebuilt"
+    derived_target.write_text("old generated\n", encoding="utf-8")
+    token = current_tool_context.set(ToolContext(workspace_dir=str(tmp_path)))
+    apply_patch = _original_async(patch_tool.apply_patch)
+    try:
+        result = await apply_patch(
+            """*** Begin Patch
+*** Update File: docs/content/manual/manual.yml
+@@ -1,1 +1,1 @@
+-old docs
++new docs
+*** Update File: jq.1.prebuilt
+@@ -1,1 +1,1 @@
+-old generated
++new generated
+*** End Patch"""
+        )
+    finally:
+        current_tool_context.reset(token)
+
+    assert result.startswith("Applied patch: 2 file(s) modified")
+    assert "documentation file(s) changed" in result
+    assert "verify the docs build" in result
+    assert "generated or derived-looking file(s) changed" in result
+    assert "regenerate/verify" in result
+
+
+@pytest.mark.asyncio
+async def test_apply_patch_rejects_update_without_hunks(tmp_path: Path) -> None:
+    target = tmp_path / "src" / "feature.py"
+    target.parent.mkdir()
+    target.write_text("old = 1\n", encoding="utf-8")
+    token = current_tool_context.set(ToolContext(workspace_dir=str(tmp_path)))
+    apply_patch = _original_async(patch_tool.apply_patch)
+    try:
+        with pytest.raises(RetryableToolInputError, match="did not contain any hunk headers"):
+            await apply_patch(
+                """*** Begin Patch
+*** Update File: src/feature.py
+--- a/src/feature.py
++++ b/src/feature.py
+-old = 1
++old = 2
+*** End Patch"""
+            )
+    finally:
+        current_tool_context.reset(token)
+
+    assert target.read_text(encoding="utf-8") == "old = 1\n"
+
+
+@pytest.mark.asyncio
+async def test_apply_patch_context_mismatch_is_model_retriable(tmp_path: Path) -> None:
+    target = tmp_path / "src" / "feature.py"
+    target.parent.mkdir()
+    target.write_text("actual = 1\n", encoding="utf-8")
+    token = current_tool_context.set(ToolContext(workspace_dir=str(tmp_path)))
+    apply_patch = _original_async(patch_tool.apply_patch)
+    try:
+        with pytest.raises(RetryableToolInputError) as exc_info:
+            await apply_patch(
+                """*** Begin Patch
+*** Update File: src/feature.py
+@@ -1,1 +1,1 @@
+-expected = 1
++actual = 2
+*** End Patch"""
+            )
+    finally:
+        current_tool_context.reset(token)
+
+    assert "context mismatch" in exc_info.value.user_message
+    assert "Read the current file content" in exc_info.value.user_message
+    assert target.read_text(encoding="utf-8") == "actual = 1\n"
+
+
+@pytest.mark.asyncio
 async def test_apply_patch_allows_workspace_under_sensitive_parent(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -147,7 +297,8 @@ async def test_apply_patch_allows_workspace_under_sensitive_parent(
     finally:
         current_tool_context.reset(token)
 
-    assert result == "Applied patch: 1 file(s) added"
+    assert result.startswith("Applied patch: 1 file(s) added")
+    assert "documentation file(s) changed" in result
     assert (workspace / "docs" / "plan.md").read_text(encoding="utf-8") == "hello"
 
 
@@ -344,7 +495,10 @@ async def test_apply_patch_run_mode_full_skips_sandbox_wrapper_gate(
         current_tool_context.reset(token)
         reset_runtime()
 
-    assert result == "Applied patch: 1 file(s) modified"
+    assert result == (
+        "Applied patch: 1 file(s) modified Note: workspace changes are now present. "
+        "Before final, inspect git_diff and run focused verification for the changed behavior."
+    )
     assert outside.read_text(encoding="utf-8") == "new\n"
     assert get_approval_queue().list_pending("exec") == []
 
@@ -393,7 +547,7 @@ async def test_apply_patch_add_file_refuses_existing_file(tmp_path: Path) -> Non
     token = current_tool_context.set(ToolContext(workspace_dir=str(tmp_path)))
     apply_patch = _original_async(patch_tool.apply_patch)
     try:
-        with pytest.raises(FileExistsError, match="File already exists"):
+        with pytest.raises(RetryableToolInputError, match="target already exists"):
             await apply_patch(
                 """*** Begin Patch
 *** Add File: existing.txt

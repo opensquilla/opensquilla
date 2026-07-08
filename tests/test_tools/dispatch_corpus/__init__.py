@@ -132,6 +132,25 @@ def _simple_registry(
     return reg
 
 
+def _required_value_registry(name: str) -> ToolRegistry:
+    """Registry with a single tool that declares a required string argument."""
+    reg = ToolRegistry()
+
+    async def _handler(value: str) -> str:
+        return value
+
+    reg.register(
+        ToolSpec(
+            name=name,
+            description=name,
+            parameters={"value": {"type": "string"}},
+            required=["value"],
+        ),
+        _handler,
+    )
+    return reg
+
+
 def _publishing_registry(name: str) -> ToolRegistry:
     """Registry with a tool that appends an artifact and returns 'published'."""
     reg = ToolRegistry()
@@ -421,6 +440,94 @@ def _case_unparsed_raw_arguments_rejected() -> CorpusCase:
         ),
         ctx_factory=_owner_agent_ctx,
         registry_factory=lambda: _simple_registry("simple_tool"),
+        expected_is_error=True,
+        expected_error_class="InvalidToolArgumentsError",
+        expected_log_events={("dispatch.invalid_tool_arguments", "warning")},
+    )
+
+
+def _case_missing_required_arguments_rejected() -> CorpusCase:
+    """
+    Required-argument preflight — the tool declares a required argument and the
+    call omits it, so dispatch returns a structured envelope before handler
+    execution.
+    """
+    return CorpusCase(
+        name="missing_required_arguments_rejected",
+        tool_call=ToolCall(
+            tool_use_id="tc-missing-required",
+            tool_name="strict_tool",
+            arguments={},
+        ),
+        ctx_factory=_owner_agent_ctx,
+        registry_factory=lambda: _required_value_registry("strict_tool"),
+        expected_is_error=True,
+        expected_error_class="InvalidToolArgumentsError",
+        expected_log_events={("dispatch.invalid_tool_arguments", "warning")},
+    )
+
+
+def _case_schema_invalid_arguments_rejected() -> CorpusCase:
+    """
+    Schema preflight — the required argument is present but carries the wrong
+    JSON type, so dispatch returns a structured envelope before handler
+    execution.
+    """
+    return CorpusCase(
+        name="schema_invalid_arguments_rejected",
+        tool_call=ToolCall(
+            tool_use_id="tc-schema-invalid",
+            tool_name="strict_tool",
+            arguments={"value": 7},
+        ),
+        ctx_factory=_owner_agent_ctx,
+        registry_factory=lambda: _required_value_registry("strict_tool"),
+        expected_is_error=True,
+        expected_error_class="InvalidToolArgumentsError",
+        expected_log_events={("dispatch.invalid_tool_arguments", "warning")},
+    )
+
+
+def _case_alias_conflict_rejected() -> CorpusCase:
+    """
+    Alias normalisation preflight — canonical and alias argument names disagree,
+    so dispatch returns a structured envelope before handler execution.
+    """
+    return CorpusCase(
+        name="alias_conflict_rejected",
+        tool_call=ToolCall(
+            tool_use_id="tc-alias-conflict",
+            tool_name="edit_file",
+            arguments={
+                "path": "a.py",
+                "file_path": "b.py",
+                "old_text": "x",
+                "new_text": "y",
+            },
+        ),
+        ctx_factory=_owner_agent_ctx,
+        registry_factory=lambda: _simple_registry("edit_file"),
+        expected_is_error=True,
+        expected_error_class="InvalidToolArgumentsError",
+        expected_log_events={("dispatch.tool_arguments_alias_conflict", "warning")},
+    )
+
+
+def _case_missing_executable_shape_rejected() -> CorpusCase:
+    """
+    Executable-shape preflight — an edit_file call carries a path but no edit
+    payload, so dispatch returns a structured envelope before handler
+    execution.
+    """
+    return CorpusCase(
+        name="missing_executable_shape_rejected",
+        tool_call=ToolCall(
+            tool_use_id="tc-missing-shape",
+            tool_name="edit_file",
+            arguments={"path": "a.py"},
+        ),
+        ctx_factory=_owner_agent_ctx,
+        registry_factory=lambda: _simple_registry("edit_file"),
         expected_is_error=True,
         expected_error_class="InvalidToolArgumentsError",
         expected_log_events={("dispatch.invalid_tool_arguments", "warning")},
@@ -1151,6 +1258,10 @@ ALL_CASES: list[CorpusCase] = [
     _case_tool_not_found_unknown_name(),
     _case_skill_call_mismatch(),
     _case_unparsed_raw_arguments_rejected(),
+    _case_missing_required_arguments_rejected(),
+    _case_schema_invalid_arguments_rejected(),
+    _case_alias_conflict_rejected(),
+    _case_missing_executable_shape_rejected(),
     _case_owner_only_block_non_owner(),
     _case_owner_only_pass_owner(),
     _case_denied_tools_block(),

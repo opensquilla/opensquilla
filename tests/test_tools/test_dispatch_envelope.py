@@ -5,6 +5,7 @@ import json
 
 import pytest
 
+from opensquilla.engine.tool_result_store import ToolResultStore
 from opensquilla.engine.types import ToolCall
 from opensquilla.result_budget import (
     DEFAULT_TOOL_RUN_BUDGET_POLICY,
@@ -34,6 +35,9 @@ def _build_registry() -> ToolRegistry:
     async def echo(value: str = "") -> str:
         return value
 
+    async def required_echo(value: str) -> str:
+        return value
+
     async def pending() -> str:
         return json.dumps(
             {
@@ -54,6 +58,15 @@ def _build_registry() -> ToolRegistry:
         ),
         echo,
     )
+    registry.register(
+        ToolSpec(
+            name="required_echo",
+            description="required echo",
+            parameters={"value": {"type": "string"}},
+            required=["value"],
+        ),
+        required_echo,
+    )
     registry.register(ToolSpec(name="pending", description="pending", parameters={}), pending)
     return registry
 
@@ -66,7 +79,32 @@ def _strict_preview_chars(content: str) -> int:
     assert "budget_class" not in payload
     preview = payload.get("preview", "")
     assert isinstance(preview, str)
-    return len(preview)
+    tail = payload.get("tail", "")
+    assert isinstance(tail, str)
+    return len(preview) + len(tail)
+
+
+def _assert_invalid_attempt_result(
+    result,
+    *,
+    tool: str,
+    reason_code: str,
+    received_keys: list[str],
+) -> dict[str, object]:
+    assert result.is_error is True
+    assert result.execution_status is not None
+    assert result.execution_status["status"] == "error"
+    assert result.execution_status["reason"] == "invalid_tool_arguments"
+    assert result.execution_status["preflight_rejected"] is True
+    assert result.execution_status["reason_code"] == reason_code
+    payload = json.loads(result.content)
+    assert payload["status"] == "rejected"
+    assert payload["reason_code"] == reason_code
+    assert payload["tool"] == tool
+    assert payload["received_keys"] == received_keys
+    assert payload["retry_allowed"] is True
+    assert payload["error_class"] == "InvalidToolArgumentsError"
+    return payload
 
 
 def test_web_retrieval_budget_profile_builder_preserves_unlimited_call_defaults() -> None:
@@ -185,6 +223,24 @@ async def test_dispatch_tool_exception_envelope_is_canonical_five_key_shape() ->
 
 
 @pytest.mark.asyncio
+async def test_dispatch_redacts_secret_like_tool_result_content() -> None:
+    handler = build_tool_handler(_build_registry())
+    secret = "sk-or-v1-abcdefghijklmnopqrstuvwxyz"
+
+    result = await handler(
+        ToolCall(
+            tool_use_id="tc-secret",
+            tool_name="echo",
+            arguments={"value": f"env.OPENROUTER_API_KEY={secret}"},
+        )
+    )
+
+    assert result.is_error is False
+    assert secret not in result.content
+    assert result.content == "env.OPENROUTER_API_KEY=[REDACTED]"
+
+
+@pytest.mark.asyncio
 async def test_dispatch_rejects_unparsed_raw_tool_arguments_before_handler() -> None:
     handler = build_tool_handler(_build_registry())
 
@@ -196,23 +252,595 @@ async def test_dispatch_rejects_unparsed_raw_tool_arguments_before_handler() -> 
         )
     )
 
-    assert result.is_error is True
-    assert result.execution_status is not None
-    assert result.execution_status["reason"] == "runtime_error"
-    payload = json.loads(result.content)
-    assert payload["tool"] == "echo"
-    assert payload["error_class"] == "InvalidToolArgumentsError"
-    assert payload["retry_allowed"] is False
+    payload = _assert_invalid_attempt_result(
+        result,
+        tool="echo",
+        reason_code="unparsed_raw_arguments",
+        received_keys=["_raw"],
+    )
     assert "valid JSON" in payload["user_message"]
+    assert "apply_patch" not in payload["user_message"]
+
+
+@pytest.mark.asyncio
+async def test_dispatch_unwraps_schema_valid_raw_json_arguments_before_handler() -> None:
+    handler = build_tool_handler(_build_registry())
+
+    result = await handler(
+        ToolCall(
+            tool_use_id="tc-valid-raw",
+            tool_name="echo",
+            arguments={"_raw": '{"value": "ok"}'},
+        )
+    )
+
+    assert result.is_error is False
+    assert result.content == "ok"
+
+
+@pytest.mark.asyncio
+async def test_dispatch_rejects_missing_required_arguments_before_handler() -> None:
+    handler = build_tool_handler(_build_registry())
+
+    result = await handler(
+        ToolCall(
+            tool_use_id="tc-missing-required",
+            tool_name="required_echo",
+            arguments={},
+        )
+    )
+
+    payload = _assert_invalid_attempt_result(
+        result,
+        tool="required_echo",
+        reason_code="missing_required_arguments",
+        received_keys=[],
+    )
+    assert "missing required argument" in payload["user_message"]
+    assert "`value`" in payload["user_message"]
+
+
+@pytest.mark.asyncio
+async def test_dispatch_missing_edit_file_old_text_explains_valid_shapes() -> None:
+    registry = ToolRegistry()
+
+    async def edit_file(path: str, old_text: str, new_text: str) -> str:
+        return f"{path}:{old_text}:{new_text}"
+
+    registry.register(
+        ToolSpec(
+            name="edit_file",
+            description="edit file",
+            parameters={
+                "path": {"type": "string"},
+                "old_text": {"type": "string"},
+                "new_text": {"type": "string"},
+                "edits": {"type": "array"},
+            },
+            required=["path", "old_text", "new_text"],
+        ),
+        edit_file,
+    )
+    handler = build_tool_handler(registry)
+
+    result = await handler(
+        ToolCall(
+            tool_use_id="tc-edit-missing-old",
+            tool_name="edit_file",
+            arguments={"path": "demo.py", "new_text": "new"},
+        )
+    )
+
+    payload = _assert_invalid_attempt_result(
+        result,
+        tool="edit_file",
+        reason_code="missing_required_arguments",
+        received_keys=["new_text", "path"],
+    )
+    assert "new_text alone cannot identify where to edit" in payload["user_message"]
+    assert '{"path":"...","old_text":"...","new_text":"..."}' in payload["user_message"]
+    assert '{"path":"...","edits":[{"old_text":"...","new_text":"..."}]}' in payload[
+        "user_message"
+    ]
+
+
+@pytest.mark.asyncio
+async def test_dispatch_missing_write_file_content_shows_minimal_json() -> None:
+    registry = ToolRegistry()
+
+    async def write_file(path: str, content: str) -> str:
+        return f"{path}:{content}"
+
+    registry.register(
+        ToolSpec(
+            name="write_file",
+            description="write file",
+            parameters={
+                "path": {"type": "string"},
+                "content": {"type": "string"},
+            },
+            required=["path", "content"],
+        ),
+        write_file,
+    )
+    handler = build_tool_handler(registry)
+
+    result = await handler(
+        ToolCall(
+            tool_use_id="tc-write-missing-content",
+            tool_name="write_file",
+            arguments={"path": "demo.py"},
+        )
+    )
+
+    payload = json.loads(result.content)
+    assert result.is_error is True
+    assert '{"path":"...","content":"..."}' in payload["user_message"]
+    assert "existing source files" in payload["user_message"]
+    assert "prefer edit_file or apply_patch" in payload["user_message"]
+    assert "You supplied argument(s)" not in payload["user_message"]
+
+
+@pytest.mark.asyncio
+async def test_dispatch_missing_edit_file_guidance_omits_hidden_apply_patch() -> None:
+    registry = ToolRegistry()
+
+    async def edit_file(
+        path: str,
+        old_text: str | None = None,
+        new_text: str | None = None,
+        edits: list[dict[str, object]] | None = None,
+    ) -> str:
+        return f"{path}:{old_text}:{new_text}:{edits}"
+
+    registry.register(
+        ToolSpec(
+            name="edit_file",
+            description="edit file",
+            parameters={
+                "path": {"type": "string"},
+                "old_text": {"type": "string"},
+                "new_text": {"type": "string"},
+                "edits": {"type": "array"},
+            },
+            required=["path", "old_text", "new_text"],
+        ),
+        edit_file,
+    )
+    handler = build_tool_handler(
+        registry,
+        ToolContext(allowed_tools={"edit_file"}),
+    )
+
+    result = await handler(
+        ToolCall(
+            tool_use_id="tc-edit-hidden-patch",
+            tool_name="edit_file",
+            arguments={"path": "demo.py", "new_text": "new"},
+        )
+    )
+
+    payload = _assert_invalid_attempt_result(
+        result,
+        tool="edit_file",
+        reason_code="missing_required_arguments",
+        received_keys=["new_text", "path"],
+    )
+    assert "new_text alone cannot identify where to edit" in payload["user_message"]
+    assert "apply_patch" not in payload["user_message"]
+    assert "split the edit into smaller edit_file calls" in payload["user_message"]
+
+
+@pytest.mark.asyncio
+async def test_dispatch_missing_write_file_guidance_omits_hidden_edit_tools() -> None:
+    registry = ToolRegistry()
+
+    async def write_file(path: str, content: str) -> str:
+        return f"{path}:{content}"
+
+    registry.register(
+        ToolSpec(
+            name="write_file",
+            description="write file",
+            parameters={
+                "path": {"type": "string"},
+                "content": {"type": "string"},
+            },
+            required=["path", "content"],
+        ),
+        write_file,
+    )
+    handler = build_tool_handler(
+        registry,
+        ToolContext(allowed_tools={"write_file"}),
+    )
+
+    result = await handler(
+        ToolCall(
+            tool_use_id="tc-write-hidden-edit-tools",
+            tool_name="write_file",
+            arguments={"path": "demo.py"},
+        )
+    )
+
+    payload = _assert_invalid_attempt_result(
+        result,
+        tool="write_file",
+        reason_code="missing_required_arguments",
+        received_keys=["path"],
+    )
+    assert '{"path":"...","content":"..."}' in payload["user_message"]
+    assert "edit_file" not in payload["user_message"]
+    assert "apply_patch" not in payload["user_message"]
+
+
+@pytest.mark.asyncio
+async def test_dispatch_missing_write_file_guidance_uses_visible_edit_file_only() -> None:
+    registry = ToolRegistry()
+
+    async def write_file(path: str, content: str) -> str:
+        return f"{path}:{content}"
+
+    registry.register(
+        ToolSpec(
+            name="write_file",
+            description="write file",
+            parameters={
+                "path": {"type": "string"},
+                "content": {"type": "string"},
+            },
+            required=["path", "content"],
+        ),
+        write_file,
+    )
+    handler = build_tool_handler(
+        registry,
+        ToolContext(allowed_tools={"write_file", "edit_file"}),
+    )
+
+    result = await handler(
+        ToolCall(
+            tool_use_id="tc-write-visible-edit-only",
+            tool_name="write_file",
+            arguments={"path": "demo.py"},
+        )
+    )
+
+    payload = _assert_invalid_attempt_result(
+        result,
+        tool="write_file",
+        reason_code="missing_required_arguments",
+        received_keys=["path"],
+    )
+    assert "prefer edit_file" in payload["user_message"]
+    assert "apply_patch" not in payload["user_message"]
+
+
+@pytest.mark.asyncio
+async def test_dispatch_missing_write_file_path_can_include_supplied_argument_keys() -> None:
+    registry = ToolRegistry()
+
+    async def write_file(path: str, content: str) -> str:
+        return f"{path}:{content}"
+
+    registry.register(
+        ToolSpec(
+            name="write_file",
+            description="write file",
+            parameters={
+                "path": {"type": "string"},
+                "content": {"type": "string"},
+            },
+            required=["path", "content"],
+        ),
+        write_file,
+    )
+    handler = build_tool_handler(
+        registry,
+        ToolContext(missing_required_argument_shape_guidance=True),
+    )
+
+    result = await handler(
+        ToolCall(
+            tool_use_id="tc-write-missing-path",
+            tool_name="write_file",
+            arguments={"content": "print('scratch')\n"},
+        )
+    )
+
+    payload = json.loads(result.content)
+    assert result.is_error is True
+    assert "You supplied argument(s): `content`." in payload["user_message"]
+    assert "Missing argument(s): `path`." in payload["user_message"]
+    assert '{"path":"...","content":"..."}' in payload["user_message"]
+
+
+@pytest.mark.asyncio
+async def test_dispatch_missing_required_shape_guidance_can_be_enabled_by_env(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("OPENSQUILLA_MISSING_REQUIRED_ARGUMENT_SHAPE_GUIDANCE", "1")
+    registry = ToolRegistry()
+
+    async def write_file(path: str, content: str) -> str:
+        return f"{path}:{content}"
+
+    registry.register(
+        ToolSpec(
+            name="write_file",
+            description="write file",
+            parameters={
+                "path": {"type": "string"},
+                "content": {"type": "string"},
+            },
+            required=["path", "content"],
+        ),
+        write_file,
+    )
+    handler = build_tool_handler(registry)
+
+    result = await handler(
+        ToolCall(
+            tool_use_id="tc-write-env-missing-path",
+            tool_name="write_file",
+            arguments={"content": "print('scratch')\n"},
+        )
+    )
+
+    payload = json.loads(result.content)
+    assert result.is_error is True
+    assert "You supplied argument(s): `content`." in payload["user_message"]
+    assert "Missing argument(s): `path`." in payload["user_message"]
+
+
+@pytest.mark.asyncio
+async def test_dispatch_missing_apply_patch_patch_shows_patch_shape() -> None:
+    registry = ToolRegistry()
+
+    async def apply_patch(patch: str) -> str:
+        return patch
+
+    registry.register(
+        ToolSpec(
+            name="apply_patch",
+            description="apply patch",
+            parameters={"patch": {"type": "string"}},
+            required=["patch"],
+        ),
+        apply_patch,
+    )
+    handler = build_tool_handler(registry)
+
+    result = await handler(
+        ToolCall(
+            tool_use_id="tc-patch-missing-patch",
+            tool_name="apply_patch",
+            arguments={},
+        )
+    )
+
+    payload = json.loads(result.content)
+    assert result.is_error is True
+    assert '{"patch":"*** Begin Patch' in payload["user_message"]
+    assert "*** Update File: ..." in payload["user_message"]
+    assert "*** End Patch" in payload["user_message"]
+
+
+@pytest.mark.asyncio
+async def test_dispatch_missing_exec_command_command_shows_minimal_json() -> None:
+    registry = ToolRegistry()
+
+    async def exec_command(command: str) -> str:
+        return command
+
+    registry.register(
+        ToolSpec(
+            name="exec_command",
+            description="execute command",
+            parameters={"command": {"type": "string"}},
+            required=["command"],
+        ),
+        exec_command,
+    )
+    handler = build_tool_handler(registry)
+
+    result = await handler(
+        ToolCall(
+            tool_use_id="tc-exec-missing-command",
+            tool_name="exec_command",
+            arguments={"new_text": "python test.py"},
+        )
+    )
+
+    payload = json.loads(result.content)
+    assert result.is_error is True
+    assert '{"command":"..."}' in payload["user_message"]
+    assert "Do not put shell text in `new_text`, `path`, or `_raw`" in payload[
+        "user_message"
+    ]
+
+
+@pytest.mark.asyncio
+async def test_dispatch_missing_execute_code_code_shows_minimal_json() -> None:
+    registry = ToolRegistry()
+
+    async def execute_code(code: str) -> str:
+        return code
+
+    registry.register(
+        ToolSpec(
+            name="execute_code",
+            description="execute Python code",
+            parameters={"code": {"type": "string"}},
+            required=["code"],
+        ),
+        execute_code,
+    )
+    handler = build_tool_handler(registry)
+
+    result = await handler(
+        ToolCall(
+            tool_use_id="tc-code-missing-code",
+            tool_name="execute_code",
+            arguments={"command": "print('hi')"},
+        )
+    )
+
+    payload = json.loads(result.content)
+    assert result.is_error is True
+    assert '{"code":"..."}' in payload["user_message"]
+    assert "Use exec_command for shell commands" in payload["user_message"]
+
+
+@pytest.mark.asyncio
+async def test_dispatch_strips_provider_replay_arguments_before_handler() -> None:
+    handler = build_tool_handler(_build_registry())
+
+    result = await handler(
+        ToolCall(
+            tool_use_id="tc-replay",
+            tool_name="echo",
+            arguments={
+                "_opensquilla_replay_index": 2,
+                "_opensquilla_replay_verbosity": "1",
+                "value": "ok",
+            },
+        )
+    )
+
+    assert result.is_error is False
+    assert result.content == "ok"
+
+
+@pytest.mark.asyncio
+async def test_dispatch_unwraps_nested_json_arguments_before_handler() -> None:
+    handler = build_tool_handler(_build_registry())
+
+    result = await handler(
+        ToolCall(
+            tool_use_id="tc-nested-arguments",
+            tool_name="echo",
+            arguments={
+                "_opensquilla_replay_nonce": "history-replay-1",
+                "arguments": '{"value": "ok"}',
+            },
+        )
+    )
+
+    assert result.is_error is False
+    assert result.content == "ok"
+
+
+@pytest.mark.asyncio
+async def test_dispatch_normalizes_common_edit_file_aliases_before_required_check() -> None:
+    registry = ToolRegistry()
+
+    async def edit_file(path: str, old_text: str, new_text: str) -> str:
+        return json.dumps(
+            {
+                "path": path,
+                "old_text": old_text,
+                "new_text": new_text,
+            }
+        )
+
+    registry.register(
+        ToolSpec(
+            name="edit_file",
+            description="edit file",
+            parameters={
+                "path": {"type": "string"},
+                "old_text": {"type": "string"},
+                "new_text": {"type": "string"},
+            },
+            required=["path", "old_text", "new_text"],
+        ),
+        edit_file,
+    )
+    handler = build_tool_handler(registry)
+
+    result = await handler(
+        ToolCall(
+            tool_use_id="tc-edit-aliases",
+            tool_name="edit_file",
+            arguments={
+                "file_path": "/tmp/example.py",
+                "old_string": "old",
+                "new_string": "new",
+            },
+        )
+    )
+
+    assert result.is_error is False
+    assert json.loads(result.content) == {
+        "path": "/tmp/example.py",
+        "old_text": "old",
+        "new_text": "new",
+    }
+
+
+@pytest.mark.asyncio
+async def test_dispatch_normalizes_camel_case_edit_file_aliases_before_required_check() -> None:
+    registry = ToolRegistry()
+
+    async def edit_file(path: str, old_text: str, new_text: str) -> str:
+        return json.dumps(
+            {
+                "path": path,
+                "old_text": old_text,
+                "new_text": new_text,
+            }
+        )
+
+    registry.register(
+        ToolSpec(
+            name="edit_file",
+            description="edit file",
+            parameters={
+                "path": {"type": "string"},
+                "old_text": {"type": "string"},
+                "new_text": {"type": "string"},
+            },
+            required=["path", "old_text", "new_text"],
+        ),
+        edit_file,
+    )
+    handler = build_tool_handler(registry)
+
+    result = await handler(
+        ToolCall(
+            tool_use_id="tc-edit-camel-aliases",
+            tool_name="edit_file",
+            arguments={
+                "filePath": "/tmp/example.py",
+                "oldText": "old",
+                "newText": "new",
+            },
+        )
+    )
+
+    assert result.is_error is False
+    assert json.loads(result.content) == {
+        "path": "/tmp/example.py",
+        "old_text": "old",
+        "new_text": "new",
+    }
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "marker_key",
-    ["_opensquilla_compacted_tool_arguments", "_opensquilla_compacted_tool_input"],
+    ("marker_key", "marker_value"),
+    [
+        ("_opensquilla_compacted_tool_arguments", True),
+        ("_opensquilla_compacted_tool_input", True),
+        ("_opensquilla_compacted_tool_arguments", "true"),
+        ("_opensquilla_compacted_tool_input", "true"),
+        ("_invalid_provider_context_arguments", "true"),
+    ],
 )
 async def test_dispatch_rejects_provider_compacted_tool_arguments_before_handler(
     marker_key: str,
+    marker_value: object,
 ) -> None:
     handler = build_tool_handler(_build_registry())
 
@@ -221,7 +849,7 @@ async def test_dispatch_rejects_provider_compacted_tool_arguments_before_handler
             tool_use_id="tc-compacted",
             tool_name="echo",
             arguments={
-                marker_key: True,
+                marker_key: marker_value,
                 "head": '{"value": "large',
                 "tail": 'payload"}',
             },
@@ -233,6 +861,120 @@ async def test_dispatch_rejects_provider_compacted_tool_arguments_before_handler
     assert result.execution_status["reason"] == "provider_context_projection_reused"
     payload = json.loads(result.content)
     assert payload["tool"] == "echo"
+    assert payload["error_class"] == "ProjectedToolArgumentsError"
+    assert payload["retry_allowed"] is False
+    assert "compacted" in payload["user_message"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        {
+            "value": (
+                "[provider_request_tool_input_compacted: original_chars=987; "
+                "sha256=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa]"
+            )
+        },
+        {
+            "value": {
+                "nested": [
+                    "safe prefix",
+                    (
+                        "[provider_request_tool_input_compacted: original_chars=987; "
+                        "sha256=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa]"
+                    ),
+                ]
+            }
+        },
+    ],
+)
+async def test_dispatch_rejects_provider_request_compacted_argument_strings_before_handler(
+    arguments: dict[str, object],
+) -> None:
+    calls: list[object] = []
+    registry = ToolRegistry()
+
+    async def echo(value: object = "") -> str:
+        calls.append(value)
+        return json.dumps(value)
+
+    registry.register(
+        ToolSpec(
+            name="echo",
+            description="echo",
+            parameters={"value": {}},
+        ),
+        echo,
+    )
+    handler = build_tool_handler(registry)
+
+    result = await handler(
+        ToolCall(
+            tool_use_id="tc-provider-request-compacted",
+            tool_name="echo",
+            arguments=arguments,
+        )
+    )
+
+    assert calls == []
+    assert result.is_error is True
+    assert result.execution_status is not None
+    assert result.execution_status["reason"] == "provider_context_projection_reused"
+    payload = json.loads(result.content)
+    assert payload["tool"] == "echo"
+    assert payload["error_class"] == "ProjectedToolArgumentsError"
+    assert payload["retry_allowed"] is False
+    assert "compacted" in payload["user_message"]
+
+
+@pytest.mark.asyncio
+async def test_dispatch_rejects_mid_string_compacted_marker_before_handler() -> None:
+    calls: list[object] = []
+    registry = ToolRegistry()
+
+    async def edit_file(
+        path: str = "",
+        old_text: str = "",
+        new_text: str = "",
+    ) -> str:
+        calls.append((path, old_text, new_text))
+        return json.dumps({"path": path})
+
+    registry.register(
+        ToolSpec(
+            name="edit_file",
+            description="edit",
+            parameters={"path": {}, "old_text": {}, "new_text": {}},
+        ),
+        edit_file,
+    )
+    handler = build_tool_handler(registry)
+
+    result = await handler(
+        ToolCall(
+            tool_use_id="tc-mid-string-compacted",
+            tool_name="edit_file",
+            arguments={
+                "path": "src/example.py",
+                "old_text": (
+                    "def load(self):\n"
+                    "    [provider_request_tool_result_compacted: omitted 4210 chars; "
+                    "original_chars=4655; sha256="
+                    + "b" * 64
+                    + "]\n    return data\n"
+                ),
+                "new_text": "def load(self):\n    return data\n",
+            },
+        )
+    )
+
+    assert calls == []
+    assert result.is_error is True
+    assert result.execution_status is not None
+    assert result.execution_status["reason"] == "provider_context_projection_reused"
+    payload = json.loads(result.content)
+    assert payload["tool"] == "edit_file"
     assert payload["error_class"] == "ProjectedToolArgumentsError"
     assert payload["retry_allowed"] is False
     assert "compacted" in payload["user_message"]
@@ -493,12 +1235,201 @@ async def test_dispatch_strict_policy_bounds_unknown_huge_tool_result() -> None:
     payload = json.loads(result.content)
     assert payload["result_truncated"] is True
     assert payload["result_original_chars"] == 1000
-    assert len(payload["preview"]) <= 120
+    assert payload["result_omitted_chars"] == 880
+    assert len(payload["preview"]) + len(payload["tail"]) <= 120
+    assert payload["preview"] == "x" * 78
+    assert payload["tail"] == "x" * 42
     assert "tool_result_budget_applied" not in payload
     assert "result_returned_chars" not in payload
     assert "budget_class" not in payload
     assert result.artifacts == []
     assert len(result.content) < 400
+
+
+@pytest.mark.asyncio
+async def test_dispatch_strict_policy_preserves_tail_of_huge_tool_result() -> None:
+    registry = ToolRegistry()
+
+    async def huge() -> str:
+        return "HEAD-" + ("x" * 200) + "-TRACEBACK"
+
+    registry.register(ToolSpec(name="huge", description="huge", parameters={}), huge)
+    handler = build_tool_handler(
+        registry,
+        ToolContext(
+            tool_result_budget_policy=ToolResultBudgetPolicy(
+                max_single_tool_result_chars=40,
+            )
+        ),
+    )
+
+    result = await handler(
+        ToolCall(tool_use_id="tc-huge-tail", tool_name="huge", arguments={})
+    )
+
+    payload = json.loads(result.content)
+    assert payload["preview"].startswith("HEAD-")
+    assert payload["tail"].endswith("-TRACEBACK")
+    assert len(payload["preview"]) + len(payload["tail"]) <= 40
+
+
+@pytest.mark.asyncio
+async def test_dispatch_execution_policy_stores_raw_snapshot_for_truncated_exec_result(
+    tmp_path,
+) -> None:
+    registry = ToolRegistry()
+    raw_output = "HEAD\n" + ("x" * 9_000_000) + "\nTAIL"
+
+    async def exec_command(command: str) -> str:
+        assert command == "pytest -q"
+        return raw_output
+
+    registry.register(
+        ToolSpec(
+            name="exec_command",
+            description="exec",
+            parameters={"command": {"type": "string"}},
+            required=["command"],
+        ),
+        exec_command,
+    )
+    ctx = ToolContext(
+        session_key="agent:main:session-1",
+        tool_result_store_dir=str(tmp_path / "tool-results"),
+        tool_result_store_session_id="session-1",
+        tool_result_budget_policy=ToolResultBudgetPolicy(
+            max_single_execution_result_chars=10_000,
+        ),
+    )
+    handler = build_tool_handler(registry, ctx)
+
+    result = await handler(
+        ToolCall(
+            tool_use_id="tc-large-exec",
+            tool_name="exec_command",
+            arguments={"command": "pytest -q"},
+        )
+    )
+
+    payload = json.loads(result.content)
+    assert payload["result_truncated"] is True
+    assert payload["result_original_chars"] == len(raw_output)
+    assert payload["preview"].startswith("HEAD")
+    assert payload["tail"].endswith("TAIL")
+    assert len(payload["preview"]) + len(payload["tail"]) <= 10_000
+    assert payload["tool_result_handle"].startswith("tr-")
+    assert "retrieve_tool_result" in payload["retrieve_hint"]
+    assert len(result.content) < 12_000
+
+    stored = ToolResultStore(tmp_path / "tool-results").read(
+        payload["tool_result_handle"],
+        session_id="session-1",
+    )
+    assert stored.content == raw_output
+    assert stored.storage_encoding == "gzip+utf-8"
+    assert stored.stored_size_bytes is not None
+    assert stored.stored_size_bytes < 8 * 1024 * 1024
+
+
+@pytest.mark.asyncio
+async def test_dispatch_execution_policy_bounds_broad_exec_result_only() -> None:
+    registry = ToolRegistry()
+
+    async def exec_command(command: str) -> str:
+        return f"command={command}\n" + ("x" * 200) + "\nTRACEBACK"
+
+    async def read_file() -> str:
+        return "source\n" + ("x" * 200)
+
+    registry.register(
+        ToolSpec(
+            name="exec_command",
+            description="exec",
+            parameters={"command": {"type": "string"}},
+            required=["command"],
+        ),
+        exec_command,
+    )
+    registry.register(ToolSpec(name="read_file", description="read", parameters={}), read_file)
+    handler = build_tool_handler(
+        registry,
+        ToolContext(
+            tool_result_budget_policy=ToolResultBudgetPolicy(
+                max_single_execution_result_chars=40,
+            )
+        ),
+    )
+
+    broad = await handler(
+        ToolCall(
+            tool_use_id="tc-broad",
+            tool_name="exec_command",
+            arguments={"command": "pytest -q"},
+        )
+    )
+    preserved = await handler(
+        ToolCall(tool_use_id="tc-read", tool_name="read_file", arguments={})
+    )
+
+    broad_payload = json.loads(broad.content)
+    assert broad_payload["result_truncated"] is True
+    assert broad_payload["tail"].endswith("TRACEBACK")
+    assert preserved.content == "source\n" + ("x" * 200)
+
+
+@pytest.mark.asyncio
+async def test_dispatch_execution_policy_preserves_semantic_exec_results() -> None:
+    registry = ToolRegistry()
+
+    async def exec_command(command: str) -> str:
+        return f"command={command}\n" + ("important diff\n" * 40)
+
+    registry.register(
+        ToolSpec(
+            name="exec_command",
+            description="exec",
+            parameters={"command": {"type": "string"}},
+            required=["command"],
+        ),
+        exec_command,
+    )
+    handler = build_tool_handler(
+        registry,
+        ToolContext(
+            tool_result_budget_policy=ToolResultBudgetPolicy(
+                max_single_execution_result_chars=40,
+            )
+        ),
+    )
+
+    git_diff = await handler(
+        ToolCall(
+            tool_use_id="tc-diff",
+            tool_name="exec_command",
+            arguments={"command": "git diff"},
+        )
+    )
+    source_read = await handler(
+        ToolCall(
+            tool_use_id="tc-source",
+            tool_name="exec_command",
+            arguments={"command": "sed -n '1,80p' src/lib.rs"},
+        )
+    )
+    markdown_read = await handler(
+        ToolCall(
+            tool_use_id="tc-markdown",
+            tool_name="exec_command",
+            arguments={"command": "cat README.md"},
+        )
+    )
+
+    assert "result_truncated" not in git_diff.content
+    assert "important diff" in git_diff.content
+    assert "result_truncated" not in source_read.content
+    assert "important diff" in source_read.content
+    assert "result_truncated" not in markdown_read.content
+    assert "important diff" in markdown_read.content
 
 
 @pytest.mark.asyncio

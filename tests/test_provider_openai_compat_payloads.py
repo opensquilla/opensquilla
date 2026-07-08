@@ -2,13 +2,20 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from typing import Any
 
 import httpx
 import pytest
+import structlog.testing
 
 from opensquilla.engine.types import ThinkingLevel
-from opensquilla.provider.openai import OpenAIProvider, _stream_timeout
+from opensquilla.provider.openai import (
+    OpenAIProvider,
+    _build_openai_tool,
+    _stream_timeout,
+    _tool_schema_accepts_arguments,
+)
 from opensquilla.provider.types import (
     ChatConfig,
     ContentBlockToolResult,
@@ -22,6 +29,87 @@ from opensquilla.provider.types import (
     ToolInputSchema,
     ToolUseEndEvent,
 )
+from opensquilla.tools.policy_helpers import ToolPolicy, apply_tool_policy
+from opensquilla.tools.registry import get_default_registry
+from opensquilla.tools.types import ToolContext
+
+STRICT_SOURCE_EDIT_TOOL_NAMES = {
+    "read_source",
+    "edit_source",
+    "grep_search",
+    "glob_search",
+    "exec_command",
+    "git_status",
+    "git_diff",
+    "retrieve_tool_result",
+}
+SOURCE_EDIT_V2_TOOL_NAMES = {
+    "read_source",
+    "edit_source",
+    "source_symbols",
+    "grep_search",
+    "glob_search",
+    "exec_command",
+    "git_status",
+    "git_diff",
+    "retrieve_tool_result",
+}
+BALANCED_SOURCE_EDIT_TOOL_NAMES = {
+    "read_source",
+    "edit_source",
+    "create_source",
+    "write_scratch",
+    "source_symbols",
+    "read_file",
+    "grep_search",
+    "glob_search",
+    "list_dir",
+    "exec_command",
+    "git_status",
+    "git_diff",
+    "retrieve_tool_result",
+}
+PATCH_FALLBACK_SOURCE_EDIT_TOOL_NAMES = BALANCED_SOURCE_EDIT_TOOL_NAMES | {"apply_patch"}
+SCAFFOLD_EDIT_TOOL_NAMES = {
+    "exec_command",
+    "read_file",
+    "edit_file",
+    "write_file",
+    "glob_search",
+    "grep_search",
+    "list_dir",
+    "git_status",
+    "git_diff",
+    "retrieve_tool_result",
+}
+SCAFFOLD_PATCH_TOOL_NAMES = SCAFFOLD_EDIT_TOOL_NAMES | {"apply_patch"}
+STRICT_SOURCE_EDIT_FORBIDDEN_TOOL_NAMES = {
+    "read_file",
+    "list_dir",
+    "write_file",
+    "edit_file",
+    "apply_patch",
+    "execute_code",
+    "background_process",
+    "process",
+    "git_log",
+}
+SCAFFOLD_FORBIDDEN_TOOL_NAMES = {
+    "background_process",
+    "process",
+    "execute_code",
+    "git_log",
+    "read_source",
+    "edit_source",
+    "source_symbols",
+}
+SCAFFOLD_EDIT_FORBIDDEN_DESCRIPTION_NAMES = SCAFFOLD_FORBIDDEN_TOOL_NAMES | {
+    "apply_patch",
+    "read_spreadsheet",
+}
+SCAFFOLD_PATCH_FORBIDDEN_DESCRIPTION_NAMES = SCAFFOLD_FORBIDDEN_TOOL_NAMES | {
+    "read_spreadsheet",
+}
 
 
 def _sse_body(model: str = "test-model") -> bytes:
@@ -80,6 +168,31 @@ def _patch_transport_body(monkeypatch: Any, captured: dict[str, Any], body: byte
         return real_async_client(*args, **kwargs)
 
     monkeypatch.setattr("opensquilla.provider.openai.httpx.AsyncClient", patched_async_client)
+
+
+def _assistant_tool_call_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [
+        message
+        for message in messages
+        if message.get("role") == "assistant" and "tool_calls" in message
+    ]
+
+
+def _tool_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [message for message in messages if message.get("role") == "tool"]
+
+
+def _payload_tool_descriptions(payload: dict[str, Any]) -> str:
+    return "\n".join(
+        str(tool["function"].get("description", ""))
+        for tool in payload.get("tools", [])
+    )
+
+
+def _assert_no_dashscope_duplicate_omission(messages: list[dict[str, Any]]) -> None:
+    serialized = json.dumps(messages, ensure_ascii=False)
+    assert "duplicate tool interaction omitted" not in serialized
+    assert "arguments_sha256" not in serialized
 
 
 def _patch_transport_response(
@@ -198,10 +311,68 @@ def test_openrouter_stream_timeout_emits_heartbeat_before_non_stream_fallback(
         )
         return await asyncio.wait_for(anext(events), timeout=0.02)
 
-    event = asyncio.run(_first_event())
+    with structlog.testing.capture_logs() as captured:
+        event = asyncio.run(_first_event())
 
     assert isinstance(event, ProviderHeartbeatEvent)
     assert event.phase == "llm_fallback"
+    assert any(
+        item["event"] == "openrouter.stream_timeout_fallback_started"
+        for item in captured
+    )
+
+
+def test_dashscope_stream_timeout_emits_heartbeat_before_non_stream_fallback(
+    monkeypatch: Any,
+) -> None:
+    class TimeoutStream:
+        async def __aenter__(self) -> Any:
+            raise httpx.ReadTimeout("stream idle")
+
+        async def __aexit__(self, *_exc: Any) -> None:
+            return None
+
+    class TimeoutClient:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            pass
+
+        async def __aenter__(self) -> TimeoutClient:
+            return self
+
+        async def __aexit__(self, *_exc: Any) -> None:
+            return None
+
+        def stream(self, *args: Any, **kwargs: Any) -> TimeoutStream:
+            return TimeoutStream()
+
+    class SlowFallbackProvider(OpenAIProvider):
+        async def _complete_non_stream(self, **kwargs: Any):
+            await asyncio.sleep(0.05)
+            yield ErrorEvent(message="fallback finished", code="timeout")
+
+    monkeypatch.setattr("opensquilla.provider.openai.httpx.AsyncClient", TimeoutClient)
+    provider = SlowFallbackProvider(
+        api_key="test",
+        model="qwen3.6-flash",
+        base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+        provider_kind="dashscope",
+    )
+
+    async def _first_event() -> Any:
+        events = provider.chat(
+            [Message(role="user", content="hi")],
+            config=ChatConfig(timeout=1.0),
+        )
+        return await asyncio.wait_for(anext(events), timeout=0.02)
+
+    with structlog.testing.capture_logs() as captured:
+        event = asyncio.run(_first_event())
+
+    assert isinstance(event, ProviderHeartbeatEvent)
+    assert event.phase == "llm_fallback"
+    assert any(
+        item["event"] == "dashscope.non_stream_fallback_started" for item in captured
+    )
 
 
 def test_openrouter_list_models_reports_openrouter_provider(monkeypatch: Any) -> None:
@@ -261,6 +432,62 @@ def test_openrouter_http_error_names_provider_request(monkeypatch: Any) -> None:
     error = next(event for event in events if isinstance(event, ErrorEvent))
     assert error.code == "500"
     assert error.message == "OpenRouter chat request failed (HTTP 500): Internal Server Error"
+
+
+def test_openai_compatible_provider_writes_llm_trace(monkeypatch: Any, tmp_path: Any) -> None:
+    captured: dict[str, Any] = {}
+    trace_path = tmp_path / "llm_calls.jsonl"
+    monkeypatch.setenv("OPENSQUILLA_LLM_TRACE_RECORDER", "full")
+    monkeypatch.setenv("OPENSQUILLA_LLM_TRACE_PATH", str(trace_path))
+    _patch_transport(monkeypatch, captured)
+    provider = OpenAIProvider(
+        api_key="test",
+        model="qwen3.6-flash",
+        base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+        provider_kind="dashscope",
+    )
+
+    events = _collect_events(provider, ChatConfig(cache_mode="on"))
+
+    assert any(isinstance(event, DoneEvent) for event in events)
+    rows = [json.loads(line) for line in trace_path.read_text(encoding="utf-8").splitlines()]
+    assert [row["event"] for row in rows] == [
+        "llm.request",
+        "llm.response_chunk",
+        "llm.response_chunk",
+        "llm.response",
+    ]
+    assert rows[0]["provider"] == "dashscope"
+    assert rows[0]["payload"]["model"] == "qwen3.6-flash"
+    assert rows[0]["headers"]["Authorization"] == "[REDACTED]"
+    assert rows[-1]["usage"]["input_tokens"] == 2
+    assert rows[-1]["assistant_text"] == "ok"
+
+
+def test_llm_trace_request_metadata_carries_compaction_proof(
+    monkeypatch: Any, tmp_path: Any
+) -> None:
+    captured: dict[str, Any] = {}
+    trace_path = tmp_path / "llm_calls.jsonl"
+    monkeypatch.setenv("OPENSQUILLA_LLM_TRACE_RECORDER", "full")
+    monkeypatch.setenv("OPENSQUILLA_LLM_TRACE_PATH", str(trace_path))
+    _patch_transport(monkeypatch, captured)
+    provider = OpenAIProvider(
+        api_key="test",
+        model="qwen3.6-flash",
+        base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+        provider_kind="dashscope",
+    )
+
+    events = _collect_events(provider, ChatConfig(provider_request_max_chars=100_000))
+
+    assert any(isinstance(event, DoneEvent) for event in events)
+    rows = [json.loads(line) for line in trace_path.read_text(encoding="utf-8").splitlines()]
+    request_proof = rows[0]["metadata"]["request_proof"]
+    assert request_proof["compaction_tier"] == 0
+    assert request_proof["retry_count"] == 0
+    assert "compaction_tiny_guard_chars" in request_proof
+    assert "compaction_protect_recent_assistant" in request_proof
 
 
 def test_openrouter_deepseek_v4_returns_reasoning_content_from_details(
@@ -337,6 +564,252 @@ def _collect_events(
         ]
 
     return asyncio.run(_run())
+
+
+def test_strict_source_edit_profile_provider_payload_exposes_exact_tool_surface(
+    monkeypatch: Any,
+) -> None:
+    captured: dict[str, Any] = {}
+    _patch_transport(monkeypatch, captured)
+    provider = OpenAIProvider(
+        api_key="test",
+        model="qwen3.6-flash",
+        base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+        provider_kind="dashscope",
+    )
+    registry = get_default_registry()
+    ctx = apply_tool_policy(
+        ToolContext(is_owner=True),
+        available_tools=registry.list_names(),
+        agent_policy=ToolPolicy(profile="repo_coding_source_edit_strict"),
+    )
+    tools = registry.to_tool_definitions(ctx)
+    cfg = ChatConfig(
+        model_capabilities=ModelCapabilities(
+            supports_tools=True,
+            reasoning_format="dashscope",
+        )
+    )
+
+    _collect_events(provider, cfg, tools=tools)
+
+    tool_names = {
+        tool["function"]["name"]
+        for tool in captured["payload"]["tools"]
+    }
+    assert tool_names == STRICT_SOURCE_EDIT_TOOL_NAMES
+    assert STRICT_SOURCE_EDIT_FORBIDDEN_TOOL_NAMES.isdisjoint(tool_names)
+
+
+def test_source_edit_v2_profile_provider_payload_exposes_exact_tool_surface(
+    monkeypatch: Any,
+) -> None:
+    captured: dict[str, Any] = {}
+    _patch_transport(monkeypatch, captured)
+    provider = OpenAIProvider(
+        api_key="test",
+        model="qwen3.6-flash",
+        base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+        provider_kind="dashscope",
+    )
+    registry = get_default_registry()
+    ctx = apply_tool_policy(
+        ToolContext(is_owner=True),
+        available_tools=registry.list_names(),
+        agent_policy=ToolPolicy(profile="repo_coding_source_edit_v2"),
+    )
+    tools = registry.to_tool_definitions(ctx)
+    cfg = ChatConfig(
+        model_capabilities=ModelCapabilities(
+            supports_tools=True,
+            reasoning_format="dashscope",
+        )
+    )
+
+    _collect_events(provider, cfg, tools=tools)
+
+    tool_names = {
+        tool["function"]["name"]
+        for tool in captured["payload"]["tools"]
+    }
+    assert tool_names == SOURCE_EDIT_V2_TOOL_NAMES
+    assert STRICT_SOURCE_EDIT_FORBIDDEN_TOOL_NAMES.isdisjoint(tool_names)
+
+
+def test_balanced_source_edit_profile_provider_payload_exposes_exact_tool_surface(
+    monkeypatch: Any,
+) -> None:
+    captured: dict[str, Any] = {}
+    _patch_transport(monkeypatch, captured)
+    provider = OpenAIProvider(
+        api_key="test",
+        model="qwen3.6-flash",
+        base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+        provider_kind="dashscope",
+    )
+    registry = get_default_registry()
+    ctx = apply_tool_policy(
+        ToolContext(is_owner=True),
+        available_tools=registry.list_names(),
+        agent_policy=ToolPolicy(profile="repo_coding_source_edit_balanced"),
+    )
+    tools = registry.to_tool_definitions(ctx)
+    cfg = ChatConfig(
+        model_capabilities=ModelCapabilities(
+            supports_tools=True,
+            reasoning_format="dashscope",
+        )
+    )
+
+    _collect_events(provider, cfg, tools=tools)
+
+    tool_names = {
+        tool["function"]["name"]
+        for tool in captured["payload"]["tools"]
+    }
+    assert tool_names == BALANCED_SOURCE_EDIT_TOOL_NAMES
+    assert {"write_file", "edit_file", "apply_patch", "execute_code"}.isdisjoint(tool_names)
+
+
+def test_patch_fallback_source_edit_profile_provider_payload_adds_only_apply_patch(
+    monkeypatch: Any,
+) -> None:
+    captured: dict[str, Any] = {}
+    _patch_transport(monkeypatch, captured)
+    provider = OpenAIProvider(
+        api_key="test",
+        model="qwen3.6-flash",
+        base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+        provider_kind="dashscope",
+    )
+    registry = get_default_registry()
+    ctx = apply_tool_policy(
+        ToolContext(is_owner=True),
+        available_tools=registry.list_names(),
+        agent_policy=ToolPolicy(profile="repo_coding_source_edit_patch_fallback"),
+    )
+    tools = registry.to_tool_definitions(ctx)
+    cfg = ChatConfig(
+        model_capabilities=ModelCapabilities(
+            supports_tools=True,
+            reasoning_format="dashscope",
+        )
+    )
+
+    _collect_events(provider, cfg, tools=tools)
+
+    tool_names = {
+        tool["function"]["name"]
+        for tool in captured["payload"]["tools"]
+    }
+    assert tool_names == PATCH_FALLBACK_SOURCE_EDIT_TOOL_NAMES
+    assert {"write_file", "edit_file", "execute_code"}.isdisjoint(tool_names)
+
+
+def test_scaffold_edit_profile_provider_payload_exposes_exact_tool_surface(
+    monkeypatch: Any,
+) -> None:
+    captured: dict[str, Any] = {}
+    _patch_transport(monkeypatch, captured)
+    provider = OpenAIProvider(
+        api_key="test",
+        model="qwen3.6-flash",
+        base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+        provider_kind="dashscope",
+    )
+    registry = get_default_registry()
+    ctx = apply_tool_policy(
+        ToolContext(is_owner=True),
+        available_tools=registry.list_names(),
+        agent_policy=ToolPolicy(profile="repo_coding_scaffold_edit"),
+    )
+    tools = registry.to_tool_definitions(ctx)
+
+    _collect_events(provider, ChatConfig(), tools=tools)
+
+    tool_names = {
+        tool["function"]["name"]
+        for tool in captured["payload"]["tools"]
+    }
+    assert tool_names == SCAFFOLD_EDIT_TOOL_NAMES
+    assert SCAFFOLD_FORBIDDEN_TOOL_NAMES.isdisjoint(tool_names)
+    assert "apply_patch" not in tool_names
+    descriptions = _payload_tool_descriptions(captured["payload"])
+    for hidden_name in SCAFFOLD_EDIT_FORBIDDEN_DESCRIPTION_NAMES:
+        assert hidden_name not in descriptions
+
+
+def test_scaffold_patch_profile_provider_payload_adds_only_apply_patch(
+    monkeypatch: Any,
+) -> None:
+    captured: dict[str, Any] = {}
+    _patch_transport(monkeypatch, captured)
+    provider = OpenAIProvider(
+        api_key="test",
+        model="qwen3.6-flash",
+        base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+        provider_kind="dashscope",
+    )
+    registry = get_default_registry()
+    ctx = apply_tool_policy(
+        ToolContext(is_owner=True),
+        available_tools=registry.list_names(),
+        agent_policy=ToolPolicy(profile="repo_coding_scaffold_patch"),
+    )
+    tools = registry.to_tool_definitions(ctx)
+
+    _collect_events(provider, ChatConfig(), tools=tools)
+
+    tool_names = {
+        tool["function"]["name"]
+        for tool in captured["payload"]["tools"]
+    }
+    assert tool_names == SCAFFOLD_PATCH_TOOL_NAMES
+    assert SCAFFOLD_FORBIDDEN_TOOL_NAMES.isdisjoint(tool_names)
+    descriptions = _payload_tool_descriptions(captured["payload"])
+    assert "apply_patch" in descriptions
+    for hidden_name in SCAFFOLD_PATCH_FORBIDDEN_DESCRIPTION_NAMES:
+        assert hidden_name not in descriptions
+
+
+def test_tool_input_schema_omits_additional_properties_by_default() -> None:
+    tool = ToolDefinition(
+        name="lookup",
+        description="Lookup a value.",
+        input_schema=ToolInputSchema(properties={"q": {"type": "string"}}, required=["q"]),
+    )
+
+    payload = _build_openai_tool(tool)
+
+    assert payload["function"]["parameters"] == {
+        "type": "object",
+        "properties": {"q": {"type": "string"}},
+        "required": ["q"],
+    }
+    assert _tool_schema_accepts_arguments(tool, {"q": "hi", "extra": "ignored"})
+
+
+def test_tool_input_schema_supports_explicit_additional_properties_false() -> None:
+    tool = ToolDefinition(
+        name="lookup",
+        description="Lookup a value.",
+        input_schema=ToolInputSchema(
+            properties={"q": {"type": "string"}},
+            required=["q"],
+            additional_properties=False,
+        ),
+    )
+
+    payload = _build_openai_tool(tool)
+
+    assert payload["function"]["parameters"] == {
+        "type": "object",
+        "properties": {"q": {"type": "string"}},
+        "required": ["q"],
+        "additionalProperties": False,
+    }
+    assert _tool_schema_accepts_arguments(tool, {"q": "hi"})
+    assert not _tool_schema_accepts_arguments(tool, {"q": "hi", "extra": "rejected"})
 
 
 def test_deepseek_thinking_uses_provider_thinking_field_not_openai_reasoning_effort(
@@ -893,6 +1366,555 @@ def test_zai_non_thinking_sends_provider_disabled_for_default_thinking_model(
     assert captured["payload"]["thinking"] == {"type": "disabled"}
 
 
+def test_dashscope_cache_on_marks_system_and_latest_user(monkeypatch: Any) -> None:
+    captured: dict[str, Any] = {}
+    _patch_transport(monkeypatch, captured)
+    provider = OpenAIProvider(
+        api_key="test",
+        model="qwen3.6-flash",
+        base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+        provider_kind="dashscope",
+    )
+    cfg = ChatConfig(
+        system="stable base",
+        cache_breakpoints=[{"text": "stable base", "cache": "true"}],
+        cache_mode="on",
+    )
+
+    _collect(provider, cfg)
+
+    payload = captured["payload"]
+    assert "cache_control" not in payload
+    assert payload["messages"][0] == {
+        "role": "system",
+        "content": [
+            {
+                "type": "text",
+                "text": "stable base",
+                "cache_control": {"type": "ephemeral"},
+            }
+        ],
+    }
+    assert payload["messages"][1] == {
+        "role": "user",
+        "content": [
+            {
+                "type": "text",
+                "text": "hi",
+                "cache_control": {"type": "ephemeral"},
+            }
+        ],
+    }
+
+
+def test_dashscope_cache_on_marks_recent_tool_history_without_exceeding_limit(
+    monkeypatch: Any,
+) -> None:
+    captured: dict[str, Any] = {}
+    _patch_transport(monkeypatch, captured)
+    provider = OpenAIProvider(
+        api_key="test",
+        model="qwen3.6-flash",
+        base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+        provider_kind="dashscope",
+    )
+    cfg = ChatConfig(
+        system="stable base",
+        cache_breakpoints=[{"text": "stable base", "cache": "true"}],
+        cache_mode="on",
+    )
+
+    async def _run() -> None:
+        async for _event in provider.chat(
+            [
+                Message(role="user", content="initial issue"),
+                Message(role="assistant", content="older analysis"),
+                Message(role="user", content="older tool result"),
+                Message(
+                    role="assistant",
+                    content=[
+                        ContentBlockToolUse(
+                            id="call_1",
+                            name="exec_command",
+                            input={"cmd": "pytest"},
+                        )
+                    ],
+                ),
+                Message(
+                    role="user",
+                    content=[
+                        ContentBlockToolResult(
+                            tool_use_id="call_1",
+                            content="long pytest output",
+                        )
+                    ],
+                ),
+                Message(role="assistant", content="I will patch the failure."),
+            ],
+            config=cfg,
+        ):
+            pass
+
+    asyncio.run(_run())
+
+    messages = captured["payload"]["messages"]
+    marker_positions = [
+        (message_index, message["role"], block_index)
+        for message_index, message in enumerate(messages)
+        if isinstance(message.get("content"), list)
+        for block_index, block in enumerate(message["content"])
+        if block.get("cache_control") == {"type": "ephemeral"}
+    ]
+    assert marker_positions == [
+        (0, "system", 0),
+        (1, "user", 0),
+        (5, "tool", 0),
+        (6, "assistant", 0),
+    ]
+    fresh_tool_content = messages[5]["content"]
+    assert fresh_tool_content == [
+        {
+            "type": "text",
+            "text": "long pytest output",
+            "cache_control": {"type": "ephemeral"},
+        }
+    ]
+
+
+def test_dashscope_cache_on_keeps_initial_user_marker_in_long_history(
+    monkeypatch: Any,
+) -> None:
+    captured: dict[str, Any] = {}
+    _patch_transport(monkeypatch, captured)
+    provider = OpenAIProvider(
+        api_key="test",
+        model="qwen3.6-flash",
+        base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+        provider_kind="dashscope",
+    )
+    cfg = ChatConfig(
+        system="stable base",
+        cache_breakpoints=[{"text": "stable base", "cache": "true"}],
+        cache_mode="on",
+    )
+
+    async def _run() -> None:
+        async for _event in provider.chat(
+            [
+                Message(role="user", content="initial issue"),
+                Message(role="assistant", content="analysis 1"),
+                Message(role="user", content="tool result 1"),
+                Message(role="assistant", content="analysis 2"),
+                Message(role="user", content="tool result 2"),
+                Message(role="assistant", content="analysis 3"),
+            ],
+            config=cfg,
+        ):
+            pass
+
+    asyncio.run(_run())
+
+    messages = captured["payload"]["messages"]
+    marker_positions = [
+        (message_index, message["role"], block_index)
+        for message_index, message in enumerate(messages)
+        if isinstance(message.get("content"), list)
+        for block_index, block in enumerate(message["content"])
+        if block.get("cache_control") == {"type": "ephemeral"}
+    ]
+    assert marker_positions == [
+        (0, "system", 0),
+        (1, "user", 0),
+        (5, "user", 0),
+        (6, "assistant", 0),
+    ]
+
+
+def test_dashscope_cache_off_does_not_mark_messages(monkeypatch: Any) -> None:
+    captured: dict[str, Any] = {}
+    _patch_transport(monkeypatch, captured)
+    provider = OpenAIProvider(
+        api_key="test",
+        model="qwen3.6-flash",
+        base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+        provider_kind="dashscope",
+    )
+    cfg = ChatConfig(
+        system="stable base",
+        cache_breakpoints=[{"text": "stable base", "cache": "true"}],
+        cache_mode="off",
+    )
+
+    _collect(provider, cfg)
+
+    payload = captured["payload"]
+    assert "cache_control" not in payload
+    assert payload["messages"][0] == {"role": "system", "content": "stable base"}
+    assert payload["messages"][1] == {"role": "user", "content": "hi"}
+
+
+def test_dashscope_repeated_history_tool_calls_preserves_duplicate_replay_protocol(
+    monkeypatch: Any,
+) -> None:
+    captured: dict[str, Any] = {}
+    _patch_transport(monkeypatch, captured)
+    provider = OpenAIProvider(
+        api_key="test",
+        model="qwen3.6-flash",
+        base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+        provider_kind="dashscope",
+    )
+
+    async def _run() -> None:
+        async for _event in provider.chat(
+            [
+                Message(role="user", content="build and poll"),
+                Message(
+                    role="assistant",
+                    content=[
+                        ContentBlockToolUse(
+                            id="call_1",
+                            name="process",
+                            input={"action": "poll", "session_id": "abc"},
+                        )
+                    ],
+                ),
+                Message(
+                    role="user",
+                    content=[
+                        ContentBlockToolResult(
+                            tool_use_id="call_1",
+                            content='{"status":"running"}',
+                        )
+                    ],
+                ),
+                Message(
+                    role="assistant",
+                    content=[
+                        ContentBlockToolUse(
+                            id="call_2",
+                            name="process",
+                            input={"action": "poll", "session_id": "abc"},
+                        )
+                    ],
+                ),
+            ],
+            config=ChatConfig(),
+        ):
+            pass
+
+    asyncio.run(_run())
+
+    messages = captured["payload"]["messages"]
+    tool_call_messages = _assistant_tool_call_messages(messages)
+    assert [
+        message["tool_calls"][0]["id"] for message in tool_call_messages
+    ] == ["call_1", "call_2"]
+    for message in tool_call_messages:
+        raw_args = message["tool_calls"][0]["function"]["arguments"]
+        assert json.loads(raw_args) == {"action": "poll", "session_id": "abc"}
+    tool_messages = _tool_messages(messages)
+    assert [message["tool_call_id"] for message in tool_messages] == ["call_1"]
+    assert tool_messages[0]["content"] == '{"status":"running"}'
+    _assert_no_dashscope_duplicate_omission(messages)
+
+
+def test_dashscope_repeated_non_process_tool_calls_preserves_duplicate_replay_protocol(
+    monkeypatch: Any,
+) -> None:
+    captured: dict[str, Any] = {}
+    _patch_transport(monkeypatch, captured)
+    provider = OpenAIProvider(
+        api_key="test",
+        model="qwen3.6-flash",
+        base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+        provider_kind="dashscope",
+    )
+
+    async def _run() -> None:
+        async for _event in provider.chat(
+            [
+                Message(role="user", content="read twice"),
+                Message(
+                    role="assistant",
+                    content=[
+                        ContentBlockToolUse(
+                            id="call_1",
+                            name="read_file",
+                            input={"path": "/tmp/example.txt"},
+                        )
+                    ],
+                ),
+                Message(
+                    role="user",
+                    content=[
+                        ContentBlockToolResult(
+                            tool_use_id="call_1",
+                            content="one",
+                        )
+                    ],
+                ),
+                Message(
+                    role="assistant",
+                    content=[
+                        ContentBlockToolUse(
+                            id="call_2",
+                            name="read_file",
+                            input={"path": "/tmp/example.txt"},
+                        )
+                    ],
+                ),
+            ],
+            config=ChatConfig(),
+        ):
+            pass
+
+    asyncio.run(_run())
+
+    messages = captured["payload"]["messages"]
+    tool_call_messages = _assistant_tool_call_messages(messages)
+    assert [
+        message["tool_calls"][0]["id"] for message in tool_call_messages
+    ] == ["call_1", "call_2"]
+    for message in tool_call_messages:
+        raw_args = message["tool_calls"][0]["function"]["arguments"]
+        assert json.loads(raw_args) == {"path": "/tmp/example.txt"}
+    tool_messages = _tool_messages(messages)
+    assert [message["tool_call_id"] for message in tool_messages] == ["call_1"]
+    assert tool_messages[0]["content"] == "one"
+    _assert_no_dashscope_duplicate_omission(messages)
+
+
+def test_dashscope_repeated_exec_command_history_preserves_duplicate_replay_protocol(
+    monkeypatch: Any,
+) -> None:
+    captured: dict[str, Any] = {}
+    _patch_transport(monkeypatch, captured)
+    provider = OpenAIProvider(
+        api_key="test",
+        model="qwen3.6-flash",
+        base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+        provider_kind="dashscope",
+    )
+    command = "cd /workspace/project && cargo test -p mypkg case1"
+
+    async def _run() -> None:
+        async for _event in provider.chat(
+            [
+                Message(role="user", content="run twice"),
+                Message(
+                    role="assistant",
+                    content=[
+                        ContentBlockToolUse(
+                            id="call_1",
+                            name="exec_command",
+                            input={"command": command},
+                        )
+                    ],
+                ),
+                Message(
+                    role="user",
+                    content=[
+                        ContentBlockToolResult(
+                            tool_use_id="call_1",
+                            content="failed",
+                            is_error=True,
+                        )
+                    ],
+                ),
+                Message(
+                    role="assistant",
+                    content=[
+                        ContentBlockToolUse(
+                            id="call_2",
+                            name="exec_command",
+                            input={"command": command},
+                        )
+                    ],
+                ),
+            ],
+            config=ChatConfig(),
+        ):
+            pass
+
+    asyncio.run(_run())
+
+    messages = captured["payload"]["messages"]
+    tool_call_messages = _assistant_tool_call_messages(messages)
+    assert [
+        message["tool_calls"][0]["id"] for message in tool_call_messages
+    ] == ["call_1", "call_2"]
+    for message in tool_call_messages:
+        raw_args = message["tool_calls"][0]["function"]["arguments"]
+        assert json.loads(raw_args) == {"command": command}
+        assert "approval_id" not in raw_args
+    tool_messages = _tool_messages(messages)
+    assert [message["tool_call_id"] for message in tool_messages] == ["call_1"]
+    assert tool_messages[0]["content"] == "failed"
+    _assert_no_dashscope_duplicate_omission(messages)
+
+
+def test_dashscope_repeated_exec_command_summary_preserves_structured_history(
+    monkeypatch: Any,
+) -> None:
+    captured: dict[str, Any] = {}
+    _patch_transport(monkeypatch, captured)
+    provider = OpenAIProvider(
+        api_key="test",
+        model="qwen3.6-flash",
+        base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+        provider_kind="dashscope",
+    )
+    command = "pytest tests/test_widget.py::test_handles_blank"
+
+    async def _run() -> None:
+        async for _event in provider.chat(
+            [
+                Message(role="user", content="run test, edit, run again"),
+                Message(
+                    role="assistant",
+                    content=[
+                        ContentBlockToolUse(
+                            id="call_1",
+                            name="exec_command",
+                            input={"command": command},
+                        )
+                    ],
+                ),
+                Message(
+                    role="user",
+                    content=[
+                        ContentBlockToolResult(
+                            tool_use_id="call_1",
+                            content=(
+                                "FAILED tests/test_widget.py::test_handles_blank\n"
+                                "E AssertionError: expected 4, got 3\n"
+                                "exit code: 1"
+                            ),
+                            is_error=True,
+                        )
+                    ],
+                ),
+                Message(
+                    role="assistant",
+                    content=[
+                        ContentBlockToolUse(
+                            id="call_edit",
+                            name="apply_patch",
+                            input={"patch": "*** Begin Patch\n*** End Patch"},
+                        )
+                    ],
+                ),
+                Message(
+                    role="user",
+                    content=[
+                        ContentBlockToolResult(
+                            tool_use_id="call_edit",
+                            content="patch applied",
+                        )
+                    ],
+                ),
+                Message(
+                    role="assistant",
+                    content=[
+                        ContentBlockToolUse(
+                            id="call_2",
+                            name="exec_command",
+                            input={"command": command},
+                        )
+                    ],
+                ),
+            ],
+            config=ChatConfig(),
+        ):
+            pass
+
+    asyncio.run(_run())
+
+    messages = captured["payload"]["messages"]
+    tool_call_messages = _assistant_tool_call_messages(messages)
+    assert [
+        message["tool_calls"][0]["id"] for message in tool_call_messages
+    ] == ["call_1", "call_edit", "call_2"]
+    tool_messages = _tool_messages(messages)
+    assert [message["tool_call_id"] for message in tool_messages] == [
+        "call_1",
+        "call_edit",
+    ]
+    assert "AssertionError" in tool_messages[0]["content"]
+    assert tool_messages[1]["content"] == "patch applied"
+    _assert_no_dashscope_duplicate_omission(messages)
+
+
+def test_dashscope_repeated_apply_patch_history_preserves_duplicate_replay_protocol(
+    monkeypatch: Any,
+) -> None:
+    captured: dict[str, Any] = {}
+    _patch_transport(monkeypatch, captured)
+    provider = OpenAIProvider(
+        api_key="test",
+        model="qwen3.6-flash",
+        base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+        provider_kind="dashscope",
+    )
+    patch = "*** Begin Patch: tests/jq.test\n@@ -1,3 +1,5 @@\n+new\n*** End Patch: tests/jq.test"
+
+    async def _run() -> None:
+        async for _event in provider.chat(
+            [
+                Message(role="user", content="patch"),
+                Message(
+                    role="assistant",
+                    content=[
+                        ContentBlockToolUse(
+                            id="call_1",
+                            name="apply_patch",
+                            input={"patch": patch},
+                        )
+                    ],
+                ),
+                Message(
+                    role="user",
+                    content=[
+                        ContentBlockToolResult(
+                            tool_use_id="call_1",
+                            content="patch failed",
+                            is_error=True,
+                        )
+                    ],
+                ),
+                Message(
+                    role="assistant",
+                    content=[
+                        ContentBlockToolUse(
+                            id="call_2",
+                            name="apply_patch",
+                            input={"patch": patch},
+                        )
+                    ],
+                ),
+            ],
+            config=ChatConfig(),
+        ):
+            pass
+
+    asyncio.run(_run())
+
+    messages = captured["payload"]["messages"]
+    tool_call_messages = _assistant_tool_call_messages(messages)
+    assert [
+        message["tool_calls"][0]["id"] for message in tool_call_messages
+    ] == ["call_1", "call_2"]
+    for message in tool_call_messages:
+        raw_args = message["tool_calls"][0]["function"]["arguments"]
+        assert json.loads(raw_args) == {"patch": patch}
+        assert "approval_id" not in raw_args
+    tool_messages = _tool_messages(messages)
+    assert [message["tool_call_id"] for message in tool_messages] == ["call_1"]
+    assert tool_messages[0]["content"] == "patch failed"
+    _assert_no_dashscope_duplicate_omission(messages)
+
+
 def test_dashscope_thinking_uses_enable_thinking_and_budget(monkeypatch: Any) -> None:
     captured: dict[str, Any] = {}
     _patch_transport(monkeypatch, captured)
@@ -916,7 +1938,402 @@ def test_dashscope_thinking_uses_enable_thinking_and_budget(monkeypatch: Any) ->
 
     assert captured["payload"]["enable_thinking"] is True
     assert captured["payload"]["thinking_budget"] == 4096
+    assert captured["payload"]["max_completion_tokens"] == cfg.max_tokens
+    assert "max_tokens" not in captured["payload"]
     assert "reasoning_effort" not in captured["payload"]
+
+
+def test_dashscope_thinking_omits_forced_tool_choice(monkeypatch: Any) -> None:
+    captured: dict[str, Any] = {}
+    _patch_transport(monkeypatch, captured)
+    provider = OpenAIProvider(
+        api_key="test",
+        model="qwen3.6-flash",
+        base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+        provider_kind="dashscope",
+    )
+    tool = ToolDefinition(
+        name="read_file",
+        description="Read a file",
+        input_schema={
+            "type": "object",
+            "properties": {"path": {"type": "string"}},
+            "required": ["path"],
+        },
+    )
+    cfg = ChatConfig(
+        thinking=True,
+        tool_choice={"type": "function", "function": {"name": "read_file"}},
+        model_capabilities=ModelCapabilities(
+            supports_reasoning=True,
+            supports_tools=True,
+            reasoning_format="dashscope",
+        ),
+    )
+
+    _collect_events(provider, cfg, tools=[tool])
+
+    assert captured["payload"]["enable_thinking"] is True
+    assert "tools" in captured["payload"]
+    assert "tool_choice" not in captured["payload"]
+
+
+def test_dashscope_thinking_omits_implicit_level_budget(monkeypatch: Any) -> None:
+    captured: dict[str, Any] = {}
+    _patch_transport(monkeypatch, captured)
+    provider = OpenAIProvider(
+        api_key="test",
+        model="qwen3.6-flash",
+        base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+        provider_kind="dashscope",
+    )
+    cfg = ChatConfig(
+        thinking=True,
+        thinking_budget_tokens=20_000,
+        thinking_budget_explicit=False,
+        model_capabilities=ModelCapabilities(
+            supports_reasoning=True,
+            supports_tools=True,
+            reasoning_format="dashscope",
+        ),
+    )
+
+    _collect(provider, cfg)
+
+    assert captured["payload"]["enable_thinking"] is True
+    assert "thinking_budget" not in captured["payload"]
+    assert "reasoning_effort" not in captured["payload"]
+
+
+_DASHSCOPE_BUDGET_ENV = "OPENSQUILLA_DASHSCOPE_THINKING_BUDGET"
+
+
+def test_dashscope_env_thinking_budget_absent_leaves_payload_inert(
+    monkeypatch: Any,
+) -> None:
+    """With the env override unset, the dashscope payload keeps the default
+    behaviour (implicit config emits no thinking_budget)."""
+    monkeypatch.delenv(_DASHSCOPE_BUDGET_ENV, raising=False)
+    captured: dict[str, Any] = {}
+    _patch_transport(monkeypatch, captured)
+    provider = OpenAIProvider(
+        api_key="test",
+        model="qwen3.6-flash",
+        base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+        provider_kind="dashscope",
+    )
+    cfg = ChatConfig(
+        thinking=True,
+        thinking_budget_tokens=20_000,
+        thinking_budget_explicit=False,
+        model_capabilities=ModelCapabilities(
+            supports_reasoning=True,
+            supports_tools=True,
+            reasoning_format="dashscope",
+        ),
+    )
+
+    _collect(provider, cfg)
+
+    assert captured["payload"]["enable_thinking"] is True
+    assert "thinking_budget" not in captured["payload"]
+
+
+def test_dashscope_env_thinking_budget_sets_payload_when_config_implicit(
+    monkeypatch: Any,
+) -> None:
+    """When set, the env override injects an explicit per-call thinking_budget
+    even when AgentConfig would emit none."""
+    monkeypatch.setenv(_DASHSCOPE_BUDGET_ENV, "18000")
+    captured: dict[str, Any] = {}
+    _patch_transport(monkeypatch, captured)
+    provider = OpenAIProvider(
+        api_key="test",
+        model="qwen3.6-flash",
+        base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+        provider_kind="dashscope",
+    )
+    cfg = ChatConfig(
+        thinking=True,
+        thinking_budget_tokens=20_000,
+        thinking_budget_explicit=False,
+        model_capabilities=ModelCapabilities(
+            supports_reasoning=True,
+            supports_tools=True,
+            reasoning_format="dashscope",
+        ),
+    )
+
+    _collect(provider, cfg)
+
+    assert captured["payload"]["enable_thinking"] is True
+    assert captured["payload"]["thinking_budget"] == 18000
+
+
+def test_dashscope_env_thinking_budget_overrides_explicit_config_and_clamps(
+    monkeypatch: Any,
+) -> None:
+    """The env override takes precedence over an explicit config budget and is
+    clamped to the DashScope-supported ceiling."""
+    monkeypatch.setenv(_DASHSCOPE_BUDGET_ENV, "999999")
+    captured: dict[str, Any] = {}
+    _patch_transport(monkeypatch, captured)
+    provider = OpenAIProvider(
+        api_key="test",
+        model="qwen3.6-flash",
+        base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+        provider_kind="dashscope",
+    )
+    cfg = ChatConfig(
+        thinking=True,
+        thinking_budget_tokens=4096,
+        model_capabilities=ModelCapabilities(
+            supports_reasoning=True,
+            supports_tools=True,
+            reasoning_format="dashscope",
+        ),
+    )
+
+    _collect(provider, cfg)
+
+    assert captured["payload"]["thinking_budget"] == 38_912
+
+
+def test_dashscope_env_thinking_budget_invalid_falls_back_to_config(
+    monkeypatch: Any,
+) -> None:
+    """A blank/unparseable/non-positive override is ignored, restoring the
+    config-driven behaviour rather than breaking the payload."""
+    monkeypatch.setenv(_DASHSCOPE_BUDGET_ENV, "not-a-number")
+    captured: dict[str, Any] = {}
+    _patch_transport(monkeypatch, captured)
+    provider = OpenAIProvider(
+        api_key="test",
+        model="qwen3.6-plus",
+        base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+        provider_kind="dashscope",
+    )
+    cfg = ChatConfig(
+        thinking=True,
+        thinking_budget_tokens=4096,
+        model_capabilities=ModelCapabilities(
+            supports_reasoning=True,
+            supports_tools=True,
+            reasoning_format="dashscope",
+        ),
+    )
+
+    _collect(provider, cfg)
+
+    assert captured["payload"]["thinking_budget"] == 4096
+
+
+def test_zai_ignores_dashscope_env_thinking_budget(monkeypatch: Any) -> None:
+    """GLM regression guard: the DashScope-only env override must never leak into
+    the zai (GLM) payload branch."""
+    monkeypatch.setenv(_DASHSCOPE_BUDGET_ENV, "18000")
+    captured: dict[str, Any] = {}
+    _patch_transport(monkeypatch, captured)
+    provider = OpenAIProvider(
+        api_key="test",
+        model="glm-5.1",
+        base_url="https://openrouter.ai/api/v1",
+        provider_kind="openrouter",
+    )
+    cfg = ChatConfig(
+        thinking=True,
+        model_capabilities=ModelCapabilities(
+            supports_reasoning=True,
+            supports_tools=True,
+            reasoning_format="zai",
+        ),
+    )
+
+    _collect(provider, cfg)
+
+    assert captured["payload"]["thinking"] == {"type": "enabled"}
+    assert "thinking_budget" not in captured["payload"]
+    assert "enable_thinking" not in captured["payload"]
+
+
+def test_dashscope_request_logs_qwen_provider_profile(monkeypatch: Any) -> None:
+    captured_payload: dict[str, Any] = {}
+    _patch_transport(monkeypatch, captured_payload)
+    provider = OpenAIProvider(
+        api_key="test",
+        model="qwen3.6-flash",
+        base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+        provider_kind="dashscope",
+    )
+
+    # Interactive-chat tests leave a WARNING-filtering wrapper_class configured
+    # process-wide; capture_logs only swaps processors, so reset the wrapper to
+    # keep this info-level event visible (same guard as _capture_metric_logs).
+    old_config = structlog.get_config()
+    structlog.configure(wrapper_class=structlog.make_filtering_bound_logger(logging.NOTSET))
+    try:
+        with structlog.testing.capture_logs() as captured_logs:
+            _collect(
+                provider,
+                ChatConfig(
+                    thinking=True,
+                    thinking_budget_tokens=2048,
+                    cache_mode="on",
+                    model_capabilities=ModelCapabilities(
+                        supports_reasoning=True,
+                        supports_tools=True,
+                        reasoning_format="dashscope",
+                    ),
+                ),
+            )
+    finally:
+        structlog.configure(**old_config)
+
+    profile = next(
+        item for item in captured_logs if item["event"] == "provider.qwen_provider_profile"
+    )
+    assert profile["provider"] == "dashscope"
+    assert profile["model"] == "qwen3.6-flash"
+    assert profile["endpoint_family"] == "standard_cn"
+    assert profile["thinking_enabled"] is True
+    assert profile["thinking_budget"] == 2048
+    assert profile["cache_mode"] == "on"
+    assert profile["text_tool_parser"] == "qwen_tags"
+    assert profile["stream_fallback"] == "non_stream_once"
+
+
+def test_dashscope_qwen36_flash_thinking_does_not_replay_reasoning_content(
+    monkeypatch: Any,
+) -> None:
+    captured: dict[str, Any] = {}
+    _patch_transport(monkeypatch, captured)
+    provider = OpenAIProvider(
+        api_key="test",
+        model="qwen3.6-flash",
+        base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+        provider_kind="dashscope",
+    )
+    messages = [
+        Message(
+            role="assistant",
+            content=[
+                ContentBlockToolUse(
+                    id="call_patch",
+                    name="apply_patch",
+                    input={"patch": "*** Begin Patch\n*** End Patch"},
+                )
+            ],
+            reasoning_content="I chose a minimal patch before calling the tool.",
+        ),
+        Message(
+            role="user",
+            content=[
+                ContentBlockToolResult(
+                    tool_use_id="call_patch",
+                    content="Applied patch",
+                )
+            ],
+        ),
+        Message(role="user", content="continue"),
+    ]
+    cfg = ChatConfig(
+        thinking=True,
+        thinking_budget_tokens=4096,
+        model_capabilities=ModelCapabilities(
+            supports_reasoning=True,
+            supports_tools=True,
+            reasoning_format="dashscope",
+        ),
+    )
+
+    async def _run() -> None:
+        async for _ in provider.chat(messages, config=cfg):
+            pass
+
+    asyncio.run(_run())
+
+    assert captured["payload"]["enable_thinking"] is True
+    assert "preserve_thinking" not in captured["payload"]
+    assert "reasoning_content" not in captured["payload"]["messages"][0]
+
+
+def test_dashscope_preserve_thinking_model_replays_reasoning_content(
+    monkeypatch: Any,
+) -> None:
+    captured: dict[str, Any] = {}
+    _patch_transport(monkeypatch, captured)
+    provider = OpenAIProvider(
+        api_key="test",
+        model="qwen3.6-max-preview",
+        base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+        provider_kind="dashscope",
+    )
+    messages = [
+        Message(
+            role="assistant",
+            content="previous visible answer",
+            reasoning_content="previous DashScope thinking",
+        ),
+        Message(role="user", content="continue"),
+    ]
+    cfg = ChatConfig(
+        thinking=True,
+        model_capabilities=ModelCapabilities(
+            supports_reasoning=True,
+            supports_tools=True,
+            reasoning_format="dashscope",
+        ),
+    )
+
+    async def _run() -> None:
+        async for _ in provider.chat(messages, config=cfg):
+            pass
+
+    asyncio.run(_run())
+
+    assert captured["payload"]["enable_thinking"] is True
+    assert captured["payload"]["preserve_thinking"] is True
+    assert captured["payload"]["messages"][0]["reasoning_content"] == (
+        "previous DashScope thinking"
+    )
+
+
+def test_dashscope_non_thinking_does_not_replay_reasoning_content(
+    monkeypatch: Any,
+) -> None:
+    captured: dict[str, Any] = {}
+    _patch_transport(monkeypatch, captured)
+    provider = OpenAIProvider(
+        api_key="test",
+        model="qwen3.6-flash",
+        base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+        provider_kind="dashscope",
+    )
+    messages = [
+        Message(
+            role="assistant",
+            content="previous answer",
+            reasoning_content="prior DashScope thinking should stay hidden when off",
+        ),
+        Message(role="user", content="continue"),
+    ]
+    cfg = ChatConfig(
+        thinking=False,
+        model_capabilities=ModelCapabilities(
+            supports_reasoning=True,
+            supports_tools=True,
+            reasoning_format="dashscope",
+        ),
+    )
+
+    async def _run() -> None:
+        async for _ in provider.chat(messages, config=cfg):
+            pass
+
+    asyncio.run(_run())
+
+    assert captured["payload"]["enable_thinking"] is False
+    assert "reasoning_content" not in captured["payload"]["messages"][0]
 
 
 def test_dashscope_non_thinking_sends_enable_thinking_false(monkeypatch: Any) -> None:
@@ -1202,6 +2619,31 @@ def test_openrouter_still_sends_temperature(monkeypatch: Any) -> None:
     assert captured["payload"]["temperature"] == 0
 
 
+def test_openai_payload_omits_top_p_by_default(monkeypatch: Any) -> None:
+    captured: dict[str, Any] = {}
+    _patch_transport(monkeypatch, captured)
+    provider = OpenAIProvider(api_key="test", model="gpt-4o-mini")
+
+    _collect(provider, ChatConfig())
+
+    assert "top_p" not in captured["payload"]
+
+
+def test_openai_payload_sends_top_p_when_configured(monkeypatch: Any) -> None:
+    captured: dict[str, Any] = {}
+    _patch_transport(monkeypatch, captured)
+    provider = OpenAIProvider(
+        api_key="test",
+        model="qwen3.6-flash",
+        base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+        provider_kind="dashscope",
+    )
+
+    _collect(provider, ChatConfig(top_p=0.95))
+
+    assert captured["payload"]["top_p"] == 0.95
+
+
 def test_siliconflow_baseline_payload_does_not_enable_provider_thinking_by_default(
     monkeypatch: Any,
 ) -> None:
@@ -1330,6 +2772,1196 @@ def test_gemini_stream_tool_call_without_index_is_tolerated(monkeypatch: Any) ->
     assert tool_end.tool_name == "lookup"
     assert tool_end.arguments == {"q": "hi"}
     assert done.model == "gemini-2.5-flash"
+
+
+def test_stream_malformed_tool_arguments_logs_and_preserves_raw(
+    monkeypatch: Any,
+) -> None:
+    raw_arguments = '{"path":"demo.py","new_text":"unterminated'
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        chunks = [
+            {
+                "model": "qwen3.6-flash",
+                "choices": [
+                    {
+                        "delta": {
+                            "tool_calls": [
+                                {
+                                    "index": 0,
+                                    "id": "call_edit",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "edit_file",
+                                        "arguments": raw_arguments,
+                                    },
+                                }
+                            ]
+                        },
+                        "finish_reason": None,
+                    }
+                ],
+            },
+            {
+                "model": "qwen3.6-flash",
+                "choices": [{"delta": {}, "finish_reason": "tool_calls"}],
+            },
+        ]
+        body = b"".join(f"data: {json.dumps(chunk)}\n\n".encode() for chunk in chunks)
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/event-stream"},
+            content=body + b"data: [DONE]\n\n",
+        )
+
+    transport = httpx.MockTransport(handler)
+    real_async_client = httpx.AsyncClient
+
+    def patched_async_client(*args: Any, **kwargs: Any) -> httpx.AsyncClient:
+        kwargs["transport"] = transport
+        return real_async_client(*args, **kwargs)
+
+    monkeypatch.setattr("opensquilla.provider.openai.httpx.AsyncClient", patched_async_client)
+    provider = OpenAIProvider(
+        api_key="test",
+        model="qwen3.6-flash",
+        base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+        provider_kind="dashscope",
+    )
+    tool = ToolDefinition(
+        name="edit_file",
+        description="Edit a file.",
+        input_schema=ToolInputSchema(
+            properties={
+                "path": {"type": "string"},
+                "old_text": {"type": "string"},
+                "new_text": {"type": "string"},
+            },
+            required=["path", "old_text", "new_text"],
+        ),
+    )
+
+    with structlog.testing.capture_logs() as captured:
+        events = _collect_events(provider, ChatConfig(), tools=[tool])
+
+    tool_end = next(event for event in events if isinstance(event, ToolUseEndEvent))
+    invalid_log = next(
+        item for item in captured if item["event"] == "provider.tool_arguments_json_invalid"
+    )
+    assert tool_end.tool_use_id == "call_edit"
+    assert tool_end.tool_name == "edit_file"
+    assert tool_end.arguments == {"_raw": raw_arguments}
+    assert invalid_log["provider"] == "dashscope"
+    assert invalid_log["model"] == "qwen3.6-flash"
+    assert invalid_log["tool"] == "edit_file"
+    assert invalid_log["tool_use_id"] == "call_edit"
+    assert invalid_log["raw_chars"] == len(raw_arguments)
+    assert "Unterminated string" in invalid_log["error"]
+
+
+def test_stream_dashscope_repairs_parameter_wrapped_tool_arguments(
+    monkeypatch: Any,
+) -> None:
+    raw_arguments = '<parameter>{"path":"demo.py","old_text":"old","new_text":"new"}</parameter>'
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        chunks = [
+            {
+                "model": "qwen3.6-flash",
+                "choices": [
+                    {
+                        "delta": {
+                            "tool_calls": [
+                                {
+                                    "index": 0,
+                                    "id": "call_edit",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "edit_file",
+                                        "arguments": raw_arguments,
+                                    },
+                                }
+                            ]
+                        },
+                        "finish_reason": None,
+                    }
+                ],
+            },
+            {
+                "model": "qwen3.6-flash",
+                "choices": [{"delta": {}, "finish_reason": "tool_calls"}],
+            },
+        ]
+        body = b"".join(f"data: {json.dumps(chunk)}\n\n".encode() for chunk in chunks)
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/event-stream"},
+            content=body + b"data: [DONE]\n\n",
+        )
+
+    transport = httpx.MockTransport(handler)
+    real_async_client = httpx.AsyncClient
+
+    def patched_async_client(*args: Any, **kwargs: Any) -> httpx.AsyncClient:
+        kwargs["transport"] = transport
+        return real_async_client(*args, **kwargs)
+
+    monkeypatch.setattr("opensquilla.provider.openai.httpx.AsyncClient", patched_async_client)
+    provider = OpenAIProvider(
+        api_key="test",
+        model="qwen3.6-flash",
+        base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+        provider_kind="dashscope",
+    )
+    tool = ToolDefinition(
+        name="edit_file",
+        description="Edit a file.",
+        input_schema=ToolInputSchema(
+            properties={
+                "path": {"type": "string"},
+                "old_text": {"type": "string"},
+                "new_text": {"type": "string"},
+            },
+            required=["path", "old_text", "new_text"],
+        ),
+    )
+
+    with structlog.testing.capture_logs() as captured:
+        events = _collect_events(provider, ChatConfig(), tools=[tool])
+
+    tool_end = next(event for event in events if isinstance(event, ToolUseEndEvent))
+    assert tool_end.arguments == {
+        "path": "demo.py",
+        "old_text": "old",
+        "new_text": "new",
+    }
+    assert any(
+        item["event"] == "provider.tool_arguments_json_repaired"
+        and item["repair"] == "dashscope_wrapper_json"
+        for item in captured
+    )
+    assert not any(item["event"] == "provider.tool_arguments_json_invalid" for item in captured)
+
+
+def test_stream_dashscope_recovers_qwen_json_text_tool_call(
+    monkeypatch: Any,
+) -> None:
+    text_tool_call = (
+        'thinking out loud<tool_call>{"name":"edit_file","arguments":'
+        '{"path":"demo.py","old_text":"old","new_text":"new"}}</tool_call>'
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        chunks = [
+            {
+                "model": "qwen3.6-flash",
+                "choices": [{"delta": {"content": text_tool_call}, "finish_reason": None}],
+            },
+            {
+                "model": "qwen3.6-flash",
+                "choices": [{"delta": {}, "finish_reason": "stop"}],
+            },
+        ]
+        body = b"".join(f"data: {json.dumps(chunk)}\n\n".encode() for chunk in chunks)
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/event-stream"},
+            content=body + b"data: [DONE]\n\n",
+        )
+
+    transport = httpx.MockTransport(handler)
+    real_async_client = httpx.AsyncClient
+
+    def patched_async_client(*args: Any, **kwargs: Any) -> httpx.AsyncClient:
+        kwargs["transport"] = transport
+        return real_async_client(*args, **kwargs)
+
+    monkeypatch.setattr("opensquilla.provider.openai.httpx.AsyncClient", patched_async_client)
+    provider = OpenAIProvider(
+        api_key="test",
+        model="qwen3.6-flash",
+        base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+        provider_kind="dashscope",
+    )
+    tool = ToolDefinition(
+        name="edit_file",
+        description="Edit a file.",
+        input_schema=ToolInputSchema(
+            properties={
+                "path": {"type": "string"},
+                "old_text": {"type": "string"},
+                "new_text": {"type": "string"},
+            },
+            required=["path", "old_text", "new_text"],
+        ),
+    )
+
+    with structlog.testing.capture_logs() as captured:
+        events = _collect_events(provider, ChatConfig(), tools=[tool])
+
+    tool_end = next(event for event in events if isinstance(event, ToolUseEndEvent))
+    assert tool_end.synthetic_from_text is True
+    assert tool_end.tool_name == "edit_file"
+    assert tool_end.arguments == {
+        "path": "demo.py",
+        "old_text": "old",
+        "new_text": "new",
+    }
+    assert any(item["event"] == "provider.qwen_text_tool_call_parsed" for item in captured)
+
+
+def test_stream_dashscope_recovers_qwen_xml_text_tool_call_with_aliases(
+    monkeypatch: Any,
+) -> None:
+    text_tool_call = (
+        "<tool_call><function=edit_file>"
+        "<parameter=filePath>demo.py</parameter>"
+        "<parameter=oldString>old</parameter>"
+        "<parameter=newString>new</parameter>"
+        "</function></tool_call>"
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        chunks = [
+            {
+                "model": "qwen3.6-flash",
+                "choices": [{"delta": {"content": text_tool_call}, "finish_reason": None}],
+            },
+            {
+                "model": "qwen3.6-flash",
+                "choices": [{"delta": {}, "finish_reason": "stop"}],
+            },
+        ]
+        body = b"".join(f"data: {json.dumps(chunk)}\n\n".encode() for chunk in chunks)
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/event-stream"},
+            content=body + b"data: [DONE]\n\n",
+        )
+
+    transport = httpx.MockTransport(handler)
+    real_async_client = httpx.AsyncClient
+
+    def patched_async_client(*args: Any, **kwargs: Any) -> httpx.AsyncClient:
+        kwargs["transport"] = transport
+        return real_async_client(*args, **kwargs)
+
+    monkeypatch.setattr("opensquilla.provider.openai.httpx.AsyncClient", patched_async_client)
+    provider = OpenAIProvider(
+        api_key="test",
+        model="qwen3.6-flash",
+        base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+        provider_kind="dashscope",
+    )
+    tool = ToolDefinition(
+        name="edit_file",
+        description="Edit a file.",
+        input_schema=ToolInputSchema(
+            properties={
+                "path": {"type": "string"},
+                "old_text": {"type": "string"},
+                "new_text": {"type": "string"},
+            },
+            required=["path", "old_text", "new_text"],
+        ),
+    )
+
+    with structlog.testing.capture_logs() as captured:
+        events = _collect_events(provider, ChatConfig(), tools=[tool])
+
+    tool_end = next(event for event in events if isinstance(event, ToolUseEndEvent))
+    assert tool_end.arguments == {
+        "path": "demo.py",
+        "old_text": "old",
+        "new_text": "new",
+    }
+    assert any(
+        item["event"] == "provider.tool_arguments_aliases_applied"
+        and item["provider"] == "dashscope"
+        for item in captured
+    )
+
+
+def test_stream_dashscope_rejects_qwen_text_tool_call_with_schema_errors(
+    monkeypatch: Any,
+) -> None:
+    text_tool_call = (
+        '<tool_call>{"name":"edit_file","arguments":'
+        '{"path":"demo.py","old_text":"old","new_text":7}}</tool_call>'
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        chunks = [
+            {
+                "model": "qwen3.6-flash",
+                "choices": [{"delta": {"content": text_tool_call}, "finish_reason": None}],
+            },
+            {
+                "model": "qwen3.6-flash",
+                "choices": [{"delta": {}, "finish_reason": "stop"}],
+            },
+        ]
+        body = b"".join(f"data: {json.dumps(chunk)}\n\n".encode() for chunk in chunks)
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/event-stream"},
+            content=body + b"data: [DONE]\n\n",
+        )
+
+    transport = httpx.MockTransport(handler)
+    real_async_client = httpx.AsyncClient
+
+    def patched_async_client(*args: Any, **kwargs: Any) -> httpx.AsyncClient:
+        kwargs["transport"] = transport
+        return real_async_client(*args, **kwargs)
+
+    monkeypatch.setattr("opensquilla.provider.openai.httpx.AsyncClient", patched_async_client)
+    provider = OpenAIProvider(
+        api_key="test",
+        model="qwen3.6-flash",
+        base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+        provider_kind="dashscope",
+    )
+    tool = ToolDefinition(
+        name="edit_file",
+        description="Edit a file.",
+        input_schema=ToolInputSchema(
+            properties={
+                "path": {"type": "string"},
+                "old_text": {"type": "string"},
+                "new_text": {"type": "string"},
+            },
+            required=["path", "old_text", "new_text"],
+        ),
+    )
+
+    with structlog.testing.capture_logs() as captured:
+        events = _collect_events(provider, ChatConfig(), tools=[tool])
+
+    assert not any(isinstance(event, ToolUseEndEvent) for event in events)
+    assert any(
+        item["event"] == "provider.qwen_text_tool_call_rejected_schema"
+        for item in captured
+    )
+
+
+def test_stream_dashscope_ignores_empty_tool_call_chunks(
+    monkeypatch: Any,
+) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        chunks = [
+            {
+                "model": "qwen3.6-flash",
+                "choices": [
+                    {
+                        "delta": {
+                            "tool_calls": [
+                                {
+                                    "index": 0,
+                                    "id": None,
+                                    "type": "function",
+                                    "function": {"name": "", "arguments": ""},
+                                }
+                            ]
+                        },
+                        "finish_reason": None,
+                    }
+                ],
+            },
+            {
+                "model": "qwen3.6-flash",
+                "choices": [{"delta": {}, "finish_reason": "stop"}],
+            },
+        ]
+        body = b"".join(f"data: {json.dumps(chunk)}\n\n".encode() for chunk in chunks)
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/event-stream"},
+            content=body + b"data: [DONE]\n\n",
+        )
+
+    transport = httpx.MockTransport(handler)
+    real_async_client = httpx.AsyncClient
+
+    def patched_async_client(*args: Any, **kwargs: Any) -> httpx.AsyncClient:
+        kwargs["transport"] = transport
+        return real_async_client(*args, **kwargs)
+
+    monkeypatch.setattr("opensquilla.provider.openai.httpx.AsyncClient", patched_async_client)
+    provider = OpenAIProvider(
+        api_key="test",
+        model="qwen3.6-flash",
+        base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+        provider_kind="dashscope",
+    )
+    tool = ToolDefinition(
+        name="edit_file",
+        description="Edit a file.",
+        input_schema=ToolInputSchema(
+            properties={
+                "path": {"type": "string"},
+                "old_text": {"type": "string"},
+                "new_text": {"type": "string"},
+            },
+            required=["path", "old_text", "new_text"],
+        ),
+    )
+
+    with structlog.testing.capture_logs() as captured:
+        events = _collect_events(provider, ChatConfig(), tools=[tool])
+
+    assert not any(isinstance(event, ToolUseEndEvent) for event in events)
+    assert any(
+        item["event"] == "dashscope.stream_tool_chunk_sanitized" for item in captured
+    )
+
+
+def test_stream_dashscope_canonicalizes_repaired_edit_file_aliases(
+    monkeypatch: Any,
+) -> None:
+    raw_arguments = (
+        '<parameter>{"filePath":"demo.py","oldString":"old","newString":"new"}</parameter>'
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        chunks = [
+            {
+                "model": "qwen3.6-flash",
+                "choices": [
+                    {
+                        "delta": {
+                            "tool_calls": [
+                                {
+                                    "index": 0,
+                                    "id": "call_edit",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "edit_file",
+                                        "arguments": raw_arguments,
+                                    },
+                                }
+                            ]
+                        },
+                        "finish_reason": None,
+                    }
+                ],
+            },
+            {
+                "model": "qwen3.6-flash",
+                "choices": [{"delta": {}, "finish_reason": "tool_calls"}],
+            },
+        ]
+        body = b"".join(f"data: {json.dumps(chunk)}\n\n".encode() for chunk in chunks)
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/event-stream"},
+            content=body + b"data: [DONE]\n\n",
+        )
+
+    transport = httpx.MockTransport(handler)
+    real_async_client = httpx.AsyncClient
+
+    def patched_async_client(*args: Any, **kwargs: Any) -> httpx.AsyncClient:
+        kwargs["transport"] = transport
+        return real_async_client(*args, **kwargs)
+
+    monkeypatch.setattr("opensquilla.provider.openai.httpx.AsyncClient", patched_async_client)
+    provider = OpenAIProvider(
+        api_key="test",
+        model="qwen3.6-flash",
+        base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+        provider_kind="dashscope",
+    )
+    tool = ToolDefinition(
+        name="edit_file",
+        description="Edit a file.",
+        input_schema=ToolInputSchema(
+            properties={
+                "path": {"type": "string"},
+                "old_text": {"type": "string"},
+                "new_text": {"type": "string"},
+            },
+            required=["path", "old_text", "new_text"],
+        ),
+    )
+
+    with structlog.testing.capture_logs() as captured:
+        events = _collect_events(provider, ChatConfig(), tools=[tool])
+
+    tool_end = next(event for event in events if isinstance(event, ToolUseEndEvent))
+    assert tool_end.arguments == {
+        "path": "demo.py",
+        "old_text": "old",
+        "new_text": "new",
+    }
+    assert any(
+        item["event"] == "provider.tool_arguments_json_repaired"
+        and item["repair"] == "dashscope_wrapper_json"
+        for item in captured
+    )
+    assert any(
+        item["event"] == "provider.tool_arguments_aliases_applied" and item["tool"] == "edit_file"
+        for item in captured
+    )
+    assert not any(item["event"] == "provider.tool_arguments_json_invalid" for item in captured)
+
+
+def test_stream_dashscope_reports_repaired_edit_file_alias_conflicts(
+    monkeypatch: Any,
+) -> None:
+    raw_arguments = (
+        '<parameter>{"path":"src/a.py","filePath":"src/b.py",'
+        '"old_text":"old","new_text":"new"}</parameter>'
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        chunks = [
+            {
+                "model": "qwen3.6-flash",
+                "choices": [
+                    {
+                        "delta": {
+                            "tool_calls": [
+                                {
+                                    "index": 0,
+                                    "id": "call_edit",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "edit_file",
+                                        "arguments": raw_arguments,
+                                    },
+                                }
+                            ]
+                        },
+                        "finish_reason": None,
+                    }
+                ],
+            },
+            {
+                "model": "qwen3.6-flash",
+                "choices": [{"delta": {}, "finish_reason": "tool_calls"}],
+            },
+        ]
+        body = b"".join(f"data: {json.dumps(chunk)}\n\n".encode() for chunk in chunks)
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/event-stream"},
+            content=body + b"data: [DONE]\n\n",
+        )
+
+    transport = httpx.MockTransport(handler)
+    real_async_client = httpx.AsyncClient
+
+    def patched_async_client(*args: Any, **kwargs: Any) -> httpx.AsyncClient:
+        kwargs["transport"] = transport
+        return real_async_client(*args, **kwargs)
+
+    monkeypatch.setattr("opensquilla.provider.openai.httpx.AsyncClient", patched_async_client)
+    provider = OpenAIProvider(
+        api_key="test",
+        model="qwen3.6-flash",
+        base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+        provider_kind="dashscope",
+    )
+    tool = ToolDefinition(
+        name="edit_file",
+        description="Edit a file.",
+        input_schema=ToolInputSchema(
+            properties={
+                "path": {"type": "string"},
+                "old_text": {"type": "string"},
+                "new_text": {"type": "string"},
+            },
+            required=["path", "old_text", "new_text"],
+        ),
+    )
+
+    with structlog.testing.capture_logs() as captured:
+        events = _collect_events(provider, ChatConfig(), tools=[tool])
+
+    tool_end = next(event for event in events if isinstance(event, ToolUseEndEvent))
+    assert tool_end.arguments == {"_raw": raw_arguments}
+    assert any(
+        item["event"] == "provider.tool_arguments_alias_conflict" and item["tool"] == "edit_file"
+        for item in captured
+    )
+    assert any(
+        item["event"] == "provider.tool_arguments_json_invalid"
+        and item["reason"] == "schema_validation_failed"
+        for item in captured
+    )
+
+
+def test_stream_dashscope_rejects_repaired_tool_arguments_with_wrong_type(
+    monkeypatch: Any,
+) -> None:
+    raw_arguments = '<parameter>{"path":123,"old_text":"old","new_text":"new"}</parameter>'
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        chunks = [
+            {
+                "model": "qwen3.6-flash",
+                "choices": [
+                    {
+                        "delta": {
+                            "tool_calls": [
+                                {
+                                    "index": 0,
+                                    "id": "call_edit",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "edit_file",
+                                        "arguments": raw_arguments,
+                                    },
+                                }
+                            ]
+                        },
+                        "finish_reason": None,
+                    }
+                ],
+            },
+            {
+                "model": "qwen3.6-flash",
+                "choices": [{"delta": {}, "finish_reason": "tool_calls"}],
+            },
+        ]
+        body = b"".join(f"data: {json.dumps(chunk)}\n\n".encode() for chunk in chunks)
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/event-stream"},
+            content=body + b"data: [DONE]\n\n",
+        )
+
+    transport = httpx.MockTransport(handler)
+    real_async_client = httpx.AsyncClient
+
+    def patched_async_client(*args: Any, **kwargs: Any) -> httpx.AsyncClient:
+        kwargs["transport"] = transport
+        return real_async_client(*args, **kwargs)
+
+    monkeypatch.setattr("opensquilla.provider.openai.httpx.AsyncClient", patched_async_client)
+    provider = OpenAIProvider(
+        api_key="test",
+        model="qwen3.6-flash",
+        base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+        provider_kind="dashscope",
+    )
+    tool = ToolDefinition(
+        name="edit_file",
+        description="Edit a file.",
+        input_schema=ToolInputSchema(
+            properties={
+                "path": {"type": "string"},
+                "old_text": {"type": "string"},
+                "new_text": {"type": "string"},
+            },
+            required=["path", "old_text", "new_text"],
+        ),
+    )
+
+    with structlog.testing.capture_logs() as captured:
+        events = _collect_events(provider, ChatConfig(), tools=[tool])
+
+    tool_end = next(event for event in events if isinstance(event, ToolUseEndEvent))
+    assert tool_end.arguments == {"_raw": raw_arguments}
+    assert any(
+        item["event"] == "provider.tool_arguments_json_invalid"
+        and item["reason"] == "schema_validation_failed"
+        for item in captured
+    )
+    assert not any(item["event"] == "provider.tool_arguments_json_repaired" for item in captured)
+
+
+def test_stream_dashscope_repairs_embedded_tool_arguments_after_corrupt_prefix(
+    monkeypatch: Any,
+) -> None:
+    raw_arguments = (
+        '{"path":"demo.py","new_text":"unterminated prefix '
+        '{"path":"demo.py","old_text":"old","new_text":"new"}'
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        chunks = [
+            {
+                "model": "qwen3.6-flash",
+                "choices": [
+                    {
+                        "delta": {
+                            "tool_calls": [
+                                {
+                                    "index": 0,
+                                    "id": "call_edit",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "edit_file",
+                                        "arguments": raw_arguments,
+                                    },
+                                }
+                            ]
+                        },
+                        "finish_reason": None,
+                    }
+                ],
+            },
+            {
+                "model": "qwen3.6-flash",
+                "choices": [{"delta": {}, "finish_reason": "tool_calls"}],
+            },
+        ]
+        body = b"".join(f"data: {json.dumps(chunk)}\n\n".encode() for chunk in chunks)
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/event-stream"},
+            content=body + b"data: [DONE]\n\n",
+        )
+
+    transport = httpx.MockTransport(handler)
+    real_async_client = httpx.AsyncClient
+
+    def patched_async_client(*args: Any, **kwargs: Any) -> httpx.AsyncClient:
+        kwargs["transport"] = transport
+        return real_async_client(*args, **kwargs)
+
+    monkeypatch.setattr("opensquilla.provider.openai.httpx.AsyncClient", patched_async_client)
+    provider = OpenAIProvider(
+        api_key="test",
+        model="qwen3.6-flash",
+        base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+        provider_kind="dashscope",
+    )
+    tool = ToolDefinition(
+        name="edit_file",
+        description="Edit a file.",
+        input_schema=ToolInputSchema(
+            properties={
+                "path": {"type": "string"},
+                "old_text": {"type": "string"},
+                "new_text": {"type": "string"},
+            },
+            required=["path", "old_text", "new_text"],
+        ),
+    )
+
+    with structlog.testing.capture_logs() as captured:
+        events = _collect_events(provider, ChatConfig(), tools=[tool])
+
+    tool_end = next(event for event in events if isinstance(event, ToolUseEndEvent))
+    assert tool_end.arguments == {
+        "path": "demo.py",
+        "old_text": "old",
+        "new_text": "new",
+    }
+    assert any(
+        item["event"] == "provider.tool_arguments_json_repaired"
+        and item["repair"] == "dashscope_embedded_json_object"
+        for item in captured
+    )
+    assert not any(item["event"] == "provider.tool_arguments_json_invalid" for item in captured)
+
+
+def test_stream_dashscope_repairs_common_malformed_tool_arguments(
+    monkeypatch: Any,
+) -> None:
+    raw_arguments = '{"path":"demo.py","old_text":"old","new_text":"new",'
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        chunks = [
+            {
+                "model": "qwen3.6-flash",
+                "choices": [
+                    {
+                        "delta": {
+                            "tool_calls": [
+                                {
+                                    "index": 0,
+                                    "id": "call_edit",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "edit_file",
+                                        "arguments": raw_arguments,
+                                    },
+                                }
+                            ]
+                        },
+                        "finish_reason": None,
+                    }
+                ],
+            },
+            {
+                "model": "qwen3.6-flash",
+                "choices": [{"delta": {}, "finish_reason": "tool_calls"}],
+            },
+        ]
+        body = b"".join(f"data: {json.dumps(chunk)}\n\n".encode() for chunk in chunks)
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/event-stream"},
+            content=body + b"data: [DONE]\n\n",
+        )
+
+    transport = httpx.MockTransport(handler)
+    real_async_client = httpx.AsyncClient
+
+    def patched_async_client(*args: Any, **kwargs: Any) -> httpx.AsyncClient:
+        kwargs["transport"] = transport
+        return real_async_client(*args, **kwargs)
+
+    monkeypatch.setattr("opensquilla.provider.openai.httpx.AsyncClient", patched_async_client)
+    provider = OpenAIProvider(
+        api_key="test",
+        model="qwen3.6-flash",
+        base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+        provider_kind="dashscope",
+    )
+    tool = ToolDefinition(
+        name="edit_file",
+        description="Edit a file.",
+        input_schema=ToolInputSchema(
+            properties={
+                "path": {"type": "string"},
+                "old_text": {"type": "string"},
+                "new_text": {"type": "string"},
+            },
+            required=["path", "old_text", "new_text"],
+        ),
+    )
+
+    with structlog.testing.capture_logs() as captured:
+        events = _collect_events(provider, ChatConfig(), tools=[tool])
+
+    tool_end = next(event for event in events if isinstance(event, ToolUseEndEvent))
+    assert tool_end.arguments == {
+        "path": "demo.py",
+        "old_text": "old",
+        "new_text": "new",
+    }
+    assert any(
+        item["event"] == "provider.tool_arguments_json_repaired"
+        and item["repair"] == "dashscope_malformed_json"
+        for item in captured
+    )
+    assert not any(item["event"] == "provider.tool_arguments_json_invalid" for item in captured)
+
+
+def test_stream_dashscope_repairs_literal_control_chars_in_tool_arguments(
+    monkeypatch: Any,
+) -> None:
+    raw_arguments = '{"path":"demo.py","old_text":"old\\nline","new_text":"new\nline"}'
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        chunks = [
+            {
+                "model": "qwen3.6-flash",
+                "choices": [
+                    {
+                        "delta": {
+                            "tool_calls": [
+                                {
+                                    "index": 0,
+                                    "id": "call_edit",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "edit_file",
+                                        "arguments": raw_arguments,
+                                    },
+                                }
+                            ]
+                        },
+                        "finish_reason": None,
+                    }
+                ],
+            },
+            {
+                "model": "qwen3.6-flash",
+                "choices": [{"delta": {}, "finish_reason": "tool_calls"}],
+            },
+        ]
+        body = b"".join(f"data: {json.dumps(chunk)}\n\n".encode() for chunk in chunks)
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/event-stream"},
+            content=body + b"data: [DONE]\n\n",
+        )
+
+    transport = httpx.MockTransport(handler)
+    real_async_client = httpx.AsyncClient
+
+    def patched_async_client(*args: Any, **kwargs: Any) -> httpx.AsyncClient:
+        kwargs["transport"] = transport
+        return real_async_client(*args, **kwargs)
+
+    monkeypatch.setattr("opensquilla.provider.openai.httpx.AsyncClient", patched_async_client)
+    provider = OpenAIProvider(
+        api_key="test",
+        model="qwen3.6-flash",
+        base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+        provider_kind="dashscope",
+    )
+    tool = ToolDefinition(
+        name="edit_file",
+        description="Edit a file.",
+        input_schema=ToolInputSchema(
+            properties={
+                "path": {"type": "string"},
+                "old_text": {"type": "string"},
+                "new_text": {"type": "string"},
+            },
+            required=["path", "old_text", "new_text"],
+        ),
+    )
+
+    with structlog.testing.capture_logs() as captured:
+        events = _collect_events(provider, ChatConfig(), tools=[tool])
+
+    tool_end = next(event for event in events if isinstance(event, ToolUseEndEvent))
+    assert tool_end.arguments == {
+        "path": "demo.py",
+        "old_text": "old\nline",
+        "new_text": "new\nline",
+    }
+    assert any(
+        item["event"] == "provider.tool_arguments_json_repaired"
+        and item["repair"] == "dashscope_malformed_json"
+        for item in captured
+    )
+    assert not any(item["event"] == "provider.tool_arguments_json_invalid" for item in captured)
+
+
+def test_stream_dashscope_keeps_unrepairable_tool_arguments_invalid(
+    monkeypatch: Any,
+) -> None:
+    raw_arguments = '{"path":"demo.py","old_text":"unterminated'
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        chunks = [
+            {
+                "model": "qwen3.6-flash",
+                "choices": [
+                    {
+                        "delta": {
+                            "tool_calls": [
+                                {
+                                    "index": 0,
+                                    "id": "call_edit",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "edit_file",
+                                        "arguments": raw_arguments,
+                                    },
+                                }
+                            ]
+                        },
+                        "finish_reason": None,
+                    }
+                ],
+            },
+            {
+                "model": "qwen3.6-flash",
+                "choices": [{"delta": {}, "finish_reason": "tool_calls"}],
+            },
+        ]
+        body = b"".join(f"data: {json.dumps(chunk)}\n\n".encode() for chunk in chunks)
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/event-stream"},
+            content=body + b"data: [DONE]\n\n",
+        )
+
+    transport = httpx.MockTransport(handler)
+    real_async_client = httpx.AsyncClient
+
+    def patched_async_client(*args: Any, **kwargs: Any) -> httpx.AsyncClient:
+        kwargs["transport"] = transport
+        return real_async_client(*args, **kwargs)
+
+    monkeypatch.setattr("opensquilla.provider.openai.httpx.AsyncClient", patched_async_client)
+    provider = OpenAIProvider(
+        api_key="test",
+        model="qwen3.6-flash",
+        base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+        provider_kind="dashscope",
+    )
+    tool = ToolDefinition(
+        name="edit_file",
+        description="Edit a file.",
+        input_schema=ToolInputSchema(
+            properties={
+                "path": {"type": "string"},
+                "old_text": {"type": "string"},
+                "new_text": {"type": "string"},
+            },
+            required=["path", "old_text", "new_text"],
+        ),
+    )
+
+    with structlog.testing.capture_logs() as captured:
+        events = _collect_events(provider, ChatConfig(), tools=[tool])
+
+    tool_end = next(event for event in events if isinstance(event, ToolUseEndEvent))
+    assert tool_end.arguments == {"_raw": raw_arguments}
+    assert any(item["event"] == "provider.tool_arguments_json_invalid" for item in captured)
+    assert not any(item["event"] == "provider.tool_arguments_json_repaired" for item in captured)
+
+
+def test_stream_dashscope_unwraps_nested_raw_tool_arguments(
+    monkeypatch: Any,
+) -> None:
+    raw_arguments = json.dumps(
+        {"_raw": json.dumps({"path": "demo.py", "old_text": "old", "new_text": "new"})}
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        chunks = [
+            {
+                "model": "qwen3.6-flash",
+                "choices": [
+                    {
+                        "delta": {
+                            "tool_calls": [
+                                {
+                                    "index": 0,
+                                    "id": "call_edit",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "edit_file",
+                                        "arguments": raw_arguments,
+                                    },
+                                }
+                            ]
+                        },
+                        "finish_reason": None,
+                    }
+                ],
+            },
+            {
+                "model": "qwen3.6-flash",
+                "choices": [{"delta": {}, "finish_reason": "tool_calls"}],
+            },
+        ]
+        body = b"".join(f"data: {json.dumps(chunk)}\n\n".encode() for chunk in chunks)
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/event-stream"},
+            content=body + b"data: [DONE]\n\n",
+        )
+
+    transport = httpx.MockTransport(handler)
+    real_async_client = httpx.AsyncClient
+
+    def patched_async_client(*args: Any, **kwargs: Any) -> httpx.AsyncClient:
+        kwargs["transport"] = transport
+        return real_async_client(*args, **kwargs)
+
+    monkeypatch.setattr("opensquilla.provider.openai.httpx.AsyncClient", patched_async_client)
+    provider = OpenAIProvider(
+        api_key="test",
+        model="qwen3.6-flash",
+        base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+        provider_kind="dashscope",
+    )
+    tool = ToolDefinition(
+        name="edit_file",
+        description="Edit a file.",
+        input_schema=ToolInputSchema(
+            properties={
+                "path": {"type": "string"},
+                "old_text": {"type": "string"},
+                "new_text": {"type": "string"},
+            },
+            required=["path", "old_text", "new_text"],
+        ),
+    )
+
+    with structlog.testing.capture_logs() as captured:
+        events = _collect_events(provider, ChatConfig(), tools=[tool])
+
+    tool_end = next(event for event in events if isinstance(event, ToolUseEndEvent))
+    assert tool_end.arguments == {
+        "path": "demo.py",
+        "old_text": "old",
+        "new_text": "new",
+    }
+    assert any(
+        item["event"] == "provider.tool_arguments_json_repaired"
+        and item["repair"] == "dashscope_nested_raw_json"
+        for item in captured
+    )
+
+
+def test_stream_openrouter_does_not_repair_dashscope_wrappers(
+    monkeypatch: Any,
+) -> None:
+    raw_arguments = '<parameter>{"path":"demo.py","old_text":"old","new_text":"new"}</parameter>'
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        chunks = [
+            {
+                "model": "z-ai/glm-5.1",
+                "choices": [
+                    {
+                        "delta": {
+                            "tool_calls": [
+                                {
+                                    "index": 0,
+                                    "id": "call_edit",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "edit_file",
+                                        "arguments": raw_arguments,
+                                    },
+                                }
+                            ]
+                        },
+                        "finish_reason": None,
+                    }
+                ],
+            },
+            {
+                "model": "z-ai/glm-5.1",
+                "choices": [{"delta": {}, "finish_reason": "tool_calls"}],
+            },
+        ]
+        body = b"".join(f"data: {json.dumps(chunk)}\n\n".encode() for chunk in chunks)
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/event-stream"},
+            content=body + b"data: [DONE]\n\n",
+        )
+
+    transport = httpx.MockTransport(handler)
+    real_async_client = httpx.AsyncClient
+
+    def patched_async_client(*args: Any, **kwargs: Any) -> httpx.AsyncClient:
+        kwargs["transport"] = transport
+        return real_async_client(*args, **kwargs)
+
+    monkeypatch.setattr("opensquilla.provider.openai.httpx.AsyncClient", patched_async_client)
+    provider = OpenAIProvider(
+        api_key="test",
+        model="z-ai/glm-5.1",
+        base_url="https://openrouter.ai/api/v1",
+        provider_kind="openrouter",
+    )
+    tool = ToolDefinition(
+        name="edit_file",
+        description="Edit a file.",
+        input_schema=ToolInputSchema(
+            properties={
+                "path": {"type": "string"},
+                "old_text": {"type": "string"},
+                "new_text": {"type": "string"},
+            },
+            required=["path", "old_text", "new_text"],
+        ),
+    )
+
+    with structlog.testing.capture_logs() as captured:
+        events = _collect_events(provider, ChatConfig(), tools=[tool])
+
+    tool_end = next(event for event in events if isinstance(event, ToolUseEndEvent))
+    assert tool_end.arguments == {"_raw": raw_arguments}
+    assert any(item["event"] == "provider.tool_arguments_json_invalid" for item in captured)
+    assert not any(item["event"] == "provider.tool_arguments_json_repaired" for item in captured)
 
 
 def test_openai_compat_sends_required_tool_choice_when_configured(

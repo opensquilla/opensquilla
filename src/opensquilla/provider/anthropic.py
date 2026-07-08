@@ -20,6 +20,7 @@ from .request_proof import (
     prove_provider_payload_from_env,
 )
 from .stream_assembly import ReasoningAccumulator, ToolStreamAccumulator
+from .trace_recorder import LLMTraceRecorder
 from .types import (
     ChatConfig,
     DoneEvent,
@@ -29,6 +30,7 @@ from .types import (
     StreamEvent,
     TextDeltaEvent,
     ToolDefinition,
+    ToolUseEndEvent,
 )
 
 log = structlog.get_logger(__name__)
@@ -404,9 +406,51 @@ class AnthropicProvider:
             headers["Authorization"] = f"Bearer {self._api_key}"
         else:
             headers["x-api-key"] = self._api_key
+        endpoint = self._api_url("/v1/messages")
+        trace = LLMTraceRecorder(
+            provider="anthropic",
+            model=self._model,
+            base_url=self._base_url,
+            endpoint=endpoint,
+            stream=True,
+        )
+        trace.record_request(
+            payload=payload,
+            headers=headers,
+            metadata={
+                "timeout_seconds": cfg.timeout,
+                "tools_count": len(tools or []),
+                "request_has_document": request_has_document,
+                "request_proof": budget_decision.proof,
+            },
+        )
 
         # Tool calls keyed by Anthropic's global content-block index.
         tools_acc = ToolStreamAccumulator()
+        text_parts: list[str] = []
+        trace_tool_calls: list[dict[str, Any]] = []
+        response_ids: set[str] = set()
+
+        def _trace_tool_call(end_event: ToolUseEndEvent, raw: str) -> None:
+            # The trace mirrors the emitted ToolUseEndEvent; the raw fragment
+            # text is kept alongside so a trace reader can distinguish
+            # repaired arguments from wire-valid JSON.
+            try:
+                if raw:
+                    json.loads(raw)
+                arguments_valid = True
+            except json.JSONDecodeError:
+                arguments_valid = False
+            trace_tool_calls.append(
+                {
+                    "id": end_event.tool_use_id,
+                    "name": end_event.tool_name,
+                    "arguments_raw": raw,
+                    "arguments_json_valid": arguments_valid,
+                    "arguments": end_event.arguments,
+                }
+            )
+
         base_input_tokens = 0
         input_tokens = 0
         output_tokens = 0
@@ -424,18 +468,24 @@ class AnthropicProvider:
             ) as client:
                 async with client.stream(
                     "POST",
-                    self._api_url("/v1/messages"),
+                    endpoint,
                     headers=headers,
                     json=payload,
                 ) as response:
                     if response.status_code != 200:
                         body = await response.aread()
+                        body_text = body.decode("utf-8", errors="replace")
                         if request_has_document:
                             _increment_document_block_rejected(str(response.status_code))
+                        trace.record_error(
+                            code=str(response.status_code),
+                            message=f"HTTP {response.status_code}: {body_text}",
+                            status_code=response.status_code,
+                            response_body=body_text,
+                        )
                         yield ErrorEvent(
                             message=(
-                                f"HTTP {response.status_code}: "
-                                f"{body.decode('utf-8', errors='replace')}"
+                                f"HTTP {response.status_code}: " f"{body_text}"
                             ),
                             code=str(response.status_code),
                             retry_after_s=retry_after_from_headers(
@@ -461,9 +511,13 @@ class AnthropicProvider:
                         except json.JSONDecodeError:
                             continue
 
+                        trace.record_chunk(event)
                         etype = event.get("type", "")
 
                         if etype == "message_start":
+                            message_id = event.get("message", {}).get("id")
+                            if isinstance(message_id, str) and message_id:
+                                response_ids.add(message_id)
                             usage = event.get("message", {}).get("usage", {})
                             base_input_tokens = _coerce_int(usage.get("input_tokens"))
                             (
@@ -488,7 +542,9 @@ class AnthropicProvider:
                             delta = event.get("delta", {})
                             dtype = delta.get("type")
                             if dtype == "text_delta":
-                                yield TextDeltaEvent(text=delta.get("text", ""))
+                                text = delta.get("text", "")
+                                text_parts.append(text)
+                                yield TextDeltaEvent(text=text)
                             elif dtype == "input_json_delta":
                                 index = event.get("index", 0)
                                 fragment = delta.get("partial_json", "")
@@ -508,7 +564,19 @@ class AnthropicProvider:
 
                         elif etype == "content_block_stop":
                             index = event.get("index", -1)
+                            raw = next(
+                                (
+                                    text
+                                    for key, _tid, _name, text in (
+                                        tools_acc.pending_raw_arguments()
+                                    )
+                                    if key == index
+                                ),
+                                "",
+                            )
                             for tool_event in tools_acc.finish(index):
+                                if isinstance(tool_event, ToolUseEndEvent):
+                                    _trace_tool_call(tool_event, raw)
                                 yield tool_event
 
                         elif etype == "message_delta":
@@ -543,9 +611,33 @@ class AnthropicProvider:
                     # message_stop (upstream close, gateway drop) must still
                     # close open tool calls and yield DoneEvent — the
                     # generator never falls off the end silently.
+                    pending_raw = {
+                        tool_use_id: text
+                        for _key, tool_use_id, _name, text in tools_acc.pending_raw_arguments()
+                    }
                     for tool_event in tools_acc.finish_all():
+                        if isinstance(tool_event, ToolUseEndEvent):
+                            _trace_tool_call(
+                                tool_event,
+                                pending_raw.get(tool_event.tool_use_id, ""),
+                            )
                         yield tool_event
                     reasoning_content = reasoning.finalize()
+                    trace.record_response(
+                        usage={
+                            "input_tokens": input_tokens,
+                            "output_tokens": output_tokens,
+                            "reasoning_tokens": 0,
+                            "cached_tokens": cached_tokens,
+                            "cache_write_tokens": cache_creation_tokens,
+                        },
+                        stop_reason=stop_reason,
+                        actual_model=self._model,
+                        assistant_text="".join(text_parts),
+                        reasoning_content=reasoning_content,
+                        tool_calls=trace_tool_calls,
+                        response_ids=sorted(response_ids),
+                    )
                     yield DoneEvent(
                         stop_reason=stop_reason,
                         input_tokens=input_tokens,
@@ -557,14 +649,20 @@ class AnthropicProvider:
                     )
 
         except httpx.TimeoutException as exc:
+            trace.record_error(code="timeout", message=f"Request timed out: {exc}")
             yield ErrorEvent(message=f"Request timed out: {exc}", code="timeout")
         except httpx.RequestError as exc:
+            trace.record_error(code="request_error", message=f"Request error: {exc}")
             yield ErrorEvent(message=f"Request error: {exc}", code="request_error")
         except Exception as exc:  # noqa: BLE001 - chat() contract: ErrorEvent instead of raising
             log.exception(
                 "provider.stream_internal_error",
                 provider=self.provider_name,
                 model=self._model,
+            )
+            trace.record_error(
+                code="provider_internal",
+                message=f"Provider response handling failed: {exc}",
             )
             yield ErrorEvent(
                 message=f"Provider response handling failed: {exc}",

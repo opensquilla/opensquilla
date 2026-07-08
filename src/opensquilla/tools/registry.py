@@ -131,8 +131,104 @@ class ToolRegistry:
         return parameters
 
     @staticmethod
-    def _description_for(rt: RegisteredTool, ctx: ToolContext) -> str:
+    def _tool_visible(
+        visible_tool_names: frozenset[str] | set[str] | None,
+        name: str,
+    ) -> bool:
+        return visible_tool_names is None or name in visible_tool_names
+
+    @staticmethod
+    def _normalize_description(description: str) -> str:
+        return " ".join(description.split())
+
+    @classmethod
+    def _description_for(
+        cls,
+        rt: RegisteredTool,
+        ctx: ToolContext,
+        visible_tool_names: frozenset[str] | set[str] | None = None,
+    ) -> str:
         description = rt.spec.description
+        rewritten = False
+        if rt.spec.name == "read_file" and not cls._tool_visible(
+            visible_tool_names,
+            "read_spreadsheet",
+        ):
+            original = description
+            description = description.replace(
+                "For CSV/TSV/Excel workbook data, use read_spreadsheet.",
+                "",
+            )
+            rewritten = rewritten or description != original
+        if rt.spec.name == "write_file" and not cls._tool_visible(
+            visible_tool_names,
+            "apply_patch",
+        ):
+            if cls._tool_visible(visible_tool_names, "edit_file"):
+                replacement = (
+                    "read_file without offset or limit, then prefer edit_file for "
+                    "exact replacements."
+                )
+            else:
+                replacement = (
+                    "read_file without offset or limit, then only rewrite the full "
+                    "file when the complete replacement content is intended."
+                )
+            original = description
+            description = description.replace(
+                "read_file without offset or limit, then prefer edit_file for exact "
+                "replacements or apply_patch for multi-line hunks.",
+                replacement,
+            )
+            rewritten = rewritten or description != original
+        if rt.spec.name == "edit_file" and not cls._tool_visible(
+            visible_tool_names,
+            "apply_patch",
+        ):
+            original = description
+            description = description.replace(
+                "For large or line-oriented changes, prefer apply_patch with a small hunk.",
+                (
+                    "For large or line-oriented changes, split the change into "
+                    "smaller exact replacements with complete old_text/new_text "
+                    "arguments."
+                ),
+            )
+            rewritten = rewritten or description != original
+        if rt.spec.name == "exec_command" and not (
+            cls._tool_visible(visible_tool_names, "read_source")
+            and cls._tool_visible(visible_tool_names, "edit_source")
+        ):
+            if cls._tool_visible(visible_tool_names, "edit_file") and cls._tool_visible(
+                visible_tool_names,
+                "apply_patch",
+            ):
+                source_change_guidance = (
+                    "For workspace source changes, prefer read_file followed by "
+                    "edit_file or apply_patch; do not use shell redirection or "
+                    "ad hoc scripts as the primary source-edit path."
+                )
+            elif cls._tool_visible(visible_tool_names, "edit_file"):
+                source_change_guidance = (
+                    "For workspace source changes, prefer read_file followed by "
+                    "edit_file; do not use shell redirection or ad hoc scripts as "
+                    "the primary source-edit path."
+                )
+            else:
+                source_change_guidance = (
+                    "For workspace source changes, use the visible file-editing "
+                    "tools when available; do not use shell redirection or ad hoc "
+                    "scripts as the primary source-edit path."
+                )
+            original = description
+            description = description.replace(
+                "For workspace source changes, prefer read_source followed by "
+                "edit_source so edits stay revision-gated, structured, and reviewable.",
+                source_change_guidance,
+            )
+            rewritten = rewritten or description != original
+        if rewritten:
+            description = cls._normalize_description(description)
         scratch_dir = getattr(ctx, "scratch_dir", None)
         if scratch_dir and rt.spec.name in {
             "exec_command",
@@ -157,10 +253,16 @@ class ToolRegistry:
         When *ctx* is None, all tools are returned (backward compat for tests).
         """
         active_ctx = ctx if ctx is not None else self._default_context()
+        visible_tools = self._iter_visible_tools(active_ctx, sort=True)
+        visible_tool_names = frozenset(rt.spec.name for rt in visible_tools)
         return [
             ToolDefinition(
                 name=rt.spec.name,
-                description=self._description_for(rt, active_ctx),
+                description=self._description_for(
+                    rt,
+                    active_ctx,
+                    visible_tool_names,
+                ),
                 input_schema=ToolInputSchema(
                     type="object",
                     properties=self._parameters_for(rt, active_ctx),
@@ -170,7 +272,7 @@ class ToolRegistry:
                 execution_timeout_argument=rt.spec.execution_timeout_argument,
                 execution_timeout_padding=rt.spec.execution_timeout_padding,
             )
-            for rt in self._iter_visible_tools(active_ctx, sort=True)
+            for rt in visible_tools
         ]
 
     async def list_tools(
@@ -201,10 +303,12 @@ class ToolRegistry:
             ctx = self._context_for_profile(profile)
             if not is_owner:
                 ctx = replace(ctx, is_owner=False)
+        visible_tools = self._iter_visible_tools(ctx, sort=True)
+        visible_tool_names = frozenset(rt.spec.name for rt in visible_tools)
         return [
             {
                 "name": rt.spec.name,
-                "description": self._description_for(rt, ctx),
+                "description": self._description_for(rt, ctx, visible_tool_names),
                 "schema": {
                     "type": "object",
                     "properties": self._parameters_for(rt, ctx),
@@ -213,7 +317,7 @@ class ToolRegistry:
                 "source": "plugin" if "." in rt.spec.name else "builtin",
                 "enabled": True,
             }
-            for rt in self._iter_visible_tools(ctx, sort=True)
+            for rt in visible_tools
         ]
 
     async def effective_tools(

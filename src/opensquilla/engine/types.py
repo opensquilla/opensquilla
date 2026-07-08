@@ -442,6 +442,7 @@ class AgentConfig:
     max_turn_cost_usd: float = 0.0
     max_turn_tool_errors: int = 0
     temperature: float | None = None
+    top_p: float | None = None
     thinking: bool | ThinkingLevel = False
     thinking_budget_tokens: int = _THINKING_BUDGET_DEFAULT
     system_prompt: str | None = None
@@ -477,9 +478,7 @@ class AgentConfig:
     skills_context_prompt: str | None = None
     # Pre-compaction memory flush
     flush_enabled: bool = False
-    flush_triggers: list[str] = field(
-        default_factory=lambda: list(DEFAULT_FLUSH_TRIGGERS)
-    )
+    flush_triggers: list[str] = field(default_factory=lambda: list(DEFAULT_FLUSH_TRIGGERS))
     flush_pre_compaction: bool = False
     flush_timeout_seconds: float = 15.0
     flush_background_timeout_seconds: float = 120.0
@@ -507,16 +506,94 @@ class AgentConfig:
     tool_result_compression_summary_timeout_seconds: float = 20.0
     tool_result_compression_summary_input_max_chars: int = 60_000
     tool_result_projection_max_inline_chars: int = 60_000
+    # Fresh diagnostic delivery is experimental; unattended profiles should opt
+    # in only after model-specific validation.
+    tool_result_fresh_diagnostic_policy_enabled: bool = False
+    tool_result_diagnostic_retrieval_gate_enabled: bool = False
+    # When the fresh diagnostic policy is enabled, keep bounded failures intact
+    # for the immediate handoff, then let older history/replay compaction handle
+    # long-term context pressure.
+    tool_result_fresh_diagnostic_inline_max_chars: int = 64_000
+    # Dispatch-layer tool result caps. 0 disables the cap. These run before
+    # provider-request projection and are intended for unattended automation
+    # profiles that must keep broad local command output bounded.
+    tool_result_dispatch_max_chars: int = 0
+    tool_result_dispatch_turn_max_chars: int = 0
     tool_result_provider_request_max_chars: int = 0
     provider_request_proof_max_chars: int = 0
     tool_use_argument_provider_request_max_chars: int = 0
     tool_use_argument_projection_enabled: bool = False
     tool_result_external_keep_recent: int = 2
     tool_failure_loop_block_threshold: int = 3
+    repeated_tool_call_recovery_threshold: int = 0
+    # Extra tool names covered by repeated-identical-call recovery, on top of
+    # the built-in read-only set. Set via OPENSQUILLA_TOOL_REPEAT_NUDGE_TOOLS
+    # (comma-separated); the threshold is tunable via
+    # OPENSQUILLA_TOOL_REPEAT_NUDGE_THRESHOLD.
+    repeated_tool_call_recovery_extra_tools: tuple[str, ...] = ()
+    progress_watchdog_mode: Literal["off", "log", "warn_model", "block"] = "off"
+    progress_watchdog_repeated_tool_error_threshold: int = 3
+    progress_watchdog_repeated_provider_failure_threshold: int = 2
+    progress_watchdog_repeated_failure_anchor_threshold: int = 3
+    post_write_convergence_enabled: bool = False
+    post_write_convergence_warn_threshold: int = 3
+    post_write_convergence_finalize_after_warning: int = 3
+    patch_evidence_ledger_path: str | None = None
+    # Finalize-time red-evidence gate (see engine.finalize_evidence_gate).
+    # Off by default; enabled per run via OPENSQUILLA_FINALIZE_EVIDENCE_GATE.
+    finalize_evidence_gate_enabled: bool = False
+    # Keep rejection feedback visible when blocked compacted-placeholder tool
+    # calls are projected out of provider requests: the blocked tool_use keeps
+    # a placeholder input and its error tool_result stays in the projection.
+    # Off by default; enabled via OPENSQUILLA_PROVIDER_CONTEXT_BLOCK_FEEDBACK.
+    provider_context_block_feedback: bool = False
+    # Byte-identical provider-request loop breaker. 0 = off. At N consecutive
+    # identical projected payloads the request is perturbed with a loop nudge;
+    # at 2N the turn aborts. Set via OPENSQUILLA_IDENTICAL_REQUEST_LOOP_BREAK.
+    identical_request_loop_break_threshold: int = 0
+    # Escalating recovery directive for repeated compacted-placeholder tool-call
+    # offenses within one turn. 0 = off. From the Nth iteration that blocks a
+    # placeholder reuse onward, a stronger directive is appended after the tool
+    # results so the model rebuilds arguments from fresh file/command output
+    # instead of re-offending until the wall clock expires. Set via
+    # OPENSQUILLA_PLACEHOLDER_ESCALATION_THRESHOLD.
+    placeholder_escalation_threshold: int = 0
+    # Pre-deadline wrap-up nudge. 0 = off. When positive and a total turn
+    # timeout is configured, the wrap-up directive arms once when remaining
+    # wall-clock time drops below this many seconds, then is rebuilt each
+    # iteration (so the remaining-minutes figure stays current) and spliced
+    # into every subsequent provider request; only the arming log event is
+    # one-shot. Unlike the max_iterations finalization, tools stay available
+    # so the model can still apply and verify its final changes. Set via
+    # OPENSQUILLA_DEADLINE_WRAPUP_MARGIN_SECONDS.
+    deadline_wrapup_margin_seconds: int = 0
+    # Provider-view dedup of byte-identical repeated tool results. Off by
+    # default. When enabled, older duplicate tool_result payloads (same content
+    # emitted N+ times across iterations) are replaced in the provider request
+    # projection with a compact back-reference to the surviving newest copy;
+    # persisted history is never mutated. Set via
+    # OPENSQUILLA_PROVIDER_HISTORY_DEDUP.
+    provider_history_dedup_enabled: bool = False
+    # Minimum number of byte-identical copies of a tool result before dedup
+    # elides the older ones (keeps the newest copy full). Set via
+    # OPENSQUILLA_PROVIDER_HISTORY_DEDUP_MIN_REPEATS.
+    provider_history_dedup_min_repeats: int = 2
+    tool_loop_observer_mode: Literal["off", "log"] = "off"
+    runtime_recovery_mode: Literal["off", "log", "warn_model"] = "log"
+    runtime_recovery_source_loop_max_nudges: int = 1
+    final_diff_contract_mode: Literal["off", "log", "warn_model"] = "log"
+    source_diff_preservation_mode: Literal["off", "log", "block"] = "log"
+    source_diff_candidate_mode: Literal["off", "log", "warn_model"] = "log"
+    runtime_state_capsule_mode: Literal["off", "log", "inject"] = "off"
+    post_tool_empty_recovery_mode: Literal["off", "log", "warn_model"] = "log"
+    text_only_tool_recovery_mode: Literal["off", "log", "warn_model"] = "off"
+    reasoning_prefill_recovery_mode: Literal["off", "log", "recover"] = "log"
+    runtime_events_path: str | None = None
     tool_result_store_dir: str | None = None
     tool_result_store_session_id: str | None = None
     tool_result_store_session_key: str | None = None
     tool_result_store_agent_id: str | None = None
+    tool_result_store_full_trace: bool = False
     tool_result_store_max_bytes: int | None = 8 * 1024 * 1024
     tool_result_store_disk_budget_bytes: int | None = 256 * 1024 * 1024
     tool_result_store_retention_seconds: int | None = 7 * 24 * 60 * 60

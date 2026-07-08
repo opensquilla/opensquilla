@@ -1,4 +1,36 @@
 # serializer version: 1
+# name: test_dispatch_corpus_snapshot[alias_conflict_rejected]
+  dict({
+    'artifact_count': 0,
+    'content': dict({
+      'error_class': 'InvalidToolArgumentsError',
+      'reason_code': 'alias_conflict',
+      'received_keys': list([
+        'file_path',
+        'new_text',
+        'old_text',
+        'path',
+      ]),
+      'retry_allowed': True,
+      'status': 'rejected',
+      'tool': 'edit_file',
+      'user_message': 'The edit_file tool call arguments contained conflicting aliases: file_path conflicts with path for canonical argument path. Reissue the tool call with only canonical JSON arguments.',
+    }),
+    'execution_status': dict({
+      'exit_code': None,
+      'preflight_rejected': True,
+      'preservation_class': 'diagnostic',
+      'reason': 'invalid_tool_arguments',
+      'reason_code': 'alias_conflict',
+      'source': 'tool_runtime',
+      'status': 'error',
+      'timed_out': False,
+      'truncated': False,
+      'version': 1,
+    }),
+    'is_error': True,
+  })
+# ---
 # name: test_dispatch_corpus_snapshot[allowlist_present_tool_absent]
   dict({
     'artifact_count': 0,
@@ -155,18 +187,18 @@
     'is_error': False,
   })
 # ---
-# name: test_dispatch_corpus_snapshot[happy_path_with_sandbox_descriptor_guard]
-  dict({
-    'artifact_count': 0,
-    'content': 'sandboxed:echo ok',
-    'execution_status': None,
-    'is_error': False,
-  })
-# ---
 # name: test_dispatch_corpus_snapshot[happy_path_with_artifacts_budget_bypassed]
   dict({
     'artifact_count': 1,
     'content': 'published',
+    'execution_status': None,
+    'is_error': False,
+  })
+# ---
+# name: test_dispatch_corpus_snapshot[happy_path_with_sandbox_descriptor_guard]
+  dict({
+    'artifact_count': 0,
+    'content': 'sandboxed:echo ok',
     'execution_status': None,
     'is_error': False,
   })
@@ -215,6 +247,77 @@
       'version': 1,
     }),
     'is_error': False,
+  })
+# ---
+# name: test_dispatch_corpus_snapshot[missing_executable_shape_rejected]
+  dict({
+    'artifact_count': 0,
+    'content': dict({
+      'error_class': 'InvalidToolArgumentsError',
+      'reason_code': 'missing_executable_shape',
+      'received_keys': list([
+        'path',
+      ]),
+      'retry_allowed': True,
+      'status': 'rejected',
+      'tool': 'edit_file',
+      'user_message': 'Valid executable edit_file shapes are {"path":"...","old_text":"...","new_text":"..."} or {"path":"...","edits":[{"old_text":"...","new_text":"..."}]}.',
+      'valid_shapes': list([
+        list([
+          'path',
+          'old_text',
+          'new_text',
+        ]),
+        list([
+          'path',
+          'edits',
+        ]),
+      ]),
+    }),
+    'execution_status': dict({
+      'exit_code': None,
+      'preflight_rejected': True,
+      'preservation_class': 'diagnostic',
+      'reason': 'invalid_tool_arguments',
+      'reason_code': 'missing_executable_shape',
+      'source': 'tool_runtime',
+      'status': 'error',
+      'timed_out': False,
+      'truncated': False,
+      'version': 1,
+    }),
+    'is_error': True,
+  })
+# ---
+# name: test_dispatch_corpus_snapshot[missing_required_arguments_rejected]
+  dict({
+    'artifact_count': 0,
+    'content': dict({
+      'error_class': 'InvalidToolArgumentsError',
+      'missing_keys': list([
+        'value',
+      ]),
+      'reason_code': 'missing_required_arguments',
+      'received_keys': list([
+      ]),
+      'retry_allowed': True,
+      'status': 'rejected',
+      'tool': 'strict_tool',
+      'user_message': 'The strict_tool tool call is missing required argument(s): `value`. Reissue the tool call with complete JSON arguments. Required arguments: `value`.',
+    }),
+    'execution_status': dict({
+      'exit_code': None,
+      'preflight_rejected': True,
+      'preservation_class': 'diagnostic',
+      'reason': 'invalid_tool_arguments',
+      'reason_code': 'missing_required_arguments',
+      'source': 'tool_runtime',
+      'status': 'error',
+      'timed_out': False,
+      'truncated': False,
+      'version': 1,
+    }),
+    'is_error': True,
   })
 # ---
 # name: test_dispatch_corpus_snapshot[multiple_policies_would_deny_first_wins]
@@ -369,6 +472,7 @@
     'artifact_count': 0,
     'content': dict({
       'is_error': False,
+      'result_omitted_chars': 1932,
       'result_original_chars': 2012,
       'result_truncated': True,
       'tool': 'exec_command',
@@ -415,6 +519,35 @@
       'version': 1,
     }),
     'is_error': False,
+  })
+# ---
+# name: test_dispatch_corpus_snapshot[schema_invalid_arguments_rejected]
+  dict({
+    'artifact_count': 0,
+    'content': dict({
+      'error_class': 'InvalidToolArgumentsError',
+      'reason_code': 'schema_validation_failed',
+      'received_keys': list([
+        'value',
+      ]),
+      'retry_allowed': True,
+      'status': 'rejected',
+      'tool': 'strict_tool',
+      'user_message': 'The strict_tool tool call arguments did not match the tool schema: value expected string, got integer. Reissue the tool call with corrected JSON arguments.',
+    }),
+    'execution_status': dict({
+      'exit_code': None,
+      'preflight_rejected': True,
+      'preservation_class': 'diagnostic',
+      'reason': 'invalid_tool_arguments',
+      'reason_code': 'schema_validation_failed',
+      'source': 'tool_runtime',
+      'status': 'error',
+      'timed_out': False,
+      'truncated': False,
+      'version': 1,
+    }),
+    'is_error': True,
   })
 # ---
 # name: test_dispatch_corpus_snapshot[skill_call_mismatch]
@@ -468,15 +601,21 @@
     'artifact_count': 0,
     'content': dict({
       'error_class': 'InvalidToolArgumentsError',
-      'retry_allowed': False,
-      'status': 'error',
+      'reason_code': 'unparsed_raw_arguments',
+      'received_keys': list([
+        '_raw',
+      ]),
+      'retry_allowed': True,
+      'status': 'rejected',
       'tool': 'simple_tool',
-      'user_message': 'The tool call arguments were not valid JSON. Reissue the tool call with valid JSON that matches the tool schema.',
+      'user_message': 'The tool call arguments were not valid JSON and were not executed. Reissue the same tool call with complete JSON arguments that match the tool schema. Do not wrap the arguments in _raw, XML tags, or markdown fences. For large file edits, split the edit into smaller calls using an editing tool listed in Available Tools.',
     }),
     'execution_status': dict({
       'exit_code': None,
+      'preflight_rejected': True,
       'preservation_class': 'diagnostic',
-      'reason': 'runtime_error',
+      'reason': 'invalid_tool_arguments',
+      'reason_code': 'unparsed_raw_arguments',
       'source': 'tool_runtime',
       'status': 'error',
       'timed_out': False,

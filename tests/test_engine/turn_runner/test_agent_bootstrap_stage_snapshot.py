@@ -152,6 +152,24 @@ def _capture_locals_at_post_slice() -> dict[str, Any]:
         "agent_config_tool_result_projection_max_inline_chars": getattr(
             agent_config, "tool_result_projection_max_inline_chars", None
         ),
+        "agent_config_tool_result_fresh_diagnostic_policy_enabled": getattr(
+            agent_config, "tool_result_fresh_diagnostic_policy_enabled", None
+        ),
+        "agent_config_tool_result_diagnostic_retrieval_gate_enabled": getattr(
+            agent_config, "tool_result_diagnostic_retrieval_gate_enabled", None
+        ),
+        "agent_config_tool_result_fresh_diagnostic_inline_max_chars": getattr(
+            agent_config, "tool_result_fresh_diagnostic_inline_max_chars", None
+        ),
+        "agent_config_tool_result_dispatch_max_chars": getattr(
+            agent_config, "tool_result_dispatch_max_chars", None
+        ),
+        "agent_config_tool_result_dispatch_turn_max_chars": getattr(
+            agent_config, "tool_result_dispatch_turn_max_chars", None
+        ),
+        "agent_config_tool_result_store_full_trace": getattr(
+            agent_config, "tool_result_store_full_trace", None
+        ),
         "agent_config_flush_enabled": getattr(
             agent_config, "flush_enabled", None
         ),
@@ -608,6 +626,12 @@ async def test_agent_bootstrap_stage_snapshot(
         "agent_config_cache_mode": "off",
         "agent_config_thinking": case["thinking"],
         "agent_config_tool_result_projection_max_inline_chars": 60_000,
+        "agent_config_tool_result_fresh_diagnostic_policy_enabled": False,
+        "agent_config_tool_result_diagnostic_retrieval_gate_enabled": False,
+        "agent_config_tool_result_fresh_diagnostic_inline_max_chars": 64_000,
+        "agent_config_tool_result_dispatch_max_chars": 0,
+        "agent_config_tool_result_dispatch_turn_max_chars": 0,
+        "agent_config_tool_result_store_full_trace": False,
         "agent_config_flush_enabled": False,
         "effective_runtime_timeout": expected_runtime_timeout,
         "effective_max_iterations": expected_max_iterations,

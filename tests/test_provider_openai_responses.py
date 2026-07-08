@@ -125,6 +125,52 @@ def test_openai_responses_provider_posts_responses_payload_and_usage(
     assert done.model == "gpt-5.4"
 
 
+def test_openai_responses_provider_writes_llm_trace(monkeypatch: Any, tmp_path: Any) -> None:
+    captured: dict[str, Any] = {}
+    trace_path = tmp_path / "responses-llm-calls.jsonl"
+    monkeypatch.setenv("OPENSQUILLA_LLM_TRACE_RECORDER", "full")
+    monkeypatch.setenv("OPENSQUILLA_LLM_TRACE_PATH", str(trace_path))
+    _patch_transport(
+        monkeypatch,
+        captured,
+        httpx.Response(
+            200,
+            json={
+                "id": "resp_trace",
+                "model": "gpt-5.4",
+                "output": [
+                    {
+                        "type": "message",
+                        "role": "assistant",
+                        "content": [{"type": "output_text", "text": "ok"}],
+                    }
+                ],
+                "usage": {"input_tokens": 5, "output_tokens": 2},
+            },
+        ),
+    )
+    provider = OpenAIResponsesProvider(api_key="test", model="gpt-5.4")
+
+    async def _run() -> list[Any]:
+        return [
+            event
+            async for event in provider.chat(
+                [Message(role="user", content="hi")],
+                config=ChatConfig(max_tokens=12),
+            )
+        ]
+
+    events = asyncio.run(_run())
+
+    assert any(isinstance(event, DoneEvent) for event in events)
+    rows = [json.loads(line) for line in trace_path.read_text(encoding="utf-8").splitlines()]
+    assert [row["event"] for row in rows] == ["llm.request", "llm.response"]
+    assert rows[0]["provider"] == "openai_responses"
+    assert rows[0]["headers"]["Authorization"] == "[REDACTED]"
+    assert rows[-1]["assistant_text"] == "ok"
+    assert rows[-1]["response_ids"] == ["resp_trace"]
+
+
 def test_openai_responses_compact_window_returns_opaque_output(
     monkeypatch: Any,
 ) -> None:

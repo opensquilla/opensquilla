@@ -64,7 +64,7 @@ from opensquilla.gateway.config import effective_agent_stream_idle_timeout_secon
 from opensquilla.gateway.session_events import build_sessions_changed_payload
 from opensquilla.paths import media_root_from_config
 from opensquilla.permissions import configured_default_elevated
-from opensquilla.session.terminal_reply import build_terminal_reply
+from opensquilla.session.terminal_reply import append_error_ref, build_terminal_reply
 
 if TYPE_CHECKING:
     from opensquilla.gateway.event_bridge import EventBridge
@@ -2333,7 +2333,10 @@ async def _run_turn_batch_path(
                 await channel.send(
                     _build_reply_message(
                         channel,
-                        build_terminal_reply(_terminal_payload_from_error_event(event)),
+                        append_error_ref(
+                            build_terminal_reply(_terminal_payload_from_error_event(event)),
+                            getattr(event, "error_id", "") or None,
+                        ),
                         msg,
                     )
                 )
@@ -2504,7 +2507,10 @@ async def _run_turn_streaming_path(
                     code=event.code,
                     message=event.message,
                 )
-                stream_error = build_terminal_reply(_terminal_payload_from_error_event(event))
+                stream_error = append_error_ref(
+                    build_terminal_reply(_terminal_payload_from_error_event(event)),
+                    getattr(event, "error_id", "") or None,
+                )
                 break
     except TimeoutError as exc:
         log.error("channel_dispatch.agent_stream_timeout", session_key=session_key)

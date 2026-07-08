@@ -70,7 +70,11 @@ from opensquilla.session.naming import (
     is_naming_eligible,
     title_slot_is_empty,
 )
-from opensquilla.session.terminal_reply import build_terminal_reply, sanitize_agent_error
+from opensquilla.session.terminal_reply import (
+    append_error_ref,
+    build_terminal_reply,
+    sanitize_agent_error,
+)
 
 _d = get_dispatcher()
 log = structlog.get_logger(__name__)
@@ -692,7 +696,12 @@ def _normalize_terminal_event_payload(event_name: str, payload: dict[str, Any]) 
         fallback_error_class=str(code) if code else None,
         fallback_error_message=raw_text,
     )
-    terminal_message = build_terminal_reply(terminal_payload)
+    # Join the user-visible reply to its durable turn_errors row: hex ids keep
+    # substring-based timeout classification stable, and append_error_ref is
+    # idempotent so the CLI client's re-normalization cannot double-suffix.
+    error_id = payload.get("error_id")
+    error_ref = error_id if isinstance(error_id, str) else None
+    terminal_message = append_error_ref(build_terminal_reply(terminal_payload), error_ref)
     # Serialize the typed turn outcome onto the wire so every surface (Web UI,
     # CLI, channels) can render a specific cause + retryability + recovery
     # affordance instead of parsing the human string. The taxonomy already

@@ -306,6 +306,13 @@ Optional subagent/task parent relationship.
 Optional cron metadata. Cron metadata does not automatically make an existing
 webchat/channel session a cron session.
 
+`error_id`
+
+Optional short reference id on `session.event.error` payloads (and rendered
+into user-facing error text as `(ref: <error_id>)`). Joins the error to its
+durable `turn_errors` record for diagnostics. Additive; may be absent on
+older gateways or when no record was written.
+
 ## Backend Rules
 
 The backend owns session classification and display normalization.

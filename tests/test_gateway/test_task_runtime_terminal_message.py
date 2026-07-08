@@ -308,6 +308,35 @@ async def test_task_runtime_stream_error_emits_sanitized_terminal_message() -> N
 
 
 @pytest.mark.asyncio
+async def test_task_runtime_stream_error_terminal_message_carries_error_ref() -> None:
+    # Additive: when the turn loop stamped an error_id, the stream emitter
+    # suffixes the user-facing text with the durable turn_errors reference.
+    # An empty error_id (test above) must leave the text untouched.
+    emitted: list[tuple[str, str, dict[str, Any]]] = []
+
+    async def _stream():
+        yield ErrorEvent(message="Agent error", code="agent_error", error_id="abcd1234")
+
+    async def _emitter(session_key: str, event_name: str, payload: dict[str, Any]) -> None:
+        emitted.append((session_key, event_name, payload))
+
+    with pytest.raises(TaskRuntimeStreamError):
+        await _emit_task_runtime_stream_events(
+            _stream(),
+            "agent:main:test",
+            _emitter,
+            stream_event_sink=None,
+            idle_timeout=1.0,
+            heartbeat_interval=0.0,
+        )
+
+    payload = emitted[-1][2]
+    assert payload["error_id"] == "abcd1234"
+    assert payload["message"].endswith("(ref: abcd1234)")
+    assert payload["terminal_message"].endswith("(ref: abcd1234)")
+
+
+@pytest.mark.asyncio
 async def test_task_runtime_stream_output_truncation_is_terminal_state() -> None:
     emitted: list[tuple[str, str, dict[str, Any]]] = []
 

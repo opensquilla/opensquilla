@@ -56,7 +56,11 @@ from opensquilla.gateway.session_streams import get_session_streams
 from opensquilla.gateway.websocket import get_registry
 from opensquilla.paths import default_opensquilla_home
 from opensquilla.permissions import configured_default_elevated
-from opensquilla.session.terminal_reply import build_terminal_reply, sanitize_agent_error
+from opensquilla.session.terminal_reply import (
+    append_error_ref,
+    build_terminal_reply,
+    sanitize_agent_error,
+)
 
 log = structlog.get_logger(__name__)
 
@@ -1243,6 +1247,11 @@ async def _emit_task_runtime_stream_events(
                 terminal_payload["error_class"] = safe_error_code
                 terminal_payload["error_message"] = safe_error_message
             terminal_message = build_terminal_reply(terminal_payload)
+            # Additive ref suffix joining the reply to its durable turn_errors
+            # row; absent when no record was written (error_id empty).
+            event_error_id = event_dict.get("error_id")
+            if isinstance(event_error_id, str) and event_error_id:
+                terminal_message = append_error_ref(terminal_message, event_error_id)
             event_dict["message"] = terminal_message
             event_dict["terminal_message"] = terminal_message
             event_dict["terminal_reason"] = terminal_payload["terminal_reason"]

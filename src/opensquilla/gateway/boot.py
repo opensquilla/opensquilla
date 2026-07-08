@@ -1361,26 +1361,33 @@ def _setup_file_logging(config: GatewayConfig | None = None) -> None:
 
     # Bridge structlog through stdlib and keep console output for foreground
     # runs. Wrapped so a logging misconfiguration can never block gateway boot.
+    bridge_error: Exception | None = None
+    log_level = _resolve_log_level(config)
     try:
         _bridge_structlog_to_stdlib()
         console_handler = logging.StreamHandler(sys.stdout)
         setattr(console_handler, _CONSOLE_HANDLER_ATTR, True)
-        console_handler.setLevel(_resolve_log_level(config))
+        console_handler.setLevel(log_level)
         console_handler.setFormatter(
             logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s")
         )
         root.addHandler(console_handler)
     except Exception as exc:  # noqa: BLE001 - logging must never block boot
+        bridge_error = exc
         logging.getLogger(__name__).warning("structlog bridge disabled: %s", exc)
 
     enabled = _env_bool("OPENSQUILLA_LOG_FILE_ENABLED")
     if enabled is None:
         enabled = config.log_file_enabled
+    opensquilla_logger = logging.getLogger("opensquilla")
     if not enabled:
+        # No file handler will manage the level, but bridged console output
+        # still depends on it: left NOTSET, the "opensquilla" logger is
+        # effectively WARNING and INFO/DEBUG never reach the console handler.
+        opensquilla_logger.setLevel(log_level)
         return
 
     log_dir = Path(os.environ.get("OPENSQUILLA_LOG_DIR", str(default_opensquilla_home() / "logs")))
-    log_level = _resolve_log_level(config)
     try:
         log_dir.mkdir(parents=True, exist_ok=True)
         log_file = log_dir / "debug.log"
@@ -1392,9 +1399,9 @@ def _setup_file_logging(config: GatewayConfig | None = None) -> None:
         )
     except OSError as exc:
         logging.getLogger(__name__).warning("file logging disabled: %s", exc)
+        opensquilla_logger.setLevel(log_level)
         return
     setattr(file_handler, _DEBUG_FILE_HANDLER_ATTR, True)
-    opensquilla_logger = logging.getLogger("opensquilla")
     setattr(file_handler, "_opensquilla_previous_logger_level", opensquilla_logger.level)
     file_handler.setLevel(log_level)
     file_handler.setFormatter(
@@ -1403,6 +1410,10 @@ def _setup_file_logging(config: GatewayConfig | None = None) -> None:
 
     root.addHandler(file_handler)
     opensquilla_logger.setLevel(log_level)
+    if bridge_error is not None:
+        # The first warning fired before the file handler existed, so it only
+        # reached the console; re-emit it so debug.log records it too.
+        logging.getLogger(__name__).warning("structlog bridge disabled: %s", bridge_error)
 
 
 @dataclass

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import io
 import logging
 from logging.handlers import RotatingFileHandler
 
@@ -74,21 +75,63 @@ def test_setup_file_logging_can_be_disabled(tmp_path, monkeypatch) -> None:
     monkeypatch.delenv("OPENSQUILLA_LOG_FILE_ENABLED", raising=False)
     monkeypatch.delenv("OPENSQUILLA_LOG_LEVEL", raising=False)
 
-    _setup_file_logging(GatewayConfig(log_file_enabled=False))
-    assert not (tmp_path / "debug.log").exists()
+    try:
+        _setup_file_logging(GatewayConfig(log_file_enabled=False))
+        assert not (tmp_path / "debug.log").exists()
 
-    _setup_file_logging(GatewayConfig(log_level="INFO"))
-    assert opensquilla_logger.level == logging.INFO
-    assert (tmp_path / "debug.log").exists()
-    _setup_file_logging(GatewayConfig(log_file_enabled=False))
+        _setup_file_logging(GatewayConfig(log_level="INFO"))
+        assert opensquilla_logger.level == logging.INFO
+        assert (tmp_path / "debug.log").exists()
+        _setup_file_logging(GatewayConfig(log_file_enabled=False))
 
-    handlers = [
-        handler
-        for handler in logging.getLogger().handlers
-        if getattr(handler, "_opensquilla_debug_file_handler", False)
-    ]
-    assert handlers == []
-    assert opensquilla_logger.level == original_opensquilla_level
+        handlers = [
+            handler
+            for handler in logging.getLogger().handlers
+            if getattr(handler, "_opensquilla_debug_file_handler", False)
+        ]
+        assert handlers == []
+        # Disabling file logging must not silence the bridged console output:
+        # the disabled path still pins the "opensquilla" logger to the
+        # configured level (default DEBUG) rather than restoring the pre-setup
+        # level, so INFO/DEBUG keep flowing to the console handler.
+        assert opensquilla_logger.level == logging.DEBUG
+    finally:
+        _remove_debug_handlers()
+        _remove_console_handlers()
+        opensquilla_logger.setLevel(original_opensquilla_level)
+
+
+def test_disabled_file_logging_still_bridges_info_to_console(tmp_path, monkeypatch) -> None:
+    _remove_debug_handlers()
+    _remove_console_handlers()
+    old_config = structlog.get_config()
+    opensquilla_logger = logging.getLogger("opensquilla")
+    original_level = opensquilla_logger.level
+    monkeypatch.setenv("OPENSQUILLA_LOG_DIR", str(tmp_path))
+    monkeypatch.delenv("OPENSQUILLA_LOG_FILE_ENABLED", raising=False)
+    monkeypatch.setenv("OPENSQUILLA_LOG_LEVEL", "INFO")
+    try:
+        structlog.reset_defaults()
+        _setup_file_logging(GatewayConfig(log_file_enabled=False))
+        assert not (tmp_path / "debug.log").exists()
+
+        console_handlers = [
+            handler
+            for handler in logging.getLogger().handlers
+            if getattr(handler, "_opensquilla_console_log_handler", False)
+        ]
+        assert len(console_handlers) == 1
+        stream = io.StringIO()
+        console_handlers[0].setStream(stream)
+
+        structlog.get_logger("opensquilla.test_bridge").info("console_bridge_info_event")
+        console_handlers[0].flush()
+        assert "console_bridge_info_event" in stream.getvalue()
+    finally:
+        _remove_debug_handlers()
+        _remove_console_handlers()
+        structlog.configure(**old_config)
+        opensquilla_logger.setLevel(original_level)
 
 
 def test_structlog_events_reach_debug_log_with_traceback(tmp_path, monkeypatch) -> None:

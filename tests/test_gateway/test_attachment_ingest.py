@@ -155,8 +155,9 @@ async def test_unknown_textual_upload_accepted_via_utf8_fallback() -> None:
 
 
 @pytest.mark.asyncio
-async def test_unknown_binary_upload_stays_rejected() -> None:
-    # NUL bytes mark the payload as binary; the UTF-8 fallback must not fire.
+async def test_unknown_binary_upload_accepted_as_opaque() -> None:
+    # Binary payloads with unrendered claims are admitted as opaque: bytes are
+    # never parsed or inlined, and the specific claim survives as the label.
     result = await ingest_attachments(
         "read it",
         [
@@ -169,14 +170,126 @@ async def test_unknown_binary_upload_stays_rejected() -> None:
         failure_mode="mark",
     )
 
-    assert result.attachments == []
-    assert result.failures[0].reason == "unsupported_mime"
+    assert result.failures == []
+    assert result.attachments[0]["type"] == "application/x-unknown"
 
 
 @pytest.mark.asyncio
-async def test_unknown_text_head_with_binary_tail_rejected() -> None:
-    # The head (peek window) is clean ASCII but the tail is binary. The fallback
-    # validates the whole payload, so this must stay fail-closed.
+async def test_unknown_binary_upload_rejected_when_opaque_admission_disabled() -> None:
+    # accept_opaque=False restores the legacy fail-closed gate with the same
+    # error copy third-party clients may match on.
+    result = await ingest_attachments(
+        "read it",
+        [
+            {
+                "name": "blob.bin",
+                "mime_type": "application/x-unknown",
+                "data": b"\x00\x01\x02\x03binary",
+            }
+        ],
+        failure_mode="mark",
+        accept_opaque=False,
+    )
+
+    assert result.attachments == []
+    assert result.failures[0].reason == "unsupported_mime"
+    assert "is not allowed; must be one of" in result.failures[0].detail
+
+
+@pytest.mark.asyncio
+async def test_zip_upload_accepted_as_opaque_not_ooxml() -> None:
+    import io
+    import zipfile
+
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        archive.writestr("paper/main.tex", "\\documentclass{article}")
+    result = await ingest_attachments(
+        "read it",
+        [{"name": "paper.zip", "mime_type": "application/zip", "data": buffer.getvalue()}],
+        failure_mode="mark",
+        mark_bytes_as_staged=True,
+    )
+
+    assert result.failures == []
+    assert result.attachments[0]["type"] == "application/zip"
+    assert result.attachments[0]["_was_staged"] is True
+
+
+@pytest.mark.asyncio
+async def test_unknown_claim_adopts_sniffed_rendered_type() -> None:
+    # An image uploaded with a generic claim is routed to the image family by
+    # its magic bytes instead of degrading to an opaque blob.
+    png = b"\x89PNG\r\n\x1a\n" + b"fake image body"
+    result = await ingest_attachments(
+        "read it",
+        [{"name": "shot", "mime_type": "application/octet-stream", "data": png}],
+        failure_mode="mark",
+    )
+
+    assert result.failures == []
+    assert result.attachments[0]["type"] == "image/png"
+
+
+@pytest.mark.asyncio
+async def test_opaque_limit_bytes_caps_opaque_payloads() -> None:
+    result = await ingest_attachments(
+        "read it",
+        [
+            {
+                "name": "blob.bin",
+                "mime_type": "application/x-unknown",
+                "data": b"\x00" + b"a" * 2048,
+            }
+        ],
+        failure_mode="mark",
+        mark_bytes_as_staged=True,
+        opaque_limit_bytes=1024,
+    )
+
+    assert result.attachments == []
+    assert result.failures[0].reason == "oversize"
+
+
+@pytest.mark.asyncio
+async def test_binary_claiming_text_above_inline_cap_reclassified_opaque() -> None:
+    # A binary claiming a text mime must not shop for the 30MiB staged-text
+    # ceiling: without whole-payload UTF-8 proof it is reclassified opaque.
+    from opensquilla.contracts.attachments import OPAQUE_MIME, TEXT_ATTACHMENT_BYTES
+
+    payload = b"\xff\xfe" + b"a" * (TEXT_ATTACHMENT_BYTES + 64)
+    result = await ingest_attachments(
+        "read it",
+        [{"name": "fake.csv", "mime_type": "text/csv", "data": payload}],
+        failure_mode="mark",
+        mark_bytes_as_staged=True,
+    )
+
+    assert result.failures == []
+    assert result.attachments[0]["type"] == OPAQUE_MIME
+
+
+@pytest.mark.asyncio
+async def test_binary_claiming_text_above_inline_cap_rejected_when_strict() -> None:
+    from opensquilla.contracts.attachments import TEXT_ATTACHMENT_BYTES
+
+    payload = b"\xff\xfe" + b"a" * (TEXT_ATTACHMENT_BYTES + 64)
+    result = await ingest_attachments(
+        "read it",
+        [{"name": "fake.csv", "mime_type": "text/csv", "data": payload}],
+        failure_mode="mark",
+        mark_bytes_as_staged=True,
+        accept_opaque=False,
+    )
+
+    assert result.attachments == []
+    assert result.failures[0].reason == "oversize"
+
+
+@pytest.mark.asyncio
+async def test_unknown_text_head_with_binary_tail_is_not_text() -> None:
+    # The head (peek window) is clean ASCII but the tail is binary. The text
+    # fallback validates the whole payload, so these stay opaque, never text.
     clean_head = b"a" * (SNIFF_PEEK_BYTES + 64)
     for tail in (b"\x00\x01\x02", b"\xff\xfe\xfd"):  # NUL tail, then invalid-UTF-8 tail
         result = await ingest_attachments(
@@ -190,8 +303,8 @@ async def test_unknown_text_head_with_binary_tail_rejected() -> None:
             ],
             failure_mode="mark",
         )
-        assert result.attachments == []
-        assert result.failures[0].reason == "unsupported_mime"
+        assert result.failures == []
+        assert result.attachments[0]["type"] == "application/x-unknown"
 
 
 @pytest.mark.asyncio
@@ -212,7 +325,8 @@ async def test_multibyte_char_straddling_peek_boundary_still_text() -> None:
 @pytest.mark.asyncio
 async def test_undecodable_head_with_valid_utf8_payload_is_not_misread() -> None:
     # An invalid-UTF-8 head must not be sniffed as text even when the bytes
-    # after it are clean: the whole-payload check stays authoritative.
+    # after it are clean: the whole-payload check stays authoritative, so the
+    # item is admitted opaque under its claimed label rather than as text.
     payload = b"\xff\xfe" + b"clean tail " * 8
     result = await ingest_attachments(
         "read it",
@@ -220,8 +334,8 @@ async def test_undecodable_head_with_valid_utf8_payload_is_not_misread() -> None
         failure_mode="mark",
     )
 
-    assert result.attachments == []
-    assert result.failures[0].reason == "unsupported_mime"
+    assert result.failures == []
+    assert result.attachments[0]["type"] == "application/x-unknown"
 
 
 @pytest.mark.asyncio

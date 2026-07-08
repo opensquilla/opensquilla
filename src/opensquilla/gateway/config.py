@@ -98,6 +98,12 @@ class AttachmentsConfig(BaseSettings):
     transcript_disk_budget_bytes: int = 2 * 1024 * 1024 * 1024  # 2 GB
     artifact_max_bytes: int = 30 * 1024 * 1024
     artifact_disk_budget_bytes: int = 512 * 1024 * 1024
+    # Admission policy for opaque attachment types (archives, binaries,
+    # audio/video, unknown formats). Opaque bytes are never parsed or inlined
+    # into a provider prompt — they are staged into the agent workspace for
+    # tool access only. False restores the rendered-types-only admission gate.
+    accept_opaque: bool = True
+    opaque_max_bytes: int = 30 * 1024 * 1024
 
 
 class RateLimitConfig(BaseSettings):

@@ -122,11 +122,30 @@ def test_upload_normalizes_content_type_parameters(store: UploadStore) -> None:
     assert meta["mime"] == "text/plain"
 
 
-def test_upload_rejects_disallowed_mime_pre_resolution(store: UploadStore) -> None:
-    # Allow-list is enforced inside the store so the upload never lands on
-    # disk for a disallowed MIME — defence in depth alongside the route handler.
+def test_upload_store_accepts_opaque_mime(store: UploadStore) -> None:
+    # Any normalizable mime stages; opaque bytes are workspace-only downstream.
+    file_uuid = asyncio.run(store.put("x.sh", "application/x-shellscript", b"#!/bin/sh\n"))
+    assert file_uuid.startswith("u-")
+    _payload, meta = asyncio.run(store.get(file_uuid))
+    assert meta["mime"] == "application/x-shellscript"
+
+
+def test_upload_store_rejects_opaque_mime_when_admission_disabled(tmp_path: Path) -> None:
+    # accept_opaque=False keeps the store as the legacy fail-closed second
+    # layer so a disallowed MIME never lands in memory or on disk.
+    strict = UploadStore(
+        marker_dir=tmp_path / "strict-inbound",
+        ttl_seconds=600,
+        max_file_bytes=30 * 1024 * 1024,
+        accept_opaque=False,
+    )
     with pytest.raises(UploadUnsupportedMimeError):
-        asyncio.run(store.put("x.sh", "application/x-shellscript", b"#!/bin/sh\n"))
+        asyncio.run(strict.put("x.sh", "application/x-shellscript", b"#!/bin/sh\n"))
+
+
+def test_upload_store_rejects_unnormalizable_mime(store: UploadStore) -> None:
+    with pytest.raises(UploadUnsupportedMimeError):
+        asyncio.run(store.put("x.bin", "   ", b"\x00\x01"))
 
 
 def test_failed_upload_does_not_leak_uuid(store: UploadStore) -> None:
@@ -556,6 +575,116 @@ def test_upload_route_rejects_text_above_staged_ceiling() -> None:
 
     assert response.status_code == 413
     assert response.json()["code"] == "TOO_LARGE"
+
+
+def _route_client(config=None, store=None):
+    pytest.importorskip("starlette.testclient")
+    from starlette.applications import Starlette
+    from starlette.testclient import TestClient
+
+    from opensquilla.gateway.config import GatewayConfig
+    from opensquilla.gateway.uploads import UploadStore, register_upload_routes
+
+    store = store or UploadStore(marker_dir=None, ttl_seconds=600, max_file_bytes=30 * 1024 * 1024)
+    app = Starlette(debug=False)
+    register_upload_routes(app, config=config or GatewayConfig(), store=store)
+    return TestClient(app)
+
+
+def _zip_bytes() -> bytes:
+    import io
+    import zipfile
+
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        archive.writestr("paper/main.tex", "\\documentclass{article}")
+    return buffer.getvalue()
+
+
+def test_upload_route_accepts_zip_as_opaque() -> None:
+    with _route_client() as client:
+        response = client.post(
+            "/api/v1/files/upload",
+            files={"file": ("paper.zip", _zip_bytes(), "application/zip")},
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["mime"] == "application/zip"
+    assert body["file_uuid"].startswith("u-")
+
+
+def test_upload_route_normalizes_windows_zip_spelling() -> None:
+    with _route_client() as client:
+        response = client.post(
+            "/api/v1/files/upload",
+            files={"file": ("paper.zip", _zip_bytes(), "application/x-zip-compressed")},
+        )
+
+    assert response.status_code == 200
+    assert response.json()["mime"] == "application/zip"
+
+
+def test_upload_route_sniffs_rendered_type_for_generic_claim() -> None:
+    png = b"\x89PNG\r\n\x1a\n" + b"fake image body"
+    with _route_client() as client:
+        response = client.post(
+            "/api/v1/files/upload",
+            files={"file": ("shot", png, "application/octet-stream")},
+        )
+
+    assert response.status_code == 200
+    assert response.json()["mime"] == "image/png"
+
+
+def test_upload_route_sniffs_text_for_missing_claim() -> None:
+    # A .tex with no browser-reported content type resolves via the whole
+    # payload UTF-8 sniff instead of 400-ing on the missing mime.
+    with _route_client() as client:
+        response = client.post(
+            "/api/v1/files/upload",
+            files={"file": ("main.tex", b"\\documentclass{article}\n", "")},
+        )
+
+    assert response.status_code == 200
+    assert response.json()["mime"] == "text/plain"
+
+
+def test_upload_route_caps_opaque_via_config() -> None:
+    from opensquilla.gateway.config import GatewayConfig
+
+    config = GatewayConfig(attachments={"opaque_max_bytes": 1024})
+    with _route_client(config=config) as client:
+        response = client.post(
+            "/api/v1/files/upload",
+            files={"file": ("x.bin", b"\x00" + b"a" * 4096, "application/x-unknown")},
+        )
+
+    assert response.status_code == 413
+    assert response.json()["code"] == "TOO_LARGE"
+
+
+def test_upload_route_strict_mode_rejects_zip_and_missing_mime() -> None:
+    from opensquilla.gateway.config import GatewayConfig
+    from opensquilla.gateway.uploads import UploadStore
+
+    config = GatewayConfig(attachments={"accept_opaque": False})
+    strict_store = UploadStore(
+        marker_dir=None, ttl_seconds=600, max_file_bytes=30 * 1024 * 1024, accept_opaque=False
+    )
+    with _route_client(config=config, store=strict_store) as client:
+        rejected = client.post(
+            "/api/v1/files/upload",
+            files={"file": ("paper.zip", _zip_bytes(), "application/zip")},
+        )
+        missing = client.post(
+            "/api/v1/files/upload",
+            files={"file": ("main.tex", b"\\documentclass{article}\n", "")},
+        )
+
+    assert rejected.status_code == 415
+    assert rejected.json()["code"] == "UNSUPPORTED_MEDIA_TYPE"
+    assert missing.status_code == 400
 
 
 def test_upload_unauthenticated_rejected() -> None:

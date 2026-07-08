@@ -25,10 +25,12 @@ from opensquilla.contracts.attachments import (
     MBOX_MIME,
     MSG_MIME,
     OFFICE_ATTACHMENT_MIMES,
+    OPAQUE_MIME,
     PDF_MAGIC,
     SNIFF_PEEK_BYTES,
     TEXT_ATTACHMENT_BYTES,
     TEXT_ATTACHMENT_MIMES,
+    attachment_category,
     attachment_size_limit_for_mime,
     can_stage_attachment_mime,
     normalize_attachment_mime,
@@ -124,7 +126,7 @@ class AttachmentIngestResult:
 
 
 def attachment_media_type(attachment: dict[str, Any]) -> str | None:
-    """Return the claimed MIME if it is in the allow-list, else None."""
+    """Return the claimed MIME if it names a rendered family, else None."""
 
     candidates = [
         attachment.get("type"),
@@ -137,6 +139,15 @@ def attachment_media_type(attachment: dict[str, Any]) -> str | None:
         if normalized in ALLOWED_MEDIA_TYPES:
             return normalized
     return None
+
+
+def _raw_claimed_mime(attachment: dict[str, Any]) -> Any:
+    return (
+        attachment.get("type")
+        or attachment.get("mime")
+        or attachment.get("media_type")
+        or attachment.get("mime_type")
+    )
 
 
 def _coerce_attachment_dict(attachment: Any) -> dict[str, Any] | None:
@@ -219,6 +230,8 @@ def validate_attachments(
     *,
     failure_mode: Literal["raise", "mark"] = "raise",
     mark_bytes_as_staged: bool = False,
+    accept_opaque: bool = True,
+    opaque_limit_bytes: int | None = None,
     logger: Any | None = None,
 ) -> tuple[list[dict[str, Any]], list[AttachmentFailure]]:
     normalized = normalize_attachments(raw_attachments)
@@ -271,20 +284,31 @@ def validate_attachments(
         claimed = attachment_media_type(attachment)
 
         if has_uuid:
-            if claimed is None:
-                _raise_or_mark(
-                    failure_mode=failure_mode,
-                    failures=failures,
-                    failure=_failure(
-                        index,
-                        attachment,
-                        "unsupported_mime",
-                        "file_uuid reference must declare a supported mime / media_type",
-                    ),
-                )
-                continue
-            item = dict(attachment)
-            item["type"] = claimed
+            if claimed is not None:
+                item = dict(attachment)
+                item["type"] = claimed
+            else:
+                normalized_claim = normalize_attachment_mime(_raw_claimed_mime(attachment))
+                if not accept_opaque:
+                    _raise_or_mark(
+                        failure_mode=failure_mode,
+                        failures=failures,
+                        failure=_failure(
+                            index,
+                            attachment,
+                            "unsupported_mime",
+                            "file_uuid reference must declare a supported mime / media_type",
+                        ),
+                    )
+                    continue
+                # Opaque reference: keep the specific label when it normalizes;
+                # otherwise the staged upload's own metadata fills the type at
+                # resolution, where the bytes are re-validated in full.
+                item = dict(attachment)
+                if normalized_claim is not None:
+                    item["type"] = normalized_claim
+                else:
+                    item.pop("type", None)
             item["file_uuid"] = file_uuid
             item.pop("data", None)
             validated.append(item)
@@ -316,31 +340,41 @@ def validate_attachments(
         sniffed = sniff_mime_from_bytes(raw_bytes)
 
         if claimed is None:
-            # Unknown / unsupported claimed type: accept only if the bytes are
-            # cleanly decodable text (UTF-8 fallback); everything binary stays
-            # fail-closed.
-            if sniffed == "text/plain":
-                claimed = "text/plain"
+            raw_claim = _raw_claimed_mime(attachment)
+            normalized_claim = normalize_attachment_mime(raw_claim)
+            if not accept_opaque:
+                # Legacy fail-closed admission: only the UTF-8 text fallback is
+                # honored; every other unrendered claim is rejected.
+                if sniffed == "text/plain":
+                    claimed = "text/plain"
+                else:
+                    _raise_or_mark(
+                        failure_mode=failure_mode,
+                        failures=failures,
+                        failure=_failure(
+                            index,
+                            attachment,
+                            "unsupported_mime",
+                            "media type "
+                            f"{raw_claim!r} is not allowed; must be one of "
+                            f"{sorted(ALLOWED_MEDIA_TYPES)}",
+                        ),
+                    )
+                    continue
+            elif sniffed in ALLOWED_MEDIA_TYPES and not (
+                sniffed == MSG_MIME and normalized_claim is not None
+            ):
+                # Authoritative bytes identify a rendered family (an image with
+                # an empty claim, unknown-but-textual content, OOXML, email).
+                # The one carve-out: OLE magic is shared by legacy Office
+                # formats, so a specific non-Outlook claim on an OLE payload is
+                # honored as an opaque label instead of misfiling it as email.
+                claimed = sniffed
             else:
-                raw_claim = (
-                    attachment.get("type")
-                    or attachment.get("mime")
-                    or attachment.get("media_type")
-                    or attachment.get("mime_type")
-                )
-                _raise_or_mark(
-                    failure_mode=failure_mode,
-                    failures=failures,
-                    failure=_failure(
-                        index,
-                        attachment,
-                        "unsupported_mime",
-                        "media type "
-                        f"{raw_claim!r} is not allowed; must be one of "
-                        f"{sorted(ALLOWED_MEDIA_TYPES)}",
-                    ),
-                )
-                continue
+                # Opaque admission: bytes are never parsed or inlined — the
+                # payload lands in the agent workspace only. Keep the specific
+                # claim as a label when it normalizes.
+                claimed = normalized_claim or OPAQUE_MIME
 
         if claimed == "application/pdf" and sniffed != "application/pdf":
             _raise_or_mark(
@@ -418,10 +452,41 @@ def validate_attachments(
         else:
             resolved = claimed
 
+        if (
+            attachment_category(resolved) == "text"
+            and len(raw_bytes) > TEXT_ATTACHMENT_BYTES
+            and sniffed not in ("text/plain", "application/json")
+        ):
+            # The staged-text ceiling is honored only when the sniffer proved
+            # the WHOLE payload is NUL-free UTF-8; otherwise a binary could
+            # claim a text mime to shop for the larger cap. Reclassify opaque
+            # (or fail closed at the text cap when opaque admission is off).
+            if accept_opaque:
+                (logger or log).warning(
+                    "attachment.text_claim_reclassified_opaque",
+                    claimed=resolved,
+                    attachment_index=index,
+                )
+                resolved = OPAQUE_MIME
+            else:
+                _raise_or_mark(
+                    failure_mode=failure_mode,
+                    failures=failures,
+                    failure=_failure(
+                        index,
+                        attachment,
+                        "oversize",
+                        f"exceeds the {TEXT_ATTACHMENT_BYTES} byte limit",
+                    ),
+                )
+                continue
+
         max_bytes = attachment_size_limit_for_mime(
             resolved,
             staged=mark_bytes_as_staged and can_stage_attachment_mime(resolved),
         )
+        if opaque_limit_bytes is not None and attachment_category(resolved) == "opaque":
+            max_bytes = min(max_bytes, opaque_limit_bytes)
         if len(raw_bytes) > max_bytes:
             _raise_or_mark(
                 failure_mode=failure_mode,
@@ -479,6 +544,8 @@ async def resolve_attachments(
     material_root: Path | None = None,
     session_id: str | None = None,
     disk_budget_bytes: int | None = None,
+    accept_opaque: bool = True,
+    opaque_limit_bytes: int | None = None,
 ) -> tuple[list[dict[str, Any]], list[str]]:
     if not any(isinstance(a, dict) and a.get("file_uuid") for a in validated):
         enforce_total_attachment_bytes(validated)
@@ -524,6 +591,8 @@ async def resolve_attachments(
             [candidate],
             failure_mode="raise",
             mark_bytes_as_staged=True,
+            accept_opaque=accept_opaque,
+            opaque_limit_bytes=opaque_limit_bytes,
         )
         item = materialized[0]
         if material_root is None or not session_id:
@@ -562,11 +631,15 @@ async def ingest_attachments(
     material_root: Path | None = None,
     session_id: str | None = None,
     disk_budget_bytes: int | None = None,
+    accept_opaque: bool = True,
+    opaque_limit_bytes: int | None = None,
 ) -> AttachmentIngestResult:
     validated, failures = validate_attachments(
         raw_attachments,
         failure_mode=failure_mode,
         mark_bytes_as_staged=mark_bytes_as_staged,
+        accept_opaque=accept_opaque,
+        opaque_limit_bytes=opaque_limit_bytes,
     )
     resolved, consumed = await resolve_attachments(
         validated,
@@ -574,6 +647,8 @@ async def ingest_attachments(
         material_root=material_root,
         session_id=session_id,
         disk_budget_bytes=disk_budget_bytes,
+        accept_opaque=accept_opaque,
+        opaque_limit_bytes=opaque_limit_bytes,
     )
     if failures:
         markers = [failure.marker for failure in failures]

@@ -602,7 +602,10 @@ def create_gateway_app(
     if getattr(_upload_store, "marker_dir", None) is None:
         from opensquilla.paths import media_root_from_config  # noqa: PLC0415
 
-        _upload_store = UploadStore(marker_dir=media_root_from_config(config) / "uploads")
+        _upload_store = UploadStore(
+            marker_dir=media_root_from_config(config) / "uploads",
+            accept_opaque=bool(getattr(config.attachments, "accept_opaque", True)),
+        )
         set_upload_store(_upload_store)
     register_upload_routes(app, config=config, store=_upload_store)
     from opensquilla.gateway.artifacts import register_artifact_routes  # noqa: PLC0415

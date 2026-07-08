@@ -778,7 +778,7 @@ class SessionStorage:
         except Exception as exc:  # noqa: BLE001
             log.warning("session_delete.purge_router_decisions_failed: %s", exc)
 
-        # Turn error records (V018 turn_errors) — same yoyo-owned-table purge
+        # Turn error records (V019 turn_errors) — same yoyo-owned-table purge
         # as router_decisions above; the table is absent on :memory: DBs.
         try:
             async with self.conn.execute(

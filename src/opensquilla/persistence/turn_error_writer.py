@@ -6,7 +6,7 @@ persistence failure must never fail or mask the turn error being recorded),
 write-time retention pruning, and an ``open_*`` factory applying the shared
 persistence PRAGMA contract.
 
-``message``/``traceback`` are free text by design (V018 docstring records the
+``message``/``traceback`` are free text by design (V019 docstring records the
 deliberate divergence from V017's no-free-text bar); ``traceback`` passes
 ``observability.redact.scrub_text`` before insert so secret-shaped values and
 home paths never persist.

@@ -2484,7 +2484,7 @@ async def build_services(
             pass
         router_decision_writer = None
 
-    # ── Turn error records (V018 turn_errors) ──────────────────────────
+    # ── Turn error records (V019 turn_errors) ──────────────────────────
     # Same yoyo-only-table pattern as router_decision_writer: the writer
     # exists only when the session DB is real (not :memory:).
     turn_error_writer = None

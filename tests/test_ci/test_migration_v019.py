@@ -1,4 +1,4 @@
-"""V018 migration: durable per-turn error records (turn_errors)."""
+"""V019 migration: durable per-turn error records (turn_errors)."""
 
 from __future__ import annotations
 
@@ -16,10 +16,10 @@ def _column_names(conn: sqlite3.Connection, table: str) -> set[str]:
     return {row[1] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
 
 
-def test_v018_creates_turn_errors_table(tmp_path: Path) -> None:
-    db = str(tmp_path / "v018.db")
+def test_v019_creates_turn_errors_table(tmp_path: Path) -> None:
+    db = str(tmp_path / "v019.db")
     applied = apply_pending(db, MIGRATIONS_DIR)
-    assert "V018__turn_errors" in applied
+    assert "V019__turn_errors" in applied
 
     conn = sqlite3.connect(db)
     try:
@@ -47,8 +47,8 @@ def _index_exists(conn: sqlite3.Connection) -> bool:
     return row is not None
 
 
-def test_v018_creates_index(tmp_path: Path) -> None:
-    db = str(tmp_path / "v018-index.db")
+def test_v019_creates_index(tmp_path: Path) -> None:
+    db = str(tmp_path / "v019-index.db")
     apply_pending(db, MIGRATIONS_DIR)
     conn = sqlite3.connect(db)
     try:
@@ -58,7 +58,7 @@ def test_v018_creates_index(tmp_path: Path) -> None:
 
 
 def _migration_constant(name: str) -> str:
-    """Extract a module-level string constant from the V018 migration source.
+    """Extract a module-level string constant from the V019 migration source.
 
     The migration module cannot be imported directly (yoyo's ``step()``
     requires a live migration collector at module-exec time), so read the DDL
@@ -66,7 +66,7 @@ def _migration_constant(name: str) -> str:
     """
     import ast
 
-    source = (MIGRATIONS_DIR / "V018__turn_errors.py").read_text(encoding="utf-8")
+    source = (MIGRATIONS_DIR / "V019__turn_errors.py").read_text(encoding="utf-8")
     for node in ast.parse(source).body:
         if isinstance(node, ast.Assign):
             for target in node.targets:
@@ -74,12 +74,12 @@ def _migration_constant(name: str) -> str:
                     value = ast.literal_eval(node.value)
                     assert isinstance(value, str)
                     return value
-    raise AssertionError(f"constant {name!r} not found in V018 migration")
+    raise AssertionError(f"constant {name!r} not found in V019 migration")
 
 
-def test_v018_preexisting_table_gains_index(tmp_path: Path) -> None:
+def test_v019_preexisting_table_gains_index(tmp_path: Path) -> None:
     """A turn_errors table created out-of-band still gains the index on apply."""
-    db_path = tmp_path / "v018-preexisting.db"
+    db_path = tmp_path / "v019-preexisting.db"
     conn = sqlite3.connect(str(db_path))
     conn.execute(_migration_constant("CREATE_TURN_ERRORS"))
     conn.commit()
@@ -94,13 +94,13 @@ def test_v018_preexisting_table_gains_index(tmp_path: Path) -> None:
         conn.close()
 
 
-def test_v018_rollback_drops_table(tmp_path: Path) -> None:
-    db = str(tmp_path / "v018-rollback.db")
+def test_v019_rollback_drops_table(tmp_path: Path) -> None:
+    db = str(tmp_path / "v019-rollback.db")
     apply_pending(db, MIGRATIONS_DIR)
     backend = get_backend(f"sqlite:///{db}")
     migrations = read_migrations(str(MIGRATIONS_DIR))
     by_id = {migration.id: migration for migration in migrations}
-    backend.rollback_migrations([by_id["V018__turn_errors"]])
+    backend.rollback_migrations([by_id["V019__turn_errors"]])
     conn = sqlite3.connect(db)
     try:
         row = conn.execute(

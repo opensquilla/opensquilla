@@ -1,4 +1,4 @@
-"""V018 - durable per-turn error records.
+"""V019 - durable per-turn error records.
 
 Creates ``turn_errors``: one row per failed turn, written best-effort by
 ``persistence/turn_error_writer.py`` from the turn-loop catch-all. Each row
@@ -15,7 +15,7 @@ directory normalized to ``~``). ``tests/test_persistence/test_turn_error_writer.
 enforces the scrub bar. Retention is write-time pruning at 30 days.
 
 Downgrade story (SchemaAheadError, refusal-by-design): boot only migrates
-forward. An older build refuses to boot against a database recording V018
+forward. An older build refuses to boot against a database recording V019
 (``assert_schema_not_ahead``); operators roll back with yoyo, which invokes
 ``rollback_step`` (drops the index and the table) — error records are
 observability, not conversation state, so dropping them is safe.
@@ -30,7 +30,7 @@ from __future__ import annotations
 
 from yoyo import step
 
-__depends__: set[str] = {"V017__router_decisions"}
+__depends__: set[str] = {"V018__router_decisions_ts_index"}
 
 
 CREATE_TURN_ERRORS = """

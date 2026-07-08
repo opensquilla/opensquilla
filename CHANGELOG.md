@@ -130,6 +130,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Fixed
 
+- Dream (memory consolidation) now resolves its provider credentials through
+  the shared explicit-config-first resolver: previously `OPENROUTER_API_KEY` /
+  `OPENROUTER_BASE_URL` in the gateway environment unconditionally overrode
+  the configured key and endpoint — even when the configured provider was not
+  OpenRouter — silently redirecting Dream turns away from the operator's
+  endpoint.
 - Fixed managed-network sandbox domain grants missing the Bocha, Tavily, and
   Exa search API hosts: `web_search` runs with those providers active were
   blocked under the managed-network sandbox. All runtime search providers now

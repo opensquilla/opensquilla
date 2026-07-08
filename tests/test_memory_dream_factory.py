@@ -68,3 +68,47 @@ def test_dream_provider_uses_legacy_router_default_alias_when_router_active() ->
 def test_dream_rejects_dream_specific_model_override() -> None:
     with pytest.raises(ValidationError):
         GatewayConfig(memory={"dream": {"model_override": "dream/custom-model"}})
+
+
+def test_dream_provider_prefers_configured_credentials_over_openrouter_env(
+    monkeypatch,
+) -> None:
+    """Configured key/endpoint must not be hijacked by openrouter env vars.
+
+    Dream previously read OPENROUTER_API_KEY / OPENROUTER_BASE_URL before the
+    config unconditionally — even when the configured provider was not
+    openrouter — so a shell with openrouter credentials silently redirected
+    Dream turns away from the operator's endpoint.
+    """
+    monkeypatch.setenv("OPENROUTER_API_KEY", "or-env-key")
+    monkeypatch.setenv("OPENROUTER_BASE_URL", "https://openrouter-env.example/api/v1")
+    config = GatewayConfig(
+        llm={
+            "provider": "openai",
+            "model": "gpt-5.5",
+            "api_key": "sk-configured",
+            "base_url": "https://user-endpoint.example/v1",
+        },
+        squilla_router={"enabled": False},
+    )
+
+    selector = build_dream_provider_selector(config)
+
+    primary = _primary_config(selector)
+    assert primary.provider == "openai"
+    assert primary.api_key == "sk-configured"
+    assert primary.base_url == "https://user-endpoint.example"
+
+
+def test_dream_provider_falls_back_to_env_when_config_has_no_key(monkeypatch) -> None:
+    monkeypatch.setenv("OPENROUTER_API_KEY", "or-env-key")
+    monkeypatch.delenv("OPENROUTER_BASE_URL", raising=False)
+    config = GatewayConfig(
+        llm={"provider": "openrouter", "model": "user/custom-model", "api_key": ""},
+        squilla_router={"enabled": False},
+    )
+
+    selector = build_dream_provider_selector(config)
+
+    primary = _primary_config(selector)
+    assert primary.api_key == "or-env-key"

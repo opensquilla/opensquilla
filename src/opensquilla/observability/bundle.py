@@ -30,7 +30,6 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from functools import partial
 from pathlib import Path
-from types import SimpleNamespace
 from typing import Any
 from urllib.parse import quote
 
@@ -152,15 +151,22 @@ def _tilde(path: Path) -> str:
         return str(path)
 
 
-def _collect_config() -> tuple[str, str, str]:
-    """Read the config TOML directly (never GatewayConfig.load) and redact it."""
-    from opensquilla.gateway.config import redact_public_config
-    from opensquilla.onboarding.config_store import resolve_config_path
+def _load_raw_config() -> tuple[dict[str, Any], Path, str]:
+    """tomllib-load the resolved config (never GatewayConfig.load, which rewrites)."""
+    from opensquilla.diagnostics_sources import resolve_config_source
 
-    config_path, source = resolve_config_path(None)
+    config_path, source = resolve_config_source()
     with config_path.open("rb") as fh:
         data = tomllib.load(fh)
-    text = json.dumps(redact_public_config(data), indent=2, default=str)
+    return data, config_path, source
+
+
+def _collect_config() -> tuple[str, str, str]:
+    """Read the config TOML directly (never GatewayConfig.load) and redact it."""
+    from opensquilla.diagnostics_sources import redact_config_payload
+
+    data, config_path, source = _load_raw_config()
+    text = json.dumps(redact_config_payload(data), indent=2, default=str)
     return text, str(config_path), source
 
 
@@ -172,10 +178,9 @@ def _collect_doctor() -> str:
     it against a throwaway temp copy of the config so any migration rewrite
     hits the copy, never the user's file.
     """
-    from opensquilla.cli.doctor_cmd import _offline_report
-    from opensquilla.onboarding.config_store import resolve_config_path
+    from opensquilla.diagnostics_sources import offline_doctor_report, resolve_config_source
 
-    config_path, _source = resolve_config_path(None)
+    config_path, _source = resolve_config_source()
     tmp_dir: str | None = None
     doctor_config_path: str | None = None
     try:
@@ -184,7 +189,7 @@ def _collect_doctor() -> str:
             copy_path = Path(tmp_dir) / config_path.name
             shutil.copyfile(config_path, copy_path)
             doctor_config_path = str(copy_path)
-        report = _offline_report(
+        report = offline_doctor_report(
             RuntimeError("bundle offline collection"),
             gateway_url="ws://localhost:18791/ws",
             config_path=doctor_config_path,
@@ -198,22 +203,36 @@ def _collect_doctor() -> str:
 def _collect_diagnostics_flags() -> str:
     """Offline reconstruction of the ``logs.status`` RPC payload.
 
-    Note: ``_build_logs_status`` reports the *ambient* process environment
-    (env vars, default state paths), not the ``home_dir``/``log_dir``
-    overrides passed to ``collect_bundle`` — the artifact describes what a
-    gateway launched from this environment would see.
+    Note: the snapshot reports the *ambient* process environment (env vars,
+    default state paths), not the ``home_dir``/``log_dir`` overrides passed
+    to ``collect_bundle`` — the artifact describes what a gateway launched
+    from this environment would see.
     """
-    from opensquilla.gateway.rpc_logs import _build_logs_status
+    from opensquilla.diagnostics_sources import logs_status_snapshot
 
-    ctx: Any = SimpleNamespace(config=None, diagnostics_state=None)
-    return json.dumps(_build_logs_status(ctx), indent=2, default=str)
+    return json.dumps(logs_status_snapshot(), indent=2, default=str)
+
+
+def _configured_state_dir() -> Path | None:
+    """Best-effort ``state_dir`` from the config TOML (None when unset/unreadable)."""
+    try:
+        data, _path, _source = _load_raw_config()
+    except Exception:  # noqa: BLE001 - config is optional for this probe
+        return None
+    raw = data.get("state_dir")
+    if isinstance(raw, str) and raw.strip():
+        return Path(raw.strip()).expanduser()
+    return None
 
 
 def _collect_errors(home_dir: Path, days: int, session_id: str | None = None) -> str:
     """turn_errors rows from the last *days* days, one JSON object per line."""
-    db_path = home_dir / "sessions.db"
-    if not db_path.exists():
-        db_path = home_dir / "state" / "sessions.db"
+    candidates: list[Path] = []
+    state_dir = _configured_state_dir()
+    if state_dir is not None:
+        candidates.append(state_dir / "sessions.db")
+    candidates += [home_dir / "sessions.db", home_dir / "state" / "sessions.db"]
+    db_path = next((path for path in candidates if path.exists()), candidates[-1])
     cutoff = int(datetime.now(UTC).timestamp() * 1000) - days * _DAY_MS
     sql = "SELECT * FROM turn_errors WHERE ts_ms >= ?"
     args: list[Any] = [cutoff]

@@ -224,6 +224,35 @@ def test_tail_truncation_never_bisects_a_secret_line(tmp_path) -> None:
     assert secret_value.encode() not in entry
 
 
+def test_errors_collected_from_config_state_dir(
+    tmp_path, _hermetic_config: Path
+) -> None:
+    """A config-declared state_dir wins over home_dir when probing sessions.db."""
+    home, log_dir = _make_home(tmp_path)
+    # Point the DB probe elsewhere: config state_dir holds the only row that
+    # distinguishes the two databases.
+    state = tmp_path / "custom-state"
+    state.mkdir()
+    _hermetic_config.write_text(f'state_dir = "{state}"\n', encoding="utf-8")
+    db = state / "sessions.db"
+    apply_pending(str(db), MIGRATIONS_DIR)
+    conn = sqlite3.connect(str(db))
+    conn.execute(
+        "INSERT INTO turn_errors (error_id, session_key, ts_ms, message) VALUES (?, ?, ?, ?)",
+        ("feed5678", "agent:main:test", int(datetime.now(UTC).timestamp() * 1000), "custom"),
+    )
+    conn.commit()
+    conn.close()
+    dest = tmp_path / "bundle.zip"
+
+    collect_bundle(dest, home_dir=home, log_dir=log_dir)
+
+    entries = _read_zip(dest)
+    errors = entries["errors.jsonl"].decode("utf-8")
+    assert "feed5678" in errors  # row from the configured state_dir
+    assert "abcd1234" not in errors  # home_dir fallback DB was not consulted
+
+
 @pytest.mark.parametrize("include_content", [False, True])
 def test_env_files_and_raw_mirrors_never_bundled(tmp_path, include_content: bool) -> None:
     """Hard exclusions hold at both tiers: no .env, no raw decision mirrors."""

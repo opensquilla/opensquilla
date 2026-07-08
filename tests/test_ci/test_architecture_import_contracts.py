@@ -38,6 +38,13 @@ APPROVED_PACKAGE_IMPORTS: frozenset[tuple[str, str]] = frozenset({
     ("cli", "skills"),
     ("cli", "tools"),
     ("cli", "uninstall"),
+    # The diagnostics-bundle shim composes gateway redaction, the offline
+    # doctor, and onboarding config resolution lazily for the bundle
+    # generator; a top-level module (permissions.py precedent) so the
+    # low-level observability package never imports upper layers itself.
+    ("diagnostics_sources.py", "cli"),
+    ("diagnostics_sources.py", "gateway"),
+    ("diagnostics_sources.py", "onboarding"),
     ("engine", "agents"),
     ("engine", "channels"),
     ("engine", "contracts"),
@@ -97,6 +104,9 @@ APPROVED_PACKAGE_IMPORTS: frozenset[tuple[str, str]] = frozenset({
     ("onboarding", "provider"),
     ("onboarding", "search"),
     ("permissions.py", "sandbox"),
+    # turn_error_writer scrubs free-text error records through the low-level
+    # observability.redact utility before insert — sound downward layering.
+    ("persistence", "observability"),
     ("persistence", "skills"),
     ("provider", "engine"),
     ("provider", "safety"),

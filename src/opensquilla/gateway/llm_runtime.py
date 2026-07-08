@@ -86,5 +86,5 @@ def resolve_llm_runtime_config(config: Any) -> LlmRuntimeConfig:
             getattr(llm, "provider_routing", {}),
         ),
         api_key_from_env=bool(env_api_key),
-        base_url_from_env=bool(env_base_url),
+        base_url_from_env=bool(env_base_url and not llm.base_url),
     )

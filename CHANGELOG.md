@@ -47,6 +47,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Fixed
 
+- Fixed managed-network sandbox domain grants missing the Bocha, Tavily, and
+  Exa search API hosts: `web_search` runs with those providers active were
+  blocked under the managed-network sandbox. All runtime search providers now
+  have system domain grants and default search-allowlist entries, enforced by
+  a contract test.
 - Fixed secret redaction missing assignment values that start with a quote
   (for example `password: "..."`); quoted values are now masked in memory
   persistence and trace capture paths.

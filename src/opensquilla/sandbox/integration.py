@@ -109,9 +109,12 @@ _IN_PROCESS_NETWORK_TAGS: frozenset[str] = frozenset(
     {"network.fetch", "network.http", "web.fetch"}
 )
 _SEARCH_PROVIDER_SYSTEM_DOMAINS: dict[str, tuple[str, ...]] = {
+    "bocha": ("api.bochaai.com",),
     "brave": ("api.search.brave.com",),
     "duckduckgo": ("html.duckduckgo.com",),
+    "exa": ("api.exa.ai",),
     "iqs": ("cloud-iqs.aliyuncs.com",),
+    "tavily": ("api.tavily.com",),
 }
 
 

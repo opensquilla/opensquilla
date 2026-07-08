@@ -134,6 +134,10 @@ while IFS= read -r path || [[ -n "${path}" ]]; do
       mark_test_changed
       mark_platform_sensitive_changed
       ;;
+    tests/test_onboarding/* | tests/test_provider/* | tests/test_provider*.py)
+      mark_test_changed
+      mark_platform_sensitive_changed
+      ;;
     tests/*)
       mark_test_changed
       ;;
@@ -149,6 +153,10 @@ while IFS= read -r path || [[ -n "${path}" ]]; do
       mark_desktop_changed
       ;;
     src/opensquilla/persistence/* | src/opensquilla/sandbox/* | src/opensquilla/tools/boundary.py | src/opensquilla/tools/builtin/code_exec.py | src/opensquilla/tools/builtin/filesystem.py | src/opensquilla/tools/builtin/git.py | src/opensquilla/tools/builtin/shell.py | src/opensquilla/tools/builtin/shell_policy.py | src/opensquilla/tools/path_* | src/opensquilla/tools/policy* | src/opensquilla/tools/write_*)
+      mark_runtime_changed
+      mark_platform_sensitive_changed
+      ;;
+    src/opensquilla/onboarding/* | src/opensquilla/provider/*)
       mark_runtime_changed
       mark_platform_sensitive_changed
       ;;

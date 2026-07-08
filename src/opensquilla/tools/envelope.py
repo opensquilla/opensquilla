@@ -40,6 +40,7 @@ _RETRIABLE_CLASSES: Final[frozenset[str]] = frozenset(
         "BrokenPipeError",
         "TransientError",
         "TypeError",
+        "RetryableToolInputError",
     }
 )
 

@@ -178,6 +178,8 @@
     <SkillDetailDialog
       :skill="selectedSkill"
       :proposal="selectedProposal"
+      :loading-content="selectedSkillLoading"
+      :content-error="selectedSkillError"
       :installing-deps-id="installingDepsId"
       :uninstalling-name="uninstallingName"
       @close="closeDialog"
@@ -209,6 +211,8 @@ const rpc = useRpcStore()
 const activeTab = ref('installed')
 const selectedSkill = ref<Skill | null>(null)
 const selectedProposal = ref<Proposal | null>(null)
+const selectedSkillLoading = ref(false)
+const selectedSkillError = ref('')
 const proposalsPanelRef = ref<InstanceType<typeof PendingSkillProposals> | null>(null)
 
 let loadData: () => Promise<void>
@@ -300,9 +304,25 @@ async function showProposalsFromStats() {
   scrollToProposals()
 }
 
-function openSkillDialog(skill: Skill) {
+async function openSkillDialog(skill: Skill) {
   selectedSkill.value = skill
   selectedProposal.value = null
+  selectedSkillError.value = ''
+  selectedSkillLoading.value = true
+  try {
+    const detail = await rpc.call<Skill>('skills.get', { name: skill.name })
+    if (selectedSkill.value?.name === skill.name) {
+      selectedSkill.value = { ...skill, ...detail }
+    }
+  } catch (err) {
+    if (selectedSkill.value?.name === skill.name) {
+      selectedSkillError.value = (err as Error).message
+    }
+  } finally {
+    if (selectedSkill.value?.name === skill.name) {
+      selectedSkillLoading.value = false
+    }
+  }
 }
 
 async function openProposalDialog(proposalId: string) {
@@ -315,6 +335,8 @@ async function openProposalDialog(proposalId: string) {
 function closeDialog() {
   selectedSkill.value = null
   selectedProposal.value = null
+  selectedSkillLoading.value = false
+  selectedSkillError.value = ''
 }
 
 async function installDepsAndMaybeClose(name: string, installId: string) {
@@ -821,6 +843,18 @@ async function uninstallSkillAndClose(name: string) {
 }
 .sk-detail__link:hover {
   text-decoration: underline;
+}
+.sk-detail__content-state {
+  padding: var(--sp-3);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  color: var(--text-muted);
+  font-size: var(--fs-sm);
+}
+.sk-detail__content-state--error {
+  color: var(--danger);
+  border-color: color-mix(in srgb, var(--danger) 35%, var(--border));
 }
 .sk-detail__foot {
   display: flex;

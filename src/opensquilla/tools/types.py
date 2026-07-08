@@ -51,6 +51,13 @@ class ToolContext:
     run_mode: str | None = None
     sandbox_mounts: list[dict[str, Any]] = field(default_factory=list)
     sandbox_run_context: Any | None = None
+    source_diff_preservation_mode: str = "log"
+    source_diff_candidate_mode: str = "log"
+    source_diff_candidates: list[dict[str, Any]] = field(default_factory=list)
+    source_diff_candidate_counter: int = 0
+    file_edit_requires_fresh_read: bool = False
+    file_edit_flexible_recovery: bool = True
+    missing_required_argument_shape_guidance: bool = False
     session_key: str | None = None
     channel_kind: str | None = None
     channel_id: str | None = None
@@ -60,15 +67,24 @@ class ToolContext:
     task_id: str | None = None
     artifact_media_root: str | None = None
     artifact_session_id: str | None = None
+    tool_result_store_dir: str | None = None
+    tool_result_store_session_id: str | None = None
     artifact_max_bytes: int | None = None
     artifact_disk_budget_bytes: int | None = None
     published_artifacts: list[dict[str, Any]] = field(default_factory=list)
+    workspace_file_reads: list[dict[str, Any]] = field(default_factory=list)
+    workspace_file_read_state: dict[str, dict[str, Any]] = field(default_factory=dict)
     workspace_file_writes: list[dict[str, Any]] = field(default_factory=list)
+    workspace_mutation_records: list[dict[str, Any]] = field(default_factory=list)
+    workspace_mutation_receipts: list[dict[str, Any]] = field(default_factory=list)
+    workspace_epoch: int = 0
+    scratch_file_writes: list[dict[str, Any]] = field(default_factory=list)
     allowed_tools: set[str] | None = None
     denied_tools: set[str] = field(default_factory=set)
     coding_mode: bool = False  # operator coding-mode toggle (affects tool defaults)
     on_memory_source_write: Callable[[str, str], None] | None = None
     on_bootstrap_source_write: Callable[[str, str], None] | None = None
+    on_runtime_event: Callable[[dict[str, Any]], None] | None = None
     # Legacy elevated mode compatibility. New code should treat only "full" as
     # host execution; standard/trusted run modes stay sandboxed.
     elevated: str | None = None
@@ -197,12 +213,19 @@ class SafeToolError(SafeToolUserMessage, ToolError):
             self.user_message = user_message
 
 
-class InvalidToolArgumentsError(SafeToolUserMessage, ValueError):
+class RetryableToolInputError(SafeToolError):
+    """Tool input was invalid but can be corrected and retried by the caller."""
+
+
+class InvalidToolArgumentsError(RetryableToolInputError):
     """Raised when provider output did not produce executable tool arguments."""
 
     user_message = (
-        "The tool call arguments were not valid JSON. Reissue the tool call with "
-        "valid JSON that matches the tool schema."
+        "The tool call arguments were not valid JSON and were not executed. "
+        "Reissue the same tool call with complete JSON arguments that match "
+        "the tool schema. Do not wrap the arguments in _raw, XML tags, or "
+        "markdown fences. For large file edits, split the edit into smaller "
+        "calls using an editing tool listed in Available Tools."
     )
 
 
@@ -210,8 +233,10 @@ class ProjectedToolArgumentsError(SafeToolUserMessage, ValueError):
     """Raised when provider-context argument projections reach dispatch."""
 
     user_message = (
-        "The tool call arguments were compacted for model context and cannot be "
-        "executed. Reissue the tool call with the real schema fields."
+        "The tool call arguments contain provider-compacted placeholder text and "
+        "were not executed. That placeholder is not real content; do not copy or "
+        "retype it. Re-read the relevant file or re-run the command to obtain the "
+        "real content, then reissue the tool call with complete arguments."
     )
 
 

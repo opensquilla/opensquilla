@@ -33,6 +33,7 @@ _VALID_SOURCES = {"tool_runtime", "adapter", "replay", "legacy", "unknown"}
 _VALID_PRESERVATION = {"normal", "diagnostic", "retain_summary", "retain_full", "ephemeral"}
 _ERROR_STATUSES = {"error", "timeout", "cancelled"}
 _EXEC_EXIT_RE = re.compile(r"^exit_code=(-?\d+)\n", re.DOTALL)
+_MASKED_PIPELINE_FAILURE_MARKER = "[shell_warning:masked_pipeline_failure]"
 
 
 def _as_bool(value: Any, *, default: bool = False) -> bool:
@@ -167,14 +168,21 @@ def execution_status_for_tool_result(tool_name: str, content: Any) -> ExecutionS
         if match is None:
             return None
         exit_code = int(match.group(1))
-        failed = exit_code != 0
+        masked_failure = exit_code == 0 and _MASKED_PIPELINE_FAILURE_MARKER in content
+        failed = exit_code != 0 or masked_failure
         return {
             "version": 1,
             "status": "error" if failed else "success",
             "exit_code": exit_code,
             "timed_out": False,
             "truncated": False,
-            "reason": "nonzero_exit" if failed else None,
+            "reason": (
+                "masked_pipeline_failure"
+                if masked_failure
+                else "nonzero_exit"
+                if failed
+                else None
+            ),
             "source": "adapter",
             "preservation_class": "diagnostic" if failed else "normal",
         }

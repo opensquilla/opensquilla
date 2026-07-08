@@ -60,7 +60,16 @@ class AgentProfile:
     identity: AgentIdentity = field(default_factory=AgentIdentity)
     agents_doc: AgentsDocument | None = None
     workspace_files: dict[str, str] = field(default_factory=dict)
-    # Prompt assembly mode: "full" | "minimal" | "none"
+    # Prompt assembly mode: "full" | "minimal" | "none" |
+    # "headless_source_edit" | "headless_repo_coding_scaffold"
     prompt_mode: str = "full"
+    # Opt-in additive "Patch Evidence Protocol" prompt section for
+    # repo-coding/patching sessions (see engine.runtime
+    # _resolve_patch_evidence_protocol). Composes with any prompt_mode.
+    patch_evidence_protocol: bool = False
+    # Opt-in additive "Reproduction Evidence" prompt section paired with the
+    # loop-side finalize-time red-evidence gate (see engine.runtime
+    # _resolve_finalize_evidence_gate). Composes with any prompt_mode.
+    finalize_evidence_gate: bool = False
     # Per-turn time-prefix on user messages (see engine.steps.inject_time_prefix).
     inject_time_prefix: bool = True

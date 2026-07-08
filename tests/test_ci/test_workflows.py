@@ -546,6 +546,70 @@ def test_ci_change_classifier_tracks_platform_sensitive_changes(tmp_path: Path) 
     )
 
 
+def test_ci_change_classifier_runs_windows_full_for_persistence_risk(
+    tmp_path: Path,
+) -> None:
+    outputs = _classify_changed_files(
+        tmp_path,
+        [
+            "src/opensquilla/persistence/migrator.py",
+            "tests/test_persistence/test_migrator.py",
+            "migrations/V999__example.py",
+        ],
+    )
+
+    assert outputs == _expected_classifier_outputs(
+        runtime_changed="true",
+        test_changed="true",
+        windows_full_required="true",
+        python_changed="true",
+        platform_sensitive_changed="true",
+        build_wheel_required="true",
+    )
+
+
+def test_ci_change_classifier_runs_windows_full_for_provider_onboarding_risk(
+    tmp_path: Path,
+) -> None:
+    outputs = _classify_changed_files(
+        tmp_path,
+        [
+            "src/opensquilla/provider/registry.py",
+            "src/opensquilla/onboarding/provider_specs.py",
+            "tests/test_onboarding/test_mutations.py",
+            "tests/test_provider/test_spec_substrate.py",
+        ],
+    )
+
+    assert outputs == _expected_classifier_outputs(
+        runtime_changed="true",
+        test_changed="true",
+        windows_full_required="true",
+        python_changed="true",
+        platform_sensitive_changed="true",
+        build_wheel_required="true",
+    )
+
+
+def test_ci_change_classifier_runs_windows_full_for_gateway_functional_e2e(
+    tmp_path: Path,
+) -> None:
+    outputs = _classify_changed_files(
+        tmp_path,
+        [
+            "tests/functional/test_gateway_non_image_attachment_materialization_e2e.py",
+            "tests/functional/test_gateway_attachment_history_e2e.py",
+        ],
+    )
+
+    assert outputs == _expected_classifier_outputs(
+        test_changed="true",
+        windows_full_required="true",
+        python_changed="true",
+        platform_sensitive_changed="true",
+    )
+
+
 def test_ci_change_classifier_tracks_desktop_changes(tmp_path: Path) -> None:
     outputs = _classify_changed_files(
         tmp_path,

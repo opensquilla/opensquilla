@@ -184,6 +184,125 @@ def test_policy_helpers_apply_workspace_write_deny_globs_from_config() -> None:
     assert set(ctx.workspace_write_deny_globs) == {"generated/**", "*.secret"}
 
 
+def test_policy_helpers_enable_fresh_file_reads_for_coding_profile() -> None:
+    default_ctx = apply_tool_policy_from_config(
+        ToolContext(),
+        available_tools=["write_file", "edit_file", "read_file"],
+        config={},
+    )
+    coding_ctx = apply_tool_policy_from_config(
+        ToolContext(),
+        available_tools=["write_file", "edit_file", "read_file"],
+        config={"tools": {"profile": "coding"}},
+    )
+    disabled_ctx = apply_tool_policy_from_config(
+        ToolContext(),
+        available_tools=["write_file", "edit_file", "read_file"],
+        config={
+            "tools": {
+                "profile": "coding",
+                "fileEditRequiresFreshRead": False,
+            }
+        },
+    )
+
+    assert default_ctx.file_edit_requires_fresh_read is False
+    assert coding_ctx.file_edit_requires_fresh_read is True
+    assert disabled_ctx.file_edit_requires_fresh_read is False
+
+
+def test_policy_helpers_keep_flexible_edit_recovery_on_by_default() -> None:
+    default_ctx = apply_tool_policy_from_config(
+        ToolContext(),
+        available_tools=["write_file", "edit_file", "read_file"],
+        config={},
+    )
+    disabled_ctx = apply_tool_policy_from_config(
+        ToolContext(),
+        available_tools=["write_file", "edit_file", "read_file"],
+        config={
+            "tools": {
+                "fileEditFlexibleRecovery": False,
+            }
+        },
+    )
+
+    assert default_ctx.file_edit_flexible_recovery is True
+    assert disabled_ctx.file_edit_flexible_recovery is False
+
+
+def test_gateway_tools_config_preserves_fresh_file_read_switch() -> None:
+    cfg = GatewayConfig(
+        tools={
+            "file_edit_requires_fresh_read": True,
+        }
+    )
+
+    ctx = apply_tool_policy_from_config(
+        ToolContext(),
+        available_tools=["write_file", "edit_file", "read_file"],
+        config=cfg,
+    )
+
+    assert ctx.file_edit_requires_fresh_read is True
+
+
+def test_gateway_tools_config_preserves_flexible_edit_recovery_switch() -> None:
+    cfg = GatewayConfig(
+        tools={
+            "file_edit_flexible_recovery": False,
+        }
+    )
+
+    ctx = apply_tool_policy_from_config(
+        ToolContext(),
+        available_tools=["write_file", "edit_file", "read_file"],
+        config=cfg,
+    )
+
+    assert ctx.file_edit_flexible_recovery is False
+
+
+def test_coding_ablation_policy_can_remove_confusing_runtime_tools() -> None:
+    ctx = apply_tool_policy_from_config(
+        ToolContext(),
+        available_tools=[
+            "read_file",
+            "write_file",
+            "edit_file",
+            "apply_patch",
+            "glob_search",
+            "grep_search",
+            "list_dir",
+            "exec_command",
+            "background_process",
+            "process",
+            "execute_code",
+            "memory_search",
+            "memory_get",
+            "sessions_list",
+            "session_status",
+            "retrieve_tool_result",
+        ],
+        config={
+            "tools": {
+                "profile": "coding",
+                "also_allow": ["retrieve_tool_result"],
+                "deny": ["execute_code", "background_process", "process"],
+            }
+        },
+    )
+
+    assert ctx.allowed_tools is not None
+    assert "exec_command" in ctx.allowed_tools
+    assert "read_file" in ctx.allowed_tools
+    assert "apply_patch" in ctx.allowed_tools
+    assert "retrieve_tool_result" in ctx.allowed_tools
+    assert {"execute_code", "background_process", "process"} <= ctx.denied_tools
+    assert not ({"execute_code", "background_process", "process"} & ctx.allowed_tools)
+    assert ctx.file_edit_requires_fresh_read is True
+
+
 def test_gateway_tools_config_preserves_workspace_write_deny_globs() -> None:
     cfg = GatewayConfig(
         tools={

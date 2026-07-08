@@ -192,20 +192,18 @@ def test_no_key_provider_reports_not_required_source():
     "provider_id",
     ["byteplus_coding_plan", "volcengine_coding_plan"],
 )
-def test_runtime_unsupported_provider_is_not_reported_as_key_free(provider_id):
-    # Coding-plan stubs are registered with real env keys but have no runtime
-    # backend; the status must not collapse that into "no key required".
+def test_coding_plan_provider_without_key_is_missing_not_key_free(provider_id):
+    # Coding-plan providers are runtime-supported and require real env keys;
+    # an empty key is missing setup, never "no key required".
     cfg = GatewayConfig()
     cfg.llm = LlmProviderConfig(provider=provider_id, model="m", api_key="")
 
     s = get_onboarding_status(cfg)
 
     assert s.llm_configured is False
-    assert s.llm_source == "unsupported"
-    assert s.sections["llm"].value == "unknown"
-    detail = str(s.section_details["llm"]["detail"])
-    assert detail == "registered but not runtime-supported"
-    assert "no key required" not in detail
+    assert s.llm_source == "none"
+    assert s.sections["llm"].value == "missing"
+    assert "no key required" not in str(s.section_details["llm"])
 
 
 def test_zero_channels_means_not_messaging_configured():

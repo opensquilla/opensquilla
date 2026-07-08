@@ -1,8 +1,16 @@
-"""V008 - scheduler job tool policy.
+"""V008 - scheduler job tool policy (wrong-database no-op).
 
-Adds a persisted per-job tool policy column for cron jobs. JobStore also
-performs an idempotent in-process migration for ad-hoc stores; this yoyo
-migration keeps managed database upgrades in sync.
+Adds a persisted per-job tool policy column for cron jobs.
+
+``scheduler_jobs`` lives in ``scheduler.db`` (``JobStore`` opened from
+``gateway/boot.py``), NOT in ``sessions.db`` — and ``apply_pending`` only
+ever runs against ``sessions.db``. On real split-database deployments the
+table is absent from the migration connection and this step no-ops,
+recorded in the sessions.db ledger without touching scheduler data. The
+real in-place upgrade is ``JobStore._migrate``'s connect-time ADD COLUMN
+pass (``scheduler/persistence.py``); the guards below keep this step
+harmless where the table does share a file with the session store (e.g.
+ad-hoc test setups).
 """
 
 from __future__ import annotations

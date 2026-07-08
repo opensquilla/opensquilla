@@ -7,6 +7,21 @@ export interface SessionStatusBadge {
   cls: string
 }
 
+export type SessionStatusBadgeClasses = Partial<Record<
+  'needsInput' | 'running' | 'queued' | 'failed' | 'timeout' | 'interrupted' | 'cancelled',
+  string
+>>
+
+const DEFAULT_STATUS_CLASSES: Required<SessionStatusBadgeClasses> = {
+  needsInput: 'is-needs-input',
+  running: 'is-running',
+  queued: 'is-queued',
+  failed: 'is-failed',
+  timeout: 'is-failed',
+  interrupted: 'is-queued',
+  cancelled: 'is-off',
+}
+
 export function sessionSurfaceIcon(item: SessionItem): IconName {
   if (item.sessionKind === 'cron') return 'cron'
   if (item.sessionKind === 'channel') return 'channels'
@@ -15,21 +30,36 @@ export function sessionSurfaceIcon(item: SessionItem): IconName {
   return 'sessions'
 }
 
-export function sessionStatusBadge(item: SessionItem, needsInput = false): SessionStatusBadge | null {
+export function sessionStatusBadge(
+  item: SessionItem,
+  needsInput = false,
+  classes: SessionStatusBadgeClasses = {},
+): SessionStatusBadge | null {
   const t = i18n.global.t
   if (needsInput) {
-    return { label: t('sessions.status.needsInput'), cls: 'is-needs-input' }
+    return {
+      label: t('sessions.status.needsInput'),
+      cls: classes.needsInput || DEFAULT_STATUS_CLASSES.needsInput,
+    }
   }
-  const map: Record<string, { labelKey: string; cls: string }> = {
-    running: { labelKey: 'sessions.status.running', cls: 'is-running' },
-    queued: { labelKey: 'sessions.status.queued', cls: 'is-queued' },
-    failed: { labelKey: 'sessions.status.failed', cls: 'is-failed' },
-    timeout: { labelKey: 'sessions.status.timeout', cls: 'is-failed' },
-    interrupted: { labelKey: 'sessions.status.interrupted', cls: 'is-queued' },
-    cancelled: { labelKey: 'sessions.status.cancelled', cls: 'is-off' },
+  const map: Record<string, { labelKey: string; classKey: keyof SessionStatusBadgeClasses }> = {
+    running: { labelKey: 'sessions.status.running', classKey: 'running' },
+    queued: { labelKey: 'sessions.status.queued', classKey: 'queued' },
+    failed: { labelKey: 'sessions.status.failed', classKey: 'failed' },
+    timeout: { labelKey: 'sessions.status.timeout', classKey: 'timeout' },
+    interrupted: { labelKey: 'sessions.status.interrupted', classKey: 'interrupted' },
+    cancelled: { labelKey: 'sessions.status.cancelled', classKey: 'cancelled' },
   }
   const entry = map[item.runStatus]
-  return entry ? { label: t(entry.labelKey), cls: entry.cls } : null
+  if (!entry) return null
+  const stoppedLabel =
+    (item.runStatus === 'cancelled' || item.runStatus === 'interrupted') && item.runLabel
+      ? item.runLabel
+      : ''
+  return {
+    label: stoppedLabel || t(entry.labelKey),
+    cls: classes[entry.classKey] || DEFAULT_STATUS_CLASSES[entry.classKey],
+  }
 }
 
 /**

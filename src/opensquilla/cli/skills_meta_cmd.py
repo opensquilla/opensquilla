@@ -79,6 +79,36 @@ def _open_writer() -> MetaRunWriter:
     return open_meta_run_writer(_resolve_db_path())
 
 
+_NO_HISTORY_MESSAGE = (
+    "no meta-run history yet — the database is created on first gateway run"
+)
+
+
+def _db_file_exists() -> bool:
+    return os.path.exists(_resolve_db_path())
+
+
+def _exit_no_history_list(*, json_out: bool, empty_json: Any) -> None:
+    """Friendly exit for list-style commands when the DB was never created.
+
+    The CLI is a read surface: opening the path with sqlite's default
+    read-write-CREATE mode would either traceback (state dir missing) or
+    silently create a stray empty ``sessions.db``. Exit 0 with the
+    command's empty-output shape instead, and never create the file.
+    """
+    if json_out:
+        typer.echo(json.dumps(empty_json, default=str))
+    else:
+        typer.echo(f"({_NO_HISTORY_MESSAGE})")
+    raise typer.Exit(0)
+
+
+def _exit_no_history_lookup(run_id: str) -> None:
+    """No-DB exit for run-lookup commands — keeps the not-found convention."""
+    typer.echo(f"run not found: {run_id} ({_NO_HISTORY_MESSAGE})", err=True)
+    raise typer.Exit(2)
+
+
 def _parse_since(value: str | None) -> int | None:
     try:
         return parse_since_ms(value)
@@ -133,6 +163,8 @@ def runs_list(
     json_out: bool = typer.Option(False, "--json", help="Emit JSON"),
 ) -> None:
     """List meta-skill runs."""
+    if not _db_file_exists():
+        _exit_no_history_list(json_out=json_out, empty_json=[])
     writer = _open_writer()
     try:
         rows = writer.list_runs(
@@ -162,6 +194,8 @@ def runs_show(
     json_out: bool = typer.Option(False, "--json"),
 ) -> None:
     """Show a single run with its steps."""
+    if not _db_file_exists():
+        _exit_no_history_lookup(run_id)
     writer = _open_writer()
     try:
         rec = writer.get_run(run_id)
@@ -203,6 +237,8 @@ def runs_steps(
     json_out: bool = typer.Option(False, "--json"),
 ) -> None:
     """Show step-by-step trace of a run."""
+    if not _db_file_exists():
+        _exit_no_history_lookup(run_id)
     writer = _open_writer()
     try:
         steps = writer.get_steps(run_id)
@@ -235,6 +271,8 @@ def runs_draft(
     json_out: bool = typer.Option(False, "--json"),
 ) -> None:
     """Draft a meta-skill authoring seed from a historical run."""
+    if not _db_file_exists():
+        _exit_no_history_lookup(run_id)
     writer = _open_writer()
     try:
         rec = writer.get_run(run_id)
@@ -270,6 +308,8 @@ def runs_failures(
     json_out: bool = typer.Option(False, "--json"),
 ) -> None:
     """List failed runs."""
+    if not _db_file_exists():
+        _exit_no_history_list(json_out=json_out, empty_json=[])
     writer = _open_writer()
     try:
         rows = writer.list_failures(
@@ -297,6 +337,8 @@ def runs_diff(
     """Compare two meta-skill runs."""
     from opensquilla.skills.meta.run_reports import build_run_diff
 
+    if not _db_file_exists():
+        _exit_no_history_lookup(left_run_id)
     writer = _open_writer()
     try:
         left = writer.get_run(left_run_id)
@@ -333,6 +375,8 @@ def runs_cost(
     """Summarize meta-skill run usage and cost telemetry."""
     from opensquilla.skills.meta.run_reports import build_cost_summary
 
+    if not _db_file_exists():
+        _exit_no_history_list(json_out=json_out, empty_json=build_cost_summary([]))
     writer = _open_writer()
     try:
         rows = writer.list_runs(
@@ -365,6 +409,8 @@ def runs_validate(
     """Show validation metadata for a historical run."""
     from opensquilla.skills.meta.run_reports import build_validation_summary
 
+    if not _db_file_exists():
+        _exit_no_history_lookup(run_id)
     writer = _open_writer()
     try:
         rec = writer.get_run(run_id)
@@ -394,6 +440,8 @@ def runs_eval_baseline(
     """Show deterministic eval baseline metadata for a historical run."""
     from opensquilla.skills.meta.run_reports import build_eval_baseline
 
+    if not _db_file_exists():
+        _exit_no_history_lookup(run_id)
     writer = _open_writer()
     try:
         rec = writer.get_run(run_id)
@@ -484,6 +532,8 @@ def runs_replay(
     json_out: bool = typer.Option(False, "--json"),
 ) -> None:
     """Replay a historical meta-skill run."""
+    if not _db_file_exists():
+        _exit_no_history_lookup(run_id)
     writer = _open_writer()
     try:
         rec = writer.get_run(run_id)

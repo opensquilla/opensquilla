@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import shlex
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any, TypeGuard
@@ -49,13 +50,90 @@ CONTROL_TOOL_NAMES: frozenset[str] = frozenset(
     }
 )
 
+EXECUTION_TOOL_NAMES: frozenset[str] = frozenset(
+    {
+        "background_process",
+        "exec_command",
+        "execute_code",
+        "process",
+    }
+)
+
+_SEMANTIC_RESULT_PRESERVE_TOOL_NAMES: frozenset[str] = frozenset(
+    {
+        "git_diff",
+        "read_file",
+    }
+)
+_SOURCE_CONTEXT_EXEC_MAX_CHARS = 200_000
+_SOURCE_CONTEXT_FILE_SUFFIXES = (
+    ".bash",
+    ".c",
+    ".cc",
+    ".cpp",
+    ".cs",
+    ".css",
+    ".go",
+    ".gradle",
+    ".h",
+    ".hpp",
+    ".html",
+    ".java",
+    ".js",
+    ".json",
+    ".jsx",
+    ".kt",
+    ".lua",
+    ".m",
+    ".mjs",
+    ".md",
+    ".mm",
+    ".php",
+    ".proto",
+    ".py",
+    ".rb",
+    ".rs",
+    ".scala",
+    ".scss",
+    ".sh",
+    ".sql",
+    ".svelte",
+    ".swift",
+    ".toml",
+    ".ts",
+    ".tsx",
+    ".vue",
+    ".xml",
+    ".yaml",
+    ".yml",
+)
+_SOURCE_CONTEXT_FILE_BASENAMES = frozenset(
+    {
+        "build.gradle",
+        "cargo.toml",
+        "cmakelists.txt",
+        "dockerfile",
+        "gemfile",
+        "go.mod",
+        "makefile",
+        "package.json",
+        "pom.xml",
+        "pyproject.toml",
+        "setup.cfg",
+        "setup.py",
+        "tsconfig.json",
+    }
+)
+
 
 @dataclass(frozen=True)
 class ToolResultBudgetPolicy:
     max_single_tool_result_chars: int | None = None
     max_single_external_result_chars: int | None = None
+    max_single_execution_result_chars: int | None = None
     max_tool_result_chars_per_turn: int | None = None
     max_external_tool_result_chars_per_turn: int | None = None
+    max_execution_tool_result_chars_per_turn: int | None = None
     min_error_result_chars: int = 512
     min_control_result_chars: int = 512
 
@@ -346,6 +424,114 @@ class ToolRunBudgetTracker:
             )
 
 
+def _safe_shell_tokens(segment: str) -> list[str]:
+    try:
+        return shlex.split(segment)
+    except ValueError:
+        return segment.split()
+
+
+def _command_segments(command: str) -> list[str]:
+    normalized = command.replace("\n", ";")
+    for separator in ("&&", "||", "|"):
+        normalized = normalized.replace(separator, ";")
+    return [segment.strip() for segment in normalized.split(";") if segment.strip()]
+
+
+def _token_looks_like_source_path(token: str) -> bool:
+    value = token.strip().strip("\"'")
+    if not value or value.startswith("-"):
+        return False
+    if any(char in value for char in "*?[]{}"):
+        return False
+    value = value.rstrip(",:;")
+    if ":" in value:
+        value = value.rsplit(":", 1)[0]
+    lowered = value.lower()
+    basename = lowered.rsplit("/", 1)[-1]
+    return basename in _SOURCE_CONTEXT_FILE_BASENAMES or lowered.endswith(
+        _SOURCE_CONTEXT_FILE_SUFFIXES
+    )
+
+
+def _exec_command_invokes_git_diff(command: str | None) -> bool:
+    if not command:
+        return False
+    lowered = command.lower()
+    return (
+        lowered.strip().startswith("git diff")
+        or " git diff " in f" {lowered} "
+        or "\ngit diff " in lowered
+        or "&& git diff " in lowered
+        or "; git diff " in lowered
+    )
+
+
+def exec_command_invokes_git_diff(command: str | None) -> bool:
+    """Return true when an exec command includes a focused git diff read."""
+    return _exec_command_invokes_git_diff(command)
+
+
+def _exec_command_invokes_source_context_read(
+    command: str | None,
+    *,
+    content: str,
+    content_chars: int | None = None,
+) -> bool:
+    content_length = len(content) if content_chars is None else content_chars
+    if not command or content_length > _SOURCE_CONTEXT_EXEC_MAX_CHARS:
+        return False
+    for segment in _command_segments(command.lower()):
+        tokens = _safe_shell_tokens(segment)
+        if not tokens:
+            continue
+        executable = tokens[0].rsplit("/", 1)[-1]
+        has_source_path = any(_token_looks_like_source_path(token) for token in tokens[1:])
+        if executable == "cat" and has_source_path:
+            return True
+        if executable == "sed":
+            has_print_range = "-n" in tokens and any("p" in token for token in tokens[1:])
+            if has_print_range and has_source_path:
+                return True
+        if executable in {"rg", "grep"}:
+            has_line_numbers = any(
+                token == "-n" or (token.startswith("-") and "n" in token)
+                for token in tokens[1:]
+            )
+            if has_line_numbers and has_source_path:
+                return True
+    return False
+
+
+def exec_command_invokes_source_context_read(
+    command: str | None,
+    *,
+    content: str,
+    content_chars: int | None = None,
+) -> bool:
+    """Return true when an exec command reads bounded source/config context."""
+    return _exec_command_invokes_source_context_read(
+        command,
+        content=content,
+        content_chars=content_chars,
+    )
+
+
+def _exec_command_preserves_full_result(
+    arguments: dict[str, Any] | None,
+    *,
+    content: str,
+) -> bool:
+    command = arguments.get("command") if isinstance(arguments, dict) else None
+    command_text = command if isinstance(command, str) else None
+    return _exec_command_invokes_git_diff(
+        command_text
+    ) or _exec_command_invokes_source_context_read(
+        command_text,
+        content=content,
+    )
+
+
 @dataclass(frozen=True)
 class ToolResultBudgetDecision:
     content: str
@@ -363,6 +549,7 @@ class ToolResultBudgetTracker:
         self._lock = asyncio.Lock()
         self._tool_chars_used = 0
         self._external_chars_used = 0
+        self._execution_chars_used = 0
 
     async def normalize(
         self,
@@ -371,6 +558,7 @@ class ToolResultBudgetTracker:
         content: str,
         budget_class: ToolResultBudgetClass,
         is_error: bool = False,
+        arguments: dict[str, Any] | None = None,
     ) -> ToolResultBudgetDecision:
         if not isinstance(content, str):
             content = str(content)
@@ -390,16 +578,38 @@ class ToolResultBudgetTracker:
             single_limit = self.policy.max_single_tool_result_chars
 
         original_chars = len(content)
+        execution_budget_applies = self._execution_budget_applies(
+            tool_name=tool_name,
+            content=content,
+            is_error=is_error,
+            arguments=arguments,
+        )
         async with self._lock:
             limits: list[int] = []
             if single_limit is not None:
                 limits.append(max(0, int(single_limit)))
+            if (
+                execution_budget_applies
+                and self.policy.max_single_execution_result_chars is not None
+            ):
+                limits.append(max(0, int(self.policy.max_single_execution_result_chars)))
             if self.policy.max_tool_result_chars_per_turn is not None:
                 limits.append(
                     max(
                         0,
                         int(self.policy.max_tool_result_chars_per_turn)
                         - self._tool_chars_used,
+                    )
+                )
+            if (
+                execution_budget_applies
+                and self.policy.max_execution_tool_result_chars_per_turn is not None
+            ):
+                limits.append(
+                    max(
+                        0,
+                        int(self.policy.max_execution_tool_result_chars_per_turn)
+                        - self._execution_chars_used,
                     )
                 )
             if (
@@ -437,6 +647,8 @@ class ToolResultBudgetTracker:
                 self._tool_chars_used += original_chars
                 if budget_class is ToolResultBudgetClass.EXTERNAL:
                     self._external_chars_used += original_chars
+                if execution_budget_applies:
+                    self._execution_chars_used += original_chars
                 return ToolResultBudgetDecision(
                     content=content,
                     changed=False,
@@ -456,6 +668,8 @@ class ToolResultBudgetTracker:
             self._tool_chars_used += returned_chars
             if budget_class is ToolResultBudgetClass.EXTERNAL:
                 self._external_chars_used += returned_chars
+            if execution_budget_applies:
+                self._execution_chars_used += returned_chars
             return ToolResultBudgetDecision(
                 content=compacted,
                 changed=True,
@@ -463,6 +677,27 @@ class ToolResultBudgetTracker:
                 returned_chars=returned_chars,
                 budget_class=budget_class,
             )
+
+    @staticmethod
+    def _execution_budget_applies(
+        *,
+        tool_name: str,
+        content: str,
+        is_error: bool,
+        arguments: dict[str, Any] | None,
+    ) -> bool:
+        if is_error:
+            return False
+        if tool_name in _SEMANTIC_RESULT_PRESERVE_TOOL_NAMES:
+            return False
+        if tool_name not in EXECUTION_TOOL_NAMES:
+            return False
+        if tool_name == "exec_command" and _exec_command_preserves_full_result(
+            arguments,
+            content=content,
+        ):
+            return False
+        return True
 
 
 def resolve_budget_class(tool_name: str, explicit: Any = None) -> ToolResultBudgetClass:
@@ -557,14 +792,28 @@ def compact_tool_result_content(
             original_chars=original_chars,
             budget_class=budget_class,
         )
-    preview = content[:max_preview_chars]
+    if max_preview_chars <= 0:
+        preview = ""
+        tail = ""
+    else:
+        head_chars = max(1, int(max_preview_chars * 0.65))
+        tail_chars = max(0, max_preview_chars - head_chars)
+        if tail_chars <= 0:
+            preview = content[:max_preview_chars]
+            tail = ""
+        else:
+            preview = content[:head_chars]
+            tail = content[-tail_chars:]
     payload: dict[str, Any] = {
         "result_truncated": True,
         "result_original_chars": original_chars,
+        "result_omitted_chars": max(0, original_chars - len(preview) - len(tail)),
         "tool": tool_name,
         "is_error": bool(is_error),
         "preview": preview,
     }
+    if tail:
+        payload["tail"] = tail
     return json.dumps(payload, ensure_ascii=False)
 
 
@@ -618,7 +867,8 @@ def _preview_chars(rendered: str) -> int:
     if isinstance(payload, dict):
         preview = payload.get("preview")
         if isinstance(preview, str):
-            return len(preview)
+            tail = payload.get("tail")
+            return len(preview) + (len(tail) if isinstance(tail, str) else 0)
         head = payload.get("head")
         tail = payload.get("tail")
         if isinstance(head, str) or isinstance(tail, str):

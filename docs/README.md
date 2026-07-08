@@ -63,6 +63,8 @@ root release README with task-oriented guides.
   raw capture guidance, read-only turn replay, and developer replay benchmarks.
 - [`tui-real-terminal-harness.md`](tui-real-terminal-harness.md) - maintainer
   real-terminal TUI integration harness and evidence capture.
+- [`experiments.md`](experiments.md) - opt-in runtime toggle conventions and
+  the delivery-verification tooling in `scripts/experiments/`.
 - [`operations.md`](operations.md) - sessions, cron, usage, diagnostics,
   migration, MCP server, and install inventory commands.
 - [`troubleshooting.md`](troubleshooting.md) - common install/runtime issues.

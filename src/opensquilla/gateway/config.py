@@ -177,11 +177,29 @@ class SkillsConfig(BaseSettings):
 class ToolsConfig(BaseModel):
     """Top-level runtime tool policy configuration."""
 
-    profile: Literal["full", "minimal", "memory_only", "coding", "messaging"] | None = None
+    profile: (
+        Literal[
+            "full",
+            "minimal",
+            "memory_only",
+            "coding",
+            "messaging",
+            "repo_coding_source_edit",
+            "repo_coding_source_edit_strict",
+            "repo_coding_source_edit_v2",
+            "repo_coding_source_edit_balanced",
+            "repo_coding_source_edit_patch_fallback",
+            "repo_coding_scaffold_edit",
+            "repo_coding_scaffold_patch",
+        ]
+        | None
+    ) = None
     allow: list[str] = Field(default_factory=list)
     deny: list[str] = Field(default_factory=list)
     also_allow: list[str] = Field(default_factory=list)
     workspace_write_deny_globs: list[str] = Field(default_factory=list)
+    file_edit_requires_fresh_read: bool | None = None
+    file_edit_flexible_recovery: bool | None = None
     trusted_fake_ip_cidrs: list[str] = Field(default_factory=list)
 
     @field_validator("trusted_fake_ip_cidrs")
@@ -276,9 +294,22 @@ class LlmProviderConfig(BaseSettings):
     base_url: str = "https://openrouter.ai/api/v1"
     proxy: str = ""  # explicit HTTP proxy URL (e.g. http://127.0.0.1:7890)
     max_tokens: int = 0  # 0 = auto-resolve from model catalog; >0 = explicit override
+    # 0 = auto-resolve from model catalog; >0 = explicit context-window override
+    # in tokens. Drives the provider-context budget ladder and context usage
+    # reporting for models the catalog does not know (e.g. direct DashScope
+    # model ids that never appear in the OpenRouter catalog fetch).
+    context_window_tokens: int = 0
+    temperature: float | None = None
+    top_p: float | None = None
     # Optional global thinking level: off|minimal|low|medium|high|xhigh|adaptive.
     # When unset, squilla_router may suggest thinking for selected tiers.
     thinking: str | None = None
+    # Explicit provider-request proof budget in characters. 0 = derive from the
+    # context-budget ladder (window minus output+thinking reserve, times the
+    # overflow threshold). A positive value bypasses that derivation and feeds
+    # request-proof projection directly, so operators can size provider payloads
+    # for models whose output reserve would otherwise dominate the window.
+    provider_request_proof_max_chars: int = 0
     # OpenRouter-only: map model id -> upstream provider name. Mapped models
     # send provider.order=[name] so the provider is preferred without disabling
     # OpenRouter fallback.
@@ -585,7 +616,24 @@ class SafetyConfig(BaseModel):
 class PromptConfig(BaseModel):
     """Prompt-layer feature flags."""
 
+    mode: Literal[
+        "auto",
+        "full",
+        "minimal",
+        "none",
+        "headless_source_edit",
+        "headless_repo_coding_scaffold",
+    ] = "auto"
     platform_hint_enabled: bool = True
+    # Opt-in additive "Patch Evidence Protocol" system-prompt section for
+    # repo-coding/patching sessions. Overridable per run via the
+    # OPENSQUILLA_PATCH_EVIDENCE_PROTOCOL env var ("on"/"off").
+    patch_evidence_protocol: bool = False
+    # Opt-in additive "Reproduction Evidence" system-prompt section plus the
+    # loop-side finalize-time red-evidence gate (engine.finalize_evidence_gate).
+    # Overridable per run via the OPENSQUILLA_FINALIZE_EVIDENCE_GATE env var
+    # ("on"/"off").
+    finalize_evidence_gate: bool = False
 
 
 MemoryEmbeddingProvider = Literal[
@@ -962,6 +1010,12 @@ class AgentTokenSavingConfig(BaseSettings):
 
     # Tokenjuice projection is the default tool-result path.
     tool_result_projection_max_inline_chars: int = Field(default=60_000, ge=1000)
+    tool_result_fresh_diagnostic_policy_enabled: bool = Field(default=False)
+    tool_result_diagnostic_retrieval_gate_enabled: bool = Field(default=False)
+    tool_result_fresh_diagnostic_inline_max_chars: int = Field(default=64_000, ge=0)
+    tool_result_dispatch_max_chars: int = Field(default=0, ge=0)
+    tool_result_dispatch_turn_max_chars: int = Field(default=0, ge=0)
+    tool_result_store_full_trace: bool = Field(default=False)
     tool_result_store_max_bytes: int = Field(default=8 * 1024 * 1024, ge=0)
     tool_result_store_disk_budget_bytes: int = Field(default=256 * 1024 * 1024, ge=0)
     tool_result_store_retention_seconds: int = Field(default=7 * 24 * 60 * 60, ge=0)
@@ -1866,6 +1920,19 @@ class GatewayConfig(BaseSettings):
     agent_max_provider_retries: int | None = None
     # Agent model/tool loop budget for a single turn. 0 disables this cap.
     agent_max_iterations: int = Field(default=0, ge=0)
+    # Source diff preservation protects already-mutated source files from
+    # high-confidence destructive git restore/checkout/reset/clean commands.
+    source_diff_preservation_mode: Literal["off", "log", "block"] = "log"
+    # Source diff candidate ledger records recoverable source edit patches and
+    # can surface lost candidate ids in final-diff recovery diagnostics.
+    source_diff_candidate_mode: Literal["off", "log", "warn_model"] = "log"
+    # Runtime state capsule is an opt-in provider-visible factual summary for
+    # coding turns. ``log`` records telemetry only; ``inject`` adds it to the
+    # provider request view.
+    runtime_state_capsule_mode: Literal["off", "log", "inject"] = "off"
+    # Text-only tool recovery is an opt-in guard for tool-capable turns where
+    # a model emits prose instead of a tool call.
+    text_only_tool_recovery_mode: Literal["off", "log", "warn_model"] = "off"
     # Provider request timeout (single LLM HTTP/streaming request).
     llm_request_timeout_seconds: float = 120.0
     # Agent stream liveness events. The heartbeat interval only affects

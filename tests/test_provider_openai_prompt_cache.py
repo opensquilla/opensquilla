@@ -129,6 +129,110 @@ def test_openrouter_deepseek_auto_cache_does_not_add_top_level_cache_control(mon
     assert payload["messages"][0]["content"][0]["cache_control"] == {"type": "ephemeral"}
 
 
+def test_dashscope_qwen36_flash_auto_cache_adds_message_cache_control(monkeypatch) -> None:
+    captured: dict[str, Any] = {}
+    _patch_openai_transport(monkeypatch, captured)
+    provider = OpenAIProvider(
+        api_key="test",
+        model="qwen3.6-flash",
+        base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+        provider_kind="dashscope",
+    )
+    cfg = ChatConfig(
+        system="stable base",
+        cache_breakpoints=[{"text": "stable base", "cache": "true"}],
+        cache_mode="auto",
+    )
+
+    done = _collect_done(provider, cfg)
+
+    assert done.cached_tokens == 5
+    payload = captured["payload"]
+    assert "cache_control" not in payload
+    system_message = payload["messages"][0]
+    assert system_message["role"] == "system"
+    assert len(system_message["content"]) == 1
+    assert system_message["content"][0]["cache_control"] == {"type": "ephemeral"}
+    assert system_message["content"][0]["text"] == "stable base"
+    assert payload["messages"][1] == {"role": "user", "content": "hi"}
+
+
+def test_openrouter_qwen36_flash_auto_cache_adds_alibaba_message_cache_control(
+    monkeypatch,
+) -> None:
+    captured: dict[str, Any] = {}
+    _patch_openai_transport(monkeypatch, captured)
+    provider = OpenAIProvider(
+        api_key="test",
+        model="qwen/qwen3.6-flash",
+        base_url="https://openrouter.ai/api/v1",
+        provider_kind="openrouter",
+    )
+    cfg = ChatConfig(
+        system="stable base",
+        cache_breakpoints=[{"text": "stable base", "cache": "true"}],
+        cache_mode="auto",
+    )
+
+    _collect_done(provider, cfg)
+
+    payload = captured["payload"]
+    assert "cache_control" not in payload
+    assert payload["messages"][0] == {
+        "role": "system",
+        "content": [
+            {
+                "type": "text",
+                "text": "stable base",
+                "cache_control": {"type": "ephemeral"},
+            }
+        ],
+    }
+    assert payload["messages"][1] == {
+        "role": "user",
+        "content": [
+            {
+                "type": "text",
+                "text": "hi",
+                "cache_control": {"type": "ephemeral"},
+            }
+        ],
+    }
+
+
+def test_openrouter_unprefixed_qwen36_flash_auto_cache_adds_message_cache_control(
+    monkeypatch,
+) -> None:
+    captured: dict[str, Any] = {}
+    _patch_openai_transport(monkeypatch, captured)
+    provider = OpenAIProvider(
+        api_key="test",
+        model="qwen3.6-flash",
+        base_url="https://openrouter.ai/api/v1",
+        provider_kind="openrouter",
+    )
+    cfg = ChatConfig(
+        system="stable base",
+        cache_breakpoints=[{"text": "stable base", "cache": "true"}],
+        cache_mode="on",
+    )
+
+    _collect_done(provider, cfg)
+
+    messages = captured["payload"]["messages"]
+    marker_positions = [
+        (message_index, message["role"], block_index)
+        for message_index, message in enumerate(messages)
+        if isinstance(message.get("content"), list)
+        for block_index, block in enumerate(message["content"])
+        if block.get("cache_control") == {"type": "ephemeral"}
+    ]
+    assert marker_positions == [
+        (0, "system", 0),
+        (1, "user", 0),
+    ]
+
+
 def test_openrouter_zai_auto_cache_requires_live_capability_proof(monkeypatch) -> None:
     captured: dict[str, Any] = {}
     _patch_openai_transport(monkeypatch, captured)

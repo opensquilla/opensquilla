@@ -899,7 +899,9 @@ async def meta_resolution(ctx: TurnContext) -> TurnContext:
     # ── Leading awaiting branch (PR3, design §8.2) ─────────────────
     if writer is not None and session_id:
         try:
-            awaiting = writer.peek_awaiting(session_id=session_id)
+            awaiting = await asyncio.to_thread(
+                writer.peek_awaiting, session_id=session_id,
+            )
         except Exception as exc:  # noqa: BLE001 — fail-open
             log.warning("meta_resolution.peek_awaiting_failed", error=str(exc))
             awaiting = None
@@ -909,13 +911,17 @@ async def meta_resolution(ctx: TurnContext) -> TurnContext:
             now = time.time()
 
             if now - awaiting.awaiting_since > schema.timeout_hours * 3600:
-                writer.mark_expired(run_id=awaiting.run_id)
+                await asyncio.to_thread(
+                    writer.mark_expired, run_id=awaiting.run_id,
+                )
                 ctx.metadata["meta_clarify_expired"] = awaiting
                 return ctx
 
             if _hits_cancel_keywords(ctx.message, schema.cancel_keywords):
-                writer.mark_cancelled(
-                    run_id=awaiting.run_id, reason="user_cancel",
+                await asyncio.to_thread(
+                    writer.mark_cancelled,
+                    run_id=awaiting.run_id,
+                    reason="user_cancel",
                 )
                 ctx.metadata["meta_clarify_cancelled"] = awaiting
                 ctx.metadata["meta_clarify_cancel_reason"] = "user_cancel"
@@ -998,8 +1004,10 @@ async def meta_resolution(ctx: TurnContext) -> TurnContext:
                             # Explicit cancel: same effect as the
                             # deterministic cancel_keyword path.
                             if nl_intent == "CANCEL_ALL":
-                                writer.mark_cancelled(
-                                    run_id=awaiting.run_id, reason="user_cancel_nl",
+                                await asyncio.to_thread(
+                                    writer.mark_cancelled,
+                                    run_id=awaiting.run_id,
+                                    reason="user_cancel_nl",
                                 )
                                 ctx.metadata["meta_clarify_cancelled"] = awaiting
                                 ctx.metadata["meta_clarify_cancel_reason"] = (
@@ -1024,7 +1032,8 @@ async def meta_resolution(ctx: TurnContext) -> TurnContext:
                             if isinstance(prefill_audit, dict) and prefill_audit:
                                 progress_payload["__prefill_audit__"] = prefill_audit
                             try:
-                                writer.update_awaiting_partial(
+                                await asyncio.to_thread(
+                                    writer.update_awaiting_partial,
                                     run_id=awaiting.run_id,
                                     filled_json=json.dumps(
                                         progress_payload,
@@ -1169,12 +1178,15 @@ async def meta_resolution(ctx: TurnContext) -> TurnContext:
                 parsed = filled_auto
                 errors = []
             if errors:
-                failure_count = writer.increment_parse_failures(
+                failure_count = await asyncio.to_thread(
+                    writer.increment_parse_failures,
                     run_id=awaiting.run_id,
                 )
                 if failure_count >= 3:
-                    writer.mark_cancelled(
-                        run_id=awaiting.run_id, reason="parse_failure_limit",
+                    await asyncio.to_thread(
+                        writer.mark_cancelled,
+                        run_id=awaiting.run_id,
+                        reason="parse_failure_limit",
                     )
                     ctx.metadata["meta_clarify_cancelled"] = awaiting
                     ctx.metadata["meta_clarify_cancel_reason"] = (

@@ -710,6 +710,9 @@ def test_error_handler_drops_unpaired_tool_use_on_output_truncation() -> None:
 
 
 def test_warning_handler_forwards_through_transformer() -> None:
+    state = _make_state()
+    state.final_text_parts = ["keep"]
+    state.current_text_parts = ["keep"]
     captured: list[WarningEvent] = []
 
     def transformer(event: WarningEvent) -> WarningEvent:
@@ -717,9 +720,24 @@ def test_warning_handler_forwards_through_transformer() -> None:
         return WarningEvent(code="rewritten", message="from-transformer")
 
     handler = _WarningHandler(transformer)
-    out = handler.handle(WarningEvent(code="orig", message="m"))
+    out = handler.handle(WarningEvent(code="orig", message="m"), state)
     assert captured == [WarningEvent(code="orig", message="m")]
     assert out.code == "rewritten"
+    assert state.final_text_parts == ["keep"]
+    assert state.current_text_parts == ["keep"]
+
+
+def test_warning_handler_discards_superseded_workspace_recovery_text() -> None:
+    state = _make_state()
+    state.final_text_parts = ["Earlier.", "Implemented the fix."]
+    state.current_text_parts = ["Implemented the fix."]
+
+    handler = _WarningHandler(lambda event: event)
+    out = handler.handle(WarningEvent(code="workspace_diff_recovery", message="m"), state)
+
+    assert out.code == "workspace_diff_recovery"
+    assert state.final_text_parts == ["Earlier."]
+    assert state.current_text_parts == []
 
 
 def test_done_handler_normalizes_and_emits_done() -> None:

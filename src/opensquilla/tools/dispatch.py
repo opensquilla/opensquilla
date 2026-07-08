@@ -18,9 +18,10 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import time
 import weakref
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -49,9 +50,18 @@ from opensquilla.sandbox.operation_runtime import (
     run_tool_handler_with_operation_guard,
 )
 from opensquilla.tool_boundary import AgentToolHandler, ToolCall, ToolResult
+from opensquilla.tools.argument_normalization import (
+    canonicalize_tool_arguments,
+    format_alias_conflicts,
+)
 from opensquilla.tools.envelope import build_tool_failure_envelope
 from opensquilla.tools.policy import DispatchInput, finalize, run_chain_with_emit
+from opensquilla.tools.projected_arguments import find_projected_tool_argument
 from opensquilla.tools.registry import ToolRegistry
+from opensquilla.tools.schema_validation import (
+    tool_spec_schema_parts,
+    validate_tool_arguments,
+)
 from opensquilla.tools.types import (
     CallerKind,
     InvalidToolArgumentsError,
@@ -64,14 +74,9 @@ log = structlog.get_logger("opensquilla.tools.dispatch")
 
 __all__ = ["build_tool_handler", "preflight_tool_call"]
 
-_TOOL_ARGUMENT_PROJECTION_PREFIX = "[tool_use_argument_projection]\n"
-_HISTORICAL_TOOL_ARGUMENT_PROJECTION_PREFIX = "[historical_tool_argument_omitted]\n"
-_INVALID_PROVIDER_CONTEXT_PROJECTION_PREFIX = "[invalid_provider_context_projection:"
-_COMPACTED_TOOL_ARGUMENT_MARKERS = frozenset(
-    {
-        "_opensquilla_compacted_tool_arguments",
-        "_opensquilla_compacted_tool_input",
-    }
+_PROVIDER_REPLAY_ARGUMENT_PREFIX = "_opensquilla_replay_"
+_MISSING_REQUIRED_ARGUMENT_SHAPE_GUIDANCE_ENV = (
+    "OPENSQUILLA_MISSING_REQUIRED_ARGUMENT_SHAPE_GUIDANCE"
 )
 
 
@@ -145,6 +150,50 @@ def _build_envelope_result(
         ),
         is_error=True,
         execution_status=normalize_execution_status(status),
+    )
+
+
+def _build_invalid_attempt_result(
+    tool_call: ToolCall,
+    *,
+    reason_code: str,
+    user_message: str,
+    missing_keys: list[str] | None = None,
+    valid_shapes: list[list[str]] | None = None,
+) -> ToolResult:
+    payload: dict[str, Any] = {
+        "status": "rejected",
+        "reason_code": reason_code,
+        "tool": tool_call.tool_name,
+        "received_keys": sorted(str(name) for name in tool_call.arguments if str(name)),
+        "retry_allowed": True,
+        "user_message": user_message,
+        "error_class": "InvalidToolArgumentsError",
+    }
+    if missing_keys is not None:
+        payload["missing_keys"] = missing_keys
+    if valid_shapes is not None:
+        payload["valid_shapes"] = valid_shapes
+
+    status = {
+        "version": 1,
+        "status": "error",
+        "exit_code": None,
+        "timed_out": False,
+        "truncated": False,
+        "reason": "invalid_tool_arguments",
+        "source": "tool_runtime",
+        "preservation_class": "diagnostic",
+    }
+    execution_status: dict[str, Any] = dict(normalize_execution_status(status))
+    execution_status["preflight_rejected"] = True
+    execution_status["reason_code"] = reason_code
+    return ToolResult(
+        tool_use_id=tool_call.tool_use_id,
+        tool_name=tool_call.tool_name,
+        content=json.dumps(payload),
+        is_error=True,
+        execution_status=execution_status,  # type: ignore[arg-type]
     )
 
 
@@ -251,6 +300,105 @@ def _check_injection_guard(
     )
 
 
+def _record_invalid_tool_arguments_event(
+    effective_ctx: ToolContext | None,
+    tool_call: ToolCall,
+    *,
+    reason: str,
+    missing: list[str] | None = None,
+    required: list[str] | None = None,
+    errors: list[str] | None = None,
+    shape_guidance_enabled: bool | None = None,
+) -> None:
+    if effective_ctx is None or effective_ctx.on_runtime_event is None:
+        return
+    event: dict[str, Any] = {
+        "feature": "tool_arguments",
+        "name": "dispatch.invalid_tool_arguments",
+        "tool": tool_call.tool_name,
+        "tool_name": tool_call.tool_name,
+        "tool_use_id": tool_call.tool_use_id,
+        "reason": reason,
+        "argument_keys": sorted(
+            key for key in (str(name) for name in tool_call.arguments) if key
+        ),
+        "executed": False,
+        "agent_id": effective_ctx.agent_id,
+        "session_key": effective_ctx.session_key,
+    }
+    if missing is not None:
+        event["missing"] = missing
+    if required is not None:
+        event["required"] = required
+    if errors is not None:
+        event["errors"] = errors
+    if shape_guidance_enabled is not None:
+        event["shape_guidance_enabled"] = shape_guidance_enabled
+    try:
+        effective_ctx.on_runtime_event(event)
+    except Exception:
+        return
+
+
+def _unwrap_nested_json_arguments(
+    tool_call: ToolCall,
+    registered: Any,
+    effective_ctx: ToolContext | None,
+) -> ToolCall:
+    """Normalize model-emitted OpenAI wire-style nested arguments.
+
+    Some OpenAI-compatible providers/models occasionally put the function-call
+    wire field itself into the tool arguments object, e.g.
+    ``{"arguments": "{\"path\":\"...\"}"}``. Only unwrap when ``arguments`` is
+    not a declared tool parameter and no other executable fields are present.
+    """
+
+    arguments = tool_call.arguments
+    nested_key = "arguments"
+    nested_arguments = arguments.get(nested_key)
+    if not isinstance(nested_arguments, str):
+        nested_key = "_raw"
+        nested_arguments = arguments.get(nested_key)
+    if not isinstance(nested_arguments, str):
+        return tool_call
+
+    spec = getattr(registered, "spec", None)
+    parameters = getattr(spec, "parameters", None) or {}
+    if nested_key != "_raw" and isinstance(parameters, dict) and nested_key in parameters:
+        return tool_call
+
+    non_replay_keys = {
+        key
+        for key in arguments
+        if not key.startswith(_PROVIDER_REPLAY_ARGUMENT_PREFIX)
+    }
+    if non_replay_keys != {nested_key}:
+        return tool_call
+
+    try:
+        parsed_arguments = json.loads(nested_arguments)
+    except json.JSONDecodeError:
+        return tool_call
+    if not isinstance(parsed_arguments, dict):
+        return tool_call
+
+    log.warning(
+        "dispatch.nested_json_arguments_unwrapped",
+        tool=tool_call.tool_name,
+        tool_use_id=tool_call.tool_use_id,
+        agent_id=effective_ctx.agent_id if effective_ctx else None,
+        session_key=effective_ctx.session_key if effective_ctx else None,
+        source_key=nested_key,
+    )
+    return ToolCall(
+        tool_use_id=tool_call.tool_use_id,
+        tool_name=tool_call.tool_name,
+        arguments=parsed_arguments,
+        synthetic_from_text=tool_call.synthetic_from_text,
+        origin_trace=tool_call.origin_trace,
+    )
+
+
 def _check_non_executable_arguments(
     tool_call: ToolCall,
     effective_ctx: ToolContext | None,
@@ -265,19 +413,27 @@ def _check_non_executable_arguments(
             session_key=effective_ctx.session_key if effective_ctx else None,
             reason="unparsed_raw_arguments",
         )
-        return _build_envelope_result(
+        _record_invalid_tool_arguments_event(
+            effective_ctx,
             tool_call,
-            exc=InvalidToolArgumentsError(),
+            reason="unparsed_raw_arguments",
+        )
+        return _build_invalid_attempt_result(
+            tool_call,
+            reason_code="unparsed_raw_arguments",
+            user_message=InvalidToolArgumentsError.user_message,
         )
 
-    if any(arguments.get(marker) is True for marker in _COMPACTED_TOOL_ARGUMENT_MARKERS):
+    projected_match = find_projected_tool_argument(arguments)
+    if projected_match is not None:
         log.warning(
             "dispatch.projected_tool_arguments_refused",
             tool=tool_call.tool_name,
             tool_use_id=tool_call.tool_use_id,
             agent_id=effective_ctx.agent_id if effective_ctx else None,
             session_key=effective_ctx.session_key if effective_ctx else None,
-            reason="compacted_argument_marker",
+            reason=projected_match.kind,
+            field=projected_match.path,
         )
         return _build_envelope_result(
             tool_call,
@@ -285,30 +441,405 @@ def _check_non_executable_arguments(
             reason_override="provider_context_projection_reused",
         )
 
-    for argument_name, value in arguments.items():
-        if isinstance(value, str) and value.startswith(
-            (
-                _TOOL_ARGUMENT_PROJECTION_PREFIX,
-                _HISTORICAL_TOOL_ARGUMENT_PROJECTION_PREFIX,
-                _INVALID_PROVIDER_CONTEXT_PROJECTION_PREFIX,
-            )
-        ):
-            log.warning(
-                "dispatch.projected_tool_arguments_refused",
-                tool=tool_call.tool_name,
-                tool_use_id=tool_call.tool_use_id,
-                agent_id=effective_ctx.agent_id if effective_ctx else None,
-                session_key=effective_ctx.session_key if effective_ctx else None,
-                reason="projection_string",
-                field=argument_name,
-            )
-            return _build_envelope_result(
-                tool_call,
-                exc=ProjectedToolArgumentsError(),
-                reason_override="provider_context_projection_reused",
-            )
-
     return None
+
+
+def _invalid_argument_guidance(
+    tool_name: str,
+    *,
+    missing: list[str],
+    effective_ctx: ToolContext | None = None,
+) -> str:
+    def tool_visible(name: str) -> bool:
+        if effective_ctx is None:
+            return True
+        if name in effective_ctx.denied_tools:
+            return False
+        if effective_ctx.allowed_tools is not None and name not in effective_ctx.allowed_tools:
+            return False
+        return True
+
+    missing_set = set(missing)
+    if tool_name == "edit_file":
+        details = (
+            " Valid edit_file shapes: single edit "
+            '{"path":"...","old_text":"...","new_text":"..."}; '
+            "multi edit "
+            '{"path":"...","edits":[{"old_text":"...","new_text":"..."}]}.'
+        )
+        if "old_text" in missing_set:
+            details += " new_text alone cannot identify where to edit."
+        if tool_visible("apply_patch"):
+            details += (
+                " For complex or large edits, prefer apply_patch with a small "
+                "unified diff instead of retrying malformed edit_file JSON."
+            )
+        else:
+            details += (
+                " For complex or large edits, split the edit into smaller "
+                "edit_file calls with complete JSON arguments."
+            )
+        return details
+    if tool_name == "write_file":
+        details = ' Valid write_file shape: {"path":"...","content":"..."}.'
+        alternatives = [
+            name
+            for name in ("edit_file", "apply_patch")
+            if tool_visible(name)
+        ]
+        if alternatives:
+            details += (
+                f" For existing source files, prefer {' or '.join(alternatives)} "
+                "so the replacement region stays explicit."
+            )
+        else:
+            details += (
+                " For existing source files, only rewrite the full file when the "
+                "complete replacement content is intended."
+            )
+        return details
+    if tool_name == "apply_patch":
+        return (
+            ' Valid apply_patch shape: {"patch":"*** Begin Patch\\n'
+            "*** Update File: ...\\n@@ ...\\n*** End Patch\"}."
+        )
+    if tool_name == "exec_command":
+        return (
+            ' Valid exec_command shape: {"command":"..."}. '
+            "Do not put shell text in `new_text`, `path`, or `_raw`."
+        )
+    if tool_name == "execute_code":
+        return (
+            ' Valid execute_code shape: {"code":"..."}. '
+            "Use exec_command for shell commands."
+        )
+    return ""
+
+
+_EDIT_FILE_OLD_TEXT_KEYS = ("old_text", "oldText", "old_string", "oldString")
+_EDIT_FILE_NEW_TEXT_KEYS = ("new_text", "newText", "new_string", "newString")
+
+
+def _non_blank_string(value: object) -> bool:
+    return isinstance(value, str) and bool(value.strip())
+
+
+def _non_empty_edit_old_text(value: object) -> bool:
+    return isinstance(value, str) and value != ""
+
+
+def _first_string_field(arguments: Mapping[str, Any], keys: tuple[str, ...]) -> str | None:
+    for key in keys:
+        value = arguments.get(key)
+        if isinstance(value, str):
+            return value
+    return None
+
+
+def _valid_edit_file_shape(arguments: Mapping[str, Any]) -> bool:
+    has_single = _non_empty_edit_old_text(arguments.get("old_text")) and isinstance(
+        arguments.get("new_text"),
+        str,
+    )
+    if has_single:
+        return True
+    edits = arguments.get("edits")
+    if not isinstance(edits, list) or not edits:
+        return False
+    for item in edits:
+        if not isinstance(item, Mapping):
+            return False
+        edit_old_text = _first_string_field(item, _EDIT_FILE_OLD_TEXT_KEYS)
+        edit_new_text = _first_string_field(item, _EDIT_FILE_NEW_TEXT_KEYS)
+        if not _non_empty_edit_old_text(edit_old_text):
+            return False
+        if not isinstance(edit_new_text, str):
+            return False
+    return True
+
+
+def _valid_apply_patch_shape(arguments: Mapping[str, Any]) -> bool:
+    return _non_blank_string(arguments.get("patch")) or _non_blank_string(
+        arguments.get("path")
+    )
+
+
+def _executable_shape_guidance(tool_name: str) -> str:
+    if tool_name == "edit_file":
+        return (
+            "Valid executable edit_file shapes are "
+            '{"path":"...","old_text":"...","new_text":"..."} or '
+            '{"path":"...","edits":[{"old_text":"...","new_text":"..."}]}.'
+        )
+    if tool_name == "apply_patch":
+        return (
+            "Valid executable apply_patch shapes are "
+            '{"patch":"*** Begin Patch\\n..."} or {"path":"scratch/patch.txt"}.'
+        )
+    return "The tool call is missing an executable argument shape."
+
+
+def _executable_valid_shapes(tool_name: str) -> list[list[str]]:
+    if tool_name == "edit_file":
+        return [["path", "old_text", "new_text"], ["path", "edits"]]
+    if tool_name == "apply_patch":
+        return [["patch"], ["path"]]
+    return []
+
+
+def _check_executable_tool_shape(
+    tool_call: ToolCall,
+    effective_ctx: ToolContext | None,
+) -> ToolResult | None:
+    if tool_call.tool_name == "edit_file":
+        valid = _valid_edit_file_shape(tool_call.arguments)
+    elif tool_call.tool_name == "apply_patch":
+        valid = _valid_apply_patch_shape(tool_call.arguments)
+    else:
+        return None
+    if valid:
+        return None
+
+    guidance = _executable_shape_guidance(tool_call.tool_name)
+    log.warning(
+        "dispatch.invalid_tool_arguments",
+        tool=tool_call.tool_name,
+        tool_use_id=tool_call.tool_use_id,
+        agent_id=effective_ctx.agent_id if effective_ctx else None,
+        session_key=effective_ctx.session_key if effective_ctx else None,
+        reason="missing_executable_shape",
+        argument_keys=sorted(str(name) for name in tool_call.arguments if str(name)),
+    )
+    _record_invalid_tool_arguments_event(
+        effective_ctx,
+        tool_call,
+        reason="missing_executable_shape",
+        errors=[guidance],
+    )
+    return _build_invalid_attempt_result(
+        tool_call,
+        reason_code="missing_executable_shape",
+        user_message=guidance,
+        valid_shapes=_executable_valid_shapes(tool_call.tool_name),
+    )
+
+
+def _missing_required_argument_shape_guidance_enabled(
+    effective_ctx: ToolContext | None,
+) -> bool:
+    if (
+        effective_ctx is not None
+        and effective_ctx.missing_required_argument_shape_guidance
+    ):
+        return True
+    raw = os.environ.get(_MISSING_REQUIRED_ARGUMENT_SHAPE_GUIDANCE_ENV, "")
+    return raw.strip().lower() in {"1", "true", "yes", "on", "enabled"}
+
+
+def _format_argument_names(names: list[str], *, limit: int = 8) -> str:
+    visible = [name for name in names if name][:limit]
+    rendered = ", ".join(f"`{name}`" for name in visible)
+    hidden = len(names) - len(visible)
+    if hidden > 0:
+        suffix = f", and {hidden} more"
+        return f"{rendered}{suffix}" if rendered else f"{hidden} argument(s)"
+    return rendered
+
+
+def _missing_required_argument_shape_guidance(
+    tool_call: ToolCall,
+    *,
+    missing: list[str],
+) -> str:
+    supplied = sorted(str(name) for name in tool_call.arguments if str(name))
+    missing_text = _format_argument_names(missing)
+    if supplied:
+        supplied_text = _format_argument_names(supplied)
+        return (
+            f" You supplied argument(s): {supplied_text}. "
+            f"Missing argument(s): {missing_text}."
+        )
+    return f" You supplied no arguments. Missing argument(s): {missing_text}."
+
+
+def _check_required_arguments(
+    tool_call: ToolCall,
+    registered: Any,
+    effective_ctx: ToolContext | None,
+) -> ToolResult | None:
+    spec = getattr(registered, "spec", None)
+    required = getattr(spec, "required", None) or []
+    required_names = [str(name) for name in required if isinstance(name, str) and name]
+    if not required_names:
+        return None
+
+    missing = [name for name in required_names if name not in tool_call.arguments]
+    if not missing:
+        return None
+
+    missing_text = ", ".join(f"`{name}`" for name in missing)
+    required_text = ", ".join(f"`{name}`" for name in required_names)
+    user_message = (
+        f"The {tool_call.tool_name} tool call is missing required argument(s): "
+        f"{missing_text}. Reissue the tool call with complete JSON arguments. "
+        f"Required arguments: {required_text}."
+    )
+    guidance = _invalid_argument_guidance(
+        tool_call.tool_name,
+        missing=missing,
+        effective_ctx=effective_ctx,
+    )
+    shape_guidance_enabled = _missing_required_argument_shape_guidance_enabled(
+        effective_ctx
+    )
+    if shape_guidance_enabled:
+        user_message = (
+            f"{user_message}"
+            f"{_missing_required_argument_shape_guidance(tool_call, missing=missing)}"
+        )
+    if guidance:
+        user_message = f"{user_message}{guidance}"
+    log.warning(
+        "dispatch.invalid_tool_arguments",
+        tool=tool_call.tool_name,
+        tool_use_id=tool_call.tool_use_id,
+        agent_id=effective_ctx.agent_id if effective_ctx else None,
+        session_key=effective_ctx.session_key if effective_ctx else None,
+        reason="missing_required_arguments",
+        missing=missing,
+        required=required_names,
+        argument_keys=sorted(str(name) for name in tool_call.arguments if str(name)),
+        shape_guidance_enabled=shape_guidance_enabled,
+    )
+    _record_invalid_tool_arguments_event(
+        effective_ctx,
+        tool_call,
+        reason="missing_required_arguments",
+        missing=missing,
+        required=required_names,
+        shape_guidance_enabled=shape_guidance_enabled,
+    )
+    return _build_invalid_attempt_result(
+        tool_call,
+        reason_code="missing_required_arguments",
+        user_message=user_message,
+        missing_keys=missing,
+    )
+
+
+def _check_schema_valid_arguments(
+    tool_call: ToolCall,
+    registered: Any,
+    effective_ctx: ToolContext | None,
+) -> ToolResult | None:
+    spec = getattr(registered, "spec", None)
+    properties, required, additional_properties = tool_spec_schema_parts(spec)
+    errors = validate_tool_arguments(
+        tool_call.arguments,
+        properties=properties,
+        required=required,
+        additional_properties=additional_properties,
+    )
+    if not errors:
+        return None
+    user_message = (
+        f"The {tool_call.tool_name} tool call arguments did not match the tool "
+        f"schema: {'; '.join(errors[:5])}. Reissue the tool call with corrected "
+        "JSON arguments."
+    )
+    log.warning(
+        "dispatch.invalid_tool_arguments",
+        tool=tool_call.tool_name,
+        tool_use_id=tool_call.tool_use_id,
+        agent_id=effective_ctx.agent_id if effective_ctx else None,
+        session_key=effective_ctx.session_key if effective_ctx else None,
+        reason="schema_validation_failed",
+        errors=errors[:5],
+        argument_keys=sorted(str(name) for name in tool_call.arguments if str(name)),
+    )
+    _record_invalid_tool_arguments_event(
+        effective_ctx,
+        tool_call,
+        reason="schema_validation_failed",
+        errors=errors[:5],
+    )
+    return _build_invalid_attempt_result(
+        tool_call,
+        reason_code="schema_validation_failed",
+        user_message=user_message,
+    )
+
+
+def _strip_provider_replay_arguments(tool_call: ToolCall) -> ToolCall:
+    """Remove provider-history-only replay fields before live tool execution."""
+
+    if not any(key.startswith(_PROVIDER_REPLAY_ARGUMENT_PREFIX) for key in tool_call.arguments):
+        return tool_call
+    return ToolCall(
+        tool_use_id=tool_call.tool_use_id,
+        tool_name=tool_call.tool_name,
+        arguments={
+            key: value
+            for key, value in tool_call.arguments.items()
+            if not key.startswith(_PROVIDER_REPLAY_ARGUMENT_PREFIX)
+        },
+        synthetic_from_text=tool_call.synthetic_from_text,
+        origin_trace=tool_call.origin_trace,
+    )
+
+
+def _normalize_common_tool_argument_aliases(
+    tool_call: ToolCall,
+    effective_ctx: ToolContext | None,
+) -> tuple[ToolCall, ToolResult | None]:
+    """Map common coding-agent argument names to OpenSquilla canonical names."""
+
+    result = canonicalize_tool_arguments(tool_call.tool_name, tool_call.arguments)
+    if result.conflicts:
+        conflict_messages = format_alias_conflicts(result.conflicts)
+        user_message = (
+            f"The {tool_call.tool_name} tool call arguments contained conflicting "
+            f"aliases: {'; '.join(conflict_messages[:5])}. Reissue the tool call "
+            "with only canonical JSON arguments."
+        )
+        log.warning(
+            "dispatch.tool_arguments_alias_conflict",
+            tool=tool_call.tool_name,
+            tool_use_id=tool_call.tool_use_id,
+            agent_id=effective_ctx.agent_id if effective_ctx else None,
+            session_key=effective_ctx.session_key if effective_ctx else None,
+            conflicts=conflict_messages[:5],
+            argument_keys=sorted(str(name) for name in tool_call.arguments if str(name)),
+        )
+        _record_invalid_tool_arguments_event(
+            effective_ctx,
+            tool_call,
+            reason="alias_conflict",
+            errors=conflict_messages[:5],
+        )
+        return tool_call, _build_invalid_attempt_result(
+            tool_call,
+            reason_code="alias_conflict",
+            user_message=user_message,
+        )
+    if result.aliases_applied:
+        log.info(
+            "dispatch.tool_arguments_aliases_applied",
+            tool=tool_call.tool_name,
+            tool_use_id=tool_call.tool_use_id,
+            agent_id=effective_ctx.agent_id if effective_ctx else None,
+            session_key=effective_ctx.session_key if effective_ctx else None,
+            aliases=result.aliases_applied,
+        )
+    if not result.changed:
+        return tool_call, None
+    return ToolCall(
+        tool_use_id=tool_call.tool_use_id,
+        tool_name=tool_call.tool_name,
+        arguments=result.arguments,
+        synthetic_from_text=tool_call.synthetic_from_text,
+        origin_trace=tool_call.origin_trace,
+    ), None
 
 
 def _is_untrusted_caller(ctx: ToolContext | None) -> bool:
@@ -408,9 +939,30 @@ async def preflight_tool_call(
     if registered is None:
         return _resolve_registry_miss(tool_call, known, ctx)
 
+    tool_call = _unwrap_nested_json_arguments(tool_call, registered, ctx)
+    injection_envelope = _check_injection_guard(tool_call, ctx)
+    if injection_envelope is not None:
+        return injection_envelope
+
     non_executable_arguments = _check_non_executable_arguments(tool_call, ctx)
     if non_executable_arguments is not None:
         return non_executable_arguments
+    tool_call = _strip_provider_replay_arguments(tool_call)
+    tool_call, alias_normalization_error = _normalize_common_tool_argument_aliases(
+        tool_call,
+        ctx,
+    )
+    if alias_normalization_error is not None:
+        return alias_normalization_error
+    missing_required_arguments = _check_required_arguments(tool_call, registered, ctx)
+    if missing_required_arguments is not None:
+        return missing_required_arguments
+    schema_valid_arguments = _check_schema_valid_arguments(tool_call, registered, ctx)
+    if schema_valid_arguments is not None:
+        return schema_valid_arguments
+    executable_shape = _check_executable_tool_shape(tool_call, ctx)
+    if executable_shape is not None:
+        return executable_shape
 
     dispatch_input = DispatchInput(
         tool_call=tool_call,
@@ -517,9 +1069,38 @@ def build_tool_handler(
         if registered is None:
             return _resolve_registry_miss(tool_call, known, effective_ctx)
 
+        tool_call = _unwrap_nested_json_arguments(tool_call, registered, effective_ctx)
+        injection_envelope = _check_injection_guard(tool_call, effective_ctx)
+        if injection_envelope is not None:
+            return injection_envelope
+
         non_executable_arguments = _check_non_executable_arguments(tool_call, effective_ctx)
         if non_executable_arguments is not None:
             return non_executable_arguments
+        tool_call = _strip_provider_replay_arguments(tool_call)
+        tool_call, alias_normalization_error = _normalize_common_tool_argument_aliases(
+            tool_call,
+            effective_ctx,
+        )
+        if alias_normalization_error is not None:
+            return alias_normalization_error
+        missing_required_arguments = _check_required_arguments(
+            tool_call,
+            registered,
+            effective_ctx,
+        )
+        if missing_required_arguments is not None:
+            return missing_required_arguments
+        schema_valid_arguments = _check_schema_valid_arguments(
+            tool_call,
+            registered,
+            effective_ctx,
+        )
+        if schema_valid_arguments is not None:
+            return schema_valid_arguments
+        executable_shape = _check_executable_tool_shape(tool_call, effective_ctx)
+        if executable_shape is not None:
+            return executable_shape
 
         # 3. ToolHook.before_tool — optional observability hook.
         hook_call = ToolHookCall(tool_call=tool_call, ctx=effective_ctx) if hooks else None

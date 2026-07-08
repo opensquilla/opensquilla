@@ -86,6 +86,34 @@ base URL (`https://api.openai.com/v1`):
 Both read the same key and base URL, so switching between them needs only a
 `provider` change.
 
+### Volcengine Ark: regular vs coding-plan endpoints
+
+Use `volcengine` for regular Ark chat/completions models. Its default base URL
+is the OpenAI-compatible endpoint `https://ark.cn-beijing.volces.com/api/v3`.
+
+Use `volcengine_coding_plan` for Volcengine's OpenAI Responses-compatible
+coding-plan subscription surface. Its default base URL is
+`https://ark.cn-beijing.volces.com/api/coding/v3`; OpenSquilla appends
+`/responses` when it sends the request.
+
+```sh
+export VOLCENGINE_API_KEY="..."
+opensquilla configure provider --provider volcengine_coding_plan --model <model> --api-key-env VOLCENGINE_API_KEY
+```
+
+Use `volcengine_coding_plan_anthropic` for tools or deployments that expect the
+Anthropic Messages protocol. Its default base URL is
+`https://ark.cn-beijing.volces.com/api/coding`; OpenSquilla appends
+`/v1/messages`.
+
+```sh
+export VOLCENGINE_API_KEY="..."
+opensquilla configure provider --provider volcengine_coding_plan_anthropic --model <model> --api-key-env VOLCENGINE_API_KEY
+```
+
+Do not point either coding-plan provider at the regular `/api/v3` URL. That
+regular Ark URL does not consume Coding Plan quota.
+
 ## Model Inspection
 
 List models:

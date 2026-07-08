@@ -34,7 +34,12 @@ from opensquilla.skills.meta.types import MetaPlan, MetaResult, MetaStep
 MIGRATIONS_DIR = Path(__file__).resolve().parents[1].parent / "migrations"
 
 
-def _seed_writer(tmp_path: Path):
+def _seed_writer(
+    tmp_path: Path,
+    *,
+    final_status: str = "ok",
+    final_result: MetaResult | None = None,
+):
     db = str(tmp_path / "runs.db")
     apply_pending(db, MIGRATIONS_DIR)
     writer = open_meta_run_writer(db)
@@ -77,10 +82,12 @@ def _seed_writer(tmp_path: Path):
         status="ok",
         output_text="done",
     )
+    # finish_run_sync is status-guarded (running → terminal), so the seed
+    # helper finalizes exactly once with the caller's desired terminal state.
     writer.finish_run_sync(
         run_id=run_id,
-        status="ok",
-        result=MetaResult(ok=True, final_text="done"),
+        status=final_status,  # type: ignore[arg-type]
+        result=final_result or MetaResult(ok=True, final_text="done"),
     )
     return writer, run_id
 
@@ -114,11 +121,10 @@ def test_meta_runs_list_rpc_returns_summary(tmp_path: Path) -> None:
 
 
 def test_meta_runs_failures_rpc_returns_summary_only(tmp_path: Path) -> None:
-    writer, run_id = _seed_writer(tmp_path)
-    writer.finish_run_sync(
-        run_id=run_id,
-        status="failed",
-        result=MetaResult(
+    writer, run_id = _seed_writer(
+        tmp_path,
+        final_status="failed",
+        final_result=MetaResult(
             ok=False,
             error="raw secret failure detail",
             failed_step_id="s1",
@@ -219,11 +225,10 @@ def test_meta_runs_confirm_preflight_rejects_missing_fields(tmp_path: Path) -> N
 
 
 def test_meta_runs_replay_rpc_returns_bounded_replay_message(tmp_path: Path) -> None:
-    writer, run_id = _seed_writer(tmp_path)
-    writer.finish_run_sync(
-        run_id=run_id,
-        status="failed",
-        result=MetaResult(ok=False, error="failed at writer", failed_step_id="s1"),
+    writer, run_id = _seed_writer(
+        tmp_path,
+        final_status="failed",
+        final_result=MetaResult(ok=False, error="failed at writer", failed_step_id="s1"),
     )
     try:
         ctx = RpcContext(conn_id="test", meta_run_writer=writer)
@@ -243,17 +248,16 @@ def test_meta_runs_replay_rpc_returns_bounded_replay_message(tmp_path: Path) -> 
 
 
 def test_meta_runs_replay_keeps_original_request_before_large_outputs(tmp_path: Path) -> None:
-    writer, run_id = _seed_writer(tmp_path)
+    writer, run_id = _seed_writer(
+        tmp_path,
+        final_status="failed",
+        final_result=MetaResult(ok=False, error="failed late", failed_step_id="s1"),
+    )
     writer.finish_step_sync(
         run_id=run_id,
         step_id="s1",
         status="ok",
         output_text="x" * 10_000,
-    )
-    writer.finish_run_sync(
-        run_id=run_id,
-        status="failed",
-        result=MetaResult(ok=False, error="failed late", failed_step_id="s1"),
     )
     try:
         ctx = RpcContext(conn_id="test", meta_run_writer=writer)
@@ -472,11 +476,10 @@ async def test_meta_runs_read_only_allows_session_scoped_history(tmp_path: Path)
 async def test_meta_runs_failures_read_only_allows_session_scoped_history(
     tmp_path: Path,
 ) -> None:
-    writer, run_id = _seed_writer(tmp_path)
-    writer.finish_run_sync(
-        run_id=run_id,
-        status="failed",
-        result=MetaResult(ok=False, error="failed", failed_step_id="s1"),
+    writer, run_id = _seed_writer(
+        tmp_path,
+        final_status="failed",
+        final_result=MetaResult(ok=False, error="failed", failed_step_id="s1"),
     )
     other_plan = MetaPlan(
         name="beta-skill",

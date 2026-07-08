@@ -35,9 +35,15 @@ class AttachmentWorkspaceMaterialization:
 
 def is_materializable_attachment_mime(
     mime: Any,
-    materializable_mimes: Collection[str],
+    materializable_mimes: Collection[str] | None,
 ) -> bool:
-    return isinstance(mime, str) and mime in materializable_mimes
+    if not isinstance(mime, str):
+        return False
+    # None means "materialize any type": opaque attachments are reachable only
+    # through their workspace copy, so the materializer must not gate them.
+    if materializable_mimes is None:
+        return True
+    return mime in materializable_mimes
 
 
 def render_attachment_material_marker(
@@ -62,11 +68,13 @@ class AttachmentWorkspaceMaterializer:
         *,
         media_root: Path,
         workspace_dir: str | Path,
-        materializable_mimes: Collection[str],
+        materializable_mimes: Collection[str] | None = None,
     ) -> None:
         self._media_root = Path(media_root)
         self._workspace_root = Path(workspace_dir)
-        self._materializable_mimes = frozenset(materializable_mimes)
+        self._materializable_mimes = (
+            frozenset(materializable_mimes) if materializable_mimes is not None else None
+        )
 
     def materialize(
         self,

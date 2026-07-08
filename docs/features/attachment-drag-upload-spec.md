@@ -36,8 +36,10 @@ error states, retry behavior, and cross-platform desktop validation.
   surface.
 - Support the same drag behavior in the Electron desktop client without a
   separate upload implementation.
-- Preserve the existing attachment policy: max count, MIME allow-list, per-MIME
-  size caps, total size cap, MIME sniffing, and staged upload TTL.
+- Preserve the existing attachment policy: max count, per-category size caps,
+  total size cap, MIME sniffing, and staged upload TTL. Any file type is
+  admitted; the MIME set only routes representation (rendered families are
+  extracted or inlined, everything else stages as an opaque workspace file).
 - Make upload progress and failure states visible in the composer.
 - Prevent sending while any attachment is still reading or uploading.
 - Ensure token-authenticated gateways can upload files by using the same bearer
@@ -53,7 +55,9 @@ error states, retry behavior, and cross-platform desktop validation.
 - Do not expose arbitrary local filesystem reads through Electron preload.
 - Do not make Electron bypass the gateway upload endpoint.
 - Do not add resumable/chunked uploads in this iteration.
-- Do not broaden the attachment MIME allow-list beyond the existing policy.
+- Do not add per-type client-side gating: admission is any-type (opaque
+  staging), and rejections happen only on size/count policy, mirroring the
+  gateway's category router in `contracts/attachments.py`.
 - Do not support remote URL drag/drop as file upload unless the browser supplies
   a real `File` object.
 

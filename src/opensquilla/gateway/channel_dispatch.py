@@ -433,7 +433,9 @@ async def run_channel_dispatch(
             principal_is_owner=_is_channel_admin_sender(config, route_envelope),
         )
 
-        ingested = await _ingest_channel_message_attachments(channel=channel, msg=msg)
+        ingested = await _ingest_channel_message_attachments(
+            channel=channel, msg=msg, config=config
+        )
 
         async with _maybe_lock(session_lock):
             await _record_delivery_context(
@@ -836,7 +838,7 @@ async def _dispatch_combined_message_after_debounce(channel: Any, combined: Any,
         principal_is_owner=_is_channel_admin_sender(config, route_envelope),
     )
 
-    ingested = await _ingest_channel_message_attachments(channel=channel, msg=msg)
+    ingested = await _ingest_channel_message_attachments(channel=channel, msg=msg, config=config)
 
     async with _maybe_lock(session_lock):
         await _record_delivery_context(session_manager, session_key, msg, session_prefix, route_envelope=route_envelope)  # noqa: E501
@@ -1977,16 +1979,21 @@ async def _ingest_channel_message_attachments(
     *,
     channel: Any,
     msg: IncomingMessage,
+    config: Any = None,
 ) -> AttachmentIngestResult:
     materialized = await _materialize_channel_attachments(
         channel,
         list(getattr(msg, "attachments", []) or []),
     )
+    attachments_cfg = getattr(config, "attachments", None)
+    opaque_cap = getattr(attachments_cfg, "opaque_max_bytes", None)
     result = await ingest_attachments(
         msg.content,
         materialized,
         failure_mode="mark",
         mark_bytes_as_staged=True,
+        accept_opaque=bool(getattr(attachments_cfg, "accept_opaque", True)),
+        opaque_limit_bytes=opaque_cap if isinstance(opaque_cap, int) else None,
     )
     for failure in result.failures:
         log.warning(

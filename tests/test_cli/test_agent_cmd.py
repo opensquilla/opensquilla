@@ -1147,11 +1147,14 @@ async def test_run_agent_once_rejects_agent_file_requiring_upload_bridge(tmp_pat
 
 
 @pytest.mark.asyncio
-async def test_run_agent_once_rejects_large_text_file_without_staging(tmp_path) -> None:
+async def test_run_agent_once_requires_staging_for_large_text_file(tmp_path) -> None:
+    # Text above the inline threshold is stageable now; the one-shot path has
+    # no gateway upload bridge, so it must fail with the staging hint rather
+    # than a text-family dead end.
     big_csv = tmp_path / "big.csv"
     big_csv.write_bytes(b"a" * 2_000_001)
 
-    with pytest.raises(ValueError, match=r"text-family|/path"):
+    with pytest.raises(ValueError, match=r"upload is required|too large to inline"):
         await run_agent_once(
             message="read",
             agent_id="main",

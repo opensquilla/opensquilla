@@ -33,9 +33,15 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.routing import Route
 
+from opensquilla.contracts.attachment_sniff import sniff_mime_from_bytes
 from opensquilla.contracts.attachments import (
     ALLOWED_MEDIA_TYPES,
+    MSG_MIME,
+    OPAQUE_ATTACHMENT_BYTES,
+    OPAQUE_MIME,
+    attachment_category,
     attachment_size_limit_for_mime,
+    can_stage_attachment_mime,
     normalize_attachment_mime,
 )
 from opensquilla.gateway.config import GatewayConfig
@@ -96,10 +102,12 @@ class UploadStore:
         marker_dir: Path | None,
         ttl_seconds: float = _DEFAULT_TTL_SECONDS,
         max_file_bytes: int = _DEFAULT_MAX_FILE_BYTES,
+        accept_opaque: bool = True,
     ) -> None:
         self.marker_dir: Path | None = Path(marker_dir) if marker_dir is not None else None
         self.ttl_seconds = ttl_seconds
         self.max_file_bytes = max_file_bytes
+        self.accept_opaque = accept_opaque
         self._entries: dict[str, _Entry] = {}
         self._locks: dict[str, asyncio.Lock] = {}
         self._lock_for_locks = asyncio.Lock()
@@ -176,9 +184,19 @@ class UploadStore:
         """
 
         normalized_mime = normalize_attachment_mime(mime)
-        if normalized_mime not in _ALLOWED_MIMES:
+        if normalized_mime is None:
             raise UploadUnsupportedMimeError(f"mime {mime!r} is not allowed")
-        mime_limit = attachment_size_limit_for_mime(normalized_mime, staged=True)
+        if not self.accept_opaque and normalized_mime not in _ALLOWED_MIMES:
+            raise UploadUnsupportedMimeError(f"mime {mime!r} is not allowed")
+        # Email stays non-stageable policy-wise, so its cap resolves to the
+        # inline text ceiling even on this staged path. Strict deployments
+        # keep the legacy stageable set (pdf/image/office), so text stays at
+        # the 2MB inline cap rather than the 30MiB staged-text ceiling.
+        if self.accept_opaque:
+            staged = can_stage_attachment_mime(normalized_mime)
+        else:
+            staged = attachment_category(normalized_mime) in {"pdf", "image", "office"}
+        mime_limit = attachment_size_limit_for_mime(normalized_mime, staged=staged)
         max_bytes = min(self.max_file_bytes, mime_limit)
         if len(payload) > max_bytes:
             raise UploadOversizeError(
@@ -341,12 +359,14 @@ def register_upload_routes(
 
         filename = getattr(upload, "filename", None) or "attachment"
         content_type = getattr(upload, "content_type", None) or form.get("mime") or ""
-        if not isinstance(content_type, str) or not content_type:
-            return JSONResponse(
-                {"error": "missing or invalid 'mime' / content-type"}, status_code=400
-            )
         normalized_mime = normalize_attachment_mime(content_type)
-        if normalized_mime is None:
+
+        attachments_cfg = getattr(config, "attachments", None)
+        accept_opaque = bool(getattr(attachments_cfg, "accept_opaque", True))
+
+        # Legacy fail-closed admission rejects a missing/invalid claim before
+        # the payload is read, preserving the strict-mode error precedence.
+        if not accept_opaque and normalized_mime is None:
             return JSONResponse(
                 {"error": "missing or invalid 'mime' / content-type"}, status_code=400
             )
@@ -357,9 +377,48 @@ def register_upload_routes(
                 {"error": "empty upload"}, status_code=400
             )
 
+        if not accept_opaque:
+            if normalized_mime is None:
+                # Unreachable: rejected before the payload read; kept so the
+                # legacy branch below is well-typed.
+                return JSONResponse(
+                    {"error": "missing or invalid 'mime' / content-type"}, status_code=400
+                )
+            # Legacy fail-closed admission: the claimed mime alone decides.
+            resolved_mime = normalized_mime
+        elif normalized_mime in _ALLOWED_MIMES:
+            resolved_mime = normalized_mime
+        else:
+            # Unrendered or missing claim: adopt the sniffed rendered type when
+            # the bytes identify one (with the OLE carve-out mirroring ingest);
+            # otherwise stage as opaque under the claimed label.
+            sniffed = sniff_mime_from_bytes(payload)
+            if sniffed in _ALLOWED_MIMES and not (
+                sniffed == MSG_MIME and normalized_mime is not None
+            ):
+                resolved_mime = sniffed
+            else:
+                resolved_mime = normalized_mime or OPAQUE_MIME
+
+        if accept_opaque and attachment_category(resolved_mime) == "opaque":
+            opaque_cap = getattr(attachments_cfg, "opaque_max_bytes", None)
+            if not isinstance(opaque_cap, int) or opaque_cap <= 0:
+                opaque_cap = OPAQUE_ATTACHMENT_BYTES
+            if len(payload) > opaque_cap:
+                return JSONResponse(
+                    {
+                        "error": (
+                            f"upload exceeds {opaque_cap} byte cap for "
+                            f"{resolved_mime} (got {len(payload)})"
+                        ),
+                        "code": "TOO_LARGE",
+                    },
+                    status_code=413,
+                )
+
         try:
             file_uuid, expires_at = await store.put_with_expiry(
-                filename, normalized_mime, payload
+                filename, resolved_mime, payload
             )
         except UploadOversizeError as exc:
             return JSONResponse({"error": str(exc), "code": "TOO_LARGE"}, status_code=413)
@@ -372,7 +431,7 @@ def register_upload_routes(
             {
                 "file_uuid": file_uuid,
                 "filename": filename,
-                "mime": normalized_mime,
+                "mime": resolved_mime,
                 "size": len(payload),
                 # Staged lifetime so a client can re-upload before a slow compose
                 # sends against an expired uuid (issue #468).

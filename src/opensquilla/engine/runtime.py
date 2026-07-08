@@ -41,9 +41,6 @@ from opensquilla.attachment_workspace import (
     AttachmentWorkspaceMaterializer,
     render_attachment_material_marker,
 )
-from opensquilla.attachment_workspace import (
-    is_materializable_attachment_mime as _attachment_workspace_is_materializable_attachment_mime,
-)
 from opensquilla.bootstrap_types import BootstrapFileReport
 from opensquilla.contracts.attachments import (
     ALLOWED_MEDIA_TYPES as _ALLOWED_ENGINE_MEDIA_TYPES,
@@ -53,6 +50,9 @@ from opensquilla.contracts.attachments import (
 )
 from opensquilla.contracts.attachments import (
     EMAIL_ATTACHMENT_MIMES as _EMAIL_ATTACHMENT_MIMES,
+)
+from opensquilla.contracts.attachments import (
+    IMAGE_ATTACHMENT_MIMES as _IMAGE_ATTACHMENT_MIMES,
 )
 from opensquilla.contracts.attachments import (
     MAX_ATTACHMENTS as _MAX_ATTACHMENT_COUNT,
@@ -67,6 +67,9 @@ from opensquilla.contracts.attachments import (
     OFFICE_ATTACHMENT_MIMES as _OFFICE_ATTACHMENT_MIMES,
 )
 from opensquilla.contracts.attachments import (
+    OPAQUE_MIME as _OPAQUE_MIME,
+)
+from opensquilla.contracts.attachments import (
     PPTX_MIME as _PPTX_MIME,
 )
 from opensquilla.contracts.attachments import (
@@ -77,6 +80,12 @@ from opensquilla.contracts.attachments import (
 )
 from opensquilla.contracts.attachments import (
     attachment_size_limit_for_mime as _attachment_size_limit_for_mime,
+)
+from opensquilla.contracts.attachments import (
+    can_stage_attachment_mime as _can_stage_attachment_mime,
+)
+from opensquilla.contracts.attachments import (
+    normalize_attachment_mime as _normalize_attachment_mime,
 )
 from opensquilla.engine.agent import Agent, ToolHandler
 from opensquilla.engine.agent_injection import PendingInputProvider
@@ -260,23 +269,16 @@ _IMAGE_GENERATION_TOOL_NAMES: Final[frozenset[str]] = frozenset({"image_generate
 _ARTIFACT_DELIVERY_FAILURE_MARKER: Final[str] = "File delivery failed:"
 _ARTIFACT_DELIVERY_TOOL_NAME: Final[str] = "publish_artifact"
 _ARTIFACT_DELIVERY_FAILURE_MAX_CHARS: Final[int] = 360
-_MATERIALIZABLE_ATTACHMENT_MIMES: Final[frozenset[str]] = frozenset(
-    {
-        "application/pdf",
-        *_ENGINE_TEXT_FAMILY_MIMES,
-        *_OFFICE_ATTACHMENT_MIMES,
-        *_EMAIL_ATTACHMENT_MIMES,
-    }
-)
-
 _HOOKS_FEATURE_ENV: Final[str] = "OPENSQUILLA_HOOKS"
 
 
 def _is_materializable_attachment_mime(mime: Any) -> bool:
-    return _attachment_workspace_is_materializable_attachment_mime(
-        mime,
-        _MATERIALIZABLE_ATTACHMENT_MIMES,
-    )
+    # Everything except rendered images lands in the workspace so the agent's
+    # tools can reach it; rendered images travel to the provider as vision
+    # blocks instead. Non-rendered image labels (image/tiff, image/svg+xml…)
+    # are opaque, so their only representation is the workspace copy.
+    normalized = _normalize_attachment_mime(mime)
+    return normalized is not None and normalized not in _IMAGE_ATTACHMENT_MIMES
 
 
 def collect_invoked_skills(
@@ -7209,7 +7211,7 @@ class TurnRunner:
             if not isinstance(att, dict):
                 continue
             media_type = att.get("type") or att.get("mime") or att.get("media_type")
-            if not (isinstance(media_type, str) and media_type in _ALLOWED_ENGINE_MEDIA_TYPES):
+            if not isinstance(media_type, str):
                 continue
             # Persisted attachment envelope: ``sha256_ref`` indicates the bytes live on
             # disk under media/transcripts/<session>/<sha>. Text routes keep
@@ -7226,7 +7228,7 @@ class TurnRunner:
             name = att.get("name")
             fallback = "image" if media_type.startswith("image/") else "attachment"
             label = name if isinstance(name, str) and name.strip() else fallback
-            if preserve_image_attachments and media_type.startswith("image/"):
+            if preserve_image_attachments and media_type in _IMAGE_ATTACHMENT_MIMES:
                 from opensquilla.provider.types import ContentBlockImage
 
                 if isinstance(data, str) and data:
@@ -7273,7 +7275,7 @@ class TurnRunner:
                 materializer = AttachmentWorkspaceMaterializer(
                     media_root=media_root or Path("."),
                     workspace_dir=workspace_dir,
-                    materializable_mimes=_MATERIALIZABLE_ATTACHMENT_MIMES,
+                    materializable_mimes=None,
                 )
                 result = None
                 if isinstance(sha_ref, str) and sha_ref and media_root is not None:
@@ -7393,7 +7395,16 @@ class TurnRunner:
                 if isinstance(mime, str) and mime in _ALLOWED_ENGINE_MEDIA_TYPES:
                     media_type = mime
             if media_type is None or media_type not in _ALLOWED_ENGINE_MEDIA_TYPES:
-                raise ValueError(f"attachments[{index}] media type {att_type!r} is not allowed")
+                # Not a rendered family. Normalization resolves parameterized
+                # rendered claims ("text/plain; charset=utf-8"); anything else
+                # is an opaque attachment carried under its normalized label.
+                normalized = _normalize_attachment_mime(
+                    media_type or att.get("mime") or att.get("media_type")
+                )
+                if normalized in _ALLOWED_ENGINE_MEDIA_TYPES:
+                    media_type = normalized
+                else:
+                    media_type = normalized or _OPAQUE_MIME
             if is_attachment_ref(att):
                 missing_ref_marker = ""
                 if media_root is None:
@@ -7419,7 +7430,10 @@ class TurnRunner:
                     raise ValueError(f"attachments[{index}].data must be valid base64") from exc
             max_bytes = _attachment_size_limit_for_mime(
                 media_type,
-                staged=media_type == "application/pdf" and att.get("_was_staged") is True,
+                staged=(
+                    att.get("_was_staged") is True
+                    and _can_stage_attachment_mime(media_type)
+                ),
             )
             if len(raw_bytes) > max_bytes:
                 raise ValueError(f"attachments[{index}] exceeds the {max_bytes} byte limit")
@@ -7434,7 +7448,7 @@ class TurnRunner:
                 materializer = AttachmentWorkspaceMaterializer(
                     media_root=media_root or Path("."),
                     workspace_dir=workspace_dir,
-                    materializable_mimes=_MATERIALIZABLE_ATTACHMENT_MIMES,
+                    materializable_mimes=None,
                 )
                 if is_attachment_ref(att):
                     result = materializer.materialize(att, session_id=session_id)
@@ -7461,7 +7475,7 @@ class TurnRunner:
                 attachment_blocks.append(ContentBlockText(text=wrapped))
                 continue
 
-            if media_type.startswith("image/"):
+            if media_type in _IMAGE_ATTACHMENT_MIMES:
                 attachment_blocks.append(ContentBlockImage(media_type=media_type, data=data))
             elif media_type == "application/pdf":
                 try:
@@ -7546,8 +7560,22 @@ class TurnRunner:
                     decoded_text = "\n\n".join([decoded_text, material_marker])
                 wrapped = _render_file_context_block(filename, media_type, decoded_text)
                 attachment_blocks.append(ContentBlockText(text=wrapped))
-            else:  # pragma: no cover - guarded by allow-list above
-                raise ValueError(f"attachments[{index}] media type {media_type!r} is not handled")
+            else:
+                # Opaque attachment: the raw bytes never reach the provider.
+                # The model gets an escaped metadata envelope plus the
+                # workspace marker so it can act on the file with tools.
+                sha = att.get("sha256") or att.get("sha256_ref")
+                details = f"[opaque attachment: {media_type}, {len(raw_bytes)} bytes"
+                if isinstance(sha, str) and sha:
+                    details += f", sha256 {sha}"
+                details += (
+                    "; content is not inlined. Inspect or convert the workspace "
+                    "copy with filesystem, shell, or code tools.]"
+                )
+                if material_marker:
+                    details = "\n\n".join([details, material_marker])
+                wrapped = _render_file_context_block(filename, media_type, details)
+                attachment_blocks.append(ContentBlockText(text=wrapped))
 
         return [
             Message(

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import mimetypes
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
@@ -12,12 +13,18 @@ from opensquilla.contracts.attachments import (
     EML_MIME,
     IMAGE_ATTACHMENT_BYTES,
     MAX_STAGED_PDF_BYTES,
+    MAX_STAGED_TEXT_BYTES,
     MBOX_MIME,
     MSG_MIME,
+    OFFICE_ATTACHMENT_BYTES,
+    OPAQUE_ATTACHMENT_BYTES,
+    OPAQUE_MIME,
     PPTX_MIME,
     TEXT_ATTACHMENT_BYTES,
     XLSX_MIME,
+    attachment_category,
     can_stage_attachment_mime,
+    normalize_attachment_mime,
 )
 from opensquilla.contracts.attachments import (
     attachment_size_limit_for_mime as _policy_attachment_size_limit_for_mime,
@@ -26,7 +33,6 @@ from opensquilla.contracts.attachments import (
 CLI_INLINE_THRESHOLD_BYTES = TEXT_ATTACHMENT_BYTES
 CLI_TEXT_ATTACHMENT_BYTES = TEXT_ATTACHMENT_BYTES
 CLI_IMAGE_ATTACHMENT_BYTES = IMAGE_ATTACHMENT_BYTES
-CLI_ENGINE_ATTACHMENT_BYTES = IMAGE_ATTACHMENT_BYTES
 CLI_STAGED_PDF_BYTES = MAX_STAGED_PDF_BYTES
 
 CLI_IMAGE_MIMES: dict[str, str] = {
@@ -54,16 +60,6 @@ CLI_ALLOWED_FILE_MIMES: dict[str, str] = {
     "mbox": MBOX_MIME,
     "msg": MSG_MIME,
 }
-CLI_TEXT_FAMILY_MIMES: frozenset[str] = frozenset(
-    {
-        "text/plain",
-        "text/markdown",
-        "text/html",
-        "text/csv",
-        "application/json",
-    }
-)
-
 PATH_REMOTE_GATEWAY_MESSAGE = "Use /file to upload from this CLI machine"
 PATH_TEXT_EXTENSIONS = {
     ".txt",
@@ -113,15 +109,13 @@ AsyncUploadCallable = Callable[[Path, str, str], Awaitable[str]]
 
 
 def attachment_size_limit_for_mime(mime: str) -> int:
-    return _policy_attachment_size_limit_for_mime(mime, staged=True)
+    return _policy_attachment_size_limit_for_mime(
+        mime, staged=can_stage_attachment_mime(mime)
+    )
 
 
 def _can_stage_mime(mime: str) -> bool:
     return can_stage_attachment_mime(mime)
-
-
-def _allowed_label() -> str:
-    return ", ".join(sorted(set(CLI_ALLOWED_FILE_MIMES.values())))
 
 
 _TEXT_FALLBACK_MAX_SNIFF_BYTES = 4 * 1000 * 1000
@@ -151,15 +145,22 @@ def _looks_like_utf8_text(path: Path) -> bool:
 
 
 def mime_for_path(path: Path) -> str:
+    """Resolve a best-effort MIME label for any local file (never raises).
+
+    Known extensions map to their rendered mime; unknown extensions become
+    text/plain when the bytes are decodable UTF-8, otherwise an opaque label
+    (best-guess from the extension table, or the generic binary type). The
+    gateway re-validates against the actual bytes either way.
+    """
+
     ext = path.suffix.lower().lstrip(".")
     mime = CLI_ALLOWED_FILE_MIMES.get(ext)
     if mime:
         return mime
-    # Unknown extension: accept as plain text when the bytes are decodable UTF-8
-    # (the gateway re-validates); otherwise stay fail-closed.
     if _looks_like_utf8_text(path):
         return "text/plain"
-    raise ValueError(f"Unsupported format: .{ext}. Allowed: {_allowed_label()}")
+    guessed, _encoding = mimetypes.guess_type(path.name)
+    return normalize_attachment_mime(guessed) or OPAQUE_MIME
 
 
 def _ensure_existing_file(path: Path) -> None:
@@ -181,17 +182,25 @@ def _check_size_policy(path: Path, mime: str) -> int:
     size = path.stat().st_size
     limit = attachment_size_limit_for_mime(mime)
     if size > limit:
-        if mime == "application/pdf":
+        category = attachment_category(mime)
+        if category == "pdf":
             detail = f"{CLI_STAGED_PDF_BYTES} byte PDF limit"
-        elif mime in CLI_TEXT_FAMILY_MIMES:
+        elif category == "text":
             detail = (
-                f"{CLI_TEXT_ATTACHMENT_BYTES} byte text-family direct attachment limit; "
+                f"{MAX_STAGED_TEXT_BYTES} byte staged text limit; "
                 "use /path for bounded local reads"
             )
-        elif mime in CLI_IMAGE_MIMES.values():
+        elif category == "image":
             detail = f"{CLI_IMAGE_ATTACHMENT_BYTES} byte image attachment limit"
+        elif category == "office":
+            detail = f"{OFFICE_ATTACHMENT_BYTES} byte office document limit"
+        elif category == "email":
+            detail = (
+                f"{CLI_TEXT_ATTACHMENT_BYTES} byte email limit "
+                "(emails are extracted as bounded text and are never staged)"
+            )
         else:
-            detail = f"{CLI_ENGINE_ATTACHMENT_BYTES} byte attachment limit"
+            detail = f"{OPAQUE_ATTACHMENT_BYTES} byte attachment limit"
         raise ValueError(f"File too large: {path.name} is {size} bytes; max is {detail}")
     return size
 
@@ -230,9 +239,11 @@ def build_file_attachment(
     if size <= CLI_INLINE_THRESHOLD_BYTES:
         return _inline_attachment(local, mime)
     if not _can_stage_mime(mime):
+        # Unreachable for email in practice (the size policy caps email at the
+        # inline threshold), kept as a fail-closed guard for future categories.
         raise ValueError(
             f"File too large to attach directly ({size} bytes > "
-            f"{CLI_TEXT_ATTACHMENT_BYTES}); text-family attachments are not staged. "
+            f"{CLI_INLINE_THRESHOLD_BYTES}); this attachment type is not staged. "
             "Use /path for bounded local reads."
         )
     if upload_callable is None:
@@ -261,9 +272,11 @@ async def build_file_attachment_async(
     if size <= CLI_INLINE_THRESHOLD_BYTES:
         return _inline_attachment(local, mime)
     if not _can_stage_mime(mime):
+        # Unreachable for email in practice (the size policy caps email at the
+        # inline threshold), kept as a fail-closed guard for future categories.
         raise ValueError(
             f"File too large to attach directly ({size} bytes > "
-            f"{CLI_TEXT_ATTACHMENT_BYTES}); text-family attachments are not staged. "
+            f"{CLI_INLINE_THRESHOLD_BYTES}); this attachment type is not staged. "
             "Use /path for bounded local reads."
         )
     if upload_callable is None:

@@ -1647,7 +1647,7 @@
     "removeAttachment": "Supprimer la pièce jointe",
     "remove": "Supprimer",
     "attachFiles": "Joindre des fichiers",
-    "attachFilesTitle": "Joindre des fichiers : PNG, JPEG, GIF, WEBP, PDF, TXT, MD, HTML, CSV, JSON",
+    "attachFilesTitle": "Joindre des fichiers : tout type de fichier (images, PDF, Office et texte sont lus directement ; les autres vont dans l'espace de travail de l'agent)",
     "dropOverlayTitle": "Déposez pour joindre",
     "dropOverlayHint": "Les fichiers seront ajoutés au compositeur",
     "composerSettings": "Paramètres du compositeur",

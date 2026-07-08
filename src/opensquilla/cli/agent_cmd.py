@@ -245,10 +245,14 @@ async def run_agent_once(
 
     try:
         await svc.session_manager.get_or_create(session_key, agent_id=agent_id)
+        attachments_cfg = getattr(service_cfg, "attachments", None)
+        opaque_cap = getattr(attachments_cfg, "opaque_max_bytes", None)
         ingested_attachments = await _attachment_ingest.ingest_attachments(
             message,
             run_attachments,
             failure_mode="raise",
+            accept_opaque=bool(getattr(attachments_cfg, "accept_opaque", True)),
+            opaque_limit_bytes=opaque_cap if isinstance(opaque_cap, int) else None,
         )
         message = ingested_attachments.text
         run_attachments = ingested_attachments.attachments

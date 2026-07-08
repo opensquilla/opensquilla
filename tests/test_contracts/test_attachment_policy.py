@@ -43,6 +43,95 @@ def test_email_is_capped_at_the_text_limit_and_not_stageable() -> None:
         )
 
 
+def test_attachment_category_is_total() -> None:
+    # Every input — rendered mime, unknown mime, garbage, non-strings — must
+    # classify; the opaque category is the closed-world catch-all.
+    for mime in attachments.ALLOWED_MEDIA_TYPES:
+        assert attachments.attachment_category(mime) != "opaque"
+        assert attachments.attachment_category(mime) in attachments.ATTACHMENT_CATEGORIES
+    for unknown in (
+        "application/zip",
+        "application/x-7z-compressed",
+        "audio/mpeg",
+        "video/mp4",
+        "application/octet-stream",
+        "not-a-mime",
+        "",
+        None,
+        42,
+    ):
+        assert attachments.attachment_category(unknown) == "opaque"
+
+
+def test_rendered_categories_match_their_mime_sets() -> None:
+    for mime in attachments.IMAGE_ATTACHMENT_MIMES:
+        assert attachments.attachment_category(mime) == "image"
+    assert attachments.attachment_category("application/pdf") == "pdf"
+    for mime in attachments.TEXT_ATTACHMENT_MIMES:
+        assert attachments.attachment_category(mime) == "text"
+    for mime in attachments.OFFICE_ATTACHMENT_MIMES:
+        assert attachments.attachment_category(mime) == "office"
+    for mime in (attachments.EML_MIME, attachments.MBOX_MIME, attachments.MSG_MIME):
+        assert attachments.attachment_category(mime) == "email"
+
+
+def test_mime_aliases_resolve_to_canonical_types() -> None:
+    # Windows-registry and legacy-browser spellings must land in the same
+    # category and size class as their canonical MIME.
+    assert attachments.normalize_attachment_mime("image/jpg") == "image/jpeg"
+    assert attachments.attachment_category("image/jpg") == "image"
+    assert (
+        attachments.normalize_attachment_mime("application/x-zip-compressed")
+        == "application/zip"
+    )
+    assert attachments.normalize_attachment_mime("IMAGE/JPG; q=0.8") == "image/jpeg"
+
+
+def test_text_is_stageable_above_the_inline_threshold() -> None:
+    # Large text files (LaTeX sources, logs) must have a staged path instead of
+    # dead-ending at the 2MB inline cap. The larger staged ceiling is only
+    # honored for payloads ingestion proves to be whole-payload UTF-8.
+    for mime in attachments.TEXT_ATTACHMENT_MIMES:
+        assert attachments.can_stage_attachment_mime(mime) is True
+        assert (
+            attachments.attachment_size_limit_for_mime(mime, staged=True)
+            == attachments.MAX_STAGED_TEXT_BYTES
+        )
+        assert (
+            attachments.attachment_size_limit_for_mime(mime, staged=False)
+            == attachments.TEXT_ATTACHMENT_BYTES
+        )
+    assert attachments.MAX_STAGED_TEXT_BYTES > attachments.INLINE_ATTACHMENT_BYTES
+
+
+def test_opaque_types_are_stageable_and_capped() -> None:
+    # Any file type is admitted as an opaque workspace file: stageable, with
+    # its own staged ceiling, and the conservative default cap when inlined.
+    for mime in ("application/zip", "audio/mpeg", attachments.OPAQUE_MIME):
+        assert attachments.attachment_category(mime) == "opaque"
+        assert attachments.can_stage_attachment_mime(mime) is True
+        assert (
+            attachments.attachment_size_limit_for_mime(mime, staged=True)
+            == attachments.OPAQUE_ATTACHMENT_BYTES
+        )
+        assert (
+            attachments.attachment_size_limit_for_mime(mime, staged=False)
+            == attachments.MAX_ATTACHMENT_BYTES
+        )
+    # An unnormalizable claim is never stageable — the caller must resolve a
+    # concrete mime (for example OPAQUE_MIME) before staging.
+    assert attachments.can_stage_attachment_mime(None) is False
+    assert attachments.can_stage_attachment_mime("   ") is False
+
+
+def test_sniff_module_stays_out_of_gateway() -> None:
+    # The sniffer lives in contracts precisely so policy-only consumers can
+    # sniff without importing gateway internals; it must never grow one.
+    imports = _imports_from(Path("src/opensquilla/contracts/attachment_sniff.py"))
+    assert not any(module.startswith("opensquilla.gateway") for module in imports)
+    assert "opensquilla.contracts.attachments" in imports
+
+
 def test_channel_attachment_io_does_not_import_gateway_policy() -> None:
     imports = _imports_from(Path("src/opensquilla/channels/_attachment_io.py"))
 

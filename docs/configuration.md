@@ -216,6 +216,50 @@ opensquilla channels status <name> --json
 
 See [`channels.md`](channels.md) for details.
 
+## Attachments
+
+Attachment ingestion accepts **any file type**. Rendered families (images,
+PDF, text, Office documents, email) are extracted or inlined for the model;
+everything else is an *opaque* attachment: the bytes are staged into the agent
+workspace for tool access and are never parsed, decompressed, or inlined into
+a provider prompt.
+
+```toml
+[attachments]
+# Admit opaque (non-rendered) attachment types: archives, binaries,
+# audio/video, unknown formats. false restores the legacy fail-closed
+# rendered-types-only admission gate on every surface.
+accept_opaque = true
+# Per-file ceiling for opaque attachments (bytes).
+opaque_max_bytes = 31457280            # 30 MiB
+# Persist attachment bytes with session transcripts.
+persist_transcripts = true
+# media_root = ""                      # default: resolved from the cache dir
+transcript_disk_budget_bytes = 2147483648   # 2 GiB
+artifact_max_bytes = 31457280               # 30 MiB
+artifact_disk_budget_bytes = 536870912      # 512 MiB
+```
+
+Env overrides use the `OPENSQUILLA_ATTACHMENTS_` prefix
+(`OPENSQUILLA_ATTACHMENTS_ACCEPT_OPAQUE`, `OPENSQUILLA_ATTACHMENTS_OPAQUE_MAX_BYTES`, …).
+
+Size policy at a glance: inline attachments up to 2 MB ride the RPC message;
+larger files stage through `POST /api/v1/files/upload` (10-minute TTL) up to
+30 MiB per file for text (whole-payload UTF-8 proven), PDF, Office, and opaque
+types. Email is always capped at the 2 MB text limit and never stages. Per
+turn: at most 10 attachments and 60 MiB total.
+
+Behavior notes:
+
+- With `accept_opaque = true` (the default), the upload endpoint no longer
+  returns HTTP 415 `UNSUPPORTED_MEDIA_TYPE` for unrendered types, and
+  `sessions.send` no longer rejects them; strict deployments that disable the
+  flag keep the legacy errors and codes unchanged.
+- Opaque files reach the model only as an escaped metadata envelope plus a
+  workspace path marker; the agent inspects or converts them with filesystem,
+  shell, or code tools under the active safety tier and approval policy. On
+  platforms without a sandbox backend those tool actions rely on approvals.
+
 ## Memory Configuration
 
 Useful commands:

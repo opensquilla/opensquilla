@@ -1,10 +1,11 @@
 """Tests for gateway attachment validation.
 
-The gateway accepts image/*, application/pdf, and text-family MIMEs
-(text/plain, text/markdown, text/html, text/csv, application/json). The
-validator sniffs MIME from decoded bytes and prefers the sniffed type on
-mismatch, the per-turn cap is 10, and a {file_uuid: ...} reference shape is
-accepted for the upload store.
+Any file type is admitted: rendered families (image/*, application/pdf,
+text-family, OOXML office, email) keep extraction and anti-forgery behavior,
+and everything else is accepted as an opaque item whose bytes are staged for
+the agent workspace, never parsed or inlined. The validator sniffs MIME from
+decoded bytes and prefers the sniffed type on mismatch, the per-turn cap is
+10, and a {file_uuid: ...} reference shape is accepted for the upload store.
 """
 
 from __future__ import annotations
@@ -34,11 +35,12 @@ def _attach(media_type: str, payload: bytes, **extra: Any) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# Allow-list locked at exactly the supported MIMEs (images, PDF, text-family,
-# and modern OOXML office documents).
+# The RENDERED families are locked at exactly the supported MIMEs (images,
+# PDF, text-family, modern OOXML office documents, email). This set routes
+# model-facing representation; it is no longer an admission gate.
 # ---------------------------------------------------------------------------
 
-def test_allowed_media_types_set_contents() -> None:
+def test_rendered_media_types_set_contents() -> None:
     assert _ALLOWED_MEDIA_TYPES == {
         "image/png",
         "image/jpeg",
@@ -99,16 +101,30 @@ def test_html_inline_accepted() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Rejection paths.
+# Opaque admission and rejection paths.
 # ---------------------------------------------------------------------------
 
-def test_unknown_binary_mime_rejected() -> None:
-    # Unknown binary uploads stay fail-closed (NUL bytes defeat the UTF-8 text
-    # fallback). Unknown *textual* uploads are accepted as text/plain — see
+def test_unknown_binary_mime_accepted_as_opaque() -> None:
+    # Binary payloads with unrendered claims are admitted as opaque items:
+    # bytes are never parsed or inlined, and the specific claim survives as
+    # the label. Unknown *textual* uploads still resolve to text/plain — see
     # test_unknown_textual_upload_accepted_via_utf8_fallback in the ingest suite.
+    out = _validate_attachments(
+        [_attach("application/x-binary", b"\x00\x01\x02\x03 binary blob", name="x.bin")]
+    )
+    assert len(out) == 1
+    assert out[0]["type"] == "application/x-binary"
+
+
+def test_unknown_binary_mime_rejected_when_opaque_admission_disabled() -> None:
+    # attachments.accept_opaque=false restores the legacy fail-closed gate,
+    # including the error copy third-party clients may match on.
+    from opensquilla.gateway.attachment_ingest import validate_attachments
+
     with pytest.raises(ValueError, match="not allowed"):
-        _validate_attachments(
-            [_attach("application/x-binary", b"\x00\x01\x02\x03 binary blob", name="x.bin")]
+        validate_attachments(
+            [_attach("application/x-binary", b"\x00\x01\x02\x03 binary blob", name="x.bin")],
+            accept_opaque=False,
         )
 
 

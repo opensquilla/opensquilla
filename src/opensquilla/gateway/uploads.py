@@ -215,6 +215,14 @@ class UploadStore:
                 f"upload exceeds {max_bytes} byte cap for {normalized_mime} "
                 f"(got {len(payload)})"
             )
+        if len(payload) > self.max_total_bytes:
+            # A payload larger than the aggregate cap can never be staged, so
+            # this is a permanent per-payload condition (413), never the
+            # retryable store-full rejection.
+            raise UploadOversizeError(
+                f"upload of {len(payload)} bytes exceeds the "
+                f"{self.max_total_bytes} byte staged-upload store cap"
+            )
 
         file_uuid = f"u-{_uuid.uuid4().hex}"
         sha = hashlib.sha256(payload).hexdigest()

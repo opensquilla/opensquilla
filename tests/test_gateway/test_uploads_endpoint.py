@@ -929,6 +929,25 @@ def test_store_full_boundary_admits_exact_fit(tmp_path: Path) -> None:
 
 
 def test_upload_route_returns_507_when_store_full(tmp_path: Path) -> None:
+    # A genuinely transient condition: the payload fits the cap on its own,
+    # but not while earlier staged entries are still alive.
+    store = _capped_store(tmp_path, max_total_bytes=1024)
+    asyncio.run(store.put("staged.txt", "text/plain", b"a" * 900))
+    with _route_client(store=store) as client:
+        response = client.post(
+            "/api/v1/files/upload",
+            files={"file": ("next.txt", b"b" * 200, "text/plain")},
+        )
+
+    assert response.status_code == 507
+    body = response.json()
+    assert body["code"] == "UPLOAD_STORE_FULL"
+    assert "retry" in body["error"]
+
+
+def test_payload_larger_than_total_cap_is_permanent_413(tmp_path: Path) -> None:
+    # A payload that can NEVER fit the aggregate cap is a permanent per-payload
+    # condition: 413 TOO_LARGE, not the retryable 507.
     store = _capped_store(tmp_path, max_total_bytes=64)
     with _route_client(store=store) as client:
         response = client.post(
@@ -936,10 +955,35 @@ def test_upload_route_returns_507_when_store_full(tmp_path: Path) -> None:
             files={"file": ("big.txt", b"a" * 128, "text/plain")},
         )
 
-    assert response.status_code == 507
-    body = response.json()
-    assert body["code"] == "UPLOAD_STORE_FULL"
-    assert "retry" in body["error"]
+    assert response.status_code == 413
+    assert response.json()["code"] == "TOO_LARGE"
+
+
+def test_non_positive_total_cap_falls_back_to_default(tmp_path: Path) -> None:
+    # The RAM cap can be raised but not disabled: a non-positive config value
+    # falls back to the default at app construction (with a boot warning).
+    pytest.importorskip("starlette.testclient")
+    from opensquilla.gateway.app import create_gateway_app
+    from opensquilla.gateway.config import GatewayConfig
+    from opensquilla.gateway.uploads import (
+        _DEFAULT_MAX_TOTAL_BYTES,
+        get_upload_store,
+        set_upload_store,
+    )
+
+    original_store = get_upload_store()
+    set_upload_store(None)
+    try:
+        config = GatewayConfig(
+            attachments={
+                "upload_store_max_total_bytes": 0,
+                "media_root": str(tmp_path / "media"),
+            },
+        )
+        create_gateway_app(config)
+        assert get_upload_store().max_total_bytes == _DEFAULT_MAX_TOTAL_BYTES
+    finally:
+        set_upload_store(original_store)
 
 
 def test_strict_mime_rejection_takes_precedence_over_full_store(tmp_path: Path) -> None:

@@ -234,11 +234,14 @@ accept_opaque = true
 opaque_max_bytes = 31457280            # 30 MiB
 # Aggregate RAM ceiling for the in-memory staged-upload store. When reached,
 # new uploads get HTTP 507 UPLOAD_STORE_FULL (retryable; staged entries
-# expire within the 10-minute TTL). Requires a gateway restart to change.
+# expire within the 10-minute TTL); a payload larger than the cap itself is a
+# permanent 413. Non-positive or invalid values fall back to the default —
+# this cap can be raised but not disabled. Requires a gateway restart.
 upload_store_max_total_bytes = 314572800    # 300 MiB
 # Disk budget for attachment copies materialized into an agent workspace
 # (<workspace>/.opensquilla/attachments). When exceeded, new materializations
-# degrade to an unavailable marker; existing files are never evicted.
+# degrade to an unavailable marker; existing files are never evicted. Set to
+# 0 (or any non-positive value) to disable the budget entirely.
 workspace_attachment_disk_budget_bytes = 1073741824  # 1 GiB
 # Persist attachment bytes with session transcripts.
 persist_transcripts = true

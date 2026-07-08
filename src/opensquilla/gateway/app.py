@@ -607,6 +607,14 @@ def create_gateway_app(
 
         _store_total_cap = getattr(config.attachments, "upload_store_max_total_bytes", None)
         if not isinstance(_store_total_cap, int) or _store_total_cap <= 0:
+            if _store_total_cap is not None:
+                log.warning(
+                    "attachments.upload_store_max_total_bytes=%r is not a "
+                    "positive integer; using the %d byte default (this RAM "
+                    "cap can be raised but not disabled)",
+                    _store_total_cap,
+                    _UPLOAD_STORE_DEFAULT_TOTAL,
+                )
             _store_total_cap = _UPLOAD_STORE_DEFAULT_TOTAL
         _upload_store = UploadStore(
             marker_dir=media_root_from_config(config) / "uploads",

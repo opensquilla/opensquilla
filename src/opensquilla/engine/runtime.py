@@ -6982,6 +6982,16 @@ class TurnRunner:
             if attachment_replay_session_id is None:
                 attachment_replay_session_id = session_key
         last_entry_was_user = False
+        history_materializer: AttachmentWorkspaceMaterializer | None = None
+        if materialize_historical_attachments and workspace_dir and attachment_replay_session_id:
+            # One instance per history load so first-materialization replays
+            # pay for a single workspace-tree budget scan, not one per entry.
+            history_materializer = AttachmentWorkspaceMaterializer(
+                media_root=self._attachment_media_root(),
+                workspace_dir=workspace_dir,
+                materializable_mimes=None,
+                disk_budget_bytes=workspace_attachment_budget_from_config(self._config),
+            )
         for entry_index, entry in enumerate(transcript):
             if entry_index in bound_skip_indexes:
                 # The bound current prompt (re-appended by the caller) and any
@@ -7009,9 +7019,7 @@ class TurnRunner:
                     media_root=self._attachment_media_root(),
                     session_id=attachment_replay_session_id,
                     workspace_dir=workspace_dir,
-                    workspace_attachment_budget_bytes=(
-                        workspace_attachment_budget_from_config(self._config)
-                    ),
+                    historical_materializer=history_materializer,
                 )
             elif raw_content and entry.role == "assistant":
                 content = self._maybe_unpack_assistant_artifacts(raw_content)
@@ -7174,6 +7182,7 @@ class TurnRunner:
         session_id: str | None = None,
         workspace_dir: str | Path | None = None,
         workspace_attachment_budget_bytes: int | None = None,
+        historical_materializer: AttachmentWorkspaceMaterializer | None = None,
     ) -> Any:
         """Reduce persisted attachment envelopes to text-only history.
 
@@ -7208,10 +7217,12 @@ class TurnRunner:
         omitted: list[str] = []
         replay_blocks: list[Any] = []
         preserved_image = False
-        historical_materializer: AttachmentWorkspaceMaterializer | None = None
-        if materialize_historical_attachments and session_id and workspace_dir:
-            # One instance per replay so the whole batch shares a single
-            # budget scan instead of re-walking the tree per attachment.
+        if not materialize_historical_attachments:
+            historical_materializer = None
+        elif historical_materializer is None and session_id and workspace_dir:
+            # Fallback for direct callers: the history loader passes one
+            # shared instance per load so the whole transcript shares a
+            # single budget scan instead of re-walking the tree per entry.
             historical_materializer = AttachmentWorkspaceMaterializer(
                 media_root=media_root or Path("."),
                 workspace_dir=workspace_dir,

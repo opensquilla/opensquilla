@@ -54,6 +54,36 @@ _ASSIGNMENT_RE = re.compile(
 # payloads are masked in full (over-masking a trailing "=" is fine; leaking a
 # token suffix is not).
 _BEARER_RE = re.compile(r"(?i)(?P<prefix>bearer\s+)(?P<value>[a-z0-9._\-+/=]+)")
+# Bare provider/service tokens with globally distinctive prefixes. Provider and
+# channel errors echo credentials verbatim with no key=value structure around
+# them ("Incorrect API key sk-... provided"), and those messages flow straight
+# into turn_errors and the public diagnostics bundle. Every branch is anchored
+# to word-run boundaries and length-floored so ordinary prose ("skill",
+# "risk-free", "eyJustSaying") never matches; over-masking token-shaped strings
+# is fine, leaking a token tail is not. The literal prefixes keep scanning
+# linear on megabyte log tails (each attempt fails on the first character).
+_RUN = r"[A-Za-z0-9_-]"
+_BARE_TOKEN_RE = re.compile(
+    rf"""(?x)
+    (?<!{_RUN})
+    (?:
+        sk-{_RUN}{{16,}}                          # OpenAI-style (incl. sk-proj-, sk-ant-)
+        |xox[abposr]-[A-Za-z0-9-]{{10,}}          # Slack bot/user/app/legacy tokens
+        |gh[pousr]_[A-Za-z0-9_]{{16,}}            # GitHub classic tokens (ghp/gho/ghu/ghs/ghr)
+        |github_pat_[A-Za-z0-9_]{{16,}}           # GitHub fine-grained PATs
+        |AKIA[0-9A-Z]{{16}}                       # AWS access key id
+        |eyJ{_RUN}{{5,}}(?:\.{_RUN}{{8,}}){{2,}}  # JWT-shaped dotted base64url runs
+        |AIza[0-9A-Za-z_-]{{35}}                  # Google API keys
+    )
+    (?!{_RUN})
+    """
+)
+# Slack incoming-webhook URLs carry the credential in the path; keep the host
+# recognizable and mask only the path. The path class excludes "[" so an
+# already-masked "services/[redacted]" cannot rematch (idempotent).
+_SLACK_WEBHOOK_RE = re.compile(
+    r"(?P<prefix>\bhooks\.slack\.com/services/)[A-Za-z0-9/_-]+"
+)
 
 
 def scrub_text(text: str) -> str:
@@ -62,6 +92,8 @@ def scrub_text(text: str) -> str:
         lambda m: f"{m.group('prefix')}{m.group('quote') or ''}{_REDACTED}", text
     )
     scrubbed = _BEARER_RE.sub(lambda m: f"{m.group('prefix')}{_REDACTED}", scrubbed)
+    scrubbed = _BARE_TOKEN_RE.sub(_REDACTED, scrubbed)
+    scrubbed = _SLACK_WEBHOOK_RE.sub(lambda m: f"{m.group('prefix')}{_REDACTED}", scrubbed)
     home = str(Path.home())
     if home and home != "/":
         scrubbed = scrubbed.replace(home, "~")

@@ -17,11 +17,16 @@ _REDACTED = "[redacted]"
 # Mirrors gateway.config._PUBLIC_SECRET_EXACT_KEYS + suffixes for free text.
 # No blanket `_key` suffix: benign identifiers like `session_key` must stay
 # readable in diagnostics.
+# The suffix branch anchors its `[a-z0-9_]*` prefix with a negative lookbehind
+# so it is only attempted at word-run starts: without the anchor the engine
+# rescans the run once per character (quadratic — megabyte base64/hex runs in
+# log tails take hours). Matches are unchanged since the star can always start
+# from the run boundary.
 _SECRET_KEY = (
     r"(?:api[_-]?key|token|secret[_-]?access[_-]?key|secret[_-]?key|secret|password"
     r"|authorization|signing[_-]?secret|private[_-]?key"
     r"|app[_-]?secret|verification[_-]?token|encrypt[_-]?key|encoding[_-]?aes[_-]?key"
-    r"|[a-z0-9_]*(?:_token|_secret|_password|_api_key))"
+    r"|(?<![a-z0-9_])[a-z0-9_]*(?:_token|_secret|_password|_api_key))"
 )
 # Common Authorization credential schemes; the scheme word plus its payload is
 # masked as one value (Basic base64, opaque Token blobs, Digest params, ...).

@@ -6,8 +6,10 @@ name: Container Images
 #
 # Publishing model:
 #   * Pushing a release tag (v0.5.0rc2, v0.6.0, ...) publishes
-#     ghcr.io/<owner>/<repo>:<tag>; exact-semver tags (vX.Y.Z with no
-#     pre-release suffix) also move :latest.
+#     ghcr.io/<owner>/<repo>:<tag> and moves :latest to it. :latest tracks
+#     the most recently pushed release tag — including prereleases and
+#     backports; if a backport repoints it, re-run this workflow from the
+#     newest tag.
 #   * workflow_dispatch validates the full multi-arch build without
 #     publishing; set publish=true to push the result as :edge.
 #
@@ -88,24 +90,6 @@ jobs:
               )
           PY
 
-      - name: Decide publish mode
-        id: mode
-        env:
-          DISPATCH_PUBLISH: ${{ inputs.publish }}
-        run: |
-          publish=false
-          stable=false
-          if [[ "${GITHUB_EVENT_NAME}" == "push" ]]; then
-            publish=true
-            if [[ "${GITHUB_REF_NAME}" =~ ^v[0-9]+[.][0-9]+[.][0-9]+$ ]]; then
-              stable=true
-            fi
-          elif [[ "${DISPATCH_PUBLISH}" == "true" ]]; then
-            publish=true
-          fi
-          echo "publish=${publish}" >> "$GITHUB_OUTPUT"
-          echo "stable=${stable}" >> "$GITHUB_OUTPUT"
-
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
 
@@ -113,7 +97,7 @@ jobs:
         uses: docker/setup-buildx-action@v3
 
       - name: Log in to GHCR
-        if: steps.mode.outputs.publish == 'true'
+        if: ${{ github.event_name == 'push' || inputs.publish == true }}
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
@@ -129,7 +113,7 @@ jobs:
           images: ghcr.io/${{ github.repository }}
           tags: |
             type=ref,event=tag,enable=${{ github.event_name == 'push' }}
-            type=raw,value=latest,enable=${{ steps.mode.outputs.stable == 'true' }}
+            type=raw,value=latest,enable=${{ github.event_name == 'push' }}
             type=raw,value=edge,enable=${{ github.event_name == 'workflow_dispatch' }}
           flavor: |
             latest=false
@@ -139,12 +123,10 @@ jobs:
         with:
           context: .
           platforms: linux/amd64,linux/arm64
-          push: ${{ steps.mode.outputs.publish == 'true' }}
+          push: ${{ github.event_name == 'push' || inputs.publish == true }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           # Keep the pushed artifact a plain two-entry manifest list; the
           # default provenance attestation adds an unknown/unknown entry that
           # confuses registry UIs and `docker pull` inspection.
           provenance: false
-          cache-from: type=gha
-          cache-to: type=gha,mode=max

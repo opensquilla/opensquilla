@@ -23,14 +23,19 @@ docker --version
 docker compose version
 ```
 
-Nothing else is required on the host — no Python, no Git, no build tools.
+Nothing else is required on the host for the prebuilt-image path — no
+Python, no Git, no build tools.
 
 ## Quick Start with the Prebuilt Image
 
 Prebuilt multi-arch images are published to
 [`ghcr.io/opensquilla/opensquilla`](https://github.com/opensquilla/opensquilla/pkgs/container/opensquilla)
-for each release tag. If the release you want predates image publishing, use
-[Build the Image Yourself](#build-the-image-yourself) instead.
+for each release tag, and `latest` points at the most recent release. If the
+release you want predates image publishing, use
+[Build the Image Yourself](#build-the-image-yourself) instead. A pull that
+fails with `denied` or `manifest unknown` means the image for that tag has
+not been published (or the package is not public yet) — check the package
+page for available tags, or build from source.
 
 Create a directory for the deployment and write this `compose.yaml`:
 
@@ -162,6 +167,16 @@ Three ways, in order of preference:
    `/var/lib/opensquilla/.env` at startup, so keys survive image upgrades
    without appearing in `compose.yaml`. On a bind mount, keep it owned by the
    container user and private: `chown 10001:10001 .env && chmod 600 .env`.
+   Caveat: a key listed under `environment:` in `compose.yaml` shadows the
+   state-volume `.env` even when the host variable is unset (Compose passes
+   an empty value through) — remove it from `environment:` if you manage it
+   in the state volume.
+
+One precedence caveat for auth: values saved to `config.toml` — for example
+by the Web UI — take precedence over environment variables at boot. If the
+`OPENSQUILLA_AUTH_*` variables stop taking effect after configuring through
+the Web UI, `config.toml` now owns the `[auth]` settings; rotate the token
+there (or in the Web UI) and restart.
 
 Hand-edits to `/var/lib/opensquilla/config.toml` are read at boot only —
 restart to apply them:
@@ -214,10 +229,11 @@ To roll back, pin the previous release tag in `image:` and `docker compose up
 
 The source checkout ships the same `Dockerfile` and a `compose.yaml` that
 defaults to a self-built `opensquilla:local` image (override with
-`OPENSQUILLA_GATEWAY_IMAGE` to use the GHCR image instead). Building needs the
-Git LFS router assets:
+`OPENSQUILLA_GATEWAY_IMAGE` to use the GHCR image instead). Building needs
+`git`, `git-lfs`, and the Git LFS router assets:
 
 ```sh
+sudo apt install -y git git-lfs
 git clone https://github.com/opensquilla/opensquilla.git
 cd opensquilla
 git lfs pull --include="src/opensquilla/squilla_router/models/**"

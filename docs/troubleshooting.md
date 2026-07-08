@@ -273,7 +273,10 @@ http://<server-address>:18791/control/?token=<value>
 ```
 
 Use `token` mode specifically — `password` and `trusted-proxy` modes do
-not support the Web UI connection.
+not support the Web UI connection. If the variables have no effect, the
+state volume's `config.toml` may already contain an `[auth]` table —
+TOML values take precedence over `OPENSQUILLA_AUTH_*` at boot; edit the
+token there (or in the Web UI) and restart.
 
 ## Docker: Gateway Fails at Boot on a Bind-Mounted State Directory
 
@@ -292,9 +295,11 @@ problem — the image pre-creates the state root with the right owner.
 ## Docker: Build Fails with "model assets are unavailable"
 
 `docker build` validates the bundled router models and refuses to bake
-Git LFS pointer files into the image. Hydrate them before building:
+Git LFS pointer files into the image. Hydrate them before building
+(`git-lfs` is a separate package from `git` on Debian):
 
 ```sh
+sudo apt install -y git git-lfs
 git lfs pull --include="src/opensquilla/squilla_router/models/**"
 docker build -t opensquilla:local .
 ```

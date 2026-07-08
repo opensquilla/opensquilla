@@ -1381,6 +1381,8 @@
       "installVia": "通过 {kind} 安装",
       "installing": "安装中...",
       "homepage": "主页",
+      "loadingContent": "正在加载 SKILL.md...",
+      "emptyContent": "没有可用的 SKILL.md 内容。",
       "removing": "移除中...",
       "remove": "移除"
     },

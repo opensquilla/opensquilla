@@ -1381,6 +1381,8 @@
       "installVia": "Über {kind} installieren",
       "installing": "Wird installiert...",
       "homepage": "Startseite",
+      "loadingContent": "SKILL.md wird geladen...",
+      "emptyContent": "Kein SKILL.md-Inhalt verfügbar.",
       "removing": "Wird entfernt...",
       "remove": "Entfernen"
     },

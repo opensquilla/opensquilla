@@ -1381,6 +1381,8 @@
       "installVia": "{kind} 経由でインストール",
       "installing": "インストール中...",
       "homepage": "ホームページ",
+      "loadingContent": "SKILL.md を読み込み中...",
+      "emptyContent": "利用できる SKILL.md コンテンツはありません。",
       "removing": "削除中...",
       "remove": "削除"
     },

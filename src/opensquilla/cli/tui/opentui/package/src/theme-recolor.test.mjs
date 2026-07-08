@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
-import test, { afterEach } from "node:test";
+import test, { afterEach, beforeEach } from "node:test";
 
-import { applyTheme, STATUS, THEME } from "./theme.mjs";
+import { applyTheme, setColorMode, STATUS, THEME } from "./theme.mjs";
 import { createTurnView } from "./turnView.mjs";
 import { createBlock } from "./blockRegistry.mjs";
 import { createPromptBlock } from "./blocks/promptBlock.mjs";
@@ -43,7 +43,15 @@ function findById(node, id) {
   return null;
 }
 
-afterEach(() => applyTheme("opensquilla-dark"));
+beforeEach(() => {
+  setColorMode("truecolor");
+  applyTheme("opensquilla-dark");
+});
+
+afterEach(() => {
+  setColorMode("truecolor");
+  applyTheme("opensquilla-dark");
+});
 
 test("prompt block recolors every line node and the body rail to the new theme tokens", () => {
   applyTheme("opensquilla-dark");

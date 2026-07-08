@@ -151,6 +151,10 @@ class ErrorEvent:
     kind: Literal["error"] = field(default="error", init=False)
     message: str = ""
     code: str = ""
+    # Short reference id joining this error to its durable turn_errors row.
+    # Appended last with a default: positional construction elsewhere must not
+    # shift (same hazard the DoneEvent comment in this file documents).
+    error_id: str = ""
 
 
 @dataclass

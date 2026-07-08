@@ -260,3 +260,17 @@ def _normalize(value: Any) -> str:
     if isinstance(value, str):
         return value.strip().lower()
     return ""
+
+
+def append_error_ref(message: str, error_id: str | None) -> str:
+    """Append ``(ref: <error_id>)`` to a user-facing error message.
+
+    Idempotent: a message already carrying this ref is returned unchanged, so
+    gateway-side and client-side normalization passes cannot double-suffix.
+    """
+    if not error_id:
+        return message
+    suffix = f"(ref: {error_id})"
+    if suffix in message:
+        return message
+    return f"{message} {suffix}"

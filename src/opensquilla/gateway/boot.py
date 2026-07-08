@@ -540,6 +540,7 @@ class ServiceContainer:
     memory_repair_service: Any = None
     meta_run_writer: Any = None
     router_decision_writer: Any = None
+    turn_error_writer: Any = None
     router_calibration_service: Any = None
     task_runtime: Any = None
     heartbeat_loop: Any = None
@@ -650,6 +651,11 @@ class ServiceContainer:
                 pass
             try:
                 self.router_decision_writer.close()
+            except Exception:
+                pass
+        if self.turn_error_writer is not None:
+            try:
+                self.turn_error_writer.close()
             except Exception:
                 pass
         try:
@@ -2433,6 +2439,32 @@ async def build_services(
             pass
         router_decision_writer = None
 
+    # ── Turn error records (V018 turn_errors) ──────────────────────────
+    # Same yoyo-only-table pattern as router_decision_writer: the writer
+    # exists only when the session DB is real (not :memory:).
+    turn_error_writer = None
+    try:
+        errors_storage = get_session_storage(session_manager)
+        errors_db_path = (
+            getattr(errors_storage, "_db_path", None)
+            if errors_storage is not None
+            else None
+        )
+        if errors_db_path and errors_db_path != ":memory:":
+            from opensquilla.persistence.turn_error_writer import (
+                open_turn_error_writer,
+            )
+
+            turn_error_writer = open_turn_error_writer(errors_db_path)
+    except Exception as e:  # noqa: BLE001 - error records must not block boot.
+        log.warning("build_services.turn_error_writer_failed", error=str(e))
+        try:
+            if turn_error_writer is not None:
+                turn_error_writer.close()
+        except Exception:
+            pass
+        turn_error_writer = None
+
     # ── Router calibration (opt-in 24h in-process job) ──────────────
     # Only when squilla_router.calibration_enabled is true AND a real decision
     # writer exists. Default-off: no service is constructed, so gateway boot is
@@ -2476,6 +2508,7 @@ async def build_services(
         memory_repair_service=memory_repair_service,
         meta_run_writer=meta_run_writer,
         router_decision_writer=router_decision_writer,
+        turn_error_writer=turn_error_writer,
         router_calibration_service=router_calibration_service,
         deferred_warmups=deferred_warmups,
     )
@@ -2532,6 +2565,7 @@ def build_turn_runner_from_services(
         turn_hooks=getattr(svc, "turn_hooks", None),
         compaction_hooks=getattr(svc, "compaction_hooks", None),
         meta_run_writer=getattr(svc, "meta_run_writer", None),
+        turn_error_writer=getattr(svc, "turn_error_writer", None),
     )
 
 

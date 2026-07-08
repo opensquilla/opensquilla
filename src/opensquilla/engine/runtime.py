@@ -222,7 +222,11 @@ from opensquilla.session.keys import (
     is_subagent_key,
     normalize_agent_id,
 )
-from opensquilla.session.terminal_reply import build_terminal_reply, sanitize_agent_error
+from opensquilla.session.terminal_reply import (
+    append_error_ref,
+    build_terminal_reply,
+    sanitize_agent_error,
+)
 from opensquilla.tools.types import CallerKind, ToolContext
 
 if TYPE_CHECKING:
@@ -2224,6 +2228,7 @@ class TurnRunner:
         turn_hooks: Sequence[TurnHook] | None = None,
         compaction_hooks: Sequence[CompactionHook] | None = None,
         meta_run_writer: MetaRunWriter | None = None,
+        turn_error_writer: Any | None = None,
     ) -> None:
         self._provider_selector = provider_selector
         self._tool_registry = tool_registry
@@ -2239,6 +2244,7 @@ class TurnRunner:
         self._session_flush_service = session_flush_service
         self._diagnostics_state = diagnostics_state
         self._meta_run_writer = meta_run_writer
+        self._turn_error_writer = turn_error_writer
         self._router_control_hold_store = RouterControlHoldStore()
         # TurnHook surface. The default trace hook reproduces the inline trace
         # event behavior while keeping the event sink replaceable at construction.
@@ -3410,18 +3416,47 @@ class TurnRunner:
                 error=str(exc),
                 exc_info=True,
             )
+            fallback_hops = 0
+            if turn_obj is not None:
+                try:
+                    fallback_hops = int(
+                        (getattr(turn_obj, "metadata", None) or {}).get(
+                            "router_fallback_hops", 0
+                        )
+                    )
+                except (TypeError, ValueError):
+                    fallback_hops = 0
+            error_id = self._record_turn_error(
+                session_key=session_key,
+                turn_id=turn_id,
+                session_id=session_id_for_log,
+                surface=input_mode or "unknown",
+                error_class=error_code or type(exc).__name__,
+                message=error_message,
+                exc=exc,
+                provider=(
+                    type(provider_for_log).__name__
+                    if provider_for_log is not None
+                    else None
+                ),
+                model=resolved_model or None,
+                fallback_hops=fallback_hops,
+            )
             if self._session_manager is not None:
                 if event_code == "provider_output_truncated":
-                    transcript_message = build_terminal_reply(
-                        {
-                            "status": "failed",
-                            "terminal_reason": "output_truncated",
-                            "error_class": event_code,
-                            "error_message": error_message,
-                        }
+                    transcript_message = append_error_ref(
+                        build_terminal_reply(
+                            {
+                                "status": "failed",
+                                "terminal_reason": "output_truncated",
+                                "error_class": event_code,
+                                "error_message": error_message,
+                            }
+                        ),
+                        error_id,
                     )
                 else:
-                    transcript_message = f"Error: {error_message}"
+                    transcript_message = f"Error: {append_error_ref(error_message, error_id)}"
                 await self._append_session_message(
                     session_key, role="system", content=transcript_message
                 )
@@ -3448,7 +3483,7 @@ class TurnRunner:
                         "error_chars": len(str(exc)),
                     },
                 )
-            yield ErrorEvent(message=error_message, code=event_code)
+            yield ErrorEvent(message=error_message, code=event_code, error_id=error_id or "")
 
     @staticmethod
     def _write_trace_event(
@@ -3589,6 +3624,62 @@ class TurnRunner:
     def _handle_runtime_warning(self, event: WarningEvent) -> WarningEvent:
         return event
 
+    def _record_turn_error(
+        self,
+        *,
+        session_key: str,
+        turn_id: str | None,
+        session_id: str | None,
+        surface: str,
+        error_class: str | None,
+        message: str,
+        exc: BaseException | None,
+        provider: str | None,
+        model: str | None,
+        fallback_hops: int,
+    ) -> str | None:
+        """Best-effort durable error record; returns the error_id or None.
+
+        Never raises: a persistence failure must not mask the turn error
+        being recorded.
+        """
+        if self._turn_error_writer is None:
+            return None
+        try:
+            from opensquilla.persistence.turn_error_writer import new_error_id
+
+            error_id = new_error_id()
+            traceback_text = None
+            if exc is not None:
+                import traceback as _traceback
+
+                traceback_text = "".join(
+                    _traceback.format_exception(type(exc), exc, exc.__traceback__)
+                )
+            recorded = self._turn_error_writer.record_error(
+                {
+                    "error_id": error_id,
+                    "turn_id": turn_id,
+                    "session_key": session_key,
+                    "session_id": session_id,
+                    "surface": surface,
+                    "error_class": error_class,
+                    "message": message,
+                    "traceback": traceback_text,
+                    "provider": provider,
+                    "model": model,
+                    "fallback_hops": fallback_hops,
+                }
+            )
+            return error_id if recorded else None
+        except Exception as record_exc:  # noqa: BLE001 - must not mask the turn error
+            log.warning(
+                "turn_runner.error_record_failed",
+                session_key=session_key,
+                error=str(record_exc),
+            )
+            return None
+
     async def _persist_turn_error(
         self,
         session_key: str,
@@ -3612,6 +3703,20 @@ class TurnRunner:
             if error_code in {"provider_request_too_large", "provider_output_truncated"}
             else event.code
         )
+        # When the event already carries an error_id from the catch-all, no
+        # second turn_errors row is written — getattr short-circuits.
+        error_id = getattr(event, "error_id", "") or self._record_turn_error(
+            session_key=session_key,
+            turn_id=None,
+            session_id=None,
+            surface="unknown",
+            error_class=event_code,
+            message=message,
+            exc=None,
+            provider=None,
+            model=None,
+            fallback_hops=0,
+        )
         outcome_details = turn_outcome_details(
             outcome_from_error(
                 code=event_code,
@@ -3620,16 +3725,19 @@ class TurnRunner:
             )
         )
         if event_code == "provider_output_truncated":
-            transcript_message = build_terminal_reply(
-                {
-                    "status": "failed",
-                    "terminal_reason": "output_truncated",
-                    "error_class": event_code,
-                    "error_message": message,
-                }
+            transcript_message = append_error_ref(
+                build_terminal_reply(
+                    {
+                        "status": "failed",
+                        "terminal_reason": "output_truncated",
+                        "error_class": event_code,
+                        "error_message": message,
+                    }
+                ),
+                error_id,
             )
         else:
-            transcript_message = f"Error: {message}"
+            transcript_message = f"Error: {append_error_ref(message, error_id)}"
         try:
             if event_code == "current_turn_context_exhausted":
                 compact = getattr(self._session_manager, "compact", None)

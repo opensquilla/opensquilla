@@ -296,6 +296,9 @@ async def test_task_runtime_stream_error_emits_sanitized_terminal_message() -> N
             {
                 "message": "The task timed out before it could finish.",
                 "code": "iteration_timeout",
+                # Additive wire field: durable turn_errors reference id
+                # (empty when no record was written for this error).
+                "error_id": "",
                 "terminal_message": "The task timed out before it could finish.",
                 "terminal_reason": "timeout",
                 "error_message": "The task timed out before it could finish.",

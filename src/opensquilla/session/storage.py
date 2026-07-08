@@ -775,6 +775,22 @@ class SessionStorage:
         except Exception as exc:  # noqa: BLE001
             log.warning("session_delete.purge_router_decisions_failed: %s", exc)
 
+        # Turn error records (V018 turn_errors) — same yoyo-owned-table purge
+        # as router_decisions above; the table is absent on :memory: DBs.
+        try:
+            async with self.conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='turn_errors'"
+            ) as cur:
+                has_turn_errors = await cur.fetchone() is not None
+            if has_turn_errors:
+                await self.conn.execute(
+                    "DELETE FROM turn_errors WHERE session_key = ?",
+                    (session_key,),
+                )
+                await self.conn.commit()
+        except Exception as exc:  # noqa: BLE001
+            log.warning("session_delete.purge_turn_errors_failed: %s", exc)
+
     async def prune_stale_sessions(self, before_ms: int) -> int:
         """Delete sessions not updated since before_ms epoch ms. Returns count deleted."""
         async with self.conn.execute(

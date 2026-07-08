@@ -29,6 +29,8 @@ log = logging.getLogger(__name__)
 _PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
 #: ERROR_ACCESS_DENIED — the probed process exists but belongs to another user.
 _ERROR_ACCESS_DENIED = 5
+#: STILL_ACTIVE — Windows process exit code while the process is still running.
+_STILL_ACTIVE = 259
 #: How many pre-migration snapshot files to keep per database.
 _BACKUP_KEEP = 2
 #: Username recorded in yoyo's audit log when the environment has none.
@@ -74,7 +76,7 @@ def _to_yoyo_url(db_url: str) -> str:
         return "sqlite:///:memory:"
     # bare filesystem path — normalise to absolute so yoyo opens the same db
     # regardless of the worker cwd.
-    return "sqlite:///" + quote(os.path.abspath(db_url), safe="/:")
+    return "sqlite:///" + quote(Path(db_url).expanduser().resolve().as_posix(), safe="/:")
 
 
 def _sqlite_path_from_db_url(db_url: str) -> Path | None:
@@ -92,6 +94,8 @@ def _sqlite_path_from_db_url(db_url: str) -> Path | None:
         return None
 
     path = unquote(parsed.path)
+    if os.name == "nt" and len(path) >= 3 and path[0] == "/" and path[2] == ":":
+        path = path[1:]
     if os.name != "nt" and path.startswith("//") and not path.startswith("///"):
         path = path[1:]
     return Path(path).expanduser().resolve()
@@ -120,11 +124,20 @@ def _is_pid_alive_windows(pid: int, ctypes_module: Any = None) -> bool:
     )
     kernel32.CloseHandle.argtypes = (ctypes_module.c_void_p,)
     kernel32.CloseHandle.restype = ctypes_module.c_int
+    kernel32.GetExitCodeProcess.argtypes = (
+        ctypes_module.c_void_p,
+        ctypes_module.c_void_p,
+    )
+    kernel32.GetExitCodeProcess.restype = ctypes_module.c_int
     handle = kernel32.OpenProcess(_PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
     last_error = int(ctypes_module.get_last_error())
     if handle:
+        exit_code = ctypes_module.c_uint32()
+        if not kernel32.GetExitCodeProcess(handle, ctypes_module.byref(exit_code)):
+            kernel32.CloseHandle(handle)
+            return True
         kernel32.CloseHandle(handle)
-        return True
+        return int(exit_code.value) == _STILL_ACTIVE
     # Access denied: the process exists but is owned by someone else.
     return last_error == _ERROR_ACCESS_DENIED
 

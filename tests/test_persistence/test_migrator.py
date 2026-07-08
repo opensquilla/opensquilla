@@ -12,6 +12,7 @@ import sys
 import warnings
 from pathlib import Path
 from types import SimpleNamespace
+from urllib.parse import quote
 
 import pytest
 from yoyo import exceptions
@@ -635,11 +636,21 @@ def test_apply_pending_fails_loud_when_discovery_finds_nothing(
 # ---------------------------------------------------------------------------
 
 
+def _expected_yoyo_url(raw: str) -> str:
+    return "sqlite:///" + quote(Path(raw).resolve().as_posix(), safe="/:")
+
+
 def test_to_yoyo_url_percent_encodes_url_metacharacters() -> None:
-    assert migrator._to_yoyo_url("/tmp/a#b/demo.db") == "sqlite:////tmp/a%23b/demo.db"
-    assert migrator._to_yoyo_url("/tmp/a?b/demo.db") == "sqlite:////tmp/a%3Fb/demo.db"
+    assert migrator._to_yoyo_url("/tmp/a#b/demo.db") == _expected_yoyo_url(
+        "/tmp/a#b/demo.db"
+    )
+    assert migrator._to_yoyo_url("/tmp/a?b/demo.db") == _expected_yoyo_url(
+        "/tmp/a?b/demo.db"
+    )
     # A literal '%41' must not decay into 'A' inside sqlite's URI parser.
-    assert migrator._to_yoyo_url("/tmp/pct%41/demo.db") == "sqlite:////tmp/pct%2541/demo.db"
+    assert migrator._to_yoyo_url("/tmp/pct%41/demo.db") == _expected_yoyo_url(
+        "/tmp/pct%41/demo.db"
+    )
 
 
 def test_to_yoyo_url_round_trips_through_inspection_helper() -> None:
@@ -862,10 +873,26 @@ def test_is_pid_alive_rejects_nonpositive_pids() -> None:
     assert migrator._is_pid_alive(-5) is False
 
 
-def _fake_ctypes(open_result: int, last_error: int, calls: dict[str, object]) -> SimpleNamespace:
+def _fake_ctypes(
+    open_result: int,
+    last_error: int,
+    calls: dict[str, object],
+    *,
+    exit_code: int = 259,
+    get_exit_code_result: int = 1,
+) -> SimpleNamespace:
+    class FakeUInt32:
+        def __init__(self, value: int = 0) -> None:
+            self.value = value
+
     def open_process(access: object, inherit: object, pid: object) -> int:
         calls["open_process"] = (access, inherit, pid)
         return open_result
+
+    def get_exit_code_process(handle: object, code_ref: FakeUInt32) -> int:
+        calls["get_exit_code_process"] = handle
+        code_ref.value = exit_code
+        return get_exit_code_result
 
     def close_handle(handle: object) -> int:
         calls["closed_handle"] = handle
@@ -873,17 +900,26 @@ def _fake_ctypes(open_result: int, last_error: int, calls: dict[str, object]) ->
 
     def win_dll(name: str, use_last_error: bool = False) -> SimpleNamespace:
         calls["win_dll"] = (name, use_last_error)
-        return SimpleNamespace(OpenProcess=open_process, CloseHandle=close_handle)
+        return SimpleNamespace(
+            OpenProcess=open_process,
+            GetExitCodeProcess=get_exit_code_process,
+            CloseHandle=close_handle,
+        )
 
     def get_last_error() -> int:
         calls["read_last_error"] = True
         return last_error
 
+    def byref(value: FakeUInt32) -> FakeUInt32:
+        calls["byref"] = value
+        return value
+
     return SimpleNamespace(
         WinDLL=win_dll,
         get_last_error=get_last_error,
+        byref=byref,
         c_void_p=object(),
-        c_uint32=object(),
+        c_uint32=FakeUInt32,
         c_int=object(),
     )
 
@@ -894,6 +930,16 @@ def test_is_pid_alive_windows_open_handle_means_alive() -> None:
 
     assert migrator._is_pid_alive_windows(4321, ctypes_module=fake) is True
     assert calls["win_dll"] == ("kernel32", True)  # use_last_error must be set
+    assert calls["get_exit_code_process"] == 1234
+    assert calls["closed_handle"] == 1234
+
+
+def test_is_pid_alive_windows_exited_handle_means_dead() -> None:
+    calls: dict[str, object] = {}
+    fake = _fake_ctypes(open_result=1234, last_error=0, calls=calls, exit_code=0)
+
+    assert migrator._is_pid_alive_windows(4321, ctypes_module=fake) is False
+    assert calls["get_exit_code_process"] == 1234
     assert calls["closed_handle"] == 1234
 
 

@@ -103,4 +103,3 @@ def test_analyze_dashscope_payload_risk_counts_provider_visible_signals(
     assert summary["llm"]["timeout_errors"] == 1
     assert summary["llm"]["first_chunk_latency_seconds"]["count"] == 2
     assert summary["llm"]["first_chunk_latency_seconds"]["mean"] == 1.75
-

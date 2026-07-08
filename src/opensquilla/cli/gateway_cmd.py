@@ -133,7 +133,22 @@ def run_gateway(
     explicit_flag: str | None = listen or (bind if bind and bind != "127.0.0.1" else None)
     host = resolve_listen_address(explicit_flag, default=config.host or "127.0.0.1")
     resolved_port = port if port is not None else config.port
+    stored_host, stored_port, stored_debug = config.host, config.port, config.debug
     config = config.model_copy(update={"host": host, "port": resolved_port, "debug": debug})
+    # CLI-resolved listen/port/debug are runtime state for this process, not
+    # operator config edits: record runtime provenance (the same mechanism
+    # env application uses for llm.base_url/proxy) so an RPC-surface persist
+    # from the Web UI never bakes a one-off ``--listen 0.0.0.0`` / ``--debug``
+    # into config.toml. The sparse persister restores the stored value while
+    # the field still equals the applied one; an explicit post-boot operator
+    # edit wins as usual.
+    for field_path, stored, applied in (
+        ("host", stored_host, host),
+        ("port", stored_port, resolved_port),
+        ("debug", stored_debug, debug),
+    ):
+        if applied != stored:
+            config.record_runtime_override(field_path, stored, applied)
 
     if not _gateway_bind_available(host, resolved_port):
         console.print("OPENSQUILLA_GATEWAY_PORT_IN_USE")
@@ -259,10 +274,13 @@ def run_gateway(
                 except (OSError, tomllib.TOMLDecodeError):
                     env_key = ""
             if env_key and not os.environ.get(env_key):
-                from opensquilla.onboarding.next_steps import set_env_hint
+                from opensquilla.onboarding.next_steps import set_env_command
 
+                # ``command`` is the machine-shaped field: keep it the bare
+                # command on every platform, matching env_recovery_commands
+                # (the primary path feeding this same list).
                 recovery_entries.append(
-                    {"label": "Set memory key", "command": set_env_hint(env_key)}
+                    {"label": "Set memory key", "command": set_env_command(env_key)}
                 )
         for entry in recovery_entries:
             console.print(f"{entry['label']}: {entry['command']}")

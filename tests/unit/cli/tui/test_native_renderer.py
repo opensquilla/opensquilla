@@ -144,3 +144,34 @@ async def test_native_renderer_reports_tool_completion_with_elapsed() -> None:
         f"[{ACCENT}]⚙ rm[/]\n",
         "[red]  ✗ rm: bad \\[path][/red]\n",
     ]
+
+
+@pytest.mark.asyncio
+async def test_native_renderer_strips_routing_directive_tags() -> None:
+    output = _RecordingOutputHandle()
+    renderer = NativeStreamRenderer(output_handle=output)
+
+    await renderer.aappend_text("[[reply_to")
+    await renderer.aappend_text("_current]]\n")
+    await renderer.aappend_text("My name is OpenSquilla.")
+    await renderer.afinalize()
+
+    joined = "".join(output.writes)
+    assert "reply_to_current" not in joined
+    assert "My name is OpenSquilla." in joined
+    # The logical buffer (TurnResult text) keeps the model's exact output.
+    assert "[[reply_to_current]]" in renderer.buffer
+
+
+@pytest.mark.asyncio
+async def test_native_renderer_flushes_held_bracket_prefix_before_a_tool_row() -> None:
+    output = _RecordingOutputHandle()
+    renderer = NativeStreamRenderer(output_handle=output)
+
+    await renderer.aappend_text("see [[re")  # held: could still become a tag
+    await renderer.atool_start("grep", tool_use_id="t1")
+    await renderer.afinalize()
+
+    joined = "".join(output.writes)
+    # The held prefix proved to be ordinary text and prints BEFORE the tool row.
+    assert joined.index("[[re") < joined.index("grep")

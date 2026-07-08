@@ -73,3 +73,23 @@ def test_search_payload_marks_search_as_optional_capability():
     assert all(row["blocking"] is False for row in payload)
     assert all(row["canProbe"] is False for row in payload)
     assert all(row["readmeScenarios"] for row in payload)
+
+
+def test_search_api_key_description_states_plaintext_storage_and_env_fallback():
+    """The api_key hint must describe where the key actually goes: pasted
+    keys persist as plaintext ``search_api_key`` in the config file (taking
+    precedence over the env var); blank reads the env var instead. The old
+    "Stored under env key X." wording claimed the opposite."""
+    spec = get_search_provider_setup_spec("brave")
+    api_field = next(f for f in spec.fields if f.name == "api_key")
+
+    assert "Stored under env key" not in api_field.description
+    assert "plaintext search_api_key" in api_field.description
+    assert spec.env_key in api_field.description
+    assert "Leave blank" in api_field.description
+
+
+def test_search_api_key_description_empty_without_env_key():
+    spec = get_search_provider_setup_spec("duckduckgo")
+    api_field = next(f for f in spec.fields if f.name == "api_key")
+    assert api_field.description == ""

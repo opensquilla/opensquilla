@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import sys
 from collections.abc import Awaitable, Callable, MutableMapping
 from dataclasses import asdict, dataclass
 from typing import Any
@@ -27,9 +28,19 @@ from opensquilla.cli.tui.backend.output_binding import TuiOutputBinding
 from opensquilla.cli.tui.backend.runtime import run_tui_runtime
 from opensquilla.cli.tui.backend.state import TuiRuntimeState
 from opensquilla.cli.tui.opentui.messages import ModelText, NoticeWrite, PromptEcho
-from opensquilla.cli.tui.opentui.notice_capture import capture_stdout_as_notices
+from opensquilla.cli.tui.opentui.notice_capture import capture_stdout_as_notices, real_stderr
 from opensquilla.cli.tui.opentui.surface import open_opentui_surface
 from opensquilla.engine.commands import Surface
+
+# The one notice the backend runtime emits when the input surface dies (see
+# cli/tui/backend/runtime.py) — it carries the only copy of a sidecar crash
+# reason, so it must survive host teardown.
+_SURFACE_ERROR_MARKER = "Input surface error"
+
+# Strong references to in-flight notice tasks: the event loop only holds weak
+# references to scheduled tasks, so a notice could otherwise be garbage
+# collected mid-send and silently vanish.
+_notice_tasks: set[asyncio.Task[None]] = set()
 
 
 @dataclass
@@ -70,28 +81,65 @@ def opentui_notice(scope: MutableMapping[str, Any], payload: str) -> None:
         console.print(payload)
 
 
-def forward_console_notice(scope: MutableMapping[str, Any], line: str) -> None:
+def forward_console_notice(
+    scope: MutableMapping[str, Any],
+    line: str,
+    *,
+    pending_tasks: set[asyncio.Task[None]] | None = None,
+) -> None:
     """Ship one captured console line to the host as a styled notice.
 
     Mirrors :func:`opentui_notice`'s loop-scheduling so it is safe to call from
-    the synchronous ``console.print`` path inside a running turn.
+    the synchronous ``console.print`` path inside a running turn. When the host
+    bridge is gone (teardown, sidecar crash) the line falls back to the real
+    terminal stderr so shutdown and crash diagnostics are never silently
+    dropped. ``pending_tasks`` collects the scheduled sends so the runtime can
+    drain them before the event loop goes away.
     """
     output = get_tui_output(scope)
-    if output is None:
-        return
-    send = getattr(output, "send_message", None)
+    send = getattr(output, "send_message", None) if output is not None else None
     if send is None:
+        _write_to_real_stderr(line)
         return
 
     async def _write() -> None:
-        with contextlib.suppress(Exception):
+        try:
             await send("notice.write", asdict(NoticeWrite(text=line)))
+        except Exception:
+            _write_to_real_stderr(line)
 
     try:
         loop = asyncio.get_running_loop()
     except RuntimeError:
+        _write_to_real_stderr(line)
         return
-    loop.create_task(_write())
+    task = loop.create_task(_write())
+    _notice_tasks.add(task)
+    task.add_done_callback(_notice_tasks.discard)
+    if pending_tasks is not None:
+        # Prune the caller's set as sends complete too, or a long session pins
+        # one dead task per captured console line until teardown; the exit-path
+        # gather only needs whatever is genuinely still in flight.
+        pending_tasks.add(task)
+        task.add_done_callback(pending_tasks.discard)
+
+
+def _write_to_real_stderr(line: str) -> None:
+    with contextlib.suppress(Exception):
+        stream = real_stderr()
+        stream.write(line + "\n")
+        stream.flush()
+
+
+def _reprint_surface_error(payload: str) -> None:
+    # By the time this runs the capture has been torn down and sys.stderr is
+    # the real terminal again; render the Rich markup to plain text so the
+    # crash reason survives even when the styled notice raced a dying host.
+    from rich.text import Text  # noqa: PLC0415 - keep import light
+
+    with contextlib.suppress(Exception):
+        sys.stderr.write(Text.from_markup(payload).plain + "\n")
+        sys.stderr.flush()
 
 
 async def echo_opentui_user_input(tui_surface: TuiSurface, text: str) -> None:
@@ -136,14 +184,22 @@ async def run_opentui_chat_runtime(
             kwargs["workspace_dir"] = context.workspace_dir
         return open_opentui_surface(**kwargs)
 
+    notice_tasks: set[asyncio.Task[None]] = set()
+    surface_errors: list[str] = []
+
     def _notice(payload: str) -> None:
+        # The surface-error notice carries the only copy of the sidecar crash
+        # reason; remember it so it can be re-printed to the real stderr once
+        # the capture (and the possibly-dead host) is out of the way.
+        if _SURFACE_ERROR_MARKER in payload:
+            surface_errors.append(payload)
         opentui_notice(scope, payload)
 
     runtime_state = TuiRuntimeState()
     scope["pending_input_provider"] = runtime_state
 
     def _forward_notice(line: str) -> None:
-        forward_console_notice(scope, line)
+        forward_console_notice(scope, line, pending_tasks=notice_tasks)
 
     try:
         # Capture slash-command/runtime console output so it renders inside the
@@ -170,5 +226,13 @@ async def run_opentui_chat_runtime(
                 ),
             )
     finally:
+        for payload in surface_errors:
+            _reprint_surface_error(payload)
         if scope.get("pending_input_provider") is runtime_state:
             scope.pop("pending_input_provider", None)
+        if notice_tasks:
+            # Exit-path notices (Goodbye, surface errors) are scheduled with no
+            # further await before teardown; drive them here so each one is
+            # delivered or hits the stderr fallback instead of dying with the
+            # event loop.
+            await asyncio.gather(*notice_tasks, return_exceptions=True)

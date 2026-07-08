@@ -2128,6 +2128,28 @@ class GatewayConfig(BaseSettings):
             "dream_enabled": str(self.memory.dream.enabled).lower(),
         }
     _runtime_secret_paths: set[str] = PrivateAttr(default_factory=set)
+    # Paths whose secret value was explicitly entered by the operator (set by
+    # ``clear_runtime_secret``): value-coincidence redaction heuristics in
+    # ``to_toml_dict`` must not strip them, even when the entered value
+    # happens to equal the corresponding environment variable.
+    _explicit_secret_paths: set[str] = PrivateAttr(default_factory=set)
+    # Sparse-persist provenance (consumed by onboarding.config_store):
+    # - _persist_baseline: the TOML dump captured when THIS instance was
+    #   loaded (or last persisted). Instance-scoped by design — a path-keyed
+    #   global baseline lets a second live object for the same file diff
+    #   against another writer's snapshot and silently revert its changes.
+    # - _runtime_field_overrides: path -> (stored_value, applied_value) for
+    #   fields the runtime resolved in place from the environment (e.g.
+    #   llm.base_url from OPENAI_BASE_URL). Persisting restores stored_value
+    #   whenever the field still equals applied_value, so env-derived values
+    #   never leak into config.toml.
+    # - _force_persist_paths: paths an explicit mutation set that must be
+    #   written even when equal to the model default (e.g. a deliberate
+    #   image_generation.enabled = false on a fresh config), so keep-current
+    #   logic can see the decision on the next load.
+    _persist_baseline: dict[str, Any] | None = PrivateAttr(default=None)
+    _runtime_field_overrides: dict[str, tuple[Any, Any]] = PrivateAttr(default_factory=dict)
+    _force_persist_paths: set[str] = PrivateAttr(default_factory=set)
 
     def to_toml_dict(self) -> dict[str, Any]:
         """Convert config to a TOML-writable dict."""
@@ -2144,13 +2166,19 @@ class GatewayConfig(BaseSettings):
             data.pop("search_api_key_env", None)
         elif not data.get("search_api_key"):
             data.pop("search_api_key", None)
-        _delete_env_sourced_secret(
-            data,
-            "audio.providers.elevenlabs.api_key",
-            "audio.providers.elevenlabs.api_key_env",
-            default_env="ELEVENLABS_API_KEY",
-            settings_env="OPENSQUILLA_AUDIO_PROVIDERS__ELEVENLABS__API_KEY",
-        )
+        # Heuristic guard for the pre-provenance era: a value equal to the
+        # env var is assumed env-sourced and dropped. Skipped when the
+        # operator explicitly entered the key (recorded by
+        # ``clear_runtime_secret``) — an explicit entry must persist even
+        # when it coincides with the env value.
+        if "audio.providers.elevenlabs.api_key" not in self._explicit_secret_paths:
+            _delete_env_sourced_secret(
+                data,
+                "audio.providers.elevenlabs.api_key",
+                "audio.providers.elevenlabs.api_key_env",
+                default_env="ELEVENLABS_API_KEY",
+                settings_env="OPENSQUILLA_AUDIO_PROVIDERS__ELEVENLABS__API_KEY",
+            )
         router = data.get("squilla_router")
         if isinstance(router, dict) and router.get("tier_profile"):
             profile = str(router["tier_profile"]).strip().lower()
@@ -2194,9 +2222,109 @@ class GatewayConfig(BaseSettings):
 
     def clear_runtime_secret(self, path: str) -> None:
         self._runtime_secret_paths.discard(path)
+        # Clearing records operator provenance: every mutation surface calls
+        # this exactly when the user supplied an explicit new value for the
+        # secret, so value-coincidence heuristics (the env == value deletion
+        # in ``to_toml_dict``) must no longer strip the path from persist
+        # dumps — an explicit key equal to the env value is still explicit.
+        self._explicit_secret_paths.add(path)
 
     def inherit_runtime_secrets(self, other: GatewayConfig) -> None:
         self._runtime_secret_paths = set(other._runtime_secret_paths)
+        self._explicit_secret_paths = set(other._explicit_secret_paths)
+
+    def record_runtime_override(self, path: str, stored: Any, applied: Any) -> None:
+        """Record that ``path`` was resolved in place from the environment.
+
+        ``stored`` is the value the persisted config carried before the
+        runtime override; ``applied`` is the value now living on the model.
+        The sparse persister restores ``stored`` whenever the field still
+        equals ``applied``, so a boot-time env override never gets baked
+        into config.toml by an unrelated save.
+
+        Repeated records for the same path keep the ORIGINAL stored slot and
+        update only ``applied``: a re-resolve on the same instance reads the
+        field AFTER the first resolution already wrote the env value into it,
+        so its ``stored`` argument reflects the applied env value (or a later
+        in-memory mutation), not disk provenance — chaining it would make a
+        later persist "restore" a value that was never on disk.
+        ``clear_runtime_override`` is the explicit reset used when an
+        operator supplies a genuinely new stored value.
+        """
+        existing = self._runtime_field_overrides.get(path)
+        if existing is not None:
+            stored = existing[0]
+        self._runtime_field_overrides[path] = (stored, applied)
+
+    def clear_runtime_override(self, path: str) -> None:
+        self._runtime_field_overrides.pop(path, None)
+
+    def runtime_field_overrides(self) -> dict[str, tuple[Any, Any]]:
+        return dict(self._runtime_field_overrides)
+
+    def inherit_persist_provenance(self, other: GatewayConfig) -> None:
+        """Adopt ``other``'s runtime-override records and force-persist marks.
+
+        For mirroring a mutation clone back onto the live gateway config:
+        the clone started from a deep copy of THIS instance's provenance and
+        then applied the operator's ``clear_runtime_override`` /
+        ``mark_force_persist`` decisions, so it is authoritative. Without
+        this, a record cleared on the clone never reaches the live config,
+        and the stale live record makes a later unrelated persist rewrite
+        the field back to a value the operator just replaced.
+        """
+        self._runtime_field_overrides = dict(other._runtime_field_overrides)
+        self._force_persist_paths = set(other._force_persist_paths)
+
+    def reconcile_runtime_overrides(self, other: GatewayConfig) -> None:
+        """Refresh override records after ``other``'s values are applied here.
+
+        Rule for in-place config swaps (``config.set`` / ``patch`` /
+        ``apply`` / ``reload``, where ``other`` was built independently of
+        this instance and may carry freshly re-derived records):
+
+        - a pre-existing record on THIS instance survives only while
+          ``other``'s live value still equals the record's applied value —
+          otherwise the recorded env application no longer describes the new
+          state, and restoring its stored slot at persist time would rewrite
+          provenance that no longer holds (e.g. reverting a hand-edited
+          ``llm.base_url`` to the boot-time stored value);
+        - ``other``'s own records win per path, except that when ``other``
+          re-resolved on top of a value THIS instance had already
+          env-applied (its stored slot equals our applied slot), the
+          original disk-provenance stored slot is kept and only the applied
+          value advances — mirroring ``record_runtime_override``'s
+          non-chaining rule across instances.
+        """
+
+        def _live_value(model: Any, path: str) -> Any:
+            current: Any = model
+            for part in path.split("."):
+                current = getattr(current, part, None)
+                if current is None:
+                    return None
+            return current
+
+        merged: dict[str, tuple[Any, Any]] = {}
+        for path, (stored, applied) in self._runtime_field_overrides.items():
+            if _live_value(other, path) == applied:
+                merged[path] = (stored, applied)
+        for path, (stored, applied) in other._runtime_field_overrides.items():
+            prior = self._runtime_field_overrides.get(path)
+            if prior is not None and prior[1] == stored:
+                stored = prior[0]
+            merged[path] = (stored, applied)
+        self._runtime_field_overrides = merged
+
+    def mark_force_persist(self, path: str) -> None:
+        """Always write ``path`` on the next persist, even if it equals the
+        model default — used for explicit boolean decisions (e.g. a
+        deliberate ``image_generation.enabled = false``) that keep-current
+        logic must be able to see in the file."""
+        self._force_persist_paths.add(path)
+
+    def force_persist_paths(self) -> set[str]:
+        return set(self._force_persist_paths)
 
     @classmethod
     def load_from_toml(cls, path: str | Path) -> GatewayConfig:

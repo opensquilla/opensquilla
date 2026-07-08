@@ -17,13 +17,13 @@ from opensquilla.onboarding.audio_specs import get_audio_provider_setup_spec
 from opensquilla.onboarding.config_store import default_config_path
 from opensquilla.onboarding.image_generation_specs import (
     get_image_generation_provider_setup_spec,
-    list_image_generation_provider_setup_specs,
 )
 from opensquilla.onboarding.provider_specs import get_provider_setup_spec
 from opensquilla.onboarding.search_specs import get_search_provider_setup_spec
 from opensquilla.onboarding.section_status import (
     FIRST_RUN_REQUIRED_SECTIONS,
     SectionStatus,
+    _configured_image_generation_provider_ids,
     audio_section_status,
     channels_section_status,
     ensemble_section_status,
@@ -121,6 +121,8 @@ def _source_detail(source: str, env_key: str = "") -> str:
         return f"env key not visible: {env_key}" if env_key else "env key not visible"
     if source == "not_required":
         return "no key required"
+    if source == "unsupported":
+        return "registered but not runtime-supported"
     return ""
 
 
@@ -215,6 +217,17 @@ def _llm_provider_credential_status(
         return {"provider": provider, "available": False, "source": "none", "envKey": ""}
 
     env_key = str(getattr(spec, "env_key", "") or "").strip()
+    if not spec.runtime_supported:
+        # Keep this aligned with ``_llm_source``: a registered but
+        # runtime-unsupported provider must never report a satisfied
+        # credential state ("not_required") while llmSource says
+        # "unsupported" — nothing can run against it.
+        return {
+            "provider": provider,
+            "available": False,
+            "source": "unsupported",
+            "envKey": env_key,
+        }
     if not spec.requires_api_key:
         return {
             "provider": provider,
@@ -308,6 +321,19 @@ def _llm_credential_status(cfg: GatewayConfig) -> dict[str, object]:
     env_key = str(getattr(spec, "env_key", "") or "").strip()
     configured_env_key = str(getattr(llm, "api_key_env", "") or "").strip()
     resolved_env_key = configured_env_key or env_key
+
+    if not spec.runtime_supported:
+        # Mirror ``_llm_source``'s "unsupported" enumerant so the status
+        # payload is internally consistent (llmSource vs
+        # llmCredentialStatus.source) for the same provider.
+        return {
+            "provider": provider,
+            "available": False,
+            "source": "unsupported",
+            "envKey": resolved_env_key,
+            "masked": "",
+            "revealAllowed": False,
+        }
 
     if not spec.requires_api_key:
         return {
@@ -404,7 +430,12 @@ def _llm_source(cfg: GatewayConfig, status: SectionStatus) -> tuple[str, str]:
         spec = get_provider_setup_spec(llm.provider)
     except KeyError:
         return "none", ""
-    if not spec.runtime_supported or not spec.requires_api_key:
+    if not spec.runtime_supported:
+        # Registered but runtime-unsupported providers (e.g. coding-plan
+        # stubs) are not "no key required": nothing can run against them,
+        # so never report the credential state as satisfied.
+        return "unsupported", ""
+    if not spec.requires_api_key:
         return "not_required", ""
     if status is SectionStatus.OK and llm.api_key and (
         "llm.api_key" not in getattr(cfg, "_runtime_secret_paths", set())
@@ -484,60 +515,6 @@ def _image_generation_provider_source(
     if getattr(llm, "provider", "").strip().lower() == provider_id and getattr(llm, "api_key", ""):
         return "llm_fallback", spec.env_key
     return "", spec_env_key
-
-
-def _image_generation_provider_has_operator_credential(
-    cfg: GatewayConfig,
-    provider_id: str,
-    spec: object,
-) -> bool:
-    provider_cfg = _image_generation_provider_config(cfg, provider_id)
-    if provider_cfg is None:
-        return False
-    if getattr(provider_cfg, "api_key", ""):
-        return True
-    spec_env_key = (getattr(spec, "env_key", "") or "").strip()
-    cfg_env_key = (getattr(provider_cfg, "api_key_env", "") or "").strip()
-    return bool(cfg_env_key and cfg_env_key != spec_env_key)
-
-
-def _configured_image_generation_provider_ids(cfg: GatewayConfig) -> list[str]:
-    image_cfg = cfg.image_generation
-    refs: list[str] = []
-    primary = getattr(image_cfg, "primary", "")
-    fallbacks = list(getattr(image_cfg, "fallbacks", []) or [])
-    default_primary = "openai/gpt-image-1"
-    explicit_model_routing = bool(fallbacks) or bool(primary and primary != default_primary)
-    specs = [
-        spec
-        for spec in list_image_generation_provider_setup_specs()
-        if spec.runtime_supported
-    ]
-    explicit_provider_ids = [
-        spec.provider_id
-        for spec in specs
-        if _image_generation_provider_has_operator_credential(
-            cfg,
-            spec.provider_id,
-            spec,
-        )
-    ]
-    if not explicit_model_routing and explicit_provider_ids:
-        return explicit_provider_ids
-    if explicit_model_routing:
-        refs = [primary, *fallbacks]
-    else:
-        refs = [spec.default_model for spec in specs]
-
-    provider_ids: list[str] = []
-    seen: set[str] = set()
-    for ref in refs:
-        provider_id, sep, _model = ref.partition("/")
-        provider_id = provider_id.strip()
-        if sep and provider_id and provider_id not in seen:
-            seen.add(provider_id)
-            provider_ids.append(provider_id)
-    return provider_ids
 
 
 def _image_generation_annotations(

@@ -6,6 +6,7 @@ from pathlib import Path
 
 from opensquilla.engine.context import load_context_files
 from opensquilla.migration.openclaw import MigrationOptions, OpenClawMigrator
+from opensquilla.onboarding.config_store import load_config
 from opensquilla.provider.selector import build_provider
 from opensquilla.skills.loader import SkillLoader
 from opensquilla.skills.types import SkillLayer
@@ -307,7 +308,9 @@ def test_user_data_preset_skips_runtime_config_and_archives(
     assert (home / "skills" / "openclaw-imports" / "demo" / "SKILL.md").is_file()
     persisted = tomllib.loads(config_path.read_text(encoding="utf-8"))
     assert str(home / "skills" / "openclaw-imports") in persisted["skills"]["extra_dirs"]
-    assert persisted["llm"]["model"] != "deepseek-chat"
+    # The user-data preset skips model config entirely; with sparse
+    # persistence the llm section is not written at all.
+    assert persisted.get("llm", {}).get("model") != "deepseek-chat"
     assert not (Path(report["output_dir"]) / "archive" / "plugins-config.json").exists()
     assert not any(item["kind"] == "model-config" for item in report["items"])
 
@@ -512,7 +515,11 @@ def test_provider_keys_can_migrate_from_provider_config_when_opted_in(
     env_text = (home / ".env").read_text(encoding="utf-8")
     assert "OPENROUTER_API_KEY=sk-or-from-config" in env_text
     persisted = tomllib.loads(config_path.read_text(encoding="utf-8"))
-    assert persisted["llm"]["provider"] == "openrouter"
+    # Sparse persistence omits values equal to the built-in default
+    # (provider "openrouter"); the effective provider must still resolve
+    # to the migrated value.
+    assert persisted["llm"].get("provider", "openrouter") == "openrouter"
+    assert load_config(config_path).llm.provider == "openrouter"
     assert persisted["llm"]["model"] == "deepseek/deepseek-v3.1"
     assert persisted["llm"]["api_key_env"] == "OPENROUTER_API_KEY"
     assert persisted["llm"]["base_url"] == "https://openrouter.example.test/api/v1"

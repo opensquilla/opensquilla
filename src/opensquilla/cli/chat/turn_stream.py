@@ -30,6 +30,7 @@ from opensquilla.cli.tui.backend.domain_events import (
 )
 from opensquilla.cli.tui.backend.streaming import StreamingPlane
 from opensquilla.execution_status import derive_is_error
+from opensquilla.router_tiers import tier_index
 from opensquilla.session.terminal_reply import build_terminal_reply
 
 _DEFAULT_STREAM_HEARTBEAT_INTERVAL_SECONDS = 15.0
@@ -287,9 +288,7 @@ def _float_list_field(payload: Mapping[str, Any], key: str) -> list[float]:
 
 
 def _tier_index_from_tier(tier: str) -> int:
-    if len(tier) >= 2 and tier[0].lower() == "t" and tier[1:].isdigit():
-        return int(tier[1:])
-    return -1
+    return tier_index(tier)
 
 
 def normalize_router_decision_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
@@ -382,6 +381,55 @@ async def _finish_text_delta_stream(
             plane,
             flush.text,
         )
+
+
+async def _drain_stalled_text_plane(
+    renderer: Any,
+    plane: StreamingPlane | None,
+) -> None:
+    """Drain a buffered text tail while the stream is stalled.
+
+    ``StreamingPlane.append`` only evaluates flush conditions when the next
+    delta arrives, so a burst tail followed by a long stall (e.g. the model
+    pausing before a tool call) would sit unrendered until the stream
+    resumes — heartbeat ticks call this to keep the tail flowing.
+    """
+    if plane is None:
+        return
+    flush = plane.flush()
+    if flush is not None:
+        await _flush_streaming_text(renderer, plane, flush.text)
+
+
+async def _drain_stalled_reasoning_plane(
+    renderer: Any,
+    plane: StreamingPlane | None,
+) -> None:
+    if plane is None:
+        return
+    flush = plane.flush()
+    if flush is not None:
+        await _flush_streaming_reasoning(renderer, flush.text)
+
+
+async def _drain_stalled_planes(
+    renderer: Any,
+    text_plane: StreamingPlane | None,
+    reasoning_plane: StreamingPlane | None,
+    *,
+    reasoning_mid_stream: bool,
+) -> None:
+    """Drain stalled buffers without splitting an open reasoning marker.
+
+    Rendering answer text closes any open reasoning block, so while the
+    reasoning stream is the active one a buffered text tail must stay
+    buffered: draining it mid-stall would end the thinking marker and split
+    one thought into two blocks. The tail still flushes at the next text
+    delta or boundary event.
+    """
+    if not reasoning_mid_stream:
+        await _drain_stalled_text_plane(renderer, text_plane)
+    await _drain_stalled_reasoning_plane(renderer, reasoning_plane)
 
 
 async def _flush_streaming_reasoning(
@@ -735,6 +783,12 @@ async def stream_response_gateway(
     )
 
     with stream_deps.renderer_factory(output_handle=tui_output) as renderer:
+        # Announce the turn before the first provider event: without this the
+        # UI sits visibly dead ("ready" pill, nothing pulsing) for the whole
+        # model-thinking window between submit and the first token.
+        _turn_started = getattr(renderer, "aturn_started", None)
+        if _turn_started is not None:
+            await _turn_started()
         streaming_plane = (
             StreamingPlane(
                 event_sink=stream_deps.tui_event_sink,
@@ -1085,6 +1139,12 @@ async def stream_response_turnrunner(
     )
 
     with stream_deps.renderer_factory(output_handle=tui_output) as renderer:
+        # Announce the turn before the first provider event: without this the
+        # UI sits visibly dead ("ready" pill, nothing pulsing) for the whole
+        # model-thinking window between submit and the first token.
+        _turn_started = getattr(renderer, "aturn_started", None)
+        if _turn_started is not None:
+            await _turn_started()
         streaming_plane = (
             StreamingPlane(
                 event_sink=stream_deps.tui_event_sink,
@@ -1107,6 +1167,10 @@ async def stream_response_turnrunner(
             if tui_output is not None or stream_deps.tui_event_sink is not None
             else None
         )
+        # Tracks which plane streamed most recently: the heartbeat drain must
+        # not render a stale text tail while reasoning is mid-stream, or it
+        # would close the open thinking marker and split the thought.
+        reasoning_mid_stream = False
         try:
             try:
                 stream = turn_runner.run(
@@ -1119,6 +1183,7 @@ async def stream_response_turnrunner(
                 )
                 async for event in stream_deps.stream_wrapper(stream, svc):
                     if isinstance(event, TextDeltaEvent):
+                        reasoning_mid_stream = False
                         await _append_text_delta(
                             renderer,
                             stream_deps,
@@ -1129,6 +1194,7 @@ async def stream_response_turnrunner(
                             presentation=getattr(event, "presentation", "answer"),
                         )
                     elif isinstance(event, ThinkingEvent):
+                        reasoning_mid_stream = True
                         await _append_reasoning_delta(
                             renderer,
                             stream_deps,
@@ -1154,6 +1220,12 @@ async def stream_response_turnrunner(
                         )
                     elif isinstance(event, RunHeartbeatEvent):
                         renderer.pulse()
+                        await _drain_stalled_planes(
+                            renderer,
+                            streaming_plane,
+                            reasoning_plane,
+                            reasoning_mid_stream=reasoning_mid_stream,
+                        )
                     elif isinstance(event, ToolUseStartEvent):
                         await _finish_text_delta_stream(
                             renderer,
@@ -1171,6 +1243,7 @@ async def stream_response_turnrunner(
                             source="turn_runner",
                             turn_id=session_key,
                         )
+                        reasoning_mid_stream = False
                         _emit_tui_domain_event(
                             stream_deps,
                             kind=KIND_TOOL_STARTED,
@@ -1408,6 +1481,12 @@ async def handle_image_command_turnrunner(
     usage: UsageSummary | None = None
     model_after: str | None = None
     with stream_deps.renderer_factory(output_handle=tui_output) as renderer:
+        # Announce the turn before the first provider event: without this the
+        # UI sits visibly dead ("ready" pill, nothing pulsing) for the whole
+        # model-thinking window between submit and the first token.
+        _turn_started = getattr(renderer, "aturn_started", None)
+        if _turn_started is not None:
+            await _turn_started()
         streaming_plane = (
             StreamingPlane(
                 event_sink=stream_deps.tui_event_sink,
@@ -1455,6 +1534,7 @@ async def handle_image_command_turnrunner(
                         )
                     elif isinstance(event, RunHeartbeatEvent):
                         renderer.pulse()
+                        await _drain_stalled_text_plane(renderer, streaming_plane)
                     elif isinstance(event, ToolUseStartEvent):
                         await _finish_text_delta_stream(
                             renderer,

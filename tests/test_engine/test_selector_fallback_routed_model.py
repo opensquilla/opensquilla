@@ -9,9 +9,16 @@ computed for the abandoned model no longer apply.
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
 from types import SimpleNamespace
+from typing import Any
 
-from opensquilla.engine.runtime import _SelectorFallbackProvider
+from opensquilla.engine.pipeline import TurnContext
+from opensquilla.engine.runtime import TurnRunner, _SelectorFallbackProvider
+from opensquilla.engine.types import DoneEvent as EngineDoneEvent
+from opensquilla.engine.types import RouterDecisionEvent
+from opensquilla.provider import DoneEvent, ErrorEvent, TextDeltaEvent
+from opensquilla.tools.types import CallerKind, ToolContext
 
 
 class _StubSelector:
@@ -64,3 +71,152 @@ def test_fallback_to_same_model_keeps_savings() -> None:
 def test_fallback_without_metadata_is_noop() -> None:
     wrapper = _SelectorFallbackProvider(object(), _StubSelector("any/model"))
     assert wrapper.fallback_after_invalid_response("upstream 503") is True
+
+
+PRIMARY_MODEL = "routed-primary"
+FALLBACK_MODEL = "fallback-secondary"
+
+
+class _ChainProvider:
+    """Scripted provider link: either fails pre-content or streams a reply."""
+
+    provider_name = "openrouter"
+
+    def __init__(self, model: str, *, fail: bool) -> None:
+        self._model = model
+        self._fail = fail
+
+    async def chat(
+        self,
+        messages: list[Any],
+        tools: Any = None,
+        config: Any = None,
+    ) -> AsyncIterator[Any]:
+        if self._fail:
+            yield ErrorEvent(message="HTTP 404: model not found", code="404")
+            return
+        yield TextDeltaEvent(text=f"answer-from:{self._model}")
+        yield DoneEvent(model=self._model, input_tokens=3, output_tokens=2)
+
+    async def list_models(self) -> list[Any]:
+        return []
+
+
+class _ChainSelector:
+    """Two-link chain selector: primary fails, one fallback hop remains."""
+
+    def __init__(self, *, primary_fails: bool) -> None:
+        self._primary_fails = primary_fails
+        self.current_config = SimpleNamespace(model=PRIMARY_MODEL)
+
+    def clone(self) -> _ChainSelector:
+        return self
+
+    def override_model(self, model: str) -> None:
+        self.current_config = SimpleNamespace(model=model)
+
+    def resolve(self) -> _ChainProvider:
+        return _ChainProvider(PRIMARY_MODEL, fail=self._primary_fails)
+
+    def next_fallback_after_failure(self, exc: Exception) -> _ChainProvider:
+        self.current_config = SimpleNamespace(model=FALLBACK_MODEL)
+        return _ChainProvider(FALLBACK_MODEL, fail=False)
+
+
+def _routed_pipeline_fake(routed_model: str) -> Any:
+    async def routed_pipeline(
+        self: TurnRunner,
+        message: str,
+        session_key: str,
+        provider: Any,
+        cloned_selector: Any,
+        tool_defs: list[Any],
+        base_prompt: str | tuple[str, str],
+        attachments: list[dict[str, Any]],
+        **_: Any,
+    ) -> tuple[TurnContext, Any]:
+        return (
+            TurnContext(
+                message=message,
+                session_key=session_key,
+                config=self._config,
+                provider=provider,
+                model=routed_model,
+                tool_defs=tool_defs,
+                system_prompt=base_prompt,
+                attachments=attachments,
+                metadata={
+                    "routed_tier": "c1",
+                    "routed_model": routed_model,
+                    "baseline_model": "baseline-expensive",
+                    "routing_source": "router",
+                    "routing_confidence": 0.9,
+                    "savings_pct": 41.0,
+                    "savings_max_price_per_m": 3.0,
+                    "savings_routed_price_per_m": 0.5,
+                },
+            ),
+            provider,
+        )
+
+    return routed_pipeline
+
+
+async def _run_turn_events(
+    monkeypatch: Any,
+    *,
+    primary_fails: bool,
+) -> list[Any]:
+    monkeypatch.setattr(TurnRunner, "_run_pipeline", _routed_pipeline_fake(PRIMARY_MODEL))
+    runner = TurnRunner(provider_selector=_ChainSelector(primary_fails=primary_fails))
+    return [
+        event
+        async for event in runner.run(
+            "hi",
+            "agent:main:selector-fallback-e2e",
+            tool_context=ToolContext(is_owner=True, caller_kind=CallerKind.CLI),
+            history_has_persisted_user=False,
+            no_memory_capture=True,
+        )
+    ]
+
+
+async def test_precontent_fallback_emits_corrective_router_decision_before_done(
+    monkeypatch: Any,
+) -> None:
+    events = await _run_turn_events(monkeypatch, primary_fails=True)
+
+    router_events = [event for event in events if isinstance(event, RouterDecisionEvent)]
+    assert len(router_events) == 2
+
+    initial, corrective = router_events
+    assert initial.model == PRIMARY_MODEL
+    assert initial.source == "router"
+    assert initial.fallback is False
+
+    assert corrective.model == FALLBACK_MODEL
+    assert corrective.source == "fallback"
+    assert corrective.fallback is True
+    assert corrective.savings_pct == 0.0
+
+    done_events = [event for event in events if isinstance(event, EngineDoneEvent)]
+    assert len(done_events) == 1
+    assert done_events[0].model == FALLBACK_MODEL
+    assert done_events[0].routed_model == FALLBACK_MODEL
+    assert events.index(corrective) < events.index(done_events[0])
+
+
+async def test_turn_without_fallback_hop_emits_exactly_one_router_decision(
+    monkeypatch: Any,
+) -> None:
+    events = await _run_turn_events(monkeypatch, primary_fails=False)
+
+    router_events = [event for event in events if isinstance(event, RouterDecisionEvent)]
+    assert len(router_events) == 1
+    assert router_events[0].model == PRIMARY_MODEL
+    assert router_events[0].source == "router"
+    assert router_events[0].fallback is False
+
+    done_events = [event for event in events if isinstance(event, EngineDoneEvent)]
+    assert len(done_events) == 1
+    assert done_events[0].model == PRIMARY_MODEL

@@ -7,7 +7,7 @@ adapter contexts and IO globals.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, cast
 
 from opensquilla.cli.chat.session_state import ChatSessionState
 from opensquilla.cli.tui.adapters import slash_gateway as _gateway_slash_adapter
@@ -80,11 +80,15 @@ async def flush_before_standalone_rewrite(
 async def handle_gateway_slash_command(
     cmd: str,
     state: ChatSessionState,
-    client: GatewayClientLike,
+    # Kept permissive: callers annotate clients with their own structural
+    # protocols (chat runtime vs TUI adapter); the concrete GatewayClient
+    # satisfies the adapter's full contract.
+    client: Any,
     elevated_state: dict[str, str | None],
     *,
     tui_output: TuiOutputHandle | None = None,
     stream_response: GatewayStreamResponse | None = None,
+    requested_model: str | None = None,
     output_console: Any | None = None,
     error_panel_factory: Any | None = None,
 ) -> bool:
@@ -96,30 +100,12 @@ async def handle_gateway_slash_command(
         cmd,
         GatewaySlashContext(
             state=state,
-            client=client,
+            client=cast(GatewayClientLike, client),
             elevated_state=elevated_state,
             tui_output=tui_output,
             stream_response=stream_response,
+            requested_model=requested_model,
         ),
-    )
-
-
-async def handle_tool_compress_command(
-    cmd: str,
-    *,
-    config: object | None = None,
-    client: object | None = None,
-    output_console: Any | None = None,
-    error_panel_factory: Any | None = None,
-) -> None:
-    sync_gateway_slash_adapter_io(
-        output_console=output_console,
-        error_panel_factory=error_panel_factory,
-    )
-    await _gateway_slash_adapter._handle_tool_compress_command(
-        cmd,
-        config=config,
-        client=client,
     )
 
 
@@ -160,7 +146,7 @@ def save_transcript_command(
         output_console=output_console,
         error_panel_factory=error_panel_factory,
     )
-    _standalone_slash_adapter._save_transcript_command(cmd, state)
+    _standalone_slash_adapter._save_state_transcript_command(cmd, state)
 
 
 async def save_gateway_transcript_command(
@@ -175,7 +161,11 @@ async def save_gateway_transcript_command(
         output_console=output_console,
         error_panel_factory=error_panel_factory,
     )
-    await _gateway_slash_adapter._save_gateway_transcript_command(cmd, state, client)
+    await _gateway_slash_adapter._save_gateway_transcript_command(
+        cmd,
+        state,
+        cast(GatewayClientLike, client),
+    )
 
 
 async def forget_server_approvals(
@@ -189,7 +179,10 @@ async def forget_server_approvals(
         output_console=output_console,
         error_panel_factory=error_panel_factory,
     )
-    return await _gateway_slash_adapter._forget_server_approvals(client, target)
+    return await _gateway_slash_adapter._forget_server_approvals(
+        cast("GatewayClientLike | None", client),
+        target,
+    )
 
 
 async def handle_approvals_command(
@@ -203,7 +196,10 @@ async def handle_approvals_command(
         output_console=output_console,
         error_panel_factory=error_panel_factory,
     )
-    await _gateway_slash_adapter._handle_approvals_command(cmd, client)
+    await _gateway_slash_adapter._handle_approvals_command(
+        cmd,
+        cast("GatewayClientLike | None", client),
+    )
 
 
 async def handle_forget_command(
@@ -217,7 +213,10 @@ async def handle_forget_command(
         output_console=output_console,
         error_panel_factory=error_panel_factory,
     )
-    await _gateway_slash_adapter._handle_forget_command(cmd, client)
+    await _gateway_slash_adapter._handle_forget_command(
+        cmd,
+        cast("GatewayClientLike | None", client),
+    )
 
 
 async def handle_elevated_command(
@@ -232,4 +231,8 @@ async def handle_elevated_command(
         output_console=output_console,
         error_panel_factory=error_panel_factory,
     )
-    await _gateway_slash_adapter._handle_elevated_command(cmd, state, client)
+    await _gateway_slash_adapter._handle_elevated_command(
+        cmd,
+        state,
+        cast("GatewayClientLike | None", client),
+    )

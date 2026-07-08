@@ -27,6 +27,8 @@ class StreamingFlushPolicy:
 class StreamingFlush:
     text: str
     reason: StreamingFlushReason
+    # Number of deltas coalesced into THIS flush; the lifetime total lives on
+    # the plane as ``delta_count``.
     delta_count: int
     chars: int
 
@@ -50,6 +52,7 @@ class StreamingPlane:
         self._flush_kind = flush_kind
         self._buffer: list[str] = []
         self._buffer_chars = 0
+        self._pending_deltas = 0
         self._last_flush_ms = clock_ms()
         self.delta_count = 0
         self.flush_count = 0
@@ -65,14 +68,21 @@ class StreamingPlane:
         if (
             self._buffer_chars > 0
             and self._buffer_chars + delta_chars > self.policy.max_chars
+            and not self._delta_needs_flush(delta)
         ):
+            # Split flush: emit the bounded buffer and retain the delta. Only
+            # valid when the retained delta does not itself satisfy a flush
+            # condition — otherwise it would sit deferred until the next
+            # append, however long the stream stalls.
             flush = self._flush("size")
             self._buffer.append(delta)
             self._buffer_chars += delta_chars
+            self._pending_deltas = 1
             self.max_buffer_chars = max(self.max_buffer_chars, self._buffer_chars)
             return flush
         self._buffer.append(delta)
         self._buffer_chars += delta_chars
+        self._pending_deltas += 1
         self.max_buffer_chars = max(self.max_buffer_chars, self._buffer_chars)
         reason = self._flush_reason(delta)
         if reason is not None:
@@ -80,6 +90,12 @@ class StreamingPlane:
         return None
 
     def flush(self, *, force: bool = False) -> StreamingFlush | None:
+        """Drain the buffer when a flush condition holds (always, with force).
+
+        ``append`` only evaluates flush conditions when the next delta
+        arrives, so heartbeat/pulse call sites should invoke this to drain a
+        buffered tail while the stream is stalled mid-turn.
+        """
         if self._buffer_chars == 0:
             return None
         reason = self._flush_reason("")
@@ -97,11 +113,12 @@ class StreamingPlane:
         flush = StreamingFlush(
             text=text,
             reason=reason,
-            delta_count=self.delta_count,
+            delta_count=self._pending_deltas,
             chars=len(text),
         )
         self._buffer.clear()
         self._buffer_chars = 0
+        self._pending_deltas = 0
         self.flush_count += 1
         self._last_flush_ms = self._clock_ms()
         self._emit_flush_event(flush)
@@ -125,6 +142,12 @@ class StreamingPlane:
                 timestamp_ms=now_ms(),
             )
         )
+
+    def _delta_needs_flush(self, delta: str) -> bool:
+        delta_chars = len(delta)
+        if delta_chars >= self.policy.max_chars:
+            return True
+        return "\n" in delta and delta_chars >= self.policy.newline_min_chars
 
     def _flush_reason(self, delta: str) -> StreamingFlushReason | None:
         if self._buffer_chars >= self.policy.max_chars:

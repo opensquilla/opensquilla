@@ -43,7 +43,9 @@ dependencies = [
     "croniter>=2.0",
     "tomli-w>=1.0",
     "yoyo-migrations>=8.2,<10",
-    "questionary>=2.0",
+    # >=2.1: the onboarding wizard's provider select relies on
+    # ``use_search_filter`` (type-to-filter), added in questionary 2.1.
+    "questionary>=2.1",
     "python-docx>=1.1.0",
     "python-pptx>=1.0.0",
     "openpyxl>=3.1.0",

@@ -8,6 +8,7 @@ from typing import Any
 import opensquilla.cli.tui.adapters.input_bridge as _input_bridge
 from opensquilla.cli.chat import turn_stream as _turn_stream
 from opensquilla.cli.tui.adapters import runtime_helpers as _runtime_helpers
+from opensquilla.cli.tui.adapters.approvals import tui_approval_handler
 from opensquilla.cli.tui.backend.contracts import TuiOutputHandle
 from opensquilla.cli.tui.backend.domain_events import KIND_ROUTER_DECISION, TuiDomainEvent
 from opensquilla.cli.tui.backend.plugins import TuiPluginManager
@@ -97,6 +98,7 @@ def _set_toolbar_value(
 
 
 async def _noop_approval_handler(*_args: Any, **_kwargs: Any) -> None:
+    """Explicit opt-out for callers that must never prompt (replay harnesses)."""
     return None
 
 
@@ -124,7 +126,10 @@ def default_turn_stream_dependencies(
         ),
         stream_wrapper=stream_wrapper,
         approval_handler=(
-            _noop_approval_handler if approval_handler is None else approval_handler
+            # Built per-call so each dependency set gets a fresh handler bound
+            # to current console defaults; the handler reaches the interactive
+            # surface through the renderer it is invoked with.
+            tui_approval_handler() if approval_handler is None else approval_handler
         ),
         cancel_clearer=(
             _runtime_helpers.clear_current_cancel

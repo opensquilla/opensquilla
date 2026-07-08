@@ -1,7 +1,10 @@
 """Tests for the shared onboarding setup engine."""
 
+from __future__ import annotations
+
 import tomllib
 
+from opensquilla.onboarding.config_store import load_config
 from opensquilla.onboarding.setup_engine import SetupEngine
 
 
@@ -47,7 +50,7 @@ def test_setup_engine_can_derive_provider_model_from_router_default_tier(tmp_pat
     assert data["llm"]["provider"] == "deepseek"
     assert data["llm"]["model"] == "deepseek-v4-flash"
     assert data["squilla_router"]["tier_profile"] == "deepseek"
-    assert data["squilla_router"]["default_tier"] == "c1"
+    assert load_config(target).squilla_router.default_tier == "c1"
 
 
 def test_setup_engine_passes_preset_id_through_to_provider_upsert(tmp_path):
@@ -69,7 +72,7 @@ def test_setup_engine_passes_preset_id_through_to_provider_upsert(tmp_path):
 
     data = tomllib.loads(target.read_text())
     assert data["llm"]["provider"] == "groq"
-    assert data["squilla_router"]["enabled"] is True
+    assert load_config(target).squilla_router.enabled is True
     assert "tier_profile" not in data["squilla_router"]
     tier = data["squilla_router"]["tiers"]["c0"]
     assert tier["provider"] == "groq"
@@ -150,7 +153,7 @@ def test_setup_engine_image_generation_can_use_custom_env_reference(
 
     data = tomllib.loads(target.read_text())
     provider = data["image_generation"]["providers"]["openrouter"]
-    assert provider["api_key"] == ""
+    assert load_config(target).image_generation.providers.openrouter.api_key == ""
     assert provider["api_key_env"] == "OPENSQUILLA_TEST_IMAGE_KEY"
 
 
@@ -170,7 +173,7 @@ def test_setup_engine_accepts_short_capability_section_aliases(tmp_path, monkeyp
     engine.persist()
 
     data = tomllib.loads(target.read_text())
-    assert data["image_generation"]["enabled"] is False
+    assert load_config(target).image_generation.enabled is False
     assert data["memory"]["embedding"]["provider"] == "local"
     assert data["memory"]["embedding"]["local"]["onnx_dir"] == "models/bge"
 
@@ -228,10 +231,143 @@ def test_setup_engine_applies_ensemble_with_keep_current_semantics(tmp_path):
 
 
 def test_setup_engine_accepts_ensemble_section_aliases(tmp_path):
+    import tomllib as _tomllib
+
     for alias in ("ensemble", "llm-ensemble", "llm_ensemble"):
         target = tmp_path / f"{alias.replace('_', '-')}.toml"
+        # Seed the non-default state: the alias must observably apply the
+        # disable, not exit cleanly while persisting nothing (the effective
+        # value equals the model default on a fresh config, so a no-op
+        # would previously pass this test).
+        target.write_text("[llm_ensemble]\nenabled = true\n", encoding="utf-8")
         engine = SetupEngine(path=target)
         engine.apply(alias, {"enabled": False})
         engine.persist()
-        data = tomllib.loads(target.read_text())
-        assert data["llm_ensemble"]["enabled"] is False
+        data = _tomllib.loads(target.read_text())
+        assert data["llm_ensemble"]["enabled"] is False, alias
+        assert load_config(target).llm_ensemble.enabled is False
+
+
+def test_setup_engine_provider_none_payload_values_keep_stored_fields(tmp_path):
+    # None payload values mean "not passed": a same-provider re-save keeps
+    # the stored model/base_url/proxy instead of coercing None to "None" or
+    # resetting to derived defaults.
+    target = tmp_path / "config.toml"
+    target.write_text(
+        "[llm]\n"
+        'provider = "openrouter"\n'
+        'model = "custom/model-x"\n'
+        'api_key = "sk-old"\n'
+        'base_url = "https://gateway.example.test/v1"\n'
+        'proxy = "http://127.0.0.1:7890"\n',
+        encoding="utf-8",
+    )
+    engine = SetupEngine(path=target)
+
+    engine.apply(
+        "provider",
+        {
+            "providerId": "openrouter",
+            "model": None,
+            "apiKey": "sk-new",
+            "apiKeyEnv": None,
+            "baseUrl": None,
+            "proxy": None,
+        },
+    )
+    engine.persist()
+
+    cfg = load_config(target)
+    assert cfg.llm.model == "custom/model-x"
+    assert cfg.llm.base_url == "https://gateway.example.test/v1"
+    assert cfg.llm.proxy == "http://127.0.0.1:7890"
+    assert cfg.llm.api_key == "sk-new"
+
+
+def test_setup_engine_search_none_payload_values_keep_stored_settings(tmp_path):
+    target = tmp_path / "config.toml"
+    target.write_text(
+        'search_provider = "brave"\n'
+        'search_api_key = "sk-old"\n'
+        "search_max_results = 9\n"
+        'search_proxy = "http://127.0.0.1:7890"\n'
+        "search_use_env_proxy = true\n"
+        'search_fallback_policy = "network"\n'
+        "search_diagnostics = true\n",
+        encoding="utf-8",
+    )
+    engine = SetupEngine(path=target)
+
+    engine.apply(
+        "search",
+        {
+            "providerId": "brave",
+            "apiKey": "sk-new",
+            "maxResults": None,
+            "proxy": None,
+            "useEnvProxy": None,
+            "fallbackPolicy": None,
+            "diagnostics": None,
+        },
+    )
+    engine.persist()
+
+    cfg = load_config(target)
+    assert cfg.search_max_results == 9
+    assert cfg.search_proxy == "http://127.0.0.1:7890"
+    assert cfg.search_use_env_proxy is True
+    assert cfg.search_fallback_policy == "network"
+    assert cfg.search_diagnostics is True
+    assert cfg.search_api_key == "sk-new"
+
+
+def test_setup_engine_image_enabled_none_keeps_stored_disabled_flag(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("OPENSQUILLA_TEST_IMAGE_KEY", "sk-image-env")
+    target = tmp_path / "config.toml"
+    target.write_text(
+        "[image_generation]\n"
+        "enabled = false\n"
+        'primary = "openrouter/google/gemini-3.1-flash-image-preview"\n'
+        "\n"
+        "[image_generation.providers.openrouter]\n"
+        'api_key_env = "OPENSQUILLA_TEST_IMAGE_KEY"\n',
+        encoding="utf-8",
+    )
+    engine = SetupEngine(path=target)
+
+    engine.apply(
+        "image-generation",
+        {
+            "providerId": "openrouter",
+            "primary": "openrouter/google/gemini-3.1-flash-image-preview",
+            "apiKeyEnv": "OPENSQUILLA_TEST_IMAGE_KEY",
+            "enabled": None,
+        },
+    )
+    engine.persist()
+
+    assert load_config(target).image_generation.enabled is False
+
+
+def test_setup_engine_image_enabled_none_defaults_to_enabled_for_fresh_config(
+    tmp_path, monkeypatch
+):
+    # A config that never stored the flag keeps the legacy
+    # configure-implies-enable behavior for a first-time setup.
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-image-env")
+    target = tmp_path / "config.toml"
+    engine = SetupEngine(path=target)
+
+    engine.apply(
+        "image-generation",
+        {
+            "providerId": "openrouter",
+            "primary": "openrouter/google/gemini-3.1-flash-image-preview",
+            "enabled": None,
+        },
+    )
+    engine.persist()
+
+    assert load_config(target).image_generation.enabled is True

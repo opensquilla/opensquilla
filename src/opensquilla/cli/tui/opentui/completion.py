@@ -7,7 +7,6 @@ import os
 import shutil
 import subprocess
 from collections.abc import Callable, Sequence
-from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -55,12 +54,14 @@ def fuzzy_rank(query: str, candidates: Sequence[str]) -> list[tuple[int, float]]
     """Return matching candidate indexes ranked by deterministic fuzzy score.
 
     Matching is case-insensitive and requires the query to appear as an ordered
-    subsequence of the candidate. Scores then prefer, in order: exact prefix or
-    path-segment prefix matches, longer contiguous matched runs, characters
-    matched at the beginning of a path segment, earlier first matches, shorter
-    matched path segments/candidates, and finally a small SequenceMatcher ratio
-    bonus. Ties keep the input order. Empty queries return every candidate in
-    the original order with a neutral score.
+    subsequence of the candidate. Scores then prefer, in order: exact prefix,
+    slash-command segment prefix, or path-segment prefix matches, longer
+    contiguous matched runs, characters matched at the beginning of a path
+    segment, earlier first matches, and shorter matched path
+    segments/candidates. The scoring mirrors ``fuzzyScore`` in
+    ``package/src/composer.mjs`` so the host's local ranking and this one agree.
+    Ties keep the input order. Empty queries return every candidate in the
+    original order with a neutral score.
     """
 
     normalized_query = query.casefold()
@@ -120,7 +121,12 @@ def build_completion_catalog(
     catalog: list[CompletionCandidate] = []
     catalog.extend(_command_candidates(surface))
     catalog.extend(_skill_candidates(skill_loader, workspace_dir=workspace_dir))
-    catalog.extend(SETTING_TOGGLES)
+    # A toggle whose command the registry already exposes on this surface would
+    # render as a duplicate menu row under a second label; keep the registry row.
+    taken = {candidate.insert_text.strip() for candidate in catalog}
+    catalog.extend(
+        toggle for toggle in SETTING_TOGGLES if toggle.insert_text.strip() not in taken
+    )
     return catalog
 
 
@@ -162,6 +168,9 @@ def build_completion_context(
 
 
 def _score_candidate(query: str, candidate: str) -> float | None:
+    # Mirrors fuzzyScore in package/src/composer.mjs: the host ranks its local
+    # files snapshot with that scorer before this side's async response
+    # replaces the menu, so any drift shows up as a visible reorder flicker.
     text = candidate.casefold()
     positions = _subsequence_positions(query, text)
     if positions is None:
@@ -171,10 +180,15 @@ def _score_candidate(query: str, candidate: str) -> float | None:
     if text.startswith(query):
         score += 80
 
-    segment_prefix_length = _matched_segment_prefix_length(query, text)
-    if segment_prefix_length is not None:
+    segments = _path_segments(text)
+    if text.startswith("/") and segments and segments[0].startswith(query):
+        score += 90
+    prefix_segment = next(
+        (segment for segment in segments if segment.startswith(query)), None
+    )
+    if prefix_segment is not None:
         score += 60
-        score += max(0.0, 24.0 - (segment_prefix_length * 2.0))
+        score += max(0.0, 24.0 - (len(prefix_segment) * 2.0))
 
     run_length = 1
     longest_run = 1
@@ -193,7 +207,6 @@ def _score_candidate(query: str, candidate: str) -> float | None:
     first = positions[0]
     score += max(0.0, 30.0 - (first * 0.75))
     score += max(0.0, 18.0 - len(candidate) * 0.35)
-    score += SequenceMatcher(None, query, text).ratio() * 10
     return score
 
 
@@ -207,13 +220,6 @@ def _subsequence_positions(query: str, text: str) -> list[int] | None:
         positions.append(index)
         start = index + 1
     return positions
-
-
-def _matched_segment_prefix_length(query: str, text: str) -> int | None:
-    for segment in _path_segments(text):
-        if segment.startswith(query):
-            return len(segment)
-    return None
 
 
 def _path_segments(text: str) -> list[str]:
@@ -242,22 +248,29 @@ def _git_files(root: Path) -> list[str] | None:
         return None
 
     try:
+        # -z: NUL-separated verbatim paths, so core.quotePath never C-quotes a
+        # non-ASCII name into an octal-escape string that matches nothing on
+        # disk. Decoding with the filesystem rules (surrogateescape) means even
+        # undecodable path bytes can never crash completion.
         result = subprocess.run(
-            ["git", "ls-files", "--cached", "--others", "--exclude-standard"],
+            ["git", "ls-files", "-z", "--cached", "--others", "--exclude-standard"],
             cwd=root,
             capture_output=True,
             check=False,
-            text=True,
         )
-    except OSError:
+    except (OSError, ValueError):
         return None
     if result.returncode != 0:
         return None
-    return [Path(line.strip()).as_posix() for line in result.stdout.splitlines() if line.strip()]
+    return [
+        Path(os.fsdecode(entry)).as_posix()
+        for entry in result.stdout.split(b"\0")
+        if entry
+    ]
 
 
 def _walk_files(root: Path, *, max_walk: int) -> list[str]:
-    ignore_patterns = _load_gitignore_patterns(root)
+    ignore_rules = _load_gitignore_patterns(root)
     results: list[str] = []
     visited = 0
 
@@ -266,7 +279,7 @@ def _walk_files(root: Path, *, max_walk: int) -> list[str]:
         dirnames[:] = [
             dirname
             for dirname in sorted(dirnames)
-            if not _skip_dir(root, current_dir / dirname, ignore_patterns)
+            if not _skip_dir(root, current_dir / dirname, ignore_rules)
         ]
 
         for filename in sorted(filenames):
@@ -276,7 +289,7 @@ def _walk_files(root: Path, *, max_walk: int) -> list[str]:
 
             path = current_dir / filename
             rel = path.relative_to(root).as_posix()
-            if _is_ignored(rel, ignore_patterns):
+            if _is_ignored(rel, ignore_rules):
                 continue
             if _is_sensitive_access_path(path.resolve(strict=False)):
                 continue
@@ -295,48 +308,59 @@ def _filter_sensitive_relative_paths(root: Path, rel_paths: list[str]) -> list[s
     return results
 
 
-def _skip_dir(root: Path, path: Path, ignore_patterns: list[str]) -> bool:
+def _skip_dir(root: Path, path: Path, ignore_rules: list[tuple[str, bool]]) -> bool:
     name = path.name
     if name in _SKIP_DIRS or name.startswith("."):
         return True
     rel = path.relative_to(root).as_posix()
-    return _is_ignored(f"{rel}/", ignore_patterns) or _is_ignored(rel, ignore_patterns)
+    return _is_ignored(f"{rel}/", ignore_rules) or _is_ignored(rel, ignore_rules)
 
 
-def _load_gitignore_patterns(root: Path) -> list[str]:
+def _load_gitignore_patterns(root: Path) -> list[tuple[str, bool]]:
+    """Parse the root ``.gitignore`` into ordered ``(pattern, negated)`` rules."""
     gitignore = root / ".gitignore"
     try:
         lines = gitignore.read_text(encoding="utf-8", errors="ignore").splitlines()
     except OSError:
         return []
 
-    patterns: list[str] = []
+    rules: list[tuple[str, bool]] = []
     for raw_line in lines:
         line = raw_line.strip()
-        if not line or line.startswith("#") or line.startswith("!"):
+        if not line or line.startswith("#"):
             continue
-        patterns.append(line.lstrip("/"))
-    return patterns
+        negated = line.startswith("!")
+        if negated:
+            line = line[1:]
+            if not line:
+                continue
+        rules.append((line.lstrip("/"), negated))
+    return rules
 
 
-def _is_ignored(rel_posix: str, patterns: list[str]) -> bool:
+def _is_ignored(rel_posix: str, rules: list[tuple[str, bool]]) -> bool:
+    # Git semantics: the LAST matching rule wins, so a later "!keep.log" can
+    # re-include a file excluded by an earlier "*.log" (and vice versa).
     rel = rel_posix.strip("/")
     parts = rel.split("/") if rel else []
-    for pattern in patterns:
-        normalized = pattern.strip("/")
-        if not normalized:
-            continue
-        if pattern.endswith("/") and (rel == normalized or rel.startswith(normalized + "/")):
-            return True
-        if "/" in normalized:
-            if fnmatch.fnmatch(rel, normalized) or rel.startswith(normalized + "/"):
-                return True
-            continue
-        if fnmatch.fnmatch(Path(rel).name, normalized):
-            return True
-        if any(fnmatch.fnmatch(part, normalized) for part in parts):
-            return True
-    return False
+    ignored = False
+    for pattern, negated in rules:
+        if _pattern_matches(rel, parts, pattern):
+            ignored = not negated
+    return ignored
+
+
+def _pattern_matches(rel: str, parts: list[str], pattern: str) -> bool:
+    normalized = pattern.strip("/")
+    if not normalized:
+        return False
+    if pattern.endswith("/") and (rel == normalized or rel.startswith(normalized + "/")):
+        return True
+    if "/" in normalized:
+        return fnmatch.fnmatch(rel, normalized) or rel.startswith(normalized + "/")
+    if fnmatch.fnmatch(Path(rel).name, normalized):
+        return True
+    return any(fnmatch.fnmatch(part, normalized) for part in parts)
 
 
 def _command_candidates(surface: Surface | str) -> list[CompletionCandidate]:

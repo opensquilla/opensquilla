@@ -1,43 +1,49 @@
 // Notice rendering: command notices captured from Python render INSIDE the host
 // frame as a severity glyph + theme-colored line (never raw ANSI on the
-// terminal). Verifies the exact recipe main.mjs's notice handler uses, including
-// cross-theme color correctness (the same notice recolors under a light theme).
+// terminal). Renders through the SAME noticeContent recipe main.mjs's notice
+// handler consumes — so these tests exercise the shipped composition, including
+// cross-theme color correctness and the live-recolor path for already-rendered
+// notice nodes.
 //
 // Run with: bun test src/notice-render.bun.test.mjs
 import { test, expect } from "bun:test";
 import { createTestRenderer } from "@opentui/core/testing";
 import { BoxRenderable, TextRenderable } from "@opentui/core";
 
-import { parseNotice, isStructuredLine, NOTICE_LEVELS } from "./ansiNotice.mjs";
-import { TOOL_INDENT } from "./primitives.mjs";
+import { noticeContent, recolorNoticeNodes } from "./ansiNotice.mjs";
 import { applyTheme, THEME } from "./theme.mjs";
 
 const ESC = "\u001b";
 
-// Mirror of main.mjs's notice.write handler so the rendering recipe is verified
-// against the real OpenTUI text layer.
-function renderNotice(renderer, conversationBox, rawText, idx) {
-  const { text, level } = parseNotice(rawText);
-  if (!text.trim()) return null;
-  const spec = NOTICE_LEVELS[level] ?? NOTICE_LEVELS.detail;
-  const fg = THEME[spec.token] ?? THEME.detailText;
-  const content = isStructuredLine(text)
-    ? `${TOOL_INDENT}${text}`
-    : `${TOOL_INDENT}${spec.glyph} ${text}`;
-  const node = new TextRenderable(renderer, { id: `notice-${idx}`, content, fg });
+// The thin renderer-binding around noticeContent (mirrors only node creation;
+// the recipe itself — blank drop, glyph, structured branch, token — is shipped).
+function renderNotice(renderer, conversationBox, rawText, idx, registry = []) {
+  const spec = noticeContent(rawText);
+  if (!spec) return null;
+  const node = new TextRenderable(renderer, {
+    id: `notice-${idx}`,
+    content: spec.content,
+    fg: THEME[spec.token] ?? THEME.detailText,
+  });
+  registry.push({ node, token: spec.token });
   conversationBox.add(node);
-  return { content, level };
+  return node;
 }
 
 const rgb = (c) => [Math.round(c.r * 255), Math.round(c.g * 255), Math.round(c.b * 255)];
 
-async function renderNotices(width, lines) {
+async function makeConversation(width) {
   const { renderer, renderOnce, captureSpans } = await createTestRenderer({ width, height: 12 });
   const conversationBox = new BoxRenderable(renderer, {
     id: "conversation", position: "absolute", left: 0, top: 0, right: 0, height: 12,
     flexDirection: "column",
   });
   renderer.root.add(conversationBox);
+  return { renderer, renderOnce, captureSpans, conversationBox };
+}
+
+async function renderNotices(width, lines) {
+  const { renderer, renderOnce, captureSpans, conversationBox } = await makeConversation(width);
   lines.forEach((raw, i) => renderNotice(renderer, conversationBox, raw, i));
   await renderOnce();
   const frame = captureSpans();
@@ -88,4 +94,27 @@ test("table/panel border lines render without a glyph", async () => {
   expect(text).toContain("│ model   deepseek-v4 │");
   expect(text).not.toContain("·"); // structured lines skip the glyph
   renderer.destroy?.();
+});
+
+test("a live theme switch re-points already-rendered notice nodes", async () => {
+  // Notice nodes capture their fg VALUE at creation, so main.mjs registers each
+  // as { node, token } and re-points them via recolorNoticeNodes on every
+  // /theme switch — otherwise a dark→light flip leaves dark-theme colors on
+  // the new light background.
+  applyTheme("opensquilla-dark");
+  const { renderer, renderOnce, captureSpans, conversationBox } = await makeConversation(70);
+  const registry = [];
+  renderNotice(renderer, conversationBox, `${ESC}[31mUnknown command. Use /help.${ESC}[0m`, 0, registry);
+  await renderOnce();
+
+  applyTheme("opensquilla-light");
+  recolorNoticeNodes(registry, THEME);
+  await renderOnce();
+  const frame = captureSpans();
+  const errLine = findLine(frame, "Unknown command");
+  const span = errLine.spans.find((s) => s.text.trim().length > 0);
+  // The pre-rendered node now paints light THEME.error, not the stale dark red.
+  expect(rgb(span.fg)).toEqual([194, 56, 46]);
+  renderer.destroy?.();
+  applyTheme("opensquilla-dark");
 });

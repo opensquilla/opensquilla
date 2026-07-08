@@ -22,6 +22,15 @@ export function createIpc({ fromFd, toFd }) {
     const lines = readline.createInterface({ input, crlfDelay: Infinity });
     lines.on("line", (line) => { if (line.trim()) { try { onMessage(JSON.parse(line)); } catch (e) { send({ type: "error", message: e instanceof Error ? e.message : String(e) }); } } });
     lines.on("close", onClose);
+    // A dead or absent read fd (e.g. the host launched by hand without its
+    // Python parent) surfaces as a stream 'error', never 'close' — and the
+    // engine's global exception handlers swallow it, leaving a live full-screen
+    // UI with no exit path. Fold read errors into the same clean shutdown as
+    // EOF; close() is idempotent and emits 'close' exactly once. readline
+    // re-emits input errors on the interface, so both emitters need a handler.
+    const shutdown = () => lines.close();
+    lines.on("error", shutdown);
+    input.on("error", shutdown);
   }
   return { send, start };
 }
@@ -47,6 +56,8 @@ export function createDispatcher(h) {
       case "notice.write": return h.notice?.(m);
       case "theme.set": return h.themeSet?.(m);
       case "theme.pick": return h.themePick?.(m);
+      case "approval.request": return h.approvalRequest?.(m);
+      case "approval.dismiss": return h.approvalDismiss?.(m);
       case "shutdown": return h.shutdown(m);
       default: return h.unknown(m);
     }

@@ -7,6 +7,7 @@ from pathlib import Path
 from typer.testing import CliRunner
 
 from opensquilla.cli.main import app
+from opensquilla.onboarding.config_store import load_config
 
 runner = CliRunner()
 
@@ -85,7 +86,11 @@ telegram:
     config = tomllib.loads(config_path.read_text(encoding="utf-8"))
     assert config["host"] == "127.0.0.9"
     assert config["port"] == 19999
-    assert config["llm"]["provider"] == "openrouter"
+    # Sparse persistence omits values equal to the built-in default
+    # (provider "openrouter"); the effective provider must still resolve
+    # to the migrated value.
+    assert config["llm"].get("provider", "openrouter") == "openrouter"
+    assert load_config(config_path).llm.provider == "openrouter"
     assert config["llm"]["model"] == "anthropic/claude-3.5-sonnet"
     assert config["channels"]["channels"][0]["type"] == "telegram"
     assert (Path(report["output_dir"]) / "report.json").is_file()

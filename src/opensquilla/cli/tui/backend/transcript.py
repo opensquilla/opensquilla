@@ -6,6 +6,8 @@ import json
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
 
+from opensquilla.cli.tui.backend.render_summary import sanitize_terminal_text
+
 type TranscriptRole = str
 type ToolStatus = str
 
@@ -126,7 +128,15 @@ class TranscriptStore:
         if item.item_id:
             return item
         if isinstance(item, ToolItem) and item.tool_id:
-            return replace(item, item_id=f"tool-{item.tool_id}")
+            # Repeated appends for one tool_id (running -> done transitions,
+            # or providers reusing tool_use ids across turns) must still get
+            # unique item_ids so renderers can key rows by them.
+            base = f"tool-{item.tool_id}"
+            seen = self._counters.get(base, 0) + 1
+            self._counters[base] = seen
+            if seen == 1:
+                return replace(item, item_id=base)
+            return replace(item, item_id=f"{base}-{seen}")
         prefix = _item_prefix(item)
         next_id = self._counters.get(prefix, 0) + 1
         self._counters[prefix] = next_id
@@ -134,7 +144,7 @@ class TranscriptStore:
 
 
 def build_args_preview(args: object, policy: ToolPreviewPolicy) -> ToolPreview:
-    text = json.dumps(args, ensure_ascii=False, separators=(",", ":"))
+    text = sanitize_terminal_text(_stringify_json(args))
     text, truncated = _truncate_chars(text, policy.max_arg_chars, marker="...")
     return ToolPreview(text=text, truncated=truncated, line_count=_line_count(text))
 
@@ -145,7 +155,7 @@ def build_output_preview(
     *,
     is_error: bool = False,
 ) -> ToolPreview:
-    text = _stringify_output(output)
+    text = sanitize_terminal_text(_stringify_output(output))
     if is_error:
         text = f"error: {text}"
     text, truncated_by_lines = _truncate_lines(text, policy.max_output_lines)
@@ -239,7 +249,16 @@ def _stringify_output(output: object) -> str:
         return f"[image {mime} {width}x{height}]"
     if isinstance(output, str):
         return output
-    return json.dumps(output, ensure_ascii=False, separators=(",", ":"))
+    return _stringify_json(output)
+
+
+def _stringify_json(value: object) -> str:
+    try:
+        return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+    except (TypeError, ValueError):
+        # Tool args/output are typed `object`: bytes, Paths, or circular
+        # structures must degrade to a readable preview, not raise.
+        return str(value)
 
 
 def _row_count(item: TranscriptItem) -> int:

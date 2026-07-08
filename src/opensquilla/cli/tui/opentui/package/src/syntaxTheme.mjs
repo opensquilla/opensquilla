@@ -14,19 +14,29 @@
 // and tree-sitter scopes resolve. "default" is the critical one — it is the base
 // color for all otherwise-unstyled paragraph text.
 function themeStyleDefs(t) {
-  return {
+  const defs = {
     default: { fg: t.text },
     text: { fg: t.text },
     paragraph: { fg: t.text },
-    // Markdown inline markup scopes.
+    // Markdown inline markup scopes. The bundled tree-sitter grammar emits
+    // DOTTED capture names (markup.heading.1…6, markup.link.label/url,
+    // markup.raw.block, markup.list.checked/unchecked) and the style lookup
+    // falls back only to the FIRST dotted segment ("markup", unregistered), so
+    // every emitted name needs its own registration — "markup.heading" alone
+    // styles only pipe-table header cells, and "markup.raw" only inline code.
     "markup.heading": { fg: t.brandAccent, bold: true },
     "markup.strong": { fg: t.text, bold: true },
     "markup.italic": { fg: t.text, italic: true },
     "markup.strikethrough": { fg: t.muted },
     "markup.link": { fg: t.routeText, underline: true },
+    "markup.link.label": { fg: t.routeText, underline: true },
+    "markup.link.url": { fg: t.routeText, underline: true },
     "markup.raw": { fg: t.brandAccentSoft }, // inline `code`
+    "markup.raw.block": { fg: t.brandAccentSoft }, // indented/fenced containers
     "markup.quote": { fg: t.muted, italic: true },
     "markup.list": { fg: t.text },
+    "markup.list.unchecked": { fg: t.text },
+    "markup.list.checked": { fg: t.text },
     // Common tree-sitter code scopes for fenced blocks — brand-forward and
     // legible on any background (each theme's tokens already clear WCAG AA).
     keyword: { fg: t.brandAccent },
@@ -40,6 +50,12 @@ function themeStyleDefs(t) {
     operator: { fg: t.muted },
     punctuation: { fg: t.muted },
   };
+  // ATX/setext headings are captured per level (markup.heading.N), all styled
+  // like the base heading scope.
+  for (let level = 1; level <= 6; level += 1) {
+    defs[`markup.heading.${level}`] = { fg: t.brandAccent, bold: true };
+  }
+  return defs;
 }
 
 // Register/refresh every theme-derived style on a SyntaxStyle in place. Safe to

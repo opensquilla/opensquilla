@@ -97,6 +97,51 @@ def _runtime_hooks(**kwargs: Any) -> TuiRuntimeHooks:
     )
 
 
+@pytest.mark.asyncio
+async def test_runtime_ignores_blank_input_lines() -> None:
+    """A blank Enter is never a message: no dispatch, no echo, no queue entry.
+
+    Surfaces guard this too, but the backend is the defense shared by every
+    frontend — a phantom empty prompt card queued behind a running turn was
+    the visible failure.
+    """
+    inputs: asyncio.Queue[str | None] = asyncio.Queue()
+    surface = _FakeSurface(inputs)
+    state = TuiRuntimeState()
+    executed: list[str] = []
+    echoed: list[str] = []
+
+    async def _dispatch(user_input: str) -> bool:
+        executed.append(user_input)
+        return True
+
+    async def _echo(_surface: Any, text: str) -> None:
+        echoed.append(text)
+
+    task = asyncio.create_task(
+        run_tui_runtime(
+            dispatch=_dispatch,
+            surface_factory=_surface_factory(surface),
+            config=_runtime_config(state=state),
+            hooks=TuiRuntimeHooks(
+                on_user_input_echo=_echo,
+                on_queued_turn_start=_queued_echo,
+            ),
+        )
+    )
+    inputs.put_nowait("")
+    inputs.put_nowait("   ")
+    inputs.put_nowait("\t")
+    inputs.put_nowait("real message")
+    await _wait_until(lambda: executed == ["real message"])
+    inputs.put_nowait(None)
+    await task
+
+    assert executed == ["real message"]
+    assert echoed == ["real message"]
+    assert state.pending_items == ()
+
+
 def test_runtime_state_drains_pending_inputs_for_agent_injection() -> None:
     state = TuiRuntimeState()
     state.enqueue("second")

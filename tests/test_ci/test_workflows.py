@@ -195,7 +195,9 @@ def test_default_ci_blocks_pull_requests_and_main_pushes() -> None:
     assert "Windows high-risk/full tests" in text
     assert "Release packaging contracts" in text
     assert "CI result" in text
-    assert 'push)\n              printf \'.ci/run-all\\n\' > "${changed_files}"' in text
+    assert 'push)\n              before="${{ github.event.before }}"' in text
+    assert 'git diff --name-only "${before}" "${after}" > "${changed_files}"' in text
+    assert 'printf \'.ci/run-all\\n\' > "${changed_files}"' in text
     assert "runtime_changed" in text
     assert "test_changed" in text
     assert "ci_changed" in text
@@ -212,6 +214,19 @@ def test_default_ci_blocks_pull_requests_and_main_pushes() -> None:
     assert "allow_success_or_skipped" in text
     assert "code_changed" not in text
     assert "workflow_changed" not in text
+
+
+def test_default_ci_keeps_main_pushes_targeted_and_manual_runs_full() -> None:
+    ci_path = WORKFLOW_DIR / "ci.yml"
+    if not ci_path.exists():
+        return
+    text = ci_path.read_text(encoding="utf-8")
+
+    assert 'before="${{ github.event.before }}"' in text
+    assert 'after="${{ github.event.after }}"' in text
+    assert 'git diff --name-only "${before}" "${after}" > "${changed_files}"' in text
+    assert 'workflow_dispatch' in text
+    assert 'printf \'.ci/run-all\\n\' > "${changed_files}"' in text
 
 
 def test_ci_verifies_committed_frontend_dist_is_fresh() -> None:
@@ -546,6 +561,70 @@ def test_ci_change_classifier_tracks_platform_sensitive_changes(tmp_path: Path) 
     )
 
 
+def test_ci_change_classifier_runs_windows_full_for_persistence_risk(
+    tmp_path: Path,
+) -> None:
+    outputs = _classify_changed_files(
+        tmp_path,
+        [
+            "src/opensquilla/persistence/migrator.py",
+            "tests/test_persistence/test_migrator.py",
+            "migrations/V999__example.py",
+        ],
+    )
+
+    assert outputs == _expected_classifier_outputs(
+        runtime_changed="true",
+        test_changed="true",
+        windows_full_required="true",
+        python_changed="true",
+        platform_sensitive_changed="true",
+        build_wheel_required="true",
+    )
+
+
+def test_ci_change_classifier_runs_windows_full_for_provider_onboarding_risk(
+    tmp_path: Path,
+) -> None:
+    outputs = _classify_changed_files(
+        tmp_path,
+        [
+            "src/opensquilla/provider/registry.py",
+            "src/opensquilla/onboarding/provider_specs.py",
+            "tests/test_onboarding/test_mutations.py",
+            "tests/test_provider/test_spec_substrate.py",
+        ],
+    )
+
+    assert outputs == _expected_classifier_outputs(
+        runtime_changed="true",
+        test_changed="true",
+        windows_full_required="true",
+        python_changed="true",
+        platform_sensitive_changed="true",
+        build_wheel_required="true",
+    )
+
+
+def test_ci_change_classifier_runs_windows_full_for_gateway_functional_e2e(
+    tmp_path: Path,
+) -> None:
+    outputs = _classify_changed_files(
+        tmp_path,
+        [
+            "tests/functional/test_gateway_non_image_attachment_materialization_e2e.py",
+            "tests/functional/test_gateway_attachment_history_e2e.py",
+        ],
+    )
+
+    assert outputs == _expected_classifier_outputs(
+        test_changed="true",
+        windows_full_required="true",
+        python_changed="true",
+        platform_sensitive_changed="true",
+    )
+
+
 def test_ci_change_classifier_tracks_desktop_changes(tmp_path: Path) -> None:
     outputs = _classify_changed_files(
         tmp_path,
@@ -623,6 +702,7 @@ def test_windows_high_risk_job_uses_subset_until_full_ci() -> None:
         "${{ needs.classify-changes.outputs.full_required == 'true' }}"
     )
     assert 'uv run pytest tests -q -m "${markers}" --durations=50' in text
+    assert 'uv run pytest tests -q -m "${markers}" --durations=50 --maxfail=1' in text
     assert "tests/test_compat" in text
     assert "tests/test_sandbox" in text
     assert "tests/test_tools/test_shell_policy_windows.py" in text

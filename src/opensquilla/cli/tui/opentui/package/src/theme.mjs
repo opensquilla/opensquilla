@@ -12,6 +12,29 @@
 // overlay); the rest are distinct on-brand aesthetics that keep the orange accent
 // family and the semantic run-state structure. Every foreground clears WCAG AA on
 // the surfaces it renders on — enforced by theme-contrast.bun.test.mjs.
+//
+// Color degradation: a color MODE is resolved once at import (detectColorMode)
+// and applied inside applyTheme, so live /theme switches degrade the same way
+// the startup theme does. Three modes:
+//   truecolor — tokens pass through unchanged (the default);
+//   compat16  — every token is quantized to the nearest canonical ANSI-16 RGB
+//               value (quantizeToBasic16) for 16-color-only terminals;
+//   mono      — the grayscale "monochrome" palette is forced for NO_COLOR and
+//               TERM=dumb.
+// The engine below us already owns the 256-color case: @opentui/core's native
+// renderer detects rgb/ansi256 capability and, on ansi256-only terminals, syncs
+// a native 256-color palette — so this layer only handles NO_COLOR, 16-color,
+// and the explicit OPENSQUILLA_TUI_COLOR override.
+//
+// NO_COLOR in a cell renderer: the host paints opaque backgrounds on every
+// surface, so "no color" cannot mean "emit no SGR at all" — the alternate
+// screen would be an unreadable terminal-default-on-terminal-default smear.
+// We honor the INTENT instead: no hue carries information (the glyph vocabulary
+// ✓ ✗ ⚠ › · already encodes the semantics), everything renders as grayscale.
+// Per the NO_COLOR spec, user-level configuration (OPENSQUILLA_TUI_COLOR)
+// takes precedence over NO_COLOR.
+
+import process from "node:process";
 
 export const PALETTES = Object.freeze({
   // Canonical — verbatim from opensquilla-webui/src/assets/base.css.
@@ -55,11 +78,12 @@ export const PALETTES = Object.freeze({
     accent: "#FF8A1F", accentSecondary: "#FFB266",
     ok: "#3DF0A8", warn: "#FFD24A", danger: "#FF5C5C", info: "#5AC8FF", queued: "#BB9CFF",
   },
-  // Nordic polar night — recognizable cool palette with the brand accent.
+  // Nordic polar night — recognizable cool palette with the brand accent
+  // (brightened so it clears 4.5:1 as status-pill TEXT on bgSurface).
   nord: {
     bg: "#2E3440", bgSurface: "#3B4252", bgElevated: "#434C5E",
     text: "#ECEFF4", textMuted: "#C0C7D4", textDim: "#B6BDC9",
-    accent: "#EE7C35", accentSecondary: "#FFA86A",
+    accent: "#FF9446", accentSecondary: "#FFA86A",
     ok: "#A3BE8C", warn: "#EBCB8B", danger: "#D89FA5", info: "#88C0D0", queued: "#B690AF",
   },
   // Near-monochrome — the orange accent is the only saturated hue.
@@ -68,6 +92,18 @@ export const PALETTES = Object.freeze({
     text: "#EAEAEA", textMuted: "#9A9A9A", textDim: "#8A8A8A",
     accent: "#EC6A1A", accentSecondary: "#FF8A4C",
     ok: "#A7C2B0", warn: "#C9B98A", danger: "#CE9A9A", info: "#9FB3C0", queued: "#B0A6C8",
+  },
+  // Strict grayscale (every value r==g==b) — forced in mono color mode
+  // (NO_COLOR / TERM=dumb), pickable everywhere. Built on the opensquilla-dark
+  // lightness ladder; with hue gone, the semantic slots get DISTINCT lightness
+  // steps instead (danger brightest → queued dimmest), each clearing WCAG AA on
+  // all three surfaces. Hue loss is acceptable by design: the glyph vocabulary
+  // (✓ ✗ ⚠ › ·) already carries the run-state semantics.
+  monochrome: {
+    bg: "#121212", bgSurface: "#1A1A1A", bgElevated: "#232323",
+    text: "#ECECEC", textMuted: "#A6A6A6", textDim: "#8C8C8C",
+    accent: "#E0E0E0", accentSecondary: "#C4C4C4",
+    ok: "#B8B8B8", warn: "#D0D0D0", danger: "#F5F5F5", info: "#A0A0A0", queued: "#949494",
   },
 });
 
@@ -126,6 +162,88 @@ export function resolveThemeName(name) {
   return Object.prototype.hasOwnProperty.call(PALETTES, n) ? n : DEFAULT_THEME;
 }
 
+// ---- Color degradation ------------------------------------------------------
+
+// Resolve the terminal's color mode from the environment. Precedence (highest
+// first — the explicit override outranks NO_COLOR because the NO_COLOR spec
+// defers to user-level configuration):
+//   a. OPENSQUILLA_TUI_COLOR: "truecolor" | "16" | "mono" (unknown values are
+//      ignored and fall through to detection);
+//   b. NO_COLOR set to any non-empty value -> mono;
+//   c. TERM=dumb -> mono;
+//   d. COLORTERM advertising truecolor/24bit -> truecolor;
+//   e. TERM families known to speak truecolor (direct/256color entries degrade
+//      via the engine's native 256-color palette sync; tmux passes truecolor
+//      through when the outer terminal supports it — assume modern) -> truecolor;
+//   f. legacy 16-color TERM families -> compat16;
+//   g. default -> truecolor. The host already assumes a modern terminal for the
+//      alternate screen and mouse tracking, so an unknown TERM is not punished.
+export function detectColorMode(env = process.env) {
+  const override = String(env.OPENSQUILLA_TUI_COLOR ?? "").trim().toLowerCase();
+  if (override === "truecolor") return "truecolor";
+  if (override === "16") return "compat16";
+  if (override === "mono") return "mono";
+  if (String(env.NO_COLOR ?? "") !== "") return "mono";
+  const term = String(env.TERM ?? "").trim().toLowerCase();
+  if (term === "dumb") return "mono";
+  const colorterm = String(env.COLORTERM ?? "").toLowerCase();
+  if (colorterm.includes("truecolor") || colorterm.includes("24bit")) return "truecolor";
+  if (/direct|256color|kitty|ghostty|wezterm|alacritty|iterm|tmux/.test(term)) return "truecolor";
+  if (/^(vt100|vt220|ansi|linux)/.test(term) || term === "xterm" || term === "screen") {
+    return "compat16";
+  }
+  return "truecolor";
+}
+
+// The 16 canonical ANSI RGB values — indices 0-15 of the xterm 256-color cube.
+// Invariant: this is the SAME base-16 table ansiNotice.mjs's xterm256ToRgb uses
+// to classify inbound notice colors; it is duplicated (not imported) on purpose
+// so outbound quantization never couples to inbound notice parsing. Keep the
+// two tables identical.
+const BASIC16 = Object.freeze([
+  [0, 0, 0], [128, 0, 0], [0, 128, 0], [128, 128, 0],
+  [0, 0, 128], [128, 0, 128], [0, 128, 128], [192, 192, 192],
+  [128, 128, 128], [255, 0, 0], [0, 255, 0], [255, 255, 0],
+  [0, 0, 255], [255, 0, 255], [0, 255, 255], [255, 255, 255],
+]);
+
+// Nearest canonical ANSI-16 value by plain squared-Euclidean RGB distance —
+// simple, deterministic (first match wins a tie), and it keeps the brand orange
+// on the warm axis (red) across the shipped palettes instead of collapsing it
+// into olive the way green-weighted metrics do. Exact basic-16 inputs are
+// fixed points. Exported for the quantization tests.
+export function quantizeToBasic16(hex) {
+  const n = parseInt(String(hex).replace("#", ""), 16);
+  const r = (n >> 16) & 255;
+  const g = (n >> 8) & 255;
+  const b = n & 255;
+  let best = BASIC16[0];
+  let bestDist = Infinity;
+  for (const [cr, cg, cb] of BASIC16) {
+    const dist = (r - cr) ** 2 + (g - cg) ** 2 + (b - cb) ** 2;
+    if (dist < bestDist) {
+      bestDist = dist;
+      best = [cr, cg, cb];
+    }
+  }
+  return `#${best.map((v) => v.toString(16).padStart(2, "0")).join("").toUpperCase()}`;
+}
+
+// The active color mode, resolved ONCE at import so every applyTheme call —
+// startup and live /theme switches alike — degrades identically. setColorMode
+// exists for the tests (and a future /color command); unknown modes are ignored
+// so a bad caller can never wedge the host into an unrenderable state.
+let colorMode = detectColorMode(process.env);
+
+export function setColorMode(mode) {
+  if (mode === "truecolor" || mode === "compat16" || mode === "mono") colorMode = mode;
+  return colorMode;
+}
+
+export function activeColorMode() {
+  return colorMode;
+}
+
 // Live, mutable active-theme token set. Blocks and the composer read THEME.<token>
 // at render time, so applyTheme() repopulates this object IN PLACE and a re-render
 // recolors the UI without recreating any imports.
@@ -144,10 +262,22 @@ export function onThemeApplied(listener) {
   return () => _themeListeners.delete(listener);
 }
 
-export function applyTheme(name) {
-  const resolved = resolveThemeName(name);
-  Object.assign(THEME, toTokens(PALETTES[resolved]));
-  Object.assign(STATUS, toStatus(PALETTES[resolved]));
+export function applyTheme(name, { explicit = false } = {}) {
+  // mono mode overrides the requested palette with the grayscale one. The
+  // startup call and the /theme + picker paths all route through here without
+  // the flag, so under NO_COLOR they conservatively land on monochrome too —
+  // applyThemeExplicit below is the direct-user-request bypass.
+  const resolved = colorMode === "mono" && !explicit ? "monochrome" : resolveThemeName(name);
+  const tokens = toTokens(PALETTES[resolved]);
+  const status = toStatus(PALETTES[resolved]);
+  if (colorMode === "compat16") {
+    // Quantize AFTER derivation so every consumer — including a live /theme
+    // switch — only ever sees basic-16 values on a 16-color terminal.
+    for (const key of Object.keys(tokens)) tokens[key] = quantizeToBasic16(tokens[key]);
+    for (const key of Object.keys(status)) status[key] = quantizeToBasic16(status[key]);
+  }
+  Object.assign(THEME, tokens);
+  Object.assign(STATUS, status);
   activeTheme = resolved;
   for (const listener of _themeListeners) {
     try {
@@ -157,6 +287,14 @@ export function applyTheme(name) {
     }
   }
   return resolved;
+}
+
+// Direct user selection: bypasses the mono forcing, so a user who explicitly
+// asks for a palette gets it even under NO_COLOR (user-level configuration
+// outranks NO_COLOR, per its spec). Not wired to the /theme command yet — the
+// current command and picker intentionally stay on the conservative path above.
+export function applyThemeExplicit(name) {
+  return applyTheme(name, { explicit: true });
 }
 
 export function activeThemeName() {

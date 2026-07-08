@@ -8,7 +8,6 @@ import pytest
 from opensquilla.cli.repl.session_state import ChatSessionState
 from opensquilla.cli.repl.stream import TurnResult
 from opensquilla.cli.tui.contracts import TuiOutputHandle
-from opensquilla.engine.commands import Surface
 
 
 class _StandaloneSlashHarness:
@@ -74,22 +73,20 @@ def _slash_services(harness: _StandaloneSlashHarness):
 
 
 @pytest.mark.asyncio
-async def test_standalone_slash_adapter_matches_exit_with_standalone_surface(
-    monkeypatch: pytest.MonkeyPatch,
+async def test_standalone_slash_adapter_leaves_exit_to_the_runtime_loop(
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
-    from opensquilla.cli.repl import standalone_slash_adapter
+    """Exit commands are owned by the runtime loop, not the slash handler.
+
+    The handler has no exit branch: an ``/exit`` that reaches it anyway is
+    answered with the unknown-command notice and ``True`` (handled), so
+    the dispatch loop keeps running instead of terminating from inside
+    slash dispatch.
+    """
     from opensquilla.cli.repl.standalone_slash_adapter import (
         StandaloneSlashContext,
         handle_standalone_slash_command,
     )
-
-    surfaces: list[Surface] = []
-
-    def fake_is_exit_command(value: str, surface: Surface) -> bool:
-        surfaces.append(surface)
-        return value == "/exit"
-
-    monkeypatch.setattr(standalone_slash_adapter, "is_exit_command", fake_is_exit_command)
 
     state = ChatSessionState(session_key="agent:main:standalone:test", model="openai/test")
     context = StandaloneSlashContext(
@@ -105,8 +102,8 @@ async def test_standalone_slash_adapter_matches_exit_with_standalone_surface(
 
     handled = await handle_standalone_slash_command("/exit", context)
 
-    assert handled is False
-    assert surfaces == [Surface.CLI_STANDALONE]
+    assert handled is True
+    assert "Unknown command." in capsys.readouterr().out
 
 
 @pytest.mark.asyncio

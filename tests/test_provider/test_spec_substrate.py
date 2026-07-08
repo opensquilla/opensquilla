@@ -32,6 +32,12 @@ _CATALOG_SOURCE_WAIVERS: frozenset[str] = frozenset(
         # OAuth-only ChatGPT-backend provider: models are fixed by the
         # Codex subscription, not a public catalog.
         "openai_codex",
+        # Coding-plan subscription endpoints expose a fixed subscription
+        # surface rather than a models.dev-backed catalog.
+        "volcengine_coding_plan",
+        "volcengine_coding_plan_anthropic",
+        "byteplus_coding_plan",
+        "byteplus_coding_plan_anthropic",
     }
 )
 
@@ -98,7 +104,45 @@ def test_anthropic_backend_auth_header_styles() -> None:
     endpoints require Authorization: Bearer. The request goldens freeze the
     wire effect; this pins the spec values that drive it."""
     assert get_provider_spec("anthropic").auth_header_style == "x-api-key"
-    for provider_id in ("minimax", "minimax_cn", "minimax_global"):
+    for provider_id in (
+        "minimax",
+        "minimax_cn",
+        "minimax_global",
+        "volcengine_coding_plan_anthropic",
+        "byteplus_coding_plan_anthropic",
+    ):
         spec = get_provider_spec(provider_id)
         assert spec.backend == "anthropic"
         assert spec.auth_header_style == "bearer"
+
+
+def test_coding_plan_specs_expose_protocol_specific_runtime_surfaces() -> None:
+    """Coding-plan provider ids map the official protocol-specific URLs."""
+    expected = {
+        "volcengine_coding_plan": (
+            "openai_responses",
+            "https://ark.cn-beijing.volces.com/api/coding/v3",
+            frozenset({"chat", "coding_plan", "responses"}),
+        ),
+        "volcengine_coding_plan_anthropic": (
+            "anthropic",
+            "https://ark.cn-beijing.volces.com/api/coding",
+            frozenset({"chat", "coding_plan"}),
+        ),
+        "byteplus_coding_plan": (
+            "openai_responses",
+            "https://ark.ap-southeast.bytepluses.com/api/coding/v3",
+            frozenset({"chat", "coding_plan", "responses"}),
+        ),
+        "byteplus_coding_plan_anthropic": (
+            "anthropic",
+            "https://ark.ap-southeast.bytepluses.com/api/coding",
+            frozenset({"chat", "coding_plan"}),
+        ),
+    }
+    for provider_id, (backend, base_url, capabilities) in expected.items():
+        spec = get_provider_spec(provider_id)
+        assert spec.backend == backend
+        assert spec.default_base_url == base_url
+        assert spec.runtime_supported is True
+        assert capabilities <= spec.capabilities

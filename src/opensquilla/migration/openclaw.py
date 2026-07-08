@@ -25,7 +25,7 @@ from opensquilla.gateway.config import (
     GatewayConfig,
     MCPServerEntry,
 )
-from opensquilla.migration.env_file import merge_env_lines
+from opensquilla.migration.env_file import merge_env_lines, write_secret_env_file
 from opensquilla.onboarding.config_store import load_config, persist_config
 from opensquilla.paths import default_opensquilla_home
 
@@ -2016,11 +2016,7 @@ class OpenClawMigrator:
             else []
         )
         lines = merge_env_lines(existing_lines, self._env_additions)
-        env_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-        try:
-            os.chmod(env_path, 0o600)
-        except OSError:
-            pass
+        write_secret_env_file(env_path, lines)
 
     def _backup_file(self, path: Path) -> None:
         backup = path.with_name(f"{path.name}.backup.{self.timestamp}")

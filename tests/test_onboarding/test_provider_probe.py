@@ -11,6 +11,7 @@ import pytest
 
 from opensquilla.onboarding.probe import probe_llm_provider
 from opensquilla.provider.failures import ProviderFailureKind
+from opensquilla.provider.types import TextDeltaEvent
 
 
 def _sse_ok_body() -> bytes:
@@ -27,6 +28,22 @@ def _sse_ok_body() -> bytes:
 
 def _patch_response(monkeypatch: Any, response: httpx.Response) -> None:
     transport = httpx.MockTransport(lambda request: response)
+    real_async_client = httpx.AsyncClient
+
+    def patched_async_client(*args: Any, **kwargs: Any) -> httpx.AsyncClient:
+        kwargs["transport"] = transport
+        return real_async_client(*args, **kwargs)
+
+    monkeypatch.setattr("opensquilla.provider.openai.httpx.AsyncClient", patched_async_client)
+
+
+def _patch_transport_error(monkeypatch: Any, exc: Exception) -> None:
+    """Route provider HTTP through a transport that always fails to connect."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise exc
+
+    transport = httpx.MockTransport(handler)
     real_async_client = httpx.AsyncClient
 
     def patched_async_client(*args: Any, **kwargs: Any) -> httpx.AsyncClient:
@@ -100,3 +117,83 @@ def test_probe_rejects_unknown_provider_as_validation_error() -> None:
 def test_probe_requires_model() -> None:
     with pytest.raises(ValueError, match="Model is required"):
         _probe(provider_id="openai", model="", api_key="sk-test")
+
+
+def test_probe_classifies_connection_failure_as_transport_transient(monkeypatch: Any) -> None:
+    _patch_transport_error(monkeypatch, httpx.ConnectError("connection refused"))
+    result = _probe(provider_id="openai", model="gpt-4o", api_key="sk-test")
+    assert result.ok is False
+    assert result.failure_kind == ProviderFailureKind.TRANSPORT_TRANSIENT.value
+
+
+def test_probe_classifies_raised_stream_exception_as_transport_transient(
+    monkeypatch: Any,
+) -> None:
+    """An exception escaping the adapter's stream hits the probe's own guard."""
+
+    class _ExplodingProvider:
+        provider_name = "openai"
+
+        def chat(self, messages: Any, tools: Any = None, config: Any = None) -> Any:
+            async def _gen() -> Any:
+                raise RuntimeError("socket closed unexpectedly")
+                yield  # pragma: no cover - makes _gen an async generator
+
+            return _gen()
+
+        async def list_models(self) -> list[Any]:
+            return []
+
+    monkeypatch.setattr(
+        "opensquilla.onboarding.probe.build_provider",
+        lambda *args, **kwargs: _ExplodingProvider(),
+    )
+    result = _probe(provider_id="openai", model="gpt-4o", api_key="sk-test")
+    assert result.ok is False
+    assert result.failure_kind == ProviderFailureKind.TRANSPORT_TRANSIENT.value
+    assert "socket closed" in result.message
+
+
+def test_probe_classifies_truncated_stream_as_malformed_response(monkeypatch: Any) -> None:
+    """A stream that dies before its completion event is a malformed response."""
+
+    class _TruncatedProvider:
+        provider_name = "openai"
+
+        def chat(self, messages: Any, tools: Any = None, config: Any = None) -> Any:
+            async def _gen() -> Any:
+                yield TextDeltaEvent(text="pa")  # then the stream just stops
+
+            return _gen()
+
+        async def list_models(self) -> list[Any]:
+            return []
+
+    monkeypatch.setattr(
+        "opensquilla.onboarding.probe.build_provider",
+        lambda *args, **kwargs: _TruncatedProvider(),
+    )
+    result = _probe(provider_id="openai", model="gpt-4o", api_key="sk-test")
+    assert result.ok is False
+    assert result.failure_kind == ProviderFailureKind.MALFORMED_RESPONSE.value
+    assert "without a completion event" in result.message
+
+
+def test_probe_redacts_key_material_echoed_by_auth_errors(monkeypatch: Any) -> None:
+    """Provider 401 bodies can echo the bad key; the probe must never repeat it."""
+    leaked = "sk-verysecretsynthetictoken123"
+    _patch_response(
+        monkeypatch,
+        httpx.Response(
+            401,
+            headers={"content-type": "application/json"},
+            content=json.dumps(
+                {"error": {"message": f"Incorrect API key provided: {leaked}"}}
+            ).encode(),
+        ),
+    )
+    result = _probe(provider_id="openai", model="gpt-4o", api_key="sk-bad")
+    assert result.ok is False
+    assert result.failure_kind == ProviderFailureKind.AUTH_INVALID.value
+    assert leaked not in result.message
+    assert "***" in result.message

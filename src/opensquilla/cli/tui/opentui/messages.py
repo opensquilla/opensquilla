@@ -22,6 +22,9 @@ class RouterPluginState:
     source: str = ""
     routing_applied: bool = True
     rollout_phase: str = "full"
+    # Last turn's token traffic ("34.6k/548" = in/out), displayed as its own
+    # "io" strip field so the ctx field can stay a pure context-pressure value.
+    io: str = ""
 
 
 @dataclass(frozen=True)
@@ -46,20 +49,6 @@ class ModelText:
 
 
 @dataclass(frozen=True)
-class ToolCall:
-    name: str
-    summary: str = ""
-    status: str = "running"
-    id: str | None = None
-
-
-@dataclass(frozen=True)
-class ToolDetail:
-    text: str
-    tool_id: str | None = None
-
-
-@dataclass(frozen=True)
 class BlockBegin:
     id: str
     kind: str
@@ -81,11 +70,6 @@ class BlockUpdate:
 @dataclass(frozen=True)
 class BlockEnd:
     id: str
-
-
-@dataclass(frozen=True)
-class Usage:
-    text: str
 
 
 @dataclass(frozen=True)
@@ -136,6 +120,18 @@ class NoticeWrite:
 
 
 @dataclass(frozen=True)
+class ApprovalDismiss:
+    """Close the host approval overlay for a request Python stopped waiting on.
+
+    Sent when a pending ``approval.request`` resolves without a user decision
+    (timeout, turn cancellation) so the stale modal never lingers to swallow
+    the user's next keypress.
+    """
+
+    id: str
+
+
+@dataclass(frozen=True)
 class HostReady:
     pass
 
@@ -174,6 +170,26 @@ class HostError:
     detail: str | None = None
 
 
+@dataclass(frozen=True)
+class HostProtocolUnknown:
+    """Host reply for a Python message type its dispatcher does not know.
+
+    Sent instead of an ``error`` frame so a version-skewed (usually stale)
+    host degrades to one skipped frame instead of a session teardown.
+    """
+
+    message_type: str
+
+
+@dataclass(frozen=True)
+class HostApprovalResponse:
+    """User decision for an ``approval.request`` overlay shown by the host."""
+
+    id: str
+    approved: bool
+    choice: str | None = None
+
+
 type HostToPythonMessage = (
     HostReady
     | HostInputSubmit
@@ -182,7 +198,51 @@ type HostToPythonMessage = (
     | HostResize
     | HostCompletionRequest
     | HostError
+    | HostProtocolUnknown
+    | HostApprovalResponse
 )
+
+
+# Wire inventories, one entry per message type in each direction. These are the
+# single source of truth the conformance tests pin against the host's dispatcher
+# and emitter source, so a new/renamed type or a dispatcher-less sender fails a
+# unit test instead of surfacing as a live protocol error. Values are the
+# canonical payload dataclass, or None where the payload is an ad-hoc mapping
+# (or absent) at the call site.
+PYTHON_TO_HOST_TYPES: dict[str, type | None] = {
+    "turn.begin": TurnBegin,
+    "turn.end": TurnEnd,
+    "turn.status": TurnStatusState,
+    "composer.set": ComposerState,
+    "completion.context": CompletionContext,
+    "completion.response": None,
+    "router.update": RouterPluginState,
+    "block.begin": BlockBegin,
+    "block.append": BlockAppend,
+    "block.update": BlockUpdate,
+    "block.end": BlockEnd,
+    "prompt.echo": PromptEcho,
+    "model.text": ModelText,
+    "scrollback.write": ScrollbackWrite,
+    "notice.write": NoticeWrite,
+    "theme.set": None,
+    "theme.pick": None,
+    "approval.request": None,
+    "approval.dismiss": ApprovalDismiss,
+    "shutdown": None,
+}
+
+HOST_TO_PYTHON_TYPES: dict[str, type] = {
+    "ready": HostReady,
+    "input.submit": HostInputSubmit,
+    "input.cancel": HostInputCancel,
+    "input.eof": HostInputEof,
+    "resize": HostResize,
+    "completion.request": HostCompletionRequest,
+    "error": HostError,
+    "protocol.unknown": HostProtocolUnknown,
+    "approval.response": HostApprovalResponse,
+}
 
 
 def python_message_to_json(message_type: str, payload: object | None = None) -> str:
@@ -232,6 +292,16 @@ def host_message_from_json(raw: str) -> HostToPythonMessage:
             message=_required_str(payload, "error.message", "message"),
             detail=_optional_str(payload, "detail"),
         )
+    if message_type == "protocol.unknown":
+        return HostProtocolUnknown(
+            message_type=_required_str(payload, "protocol.unknown.messageType", "messageType"),
+        )
+    if message_type == "approval.response":
+        return HostApprovalResponse(
+            id=_required_str(payload, "approval.response.id", "id"),
+            approved=_required_bool(payload, "approval.response.approved", "approved"),
+            choice=_optional_str(payload, "choice"),
+        )
 
     raise HostToPythonMessageError(f"Unknown OpenTUI host message type: {message_type}")
 
@@ -265,5 +335,12 @@ def _optional_str(payload: dict[str, Any], key: str) -> str | None:
 def _required_int(payload: dict[str, Any], label: str, key: str) -> int:
     value = payload.get(key)
     if not isinstance(value, int):
+        raise HostToPythonMessageError(f"OpenTUI host message requires {label}")
+    return value
+
+
+def _required_bool(payload: dict[str, Any], label: str, key: str) -> bool:
+    value = payload.get(key)
+    if not isinstance(value, bool):
         raise HostToPythonMessageError(f"OpenTUI host message requires {label}")
     return value

@@ -5288,13 +5288,15 @@ class TurnRunner:
             # Flush the staged router decision record (V017 router_decisions)
             # with executed facts: executed_kind/ensemble_profile/fallback_hops
             # are only knowable now that the provider ran. Best-effort — the
-            # hook never raises and no-ops when nothing was staged.
+            # hook never raises and no-ops when nothing was staged. The SQLite
+            # insert is scheduled onto a worker thread (fire-and-forget) so a
+            # contended WAL commit can never stall the event loop.
             if turn_obj is not None:
                 from opensquilla.engine.steps.router_decision_record import (
-                    flush_router_decision,
+                    schedule_router_decision_flush,
                 )
 
-                flush_router_decision(
+                schedule_router_decision_flush(
                     turn_obj.metadata,
                     ensemble_trace=(
                         getattr(done_event, "ensemble_trace", None)

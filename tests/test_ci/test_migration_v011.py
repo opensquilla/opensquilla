@@ -3,24 +3,58 @@
 Verifies the recreate-and-copy migration preserves existing rows,
 opens the constraint to accept ``auto_cron`` + ``auto_dream``, and
 keeps all five V010 indexes alive.
+
+The preservation tests build the schema as of V010 only, seed rows,
+then migrate to head — applying the full directory first would leave
+the second ``apply_pending`` with nothing to do, so the recreate copy
+would only ever run against empty tables.
 """
 
 from __future__ import annotations
 
 import sqlite3
+from datetime import datetime
 from pathlib import Path
 
 import pytest
+from yoyo import get_backend, read_migrations
 
 from opensquilla.persistence.migrator import apply_pending
 
 MIGRATIONS_DIR = Path(__file__).resolve().parents[2] / "migrations"
+
+V010_ID = "V010__meta_skill_runs"
+V011_ID = "V011__meta_skill_runs_triggered_by_auto"
 
 
 def _open_conn(db_path: str) -> sqlite3.Connection:
     conn = sqlite3.connect(db_path)
     conn.execute("PRAGMA foreign_keys = ON")
     return conn
+
+
+def _apply_through(db: str, last_id: str) -> None:
+    """Apply *last_id* and its transitive __depends__ closure only."""
+    # Mirror the migrator's Python 3.12 datetime adapter registration; the
+    # yoyo ledger writes applied_at datetimes on this direct-backend path.
+    sqlite3.register_adapter(datetime, lambda value: value.isoformat(" "))
+    backend = get_backend("sqlite:///" + db)
+    try:
+        migrations = read_migrations(str(MIGRATIONS_DIR))
+        by_id = {migration.id: migration for migration in migrations}
+        wanted: set[str] = set()
+        todo = [last_id]
+        while todo:
+            migration_id = todo.pop()
+            if migration_id in wanted:
+                continue
+            wanted.add(migration_id)
+            todo.extend(dep.id for dep in by_id[migration_id].depends)
+        subset = migrations.filter(lambda m: m.id in wanted)
+        with backend.lock():
+            backend.apply_migrations(backend.to_apply(subset))
+    finally:
+        backend.connection.close()
 
 
 def _insert_run(conn: sqlite3.Connection, run_id: str, triggered_by: str) -> None:
@@ -80,34 +114,35 @@ def test_v011_relaxes_triggered_by_check_to_accept_auto_values(
 
 
 def test_v011_preserves_pre_existing_rows(tmp_path: Path) -> None:
-    """A row inserted before V011 must still be present after V011 runs."""
+    """Rows inserted under the V010 schema must survive the V011
+    recreate-and-copy with every column value intact."""
     db = str(tmp_path / "v011_preserve.db")
-    # Apply only up to V010 by reaching into the migrator with the same DB
-    # and then a second pass for V011 — apply_pending is idempotent for the
-    # already-applied migrations.
-    apply_pending(db, MIGRATIONS_DIR)  # full set
+    _apply_through(db, V010_ID)
 
     conn = _open_conn(db)
     try:
-        # Insert one row with each original value
+        # Insert one row with each original value BEFORE V011 exists.
         _insert_run(conn, "rA", "hard_takeover")
         _insert_run(conn, "rB", "soft_meta_invoke")
     finally:
         conn.close()
 
-    # Re-apply (idempotent) — confirms rows survive even though V011 does a
-    # recreate-and-copy.
-    apply_pending(db, MIGRATIONS_DIR)
+    # Migrate to head — V011's copy now runs against a populated table.
+    applied = apply_pending(db, MIGRATIONS_DIR)
+    assert "V011__meta_skill_runs_triggered_by_auto" in applied
 
     conn = _open_conn(db)
     try:
-        names = sorted(
-            r[0] for r in conn.execute(
-                "SELECT triggered_by FROM meta_skill_runs"
-            ).fetchall()
-        )
-        assert "hard_takeover" in names
-        assert "soft_meta_invoke" in names
+        rows = conn.execute(
+            "SELECT run_id, triggered_by, meta_skill_name, meta_skill_digest,"
+            " plan_snapshot_json, status, started_at_ms, inputs_json"
+            " FROM meta_skill_runs ORDER BY run_id"
+        ).fetchall()
+        assert rows == [
+            ("rA", "hard_takeover", "synth", "deadbeef", "{}", "ok", 1_000_000, "{}"),
+            ("rB", "soft_meta_invoke", "synth", "deadbeef", "{}", "ok", 1_000_000, "{}"),
+        ]
+        assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
     finally:
         conn.close()
 
@@ -129,10 +164,11 @@ def test_v011_keeps_all_five_v010_indexes(tmp_path: Path) -> None:
 
 def test_v011_child_table_rows_survive_recreate(tmp_path: Path) -> None:
     """meta_skill_run_steps.run_id FKs into meta_skill_runs.run_id;
-    recreating the parent table with foreign_keys=OFF must not orphan
-    child rows."""
+    recreating the parent table must not orphan or drop child rows that
+    existed BEFORE the recreate ran."""
     db = str(tmp_path / "v011_child.db")
-    apply_pending(db, MIGRATIONS_DIR)
+    _apply_through(db, V010_ID)
+
     conn = _open_conn(db)
     try:
         _insert_run(conn, "rx", "soft_meta_invoke")
@@ -149,9 +185,11 @@ def test_v011_child_table_rows_survive_recreate(tmp_path: Path) -> None:
     finally:
         conn.close()
 
-    # Re-apply (no-op for V010+V011) — child rows must still resolve their
-    # parent.
-    apply_pending(db, MIGRATIONS_DIR)
+    # Migrate to head — V011 drops and recreates the parent table with the
+    # child rows in place.
+    applied = apply_pending(db, MIGRATIONS_DIR)
+    assert V011_ID in applied
+
     conn = _open_conn(db)
     try:
         row = conn.execute(
@@ -162,5 +200,6 @@ def test_v011_child_table_rows_survive_recreate(tmp_path: Path) -> None:
             ("rx",),
         ).fetchone()
         assert row == ("rx", "step1")
+        assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
     finally:
         conn.close()

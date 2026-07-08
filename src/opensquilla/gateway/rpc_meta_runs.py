@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any, cast
 
 from opensquilla.engine.steps.meta_command import pending_meta_launch_put
@@ -154,8 +155,10 @@ def _existing_specs(ctx: RpcContext) -> list[Any]:
         return []
 
 
-def _record_or_404(writer: Any, run_id: str) -> RunRecord:
-    record = writer.get_run(run_id)
+async def _record_or_404(writer: Any, run_id: str) -> RunRecord:
+    # The writer is sync sqlite (busy_timeout=5000); keep its reads off
+    # the event loop so a contended commit cannot stall the gateway.
+    record = await asyncio.to_thread(writer.get_run, run_id)
     if record is None:
         raise RpcHandlerError(ERROR_NOT_FOUND, f"meta run not found: {run_id}")
     return cast(RunRecord, record)
@@ -173,19 +176,16 @@ async def _handle_meta_runs_list(params: Any, ctx: RpcContext) -> dict[str, Any]
     writer = _writer_from_context(ctx)
     p = params if isinstance(params, dict) else {}
     session_key = _session_key_for_history(p, ctx)
-    rows = writer.list_runs(
+    rows = await asyncio.to_thread(
+        writer.list_runs,
         name=p.get("name"),
         status=p.get("status"),
         session_key=session_key,
         since_ms=_parse_since_param(p.get("since")),
         limit=_bounded_limit(p.get("limit")),
     )
-    return {
-        "runs": [
-            _serialize_record_summary(row)
-            for row in _hydrate_records(writer, rows)
-        ]
-    }
+    hydrated = await asyncio.to_thread(_hydrate_records, writer, rows)
+    return {"runs": [_serialize_record_summary(row) for row in hydrated]}
 
 
 @_d.method("meta.runs.show", scope="operator.admin")
@@ -193,7 +193,7 @@ async def _handle_meta_runs_show(params: Any, ctx: RpcContext) -> dict[str, Any]
     writer = _writer_from_context(ctx)
     p = params if isinstance(params, dict) else {}
     run_id = str(p.get("runId") or p.get("run_id") or "")
-    record = writer.get_run(run_id)
+    record = await asyncio.to_thread(writer.get_run, run_id)
     if record is None:
         return {"run": None}
     return {"run": _serialize_record(record)}
@@ -204,18 +204,15 @@ async def _handle_meta_runs_failures(params: Any, ctx: RpcContext) -> dict[str, 
     writer = _writer_from_context(ctx)
     p = params if isinstance(params, dict) else {}
     session_key = _session_key_for_history(p, ctx)
-    rows = writer.list_failures(
+    rows = await asyncio.to_thread(
+        writer.list_failures,
         name=p.get("name"),
         session_key=session_key,
         since_ms=_parse_since_param(p.get("since")),
         limit=_bounded_limit(p.get("limit")),
     )
-    return {
-        "runs": [
-            _serialize_record_summary(row)
-            for row in _hydrate_records(writer, rows)
-        ]
-    }
+    hydrated = await asyncio.to_thread(_hydrate_records, writer, rows)
+    return {"runs": [_serialize_record_summary(row) for row in hydrated]}
 
 
 @_d.method("meta.runs.draft", scope="operator.admin")
@@ -223,7 +220,7 @@ async def _handle_meta_runs_draft(params: Any, ctx: RpcContext) -> dict[str, Any
     writer = _writer_from_context(ctx)
     p = params if isinstance(params, dict) else {}
     run_id = str(p.get("runId") or p.get("run_id") or "")
-    record = writer.get_run(run_id)
+    record = await asyncio.to_thread(writer.get_run, run_id)
     if record is None:
         return {"draft": None}
     return {
@@ -238,7 +235,7 @@ async def _handle_meta_runs_draft(params: Any, ctx: RpcContext) -> dict[str, Any
 async def _handle_meta_runs_confirm_preflight(params: Any, ctx: RpcContext) -> dict[str, Any]:
     writer = _writer_from_context(ctx)
     p = params if isinstance(params, dict) else {}
-    record = _record_or_404(writer, _run_id_param(p))
+    record = await _record_or_404(writer, _run_id_param(p))
     plan = deserialize_plan(record)
     fields_raw = p.get("fields") or p.get("confirmedFields") or {}
     fields = (
@@ -277,8 +274,8 @@ async def _handle_meta_runs_diff(params: Any, ctx: RpcContext) -> dict[str, Any]
         raise RpcHandlerError(ERROR_INVALID_REQUEST, "leftRunId and rightRunId are required")
     return {
         "diff": build_run_diff(
-            _record_or_404(writer, left_id),
-            _record_or_404(writer, right_id),
+            await _record_or_404(writer, left_id),
+            await _record_or_404(writer, right_id),
         )
     }
 
@@ -287,7 +284,7 @@ async def _handle_meta_runs_diff(params: Any, ctx: RpcContext) -> dict[str, Any]
 async def _handle_meta_runs_replay(params: Any, ctx: RpcContext) -> dict[str, Any]:
     writer = _writer_from_context(ctx)
     p = params if isinstance(params, dict) else {}
-    record = _record_or_404(writer, _run_id_param(p))
+    record = await _record_or_404(writer, _run_id_param(p))
     mode = str(p.get("mode") or "run")
     return {"replay": build_replay_request(record, mode=mode)}
 
@@ -297,21 +294,22 @@ async def _handle_meta_runs_cost(params: Any, ctx: RpcContext) -> dict[str, Any]
     writer = _writer_from_context(ctx)
     p = params if isinstance(params, dict) else {}
     session_key = _session_key_for_history(p, ctx)
-    rows = writer.list_runs(
+    rows = await asyncio.to_thread(
+        writer.list_runs,
         name=p.get("name"),
         status=p.get("status"),
         session_key=session_key,
         since_ms=_parse_since_param(p.get("since")),
         limit=_bounded_limit(p.get("limit")),
     )
-    return build_cost_summary(_hydrate_records(writer, rows))
+    return build_cost_summary(await asyncio.to_thread(_hydrate_records, writer, rows))
 
 
 @_d.method("meta.runs.validate", scope="operator.admin")
 async def _handle_meta_runs_validate(params: Any, ctx: RpcContext) -> dict[str, Any]:
     writer = _writer_from_context(ctx)
     p = params if isinstance(params, dict) else {}
-    record = _record_or_404(writer, _run_id_param(p))
+    record = await _record_or_404(writer, _run_id_param(p))
     return {"validation": build_validation_summary(record)}
 
 
@@ -319,7 +317,7 @@ async def _handle_meta_runs_validate(params: Any, ctx: RpcContext) -> dict[str, 
 async def _handle_meta_runs_eval_baseline(params: Any, ctx: RpcContext) -> dict[str, Any]:
     writer = _writer_from_context(ctx)
     p = params if isinstance(params, dict) else {}
-    record = _record_or_404(writer, _run_id_param(p))
+    record = await _record_or_404(writer, _run_id_param(p))
     return {"baseline": build_eval_baseline(record)}
 
 

@@ -65,6 +65,30 @@ def _column_exists(conn, table: str, column: str) -> bool:
     return any(row[1] == column for row in cur.fetchall())
 
 
+def _assert_fk_enforcement_off(conn) -> None:
+    """Fail loudly if foreign-key enforcement is live on this connection.
+
+    yoyo wraps every Python step in an explicit transaction, and
+    ``PRAGMA foreign_keys`` is a documented no-op inside a transaction, so
+    the OFF/ON bracket in the rollback recreate below cannot take effect
+    there. The rebuild has only ever been validated with SQLite's default
+    foreign_keys=OFF; with enforcement live the drop-and-copy would run
+    under FK semantics this migration was not designed for. Refuse loudly.
+    """
+    cur = conn.cursor()
+    cur.execute("PRAGMA foreign_keys")
+    row = cur.fetchone()
+    if row is not None and row[0]:
+        raise RuntimeError(
+            "V015: PRAGMA foreign_keys is enabled on the migration "
+            "connection; the meta_skill_run_steps rebuild would run with "
+            "foreign-key enforcement live (the OFF pragma below is a no-op "
+            "inside yoyo's step transaction). Refusing to proceed — run "
+            "migrations on a connection with foreign-key enforcement "
+            "disabled."
+        )
+
+
 def apply_step(conn) -> None:
     if not _table_exists(conn, "meta_skill_run_steps"):
         return
@@ -81,7 +105,10 @@ def rollback_step(conn) -> None:
         return
     if not _column_exists(conn, "meta_skill_run_steps", "usage_json"):
         return
+    _assert_fk_enforcement_off(conn)
     cur = conn.cursor()
+    # Inert inside yoyo's step transaction (see _assert_fk_enforcement_off);
+    # kept because it is harmless and correct outside a transaction.
     cur.execute("PRAGMA foreign_keys = OFF")
     try:
         cur.execute(

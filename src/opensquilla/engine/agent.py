@@ -10,6 +10,7 @@ import contextlib
 import functools
 import hashlib
 import json
+import os
 import re
 import subprocess
 import time
@@ -192,6 +193,37 @@ from .types import (
 logger = structlog.get_logger("opensquilla.engine.agent")
 
 _TURN_OBJECTIVE_REMINDER_MAX_CHARS = 2000
+
+_TURN_OBJECTIVE_REMINDER_ENV = "OPENSQUILLA_TURN_OBJECTIVE_REMINDER"
+_TURN_OBJECTIVE_REMINDER_ON = {"on", "1", "true", "yes"}
+_TURN_OBJECTIVE_REMINDER_OFF = {"off", "0", "false", "no"}
+_TURN_OBJECTIVE_REMINDER_TRIM_PREFIX = "trim:"
+
+
+def _resolve_turn_objective_reminder() -> tuple[bool, int]:
+    """Resolve the opt-in turn-objective reminder override.
+
+    ``OPENSQUILLA_TURN_OBJECTIVE_REMINDER`` accepts "on"/"off" or
+    "trim:<chars>" (a positive integer replacing the default truncation cap).
+    Unset or "on" keeps the shipped reminder byte-identical; "off" suppresses
+    the per-turn "[Current user request reminder]" message entirely.
+    Unrecognized values raise instead of being silently ignored so a run
+    manifest cannot record an override the run did not actually apply.
+    """
+    env_value = os.environ.get(_TURN_OBJECTIVE_REMINDER_ENV, "").strip().lower()
+    if not env_value or env_value in _TURN_OBJECTIVE_REMINDER_ON:
+        return True, _TURN_OBJECTIVE_REMINDER_MAX_CHARS
+    if env_value in _TURN_OBJECTIVE_REMINDER_OFF:
+        return False, _TURN_OBJECTIVE_REMINDER_MAX_CHARS
+    if env_value.startswith(_TURN_OBJECTIVE_REMINDER_TRIM_PREFIX):
+        raw_chars = env_value[len(_TURN_OBJECTIVE_REMINDER_TRIM_PREFIX) :]
+        if raw_chars.isdigit() and int(raw_chars) > 0:
+            return True, int(raw_chars)
+    raise ValueError(
+        f"{_TURN_OBJECTIVE_REMINDER_ENV} must be one of: "
+        + ", ".join(sorted(_TURN_OBJECTIVE_REMINDER_ON | _TURN_OBJECTIVE_REMINDER_OFF))
+        + ", or trim:<positive integer>"
+    )
 
 _PROVIDER_OUTPUT_TRUNCATED_REPLY = build_terminal_reply(
     {
@@ -1376,6 +1408,10 @@ class Agent:
             )
         self._meta_run_writer = (self.config.metadata or {}).get("meta_run_writer")
         self._pending_warnings: list[WarningEvent] = []
+        (
+            self._turn_objective_reminder_enabled,
+            self._turn_objective_reminder_max_chars,
+        ) = _resolve_turn_objective_reminder()
 
         self._state: AgentState = AgentState.IDLE
         self._history: list[Message] = []
@@ -3735,7 +3771,9 @@ class Agent:
         runtime_context_message = self._runtime_context_message(runtime_context)
         request_context_message = self._request_context_message(self.config.request_context_prompt)
         turn_objective_message = self._turn_objective_message(
-            semantic_message if semantic_message is not None else message
+            semantic_message if semantic_message is not None else message,
+            enabled=self._turn_objective_reminder_enabled,
+            max_chars=self._turn_objective_reminder_max_chars,
         )
         runtime_context_hash = hashlib.sha256(runtime_context.encode("utf-8")).hexdigest()[:16]
 
@@ -9218,12 +9256,19 @@ class Agent:
         return Message(role="user", content="\n".join(lines))
 
     @staticmethod
-    def _turn_objective_message(turn_objective: str | None) -> Message | None:
+    def _turn_objective_message(
+        turn_objective: str | None,
+        *,
+        enabled: bool = True,
+        max_chars: int = _TURN_OBJECTIVE_REMINDER_MAX_CHARS,
+    ) -> Message | None:
+        if not enabled:
+            return None
         if not turn_objective or not turn_objective.strip():
             return None
         objective = turn_objective.strip()
-        if len(objective) > _TURN_OBJECTIVE_REMINDER_MAX_CHARS:
-            objective = objective[:_TURN_OBJECTIVE_REMINDER_MAX_CHARS].rstrip() + "..."
+        if len(objective) > max_chars:
+            objective = objective[:max_chars].rstrip() + "..."
         lines = [
             "[Current user request reminder]",
             "This is the active user request for this same turn, not a new request.",

@@ -16,6 +16,7 @@ def test_cache_dirs_cover_common_language_tools(tmp_path: Path) -> None:
         "pip",
         "uv",
         "npm",
+        "npm-cache",
         "pnpm",
         "yarn",
         "cargo",
@@ -45,7 +46,7 @@ def test_cache_env_points_to_workspace_cache(tmp_path: Path) -> None:
     assert env["GIT_CONFIG_NOSYSTEM"] == "1"
     assert env["PIP_CACHE_DIR"] == str(root / "pip")
     assert env["UV_CACHE_DIR"] == str(root / "uv")
-    assert env["npm_config_cache"] == str(root / "npm")
+    assert env["npm_config_cache"] == str(root / "npm-cache")
     assert env["PNPM_HOME"] == str(root / "pnpm" / "home")
     assert env["PNPM_STORE_DIR"] == str(root / "pnpm" / "store")
     assert env["YARN_CACHE_FOLDER"] == str(root / "yarn")

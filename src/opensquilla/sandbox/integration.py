@@ -375,6 +375,8 @@ def _session_mounts_for_policy(workspace: Path) -> tuple[MountSpec, ...]:
         access = normalize_mount_access(item.get("access"))
         try:
             host_path = normalize_path(raw_path)
+            if not host_path.exists():
+                continue
             decision = decide_path_access(
                 host_path,
                 workspace=workspace,

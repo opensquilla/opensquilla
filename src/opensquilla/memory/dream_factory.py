@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -46,17 +45,26 @@ def build_dream_provider_selector(config: Any) -> Any | None:
     if llm_cfg is None:
         return None
 
-    api_key = os.environ.get("OPENROUTER_API_KEY", "") or getattr(llm_cfg, "api_key", "")
+    from opensquilla.gateway.llm_runtime import resolve_llm_runtime_config
+    from opensquilla.provider.selector import ModelSelector, ProviderConfig, SelectorConfig
+
+    # Resolve credentials through the shared explicit-config-first resolver
+    # (config > derived provider env > spec default) instead of a local
+    # openrouter-env-first chain, so a shell holding OPENROUTER_* variables
+    # cannot hijack a non-openrouter Dream provider or an operator-chosen
+    # endpoint. Resolved on a throwaway deep copy: the resolver materializes
+    # values into the model in place, and Dream must not mutate the live
+    # gateway config.
+    runtime = resolve_llm_runtime_config(config.model_copy(deep=True))
+    api_key = runtime.api_key
     if not api_key:
         return None
 
-    from opensquilla.provider.selector import ModelSelector, ProviderConfig, SelectorConfig
-
     provider, model = _dream_provider_target(config)
-    base_url = os.environ.get("OPENROUTER_BASE_URL", "") or getattr(llm_cfg, "base_url", "")
+    base_url = runtime.base_url
     if base_url.endswith("/v1"):
         base_url = base_url[:-3]
-    proxy = os.environ.get("OPENSQUILLA_LLM_PROXY", "") or getattr(llm_cfg, "proxy", "")
+    proxy = runtime.proxy
 
     return ModelSelector(
         SelectorConfig(

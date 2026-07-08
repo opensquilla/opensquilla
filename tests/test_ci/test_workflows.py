@@ -546,6 +546,28 @@ def test_ci_change_classifier_tracks_platform_sensitive_changes(tmp_path: Path) 
     )
 
 
+def test_ci_change_classifier_runs_windows_full_for_persistence_risk(
+    tmp_path: Path,
+) -> None:
+    outputs = _classify_changed_files(
+        tmp_path,
+        [
+            "src/opensquilla/persistence/migrator.py",
+            "tests/test_persistence/test_migrator.py",
+            "migrations/V999__example.py",
+        ],
+    )
+
+    assert outputs == _expected_classifier_outputs(
+        runtime_changed="true",
+        test_changed="true",
+        windows_full_required="true",
+        python_changed="true",
+        platform_sensitive_changed="true",
+        build_wheel_required="true",
+    )
+
+
 def test_ci_change_classifier_tracks_desktop_changes(tmp_path: Path) -> None:
     outputs = _classify_changed_files(
         tmp_path,

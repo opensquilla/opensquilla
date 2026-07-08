@@ -466,8 +466,40 @@ def test_acl_refresh_grants_current_user_normal_access_when_requested(
 
     assert calls == [
         (workspace, "RWX", "S-1-5-21-capability"),
-        (workspace, "RWX", "S-1-5-21-user"),
+        (workspace, "HOST_RWX", "S-1-5-21-user"),
     ]
+
+
+def test_acl_refresh_skips_missing_policy_grants(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    from opensquilla.sandbox.backend import windows_default_runner as mod
+
+    missing = tmp_path / "deleted-probe.txt"
+    calls = []
+
+    monkeypatch.setattr(
+        mod,
+        "_grant_path_to_sid",
+        lambda path, access, sid: calls.append((path, access, sid)),
+    )
+
+    mod._apply_acl_refresh(
+        {
+            "autoGrants": [
+                {
+                    "path": str(missing),
+                    "access": "RWX",
+                    "kind": "policy",
+                    "capabilitySid": "S-1-5-21-capability",
+                }
+            ],
+            "capabilitySids": ["S-1-5-21-capability"],
+        }
+    )
+
+    assert calls == []
 
 
 def test_acl_refresh_applies_deny_write_paths_to_write_root_capability_sids(

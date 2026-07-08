@@ -16,6 +16,7 @@ from opensquilla.sandbox.types import (
     SandboxRequest,
     SecurityLevel,
 )
+from opensquilla.tools.types import ToolContext, current_tool_context
 
 
 def _policy() -> SandboxPolicy:
@@ -68,6 +69,55 @@ def test_payload_contains_cache_env_and_run_mode(
         tmp_path / ".opensquilla-cache" / "npm" / "prefix"
     )
     assert payload["policy"]["network"] == "none"
+
+
+def test_session_mounts_skip_missing_paths(tmp_path: Path) -> None:
+    from opensquilla.sandbox import integration as mod
+
+    missing = tmp_path / "deleted-probe.txt"
+    token = current_tool_context.set(
+        ToolContext(
+            workspace_dir=str(tmp_path),
+            sandbox_mounts=[{"path": str(missing), "access": "rw"}],
+        )
+    )
+    try:
+        assert mod._session_mounts_for_policy(tmp_path) == ()
+    finally:
+        current_tool_context.reset(token)
+
+
+def test_windows_acl_payload_skips_missing_policy_mounts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from opensquilla.sandbox.backend import windows_default as mod
+
+    missing = tmp_path / "deleted-probe.txt"
+    policy = _policy()
+    policy = SandboxPolicy(
+        level=policy.level,
+        network=policy.network,
+        mounts=(
+            MountSpec(
+                host_path=missing,
+                sandbox_path=missing,
+                mode="rw",
+                required=False,
+            ),
+        ),
+        workspace_rw=policy.workspace_rw,
+        tmp_writable=policy.tmp_writable,
+        limits=policy.limits,
+        env_allowlist=policy.env_allowlist,
+        require_approval=policy.require_approval,
+    )
+    request = _request(tmp_path).with_policy(policy)
+    monkeypatch.setattr(mod, "_capability_store_path", lambda: tmp_path / "cap_sids.json")
+
+    plan = mod._acl_plan_payload(request)
+
+    assert all(grant["path"] != str(missing) for grant in plan["autoGrants"])
 
 
 def test_payload_rehomes_user_state_for_regular_windows_commands(

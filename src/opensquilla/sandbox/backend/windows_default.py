@@ -21,7 +21,10 @@ from opensquilla.sandbox.backend.windows_default_acl import (
     AclGrantKind,
     plan_acl_refresh,
 )
-from opensquilla.sandbox.backend.windows_default_cache import build_cache_env, ensure_cache_dirs
+from opensquilla.sandbox.backend.windows_default_cache import (
+    build_cache_env,
+    ensure_cache_dirs,
+)
 from opensquilla.sandbox.backend.windows_default_capability import capability_sids_for_command
 from opensquilla.sandbox.backend.windows_default_roots import (
     process_executable_rx_roots,
@@ -355,8 +358,12 @@ def _filesystem_operation_target_roots(operation: SandboxOperation) -> tuple[Pat
     request = _filesystem_request(operation)
     roots: list[Path] = []
     for path in request.paths:
-        root = path.parent if operation.kind in SANDBOX_FILESYSTEM_WRITE_KINDS else path
-        roots.append(_nearest_existing_acl_root(root))
+        if operation.kind in SANDBOX_FILESYSTEM_WRITE_KINDS:
+            roots.append(_nearest_existing_acl_root(path.parent))
+            if path.exists():
+                roots.append(_nearest_existing_acl_root(path))
+            continue
+        roots.append(_nearest_existing_acl_root(path))
     return tuple(dict.fromkeys(roots))
 
 
@@ -527,6 +534,7 @@ def _acl_plan_payload(request: SandboxRequest) -> dict[str, object]:
             AclGrantKind.POLICY,
         )
         for mount in request.policy.mounts
+        if mount.host_path.exists()
     ]
     plan = plan_acl_refresh(
         run_mode=normalize_run_mode(request.run_mode),

@@ -11,6 +11,7 @@ def _clear_search_env(monkeypatch) -> None:
     for key in (
         "BOCHA_SEARCH_API_KEY",
         "BRAVE_SEARCH_API_KEY",
+        "IQS_SEARCH_API_KEY",
         "TAVILY_API_KEY",
         "EXA_API_KEY",
         "CUSTOM_EXA_KEY",
@@ -88,6 +89,18 @@ def test_resolver_bocha_default_env_orders_bocha_then_duckduckgo(monkeypatch) ->
     assert bocha.credential_source == "spec_env"
 
 
+def test_resolver_iqs_default_env_orders_iqs_then_duckduckgo(monkeypatch) -> None:
+    _clear_search_env(monkeypatch)
+    monkeypatch.setenv("IQS_SEARCH_API_KEY", "iqs-key")
+
+    runtime = resolve_search_runtime(SearchRuntimeConfig(provider="duckduckgo"))
+
+    assert runtime.provider_order(SearchOptions(query="q")) == ("iqs", "duckduckgo")
+    iqs = runtime.provider_config("iqs")
+    assert iqs.available is True
+    assert iqs.credential_source == "spec_env"
+
+
 def test_resolver_all_key_mode_tie_breakers(monkeypatch) -> None:
     _clear_search_env(monkeypatch)
     monkeypatch.setenv("BOCHA_SEARCH_API_KEY", "bocha-key")
@@ -125,6 +138,45 @@ def test_resolver_all_key_mode_tie_breakers(monkeypatch) -> None:
         "exa",
         "duckduckgo",
     )
+
+
+def test_resolver_all_key_mode_tie_breakers_with_iqs(monkeypatch) -> None:
+    _clear_search_env(monkeypatch)
+    monkeypatch.setenv("BOCHA_SEARCH_API_KEY", "bocha-key")
+    monkeypatch.setenv("BRAVE_SEARCH_API_KEY", "brave-key")
+    monkeypatch.setenv("IQS_SEARCH_API_KEY", "iqs-key")
+    monkeypatch.setenv("TAVILY_API_KEY", "tavily-key")
+    monkeypatch.setenv("EXA_API_KEY", "exa-key")
+
+    runtime = resolve_search_runtime(SearchRuntimeConfig(provider="duckduckgo"))
+
+    assert runtime.provider_order(SearchOptions(query="q")) == (
+        "bocha",
+        "tavily",
+        "iqs",
+        "brave",
+        "exa",
+        "duckduckgo",
+    )
+    assert runtime.provider_order(SearchOptions(query="q", mode="technical")) == (
+        "exa",
+        "bocha",
+        "brave",
+        "tavily",
+        "iqs",
+        "duckduckgo",
+    )
+    assert runtime.provider_order(SearchOptions(query="q", recency="week")) == (
+        "bocha",
+        "tavily",
+        "iqs",
+        "brave",
+        "exa",
+        "duckduckgo",
+    )
+    assert runtime.provider_order(
+        SearchOptions(query="q", include_domains=("python.org",))
+    ) == ("tavily", "iqs", "exa")
 
 
 def test_resolver_domain_constrained_auto_prefers_domain_filter_providers(
@@ -226,6 +278,7 @@ def test_runtime_build_provider_registers_builtin_providers_in_fresh_process(
 
     for module_name in (
         "opensquilla.search.providers.bocha",
+        "opensquilla.search.providers.iqs",
         "opensquilla.search.providers.tavily",
         "opensquilla.search.providers.brave",
         "opensquilla.search.providers.exa",

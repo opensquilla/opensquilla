@@ -22,6 +22,12 @@ _provider_specs: dict[str, SearchProviderSpec] = {
         provider_id="duckduckgo",
         capabilities=frozenset({"web", "no_key"}),
     ),
+    "iqs": SearchProviderSpec(
+        provider_id="iqs",
+        requires_api_key=True,
+        env_key="IQS_SEARCH_API_KEY",
+        capabilities=frozenset({"web", "freshness", "domain_filter", "content"}),
+    ),
     "tavily": SearchProviderSpec(
         provider_id="tavily",
         requires_api_key=True,

@@ -109,8 +109,12 @@ _IN_PROCESS_NETWORK_TAGS: frozenset[str] = frozenset(
     {"network.fetch", "network.http", "web.fetch"}
 )
 _SEARCH_PROVIDER_SYSTEM_DOMAINS: dict[str, tuple[str, ...]] = {
+    "bocha": ("api.bochaai.com",),
     "brave": ("api.search.brave.com",),
     "duckduckgo": ("html.duckduckgo.com",),
+    "exa": ("api.exa.ai",),
+    "iqs": ("cloud-iqs.aliyuncs.com",),
+    "tavily": ("api.tavily.com",),
 }
 
 
@@ -375,6 +379,8 @@ def _session_mounts_for_policy(workspace: Path) -> tuple[MountSpec, ...]:
         access = normalize_mount_access(item.get("access"))
         try:
             host_path = normalize_path(raw_path)
+            if not host_path.exists():
+                continue
             decision = decide_path_access(
                 host_path,
                 workspace=workspace,

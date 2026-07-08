@@ -802,6 +802,39 @@ async def test_standard_shell_simple_read_path_outside_workspace_requests_ro_mou
 
 
 @pytest.mark.asyncio
+async def test_standard_shell_powershell_read_path_outside_workspace_requests_ro_mount(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(exist_ok=True)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    backend_calls: list[object] = []
+
+    async def fail_backend(request: object, *, runtime: object = None) -> object:
+        backend_calls.append(request)
+        raise AssertionError("backend should not run before path access is granted")
+
+    monkeypatch.setattr(shell, "run_under_backend", fail_backend)
+    monkeypatch.setattr(
+        shell,
+        "check_safe_bin",
+        lambda command: SimpleNamespace(allowed=True, needs_approval=False, reason=""),
+    )
+
+    command = f'powershell -NoProfile -Command "Get-ChildItem -LiteralPath \'{outside}\'"'
+    with tool_context(workspace, run_mode="standard"):
+        payload = json.loads(await shell.exec_command(command))
+
+    assert payload["status"] == "approval_required"
+    assert payload["path"] == str(outside.resolve(strict=False))
+    assert payload["access"] == "ro"
+    assert payload["approvalKind"] == "sandbox_path"
+    assert backend_calls == []
+
+
+@pytest.mark.asyncio
 async def test_trusted_filesystem_read_path_outside_workspace_auto_mounts_without_prompt(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -873,6 +906,39 @@ async def test_trusted_shell_simple_read_path_outside_workspace_auto_mounts_with
 
     with tool_context(workspace, run_mode="trusted") as ctx:
         result = await shell.exec_command(f"ls {outside}")
+
+    assert "exit_code=0" in result
+    assert "listed" in result
+    assert backend_calls
+    assert get_approval_queue().list_pending("exec") == []
+    assert ctx.sandbox_mounts == [{"path": str(outside.resolve(strict=False)), "access": "ro"}]
+
+
+@pytest.mark.asyncio
+async def test_trusted_shell_powershell_read_path_outside_workspace_auto_mounts_without_prompt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(exist_ok=True)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    backend_calls: list[object] = []
+
+    async def fake_backend(request: object, *, runtime: object = None) -> object:
+        backend_calls.append(request)
+        return SimpleNamespace(stdout="listed\n", stderr="", returncode=0, backend_notes=[])
+
+    monkeypatch.setattr(shell, "run_under_backend", fake_backend)
+    monkeypatch.setattr(
+        shell,
+        "check_safe_bin",
+        lambda command: SimpleNamespace(allowed=True, needs_approval=False, reason=""),
+    )
+
+    command = f'powershell -NoProfile -Command "Get-ChildItem -LiteralPath \'{outside}\'"'
+    with tool_context(workspace, run_mode="trusted") as ctx:
+        result = await shell.exec_command(command)
 
     assert "exit_code=0" in result
     assert "listed" in result

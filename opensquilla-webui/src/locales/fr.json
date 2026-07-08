@@ -699,6 +699,8 @@
       "timeout": "Expiré",
       "interrupted": "Interrompu",
       "cancelled": "Annulé",
+      "outputInterrupted": "Sortie interrompue",
+      "stoppedAfterSeconds": "Arrêté après {seconds} s",
       "idle": "Inactif"
     },
     "relTime": {

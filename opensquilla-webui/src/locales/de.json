@@ -699,6 +699,8 @@
       "timeout": "Zeitüberschreitung",
       "interrupted": "Unterbrochen",
       "cancelled": "Abgebrochen",
+      "outputInterrupted": "Ausgabe unterbrochen",
+      "stoppedAfterSeconds": "Nach {seconds}s gestoppt",
       "idle": "Inaktiv"
     },
     "relTime": {

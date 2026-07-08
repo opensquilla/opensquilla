@@ -48,6 +48,131 @@ function fallbackMessageKey(msg: ChatMessage): string {
   return `${msg.role}:${msg.ts || ''}:${msg.text || ''}`
 }
 
+function sameMessage(a: ChatMessage, b: ChatMessage): boolean {
+  if (a.messageId && b.messageId) return a.messageId === b.messageId
+  return fallbackMessageKey(a) === fallbackMessageKey(b)
+}
+
+function userTextKey(msg: ChatMessage): string {
+  return String(msg.text || '').trim().replace(/\s+/g, ' ')
+}
+
+function userOccurrenceByText(messages: ChatMessage[], userIndex: number): number {
+  const key = userTextKey(messages[userIndex])
+  if (!key) return -1
+  let occurrence = 0
+  for (let i = 0; i <= userIndex; i++) {
+    if (messages[i]?.role === 'user' && userTextKey(messages[i]) === key) occurrence++
+  }
+  return occurrence
+}
+
+function findUserByTextOccurrence(messages: ChatMessage[], user: ChatMessage, occurrence: number): number {
+  const key = userTextKey(user)
+  if (!key || occurrence <= 0) return -1
+  let seen = 0
+  for (let i = 0; i < messages.length; i++) {
+    if (messages[i]?.role !== 'user' || userTextKey(messages[i]) !== key) continue
+    seen++
+    if (seen === occurrence) return i
+  }
+  return -1
+}
+
+function userOrdinal(messages: ChatMessage[], userIndex: number): number {
+  let ordinal = 0
+  for (let i = 0; i <= userIndex; i++) {
+    if (messages[i]?.role === 'user') ordinal++
+  }
+  return ordinal
+}
+
+function findUserByOrdinal(messages: ChatMessage[], ordinal: number): number {
+  if (ordinal <= 0) return -1
+  let seen = 0
+  for (let i = 0; i < messages.length; i++) {
+    if (messages[i]?.role !== 'user') continue
+    seen++
+    if (seen === ordinal) return i
+  }
+  return -1
+}
+
+function findIncomingUserForPreviousStopNotice(
+  previousMessages: ChatMessage[],
+  incomingMessages: ChatMessage[],
+  previousUserIndex: number,
+): number {
+  const previousUser = previousMessages[previousUserIndex]
+  const exact = incomingMessages.findIndex(msg => sameMessage(msg, previousUser))
+  if (exact >= 0) return exact
+
+  const byTextOccurrence = findUserByTextOccurrence(
+    incomingMessages,
+    previousUser,
+    userOccurrenceByText(previousMessages, previousUserIndex),
+  )
+  if (byTextOccurrence >= 0) return byTextOccurrence
+
+  return findUserByOrdinal(incomingMessages, userOrdinal(previousMessages, previousUserIndex))
+}
+
+function assistantHasVisibleOutput(message: ChatMessage): boolean {
+  return Boolean(
+    String(message.text || '').trim() ||
+    message.reasoning?.text ||
+    message.attachments?.length ||
+    message.artifacts?.length ||
+    message.tool_calls?.length ||
+    message.timeline?.length ||
+    message.statusHistory?.length,
+  )
+}
+
+function turnHasServerOutputAfterUser(messages: ChatMessage[], userIndex: number): boolean {
+  for (let i = userIndex + 1; i < messages.length; i++) {
+    const msg = messages[i]
+    if (!msg) continue
+    if (msg.role === 'user') return false
+    if (msg.role === 'router') continue
+    if (msg.role === 'assistant' && !assistantHasVisibleOutput(msg)) continue
+    return true
+  }
+  return false
+}
+
+function stopNoticeInsertionIndex(messages: ChatMessage[], userIndex: number): number {
+  let index = userIndex + 1
+  while (index < messages.length && messages[index]?.role === 'router') index++
+  return index
+}
+
+export function reconcileClientStopNotices(prev: ChatMessage[], incoming: ChatMessage[]): ChatMessage[] {
+  if (!prev.some(msg => msg.stopNotice)) return incoming
+  const merged = incoming.slice()
+
+  for (let i = 0; i < prev.length; i++) {
+    const notice = prev[i]
+    if (!notice?.stopNotice) continue
+    if (merged.some(msg => sameMessage(msg, notice))) continue
+
+    const priorUserIndex = (() => {
+      for (let j = i - 1; j >= 0; j--) {
+        if (prev[j]?.role === 'user') return j
+      }
+      return -1
+    })()
+    if (priorUserIndex < 0) continue
+    const userIndex = findIncomingUserForPreviousStopNotice(prev, merged, priorUserIndex)
+    if (userIndex < 0) continue
+    if (turnHasServerOutputAfterUser(merged, userIndex)) continue
+
+    merged.splice(stopNoticeInsertionIndex(merged, userIndex), 0, notice)
+  }
+
+  return merged
+}
+
 function lastUserIndex(messages: ChatMessage[]): number {
   for (let i = messages.length - 1; i >= 0; i--) {
     if (messages[i]?.role === 'user') return i

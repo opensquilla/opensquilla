@@ -6686,35 +6686,18 @@ class TurnRunner:
         session_key: str,
         message_id: str,
     ) -> bool:
-        """Remove the ingress-persisted user prompt for a zero-output cancel.
+        """Keep the ingress-persisted user prompt for a zero-output cancel.
 
-        Returns whether a message was removed. Best-effort: a failure is logged
-        and swallowed so it can never mask the cancellation being handled.
+        WebUI Stop can happen before any assistant output exists. The user still
+        needs the submitted question to remain visible and reloadable from
+        history, so cancellation no longer rolls back this transcript row.
         """
-        if self._session_manager is None:
-            return False
-        remove_message = getattr(self._session_manager, "remove_message", None)
-        if not callable(remove_message):
-            return False
-        try:
-            removed = remove_message(session_key, message_id)
-            if inspect.isawaitable(removed):
-                removed = await removed
-            if removed:
-                log.info(
-                    "turn_runner.cancelled_prompt_rolled_back",
-                    session_key=session_key,
-                    message_id=message_id,
-                )
-            return bool(removed)
-        except Exception:  # pragma: no cover — never mask the cancel
-            log.warning(
-                "turn_runner.cancelled_prompt_rollback_failed",
-                session_key=session_key,
-                message_id=message_id,
-                exc_info=True,
-            )
-            return False
+        log.info(
+            "turn_runner.cancelled_prompt_retained",
+            session_key=session_key,
+            message_id=message_id,
+        )
+        return False
 
     async def _load_history(
         self,

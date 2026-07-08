@@ -240,6 +240,67 @@ def test_train_candidate_uses_init_model_when_base_present(tmp_path) -> None:
     assert info.used_init_model is True
 
 
+def test_assembled_bundle_manifest_matches_retrained_head(tmp_path) -> None:
+    """The copied artifact manifest must describe the *new* lgbm head.
+
+    The base manifest pins size/sha256 of the shipped model; without a rewrite
+    the runtime's bundle validation rejects every candidate as incomplete.
+    """
+    pytest.importorskip("lightgbm")
+    import hashlib
+    import json
+    from types import SimpleNamespace
+
+    from opensquilla.squilla_router.self_learning.train import (
+        build_candidate_bundle,
+        train_booster,
+    )
+
+    base = tmp_path / "base"
+    base.mkdir()
+    booster, _ = train_booster(
+        _synthetic_dataset(), base_model_path=None, config=SimpleNamespace(num_boost_round=20)
+    )
+    booster.save_model(str(base / "lgbm_main.bin"))
+    base_bytes = (base / "lgbm_main.bin").read_bytes()
+    (base / "artifact_manifest.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "files": [
+                    {
+                        "path": "lgbm_main.bin",
+                        "size_bytes": len(base_bytes),
+                        "sha256": hashlib.sha256(base_bytes).hexdigest(),
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    info = build_candidate_bundle(
+        _synthetic_dataset(),
+        base_dir=base,
+        learned_root=tmp_path / "learned",
+        config=SimpleNamespace(num_boost_round=10),
+    )
+    bundle = tmp_path / "learned" / info.version
+    manifest_path = bundle / "artifact_manifest.json"
+    assert manifest_path.is_file() and not manifest_path.is_symlink()
+    new_bytes = (bundle / "lgbm_main.bin").read_bytes()
+    entry = next(
+        e
+        for e in json.loads(manifest_path.read_text(encoding="utf-8"))["files"]
+        if e["path"] == "lgbm_main.bin"
+    )
+    assert entry["size_bytes"] == len(new_bytes)
+    assert entry["sha256"] == hashlib.sha256(new_bytes).hexdigest()
+    # The base manifest is untouched.
+    base_entry = json.loads((base / "artifact_manifest.json").read_text(encoding="utf-8"))
+    assert base_entry["files"][0]["sha256"] == hashlib.sha256(base_bytes).hexdigest()
+
+
 # --------------------------------------------------------------------------- #
 # Orchestrator (injected trainer; no subprocess)
 # --------------------------------------------------------------------------- #

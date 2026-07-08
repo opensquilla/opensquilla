@@ -12,6 +12,7 @@ base install and the runtime hot path never require it.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import shutil
 from dataclasses import asdict, dataclass
@@ -25,6 +26,7 @@ from opensquilla.squilla_router.self_learning.dataset import TrainingDataset
 
 _NUM_CLASS = 4
 _LGBM_FILENAME = "lgbm_main.bin"
+_ARTIFACT_MANIFEST = "artifact_manifest.json"
 
 
 @dataclass
@@ -107,12 +109,39 @@ def train_booster(dataset: TrainingDataset, *, base_model_path: Path | None, con
     )
 
 
+def _rewrite_artifact_manifest(out_dir: Path) -> None:
+    """Update the copied manifest's ``lgbm_main.bin`` entry for the new head.
+
+    The base manifest pins size/sha256 of the *shipped* model; the runtime's
+    bundle validation would otherwise reject every retrained candidate as an
+    incomplete artifact. Only the swapped file's entry is touched.
+    """
+
+    manifest_path = out_dir / _ARTIFACT_MANIFEST
+    if not manifest_path.is_file():
+        return
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    lgbm_path = out_dir / _LGBM_FILENAME
+    data = lgbm_path.read_bytes()
+    for entry in manifest.get("files", []):
+        if str(entry.get("path")) == _LGBM_FILENAME:
+            if "size_bytes" in entry:
+                entry["size_bytes"] = len(data)
+            if "sha256" in entry:
+                entry["sha256"] = hashlib.sha256(data).hexdigest()
+            entry["source_note"] = "Self-learning retrained LightGBM head."
+    manifest_path.write_text(
+        json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+
+
 def assemble_bundle(base_dir: Path, out_dir: Path, new_lgbm_path: Path) -> None:
     """Materialize a candidate bundle: reuse base artifacts, swap the LGBM head.
 
     Unchanged entries are symlinked (tiny, instant candidates); the retrained
-    ``lgbm_main.bin`` is a real copy. Symlinks fall back to copies where the OS
-    forbids them (e.g. unprivileged Windows).
+    ``lgbm_main.bin`` is a real copy, and the artifact manifest is copied (not
+    linked) so its entry can be rewritten for the new head. Symlinks fall back
+    to copies where the OS forbids them (e.g. unprivileged Windows).
     """
 
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -122,6 +151,9 @@ def assemble_bundle(base_dir: Path, out_dir: Path, new_lgbm_path: Path) -> None:
         target = out_dir / entry.name
         if target.exists() or target.is_symlink():
             continue
+        if entry.name == _ARTIFACT_MANIFEST:
+            shutil.copy2(entry, target)
+            continue
         try:
             target.symlink_to(entry.resolve())
         except OSError:
@@ -130,6 +162,7 @@ def assemble_bundle(base_dir: Path, out_dir: Path, new_lgbm_path: Path) -> None:
             else:
                 shutil.copy2(entry, target)
     shutil.copy2(new_lgbm_path, out_dir / _LGBM_FILENAME)
+    _rewrite_artifact_manifest(out_dir)
 
 
 def build_candidate_bundle(

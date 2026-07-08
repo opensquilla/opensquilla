@@ -98,40 +98,8 @@ def _provider_api_key_env(provider_id: str, default_env_key: str, ctx: RpcContex
     return default_env_key
 
 
-def _provider_key_configured(provider_id: str, env_key: str, ctx: RpcContext) -> bool:
-    active = provider_id == _active_llm_provider(ctx)
-    llm_cfg = getattr(getattr(ctx, "config", None), "llm", None)
-    if active and bool(getattr(llm_cfg, "api_key", "")):
-        return True
-    return bool(env_key and os.environ.get(env_key))
-
-
-_URL_SHAPED_KEY_RE = re.compile(r"^https?://")
-_ENV_NAME_SHAPED_KEY_RE = re.compile(r"^[A-Z][A-Z0-9_]{2,}$")
-
-
-def _api_key_shape(key_value: str) -> str:
-    """Classify obviously-misconfigured key material without emitting it.
-
-    Only the classification label ever leaves this function; the key value
-    itself is never logged or included in any payload.
-    """
-    value = key_value.strip()
-    if not value:
-        return "ok"
-    if _URL_SHAPED_KEY_RE.match(value):
-        return "looks_like_url"
-    if _ENV_NAME_SHAPED_KEY_RE.match(value):
-        return "looks_like_env_name"
-    return "ok"
-
-
-def _provider_api_key_shape(provider_id: str, env_key: str, ctx: RpcContext) -> str:
-    """Resolve the configured key material for a row and return its shape.
-
-    Mirrors the resolution order of ``_provider_key_configured``: the active
-    provider's config-held key wins, then the row's env var.
-    """
+def _provider_key_material(provider_id: str, env_key: str, ctx: RpcContext) -> str:
+    """Resolve a row's configured key material: active config key, then env."""
     active = provider_id == _active_llm_provider(ctx)
     llm_cfg = getattr(getattr(ctx, "config", None), "llm", None)
     key_value = ""
@@ -139,7 +107,51 @@ def _provider_api_key_shape(provider_id: str, env_key: str, ctx: RpcContext) -> 
         key_value = str(getattr(llm_cfg, "api_key", "") or "")
     if not key_value and env_key:
         key_value = os.environ.get(env_key, "") or ""
-    return _api_key_shape(key_value)
+    return key_value
+
+
+def _provider_key_configured(provider_id: str, env_key: str, ctx: RpcContext) -> bool:
+    return bool(_provider_key_material(provider_id, env_key, ctx))
+
+
+_URL_SHAPED_KEY_RE = re.compile(r"^https?://")
+_ENV_NAME_SHAPED_KEY_RE = re.compile(r"^[A-Z][A-Z0-9_]{2,}$")
+_OPENSQUILLA_ENV_NAME_RE = re.compile(r"^OPENSQUILLA_[A-Z0-9_]+$")
+_ENV_NAME_SUFFIXES = ("_API_KEY", "_TOKEN", "_SECRET", "_KEY_ENV")
+
+
+def _api_key_shape(key_value: str, *, expected_env_name: str = "") -> str:
+    """Classify obviously-misconfigured key material without emitting it.
+
+    Only the classification label ever leaves this function; the key value
+    itself is never logged or included in any payload. ``looks_like_env_name``
+    is deliberately narrow — legitimate all-uppercase keys exist — so it fires
+    only on shell-paste ``$NAME`` values and on env-name-shaped values that
+    equal the row's expected env var name, are ``OPENSQUILLA_*`` names, or
+    carry a well-known env-key suffix.
+    """
+    value = key_value.strip()
+    if not value:
+        return "ok"
+    if _URL_SHAPED_KEY_RE.match(value):
+        return "looks_like_url"
+    if value.startswith("$"):
+        return "looks_like_env_name"
+    if _ENV_NAME_SHAPED_KEY_RE.match(value) and (
+        (expected_env_name and value == expected_env_name)
+        or _OPENSQUILLA_ENV_NAME_RE.match(value)
+        or value.endswith(_ENV_NAME_SUFFIXES)
+    ):
+        return "looks_like_env_name"
+    return "ok"
+
+
+def _provider_api_key_shape(provider_id: str, env_key: str, ctx: RpcContext) -> str:
+    """Shape of the key material resolved by ``_provider_key_material``."""
+    return _api_key_shape(
+        _provider_key_material(provider_id, env_key, ctx),
+        expected_env_name=env_key,
+    )
 
 
 def _provider_base_url(provider_id: str, default_base_url: str, ctx: RpcContext) -> str:

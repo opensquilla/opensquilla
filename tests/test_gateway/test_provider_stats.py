@@ -76,6 +76,20 @@ def test_snapshot_reports_p95_at_ten_samples() -> None:
     assert snap["p95TtftMs"] == 1000
 
 
+def test_snapshot_p95_gates_on_ttft_carrying_samples_not_window_size() -> None:
+    store = ProviderStatsStore(now=_Clock())
+    # 9 failed calls without a TTFT plus one success: the window holds 10
+    # samples, but a single TTFT must not become a p95 readout.
+    _fill(store, count=9, ttft_ms=None)
+    _fill(store, count=1, ttft_ms=5000)
+
+    snap = store.snapshot("openrouter")
+    assert snap is not None
+    assert snap["samples"] == 10
+    assert snap["p50TtftMs"] == 5000
+    assert snap["p95TtftMs"] is None
+
+
 def test_snapshot_windowing_drops_old_samples() -> None:
     clock = _Clock()
     store = ProviderStatsStore(now=clock)

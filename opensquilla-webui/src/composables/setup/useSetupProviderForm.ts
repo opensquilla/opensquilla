@@ -48,6 +48,7 @@ interface ProviderPanelContext {
   providerEnvCommand: ComputedRef<string>
   llmTimeoutSeconds: Ref<number>
   contextWindowTokens: Ref<string>
+  contextWindowGlobal: ComputedRef<number | null>
   providerIsLocal: ComputedRef<boolean>
 }
 
@@ -148,7 +149,10 @@ function freshConnection(providerId: string): ConnectionState {
 }
 
 function normalizeLatencyMs(value: unknown): number | null {
-  return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : null
+  // The gateway sends latencyMs=0 as the "never reached the network" sentinel
+  // (missing key / build failure), so a zero is not a real round trip — treat
+  // it as unknown rather than rendering a bogus "· 0ms".
+  return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : null
 }
 
 function normalizeDiscoveredModels(rows: unknown): DiscoveredModel[] {
@@ -470,6 +474,7 @@ export function useSetupProviderForm() {
       providerEnvCommand: context.providerEnvCommand.value,
       llmTimeoutSeconds: context.llmTimeoutSeconds.value,
       contextWindowTokens: context.contextWindowTokens.value,
+      contextWindowGlobal: context.contextWindowGlobal.value,
       providerIsLocal: context.providerIsLocal.value,
       connection: connection.value,
       providerFieldValue: (field: ProviderField) => fieldValue(field, context.currentConfig.value),

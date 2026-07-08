@@ -263,6 +263,7 @@
       "notReachable": "✗ Connexion impossible — {reason}",
       "discoverFailed": "Impossible de lister les modèles — saisissez un id de modèle.",
       "verdictModels": "{count} modèles · p. ex. {samples}",
+      "verdictSampleJoiner": ", ",
       "failureAuth": "Le fournisseur a refusé cette clé d'API.",
       "failureCredits": "Ce compte n'a plus de crédits.",
       "failureRateLimited": "Le fournisseur limite les requêtes — réessayez dans un instant.",

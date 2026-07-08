@@ -12,6 +12,8 @@ import asyncio
 from collections.abc import AsyncIterator
 from typing import Any
 
+import pytest
+
 from opensquilla.engine import Agent, AgentConfig
 from opensquilla.provider import ChatConfig, Message
 from opensquilla.provider import DoneEvent as ProviderDoneEvent
@@ -43,12 +45,28 @@ class _ScriptedProvider:
         return []
 
 
-def _run_turn(config: AgentConfig) -> list[Any]:
+class _RaisingProvider(_ScriptedProvider):
+    """Stream that raises (instead of yielding a ProviderErrorEvent)."""
+
+    async def _stream(self) -> AsyncIterator[Any]:
+        yield ProviderTextDeltaEvent(text="partial")
+        raise RuntimeError("connection reset mid-stream")
+
+
+class _HangingProvider(_ScriptedProvider):
+    """Stream that never produces an event, tripping the total deadline."""
+
+    async def _stream(self) -> AsyncIterator[Any]:
+        await asyncio.sleep(30.0)
+        yield ProviderTextDeltaEvent(text="never reached")
+
+
+def _run_turn(config: AgentConfig, provider: _ScriptedProvider | None = None) -> list[Any]:
     events: list[Any] = []
 
     async def run() -> None:
         agent = Agent(
-            provider=_ScriptedProvider(),
+            provider=provider or _ScriptedProvider(),
             config=config,
             tool_definitions=[],
             tool_handler=None,
@@ -114,3 +132,55 @@ def test_no_observer_configured_is_a_noop() -> None:
     events = _run_turn(AgentConfig(max_iterations=2))
     texts = [getattr(ev, "text", "") for ev in events]
     assert any("observed reply" in text for text in texts)
+
+
+def test_observer_records_failed_sample_when_stream_raises() -> None:
+    calls: list[dict[str, Any]] = []
+
+    def observer(**kwargs: Any) -> None:
+        calls.append(kwargs)
+
+    with pytest.raises(RuntimeError, match="connection reset mid-stream"):
+        _run_turn(
+            AgentConfig(
+                max_iterations=2,
+                provider_id="vllm",
+                model_id="test-model",
+                provider_call_observer=observer,
+            ),
+            provider=_RaisingProvider(),
+        )
+
+    assert len(calls) == 1
+    sample = calls[0]
+    assert sample["ok"] is False
+    assert sample["failure_kind"] == "raised"
+    assert sample["ttft_ms"] is not None
+    assert sample["duration_ms"] >= 0
+
+
+def test_observer_records_failed_sample_on_total_deadline_timeout() -> None:
+    calls: list[dict[str, Any]] = []
+
+    def observer(**kwargs: Any) -> None:
+        calls.append(kwargs)
+
+    events = _run_turn(
+        AgentConfig(
+            max_iterations=2,
+            provider_id="vllm",
+            model_id="test-model",
+            timeout=0.05,
+            iteration_timeout=30.0,
+            provider_call_observer=observer,
+        ),
+        provider=_HangingProvider(),
+    )
+
+    assert len(calls) == 1
+    sample = calls[0]
+    assert sample["ok"] is False
+    assert sample["failure_kind"] == "total_timeout"
+    assert sample["ttft_ms"] is None
+    # The total-deadline timeout must still surface as the same terminal error.
+    assert any(getattr(ev, "code", "") == "agent_runtime_timeout" for ev in events)

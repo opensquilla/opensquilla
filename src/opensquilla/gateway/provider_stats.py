@@ -56,9 +56,10 @@ class ProviderStatsStore:
     ) -> None:
         if not provider_id:
             return
-        bucket = self._samples.setdefault(
-            provider_id, deque(maxlen=_MAX_SAMPLES_PER_PROVIDER)
-        )
+        bucket = self._samples.get(provider_id)
+        if bucket is None:
+            bucket = deque(maxlen=_MAX_SAMPLES_PER_PROVIDER)
+            self._samples[provider_id] = bucket
         bucket.append(
             _CallSample(
                 ts=self._now(),
@@ -93,11 +94,7 @@ class ProviderStatsStore:
             sample.ttft_ms for sample in recent if sample.ttft_ms is not None
         )
         p50 = _percentile(ttfts, 0.50) if ttfts else None
-        p95 = (
-            _percentile(ttfts, 0.95)
-            if ttfts and len(recent) >= _MIN_P95_SAMPLES
-            else None
-        )
+        p95 = _percentile(ttfts, 0.95) if len(ttfts) >= _MIN_P95_SAMPLES else None
         return {
             "p50TtftMs": p50,
             "p95TtftMs": p95,

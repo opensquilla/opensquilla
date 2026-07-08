@@ -1340,6 +1340,44 @@ async def test_providers_status_flags_env_name_shaped_api_key(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_providers_status_flags_shell_paste_dollar_env_name(monkeypatch):
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    cfg = GatewayConfig(
+        llm={
+            "provider": "openrouter",
+            "model": "openrouter/model",
+            "api_key": "$DEEPSEEK_API_KEY",
+        }
+    )
+
+    res = await get_dispatcher().dispatch(
+        "r1", "providers.status", {"provider": "openrouter"}, _ctx(config=cfg)
+    )
+
+    assert res.error is None, res.error
+    row = res.payload["providers"][0]
+    assert row["apiKeyShape"] == "looks_like_env_name"
+
+
+@pytest.mark.asyncio
+async def test_providers_status_generic_all_caps_key_is_ok(monkeypatch):
+    # Legitimate all-uppercase key material must not trip the env-name lint.
+    monkeypatch.setenv("OPENROUTER_API_KEY", "AB12CD34EF56GH78")
+    cfg = GatewayConfig(
+        llm={"provider": "openrouter", "model": "openrouter/model"}
+    )
+
+    res = await get_dispatcher().dispatch(
+        "r1", "providers.status", {"provider": "openrouter"}, _ctx(config=cfg)
+    )
+
+    assert res.error is None, res.error
+    row = res.payload["providers"][0]
+    assert row["apiKeyConfigured"] is True
+    assert row["apiKeyShape"] == "ok"
+
+
+@pytest.mark.asyncio
 async def test_providers_status_absent_key_reports_ok_shape(monkeypatch):
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
     cfg = GatewayConfig(llm={"provider": "openrouter", "model": "openrouter/model"})

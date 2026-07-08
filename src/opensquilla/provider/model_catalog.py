@@ -642,6 +642,40 @@ class ModelCatalog:
         return DEFAULT_CONTEXT_WINDOW, "default"
 
 
+def resolve_effective_context_window(
+    catalog: Any, model_id: str, provider: str = "", global_override: int = 0
+) -> tuple[int, str]:
+    """Resolve the effective context window with the full layered precedence.
+
+    Single implementation of the rule "per-model ``[models.*]`` override >
+    global ``llm.context_window_tokens`` (``global_override``) > catalog >
+    default". Sources returned: ``"override"`` | ``"config"`` | ``"catalog"``
+    | ``"default"``.
+
+    ``catalog`` is duck-typed: override detection and catalog/default
+    attribution use ``resolve_context_window_with_source`` when present
+    (never reporting ``"override"`` without it, so the global config value
+    still applies), while the catalog-layer value itself comes from the
+    plain ``resolve_context_window`` — the canonical value API, which
+    catalog-shaped stand-ins may implement alone. Junk/non-positive
+    ``global_override`` values count as unset.
+    """
+    with_source = getattr(catalog, "resolve_context_window_with_source", None)
+    source = "catalog"
+    if callable(with_source):
+        window, raw_source = with_source(model_id, provider=provider)
+        source = str(raw_source)
+        if source == "override":
+            return int(window), "override"
+    try:
+        global_window = int(global_override)
+    except (TypeError, ValueError):
+        global_window = 0
+    if global_window > 0:
+        return global_window, "config"
+    return int(catalog.resolve_context_window(model_id, provider=provider)), source
+
+
 # ---------------------------------------------------------------------------
 # Shared process-wide catalog instance.
 #

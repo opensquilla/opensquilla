@@ -4,7 +4,7 @@ import { useI18n } from 'vue-i18n'
 import Icon from '@/components/Icon.vue'
 import type { ConnectionState } from '@/composables/setup/useSetupProviderForm'
 
-const { t, locale } = useI18n()
+const { t } = useI18n()
 
 interface ProviderCredentialPanelContract {
   providerLabel: string
@@ -125,7 +125,7 @@ const verdictModelsText = computed(() => {
   const connection = props.panel.connection
   if (connection.phase !== 'verified' || connection.modelSource !== 'live') return ''
   if (connection.models.length === 0) return ''
-  const joiner = String(locale.value || '').toLowerCase().startsWith('zh') ? '、' : ', '
+  const joiner = t('setup.provider.verdictSampleJoiner')
   const samples = connection.models.slice(0, 3).map(model => model.id).join(joiner)
   return t('setup.provider.verdictModels', { count: connection.models.length, samples })
 })

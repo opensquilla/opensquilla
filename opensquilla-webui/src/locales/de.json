@@ -263,6 +263,7 @@
       "notReachable": "✗ Verbindung fehlgeschlagen — {reason}",
       "discoverFailed": "Modelle konnten nicht aufgelistet werden — Modell-ID eintippen.",
       "verdictModels": "{count} Modelle · z. B. {samples}",
+      "verdictSampleJoiner": ", ",
       "failureAuth": "Der Anbieter hat diesen API-Schlüssel abgelehnt.",
       "failureCredits": "Dieses Konto hat kein Guthaben mehr.",
       "failureRateLimited": "Der Anbieter drosselt Anfragen gerade — gleich noch einmal versuchen.",

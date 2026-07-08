@@ -39,10 +39,10 @@ beforeEach(() => {
   // The verdict keys land in the locale JSONs via the i18n merge step; inject
   // them here so assertions exercise interpolation instead of raw key names.
   i18n.global.mergeLocaleMessage('en', {
-    setup: { provider: { verdictModels: '{count} models · e.g. {samples}' } },
+    setup: { provider: { verdictModels: '{count} models · e.g. {samples}', verdictSampleJoiner: ', ' } },
   })
   i18n.global.mergeLocaleMessage('zh-Hans', {
-    setup: { provider: { verdictModels: '{count} 个模型 · 例如 {samples}' } },
+    setup: { provider: { verdictModels: '{count} 个模型 · 例如 {samples}', verdictSampleJoiner: '、' } },
   })
   document.body.innerHTML = ''
 })

@@ -7,6 +7,7 @@ import SetupCommandBlock from '@/components/setup/SetupCommandBlock.vue'
 import SetupProviderCredentialCard from '@/components/setup/SetupProviderCredentialCard.vue'
 import SetupModelCombobox from '@/components/setup/SetupModelCombobox.vue'
 import type { ConnectionState, ProviderCredentialPanelState } from '@/composables/setup/useSetupProviderForm'
+import { parseContextWindowInput } from '@/composables/setup/useSettingsPromotedForm'
 import type { SetupTierRow } from '@/composables/setup/useSetupRouterForm'
 
 const { t } = useI18n()
@@ -41,6 +42,7 @@ interface ProviderPanelContract {
   providerEnvCommand: string
   llmTimeoutSeconds: number
   contextWindowTokens: string
+  contextWindowGlobal: number | null
   providerIsLocal: boolean
   connection: ConnectionState
   providerFieldValue: (field: FieldSpec) => string
@@ -109,14 +111,22 @@ const contextWindowAuto = computed<number | null>(() => {
   return typeof row?.contextWindow === 'number' ? row.contextWindow : null
 })
 
-const contextWindowOverride = computed<number | null>(() => {
-  const parsed = Number(props.panel.contextWindowTokens)
-  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : null
-})
-
-const contextWindowEffective = computed<number | null>(() => (
-  contextWindowOverride.value ?? contextWindowAuto.value
+const contextWindowOverride = computed<number | null>(() => (
+  parseContextWindowInput(props.panel.contextWindowTokens)
 ))
+
+// Precedence mirrors the backend resolver (provider/resolution.py): a per-model
+// override wins, else the global llm.context_window_tokens layer, else the
+// auto-detected discovery window.
+const contextWindowEffective = computed<{ value: number | null; source: 'override' | 'config' | 'auto' }>(() => {
+  if (contextWindowOverride.value != null) {
+    return { value: contextWindowOverride.value, source: 'override' }
+  }
+  if (props.panel.contextWindowGlobal != null && props.panel.contextWindowGlobal > 0) {
+    return { value: props.panel.contextWindowGlobal, source: 'config' }
+  }
+  return { value: contextWindowAuto.value, source: 'auto' }
+})
 
 const contextWindowReadout = computed(() => t('setup.provider.contextWindowReadout', {
   auto: contextWindowAuto.value != null
@@ -125,15 +135,15 @@ const contextWindowReadout = computed(() => t('setup.provider.contextWindowReado
   override: contextWindowOverride.value != null
     ? String(contextWindowOverride.value)
     : t('setup.provider.contextWindowNone'),
-  effective: contextWindowEffective.value != null
-    ? String(contextWindowEffective.value)
+  effective: contextWindowEffective.value.value != null
+    ? String(contextWindowEffective.value.value)
     : t('setup.provider.contextWindowUnknown'),
 }))
 
 const showContextWindowWarning = computed(() => (
   props.panel.providerIsLocal
-  && contextWindowEffective.value != null
-  && contextWindowEffective.value <= LOCAL_CONTEXT_WINDOW_WARN_TOKENS
+  && contextWindowEffective.value.value != null
+  && contextWindowEffective.value.value <= LOCAL_CONTEXT_WINDOW_WARN_TOKENS
 ))
 </script>
 
@@ -252,7 +262,7 @@ const showContextWindowWarning = computed(() => (
         </div>
       </label>
       <div v-if="showContextWindowWarning" class="setup-warning">
-        {{ t('setup.provider.contextWindowLocalWarning', { tokens: contextWindowEffective }) }}
+        {{ t('setup.provider.contextWindowLocalWarning', { tokens: contextWindowEffective.value }) }}
       </div>
     </details>
     <div v-if="panel.providerEnvMissing" class="setup-warning">

@@ -67,6 +67,7 @@ function panel(overrides: Record<string, unknown> = {}) {
     providerEnvCommand: '',
     llmTimeoutSeconds: 120,
     contextWindowTokens: '',
+    contextWindowGlobal: null,
     providerIsLocal: false,
     connection: connection(),
     providerFieldValue: () => '',
@@ -282,6 +283,49 @@ describe('SetupProviderPanel — context-window override', () => {
     })
 
     expect(el.querySelector('.setup-warning')).toBeNull()
+
+    app.unmount()
+  })
+
+  it('falls back to the global llm.context_window_tokens layer when no override is set', async () => {
+    const { app, el } = await mountPanel({
+      connection: connection({ phase: 'verified', models: DISCOVERED, modelSource: 'live' }),
+      providerFieldValue: modelValue('test-vendor/alpha'),
+      contextWindowTokens: '',
+      contextWindowGlobal: 100000,
+    })
+
+    // No per-model override → effective takes the global config layer, not auto.
+    expect(readout(el)).toContain('override none')
+    expect(readout(el)).toContain('auto-detected 262144')
+    expect(readout(el)).toContain('effective 100000')
+
+    app.unmount()
+  })
+
+  it('a per-model override beats the global config layer', async () => {
+    const { app, el } = await mountPanel({
+      connection: connection({ phase: 'verified', models: DISCOVERED, modelSource: 'live' }),
+      providerFieldValue: modelValue('test-vendor/alpha'),
+      contextWindowTokens: '4096',
+      contextWindowGlobal: 100000,
+    })
+
+    expect(readout(el)).toContain('override 4096')
+    expect(readout(el)).toContain('effective 4096')
+
+    app.unmount()
+  })
+
+  it('warns for a small global window on a local provider with no override', async () => {
+    const { app, el } = await mountPanel({
+      providerFieldValue: modelValue('test-vendor/alpha'),
+      contextWindowTokens: '',
+      contextWindowGlobal: 8192,
+      providerIsLocal: true,
+    })
+
+    expect(el.querySelector('.setup-warning')?.textContent).toContain('8192 tokens')
 
     app.unmount()
   })

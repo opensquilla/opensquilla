@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { useSettingsPromotedForm } from './useSettingsPromotedForm'
+import { useSettingsPromotedForm, parseContextWindowInput } from './useSettingsPromotedForm'
 
 // The audio TTS tuning fields (voice/model/base_url/language_code) are accepted
 // and applied by the backend (mutations.upsert_audio_provider); these cover the
@@ -119,5 +119,39 @@ describe('useSettingsPromotedForm — context-window override', () => {
     })
     expect(f.contextWindowTokens.value).toBe('32768')
     expect(f.contextWindowDirty.value).toBe(false)
+  })
+
+  it('reseeds value + baseline from the saved override for a switched provider+model', () => {
+    const f = useSettingsPromotedForm()
+    const config = {
+      llm: { provider: 'ollama', model: 'qwen3:8b' },
+      models: {
+        ollama: { 'qwen3:8b': { context_window: 16384 } },
+        vllm: { 'meta/llama-4': { context_window: 65536 } },
+      },
+    }
+    f.initFromConfig(config)
+    expect(f.contextWindowTokens.value).toBe('16384')
+
+    // Provider switch: reseed from the new provider+model override, pristine.
+    f.reseedContextWindow(config, 'vllm', 'meta/llama-4')
+    expect(f.contextWindowTokens.value).toBe('65536')
+    expect(f.contextWindowDirty.value).toBe(false)
+
+    // Model switch to one with no saved override: clears the field, pristine.
+    f.reseedContextWindow(config, 'vllm', 'meta/llama-4-mini')
+    expect(f.contextWindowTokens.value).toBe('')
+    expect(f.contextWindowDirty.value).toBe(false)
+  })
+})
+
+describe('parseContextWindowInput', () => {
+  it('returns a floored positive integer or null for blank/zero/non-numeric', () => {
+    expect(parseContextWindowInput('16384')).toBe(16384)
+    expect(parseContextWindowInput('32768.9')).toBe(32768)
+    expect(parseContextWindowInput('')).toBeNull()
+    expect(parseContextWindowInput('0')).toBeNull()
+    expect(parseContextWindowInput('-5')).toBeNull()
+    expect(parseContextWindowInput('abc')).toBeNull()
   })
 })

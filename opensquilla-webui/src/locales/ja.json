@@ -263,6 +263,7 @@
       "notReachable": "✗ 接続できませんでした — {reason}",
       "discoverFailed": "モデル一覧を取得できませんでした — モデル ID を入力してください。",
       "verdictModels": "{count} 件のモデル · 例: {samples}",
+      "verdictSampleJoiner": "、",
       "failureAuth": "プロバイダーがこの API キーを拒否しました。",
       "failureCredits": "このアカウントにはクレジットが残っていません。",
       "failureRateLimited": "プロバイダーがリクエストを制限しています — 少し待って再試行してください。",

@@ -354,6 +354,18 @@ describe('useSetupProviderForm — connection state machine', () => {
     expect(f.connection.value.latencyMs).toBeNull()
   })
 
+  it('treats latencyMs=0 as the never-reached-network sentinel, not a real round trip', async () => {
+    // The gateway sends latencyMs=0 when the call never hit the network (missing
+    // key / build failure); it must not render as a bogus "· 0ms" pill.
+    mockRpc({ probe: { ok: false, failureKind: 'auth_invalid', message: 'No API key available.', latencyMs: 0 } })
+    const f = useSetupProviderForm()
+    f.selectProvider('openai')
+    await f.probeConnection()
+
+    expect(f.connection.value.phase).toBe('key_invalid')
+    expect(f.connection.value.latencyMs).toBeNull()
+  })
+
   it('maps a thrown RPC error to unreachable with the message as detail', async () => {
     callMock.mockRejectedValue(new Error('gateway offline'))
     const f = useSetupProviderForm()

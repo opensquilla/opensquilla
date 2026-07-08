@@ -263,6 +263,7 @@
       "notReachable": "✗ Couldn't connect — {reason}",
       "discoverFailed": "Couldn't list models — type a model id.",
       "verdictModels": "{count} models · e.g. {samples}",
+      "verdictSampleJoiner": ", ",
       "failureAuth": "The provider rejected this API key.",
       "failureCredits": "This account has no credits left.",
       "failureRateLimited": "The provider is rate-limiting requests — try again in a moment.",

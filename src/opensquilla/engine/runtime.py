@@ -122,8 +122,6 @@ from opensquilla.engine.turn_runner import (
     TurnFinalizerStageInput,
 )
 from opensquilla.engine.turn_runner.harness import (
-    _catalog_context_window_with_source,
-    _positive_int_or_zero,
     _PromptReportBuilderAdapter,
     _RequestContextPrependAdapter,
     _TurnRunnerAgentConfigBuilderAdapter,
@@ -192,6 +190,7 @@ from opensquilla.provider import (
     classify_provider_error,
     decide_recovery_action,
 )
+from opensquilla.provider.model_catalog import resolve_effective_context_window
 from opensquilla.provider.types import (
     EnsembleProgressEvent as ProviderEnsembleProgressEvent,
 )
@@ -3096,16 +3095,13 @@ class TurnRunner:
                     # Same precedence as the harness catalog adapter: a
                     # per-model [models.*] override beats the global
                     # llm.context_window_tokens value, which beats the catalog.
-                    window, window_source = _catalog_context_window_with_source(
-                        self._model_catalog, model, active_provider_id
+                    llm_cfg = getattr(self._config, "llm", None) if self._config else None
+                    window, _window_source = resolve_effective_context_window(
+                        self._model_catalog,
+                        model,
+                        provider=active_provider_id,
+                        global_override=getattr(llm_cfg, "context_window_tokens", 0) or 0,
                     )
-                    if window_source != "override":
-                        llm_cfg = getattr(self._config, "llm", None) if self._config else None
-                        global_window = _positive_int_or_zero(
-                            getattr(llm_cfg, "context_window_tokens", 0)
-                        )
-                        if global_window > 0:
-                            window = global_window
                     compaction_context_window_tokens = window
             ch_outcome = await self._compaction_and_history_stage.run(
                 CompactionAndHistoryStageInput(

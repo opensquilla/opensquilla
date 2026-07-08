@@ -43,7 +43,7 @@
           class="btn btn--ghost"
           type="button"
           :title="t('sessions.overview.copyDiagnostics')"
-          :disabled="healthLoading"
+          :disabled="healthLoading || !healthReport"
           @click="copyDiagnostics"
         >
           <Icon :name="copiedCommandKey === DIAGNOSTICS_COPY_KEY ? 'check' : 'copy'" :size="16" />
@@ -486,8 +486,8 @@ const healthError = ref<Error | null>(null)
 // ISO timestamp of the last completed doctor.status, for the freshness line.
 const healthCheckedAt = ref<string | undefined>(undefined)
 const copiedCommandKey = ref('')
-// Best-effort providers.status rows, fetched alongside loadHealth for the
-// active-provider latency line; failures leave the list empty and silent.
+// Best-effort providers.status rows, fetched on mount and manual Refresh for
+// the active-provider latency line; failures leave the list empty and silent.
 const providerRows = ref<ProviderStatusRow[]>([])
 
 const eventLog = ref<LogEvent[]>([])
@@ -564,13 +564,9 @@ const impactChips = computed(() => [
 // Environment footer readout: gateway URL, config path (abbreviated + copyable),
 // agent, provider — quiet utility detail, not hero content.
 function abbreviatePath(path: string): string {
-  let p = path
-  const home = '/Users/'
-  if (p.startsWith(home)) {
-    const rest = p.slice(home.length)
-    const slash = rest.indexOf('/')
-    if (slash !== -1) p = '~' + rest.slice(slash)
-  }
+  // Collapse macOS and Linux home prefixes to `~/` (same rule the diagnostics
+  // copies use), then squeeze anything still too long.
+  let p = normalizeHomePaths(path)
   if (p.length > 42) {
     const tail = p.slice(-30)
     const head = p.slice(0, 10)
@@ -650,6 +646,10 @@ onMounted(() => {
   // than the 30s status polls, so they only rerun on manual Refresh).
   // useRequest handles initial load for status/usage/sessions on mount.
   loadHealth()
+  // Latency rides alongside the doctor report but never gates it. Like the
+  // deep checks, providers.status is expensive (a client per registered spec),
+  // so it loads on mount and manual Refresh only — never from the 30s poll.
+  void loadProviderStatus()
 })
 
 // Timers and the event subscription live on activate/deactivate so a kept-alive
@@ -702,6 +702,8 @@ const refreshing = ref(false)
 async function refresh() {
   if (refreshing.value) return
   refreshing.value = true
+  // Fire-and-forget: latency is optional telemetry and never gates the refresh.
+  void loadProviderStatus()
   try {
     await Promise.all([refreshStatus(), refreshUsage(), refreshSessions(), loadHealth()])
   } finally {
@@ -716,8 +718,6 @@ function scrollToHealth() {
 async function loadHealth() {
   healthLoading.value = true
   healthError.value = null
-  // Latency rides alongside the doctor report but never gates it.
-  void loadProviderStatus()
 
   try {
     await rpc.waitForConnection()
@@ -783,9 +783,12 @@ const DIAGNOSTICS_COPY_KEY = 'diagnostics-json'
 // Full doctor report as pretty JSON for bug reports, with the gateway URL and
 // a copy timestamp attached and local home directories collapsed to `~/`.
 async function copyDiagnostics() {
+  // No live report (doctor failed or still loading) means nothing worth
+  // pasting into a bug report; the button is disabled in that state too.
+  if (!healthReport.value) return
   const report = {
-    ...(healthReport.value ?? {}),
-    gatewayUrl: healthReport.value?.gatewayUrl || gatewayContextUrl(),
+    ...healthReport.value,
+    gatewayUrl: healthReport.value.gatewayUrl || gatewayContextUrl(),
     copiedAt: new Date().toISOString(),
   }
   try {

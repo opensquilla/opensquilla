@@ -4465,6 +4465,19 @@ class Agent:
                     # Time-to-first-event for this provider call, stamped once
                     # at the first streamed event (diagnostics only).
                     first_event_at: float | None = None
+
+                    def _notify_call_outcome(*, ok: bool, failure_kind: str = "") -> None:
+                        self._notify_provider_call_observer(
+                            ttft_ms=(
+                                int((first_event_at - call_started_at) * 1000)
+                                if first_event_at is not None
+                                else None
+                            ),
+                            duration_ms=int((time.monotonic() - call_started_at) * 1000),
+                            ok=ok,
+                            failure_kind=failure_kind,
+                        )
+
                     try:
                         if self._failure_injector is None:
                             raw_stream = self.provider.chat(
@@ -4767,16 +4780,7 @@ class Agent:
                                     error=raw_ev.error,
                                 )
                     except _IterationStreamTimeoutError:
-                        self._notify_provider_call_observer(
-                            ttft_ms=(
-                                int((first_event_at - call_started_at) * 1000)
-                                if first_event_at is not None
-                                else None
-                            ),
-                            duration_ms=int((time.monotonic() - call_started_at) * 1000),
-                            ok=False,
-                            failure_kind="iteration_timeout",
-                        )
+                        _notify_call_outcome(ok=False, failure_kind="iteration_timeout")
                         if artifact_delivery_final_response_pending:
                             yield _finish_artifact_delivery_degraded(
                                 reason=(
@@ -4797,15 +4801,20 @@ class Agent:
                         )
                         yield terminal_error
                         break
+                    except TimeoutError:
+                        # Total-deadline timeout raised by the stream wrapper:
+                        # record the failed call, then propagate unchanged.
+                        _notify_call_outcome(ok=False, failure_kind="total_timeout")
+                        raise
+                    except Exception:
+                        # A provider stream that raises (instead of yielding a
+                        # ProviderErrorEvent) must still enter the stats before
+                        # the exception propagates unchanged.
+                        _notify_call_outcome(ok=False, failure_kind="raised")
+                        raise
 
                     call_duration_ms = int((time.monotonic() - call_started_at) * 1000)
-                    self._notify_provider_call_observer(
-                        ttft_ms=(
-                            int((first_event_at - call_started_at) * 1000)
-                            if first_event_at is not None
-                            else None
-                        ),
-                        duration_ms=call_duration_ms,
+                    _notify_call_outcome(
                         ok=provider_error_for_log is None,
                         failure_kind=(
                             str(provider_error_for_log.code or "provider_error")

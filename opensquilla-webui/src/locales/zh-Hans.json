@@ -263,6 +263,7 @@
       "notReachable": "✗ 无法连接 — {reason}",
       "discoverFailed": "无法列出模型 — 请直接输入模型 ID。",
       "verdictModels": "{count} 个模型 · 例如 {samples}",
+      "verdictSampleJoiner": "、",
       "failureAuth": "服务商拒绝了这个 API 密钥。",
       "failureCredits": "该账户已没有余额。",
       "failureRateLimited": "服务商正在限流 — 请稍后重试。",

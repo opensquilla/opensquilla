@@ -1,4 +1,5 @@
 import { computed, onScopeDispose, ref, watch, type Ref } from 'vue'
+import { taskTerminalStatus } from '@/utils/chat/streamEvents'
 
 // Soft content-silence watchdog for the live chat stream.
 //
@@ -20,6 +21,9 @@ export const SOFT_STALL_THRESHOLD_MS = 90_000
 // After "keep waiting", the banner stays hidden for this long, then re-arms.
 export const STALL_REARM_DELAY_MS = 30_000
 const CHECK_INTERVAL_MS = 1_000
+// text_delta bursts arrive many times a second; while the banner is down a
+// re-check can wait for the 1s ticker, so evaluations this close are skipped.
+const EVALUATE_MIN_INTERVAL_MS = 500
 
 // Events that prove the provider/agent is actually making progress. Everything
 // outside this set (run_heartbeat, state_change, transport ticks, …) is
@@ -31,6 +35,10 @@ const CONTENT_EVENTS = new Set([
   'session.event.tool_use_delta',
   'session.event.tool_result',
   'session.event.router_decision',
+  // Long compaction or ensemble phases emit only these frames; they prove
+  // forward progress and must keep the banner down.
+  'session.event.compaction',
+  'session.event.ensemble_progress',
 ])
 
 const APPROVAL_REQUESTED_EVENTS = new Set([
@@ -64,14 +72,13 @@ function payloadApprovalId(payload: Record<string, unknown>): string {
 
 // Terminal events end the turn, so the banner clears and per-turn tracking
 // resets. Mirrors handleRpcAny's terminal detection: `*.done` / `chat.done` /
-// `*.error` plus TaskRuntime terminals; task_group frames are mid-turn
-// checkpoints, not turn terminals, and are excluded upstream.
+// `*.error` plus TaskRuntime terminals (via the shared taskTerminalStatus
+// helper); task_group frames are mid-turn checkpoints, not turn terminals,
+// and are excluded upstream.
 function isTerminalEvent(event: string): boolean {
   if (event.endsWith('.done') || event === 'chat.done') return true
   if (event.endsWith('.error')) return true
-  if (!event.startsWith('task.')) return false
-  return ['succeeded', 'failed', 'timeout', 'abandoned', 'cancelled']
-    .includes(event.slice('task.'.length))
+  return taskTerminalStatus(event) !== ''
 }
 
 export function useChatStallWatchdog(options: UseChatStallWatchdogOptions) {
@@ -84,6 +91,7 @@ export function useChatStallWatchdog(options: UseChatStallWatchdogOptions) {
   // Epoch ms until which a "keep waiting" dismissal keeps the banner hidden.
   const dismissedUntil = ref(0)
   let lastContentAt = now()
+  let lastEvaluatedAt = 0
   let ticker: ReturnType<typeof setInterval> | null = null
 
   // Approval-pending wins when both gates hold: a blocked approval usually
@@ -95,6 +103,7 @@ export function useChatStallWatchdog(options: UseChatStallWatchdogOptions) {
   })
 
   function evaluate() {
+    lastEvaluatedAt = now()
     if (!options.isStreaming.value || suspendReason.value !== null) {
       stallActive.value = false
       return
@@ -118,6 +127,10 @@ export function useChatStallWatchdog(options: UseChatStallWatchdogOptions) {
   function noteContent() {
     lastContentAt = now()
     dismissedUntil.value = 0
+    // With no banner up, a re-evaluation this soon after the last one cannot
+    // change anything — the ticker re-checks within 1s anyway. An active
+    // banner always re-evaluates so fresh content clears it immediately.
+    if (!stallActive.value && now() - lastEvaluatedAt < EVALUATE_MIN_INTERVAL_MS) return
     evaluate()
   }
 
@@ -227,8 +240,11 @@ export function useChatStallWatchdog(options: UseChatStallWatchdogOptions) {
       stopTicker()
       stallActive.value = false
       dismissedUntil.value = 0
-      // Unfinished tools from an ended turn must not suspend the next one.
+      // Unfinished tools and approvals from an ended turn must not suspend the
+      // next one — a missed approval.resolved (e.g. across a WS reconnect)
+      // would otherwise gate the watchdog forever.
       pendingToolIds.value = new Set()
+      pendingApprovalIds.value = new Set()
     }
   }, { immediate: true })
 

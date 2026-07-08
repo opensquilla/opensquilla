@@ -52,6 +52,8 @@ PATH_POLICY_FIXTURE_FILES = {
     "tests/test_tools/test_shell_sensitive.py",
     "tests/test_tools/test_web_http_request.py",
     "tests/test_observability/test_decision_log_contract.py",
+    "opensquilla-webui/src/utils/overviewDiagnostics.test.ts",
+    "opensquilla-webui/src/views/OverviewView.diagnostics.test.ts",
 }
 
 

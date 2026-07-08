@@ -37,7 +37,8 @@ Honesty notes (documented limitations, by design):
   may adjust the max_tokens number without changing its attribution.
   ``llm.context_window`` additionally applies the global
   ``llm.context_window_tokens`` config value below the per-model
-  ``[models.*]`` override, mirroring the engine budgeting precedence.
+  ``[models.*]`` override via ``resolve_effective_context_window``, the
+  shared implementation of the engine budgeting precedence.
 
 Secrets never appear here by construction: the emitted paths form a literal
 allowlist of non-secret field names (the only dynamic path segment is the
@@ -52,7 +53,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Literal
 
-from opensquilla.provider.model_catalog import ModelCatalog
+from opensquilla.provider.model_catalog import (
+    ModelCatalog,
+    resolve_effective_context_window,
+)
 from opensquilla.provider.registry import UnknownProviderError, get_provider_spec
 
 FieldSource = Literal["default", "catalog", "preset", "config", "session"]
@@ -60,6 +64,7 @@ FieldSource = Literal["default", "catalog", "preset", "config", "session"]
 # ModelCatalog *_with_source labels -> provenance vocabulary.
 _CATALOG_SOURCE_MAP: dict[str, FieldSource] = {
     "override": "config",
+    "config": "config",
     "catalog": "catalog",
     "default": "default",
 }
@@ -169,23 +174,18 @@ def resolve_effective_llm(config: Any, catalog: ModelCatalog) -> dict[str, Resol
         fields["llm.max_tokens"] = ResolvedField(
             max_tokens, _CATALOG_SOURCE_MAP[max_tokens_source]
         )
-        context_window, context_window_source = catalog.resolve_context_window_with_source(
-            model, provider
-        )
         # Precedence: per-model [models.*] override > global config window >
-        # catalog > default. The catalog resolver only knows the per-model
-        # layer, so the global llm.context_window_tokens value is applied
-        # here, mirroring the harness budgeting path.
-        try:
-            global_context_window = int(getattr(llm, "context_window_tokens", 0) or 0)
-        except (TypeError, ValueError):
-            global_context_window = 0
-        if context_window_source != "override" and global_context_window > 0:
-            fields["llm.context_window"] = ResolvedField(global_context_window, "config")
-        else:
-            fields["llm.context_window"] = ResolvedField(
-                context_window, _CATALOG_SOURCE_MAP[context_window_source]
-            )
+        # catalog > default — the single shared implementation in
+        # resolve_effective_context_window, mirroring the engine budgeting path.
+        context_window, context_window_source = resolve_effective_context_window(
+            catalog,
+            model,
+            provider=provider,
+            global_override=getattr(llm, "context_window_tokens", 0) or 0,
+        )
+        fields["llm.context_window"] = ResolvedField(
+            context_window, _CATALOG_SOURCE_MAP[context_window_source]
+        )
 
     router_cfg = getattr(config, "squilla_router", None)
     tiers = getattr(router_cfg, "tiers", None)

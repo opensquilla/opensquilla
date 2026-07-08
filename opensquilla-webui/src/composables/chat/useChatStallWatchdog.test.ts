@@ -89,6 +89,26 @@ describe('useChatStallWatchdog', () => {
     h.scope.stop()
   })
 
+  it('compaction and ensemble progress frames count as content activity', async () => {
+    const h = harness()
+    await startStreaming(h)
+
+    for (const event of [
+      'session.event.compaction',
+      'session.event.ensemble_progress',
+    ]) {
+      vi.advanceTimersByTime(THRESHOLD - 1000)
+      expect(h.api.stallActive.value).toBe(false)
+      h.api.noteEvent(event, {})
+    }
+    // The last progress frame reset the clock: still below threshold.
+    vi.advanceTimersByTime(THRESHOLD - 1000)
+    expect(h.api.stallActive.value).toBe(false)
+    vi.advanceTimersByTime(1000)
+    expect(h.api.stallActive.value).toBe(true)
+    h.scope.stop()
+  })
+
   it('suspends while a tool call is in flight and resumes after its result', async () => {
     const h = harness()
     await startStreaming(h)
@@ -255,6 +275,26 @@ describe('useChatStallWatchdog', () => {
     vi.advanceTimersByTime(THRESHOLD - 1000)
     expect(h.api.stallActive.value).toBe(false)
     vi.advanceTimersByTime(1000)
+    expect(h.api.stallActive.value).toBe(true)
+    h.scope.stop()
+  })
+
+  it('clears a pending approval when streaming ends so it cannot suspend the next turn', async () => {
+    const h = harness()
+    await startStreaming(h)
+
+    // The resolved push never arrives (e.g. a WS reconnect ate it).
+    h.api.noteEvent('exec.approval.requested', { approval_id: 'lost' })
+    expect(h.api.suspendReason.value).toBe('approval-pending')
+
+    h.isStreaming.value = false
+    await nextTick()
+    expect(h.api.suspendReason.value).toBe(null)
+
+    // The next turn's watchdog is live again, not suspended forever.
+    await startStreaming(h)
+    expect(h.api.suspendReason.value).toBe(null)
+    vi.advanceTimersByTime(THRESHOLD)
     expect(h.api.stallActive.value).toBe(true)
     h.scope.stop()
   })

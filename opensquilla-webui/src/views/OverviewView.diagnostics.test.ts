@@ -224,6 +224,21 @@ describe('OverviewView copy diagnostics JSON', () => {
     expect(Number.isNaN(Date.parse(String(parsed.copiedAt)))).toBe(false)
     expect(pushToast).toHaveBeenCalledWith('Diagnostics JSON copied', { tone: 'ok' })
   })
+
+  it('disables the button when the doctor report is unavailable', async () => {
+    const { el, copyText, pushToast, flush } = await mountOverview({ report: null })
+    const button = el.querySelector<HTMLButtonElement>(COPY_JSON_SELECTOR)
+    expect(button).toBeTruthy()
+    expect(button!.disabled).toBe(true)
+    // The diagnose hand-off is hidden without a live report too.
+    expect(el.querySelector(DIAGNOSE_SELECTOR)).toBeNull()
+
+    // Even a forced click copies nothing and shows no success toast.
+    button!.click()
+    await flush()
+    expect(copyText).not.toHaveBeenCalled()
+    expect(pushToast).not.toHaveBeenCalled()
+  })
 })
 
 describe('OverviewView finding settings links', () => {
@@ -292,5 +307,30 @@ describe('OverviewView provider latency line', () => {
     // The rest of the overview still rendered.
     expect(el.querySelector('.ov-statusline')).toBeTruthy()
     expect(el.querySelector(COPY_JSON_SELECTOR)).toBeTruthy()
+  })
+
+  it('fetches providers.status on mount only, not on health reruns', async () => {
+    const { el, rpcCall, flush } = await mountOverview({ providers: latencyProviders })
+    const providerCalls = () =>
+      rpcCall.mock.calls.filter(([method]) => method === 'providers.status').length
+    expect(providerCalls()).toBe(1)
+
+    // "Rerun checks" repeats the deep doctor pass but must not re-instantiate
+    // a provider client per registered spec just for the latency line.
+    el.querySelector<HTMLButtonElement>('.ov-rerun')!.click()
+    await flush()
+    expect(rpcCall.mock.calls.filter(([method]) => method === 'doctor.status').length).toBe(2)
+    expect(providerCalls()).toBe(1)
+  })
+})
+
+describe('OverviewView config path readout', () => {
+  it('abbreviates Linux home config paths too', async () => {
+    const report = baseReport()
+    report.configPath = '/home/dummyuser/dir/opensquilla.toml'
+    const { el } = await mountOverview({ report })
+    const codes = Array.from(el.querySelectorAll('.ov-readout__kv code'))
+      .map(code => code.textContent)
+    expect(codes).toContain('~/dir/opensquilla.toml')
   })
 })

@@ -351,15 +351,25 @@ const providerCoreFields = computed(() => providerFields.value.filter(f => !isPr
 const providerAdvancedFields = computed(() => providerFields.value.filter(f => !isProviderCredentialField(f) && isProviderAdvancedField(f)))
 
 // Providers that run on the user's own hardware, where the runtime frequently
-// defaults to a much smaller context window than the model supports. Prefer the
-// catalog spec's deployment field when present; fall back to known local ids.
+// defaults to a much smaller context window than the model supports. Mirrors the
+// backend LOCAL_RUNTIME_PROVIDERS in provider/registry.py — keep in sync.
 const LOCAL_PROVIDER_IDS = new Set(['ollama', 'vllm', 'lm_studio', 'ovms', 'local', 'custom'])
 const providerIsLocal = computed(() => {
   const spec = providerSpec.value
   if (!spec) return false
+  // Union, not either/or: the backend budgets 'custom' (deployment='custom') at
+  // the local 8192 default too, so a deployment tag that isn't 'local' must not
+  // suppress the known-local-id match.
   const deployment = String(spec.deployment || '').trim().toLowerCase()
-  if (deployment) return deployment === 'local'
-  return LOCAL_PROVIDER_IDS.has(spec.providerId)
+  return deployment === 'local' || LOCAL_PROVIDER_IDS.has(spec.providerId)
+})
+
+// The global llm.context_window_tokens layer sits between the per-model override
+// and catalog auto-detection in the backend's precedence. Surface it so the
+// panel readout reflects it when no per-model override is set.
+const contextWindowGlobal = computed<number | null>(() => {
+  const raw = Number((config.value.llm || {}).context_window_tokens)
+  return Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : null
 })
 
 const providerSummary = computed(() => {
@@ -549,6 +559,7 @@ const providerPanel = providerForm.createPanel({
   providerEnvCommand,
   llmTimeoutSeconds: promotedForm.llmTimeoutSeconds,
   contextWindowTokens: promotedForm.contextWindowTokens,
+  contextWindowGlobal,
   providerIsLocal,
 })
 
@@ -1001,10 +1012,26 @@ function setDisableNetworkObservability(enabled: boolean) {
 
 function onProviderChange() {
   providerForm.resetForProvider(providerSpec.value)
+  // The context-window override is per provider+model, so a provider switch must
+  // reseed the field (value + baseline) from the newly-selected provider's saved
+  // override — otherwise it keeps showing/saving the previous provider's value.
+  promotedForm.reseedContextWindow(config.value, providerForm.selectedProvider.value, currentFormModelValue())
+}
+
+// The model id currently entered in the provider form (form value → saved
+// config → spec default), trimmed. Drives the per-model context-window override.
+function currentFormModelValue(): string {
+  const modelField = providerFields.value.find(f => f.name === 'model') || { name: 'model', label: 'model' }
+  return String(providerForm.fieldValue(modelField, config.value.llm || {}) || '').trim()
 }
 
 function updateProviderField(name: string, value: unknown) {
   providerForm.updateField(name, value)
+  // Editing the model field switches which per-model override applies, so reseed
+  // the context-window field from the saved override for the new model id.
+  if (name === 'model') {
+    promotedForm.reseedContextWindow(config.value, providerForm.selectedProvider.value, String(value ?? '').trim())
+  }
 }
 
 async function revealProviderCredential() {
@@ -1300,12 +1327,15 @@ async function saveProvider() {
     const payload = providerForm.payload()
     await rpc.call('onboarding.provider.configure', payload)
     const restart = await patchConfig(promotedForm.providerPatches())
-    // The per-model context-window override rides the deep-merge patch form.
-    const contextPatch = promotedForm.contextWindowPatch(
-      providerForm.selectedProvider.value,
-      String(payload.model ?? config.value.llm?.model ?? ''),
-    )
-    if (contextPatch) await deepPatchConfig(contextPatch)
+    // The per-model context-window override rides the deep-merge patch form. Key
+    // it on the CURRENT form model field (not payload.model, which is empty when
+    // the user didn't retype the model, nor the pre-save config model) and skip
+    // the patch entirely when no model is selected.
+    const contextModel = currentFormModelValue()
+    if (contextModel) {
+      const contextPatch = promotedForm.contextWindowPatch(providerForm.selectedProvider.value, contextModel)
+      if (contextPatch) await deepPatchConfig(contextPatch)
+    }
     await loadData()
     if (providerEnvMissing.value) {
       pushToast(t('setup.toast.envNotVisibleGateway', { envKey: providerEnvKey.value }), { tone: 'danger' })

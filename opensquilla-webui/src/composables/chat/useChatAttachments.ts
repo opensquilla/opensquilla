@@ -8,6 +8,12 @@ const ATTACHMENT_TEXT_HARD_CAP_BYTES = INLINE_THRESHOLD_BYTES
 const ATTACHMENT_IMAGE_HARD_CAP_BYTES = 5 * 1024 * 1024
 const ATTACHMENT_PDF_HARD_CAP_BYTES = 30 * 1024 * 1024
 const ATTACHMENT_OFFICE_HARD_CAP_BYTES = 30 * 1024 * 1024
+// Text above the inline threshold routes through the staged upload path (the
+// gateway proves the whole payload is UTF-8 before honoring this ceiling).
+const ATTACHMENT_STAGED_TEXT_HARD_CAP_BYTES = 30 * 1024 * 1024
+// Opaque types (archives, binaries, audio/video, unknown formats) stage up to
+// this ceiling; their bytes land in the agent workspace, never in the prompt.
+const ATTACHMENT_OPAQUE_HARD_CAP_BYTES = 30 * 1024 * 1024
 const MAX_ATTACHMENTS = 10
 const MAX_TOTAL_ATTACHMENT_BYTES = 60 * 1024 * 1024
 const STAGED_UPLOAD_REFRESH_GRACE_MS = 30_000
@@ -55,11 +61,8 @@ function isImageAttachmentMime(mime: string): boolean {
 
 function canStageAttachmentMime(mime: string): boolean {
   // Email is capped at the text limit, so it inlines and is never staged.
-  return (
-    mime === 'application/pdf' ||
-    isImageAttachmentMime(mime) ||
-    ATTACHMENT_OFFICE_MIMES.includes(mime)
-  )
+  // Everything else — rendered or opaque — has a staged path.
+  return !ATTACHMENT_EMAIL_MIMES.includes(mime)
 }
 
 function attachmentHardCapBytes(mime: string): number {
@@ -67,8 +70,8 @@ function attachmentHardCapBytes(mime: string): number {
   if (isImageAttachmentMime(mime)) return ATTACHMENT_IMAGE_HARD_CAP_BYTES
   if (ATTACHMENT_OFFICE_MIMES.includes(mime)) return ATTACHMENT_OFFICE_HARD_CAP_BYTES
   if (ATTACHMENT_EMAIL_MIMES.includes(mime)) return ATTACHMENT_EMAIL_HARD_CAP_BYTES
-  if (['text/plain', 'text/markdown', 'text/html', 'text/csv', 'application/json'].includes(mime)) return ATTACHMENT_TEXT_HARD_CAP_BYTES
-  return ATTACHMENT_IMAGE_HARD_CAP_BYTES
+  if (ATTACHMENT_TEXT_MIMES.includes(mime)) return ATTACHMENT_STAGED_TEXT_HARD_CAP_BYTES
+  return ATTACHMENT_OPAQUE_HARD_CAP_BYTES
 }
 
 function resolveAttachmentMime(file: File): string {
@@ -129,11 +132,12 @@ export function useChatAttachments() {
     let mime = resolveAttachmentMime(file)
     if (!isAllowedAttachmentMime(mime)) {
       if (await fileLooksLikeUtf8Text(file)) {
+        // Unknown-but-textual uploads degrade to text/plain so the gateway's
+        // UTF-8 fallback is reachable from the WebUI (the gateway re-validates).
         mime = 'text/plain'
-      } else {
-        pushToast(i18n.global.t('chat.toast.unsupportedFile', { name: fileName, mime }), { tone: 'danger' })
-        return
       }
+      // Anything else is an opaque attachment: it uploads under its resolved
+      // label and the gateway stages the bytes for the agent workspace.
     }
     const hardCap = attachmentHardCapBytes(mime)
     if (file.size > hardCap) {

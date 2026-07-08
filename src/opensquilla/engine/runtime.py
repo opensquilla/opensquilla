@@ -40,6 +40,7 @@ from opensquilla.attachment_refs import (
 from opensquilla.attachment_workspace import (
     AttachmentWorkspaceMaterializer,
     render_attachment_material_marker,
+    workspace_attachment_budget_from_config,
 )
 from opensquilla.bootstrap_types import BootstrapFileReport
 from opensquilla.contracts.attachments import (
@@ -7008,6 +7009,9 @@ class TurnRunner:
                     media_root=self._attachment_media_root(),
                     session_id=attachment_replay_session_id,
                     workspace_dir=workspace_dir,
+                    workspace_attachment_budget_bytes=(
+                        workspace_attachment_budget_from_config(self._config)
+                    ),
                 )
             elif raw_content and entry.role == "assistant":
                 content = self._maybe_unpack_assistant_artifacts(raw_content)
@@ -7169,6 +7173,7 @@ class TurnRunner:
         media_root: Path | None = None,
         session_id: str | None = None,
         workspace_dir: str | Path | None = None,
+        workspace_attachment_budget_bytes: int | None = None,
     ) -> Any:
         """Reduce persisted attachment envelopes to text-only history.
 
@@ -7203,6 +7208,16 @@ class TurnRunner:
         omitted: list[str] = []
         replay_blocks: list[Any] = []
         preserved_image = False
+        historical_materializer: AttachmentWorkspaceMaterializer | None = None
+        if materialize_historical_attachments and session_id and workspace_dir:
+            # One instance per replay so the whole batch shares a single
+            # budget scan instead of re-walking the tree per attachment.
+            historical_materializer = AttachmentWorkspaceMaterializer(
+                media_root=media_root or Path("."),
+                workspace_dir=workspace_dir,
+                materializable_mimes=None,
+                disk_budget_bytes=workspace_attachment_budget_bytes,
+            )
         if preserve_image_attachments and text:
             from opensquilla.provider.types import ContentBlockText
 
@@ -7267,16 +7282,11 @@ class TurnRunner:
                         preserved_image = True
                     continue
             if (
-                materialize_historical_attachments
+                historical_materializer is not None
                 and session_id
-                and workspace_dir
                 and _is_materializable_attachment_mime(media_type)
             ):
-                materializer = AttachmentWorkspaceMaterializer(
-                    media_root=media_root or Path("."),
-                    workspace_dir=workspace_dir,
-                    materializable_mimes=None,
-                )
+                materializer = historical_materializer
                 result = None
                 if isinstance(sha_ref, str) and sha_ref and media_root is not None:
                     raw_size = att.get("size")
@@ -7360,6 +7370,7 @@ class TurnRunner:
         media_root: Path | None = None,
         workspace_dir: str | Path | None = None,
         session_id: str | None = None,
+        workspace_attachment_budget_bytes: int | None = None,
     ) -> list | None:
         """Build a multimodal user message that carries the attachments.
 
@@ -7387,6 +7398,16 @@ class TurnRunner:
 
         prompt_block = ContentBlockText(text=message)
         attachment_blocks: list[Any] = []
+        turn_materializer: AttachmentWorkspaceMaterializer | None = None
+        if workspace_dir:
+            # One instance per turn so the attachment batch shares a single
+            # budget scan instead of re-walking the tree per attachment.
+            turn_materializer = AttachmentWorkspaceMaterializer(
+                media_root=media_root or Path("."),
+                workspace_dir=workspace_dir,
+                materializable_mimes=None,
+                disk_budget_bytes=workspace_attachment_budget_bytes,
+            )
         for index, att in enumerate(attachments, start=1):
             att_type = att.get("type")
             media_type: str | None = att_type if isinstance(att_type, str) else None
@@ -7442,14 +7463,10 @@ class TurnRunner:
             filename = _sanitize_attachment_filename(name_raw)
             material_marker = ""
             if (
-                workspace_dir
+                turn_materializer is not None
                 and _is_materializable_attachment_mime(media_type)
             ):
-                materializer = AttachmentWorkspaceMaterializer(
-                    media_root=media_root or Path("."),
-                    workspace_dir=workspace_dir,
-                    materializable_mimes=None,
-                )
+                materializer = turn_materializer
                 if is_attachment_ref(att):
                     result = materializer.materialize(att, session_id=session_id)
                 else:

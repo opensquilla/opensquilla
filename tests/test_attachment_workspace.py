@@ -92,3 +92,118 @@ def test_existing_materialized_file_is_reused_when_hash_matches(tmp_path: Path) 
     assert result.available is True
     assert existing.stat().st_mtime_ns == before_mtime_ns
     assert existing.read_bytes() == payload
+
+
+def _budgeted(tmp_path: Path, budget: int | None) -> AttachmentWorkspaceMaterializer:
+    return AttachmentWorkspaceMaterializer(
+        media_root=tmp_path / "media",
+        workspace_dir=tmp_path / "workspace",
+        materializable_mimes=None,
+        disk_budget_bytes=budget,
+    )
+
+
+def test_budget_rejects_materialization_that_would_exceed_it(tmp_path: Path) -> None:
+    materializer = _budgeted(tmp_path, budget=10)
+
+    result = materializer.materialize_bytes(
+        b"x" * 11,
+        name="big.bin",
+        mime="application/octet-stream",
+        session_id="session-a",
+    )
+
+    assert result.available is False
+    assert result.error is not None
+    assert "workspace attachment budget exceeded" in result.error
+    # The marker text names the remedy for the operator/model to see.
+    assert "workspace_attachment_disk_budget_bytes" in result.error
+    files = list((tmp_path / "workspace" / ".opensquilla" / "attachments").rglob("*-big.bin"))
+    assert files == []
+
+
+def test_budget_counts_existing_workspace_files(tmp_path: Path) -> None:
+    materializer = _budgeted(tmp_path, budget=16)
+    first = materializer.materialize_bytes(
+        b"a" * 10, name="a.bin", mime="application/octet-stream", session_id="session-a"
+    )
+    assert first.available is True
+
+    # A fresh instance re-scans the tree, so the 10 existing bytes count.
+    second = _budgeted(tmp_path, budget=16).materialize_bytes(
+        b"b" * 10, name="b.bin", mime="application/octet-stream", session_id="session-a"
+    )
+    assert second.available is False
+    assert "workspace attachment budget exceeded" in (second.error or "")
+
+    # A smaller payload that fits the remaining headroom is admitted.
+    third = _budgeted(tmp_path, budget=16).materialize_bytes(
+        b"c" * 6, name="c.bin", mime="application/octet-stream", session_id="session-a"
+    )
+    assert third.available is True
+
+
+def test_budget_reuse_of_existing_file_is_always_free(tmp_path: Path) -> None:
+    payload = b"d" * 12
+    first = _budgeted(tmp_path, budget=12).materialize_bytes(
+        payload, name="d.bin", mime="application/octet-stream", session_id="session-a"
+    )
+    assert first.available is True
+
+    # At-budget workspace: re-materializing the SAME content must stay
+    # available (reuse short-circuits before the budget check) so replay of
+    # already-materialized history never degrades when the budget fills.
+    again = _budgeted(tmp_path, budget=12).materialize_bytes(
+        payload, name="d.bin", mime="application/octet-stream", session_id="session-a"
+    )
+    assert again.available is True
+    assert again.rel_path == first.rel_path
+
+
+def test_budget_none_is_unbounded(tmp_path: Path) -> None:
+    result = _budgeted(tmp_path, budget=None).materialize_bytes(
+        b"e" * 4096, name="e.bin", mime="application/octet-stream", session_id="session-a"
+    )
+    assert result.available is True
+
+
+def test_budget_shared_across_one_instance_batch(tmp_path: Path) -> None:
+    # One materializer instance (one turn) tracks its own writes against the
+    # budget without re-walking the tree.
+    materializer = _budgeted(tmp_path, budget=16)
+    first = materializer.materialize_bytes(
+        b"f" * 10, name="f.bin", mime="application/octet-stream", session_id="session-a"
+    )
+    second = materializer.materialize_bytes(
+        b"g" * 10, name="g.bin", mime="application/octet-stream", session_id="session-a"
+    )
+    assert first.available is True
+    assert second.available is False
+
+
+def test_workspace_attachment_budget_from_config_guards() -> None:
+    from types import SimpleNamespace
+
+    from opensquilla.attachment_workspace import workspace_attachment_budget_from_config
+
+    good = SimpleNamespace(
+        attachments=SimpleNamespace(workspace_attachment_disk_budget_bytes=123)
+    )
+    assert workspace_attachment_budget_from_config(good) == 123
+    assert workspace_attachment_budget_from_config(None) is None
+    assert (
+        workspace_attachment_budget_from_config(
+            SimpleNamespace(
+                attachments=SimpleNamespace(workspace_attachment_disk_budget_bytes=0)
+            )
+        )
+        is None
+    )
+    assert (
+        workspace_attachment_budget_from_config(
+            SimpleNamespace(
+                attachments=SimpleNamespace(workspace_attachment_disk_budget_bytes="2")
+            )
+        )
+        is None
+    )

@@ -903,3 +903,25 @@ def test_historical_non_rendered_image_is_not_replayed_for_vision() -> None:
     else:
         assert isinstance(out, str)
         assert "scan.tiff" in out
+
+
+def test_workspace_budget_degrades_materialization_to_marker(tmp_path: Path) -> None:
+    # An over-budget workspace degrades the workspace copy to an unavailable
+    # marker naming the remedy; the turn itself never fails.
+    payload = b"\x00\x01" + b"z" * 256
+    workspace = tmp_path / "workspace"
+    out = TurnRunner._build_attachment_messages(
+        "inspect",
+        [{"type": "application/x-unknown", "data": _b64(payload), "name": "blob.bin"}],
+        workspace_dir=workspace,
+        session_id="s-budget",
+        workspace_attachment_budget_bytes=8,
+    )
+
+    assert out is not None
+    text_blocks = [b for b in out[0].content if isinstance(b, ContentBlockText)]
+    wrapped = next(b for b in text_blocks if b.text.startswith("<file "))
+    assert "attachment unavailable" in wrapped.text
+    assert "workspace attachment budget exceeded" in wrapped.text
+    files = list((workspace / ".opensquilla" / "attachments").rglob("*-blob.bin"))
+    assert files == []

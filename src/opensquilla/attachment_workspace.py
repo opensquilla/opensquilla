@@ -21,6 +21,12 @@ _UNSAFE_FILENAME_CHARS = re.compile(r"[^A-Za-z0-9._@+=, -]+")
 _WHITESPACE = re.compile(r"\s+")
 
 
+class AttachmentWorkspaceBudgetError(ValueError):
+    """Materializing the payload would push the workspace attachment
+    directory past its disk budget. Existing files are never evicted; the
+    attachment degrades to an unavailable marker instead."""
+
+
 @dataclass(frozen=True)
 class AttachmentWorkspaceMaterialization:
     """Result of attempting to make an attachment available inside a workspace."""
@@ -31,6 +37,20 @@ class AttachmentWorkspaceMaterialization:
     size: int
     rel_path: str | None = None
     error: str | None = None
+
+
+def workspace_attachment_budget_from_config(config: Any) -> int | None:
+    """Resolve attachments.workspace_attachment_disk_budget_bytes, or None.
+
+    Guarded like every attachments-config read: absent section, non-int, or
+    non-positive values mean "unbounded" so config-less runners keep working.
+    """
+
+    attachments_cfg = getattr(config, "attachments", None)
+    value = getattr(attachments_cfg, "workspace_attachment_disk_budget_bytes", None)
+    if isinstance(value, int) and value > 0:
+        return value
+    return None
 
 
 def is_materializable_attachment_mime(
@@ -69,12 +89,37 @@ class AttachmentWorkspaceMaterializer:
         media_root: Path,
         workspace_dir: str | Path,
         materializable_mimes: Collection[str] | None = None,
+        disk_budget_bytes: int | None = None,
     ) -> None:
         self._media_root = Path(media_root)
         self._workspace_root = Path(workspace_dir)
         self._materializable_mimes = (
             frozenset(materializable_mimes) if materializable_mimes is not None else None
         )
+        self._disk_budget_bytes = disk_budget_bytes
+        # Lazily-scanned bytes under <workspace>/.opensquilla/attachments,
+        # kept current across this instance's writes so a batch of
+        # materializations pays for one directory walk.
+        self._usage_bytes: int | None = None
+
+    def _attachments_root(self) -> Path:
+        return self._workspace_root.resolve() / ".opensquilla" / "attachments"
+
+    def _current_usage_bytes(self) -> int:
+        if self._usage_bytes is None:
+            total = 0
+            root = self._attachments_root()
+            if root.is_dir():
+                for path in root.rglob("*"):
+                    try:
+                        if path.is_file() and not path.is_symlink():
+                            total += path.stat().st_size
+                    except OSError:
+                        # Session-delete cleanup may race the walk; a vanished
+                        # file simply stops counting.
+                        continue
+            self._usage_bytes = total
+        return self._usage_bytes
 
     def materialize(
         self,
@@ -197,6 +242,7 @@ class AttachmentWorkspaceMaterializer:
         sha: str,
         size: int,
     ) -> None:
+        existing_size: int | None = None
         if target.exists():
             if target.is_symlink():
                 pass
@@ -205,7 +251,19 @@ class AttachmentWorkspaceMaterializer:
             else:
                 existing = target.read_bytes()
                 if len(existing) == size and hashlib.sha256(existing).hexdigest() == sha:
+                    # Reuse is always free: an already-materialized file must
+                    # never flip to unavailable when the budget fills later.
                     return
+                existing_size = len(existing)
+        if self._disk_budget_bytes is not None:
+            usage = self._current_usage_bytes() - (existing_size or 0)
+            if usage + size > self._disk_budget_bytes:
+                raise AttachmentWorkspaceBudgetError(
+                    "workspace attachment budget exceeded "
+                    f"({usage} + {size} > {self._disk_budget_bytes} bytes); "
+                    "delete finished sessions or raise "
+                    "attachments.workspace_attachment_disk_budget_bytes"
+                )
         tmp_path = target.with_name(f".{target.name}.{secrets.token_hex(4)}.tmp")
         try:
             with open(tmp_path, "wb") as handle:
@@ -223,6 +281,8 @@ class AttachmentWorkspaceMaterializer:
         written = target.read_bytes()
         if len(written) != size or hashlib.sha256(written).hexdigest() != sha:
             raise ValueError("workspace material hash mismatch")
+        if self._usage_bytes is not None:
+            self._usage_bytes += size - (existing_size or 0)
 
 
 def _coerce_attachment_ref(

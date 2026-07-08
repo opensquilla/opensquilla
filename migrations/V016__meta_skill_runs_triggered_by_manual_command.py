@@ -121,6 +121,41 @@ def _table_exists(conn, table: str) -> bool:
     return cur.fetchone() is not None
 
 
+def _table_sql(conn, table: str) -> str:
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name=?",
+        (table,),
+    )
+    row = cur.fetchone()
+    return row[0] if row and row[0] else ""
+
+
+def _assert_fk_enforcement_off(conn) -> None:
+    """Fail loudly if foreign-key enforcement is live on this connection.
+
+    yoyo wraps every Python step in an explicit transaction, and
+    ``PRAGMA foreign_keys`` is a documented no-op inside a transaction, so
+    the OFF/ON bracket in the recreate below cannot take effect there. The
+    rebuild is only safe because SQLite defaults foreign_keys to OFF: with
+    enforcement enabled (e.g. an SQLITE_DEFAULT_FOREIGN_KEYS=1 build),
+    ``DROP TABLE meta_skill_runs`` would run an implicit DELETE that
+    CASCADE-wipes every meta_skill_run_steps row — and the subsequent
+    ``foreign_key_check`` would still pass. Refuse instead of losing data.
+    """
+    cur = conn.cursor()
+    cur.execute("PRAGMA foreign_keys")
+    row = cur.fetchone()
+    if row is not None and row[0]:
+        raise RuntimeError(
+            "V016: PRAGMA foreign_keys is enabled on the migration "
+            "connection; rebuilding meta_skill_runs would cascade-delete "
+            "its meta_skill_run_steps child rows. Refusing to proceed — "
+            "run migrations on a connection with foreign-key enforcement "
+            "disabled."
+        )
+
+
 def _manual_command_count(conn) -> int:
     cur = conn.cursor()
     cur.execute(
@@ -130,7 +165,10 @@ def _manual_command_count(conn) -> int:
 
 
 def _recreate_runs_table(conn, triggered_by_values: tuple[str, ...]) -> None:
+    _assert_fk_enforcement_off(conn)
     cur = conn.cursor()
+    # Inert inside yoyo's step transaction (see _assert_fk_enforcement_off);
+    # kept because it is harmless and correct outside a transaction.
     cur.execute("PRAGMA foreign_keys = OFF")
     try:
         cur.execute(_create_table_sql(triggered_by_values, "meta_skill_runs__new"))
@@ -155,6 +193,12 @@ def _recreate_runs_table(conn, triggered_by_values: tuple[str, ...]) -> None:
 
 def apply_step(conn) -> None:
     if not _table_exists(conn, "meta_skill_runs"):
+        return
+    if "manual_command" in _table_sql(conn, "meta_skill_runs"):
+        # Re-run guard (yoyo's apply-then-mark crash window, or operator
+        # reapply): the relaxed CHECK is already in place. The recreate is
+        # idempotent in effect today, but any future migration that adds a
+        # column would turn a re-run into silent column loss — skip instead.
         return
     _recreate_runs_table(conn, _NEW_TRIGGERED_BY_VALUES)
 

@@ -699,6 +699,8 @@
       "timeout": "Timed out",
       "interrupted": "Interrupted",
       "cancelled": "Cancelled",
+      "outputInterrupted": "Output interrupted",
+      "stoppedAfterSeconds": "Stopped after {seconds}s",
       "idle": "Idle"
     },
     "relTime": {

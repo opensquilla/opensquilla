@@ -215,8 +215,10 @@ modify the code.
    The script installs `.[recommended]` (SquillaRouter + memory + local
    models) into a dedicated user environment via `uv tool install`,
    falling back to `python -m pip install --user` when `uv` is
-   unavailable. Open a new terminal if `opensquilla` is not on `PATH`
-   after install.
+   unavailable. If `opensquilla` is not on `PATH` after install (common
+   on a fresh host where `~/.local/bin` is not yet on `PATH`), run
+   `uv tool update-shell` and open a new terminal; see
+   [Troubleshooting](#troubleshooting) for details.
 
 3. **(optional) Install advanced extras.** Most channels — Feishu,
    Telegram, DingTalk, QQ, WeCom, Slack, and Discord — work from the

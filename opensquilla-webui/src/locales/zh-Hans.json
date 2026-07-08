@@ -699,6 +699,8 @@
       "timeout": "已超时",
       "interrupted": "已中断",
       "cancelled": "已取消",
+      "outputInterrupted": "输出被中断",
+      "stoppedAfterSeconds": "运行 {seconds}秒后停止",
       "idle": "空闲"
     },
     "relTime": {

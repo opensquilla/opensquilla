@@ -1,4 +1,4 @@
-"""Zero-output cancelled turns roll back their ingress-persisted prompt (#240)."""
+"""Zero-output cancelled turns keep their ingress-persisted prompt visible."""
 
 from __future__ import annotations
 
@@ -10,13 +10,12 @@ from opensquilla.engine.runtime import TurnRunner
 
 
 class _RecordingSessionManager:
-    def __init__(self, *, removable: bool = True) -> None:
+    def __init__(self) -> None:
         self.removed: list[tuple[str, str]] = []
-        self._removable = removable
 
     async def remove_message(self, session_key: str, message_id: str) -> bool:
         self.removed.append((session_key, message_id))
-        return self._removable
+        return True
 
 
 def _runner(manager) -> TurnRunner:
@@ -28,28 +27,18 @@ def _runner(manager) -> TurnRunner:
 
 
 @pytest.mark.asyncio
-async def test_rollback_removes_bound_prompt() -> None:
+async def test_zero_output_cancel_keeps_bound_prompt_visible() -> None:
     manager = _RecordingSessionManager()
     runner = _runner(manager)
 
     removed = await runner._rollback_cancelled_prompt("agent:main:webchat:x", "msg-1")
 
-    assert removed is True
-    assert manager.removed == [("agent:main:webchat:x", "msg-1")]
-
-
-@pytest.mark.asyncio
-async def test_rollback_reports_false_when_nothing_removed() -> None:
-    manager = _RecordingSessionManager(removable=False)
-    runner = _runner(manager)
-
-    removed = await runner._rollback_cancelled_prompt("agent:main:webchat:x", "msg-1")
-
     assert removed is False
+    assert manager.removed == []
 
 
 @pytest.mark.asyncio
-async def test_rollback_is_noop_without_remove_message() -> None:
+async def test_cancelled_prompt_retention_is_noop_without_remove_message() -> None:
     # A session manager without remove_message must not raise.
     manager = SimpleNamespace()
     runner = _runner(manager)
@@ -60,13 +49,12 @@ async def test_rollback_is_noop_without_remove_message() -> None:
 
 
 @pytest.mark.asyncio
-async def test_rollback_swallows_remove_errors() -> None:
+async def test_cancelled_prompt_retention_never_calls_remove_message() -> None:
     class _FailingManager:
         async def remove_message(self, session_key: str, message_id: str) -> bool:
-            raise RuntimeError("boom")
+            raise AssertionError("remove_message should not be called")
 
     runner = _runner(_FailingManager())
 
-    # Must not propagate — a rollback failure cannot mask the cancellation.
     removed = await runner._rollback_cancelled_prompt("agent:main:webchat:x", "msg-1")
     assert removed is False

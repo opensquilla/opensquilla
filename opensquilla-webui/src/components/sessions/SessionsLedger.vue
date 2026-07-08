@@ -69,7 +69,7 @@ import { useI18n } from 'vue-i18n'
 import Icon from '@/components/Icon.vue'
 import type { IconName } from '@/utils/icons'
 import type { SessionItem, SessionLedgerEntry } from '@/composables/useSessions'
-import { formatRelativeTime, subagentRowTitle } from './sessionDisplay'
+import { formatRelativeTime, sessionStatusBadge, subagentRowTitle } from './sessionDisplay'
 
 const { t } = useI18n()
 
@@ -83,6 +83,16 @@ const emit = defineEmits<{
   open: [item: SessionItem]
   remove: [item: SessionItem]
 }>()
+
+const HUB_ROW_STATUS_CLASSES = {
+  needsInput: 'hub-row__status--needs-input',
+  running: 'hub-row__status--running',
+  queued: 'hub-row__status--queued',
+  failed: 'hub-row__status--failed',
+  timeout: 'hub-row__status--failed',
+  interrupted: 'hub-row__status--queued',
+  cancelled: 'hub-row__status--off',
+}
 
 function surfaceIcon(item: SessionItem): IconName {
   if (item.sessionKind === 'cron') return 'cron'
@@ -99,19 +109,7 @@ function agentName(item: SessionItem): string {
 }
 
 function statusBadge(item: SessionItem): { label: string; cls: string } | null {
-  if (props.needsInputKeys.has(item.key)) {
-    return { label: t('sessions.status.needsInput'), cls: 'hub-row__status--needs-input' }
-  }
-  const map: Record<string, { labelKey: string; cls: string }> = {
-    running: { labelKey: 'sessions.status.running', cls: 'hub-row__status--running' },
-    queued: { labelKey: 'sessions.status.queued', cls: 'hub-row__status--queued' },
-    failed: { labelKey: 'sessions.status.failed', cls: 'hub-row__status--failed' },
-    timeout: { labelKey: 'sessions.status.timeout', cls: 'hub-row__status--failed' },
-    interrupted: { labelKey: 'sessions.status.interrupted', cls: 'hub-row__status--queued' },
-    cancelled: { labelKey: 'sessions.status.cancelled', cls: 'hub-row__status--off' },
-  }
-  const entry = map[item.runStatus]
-  return entry ? { label: t(entry.labelKey), cls: entry.cls } : null
+  return sessionStatusBadge(item, props.needsInputKeys.has(item.key), HUB_ROW_STATUS_CLASSES)
 }
 
 // The Stomatopod channel readout, applied to existing row data (no new wiring):

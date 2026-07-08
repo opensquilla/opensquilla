@@ -6,6 +6,13 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
+pytestmark = pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="experiment tooling is POSIX-only (fcntl file locking)",
+)
+
 ROOT = Path(__file__).parents[2]
 SCRIPTS = ROOT / "scripts" / "experiments"
 

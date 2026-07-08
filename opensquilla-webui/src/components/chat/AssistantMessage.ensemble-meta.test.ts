@@ -1,5 +1,5 @@
 // @vitest-environment happy-dom
-import { beforeEach, describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { createApp, nextTick } from 'vue'
 import i18n from '@/i18n'
 import type { ChatRenderedMessage } from '@/types/chat'
@@ -19,7 +19,7 @@ function assistantMessage(overrides: Partial<ChatRenderedMessage> = {}): ChatRen
   }
 }
 
-async function mountMessage(message: ChatRenderedMessage) {
+async function mountMessage(message: ChatRenderedMessage, propOverrides: Record<string, unknown> = {}) {
   const el = document.createElement('div')
   document.body.appendChild(el)
   const app = createApp(AssistantMessage, {
@@ -37,6 +37,7 @@ async function mountMessage(message: ChatRenderedMessage) {
     toolStatusText: () => '',
     toolSecondaryText: () => '',
     copyMessage: async () => true,
+    ...propOverrides,
   })
   app.use(i18n)
   app.mount(el)
@@ -112,5 +113,28 @@ describe('AssistantMessage ensemble footer metadata', () => {
   it('keeps the ensemble summary broad enough on compact layouts', () => {
     expect(source).not.toContain('max-width: 7rem;')
     expect(source).toContain('max-width: min(14rem, 100%);')
+  })
+
+  it('does not toggle share selection for stopped-output notices', async () => {
+    const onToggleShare = vi.fn()
+    const { app, el } = await mountMessage(
+      assistantMessage({
+        text: 'Stopped after 1s',
+        messageId: 'client-stop-notice:task-1',
+        stopNotice: true,
+      }),
+      {
+        shareMode: true,
+        shareMessageId: 'client-stop-notice:task-1',
+        onToggleShare,
+      },
+    )
+
+    el.querySelector<HTMLElement>('.msg-ai')?.click()
+    await nextTick()
+
+    expect(el.querySelector('.chat-share-picker')).toBeNull()
+    expect(onToggleShare).not.toHaveBeenCalled()
+    app.unmount()
   })
 })

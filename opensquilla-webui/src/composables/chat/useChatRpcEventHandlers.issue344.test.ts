@@ -227,4 +227,67 @@ describe('issue #344 — live stream is bound to a single task', () => {
       }),
     )
   })
+
+  it('keeps the stopped-output notice as a local turn result when the next user message is added', () => {
+    const { api, options, stream, messages } = makeHarness('__opensquilla_stopped_stream_task__')
+    stream.isStreaming.value = true
+    messages.value = [
+      { role: 'user', text: 'stop immediately', ts: 1_000, messageId: 'user-1' },
+    ]
+    options.sessionRunStatus = vi.fn((source: ChatRunStatusSource | null | undefined): ChatRunStatus => ({
+      status: source?.run_status === 'cancelled' ? 'cancelled' : 'idle',
+      label: source?.run_status === 'cancelled' ? 'Stopped after 1s' : 'Idle',
+      task: source?.last_task ?? null,
+    }))
+
+    api.handlers.onSessionsChanged({
+      session_key: SESSION,
+      reason: 'task_terminal',
+      run_status: 'cancelled',
+      last_task: { task_id: 'task-B', status: 'cancelled', finished_at: 2_000 },
+    } as never)
+    messages.value.push({ role: 'user', text: 'next question', ts: 3_000, messageId: 'user-2' })
+
+    expect(messages.value.map(message => [message.role, message.text])).toEqual([
+      ['user', 'stop immediately'],
+      ['assistant', 'Stopped after 1s'],
+      ['user', 'next question'],
+    ])
+    expect(messages.value[1]?.stopNotice).toBe(true)
+  })
+
+  it('does not insert a stopped-output notice before a cancelled partial assistant output is finalized', () => {
+    const { api, options, stream, messages } = makeHarness('task-B')
+    stream.isStreaming.value = true
+    messages.value = [
+      { role: 'user', text: 'stop after partial output', ts: 1_000, messageId: 'user-1' },
+    ]
+    stream.endStreaming = vi.fn(() => {
+      stream.isStreaming.value = false
+      messages.value.push({
+        role: 'assistant',
+        text: 'partial output',
+        ts: 2_000,
+        interrupted: true,
+        messageId: 'assistant-1',
+      })
+    })
+    options.sessionRunStatus = vi.fn((source: ChatRunStatusSource | null | undefined): ChatRunStatus => ({
+      status: source?.run_status === 'cancelled' ? 'cancelled' : 'idle',
+      label: source?.run_status === 'cancelled' ? 'Stopped after 1s' : 'Idle',
+      task: source?.last_task ?? null,
+    }))
+
+    api.handlers.onAny('task.cancelled', {
+      task_id: 'task-B',
+      session_key: SESSION,
+      terminal_message: 'The task was cancelled before it finished.',
+    })
+
+    expect(messages.value.map(message => [message.role, message.text])).toEqual([
+      ['user', 'stop after partial output'],
+      ['assistant', 'partial output'],
+    ])
+    expect(messages.value.some(message => message.stopNotice)).toBe(false)
+  })
 })

@@ -66,8 +66,22 @@ export function normalizeRunStatus(status: string | undefined): string {
   return 'idle'
 }
 
-export function runStatusLabelText(status: string): string {
+function stoppedTaskDurationSeconds(row: RawSessionItem | undefined): number | null {
+  const lastTask = row?.last_task || row?.lastTask || null
+  if (!lastTask) return null
+  const startedAt = numberValue(lastTask.started_at) ?? numberValue(lastTask.startedAt)
+  const finishedAt = numberValue(lastTask.finished_at) ?? numberValue(lastTask.finishedAt)
+  if (startedAt == null || finishedAt == null || finishedAt < startedAt) return null
+  return Math.max(1, Math.round((finishedAt - startedAt) / 1000))
+}
+
+export function runStatusLabelText(status: string, row?: RawSessionItem): string {
   const t = i18n.global.t
+  if (status === 'cancelled' || status === 'interrupted') {
+    const seconds = stoppedTaskDurationSeconds(row)
+    if (seconds != null) return t('sessions.status.stoppedAfterSeconds', { seconds })
+    return t('sessions.status.outputInterrupted')
+  }
   const keys: Record<string, string> = {
     queued: 'sessions.status.queued',
     running: 'sessions.status.running',
@@ -292,7 +306,7 @@ export function normalizeSessionItem(item: unknown): SessionItem | null {
     status,
     visualStatus: sessionVisualStatus({ status, runStatus }),
     runStatus,
-    runLabel: runStatusLabelText(runStatus),
+    runLabel: runStatusLabelText(runStatus, raw),
     messageCount,
     updatedAt,
     interactive: raw.interactive === true,

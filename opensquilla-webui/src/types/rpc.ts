@@ -27,6 +27,10 @@ export interface RawSessionChannelContext {
 
 export interface RawSessionTask {
   status?: string
+  started_at?: number | string
+  startedAt?: number | string
+  finished_at?: number | string
+  finishedAt?: number | string
 }
 
 export interface RawSessionCron {
@@ -62,10 +66,10 @@ export interface RawSessionItem {
   status?: string
   runStatus?: string
   run_status?: string
-  active_task?: RawSessionTask
-  activeTask?: RawSessionTask
-  last_task?: RawSessionTask
-  lastTask?: RawSessionTask
+  active_task?: RawSessionTask | null
+  activeTask?: RawSessionTask | null
+  last_task?: RawSessionTask | null
+  lastTask?: RawSessionTask | null
   terminal_status?: string
   terminalStatus?: string
   display_name?: string
@@ -170,8 +174,8 @@ export interface SessionEventPayload {
   group_id?: string
   to_state?: string
   toState?: string
-  active_task?: RawSessionTask
-  last_task?: RawSessionTask
+  active_task?: RawSessionTask | null
+  last_task?: RawSessionTask | null
   [key: string]: unknown
 }
 

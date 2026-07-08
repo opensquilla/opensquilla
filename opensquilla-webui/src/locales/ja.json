@@ -699,6 +699,8 @@
       "timeout": "タイムアウト",
       "interrupted": "中断",
       "cancelled": "キャンセル",
+      "outputInterrupted": "出力が中断されました",
+      "stoppedAfterSeconds": "{seconds}秒後に停止",
       "idle": "アイドル"
     },
     "relTime": {

@@ -555,6 +555,7 @@ import {
   truncate,
   useChatRenderedMessages,
 } from '@/composables/chat/useChatRenderedMessages'
+import { messagesWithStoppedOutputNotice } from '@/composables/chat/stoppedOutputNotice'
 import { useChatRouterDecisionRuntime } from '@/composables/chat/useChatRouterDecisionRuntime'
 import { useChatAnswerReveal } from '@/composables/chat/useChatAnswerReveal'
 import { useChatRpcEventHandlers } from '@/composables/chat/useChatRpcEventHandlers'
@@ -562,6 +563,7 @@ import { useChatRpcSubscriptions } from '@/composables/chat/useChatRpcSubscripti
 import { useChatSend } from '@/composables/chat/useChatSend'
 import { useMetaRuns } from '@/composables/chat/useMetaRuns'
 import { useAgentOptions } from '@/composables/useAgentOptions'
+import { runStatusLabelText as sessionRunStatusLabelText } from '@/composables/useSessions'
 import { useChatSessionRoute } from '@/composables/chat/useChatSessionRoute'
 import { useChatRunModePreference, type RunModePolicy } from '@/composables/chat/useChatRunModePreference'
 import { useChatSessionRuntime } from '@/composables/chat/useChatSessionRuntime'
@@ -1009,8 +1011,15 @@ useDocumentEvent('click', (e) => {
   if (host && e.target instanceof Node && !host.contains(e.target)) closeAgentSwitcher()
 })
 
+const renderSourceMessages = computed(() =>
+  messagesWithStoppedOutputNotice(
+    messages.value,
+    runStatus.value,
+    t('sessions.status.outputInterrupted'),
+  ),
+)
 const chatRenderedMessages = useChatRenderedMessages({
-  messages,
+  messages: renderSourceMessages,
   interruptState,
   sessionKey,
   routerSlots,
@@ -1598,7 +1607,10 @@ function normalizeRunStatus(status: string): ChatRunStatusState {
   return 'idle'
 }
 
-function runStatusLabelText(status: ChatRunStatusState): string {
+function runStatusLabelText(status: ChatRunStatusState, source?: ChatRunStatusSource | null): string {
+  if (status === 'cancelled' || status === 'interrupted') {
+    return sessionRunStatusLabelText(status, source || undefined)
+  }
   const labels: Record<string, string> = {
     queued: t('chat.status.queued'),
     running: t('chat.status.running'),
@@ -1620,7 +1632,7 @@ function sessionRunStatus(source: ChatRunStatusSource | null | undefined): ChatR
   let status = normalizeRunStatus(stateSource.run_status || stateSource.runStatus || active?.status || last?.status || '')
   if (active && (activeStatus === 'queued' || activeStatus === 'running' || activeStatus === 'approval_pending')) status = activeStatus
   const task = active || last || null
-  return { status, label: runStatusLabelText(status), task }
+  return { status, label: runStatusLabelText(status, stateSource), task }
 }
 
 /* ── Subagent ──────────────────────────────────────────────────────── */

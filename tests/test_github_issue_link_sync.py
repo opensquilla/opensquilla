@@ -335,6 +335,85 @@ def test_apply_closed_unmerged_action_only_removes_open_pr_label() -> None:
     assert client.calls == [("remove_label", 200, "has-linked-pr")]
 
 
+class ClassifyingClient:
+    """get_issue stub: maps issue number -> API response (or None)."""
+
+    def __init__(self, targets: dict[int, dict[str, Any] | None]) -> None:
+        self.targets = targets
+        self.lookups: list[int] = []
+
+    def get_issue(self, issue_number: int) -> dict[str, Any] | None:
+        self.lookups.append(issue_number)
+        return self.targets.get(issue_number)
+
+
+def test_classify_sync_target_distinguishes_issue_pr_and_missing() -> None:
+    sync = _load_sync_module()
+    client = ClassifyingClient(
+        {
+            100: {"number": 100},
+            535: {"number": 535, "pull_request": {"url": "https://example.invalid/pulls/535"}},
+        }
+    )
+
+    assert sync.classify_sync_target(client, 100) == "issue"
+    assert sync.classify_sync_target(client, 535) == "pull_request"
+    assert sync.classify_sync_target(client, 999) == "missing"
+
+
+class StatusRaisingClient:
+    """request_json stub that answers every mutation with a fixed HTTP status."""
+
+    def __init__(self, status: int) -> None:
+        self.status = status
+        self.calls: list[tuple[str, str]] = []
+
+    def request_json(
+        self,
+        method: str,
+        path: str,
+        *,
+        payload: dict[str, Any] | None = None,
+        ignore_statuses: set[int] | None = None,
+    ) -> Any:
+        self.calls.append((method, path))
+        if self.status in (ignore_statuses or set()):
+            return None
+        raise RuntimeError(f"GitHub API {method} {path} failed: {self.status}")
+
+    def ensure_label(self, name: str) -> None:
+        self.calls.append(("ENSURE", name))
+
+
+def test_label_and_comment_mutations_tolerate_403_and_410() -> None:
+    """A PR-numbered target or a locked/deleted issue must not fail the job."""
+    sync = _load_sync_module()
+
+    for status in (403, 404, 410):
+        client = StatusRaisingClient(status)
+        sync.GitHubClient.add_labels(client, 535, ["has-linked-pr"])
+        sync.GitHubClient.remove_label(client, 535, "has-linked-pr")
+        sync.GitHubClient.create_comment(client, 535, "body")
+        assert ("POST", "/issues/535/labels") in client.calls
+        assert ("POST", "/issues/535/comments") in client.calls
+
+
+def test_ensure_label_tolerates_create_race() -> None:
+    """A 422 from a concurrent run creating the same label is not an error."""
+    sync = _load_sync_module()
+
+    class LabelRaceClient(StatusRaisingClient):
+        def request_json(self, method: str, path: str, **kwargs: Any) -> Any:
+            if method == "GET":
+                self.calls.append((method, path))
+                return None  # label not found -> triggers POST /labels
+            return super().request_json(method, path, **kwargs)
+
+    client = LabelRaceClient(422)
+    sync.GitHubClient.ensure_label(client, "has-linked-pr")
+    assert ("POST", "/labels") in client.calls
+
+
 def test_list_comments_reads_all_pages_before_idempotency_check() -> None:
     sync = _load_sync_module()
     client = PaginatedGitHubClient(

@@ -179,3 +179,43 @@ async def test_apply_patch_repeated_updates_to_same_file_compose_in_memory(
     assert receipt["before"] == before
     assert receipt["after"] == after
     assert receipt["operation_count"] == 2
+
+
+@pytest.mark.asyncio
+async def test_apply_patch_receipt_after_fingerprints_committed_file_bytes(
+    patch_context: tuple[Path, ToolContext, list[dict[str, Any]]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace, ctx, _events = patch_context
+    target = workspace / "src" / "app.py"
+    target.parent.mkdir(parents=True)
+    target.write_text("alpha\nbeta\n", encoding="utf-8")
+    apply_patch = _original_async(patch_tool.apply_patch)
+    original_apply_ops = patch_tool._apply_ops
+
+    def apply_ops_with_disk_newlines(ops: Any, root: Any = None) -> Any:
+        result = original_apply_ops(ops, root)
+        target.write_bytes(
+            target.read_text(encoding="utf-8").replace("\n", "\r\n").encode("utf-8")
+        )
+        return result
+
+    monkeypatch.setattr(patch_tool, "_apply_ops", apply_ops_with_disk_newlines)
+
+    await apply_patch(
+        patch="""*** Begin Patch
+*** Update File: src/app.py
+@@ -1,1 +1,1 @@
+-alpha
++ALPHA
+*** Update File: src/app.py
+@@ -2,1 +2,1 @@
+-beta
++BETA
+*** End Patch"""
+    )
+
+    after = fingerprint_file(target)
+    planned_after = patch_tool._fingerprint_content("ALPHA\nBETA\n")
+    assert after["size"] != planned_after["size"]
+    assert ctx.workspace_mutation_receipts[0]["after"] == after

@@ -838,7 +838,7 @@ async def apply_patch(
             path=item.resolved,
             operation=item.operation,
             before=item.before,
-            after=_fingerprint_content(item.after_content),
+            after=fingerprint_path(item.resolved),
             partial=False,
             metadata={
                 "patch_path": item.path,

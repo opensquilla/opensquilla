@@ -51,7 +51,7 @@ CREATE TABLE turn_errors (
 """
 
 CREATE_INDEX = (
-    "CREATE INDEX idx_turn_errors_session_ts"
+    "CREATE INDEX IF NOT EXISTS idx_turn_errors_session_ts"
     " ON turn_errors(session_key, ts_ms)"
 )
 
@@ -66,10 +66,11 @@ def _table_exists(conn, table: str) -> bool:
 
 
 def apply_step(conn) -> None:
-    if _table_exists(conn, "turn_errors"):
-        return
     cur = conn.cursor()
-    cur.execute(CREATE_TURN_ERRORS)
+    if not _table_exists(conn, "turn_errors"):
+        cur.execute(CREATE_TURN_ERRORS)
+    # Outside the table guard so a pre-existing table (created out-of-band)
+    # still gains the index; IF NOT EXISTS keeps the step idempotent.
     cur.execute(CREATE_INDEX)
 
 

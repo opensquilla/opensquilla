@@ -39,6 +39,8 @@ def _live_enrichment() -> dict[str, Any]:
 
     try:
         return asyncio.run(_fetch())
+    except KeyboardInterrupt:
+        raise
     except BaseException:  # noqa: BLE001 - includes SystemExit from connect()
         return {}
 
@@ -63,12 +65,12 @@ def bundle_command(
         stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
         output = Path.cwd() / f"opensquilla-bundle-{stamp}.zip"
 
-    extra = _live_enrichment()
     try:
-        # collect_bundle logs best-effort artifact failures via structlog,
-        # whose default PrintLogger writes to stdout; keep stdout reserved
-        # for the command's own output (especially --json).
+        # collect_bundle (and the enrichment client) log best-effort failures
+        # via structlog, whose default PrintLogger writes to stdout; keep
+        # stdout reserved for the command's own output (especially --json).
         with contextlib.redirect_stdout(sys.stderr):
+            extra = _live_enrichment()
             result = collect_bundle(
                 output,
                 days=days,

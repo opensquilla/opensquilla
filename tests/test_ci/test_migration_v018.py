@@ -39,6 +39,61 @@ def test_v018_creates_turn_errors_table(tmp_path: Path) -> None:
         conn.close()
 
 
+def _index_exists(conn: sqlite3.Connection) -> bool:
+    row = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='index'"
+        " AND name='idx_turn_errors_session_ts'"
+    ).fetchone()
+    return row is not None
+
+
+def test_v018_creates_index(tmp_path: Path) -> None:
+    db = str(tmp_path / "v018-index.db")
+    apply_pending(db, MIGRATIONS_DIR)
+    conn = sqlite3.connect(db)
+    try:
+        assert _index_exists(conn)
+    finally:
+        conn.close()
+
+
+def _migration_constant(name: str) -> str:
+    """Extract a module-level string constant from the V018 migration source.
+
+    The migration module cannot be imported directly (yoyo's ``step()``
+    requires a live migration collector at module-exec time), so read the DDL
+    constant out of the AST instead — no drift from an inline copy.
+    """
+    import ast
+
+    source = (MIGRATIONS_DIR / "V018__turn_errors.py").read_text(encoding="utf-8")
+    for node in ast.parse(source).body:
+        if isinstance(node, ast.Assign):
+            for target in node.targets:
+                if isinstance(target, ast.Name) and target.id == name:
+                    value = ast.literal_eval(node.value)
+                    assert isinstance(value, str)
+                    return value
+    raise AssertionError(f"constant {name!r} not found in V018 migration")
+
+
+def test_v018_preexisting_table_gains_index(tmp_path: Path) -> None:
+    """A turn_errors table created out-of-band still gains the index on apply."""
+    db_path = tmp_path / "v018-preexisting.db"
+    conn = sqlite3.connect(str(db_path))
+    conn.execute(_migration_constant("CREATE_TURN_ERRORS"))
+    conn.commit()
+    conn.close()
+
+    apply_pending(str(db_path), MIGRATIONS_DIR)
+
+    conn = sqlite3.connect(str(db_path))
+    try:
+        assert _index_exists(conn)
+    finally:
+        conn.close()
+
+
 def test_v018_rollback_drops_table(tmp_path: Path) -> None:
     db = str(tmp_path / "v018-rollback.db")
     apply_pending(db, MIGRATIONS_DIR)

@@ -164,10 +164,19 @@ def test_experimental_provider_configurable_with_required_fields():
     assert res.config.llm.provider == "azure"
 
 
-def test_coding_plan_provider_still_rejected():
+def test_coding_plan_provider_configurable_with_protocol_endpoint():
     cfg = GatewayConfig()
-    with pytest.raises(ValueError, match="not runtime-supported"):
-        upsert_llm_provider(cfg, provider_id="volcengine_coding_plan", model="x", api_key="k")
+    res = upsert_llm_provider(
+        cfg,
+        provider_id="volcengine_coding_plan",
+        model="x",
+        api_key="k",
+    )
+
+    assert res.config.llm.provider == "volcengine_coding_plan"
+    assert res.config.llm.model == "x"
+    assert res.config.llm.api_key == "k"
+    assert res.config.llm.base_url == "https://ark.cn-beijing.volces.com/api/coding/v3"
 
 
 def test_ollama_does_not_require_api_key():

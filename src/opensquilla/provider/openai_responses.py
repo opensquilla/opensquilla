@@ -18,7 +18,7 @@ from opensquilla.env import trust_env as _trust_env
 from opensquilla.secrets import clean_header_secret
 
 from .failures import retry_after_from_headers
-from .openai import _http_error_body_text, _resolve_llm_proxy
+from .openai import _VERSIONED_BASE_URL_RE, _http_error_body_text, _resolve_llm_proxy
 from .protocol import ProviderConnectionConfig, ProviderMetadata
 from .stream_assembly import ToolStreamAccumulator
 from .trace_recorder import LLMTraceRecorder
@@ -165,7 +165,7 @@ class OpenAIResponsesProvider:
         )
 
     def _api_url(self, path: str) -> str:
-        if self._base_url.endswith("/v1") and path.startswith("/v1/"):
+        if path.startswith("/v1/") and _VERSIONED_BASE_URL_RE.search(self._base_url):
             return f"{self._base_url}{path[3:]}"
         return f"{self._base_url}{path}"
 

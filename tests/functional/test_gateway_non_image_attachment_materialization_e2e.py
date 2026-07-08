@@ -45,6 +45,7 @@ _TEXT_MODEL = "test/text"
 _GATE_MODEL = "test/gate"
 _VISION_MODEL = "test/vision"
 _TURN_TERMINAL_EVENT_TIMEOUT_SECONDS = 30.0
+_TURN_TASK_DRAIN_TIMEOUT_SECONDS = 10.0
 
 _PNG_BYTES = (
     b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01"
@@ -291,7 +292,16 @@ async def _send_session_turn(
         )
         if done_count > done_before:
             if task is not None:
-                await asyncio.wait_for(asyncio.shield(task), timeout=1.0)
+                try:
+                    await asyncio.wait_for(
+                        asyncio.shield(task),
+                        timeout=_TURN_TASK_DRAIN_TIMEOUT_SECONDS,
+                    )
+                except TimeoutError as exc:
+                    raise AssertionError(
+                        "timed out waiting for agent task to finish after done event; "
+                        f"events={sink.events!r}"
+                    ) from exc
             return
         new_errors = [
             payload

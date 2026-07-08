@@ -59,6 +59,19 @@ def test_openai_responses_provider_is_separate_from_chat_completions_provider() 
     )
 
 
+def test_openai_responses_api_url_absorbs_versioned_base_url() -> None:
+    provider = OpenAIResponsesProvider(
+        api_key="test",
+        model="m",
+        base_url="https://ark.cn-beijing.volces.com/api/coding/v3",
+    )
+
+    assert (
+        provider._api_url("/v1/responses")
+        == "https://ark.cn-beijing.volces.com/api/coding/v3/responses"
+    )
+
+
 def test_openai_responses_provider_posts_responses_payload_and_usage(
     monkeypatch: Any,
 ) -> None:

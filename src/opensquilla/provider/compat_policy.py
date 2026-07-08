@@ -104,6 +104,11 @@ _ARK_UNSUPPORTED_TOOL_SCHEMA_KEYWORDS = frozenset(
 
 _DEEPSEEK_V4_MODEL_IDS = frozenset({"deepseek-v4-flash", "deepseek-v4-pro"})
 
+# TokenHub's hy3 family documents interleaved thinking: assistant turns must
+# carry reasoning_content back (an empty string when there is none), or the
+# reasoning context is lost across tool-call rounds.
+_TOKENHUB_HY3_MODEL_IDS = frozenset({"hy3", "hy3-preview"})
+
 # OpenRouter's reasoning controls are model/provider-specific: GLM can be
 # stabilized by explicitly disabling reasoning when OpenSquilla has not
 # requested thinking, while MiniMax reasoning endpoints reject that payload.
@@ -176,6 +181,11 @@ _POLICIES_BY_KIND: dict[str, OpenAICompatPolicy] = {
     "byteplus": OpenAICompatPolicy(
         display_name="BytePlus",
         tool_schema_unsupported_keywords=_ARK_UNSUPPORTED_TOOL_SCHEMA_KEYWORDS,
+    ),
+    "tencent_tokenhub": OpenAICompatPolicy(
+        display_name="Tencent TokenHub",
+        replay_reasoning_format="tencent_tokenhub",
+        require_reasoning_content_model_ids=_TOKENHUB_HY3_MODEL_IDS,
     ),
     "lm_studio": OpenAICompatPolicy(display_name="LM Studio"),
     "ovms": OpenAICompatPolicy(display_name="OpenVINO Model Server"),

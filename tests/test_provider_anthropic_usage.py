@@ -113,6 +113,10 @@ def _sse_body(events: list[dict]) -> bytes:
             "byteplus_coding_plan_anthropic",
             "https://ark.ap-southeast.bytepluses.com/api/coding",
         ),
+        (
+            "tencent_token_plan_anthropic",
+            "https://api.lkeap.cloud.tencent.com/plan/anthropic",
+        ),
     ],
 )
 def test_anthropic_compatible_endpoints_use_authorization_bearer(

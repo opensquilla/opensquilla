@@ -94,6 +94,10 @@ COMPAT_THINKING_MODELS: dict[str, tuple[str, str]] = {
     # seed-1-6 ladder (model_catalog byteplus branch) -> shared "volcengine"
     # dialect; ark schema keyword strips apply here too.
     "byteplus": ("seed-1-6", "volcengine"),
+    # hy3 ladder ([tencent_tokenhub."hy3*"] corrections rows) ->
+    # "tencent_tokenhub" dialect; the policy also requires assistant
+    # reasoning_content replay for the hy3 ids, frozen by the tools golden.
+    "tencent_tokenhub": ("hy3", "tencent_tokenhub"),
     "lm_studio": (_NEUTRAL_MODEL, "none"),
     "ovms": (_NEUTRAL_MODEL, "none"),
     "litellm_proxy": (_NEUTRAL_MODEL, "none"),
@@ -239,6 +243,23 @@ def build_cases() -> list[GoldenCase]:
                 slug="minimax__plain",
                 provider_id="minimax",
                 model="minimax-m2.5",
+            ),
+            # Anthropic-shaped Tencent TokenHub endpoint: freezes x-api-key
+            # auth on a non-Anthropic host and the bare-host /v1/messages
+            # URL join.
+            GoldenCase(
+                backend="anthropic",
+                slug="tencent_tokenhub_anthropic__plain",
+                provider_id="tencent_tokenhub_anthropic",
+                model="hy3",
+            ),
+            # Token Plan Anthropic endpoint: freezes bearer auth and the
+            # /plan/anthropic/v1/messages URL join on the lkeap host.
+            GoldenCase(
+                backend="anthropic",
+                slug="tencent_token_plan_anthropic__plain",
+                provider_id="tencent_token_plan_anthropic",
+                model="hy3",
             ),
         ]
     )

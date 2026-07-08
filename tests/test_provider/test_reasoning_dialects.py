@@ -43,6 +43,8 @@ from opensquilla.provider.registry import list_provider_specs
 #       the moonshot prefix ladder).
 #   "volcengine" — [volcengine.…] AND [byteplus.…] corrections rows (two
 #       providers, one wire spelling).
+#   "tencent_tokenhub" — compat_policy: tencent_tokenhub policy
+#       replay_reasoning_format; [tencent_tokenhub."hy3*"] corrections rows.
 #   "none"       — ModelCapabilities default plus every non-reasoning
 #       fallthrough (catch-all "*" rows and the no-dialect adaptation in
 #       model_catalog._capabilities_from_entry).
@@ -56,6 +58,7 @@ REACHABLE_REASONING_FORMATS = frozenset(
         "dashscope",
         "moonshot",
         "volcengine",
+        "tencent_tokenhub",
         "none",
     }
 )
@@ -207,6 +210,33 @@ def test_volcengine_enable_and_disable_payloads() -> None:
     assert _disabled("volcengine", ReasoningDisableArgs(model="doubao-seed-1-6")) == {
         "thinking": {"type": "disabled"}
     }
+
+
+def test_tencent_tokenhub_enable_payload_maps_levels_to_documented_efforts() -> None:
+    """TokenHub's hy3 documents exactly reasoning_effort low|high, so the
+    five-level ladder collapses onto those two values."""
+    assert _enabled("tencent_tokenhub", _HIGH_ARGS) == {
+        "thinking": {"type": "enabled"},
+        "reasoning_effort": "high",
+    }
+    for level, expected in (
+        (ThinkingLevel.MINIMAL, "low"),
+        (ThinkingLevel.LOW, "low"),
+        (ThinkingLevel.MEDIUM, "high"),
+        (ThinkingLevel.XHIGH, "high"),
+        (None, "high"),
+    ):
+        args = ReasoningEnableArgs(thinking_level=level, thinking_budget_tokens=5000)
+        assert _enabled("tencent_tokenhub", args) == {
+            "thinking": {"type": "enabled"},
+            "reasoning_effort": expected,
+        }, level
+
+
+def test_tencent_tokenhub_has_no_disable_payload() -> None:
+    """hy3 documents no thinking-off payload; off omits every field."""
+    assert DIALECTS["tencent_tokenhub"].disable is None
+    assert _disabled("tencent_tokenhub", ReasoningDisableArgs(model="hy3")) == {}
 
 
 def test_enable_effort_resolves_from_budget_when_level_is_absent() -> None:

@@ -1,7 +1,7 @@
 {
  "_source": "https://models.dev/api.json",
  "_license": "MIT (models.dev, maintained by the SST team)",
- "_fetched": "2026-07-07",
+ "_fetched": "2026-07-08",
  "providers": {
   "anthropic": {
    "claude-fable-5": {
@@ -4727,33 +4727,35 @@
     "in_mtok": 2,
     "out_mtok": 8
    },
-   "aion-labs/aion-1.0": {
-    "ctx": 131072,
-    "out": 32768,
-    "reasoning": true,
-    "tools": false,
-    "vision": false,
-    "in_mtok": 4,
-    "out_mtok": 8
-   },
-   "aion-labs/aion-1.0-mini": {
-    "ctx": 131072,
-    "out": 32768,
-    "reasoning": true,
-    "tools": false,
-    "vision": false,
-    "in_mtok": 0.7,
-    "out_mtok": 1.4
-   },
    "aion-labs/aion-2.0": {
     "ctx": 131072,
     "out": 32768,
     "reasoning": true,
-    "tools": false,
+    "tools": true,
     "vision": false,
     "in_mtok": 0.8,
     "out_mtok": 1.6,
     "cr_mtok": 0.2
+   },
+   "aion-labs/aion-3.0": {
+    "ctx": 131072,
+    "out": 32768,
+    "reasoning": true,
+    "tools": true,
+    "vision": false,
+    "in_mtok": 3,
+    "out_mtok": 6,
+    "cr_mtok": 0.75
+   },
+   "aion-labs/aion-3.0-mini": {
+    "ctx": 131072,
+    "out": 32768,
+    "reasoning": true,
+    "tools": true,
+    "vision": false,
+    "in_mtok": 0.7,
+    "out_mtok": 1.4,
+    "cr_mtok": 0.18
    },
    "aion-labs/aion-rp-llama-3.1-8b": {
     "ctx": 32768,
@@ -5236,7 +5238,7 @@
    },
    "deepseek/deepseek-v4-flash": {
     "ctx": 1048576,
-    "out": 16384,
+    "out": 65536,
     "reasoning": true,
     "tools": true,
     "vision": false,
@@ -5715,13 +5717,13 @@
     "out_mtok": 0.201
    },
    "meta-llama/llama-3.2-3b-instruct": {
-    "ctx": 80000,
-    "out": 80000,
+    "ctx": 131072,
+    "out": 131072,
     "reasoning": false,
     "tools": false,
     "vision": false,
-    "in_mtok": 0.0509,
-    "out_mtok": 0.335
+    "in_mtok": 0.05,
+    "out_mtok": 0.33
    },
    "meta-llama/llama-3.2-3b-instruct:free": {
     "ctx": 131072,
@@ -6080,9 +6082,9 @@
     "reasoning": true,
     "tools": true,
     "vision": true,
-    "in_mtok": 0.66,
+    "in_mtok": 0.65,
     "out_mtok": 3.41,
-    "cr_mtok": 0.14
+    "cr_mtok": 0.3
    },
    "moonshotai/kimi-k2.7-code": {
     "ctx": 262144,
@@ -6112,11 +6114,21 @@
     "in_mtok": 0.9,
     "out_mtok": 1.9
    },
+   "nex-agi/nex-n2-mini": {
+    "ctx": 262144,
+    "out": 262144,
+    "reasoning": true,
+    "tools": true,
+    "vision": true,
+    "in_mtok": 0.025,
+    "out_mtok": 0.1,
+    "cr_mtok": 0.0025
+   },
    "nex-agi/nex-n2-pro": {
     "ctx": 262144,
     "out": 262144,
     "reasoning": true,
-    "tools": false,
+    "tools": true,
     "vision": true,
     "in_mtok": 0.25,
     "out_mtok": 1,
@@ -7565,9 +7577,9 @@
     "reasoning": true,
     "tools": true,
     "vision": false,
-    "in_mtok": 0.14,
-    "out_mtok": 0.58,
-    "cr_mtok": 0.035
+    "in_mtok": 0.2,
+    "out_mtok": 0.8,
+    "cr_mtok": 0.5
    },
    "tencent/hy3-preview": {
     "ctx": 262144,
@@ -7599,8 +7611,8 @@
     "cr_mtok": 0.15
    },
    "thedrummer/rocinante-12b": {
-    "ctx": 32768,
-    "out": 32768,
+    "ctx": 65536,
+    "out": 65536,
     "reasoning": false,
     "tools": false,
     "vision": false,
@@ -7806,13 +7818,13 @@
    },
    "z-ai/glm-5.2": {
     "ctx": 1048576,
-    "out": 131072,
+    "out": 32768,
     "reasoning": true,
     "tools": true,
     "vision": false,
-    "in_mtok": 0.9086,
-    "out_mtok": 2.8556,
-    "cr_mtok": 0.16874
+    "in_mtok": 0.93,
+    "out_mtok": 3,
+    "cr_mtok": 0.18
    },
    "z-ai/glm-5v-turbo": {
     "ctx": 202752,
@@ -7896,9 +7908,9 @@
     "reasoning": true,
     "tools": true,
     "vision": true,
-    "in_mtok": 0.66,
+    "in_mtok": 0.65,
     "out_mtok": 3.41,
-    "cr_mtok": 0.14
+    "cr_mtok": 0.3
    },
    "~openai/gpt-latest": {
     "ctx": 1050000,
@@ -8369,6 +8381,56 @@
     "in_mtok": 1.2,
     "out_mtok": 4,
     "cw_mtok": 0
+   }
+  },
+  "tencent_token_plan": {
+   "hy3": {
+    "ctx": 256000,
+    "out": 64000,
+    "reasoning": true,
+    "tools": true,
+    "vision": false
+   }
+  },
+  "tencent_token_plan_anthropic": {
+   "hy3": {
+    "ctx": 256000,
+    "out": 64000,
+    "reasoning": true,
+    "tools": true,
+    "vision": false
+   }
+  },
+  "tencent_tokenhub": {
+   "hy3": {
+    "ctx": 256000,
+    "out": 64000,
+    "reasoning": true,
+    "tools": true,
+    "vision": false
+   },
+   "hy3-preview": {
+    "ctx": 256000,
+    "out": 64000,
+    "reasoning": true,
+    "tools": true,
+    "vision": false
+   }
+  },
+  "tencent_tokenhub_anthropic": {
+   "hy3": {
+    "ctx": 256000,
+    "out": 64000,
+    "reasoning": true,
+    "tools": true,
+    "vision": false
+   },
+   "hy3-preview": {
+    "ctx": 256000,
+    "out": 64000,
+    "reasoning": true,
+    "tools": true,
+    "vision": false
    }
   },
   "zhipu": {

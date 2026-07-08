@@ -52,6 +52,11 @@ _MODEL_ENV = {
     "minimax_openai": "MINIMAX_MODEL",
     "minimax_cn": "MINIMAX_CN_MODEL",
     "minimax_global": "MINIMAX_GLOBAL_MODEL",
+    "tencent_tokenhub": "TENCENT_TOKENHUB_MODEL",
+    "tencent_tokenhub_anthropic": "TENCENT_TOKENHUB_MODEL",
+    "tencent_tokenhub_intl": "TENCENT_TOKENHUB_INTL_MODEL",
+    "tencent_token_plan": "TENCENT_TOKEN_PLAN_MODEL",
+    "tencent_token_plan_anthropic": "TENCENT_TOKEN_PLAN_MODEL",
 }
 
 _BASE_ENV = {
@@ -69,6 +74,11 @@ _BASE_ENV = {
     "minimax_openai": "MINIMAX_OPENAI_BASE_URL",
     "minimax_cn": "MINIMAX_CN_BASE_URL",
     "minimax_global": "MINIMAX_GLOBAL_BASE_URL",
+    "tencent_tokenhub": "TENCENT_TOKENHUB_BASE_URL",
+    "tencent_tokenhub_anthropic": "TENCENT_TOKENHUB_ANTHROPIC_BASE_URL",
+    "tencent_tokenhub_intl": "TENCENT_TOKENHUB_INTL_BASE_URL",
+    "tencent_token_plan": "TENCENT_TOKEN_PLAN_BASE_URL",
+    "tencent_token_plan_anthropic": "TENCENT_TOKEN_PLAN_ANTHROPIC_BASE_URL",
 }
 
 _DEFAULT_MODELS = {
@@ -86,6 +96,11 @@ _DEFAULT_MODELS = {
     "minimax_openai": "MiniMax-M2.7",
     "minimax_cn": "MiniMax-M2.7",
     "minimax_global": "MiniMax-M2.7",
+    "tencent_tokenhub": "hy3",
+    "tencent_tokenhub_anthropic": "hy3",
+    "tencent_tokenhub_intl": "deepseek-v3.2",
+    "tencent_token_plan": "hy3",
+    "tencent_token_plan_anthropic": "hy3",
 }
 
 

@@ -4092,3 +4092,225 @@ def test_gemini_stream_multiple_tool_calls_without_indexes_stay_separate(
         ("call_lookup", "lookup", {"q": "hi"}),
         ("call_save", "save", {"value": 1}),
     ]
+
+
+# ---------------------------------------------------------------------------
+# Tencent TokenHub (hy3 family)
+# ---------------------------------------------------------------------------
+
+
+def _tokenhub_provider(model: str = "hy3") -> OpenAIProvider:
+    return OpenAIProvider(
+        api_key="test",
+        model=model,
+        base_url="https://tokenhub.tencentmaas.com/v1",
+        provider_kind="tencent_tokenhub",
+    )
+
+
+def _tokenhub_reasoning_caps() -> ModelCapabilities:
+    return ModelCapabilities(
+        supports_reasoning=True,
+        supports_tools=True,
+        reasoning_format="tencent_tokenhub",
+    )
+
+
+@pytest.mark.parametrize(
+    ("thinking_level", "expected_effort"),
+    [
+        (ThinkingLevel.MINIMAL, "low"),
+        (ThinkingLevel.LOW, "low"),
+        (ThinkingLevel.MEDIUM, "high"),
+        (ThinkingLevel.HIGH, "high"),
+        (ThinkingLevel.XHIGH, "high"),
+        (None, "high"),
+    ],
+)
+def test_tencent_tokenhub_thinking_sends_thinking_object_and_documented_effort(
+    monkeypatch: Any,
+    thinking_level: ThinkingLevel | None,
+    expected_effort: str,
+) -> None:
+    """TokenHub's hy3 accepts exactly reasoning_effort low|high plus the
+    thinking enable object; the five-level ladder collapses onto those two."""
+    captured: dict[str, Any] = {}
+    _patch_transport(monkeypatch, captured)
+    provider = _tokenhub_provider()
+    cfg = ChatConfig(
+        thinking=True,
+        thinking_level=thinking_level,
+        model_capabilities=_tokenhub_reasoning_caps(),
+    )
+
+    _collect(provider, cfg)
+
+    assert captured["url"] == "https://tokenhub.tencentmaas.com/v1/chat/completions"
+    assert captured["payload"]["thinking"] == {"type": "enabled"}
+    assert captured["payload"]["reasoning_effort"] == expected_effort
+    assert captured["payload"]["stream_options"] == {"include_usage": True}
+
+
+def test_tencent_tokenhub_non_thinking_omits_reasoning_payload(monkeypatch: Any) -> None:
+    """hy3 documents no thinking-off payload — thinking-off must omit the
+    fields entirely so the endpoint applies its own default."""
+    captured: dict[str, Any] = {}
+    _patch_transport(monkeypatch, captured)
+    provider = _tokenhub_provider()
+    cfg = ChatConfig(thinking=False, model_capabilities=_tokenhub_reasoning_caps())
+
+    _collect(provider, cfg)
+
+    assert "thinking" not in captured["payload"]
+    assert "reasoning_effort" not in captured["payload"]
+
+
+def test_tencent_tokenhub_tool_replay_preserves_reasoning_content(monkeypatch: Any) -> None:
+    """TokenHub's interleaved thinking requires resubmitting historical
+    reasoning_content on every tool-loop round."""
+    captured: dict[str, Any] = {}
+    _patch_transport(monkeypatch, captured)
+    provider = _tokenhub_provider()
+    messages = [
+        Message(
+            role="assistant",
+            content=[
+                ContentBlockToolUse(
+                    id="call_lookup",
+                    name="lookup",
+                    input={"q": "cache"},
+                )
+            ],
+            reasoning_content="I need the cache state before answering.",
+        ),
+        Message(
+            role="user",
+            content=[
+                ContentBlockToolResult(
+                    tool_use_id="call_lookup",
+                    content="cache is warm",
+                )
+            ],
+        ),
+        Message(role="user", content="continue"),
+    ]
+    cfg = ChatConfig(thinking=True, model_capabilities=_tokenhub_reasoning_caps())
+
+    async def _run() -> None:
+        async for _ in provider.chat(messages, config=cfg):
+            pass
+
+    asyncio.run(_run())
+
+    assert captured["payload"]["messages"][0]["role"] == "assistant"
+    assert captured["payload"]["messages"][0]["tool_calls"][0]["id"] == "call_lookup"
+    assert (
+        captured["payload"]["messages"][0]["reasoning_content"]
+        == "I need the cache state before answering."
+    )
+    assert captured["payload"]["messages"][1] == {
+        "role": "tool",
+        "tool_call_id": "call_lookup",
+        "content": "cache is warm",
+    }
+
+
+@pytest.mark.parametrize("model", ["hy3", "hy3-preview"])
+def test_tencent_tokenhub_hy3_replay_adds_empty_reasoning_content_when_missing(
+    monkeypatch: Any,
+    model: str,
+) -> None:
+    captured: dict[str, Any] = {}
+    _patch_transport(monkeypatch, captured)
+    provider = _tokenhub_provider(model)
+    messages = [
+        Message(role="assistant", content="Prior non-thinking assistant turn."),
+        Message(role="user", content="continue in thinking mode"),
+    ]
+    cfg = ChatConfig(thinking=True, model_capabilities=_tokenhub_reasoning_caps())
+
+    async def _run() -> None:
+        async for _ in provider.chat(messages, config=cfg):
+            pass
+
+    asyncio.run(_run())
+
+    assert captured["payload"]["messages"][0] == {
+        "role": "assistant",
+        "content": "Prior non-thinking assistant turn.",
+        "reasoning_content": "",
+    }
+
+
+def test_tencent_tokenhub_hy3_replays_reasoning_content_without_catalog_capabilities(
+    monkeypatch: Any,
+) -> None:
+    """The hy3 replay requirement is policy-gated on the exact model ids, so
+    it holds even when no capability profile resolved for the request."""
+    captured: dict[str, Any] = {}
+    _patch_transport(monkeypatch, captured)
+    provider = _tokenhub_provider()
+    messages = [
+        Message(
+            role="assistant",
+            content="earlier turn",
+            reasoning_content="prior thinking from tokenhub",
+        ),
+        Message(role="user", content="continue"),
+    ]
+
+    async def _run() -> None:
+        async for _ in provider.chat(messages, config=ChatConfig()):
+            pass
+
+    asyncio.run(_run())
+
+    assert captured["payload"]["messages"][0]["reasoning_content"] == (
+        "prior thinking from tokenhub"
+    )
+
+
+def test_tencent_tokenhub_non_hy3_model_does_not_require_reasoning_content(
+    monkeypatch: Any,
+) -> None:
+    """Third-party models hosted on TokenHub are outside the hy3 replay
+    requirement: no reasoning_content is invented for them."""
+    captured: dict[str, Any] = {}
+    _patch_transport(monkeypatch, captured)
+    provider = _tokenhub_provider("kimi-k2.6")
+    messages = [
+        Message(role="assistant", content="earlier turn"),
+        Message(role="user", content="continue"),
+    ]
+
+    async def _run() -> None:
+        async for _ in provider.chat(messages, config=ChatConfig()):
+            pass
+
+    asyncio.run(_run())
+
+    assert "reasoning_content" not in captured["payload"]["messages"][0]
+
+
+def test_tencent_token_plan_thinking_payload_and_url_join(monkeypatch: Any) -> None:
+    """The Token Plan endpoint shares the TokenHub dialect: same thinking
+    payload and hy3 replay policy, joined onto the /plan/v3 base."""
+    captured: dict[str, Any] = {}
+    _patch_transport(monkeypatch, captured)
+    provider = OpenAIProvider(
+        api_key="test",
+        model="hy3",
+        base_url="https://api.lkeap.cloud.tencent.com/plan/v3",
+        provider_kind="tencent_tokenhub",
+    )
+    cfg = ChatConfig(
+        thinking=True,
+        thinking_level=ThinkingLevel.LOW,
+        model_capabilities=_tokenhub_reasoning_caps(),
+    )
+
+    _collect(provider, cfg)
+
+    assert captured["url"] == "https://api.lkeap.cloud.tencent.com/plan/v3/chat/completions"
+    assert captured["payload"]["thinking"] == {"type": "enabled"}
+    assert captured["payload"]["reasoning_effort"] == "low"

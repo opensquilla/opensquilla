@@ -262,6 +262,8 @@ def test_packaged_corrections_file_parses_with_expected_tables() -> None:
         "deepseek",
         "gemini",
         "zhipu",
+        "tencent_tokenhub",
+        "tencent_token_plan",
     }
     assert set(payload["moonshot"]) == {
         "moonshot-v1-8k",
@@ -304,7 +306,16 @@ def test_ladder_glob_rows_keep_specific_before_general_file_order() -> None:
         .joinpath("catalog_overrides.toml")
         .read_text(encoding="utf-8")
     )
-    for provider in ("dashscope", "moonshot", "volcengine", "byteplus", "gemini", "zhipu"):
+    for provider in (
+        "dashscope",
+        "moonshot",
+        "volcengine",
+        "byteplus",
+        "gemini",
+        "zhipu",
+        "tencent_tokenhub",
+        "tencent_token_plan",
+    ):
         keys = list(payload[provider])
         assert keys[-1] == "*", provider
         assert keys.count("*") == 1, provider
@@ -530,7 +541,10 @@ _LEGACY_LIMITS: dict[tuple[str, str], tuple[int, int]] = {
     ("kimi-k2.5", "moonshot"): (8_192, 262_144),
     ("glm-5", "zhipu"): (131_072, 204_800),
     ("glm-5", "zai"): (16_384, 202_752),
-    ("z-ai/glm-5.2", ""): (128_000, 1_000_000),
+    # models.dev's 2026-07-08 refresh lowered openrouter z-ai/glm-5.2 max
+    # output from 131_072 to 32_768 (the cross-provider min); the window is
+    # unchanged.
+    ("z-ai/glm-5.2", ""): (32_768, 1_000_000),
     ("gemini-3.5-flash", "gemini"): (65_536, 1_048_576),
     ("minimax-m2.7", ""): (131_072, 204_800),
     ("step-3.5-flash", ""): (16_384, 256_000),

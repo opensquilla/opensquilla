@@ -60,6 +60,21 @@ def _resolve_deepseek_reasoning_effort(level: ThinkingLevel | None) -> str:
     return "high"
 
 
+def _resolve_tokenhub_reasoning_effort(level: ThinkingLevel | None) -> str:
+    """Map OpenSquilla thinking levels to TokenHub's documented effort values.
+
+    TokenHub's hy3 family accepts exactly ``low`` and ``high`` — anything
+    else is undocumented, so the five-level ladder collapses onto those two.
+    """
+    from opensquilla.engine.types import (
+        ThinkingLevel,  # local: avoids circular import at module load
+    )
+
+    if level in (ThinkingLevel.MINIMAL, ThinkingLevel.LOW):
+        return "low"
+    return "high"
+
+
 def _gemini_supports_reasoning_none(model: str) -> bool:
     """Return True for Gemini OpenAI-compatible models with documented off control."""
     model_name = model.rsplit("/", 1)[-1].strip().lower()
@@ -103,6 +118,11 @@ def _enable_reasoning_effort(payload: dict[str, Any], args: ReasoningEnableArgs)
 def _enable_deepseek(payload: dict[str, Any], args: ReasoningEnableArgs) -> None:
     payload["thinking"] = {"type": "enabled"}
     payload["reasoning_effort"] = _resolve_deepseek_reasoning_effort(args.thinking_level)
+
+
+def _enable_tencent_tokenhub(payload: dict[str, Any], args: ReasoningEnableArgs) -> None:
+    payload["thinking"] = {"type": "enabled"}
+    payload["reasoning_effort"] = _resolve_tokenhub_reasoning_effort(args.thinking_level)
 
 
 def _enable_thinking_object(payload: dict[str, Any], args: ReasoningEnableArgs) -> None:
@@ -191,6 +211,14 @@ DIALECTS: dict[str, ReasoningDialect] = {
         name="volcengine",
         enable=_enable_thinking_object,
         disable=_disable_thinking_object,
+    ),
+    # TokenHub (hy3 family) documents thinking={"type": "enabled"} plus
+    # reasoning_effort low|high, but no off payload — thinking-off omits
+    # every field and the endpoint applies its own default.
+    "tencent_tokenhub": ReasoningDialect(
+        name="tencent_tokenhub",
+        enable=_enable_tencent_tokenhub,
+        disable=None,
     ),
 }
 

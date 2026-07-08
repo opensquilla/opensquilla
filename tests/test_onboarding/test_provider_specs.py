@@ -70,6 +70,8 @@ EXPECTED_EXPERIMENTAL = {
     "lm_studio", "siliconflow", "ovms", "litellm_proxy", "openai_codex",
     "volcengine_coding_plan", "volcengine_coding_plan_anthropic",
     "byteplus_coding_plan", "byteplus_coding_plan_anthropic",
+    "tencent_tokenhub", "tencent_tokenhub_anthropic", "tencent_tokenhub_intl",
+    "tencent_token_plan", "tencent_token_plan_anthropic",
 }
 EXPECTED_SUPPORTED = EXPECTED_VERIFIED | EXPECTED_EXPERIMENTAL
 # No runtime support at all: never configurable.

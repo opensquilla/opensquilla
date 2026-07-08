@@ -22,6 +22,9 @@ from opensquilla.provider.selector import ProviderBuildError, ProviderConfig, _b
         ("siliconflow", "siliconflow"),
         ("volcengine", "volcengine"),
         ("byteplus", "byteplus"),
+        ("tencent_tokenhub", "tencent_tokenhub"),
+        ("tencent_tokenhub_intl", "tencent_tokenhub"),
+        ("tencent_token_plan", "tencent_tokenhub"),
         ("qianfan", "qianfan"),
         ("aihubmix", "aihubmix"),
         ("lm_studio", "lm_studio"),
@@ -57,6 +60,17 @@ def test_new_openai_compatible_profiles_have_vendor_provider_kind(
         ("siliconflow", "SILICONFLOW_API_KEY", "https://api.siliconflow.cn/v1"),
         ("volcengine", "VOLCENGINE_API_KEY", "https://ark.cn-beijing.volces.com/api/v3"),
         ("byteplus", "BYTEPLUS_API_KEY", "https://ark.ap-southeast.bytepluses.com/api/v3"),
+        ("tencent_tokenhub", "TENCENT_TOKENHUB_API_KEY", "https://tokenhub.tencentmaas.com/v1"),
+        (
+            "tencent_tokenhub_intl",
+            "TENCENT_TOKENHUB_INTL_API_KEY",
+            "https://tokenhub-intl.tencentcloudmaas.com/v1",
+        ),
+        (
+            "tencent_token_plan",
+            "TENCENT_TOKEN_PLAN_API_KEY",
+            "https://api.lkeap.cloud.tencent.com/plan/v3",
+        ),
         ("qianfan", "QIANFAN_API_KEY", "https://qianfan.baidubce.com/v2"),
         ("aihubmix", "AIHUBMIX_API_KEY", "https://aihubmix.com/v1"),
         ("lm_studio", "", "http://localhost:1234/v1"),
@@ -75,6 +89,76 @@ def test_openai_compatible_profiles_have_documented_config(
     assert spec.default_base_url == base_url
     expected_required = frozenset({"model"}) if not env_key else frozenset({"api_key", "model"})
     assert spec.required_fields == expected_required
+
+
+def test_tencent_tokenhub_profiles_pin_documented_endpoints() -> None:
+    """The TokenHub trio maps Tencent's documented per-protocol endpoints:
+    OpenAI protocol on <host>/v1, Anthropic Messages on the bare host
+    (x-api-key auth), and the international deployment on the separate
+    tencentcloudmaas.com domain with its own account/key system."""
+    cn = get_provider_spec("tencent_tokenhub")
+    assert cn.backend == "openai_compat"
+    assert cn.provider_kind == "tencent_tokenhub"
+    assert cn.env_key == "TENCENT_TOKENHUB_API_KEY"
+    assert cn.default_base_url == "https://tokenhub.tencentmaas.com/v1"
+    assert cn.catalog_source == ("tencent-tokenhub",)
+
+    anthropic_compat = get_provider_spec("tencent_tokenhub_anthropic")
+    assert anthropic_compat.backend == "anthropic"
+    assert anthropic_compat.provider_kind == "tencent_tokenhub"
+    assert anthropic_compat.env_key == "TENCENT_TOKENHUB_API_KEY"
+    assert anthropic_compat.default_base_url == "https://tokenhub.tencentmaas.com"
+    assert anthropic_compat.failure_family == "anthropic"
+    assert anthropic_compat.auth_header_style == "x-api-key"
+
+    intl = get_provider_spec("tencent_tokenhub_intl")
+    assert intl.backend == "openai_compat"
+    assert intl.provider_kind == "tencent_tokenhub"
+    assert intl.env_key == "TENCENT_TOKENHUB_INTL_API_KEY"
+    assert intl.default_base_url == "https://tokenhub-intl.tencentcloudmaas.com/v1"
+    assert intl.catalog_source == ()
+
+
+def test_tencent_token_plan_profiles_pin_documented_endpoints() -> None:
+    """The Token Plan subscription lives on the lkeap host with dedicated
+    sk-tp keys: Chat Completions at /plan/v3 and Anthropic Messages at
+    /plan/anthropic (bearer auth per Tencent's tool guides)."""
+    plan = get_provider_spec("tencent_token_plan")
+    assert plan.backend == "openai_compat"
+    assert plan.provider_kind == "tencent_tokenhub"
+    assert plan.env_key == "TENCENT_TOKEN_PLAN_API_KEY"
+    assert plan.default_base_url == "https://api.lkeap.cloud.tencent.com/plan/v3"
+    assert plan.capabilities == frozenset({"chat", "coding_plan"})
+    assert plan.catalog_source == ("tencent-token-plan",)
+
+    plan_anthropic = get_provider_spec("tencent_token_plan_anthropic")
+    assert plan_anthropic.backend == "anthropic"
+    assert plan_anthropic.provider_kind == "tencent_tokenhub"
+    assert plan_anthropic.env_key == "TENCENT_TOKEN_PLAN_API_KEY"
+    assert plan_anthropic.default_base_url == "https://api.lkeap.cloud.tencent.com/plan/anthropic"
+    assert plan_anthropic.failure_family == "anthropic"
+    assert plan_anthropic.auth_header_style == "bearer"
+    assert plan_anthropic.capabilities == frozenset({"chat", "coding_plan"})
+
+
+def test_model_selector_builds_tencent_token_plan_providers() -> None:
+    chat = _build_provider(
+        ProviderConfig(provider="tencent_token_plan", model="hy3", api_key="test-key")
+    )
+    assert isinstance(chat, OpenAIProvider)
+
+    messages = _build_provider(
+        ProviderConfig(provider="tencent_token_plan_anthropic", model="hy3", api_key="test-key")
+    )
+    assert isinstance(messages, AnthropicProvider)
+
+
+def test_model_selector_builds_tencent_tokenhub_anthropic_provider() -> None:
+    built = _build_provider(
+        ProviderConfig(provider="tencent_tokenhub_anthropic", model="hy3", api_key="test-key")
+    )
+
+    assert isinstance(built, AnthropicProvider)
 
 
 def test_minimax_mainland_profile_uses_anthropic_compatible_endpoint() -> None:
@@ -121,6 +205,9 @@ def test_minimax_region_profiles_are_explicit_anthropic_compatible_endpoints() -
         ("qianfan", "ernie-4.5-turbo-128k"),
         ("aihubmix", "openai/gpt-5-mini"),
         ("minimax_openai", "MiniMax-M2.7"),
+        ("tencent_tokenhub", "hy3"),
+        ("tencent_tokenhub_intl", "deepseek-v3.2"),
+        ("tencent_token_plan", "hy3"),
         ("lm_studio", "local-model"),
         ("ovms", "llama3"),
     ],

@@ -8,6 +8,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Added
 
+- Added Tencent TokenHub providers for the Hunyuan hy3 family:
+  `tencent_tokenhub` (OpenAI-compatible mainland endpoint,
+  `TENCENT_TOKENHUB_API_KEY`), `tencent_tokenhub_anthropic` (the same
+  deployment's Anthropic Messages protocol with `x-api-key` auth), and
+  `tencent_tokenhub_intl` (the international deployment with its own
+  `TENCENT_TOKENHUB_INTL_API_KEY`). hy3/hy3-preview thinking maps onto the
+  documented `reasoning_effort` `low`/`high` values plus the thinking enable
+  object, and assistant `reasoning_content` is replayed across turns per the
+  hy3 interleaved-thinking contract. The Token Plan subscription is covered
+  too: `tencent_token_plan` (Chat Completions at
+  `api.lkeap.cloud.tencent.com/plan/v3`) and `tencent_token_plan_anthropic`
+  (Anthropic Messages at `/plan/anthropic`, bearer auth), both reading the
+  dedicated `TENCENT_TOKEN_PLAN_API_KEY` (`sk-tp-…`) plan credential.
 - Added Alibaba Cloud IQS (`iqs`) as a runtime-supported web search provider:
   unified-search endpoint with freshness, site include/exclude filters, inline
   main-text content, and rerank scores, configured via `IQS_SEARCH_API_KEY`.

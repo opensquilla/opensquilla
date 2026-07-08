@@ -343,6 +343,69 @@ for _provider_spec in [
         "https://ark.ap-southeast.bytepluses.com/api/v3",
         catalog_source=("byteplus",),
     ),
+    # Tencent TokenHub — the current home of the Hunyuan hy3 family (the
+    # legacy api.hunyuan.cloud.tencent.com platform is sunsetting and never
+    # received hy3). Mainland endpoint; keys come from the CN TokenHub
+    # console and use plain Bearer auth on the OpenAI protocol.
+    _spec(
+        "tencent_tokenhub",
+        "openai_compat",
+        "tencent_tokenhub",
+        "TENCENT_TOKENHUB_API_KEY",
+        "https://tokenhub.tencentmaas.com/v1",
+        catalog_source=("tencent-tokenhub",),
+    ),
+    # TokenHub's Anthropic-compatible Messages endpoint lives on the bare
+    # host (POST /v1/messages) and, unlike MiniMax's, signs with x-api-key.
+    _spec(
+        "tencent_tokenhub_anthropic",
+        "anthropic",
+        "tencent_tokenhub",
+        "TENCENT_TOKENHUB_API_KEY",
+        "https://tokenhub.tencentmaas.com",
+        failure_family="anthropic",
+        auth_header_style="x-api-key",
+        catalog_source=("tencent-tokenhub",),
+    ),
+    # International TokenHub (Singapore). A separate Tencent Cloud account
+    # and key system from the CN site — hence its own env key — and a
+    # different model list (no hy3 there yet), so no catalog_source.
+    _spec(
+        "tencent_tokenhub_intl",
+        "openai_compat",
+        "tencent_tokenhub",
+        "TENCENT_TOKENHUB_INTL_API_KEY",
+        "https://tokenhub-intl.tencentcloudmaas.com/v1",
+    ),
+    # Tencent Token Plan (personal edition) — the CN subscription that
+    # carries hy3/hy3-preview (plus the General-plan third-party models on
+    # the same key, routed by model id). Dedicated sk-tp keys, not
+    # interchangeable with pay-as-you-go TokenHub keys; chat completions
+    # only (no Responses API), and Tencent's terms restrict plan keys to
+    # interactive AI-tool use.
+    _spec(
+        "tencent_token_plan",
+        "openai_compat",
+        "tencent_tokenhub",
+        "TENCENT_TOKEN_PLAN_API_KEY",
+        "https://api.lkeap.cloud.tencent.com/plan/v3",
+        capabilities=frozenset({"chat", "coding_plan"}),
+        catalog_source=("tencent-token-plan",),
+    ),
+    # The Token Plan's Anthropic Messages endpoint. Tencent's own tool
+    # guides authenticate it with a bearer token (ANTHROPIC_AUTH_TOKEN),
+    # like MiniMax and unlike the pay-as-you-go TokenHub host.
+    _spec(
+        "tencent_token_plan_anthropic",
+        "anthropic",
+        "tencent_tokenhub",
+        "TENCENT_TOKEN_PLAN_API_KEY",
+        "https://api.lkeap.cloud.tencent.com/plan/anthropic",
+        failure_family="anthropic",
+        auth_header_style="bearer",
+        capabilities=frozenset({"chat", "coding_plan"}),
+        catalog_source=("tencent-token-plan",),
+    ),
     # First-class id for any self-hosted or otherwise unlisted
     # OpenAI-compatible endpoint (vLLM, SGLang, TGI, llama.cpp server, a
     # bespoke proxy, ...). Pure registry metadata — the openai_compat backend

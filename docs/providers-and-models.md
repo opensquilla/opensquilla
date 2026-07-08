@@ -114,6 +114,56 @@ opensquilla configure provider --provider volcengine_coding_plan_anthropic --mod
 Do not point either coding-plan provider at the regular `/api/v3` URL. That
 regular Ark URL does not consume Coding Plan quota.
 
+### Tencent TokenHub: CN, Anthropic-protocol, and international endpoints
+
+Tencent's Hunyuan `hy3` / `hy3-preview` models are served on the TokenHub
+platform (the legacy `api.hunyuan.cloud.tencent.com` platform is being
+retired and never received `hy3`). Three experimental provider ids map the
+documented endpoints:
+
+- `tencent_tokenhub` — OpenAI-compatible chat/completions at
+  `https://tokenhub.tencentmaas.com/v1` (mainland; keys from the CN TokenHub
+  console, `TENCENT_TOKENHUB_API_KEY`). `hy3` thinking uses
+  `reasoning_effort` `low`/`high`, and assistant `reasoning_content` is
+  replayed across turns as the hy3 interleaved-thinking contract requires.
+- `tencent_tokenhub_anthropic` — the same deployment's Anthropic Messages
+  protocol (`https://tokenhub.tencentmaas.com` + `/v1/messages`,
+  `x-api-key` auth, same key).
+- `tencent_tokenhub_intl` — the international deployment at
+  `https://tokenhub-intl.tencentcloudmaas.com/v1`
+  (`TENCENT_TOKENHUB_INTL_API_KEY`). It is a separate Tencent Cloud account
+  and key system, and its model list currently carries third-party models
+  (DeepSeek, GLM, Kimi, MiniMax) but not `hy3`.
+
+```sh
+export TENCENT_TOKENHUB_API_KEY="..."
+opensquilla configure provider --provider tencent_tokenhub --model hy3 --api-key-env TENCENT_TOKENHUB_API_KEY
+```
+
+TokenHub also hosts third-party models behind the same endpoints; OpenSquilla
+does not inject thinking payloads for those ids because TokenHub does not
+document their dialects on this gateway.
+
+Tencent's Token Plan subscription (the Hy Token Plan carries `hy3` /
+`hy3-preview`; the General plan adds `tc-code-latest`, DeepSeek V4, GLM-5.x,
+Kimi and MiniMax ids on the same key) is exposed as two more provider ids on
+the plan host:
+
+- `tencent_token_plan` — Chat Completions at
+  `https://api.lkeap.cloud.tencent.com/plan/v3` (the plan endpoints do not
+  offer the Responses API).
+- `tencent_token_plan_anthropic` — Anthropic Messages at
+  `https://api.lkeap.cloud.tencent.com/plan/anthropic` (+ `/v1/messages`),
+  bearer auth.
+
+Both read `TENCENT_TOKEN_PLAN_API_KEY`. Plan keys are dedicated `sk-tp-…`
+credentials created on the TokenHub Token Plan console page — they are not
+interchangeable with pay-as-you-go TokenHub keys. Note Tencent's plan terms
+restrict these keys to interactive AI-tool use and prohibit non-interactive
+batch/automation calling; unattended pipelines should use the pay-as-you-go
+`tencent_tokenhub` provider instead. The plans are mainland-only products —
+the international site offers pay-as-you-go TokenHub only.
+
 ## Model Inspection
 
 List models:

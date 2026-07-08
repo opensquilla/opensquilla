@@ -369,3 +369,36 @@ supports_reasoning = false
 supports_tools = true
 supports_vision = false
 reasoning_format = "none"
+
+# tencent_tokenhub (Tencent TokenHub, CN): the hy3 family reasons through
+# the tencent_tokenhub dialect (thinking enable + reasoning_effort
+# low|high) and is text-only. TokenHub also hosts third-party models
+# (DeepSeek, GLM, Kimi, MiniMax, Qwen) whose thinking dialects on this
+# gateway are undocumented, so the catch-all stays conservative: no
+# injected thinking payload, tools on, vision off.
+[tencent_tokenhub."hy3*"]
+supports_reasoning = true
+supports_tools = true
+supports_vision = false
+reasoning_format = "tencent_tokenhub"
+
+[tencent_tokenhub."*"]
+supports_reasoning = false
+supports_tools = true
+supports_vision = false
+reasoning_format = "none"
+
+# tencent_token_plan (Token Plan subscription, same TokenHub gateway
+# dialect): hy3-family rows mirror the tencent_tokenhub table; the
+# General-plan third-party models keep the conservative catch-all.
+[tencent_token_plan."hy3*"]
+supports_reasoning = true
+supports_tools = true
+supports_vision = false
+reasoning_format = "tencent_tokenhub"
+
+[tencent_token_plan."*"]
+supports_reasoning = false
+supports_tools = true
+supports_vision = false
+reasoning_format = "none"

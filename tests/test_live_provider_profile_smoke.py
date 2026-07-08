@@ -44,6 +44,22 @@ def test_live_smoke_env_maps_cover_openai_zhipu_kimi_and_minimax() -> None:
     assert smoke._BASE_ENV["minimax_openai"] == "MINIMAX_OPENAI_BASE_URL"
     assert smoke._DEFAULT_MODELS["minimax_openai"] == "MiniMax-M2.7"
 
+    assert smoke._MODEL_ENV["tencent_tokenhub"] == "TENCENT_TOKENHUB_MODEL"
+    assert smoke._BASE_ENV["tencent_tokenhub"] == "TENCENT_TOKENHUB_BASE_URL"
+    assert smoke._DEFAULT_MODELS["tencent_tokenhub"] == "hy3"
+
+    assert smoke._MODEL_ENV["tencent_tokenhub_anthropic"] == "TENCENT_TOKENHUB_MODEL"
+    assert smoke._BASE_ENV["tencent_tokenhub_anthropic"] == "TENCENT_TOKENHUB_ANTHROPIC_BASE_URL"
+    assert smoke._DEFAULT_MODELS["tencent_tokenhub_anthropic"] == "hy3"
+
+    assert smoke._MODEL_ENV["tencent_tokenhub_intl"] == "TENCENT_TOKENHUB_INTL_MODEL"
+    assert smoke._BASE_ENV["tencent_tokenhub_intl"] == "TENCENT_TOKENHUB_INTL_BASE_URL"
+    assert smoke._DEFAULT_MODELS["tencent_tokenhub_intl"] == "deepseek-v3.2"
+
+    assert smoke._MODEL_ENV["tencent_token_plan"] == "TENCENT_TOKEN_PLAN_MODEL"
+    assert smoke._BASE_ENV["tencent_token_plan"] == "TENCENT_TOKEN_PLAN_BASE_URL"
+    assert smoke._DEFAULT_MODELS["tencent_token_plan"] == "hy3"
+
 
 def test_live_smoke_uses_moonshot_temperature_required_by_kimi_k2_6() -> None:
     assert smoke._direct_openai_temperature("moonshot", "kimi-k2.6") == 1

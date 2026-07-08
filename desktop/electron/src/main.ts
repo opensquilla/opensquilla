@@ -1429,6 +1429,7 @@ const DESKTOP_MESSAGES: Record<DesktopLocale, Record<string, string>> = {
     'menu.window': 'Window',
     'menu.checkForUpdates': 'Check for Updates…',
     'menu.relaunchToUpdate': 'Relaunch to Update',
+    'menu.downloadDiagnostics': 'Download Diagnostics…',
     'update.newVersionTitle': 'A new version is available',
     'update.newVersionDetail': 'OpenSquilla {version} is available. Download it now?',
     'update.download': 'Download',
@@ -1520,6 +1521,7 @@ const DESKTOP_MESSAGES: Record<DesktopLocale, Record<string, string>> = {
     'menu.window': '窗口',
     'menu.checkForUpdates': '检查更新…',
     'menu.relaunchToUpdate': '重启以更新',
+    'menu.downloadDiagnostics': '下载诊断信息…',
     'update.newVersionTitle': '有新版本可用',
     'update.newVersionDetail': 'OpenSquilla {version} 已发布，现在下载吗？',
     'update.download': '下载',
@@ -1611,6 +1613,7 @@ const DESKTOP_MESSAGES: Record<DesktopLocale, Record<string, string>> = {
     'menu.window': 'ウインドウ',
     'menu.checkForUpdates': 'アップデートを確認…',
     'menu.relaunchToUpdate': '再起動してアップデート',
+    'menu.downloadDiagnostics': '診断情報をダウンロード…',
     'update.newVersionTitle': '新しいバージョンが利用可能です',
     'update.newVersionDetail': 'OpenSquilla {version} が利用可能です。今すぐダウンロードしますか？',
     'update.download': 'ダウンロード',
@@ -1700,6 +1703,7 @@ const DESKTOP_MESSAGES: Record<DesktopLocale, Record<string, string>> = {
     'menu.window': 'Fenêtre',
     'menu.checkForUpdates': 'Rechercher les mises à jour…',
     'menu.relaunchToUpdate': 'Relancer pour mettre à jour',
+    'menu.downloadDiagnostics': 'Télécharger le diagnostic…',
     'update.newVersionTitle': 'Une nouvelle version est disponible',
     'update.newVersionDetail': 'OpenSquilla {version} est disponible. Télécharger maintenant ?',
     'update.download': 'Télécharger',
@@ -1789,6 +1793,7 @@ const DESKTOP_MESSAGES: Record<DesktopLocale, Record<string, string>> = {
     'menu.window': 'Fenster',
     'menu.checkForUpdates': 'Nach Updates suchen…',
     'menu.relaunchToUpdate': 'Zum Aktualisieren neu starten',
+    'menu.downloadDiagnostics': 'Diagnose herunterladen…',
     'update.newVersionTitle': 'Eine neue Version ist verfügbar',
     'update.newVersionDetail': 'OpenSquilla {version} ist verfügbar. Jetzt herunterladen?',
     'update.download': 'Herunterladen',
@@ -1878,6 +1883,7 @@ const DESKTOP_MESSAGES: Record<DesktopLocale, Record<string, string>> = {
     'menu.window': 'Ventana',
     'menu.checkForUpdates': 'Buscar actualizaciones…',
     'menu.relaunchToUpdate': 'Reiniciar para actualizar',
+    'menu.downloadDiagnostics': 'Descargar diagnóstico…',
     'update.newVersionTitle': 'Hay una nueva versión disponible',
     'update.newVersionDetail': 'OpenSquilla {version} está disponible. ¿Descargar ahora?',
     'update.download': 'Descargar',
@@ -2171,6 +2177,15 @@ function createApplicationMenu(): void {
       },
     })
   }
+  appSubmenu.push(
+    { type: 'separator' },
+    {
+      label: desktopT('menu.downloadDiagnostics'),
+      click: () => {
+        void downloadDiagnostics()
+      },
+    },
+  )
   appSubmenu.push({ type: 'separator' }, { role: 'quit' })
 
   const template: Electron.MenuItemConstructorOptions[] = [
@@ -4227,6 +4242,52 @@ async function requestGatewayShutdown(url: string): Promise<boolean> {
     return response.ok
   } catch {
     return false
+  }
+}
+
+// Fetch a diagnostics bundle from the child gateway (loopback owner, no token
+// needed — same auth posture as requestGatewayShutdown) and save it where the
+// user chooses. Falls back to opening the logs folder when no gateway is up.
+async function downloadDiagnostics(): Promise<void> {
+  desktopLog('diagnostics_download_requested')
+  const url = gatewayState.url
+  if (!url) {
+    await shell.openPath(join(app.getPath('userData'), 'logs')).catch(() => null)
+    return
+  }
+  try {
+    const response = await fetch(`${url}/api/v1/diagnostics/bundle`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: '{}',
+      signal: AbortSignal.timeout(60000),
+    })
+    if (!response.ok) {
+      desktopLog('diagnostics_download_failed', { status: response.status })
+      await shell.openPath(join(app.getPath('userData'), 'logs')).catch(() => null)
+      return
+    }
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-')
+    const win = currentMainWindow()
+    const defaultPath = join(
+      app.getPath('downloads'),
+      `opensquilla-bundle-${stamp}.zip`,
+    )
+    const saveOptions: Electron.SaveDialogOptions = {
+      defaultPath,
+      filters: [{ name: 'Zip archive', extensions: ['zip'] }],
+    }
+    const result = win
+      ? await dialog.showSaveDialog(win, saveOptions)
+      : await dialog.showSaveDialog(saveOptions)
+    if (result.canceled || !result.filePath) return
+    const bytes = Buffer.from(await response.arrayBuffer())
+    await writeFile(result.filePath, bytes)
+    desktopLog('diagnostics_download_saved', { bytes: bytes.length })
+    await shell.showItemInFolder(result.filePath)
+  } catch (err) {
+    desktopLog('diagnostics_download_failed', { error: String(err) })
+    await shell.openPath(join(app.getPath('userData'), 'logs')).catch(() => null)
   }
 }
 

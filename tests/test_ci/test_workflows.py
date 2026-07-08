@@ -195,7 +195,9 @@ def test_default_ci_blocks_pull_requests_and_main_pushes() -> None:
     assert "Windows high-risk/full tests" in text
     assert "Release packaging contracts" in text
     assert "CI result" in text
-    assert 'push)\n              printf \'.ci/run-all\\n\' > "${changed_files}"' in text
+    assert 'push)\n              before="${{ github.event.before }}"' in text
+    assert 'git diff --name-only "${before}" "${after}" > "${changed_files}"' in text
+    assert 'printf \'.ci/run-all\\n\' > "${changed_files}"' in text
     assert "runtime_changed" in text
     assert "test_changed" in text
     assert "ci_changed" in text
@@ -212,6 +214,19 @@ def test_default_ci_blocks_pull_requests_and_main_pushes() -> None:
     assert "allow_success_or_skipped" in text
     assert "code_changed" not in text
     assert "workflow_changed" not in text
+
+
+def test_default_ci_keeps_main_pushes_targeted_and_manual_runs_full() -> None:
+    ci_path = WORKFLOW_DIR / "ci.yml"
+    if not ci_path.exists():
+        return
+    text = ci_path.read_text(encoding="utf-8")
+
+    assert 'before="${{ github.event.before }}"' in text
+    assert 'after="${{ github.event.after }}"' in text
+    assert 'git diff --name-only "${before}" "${after}" > "${changed_files}"' in text
+    assert 'workflow_dispatch' in text
+    assert 'printf \'.ci/run-all\\n\' > "${changed_files}"' in text
 
 
 def test_ci_verifies_committed_frontend_dist_is_fresh() -> None:
@@ -687,6 +702,7 @@ def test_windows_high_risk_job_uses_subset_until_full_ci() -> None:
         "${{ needs.classify-changes.outputs.full_required == 'true' }}"
     )
     assert 'uv run pytest tests -q -m "${markers}" --durations=50' in text
+    assert 'uv run pytest tests -q -m "${markers}" --durations=50 --maxfail=1' in text
     assert "tests/test_compat" in text
     assert "tests/test_sandbox" in text
     assert "tests/test_tools/test_shell_policy_windows.py" in text

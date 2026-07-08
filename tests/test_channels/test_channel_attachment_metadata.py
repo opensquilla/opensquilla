@@ -13,7 +13,11 @@ from opensquilla.channels.discord import DiscordChannel, DiscordChannelConfig
 from opensquilla.channels.matrix import MatrixChannel, MatrixChannelConfig
 from opensquilla.channels.telegram import TelegramChannel, TelegramChannelConfig
 from opensquilla.channels.types import Attachment
-from opensquilla.contracts.attachments import MAX_STAGED_TEXT_BYTES
+from opensquilla.contracts.attachments import (
+    EMAIL_ATTACHMENT_BYTES,
+    MAX_STAGED_TEXT_BYTES,
+    OPAQUE_ATTACHMENT_BYTES,
+)
 from opensquilla.gateway.attachment_ingest import (
     IMAGE_ATTACHMENT_BYTES,
     MAX_ATTACHMENT_BYTES,
@@ -33,6 +37,12 @@ def test_channel_attachment_limit_uses_declared_mime_policy() -> None:
     assert attachment_limit_for_mime("image/png") == IMAGE_ATTACHMENT_BYTES
     assert attachment_limit_for_mime("application/pdf") == MAX_STAGED_PDF_BYTES
     assert attachment_limit_for_mime(None) == MAX_ATTACHMENT_BYTES
+    # Opaque types (archives, voice notes, video) download up to the staged
+    # opaque ceiling instead of the old 5MiB unknown-type cap; email keeps the
+    # inline text cap because it is never stageable.
+    assert attachment_limit_for_mime("application/zip") == OPAQUE_ATTACHMENT_BYTES
+    assert attachment_limit_for_mime("audio/ogg") == OPAQUE_ATTACHMENT_BYTES
+    assert attachment_limit_for_mime("message/rfc822") == EMAIL_ATTACHMENT_BYTES
 
     ensure_declared_size_within_limit(
         6 * 1024 * 1024,

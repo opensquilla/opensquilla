@@ -9,6 +9,7 @@ from opensquilla.contracts.attachments import (
     ALLOWED_MEDIA_TYPES,
     MAX_ATTACHMENT_BYTES,
     attachment_size_limit_for_mime,
+    can_stage_attachment_mime,
     normalize_attachment_mime,
 )
 
@@ -30,10 +31,15 @@ def _too_large(name: str | None, limit: int) -> RemoteAttachmentTooLargeError:
 
 
 def attachment_limit_for_mime(mime: str | None) -> int:
+    # Channel downloads feed the staged ingest path, so every normalizable
+    # type gets its staged ceiling (opaque included); email stays at the
+    # inline text cap because it is never stageable.
     normalized = normalize_attachment_mime(mime)
-    if normalized in ALLOWED_MEDIA_TYPES:
-        return attachment_size_limit_for_mime(normalized, staged=True)
-    return MAX_ATTACHMENT_BYTES
+    if normalized is None:
+        return MAX_ATTACHMENT_BYTES
+    return attachment_size_limit_for_mime(
+        normalized, staged=can_stage_attachment_mime(normalized)
+    )
 
 
 def ensure_declared_size_within_limit(

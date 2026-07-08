@@ -5,37 +5,42 @@
         <span class="control-panel__eyebrow">{{ t('usageLogs.logs.eyebrow') }}</span>
         <h1 class="control-stage__title">{{ t('usageLogs.logs.title') }}</h1>
         <p class="control-stage__subtitle">{{ t('usageLogs.logs.subtitle') }}</p>
+        <p v-if="status" class="lg-status-line">
+          <span
+            class="lg-status-line__seg"
+            :class="{ 'lg-status-line__seg--warn': !fileLogEnabled }"
+            :title="fileLogTitleText"
+            :aria-label="`${fileLogLabel}. ${fileLogTitleText}`"
+          >{{ fileLogLabel }}</span>
+          <span class="lg-status-line__sep" aria-hidden="true">·</span>
+          <span
+            class="lg-status-line__seg"
+            :class="{ 'lg-status-line__seg--warn': rawLogEnabled }"
+            :title="rawTitleText"
+            :aria-label="`${rawLabel}. ${rawTitleText}`"
+          >{{ rawLabel }}</span>
+        </p>
       </div>
       <div class="control-stage__actions">
-        <div class="lg-status-pills">
-          <span
-            v-if="!status"
-            class="control-pill control-pill--warn"
-            :aria-label="t('usageLogs.logs.statusUnavailableAria')"
-            :title="t('usageLogs.logs.statusUnavailableTitle')"
-          >{{ t('usageLogs.logs.statusUnavailable') }}</span>
-          <template v-else>
-            <span
-              :class="['control-pill', fileLogEnabled ? '' : 'control-pill--warn']"
-              :aria-label="fileLogEnabled
-                ? t('usageLogs.logs.fileLogAriaOn', { path: filePath })
-                : t('usageLogs.logs.fileLogAriaOff', { path: filePath })"
-              :title="t('usageLogs.logs.fileLogTitle', { path: filePath })"
-            >{{ fileLogEnabled ? t('usageLogs.logs.fileLogOn') : t('usageLogs.logs.fileLogOff') }}</span>
-            <span
-              :class="['control-pill', rawLogEnabled ? '' : 'control-pill--warn']"
-              :aria-label="rawLogEnabled
-                ? t('usageLogs.logs.rawAriaOn', { source: rawSource, path: rawPath })
-                : t('usageLogs.logs.rawAriaOff', { source: rawSource, path: rawPath })"
-              :title="t('usageLogs.logs.rawTitle', { source: rawSource, path: rawPath })"
-            >{{ rawLogEnabled ? t('usageLogs.logs.rawOn') : t('usageLogs.logs.rawOff') }}</span>
-            <span
-              class="control-pill control-pill--warn"
-              :aria-label="`${diagnosticsLabel}. ${diagnosticsCopy}`"
-              :title="diagnosticsCopy"
-            >{{ diagnosticsLabel }}</span>
-          </template>
-        </div>
+        <span
+          v-if="!status"
+          class="control-pill control-pill--warn"
+          :aria-label="t('usageLogs.logs.statusUnavailableAria')"
+          :title="t('usageLogs.logs.statusUnavailableTitle')"
+        >{{ t('usageLogs.logs.statusUnavailable') }}</span>
+        <span
+          v-else-if="rawLogEnabled"
+          class="control-pill control-pill--warn"
+          role="status"
+          :aria-label="`${t('usageLogs.logs.rawRecordingPill')}. ${rawTitleText}`"
+          :title="rawTitleText"
+        ><span class="dot" aria-hidden="true"></span>{{ t('usageLogs.logs.rawRecordingPill') }}</span>
+        <span
+          v-else-if="!fileLogEnabled"
+          class="control-pill control-pill--warn"
+          :aria-label="`${t('usageLogs.logs.fileLogOff')}. ${fileLogTitleText}`"
+          :title="fileLogTitleText"
+        >{{ t('usageLogs.logs.fileLogOff') }}</span>
         <button
           class="btn btn--ghost"
           :title="t('usageLogs.logs.bundleButtonTitle')"
@@ -355,20 +360,19 @@ const rawLogEnabled = computed(() => status.value?.raw_turn_call_log?.enabled ??
 const rawSource = computed(() => status.value?.raw_turn_call_log?.source || 'off')
 const rawPath = computed(() => status.value?.raw_turn_call_log?.directory?.path || '~/.opensquilla/logs')
 
-const diagnosticsCopy = computed(() => {
-  const detail = status.value?.diagnostics_enabled?.detail
-  if (detail === 'raw') {
-    return t('usageLogs.logs.diagnosticsCopyRaw', { source: rawSource.value })
-  }
-  return t('usageLogs.logs.diagnosticsCopyStandard')
-})
+const fileLogLabel = computed(() =>
+  fileLogEnabled.value ? t('usageLogs.logs.fileLogOn') : t('usageLogs.logs.fileLogOff'))
 
-const diagnosticsLabel = computed(() => {
-  const detail = status.value?.diagnostics_enabled?.detail
-  if (detail === 'raw') return t('usageLogs.logs.diagnosticsRaw')
-  if (status.value?.diagnostics_enabled?.effective) return t('usageLogs.logs.diagnosticsStandard')
-  return t('usageLogs.logs.diagnosticsOff')
-})
+const fileLogTitleText = computed(() =>
+  fileLogEnabled.value
+    ? t('usageLogs.logs.fileLogTitle', { path: filePath.value })
+    : t('usageLogs.logs.fileLogOffTitle', { path: filePath.value }))
+
+const rawLabel = computed(() =>
+  rawLogEnabled.value ? t('usageLogs.logs.rawOn') : t('usageLogs.logs.rawOff'))
+
+const rawTitleText = computed(() =>
+  t('usageLogs.logs.rawTitle', { source: rawSource.value, path: rawPath.value }))
 
 // A run-bearing line carries structured tool_calls in its raw JSON payload; the
 // drawer renders those as a trace, falling back to the raw text otherwise.
@@ -688,12 +692,39 @@ function escRegex(s: string): string {
 </script>
 
 <style scoped>
-/* Header uses the shared .control-stage primitive; only the status-pill cluster
-   is Logs-specific. */
-.lg-status-pills {
+/* Header uses the shared .control-stage primitive; only the quiet status line
+   (and the single abnormal-state warn pill in the actions) is Logs-specific. */
+.lg-status-line {
+  align-items: center;
+  color: var(--text-muted);
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
+  font-size: var(--fs-xs);
+  gap: var(--sp-2);
+  margin: var(--sp-2) 0 0;
+}
+
+.lg-status-line__seg {
+  cursor: help;
+}
+
+.lg-status-line__seg--warn {
+  color: var(--warn);
+}
+
+.lg-status-line__sep {
+  color: var(--text-dim);
+}
+
+/* Recording indicator inside the raw-capture warn pill; inherits the pill's
+   warn text color. */
+.control-pill .dot {
+  background: currentColor;
+  border-radius: 50%;
+  display: inline-block;
+  flex-shrink: 0;
+  height: 6px;
+  width: 6px;
 }
 
 .stat-row {

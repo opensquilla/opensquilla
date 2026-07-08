@@ -8,7 +8,7 @@ import logging
 import os
 import secrets
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, MutableMapping
 from dataclasses import dataclass, field
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
@@ -118,6 +118,7 @@ _AUTO_PROPOSE_TOOL_ALLOWLIST = frozenset(
     }
 )
 _DEBUG_FILE_HANDLER_ATTR = "_opensquilla_debug_file_handler"
+_CONSOLE_HANDLER_ATTR = "_opensquilla_console_log_handler"
 _ENABLED_VALUES = {"1", "true", "yes", "on"}
 _DISABLED_VALUES = {"0", "false", "no", "off"}
 _LOG_LEVELS = {
@@ -1285,11 +1286,76 @@ def _remove_debug_file_handlers(root: logging.Logger) -> None:
                 opensquilla_logger.setLevel(previous_level)
 
 
+def _render_structlog_event_for_stdlib(
+    logger: Any, method_name: str, event_dict: MutableMapping[str, Any]
+) -> tuple[tuple[str], dict[str, Any]]:
+    """Final structlog processor: render ``event key=value ...`` for stdlib.
+
+    Returns ``(args, kwargs)`` so ``exc_info``/``stack_info`` pass through to
+    ``logging`` natively and the Formatter renders tracebacks into every
+    attached handler (file and console).
+    """
+    kwargs: dict[str, Any] = {}
+    exc_info = event_dict.pop("exc_info", None)
+    if exc_info:
+        kwargs["exc_info"] = exc_info
+    stack_info = event_dict.pop("stack_info", None)
+    if stack_info:
+        kwargs["stack_info"] = stack_info
+    event = str(event_dict.pop("event", ""))
+    parts = [event] + [f"{key}={event_dict[key]!r}" for key in event_dict]
+    return (" ".join(part for part in parts if part),), kwargs
+
+
+def _bridge_structlog_to_stdlib() -> None:
+    """Route structlog events through stdlib logging so they reach debug.log.
+
+    Level filtering is delegated to stdlib (the ``opensquilla`` logger level is
+    managed by ``_setup_file_logging``); the ``is_configured`` guard leaves any
+    explicit prior configuration (e.g. the interactive TUI's) untouched.
+    """
+    if structlog.is_configured():
+        return
+    structlog.configure(
+        processors=[
+            structlog.contextvars.merge_contextvars,
+            structlog.processors.StackInfoRenderer(),
+            structlog.dev.set_exc_info,
+            _render_structlog_event_for_stdlib,
+        ],
+        wrapper_class=structlog.make_filtering_bound_logger(logging.NOTSET),
+        logger_factory=structlog.stdlib.LoggerFactory(),
+        cache_logger_on_first_use=False,
+    )
+
+
+def _remove_console_handlers(root: logging.Logger) -> None:
+    for handler in list(root.handlers):
+        if getattr(handler, _CONSOLE_HANDLER_ATTR, False):
+            root.removeHandler(handler)
+            handler.close()
+
+
 def _setup_file_logging(config: GatewayConfig | None = None) -> None:
     """Configure structlog + stdlib logging to write to a debug.log file."""
     config = config or GatewayConfig()
     root = logging.getLogger()
     _remove_debug_file_handlers(root)
+    _remove_console_handlers(root)
+
+    # Bridge structlog through stdlib and keep console output for foreground
+    # runs. Wrapped so a logging misconfiguration can never block gateway boot.
+    try:
+        _bridge_structlog_to_stdlib()
+        console_handler = logging.StreamHandler()
+        setattr(console_handler, _CONSOLE_HANDLER_ATTR, True)
+        console_handler.setLevel(_resolve_log_level(config))
+        console_handler.setFormatter(
+            logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+        )
+        root.addHandler(console_handler)
+    except Exception as exc:  # noqa: BLE001 - logging must never block boot
+        logging.getLogger(__name__).warning("structlog bridge disabled: %s", exc)
 
     enabled = _env_bool("OPENSQUILLA_LOG_FILE_ENABLED")
     if enabled is None:

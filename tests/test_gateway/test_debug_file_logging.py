@@ -3,6 +3,8 @@ from __future__ import annotations
 import logging
 from logging.handlers import RotatingFileHandler
 
+import structlog
+
 from opensquilla.gateway.boot import _setup_file_logging
 from opensquilla.gateway.config import GatewayConfig
 
@@ -11,6 +13,14 @@ def _remove_debug_handlers() -> None:
     root = logging.getLogger()
     for handler in list(root.handlers):
         if getattr(handler, "_opensquilla_debug_file_handler", False):
+            root.removeHandler(handler)
+            handler.close()
+
+
+def _remove_console_handlers() -> None:
+    root = logging.getLogger()
+    for handler in list(root.handlers):
+        if getattr(handler, "_opensquilla_console_log_handler", False):
             root.removeHandler(handler)
             handler.close()
 
@@ -76,3 +86,76 @@ def test_setup_file_logging_can_be_disabled(tmp_path, monkeypatch) -> None:
     ]
     assert handlers == []
     assert opensquilla_logger.level == original_opensquilla_level
+
+
+def test_structlog_events_reach_debug_log_with_traceback(tmp_path, monkeypatch) -> None:
+    _remove_debug_handlers()
+    _remove_console_handlers()
+    old_config = structlog.get_config()
+    opensquilla_logger = logging.getLogger("opensquilla")
+    original_level = opensquilla_logger.level
+    monkeypatch.setenv("OPENSQUILLA_LOG_DIR", str(tmp_path))
+    monkeypatch.setenv("OPENSQUILLA_LOG_LEVEL", "DEBUG")
+    try:
+        structlog.reset_defaults()
+        _setup_file_logging(GatewayConfig())
+        slog = structlog.get_logger("opensquilla.test_bridge")
+        try:
+            raise ValueError("synthetic-bridge-error")
+        except ValueError:
+            slog.error("bridge_event", session_key="agent:test:bridge", exc_info=True)
+        for handler in logging.getLogger().handlers:
+            handler.flush()
+        text = (tmp_path / "debug.log").read_text(encoding="utf-8")
+        assert "[ERROR] opensquilla.test_bridge: bridge_event" in text
+        assert "session_key='agent:test:bridge'" in text
+        assert "ValueError: synthetic-bridge-error" in text
+        assert text.count("bridge_event") == 1
+    finally:
+        _remove_debug_handlers()
+        _remove_console_handlers()
+        structlog.configure(**old_config)
+        opensquilla_logger.setLevel(original_level)
+
+
+def test_structlog_bridge_respects_log_level(tmp_path, monkeypatch) -> None:
+    _remove_debug_handlers()
+    _remove_console_handlers()
+    old_config = structlog.get_config()
+    opensquilla_logger = logging.getLogger("opensquilla")
+    original_level = opensquilla_logger.level
+    monkeypatch.setenv("OPENSQUILLA_LOG_DIR", str(tmp_path))
+    monkeypatch.setenv("OPENSQUILLA_LOG_LEVEL", "INFO")
+    try:
+        structlog.reset_defaults()
+        _setup_file_logging(GatewayConfig())
+        structlog.get_logger("opensquilla.test_bridge").debug("bridge_debug_event")
+        structlog.get_logger("opensquilla.test_bridge").info("bridge_info_event")
+        for handler in logging.getLogger().handlers:
+            handler.flush()
+        text = (tmp_path / "debug.log").read_text(encoding="utf-8")
+        assert "bridge_info_event" in text
+        assert "bridge_debug_event" not in text
+    finally:
+        _remove_debug_handlers()
+        _remove_console_handlers()
+        structlog.configure(**old_config)
+        opensquilla_logger.setLevel(original_level)
+
+
+def test_bridge_failure_does_not_block_setup(tmp_path, monkeypatch) -> None:
+    _remove_debug_handlers()
+    _remove_console_handlers()
+    monkeypatch.setenv("OPENSQUILLA_LOG_DIR", str(tmp_path))
+    import opensquilla.gateway.boot as boot_module
+
+    def _boom() -> None:
+        raise RuntimeError("synthetic bridge failure")
+
+    monkeypatch.setattr(boot_module, "_bridge_structlog_to_stdlib", _boom)
+    try:
+        _setup_file_logging(GatewayConfig())
+        assert (tmp_path / "debug.log").exists()
+    finally:
+        _remove_debug_handlers()
+        _remove_console_handlers()

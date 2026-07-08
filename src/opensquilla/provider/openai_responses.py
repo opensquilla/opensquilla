@@ -366,7 +366,15 @@ class OpenAIResponsesProvider:
             model=actual_model,
         )
 
-    async def list_models(self) -> list[ModelInfo]:
+    async def list_models(self, *, raise_on_error: bool = False) -> list[ModelInfo]:
+        """List available models.
+
+        By default any auth/transport failure degrades to an empty list (the
+        historical contract every runtime caller relies on). Pass
+        ``raise_on_error=True`` to surface the underlying exception instead,
+        so callers that must distinguish a wrong key from an empty catalog
+        (e.g. onboarding discovery) can classify it.
+        """
         headers = {"Authorization": f"Bearer {self._api_key}"}
         try:
             async with httpx.AsyncClient(
@@ -376,13 +384,21 @@ class OpenAIResponsesProvider:
             ) as client:
                 response = await client.get(self._api_url("/v1/models"), headers=headers)
         except httpx.HTTPError:
+            if raise_on_error:
+                raise
             return []
 
         if response.status_code != 200:
+            if raise_on_error:
+                # 4xx/5xx raise a classifiable HTTPStatusError; an unexpected
+                # non-200 success shape still degrades to the empty list.
+                response.raise_for_status()
             return []
         try:
             data = response.json()
         except json.JSONDecodeError:
+            if raise_on_error:
+                raise
             return []
 
         models: list[ModelInfo] = []

@@ -575,9 +575,11 @@ def test_unknown_provider_is_not_written_to_config(
 
     import tomllib
     data = tomllib.loads((home / "config.toml").read_text())
-    # Provider was NOT overwritten with the unknown value. The model id
-    # still came through because that's a free-form string.
-    assert data["llm"]["provider"] != "bedrock"
+    # Provider was NOT overwritten with the unknown value. Sparse persistence
+    # may omit the key entirely (it was left at the default), which satisfies
+    # the same invariant. The model id still came through because that's a
+    # free-form string.
+    assert data["llm"].get("provider") != "bedrock"
     assert data["llm"]["model"] == "claude-3-opus"
 
 

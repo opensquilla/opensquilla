@@ -10,14 +10,28 @@ from __future__ import annotations
 import inspect
 from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass
-from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
 from uuid import uuid4
 
 import opensquilla.cli.tui.adapters.input_bridge as _input_bridge
 from opensquilla.cli.chat.session_state import ChatSessionState
 from opensquilla.cli.chat.turn import TurnResult
-from opensquilla.cli.tui.adapters.commands import is_exit_command, render_help_table
+from opensquilla.cli.tui.adapters.commands import render_help_table
+from opensquilla.cli.tui.adapters.slash_common import (
+    compact_skipped_line,
+    compact_success_line,
+    compact_summary_stats,
+    compact_token_stats,
+    dispatch_theme_command,
+    record_turn,
+    registry_handler_words,
+    resolve_transcript_target,
+    save_transcript_markdown,
+    transcript_messages_to_markdown,
+)
+from opensquilla.cli.tui.adapters.slash_common import (
+    slash_parts as _slash_parts,
+)
 from opensquilla.cli.tui.backend.contracts import TuiOutputHandle
 from opensquilla.cli.ui import ACCENT, console, error_panel
 from opensquilla.engine.commands import Surface
@@ -32,27 +46,9 @@ from opensquilla.session.compaction_lifecycle import (
 if TYPE_CHECKING:
     from opensquilla.engine.agent_injection import PendingInputProvider
 
-STANDALONE_SLASH_HANDLER_WORDS = frozenset(
-    {
-        "/clear",
-        "/compact",
-        "/cmp",
-        "/cost",
-        "/exit",
-        "/help",
-        "/image",
-        "/meta",
-        "/model",
-        "/new",
-        "/path",
-        "/quit",
-        "/reset",
-        "/save",
-        "/session",
-        "/status",
-        "/theme",
-    }
-)
+# Derived from the engine registry so a new slash command only has to be
+# declared once; the dispatch chain below is pinned to this set by tests.
+STANDALONE_SLASH_HANDLER_WORDS = registry_handler_words(Surface.CLI_STANDALONE)
 
 
 class StandaloneStreamResponse(Protocol):
@@ -153,6 +149,9 @@ class StandaloneSlashServices:
 class StandaloneSlashContext:
     state: ChatSessionState
     session_key: str
+    # The model the user explicitly requested (--model at launch or the last
+    # /model choice). The runtime keeps this apart from state.model, which
+    # tracks the model that last ran (display only) and may be a router pick.
     model: str | None
     tool_ctx: object
     slash_services: StandaloneSlashServices
@@ -164,12 +163,6 @@ class StandaloneSlashContext:
     tui_output: TuiOutputHandle | None = None
     stream_response: StandaloneStreamResponse | None = None
     image_command_handler: StandaloneImageCommandHandler | None = None
-
-
-def _slash_parts(cmd: str, name: str) -> list[str] | None:
-    if cmd == name or cmd.startswith(f"{name} "):
-        return cmd.split(maxsplit=1)
-    return None
 
 
 async def _maybe_await(value: Awaitable[Any] | Any) -> Any:
@@ -380,15 +373,41 @@ async def _flush_before_standalone_rewrite(
     return True
 
 
-def _save_transcript_command(cmd: str, state: ChatSessionState) -> None:
-    parts = cmd.split(maxsplit=1)
-    if len(parts) > 1:
-        target = Path(parts[1]).expanduser()
-    else:
-        suffix = state.session_key.replace(":", "-")
-        target = Path(f"opensquilla-chat-{suffix}.md")
-    target.write_text(state.transcript.to_markdown(), encoding="utf-8")
-    console.print(f"[green]Saved transcript:[/green] {target}")
+def _save_state_transcript_command(cmd: str, state: ChatSessionState) -> None:
+    """Export only the in-memory turns (legacy path with no durable handle)."""
+    target = resolve_transcript_target(cmd, state.session_key)
+    save_transcript_markdown(
+        target,
+        state.transcript.to_markdown(),
+        output_console=console,
+        error_panel_factory=error_panel,
+    )
+
+
+async def _save_transcript_command(
+    cmd: str,
+    state: ChatSessionState,
+    read_transcript: StandaloneReadTranscript | None = None,
+) -> None:
+    """Export the durable transcript, falling back to the in-memory turns.
+
+    ``state.transcript`` only records turns dispatched by this process, so a
+    resumed session would export an empty file without the durable read.
+    """
+    target = resolve_transcript_target(cmd, state.session_key)
+    markdown = ""
+    if read_transcript is not None:
+        durable = await _read_standalone_transcript_handle(read_transcript, state.session_key)
+        if durable:
+            markdown = transcript_messages_to_markdown(durable)
+    if not markdown.strip():
+        markdown = state.transcript.to_markdown()
+    save_transcript_markdown(
+        target,
+        markdown,
+        output_console=console,
+        error_panel_factory=error_panel,
+    )
 
 
 def _image_prompt_from_command(command: str) -> str:
@@ -465,11 +484,11 @@ async def _compact_standalone_context(context: StandaloneSlashContext) -> None:
                 compaction_config,
             )
             summary = getattr(result, "summary", "") or ""
-            token_stats = (
-                f"{getattr(result, 'tokens_before', 0)} -> "
-                f"{getattr(result, 'tokens_after', 0)} tokens, "
-                f"{getattr(result, 'remaining_budget_tokens', 0)} remaining, "
-                f"{getattr(result, 'summary_source', 'unknown')}"
+            token_stats = compact_token_stats(
+                getattr(result, "tokens_before", 0),
+                getattr(result, "tokens_after", 0),
+                getattr(result, "remaining_budget_tokens", 0),
+                getattr(result, "summary_source", "unknown"),
             )
         else:
             if compact_session is None:
@@ -481,18 +500,15 @@ async def _compact_standalone_context(context: StandaloneSlashContext) -> None:
                 context_window,
                 compaction_config,
             )
-            token_stats = f"summary {len(summary)} chars"
+            token_stats = compact_summary_stats(len(summary))
     except Exception as exc:  # noqa: BLE001 - keep chat command recoverable.
         console.print(f"[red]compact failed: {exc}[/red]")
         return
 
     if summary:
-        console.print(f"[{ACCENT}]compacted[/] [dim]{token_stats}[/dim]")
+        console.print(compact_success_line(token_stats))
     else:
-        console.print(
-            f"[{ACCENT}]compact skipped[/] "
-            "[dim]already within context budget; no compact was applied[/dim]"
-        )
+        console.print(compact_skipped_line())
 
 
 async def handle_standalone_slash_command(
@@ -501,26 +517,23 @@ async def handle_standalone_slash_command(
 ) -> bool:
     """Handle standalone-mode slash commands.
 
-    Unknown slash commands are handled here so callers can keep the input loop
-    free of command-specific fallback rendering.
+    Always returns ``True``: every slash input is either executed or answered
+    with the "Unknown command" notice here, so the caller's dispatch loop keeps
+    running. Exit commands are owned by the runtime loop, which intercepts them
+    before slash dispatch. (The gateway twin instead returns ``False`` for
+    unknown commands and lets its runtime render the notice.)
     """
 
     state = context.state
     stream = context.stream_response or stream_response_turnrunner
     image_handler = context.image_command_handler or handle_image_command_turnrunner
 
-    if is_exit_command(cmd, Surface.CLI_STANDALONE):
-        console.print("[yellow]Goodbye.[/yellow]")
-        return False
-
     if cmd == "/help":
         console.print(render_help_table(Surface.CLI_STANDALONE))
         return True
 
     if _slash_parts(cmd, "/theme"):
-        from opensquilla.cli.tui.opentui.themes import handle_theme_command  # noqa: PLC0415
-
-        await handle_theme_command(cmd, context.tui_output)
+        await dispatch_theme_command(cmd, context.tui_output)
         return True
 
     if parts := _slash_parts(cmd, "/new"):
@@ -578,7 +591,7 @@ async def handle_standalone_slash_command(
         return True
 
     if _slash_parts(cmd, "/save"):
-        _save_transcript_command(cmd, state)
+        await _save_transcript_command(cmd, state, context.slash_services.read_transcript)
         return True
 
     if parts := _slash_parts(cmd, "/image"):
@@ -595,9 +608,7 @@ async def handle_standalone_slash_command(
             timeout=context.timeout,
             tui_output=context.tui_output,
         )
-        state.transcript.add("user", _image_prompt_from_command(cmd))
-        state.transcript.add("assistant", result.text)
-        state.usage.apply(result.usage)
+        record_turn(state, _image_prompt_from_command(cmd), result)
         return True
 
     if parts := _slash_parts(cmd, "/path"):
@@ -622,9 +633,7 @@ async def handle_standalone_slash_command(
             timeout=context.timeout,
             tui_output=context.tui_output,
         )
-        state.transcript.add("user", prompt)
-        state.transcript.add("assistant", result.text)
-        state.usage.apply(result.usage)
+        record_turn(state, prompt, result)
         return True
 
     console.print("[red]Unknown command.[/red] [dim]Use /help.[/dim]")

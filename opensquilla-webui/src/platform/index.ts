@@ -6,8 +6,9 @@ import { createWebPlatform } from './web'
 let cachedPlatform: Platform | null = null
 
 export function getPlatform(): Platform {
-  if (cachedPlatform) return cachedPlatform
-  cachedPlatform = detectPlatformId() === 'desktop'
+  const platformId = detectPlatformId()
+  if (cachedPlatform?.id === platformId) return cachedPlatform
+  cachedPlatform = platformId === 'desktop'
     ? createDesktopPlatform()
     : createWebPlatform()
   return cachedPlatform

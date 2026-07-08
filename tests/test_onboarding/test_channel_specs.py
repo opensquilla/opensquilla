@@ -142,7 +142,10 @@ def test_wecom_connection_mode_choices():
     assert spec.transport == "mixed"
     assert spec.requires_public_url is False
     assert field.field_type == "select"
-    assert field.default == "websocket"
+    # Must mirror WeComChannelEntry.connection_mode: a headless entry that
+    # omits connection_mode is validated in the pydantic default mode.
+    assert field.default == "webhook"
+    assert field.default == WeComChannelEntry.model_fields["connection_mode"].default
     assert field.choices == ("websocket", "webhook")
 
 
@@ -224,10 +227,14 @@ def test_channel_catalog_payload_exposes_ui_metadata():
     slack_fields = {f["name"]: f for f in slack["fields"]}
     assert slack_fields["app_token"]["showWhen"] == {"connection_mode": "socket"}
     wecom = next(c for c in payload if c["type"] == "wecom")
-    assert "Bot ID." in wecom["whatYouNeed"]
-    assert "Bot secret." in wecom["whatYouNeed"]
-    assert "Corp id." not in wecom["whatYouNeed"]
-    assert "Encoding AES key." not in wecom["whatYouNeed"]
+    # whatYouNeed follows the spec default mode, which mirrors the pydantic
+    # default (webhook): the advertised minimal setup names the fields that
+    # webhook-mode validation actually requires.
+    assert "Corp id." in wecom["whatYouNeed"]
+    assert "Corp secret." in wecom["whatYouNeed"]
+    assert "Encoding AES key." in wecom["whatYouNeed"]
+    assert "Bot ID." not in wecom["whatYouNeed"]
+    assert "Bot secret." not in wecom["whatYouNeed"]
 
 
 def test_matrix_encryption_choices():
@@ -294,3 +301,63 @@ def test_catalog_is_sorted():
 
 def test_returns_setup_spec_instance():
     assert isinstance(get_channel_setup_spec("slack"), ChannelSetupSpec)
+
+
+@pytest.mark.parametrize("type_name", sorted(ALL_TYPES))
+def test_spec_field_defaults_match_pydantic_defaults(type_name: str):
+    """Catalog defaults must mirror the gateway pydantic defaults.
+
+    A spec default that diverges from the model default (as wecom's
+    connection_mode once did) advertises a minimal setup that the headless
+    path then validates in a *different* mode, guaranteeing failure.
+    """
+    from pydantic_core import PydanticUndefined
+
+    spec = get_channel_setup_spec(type_name)
+    model = ENTRY_MODELS[type_name]
+    for field in spec.fields:
+        finfo = model.model_fields.get(field.name)
+        if finfo is None or finfo.default is PydanticUndefined or field.default is None:
+            continue
+        assert field.default == finfo.default, (
+            f"{type_name}.{field.name}: spec default {field.default!r} "
+            f"diverges from pydantic default {finfo.default!r}"
+        )
+
+
+_DUMMY_FIELD_VALUES = {
+    "text": "dummy-value",
+    "password": "dummy-secret",
+    "int": 1,
+    "float": 1.0,
+    "bool": True,
+}
+
+
+@pytest.mark.parametrize("type_name", sorted(ALL_TYPES))
+def test_advertised_minimal_setup_passes_model_validation(type_name: str):
+    """The catalog's minimal recipe must satisfy the pydantic validators.
+
+    Mirrors the headless path: fill exactly the required fields that are
+    visible under the spec defaults (what the catalog Try command asks for),
+    leave everything else to model defaults, and expect a valid entry.
+    """
+    spec = get_channel_setup_spec(type_name)
+    defaults = {field.name: field.default for field in spec.fields}
+    entry: dict[str, object] = {"name": "test-entry"}
+    for field in spec.fields:
+        if not field.required or field.name == "name":
+            continue
+        if field.show_when and any(
+            str(defaults.get(key, "")) != expected
+            for key, expected in field.show_when.items()
+        ):
+            continue
+        if field.field_type == "select":
+            entry[field.name] = field.default
+        else:
+            entry[field.name] = _DUMMY_FIELD_VALUES[field.field_type]
+
+    model = ENTRY_MODELS[type_name]
+    validated = model(**entry)
+    assert validated.name == "test-entry"

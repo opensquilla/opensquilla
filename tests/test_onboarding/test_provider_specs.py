@@ -139,6 +139,32 @@ def test_api_key_providers_expose_env_key_field_in_setup_spec():
     assert env_field.secret is False
 
 
+def test_api_key_field_describes_plaintext_config_storage_accurately():
+    """A pasted key is persisted as plaintext api_key in the config file and
+    is consulted ahead of the env var — the description must say so instead
+    of implying the paste lands under the env key."""
+    spec = get_provider_setup_spec("openrouter")
+    api_field = next(f for f in spec.fields if f.name == "api_key")
+
+    assert "Stored under env key" not in api_field.description
+    assert "plaintext api_key" in api_field.description
+    assert "config file" in api_field.description
+    assert "ahead of OPENROUTER_API_KEY" in api_field.description
+    assert "Leave blank to read OPENROUTER_API_KEY" in api_field.description
+
+
+def test_api_key_field_description_stays_accurate_without_an_env_key():
+    # Providers without a registry env key still persist pastes in plaintext.
+    for spec in list_provider_setup_specs():
+        api_field = next(f for f in spec.fields if f.name == "api_key")
+        if spec.env_key:
+            assert spec.env_key in api_field.description
+        else:
+            assert api_field.description == (
+                "Saved as plaintext api_key in the config file."
+            )
+
+
 def test_non_router_providers_explain_required_model_in_setup_spec():
     for provider_id in ("anthropic", "ollama", "qianfan", "openai_responses"):
         spec = get_provider_setup_spec(provider_id)

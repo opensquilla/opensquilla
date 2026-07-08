@@ -186,7 +186,7 @@ def all_scenarios() -> tuple[TuiScenario, ...]:
                 ScenarioStep(
                     "wait-architecture",
                     "wait_any_text",
-                    "architecture-analysis-complete\n· in 1 / out 2",
+                    "architecture-analysis-complete\n╰ in 1 / out 2",
                     "after-architecture",
                     timeout_s=10.0,
                 ),
@@ -216,10 +216,24 @@ def all_scenarios() -> tuple[TuiScenario, ...]:
                     "after-response",
                     timeout_s=10.0,
                 ),
+                # The fake app echoes the submitted input line by line; waiting
+                # for the second echoed line proves the pasted newline survived
+                # the composer (a collapsed paste would submit a single line).
+                ScenarioStep(
+                    "wait-paste-echo",
+                    "wait_text",
+                    "echo-line-1:second line CJK混合ASCII",
+                    "after-paste-echo",
+                    timeout_s=10.0,
+                ),
                 ScenarioStep("resize-wide", "resize", "120x34", "after-wide"),
                 ScenarioStep("ctrl-c", "key", "C-c", "after-ctrl-c"),
             ),
-            expected_text=(),
+            expected_text=(
+                "terminal-change-response lines=2",
+                "echo-line-0:first line",
+                "echo-line-1:second line CJK混合ASCII",
+            ),
         ),
         TuiScenario(
             scenario_id="completion_slash_menu_filter",

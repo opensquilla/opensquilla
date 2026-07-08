@@ -47,7 +47,6 @@ CHAT_COMPAT_EXPORTS = {
     "_sync_gateway_slash_adapter_io": "sync_gateway_slash_adapter_io",
     "_sync_standalone_slash_adapter_io": "sync_standalone_slash_adapter_io",
     "_turn_stream_dependencies": "default_turn_stream_dependencies",
-    "_handle_tool_compress_command": "handle_tool_compress_command",
     "_print_sessions_table": "print_sessions_table",
     "_print_models_table": "print_models_table",
     "_save_transcript_command": "save_transcript_command",

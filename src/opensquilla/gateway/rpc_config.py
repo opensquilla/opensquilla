@@ -35,6 +35,18 @@ def _update_config_in_place(old: Any, new: Any) -> None:
     for field_name in type(new).model_fields:
         setattr(old, field_name, getattr(new, field_name))
     _inherit_runtime_secrets(new, old)
+    # Refresh runtime-override provenance against the state just applied:
+    # after a reload/config.set swap, a record whose stored slot no longer
+    # reflects disk provenance must not silently rewrite later persists
+    # (e.g. a boot-time llm.base_url record surviving a hand-edit + reload
+    # would make an unrelated save revert the operator's on-disk URL to the
+    # boot-time stored value). ``reconcile_runtime_overrides`` keeps an old
+    # record only while the new value still equals its applied value and
+    # lets the candidate's freshly derived records win per path.
+    if hasattr(old, "reconcile_runtime_overrides") and hasattr(
+        new, "_runtime_field_overrides"
+    ):
+        old.reconcile_runtime_overrides(new)
 
 
 def _persist_config(config: Any) -> None:

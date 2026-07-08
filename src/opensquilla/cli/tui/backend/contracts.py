@@ -10,6 +10,8 @@ from enum import Enum
 from typing import Any, Protocol, runtime_checkable
 
 from opensquilla.cli.tui.backend.domain_events import TuiDomainEvent
+from opensquilla.cli.tui.backend.events import TuiEventSink
+from opensquilla.cli.tui.backend.state import TuiRuntimeState
 
 
 @runtime_checkable
@@ -171,5 +173,5 @@ class TuiRuntimeConfig:
     concurrent_input_during_turn: bool = True
     classify_input: Callable[[str], TuiInputKind] = _default_classify_input
     install_signal_handlers: TuiSignalInstaller = _noop_install_signal_handlers
-    event_sink: Any | None = None
-    state: Any | None = None
+    event_sink: TuiEventSink | None = None
+    state: TuiRuntimeState | None = None

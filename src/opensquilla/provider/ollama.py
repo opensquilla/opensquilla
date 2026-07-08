@@ -328,7 +328,15 @@ class OllamaProvider:
                 code="provider_internal",
             )
 
-    async def list_models(self) -> list[ModelInfo]:
+    async def list_models(self, *, raise_on_error: bool = False) -> list[ModelInfo]:
+        """List available models.
+
+        By default any auth/transport failure degrades to an empty list (the
+        historical contract every runtime caller relies on). Pass
+        ``raise_on_error=True`` to surface the underlying exception instead,
+        so callers that must distinguish an unreachable/secured host from an
+        empty catalog (e.g. onboarding discovery) can classify it.
+        """
         try:
             async with httpx.AsyncClient(
                 timeout=5.0,
@@ -351,4 +359,6 @@ class OllamaProvider:
                     for m in data.get("models", [])
                 ]
         except Exception:
+            if raise_on_error:
+                raise
             return []

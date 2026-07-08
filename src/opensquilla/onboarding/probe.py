@@ -13,12 +13,16 @@ for its live model list, enriching each row from the layered model catalog.
 
 from __future__ import annotations
 
+import inspect
 import os
 from dataclasses import dataclass, field
+from typing import Any, cast
 
+import httpx
 import structlog
 
 from opensquilla.provider.failures import ProviderFailureKind, classify_provider_error
+from opensquilla.provider.protocol import LLMProvider
 from opensquilla.provider.registry import get_provider_spec
 from opensquilla.provider.selector import (
     ProviderBuildError,
@@ -244,6 +248,25 @@ def _discover_model_row(info: ModelInfo, provider_id: str) -> dict[str, object]:
     }
 
 
+async def _list_models_for_discovery(provider: LLMProvider) -> list[ModelInfo]:
+    """List the provider's models, surfacing failures where the adapter can.
+
+    Runtime adapters historically swallow list-models errors and return an
+    empty list, which is indistinguishable from a genuinely empty catalog.
+    Adapters that grew the keyword-only ``raise_on_error`` parameter re-raise
+    auth/transport failures when asked, so discovery can classify them; older
+    adapters without the parameter keep the legacy swallow-errors behavior.
+    """
+    list_models: Any = provider.list_models
+    try:
+        accepts_raise = "raise_on_error" in inspect.signature(list_models).parameters
+    except (TypeError, ValueError):  # C-implemented or exotic callables
+        accepts_raise = False
+    if accepts_raise:
+        return cast("list[ModelInfo]", await list_models(raise_on_error=True))
+    return cast("list[ModelInfo]", await list_models())
+
+
 async def discover_provider_models(
     *,
     provider_id: str,
@@ -294,13 +317,18 @@ async def discover_provider_models(
         )
 
     try:
-        provider_models = await provider.list_models()
+        provider_models = await _list_models_for_discovery(provider)
     except Exception as exc:  # noqa: BLE001 - same classification as list_models_detailed
         kind = classify_provider_error(
             provider_id,
             _exception_status_code(exc),
             message=str(exc),
         )
+        if kind is ProviderFailureKind.UNKNOWN and isinstance(exc, httpx.TransportError):
+            # Raw socket noise ("connection refused", DNS failures) carries no
+            # status code and often no classifiable message; it is transport
+            # trouble by construction, exactly like the chat probe's guard.
+            kind = ProviderFailureKind.TRANSPORT_TRANSIENT
         log.warning(
             "onboarding.models_discover_failed",
             provider=provider_id,

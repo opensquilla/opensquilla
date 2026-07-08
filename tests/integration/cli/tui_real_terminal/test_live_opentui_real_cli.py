@@ -31,5 +31,16 @@ def test_live_opentui_real_cli_runs_architecture_prompt_in_tmux(
     result = run_real_terminal_scenario(scenario_by_id("live_opentui_architecture_prompt"))
 
     assert result.status == "pass"
-    assert (result.run_dir / "scrollback.txt").exists()
     assert (result.run_dir / "terminal.log").exists()
+    scrollback_path = result.run_dir / "scrollback.txt"
+    assert scrollback_path.exists()
+    # The scenario's wait step matched either a completed turn (the usage
+    # separator) or the runtime's own timeout notice; the final scrollback must
+    # still show that state rather than an empty or crashed pane.
+    scrollback = scrollback_path.read_text(encoding="utf-8")
+    assert scrollback.strip()
+    assert "Traceback (most recent call last)" not in scrollback
+    assert (
+        " · " in scrollback
+        or "The task timed out before it could finish." in scrollback
+    )

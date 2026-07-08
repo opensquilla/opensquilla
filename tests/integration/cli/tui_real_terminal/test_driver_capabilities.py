@@ -289,6 +289,40 @@ def test_pty_session_drives_text_process_and_cleans_up(tmp_path: Path) -> None:
     assert session.is_alive() is False
 
 
+def test_tmux_alternate_screen_probe_reads_pane_flag(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    responses = iter(["1\n", "0\n"])
+
+    def fake_run(
+        args: list[str],
+        **kwargs: Any,
+    ) -> subprocess.CompletedProcess[str]:
+        assert args == [
+            "tmux",
+            "display-message",
+            "-p",
+            "-t",
+            "opensquilla-tui-owned-3",
+            "#{alternate_on}",
+        ]
+        return subprocess.CompletedProcess(args, 0, stdout=next(responses))
+
+    monkeypatch.setattr(driver.subprocess, "run", fake_run)
+    session = TmuxTerminalSession(
+        command=["python", "-c", "print('ready')"],
+        cwd=tmp_path,
+        env={},
+        run_id="opensquilla-tui-owned-3",
+        size=TerminalSize(),
+        terminal_log=tmp_path / "terminal.log",
+    )
+
+    assert session.alternate_screen_active() is True
+    assert session.alternate_screen_active() is False
+
+
 def test_wait_for_text_times_out_with_last_screen(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

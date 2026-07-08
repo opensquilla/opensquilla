@@ -193,10 +193,12 @@ async def test_tui_gateway_stream_coerces_invalid_output_approval_surface(
     async def fake_approval_handler(*_args: Any, **kwargs: Any) -> None:
         captured.update(kwargs)
 
+    # The default approval handler is built lazily per dependency set; patch
+    # its factory so the coerced surface kwarg can be observed.
     monkeypatch.setattr(
         turn_stream_defaults,
-        "_noop_approval_handler",
-        fake_approval_handler,
+        "tui_approval_handler",
+        lambda: fake_approval_handler,
     )
 
     deps = turn_bridge.default_turn_stream_dependencies(
@@ -352,8 +354,8 @@ async def test_chat_cmd_stream_wrapper_uses_bridge_owned_renderer_dependency(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from opensquilla.cli.repl import turn_stream
-    from opensquilla.cli.tui import turn_stream_defaults
-    from opensquilla.cli.tui.opentui.renderer import OpenTuiStreamRenderer
+    from opensquilla.cli.tui.adapters import runtime_bridge
+    from opensquilla.cli.tui.opentui import renderer as opentui_renderer
 
     captured: dict[str, Any] = {}
 
@@ -370,16 +372,18 @@ async def test_chat_cmd_stream_wrapper_uses_bridge_owned_renderer_dependency(
         tui_output: TuiOutputHandle | None = None,
         deps: turn_stream.TurnStreamDependencies | None = None,
     ) -> TurnResult:
-        captured.update(
-            {
-                "renderer_global": turn_stream_defaults.OpenTuiStreamRenderer,
-                "renderer_dependency": None if deps is None else deps.renderer_factory,
-            }
-        )
+        captured["renderer_dependency"] = None if deps is None else deps.renderer_factory
         return TurnResult(text="ok")
 
+    # The bridge resolves the renderer from the selected backend, sourcing the
+    # class from the opentui renderer module — pin both halves of that wiring.
     monkeypatch.setattr(
-        turn_stream_defaults,
+        runtime_bridge,
+        "validate_tui_backend_selection",
+        lambda env=None: "opentui",
+    )
+    monkeypatch.setattr(
+        opentui_renderer,
         "OpenTuiStreamRenderer",
         _TemporaryOpenTuiRenderer,
     )
@@ -393,8 +397,4 @@ async def test_chat_cmd_stream_wrapper_uses_bridge_owned_renderer_dependency(
     )
 
     assert result.text == "ok"
-    assert captured == {
-        "renderer_global": _TemporaryOpenTuiRenderer,
-        "renderer_dependency": _TemporaryOpenTuiRenderer,
-    }
-    assert turn_stream_defaults.OpenTuiStreamRenderer is not OpenTuiStreamRenderer
+    assert captured == {"renderer_dependency": _TemporaryOpenTuiRenderer}

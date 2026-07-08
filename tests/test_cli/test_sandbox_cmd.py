@@ -50,10 +50,14 @@ def test_sandbox_trust_persists_trusted_run_mode(tmp_path: Path) -> None:
     assert cfg.permissions.default_mode == "off"
     data = tomllib.loads(config_path.read_text(encoding="utf-8"))
     assert data["sandbox"]["run_mode"] == "trusted"
-    assert data["sandbox"]["sandbox"] is True
-    assert data["sandbox"]["security_grading"] is True
-    assert data["sandbox"]["network_default"] == "proxy_allowlist"
-    assert data["permissions"]["default_mode"] == "off"
+    # Sparse persistence omits values equal to the built-in defaults
+    # (sandbox on, grading on, proxy allowlist, permissions off); the
+    # effective posture is asserted via load_config above. Any value that
+    # is written must match the trusted posture.
+    assert data["sandbox"].get("sandbox", True) is True
+    assert data["sandbox"].get("security_grading", True) is True
+    assert data["sandbox"].get("network_default", "proxy_allowlist") == "proxy_allowlist"
+    assert data.get("permissions", {}).get("default_mode", "off") == "off"
     assert "restart" in result.output.lower()
 
 

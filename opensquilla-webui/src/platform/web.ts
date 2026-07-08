@@ -32,6 +32,9 @@ export function createWebPlatform(): Platform {
     async getOsLocale() {
       return undefined
     },
+    async setNativeTheme() {
+      return undefined
+    },
     async nativeAutoUpdateEnabled() {
       return false
     },

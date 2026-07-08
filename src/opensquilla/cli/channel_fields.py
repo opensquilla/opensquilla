@@ -18,14 +18,51 @@ TOKEN_ALIASES = (
     "corp_secret",
 )
 
+_BOOL_TRUE_SPELLINGS = frozenset({"1", "true", "yes", "on"})
+_BOOL_FALSE_SPELLINGS = frozenset({"0", "false", "no", "off"})
+_BOOL_ACCEPTED_HINT = "1/0, true/false, yes/no, on/off"
 
-def coerce_channel_field_value(field_type: str, raw: str) -> Any:
+
+def _field_label(field_name: str) -> str:
+    return f"--field {field_name}" if field_name else "--field value"
+
+
+def coerce_channel_field_value(
+    field_type: str,
+    raw: str,
+    *,
+    field_name: str = "",
+) -> Any:
+    """Coerce one ``--field key=value`` string to the spec's field type.
+
+    Coercion failures raise ``typer.BadParameter`` naming the offending
+    ``--field`` so the operator sees which key was rejected. Bool parsing is
+    strict: a typo such as ``enabled=ture`` must not silently become False.
+    """
     if field_type == "int":
-        return int(raw)
+        try:
+            return int(raw)
+        except ValueError:
+            raise typer.BadParameter(
+                f"{_field_label(field_name)} expects an integer, got {raw!r}"
+            ) from None
     if field_type == "float":
-        return float(raw)
+        try:
+            return float(raw)
+        except ValueError:
+            raise typer.BadParameter(
+                f"{_field_label(field_name)} expects a number, got {raw!r}"
+            ) from None
     if field_type == "bool":
-        return raw.strip().lower() in {"1", "true", "yes", "on"}
+        normalized = raw.strip().lower()
+        if normalized in _BOOL_TRUE_SPELLINGS:
+            return True
+        if normalized in _BOOL_FALSE_SPELLINGS:
+            return False
+        raise typer.BadParameter(
+            f"{_field_label(field_name)} expects a boolean "
+            f"({_BOOL_ACCEPTED_HINT}), got {raw!r}"
+        )
     return raw
 
 
@@ -41,7 +78,9 @@ def parse_channel_field_pairs(pairs: list[str], type_name: str) -> dict[str, Any
             raise typer.BadParameter(
                 f"unknown field {key!r} for channel type {type_name!r}"
             )
-        out[key] = coerce_channel_field_value(by_name[key].field_type, value)
+        out[key] = coerce_channel_field_value(
+            by_name[key].field_type, value, field_name=key
+        )
     return out
 
 

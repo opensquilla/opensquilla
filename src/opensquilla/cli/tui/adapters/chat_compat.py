@@ -106,6 +106,7 @@ async def flush_before_standalone_rewrite(
 
 def default_turn_stream_dependencies() -> TurnStreamDependencies:
     return _turn_bridge.default_turn_stream_dependencies(
+        renderer_factory=_runtime_bridge.renderer_factory_for_selected_backend(),
         stream_wrapper=wrap_cli_turn_stream,
         cancel_clearer=_runtime_bridge.clear_current_cancel,
         image_attachment_builder=image_prompt_and_attachments,
@@ -137,19 +138,6 @@ def sync_gateway_slash_adapter_io() -> None:
 
 def sync_standalone_slash_adapter_io() -> None:
     _slash_bridge.sync_standalone_slash_adapter_io()
-
-
-async def handle_tool_compress_command(
-    cmd: str,
-    *,
-    config: object | None = None,
-    client: object | None = None,
-) -> None:
-    await _slash_bridge.handle_tool_compress_command(
-        cmd,
-        config=config,
-        client=client,
-    )
 
 
 def print_sessions_table(rows: list[dict[str, Any]]) -> None:

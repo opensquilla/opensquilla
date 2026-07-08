@@ -46,6 +46,7 @@ if TYPE_CHECKING:
         CompactionEvent,
         DoneEvent,
         ErrorEvent,
+        RouterDecisionEvent,
         TextDeltaEvent,
         ToolResultEvent,
         ToolUseStartEvent,
@@ -490,8 +491,9 @@ class _DoneHandler:
     Largest single handler. Returns ``(transformed_done_event,
     extra_yields)`` where ``extra_yields`` is the (possibly empty) list
     of events the outer stage must yield BEFORE the DoneEvent itself --
-    the artifact-delivery-failure notice TextDelta and/or the
-    hallucination Warning yield, in the original order.
+    the corrective fallback RouterDecisionEvent (when the selector
+    hopped mid-turn), the artifact-delivery-failure notice TextDelta
+    and/or the hallucination Warning yield, in the original order.
     """
 
     def handle(
@@ -609,6 +611,9 @@ class _DoneHandler:
 
         accumulated_text = "".join(state.final_text_parts)
         extra_yields: list[AgentEvent] = []
+        corrective_router_event = _fallback_router_decision_event(turn)
+        if corrective_router_event is not None:
+            extra_yields.append(corrective_router_event)
         if accumulated_text.strip() and not event.text.strip():
             event = replace(event, text=accumulated_text)
             state.done_event = event
@@ -693,6 +698,49 @@ def _append_done_notice_delta(
     event = replace(event, text="".join(state.final_text_parts))
     state.done_event = event
     return event, _TextDeltaEvent(text=notice_delta)
+
+
+def _fallback_router_decision_event(turn: Any) -> RouterDecisionEvent | None:
+    """Corrective router-decision event after a mid-turn selector failover.
+
+    The turn's one-shot RouterDecisionEvent is emitted before the first
+    provider call, so a pre-content failover leaves every router HUD
+    showing a decision for a model that never answered. When the turn
+    metadata records at least one selector fallback hop, rebuild the
+    event from the realigned metadata (``routed_model`` already names
+    the model that ran, and route savings were zeroed alongside it) and
+    mark it as a fallback so HUDs settle before the DoneEvent receipt
+    renders. Returns ``None`` when no hop occurred, keeping non-fallback
+    turns at exactly one RouterDecisionEvent.
+    """
+    # Late imports keep the module import-cycle-free.
+    from opensquilla.engine.router_decision import build_router_decision_event
+    from opensquilla.engine.steps.router_decision_record import (
+        FALLBACK_HOPS_METADATA_KEY,
+    )
+
+    metadata = turn.metadata
+    try:
+        fallback_hops = int(metadata.get(FALLBACK_HOPS_METADATA_KEY) or 0)
+    except (TypeError, ValueError):
+        fallback_hops = 0
+    if fallback_hops <= 0:
+        return None
+
+    corrective = build_router_decision_event(turn)
+    if corrective is None:
+        return None
+    # Source is passed explicitly instead of mutating turn metadata: the
+    # staged decision record and the DoneEvent keep reporting the original
+    # routing source, while the corrective HUD event reports the failover.
+    # ``savings_pct`` mirrors the realigned metadata value directly so the
+    # builder cannot resurrect stale tier savings for the abandoned model.
+    return replace(
+        corrective,
+        source="fallback",
+        fallback=True,
+        savings_pct=float(metadata.get("savings_pct") or 0.0),
+    )
 
 
 def _is_completed_meta_invoke(event: ToolResultEvent) -> bool:

@@ -171,11 +171,14 @@ def test_interactive_ensemble_disable_is_a_single_answer(tmp_path, monkeypatch):
 
     flow.run_interactive_ensemble_configure()
 
-    data = tomllib.loads(target.read_text())
-    ensemble = data["llm_ensemble"]
-    assert ensemble["enabled"] is False
+    # Sparse persistence may omit default-equal keys (the ensemble ships
+    # disabled), so pin the reloaded semantic state instead of raw TOML.
+    from opensquilla.onboarding.config_store import load_config
+
+    saved = load_config(target)
+    assert saved.llm_ensemble.enabled is False
     # Tuning values stay untouched for a later re-enable.
-    assert ensemble["model_options"] == ["stored/model-a"]
+    assert list(saved.llm_ensemble.model_options) == ["stored/model-a"]
 
 
 def test_interactive_ensemble_configure_without_tty_prints_hint(
@@ -193,6 +196,42 @@ def test_interactive_ensemble_configure_without_tty_prints_hint(
     out = capsys.readouterr().out
     assert "Headless ensemble:" in out
     assert "opensquilla onboard configure ensemble --enabled" in out
+
+
+def test_ensemble_saved_message_directs_to_gateway_reload(tmp_path, monkeypatch):
+    """The CLI runner edits the config file on disk, and file edits are only
+    read at boot — the save message must direct the operator to a gateway
+    reload/restart instead of claiming the change applies to the next turn
+    (that is only true for the RPC hot-apply path)."""
+
+    from opensquilla.onboarding import flow
+
+    target = tmp_path / "c.toml"
+    monkeypatch.setenv("OPENSQUILLA_GATEWAY_CONFIG_PATH", str(target))
+    monkeypatch.setattr(flow, "_is_tty", lambda: True)
+
+    messages: list[str] = []
+
+    class _Console:
+        def print(self, message: Any = "", *_a: Any, **_kw: Any) -> None:
+            messages.append(str(message))
+
+    monkeypatch.setattr(flow, "console", _Console())
+
+    class _Questionary(_BaseQuestionary):
+        def confirm(self, message: str, **_kwargs: Any) -> _Answer:
+            if message == "Enable the LLM ensemble?":
+                return _Answer(False)
+            raise AssertionError(f"unexpected confirm prompt: {message}")
+
+    monkeypatch.setitem(sys.modules, "questionary", _Questionary())
+
+    flow.run_interactive_ensemble_configure()
+
+    joined = "\n".join(messages)
+    assert "no restart needed" not in joined
+    assert "applies to the next turn" not in joined
+    assert "opensquilla gateway reload" in joined
 
 
 def test_interactive_configure_offers_and_dispatches_ensemble(
@@ -219,8 +258,14 @@ def test_interactive_configure_offers_and_dispatches_ensemble(
     class _Questionary(_BaseQuestionary):
         def select(self, message: str, **kwargs: Any) -> _Answer:
             assert message == "Section"
-            assert "ensemble" in kwargs["choices"]
-            return _Answer("ensemble")
+            titles = kwargs["choices"]
+            ensemble_title = next(
+                (t for t in titles if t.startswith("Ensemble")), None
+            )
+            if ensemble_title is not None and "config_path" not in seen:
+                return _Answer(ensemble_title)
+            done = next(t for t in titles if t in ("Done", "Exit (nothing changed)"))
+            return _Answer(done)
 
     monkeypatch.setitem(sys.modules, "questionary", _Questionary())
 
@@ -228,3 +273,55 @@ def test_interactive_configure_offers_and_dispatches_ensemble(
 
     assert result is not None
     assert seen["config_path"] == target
+
+
+class _ValidatedAnswer:
+    """Fake prompt honouring ``validate=`` like questionary: rejected input
+    is re-asked, so garbage can only leak through when no validator is set."""
+
+    def __init__(self, values: list[Any], validate: Any) -> None:
+        self._values = list(values)
+        self._validate = validate
+
+    def ask(self) -> Any:
+        while self._values:
+            candidate = self._values.pop(0)
+            if self._validate is None or self._validate(candidate) is True:
+                return candidate
+        raise AssertionError("prompt inputs exhausted without an accepted value")
+
+
+def test_interactive_ensemble_min_proposers_garbage_reprompts(tmp_path, monkeypatch):
+    """Typing a non-number used to blow up in the mutation layer with a raw
+    ``ValueError`` after every other answer had already been given."""
+
+    from opensquilla.onboarding import flow
+
+    target = tmp_path / "c.toml"
+    monkeypatch.setenv("OPENSQUILLA_GATEWAY_CONFIG_PATH", str(target))
+    monkeypatch.setattr(flow, "_is_tty", lambda: True)
+
+    class _Questionary(_BaseQuestionary):
+        def confirm(self, message: str, **_kwargs: Any) -> _Answer:
+            if message == "Enable the LLM ensemble?":
+                return _Answer(True)
+            raise AssertionError(f"unexpected confirm prompt: {message}")
+
+        def select(self, message: str, **kwargs: Any) -> _Answer:
+            if message in {"Ensemble selection mode", "Policy when all proposers fail"}:
+                return _Answer(kwargs["default"])
+            raise AssertionError(f"unexpected select prompt: {message}")
+
+        def text(self, message: str, **kwargs: Any):
+            if message.startswith("Ensemble model options"):
+                return _Answer("")
+            if message == "Minimum successful proposers":
+                return _ValidatedAnswer(["many", "0", "2"], kwargs.get("validate"))
+            raise AssertionError(f"unexpected text prompt: {message}")
+
+    monkeypatch.setitem(sys.modules, "questionary", _Questionary())
+
+    flow.run_interactive_ensemble_configure()
+
+    data = tomllib.loads(target.read_text())
+    assert data["llm_ensemble"]["min_successful_proposers"] == 2

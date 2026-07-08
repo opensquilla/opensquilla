@@ -100,7 +100,14 @@ def test_audio_onboarding_catalog_configure_and_status(tmp_path, monkeypatch) ->
 
     data = tomllib.loads(target.read_text())
     assert data["audio"]["enabled"] is True
-    assert data["audio"]["providers"]["elevenlabs"]["api_key_env"] == "ELEVENLABS_API_KEY"
+    # Sparse persistence omits provider fields equal to the built-in
+    # defaults (elevenlabs already defaults to ELEVENLABS_API_KEY); the
+    # effective reference is asserted through the RPC payload above.
+    providers = data["audio"].get("providers", {})
+    assert (
+        providers.get("elevenlabs", {}).get("api_key_env", "ELEVENLABS_API_KEY")
+        == "ELEVENLABS_API_KEY"
+    )
     assert data["audio"]["tts"]["voice"] == "voice_custom"
     assert data["audio"]["tts"]["model"] == "eleven_turbo_v2_5"
     assert data["audio"]["tts"]["language_code"] == "zh-CN"

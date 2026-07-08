@@ -71,6 +71,11 @@ export function createDesktopPlatform(): Platform {
     id: 'desktop',
     capabilities: desktopCapabilities,
     getOsLocale: () => requireDesktopApi().getOsLocale(),
+    async setNativeTheme(payload) {
+      const api = requireDesktopApi()
+      if (typeof api.setNativeTheme !== 'function') return undefined
+      return api.setNativeTheme(payload)
+    },
     async nativeAutoUpdateEnabled() {
       const api = requireDesktopApi()
       // Older shells without this bridge are macOS-only with native update on;

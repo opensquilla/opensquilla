@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import os
+import shutil
+import subprocess
+import unicodedata
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -36,6 +40,25 @@ def test_enumerate_workspace_files_fallback_filters_ignored_hidden_and_sensitive
     ]
 
 
+def test_enumerate_workspace_files_fallback_honors_gitignore_negations(tmp_path: Path) -> None:
+    # git semantics: "!keep.log" AFTER "*.log" re-includes the file.
+    (tmp_path / ".gitignore").write_text("*.log\n!keep.log\n", encoding="utf-8")
+    _touch(tmp_path / "keep.log")
+    _touch(tmp_path / "drop.log")
+    _touch(tmp_path / "main.py")
+
+    assert enumerate_workspace_files(tmp_path) == [".gitignore", "keep.log", "main.py"]
+
+
+def test_enumerate_workspace_files_fallback_negation_last_match_wins(tmp_path: Path) -> None:
+    # A later exclude overrides an earlier re-include, mirroring git's
+    # last-match-wins rule ordering.
+    (tmp_path / ".gitignore").write_text("!keep.log\n*.log\n", encoding="utf-8")
+    _touch(tmp_path / "keep.log")
+
+    assert enumerate_workspace_files(tmp_path) == [".gitignore"]
+
+
 def test_enumerate_workspace_files_applies_query_and_max_results(tmp_path: Path) -> None:
     _touch(tmp_path / "src" / "compact.py")
     _touch(tmp_path / "src" / "component.py")
@@ -55,15 +78,78 @@ def test_enumerate_workspace_files_uses_git_ls_files_when_available(
     _touch(tmp_path / "src" / "compact.py")
     _touch(tmp_path / "src" / ".env")
     _touch(tmp_path / "docs" / "reset.md")
+    calls: dict[str, list[str]] = {}
+
+    def fake_run(cmd: list[str], **kwargs: object) -> SimpleNamespace:
+        calls["cmd"] = cmd
+        return SimpleNamespace(
+            returncode=0,
+            stdout=b"src/compact.py\0src/.env\0docs/reset.md\0",
+            stderr=b"",
+        )
+
+    monkeypatch.setattr(completion.shutil, "which", lambda name: "/usr/bin/git")
+    monkeypatch.setattr(completion.subprocess, "run", fake_run)
+
+    assert enumerate_workspace_files(tmp_path, query="cmp") == ["src/compact.py"]
+    # NUL-separated output keeps non-ASCII paths verbatim (no core.quotePath
+    # C-quoting), so -z is load-bearing.
+    assert "-z" in calls["cmd"]
+
+
+def test_git_files_returns_non_ascii_paths_verbatim(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (tmp_path / ".git").mkdir()
+    _touch(tmp_path / "café.md")
+    _touch(tmp_path / "日本語.txt")
+    stdout = "café.md".encode() + b"\0" + "日本語.txt".encode() + b"\0"
+    monkeypatch.setattr(completion.shutil, "which", lambda name: "/usr/bin/git")
+    monkeypatch.setattr(
+        completion.subprocess,
+        "run",
+        lambda *args, **kwargs: SimpleNamespace(returncode=0, stdout=stdout, stderr=b""),
+    )
+
+    assert enumerate_workspace_files(tmp_path) == ["café.md", "日本語.txt"]
+
+
+def test_git_files_tolerates_undecodable_path_bytes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A non-UTF-8 filename byte (e.g. latin-1 0xE9) must never crash completion;
+    # it decodes through the filesystem rules (surrogateescape) instead.
+    (tmp_path / ".git").mkdir()
     monkeypatch.setattr(completion.shutil, "which", lambda name: "/usr/bin/git")
     monkeypatch.setattr(
         completion.subprocess,
         "run",
         lambda *args, **kwargs: SimpleNamespace(
-            returncode=0,
-            stdout="src/compact.py\nsrc/.env\ndocs/reset.md\n",
-            stderr="",
+            returncode=0, stdout=b"caf\xe9.md\0plain.txt\0", stderr=b""
         ),
     )
 
-    assert enumerate_workspace_files(tmp_path, query="cmp") == ["src/compact.py"]
+    names = enumerate_workspace_files(tmp_path)
+    assert "plain.txt" in names
+    assert os.fsdecode(b"caf\xe9.md") in names
+
+
+@pytest.mark.skipif(shutil.which("git") is None, reason="git is not on PATH")
+def test_enumerate_workspace_files_real_git_does_not_quote_non_ascii_paths(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Isolate from user/system git config so the default core.quotePath=true
+    # applies — the exact setting that C-quotes non-ASCII names without -z.
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", os.devnull)
+    monkeypatch.setenv("GIT_CONFIG_SYSTEM", os.devnull)
+    subprocess.run(
+        ["git", "init", "-q", str(tmp_path)], check=True, capture_output=True
+    )
+    _touch(tmp_path / "café.md")
+
+    names = enumerate_workspace_files(tmp_path)
+
+    assert all(not name.startswith('"') for name in names)
+    assert any(
+        unicodedata.normalize("NFC", name) == "café.md" for name in names
+    ), f"expected café.md in {names!r}"

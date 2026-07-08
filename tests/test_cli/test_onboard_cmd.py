@@ -35,6 +35,18 @@ def _config_arg(path) -> str:
     return shlex.quote(str(path))
 
 
+def _effective_config(path):
+    """Load the effective config exactly as the gateway would.
+
+    The sparse TOML persist omits values equal to model defaults, so raw-TOML
+    asserts are reserved for keys a save actually writes; everything else is
+    checked against the loaded (effective) configuration.
+    """
+    from opensquilla.onboarding.config_store import load_config
+
+    return load_config(path)
+
+
 def test_onboard_noninteractive_provider(tmp_path, monkeypatch):
     target = tmp_path / "c.toml"
     monkeypatch.setenv("OPENSQUILLA_GATEWAY_CONFIG_PATH", str(target))
@@ -138,8 +150,16 @@ def test_onboard_accepts_skip_image_generation_option(tmp_path, monkeypatch):
     )
 
     assert result.exit_code == 0, result.stdout
+    # A save marker: the flag-accepting run must actually persist the
+    # provider config; a fresh-config default check alone is vacuous.
+    # (Values equal to model defaults are omitted by the sparse persist, so
+    # the stored key and router profile are the observable markers.)
+    assert target.exists()
     data = tomllib.loads(target.read_text())
-    assert data["image_generation"]["enabled"] is False
+    assert data["llm"]["api_key"] == "sk"
+    assert data["squilla_router"]["tier_profile"] == "openrouter"
+    assert "image_generation" not in data or not data["image_generation"].get("enabled")
+    assert _effective_config(target).image_generation.enabled is False
 
 
 def test_onboard_passes_skip_migration_to_interactive_flow(tmp_path, monkeypatch):
@@ -256,7 +276,7 @@ def test_onboard_noninteractive_provider_without_router_profile_seeds_router_tie
     assert data["llm"]["provider"] == "anthropic"
     assert data["llm"]["api_key_env"] == "ANTHROPIC_API_KEY"
     assert "api_key" not in data["llm"]
-    assert data["squilla_router"]["enabled"] is True
+    assert _effective_config(target).squilla_router.enabled is True
     assert "tier_profile" not in data["squilla_router"]
     for tier in ("c0", "c1", "c2", "c3"):
         assert data["squilla_router"]["tiers"][tier]["provider"] == "anthropic"
@@ -1595,7 +1615,9 @@ def test_configure_without_tty_hint_targets_selected_section(
 
     result = runner.invoke(app, ["configure", section, "--config", str(target)])
 
-    assert result.exit_code == 0
+    # A non-TTY fallthrough is a failure to configure anything: exit 2 like
+    # bare `onboard`, with the hint still naming runnable setup paths.
+    assert result.exit_code == 2
     assert label in result.stdout
     assert command in result.stdout
     assert f"--config {_config_arg(target)}" in result.stdout
@@ -1626,7 +1648,7 @@ def test_onboard_configure_provider_alias_uses_setup_engine(tmp_path, monkeypatc
 
     assert result.exit_code == 0, result.stdout
     data = tomllib.loads(target.read_text())
-    assert data["llm"]["provider"] == "openrouter"
+    assert _effective_config(target).llm.provider == "openrouter"
     assert data["llm"]["api_key_env"] == "OPENROUTER_API_KEY"
     assert "api_key" not in data["llm"]
 
@@ -1653,7 +1675,7 @@ def test_configure_provider_noninteractive_uses_setup_engine(tmp_path, monkeypat
 
     assert result.exit_code == 0, result.stdout
     data = tomllib.loads(target.read_text())
-    assert data["llm"]["provider"] == "openrouter"
+    assert _effective_config(target).llm.provider == "openrouter"
     assert data["llm"]["api_key_env"] == "OPENROUTER_API_KEY"
     assert data["llm"]["proxy"] == "http://127.0.0.1:7890"
     assert "api_key" not in data["llm"]
@@ -1682,7 +1704,7 @@ def test_configure_provider_uses_explicit_config_path(tmp_path, monkeypatch):
 
     assert result.exit_code == 0, result.stdout
     data = tomllib.loads(target.read_text())
-    assert data["llm"]["provider"] == "openrouter"
+    assert _effective_config(target).llm.provider == "openrouter"
     assert data["llm"]["api_key_env"] == "OPENROUTER_API_KEY"
     assert not default_target.exists()
 
@@ -1836,8 +1858,9 @@ def test_configure_router_noninteractive_can_set_default_tier(tmp_path, monkeypa
 
     assert result.exit_code == 0, result.stdout
     data = tomllib.loads(target.read_text())
-    assert data["squilla_router"]["enabled"] is True
-    assert data["squilla_router"]["tier_profile"] == "deepseek"
+    router = _effective_config(target).squilla_router
+    assert router.enabled is True
+    assert router.tier_profile == "deepseek"
     assert data["squilla_router"]["default_tier"] == "c2"
 
 
@@ -1905,7 +1928,7 @@ def test_configure_search_noninteractive(tmp_path, monkeypatch):
 
     assert result.exit_code == 0, result.stdout
     data = tomllib.loads(target.read_text())
-    assert data["search_provider"] == "duckduckgo"
+    assert _effective_config(target).search_provider == "duckduckgo"
     assert data["search_max_results"] == 7
     assert data["search_proxy"] == "http://127.0.0.1:7890"
     assert data["search_use_env_proxy"] is True
@@ -2088,7 +2111,7 @@ def test_configure_image_generation_noninteractive_uses_env(tmp_path, monkeypatc
     assert result.exit_code == 0, result.stdout
     data = tomllib.loads(target.read_text())
     assert data["image_generation"]["enabled"] is True
-    assert data["image_generation"]["providers"]["openrouter"]["api_key"] == ""
+    assert _effective_config(target).image_generation.providers.openrouter.api_key == ""
 
 
 def test_configure_image_generation_can_use_nondefault_env_reference(
@@ -2117,7 +2140,7 @@ def test_configure_image_generation_can_use_nondefault_env_reference(
     assert result.exit_code == 0, result.stdout
     data = tomllib.loads(target.read_text())
     provider = data["image_generation"]["providers"]["openrouter"]
-    assert provider["api_key"] == ""
+    assert _effective_config(target).image_generation.providers.openrouter.api_key == ""
     assert provider["api_key_env"] == "OPENSQUILLA_TEST_IMAGE_KEY"
 
 
@@ -2174,11 +2197,60 @@ def test_configure_image_generation_can_disable_from_cli(tmp_path, monkeypatch):
     assert result.exit_code == 0, result.stdout
     data = tomllib.loads(target.read_text())
     provider = data["image_generation"]["providers"]["openrouter"]
+    # The explicit off decision must be IN THE FILE, not just resolvable as
+    # the model default — keep-current on a later rotation depends on it.
     assert data["image_generation"]["enabled"] is False
+    assert _effective_config(target).image_generation.enabled is False
     assert data["image_generation"]["primary"] == (
         "openrouter/google/gemini-3.1-flash-image-preview"
     )
     assert provider["api_key_env"] == "OPENSQUILLA_TEST_IMAGE_KEY"
+
+
+def test_configure_image_first_time_disable_survives_key_rotation(
+    tmp_path, monkeypatch
+):
+    """R1 end-to-end: an explicit --no-image-enabled at FIRST configure (fresh
+    config, value equal to the model default) must be written to the file and
+    must survive a later key rotation that omits the flag — the rotation used
+    to fall into configure-implies-enable and flip the tool back on."""
+    target = tmp_path / "c.toml"
+    monkeypatch.setenv("OPENSQUILLA_GATEWAY_CONFIG_PATH", str(target))
+
+    first = runner.invoke(
+        app,
+        [
+            "configure",
+            "image",
+            "--image-provider",
+            "openai",
+            "--primary",
+            "openai/gpt-image-1",
+            "--api-key",
+            "sk-image-1",
+            "--no-image-enabled",
+        ],
+    )
+    assert first.exit_code == 0, first.output
+    data = tomllib.loads(target.read_text())
+    assert data["image_generation"]["enabled"] is False
+
+    rotation = runner.invoke(
+        app,
+        [
+            "configure",
+            "image",
+            "--image-provider",
+            "openai",
+            "--api-key",
+            "sk-image-2",
+        ],
+    )
+    assert rotation.exit_code == 0, rotation.output
+    data = tomllib.loads(target.read_text())
+    assert data["image_generation"]["enabled"] is False
+    assert data["image_generation"]["providers"]["openai"]["api_key"] == "sk-image-2"
+    assert _effective_config(target).image_generation.enabled is False
 
 
 def test_configure_image_generation_can_disable_without_provider_from_cli(
@@ -2188,6 +2260,9 @@ def test_configure_image_generation_can_disable_without_provider_from_cli(
     target = tmp_path / "c.toml"
     monkeypatch.setenv("OPENSQUILLA_GATEWAY_CONFIG_PATH", str(target))
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    # Seed the non-default state so a silent no-op cannot masquerade as a
+    # save: the command must actually flip the on-disk value.
+    target.write_text("[image_generation]\nenabled = true\n", encoding="utf-8")
 
     result = runner.invoke(
         app,
@@ -2201,6 +2276,7 @@ def test_configure_image_generation_can_disable_without_provider_from_cli(
     assert result.exit_code == 0, result.stdout
     data = tomllib.loads(target.read_text())
     assert data["image_generation"]["enabled"] is False
+    assert _effective_config(target).image_generation.enabled is False
     assert "requires an api_key" not in result.output
 
 
@@ -2225,7 +2301,7 @@ def test_configure_accepts_short_capability_section_aliases(tmp_path, monkeypatc
     assert image.exit_code == 0, image.output
     assert memory.exit_code == 0, memory.output
     data = tomllib.loads(target.read_text())
-    assert data["image_generation"]["enabled"] is False
+    assert _effective_config(target).image_generation.enabled is False
     assert data["memory"]["embedding"]["provider"] == "local"
     assert data["memory"]["embedding"]["local"]["onnx_dir"] == "models/bge"
 
@@ -2253,7 +2329,7 @@ def test_configure_image_generation_can_disable_provider_without_key_from_cli(
 
     assert result.exit_code == 0, result.output
     data = tomllib.loads(target.read_text())
-    assert data["image_generation"]["enabled"] is False
+    assert _effective_config(target).image_generation.enabled is False
     assert data["image_generation"]["primary"] == (
         "openrouter/google/gemini-3.1-flash-image-preview"
     )
@@ -2367,6 +2443,9 @@ def test_configure_ensemble_noninteractive(tmp_path, monkeypatch):
 def test_onboard_configure_ensemble_alias_uses_setup_engine(tmp_path, monkeypatch):
     target = tmp_path / "c.toml"
     monkeypatch.setenv("OPENSQUILLA_GATEWAY_CONFIG_PATH", str(target))
+    # Seed the non-default state: `--disabled` must observably flip the file,
+    # not exit 0 while persisting/applying nothing.
+    target.write_text("[llm_ensemble]\nenabled = true\n", encoding="utf-8")
 
     result = runner.invoke(
         app,
@@ -2376,6 +2455,7 @@ def test_onboard_configure_ensemble_alias_uses_setup_engine(tmp_path, monkeypatc
     assert result.exit_code == 0, result.output
     data = tomllib.loads(target.read_text())
     assert data["llm_ensemble"]["enabled"] is False
+    assert _effective_config(target).llm_ensemble.enabled is False
 
 
 def test_configure_ensemble_omitted_flags_keep_stored_values(tmp_path, monkeypatch):
@@ -2550,3 +2630,78 @@ def test_onboard_without_probe_flag_never_probes(tmp_path, monkeypatch):
 
     assert result.exit_code == 0, result.output
     assert "Probe" not in result.stdout
+
+
+def test_advertised_router_command_actionable_for_non_registry_provider(
+    tmp_path, monkeypatch
+):
+    """X1: the advertised next-steps router one-liner against a hand-edited,
+    non-registry llm.provider used to exit 2 with the cryptic "router tier
+    'c0' must be an object"; the error must now name the provider and the
+    two runnable ways out (exit code stays 2)."""
+    target = tmp_path / "c.toml"
+    monkeypatch.setenv("OPENSQUILLA_GATEWAY_CONFIG_PATH", str(target))
+    target.write_text(
+        '[llm]\nprovider = "acme-llm"\nmodel = "acme-model"\n', encoding="utf-8"
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "onboard",
+            "configure",
+            "router",
+            "--router",
+            "recommended",
+            "--default-tier",
+            "c1",
+        ],
+    )
+
+    assert result.exit_code == 2, result.output
+    text = _plain_text(result.output)
+    assert "acme-llm" in text
+    assert "opensquilla onboard configure provider --provider" in text
+    assert "--router disabled" in text
+    assert "must be an object" not in text
+
+
+def test_onboard_interactive_value_error_is_productized(tmp_path, monkeypatch):
+    """R9 boundary: a mutation-level ValueError escaping the wizard (e.g.
+    "model is required" for a provider without a derivable default) must
+    exit 2 with a productized message, not a raw traceback."""
+    from opensquilla.cli import onboard_cmd
+
+    target = tmp_path / "c.toml"
+    monkeypatch.setenv("OPENSQUILLA_GATEWAY_CONFIG_PATH", str(target))
+
+    def boom(_options):
+        raise ValueError("model is required")
+
+    monkeypatch.setattr(onboard_cmd, "run_interactive_onboard", boom)
+
+    result = runner.invoke(app, ["onboard"])
+
+    assert result.exit_code == 2, result.output
+    assert "model is required" in _plain_text(result.output)
+    assert "Traceback" not in result.output
+
+
+def test_configure_interactive_value_error_is_productized(tmp_path, monkeypatch):
+    """R8 boundary: a mutation ValueError from the configure wizard (e.g. a
+    blank required channel secret) must exit 2 like the headless path."""
+    from opensquilla.cli import onboard_cmd
+
+    target = tmp_path / "c.toml"
+    monkeypatch.setenv("OPENSQUILLA_GATEWAY_CONFIG_PATH", str(target))
+
+    def boom(_section, config_path=None):
+        raise ValueError("channel field 'token' requires a non-empty value")
+
+    monkeypatch.setattr(onboard_cmd, "run_interactive_configure", boom)
+
+    result = runner.invoke(app, ["configure", "channels"])
+
+    assert result.exit_code == 2, result.output
+    assert "requires a non-empty value" in _plain_text(result.output)
+    assert "Traceback" not in result.output

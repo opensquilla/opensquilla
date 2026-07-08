@@ -26,6 +26,35 @@ export function themePickerKeyAction(picker, keyName) {
   return { handled: true, action: "none", selected: sel };
 }
 
+// Pure key handling for the tool-approval overlay. Modal like the theme picker
+// — every key is swallowed while it is open — with one deliberate exception:
+// Ctrl+C passes through so the interrupt path (clear input / cancel the turn)
+// is never trapped behind a pending approval. Keys: y approves, n/Escape
+// denies; with choices, Up/Down move the highlight and Enter confirms it.
+// Only BARE keys decide: modified chords (Ctrl+Y is the composer's yank,
+// Alt+N …) are swallowed like any other non-decision key, so a chord queued
+// just as the overlay pops can never approve a gated tool unread.
+export function approvalKeyAction(overlay, key) {
+  if (!overlay?.active) return { handled: false, action: "pass", selected: 0 };
+  const max = Math.max(0, (overlay.choices?.length ?? 0) - 1);
+  const sel = clamp(Number(overlay.selected) || 0, 0, max);
+  const hasChoices = (overlay.choices?.length ?? 0) > 0;
+  if (key?.ctrl && key?.name === "c") return { handled: false, action: "pass", selected: sel };
+  if (key?.ctrl || key?.meta || key?.alt || key?.option) {
+    return { handled: true, action: "none", selected: sel };
+  }
+  const name = key?.name;
+  if (name === "y") return { handled: true, action: "approve", selected: sel };
+  if (name === "n" || name === "escape") return { handled: true, action: "deny", selected: sel };
+  if (hasChoices && name === "up") return { handled: true, action: "navigate", selected: clamp(sel - 1, 0, max) };
+  if (hasChoices && name === "down") return { handled: true, action: "navigate", selected: clamp(sel + 1, 0, max) };
+  if (name === "return") {
+    if (hasChoices) return { handled: true, action: "choose", selected: sel };
+    return { handled: true, action: "approve", selected: sel };
+  }
+  return { handled: true, action: "none", selected: sel };
+}
+
 // Last path segment of a model id ("vendor/big-model" -> "big-model").
 export function shortModel(m) {
   return m ? m.split("/").pop() : m;
@@ -42,19 +71,20 @@ export function formatRouterModelValue(model, baselineModel) {
   return modelShort || model;
 }
 
-export function fixedRouterRow(label, value) {
-  const safeValue = String(value).replace(/\s+/gu, " ").trim() || "-";
-  const maxValueCells = 20;
-  let clipped = "";
-  let cells = 0;
-  for (const char of Array.from(safeValue)) {
-    const next = cells + cellWidth(char);
-    if (next > maxValueCells) break;
-    clipped += char;
-    cells = next;
-  }
-  const padding = " ".repeat(Math.max(0, maxValueCells - cells));
-  return `${label.padEnd(5)} ${clipped}${padding}`;
+// Status pill text: "<icon> <label>" plus a live " · Ns" elapsed counter once
+// a turn has been running a moment — the counter (advanced by the 180ms pulse
+// re-render) is what makes a long silent model-thinking stretch read as
+// working instead of stuck. Short turns skip it to avoid a flicker.
+export function statusPillText(icon, label, elapsedMs) {
+  const base = `${icon} ${label}`;
+  if (!Number.isFinite(elapsedMs) || elapsedMs < 2000) return base;
+  return `${base} · ${Math.floor(elapsedMs / 1000)}s`;
+}
+
+// Router strip value cell: whitespace collapsed and clipped to a fixed 18
+// cells so one long model id cannot push the other fields off the strip row.
+export function routerStripValue(value) {
+  return clipToCells(String(value ?? "").replace(/\s+/gu, " ").trim() || "-", 18);
 }
 
 function clamp(value, min, max) {
@@ -218,7 +248,7 @@ export function wordEndIndex(text, pos) {
   return i;
 }
 
-// Remove the [from, to) grapheme range; returns the new text and the caret
+// Remove the [from, to) code-point range; returns the new text and the caret
 // position (collapsed to the cut start).
 export function spliceOut(text, from, to) {
   const chars = Array.from(String(text ?? ""));
@@ -227,22 +257,140 @@ export function spliceOut(text, from, to) {
   return { text: [...chars.slice(0, a), ...chars.slice(b)].join(""), cursor: a };
 }
 
+// Grapheme-cluster boundaries around a code-point position, so backspace,
+// delete, and left/right arrows treat multi-code-point clusters (emoji
+// families, flags, composed accents) as one unit instead of mutating them
+// component by component. Positions stay code-point indices into
+// Array.from(text); only the STEP size is cluster-aware.
+const graphemeSegmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" });
+
+export function graphemeBoundaryBefore(text, pos) {
+  const chars = Array.from(String(text ?? ""));
+  const p = clamp(Number(pos) || 0, 0, chars.length);
+  if (p === 0) return 0;
+  let last = null;
+  for (const seg of graphemeSegmenter.segment(chars.slice(0, p).join(""))) last = seg.segment;
+  return last ? p - Array.from(last).length : p - 1;
+}
+
+export function graphemeBoundaryAfter(text, pos) {
+  const chars = Array.from(String(text ?? ""));
+  const p = clamp(Number(pos) || 0, 0, chars.length);
+  if (p >= chars.length) return chars.length;
+  for (const seg of graphemeSegmenter.segment(chars.slice(p).join(""))) {
+    return p + Array.from(seg.segment).length;
+  }
+  return p + 1;
+}
+
+// Word-wrap one logical line (an array of {ch, caret} entries) to `width`
+// display cells: break after the last space that fits, hard-break a word
+// longer than a whole row. Every entry survives the wrap (spaces carry over
+// to the next row instead of being dropped) so each code point keeps exactly
+// one screen cell for the caret math to land on. cellWidth takes the next
+// code point too, so a VS16 emoji-presentation pair counts its 2 cells.
+function wrapLineEntries(entries, width) {
+  const rows = [];
+  let current = [];
+  let currentWidth = 0;
+  let breakAt = -1; // index in `current` just AFTER the last space (wrap point)
+  for (let e = 0; e < entries.length; e += 1) {
+    const entry = entries[e];
+    const w = cellWidth(entry.ch, entries[e + 1]?.ch);
+    while (current.length > 0 && currentWidth + w > width) {
+      if (breakAt > 0 && breakAt < current.length) {
+        rows.push(current.slice(0, breakAt));
+        current = current.slice(breakAt);
+      } else {
+        rows.push(current);
+        current = [];
+      }
+      currentWidth = 0;
+      breakAt = -1;
+      for (let i = 0; i < current.length; i += 1) {
+        currentWidth += cellWidth(current[i].ch, (current[i + 1] ?? entry).ch);
+        if (current[i].ch === " ") breakAt = i + 1;
+      }
+    }
+    current.push(entry);
+    currentWidth += w;
+    if (entry.ch === " ") breakAt = current.length;
+  }
+  rows.push(current);
+  return rows;
+}
+
+// Lay out the composer content: word-wrap the input (with the caret's own
+// blank cell spliced in, exactly as it renders) to `contentWidth` cells,
+// locate the caret's wrapped row/column, and window the rows so the caret is
+// always inside the `contentRows`-row content area. This single model feeds
+// both the rendered lines and the hardware-cursor position, so the visible
+// caret (and the IME anchor) can never detach from the real caret.
+export function composerLayout(text, caretPos, contentWidth, contentRows) {
+  const width = Math.max(1, Math.floor(Number(contentWidth) || 1));
+  const rowsBudget = Math.max(1, Math.floor(Number(contentRows) || 1));
+  const chars = Array.from(String(text ?? ""));
+  const pos = clamp(Number(caretPos) || 0, 0, chars.length);
+  const entries = [
+    ...chars.slice(0, pos).map((ch) => ({ ch, caret: false })),
+    { ch: " ", caret: true },
+    ...chars.slice(pos).map((ch) => ({ ch, caret: false })),
+  ];
+  const rows = [];
+  let logical = [];
+  for (const entry of entries) {
+    if (entry.ch === "\n") {
+      rows.push(...wrapLineEntries(logical, width));
+      logical = [];
+    } else {
+      logical.push(entry);
+    }
+  }
+  rows.push(...wrapLineEntries(logical, width));
+
+  let caretRow = 0;
+  let caretCol = 0;
+  for (let row = 0; row < rows.length; row += 1) {
+    const rowEntries = rows[row];
+    let col = 0;
+    let found = false;
+    for (let i = 0; i < rowEntries.length; i += 1) {
+      if (rowEntries[i].caret) {
+        found = true;
+        break;
+      }
+      col += cellWidth(rowEntries[i].ch, rowEntries[i + 1]?.ch);
+    }
+    if (found) {
+      caretRow = row;
+      caretCol = col;
+      break;
+    }
+  }
+
+  const totalRows = rows.length;
+  const scrollRowOffset = clamp(caretRow - rowsBudget + 1, 0, Math.max(0, totalRows - rowsBudget));
+  const visibleLines = rows
+    .slice(scrollRowOffset, scrollRowOffset + rowsBudget)
+    .map((row) => row.map((entry) => entry.ch).join(""));
+  return { visibleLines, caretRow, caretCol, scrollRowOffset, totalRows };
+}
+
 export function menuKeyAction(menu, keyName) {
   if (!menu?.active) return { handled: false, action: "pass", menu };
   const selected = Number(menu.selected) || 0;
   const maxSelected = Math.max(0, (menu.filtered?.length ?? 0) - 1);
-  if (keyName === "up") {
+  const empty = (menu.filtered?.length ?? 0) === 0;
+  if (keyName === "up" || keyName === "down") {
+    // Nothing to navigate while the menu shows "no matches": let Up/Down fall
+    // through so caret movement and history recall keep working (mirroring the
+    // empty-list Enter fall-through below).
+    if (empty) return { handled: false, action: "pass", menu };
+    const step = keyName === "up" ? -1 : 1;
     return {
       handled: true,
       action: "navigate",
-      menu: { ...menu, selected: clamp(selected - 1, 0, maxSelected) },
-    };
-  }
-  if (keyName === "down") {
-    return {
-      handled: true,
-      action: "navigate",
-      menu: { ...menu, selected: clamp(selected + 1, 0, maxSelected) },
+      menu: { ...menu, selected: clamp(selected + step, 0, maxSelected) },
     };
   }
   if (keyName === "escape") {
@@ -251,7 +399,7 @@ export function menuKeyAction(menu, keyName) {
   if (keyName === "return" || keyName === "tab") {
     // Nothing to accept (zero matches): Enter must still SUBMIT the message
     // (fall through, don't swallow it); Tab just closes the menu with no insert.
-    if ((menu.filtered?.length ?? 0) === 0) {
+    if (empty) {
       if (keyName === "return") return { handled: false, action: "pass", menu: { ...menu, active: false } };
       return { handled: true, action: "close", menu: { ...menu, active: false } };
     }
@@ -260,6 +408,13 @@ export function menuKeyAction(menu, keyName) {
     // can still type arguments (e.g. `/theme dark`). File completions only insert
     // the path — Enter there keeps composing the message, never submits it.
     if (keyName === "return" && menu.kind === "slash") {
+      // Skill suggestions insert a prompt PREFIX ("use the X skill: ") that
+      // still needs the task typed after it — submitting it immediately would
+      // send a dangling instruction. They complete like file paths instead.
+      const item = menu.filtered[clamp(selected, 0, maxSelected)];
+      if (String(item?.category ?? "") === "skill") {
+        return { handled: true, action: "accept", menu };
+      }
       return { handled: true, action: "accept_submit", menu };
     }
     return { handled: true, action: "accept", menu };
@@ -270,7 +425,9 @@ export function menuKeyAction(menu, keyName) {
 function fileCompletionItems(paths) {
   return (Array.isArray(paths) ? paths : []).map((path) => ({
     label: String(path),
-    description: String(path),
+    // The label already IS the path; a description would render it twice on an
+    // already width-clipped menu row.
+    description: "",
     insert_text: `@${path} `,
     category: "file",
   }));
@@ -291,7 +448,9 @@ export function createComposer(deps) {
   const effFooterHeight = () => clampFooterHeight(footerHeight, renderer.terminalHeight ?? 24);
 
   let inputText = "";
-  // Caret position as a grapheme index into Array.from(inputText), range [0, len].
+  // Caret position as a code-point index into Array.from(inputText), range
+  // [0, len]. Backspace/Delete and Left/Right step by grapheme cluster (see
+  // graphemeBoundaryBefore/After) so multi-code-point emoji edit atomically.
   let cursorPos = 0;
   // Goal column for vertical (Up/Down) motion, measured in DISPLAY CELLS so the
   // caret tracks the same visual column across lines that mix narrow and wide
@@ -309,10 +468,19 @@ export function createComposer(deps) {
   // browsing history". With empty history this is 0, but the semantics are correct.
   let historyIndex = inputHistory.length;
   let draftBeforeHistory = "";
-  // Caret visibility flag, retained for the (now inert) wakeCursor() callers; the
-  // visible caret is the hardware terminal cursor, blinked natively, so there is
-  // no app-side blink timer (see startCursorBlink).
-  let cursorVisible = true;
+  // Set when an edit detached from history browsing: the input then holds an
+  // edited RECALL, not the draft, so re-entering browse must not overwrite a
+  // saved draft with it (the draft would be unrecoverable).
+  let historyEditedRecall = false;
+  // Last text removed by a kill command (Ctrl+U/K/W, Alt+Backspace, Alt+D);
+  // Ctrl+Y yanks it back so a mistyped kill is recoverable.
+  let killBuffer = "";
+  // Trigger token dismissed with Escape: the menu stays closed while the caret
+  // remains on that same token, instead of reopening on the next keystroke.
+  let menuDismissed = null;
+  // Last hardware-cursor cell emitted, so pulse-driven re-renders can skip
+  // re-asserting an unchanged position (see syncTerminalCursorToCaret).
+  let lastCursorCell = null;
   // Guard against install() binding the keypress/paste listeners more than once.
   let installed = false;
 
@@ -332,12 +500,14 @@ export function createComposer(deps) {
     source: "",
     routingApplied: true,
     rolloutPhase: "full",
+    io: "", // last turn's in/out token pair ("34.6k/548"); empty before any turn
   };
 
   const turnStatus = {
     phase: "idle",
     label: "ready",
     active: false,
+    activeSince: null, // epoch ms when active flipped on (elapsed counter base)
   };
 
   const completionContext = {
@@ -371,12 +541,6 @@ export function createComposer(deps) {
     // re-rendering, and its repeated cursor re-assertion disrupted the terminal's
     // marked-text handling and corrupted the router panel's first row while
     // typing. Removing the timer fixes that; nothing else needs the 530ms redraw.
-  }
-
-  // Reset the cursor to solid-on after a keystroke so typing feels responsive
-  // instead of landing on a blink-off frame.
-  function wakeCursor() {
-    cursorVisible = true;
   }
 
   function routerModelValue() {
@@ -421,10 +585,6 @@ export function createComposer(deps) {
     clearOverlay();
   }
 
-  function clampMenuSelection() {
-    menu.selected = clamp(menu.selected, 0, Math.max(0, menu.filtered.length - 1));
-  }
-
   function scheduleFileCompletionRequest(query) {
     if (fileDebounce) clearTimeout(fileDebounce);
     const requestId = menu.requestSeq + 1;
@@ -442,14 +602,50 @@ export function createComposer(deps) {
     fileDebounce.unref?.();
   }
 
+  // Keep the highlight on the same candidate when the list is replaced (an
+  // async completion.response landing, or a re-filter while typing); fall back
+  // to the top instead of whatever item now happens to sit at the old index.
+  function reanchorMenuSelection(previous) {
+    if (!previous) {
+      menu.selected = 0;
+      return;
+    }
+    const index = menu.filtered.findIndex(
+      (item) => String(item?.label ?? "") === String(previous.label ?? ""),
+    );
+    menu.selected = index >= 0 ? index : 0;
+  }
+
+  // Rows available above the footer for the menu box (its borders included).
+  function completionMenuMaxRows() {
+    return Math.max(0, (Number(renderer?.terminalHeight) || 24) - effFooterHeight());
+  }
+
   function updateMenuFromInput() {
     const { token, start } = tokenUnderCaret(inputText, cursorPos);
     const trigger = shouldTriggerMenu(token, start, lineStartForToken(inputText, start));
     if (!trigger.active) {
+      menuDismissed = null; // leaving the token ends an Escape dismissal
+      resetMenu();
+      return;
+    }
+    // Escape dismissed the menu for this exact token: keep it closed until the
+    // token (or trigger kind) changes, instead of reopening on the next key.
+    if (menuDismissed && menuDismissed.kind === trigger.kind && menuDismissed.tokenStart === start) {
+      resetMenu();
+      return;
+    }
+    menuDismissed = null;
+    // A menu that cannot show at least one candidate row above the footer would
+    // be an invisible modal eating arrow keys — fall back to plain typing.
+    if (completionMenuMaxRows() < 3) {
       resetMenu();
       return;
     }
 
+    const previous = menu.active && menu.kind === trigger.kind
+      ? menu.filtered[menu.selected]
+      : null;
     menu.active = true;
     menu.kind = trigger.kind;
     menu.query = trigger.query;
@@ -464,14 +660,17 @@ export function createComposer(deps) {
       menu.filtered = filterCatalog(fileCompletionItems(completionContext.files), menu.query);
       scheduleFileCompletionRequest(menu.query);
     }
-    clampMenuSelection();
+    reanchorMenuSelection(previous);
   }
 
   function completionMenuRows() {
     if (menu.filtered.length === 0) {
       return [{ content: "no matches", fg: THEME.muted }];
     }
-    const visible = Math.min(6, menu.filtered.length);
+    const visible = Math.max(
+      1,
+      Math.min(6, menu.filtered.length, completionMenuMaxRows() - 2),
+    );
     const selected = clamp(menu.selected, 0, menu.filtered.length - 1);
     let start = Math.max(0, selected - Math.floor(visible / 2));
     start = Math.min(start, Math.max(0, menu.filtered.length - visible));
@@ -479,7 +678,10 @@ export function createComposer(deps) {
       const index = start + offset;
       const marker = index === selected ? "› " : "  ";
       const label = String(item.label ?? "");
-      const description = String(item.description ?? "");
+      const rawDescription = String(item.description ?? "");
+      // A description that merely repeats the label (file rows) would render
+      // the same text twice on an already width-clipped row.
+      const description = rawDescription === label ? "" : rawDescription;
       const content = `${marker}${label}${description ? `  ${description}` : ""}`;
       return {
         content: clipToCells(content, completionMenuRowCells()),
@@ -488,11 +690,23 @@ export function createComposer(deps) {
     });
   }
 
+  // On narrow terminals shrink the menu's right inset instead of clipping rows
+  // wider than the box: the clip width must always equal the box inner width,
+  // or over-wide rows wrap inside the fixed-height box and corrupt its layout.
+  function completionMenuRightInset() {
+    const terminalWidth = Number(renderer?.terminalWidth) || 100;
+    return clamp(
+      terminalWidth - COMPLETION_MENU_LEFT - COMPLETION_MENU_CHROME_CELLS - MIN_COMPLETION_ROW_CELLS,
+      0,
+      COMPLETION_MENU_RIGHT,
+    );
+  }
+
   function completionMenuRowCells() {
     const terminalWidth = Number(renderer?.terminalWidth) || 100;
     return Math.max(
-      MIN_COMPLETION_ROW_CELLS,
-      terminalWidth - COMPLETION_MENU_LEFT - COMPLETION_MENU_RIGHT - COMPLETION_MENU_CHROME_CELLS,
+      1,
+      terminalWidth - COMPLETION_MENU_LEFT - completionMenuRightInset() - COMPLETION_MENU_CHROME_CELLS,
     );
   }
 
@@ -501,6 +715,7 @@ export function createComposer(deps) {
   function clearOverlay() {
     overlayLayer?.remove?.("completion-menu");
     overlayLayer?.remove?.("theme-picker");
+    overlayLayer?.remove?.("approval-overlay");
     // Hide the layer again so it stops intercepting wheel events — otherwise a
     // permanently-visible full-screen overlay blocks conversation scrolling.
     if (overlayLayer) overlayLayer.visible = false;
@@ -511,6 +726,13 @@ export function createComposer(deps) {
     // fresh so its height tracks the current candidate count exactly.
     clearOverlay();
     if (!menu.active) return;
+    // A resize can shrink the terminal under an open menu; with no room to show
+    // even one candidate row it must deactivate, not linger as an invisible
+    // modal that swallows arrow keys and Enter.
+    if (completionMenuMaxRows() < 3) {
+      resetMenu();
+      return;
+    }
     const rows = completionMenuRows();
     // Mounted on the full-screen overlay layer (a root sibling), so `bottom` is
     // screen-relative: footerHeight rows up puts the menu directly above the
@@ -521,9 +743,9 @@ export function createComposer(deps) {
       id: "completion-menu",
       position: "absolute",
       left: COMPLETION_MENU_LEFT,
-      right: COMPLETION_MENU_RIGHT,
+      right: completionMenuRightInset(),
       bottom: effFooterHeight(),
-      height: Math.min(8, rows.length + 2),
+      height: Math.min(8, rows.length + 2, completionMenuMaxRows()),
       borderStyle: "rounded",
       borderColor: THEME.composerBorder,
       // Opaque fill so the conversation behind the menu cannot show through and
@@ -637,26 +859,186 @@ export function createComposer(deps) {
     return true;
   }
 
-  // Split the input into display lines and splice the caret into the line/column
-  // that cursorPos lands on. Returns an array of line strings to render.
-  function composerLines() {
-    const chars = Array.from(inputText);
-    const pos = Math.max(0, Math.min(cursorPos, chars.length));
-    const caret = caretGlyph();
-    if (chars.length === 0) {
-      // Empty: caret sits before the muted placeholder.
-      return [{ text: `${caret}${composer.placeholder}`, muted: true }];
-    }
-    const before = chars.slice(0, pos).join("");
-    const after = chars.slice(pos).join("");
-    const withCaret = `${before}${caret}${after}`;
-    return withCaret.split("\n").map((line) => ({ text: line, muted: false }));
+  // ---- Tool-approval overlay ------------------------------------------------
+  // A modal confirm panel mounted on the overlay layer (like the theme picker),
+  // opened by the Python side's approval.request frame while a turn is waiting
+  // on a gated tool. y/Enter approves, n/Esc denies; when the request carries
+  // choices, Up/Down move the highlight and Enter confirms the selected one.
+  // The decision is sent back as one approval.response frame; the Python side
+  // treats silence (timeout, teardown) as a deny, so the overlay never has to
+  // guarantee delivery.
+  const APPROVAL_OVERLAY_WIDTH = 48;
+  const APPROVAL_OVERLAY_INNER = APPROVAL_OVERLAY_WIDTH - COMPLETION_MENU_CHROME_CELLS;
+  let approvalOverlay = null;
+
+  function approvalChoiceLabel(choice) {
+    return String(choice ?? "").replaceAll("_", " ");
   }
 
-  function rerenderInputRegion() {
+  function renderApprovalOverlay() {
+    if (!approvalOverlay?.active) return;
+    overlayLayer?.remove?.("approval-overlay");
+    const choices = approvalOverlay.choices;
+    const maxRows = Math.max(1, (renderer.terminalHeight ?? 24) - effFooterHeight() - 1);
+    const bodyRows = 2 + choices.length + (approvalOverlay.summary ? 1 : 0);
+    const node = new BoxRenderable(renderer, {
+      id: "approval-overlay",
+      position: "absolute",
+      left: COMPLETION_MENU_LEFT,
+      width: APPROVAL_OVERLAY_WIDTH,
+      bottom: effFooterHeight(),
+      height: Math.min(bodyRows + 2, maxRows),
+      borderStyle: "rounded",
+      borderColor: THEME.warning,
+      backgroundColor: THEME.overlayBg,
+      title: " approval ",
+      titleAlignment: "left",
+      flexDirection: "column",
+      paddingLeft: 1,
+      paddingRight: 1,
+    });
+    node.add(new TextRenderable(renderer, {
+      id: "approval-overlay-tool",
+      content: clipToCells(approvalOverlay.tool, APPROVAL_OVERLAY_INNER),
+      fg: THEME.text,
+    }));
+    if (approvalOverlay.summary) {
+      node.add(new TextRenderable(renderer, {
+        id: "approval-overlay-summary",
+        content: clipToCells(approvalOverlay.summary, APPROVAL_OVERLAY_INNER),
+        fg: THEME.muted,
+      }));
+    }
+    choices.forEach((choice, index) => {
+      const active = index === approvalOverlay.selected;
+      node.add(new TextRenderable(renderer, {
+        id: `approval-overlay-choice-${index}`,
+        content: clipToCells(
+          `${active ? "› " : "  "}${approvalChoiceLabel(choice)}`,
+          APPROVAL_OVERLAY_INNER,
+        ),
+        fg: active ? THEME.brandAccentSoft : THEME.muted,
+      }));
+    });
+    node.add(new TextRenderable(renderer, {
+      id: "approval-overlay-hint",
+      content: clipToCells(
+        choices.length > 0
+          ? "↑↓ choose · enter confirm · y/n · esc deny"
+          : "y/enter approve · n/esc deny",
+        APPROVAL_OVERLAY_INNER,
+      ),
+      fg: THEME.detailText,
+    }));
+    overlayLayer.add(node);
+    overlayLayer.visible = true;
+  }
+
+  function openApprovalOverlay(message) {
+    const id = String(message?.id ?? "");
+    if (!id) return;
+    // The approval takes the overlay layer: close the theme picker (reverting
+    // its live preview, exactly like Escape) and any completion menu first.
+    if (themePicker?.active) handleThemePickerKey("escape");
+    resetMenu();
+    approvalOverlay = {
+      active: true,
+      id,
+      tool: String(message?.tool ?? "tool"),
+      summary: String(message?.summary ?? ""),
+      choices: Array.isArray(message?.choices) ? message.choices.map(String) : [],
+      selected: 0,
+    };
+    renderApprovalOverlay();
+    renderer.requestRender?.();
+  }
+
+  function closeApprovalOverlay() {
+    approvalOverlay = null;
+    clearOverlay();
+  }
+
+  // Python dismisses a request it stopped waiting on (timeout / turn cancel).
+  // Close only the matching active overlay, and send no approval.response —
+  // the Python side already resolved the request, so a late decision frame
+  // would just be logged as unmatched and dropped.
+  function dismissApprovalOverlay(id) {
+    if (!approvalOverlay?.active) return;
+    if (String(id ?? "") !== approvalOverlay.id) return;
+    closeApprovalOverlay();
+    rerenderInputRegion();
+    renderer.requestRender?.();
+  }
+
+  function sendApprovalDecision(approved, choice) {
+    const id = approvalOverlay?.id;
+    closeApprovalOverlay();
+    rerenderInputRegion();
+    sendHostMessage({ type: "approval.response", id, approved, choice: choice ?? null });
+  }
+
+  function handleApprovalKey(key) {
+    const result = approvalKeyAction(approvalOverlay, key);
+    if (!result.handled) return false;
+    if (result.action === "navigate") {
+      approvalOverlay.selected = result.selected;
+      renderApprovalOverlay();
+      renderer.requestRender?.();
+    } else if (result.action === "approve") {
+      sendApprovalDecision(true, null);
+    } else if (result.action === "deny") {
+      sendApprovalDecision(false, null);
+    } else if (result.action === "choose") {
+      sendApprovalDecision(true, approvalOverlay.choices[result.selected] ?? null);
+    }
+    return true;
+  }
+
+  // Composer content geometry, shared by the rendered lines and the caret
+  // math so the two can never disagree. The box spans the full width minus the
+  // COMPOSER_LEFT margins; border + padding eat 2 more cells per side.
+  function composerContentWidth() {
+    const terminalWidth = Number(renderer?.terminalWidth ?? renderer?.width) || 80;
+    return Math.max(1, terminalWidth - COMPOSER_LEFT * 2 - 4);
+  }
+
+  // Content rows inside the composer box: box height (effFooterHeight - 1,
+  // the router strip takes the top footer row) minus its two border rows.
+  function composerContentRows() {
+    return Math.max(1, effFooterHeight() - 3);
+  }
+
+  // Lines to render inside the composer box: the wrapped, caret-windowed
+  // layout from composerLayout (see its docs), plus the muted placeholder for
+  // an empty input.
+  function composerViewport() {
+    if (Array.from(inputText).length === 0) {
+      // Empty: caret sits before the muted placeholder.
+      return {
+        lines: [{ text: `${caretGlyph()}${composer.placeholder}`, muted: true }],
+        caretRow: 0,
+        caretCol: 0,
+        scrollRowOffset: 0,
+      };
+    }
+    const layout = composerLayout(
+      inputText,
+      cursorPos,
+      composerContentWidth(),
+      composerContentRows(),
+    );
+    return {
+      lines: layout.visibleLines.map((text) => ({ text, muted: false })),
+      caretRow: layout.caretRow,
+      caretCol: layout.caretCol,
+      scrollRowOffset: layout.scrollRowOffset,
+    };
+  }
+
+  function rerenderInputRegion(options = {}) {
     if (!inputBox) return;
     for (const child of inputBox.getChildren?.() ?? []) inputBox.remove?.(child.id);
-    const lines = composerLines();
+    const viewport = composerViewport();
     const composerNode = new BoxRenderable(renderer, {
       id: "composer-box",
       position: "absolute",
@@ -666,18 +1048,21 @@ export function createComposer(deps) {
       height: Math.max(1, effFooterHeight() - 1), // the router strip takes the top row
       borderStyle: "rounded",
       borderColor: composer.disabled ? THEME.composerDisabledBorder : THEME.composerBorder,
-      bottomTitle: `${statusIcon()} ${turnStatus.label}`,
+      bottomTitle: ` ${statusPillText(statusIcon(), turnStatus.label, turnStatus.activeSince === null ? null : Date.now() - turnStatus.activeSince)} `,
       bottomTitleAlignment: "left",
       paddingLeft: 1,
       paddingRight: 1,
       flexDirection: "column",
       justifyContent: "flex-start",
     });
-    lines.forEach((line, index) => {
+    viewport.lines.forEach((line, index) => {
       composerNode.add(new TextRenderable(renderer, {
         id: `composer-text-${index}`,
         content: line.text,
         fg: line.muted ? THEME.muted : THEME.text,
+        // The lines are already wrapped to the content width by composerLayout;
+        // letting the engine re-wrap them would desync the caret math.
+        wrapMode: "none",
       }));
     });
     inputBox.add(composerNode);
@@ -689,7 +1074,6 @@ export function createComposer(deps) {
     // terminal's wide-char accounting to desync. (opencode, on the same
     // @opentui/core engine + alt-screen, is immune for exactly this reason — its
     // status sits below the input and its sidebar is a disjoint column.)
-    const stripValue = (v) => clipToCells(String(v ?? "").replace(/\s+/gu, " ").trim() || "-", 18);
     const routerStrip = new BoxRenderable(renderer, {
       id: "router-strip",
       position: "absolute",
@@ -710,13 +1094,24 @@ export function createComposer(deps) {
     const field = (key, label, value, valueFg) => {
       chip(`sep${sepN++}`, " · ", THEME.detailText);
       chip(`${key}-label`, `${label} `, THEME.detailText);
-      chip(`${key}-value`, stripValue(value), valueFg);
+      chip(`${key}-value`, routerStripValue(value), valueFg);
     };
+    // The renderer sends a strip-wide semantic style ("dim" while the router is
+    // pending, "warning"/"error" for fallback or broken routes); it overrides
+    // the per-field value colors so that state is visible instead of dropped.
+    const styleFg =
+      routerState.style === "warning" ? THEME.warning
+      : routerState.style === "error" ? THEME.error
+      : routerState.style === "dim" ? THEME.detailText
+      : null;
     chip("label", "router", THEME.muted);
-    field("model", "model", routerModelValue(), THEME.text);
-    field("route", "route", routerRouteValue(), THEME.routeText);
-    field("saving", "save", routerState.saving, THEME.metricPositive);
-    field("context", "ctx", routerState.context, THEME.warning);
+    field("model", "model", routerModelValue(), styleFg ?? THEME.text);
+    field("route", "route", routerRouteValue(), styleFg ?? THEME.routeText);
+    field("saving", "save", routerState.saving, styleFg ?? THEME.metricPositive);
+    field("context", "ctx", routerState.context, styleFg ?? THEME.warning);
+    // Token traffic is its own field so "ctx" can stay a pure pressure value —
+    // "ctx 34.6k/548" read like a fraction of a 548-token window.
+    if (routerState.io) field("io", "io", routerState.io, styleFg ?? THEME.detailText);
     inputBox.add(routerStrip);
     renderCompletionMenu();
     // The theme picker shares the overlay layer, so a footer re-render (pulse
@@ -724,20 +1119,29 @@ export function createComposer(deps) {
     // renderCompletionMenu's clearOverlay. Re-mount it whenever it is open so it
     // never "flashes" away and gets stuck modally swallowing keys while invisible.
     if (themePicker?.active) renderThemePicker();
-    syncTerminalCursorToCaret();
+    // Same for the approval overlay: it stays mounted across pulse-driven
+    // footer re-renders while the turn waits on the user's decision.
+    if (approvalOverlay?.active) renderApprovalOverlay();
+    syncTerminalCursorToCaret(viewport, options.cursorOnlyIfMoved === true);
     renderer.requestRender?.();
   }
 
   function submitInput() {
     const text = inputText;
-    if (text.trim() && inputHistory[inputHistory.length - 1] !== text) {
+    // Enter on a blank composer is a no-op, like every shell/REPL: submitting
+    // whitespace would echo an empty prompt card and queue a phantom message
+    // behind a running turn.
+    if (!text.trim()) return;
+    if (inputHistory[inputHistory.length - 1] !== text) {
       inputHistory.push(text);
     }
     historyIndex = inputHistory.length;
+    historyEditedRecall = false;
     draftBeforeHistory = "";
     inputText = "";
     cursorPos = 0;
     composer.text = "";
+    menuDismissed = null; // resetting the input ends the dismissal scope
     resetMenu();
     sendHostMessage({ type: "input.submit", text });
     rerenderInputRegion();
@@ -748,21 +1152,43 @@ export function createComposer(deps) {
     composer.text = text;
     cursorPos = Array.from(text).length;
     desiredVisualCol = null; // history recall / programmatic set ends a vertical run
+    menuDismissed = null; // replacing the input wholesale ends an Escape dismissal
+  }
+
+  // Every edit detaches from history browsing back to the draft slot. When the
+  // edit happened INSIDE a recalled entry, the input now holds an edited recall
+  // rather than the draft — remember that so the next Up does not overwrite the
+  // saved draft with it.
+  function detachHistoryToDraft() {
+    if (historyIndex !== inputHistory.length) historyEditedRecall = true;
+    historyIndex = inputHistory.length;
   }
 
   // Up/Down arrows walk the input history. The slot past the end (index ===
   // length) holds the in-progress draft so Down returns to what was typed.
   function recallHistory(direction) {
     if (inputHistory.length === 0) return;
-    if (historyIndex === inputHistory.length) {
-      draftBeforeHistory = inputText;
-    }
     const next = historyIndex + direction;
     if (next < 0 || next > inputHistory.length) return;
+    if (historyIndex === inputHistory.length) {
+      // Leaving the draft slot: keep what is on screen recoverable.
+      if (historyEditedRecall && draftBeforeHistory) {
+        // The input holds an edited RECALL while a real draft is stashed.
+        // Overwriting the draft would lose it for good, and dropping the edit
+        // would destroy the text on screen — so keep the edit the way a shell
+        // does: append it to history as the newest entry, so Down passes back
+        // through it on the way to the draft.
+        if (inputText.trim() && inputHistory[inputHistory.length - 1] !== inputText) {
+          inputHistory.push(inputText);
+        }
+      } else {
+        draftBeforeHistory = inputText;
+      }
+    }
     historyIndex = next;
+    historyEditedRecall = false;
     setInput(next === inputHistory.length ? draftBeforeHistory : inputHistory[next]);
     updateMenuFromInput();
-    wakeCursor();
     rerenderInputRegion();
   }
 
@@ -782,22 +1208,33 @@ export function createComposer(deps) {
     return { line, col: textWidth(lineText) };
   }
 
-  function syncTerminalCursorToCaret() {
+  function syncTerminalCursorToCaret(viewport, onlyIfMoved = false) {
     const setCursorPosition = renderer?.setCursorPosition;
     if (typeof setCursorPosition !== "function") return;
     const terminalWidth = Number(renderer?.terminalWidth ?? renderer?.width) || 80;
     const terminalHeight = Number(renderer?.terminalHeight ?? renderer?.height) || 24;
     const fh = effFooterHeight();
     const footerTop = Math.max(0, terminalHeight - fh);
-    const { line, col } = caretVisualLineCol();
+    // The caret row/col come from the SAME wrapped-and-windowed layout the
+    // composer just rendered, so the hardware cursor lands on the exact cell
+    // the caret occupies even on soft-wrapped or scrolled drafts.
+    const screenRow = viewport.caretRow - viewport.scrollRowOffset;
     const maxX = Math.max(COMPOSER_CONTENT_LEFT, terminalWidth - COMPOSER_CONTENT_LEFT - 1);
     const maxY = Math.max(footerTop, footerTop + fh - 2);
-    const x = clamp(COMPOSER_CONTENT_LEFT + col, COMPOSER_CONTENT_LEFT, maxX);
+    const x = clamp(COMPOSER_CONTENT_LEFT + viewport.caretCol, COMPOSER_CONTENT_LEFT, maxX);
     const y = clamp(
-      footerTop + COMPOSER_CONTENT_TOP_OFFSET + line,
+      footerTop + COMPOSER_CONTENT_TOP_OFFSET + screenRow,
       footerTop + COMPOSER_CONTENT_TOP_OFFSET,
       maxY,
     );
+    // Pulse-driven re-renders (the 180ms status glyph tick while a turn runs)
+    // skip re-asserting an unchanged cursor cell: repeated CUP re-assertions
+    // with no keystrokes are exactly what disrupted macOS IME marked-text
+    // handling before (see startCursorBlink).
+    if (onlyIfMoved && lastCursorCell && lastCursorCell.x === x && lastCursorCell.y === y) {
+      return;
+    }
+    lastCursorCell = { x, y };
     // visible:true is REQUIRED for IME anchoring. OpenTUI's native renderer only
     // emits a CUP move (and shows the hardware cursor) when visible is true; with
     // false it keeps the hardware cursor hidden at home, so macOS terminals
@@ -815,8 +1252,8 @@ export function createComposer(deps) {
     setCursorPosition.call(renderer, x + 1, y + 1, true);
   }
 
-  // Grapheme index of the caret on `targetLine` whose DISPLAY-CELL column is
-  // closest to `targetVisualCol`. Snaps to a grapheme boundary: when the goal
+  // Code-point index of the caret on `targetLine` whose DISPLAY-CELL column is
+  // closest to `targetVisualCol`. Snaps to a code-point boundary: when the goal
   // falls mid-glyph (e.g. inside a width-2 CJK char), land on whichever side is
   // nearer, and never past the line's end.
   function lineVisualColToPos(chars, targetLine, targetVisualCol) {
@@ -829,7 +1266,7 @@ export function createComposer(deps) {
         // Boundary before chars[i] sits at column `col`. If we stepped over the
         // goal mid-glyph, the previous boundary may be the nearer one.
         if (!atEnd && i > lineStart && col > targetVisualCol) {
-          const prevCol = col - cellWidth(chars[i - 1]);
+          const prevCol = col - cellWidth(chars[i - 1], chars[i]);
           if (targetVisualCol - prevCol < col - targetVisualCol) return i - 1;
         }
         return i;
@@ -840,7 +1277,7 @@ export function createComposer(deps) {
         col = 0;
         lineStart = i + 1;
       } else {
-        col += cellWidth(chars[i]);
+        col += cellWidth(chars[i], chars[i + 1]);
       }
     }
     return chars.length;
@@ -861,9 +1298,12 @@ export function createComposer(deps) {
     return true;
   }
 
+  // Step one grapheme cluster left/right, so the caret never lands inside a
+  // multi-code-point emoji or composed character.
   function moveCaretHorizontal(direction) {
-    const len = Array.from(inputText).length;
-    cursorPos = Math.max(0, Math.min(len, cursorPos + direction));
+    cursorPos = direction < 0
+      ? graphemeBoundaryBefore(inputText, cursorPos)
+      : graphemeBoundaryAfter(inputText, cursorPos);
   }
 
   function insertAtCursor(insertText) {
@@ -876,22 +1316,26 @@ export function createComposer(deps) {
     cursorPos = pos + insertChars.length;
   }
 
+  // Backspace: remove the whole grapheme cluster BEFORE the caret (one emoji
+  // family or composed char deletes atomically, never one code point of it).
   function deleteBeforeCursor() {
     const chars = Array.from(inputText);
     const pos = Math.max(0, Math.min(cursorPos, chars.length));
     if (pos === 0) return;
-    inputText = [...chars.slice(0, pos - 1), ...chars.slice(pos)].join("");
+    const from = graphemeBoundaryBefore(inputText, pos);
+    inputText = [...chars.slice(0, from), ...chars.slice(pos)].join("");
     composer.text = inputText;
-    cursorPos = pos - 1;
+    cursorPos = from;
   }
 
-  // Forward delete: remove the grapheme AT the caret (the Delete key). The caret
-  // stays put, like every other terminal input.
+  // Forward delete: remove the grapheme cluster AT the caret (the Delete key).
+  // The caret stays put, like every other terminal input.
   function deleteAtCursor() {
     const chars = Array.from(inputText);
     const pos = Math.max(0, Math.min(cursorPos, chars.length));
     if (pos >= chars.length) return;
-    inputText = [...chars.slice(0, pos), ...chars.slice(pos + 1)].join("");
+    const to = graphemeBoundaryAfter(inputText, pos);
+    inputText = [...chars.slice(0, pos), ...chars.slice(to)].join("");
     composer.text = inputText;
     cursorPos = pos;
   }
@@ -909,11 +1353,10 @@ export function createComposer(deps) {
     composer.text = inputText;
     cursorPos = accepted.cursor;
     resetMenu();
-    wakeCursor();
     rerenderInputRegion();
   }
 
-  function applyMenuKeyResult(result) {
+  function applyMenuKeyResult(result, keyName) {
     if (!result.handled) return false;
     if (result.action === "accept") {
       acceptCompletion();
@@ -925,24 +1368,60 @@ export function createComposer(deps) {
       submitInput();
       return true;
     }
+    if (result.action === "close" && keyName === "escape") {
+      // Latch the dismissed token so updateMenuFromInput does not reopen the
+      // menu on the very next keystroke for the same token. Only an explicit
+      // Escape latches: Tab merely closing an empty "no matches" list must not
+      // keep the menu shut once the token edits back into matches.
+      menuDismissed = { kind: menu.kind, tokenStart: menu.tokenStart };
+    }
     Object.assign(menu, result.menu);
     rerenderInputRegion();
     return true;
   }
 
+  // Kitty-protocol terminals report keypad keys under distinct "kp*" names
+  // (numpad Enter arrives as kpenter, never return); alias them onto the base
+  // names so the branches below handle them like their main-keyboard twins.
+  const KEYPAD_KEY_ALIASES = {
+    kpenter: "return",
+    kpup: "up",
+    kpdown: "down",
+    kpleft: "left",
+    kpright: "right",
+    kphome: "home",
+    kpend: "end",
+    kpdelete: "delete",
+    kppageup: "pageup",
+    kppagedown: "pagedown",
+  };
+
   function installKeyboardHandlers() {
-    renderer.keyInput.on("keypress", (key) => {
+    renderer.keyInput.on("keypress", (rawKey) => {
+      const keypadAlias = KEYPAD_KEY_ALIASES[rawKey?.name];
+      const key = keypadAlias ? { ...rawKey, name: keypadAlias, sequence: "" } : rawKey;
       // Any key other than Up/Down ends a vertical-motion run, so the next Up/Down
       // recomputes the goal column from the caret's current visual position.
       if (key.name !== "up" && key.name !== "down") desiredVisualCol = null;
+      // The approval overlay is modal and outranks the theme picker; only
+      // Ctrl+C falls through (approvalKeyAction passes it) so the interrupt
+      // path below keeps working while a decision is pending.
+      if (approvalOverlay?.active) {
+        if (handleApprovalKey(key)) return;
+      }
       // The theme picker is modal: it consumes every key while open.
       if (themePicker?.active) {
         handleThemePickerKey(key.name);
         return;
       }
-      if (menu.active) {
+      // Modified Enter is the newline chord — it must reach the newline branch
+      // below even while a menu is open, or Alt+Enter would accept (and, for a
+      // slash menu, accept AND submit) the highlighted completion instead.
+      const newlineChord =
+        key.name === "return" && Boolean(key.shift || key.option || key.meta || key.alt);
+      if (menu.active && !newlineChord) {
         const menuResult = menuKeyAction(menu, key.name);
-        if (applyMenuKeyResult(menuResult)) return;
+        if (applyMenuKeyResult(menuResult, key.name)) return;
       }
       if (key.ctrl && key.name === "c") {
         // With text: clear the input. Empty: interrupt the in-flight turn.
@@ -950,12 +1429,11 @@ export function createComposer(deps) {
         if (inputText.length > 0) {
           setInput("");
           historyIndex = inputHistory.length;
+          historyEditedRecall = false;
           resetMenu();
-          wakeCursor();
           rerenderInputRegion();
         } else {
           sendHostMessage({ type: "input.cancel" });
-          wakeCursor();
           rerenderInputRegion();
         }
         return;
@@ -964,16 +1442,19 @@ export function createComposer(deps) {
         sendHostMessage({ type: "input.eof" });
         return;
       }
-      // Standard readline-style line editing.
-      if (key.ctrl && key.name === "a") {
+      // Standard readline-style line editing. Caret motion re-derives the menu
+      // (updateMenuFromInput) exactly like the edit branches: an open menu must
+      // track the token under the NEW caret position, or a later accept would
+      // splice a stale token range.
+      if ((key.ctrl && key.name === "a") || key.name === "home") {
         cursorPos = lineStartIndex(inputText, cursorPos); // start of line
-        wakeCursor();
+        updateMenuFromInput();
         rerenderInputRegion();
         return;
       }
-      if (key.ctrl && key.name === "e") {
+      if ((key.ctrl && key.name === "e") || key.name === "end") {
         cursorPos = lineEndIndex(inputText, cursorPos); // end of line
-        wakeCursor();
+        updateMenuFromInput();
         rerenderInputRegion();
         return;
       }
@@ -988,30 +1469,44 @@ export function createComposer(deps) {
         if (key.name === "k") to = lineEndIndex(inputText, cursorPos);
         else if (key.name === "u") from = lineStartIndex(inputText, cursorPos);
         else from = wordStartIndex(inputText, cursorPos);
+        const removed = Array.from(inputText)
+          .slice(Math.min(from, to), Math.max(from, to))
+          .join("");
+        if (removed) killBuffer = removed; // Ctrl+Y yanks the last kill back
         const edited = spliceOut(inputText, from, to);
         inputText = edited.text;
         composer.text = inputText;
         cursorPos = edited.cursor;
-        historyIndex = inputHistory.length;
+        detachHistoryToDraft();
         updateMenuFromInput();
-        wakeCursor();
         rerenderInputRegion();
         return;
       }
+      // Yank: re-insert the last kill at the caret (readline Ctrl+Y), so a
+      // mistyped Ctrl+U/K/W is recoverable instead of destroying the draft.
+      if (key.ctrl && key.name === "y") {
+        if (killBuffer) {
+          insertAtCursor(killBuffer);
+          detachHistoryToDraft();
+          updateMenuFromInput();
+          rerenderInputRegion();
+        }
+        return;
+      }
       // Word-wise cursor movement (must precede the plain left/right branches,
-      // which ignore modifiers). Ctrl+Left/Alt+B back a word; Ctrl+Right/Alt+F
-      // forward a word.
+      // which ignore modifiers). Ctrl+Left/Alt+Left/Alt+B back a word;
+      // Ctrl+Right/Alt+Right/Alt+F forward a word.
       const wordBack =
         (key.ctrl && key.name === "left") ||
-        ((key.meta || key.alt || key.option) && key.name === "b");
+        ((key.meta || key.alt || key.option) && (key.name === "b" || key.name === "left"));
       const wordForward =
         (key.ctrl && key.name === "right") ||
-        ((key.meta || key.alt || key.option) && key.name === "f");
+        ((key.meta || key.alt || key.option) && (key.name === "f" || key.name === "right"));
       if (wordBack || wordForward) {
         cursorPos = wordBack
           ? wordStartIndex(inputText, cursorPos)
           : wordEndIndex(inputText, cursorPos);
-        wakeCursor();
+        updateMenuFromInput();
         rerenderInputRegion();
         return;
       }
@@ -1021,11 +1516,12 @@ export function createComposer(deps) {
         return;
       }
       if (key.name === "return") {
-        if (key.option || key.meta || key.alt) {
+        // Shift+Enter (kitty-protocol terminals) and Alt/Option+Enter insert a
+        // newline; legacy terminals cannot report Shift+Enter and are unaffected.
+        if (key.shift || key.option || key.meta || key.alt) {
           insertAtCursor("\n");
-          historyIndex = inputHistory.length;
+          detachHistoryToDraft();
           updateMenuFromInput();
-          wakeCursor();
           rerenderInputRegion();
           return;
         }
@@ -1034,13 +1530,13 @@ export function createComposer(deps) {
       }
       if (key.name === "left") {
         moveCaretHorizontal(-1);
-        wakeCursor();
+        updateMenuFromInput();
         rerenderInputRegion();
         return;
       }
       if (key.name === "right") {
         moveCaretHorizontal(1);
-        wakeCursor();
+        updateMenuFromInput();
         rerenderInputRegion();
         return;
       }
@@ -1049,7 +1545,7 @@ export function createComposer(deps) {
         // first character (cursorPos === 0).
         if (cursorPos === 0 || !moveCaretVertical(-1)) recallHistory(-1);
         else {
-          wakeCursor();
+          updateMenuFromInput();
           rerenderInputRegion();
         }
         return;
@@ -1059,7 +1555,7 @@ export function createComposer(deps) {
         // end of the input.
         if (cursorPos === Array.from(inputText).length || !moveCaretVertical(1)) recallHistory(1);
         else {
-          wakeCursor();
+          updateMenuFromInput();
           rerenderInputRegion();
         }
         return;
@@ -1076,8 +1572,8 @@ export function createComposer(deps) {
       }
       if (key.name === "backspace") {
         deleteBeforeCursor();
+        detachHistoryToDraft();
         updateMenuFromInput();
-        wakeCursor();
         rerenderInputRegion();
         return;
       }
@@ -1087,57 +1583,68 @@ export function createComposer(deps) {
         ((key.meta || key.alt || key.option) && key.name === "d") ||
         (key.ctrl && key.name === "delete")
       ) {
+        const removed = Array.from(inputText)
+          .slice(cursorPos, wordEndIndex(inputText, cursorPos))
+          .join("");
+        if (removed) killBuffer = removed;
         const edited = spliceOut(inputText, cursorPos, wordEndIndex(inputText, cursorPos));
         inputText = edited.text;
         composer.text = inputText;
         cursorPos = edited.cursor;
-        historyIndex = inputHistory.length;
+        detachHistoryToDraft();
         updateMenuFromInput();
-        wakeCursor();
         rerenderInputRegion();
         return;
       }
       if (key.name === "delete") {
         deleteAtCursor(); // forward-delete the character at the caret
+        detachHistoryToDraft();
         updateMenuFromInput();
-        wakeCursor();
         rerenderInputRegion();
         return;
       }
       const printable = key.sequence ?? key.name ?? "";
       // Only single keystrokes reach here (paste has its own handler below).
       // Reject control bytes: Tab (\t) and the ESC sequences from unhandled
-      // special keys (home/end/delete/F-keys) would otherwise be inserted
-      // verbatim and end up submitted in the message. Real typed text is printable.
+      // special keys (F-keys etc.) would otherwise be inserted verbatim and end
+      // up submitted in the message. Real typed text is printable.
       const isControlKey = /[\u0000-\u001f\u007f]/u.test(printable);
       if (printable.length > 0 && !isControlKey && !key.ctrl && !key.meta && key.name !== "space") {
         insertAtCursor(printable);
-        historyIndex = inputHistory.length;
+        detachHistoryToDraft();
         updateMenuFromInput();
-        wakeCursor();
         rerenderInputRegion();
-      } else if (key.name === "space") {
+      } else if (key.name === "space" && !key.ctrl && !key.meta) {
+        // Modified space chords (Ctrl+Space arrives as a NUL byte named
+        // "space", Alt+Space as ESC+space with meta set) are not typed text.
         insertAtCursor(" ");
-        historyIndex = inputHistory.length;
+        detachHistoryToDraft();
         updateMenuFromInput();
-        wakeCursor();
         rerenderInputRegion();
       }
     });
 
     const decoder = new TextDecoder();
     renderer.keyInput.on("paste", (event) => {
-      // Sanitize pasted text: strip ANSI/escape sequences and C0/DEL control
+      // The theme picker is modal for keypresses; paste must not slip past it
+      // and mutate the draft underneath the overlay. The approval overlay is
+      // modal the same way.
+      if (themePicker?.active || approvalOverlay?.active) return;
+      // Sanitize pasted text: real terminals (and tmux paste-buffer) transmit
+      // pasted newlines as bare CR, so normalize CRLF/CR to LF FIRST — the
+      // control-byte strip below removes CR and would otherwise concatenate
+      // the pasted lines. Then strip ANSI/escape sequences and C0/DEL control
       // bytes (e.g. pasting colored terminal output or a log) so they cannot
       // corrupt the input or get submitted to the model. Newlines and tabs are
       // preserved, so multi-line and indented pastes are unaffected.
-      const pasted = stripTerminalControls(decoder.decode(event.bytes));
+      const pasted = stripTerminalControls(
+        decoder.decode(event.bytes).replace(/\r\n?/g, "\n"),
+      );
       if (!pasted) return;
       insertAtCursor(pasted);
-      historyIndex = inputHistory.length;
+      detachHistoryToDraft();
       if (pasted.includes("\n")) resetMenu();
       else updateMenuFromInput();
-      wakeCursor();
       rerenderInputRegion();
     });
   }
@@ -1158,10 +1665,16 @@ export function createComposer(deps) {
       text: String(message.text ?? composer.text),
       disabled: Boolean(message.disabled ?? composer.disabled),
     });
-    // Route text through setInput so inputText/composer.text/cursorPos stay in
-    // sync (caret lands at the end of any prefilled text instead of drifting).
-    setInput(composer.text);
-    updateMenuFromInput();
+    // Only a frame that actually carries text may reposition the caret. The
+    // renderer sends text-less disabled toggles at every turn begin/end; those
+    // must not yank the caret to the end of an in-progress draft (or re-derive
+    // the completion menu) while the user types ahead mid-turn.
+    if (message.text !== undefined) {
+      // Route text through setInput so inputText/composer.text/cursorPos stay in
+      // sync (caret lands at the end of any prefilled text instead of drifting).
+      setInput(composer.text);
+      updateMenuFromInput();
+    }
     rerenderInputRegion();
   }
 
@@ -1176,16 +1689,20 @@ export function createComposer(deps) {
       source: String(message.source ?? routerState.source),
       routingApplied: message.routing_applied ?? routerState.routingApplied,
       rolloutPhase: String(message.rollout_phase ?? routerState.rolloutPhase),
+      io: String(message.io ?? routerState.io),
     });
     rerenderInputRegion();
   }
 
   function setTurnStatus(message) {
+    const wasActive = turnStatus.active;
     Object.assign(turnStatus, {
       phase: String(message.phase ?? turnStatus.phase),
       label: String(message.label ?? turnStatus.label),
       active: Boolean(message.active ?? turnStatus.active),
     });
+    if (turnStatus.active && !wasActive) turnStatus.activeSince = Date.now();
+    if (!turnStatus.active) turnStatus.activeSince = null;
     rerenderInputRegion();
   }
 
@@ -1209,17 +1726,23 @@ export function createComposer(deps) {
     ) {
       return;
     }
+    // The user may have arrow-navigated the locally filtered list while this
+    // response was in flight: follow the highlighted ITEM into the new list
+    // instead of keeping a raw index that now points at an unrelated entry.
+    const previous = menu.filtered[menu.selected];
     menu.filtered = Array.isArray(message.items) ? message.items : [];
-    clampMenuSelection();
+    reanchorMenuSelection(previous);
     rerenderInputRegion();
   }
 
   // main.mjs owns the pulse timer; it calls tickPulse(frame) each tick so the
   // status pill glyph advances. This replaces the old syncPulseTimer's per-tick
-  // rerenderInputRegion().
+  // rerenderInputRegion(). The cursorOnlyIfMoved flag keeps the tick from
+  // re-asserting an unchanged hardware-cursor cell every 180ms — repeated CUP
+  // re-assertions while the user is mid-IME-composition corrupt marked text.
   function tickPulse(frame) {
     pulseFrame = frame;
-    rerenderInputRegion();
+    rerenderInputRegion({ cursorOnlyIfMoved: true });
   }
 
   // Composer-relevant resize work: re-render the footer. (conversationBox height
@@ -1239,6 +1762,8 @@ export function createComposer(deps) {
     onResize,
     tickPulse,
     openThemePicker,
+    openApprovalOverlay,
+    dismissApprovalOverlay,
     applyHostTheme,
   };
 }

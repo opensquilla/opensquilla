@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import json as _json
-import shlex
 import tomllib
 from pathlib import Path
+from typing import NoReturn
 
 import typer
 from pydantic import ValidationError
@@ -22,38 +22,43 @@ from opensquilla.cli.ui import (
     warning_panel,
 )
 from opensquilla.onboarding.config_store import load_config, resolve_config_path
+from opensquilla.onboarding.errors import UserCancelledError
 from opensquilla.onboarding.flow import (
     OnboardOptions,
     run_interactive_configure,
     run_interactive_onboard,
-    run_noninteractive_provider_configure,
 )
 from opensquilla.onboarding.next_steps import (
     env_recovery_commands,
     env_reference_warnings,
     format_next_steps,
     headless_setup_commands,
+    quote_cli_arg,
     setup_catalog_command,
 )
-from opensquilla.onboarding.section_status import SectionStatus
+from opensquilla.onboarding.redaction import redact_error_text
+from opensquilla.onboarding.section_status import SECTION_STATUS_DISPLAY, SectionStatus
 from opensquilla.onboarding.setup_engine import (
+    AUDIO_SECTION_ALIASES,
     ENSEMBLE_SECTION_ALIASES,
     IMAGE_GENERATION_SECTION_ALIASES,
     MEMORY_EMBEDDING_SECTION_ALIASES,
+    SetupEngine,
     setup_catalog_payload,
 )
 from opensquilla.onboarding.setup_paths import web_setup_url
 from opensquilla.onboarding.status import OnboardingStatus, get_onboarding_status
-from opensquilla.search.types import DEFAULT_SEARCH_MAX_RESULTS
+from opensquilla.router_tiers import DEFAULT_TEXT_TIER, TEXT_TIERS
+
+# Exit code for a user-initiated cancellation (Esc/Ctrl+C in the wizard).
+# 130 = 128 + SIGINT, the conventional shell exit status for an interrupt;
+# there is no earlier repo convention for wizard cancellation, so this pins it.
+_CANCELLED_EXIT_CODE = 130
 
 _STATUS_BLOCKING = {SectionStatus.MISSING, SectionStatus.DEGRADED, SectionStatus.UNKNOWN}
-_STATUS_DISPLAY: dict[SectionStatus, str] = {
-    SectionStatus.OK: "Ready",
-    SectionStatus.OPTIONAL: "Later",
-    SectionStatus.MISSING: "Missing",
-    SectionStatus.DEGRADED: "Needs action",
-    SectionStatus.UNKNOWN: "Check",
-}
+# Single source of truth for the status words lives in section_status so the
+# table below and the next-steps capability summary can never diverge.
+_STATUS_DISPLAY: dict[SectionStatus, str] = SECTION_STATUS_DISPLAY
 _LLM_SOURCE_DISPLAY = {
     "explicit": "explicit key",
     "env": "env key visible",
@@ -180,7 +185,47 @@ def _format_config_load_error(exc: Exception) -> str:
     return str(exc).splitlines()[0]
 
 
-def _exit_config_load_error(exc: Exception, path: str | Path | None = None) -> None:
+def _format_validation_error(exc: ValidationError) -> str:
+    """Render a ValidationError as a field-naming summary.
+
+    Never echoes pydantic's ``input_value`` dump — a mispasted secret must
+    not surface on stderr. Only field paths and validator messages appear,
+    and the free-text redactor runs as a final guard so a validator message
+    that interpolates the offending value cannot leak a secret either
+    (mirrors the channel-entry formatter in ``onboarding.mutations``).
+    """
+    parts: list[str] = []
+    for error in exc.errors(include_url=False, include_context=False, include_input=False):
+        loc = ".".join(str(item) for item in error.get("loc", ()) or ())
+        msg = str(error.get("msg") or "invalid value")
+        parts.append(f"{loc}: {msg}" if loc else msg)
+    detail = "; ".join(parts) or "invalid value"
+    return redact_error_text(detail, max_len=500)
+
+
+def _exit_cancelled(exc: BaseException) -> NoReturn:
+    """Productize a wizard cancellation (Esc/Ctrl+C) at the CLI boundary."""
+    error_console.print(
+        "[yellow]Setup cancelled[/yellow] "
+        "[dim]— rerun `opensquilla onboard` when you are ready.[/dim]"
+    )
+    raise typer.Exit(code=_CANCELLED_EXIT_CODE) from exc
+
+
+def _print_restart_guidance(result: object, config_path: Path | None = None) -> None:
+    """Surface ``PersistResult.restart_required`` instead of discarding it."""
+    if not getattr(result, "restart_required", False):
+        return
+    config_arg = _config_cli_arg(config_path)
+    console.print(
+        f"[{ACCENT_SOFT}]◆[/] [bold]restart required[/] "
+        "[dim]— apply this change with[/dim] "
+        f"[{ACCENT_SOFT}]opensquilla gateway restart{markup_escape(config_arg)}[/]",
+        soft_wrap=True,
+    )
+
+
+def _exit_config_load_error(exc: Exception, path: str | Path | None = None) -> NoReturn:
     target, _ = resolve_config_path(path)
     config_arg = _config_cli_arg(target)
     error_console.print(
@@ -202,6 +247,23 @@ def _load_config_for_cli(path: str | Path | None = None):
         return load_config(path)
     except (OSError, tomllib.TOMLDecodeError, ValidationError) as exc:
         _exit_config_load_error(exc, path)
+
+
+def _has_stored_setup_state(cfg) -> bool:
+    """True when the loaded config already carries provider or router state.
+
+    Gates the keep-current default of ``onboard --router``: a re-save over an
+    install with explicit ``[llm]`` or ``[squilla_router]`` state must not
+    re-apply a router profile, while a fresh install keeps today's
+    recommended-profile first-run behavior. Env-absorbed credentials (marked
+    runtime secrets) do not count — a key exported in the shell says nothing
+    about provider/model/router preferences.
+    """
+    secret_paths: set[str] = getattr(cfg, "_runtime_secret_paths", set()) or set()
+    llm_fields = {
+        name for name in cfg.llm.model_fields_set if f"llm.{name}" not in secret_paths
+    }
+    return bool(llm_fields or cfg.squilla_router.model_fields_set)
 
 
 def _format_section_names(status: OnboardingStatus, names: list[str]) -> str:
@@ -230,7 +292,8 @@ def _status_cockpit_summary(status: OnboardingStatus) -> str:
 def _config_cli_arg(config_path: Path | None) -> str:
     if config_path is None:
         return ""
-    return f" --config {shlex.quote(str(config_path))}"
+    # Platform-appropriate quoting: PowerShell on Windows, POSIX elsewhere.
+    return f" --config {quote_cli_arg(config_path)}"
 
 
 def _headless_section_paths(
@@ -429,20 +492,35 @@ onboard_app = typer.Typer(
 def onboard_command(
     ctx: typer.Context,
     provider: str = typer.Option("", "--provider", help="Provider id to configure."),
-    model: str = typer.Option("", "--model", help="Model id for the provider."),
+    model: str | None = typer.Option(
+        None,
+        "--model",
+        help="Model id for the provider (unchanged if omitted on a re-save).",
+    ),
     api_key: str = typer.Option("", "--api-key", help="Provider key to store in config."),
     api_key_env: str = typer.Option(
         "",
         "--api-key-env",
         help="Read the provider key from this environment variable.",
     ),
-    base_url: str = typer.Option("", "--base-url", help="Custom provider base URL."),
-    proxy: str = typer.Option("", "--proxy", help="Explicit HTTP proxy URL for upstream calls."),
-    router: str = typer.Option(
-        "recommended",
+    base_url: str | None = typer.Option(
+        None,
+        "--base-url",
+        help="Custom provider base URL (unchanged if omitted on a re-save).",
+    ),
+    proxy: str | None = typer.Option(
+        None,
+        "--proxy",
+        help="Explicit HTTP proxy URL for upstream calls (unchanged if omitted on a re-save).",
+    ),
+    router: str | None = typer.Option(
+        None,
         "--router",
         metavar="MODE",
-        help="Router profile: recommended, openrouter-mix, or disabled.",
+        help=(
+            "Router profile: recommended, openrouter-mix, or disabled. "
+            "Unchanged if omitted on a re-save; recommended on first setup."
+        ),
     ),
     minimal: bool = typer.Option(False, "--minimal", help="Keep interactive setup to core fields."),
     skip_channels: bool = typer.Option(
@@ -506,19 +584,45 @@ def onboard_command(
             )
 
     if provider:
+        # Productize config-file load failures up front so a corrupt config
+        # surfaces as the standard config-error handoff instead of leaking a
+        # mutation-shaped error (or a raw traceback) below. The loaded config
+        # feeds the SetupEngine directly, so this path parses the file once
+        # before the save instead of loading, discarding, and loading again.
+        cfg_before = _load_config_for_cli(config_path)
+        # Keep-current router semantics: an omitted --router never touches
+        # the stored router state on an already-configured install (a key
+        # rotation must not re-enable a disabled router or rewrite a custom
+        # tier ladder/model); on a fresh install it keeps today's first-run
+        # behavior and applies the recommended profile.
+        router_mode = router
+        if router_mode is None and not _has_stored_setup_state(cfg_before):
+            router_mode = "recommended"
         try:
-            result = run_noninteractive_provider_configure(
-                provider,
+            engine = SetupEngine(cfg_before, path=config_path)
+            engine.apply(
+                "provider",
                 {
+                    "providerId": provider,
                     "model": model,
-                    "api_key": api_key,
-                    "api_key_env": api_key_env,
-                    "base_url": base_url,
+                    "apiKey": api_key,
+                    "apiKeyEnv": api_key_env,
+                    "baseUrl": base_url,
                     "proxy": proxy,
-                    "router": router,
                 },
-                path=config_path,
             )
+            if router_mode:
+                engine.apply("router", {"mode": router_mode})
+            result = engine.persist()
+        except ValidationError as exc:
+            # Handle before ValueError (its base class): pydantic's message
+            # embeds input_value, which can echo a secret pasted into the
+            # wrong field. Print a redacted, field-naming summary instead.
+            error_console.print(
+                "[red]Error:[/red] invalid provider configuration: "
+                f"{markup_escape(_format_validation_error(exc))}"
+            )
+            raise typer.Exit(code=2) from exc
         except (KeyError, TypeError, ValueError) as exc:
             error_console.print(f"[red]Error:[/red] {markup_escape(str(exc))}")
             if "model is required" in str(exc):
@@ -534,6 +638,7 @@ def onboard_command(
                 provider,
             )
         )
+        _print_restart_guidance(result, config_path)
         cfg = _load_config_for_cli(result.path)
         _print_env_reference_warnings(cfg)
         console.print(
@@ -546,6 +651,13 @@ def onboard_command(
             raise typer.Exit(code=1)
         return
 
+    # Pre-validate the config load so a corrupt or unreadable file surfaces
+    # as the standard config-error handoff BEFORE the wizard collects any
+    # input; the wizard-phase handlers below then never have to guess
+    # whether an I/O failure was a load or a write problem. The --if-needed
+    # gate above already load-validated the config on its way here.
+    if not if_needed:
+        _load_config_for_cli(config_path)
     options = OnboardOptions(
         skip_channels=skip_channels,
         skip_search=skip_search,
@@ -557,12 +669,43 @@ def onboard_command(
         api_key_env=api_key_env or None,
         base_url=base_url or None,
         proxy=proxy or None,
+        # None = keep-current router on a re-save; the wizard resolves the
+        # first-run default itself.
         router_mode=router,
         minimal=minimal,
         skip_migration=skip_migration,
         config_path=config_path,
     )
-    result = run_interactive_onboard(options)
+    try:
+        result = run_interactive_onboard(options)
+    except (UserCancelledError, KeyboardInterrupt, EOFError) as exc:
+        # EOFError covers Ctrl+D / exhausted piped stdin at a prompt — the
+        # same operator intent as Esc/Ctrl+C, so the same productized exit.
+        _exit_cancelled(exc)
+    except (tomllib.TOMLDecodeError, ValidationError) as exc:
+        # Corrupt config discovered mid-wizard (e.g. re-loaded after an
+        # out-of-band edit): route through the same productized handoff as
+        # `--if-needed`/`status` instead of a raw traceback.
+        _exit_config_load_error(exc, config_path)
+    except OSError as exc:
+        # The config loaded fine above, so an OSError out of the wizard is a
+        # runtime I/O failure (disk full at persist time, permissions revoked
+        # mid-wizard) — not a config-load problem, and the load-error "edit
+        # or move this config" recovery advice would be wrong here.
+        error_console.print(
+            f"[red]Error:[/red] setup hit a file I/O error: {markup_escape(str(exc))}"
+        )
+        error_console.print(
+            "[dim]Check disk space and permissions for the config directory, "
+            "then rerun `opensquilla onboard`.[/dim]"
+        )
+        raise typer.Exit(code=2) from exc
+    except (KeyError, TypeError, ValueError) as exc:
+        # Mutation-level validation failures (e.g. "model is required") must
+        # exit like the headless path does, not as a raw traceback after the
+        # operator already typed the credentials.
+        error_console.print(f"[red]Error:[/red] {markup_escape(str(exc))}")
+        raise typer.Exit(code=2) from exc
     if "tty_required" in result.warnings:
         raise typer.Exit(code=2)
     console.print(
@@ -571,6 +714,7 @@ def onboard_command(
             str(result.path),
         )
     )
+    _print_restart_guidance(result, config_path)
     cfg = _load_config_for_cli(result.path)
     _print_env_reference_warnings(cfg)
     console.print(
@@ -591,6 +735,14 @@ _STATUS_STYLE: dict[SectionStatus, str] = {
 
 
 def _status_payload(status: OnboardingStatus) -> dict:
+    """Machine-readable ``onboard status --json`` payload.
+
+    Superset contract: every key of the RPC ``onboarding.status`` payload
+    (contract-frozen in tests/test_contracts/test_onboarding_status.py) must
+    appear here under the same name so scripts can consume either surface;
+    ``sectionAliases`` plus the ``provider`` alias entries are the only
+    CLI-side additions. Pinned by tests/test_cli/test_onboard_status_json.py.
+    """
     sections = {name: state.value for name, state in status.sections.items()}
     section_details = {name: dict(detail) for name, detail in status.section_details.items()}
     if "llm" in sections:
@@ -605,22 +757,34 @@ def _status_payload(status: OnboardingStatus) -> dict:
         "sections": sections,
         "sectionDetails": section_details,
         "sectionAliases": {"llm": "provider"},
+        "llmConfigured": status.llm_configured,
         "llmSource": status.llm_source,
         "llmEnvKey": status.llm_env_key,
+        "llmCredentialStatus": dict(status.llm_credential_status),
+        "searchConfigured": status.search_configured,
         "searchProvider": status.search_provider,
         "searchSource": status.search_source,
         "searchEnvKey": status.search_env_key,
+        "imageGenerationConfigured": status.image_generation_configured,
         "imageGenerationEnabled": status.image_generation_enabled,
         "imageGenerationSource": status.image_generation_source,
         "imageGenerationProvider": status.image_generation_provider,
         "imageGenerationPrimary": status.image_generation_primary,
         "imageGenerationEnvKey": status.image_generation_env_key,
+        "audioConfigured": status.audio_configured,
+        "audioEnabled": status.audio_enabled,
+        "audioSource": status.audio_source,
+        "audioProvider": status.audio_provider,
+        "audioEnvKey": status.audio_env_key,
         "memoryEmbeddingConfigured": status.memory_embedding_configured,
         "memoryEmbeddingProvider": status.memory_embedding_provider,
         "memoryEmbeddingSource": status.memory_embedding_source,
         "memoryEmbeddingEnvKey": status.memory_embedding_env_key,
+        "ensembleCredentialStatus": list(status.ensemble_credential_status),
         "envRecoveryCommands": env_recovery_commands(status),
         "channelCount": status.channel_count,
+        "channelsConfigured": status.channels_configured,
+        "warnings": list(status.warnings),
     }
 
 
@@ -638,7 +802,8 @@ _CATALOG_COMMANDS = {
         "--api-key-env <ENV_NAME>"
     ),
     "routerProfiles": (
-        "opensquilla onboard configure router --router recommended --default-tier c1"
+        "opensquilla onboard configure router --router recommended "
+        f"--default-tier {DEFAULT_TEXT_TIER}"
     ),
     "searchProviders": (
         "opensquilla onboard configure search --search-provider <provider> "
@@ -652,6 +817,9 @@ _CATALOG_COMMANDS = {
         "opensquilla onboard configure image --image-provider <provider> "
         "--primary <model> --api-key-env <ENV_NAME>"
     ),
+    # Voice audio has no headless configure recipe yet; the Web UI setup page
+    # is the supported configuration surface.
+    "audioProviders": "opensquilla gateway run",
     "memoryEmbeddingProviders": (
         "opensquilla onboard configure memory --memory-provider <provider> "
         "--model <model> --api-key-env <ENV_NAME>"
@@ -664,6 +832,7 @@ _CATALOG_SECTION_COMMANDS = {
     "searchProviders": "opensquilla onboard catalog search",
     "channels": "opensquilla onboard catalog channels",
     "imageGenerationProviders": "opensquilla onboard catalog image",
+    "audioProviders": "opensquilla onboard catalog audio",
     "memoryEmbeddingProviders": "opensquilla onboard catalog memory",
 }
 
@@ -673,6 +842,7 @@ _CATALOG_TITLES = {
     "searchProviders": "Web search providers",
     "channels": "Channel types",
     "imageGenerationProviders": "Image generation providers",
+    "audioProviders": "Voice audio providers",
     "memoryEmbeddingProviders": "Memory embedding providers",
 }
 
@@ -784,6 +954,11 @@ def _catalog_try_command(
             command += f" --base-url {_catalog_value(row, 'defaultBaseUrl', '<base-url>')}"
         return f"{command}{config_arg}"
 
+    if name == "audioProviders":
+        # No headless configure recipe exists for voice audio yet; point at
+        # the gateway so the Web UI setup page can finish the job.
+        return f"opensquilla gateway run{config_arg}"
+
     if name == "memoryEmbeddingProviders":
         provider_id = _catalog_value(row, "providerId", "<provider>")
         command = (
@@ -878,6 +1053,22 @@ def _print_list_catalog(
             _print_catalog_try_command(name, row, config_arg)
         return
 
+    if name == "audioProviders":
+        console.print("[bold]OpenSquilla voice audio provider options[/bold]")
+        console.print(
+            "Configure voice audio from the Web UI setup page after starting "
+            "the gateway with the Try command."
+        )
+        for row in rows:
+            _print_catalog_line(
+                f"- {_catalog_value(row, 'providerId')}: {_catalog_value(row, 'label')}"
+                f" | {_catalog_value(row, 'deployment')}"
+                f" | key {_catalog_key_requirement(row)}"
+                f" | tts {_catalog_value(row, 'defaultTtsModel', 'custom')}"
+            )
+            _print_catalog_try_command(name, row, config_arg)
+        return
+
     if name == "memoryEmbeddingProviders":
         console.print("[bold]OpenSquilla memory embedding provider options[/bold]")
         _print_catalog_recipe_hint()
@@ -896,7 +1087,7 @@ def _router_tier_summary(profile: dict[str, object]) -> str:
     if not isinstance(tiers, dict):
         return ""
     summary: list[str] = []
-    for tier in ("c0", "c1", "c2", "c3"):
+    for tier in TEXT_TIERS:
         tier_spec = tiers.get(tier)
         if isinstance(tier_spec, dict):
             summary.append(f"{tier}: {tier_spec.get('model', '')}")
@@ -1074,6 +1265,79 @@ def onboard_status_command(
             _print_status_path(label, command, suffix)
 
 
+# Canonical wizard slug per accepted configure section spelling. Anything
+# outside this map is not configurable via `onboard configure` and exits 2.
+_CONFIGURE_SECTION_SLUGS: dict[str, str] = {
+    "provider": "provider",
+    "providers": "provider",
+    "router": "router",
+    **{alias: "ensemble" for alias in ENSEMBLE_SECTION_ALIASES},
+    "channel": "channels",
+    "channels": "channels",
+    "search": "search",
+    **{alias: "image-generation" for alias in IMAGE_GENERATION_SECTION_ALIASES},
+    **{alias: "memory-embedding" for alias in MEMORY_EMBEDDING_SECTION_ALIASES},
+}
+_CONFIGURE_SECTION_HINT = (
+    "provider, router, ensemble, channels, search, image (alias for "
+    "image-generation), or memory (alias for memory-embedding)"
+)
+
+
+def _exit_unknown_configure_section(selected: str, normalized: str) -> NoReturn:
+    if normalized in AUDIO_SECTION_ALIASES:
+        error_console.print(
+            "[red]Error:[/red] voice audio has no headless configure recipe yet; "
+            "view options with `opensquilla onboard catalog audio` and configure "
+            "it from the Web UI setup page."
+        )
+    else:
+        error_console.print(
+            f"[red]Error:[/red] unknown configure section: {markup_escape(repr(selected))}"
+        )
+        error_console.print(f"[dim]Sections: {_CONFIGURE_SECTION_HINT}.[/dim]")
+    raise typer.Exit(code=2)
+
+
+def _missing_headless_gate_flags(
+    normalized: str,
+    given: dict[str, bool],
+) -> list[str]:
+    """Name the gate flag(s) a headless `configure <section>` call still needs.
+
+    Called only when explicit flags were passed but no headless branch
+    matched — silently dropping those flags (the pre-fix behavior) made
+    `configure router --default-tier c2` a no-op with exit 0.
+    """
+    if normalized in {"provider", "providers"}:
+        return ["--provider"]
+    if normalized == "router":
+        return ["--router"]
+    if normalized in ENSEMBLE_SECTION_ALIASES:
+        return ["--enabled/--disabled (or another ensemble flag)"]
+    if normalized == "search":
+        return ["--search-provider"]
+    if normalized in {"channel", "channels"}:
+        return [flag for flag in ("--channel-type", "--name") if not given[flag]]
+    if normalized in IMAGE_GENERATION_SECTION_ALIASES:
+        return ["--image-provider"]
+    if normalized in MEMORY_EMBEDDING_SECTION_ALIASES:
+        return ["--memory-provider"]
+    return []
+
+
+def _exit_incomplete_headless_flags(normalized: str, given: dict[str, bool]) -> NoReturn:
+    missing = _missing_headless_gate_flags(normalized, given)
+    flags = " and ".join(missing) if missing else "its gate flag"
+    error_console.print(
+        f"[red]Error:[/red] `configure {markup_escape(normalized)}` received "
+        f"explicit flags but is missing {markup_escape(flags)}; no changes were "
+        "made. Add the missing flag(s), or rerun without flags for the guided "
+        "wizard."
+    )
+    raise typer.Exit(code=2)
+
+
 @onboard_app.command("configure")
 def configure_command(
     section_arg: str = typer.Argument(
@@ -1107,10 +1371,10 @@ def configure_command(
         help="Explicitly apply this router preset id when saving the provider.",
         rich_help_panel="Text provider",
     ),
-    model: str = typer.Option(
-        "",
+    model: str | None = typer.Option(
+        None,
         "--model",
-        help="Model id for provider or remote memory embedding.",
+        help="Model id for provider or remote memory embedding (unchanged if omitted).",
         rich_help_panel="Shared keys and endpoints",
     ),
     api_key: str = typer.Option(
@@ -1125,16 +1389,22 @@ def configure_command(
         help="Read that capability key from this environment variable.",
         rich_help_panel="Shared keys and endpoints",
     ),
-    base_url: str = typer.Option(
-        "",
+    base_url: str | None = typer.Option(
+        None,
         "--base-url",
-        help="Custom upstream base URL for provider, image, or remote memory.",
+        help=(
+            "Custom upstream base URL for provider, image, or remote memory "
+            "(unchanged if omitted)."
+        ),
         rich_help_panel="Shared keys and endpoints",
     ),
-    proxy: str = typer.Option(
-        "",
+    proxy: str | None = typer.Option(
+        None,
         "--proxy",
-        help="Explicit HTTP proxy URL for provider or search upstream calls.",
+        help=(
+            "Explicit HTTP proxy URL for provider or search upstream calls "
+            "(unchanged if omitted)."
+        ),
         rich_help_panel="Shared keys and endpoints",
     ),
     router: str = typer.Option(
@@ -1146,7 +1416,7 @@ def configure_command(
     default_tier: str = typer.Option(
         "",
         "--default-tier",
-        help="Default router text tier: c0, c1, c2, or c3.",
+        help=f"Default router text tier: {', '.join(TEXT_TIERS)}.",
         rich_help_panel="Router",
     ),
     enabled: bool | None = typer.Option(
@@ -1185,28 +1455,34 @@ def configure_command(
         help="Search provider id.",
         rich_help_panel="Search",
     ),
-    max_results: int = typer.Option(
-        DEFAULT_SEARCH_MAX_RESULTS,
+    max_results: int | None = typer.Option(
+        None,
         "--max-results",
-        help="Default Web search result limit.",
+        help="Default Web search result limit (unchanged if omitted).",
         rich_help_panel="Search",
     ),
-    use_env_proxy: bool = typer.Option(
-        False,
+    use_env_proxy: bool | None = typer.Option(
+        None,
         "--use-env-proxy/--no-use-env-proxy",
-        help="Let Web search use HTTP(S)_PROXY from the gateway environment.",
+        help=(
+            "Let Web search use HTTP(S)_PROXY from the gateway environment "
+            "(unchanged if omitted)."
+        ),
         rich_help_panel="Search",
     ),
     fallback_policy: str = typer.Option(
-        "off",
+        "",
         "--fallback-policy",
-        help="Search fallback policy: off or network.",
+        help="Search fallback policy: off or network (unchanged if omitted).",
         rich_help_panel="Search",
     ),
-    diagnostics: bool = typer.Option(
-        False,
+    diagnostics: bool | None = typer.Option(
+        None,
         "--diagnostics/--no-diagnostics",
-        help="Include search provider attempt/error details for troubleshooting.",
+        help=(
+            "Include search provider attempt/error details for troubleshooting "
+            "(unchanged if omitted)."
+        ),
         rich_help_panel="Search",
     ),
     channel_type: str = typer.Option(
@@ -1240,10 +1516,10 @@ def configure_command(
         help="Image provider id.",
         rich_help_panel="Image generation",
     ),
-    image_enabled: bool = typer.Option(
-        True,
+    image_enabled: bool | None = typer.Option(
+        None,
         "--image-enabled/--no-image-enabled",
-        help="Enable or disable image generation.",
+        help="Enable or disable image generation (unchanged if omitted).",
         rich_help_panel="Image generation",
     ),
     primary: str = typer.Option(
@@ -1273,10 +1549,47 @@ def configure_command(
 ) -> None:
     """Reconfigure provider, router, ensemble, channels, search, image generation, or memory."""
     selected = section or section_arg
+    # Which headless flags the operator explicitly passed (None/""/[] means
+    # "not given" — the None-defaulted options keep stored values downstream).
+    given = {
+        "--provider": bool(provider),
+        "--preset": bool(preset),
+        "--model": model is not None,
+        "--api-key": bool(api_key),
+        "--api-key-env": bool(api_key_env),
+        "--base-url": base_url is not None,
+        "--proxy": proxy is not None,
+        "--router": bool(router),
+        "--default-tier": bool(default_tier),
+        "--enabled/--disabled": enabled is not None,
+        "--selection-mode": bool(selection_mode),
+        "--model-options": bool(model_options),
+        "--min-successful-proposers": min_successful_proposers is not None,
+        "--all-failed-policy": bool(all_failed_policy),
+        "--search-provider": bool(search_provider),
+        "--max-results": max_results is not None,
+        "--use-env-proxy/--no-use-env-proxy": use_env_proxy is not None,
+        "--fallback-policy": bool(fallback_policy),
+        "--diagnostics/--no-diagnostics": diagnostics is not None,
+        "--channel-type": bool(channel_type),
+        "--name": bool(name),
+        "--token": bool(token),
+        "--field": bool(fields),
+        "--image-provider": bool(image_provider),
+        "--image-enabled/--no-image-enabled": image_enabled is not None,
+        "--primary": bool(primary),
+        "--memory-provider": bool(memory_provider),
+        "--onnx-dir": bool(onnx_dir),
+    }
+    any_flag_given = any(given.values())
+    wizard_section: str | None = None
     if selected:
+        normalized = selected.strip().lower()
+        wizard_section = _CONFIGURE_SECTION_SLUGS.get(normalized)
+        if wizard_section is None:
+            _exit_unknown_configure_section(selected, normalized)
         from opensquilla.onboarding.setup_engine import SetupEngine
 
-        normalized = selected.strip().lower()
         try:
             if normalized in {"provider", "providers"} and provider:
                 engine = SetupEngine(path=config_path)
@@ -1294,6 +1607,7 @@ def configure_command(
                 )
                 result = engine.persist()
                 _print_saved_path(result.path)
+                _print_restart_guidance(result, config_path)
                 _print_env_reference_warnings(_load_config_for_cli(result.path))
                 return
             if normalized == "router" and router:
@@ -1301,6 +1615,7 @@ def configure_command(
                 engine.apply("router", {"mode": router, "defaultTier": default_tier})
                 result = engine.persist()
                 _print_saved_path(result.path)
+                _print_restart_guidance(result, config_path)
                 _print_env_reference_warnings(_load_config_for_cli(result.path))
                 return
             ensemble_flags_given = (
@@ -1332,6 +1647,7 @@ def configure_command(
                 )
                 result = engine.persist()
                 _print_saved_path(result.path)
+                _print_restart_guidance(result, config_path)
                 return
             if normalized == "search" and search_provider:
                 engine = SetupEngine(path=config_path)
@@ -1341,15 +1657,17 @@ def configure_command(
                         "providerId": search_provider,
                         "apiKey": api_key,
                         "apiKeyEnv": api_key_env,
+                        # None = keep the stored global search settings.
                         "maxResults": max_results,
                         "proxy": proxy,
                         "useEnvProxy": use_env_proxy,
-                        "fallbackPolicy": fallback_policy,
+                        "fallbackPolicy": fallback_policy or None,
                         "diagnostics": diagnostics,
                     },
                 )
                 result = engine.persist()
                 _print_saved_path(result.path)
+                _print_restart_guidance(result, config_path)
                 _print_env_reference_warnings(_load_config_for_cli(result.path))
                 return
             if normalized in {"channel", "channels"} and channel_type and name:
@@ -1365,9 +1683,10 @@ def configure_command(
                 engine.apply("channel", {"entry": entry})
                 result = engine.persist()
                 _print_saved_path(result.path)
+                _print_restart_guidance(result, config_path)
                 return
             if normalized in IMAGE_GENERATION_SECTION_ALIASES and (
-                image_provider or not image_enabled
+                image_provider or image_enabled is False
             ):
                 engine = SetupEngine(path=config_path)
                 engine.apply(
@@ -1378,11 +1697,14 @@ def configure_command(
                         "apiKey": api_key,
                         "apiKeyEnv": api_key_env,
                         "baseUrl": base_url,
+                        # None = keep the stored enabled flag (a deliberate
+                        # enabled=false survives a key rotation).
                         "enabled": image_enabled,
                     },
                 )
                 result = engine.persist()
                 _print_saved_path(result.path)
+                _print_restart_guidance(result, config_path)
                 _print_env_reference_warnings(_load_config_for_cli(result.path))
                 return
             if normalized in MEMORY_EMBEDDING_SECTION_ALIASES and memory_provider:
@@ -1400,14 +1722,55 @@ def configure_command(
                 )
                 result = engine.persist()
                 _print_saved_path(result.path)
+                _print_restart_guidance(result, config_path)
                 _print_env_reference_warnings(_load_config_for_cli(result.path))
                 return
+            if any_flag_given:
+                # Explicit flags without the section's gate flag: refuse
+                # instead of silently forwarding nothing to the wizard.
+                _exit_incomplete_headless_flags(normalized, given)
         except (OSError, tomllib.TOMLDecodeError, ValidationError) as exc:
             _exit_config_load_error(exc, config_path)
         except (KeyError, TypeError, ValueError) as exc:
             error_console.print(f"[red]Error:[/red] {markup_escape(exc)}")
             raise typer.Exit(code=2) from exc
+    elif any_flag_given:
+        error_console.print(
+            "[red]Error:[/red] configuration flags need a target section, e.g. "
+            "`opensquilla onboard configure router --router recommended`; "
+            "no changes were made."
+        )
+        error_console.print(f"[dim]Sections: {_CONFIGURE_SECTION_HINT}.[/dim]")
+        raise typer.Exit(code=2)
 
-    interactive_result = run_interactive_configure(selected or None, config_path=config_path)
+    try:
+        interactive_result = run_interactive_configure(
+            wizard_section, config_path=config_path
+        )
+    except (UserCancelledError, KeyboardInterrupt, EOFError) as exc:
+        # EOFError covers Ctrl+D / exhausted piped stdin at a prompt — the
+        # same operator intent as Esc/Ctrl+C, so the same productized exit.
+        _exit_cancelled(exc)
+    except (OSError, tomllib.TOMLDecodeError, ValidationError) as exc:
+        _exit_config_load_error(exc, config_path)
+    except (KeyError, TypeError, ValueError) as exc:
+        # Mutation-level validation failures reachable from the wizard (e.g.
+        # a blank required channel secret) must surface like the headless
+        # boundary above — productized message, exit 2, no traceback.
+        error_console.print(f"[red]Error:[/red] {markup_escape(str(exc))}")
+        raise typer.Exit(code=2) from exc
     if interactive_result is not None:
         _print_saved_path(interactive_result.path)
+        _print_restart_guidance(interactive_result, config_path)
+        return
+    if not selected:
+        # Bare interactive `onboard configure` can exit the hub without changes
+        # via "Exit (nothing changed)"; that is a successful no-op, not the
+        # non-TTY error path below.
+        from opensquilla.onboarding.flow import _is_tty
+
+        if _is_tty():
+            return
+    # ``run_interactive_configure`` returns ``None`` only after printing the
+    # non-TTY hint; exit 2 like bare `onboard` so scripts see the failure.
+    raise typer.Exit(code=2)

@@ -24,7 +24,7 @@ from opensquilla.cli.chat.turn import TurnResult
 from opensquilla.cli.tui.adapters import slash_standalone as _standalone_slash_adapter
 from opensquilla.cli.tui.adapters.commands import is_exit_command
 from opensquilla.cli.tui.backend.contracts import TuiOutputHandle
-from opensquilla.cli.ui import console
+from opensquilla.cli.ui import console, error_panel
 from opensquilla.engine.commands import Surface
 from opensquilla.permissions import configured_default_elevated
 
@@ -83,6 +83,7 @@ class StandaloneRuntimeDependencies:
     sync_slash_adapter_io: Callable[[], None]
     get_tui_output: Callable[[StandaloneRuntimeScope], TuiOutputHandle | None]
     output_console: Any = console
+    error_panel_factory: Callable[[str], Any] = error_panel
 
 
 def cli_sender_id() -> str:
@@ -240,8 +241,19 @@ async def run_standalone_chat(
     state = ChatSessionState(session_key=session_key, model=model)
     turn_runner = build_turn_runner_from_services(svc)
     session_context = StandaloneSessionContext.create(state=state, tool_ctx=tool_ctx)
+    # The explicit user request (--model here, /model later) is tracked apart
+    # from state.model: after a turn state.model records the model that actually
+    # ran (display only), and feeding that back into dispatch as an explicit
+    # override would pin the session to the router's first pick from turn 2 on.
+    requested_model = model
+
+    def _report_dispatch_failure(exc: Exception) -> None:
+        detail = str(exc).strip()
+        message = f"{type(exc).__name__}: {detail}" if detail else type(exc).__name__
+        deps.output_console.print(deps.error_panel_factory(message))
 
     async def _dispatch_input(user_input: str) -> bool:
+        nonlocal requested_model
         if user_input is None or is_exit_command(user_input, Surface.CLI_STANDALONE):
             deps.output_console.print("[yellow]Goodbye.[/yellow]")
             return False
@@ -318,7 +330,7 @@ async def run_standalone_chat(
             slash_context = _standalone_slash_adapter.StandaloneSlashContext(
                 state=session_context.state,
                 session_key=session_context.session_key,
-                model=session_context.model,
+                model=requested_model,
                 tool_ctx=session_context.tool_ctx,
                 slash_services=deps.slash_services_factory(svc),
                 runtime_services=svc,
@@ -330,15 +342,23 @@ async def run_standalone_chat(
                 stream_response=_stream_response,
                 image_command_handler=_image_command_handler,
             )
-            handled = await _standalone_slash_adapter.handle_standalone_slash_command(
-                stripped,
-                slash_context,
-            )
+            try:
+                handled = await _standalone_slash_adapter.handle_standalone_slash_command(
+                    stripped,
+                    slash_context,
+                )
+            except Exception as exc:
+                _report_dispatch_failure(exc)
+                handled = True
+            # Only slash handlers (/model) may change the requested model; the
+            # session/state bookkeeping keeps whatever the handler left behind,
+            # including partial /new progress before a failure.
+            requested_model = slash_context.model
             session_context.replace_session(
                 session_key=slash_context.session_key,
                 tool_ctx=slash_context.tool_ctx,
                 state=slash_context.state,
-                model=slash_context.model,
+                model=slash_context.state.model,
             )
             return handled
 
@@ -346,17 +366,21 @@ async def run_standalone_chat(
             "PendingInputProvider | None",
             session_context.scope.get("pending_input_provider"),
         )
-        result = await deps.stream_response(
-            turn_runner,
-            session_context.session_key,
-            session_context.tool_ctx,
-            user_input,
-            model=session_context.model,
-            svc=svc,
-            timeout=timeout,
-            tui_output=deps.get_tui_output(session_context.scope),
-            pending_input_provider=pending_input_provider,
-        )
+        try:
+            result = await deps.stream_response(
+                turn_runner,
+                session_context.session_key,
+                session_context.tool_ctx,
+                user_input,
+                model=requested_model,
+                svc=svc,
+                timeout=timeout,
+                tui_output=deps.get_tui_output(session_context.scope),
+                pending_input_provider=pending_input_provider,
+            )
+        except Exception as exc:
+            _report_dispatch_failure(exc)
+            return True
         session_context.state.model = result.model_after or session_context.model
         session_context.state.transcript.add("user", user_input)
         session_context.state.transcript.add("assistant", result.text)

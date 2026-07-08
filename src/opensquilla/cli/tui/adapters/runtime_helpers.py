@@ -57,6 +57,22 @@ class TuiPluginOutputHandle:
         instead before routing a host-only command (e.g. ``/theme``)."""
         return callable(getattr(self._output_handle, "send_message", None))
 
+    @property
+    def supports_request_approval(self) -> bool:
+        """Whether the wrapped handle can run the host approval round-trip.
+
+        Mirrors ``supports_send_message``: this wrapper's ``request_approval``
+        is always callable, so approval callers must check this flag before
+        preferring it over a plain console prompt."""
+        return callable(getattr(self._output_handle, "request_approval", None))
+
+    async def request_approval(self, request: dict[str, object]) -> object | None:
+        requester = getattr(self._output_handle, "request_approval", None)
+        if requester is None:
+            return None
+        response: object | None = await requester(request)
+        return response
+
     def stream_output(self) -> AbstractAsyncContextManager[Callable[[str], None]]:
         return self._output_handle.stream_output()
 

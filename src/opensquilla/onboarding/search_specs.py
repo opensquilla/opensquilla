@@ -57,7 +57,15 @@ def _fields_for(spec: SearchProviderSpec) -> tuple[SearchProviderSetupField, ...
             label="API key",
             field_type="password",
             required=spec.requires_api_key,
-            description=f"Stored under env key {spec.env_key}." if spec.env_key else "",
+            description=(
+                (
+                    "Saved as plaintext search_api_key in the config file and "
+                    f"used ahead of {spec.env_key}. Leave blank to read "
+                    f"{spec.env_key} from the environment instead."
+                )
+                if spec.env_key
+                else ""
+            ),
             secret=True,
         ),
         SearchProviderSetupField(

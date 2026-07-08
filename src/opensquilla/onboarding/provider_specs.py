@@ -180,7 +180,13 @@ def _fields_for(spec: ProviderSpec) -> tuple[ProviderSetupField, ...]:
             required=spec.requires_api_key(),
             default="",
             description=(
-                f"Stored under env key {spec.env_key}." if spec.env_key else ""
+                (
+                    "Saved as plaintext api_key in the config file and used "
+                    f"ahead of {spec.env_key}. Leave blank to read "
+                    f"{spec.env_key} from the environment instead."
+                )
+                if spec.env_key
+                else "Saved as plaintext api_key in the config file."
             ),
             secret=True,
         ),

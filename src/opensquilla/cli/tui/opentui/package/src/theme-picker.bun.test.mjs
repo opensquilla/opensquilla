@@ -60,6 +60,10 @@ test("openThemePicker renders a titled panel listing every theme, active one mar
     .join("\n");
 
   for (const name of THEME_NAMES) expect(text).toContain(name); // every theme listed
+  // The grayscale degradation palette is a first-class pick in ANY color mode,
+  // not only the forced NO_COLOR fallback — pin it by name so a registry
+  // reshuffle can never drop it from the panel.
+  expect(text).toContain("monochrome");
   expect(text).toContain("theme"); // panel title
   expect(text).toContain("› opensquilla-dark"); // active theme marked
   expect(text.toLowerCase()).toContain("preview"); // the key hint
@@ -106,5 +110,45 @@ test("picker survives footer re-renders (pulse tick) instead of flashing away", 
     .join("\n");
   expect(text).toContain("theme"); // panel title still present
   expect(text).toContain("midnight"); // theme rows still present after re-renders
+  renderer.destroy?.();
+});
+
+test("paste while the picker is open never reaches the composer draft", async () => {
+  // The picker is modal for keypresses; bracketed paste must be modal too, or
+  // pasted text lands invisibly in the draft while the user previews themes.
+  applyTheme("opensquilla-dark");
+  const sent = [];
+  const { renderer } = await createTestRenderer({ width: 50, height: 20 });
+  const conversationBox = new BoxRenderable(renderer, {
+    id: "conversation", position: "absolute", left: 0, top: 0, right: 0, height: 14,
+  });
+  renderer.root.add(conversationBox);
+  const inputBox = new BoxRenderable(renderer, {
+    id: "input-region", position: "absolute", left: 0, right: 0, bottom: 0, height: 6,
+  });
+  renderer.root.add(inputBox);
+  const overlayLayer = new BoxRenderable(renderer, {
+    id: "overlay-layer", position: "absolute", left: 0, top: 0, right: 0, bottom: 0,
+    zIndex: 1000, shouldFill: false, visible: false,
+  });
+  renderer.root.add(overlayLayer);
+  const composer = createComposer({
+    renderer, BoxRenderable, TextRenderable, conversationBox, inputBox, overlayLayer,
+    footerHeight: 6, sendHostMessage: (m) => sent.push(m),
+  });
+  try {
+    composer.install();
+  } catch {
+    composer.rerender();
+  }
+
+  composer.openThemePicker();
+  renderer.keyInput.emit("paste", { bytes: new TextEncoder().encode("sneaky") });
+  renderer.keyInput.emit("keypress", { name: "return" }); // keep theme, close picker
+  // Enter on an empty draft is a no-op (no submit frame), so prove the draft
+  // stayed untouched with a sentinel: the submission must be ONLY the sentinel.
+  renderer.keyInput.emit("keypress", { name: "x", sequence: "X" });
+  renderer.keyInput.emit("keypress", { name: "return" });
+  expect(sent.find((m) => m.type === "input.submit")?.text).toBe("X");
   renderer.destroy?.();
 });

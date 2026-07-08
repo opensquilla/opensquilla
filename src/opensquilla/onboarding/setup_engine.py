@@ -32,7 +32,6 @@ from opensquilla.onboarding.provider_specs import provider_catalog_payload
 from opensquilla.onboarding.router_specs import router_catalog_payload
 from opensquilla.onboarding.search_specs import search_provider_catalog_payload
 from opensquilla.onboarding.status import OnboardingStatus, get_onboarding_status
-from opensquilla.search.types import DEFAULT_SEARCH_MAX_RESULTS
 
 IMAGE_GENERATION_SECTION_ALIASES = frozenset(
     {"image", "image-generation", "image_generation"}
@@ -75,6 +74,16 @@ def setup_catalog_payload(section: str | None = None) -> dict[str, Any]:
     return {key: payload[key]}
 
 
+def _optional_str(value: Any) -> str | None:
+    """``None`` = "not passed" (keep-current); anything else coerces to str."""
+    return None if value is None else str(value)
+
+
+def _optional_bool(value: Any) -> bool | None:
+    """``None`` = "not passed" (keep-current); anything else coerces to bool."""
+    return None if value is None else bool(value)
+
+
 class SetupEngine:
     """Apply onboarding sections against one in-memory config before persisting."""
 
@@ -98,15 +107,19 @@ class SetupEngine:
     def apply(self, section: str, payload: dict[str, Any]) -> MutationResult:
         normalized = section.strip().lower()
         if normalized in {"provider", "providers"}:
+            # Keep-current semantics: keys absent from the payload (or set to
+            # None) mean "leave the stored value alone" on a same-provider
+            # re-save; explicit values — including an explicit empty string —
+            # keep their legacy meaning in the mutation.
             res = upsert_llm_provider(
                 self.config,
                 provider_id=str(payload["providerId"]),
-                model=str(payload.get("model", "")),
-                api_key=str(payload.get("apiKey", "")),
-                api_key_env=str(payload.get("apiKeyEnv", "")),
-                base_url=str(payload.get("baseUrl", "")),
-                proxy=str(payload.get("proxy", "")),
-                preset_id=str(payload.get("presetId", "")),
+                model=_optional_str(payload.get("model")),
+                api_key=str(payload.get("apiKey") or ""),
+                api_key_env=str(payload.get("apiKeyEnv") or ""),
+                base_url=_optional_str(payload.get("baseUrl")),
+                proxy=_optional_str(payload.get("proxy")),
+                preset_id=str(payload.get("presetId") or ""),
             )
         elif normalized == "router":
             res = upsert_router(
@@ -151,16 +164,22 @@ class SetupEngine:
                 ),
             )
         elif normalized == "search":
+            # Keep-current semantics for the global search settings: values
+            # absent from the payload (None) never touch the stored
+            # max_results/proxy/use_env_proxy/fallback_policy/diagnostics.
+            fallback_policy = payload.get("fallbackPolicy")
             res = upsert_search_provider(
                 self.config,
                 provider_id=str(payload["providerId"]),
-                api_key=str(payload.get("apiKey", "")),
-                api_key_env=str(payload.get("apiKeyEnv", "")),
-                max_results=int(payload.get("maxResults", DEFAULT_SEARCH_MAX_RESULTS)),
-                proxy=str(payload.get("proxy", "")),
-                use_env_proxy=bool(payload.get("useEnvProxy", False)),
-                fallback_policy=str(payload.get("fallbackPolicy", "off")),
-                diagnostics=bool(payload.get("diagnostics", False)),
+                api_key=str(payload.get("apiKey") or ""),
+                api_key_env=str(payload.get("apiKeyEnv") or ""),
+                max_results=payload.get("maxResults"),
+                proxy=_optional_str(payload.get("proxy")),
+                use_env_proxy=_optional_bool(payload.get("useEnvProxy")),
+                fallback_policy=(
+                    None if fallback_policy in (None, "") else str(fallback_policy)
+                ),
+                diagnostics=_optional_bool(payload.get("diagnostics")),
             )
         elif normalized in {"channel", "channels"}:
             entry = payload.get("entry", payload)
@@ -168,31 +187,44 @@ class SetupEngine:
                 raise ValueError("channel payload must contain an entry object")
             res = upsert_channel(self.config, entry_payload=entry)
         elif normalized in IMAGE_GENERATION_SECTION_ALIASES:
-            enabled = bool(payload.get("enabled", True))
-            provider_id = str(payload.get("providerId", ""))
+            raw_enabled = payload.get("enabled")
+            if raw_enabled is None:
+                # Keep-current: a deliberate enabled=false persisted in the
+                # config must survive a key rotation that omits the flag. A
+                # config that never stored the flag keeps the legacy
+                # configure-implies-enable behavior for a fresh setup.
+                image_cfg = self.config.image_generation
+                enabled = (
+                    bool(image_cfg.enabled)
+                    if "enabled" in image_cfg.model_fields_set
+                    else True
+                )
+            else:
+                enabled = bool(raw_enabled)
+            provider_id = str(payload.get("providerId") or "")
             if not enabled and not provider_id:
                 res = disable_image_generation(self.config)
             else:
                 res = upsert_image_generation_provider(
                     self.config,
                     provider_id=provider_id,
-                    primary=str(payload.get("primary", "")),
-                    api_key=str(payload.get("apiKey", "")),
-                    api_key_env=str(payload.get("apiKeyEnv", "")),
-                    base_url=str(payload.get("baseUrl", "")),
+                    primary=str(payload.get("primary") or ""),
+                    api_key=str(payload.get("apiKey") or ""),
+                    api_key_env=str(payload.get("apiKeyEnv") or ""),
+                    base_url=str(payload.get("baseUrl") or ""),
                     enabled=enabled,
                 )
         elif normalized in AUDIO_SECTION_ALIASES:
             res = upsert_audio_provider(
                 self.config,
-                provider_id=str(payload.get("providerId", "elevenlabs")),
-                api_key=str(payload.get("apiKey", "")),
-                api_key_env=str(payload.get("apiKeyEnv", "")),
-                base_url=str(payload.get("baseUrl", "")),
+                provider_id=str(payload.get("providerId") or "elevenlabs"),
+                api_key=str(payload.get("apiKey") or ""),
+                api_key_env=str(payload.get("apiKeyEnv") or ""),
+                base_url=str(payload.get("baseUrl") or ""),
                 enabled=bool(payload.get("enabled", True)),
-                tts_voice=str(payload.get("ttsVoice", "")),
-                tts_model=str(payload.get("ttsModel", "")),
-                language_code=str(payload.get("languageCode", "")),
+                tts_voice=str(payload.get("ttsVoice") or ""),
+                tts_model=str(payload.get("ttsModel") or ""),
+                language_code=str(payload.get("languageCode") or ""),
             )
         elif normalized in MEMORY_EMBEDDING_SECTION_ALIASES:
             res = upsert_memory_embedding(

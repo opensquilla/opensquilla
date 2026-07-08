@@ -380,6 +380,14 @@ class TestChatCommand:
             "stdin",
             SimpleNamespace(isatty=lambda: True),
         )
+        # The real log-quieting swaps the process-global structlog config to an
+        # interactive log file; leaking that into later tests poisons every
+        # subsequent structlog emit once another test closes the handle.
+        monkeypatch.setattr(
+            chat_cmd._launch_bridge,
+            "quiet_logs_for_interactive_chat",
+            lambda: None,
+        )
         monkeypatch.setattr(
             chat_cmd._launch_bridge,
             "console",
@@ -836,6 +844,12 @@ async def test_standalone_turnrunner_stream_uses_heartbeat_wrapper(monkeypatch) 
         "opensquilla.cli.tui.adapters.turn_stream_defaults.OpenTuiStreamRenderer",
         _RecordingRenderer,
     )
+    # Renderer choice is now backend-aware; pin the OpenTUI backend so the
+    # recording renderer (patched above) is the one the bridge selects.
+    monkeypatch.setattr(
+        "opensquilla.cli.tui.adapters.runtime_bridge.validate_tui_backend_selection",
+        lambda env=None: "opentui",
+    )
     svc = SimpleNamespace(
         config=SimpleNamespace(
             agent_stream_heartbeat_interval_seconds=0.01,
@@ -890,6 +904,12 @@ async def test_standalone_turnrunner_stream_collects_artifacts(monkeypatch) -> N
     monkeypatch.setattr(
         "opensquilla.cli.tui.adapters.turn_stream_defaults.OpenTuiStreamRenderer",
         _RecordingRenderer,
+    )
+    # Renderer choice is now backend-aware; pin the OpenTUI backend so the
+    # recording renderer (patched above) is the one the bridge selects.
+    monkeypatch.setattr(
+        "opensquilla.cli.tui.adapters.runtime_bridge.validate_tui_backend_selection",
+        lambda env=None: "opentui",
     )
     svc = SimpleNamespace(
         config=SimpleNamespace(
@@ -966,6 +986,12 @@ async def test_standalone_turnrunner_wires_tool_strip(monkeypatch) -> None:
     monkeypatch.setattr(
         "opensquilla.cli.tui.adapters.turn_stream_defaults.OpenTuiStreamRenderer",
         _RecordingRenderer,
+    )
+    # Renderer choice is now backend-aware; pin the OpenTUI backend so the
+    # recording renderer (patched above) is the one the bridge selects.
+    monkeypatch.setattr(
+        "opensquilla.cli.tui.adapters.runtime_bridge.validate_tui_backend_selection",
+        lambda env=None: "opentui",
     )
     svc = SimpleNamespace(
         config=SimpleNamespace(
@@ -2026,6 +2052,10 @@ async def test_gateway_stream_renders_task_group_status_without_buffer_pollution
         "opensquilla.cli.tui.adapters.turn_stream_defaults.OpenTuiStreamRenderer",
         RecordingRenderer,
     )
+    monkeypatch.setattr(
+        "opensquilla.cli.tui.adapters.runtime_bridge.validate_tui_backend_selection",
+        lambda env=None: "opentui",
+    )
     fake = StatusGatewayClient()
 
     result = await chat_cmd._stream_response_gateway(
@@ -2074,6 +2104,12 @@ async def test_gateway_stream_collects_artifact_events(monkeypatch) -> None:
     monkeypatch.setattr(
         "opensquilla.cli.tui.adapters.turn_stream_defaults.OpenTuiStreamRenderer",
         _RecordingRenderer,
+    )
+    # Renderer choice is now backend-aware; pin the OpenTUI backend so the
+    # recording renderer (patched above) is the one the bridge selects.
+    monkeypatch.setattr(
+        "opensquilla.cli.tui.adapters.runtime_bridge.validate_tui_backend_selection",
+        lambda env=None: "opentui",
     )
     result = await chat_cmd._stream_response_gateway(
         ArtifactGatewayClient(),

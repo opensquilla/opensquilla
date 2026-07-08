@@ -6,7 +6,9 @@ from pathlib import Path
 import pytest
 
 from opensquilla.cli.tui.opentui.themes import (
+    COLOR_ENV_VAR,
     DEFAULT_THEME,
+    THEME_ENV_VAR,
     THEME_NAMES,
     handle_theme_command,
 )
@@ -14,6 +16,9 @@ from opensquilla.cli.ui import console
 
 _THEME_MJS = (
     Path(__file__).resolve().parents[4] / "src/opensquilla/cli/tui/opentui/package/src/theme.mjs"
+)
+_MAIN_MJS = (
+    Path(__file__).resolve().parents[4] / "src/opensquilla/cli/tui/opentui/package/src/main.mjs"
 )
 
 
@@ -30,6 +35,22 @@ def test_theme_names_match_js_registry() -> None:
     assert js_names, "could not parse PALETTES from theme.mjs"
     assert list(THEME_NAMES) == js_names
     assert DEFAULT_THEME in THEME_NAMES
+
+
+def test_theme_env_var_matches_js_host() -> None:
+    # The JS host reads the variable as a literal; the Python constant only
+    # stays truthful if both sides name the same variable, so pin the literal
+    # here the same way the palette names are pinned above.
+    text = _MAIN_MJS.read_text(encoding="utf-8")
+    assert f"process.env.{THEME_ENV_VAR}" in text
+
+
+def test_color_env_var_matches_js_host() -> None:
+    # Same pinning for the color-mode override: detectColorMode reads the
+    # variable off the env object it is handed (process.env at import), so the
+    # literal must appear in theme.mjs for the Python constant to stay truthful.
+    text = _THEME_MJS.read_text(encoding="utf-8")
+    assert f"env.{COLOR_ENV_VAR}" in text
 
 
 @pytest.mark.asyncio

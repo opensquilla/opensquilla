@@ -14,7 +14,7 @@ from typing import Any, Literal
 import yaml
 
 from opensquilla.gateway.config import ChannelsConfig, GatewayConfig, MCPServerEntry
-from opensquilla.migration.env_file import merge_env_lines
+from opensquilla.migration.env_file import merge_env_lines, write_secret_env_file
 from opensquilla.onboarding.config_store import load_config, persist_config
 from opensquilla.paths import default_opensquilla_home
 
@@ -1050,9 +1050,8 @@ class HermesMigrator:
             if env_path.exists()
             else []
         )
-        env_path.write_text(
-            "\n".join(merge_env_lines(existing_lines, self._env_additions)) + "\n",
-            encoding="utf-8",
+        write_secret_env_file(
+            env_path, merge_env_lines(existing_lines, self._env_additions)
         )
 
     def _write_config(self) -> None:

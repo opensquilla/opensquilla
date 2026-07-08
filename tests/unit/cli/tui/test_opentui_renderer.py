@@ -89,15 +89,16 @@ async def test_final_answer_is_a_card_from_the_first_delta() -> None:
 
 
 @pytest.mark.asyncio
-async def test_reasoning_renders_as_collapsed_marker_not_streamed_text() -> None:
-    """Reasoning (the model's extended-thinking process) must NOT be shown
-    verbatim. aappend_reasoning opens a collapsed 'reasoning' marker block — a
-    single 'Thinking…' affordance — and the raw reasoning text is never streamed
-    onto the timeline as block.append deltas."""
+async def test_reasoning_streams_into_its_own_block_and_closes_before_text() -> None:
+    """Reasoning (the model's extended-thinking process) streams live into a
+    dedicated 'reasoning' block — the host shows a dim rolling peek and
+    collapses it to 'Thought for Ns' on block.end — and the block closes
+    before the answer text opens so the two never interleave."""
     handle = _RecordingHandle()
     r = OpenTuiStreamRenderer(output_handle=handle)
     r.__enter__()
-    await r.aappend_reasoning("let me think step by step about the internals")
+    await r.aappend_reasoning("let me think ")
+    await r.aappend_reasoning("step by step about the internals")
     await r.aappend_text("the answer")
     await r.afinalize(None)
 
@@ -108,16 +109,22 @@ async def test_reasoning_renders_as_collapsed_marker_not_streamed_text() -> None
     ]
     assert len(reasoning_begins) == 1
     reasoning_id = reasoning_begins[0]["id"]
-    # the verbatim reasoning text is NEVER appended to the timeline
+    # every reasoning delta streams into that block (the host renders the peek)
     reasoning_appends = [
-        p for t, p in handle.sent if t == "block.append" and p["id"] == reasoning_id
+        p["delta"] for t, p in handle.sent if t == "block.append" and p["id"] == reasoning_id
     ]
-    assert reasoning_appends == [], "reasoning process text must not be streamed"
-    assert not any(
-        "step by step" in p.get("delta", "")
+    assert reasoning_appends == ["let me think ", "step by step about the internals"]
+    # the reasoning block closes before the answer block opens
+    events = [
+        (t, p.get("id"), p.get("kind"))
         for t, p in handle.sent
-        if t == "block.append"
+        if t in ("block.begin", "block.end")
+    ]
+    end_reasoning = events.index(("block.end", reasoning_id, None))
+    begin_answer = next(
+        i for i, (t, _i, kind) in enumerate(events) if t == "block.begin" and kind == "answer"
     )
+    assert end_reasoning < begin_answer
     assert not [t for t, _ in handle.sent if t == "block.retype"]
     # the reasoning marker is closed before the answer block opens
     ends = [p["id"] for t, p in handle.sent if t == "block.end"]
@@ -173,6 +180,136 @@ async def test_cancel_midtool_closes_open_tool_block() -> None:
     ends = [p for t, p in handle.sent if t == "block.end" and p["id"] == "c9"]
     assert updates and updates[-1]["patch"].get("status") == "error"
     assert ends, "cancelled in-flight tool block was never closed"
+
+
+@pytest.mark.asyncio
+async def test_aclose_without_finalize_tears_down_errored_turn() -> None:
+    """Error paths end the turn without afinalize; the guaranteed aclose must
+    still end the turn, idle the pill, and re-enable the composer so the UI
+    never stays busy and the next turn never merges into the errored card."""
+    handle = _RecordingHandle()
+    r = OpenTuiStreamRenderer(output_handle=handle)
+    r.__enter__()
+    await r.aappend_text("partial answer")
+    await r.aerror("provider exploded")
+    await r.aclose()
+
+    types = [t for t, _ in handle.sent]
+    assert "turn.end" in types
+    statuses = [p for t, p in handle.sent if t == "turn.status"]
+    assert statuses[-1]["phase"] == "idle"
+    assert statuses[-1]["active"] is False
+    composer_sets = [p for t, p in handle.sent if t == "composer.set"]
+    assert composer_sets[-1] == {"disabled": False}
+    # the open answer block was force-closed
+    begins = {p["id"] for t, p in handle.sent if t == "block.begin" and p.get("kind") == "answer"}
+    ends = {p["id"] for t, p in handle.sent if t == "block.end"}
+    assert begins <= ends
+
+
+@pytest.mark.asyncio
+async def test_aclose_force_closes_inflight_tool_block() -> None:
+    handle = _RecordingHandle()
+    r = OpenTuiStreamRenderer(output_handle=handle)
+    r.__enter__()
+    await r.atool_start("grep", {"pattern": "x"}, "c7")
+    # NO atool_finished, NO afinalize — e.g. a provider timeout mid-tool
+    await r.aclose()
+
+    updates = [p for t, p in handle.sent if t == "block.update" and p["id"] == "c7"]
+    ends = [p for t, p in handle.sent if t == "block.end" and p["id"] == "c7"]
+    assert updates and updates[-1]["patch"].get("status") == "error"
+    assert ends
+    assert [t for t, _ in handle.sent if t == "turn.end"]
+
+
+@pytest.mark.asyncio
+async def test_aclose_after_afinalize_emits_no_second_teardown() -> None:
+    handle = _RecordingHandle()
+    r = OpenTuiStreamRenderer(output_handle=handle)
+    r.__enter__()
+    await r.aappend_text("done")
+    await r.afinalize(None)
+    await r.aclose()
+
+    assert len([t for t, _ in handle.sent if t == "turn.end"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_aclose_before_any_output_is_a_noop() -> None:
+    handle = _RecordingHandle()
+    r = OpenTuiStreamRenderer(output_handle=handle)
+    r.__enter__()
+    await r.aclose()
+    assert handle.sent == []
+
+
+@pytest.mark.asyncio
+async def test_aclose_tolerates_dead_output_handle() -> None:
+    class _DeadHandle:
+        async def send_message(self, message_type: str, payload: dict) -> None:
+            raise RuntimeError("OpenTUI bridge is not started")
+
+    handle = _RecordingHandle()
+    r = OpenTuiStreamRenderer(output_handle=handle)
+    r.__enter__()
+    await r.aappend_text("partial")
+    # the bridge dies before teardown; aclose must not raise from its emits
+    r.output_handle = _DeadHandle()
+    await r.aclose()
+
+
+@pytest.mark.asyncio
+async def test_status_pill_returns_to_output_when_text_resumes_after_tool() -> None:
+    """In the narrate-then-act flow the pill must not stay stuck on the
+    finished tool's name while the final answer streams."""
+    handle = _RecordingHandle()
+    r = OpenTuiStreamRenderer(output_handle=handle)
+    r.__enter__()
+    await r.aappend_text("Let me look", presentation="intermediate")
+    await r.atool_start("grep", {"pattern": "x"}, "c1")
+    await r.atool_finished("c1", success=True, result="hit")
+    await r.aappend_text("Final answer", presentation="answer")
+    await r.afinalize(None)
+
+    phases = [p["phase"] for t, p in handle.sent if t == "turn.status"]
+    assert phases == ["thinking", "output", "tool", "output", "idle"]
+
+
+@pytest.mark.asyncio
+async def test_astatus_updates_pill_and_renders_dim_status_line() -> None:
+    """Status messages (artifact saved, task-group progress) must be visible:
+    a transient pill label plus a dim in-card status line."""
+    handle = _RecordingHandle()
+    r = OpenTuiStreamRenderer(output_handle=handle)
+    r.__enter__()
+    await r.aappend_text("working")
+    await r.astatus("artifact written: report.md")
+    await r.aappend_text(" more")
+    await r.afinalize(None)
+
+    status_blocks = [
+        p for t, p in handle.sent if t == "block.begin" and p.get("kind") == "status"
+    ]
+    assert status_blocks and status_blocks[0]["meta"]["text"] == "artifact written: report.md"
+    assert status_blocks[0]["meta"]["style"] == "dim"
+    ends = {p["id"] for t, p in handle.sent if t == "block.end"}
+    assert status_blocks[0]["id"] in ends
+
+    labels = [(p["phase"], p["label"]) for t, p in handle.sent if t == "turn.status"]
+    assert ("output", "artifact written: report.md") in labels
+    # the pill label is transient: the next text delta restores the phase label
+    status_index = labels.index(("output", "artifact written: report.md"))
+    assert ("output", "output") in labels[status_index + 1 :]
+
+
+@pytest.mark.asyncio
+async def test_astatus_ignores_blank_messages() -> None:
+    handle = _RecordingHandle()
+    r = OpenTuiStreamRenderer(output_handle=handle)
+    r.__enter__()
+    await r.astatus("   ")
+    assert not [p for t, p in handle.sent if t == "block.begin"]
 
 
 @pytest.mark.asyncio
@@ -361,3 +498,64 @@ def test_tool_result_summary_stringifies_structured_msg_payloads() -> None:
         '{"count": 1, "files": ["main.py"]}\n'
         '["ok", {"status": "done"}]'
     )
+
+
+async def test_aturn_started_announces_thinking_before_any_provider_event() -> None:
+    """The stream loop announces the turn as soon as it starts, so the pill
+    pulses "thinking" through the silent model-thinking window instead of the
+    UI sitting on "ready" until the first token."""
+    handle = _RecordingHandle()
+    renderer = OpenTuiStreamRenderer(output_handle=handle)
+
+    await renderer.aturn_started()
+
+    types = [message_type for message_type, _payload in handle.sent]
+    assert "turn.begin" in types
+    status = next(p for t, p in handle.sent if t == "turn.status")
+    assert status["phase"] == "thinking"
+    assert status["active"] is True
+    # Idempotent: the first real event must not begin a second turn.
+    await renderer.aturn_started()
+    assert types.count("turn.begin") == 1
+
+
+async def test_answer_stream_strips_routing_directive_tags() -> None:
+    handle = _RecordingHandle()
+    renderer = OpenTuiStreamRenderer(output_handle=handle)
+
+    # Tag split across deltas, then the real answer.
+    await renderer.aappend_text("[[reply_to", presentation="answer")
+    await renderer.aappend_text("_current]]\n", presentation="answer")
+    await renderer.aappend_text("My name is OpenSquilla.", presentation="answer")
+    await renderer.afinalize()
+
+    appends = [p["delta"] for t, p in handle.sent if t == "block.append"]
+    joined = "".join(appends)
+    assert "reply_to_current" not in joined
+    assert joined == "My name is OpenSquilla."
+    # The raw logical buffer (TurnResult text) keeps the model's exact output.
+    assert "[[reply_to_current]]" in renderer.buffer
+
+
+async def test_tag_only_delta_opens_no_answer_block() -> None:
+    handle = _RecordingHandle()
+    renderer = OpenTuiStreamRenderer(output_handle=handle)
+
+    await renderer.aappend_text("[[reply_to_current]]", presentation="answer")
+    await renderer.afinalize()
+
+    kinds = [p["kind"] for t, p in handle.sent if t == "block.begin"]
+    assert "answer" not in kinds
+
+
+async def test_held_bracket_prefix_flushes_into_the_block_on_close() -> None:
+    handle = _RecordingHandle()
+    renderer = OpenTuiStreamRenderer(output_handle=handle)
+
+    await renderer.aappend_text("see ", presentation="answer")
+    # A bracket run that never completes into a directive is ordinary text.
+    await renderer.aappend_text("[[re", presentation="answer")
+    await renderer.afinalize()
+
+    appends = [p["delta"] for t, p in handle.sent if t == "block.append"]
+    assert "".join(appends) == "see [[re"

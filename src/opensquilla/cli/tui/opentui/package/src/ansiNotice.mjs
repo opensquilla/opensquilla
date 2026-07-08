@@ -9,6 +9,8 @@
 // theme-agnostic level. main.mjs maps the level onto the LIVE THEME tokens, so
 // every theme — including light — gets legible, on-brand notices.
 
+import { TOOL_INDENT } from "./primitives.mjs";
+
 // level -> { glyph, token } where token names a THEME color read at render time.
 export const NOTICE_LEVELS = Object.freeze({
   error: { glyph: "✗", token: "error" }, // ✗
@@ -25,8 +27,10 @@ const BOX_DRAWING = /[─-╿▀-▟]/;
 
 const ESC = String.fromCharCode(27);
 const BEL = String.fromCharCode(7);
-// CSI ... <final byte>, e.g. SGR (m) and cursor controls.
-const CSI_RE = new RegExp(ESC + "\\[[0-9;?]*[ -/]*[@-~]", "g");
+// CSI ... <final byte>, e.g. SGR (m) and cursor controls. The parameter class
+// [0-?] covers the private-parameter bytes < = > ? too, matching
+// primitives.stripTerminalControls, so e.g. ESC[>4;2m is fully removed.
+const CSI_RE = new RegExp(ESC + "\\[[0-?]*[ -/]*[@-~]", "g");
 // OSC ... (BEL or ST) — hyperlinks etc.
 const OSC_RE = new RegExp(ESC + "\\][\\s\\S]*?(?:" + BEL + "|" + ESC + "\\\\)", "g");
 // SGR specifically, for color scanning.
@@ -102,12 +106,19 @@ function dominantLevel(raw) {
     for (let i = 0; i < params.length; i++) {
       const code = params[i];
       let level = null;
-      if (code === 38) {
+      if (code === 38 || code === 48 || code === 58) {
+        // Extended color: 38 = foreground, 48 = background, 58 = underline.
+        // All three carry ;5;N or ;2;R;G;B arguments that must be consumed so
+        // they are never re-read as standalone codes (a gray background like
+        // 48;2;31;31;31 would otherwise classify as basic red/error) — but
+        // only the foreground one feeds the level.
         if (params[i + 1] === 5) {
-          level = rgbLevel(xterm256ToRgb(params[i + 2] ?? 0));
+          if (code === 38) level = rgbLevel(xterm256ToRgb(params[i + 2] ?? 0));
           i += 2;
         } else if (params[i + 1] === 2) {
-          level = rgbLevel([params[i + 2] ?? 0, params[i + 3] ?? 0, params[i + 4] ?? 0]);
+          if (code === 38) {
+            level = rgbLevel([params[i + 2] ?? 0, params[i + 3] ?? 0, params[i + 4] ?? 0]);
+          }
           i += 4;
         }
       } else {
@@ -119,14 +130,17 @@ function dominantLevel(raw) {
   return best;
 }
 
-// Remove every escape sequence (OSC links, CSI/SGR, charset selects) and the
-// carriage returns Rich can emit, leaving display text.
+// Remove every escape sequence (OSC links, CSI/SGR including private-parameter
+// forms, charset selects), then sweep residual control bytes — lone/truncated
+// escapes, BEL, backspace, \r — the same sweep as
+// primitives.stripTerminalControls, so a line flushed mid-sequence can never
+// write raw controls into the terminal grid.
 function stripAnsi(raw) {
   return String(raw)
     .replace(OSC_RE, "")
     .replace(CSI_RE, "")
     .replace(new RegExp(`${ESC}[()][0-9A-Za-z]`, "g"), "")
-    .replace(/\r/g, "");
+    .replace(/[\x00-\x08\x0b-\x1f\x7f]/g, "");
 }
 
 // Parse one captured notice line -> { text, level } (level always present).
@@ -136,4 +150,27 @@ export function parseNotice(raw) {
 
 export function isStructuredLine(text) {
   return BOX_DRAWING.test(text);
+}
+
+// The full render recipe for one notice line, shared by main.mjs's notice
+// handler and its tests: blank spacer lines drop entirely (null); table/panel
+// border lines render as-is so their box-drawing stays aligned; plain status
+// lines get their severity glyph. token names the THEME color the caller reads
+// at render time (and re-reads on a live theme switch).
+export function noticeContent(raw) {
+  const { text, level } = parseNotice(String(raw ?? ""));
+  if (!text.trim()) return null;
+  const spec = NOTICE_LEVELS[level] ?? NOTICE_LEVELS.detail;
+  const content = isStructuredLine(text)
+    ? `${TOOL_INDENT}${text}`
+    : `${TOOL_INDENT}${spec.glyph} ${text}`;
+  return { content, token: spec.token };
+}
+
+// Re-point already-rendered loose transcript nodes ({ node, token } entries:
+// notice lines, plus the scrollback lines that share the registry) at a live
+// theme object after an in-place theme switch — renderables capture their fg
+// VALUE at creation, so without this a dark/light flip leaves them unreadable.
+export function recolorNoticeNodes(nodes, theme) {
+  for (const { node, token } of nodes) node.fg = theme[token] ?? theme.detailText;
 }

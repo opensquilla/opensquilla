@@ -2131,7 +2131,7 @@ requires-dist = [
     { name = "python-telegram-bot", specifier = ">=20.0" },
     { name = "pyyaml", specifier = ">=6.0" },
     { name = "qq-botpy", specifier = ">=1.2.1,<1.3" },
-    { name = "questionary", specifier = ">=2.0" },
+    { name = "questionary", specifier = ">=2.1" },
     { name = "readability-lxml", specifier = ">=0.8" },
     { name = "reportlab", specifier = ">=4.0.0" },
     { name = "rich", specifier = ">=13.0" },

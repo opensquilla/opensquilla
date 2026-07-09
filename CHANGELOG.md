@@ -8,6 +8,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Added
 
+- Legacy home migration: `opensquilla migrate opensquilla` imports an
+  existing OpenSquilla home — a CLI `~/.opensquilla`, a retired Windows
+  portable data directory (enumerated with a chooser across
+  `%LOCALAPPDATA%\OpenSquilla\portable\*`), or an explicit `--source` path
+  (Docker volumes, relocated or restored homes) — into the current install.
+  Dry-run by default with a pinned machine-readable report
+  (`docs/self-migration-report-contract.md`); apply stages a whole-home
+  copy with WAL-safe database handling and commits transactionally, so an
+  interrupted import never leaves a partial target. Imported configs drop
+  stale absolute path pins, inline provider keys relocate to `.env`, and
+  imported scheduler jobs arrive paused. Entry points: the desktop
+  onboarding offers detected legacy data as a first step (with provider
+  prefill), Settings → Runtime gains an "Import legacy data" rescue action,
+  the Web UI setup flow shows a read-only legacy-data advisory
+  (`onboarding.status` gains the additive `legacyData` block), gateway boot
+  warns once when a fresh home coexists with legacy data, and doctor emits
+  a `migration.legacy_home_detected` finding with copyable fix commands.
+- Golden legacy-config fixtures: every released line's default config dump
+  (0.1 through 0.5, portable and desktop shapes) is pinned as a fixture and
+  must load on current code, so old-config upgrades are tested mechanically.
 - Attachment resource ceilings: the in-memory staged-upload store now has an
   aggregate RAM cap (`attachments.upload_store_max_total_bytes`, default
   300 MiB) — when reached, new uploads are rejected with the additive HTTP
@@ -172,6 +192,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Fixed
 
+- The desktop gateway now receives the OpenSquilla home root (not the state
+  subdirectory) in `OPENSQUILLA_STATE_DIR`; a one-time relocation moves the
+  previously nested skills, workspace, session archive, router data, and
+  `.env` up to their intended locations without touching the databases.
+- Legacy configs no longer hard-fail strict validation: stale
+  `memory.dream.model_override` keys are stripped, channel entries with
+  unregistered types are parked with a warning instead of rejecting the
+  file, a `squilla_router.tier_profile` that no longer matches
+  `llm.provider` is cleared, and an unwritable config location degrades the
+  post-migration rewrite to a warning instead of failing boot.
 - Dream (memory consolidation) now resolves its provider credentials through
   the shared explicit-config-first resolver: previously `OPENROUTER_API_KEY` /
   `OPENROUTER_BASE_URL` in the gateway environment unconditionally overrode

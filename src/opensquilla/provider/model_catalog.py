@@ -348,10 +348,11 @@ class ModelCatalog:
 
     Priority chain for max_tokens:
       1. User config override (>0)
-      2. API-fetched catalog value
-      3. models.dev snapshot value
-      4. Packaged corrections budgets (catalog_overrides.toml)
-      5. DEFAULT_MAX_TOKENS (16384)
+      2. Provider-scoped live ingest (set_live_provider_entries)
+      3. API-fetched catalog value (bare-id OpenRouter cache)
+      4. models.dev snapshot value
+      5. Packaged corrections budgets (catalog_overrides.toml)
+      6. DEFAULT_MAX_TOKENS (16384)
       → then clamp to min(value, context_window)
     """
 
@@ -360,6 +361,14 @@ class ModelCatalog:
         # User-override layer for resolve_entry; keys are lowercased
         # "provider/model" or bare model ids (see set_user_overrides).
         self._user_overrides: dict[str, dict[str, Any]] = {}
+        # Provider-scoped live layer: boot-time ingest of a provider's own
+        # public model listing (see provider/live_catalog.py). Keyed
+        # provider -> lowercased model id -> validated entry fields.
+        # Deliberately separate from the bare-id ``_models`` cache — that
+        # cache is the OpenRouter catalog and its ids are provider-agnostic,
+        # so aggregator rows placed there would leak windows into other
+        # providers' resolutions of the same bare ids.
+        self._live_provider_entries: dict[str, dict[str, dict[str, Any]]] = {}
 
     def __len__(self) -> int:
         return len(self._models)
@@ -521,6 +530,54 @@ class ModelCatalog:
                     fields.setdefault(name, value)
         return fields
 
+    def set_live_provider_entries(
+        self, provider_id: str, entries: Mapping[str, Mapping[str, Any]]
+    ) -> None:
+        """Replace one provider's scoped live-layer table.
+
+        ``entries`` maps model ids to ``ModelCatalogEntry`` data-field dicts
+        (the output of a ``provider/live_catalog.py`` parser). Fields are
+        validated via ``coerce_entry_field``; unknown names or mistyped
+        values are logged and DROPPED rather than raised — live data arrives
+        from the network mid-boot, so it degrades like the packaged
+        corrections, it never crashes resolution. The whole provider table
+        is replaced atomically so a re-warm cannot leave stale rows behind.
+        """
+        provider_l = (provider_id or "").strip().lower()
+        if not provider_l:
+            return
+        table: dict[str, dict[str, Any]] = {}
+        for model_key, fields in entries.items():
+            entry: dict[str, Any] = {}
+            for name, value in fields.items():
+                try:
+                    entry[str(name)] = coerce_entry_field(str(name), value)
+                except ValueError as exc:
+                    log.warning(
+                        "model_catalog.live_provider_bad_field",
+                        provider=provider_l,
+                        model=str(model_key),
+                        error=str(exc),
+                    )
+            if entry:
+                table[str(model_key).strip().lower()] = entry
+        self._live_provider_entries[provider_l] = table
+
+    def _live_provider_fields(self, model_id: str, provider_id: str) -> dict[str, Any]:
+        """Scoped live-layer fields for ``(provider, model)``, exact key only.
+
+        Empty when the provider was never ingested — the layer is inert for
+        every provider without live-catalog registry metadata, so bare-id
+        resolutions and other providers' scoped lookups can never see a
+        foreign platform's rows.
+        """
+        if not provider_id or not self._live_provider_entries:
+            return {}
+        table = self._live_provider_entries.get(provider_id.strip().lower())
+        if not table:
+            return {}
+        return dict(table.get(model_id.strip().lower()) or {})
+
     def resolve_entry(self, model: str, *, provider: str = "") -> ModelCatalogEntry:
         """Resolve one typed catalog entry through the layered sources.
 
@@ -528,7 +585,9 @@ class ModelCatalog:
         every higher layer left unset:
 
         1. user overrides (``set_user_overrides``)
-        2. live provider catalog (per-1k costs adapted to per-Mtok)
+        2. live provider catalog — the provider-scoped ingest
+           (``set_live_provider_entries``) first, then the bare-id
+           OpenRouter cache (per-1k costs adapted to per-Mtok)
         3. packaged corrections (``catalog_overrides.toml``, exact then glob)
         4. models.dev snapshot
         5. synthesized fallback — never fails: unknown models yield a
@@ -547,6 +606,7 @@ class ModelCatalog:
         model_id = (model or "").strip()
         layers: tuple[tuple[CatalogSource, dict[str, Any]], ...] = (
             ("user", self._user_override_fields(model_id, provider_id)),
+            ("live", self._live_provider_fields(model_id, provider_id)),
             ("live", _live_layer_fields(self._models.get(model_id))),
             ("corrections", _corrections_layer_fields(provider_id, model_id)),
             ("snapshot", _snapshot_layer_fields(provider_id, model_id)),
@@ -568,8 +628,8 @@ class ModelCatalog:
     def resolve_max_tokens(
         self, model_id: str, user_override: int = 0, provider: str = ""
     ) -> int:
-        """Resolve max_tokens: user > live > provider corrections > snapshot >
-        basename corrections > default, then clamp."""
+        """Resolve max_tokens: user > scoped live > bare live > provider
+        corrections > snapshot > basename corrections > default, then clamp."""
         return self.resolve_max_tokens_with_source(model_id, user_override, provider)[0]
 
     def resolve_max_tokens_with_source(
@@ -578,10 +638,11 @@ class ModelCatalog:
         """Resolve max_tokens and name the layer that decided the value.
 
         ``override`` = the caller-supplied ``user_override`` (an explicit
-        config value); ``catalog`` = live provider catalog, exact
-        provider-scoped corrections row, models.dev snapshot, or the
-        provider-agnostic corrections budget fallback (in that order);
-        ``default`` = :data:`DEFAULT_MAX_TOKENS`. :meth:`resolve_max_tokens` delegates
+        config value); ``catalog`` = provider-scoped live ingest, live
+        provider catalog, exact provider-scoped corrections row, models.dev
+        snapshot, or the provider-agnostic corrections budget fallback (in
+        that order); ``default`` = :data:`DEFAULT_MAX_TOKENS`.
+        :meth:`resolve_max_tokens` delegates
         here (single implementation), so value and attribution can never
         drift apart. The clamp below may lower the number without changing
         the attribution: the source names the layer that supplied the
@@ -589,6 +650,8 @@ class ModelCatalog:
         """
         context_window = self.resolve_context_window(model_id, provider)
         info = self._models.get(model_id)
+        scoped_live = self._live_provider_fields(model_id, provider)
+        scoped_max_output = int(scoped_live.get("max_output_tokens") or 0)
 
         using_user_override = user_override > 0
         provider_budget = _provider_corrections_budget(provider, model_id)
@@ -597,6 +660,9 @@ class ModelCatalog:
         if using_user_override:
             effective = user_override
             source = "override"
+        elif scoped_max_output > 0:
+            effective = scoped_max_output
+            source = "catalog"
         elif info and info.max_output_tokens > 0:
             effective = info.max_output_tokens
             source = "catalog"
@@ -629,8 +695,8 @@ class ModelCatalog:
         return effective, source
 
     def resolve_context_window(self, model_id: str, provider: str = "") -> int:
-        """Resolve context window: user override > live > provider corrections >
-        snapshot > basename corrections > default."""
+        """Resolve context window: user override > scoped live > bare live >
+        provider corrections > snapshot > basename corrections > default."""
         return self.resolve_context_window_with_source(model_id, provider)[0]
 
     def user_context_window_override(self, model_id: str, provider: str = "") -> int | None:
@@ -653,10 +719,11 @@ class ModelCatalog:
         """Resolve the context window and name the layer that decided it.
 
         ``override`` = a positive ``[models.*]`` user-override value
-        (``set_user_overrides``); ``catalog`` = live provider catalog, exact
-        provider-scoped corrections row, models.dev snapshot, or the
-        provider-agnostic corrections budget fallback (in that order);
-        ``default`` = the local-runtime or cloud default window.
+        (``set_user_overrides``); ``catalog`` = provider-scoped live ingest,
+        live provider catalog, exact provider-scoped corrections row,
+        models.dev snapshot, or the provider-agnostic corrections budget
+        fallback (in that order); ``default`` = the local-runtime or cloud
+        default window.
         :meth:`resolve_context_window` delegates here (single
         implementation), so value and attribution can never drift apart.
         The remaining chain deliberately keeps its own layer order rather
@@ -665,6 +732,10 @@ class ModelCatalog:
         override = self.user_context_window_override(model_id, provider)
         if override is not None:
             return override, "override"
+        scoped_live = self._live_provider_fields(model_id, provider)
+        scoped_window = int(scoped_live.get("context_window") or 0)
+        if scoped_window > 0:
+            return scoped_window, "catalog"
         info = self._models.get(model_id)
         if info and info.context_window > 0:
             return info.context_window, "catalog"

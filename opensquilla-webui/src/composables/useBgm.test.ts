@@ -12,6 +12,7 @@ class FakeAudio {
   paused = true
   static instances: FakeAudio[] = []
   static playError: Error | null = null
+  static playDeferred: Promise<void> | null = null
   private listeners: Record<string, Array<() => void>> = {}
   constructor() {
     FakeAudio.instances.push(this)
@@ -24,6 +25,7 @@ class FakeAudio {
   }
   play = vi.fn(async () => {
     if (FakeAudio.playError) throw FakeAudio.playError
+    if (FakeAudio.playDeferred) await FakeAudio.playDeferred
     this.paused = false
   })
   pause = vi.fn(() => {
@@ -58,9 +60,11 @@ async function freshBgm() {
 }
 
 beforeEach(() => {
+  vi.restoreAllMocks()
   localStorage.clear()
   FakeAudio.instances = []
   FakeAudio.playError = null
+  FakeAudio.playDeferred = null
   vi.stubGlobal('Audio', FakeAudio)
 })
 
@@ -239,6 +243,47 @@ describe('useBgm — feature gate', () => {
       playing: false,
     })
   })
+
+  it('toggle() does not start playback while disabled', async () => {
+    stubFetch()
+    const { useBgm } = await freshBgm()
+    const bgm = useBgm()
+    await bgm.initBgm()
+
+    await bgm.toggle()
+
+    expect(FakeAudio.instances).toHaveLength(0)
+    expect(bgm.playing.value).toBe(false)
+  })
+
+  it('selectTrack() does not start playback while disabled', async () => {
+    stubFetch()
+    const { useBgm } = await freshBgm()
+    const bgm = useBgm()
+    await bgm.initBgm()
+
+    await bgm.selectTrack('stream')
+
+    expect(FakeAudio.instances).toHaveLength(0)
+    expect(bgm.currentTrackId.value).toBe('sun-yanzi-yujian')
+    expect(bgm.playing.value).toBe(false)
+  })
+
+  it('playLocalFile() does not start playback while disabled', async () => {
+    const createObjectURL = vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:test')
+    stubFetch()
+    const { useBgm } = await freshBgm()
+    const bgm = useBgm()
+    await bgm.initBgm()
+
+    await bgm.playLocalFile(new File(['music'], 'local.mp3', { type: 'audio/mpeg' }))
+
+    expect(createObjectURL).not.toHaveBeenCalled()
+    expect(FakeAudio.instances).toHaveLength(0)
+    expect(bgm.currentTrackId.value).toBe('sun-yanzi-yujian')
+    expect(bgm.localTrackTitle.value).toBe('')
+    expect(bgm.playing.value).toBe(false)
+  })
 })
 
 describe('useBgm — controls', () => {
@@ -247,6 +292,7 @@ describe('useBgm — controls', () => {
     const { useBgm } = await freshBgm()
     const bgm = useBgm()
     await bgm.initBgm()
+    bgm.setEnabled(true)
 
     await bgm.toggle()
     expect(bgm.playing.value).toBe(true)
@@ -265,6 +311,7 @@ describe('useBgm — controls', () => {
     const { useBgm } = await freshBgm()
     const bgm = useBgm()
     await bgm.initBgm()
+    bgm.setEnabled(true)
     await bgm.selectTrack('stream')
     expect(bgm.currentTrackId.value).toBe('stream')
     expect(FakeAudio.instances[0].src).toBe('https://example.com/track.mp3')
@@ -276,6 +323,7 @@ describe('useBgm — controls', () => {
     const { useBgm } = await freshBgm()
     const bgm = useBgm()
     await bgm.initBgm()
+    bgm.setEnabled(true)
     await bgm.toggle()
     bgm.setVolume(1.4)
     expect(bgm.volume.value).toBe(1)
@@ -285,14 +333,145 @@ describe('useBgm — controls', () => {
     expect(JSON.parse(localStorage.getItem('opensquilla-bgm')!)).toMatchObject({ volume: 0 })
   })
 
-  it('external pause events (e.g. OS media keys) sync the playing ref', async () => {
+  it('external play events sync and persist the playing state', async () => {
     stubFetch()
     const { useBgm } = await freshBgm()
     const bgm = useBgm()
     await bgm.initBgm()
+    bgm.setEnabled(true)
     await bgm.toggle()
-    expect(bgm.playing.value).toBe(true)
-    FakeAudio.instances[0].emit('pause')
+    await bgm.toggle()
     expect(bgm.playing.value).toBe(false)
+
+    FakeAudio.instances[0].emit('play')
+
+    expect(bgm.playing.value).toBe(true)
+    expect(JSON.parse(localStorage.getItem('opensquilla-bgm')!)).toMatchObject({ playing: true })
+  })
+
+  it.each(['pause', 'error'] as const)(
+    'external %s events sync and persist the paused state',
+    async event => {
+      stubFetch()
+      const { useBgm } = await freshBgm()
+      const bgm = useBgm()
+      await bgm.initBgm()
+      bgm.setEnabled(true)
+      await bgm.toggle()
+      expect(bgm.playing.value).toBe(true)
+
+      FakeAudio.instances[0].emit(event)
+
+      expect(bgm.playing.value).toBe(false)
+      expect(JSON.parse(localStorage.getItem('opensquilla-bgm')!)).toMatchObject({ playing: false })
+    },
+  )
+
+  it('immediately pauses and persists an external play event while disabled', async () => {
+    stubFetch()
+    const { useBgm } = await freshBgm()
+    const bgm = useBgm()
+    await bgm.initBgm()
+    bgm.setEnabled(true)
+    await bgm.toggle()
+    bgm.setEnabled(false)
+    const el = FakeAudio.instances[0]
+    el.pause.mockClear()
+
+    el.emit('play')
+
+    expect(el.pause).toHaveBeenCalledOnce()
+    expect(el.paused).toBe(true)
+    expect(bgm.playing.value).toBe(false)
+    expect(JSON.parse(localStorage.getItem('opensquilla-bgm')!)).toMatchObject({
+      enabled: false,
+      playing: false,
+    })
+  })
+})
+
+describe('useBgm — pending playback', () => {
+  it('setEnabled(false) cancels pending playlist playback before it settles', async () => {
+    let resolvePlay!: () => void
+    FakeAudio.playDeferred = new Promise<void>(resolve => { resolvePlay = resolve })
+    stubFetch()
+    const { useBgm } = await freshBgm()
+    const bgm = useBgm()
+    await bgm.initBgm()
+    bgm.setEnabled(true)
+
+    const pendingPlay = bgm.toggle()
+    const el = FakeAudio.instances[0]
+    bgm.setEnabled(false)
+
+    expect(el.pause).toHaveBeenCalledOnce()
+    expect(el.paused).toBe(true)
+    expect(bgm.playing.value).toBe(false)
+    resolvePlay()
+    await pendingPlay
+    expect(el.paused).toBe(true)
+    expect(bgm.enabled.value).toBe(false)
+    expect(bgm.playing.value).toBe(false)
+    expect(JSON.parse(localStorage.getItem('opensquilla-bgm')!)).toMatchObject({
+      enabled: false,
+      playing: false,
+    })
+  })
+
+  it('setEnabled(false) cancels pending local-file playback before it settles', async () => {
+    vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:test')
+    let resolvePlay!: () => void
+    FakeAudio.playDeferred = new Promise<void>(resolve => { resolvePlay = resolve })
+    stubFetch()
+    const { useBgm } = await freshBgm()
+    const bgm = useBgm()
+    await bgm.initBgm()
+    bgm.setEnabled(true)
+
+    const pendingPlay = bgm.playLocalFile(
+      new File(['music'], 'local.mp3', { type: 'audio/mpeg' }),
+    )
+    const el = FakeAudio.instances[0]
+    bgm.setEnabled(false)
+
+    expect(el.pause).toHaveBeenCalledOnce()
+    expect(el.paused).toBe(true)
+    expect(bgm.playing.value).toBe(false)
+    resolvePlay()
+    await pendingPlay
+    expect(el.paused).toBe(true)
+    expect(bgm.enabled.value).toBe(false)
+    expect(bgm.playing.value).toBe(false)
+    expect(JSON.parse(localStorage.getItem('opensquilla-bgm')!)).toMatchObject({
+      enabled: false,
+      playing: false,
+    })
+  })
+
+  it('ignores an older rejected request after a newer request starts playing', async () => {
+    let rejectFirst!: (error: Error) => void
+    FakeAudio.playDeferred = new Promise<void>((_resolve, reject) => { rejectFirst = reject })
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    stubFetch()
+    const { useBgm } = await freshBgm()
+    const bgm = useBgm()
+    await bgm.initBgm()
+    bgm.setEnabled(true)
+
+    const olderPlay = bgm.toggle()
+    FakeAudio.playDeferred = null
+    await bgm.selectTrack('stream')
+    expect(bgm.currentTrackId.value).toBe('stream')
+    expect(bgm.playing.value).toBe(true)
+
+    rejectFirst(new Error('older request failed'))
+    await olderPlay
+
+    expect(bgm.currentTrackId.value).toBe('stream')
+    expect(bgm.playing.value).toBe(true)
+    expect(JSON.parse(localStorage.getItem('opensquilla-bgm')!)).toMatchObject({
+      trackId: 'stream',
+      playing: true,
+    })
   })
 })

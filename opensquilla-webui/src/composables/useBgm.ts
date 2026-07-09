@@ -37,6 +37,11 @@ let audio: HTMLAudioElement | null = null
 let localObjectUrl = ''
 // Dedupes concurrent initBgm() calls onto a single load, like useAgentOptions.
 let initPromise: Promise<void> | null = null
+// Async play() settlements may arrive after a disable, pause, or newer play
+// request. Only the latest generation may publish state; the intent tells a
+// stale successful request whether it must re-pause the shared element.
+let playbackGeneration = 0
+let playbackIntent = false
 
 interface PersistedBgm {
   enabled?: boolean
@@ -98,9 +103,30 @@ function getAudio(): HTMLAudioElement {
     // (test DOMs don't fire media events), while these listeners keep the ref
     // honest when playback changes outside our calls — OS media keys, a
     // mid-stream network failure, or the element pausing itself on error.
-    audio.addEventListener('play', () => { playing.value = true })
-    audio.addEventListener('pause', () => { playing.value = false })
-    audio.addEventListener('error', () => { playing.value = false })
+    audio.addEventListener('play', () => {
+      playbackGeneration += 1
+      if (!enabled.value) {
+        playbackIntent = false
+        audio?.pause()
+        playing.value = false
+      } else {
+        playbackIntent = true
+        playing.value = true
+      }
+      persist()
+    })
+    audio.addEventListener('pause', () => {
+      playbackGeneration += 1
+      playbackIntent = false
+      playing.value = false
+      persist()
+    })
+    audio.addEventListener('error', () => {
+      playbackGeneration += 1
+      playbackIntent = false
+      playing.value = false
+      persist()
+    })
   }
   return audio
 }
@@ -158,7 +184,30 @@ async function loadPlaylist(): Promise<void> {
   }
 }
 
+async function playAudio(el: HTMLAudioElement, failureLabel: string): Promise<void> {
+  if (!enabled.value) return
+  const generation = ++playbackGeneration
+  playbackIntent = true
+  try {
+    await el.play()
+    if (generation !== playbackGeneration || !enabled.value) {
+      if (!enabled.value || !playbackIntent) el.pause()
+      return
+    }
+    playing.value = true
+  } catch (err: unknown) {
+    if (generation !== playbackGeneration) return
+    // Autoplay policy or a missing/broken file: reflect reality as paused
+    // rather than a stuck "playing" button.
+    playbackIntent = false
+    console.warn(`[useBgm] ${failureLabel}:`, err instanceof Error ? err.message : err)
+    playing.value = false
+  }
+  persist()
+}
+
 async function playTrack(id: string): Promise<void> {
+  if (!enabled.value) return
   const src = sourceForId(id)
   if (!src) return
   const el = getAudio()
@@ -168,16 +217,7 @@ async function playTrack(id: string): Promise<void> {
     el.src = src
     currentTrackId.value = id
   }
-  try {
-    await el.play()
-    playing.value = true
-  } catch (err: unknown) {
-    // Autoplay policy or a missing/broken file: reflect reality as paused
-    // rather than a stuck "playing" button.
-    console.warn('[useBgm] play blocked/failed:', err instanceof Error ? err.message : err)
-    playing.value = false
-  }
-  persist()
+  await playAudio(el, 'play blocked/failed')
 }
 
 /**
@@ -212,17 +252,23 @@ export function useBgm() {
   }
 
   function setEnabled(on: boolean) {
-    if (!on && playing.value) {
-      // Disabling silences immediately; the paused state is what persists.
+    enabled.value = on
+    if (!on) {
+      // Invalidate even a play() that has not yet set `playing`; its eventual
+      // settlement cannot restore sound or persisted playback state.
+      playbackGeneration += 1
+      playbackIntent = false
       audio?.pause()
       playing.value = false
     }
-    enabled.value = on
     persist()
   }
 
   async function toggle(): Promise<void> {
+    if (!enabled.value) return
     if (playing.value) {
+      playbackGeneration += 1
+      playbackIntent = false
       getAudio().pause()
       playing.value = false
       persist()
@@ -237,6 +283,7 @@ export function useBgm() {
   }
 
   async function selectTrack(id: string): Promise<void> {
+    if (!enabled.value) return
     if (id === currentTrackId.value && playing.value) return
     await playTrack(id)
   }
@@ -249,6 +296,7 @@ export function useBgm() {
   }
 
   async function playLocalFile(file: File): Promise<void> {
+    if (!enabled.value) return
     if (localObjectUrl) URL.revokeObjectURL(localObjectUrl)
     localObjectUrl = URL.createObjectURL(file)
     localTrackTitle.value = file.name
@@ -257,14 +305,7 @@ export function useBgm() {
     const el = getAudio()
     el.src = localObjectUrl
     currentTrackId.value = BGM_LOCAL_TRACK_ID
-    try {
-      await el.play()
-      playing.value = true
-    } catch (err: unknown) {
-      console.warn('[useBgm] local file play failed:', err instanceof Error ? err.message : err)
-      playing.value = false
-    }
-    persist()
+    await playAudio(el, 'local file play failed')
   }
 
   const currentTitle = computed(() => {

@@ -51,5 +51,7 @@ assert.equal(resolveLocaleFromTags([]), 'en')
 assert.equal(resolveLocaleFromTags([undefined, null, 42, 'ja']), 'ja')
 assert.equal(resolveLocaleFromTags(['en--US', 'ja']), 'ja')
 assert.equal(resolveLocaleFromTags(['zh-Hans-Hant', 'fr']), 'fr')
+assert.equal(resolveLocaleFromTags(['zha', 'ja']), 'ja')
+assert.equal(resolveLocaleFromTags(['zh!', 'de']), 'de')
 
 console.log('desktop-locale resolution tests passed')

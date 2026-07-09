@@ -37,9 +37,17 @@ from opensquilla.migration.openclaw import (
 from opensquilla.migration.openclaw import (
     SKILL_CONFLICT_MODES as OPENCLAW_SKILL_CONFLICT_MODES,
 )
+from opensquilla.migration.opensquilla_home import (
+    OpenSquillaHomeMigrator,
+    OpenSquillaMigrationOptions,
+    detect_legacy_cli_home,
+)
+from opensquilla.paths import default_opensquilla_home
 
-SourceName = Literal["openclaw", "hermes"]
-SOURCE_ORDER: tuple[SourceName, ...] = ("openclaw", "hermes")
+SourceName = Literal["opensquilla", "openclaw", "hermes"]
+# Own-data imports run before foreign ones: the whole-home opensquilla copy
+# must land first so the foreign migrators merge into it, not the reverse.
+SOURCE_ORDER: tuple[SourceName, ...] = ("opensquilla", "openclaw", "hermes")
 
 
 class MigrationOptionError(ValueError):
@@ -86,9 +94,12 @@ class MigrationBatchResult:
 
 
 def detect_default_sources() -> list[DetectedMigrationSource]:
-    """Discover default OpenClaw and Hermes homes in canonical migration order."""
+    """Discover legacy OpenSquilla, OpenClaw, and Hermes homes in canonical order."""
 
     found: list[DetectedMigrationSource] = []
+    legacy_home = detect_legacy_cli_home(default_opensquilla_home())
+    if legacy_home is not None:
+        found.append(DetectedMigrationSource("opensquilla", legacy_home))
     openclaw_home = Path.home() / ".openclaw"
     if _is_valid_openclaw_home(openclaw_home):
         found.append(DetectedMigrationSource("openclaw", openclaw_home))
@@ -122,7 +133,9 @@ def validate_batch_options(
     selected: tuple[SourceName, ...], options: MigrationBatchOptions
 ) -> None:
     for name in selected:
-        if name == "openclaw":
+        if name == "opensquilla":
+            _validate_opensquilla_options(options)
+        elif name == "openclaw":
             _validate_openclaw_options(options)
         elif name == "hermes":
             _validate_hermes_options(options)
@@ -149,7 +162,16 @@ def run_one_migration(
     source_path: Path,
     options: MigrationBatchOptions,
 ) -> dict[str, Any]:
-    if name == "openclaw":
+    if name == "opensquilla":
+        opensquilla_options = OpenSquillaMigrationOptions(
+            source=source_path,
+            kind="cli-home",
+            config_path=options.config,
+            apply=options.apply,
+            overwrite=options.overwrite,
+        )
+        migrator: Any = OpenSquillaHomeMigrator(opensquilla_options)
+    elif name == "openclaw":
         migration_options = MigrationOptions(
             source=source_path,
             config_path=options.config,
@@ -162,7 +184,7 @@ def run_one_migration(
             skill_conflict=options.skill_conflict,  # type: ignore[arg-type]
             persona_conflict=options.persona_conflict,  # type: ignore[arg-type]
         )
-        migrator: Any = OpenClawMigrator(migration_options)
+        migrator = OpenClawMigrator(migration_options)
     elif name == "hermes":
         hermes_options = HermesMigrationOptions(
             source=source_path,
@@ -195,6 +217,16 @@ def report_status_counts(report: dict[str, Any]) -> dict[str, int]:
         status = str(item.get("status") or "unknown")
         counts[status] = counts.get(status, 0) + 1
     return counts
+
+
+def _validate_opensquilla_options(options: MigrationBatchOptions) -> None:
+    # The self-migration is a whole-home copy: there is no per-item option
+    # surface. The onboarding wizard passes the shared defaults
+    # (preset="full", empty include/exclude), which are accepted silently.
+    if options.preset not in ("", "full") or options.include or options.exclude:
+        raise MigrationOptionError(
+            "opensquilla source does not take preset/include/exclude"
+        )
 
 
 def _validate_openclaw_options(options: MigrationBatchOptions) -> None:

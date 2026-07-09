@@ -6,6 +6,7 @@ import contextlib
 import io
 import json
 import sys
+from datetime import datetime
 from pathlib import Path
 from typing import Any, cast
 
@@ -35,14 +36,24 @@ from opensquilla.migration.openclaw import (
     OpenClawMigrator,
     _is_valid_openclaw_home,
 )
+from opensquilla.migration.opensquilla_home import (
+    OPENSQUILLA_SOURCE_KINDS,
+    OpenSquillaHomeMigrator,
+    OpenSquillaMigrationOptions,
+    PortableCandidate,
+    detect_legacy_cli_home,
+    enumerate_portable_homes,
+    is_valid_opensquilla_home,
+)
+from opensquilla.paths import default_opensquilla_home
 
 migrate_app = typer.Typer(
-    help="Migration helpers for external agent runtimes.",
+    help="Migration helpers for legacy OpenSquilla homes and external agent runtimes.",
     invoke_without_command=True,
     no_args_is_help=False,
 )
 
-_AUTO_DETECT_SOURCES: tuple[str, ...] = ("openclaw", "hermes")
+_AUTO_DETECT_SOURCES: tuple[str, ...] = ("opensquilla", "openclaw", "hermes")
 
 
 def _split_csv(values: list[str] | None) -> tuple[str, ...]:
@@ -66,12 +77,17 @@ def _stdin_is_tty() -> bool:
 
 
 def _detect_migration_sources() -> list[tuple[str, Path]]:
-    """Discover known external homes on disk. Order is stable: openclaw, hermes.
+    """Discover importable homes on disk. Order: opensquilla, openclaw, hermes.
 
-    Returns (source_id, source_path) pairs for every external runtime
-    whose default home is plausibly populated.
+    Returns (source_id, source_path) pairs for every runtime whose default
+    home is plausibly populated. The legacy OpenSquilla CLI home is offered
+    only when it is not the active home (a plain CLI user must never see
+    their own live home as a migration source).
     """
     found: list[tuple[str, Path]] = []
+    legacy_home = detect_legacy_cli_home(default_opensquilla_home())
+    if legacy_home is not None:
+        found.append(("opensquilla", legacy_home))
     openclaw_home = Path.home() / ".openclaw"
     if _is_valid_openclaw_home(openclaw_home):
         found.append(("openclaw", openclaw_home))
@@ -116,7 +132,17 @@ def _run_one_migration(
     json_output: bool,
 ) -> dict[str, Any]:
     """Run a single migrator. Validation errors raise typer.Exit(2)."""
-    if name == "openclaw":
+    if name == "opensquilla":
+        _reject_invalid_opensquilla_options(preset=preset, include=include, exclude=exclude)
+        opensquilla_options = OpenSquillaMigrationOptions(
+            source=source_path,
+            kind="cli-home",
+            config_path=config,
+            apply=apply,
+            overwrite=overwrite,
+        )
+        migrator: Any = OpenSquillaHomeMigrator(opensquilla_options)
+    elif name == "openclaw":
         _reject_invalid_options(
             preset=preset,
             include=include,
@@ -136,7 +162,7 @@ def _run_one_migration(
             skill_conflict=skill_conflict,  # type: ignore[arg-type]
             persona_conflict=persona_conflict,  # type: ignore[arg-type]
         )
-        migrator: Any = OpenClawMigrator(options)
+        migrator = OpenClawMigrator(options)
     elif name == "hermes":
         _reject_invalid_hermes_options(
             preset=preset,
@@ -173,8 +199,8 @@ def migrate_root(
         "--source",
         help=(
             "Comma-separated source ids to migrate when auto-detecting: "
-            "openclaw, hermes. Required when both are found and stdin is "
-            "not a TTY."
+            "opensquilla, openclaw, hermes. Required when several are found "
+            "and stdin is not a TTY."
         ),
     ),
     config: Path | None = typer.Option(
@@ -228,13 +254,15 @@ def migrate_root(
     ),
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON."),
 ) -> None:
-    """Auto-detect external runtimes under the user's home and migrate them.
+    """Auto-detect importable homes under the user's home and migrate them.
 
-    Subcommands (``migrate openclaw``, ``migrate hermes``) still work as
-    before with explicit source paths. Calling ``opensquilla migrate``
-    with no subcommand scans ``~/.openclaw`` and ``~/.hermes``, then
-    either prompts the user to pick which to import (TTY) or prints the
-    discovered sources and asks for ``--source`` (non-TTY, ``--json``).
+    Subcommands (``migrate opensquilla``, ``migrate openclaw``,
+    ``migrate hermes``) still work as before with explicit source paths.
+    Calling ``opensquilla migrate`` with no subcommand scans the legacy
+    ``~/.opensquilla`` CLI home (only when it is not the active home),
+    ``~/.openclaw``, and ``~/.hermes``, then either prompts the user to
+    pick which to import (TTY) or prints the discovered sources and asks
+    for ``--source`` (non-TTY, ``--json``).
     """
     if ctx.invoked_subcommand is not None:
         return
@@ -247,8 +275,10 @@ def migrate_root(
             "detected": [],
             "message": (
                 "No migration source detected. Checked default paths: "
-                f"{Path.home() / '.openclaw'}, {Path.home() / '.hermes'}. "
-                "Use `opensquilla migrate openclaw --source <path>` or "
+                f"{Path.home() / '.opensquilla'}, {Path.home() / '.openclaw'}, "
+                f"{Path.home() / '.hermes'}. "
+                "Use `opensquilla migrate opensquilla --source <path>`, "
+                "`opensquilla migrate openclaw --source <path>`, or "
                 "`opensquilla migrate hermes --source <path>` to point "
                 "at a non-default home."
             ),
@@ -312,7 +342,13 @@ def migrate_root(
     # them, so a bad ``--include`` flag for hermes never half-applies
     # openclaw first and then bails out partway through the batch.
     for name in selected:
-        if name == "openclaw":
+        if name == "opensquilla":
+            _reject_invalid_opensquilla_options(
+                preset=preset,
+                include=include_options,
+                exclude=exclude_options,
+            )
+        elif name == "openclaw":
             _reject_invalid_options(
                 preset=preset,
                 include=include_options,
@@ -361,7 +397,9 @@ def migrate_root(
         mode = "applied" if apply else "dry-run"
         for name in selected:
             console.print(f"[green]{name} migration complete[/green] ({mode})")
-            console.print(f"[dim]Report:[/dim] {reports[name]['output_dir']}")
+            output_dir = str(reports[name].get("output_dir") or "")
+            if output_dir:
+                console.print(f"[dim]Report:[/dim] {output_dir}")
 
     if has_error:
         raise typer.Exit(1)
@@ -394,6 +432,19 @@ def _reject_invalid_options(
         raise typer.Exit(2)
 
 
+def _reject_invalid_opensquilla_options(
+    *,
+    preset: str,
+    include: tuple[str, ...],
+    exclude: tuple[str, ...],
+) -> None:
+    # The self-migration is a whole-home copy with no per-item option
+    # surface; only the shared defaults are accepted silently.
+    if preset not in ("", "full") or include or exclude:
+        typer.echo("opensquilla source does not take preset/include/exclude")
+        raise typer.Exit(2)
+
+
 def _reject_invalid_hermes_options(
     *,
     preset: str,
@@ -415,6 +466,151 @@ def _reject_invalid_hermes_options(
     if skill_conflict not in HERMES_SKILL_CONFLICT_MODES:
         typer.echo(f"Unknown Hermes skill conflict behavior: {skill_conflict}")
         raise typer.Exit(2)
+
+
+def _describe_portable_candidate(candidate: PortableCandidate) -> str:
+    era = candidate.era_hint or "unknown era"
+    last_used = datetime.fromtimestamp(candidate.last_used).isoformat(timespec="seconds")
+    return f"{candidate.path} ({era}, last used {last_used}, {candidate.size_bytes} bytes)"
+
+
+def _prompt_portable_home(candidates: list[PortableCandidate]) -> Path:
+    import questionary
+
+    choices = [
+        questionary.Choice(
+            title=f"{index}. {_describe_portable_candidate(candidate)}",
+            value=str(candidate.path),
+        )
+        for index, candidate in enumerate(candidates, start=1)
+    ]
+    answer = questionary.select(
+        "Which portable OpenSquilla home should be imported?",
+        choices=choices,
+    ).ask()
+    if not answer:
+        raise typer.Exit(0)
+    return Path(answer)
+
+
+def _resolve_portable_source(home: Path | None, *, json_output: bool) -> Path:
+    """Resolve the portable source home for ``--kind windows-portable``."""
+    candidates = enumerate_portable_homes()
+    if home is not None:
+        selected = Path(home).expanduser()
+        for candidate in candidates:
+            try:
+                if candidate.path.resolve() == selected.resolve():
+                    return candidate.path
+            except OSError:
+                continue
+        if is_valid_opensquilla_home(selected):
+            return selected
+        typer.echo(f"--home does not point at a portable OpenSquilla home: {selected}")
+        raise typer.Exit(2)
+    if len(candidates) == 1:
+        return candidates[0].path
+    if not candidates:
+        typer.echo(
+            "No portable OpenSquilla homes were found under LOCALAPPDATA/TEMP. "
+            "Pass --source <path> to point at one explicitly."
+        )
+        raise typer.Exit(2)
+    if json_output or not _stdin_is_tty():
+        lines = ["Multiple portable OpenSquilla homes found; re-run with --home <path>:"]
+        lines.extend(f"  - {_describe_portable_candidate(candidate)}" for candidate in candidates)
+        typer.echo("\n".join(lines))
+        raise typer.Exit(2)
+    return _prompt_portable_home(candidates)
+
+
+@migrate_app.command("opensquilla")
+def migrate_opensquilla(
+    source: Path | None = typer.Option(
+        None,
+        "--source",
+        help="Legacy OpenSquilla home directory (any kind).",
+    ),
+    kind: str = typer.Option(
+        "cli-home",
+        "--kind",
+        help="Source kind: cli-home, windows-portable, or desktop-home.",
+    ),
+    home: Path | None = typer.Option(
+        None,
+        "--home",
+        help="Select one enumerated portable home (windows-portable only).",
+    ),
+    config: Path | None = typer.Option(
+        None,
+        "--config",
+        help="OpenSquilla config path to write or preview.",
+    ),
+    apply: bool = typer.Option(
+        False,
+        "--apply/--dry-run",
+        help="Apply the migration. Without this flag, only a dry-run report is produced.",
+    ),
+    overwrite: bool = typer.Option(
+        False,
+        "--overwrite",
+        help="Overwrite a non-empty target home after taking timestamped backups.",
+    ),
+    json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON."),
+) -> None:
+    """Import a legacy OpenSquilla home (CLI, Windows portable, or desktop)."""
+
+    if kind not in OPENSQUILLA_SOURCE_KINDS:
+        typer.echo(
+            f"Unknown source kind: {kind} (known: {', '.join(OPENSQUILLA_SOURCE_KINDS)})"
+        )
+        raise typer.Exit(2)
+    if home is not None and source is not None:
+        typer.echo("Pass either --source or --home, not both.")
+        raise typer.Exit(2)
+    if home is not None and kind != "windows-portable":
+        typer.echo("--home applies to --kind windows-portable only; use --source instead.")
+        raise typer.Exit(2)
+    source_path = source
+    if source_path is None and kind == "windows-portable":
+        source_path = _resolve_portable_source(home, json_output=json_output)
+
+    options = OpenSquillaMigrationOptions(
+        source=source_path,
+        kind=kind,
+        config_path=config,
+        apply=apply,
+        overwrite=overwrite,
+    )
+    if json_output:
+        with contextlib.redirect_stdout(io.StringIO()):
+            report = OpenSquillaHomeMigrator(options).migrate()
+    else:
+        report = OpenSquillaHomeMigrator(options).migrate()
+    has_error = any(item.get("status") == "error" for item in report.get("items", []))
+    if json_output:
+        typer.echo(json.dumps(report, ensure_ascii=False))
+    else:
+        mode = "applied" if apply else "dry-run"
+        console.print(f"[green]OpenSquilla self-migration complete[/green] ({mode})")
+        counts: dict[str, int] = {}
+        for item in report.get("items", []):
+            status = str(item.get("status") or "unknown")
+            counts[status] = counts.get(status, 0) + 1
+        if counts:
+            summary = ", ".join(f"{status}: {count}" for status, count in sorted(counts.items()))
+            console.print(f"[dim]Items:[/dim] {summary}")
+        paused = report.get("paused_jobs") or []
+        if paused:
+            console.print(
+                f"[dim]Scheduler:[/dim] {len(paused)} imported job(s) arrive paused; "
+                "review them with `opensquilla cron list`."
+            )
+        output_dir = str(report.get("output_dir") or "")
+        if output_dir:
+            console.print(f"[dim]Report:[/dim] {output_dir}")
+    if has_error:
+        raise typer.Exit(1)
 
 
 @migrate_app.command("openclaw")

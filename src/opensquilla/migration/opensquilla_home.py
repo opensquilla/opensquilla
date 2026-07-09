@@ -378,7 +378,7 @@ def _provider_env_key(provider_id: str) -> str:
         spec = registry.get_provider_spec(normalized)
     except Exception:  # noqa: BLE001 - unknown providers fall back to a generic key
         return ""
-    env_key = spec.env_key
+    env_key = str(getattr(spec, "env_key", "") or "")
     if not env_key or env_key == "OAuth":
         return ""
     return env_key

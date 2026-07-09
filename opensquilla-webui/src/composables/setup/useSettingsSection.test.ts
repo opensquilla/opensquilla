@@ -20,6 +20,13 @@ describe('settings section IA', () => {
     expect(isKnownSectionParam('safety')).toBe(false)
   })
 
+  it('does not ship copy for retired approval-policy destinations', () => {
+    expect(en.settings.rail).not.toHaveProperty('safety')
+    expect(en.settings).not.toHaveProperty('safety')
+    expect(en.console).not.toHaveProperty('approvals')
+    expect(en.nav).not.toHaveProperty('approvals')
+  })
+
   it('passes through every canonical section id unchanged', () => {
     for (const s of SETTINGS_SECTIONS) {
       expect(sectionFromRouteParam(s.id)).toBe(s.id)

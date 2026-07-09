@@ -50,7 +50,6 @@
   "nav": {
     "chat": "Chat",
     "sessions": "Sitzungen",
-    "approvals": "Genehmigungen",
     "agents": "Agenten",
     "channels": "Kanäle",
     "cron": "Cron",
@@ -136,12 +135,7 @@
         "delivery": "Zustellung",
         "preferences": "Einstellungen",
         "capabilities": "Fähigkeiten"
-      },
-      "safety": "Sicherheit"
-    },
-    "safety": {
-      "title": "Freigabestrategie",
-      "desc": "Legen Sie fest, wie OpenSquilla riskante Tool-Ausführungen über alle Agenten und Kanäle hinweg behandelt."
+      }
     }
   },
   "errorBoundary": {
@@ -1066,40 +1060,6 @@
       "hintRestarting": "Adapter wird nach Dispatch-Fehlern neu gestartet.",
       "hintExhausted": "Adapter hat sein Wiederholungsbudget erschöpft. Versuchen Sie `{cmd}`.",
       "hintConfiguredInactive": "Auf der Festplatte konfiguriert, aber in diesem Gateway-Prozess nicht aktiv — starten Sie das Gateway neu, um ihn zu laden."
-    },
-    "approvals": {
-      "eyebrow": "Steuerung · Genehmigungen",
-      "title": "Genehmigungen",
-      "subtitle": "Tor zur Werkzeugausführung — halten Sie riskante Aktionen angehalten, bis Sie grünes Licht geben.",
-      "pending": "Ausstehend",
-      "awaitingDecision": "wartet auf Entscheidung",
-      "allClear": "alles in Ordnung",
-      "strategy": "Strategie",
-      "strategyTitle": "Wie Genehmigungen gehandhabt werden",
-      "strategyAriaLabel": "Genehmigungsstrategie",
-      "modePromptLabel": "Jedes Mal nachfragen",
-      "modePromptDesc": "Jede riskante Werkzeugausführung öffnet eine Genehmigungsabfrage.",
-      "modeAutoApproveLabel": "Automatisch genehmigen",
-      "modeAutoApproveDesc": "Alle Werkzeugausführungen werden automatisch genehmigt.",
-      "modeAutoDenyLabel": "Automatisch ablehnen",
-      "modeAutoDenyDesc": "Alle Werkzeugausführungen werden automatisch abgelehnt.",
-      "emptyTitle": "Keine ausstehenden Genehmigungen.",
-      "emptyText": "Wenn ein Agent einen riskanten Werkzeugaufruf erreicht, erscheint er hier zu Ihrer Freigabe.",
-      "pendingRequests": "Ausstehende Anfragen",
-      "agent": "Agent",
-      "session": "Sitzung",
-      "command": "Befehl",
-      "details": "Details",
-      "unknownTool": "Unbekannt",
-      "approveOnce": "Einmal genehmigen",
-      "allowSameType": "Gleichen Typ zulassen",
-      "deny": "Ablehnen",
-      "loadFailed": "Genehmigungen konnten nicht geladen werden: {msg}",
-      "approved": "Genehmigt",
-      "denied": "Abgelehnt",
-      "toastFailed": "Fehlgeschlagen: {msg}",
-      "toastStrategy": "Genehmigungsstrategie: {mode}",
-      "toastStrategyFailed": "Strategie konnte nicht gespeichert werden: {msg}"
     }
   },
   "cronSkills": {

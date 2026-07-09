@@ -129,7 +129,7 @@ test.describe('In-thread approval card (mocked snapshot)', () => {
     ).toBeVisible()
   })
 
-  test('topbar pill deep-links to the blocked session chat, not the Approvals page', async ({ page }) => {
+  test('topbar pill deep-links to the blocked session chat, not the retired approvals destination', async ({ page }) => {
     await mockApprovalsRoute(page, () => [execApproval])
     await openMockedChat(page)
 

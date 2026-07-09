@@ -377,7 +377,7 @@ export function useChatApprovals(options: UseChatApprovalsOptions) {
         item !== null && !!sessionKey.value && item.sessionKey === sessionKey.value)
     const liveIds = new Set(sessionItems.map(item => item.id))
     // Unresolved cards that vanished from the snapshot were resolved elsewhere
-    // (Approvals page, another client) — drop them silently.
+    // (another client) — drop them silently.
     let next = approvalEntries.value.filter(
       entry => entry.resolution !== null || liveIds.has(entry.approval.id))
     const knownIds = new Set(next.map(entry => entry.approval.id))
@@ -620,7 +620,7 @@ export function useChatApprovals(options: UseChatApprovalsOptions) {
 
   /**
    * `*.approval.resolved` push: stamp `interruptState` from `payload.approved` so
-   * a decision landing elsewhere (the Approvals page, another client) collapses
+   * a decision landing elsewhere (another client) collapses
    * the inline part here too. No snapshot fetch — the push carries the outcome.
    */
   function handleApprovalResolved(payload: ApprovalPushPayload) {

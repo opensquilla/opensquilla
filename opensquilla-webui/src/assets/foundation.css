@@ -196,6 +196,14 @@
   --queued-fill: var(--queued);
   --chart-2: color-mix(in srgb, var(--accent) 42%, var(--bg-surface));
 
+  /* Message surfaces — the conversation's container grammar: the user-bubble
+     fill (one legible step off the chat canvas) and the 1px object border for
+     bare media and file chips. Formulas resolve against each theme's own
+     ink/surface; dark overrides the bubble mix where its deeper canvas needs
+     one more step. */
+  --msg-bubble: color-mix(in srgb, var(--text) 7%, var(--bg-surface));
+  --msg-obj-border: color-mix(in srgb, var(--text) 12%, transparent);
+
   /* Machined elevation + atmosphere — the dark-ground recipe (the default
      ground); light grounds (light, miami) override with paper shadows. */
   --elev-highlight: rgba(255,255,255,0.06);

@@ -19,10 +19,10 @@
     >
       <Icon v-if="shareSelected" name="check" :size="13" />
     </button>
-    <div class="msg-user-bubble" :class="{ 'msg-user-bubble--has-attachments': message.hasAttachments }">
-      <template v-if="message.text">
-        {{ stripTimePrefix(message.text) }}
-      </template>
+    <!-- The container grammar: attachments are standalone objects stacked
+         above the text bubble, never packed inside it — text gets a filled
+         bubble, images render as bordered bare media, files as icon chips. -->
+    <div class="msg-user-stack">
       <div v-if="message.attachments?.length" class="msg-attachments">
         <template v-for="attachment in message.attachments" :key="attachment.renderKey">
           <img
@@ -41,6 +41,9 @@
             </span>
           </span>
         </template>
+      </div>
+      <div v-if="message.text" class="msg-user-bubble">
+        {{ stripTimePrefix(message.text) }}
       </div>
     </div>
     <div v-if="!shareMode" class="msg-user-actions">
@@ -117,8 +120,11 @@ function attachmentImageSrc(attachment: DisplayAttachment): string {
 function attachmentMeta(attachment: DisplayAttachment): string {
   const mime = attachment.mime || 'attachment'
   const subtype = mime.includes('/') ? mime.split('/').pop() || mime : mime
-  const label = subtype.includes('.') ? subtype.split('.').pop() || subtype : subtype
-  return label.toUpperCase()
+  const label = (subtype.includes('.') ? subtype.split('.').pop() || subtype : subtype).toUpperCase()
+  // Same meta idiom as artifact file cards: `TYPE · N KB` (utils/chat/artifacts.ts).
+  const size = Number(attachment.size)
+  if (!Number.isFinite(size) || size <= 0) return label
+  return `${label} · ${Math.max(1, Math.round(size / 1024))} KB`
 }
 </script>
 
@@ -199,11 +205,22 @@ function attachmentMeta(attachment: DisplayAttachment): string {
   }
 }
 
+/* Stretch to the full conversation column so the 82% caps on the bubble and
+   the attachment row resolve against the column, not shrink-to-fit content. */
+.msg-user-stack {
+  align-self: stretch;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 0.375rem;
+  min-width: 0;
+}
+
 .msg-user-bubble {
-  background: var(--bg-elevated);
+  background: var(--msg-bubble);
   color: var(--text);
-  padding: 0.5rem 0.875rem;
-  border-radius: var(--radius-xl);
+  padding: 0.5625rem 0.875rem;
+  border-radius: var(--radius-panel);
   font-size: 0.875rem;
   line-height: 1.5;
   max-width: 82%;
@@ -287,19 +304,18 @@ function attachmentMeta(attachment: DisplayAttachment): string {
 .msg-attachments {
   display: flex;
   flex-wrap: wrap;
-  gap: 0.5rem;
-  margin-top: 0.625rem;
-  max-width: min(100%, 24rem);
+  justify-content: flex-end;
+  gap: 0.375rem;
+  max-width: 82%;
 }
 
-.msg-attachments:first-child {
-  margin-top: 0;
-}
-
+/* Bare media object: the 1px border keeps white-ish screenshots from
+   dissolving into a light canvas. */
 .msg-thumb {
   max-width: 200px;
   max-height: 200px;
-  border-radius: var(--radius-md);
+  border: 1px solid var(--msg-obj-border);
+  border-radius: var(--radius-card);
   object-fit: cover;
 }
 
@@ -310,10 +326,9 @@ function attachmentMeta(attachment: DisplayAttachment): string {
   flex: 0 0 2rem;
   width: 2rem;
   height: 2rem;
-  background: color-mix(in srgb, var(--text) 7%, var(--bg-surface));
-  border: 1px solid color-mix(in srgb, var(--text) 9%, var(--border));
-  border-radius: var(--radius-md);
-  color: var(--text-muted);
+  background: color-mix(in srgb, var(--accent) 12%, var(--bg-surface));
+  border-radius: var(--radius-control);
+  color: var(--accent);
 }
 
 .msg-file-chip {
@@ -322,11 +337,11 @@ function attachmentMeta(attachment: DisplayAttachment): string {
   gap: 0.625rem;
   min-width: min(15rem, 100%);
   max-width: min(100%, 24rem);
-  padding: 0.5rem 0.625rem;
-  border: 1px solid color-mix(in srgb, var(--text) 8%, var(--border));
-  border-radius: var(--radius-lg);
-  background: color-mix(in srgb, var(--bg-surface) 74%, var(--bg-elevated));
-  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--text) 6%, transparent);
+  padding: 0.4375rem 0.875rem 0.4375rem 0.4375rem;
+  border: 1px solid var(--msg-obj-border);
+  border-radius: var(--radius-card);
+  background: var(--bg-surface);
+  font-size: 0.8125rem;
   text-align: left;
 }
 
@@ -345,9 +360,10 @@ function attachmentMeta(attachment: DisplayAttachment): string {
 }
 
 .msg-file-chip__meta {
+  font-family: var(--font-mono);
   font-size: 0.6875rem;
-  font-weight: 600;
-  letter-spacing: 0;
+  font-weight: 500;
+  letter-spacing: 0.06em;
   color: var(--text-dim);
   line-height: 1.2;
   text-transform: uppercase;
@@ -364,7 +380,8 @@ function attachmentMeta(attachment: DisplayAttachment): string {
     right: 0.35rem;
   }
 
-  .msg-user-bubble {
+  .msg-user-bubble,
+  .msg-attachments {
     max-width: 90%;
   }
 }

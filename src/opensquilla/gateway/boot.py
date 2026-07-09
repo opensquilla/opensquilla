@@ -864,6 +864,35 @@ def _warn_workspace_state_mismatch(config: GatewayConfig) -> None:
     )
 
 
+def _warn_legacy_home_detected(config: GatewayConfig) -> None:
+    """One advisory warning when a fresh home boots beside importable legacy data.
+
+    Fires only when this home holds no ``sessions.db`` yet (the same freshness
+    expression the schema-migration block uses), so established installs never
+    see it — and the detection import stays behind that check, keeping the
+    established-install boot path free of it. Detection is read-only; the
+    import itself stays at the CLI layer (``opensquilla migrate opensquilla``).
+    """
+    try:
+        if _state_path(config, "sessions.db").exists():
+            return
+    except OSError:  # pragma: no cover - unreadable state dir; stay silent.
+        return
+    import importlib
+
+    legacy_detect = importlib.import_module("opensquilla.migration.legacy_detect")
+
+    candidate = legacy_detect.detect_legacy_home(_gateway_home(config))
+    if candidate is None:
+        return
+    log.warning(
+        "build_services.legacy_home_detected",
+        legacy_home=str(candidate.path),
+        kind=candidate.kind,
+        migrate_command=legacy_detect.suggested_migrate_command(candidate),
+    )
+
+
 def _ensure_configured_agent_workspaces(
     config: GatewayConfig,
     *,
@@ -1992,6 +2021,7 @@ async def build_services(
             log.info("build_services.config_loaded", path=config.config_path)
     deferred_warmups: list[Callable[[], Any]] = []
     _warn_workspace_state_mismatch(config)
+    _warn_legacy_home_detected(config)
 
     # Register session-material filesystem cleanup so deleting a session also
     # removes its transcript media + workspace attachment copies (they are

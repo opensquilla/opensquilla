@@ -196,6 +196,7 @@ def _persist(ctx: RpcContext, new_cfg: Any, *, restart_required: bool) -> str:
 
 
 def _status_payload(ctx: RpcContext) -> dict[str, Any]:
+    from opensquilla.onboarding.legacy_data import legacy_data_payload
     from opensquilla.onboarding.next_steps import env_recovery_commands
     from opensquilla.onboarding.status import get_onboarding_status
 
@@ -241,6 +242,9 @@ def _status_payload(ctx: RpcContext) -> dict[str, Any]:
         "sectionDetails": s.section_details,
         "envRecoveryCommands": env_recovery_commands(s),
         "warnings": list(s.warnings),
+        # Read-only legacy-home advisory for the Web UI setup flow; execution
+        # stays at the CLI layer (the block carries the command to run).
+        "legacyData": legacy_data_payload(),
     }
 
 

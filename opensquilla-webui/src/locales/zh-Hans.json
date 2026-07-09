@@ -585,7 +585,30 @@
       "uninstallPurgePrimary": "删除数据",
       "uninstallDone": "桌面本地清理已完成。应用即将关闭；如果要卸载应用本体，请通过系统移除 OpenSquilla。",
       "uninstallFailed": "清理失败：{detail}",
-      "uninstallCheckLog": "请查看网关日志。"
+      "uninstallCheckLog": "请查看网关日志。",
+      "migrationLabel": "导入旧数据",
+      "migrationDesc": "在本机查找旧版 OpenSquilla 数据目录，并导入到此运行时。",
+      "migrationButton": "导入旧数据",
+      "migrationNone": "未发现旧数据。",
+      "migrationSummaryFailed": "检查旧数据失败：{detail}",
+      "migrationSummaryTitle": "发现旧数据",
+      "migrationCountPlanned": "待迁移 {n} 项",
+      "migrationCountMigrated": "已迁移 {n} 项",
+      "migrationCountSkipped": "跳过 {n} 项",
+      "migrationCountError": "出错 {n} 项",
+      "migrationCountNone": "没有可导入的条目。",
+      "migrationPausedJobs": "计划任务（以暂停状态导入）：{n} 个",
+      "migrationDisk": "磁盘：需要 {required}，可用 {free}",
+      "migrationOverwrite": "覆盖现有数据（会创建带时间戳的备份）",
+      "migrationImport": "导入",
+      "migrationCancel": "取消",
+      "migrationConfirmTitle": "导入旧数据？",
+      "migrationConfirmBody": "导入期间本地运行时会停止，完成后自动重启。此页面会短暂断开连接。",
+      "migrationConfirmPrimary": "导入",
+      "migrationStarted": "已开始导入——本地运行时正在重启，此页面稍后会自动重连。",
+      "migrationDone": "旧数据已导入。本地运行时正在重启。",
+      "migrationFailed": "导入失败：{detail}",
+      "migrationPhase": "进度：{phase}"
     },
     "keyboard": {
       "title": "键盘",
@@ -2095,6 +2118,16 @@
       "hint": "网关尚未就绪，无法运行。",
       "finishSetup": "完成设置",
       "viewReadiness": "查看就绪状态"
+    },
+    "legacyDataBanner": {
+      "ariaLabel": "发现旧版 OpenSquilla 数据",
+      "title": "发现旧版 OpenSquilla 数据",
+      "dismiss": "关闭",
+      "dismissNotice": "关闭旧数据提示",
+      "hintWeb": "请先停止网关，然后运行以下命令导入数据：",
+      "hintDesktop": "可在 设置 → 运行时 中使用“导入旧数据”操作导入。",
+      "openSettings": "打开运行时设置",
+      "copyCommand": "复制迁移命令"
     },
     "shortcuts": {
       "commandPalette": {

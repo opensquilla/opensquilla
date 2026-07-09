@@ -21,6 +21,7 @@ import pytest
 from opensquilla.gateway.config import GatewayConfig, LlmProviderConfig
 from opensquilla.gateway.rpc import RpcContext
 from opensquilla.gateway.rpc_onboarding import _status_payload
+from opensquilla.migration.legacy_detect import LegacyHomeCandidate, suggested_migrate_command
 
 # Exact top-level shape of onboarding.status as shipped today.
 STATUS_TOP_LEVEL_KEYS = frozenset(
@@ -58,8 +59,17 @@ STATUS_TOP_LEVEL_KEYS = frozenset(
         "sectionDetails",
         "envRecoveryCommands",
         "warnings",
+        # Nullable legacy-data advisory block: a deliberate additive
+        # extension for the legacy-home import flow. Detection is read-only;
+        # the Web UI setup flow renders the block's `command` for the
+        # operator to run against a stopped gateway.
+        "legacyData",
     }
 )
+
+# Exact shape of the populated ``legacyData`` block; ``None`` when no legacy
+# home is detected.
+LEGACY_DATA_KEYS = frozenset({"path", "kind", "command"})
 
 # Section names double as wire keys inside ``sections`` / ``sectionDetails``.
 # ``ensemble`` is a deliberate additive extension of this frozen set: the
@@ -246,3 +256,43 @@ async def test_unsupported_provider_source_is_consistent_across_the_payload(
     assert payload["sectionDetails"]["llm"]["detail"] == (
         "registered but not runtime-supported"
     )
+
+
+async def test_legacy_data_block_is_null_without_a_candidate(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Detection is stubbed to the no-candidate outcome so the assertion holds
+    # on developer machines that do have a real legacy home lying around.
+    monkeypatch.setattr(
+        "opensquilla.migration.legacy_detect.detect_legacy_home",
+        lambda target=None: None,
+    )
+
+    payload = _status_payload(
+        RpcContext(conn_id="contract", config=_synthetic_config(tmp_path))
+    )
+
+    assert payload["legacyData"] is None
+
+
+async def test_legacy_data_block_shape_is_frozen(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    candidate = LegacyHomeCandidate(path=tmp_path / "legacy-home", kind="cli-home")
+    monkeypatch.setattr(
+        "opensquilla.migration.legacy_detect.detect_legacy_home",
+        lambda target=None: candidate,
+    )
+
+    payload = _status_payload(
+        RpcContext(conn_id="contract", config=_synthetic_config(tmp_path))
+    )
+
+    block = payload["legacyData"]
+    assert set(block) == LEGACY_DATA_KEYS
+    assert block["path"] == str(tmp_path / "legacy-home")
+    assert block["kind"] == "cli-home"
+    # The command is the exact CLI invocation the advisory tells the operator
+    # to run (dry-run by default; clients append --apply themselves).
+    assert block["command"] == suggested_migrate_command(candidate)
+    assert block["command"].startswith("opensquilla migrate opensquilla ")

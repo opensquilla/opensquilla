@@ -585,7 +585,30 @@
       "uninstallPurgePrimary": "Supprimer les données",
       "uninstallDone": "Nettoyage du bureau terminé. L'application va se fermer ; supprimez OpenSquilla via votre système si vous souhaitez désinstaller l'application elle-même.",
       "uninstallFailed": "Échec du nettoyage : {detail}",
-      "uninstallCheckLog": "consultez le journal de la passerelle."
+      "uninstallCheckLog": "consultez le journal de la passerelle.",
+      "migrationLabel": "Importer les anciennes données",
+      "migrationDesc": "Recherche un ancien répertoire OpenSquilla sur cette machine et l'importe dans cet environnement d'exécution.",
+      "migrationButton": "Importer les anciennes données",
+      "migrationNone": "Aucune ancienne donnée trouvée.",
+      "migrationSummaryFailed": "Impossible de vérifier la présence d'anciennes données : {detail}",
+      "migrationSummaryTitle": "Anciennes données trouvées",
+      "migrationCountPlanned": "{n} planifiés",
+      "migrationCountMigrated": "{n} migrés",
+      "migrationCountSkipped": "{n} ignorés",
+      "migrationCountError": "{n} en erreur",
+      "migrationCountNone": "Aucun élément à importer.",
+      "migrationPausedJobs": "Tâches planifiées (importées en pause) : {n}",
+      "migrationDisk": "Disque : {required} requis, {free} libres",
+      "migrationOverwrite": "Écraser les données existantes (des sauvegardes horodatées sont créées)",
+      "migrationImport": "Importer",
+      "migrationCancel": "Annuler",
+      "migrationConfirmTitle": "Importer les anciennes données ?",
+      "migrationConfirmBody": "L'environnement d'exécution local s'arrête pendant l'importation et redémarre une fois celle-ci terminée. Cette page perdra brièvement sa connexion.",
+      "migrationConfirmPrimary": "Importer",
+      "migrationStarted": "Importation lancée — l'environnement d'exécution local redémarre, cette page va se reconnecter sous peu.",
+      "migrationDone": "Anciennes données importées. L'environnement d'exécution local redémarre.",
+      "migrationFailed": "Échec de l'importation : {detail}",
+      "migrationPhase": "Progression : {phase}"
     },
     "keyboard": {
       "title": "Clavier",
@@ -2095,6 +2118,16 @@
       "hint": "La passerelle n'est pas encore prête à fonctionner.",
       "finishSetup": "Terminer la configuration",
       "viewReadiness": "Voir la préparation"
+    },
+    "legacyDataBanner": {
+      "ariaLabel": "Anciennes données OpenSquilla détectées",
+      "title": "Anciennes données OpenSquilla détectées",
+      "dismiss": "Ignorer",
+      "dismissNotice": "Ignorer l'avis d'anciennes données",
+      "hintWeb": "Arrêtez la passerelle, puis exécutez cette commande pour les importer :",
+      "hintDesktop": "Importez-les depuis Paramètres → Environnement d'exécution avec l'action « Importer les anciennes données ».",
+      "openSettings": "Ouvrir les paramètres d'exécution",
+      "copyCommand": "Copier la commande de migration"
     },
     "shortcuts": {
       "commandPalette": {

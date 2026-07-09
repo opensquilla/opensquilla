@@ -38,6 +38,7 @@ _COMMAND_HELP_PATHS = (
     ("gateway", "start"),
     ("gateway", "status"),
     ("memory", "repair", "list"),
+    ("migrate", "opensquilla"),
     ("memory", "repair", "run"),
     ("memory", "status"),
     ("onboard",),

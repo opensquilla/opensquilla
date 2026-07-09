@@ -24,6 +24,10 @@ contextBridge.exposeInMainWorld('opensquillaDesktop', {
   quitApp: () => ipcRenderer.invoke('desktop:boot:quit'),
   uninstallSummary: () => ipcRenderer.invoke('desktop:uninstall:summary'),
   uninstallRun: (payload: unknown) => ipcRenderer.invoke('desktop:uninstall:run', payload),
+  migrationSummary: () => ipcRenderer.invoke('desktop:migration:summary'),
+  migrationRun: (payload: unknown) => ipcRenderer.invoke('desktop:migration:run', payload),
+  previewOnboardingMigration: () => ipcRenderer.invoke('desktop:onboarding:migrate:preview'),
+  applyOnboardingMigration: () => ipcRenderer.invoke('desktop:onboarding:migrate:apply'),
   onBootStatus: (callback: (payload: unknown) => void) => {
     const listener = (_event: Electron.IpcRendererEvent, payload: unknown) => callback(payload)
     ipcRenderer.on('desktop:boot:status', listener)
@@ -38,5 +42,10 @@ contextBridge.exposeInMainWorld('opensquillaDesktop', {
     const listener = (_event: Electron.IpcRendererEvent, payload: unknown) => callback(payload)
     ipcRenderer.on('desktop:update:state-changed', listener)
     return () => ipcRenderer.removeListener('desktop:update:state-changed', listener)
+  },
+  onMigrationProgress: (callback: (payload: unknown) => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, payload: unknown) => callback(payload)
+    ipcRenderer.on('desktop:migration:progress', listener)
+    return () => ipcRenderer.removeListener('desktop:migration:progress', listener)
   },
 })

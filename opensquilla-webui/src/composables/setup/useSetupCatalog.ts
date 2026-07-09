@@ -128,6 +128,8 @@ interface OnboardingStatus {
   llmConfigured?: boolean
   llmSource?: string
   sectionDetails?: Record<string, SectionDetail>
+  // Read-only legacy-home detection (absent on older gateways).
+  legacyData?: { path?: string; kind?: string; command?: string } | null
   envRecoveryCommands?: Array<{ section?: string; command?: string; label?: string }>
   configPath?: string
   channelCount?: number

@@ -585,7 +585,30 @@
       "uninstallPurgePrimary": "Delete data",
       "uninstallDone": "Desktop cleanup complete. The app will now close; remove OpenSquilla through your OS if you want to uninstall the app itself.",
       "uninstallFailed": "Cleanup failed: {detail}",
-      "uninstallCheckLog": "check the gateway log."
+      "uninstallCheckLog": "check the gateway log.",
+      "migrationLabel": "Import legacy data",
+      "migrationDesc": "Find an older OpenSquilla home on this machine and import it into this runtime.",
+      "migrationButton": "Import legacy data",
+      "migrationNone": "No legacy data found.",
+      "migrationSummaryFailed": "Could not check for legacy data: {detail}",
+      "migrationSummaryTitle": "Legacy data found",
+      "migrationCountPlanned": "{n} planned",
+      "migrationCountMigrated": "{n} migrated",
+      "migrationCountSkipped": "{n} skipped",
+      "migrationCountError": "{n} with errors",
+      "migrationCountNone": "No items to import.",
+      "migrationPausedJobs": "Scheduler jobs (imported paused): {n}",
+      "migrationDisk": "Disk: {required} required, {free} free",
+      "migrationOverwrite": "Overwrite existing data (timestamped backups are taken)",
+      "migrationImport": "Import",
+      "migrationCancel": "Cancel",
+      "migrationConfirmTitle": "Import legacy data?",
+      "migrationConfirmBody": "The local runtime stops while the import runs and restarts when it finishes. This page will briefly lose its connection.",
+      "migrationConfirmPrimary": "Import",
+      "migrationStarted": "Import started — the local runtime is restarting and this page will reconnect shortly.",
+      "migrationDone": "Legacy data imported. The local runtime is restarting.",
+      "migrationFailed": "Import failed: {detail}",
+      "migrationPhase": "Progress: {phase}"
     },
     "keyboard": {
       "title": "Keyboard",
@@ -2095,6 +2118,16 @@
       "hint": "The gateway isn't ready to run yet.",
       "finishSetup": "Finish setup",
       "viewReadiness": "View readiness"
+    },
+    "legacyDataBanner": {
+      "ariaLabel": "Legacy OpenSquilla data found",
+      "title": "Legacy OpenSquilla data found",
+      "dismiss": "Dismiss",
+      "dismissNotice": "Dismiss legacy data notice",
+      "hintWeb": "Stop the gateway, then run this command to import it:",
+      "hintDesktop": "Import it from Settings → Runtime with the “Import legacy data” action.",
+      "openSettings": "Open runtime settings",
+      "copyCommand": "Copy migrate command"
     },
     "shortcuts": {
       "commandPalette": {

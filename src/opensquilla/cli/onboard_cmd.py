@@ -28,6 +28,7 @@ from opensquilla.onboarding.flow import (
     run_interactive_configure,
     run_interactive_onboard,
 )
+from opensquilla.onboarding.legacy_data import legacy_data_payload
 from opensquilla.onboarding.next_steps import (
     env_recovery_commands,
     env_reference_warnings,
@@ -785,6 +786,9 @@ def _status_payload(status: OnboardingStatus) -> dict:
         "channelCount": status.channel_count,
         "channelsConfigured": status.channels_configured,
         "warnings": list(status.warnings),
+        # Shared with the RPC payload (superset contract): the read-only
+        # legacy-home advisory block, or null when nothing is detected.
+        "legacyData": legacy_data_payload(),
     }
 
 

@@ -45,6 +45,13 @@ PUBLIC_RELEASE_MARKER_NAMES = (
 # behavior. They are public fixtures, not leaked developer-machine paths.
 PATH_POLICY_FIXTURE_FILES = {
     "tests/test_artifacts.py",
+    "tests/test_migration/fixtures/homes/cli-0.1/config.toml",
+    "tests/test_migration/fixtures/homes/cli-0.2/config.toml",
+    "tests/test_migration/fixtures/homes/cli-0.3/config.toml",
+    "tests/test_migration/fixtures/homes/cli-0.4/config.toml",
+    "tests/test_migration/fixtures/homes/cli-0.5/config.toml",
+    "tests/test_migration/fixtures/homes/desktop-0.4/config.toml",
+    "tests/test_migration/fixtures/homes/desktop-0.5rc/config.toml",
     "tests/test_provider_image_generation.py",
     "tests/test_sandbox/test_operation_profile.py",
     "tests/test_sandbox/test_windows_default_cache.py",

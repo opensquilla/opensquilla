@@ -585,7 +585,30 @@
       "uninstallPurgePrimary": "Daten löschen",
       "uninstallDone": "Desktop-Bereinigung abgeschlossen. Die App wird jetzt geschlossen; entfernen Sie OpenSquilla über Ihr Betriebssystem, wenn Sie die App selbst deinstallieren möchten.",
       "uninstallFailed": "Bereinigung fehlgeschlagen: {detail}",
-      "uninstallCheckLog": "prüfen Sie das Gateway-Protokoll."
+      "uninstallCheckLog": "prüfen Sie das Gateway-Protokoll.",
+      "migrationLabel": "Alte Daten importieren",
+      "migrationDesc": "Sucht ein älteres OpenSquilla-Datenverzeichnis auf diesem Rechner und importiert es in diese Laufzeit.",
+      "migrationButton": "Alte Daten importieren",
+      "migrationNone": "Keine alten Daten gefunden.",
+      "migrationSummaryFailed": "Prüfung auf alte Daten fehlgeschlagen: {detail}",
+      "migrationSummaryTitle": "Alte Daten gefunden",
+      "migrationCountPlanned": "{n} geplant",
+      "migrationCountMigrated": "{n} migriert",
+      "migrationCountSkipped": "{n} übersprungen",
+      "migrationCountError": "{n} mit Fehlern",
+      "migrationCountNone": "Keine Einträge zu importieren.",
+      "migrationPausedJobs": "Geplante Jobs (pausiert importiert): {n}",
+      "migrationDisk": "Speicherplatz: {required} benötigt, {free} frei",
+      "migrationOverwrite": "Vorhandene Daten überschreiben (es werden Sicherungen mit Zeitstempel angelegt)",
+      "migrationImport": "Importieren",
+      "migrationCancel": "Abbrechen",
+      "migrationConfirmTitle": "Alte Daten importieren?",
+      "migrationConfirmBody": "Die lokale Laufzeit wird für den Import gestoppt und danach neu gestartet. Diese Seite verliert kurzzeitig die Verbindung.",
+      "migrationConfirmPrimary": "Importieren",
+      "migrationStarted": "Import gestartet – die lokale Laufzeit startet neu, diese Seite verbindet sich in Kürze wieder.",
+      "migrationDone": "Alte Daten importiert. Die lokale Laufzeit wird neu gestartet.",
+      "migrationFailed": "Import fehlgeschlagen: {detail}",
+      "migrationPhase": "Fortschritt: {phase}"
     },
     "keyboard": {
       "title": "Tastatur",
@@ -2095,6 +2118,16 @@
       "hint": "Das Gateway ist noch nicht einsatzbereit.",
       "finishSetup": "Einrichtung abschließen",
       "viewReadiness": "Bereitschaft anzeigen"
+    },
+    "legacyDataBanner": {
+      "ariaLabel": "Alte OpenSquilla-Daten gefunden",
+      "title": "Alte OpenSquilla-Daten gefunden",
+      "dismiss": "Schließen",
+      "dismissNotice": "Hinweis zu alten Daten schließen",
+      "hintWeb": "Stoppen Sie das Gateway und führen Sie dann diesen Befehl aus, um die Daten zu importieren:",
+      "hintDesktop": "Importieren Sie die Daten unter Einstellungen → Laufzeit mit der Aktion „Alte Daten importieren“.",
+      "openSettings": "Laufzeit-Einstellungen öffnen",
+      "copyCommand": "Migrationsbefehl kopieren"
     },
     "shortcuts": {
       "commandPalette": {

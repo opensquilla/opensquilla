@@ -15,6 +15,7 @@ pinned wire contract: see ``docs/self-migration-report-contract.md`` and
 
 from __future__ import annotations
 
+import importlib
 import json
 import os
 import re
@@ -36,7 +37,6 @@ from opensquilla.gateway.config_migration import migrate_config_payload
 from opensquilla.migration.env_file import merge_env_lines, write_secret_env_file
 from opensquilla.migration.openclaw import ItemResult
 from opensquilla.paths import default_opensquilla_home
-from opensquilla.provider.registry import get_provider_spec
 
 log = structlog.get_logger(__name__)
 
@@ -374,7 +374,8 @@ def _provider_env_key(provider_id: str) -> str:
     if not normalized:
         return ""
     try:
-        spec = get_provider_spec(normalized)
+        registry = importlib.import_module("opensquilla.provider.registry")
+        spec = registry.get_provider_spec(normalized)
     except Exception:  # noqa: BLE001 - unknown providers fall back to a generic key
         return ""
     env_key = spec.env_key

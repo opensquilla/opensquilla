@@ -2,9 +2,10 @@ import { app, BrowserWindow, dialog, Menu, ipcMain, nativeTheme, safeStorage, sh
 import electronUpdater from 'electron-updater'
 import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
-import { appendFileSync, createWriteStream, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmdirSync, statSync, writeFileSync } from 'node:fs'
+import { appendFileSync, createWriteStream, existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, rmdirSync, statSync, writeFileSync } from 'node:fs'
 import { access, constants, readFile, readdir, rename, rm, stat, unlink, writeFile } from 'node:fs/promises'
 import net from 'node:net'
+import { homedir, tmpdir } from 'node:os'
 import { basename, dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { buildCliInvocation } from './cli-invocation.js'
@@ -198,6 +199,10 @@ function desktopLog(event: string, detail?: Record<string, unknown>): void {
 let gatewayStartPromise: Promise<GatewayState> | null = null
 let resolveOnboarding: ((credential: DesktopConnection) => void) | null = null
 let rejectOnboarding: ((error: Error) => void) | null = null
+// Legacy home detected for the CURRENT onboarding run. The onboarding migrate
+// IPC handlers read the source path/kind from here (main-process truth), never
+// from the renderer payload.
+let onboardingMigrationCandidate: LegacyImportCandidate | null = null
 let secretStorageBackendCache: SecretEncryption | null = null
 let macCodeSignatureDiagnosticCache: string | null = null
 let bootStatus: BootStatus = {
@@ -306,6 +311,87 @@ function relocateLegacyDesktopStateLayout(): void {
   }
   writeFileSync(markerPath, JSON.stringify({ migratedAt: new Date().toISOString(), moved }) + '\n', 'utf-8')
   if (moved.length > 0) desktopLog('desktop_layout_relocated', { moved })
+}
+
+// ── Legacy home import detection ────────────────────────────────────────────
+// Quick read-only scan for a legacy OpenSquilla home this desktop profile could
+// import. The shape check mirrors the Python migrator's home validator
+// (config.toml, state/, or workspace/ inside), so both sides agree on what
+// counts as a home — but the import itself always runs through the bundled CLI
+// (`opensquilla migrate opensquilla`) so the migration logic exists exactly
+// once, in Python. Design: docs/features/legacy-home-migration-design.md
+// (Phase 3).
+interface LegacyImportCandidate {
+  kind: 'cli-home' | 'windows-portable'
+  path: string
+}
+
+function looksLikeOpenSquillaHome(path: string): boolean {
+  try {
+    if (!statSync(path).isDirectory()) return false
+  } catch {
+    return false
+  }
+  return (
+    existsSync(join(path, 'config.toml'))
+    || existsSync(join(path, 'state'))
+    || existsSync(join(path, 'workspace'))
+  )
+}
+
+// Compare via realpath so a symlinked/relocated desktop home is never offered
+// to itself as an import source.
+function resolvedPathsEqual(a: string, b: string): boolean {
+  const canonical = (path: string): string => {
+    try {
+      return realpathSync(path)
+    } catch {
+      return resolve(path)
+    }
+  }
+  return canonical(a) === canonical(b)
+}
+
+function windowsPortableHomeRoots(): string[] {
+  const roots: string[] = []
+  if (process.env.LOCALAPPDATA) {
+    roots.push(join(process.env.LOCALAPPDATA, 'OpenSquilla', 'portable'))
+  }
+  roots.push(join(process.env.TEMP || tmpdir(), 'OpenSquilla', 'portable'))
+  return roots
+}
+
+function detectLegacyImportCandidate(): LegacyImportCandidate | null {
+  // The plain CLI home wins over portable unpacks when both exist.
+  const cliHome = join(homedir(), '.opensquilla')
+  if (looksLikeOpenSquillaHome(cliHome) && !resolvedPathsEqual(cliHome, desktopHome())) {
+    return { kind: 'cli-home', path: cliHome }
+  }
+  if (process.platform !== 'win32') return null
+  // Windows portable bundles unpack under LOCALAPPDATA/TEMP; pick the home with
+  // the newest config.toml so a stale unpack does not shadow the live one.
+  let best: { path: string; mtime: number } | null = null
+  for (const root of windowsPortableHomeRoots()) {
+    let entries: string[] = []
+    try {
+      entries = readdirSync(root)
+    } catch {
+      continue
+    }
+    for (const entry of entries) {
+      const candidate = join(root, entry)
+      if (!looksLikeOpenSquillaHome(candidate)) continue
+      if (resolvedPathsEqual(candidate, desktopHome())) continue
+      let mtime = 0
+      try {
+        mtime = statSync(join(candidate, 'config.toml')).mtimeMs
+      } catch {
+        mtime = 0
+      }
+      if (!best || mtime > best.mtime) best = { path: candidate, mtime }
+    }
+  }
+  return best ? { kind: 'windows-portable', path: best.path } : null
 }
 
 function bootPagePath(): string {
@@ -1577,6 +1663,15 @@ const DESKTOP_MESSAGES: Record<DesktopLocale, Record<string, string>> = {
     'uninstall.confirmDetail': 'Sessions, configuration, and secrets will be removed. The installed app itself will remain; remove it through your OS after the app closes.',
     'uninstall.cancel': 'Cancel',
     'uninstall.deleteEverything': 'Delete everything',
+    'migration.nav.title': 'Import',
+    'migration.nav.sub': 'Existing data',
+    'migration.step.badge': 'Import',
+    'migration.step.heading': 'Import existing OpenSquilla data',
+    'migration.step.subtitle': 'OpenSquilla found data from a previous installation on this machine. Preview what would be imported and bring it into the desktop app, or skip and start fresh.',
+    'migration.step.sourceLabel': 'Detected data location',
+    'migration.step.preview': 'Preview import',
+    'migration.step.import': 'Import',
+    'migration.step.skip': 'Skip',
     'launch.alreadyRunningTitle': 'OpenSquilla is already running',
     'launch.alreadyRunningMessage': 'Another OpenSquilla window is already open on this machine. Bringing it to the front.',
     'window.onboarding': 'Set up OpenSquilla',
@@ -1669,6 +1764,15 @@ const DESKTOP_MESSAGES: Record<DesktopLocale, Record<string, string>> = {
     'uninstall.confirmDetail': '会话、配置和密钥都将被移除。已安装的应用本身会保留；应用关闭后请通过操作系统将其卸载。',
     'uninstall.cancel': '取消',
     'uninstall.deleteEverything': '全部删除',
+    'migration.nav.title': '导入',
+    'migration.nav.sub': '现有数据',
+    'migration.step.badge': '导入',
+    'migration.step.heading': '导入现有的 OpenSquilla 数据',
+    'migration.step.subtitle': 'OpenSquilla 在本机上发现了先前安装留下的数据。可以先预览将导入的内容并将其导入桌面应用，也可以跳过并全新开始。',
+    'migration.step.sourceLabel': '检测到的数据位置',
+    'migration.step.preview': '预览导入',
+    'migration.step.import': '导入',
+    'migration.step.skip': '跳过',
     'launch.alreadyRunningTitle': 'OpenSquilla 已在运行',
     'launch.alreadyRunningMessage': '本机已打开另一个 OpenSquilla 窗口。正在将其置于前台。',
     'window.onboarding': '设置 OpenSquilla',
@@ -1759,6 +1863,15 @@ const DESKTOP_MESSAGES: Record<DesktopLocale, Record<string, string>> = {
     'uninstall.confirmDetail': 'セッション、設定、シークレットが削除されます。インストール済みのアプリ自体は残ります。アプリを閉じた後、OS から削除してください。',
     'uninstall.cancel': 'キャンセル',
     'uninstall.deleteEverything': 'すべて削除',
+    'migration.nav.title': 'インポート',
+    'migration.nav.sub': '既存データ',
+    'migration.step.badge': 'インポート',
+    'migration.step.heading': '既存の OpenSquilla データをインポート',
+    'migration.step.subtitle': 'このマシンで以前のインストールのデータが見つかりました。インポートされる内容をプレビューしてデスクトップアプリに取り込むか、スキップして新規に始められます。',
+    'migration.step.sourceLabel': '検出されたデータの場所',
+    'migration.step.preview': 'インポートをプレビュー',
+    'migration.step.import': 'インポート',
+    'migration.step.skip': 'スキップ',
     'launch.alreadyRunningTitle': 'OpenSquilla はすでに実行中です',
     'launch.alreadyRunningMessage': 'このマシンでは別の OpenSquilla ウィンドウがすでに開いています。前面に表示します。',
     'window.onboarding': 'OpenSquilla をセットアップ',
@@ -1849,6 +1962,15 @@ const DESKTOP_MESSAGES: Record<DesktopLocale, Record<string, string>> = {
     'uninstall.confirmDetail': 'Les sessions, la configuration et les secrets seront supprimés. L’application installée elle-même sera conservée ; supprimez-la via votre système d’exploitation après la fermeture de l’application.',
     'uninstall.cancel': 'Annuler',
     'uninstall.deleteEverything': 'Tout supprimer',
+    'migration.nav.title': 'Importation',
+    'migration.nav.sub': 'Données existantes',
+    'migration.step.badge': 'Importation',
+    'migration.step.heading': 'Importer les données OpenSquilla existantes',
+    'migration.step.subtitle': 'OpenSquilla a trouvé sur cette machine des données d\'une installation précédente. Prévisualisez ce qui serait importé et récupérez-les dans l\'application de bureau, ou ignorez cette étape pour repartir de zéro.',
+    'migration.step.sourceLabel': 'Emplacement des données détecté',
+    'migration.step.preview': 'Aperçu de l\'importation',
+    'migration.step.import': 'Importer',
+    'migration.step.skip': 'Ignorer',
     'launch.alreadyRunningTitle': 'OpenSquilla est déjà en cours d’exécution',
     'launch.alreadyRunningMessage': 'Une autre fenêtre OpenSquilla est déjà ouverte sur cette machine. Elle va être mise au premier plan.',
     'window.onboarding': 'Configurer OpenSquilla',
@@ -1939,6 +2061,15 @@ const DESKTOP_MESSAGES: Record<DesktopLocale, Record<string, string>> = {
     'uninstall.confirmDetail': 'Sitzungen, Konfiguration und Secrets werden entfernt. Die installierte App selbst bleibt erhalten; entfernen Sie sie nach dem Schließen der App über Ihr Betriebssystem.',
     'uninstall.cancel': 'Abbrechen',
     'uninstall.deleteEverything': 'Alles löschen',
+    'migration.nav.title': 'Import',
+    'migration.nav.sub': 'Vorhandene Daten',
+    'migration.step.badge': 'Import',
+    'migration.step.heading': 'Vorhandene OpenSquilla-Daten importieren',
+    'migration.step.subtitle': 'OpenSquilla hat auf diesem Gerät Daten einer früheren Installation gefunden. Sehen Sie sich in der Vorschau an, was importiert würde, und übernehmen Sie die Daten in die Desktop-App — oder überspringen Sie den Schritt und beginnen Sie neu.',
+    'migration.step.sourceLabel': 'Erkannter Datenspeicherort',
+    'migration.step.preview': 'Import-Vorschau',
+    'migration.step.import': 'Importieren',
+    'migration.step.skip': 'Überspringen',
     'launch.alreadyRunningTitle': 'OpenSquilla läuft bereits',
     'launch.alreadyRunningMessage': 'Auf diesem Gerät ist bereits ein anderes OpenSquilla-Fenster geöffnet. Es wird in den Vordergrund geholt.',
     'window.onboarding': 'OpenSquilla einrichten',
@@ -2029,6 +2160,15 @@ const DESKTOP_MESSAGES: Record<DesktopLocale, Record<string, string>> = {
     'uninstall.confirmDetail': 'Se eliminarán las sesiones, la configuración y los secretos. La aplicación instalada en sí permanecerá; elimínala a través de tu sistema operativo después de cerrar la aplicación.',
     'uninstall.cancel': 'Cancelar',
     'uninstall.deleteEverything': 'Eliminar todo',
+    'migration.nav.title': 'Importación',
+    'migration.nav.sub': 'Datos existentes',
+    'migration.step.badge': 'Importación',
+    'migration.step.heading': 'Importar los datos existentes de OpenSquilla',
+    'migration.step.subtitle': 'OpenSquilla encontró datos de una instalación anterior en esta máquina. Previsualiza lo que se importaría y tráelo a la aplicación de escritorio, u omite este paso y empieza de cero.',
+    'migration.step.sourceLabel': 'Ubicación de datos detectada',
+    'migration.step.preview': 'Vista previa de la importación',
+    'migration.step.import': 'Importar',
+    'migration.step.skip': 'Omitir',
     'launch.alreadyRunningTitle': 'OpenSquilla ya se está ejecutando',
     'launch.alreadyRunningMessage': 'Ya hay otra ventana de OpenSquilla abierta en esta máquina. Se traerá al frente.',
     'window.onboarding': 'Configurar OpenSquilla',
@@ -2130,6 +2270,15 @@ const ONBOARDING_SCRIPT_MESSAGES: Record<DesktopLocale, Record<string, string>> 
     directModelRequiredDirect: 'Direct model is required for Direct single model mode.',
     defaultTierRequiresModel: 'Default router tier requires a model.',
     searchApiKeyRequired: '{label} search API key is required.',
+    migrationPreviewRunning: 'Checking the existing data…',
+    migrationApplyRunning: 'Importing data… this can take a few minutes.',
+    migrationItems: 'Items — {counts}',
+    migrationPausedJobs: 'Scheduler jobs to import (arrive paused): {n}',
+    migrationDisk: 'Disk: {required} required, {free} free',
+    migrationNotesLabel: 'Notes',
+    migrationPreviewFailed: 'Preview failed: {detail}',
+    migrationApplyFailed: 'Import failed: {detail}',
+    migrationDone: 'Import complete. {n} scheduler job(s) arrived paused — re-enable them in the Cron view. Your original data remains untouched at {path}.',
     stepLabel: 'Step {n}',
   },
   'zh-Hans': {
@@ -2159,6 +2308,15 @@ const ONBOARDING_SCRIPT_MESSAGES: Record<DesktopLocale, Record<string, string>> 
     directModelRequiredDirect: '直连单模型模式需要直连模型。',
     defaultTierRequiresModel: '默认路由层级需要一个模型。',
     searchApiKeyRequired: '需要 {label} 搜索 API 密钥。',
+    migrationPreviewRunning: '正在检查现有数据……',
+    migrationApplyRunning: '正在导入数据……可能需要几分钟。',
+    migrationItems: '条目 — {counts}',
+    migrationPausedJobs: '将导入的计划任务（导入后为暂停状态）：{n}',
+    migrationDisk: '磁盘：需要 {required}，可用 {free}',
+    migrationNotesLabel: '备注',
+    migrationPreviewFailed: '预览失败：{detail}',
+    migrationApplyFailed: '导入失败：{detail}',
+    migrationDone: '导入完成。{n} 个计划任务已以暂停状态导入——请在 Cron 视图中重新启用。原始数据仍原样保留在 {path}。',
     stepLabel: '步骤 {n}',
   },
   ja: {
@@ -2188,6 +2346,15 @@ const ONBOARDING_SCRIPT_MESSAGES: Record<DesktopLocale, Record<string, string>> 
     directModelRequiredDisabled: 'Smart Router を無効にする場合は直接モデルが必要です。',
     defaultTierRequiresModel: 'デフォルトのルーターティアにはモデルが必要です。',
     searchApiKeyRequired: '{label} の検索 API キーが必要です。',
+    migrationPreviewRunning: '既存データを確認しています…',
+    migrationApplyRunning: 'データをインポートしています… 数分かかることがあります。',
+    migrationItems: '項目 — {counts}',
+    migrationPausedJobs: 'インポートされるスケジュールジョブ（一時停止状態で取り込み）: {n}',
+    migrationDisk: 'ディスク: 必要 {required} / 空き {free}',
+    migrationNotesLabel: '補足',
+    migrationPreviewFailed: 'プレビューに失敗しました: {detail}',
+    migrationApplyFailed: 'インポートに失敗しました: {detail}',
+    migrationDone: 'インポートが完了しました。{n} 件のスケジュールジョブは一時停止状態で取り込まれました — Cron ビューで再度有効にしてください。元のデータは {path} にそのまま残っています。',
     stepLabel: 'ステップ {n}',
   },
   fr: {
@@ -2217,6 +2384,15 @@ const ONBOARDING_SCRIPT_MESSAGES: Record<DesktopLocale, Record<string, string>> 
     directModelRequiredDisabled: 'Un modèle direct est requis lorsque Smart Router est désactivé.',
     defaultTierRequiresModel: 'Le niveau de routeur par défaut nécessite un modèle.',
     searchApiKeyRequired: 'La clé API de recherche {label} est requise.',
+    migrationPreviewRunning: 'Vérification des données existantes…',
+    migrationApplyRunning: 'Importation des données… cela peut prendre quelques minutes.',
+    migrationItems: 'Éléments — {counts}',
+    migrationPausedJobs: 'Tâches planifiées à importer (arrivent en pause) : {n}',
+    migrationDisk: 'Disque : {required} requis, {free} libres',
+    migrationNotesLabel: 'Remarques',
+    migrationPreviewFailed: "Échec de l'aperçu : {detail}",
+    migrationApplyFailed: "Échec de l'importation : {detail}",
+    migrationDone: "Importation terminée. {n} tâche(s) planifiée(s) sont arrivées en pause — réactivez-les dans la vue Cron. Vos données d'origine restent intactes dans {path}.",
     stepLabel: 'Étape {n}',
   },
   de: {
@@ -2246,6 +2422,15 @@ const ONBOARDING_SCRIPT_MESSAGES: Record<DesktopLocale, Record<string, string>> 
     directModelRequiredDisabled: 'Ein direktes Modell ist erforderlich, wenn Smart Router deaktiviert ist.',
     defaultTierRequiresModel: 'Die Standard-Routerstufe erfordert ein Modell.',
     searchApiKeyRequired: 'Der Such-API-Schlüssel für {label} ist erforderlich.',
+    migrationPreviewRunning: 'Vorhandene Daten werden geprüft…',
+    migrationApplyRunning: 'Daten werden importiert… das kann einige Minuten dauern.',
+    migrationItems: 'Elemente — {counts}',
+    migrationPausedJobs: 'Zu importierende Scheduler-Jobs (kommen pausiert an): {n}',
+    migrationDisk: 'Speicher: {required} benötigt, {free} frei',
+    migrationNotesLabel: 'Hinweise',
+    migrationPreviewFailed: 'Vorschau fehlgeschlagen: {detail}',
+    migrationApplyFailed: 'Import fehlgeschlagen: {detail}',
+    migrationDone: 'Import abgeschlossen. {n} Scheduler-Job(s) sind pausiert angekommen — aktivieren Sie sie in der Cron-Ansicht wieder. Ihre ursprünglichen Daten bleiben unverändert unter {path}.',
     stepLabel: 'Schritt {n}',
   },
   es: {
@@ -2275,6 +2460,15 @@ const ONBOARDING_SCRIPT_MESSAGES: Record<DesktopLocale, Record<string, string>> 
     directModelRequiredDisabled: 'Se requiere un modelo directo cuando Smart Router está desactivado.',
     defaultTierRequiresModel: 'El nivel de enrutador predeterminado requiere un modelo.',
     searchApiKeyRequired: 'Se requiere la clave API de búsqueda de {label}.',
+    migrationPreviewRunning: 'Comprobando los datos existentes…',
+    migrationApplyRunning: 'Importando datos… esto puede tardar unos minutos.',
+    migrationItems: 'Elementos — {counts}',
+    migrationPausedJobs: 'Tareas programadas a importar (llegan en pausa): {n}',
+    migrationDisk: 'Disco: {required} necesarios, {free} libres',
+    migrationNotesLabel: 'Notas',
+    migrationPreviewFailed: 'Error en la vista previa: {detail}',
+    migrationApplyFailed: 'Error en la importación: {detail}',
+    migrationDone: 'Importación completada. {n} tarea(s) programada(s) llegaron en pausa: vuelve a activarlas en la vista Cron. Tus datos originales permanecen intactos en {path}.',
     stepLabel: 'Paso {n}',
   },
 }
@@ -2422,7 +2616,7 @@ function localeOptionsHtml(): string {
   )).join('')
 }
 
-function onboardingHtml(): string {
+function onboardingHtml(detection: LegacyImportCandidate | null = null): string {
   return `<!doctype html>
 <html lang="${desktopLocale}">
 <head>
@@ -2972,6 +3166,34 @@ function onboardingHtml(): string {
       transform: translateY(-1px);
     }
     .primary:disabled { opacity: 0.55; cursor: not-allowed; }
+    .migration-buttons {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .migration-status {
+      display: flex;
+      align-items: center;
+      gap: 9px;
+    }
+    .migration-spinner {
+      width: 14px;
+      height: 14px;
+      flex: none;
+      border: 2px solid rgba(242, 106, 27, 0.25);
+      border-top-color: var(--accent);
+      border-radius: 999px;
+      animation: migration-spin 0.8s linear infinite;
+    }
+    @keyframes migration-spin {
+      to { transform: rotate(360deg); }
+    }
+    .migration-path {
+      display: block;
+      margin-top: 5px;
+      font-size: 12px;
+      word-break: break-all;
+    }
     .error {
       min-height: 18px;
       color: #b42318;
@@ -2997,7 +3219,11 @@ function onboardingHtml(): string {
         <p data-i18n="onboarding.rail.subtitle">${ot('onboarding.rail.subtitle')}</p>
       </section>
       <nav class="progress" aria-label="${ot('onboarding.aria.setupSteps')}" data-i18n-aria="onboarding.aria.setupSteps">
-        <button class="step active" type="button" data-step-label="0">
+        ${detection ? `<button class="step active" type="button" data-step-label="5">
+          <span class="step-index">1</span>
+          <span><strong data-i18n="migration.nav.title">${ot('migration.nav.title')}</strong><span data-i18n="migration.nav.sub">${ot('migration.nav.sub')}</span></span>
+        </button>` : ''}
+        <button class="step${detection ? '' : ' active'}" type="button" data-step-label="0">
           <span class="step-index">1</span>
           <span><strong data-i18n="onboarding.nav.mode.title">${ot('onboarding.nav.mode.title')}</strong><span data-i18n="onboarding.nav.mode.sub">${ot('onboarding.nav.mode.sub')}</span></span>
         </button>
@@ -3029,7 +3255,30 @@ function onboardingHtml(): string {
       </div>
     </aside>
     <form id="setup-form" class="deck">
-      <section class="setup-card active" data-screen="0">
+      ${detection ? `<section class="setup-card active" data-screen="5">
+        <header class="card-head">
+          <div>
+            <p class="eyebrow">Step 01</p>
+            <h2 data-i18n="migration.step.heading">${ot('migration.step.heading')}</h2>
+            <p data-i18n="migration.step.subtitle">${ot('migration.step.subtitle')}</p>
+          </div>
+          <span class="card-badge" data-i18n="migration.step.badge">${ot('migration.step.badge')}</span>
+        </header>
+        <div class="card-body">
+          <div class="note"><span data-i18n="migration.step.sourceLabel">${ot('migration.step.sourceLabel')}</span><code class="migration-path">${escapeHtmlServer(detection.path)}</code></div>
+          <div class="note migration-status" id="migrationStatus" hidden><span class="migration-spinner"></span><span id="migrationStatusLabel"></span></div>
+          <div class="note" id="migrationSummary" hidden></div>
+          <div class="note" id="migrationDoneNote" hidden></div>
+        </div>
+        <footer class="actions">
+          <button class="secondary" type="button" id="migrationSkip" data-i18n="migration.step.skip">${ot('migration.step.skip')}</button>
+          <div class="migration-buttons">
+            <button class="secondary" type="button" id="migrationPreview" data-i18n="migration.step.preview">${ot('migration.step.preview')}</button>
+            <button class="primary" type="button" id="migrationImport" data-i18n="migration.step.import" disabled>${ot('migration.step.import')}</button>
+          </div>
+        </footer>
+      </section>` : ''}
+      <section class="setup-card${detection ? '' : ' active'}" data-screen="0">
         <header class="card-head">
           <div>
             <p class="eyebrow">Step 01</p>
@@ -3192,7 +3441,8 @@ function onboardingHtml(): string {
     const searchProviders = ${JSON.stringify(SEARCH_PROVIDER_CATALOG)};
     const routerProfiles = ${JSON.stringify(ROUTER_PROFILES)};
     const textTiers = ${JSON.stringify(TEXT_ROUTER_TIERS)};
-    let step = 0;
+    const migrationCandidate = ${JSON.stringify(detection)};
+    let step = ${detection ? 5 : 0};
     let routerTiers = clone(routerProfiles.openrouter);
     const setupMode = document.getElementById('setupMode');
     const provider = document.getElementById('provider');
@@ -3434,9 +3684,14 @@ function onboardingHtml(): string {
       return setupMode.value === 'simple';
     }
     function routeSteps() {
-      if (isSimpleSetup()) return [0, 1, 4];
-      if (modelRoutingMode.value === 'squilla_router') return [0, 1, 2, 3, 4];
-      return [0, 1, 2, 4];
+      const base = isSimpleSetup()
+        ? [0, 1, 4]
+        : modelRoutingMode.value === 'squilla_router'
+          ? [0, 1, 2, 3, 4]
+          : [0, 1, 2, 4];
+      // The migration step (screen 5) leads the route only when a legacy home
+      // was detected; render() renumbers and hides rail entries automatically.
+      return migrationCandidate ? [5, ...base] : base;
     }
     function routePosition(targetStep) {
       return routeSteps().indexOf(targetStep);
@@ -3591,6 +3846,168 @@ function onboardingHtml(): string {
         errorBox.textContent = error && error.message ? error.message : String(error);
       }
     });
+    if (migrationCandidate) {
+      const migrationPreviewButton = document.getElementById('migrationPreview');
+      const migrationImportButton = document.getElementById('migrationImport');
+      const migrationSkipButton = document.getElementById('migrationSkip');
+      const migrationStatus = document.getElementById('migrationStatus');
+      const migrationStatusLabel = document.getElementById('migrationStatusLabel');
+      const migrationSummary = document.getElementById('migrationSummary');
+      const migrationDoneNote = document.getElementById('migrationDoneNote');
+      let migrationBusy = false;
+      let migrationPreviewOk = false;
+      function setMigrationStatus(label) {
+        if (label) {
+          migrationStatusLabel.textContent = label;
+          migrationStatus.hidden = false;
+        } else {
+          migrationStatus.hidden = true;
+        }
+      }
+      function formatMigrationBytes(value) {
+        const bytes = Number(value);
+        if (!Number.isFinite(bytes) || bytes < 0) return '?';
+        if (bytes >= 1024 * 1024 * 1024) return (bytes / (1024 * 1024 * 1024)).toFixed(1) + ' GB';
+        if (bytes >= 1024 * 1024) return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+        if (bytes >= 1024) return (bytes / 1024).toFixed(1) + ' KB';
+        return String(Math.round(bytes)) + ' B';
+      }
+      function migrationErrorDetail(result, errors) {
+        if (errors && errors.length) {
+          return errors.map((item) => String((item && (item.reason || item.kind)) || '')).filter(Boolean).join('; ');
+        }
+        if (result && result.error) return String(result.error);
+        if (result && result.raw) return String(result.raw).slice(-400);
+        return '';
+      }
+      function renderMigrationReport(report) {
+        if (!report || typeof report !== 'object') {
+          migrationSummary.hidden = true;
+          return [];
+        }
+        const items = Array.isArray(report.items) ? report.items : [];
+        const counts = {};
+        for (const item of items) {
+          const status = String((item && item.status) || 'unknown');
+          counts[status] = (counts[status] || 0) + 1;
+        }
+        const countsText = Object.keys(counts).sort().map((status) => status + ': ' + counts[status]).join(', ') || '0';
+        const pausedCount = Array.isArray(report.paused_jobs) ? report.paused_jobs.length : 0;
+        const preflight = (report.preflight && typeof report.preflight === 'object') ? report.preflight : {};
+        const lines = [
+          fmt('migrationItems', { counts: countsText }),
+          fmt('migrationPausedJobs', { n: pausedCount }),
+          fmt('migrationDisk', {
+            required: formatMigrationBytes(preflight.disk_required_bytes),
+            free: formatMigrationBytes(preflight.disk_free_bytes),
+          }),
+        ];
+        const notes = Array.isArray(report.notes) ? report.notes : [];
+        migrationSummary.innerHTML = lines.map((line) => '<div>' + escapeHtml(line) + '</div>').join('')
+          + (notes.length
+            ? '<div>' + escapeHtml(t.migrationNotesLabel) + ': ' + escapeHtml(notes.map((note) => String(note)).join(' | ')) + '</div>'
+            : '');
+        migrationSummary.hidden = false;
+        return items.filter((item) => item && item.status === 'error');
+      }
+      function applyMigrationPrefill(prefill) {
+        if (!prefill || typeof prefill !== 'object') return;
+        const nextProvider = String(prefill.provider || '').trim().toLowerCase();
+        if (nextProvider && nextProvider !== provider.value) {
+          provider.value = nextProvider;
+          syncProviderDefaults(true);
+          renderProviderGrid();
+        }
+        if (prefill.baseUrl) baseUrl.value = String(prefill.baseUrl);
+        if (prefill.model) model.value = String(prefill.model);
+        if (prefill.apiKey) document.getElementById('apiKey').value = String(prefill.apiKey);
+        syncProviderDefaults(false);
+        render();
+      }
+      if (typeof window.opensquillaDesktop.onMigrationProgress === 'function') {
+        window.opensquillaDesktop.onMigrationProgress((payload) => {
+          const phase = payload && payload.phase;
+          if (phase === 'preview') setMigrationStatus(t.migrationPreviewRunning);
+          else if (phase === 'applying') setMigrationStatus(t.migrationApplyRunning);
+          else setMigrationStatus('');
+        });
+      }
+      migrationPreviewButton.addEventListener('click', async () => {
+        if (migrationBusy) return;
+        migrationBusy = true;
+        migrationPreviewOk = false;
+        errorBox.textContent = '';
+        migrationDoneNote.hidden = true;
+        migrationPreviewButton.disabled = true;
+        migrationImportButton.disabled = true;
+        setMigrationStatus(t.migrationPreviewRunning);
+        try {
+          const result = await window.opensquillaDesktop.previewOnboardingMigration();
+          const errors = renderMigrationReport(result && result.report);
+          if (result && result.ok && errors.length === 0) {
+            migrationPreviewOk = true;
+          } else {
+            errorBox.textContent = fmt('migrationPreviewFailed', { detail: migrationErrorDetail(result, errors) });
+          }
+        } catch (error) {
+          errorBox.textContent = fmt('migrationPreviewFailed', { detail: error && error.message ? error.message : String(error) });
+        } finally {
+          migrationBusy = false;
+          setMigrationStatus('');
+          migrationPreviewButton.disabled = false;
+          migrationImportButton.disabled = !migrationPreviewOk;
+        }
+      });
+      migrationImportButton.addEventListener('click', async () => {
+        if (migrationBusy || !migrationPreviewOk) return;
+        migrationBusy = true;
+        errorBox.textContent = '';
+        migrationPreviewButton.disabled = true;
+        migrationImportButton.disabled = true;
+        migrationSkipButton.disabled = true;
+        setMigrationStatus(t.migrationApplyRunning);
+        let imported = false;
+        try {
+          const result = await window.opensquillaDesktop.applyOnboardingMigration();
+          const errors = renderMigrationReport(result && result.report);
+          if (result && result.ok && errors.length === 0) {
+            imported = true;
+            const pausedCount = result.report && Array.isArray(result.report.paused_jobs)
+              ? result.report.paused_jobs.length
+              : 0;
+            migrationDoneNote.textContent = fmt('migrationDone', { n: pausedCount, path: migrationCandidate.path });
+            migrationDoneNote.hidden = false;
+            applyMigrationPrefill(result.prefill);
+          } else {
+            errorBox.textContent = fmt('migrationApplyFailed', { detail: migrationErrorDetail(result, errors) });
+          }
+        } catch (error) {
+          errorBox.textContent = fmt('migrationApplyFailed', { detail: error && error.message ? error.message : String(error) });
+        } finally {
+          migrationBusy = false;
+          setMigrationStatus('');
+          migrationSkipButton.disabled = false;
+          if (imported) {
+            // Leave the completion note readable for a beat, then continue to
+            // the provider step with the imported connection prefilled. The
+            // migration card stays reachable from the rail to re-read the note.
+            setTimeout(() => {
+              errorBox.textContent = '';
+              setStep(1);
+            }, 1800);
+          } else {
+            migrationPreviewOk = false;
+            migrationPreviewButton.disabled = false;
+            migrationImportButton.disabled = true;
+          }
+        }
+      });
+      migrationSkipButton.addEventListener('click', () => {
+        if (migrationBusy) return;
+        errorBox.textContent = '';
+        setStep(nextRouteStep(step));
+      });
+    }
     renderProviderGrid();
     renderSearchProviderGrid();
     syncProviderDefaults(true);
@@ -3628,6 +4045,11 @@ async function runOnboarding(): Promise<DesktopConnection> {
     }
     return existing
   }
+
+  // No usable credential: this is the first-run (or reset) path, the only
+  // interaction point before the gateway first boots — so offer the legacy home
+  // import here, before provider setup (the import must precede first boot).
+  onboardingMigrationCandidate = detectLegacyImportCandidate()
 
   return new Promise((resolveCredential, rejectCredential) => {
     resolveOnboarding = resolveCredential
@@ -3686,7 +4108,7 @@ async function runOnboarding(): Promise<DesktopConnection> {
       }
     })
 
-    onboardingWindow.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(onboardingHtml())}`).catch((error) => {
+    onboardingWindow.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(onboardingHtml(onboardingMigrationCandidate))}`).catch((error) => {
       rejectCredential(error instanceof Error ? error : new Error(String(error)))
     })
   })
@@ -5464,6 +5886,216 @@ ipcMain.handle('desktop:uninstall:run', async (_event, payload?: { purgeData?: b
   isQuitting = false
   return result
 })
+
+// ── Legacy home migration (Phase 3 entry points) ─────────────────────────────
+// The import logic lives once in Python (`opensquilla migrate opensquilla`,
+// dry-run by default); the desktop only detects candidates, orchestrates the
+// gateway lifecycle, and spawns the bundled CLI — mirroring the uninstall flow
+// above. Design: docs/features/legacy-home-migration-design.md (Phase 3).
+async function runMigrateCli(
+  extraArgs: string[],
+): Promise<{ ok: boolean; stdout: string; stderr: string }> {
+  const runtime = await resolveGatewayRuntime()
+  const prefix = runtime.args.slice(0, -2) // drop the trailing ['gateway','run']
+  const child = spawn(runtime.command, [...prefix, 'migrate', 'opensquilla', ...extraArgs], {
+    cwd: runtime.cwd,
+    windowsHide: true,
+    env: {
+      ...process.env,
+      OPENSQUILLA_DESKTOP: '1',
+      OPENSQUILLA_INSTALL_METHOD: 'desktop',
+      OPENSQUILLA_GATEWAY_CONFIG_PATH: desktopConfigPath(),
+      // OPENSQUILLA_STATE_DIR names the OpenSquilla HOME ROOT: the migrator's
+      // import TARGET. It must match the gateway spawn (desktopHome()), or the
+      // import would land in a home the gateway never reads.
+      OPENSQUILLA_STATE_DIR: desktopHome(),
+      PYTHONUNBUFFERED: '1',
+      PYTHONUTF8: '1',
+      PYTHONIOENCODING: 'utf-8:replace',
+    },
+  })
+  let stdout = ''
+  let stderr = ''
+  child.stdout.on('data', (chunk) => {
+    stdout += String(chunk)
+  })
+  child.stderr.on('data', (chunk) => {
+    stderr += String(chunk)
+  })
+  const code: number = await new Promise((res) => {
+    child.once('exit', (c) => res(c ?? 1))
+    child.once('error', () => res(1))
+  })
+  return { ok: code === 0, stdout, stderr }
+}
+
+// Run the migrate CLI in JSON mode and parse its report. A blocked run exits
+// non-zero but still prints a valid report (items with status "error"), so ok
+// and report are independent signals.
+async function migrateSummaryJson(
+  extraArgs: string[],
+): Promise<{ ok: boolean; report: Record<string, unknown> | null; raw: string }> {
+  const { ok, stdout, stderr } = await runMigrateCli([...extraArgs, '--json'])
+  try {
+    return { ok, report: JSON.parse(stdout) as Record<string, unknown>, raw: stdout }
+  } catch {
+    return { ok: false, report: null, raw: stdout || stderr }
+  }
+}
+
+type DesktopMigrationPhase = 'preview' | 'applying' | 'done' | 'error'
+
+// Coarse migration progress for renderers (same publish pattern as
+// publishDesktopUpdateState): the onboarding card and the settings panel show a
+// spinner/label off these while the CLI runs.
+function publishDesktopMigrationProgress(phase: DesktopMigrationPhase, detail?: string): void {
+  const payload = detail === undefined ? { phase } : { phase, detail }
+  for (const window of BrowserWindow.getAllWindows()) {
+    if (!window.isDestroyed()) window.webContents.send('desktop:migration:progress', payload)
+  }
+}
+
+interface MigrationProviderPrefill {
+  provider: string
+  model: string
+  baseUrl: string
+  apiKeyEnv: string
+  apiKey: string
+}
+
+// After a successful apply the migrator has rewritten the target config.toml
+// and .env. Read the [llm] section back (line-based, like the privacy-config
+// reader — the file is generated, simple TOML) so the onboarding provider step
+// starts prefilled from the imported connection. The api key travels only over
+// the onboarding IPC response — the same trust boundary as saveOnboarding — and
+// is never logged and never part of any report.
+function readMigratedProviderPrefill(): MigrationProviderPrefill | null {
+  let raw = ''
+  try {
+    raw = readFileSync(desktopConfigPath(), 'utf8')
+  } catch {
+    return null
+  }
+  let inLlmSection = false
+  const values: Record<string, string> = {}
+  for (const rawLine of raw.split(/\r?\n/)) {
+    const line = rawLine.trim()
+    if (!line || line.startsWith('#')) continue
+    const section = line.match(/^\[([^\]]+)\]$/)
+    if (section) {
+      inLlmSection = section[1]?.trim() === 'llm'
+      continue
+    }
+    if (!inLlmSection) continue
+    const setting = line.match(/^([A-Za-z0-9_]+)\s*=\s*("(?:[^"\\]|\\.)*")\s*$/)
+    if (!setting) continue
+    try {
+      values[setting[1] ?? ''] = JSON.parse(setting[2] ?? '""') as string
+    } catch {
+      continue
+    }
+  }
+  const provider = (values.provider || '').trim()
+  if (!provider) return null
+  const apiKeyEnv = (values.api_key_env || '').trim()
+  let apiKey = ''
+  if (apiKeyEnv) {
+    try {
+      const envRaw = readFileSync(join(desktopHome(), '.env'), 'utf8')
+      for (const envLine of envRaw.split(/\r?\n/)) {
+        const entry = envLine.match(/^\s*(?:export\s+)?([A-Za-z0-9_]+)\s*=\s*(.*)$/)
+        if (!entry || entry[1] !== apiKeyEnv) continue
+        apiKey = String(entry[2] ?? '').trim().replace(/^(["'])(.*)\1$/, '$2')
+      }
+    } catch {
+      // No migrated .env; the user types the key as usual.
+    }
+  }
+  return {
+    provider,
+    model: (values.model || '').trim(),
+    baseUrl: (values.base_url || '').trim(),
+    apiKeyEnv,
+    apiKey,
+  }
+}
+
+ipcMain.handle('desktop:migration:summary', async () => {
+  const candidate = detectLegacyImportCandidate()
+  if (!candidate) return { ok: true, candidate: null, report: null }
+  // Dry-run is read-only, so the running gateway is deliberately left alone.
+  publishDesktopMigrationProgress('preview')
+  const { ok, report, raw } = await migrateSummaryJson([
+    '--source', candidate.path, '--kind', candidate.kind,
+  ])
+  publishDesktopMigrationProgress(ok ? 'done' : 'error')
+  return report ? { ok, candidate, report } : { ok, candidate, report, raw }
+})
+
+ipcMain.handle('desktop:migration:run', async (_event, payload?: { overwrite?: boolean }) => {
+  const candidate = detectLegacyImportCandidate()
+  if (!candidate) {
+    return { ok: false, report: null, detail: 'No legacy OpenSquilla home was detected.' }
+  }
+  const overwrite = Boolean(payload?.overwrite)
+  publishDesktopMigrationProgress('applying')
+
+  // Quiesce the owned gateway before the CLI writes (the uninstall-run
+  // pattern): wait for the child to actually EXIT, bounded by the kill deadline.
+  isQuitting = true
+  if (gatewayProcess && gatewayState.owned) {
+    const child = gatewayProcess
+    // We stay alive and await the exit, so let the gateway take its Windows
+    // HTTP graceful drain instead of an immediate TerminateProcess.
+    allowGracefulShutdownWhileQuitting = true
+    try {
+      stopGateway()
+    } finally {
+      allowGracefulShutdownWhileQuitting = false
+    }
+    await waitForGatewayProcessExit(child)
+  }
+
+  // Refuse while an unmanaged gateway still serves this profile — the import
+  // must not race live sessions.db/scheduler.db writers.
+  if (gatewayState.url && (await healthCheck(gatewayState.url))) {
+    isQuitting = false
+    publishDesktopMigrationProgress('error', 'A gateway is still serving this profile.')
+    return {
+      ok: false,
+      report: null,
+      detail: 'A gateway is still serving this profile; stop it and retry.',
+    }
+  }
+
+  const result = await runMigrateCli([
+    '--source', candidate.path, '--kind', candidate.kind, '--apply',
+    ...(overwrite ? ['--overwrite'] : []),
+    '--json',
+  ])
+  let report: Record<string, unknown> | null = null
+  try {
+    report = JSON.parse(result.stdout) as Record<string, unknown>
+  } catch {
+    report = null
+  }
+  publishDesktopMigrationProgress(result.ok ? 'done' : 'error')
+
+  // Restart via the boot splash regardless of the outcome — the owned gateway
+  // was stopped above, and the RPC transport the settings panel used died with
+  // it. This is a plain runtime restart (the settings-reset tail without the
+  // reset): the desktop credential is untouched, so onboarding is NOT re-run.
+  isQuitting = false
+  clearReusableGatewayState()
+  bootError = null
+  await currentMainWindow()?.loadFile(bootPagePath()).catch(() => null)
+  void openOrResumeDesktopApp()
+
+  return result.ok
+    ? { ok: true, report }
+    : { ok: false, report, detail: (result.stderr || result.stdout || '').slice(-2000) }
+})
+
 ipcMain.handle('desktop:boot:state', () => ({
   status: bootStatus,
   error: bootError,
@@ -5536,6 +6168,39 @@ ipcMain.handle('desktop:onboarding:cancel', () => {
   // the app instead of surfacing the cancellation as a boot failure panel.
   app.quit()
   return { ok: true }
+})
+ipcMain.handle('desktop:onboarding:migrate:preview', async () => {
+  // Same guard as desktop:onboarding:save: the preload bridge is also attached
+  // to the Control UI window, so these only respond while onboarding awaits.
+  // The source path/kind come from the main process's own detection, never
+  // from the renderer.
+  if (!resolveOnboarding) return { ok: false, error: 'No onboarding in progress.' }
+  const candidate = onboardingMigrationCandidate
+  if (!candidate) return { ok: false, error: 'No legacy OpenSquilla home was detected.' }
+  publishDesktopMigrationProgress('preview')
+  const { ok, report, raw } = await migrateSummaryJson([
+    '--source', candidate.path, '--kind', candidate.kind,
+  ])
+  publishDesktopMigrationProgress(ok ? 'done' : 'error')
+  return { ok, report, raw }
+})
+ipcMain.handle('desktop:onboarding:migrate:apply', async () => {
+  if (!resolveOnboarding) return { ok: false, error: 'No onboarding in progress.' }
+  const candidate = onboardingMigrationCandidate
+  if (!candidate) return { ok: false, error: 'No legacy OpenSquilla home was detected.' }
+  // Onboarding runs before the first gateway spawn, so there is nothing to
+  // quiesce here — the import lands before boot creates sessions.db and before
+  // scheduler jobs (imported paused) are scanned.
+  publishDesktopMigrationProgress('applying')
+  const { ok, report, raw } = await migrateSummaryJson([
+    '--source', candidate.path, '--kind', candidate.kind, '--apply',
+  ])
+  publishDesktopMigrationProgress(ok ? 'done' : 'error')
+  // The prefill (including the relocated api key) rides only on this IPC
+  // response into the onboarding window — the same trust boundary as
+  // saveOnboarding travels in the other direction.
+  const prefill = ok ? readMigratedProviderPrefill() : null
+  return { ok, report, raw, prefill }
 })
 
 // Set once the Windows graceful-drain-on-quit sequence has run so the re-issued

@@ -57,6 +57,9 @@ RPC_STATUS_KEYS = frozenset(
         "sectionDetails",
         "envRecoveryCommands",
         "warnings",
+        # Nullable legacy-data advisory block (see the deliberate additive
+        # extension in tests/test_contracts/test_onboarding_status.py).
+        "legacyData",
     }
 )
 

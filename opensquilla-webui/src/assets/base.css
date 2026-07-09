@@ -1163,6 +1163,24 @@ pre {
   outline-offset: -1px;
 }
 
+/* Legacy-data advisory variant: informational (accent-tinted) rather than a
+   readiness warning, so the two notices read as distinct even when stacked. */
+.sidebar-setup-banner--legacy {
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--sidebar-border));
+  background: color-mix(in srgb, var(--accent) 10%, var(--sidebar-control-bg));
+}
+.sidebar-setup-banner--legacy .sidebar-setup-banner__icon { color: var(--accent); }
+.sidebar-setup-banner__path {
+  margin: 0;
+  font-size: var(--fs-xs);
+  min-width: 0;
+}
+.sidebar-setup-banner__path code {
+  font-family: var(--font-mono);
+  color: var(--sidebar-text-strong);
+  word-break: break-all;
+}
+
 /* Legacy nav styles (kept for compatibility) */
 .nav-brand {
   display: flex;

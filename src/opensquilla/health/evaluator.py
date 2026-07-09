@@ -1691,3 +1691,56 @@ def evaluate_squilla_router_runtime(payload: dict[str, Any]) -> list[HealthFindi
             restart_required=True,
         )
     ]
+
+
+def evaluate_legacy_home(payload: dict[str, Any]) -> list[HealthFinding]:
+    """Advisory finding when importable legacy OpenSquilla data is detected.
+
+    Detection is a read-only path scan and safe under a running gateway; the
+    import itself needs a quiesced gateway, so the fix steps hand the operator
+    the exact CLI invocations instead of offering any in-gateway action. No
+    candidate detected → no findings, matching how the other advisory
+    surfaces (``evaluate_llm_ensemble``, ``evaluate_squilla_router_runtime``)
+    express absence: they stay silent when there is nothing to report.
+    """
+    if not bool(payload.get("detected")):
+        return []
+    path = str(payload.get("path") or "")
+    if not path:
+        return []
+    kind = str(payload.get("kind") or "cli-home")
+    target_fresh = bool(payload.get("targetFresh"))
+    # The collector supplies the ready-quoted command so this package never
+    # imports the migration machinery (health stays cycle-free in the package
+    # import graph); the inline form is a display-only fallback.
+    preview_command = str(
+        payload.get("command") or f"opensquilla migrate opensquilla --kind {kind} --source {path}"
+    )
+    if target_fresh:
+        detail = (
+            f"A legacy OpenSquilla home ({kind}) was found at {path}, and this "
+            "install holds no session data yet. Stop the gateway and run the "
+            "migrate command to import it; the preview is a dry run that "
+            "changes nothing."
+        )
+    else:
+        detail = (
+            f"A legacy OpenSquilla home ({kind}) was found at {path}. Stop the "
+            "gateway and run the migrate command to import it; the preview is "
+            "a dry run that changes nothing."
+        )
+    return [
+        HealthFinding(
+            id="migration.legacy_home_detected",
+            severity="warn",
+            surface="migration",
+            title=f"Legacy OpenSquilla data found at {path}",
+            detail=detail,
+            evidence={"path": path, "kind": kind, "target_fresh": target_fresh},
+            fix_steps=[
+                FixStep(label="Preview the import", command=preview_command),
+                FixStep(label="Apply the import", command=f"{preview_command} --apply"),
+            ],
+            restart_required=False,
+        )
+    ]

@@ -585,7 +585,30 @@
       "uninstallPurgePrimary": "データを削除",
       "uninstallDone": "デスクトップのクリーンアップが完了しました。アプリを終了します。アプリ本体を削除する場合は、OS から OpenSquilla を削除してください。",
       "uninstallFailed": "クリーンアップに失敗しました：{detail}",
-      "uninstallCheckLog": "ゲートウェイのログを確認してください。"
+      "uninstallCheckLog": "ゲートウェイのログを確認してください。",
+      "migrationLabel": "以前のデータをインポート",
+      "migrationDesc": "このマシン上の古い OpenSquilla データディレクトリを探して、このランタイムに取り込みます。",
+      "migrationButton": "以前のデータをインポート",
+      "migrationNone": "以前のデータは見つかりませんでした。",
+      "migrationSummaryFailed": "以前のデータの確認に失敗しました：{detail}",
+      "migrationSummaryTitle": "以前のデータが見つかりました",
+      "migrationCountPlanned": "計画 {n} 件",
+      "migrationCountMigrated": "移行済み {n} 件",
+      "migrationCountSkipped": "スキップ {n} 件",
+      "migrationCountError": "エラー {n} 件",
+      "migrationCountNone": "インポートする項目はありません。",
+      "migrationPausedJobs": "スケジューラージョブ（一時停止で取り込み）：{n} 件",
+      "migrationDisk": "ディスク：必要 {required}、空き {free}",
+      "migrationOverwrite": "既存のデータを上書きする（タイムスタンプ付きバックアップを作成）",
+      "migrationImport": "インポート",
+      "migrationCancel": "キャンセル",
+      "migrationConfirmTitle": "以前のデータをインポートしますか？",
+      "migrationConfirmBody": "インポート中はローカルランタイムが停止し、完了後に再起動します。このページの接続は一時的に切断されます。",
+      "migrationConfirmPrimary": "インポート",
+      "migrationStarted": "インポートを開始しました。ローカルランタイムを再起動しています。このページはまもなく再接続します。",
+      "migrationDone": "以前のデータをインポートしました。ローカルランタイムを再起動しています。",
+      "migrationFailed": "インポートに失敗しました：{detail}",
+      "migrationPhase": "進行状況：{phase}"
     },
     "keyboard": {
       "title": "キーボード",
@@ -2095,6 +2118,16 @@
       "hint": "ゲートウェイはまだ実行する準備ができていません。",
       "finishSetup": "セットアップを完了",
       "viewReadiness": "準備状況を表示"
+    },
+    "legacyDataBanner": {
+      "ariaLabel": "以前の OpenSquilla データが見つかりました",
+      "title": "以前の OpenSquilla データが見つかりました",
+      "dismiss": "閉じる",
+      "dismissNotice": "以前のデータの通知を閉じる",
+      "hintWeb": "ゲートウェイを停止してから、次のコマンドを実行してインポートしてください：",
+      "hintDesktop": "設定 → ランタイム の「以前のデータをインポート」から取り込めます。",
+      "openSettings": "ランタイム設定を開く",
+      "copyCommand": "移行コマンドをコピー"
     },
     "shortcuts": {
       "commandPalette": {

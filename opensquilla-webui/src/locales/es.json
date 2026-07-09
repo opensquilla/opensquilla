@@ -585,7 +585,30 @@
       "uninstallPurgePrimary": "Borrar datos",
       "uninstallDone": "Limpieza de escritorio completada. La app se cerrará ahora; elimina OpenSquilla desde tu sistema operativo si quieres quitar la app.",
       "uninstallFailed": "Error al limpiar: {detail}",
-      "uninstallCheckLog": "consulta el registro de la puerta de enlace."
+      "uninstallCheckLog": "consulta el registro de la puerta de enlace.",
+      "migrationLabel": "Importar datos antiguos",
+      "migrationDesc": "Busca un directorio de OpenSquilla anterior en esta máquina y lo importa a este tiempo de ejecución.",
+      "migrationButton": "Importar datos antiguos",
+      "migrationNone": "No se encontraron datos antiguos.",
+      "migrationSummaryFailed": "No se pudo comprobar si hay datos antiguos: {detail}",
+      "migrationSummaryTitle": "Datos antiguos encontrados",
+      "migrationCountPlanned": "{n} planificados",
+      "migrationCountMigrated": "{n} migrados",
+      "migrationCountSkipped": "{n} omitidos",
+      "migrationCountError": "{n} con errores",
+      "migrationCountNone": "No hay elementos que importar.",
+      "migrationPausedJobs": "Tareas programadas (importadas en pausa): {n}",
+      "migrationDisk": "Disco: {required} necesarios, {free} libres",
+      "migrationOverwrite": "Sobrescribir los datos existentes (se crean copias de seguridad con marca de tiempo)",
+      "migrationImport": "Importar",
+      "migrationCancel": "Cancelar",
+      "migrationConfirmTitle": "¿Importar datos antiguos?",
+      "migrationConfirmBody": "El tiempo de ejecución local se detiene durante la importación y se reinicia al terminar. Esta página perderá la conexión brevemente.",
+      "migrationConfirmPrimary": "Importar",
+      "migrationStarted": "Importación iniciada: el tiempo de ejecución local se está reiniciando y esta página se reconectará en breve.",
+      "migrationDone": "Datos antiguos importados. El tiempo de ejecución local se está reiniciando.",
+      "migrationFailed": "Error al importar: {detail}",
+      "migrationPhase": "Progreso: {phase}"
     },
     "keyboard": {
       "title": "Teclado",
@@ -2095,6 +2118,16 @@
       "hint": "La puerta de enlace aún no está lista para ejecutarse.",
       "finishSetup": "Finalizar configuración",
       "viewReadiness": "Ver preparación"
+    },
+    "legacyDataBanner": {
+      "ariaLabel": "Se encontraron datos antiguos de OpenSquilla",
+      "title": "Se encontraron datos antiguos de OpenSquilla",
+      "dismiss": "Descartar",
+      "dismissNotice": "Descartar el aviso de datos antiguos",
+      "hintWeb": "Detén la puerta de enlace y luego ejecuta este comando para importarlos:",
+      "hintDesktop": "Impórtalos desde Ajustes → Tiempo de ejecución con la acción «Importar datos antiguos».",
+      "openSettings": "Abrir los ajustes del tiempo de ejecución",
+      "copyCommand": "Copiar el comando de migración"
     },
     "shortcuts": {
       "commandPalette": {

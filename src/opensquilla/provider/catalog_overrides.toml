@@ -404,12 +404,13 @@ supports_vision = false
 reasoning_format = "none"
 
 # tokenrhythm (TokenRhythm aggregator, tokenrhythm.studio): not on
-# models.dev, so these rows are the canonical metadata for its catalog.
-# Windows and prices come from the platform's public model listing
-# (https://tokenrhythm.studio/api/models, CNY per Mtok converted at
-# ~6.975 CNY/USD); the platform publishes no max-output limit and does not
-# reject large max_tokens at request time, so outputs are conservative
-# floors. Every served model streams DeepSeek-style reasoning_content
+# models.dev, so these rows are the offline metadata for its catalog —
+# the fallback beneath the boot-time live ingest of the platform's public
+# listing (https://tokenrhythm.studio/api/models, keyless; see
+# provider/live_catalog.py). Windows, output limits, and prices below are
+# that listing's published values (refreshed 2026-07; CNY per Mtok
+# converted at ~6.975 CNY/USD) so offline boots budget close to the
+# platform. Every served model streams DeepSeek-style reasoning_content
 # unconditionally, but the endpoint rejects thinking-toggle payloads
 # (UNKNOWN_FIELD 400), so reasoning_format stays "none": display-side
 # parsing needs no format, and "none" keeps the request builder from
@@ -417,8 +418,8 @@ reasoning_format = "none"
 # kimi rows only.
 
 [tokenrhythm."deepseek-v4-flash"]
-context_window = 64000
-max_output_tokens = 16384
+context_window = 1000000
+max_output_tokens = 384000
 supports_reasoning = true
 supports_tools = true
 supports_vision = false
@@ -428,8 +429,8 @@ output_cost_per_mtok = 0.29
 cache_read_cost_per_mtok = 0.03
 
 [tokenrhythm."deepseek-v4-pro"]
-context_window = 64000
-max_output_tokens = 16384
+context_window = 1000000
+max_output_tokens = 384000
 supports_reasoning = true
 supports_tools = true
 supports_vision = false
@@ -439,8 +440,8 @@ output_cost_per_mtok = 3.44
 cache_read_cost_per_mtok = 0.14
 
 [tokenrhythm."glm-5"]
-context_window = 64000
-max_output_tokens = 16384
+context_window = 1000000
+max_output_tokens = 128000
 supports_reasoning = true
 supports_tools = true
 supports_vision = false
@@ -450,8 +451,8 @@ output_cost_per_mtok = 3.15
 cache_read_cost_per_mtok = 0.22
 
 [tokenrhythm."glm-5.1"]
-context_window = 64000
-max_output_tokens = 16384
+context_window = 200000
+max_output_tokens = 128000
 supports_reasoning = true
 supports_tools = true
 supports_vision = false
@@ -460,9 +461,25 @@ input_cost_per_mtok = 1.15
 output_cost_per_mtok = 4.01
 cache_read_cost_per_mtok = 0.29
 
+[tokenrhythm."glm-5.2"]
+context_window = 1000000
+max_output_tokens = 128000
+supports_reasoning = true
+supports_tools = true
+supports_vision = false
+reasoning_format = "none"
+input_cost_per_mtok = 1.15
+output_cost_per_mtok = 4.01
+cache_read_cost_per_mtok = 0.29
+
+# minimax/mimo publish near-window output caps (input + output share the
+# window). Passing those through as max_tokens would trip
+# resolve_max_tokens' request-safety clamp down to 8192, so these rows —
+# like the live ingest (live_catalog.py) — halve them to the engine's own
+# output-reserve ceiling (window/2).
 [tokenrhythm."minimax-m2.5"]
-context_window = 64000
-max_output_tokens = 16384
+context_window = 200000
+max_output_tokens = 100000
 supports_reasoning = true
 supports_tools = true
 supports_vision = false
@@ -471,8 +488,8 @@ input_cost_per_mtok = 0.30
 output_cost_per_mtok = 1.20
 
 [tokenrhythm."minimax-m2.7"]
-context_window = 64000
-max_output_tokens = 16384
+context_window = 200000
+max_output_tokens = 100000
 supports_reasoning = true
 supports_tools = true
 supports_vision = false
@@ -481,8 +498,8 @@ input_cost_per_mtok = 0.30
 output_cost_per_mtok = 1.20
 
 [tokenrhythm."kimi-k2.5"]
-context_window = 64000
-max_output_tokens = 16384
+context_window = 256000
+max_output_tokens = 64000
 supports_reasoning = true
 supports_tools = true
 supports_vision = true
@@ -492,8 +509,8 @@ output_cost_per_mtok = 3.01
 cache_read_cost_per_mtok = 0.11
 
 [tokenrhythm."kimi-k2.6"]
-context_window = 64000
-max_output_tokens = 16384
+context_window = 256000
+max_output_tokens = 128000
 supports_reasoning = true
 supports_tools = true
 supports_vision = true
@@ -503,8 +520,8 @@ output_cost_per_mtok = 3.87
 cache_read_cost_per_mtok = 0.19
 
 [tokenrhythm."kimi-k2.7-code"]
-context_window = 262144
-max_output_tokens = 32768
+context_window = 256000
+max_output_tokens = 128000
 supports_reasoning = true
 supports_tools = true
 supports_vision = true
@@ -513,8 +530,8 @@ input_cost_per_mtok = 0.93
 output_cost_per_mtok = 3.87
 
 [tokenrhythm."mimo-v2.5-pro"]
-context_window = 64000
-max_output_tokens = 16384
+context_window = 256000
+max_output_tokens = 128000
 supports_reasoning = true
 supports_tools = true
 supports_vision = false
@@ -524,7 +541,7 @@ output_cost_per_mtok = 0.86
 
 [tokenrhythm."qwen3.7-max"]
 context_window = 1000000
-max_output_tokens = 65536
+max_output_tokens = 256000
 supports_reasoning = true
 supports_tools = true
 supports_vision = false
@@ -535,10 +552,10 @@ cache_read_cost_per_mtok = 0.34
 
 # Catch-all for models TokenRhythm adds later: everything on this relay
 # so far streams reasoning and takes tools; vision stays off until
-# verified per model. Glob rows never carry budgets — a newly served
-# model budgets from the snapshot's cross-provider merge until it gets an
-# exact row here, so add one (with the platform's published window) per
-# new model.
+# verified per model. Glob rows never carry budgets — until the boot-time
+# live ingest has run, a newly served model budgets from the snapshot's
+# cross-provider merge, so still add an exact row here (with the
+# platform's published window) per new model for offline boots.
 [tokenrhythm."*"]
 supports_reasoning = true
 supports_tools = true

@@ -767,6 +767,15 @@ _DEADLINE_WRAPUP_DIRECTIVE_TEMPLATE = (
     "final answer. Finishing your best-supported work now is better than "
     "further investigation that the clock will cut off."
 )
+_MID_BUDGET_NO_DIFF_NUDGE_FRACTIONS: tuple[float, ...] = (0.5, 0.75)
+_MID_BUDGET_NO_DIFF_NUDGE_TEMPLATE = (
+    "Progress check: about {percent}% of the wall-clock budget for this task "
+    "is spent and the workspace has no source change yet. If you already "
+    "know the fix, start implementing it now and verify it against the "
+    "existing tests. If you are still investigating, pick the most likely "
+    "file and make the smallest reasonable edit now, then refine it with the "
+    "remaining time instead of leaving the whole budget to analysis."
+)
 _LARGE_CONTEXT_INVALID_RESPONSE_INPUT_TOKENS = 30_000
 _COMPACTED_TOOL_ARGUMENT_MARKERS = frozenset(
     {
@@ -3866,6 +3875,7 @@ class Agent:
         deadline_wrapup_message: Message | None = None
         deadline_thinking_off_armed = False
         endgame_git_freeze_armed = False
+        mid_budget_nudge_fired_fractions: set[float] = set()
         workspace_diff_recovery_attempted = False
         failed_tool_finalization_recovery_keys: set[str] = set()
         post_tool_empty_recovery_attempted = False
@@ -7556,6 +7566,45 @@ class Agent:
                     turn_messages.append(
                         Message(role="user", content=source_loop_recovery_guidance)
                     )
+                if (
+                    bool(getattr(self.config, "mid_budget_no_diff_nudge", False))
+                    and _total_deadline is not None
+                    and self.config.timeout > 0
+                ):
+                    elapsed_fraction = 1.0 - (
+                        max(0.0, _total_deadline - _loop.time()) / self.config.timeout
+                    )
+                    due_fractions = [
+                        fraction
+                        for fraction in _MID_BUDGET_NO_DIFF_NUDGE_FRACTIONS
+                        if fraction not in mid_budget_nudge_fired_fractions
+                        and elapsed_fraction >= fraction
+                    ]
+                    if due_fractions:
+                        # Checkpoints are consumed when crossed whether or not
+                        # a nudge fires: one crossed while a diff existed must
+                        # not fire late if that diff is reverted, and crossing
+                        # several at once yields a single nudge.
+                        mid_budget_nudge_fired_fractions.update(due_fractions)
+                        nudge_fraction = max(due_fractions)
+                        if not self._workspace_has_source_change_evidence():
+                            turn_messages.append(
+                                Message(
+                                    role="user",
+                                    content=_MID_BUDGET_NO_DIFF_NUDGE_TEMPLATE.format(
+                                        percent=int(nudge_fraction * 100),
+                                    ),
+                                )
+                            )
+                            self._write_turn_call_log(
+                                "turn_policy_decision",
+                                action="mid_budget_no_diff_nudge",
+                                reason="budget_fraction",
+                                code="mid_budget_no_diff_nudge",
+                                iteration=iterations,
+                                budget_fraction=nudge_fraction,
+                                elapsed_fraction=round(elapsed_fraction, 3),
+                            )
                 if terminal_projection_preflight_error:
                     self._write_turn_call_log(
                         "tool_argument_projection_rehydrate_recovery",
@@ -7809,6 +7858,22 @@ class Agent:
             return []
         records = getattr(ctx, "workspace_file_writes", []) or []
         return [record for record in records if isinstance(record, dict)]
+
+    def _workspace_has_source_change_evidence(self) -> bool:
+        """Best-effort check that this run produced any workspace change.
+
+        Used by the mid-budget nudge: write receipts and captured diff
+        candidates cover tool-mediated edits, and the live workspace diff
+        covers shell-made edits that leave no receipts. Any changed path
+        counts — when in doubt the nudge stays quiet.
+        """
+
+        if self._effective_workspace_write_records():
+            return True
+        ctx = self._tool_context
+        if ctx is not None and (getattr(ctx, "source_diff_candidates", []) or []):
+            return True
+        return bool(self._workspace_diff_paths_for_final_diff_contract())
 
     def _effective_workspace_write_records(self) -> list[dict[str, Any]]:
         return [
@@ -12018,6 +12083,7 @@ class Agent:
             endgame_git_freeze_margin_seconds=(
                 self.config.endgame_git_freeze_margin_seconds
             ),
+            mid_budget_no_diff_nudge=self.config.mid_budget_no_diff_nudge,
             repeated_tool_call_recovery_threshold=(
                 self.config.repeated_tool_call_recovery_threshold
             ),

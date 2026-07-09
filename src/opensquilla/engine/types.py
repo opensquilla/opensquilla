@@ -602,6 +602,13 @@ class AgentConfig:
     # revert cannot empty the collected diff. Set via
     # OPENSQUILLA_ENDGAME_GIT_FREEZE_MARGIN_SECONDS.
     endgame_git_freeze_margin_seconds: int = 0
+    # Mid-budget progress nudges. Off by default. When enabled and the turn
+    # has a wall-clock budget (timeout > 0), a one-shot user message is
+    # appended after tool results the first time elapsed time crosses 50% and
+    # again at 75% of the budget while the workspace shows no change yet (no
+    # write receipts, no captured diff candidates, empty live workspace
+    # diff). Set via OPENSQUILLA_MID_BUDGET_NO_DIFF_NUDGE.
+    mid_budget_no_diff_nudge: bool = False
     # Provider-view dedup of byte-identical repeated tool results. Off by
     # default. When enabled, older duplicate tool_result payloads (same content
     # emitted N+ times across iterations) are replaced in the provider request

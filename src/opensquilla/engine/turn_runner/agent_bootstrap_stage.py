@@ -751,6 +751,10 @@ class AgentBootstrapStage:
                 "OPENSQUILLA_ENDGAME_GIT_FREEZE_MARGIN_SECONDS",
                 AgentConfig().endgame_git_freeze_margin_seconds,
             ),
+            mid_budget_no_diff_nudge=_bool_from_env(
+                "OPENSQUILLA_MID_BUDGET_NO_DIFF_NUDGE",
+                AgentConfig().mid_budget_no_diff_nudge,
+            ),
             repeated_tool_call_recovery_threshold=_nonnegative_int_from_env(
                 "OPENSQUILLA_TOOL_REPEAT_NUDGE_THRESHOLD",
                 AgentConfig().repeated_tool_call_recovery_threshold,

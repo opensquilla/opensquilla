@@ -6,6 +6,36 @@ import type { CliInvocation } from '@/platform'
 // rewrites; `export FOO=…` and other shell lines pass through untouched.
 const CLI_TOKEN = /^opensquilla(?=\s|$)/
 
+// Gateway process-lifecycle commands. On the desktop shell these cannot work
+// from a copied command — the shell supervises its own gateway child (pid lock
+// + respawn), so a CLI restart/start/stop refuses, times out, or races the
+// shell. They are surfaced as guidance (use the app's restart) instead.
+const GATEWAY_LIFECYCLE = /^opensquilla\s+gateway\s+(?:restart|start|stop)(?:\s|$)/
+
+// localStorage key the rpc store persists the active gateway URL under. Kept in
+// sync with stores/rpc.ts WS_URL_KEY.
+const WS_URL_KEY = 'opensquilla.wsUrl'
+
+export function isGatewayLifecycleCommand(command: string): boolean {
+  return GATEWAY_LIFECYCLE.test(command)
+}
+
+// The bundled-CLI prefix targets the desktop's OWN gateway (its config/state
+// roots). It is only valid when the UI is connected to that owned gateway — the
+// one that served this page. A desktop operator who repoints the connection at
+// a remote gateway must see the raw command, not one rewritten for the local
+// bundle.
+function isOwnedGatewayConnection(): boolean {
+  if (typeof window === 'undefined') return true
+  try {
+    const raw = window.localStorage.getItem(WS_URL_KEY)
+    if (!raw) return true
+    return new URL(raw).host === window.location.host
+  } catch {
+    return true
+  }
+}
+
 const invocation: Ref<CliInvocation | null> = ref(null)
 let loaded: Promise<void> | null = null
 
@@ -36,7 +66,7 @@ export function useCliInvocation() {
 
   function format(command: string): string {
     const prefix = invocation.value?.prefix
-    if (!prefix || !CLI_TOKEN.test(command)) return command
+    if (!prefix || !CLI_TOKEN.test(command) || !isOwnedGatewayConnection()) return command
     // Function replacement keeps the prefix literal: paths inside it may
     // contain $-sequences that String.replace would otherwise expand.
     return command.replace(CLI_TOKEN, () => prefix)

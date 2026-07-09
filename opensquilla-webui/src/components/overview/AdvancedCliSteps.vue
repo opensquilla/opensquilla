@@ -1,23 +1,17 @@
 <template>
   <div v-if="steps.length" class="health-steps">
     <div v-if="heading" class="health-steps__heading">{{ heading }}</div>
-    <template v-if="folded">
-      <ol v-if="guidanceSteps.length">
-        <li v-for="step in guidanceSteps" :key="step.idx" class="health-step">
-          <span class="health-step__number">{{ step.idx + 1 }}</span>
-          <span class="health-step__body">
-            <b>{{ step.label }}</b>
-            <span v-if="step.detail" class="health-step__detail">{{ step.detail }}</span>
-          </span>
-        </li>
-      </ol>
-      <details v-if="cliSteps.length" class="cli-fold">
+    <!-- Blocks render in authored order; a run of foldable commands collapses
+         into one disclosure, guidance and lifecycle steps stay inline. Step
+         numbers always reflect the authored sequence. -->
+    <template v-for="(block, bIdx) in blocks" :key="bIdx">
+      <details v-if="block.kind === 'fold'" class="cli-fold">
         <summary class="cli-fold__summary">{{ t('setup.cli.advancedTitle') }}</summary>
         <p class="cli-fold__hint">
           {{ invocation?.mode === 'dev' ? t('setup.cli.hintDev') : t('setup.cli.hintBundled') }}
         </p>
         <ol>
-          <li v-for="step in cliSteps" :key="step.idx" class="health-step">
+          <li v-for="step in block.steps" :key="step.idx" class="health-step">
             <span class="health-step__number">{{ step.idx + 1 }}</span>
             <span class="health-step__body">
               <b>{{ step.label }}</b>
@@ -39,30 +33,30 @@
           </li>
         </ol>
       </details>
-    </template>
-    <!-- Terminal-workflow hosts keep the authored interleaved order intact. -->
-    <ol v-else>
-      <li v-for="step in indexedSteps" :key="step.idx" class="health-step">
-        <span class="health-step__number">{{ step.idx + 1 }}</span>
-        <span class="health-step__body">
-          <b>{{ step.label }}</b>
-          <span v-if="step.command" class="health-step__command">
-            <code>{{ format(step.command) }}</code>
-            <button
-              class="health-step__copy"
-              :class="{ 'health-step__copy--ok': copiedIdx === step.idx }"
-              type="button"
-              :title="copyTitle(step.idx)"
-              :aria-label="copyTitle(step.idx)"
-              @click="copyStep(step)"
-            >
-              <Icon :name="copiedIdx === step.idx ? 'check' : 'copy'" :size="14" />
-            </button>
+      <ol v-else>
+        <li v-for="step in block.steps" :key="step.idx" class="health-step">
+          <span class="health-step__number">{{ step.idx + 1 }}</span>
+          <span class="health-step__body">
+            <b>{{ step.label }}</b>
+            <span v-if="step.kind === 'command'" class="health-step__command">
+              <code>{{ format(step.command || '') }}</code>
+              <button
+                class="health-step__copy"
+                :class="{ 'health-step__copy--ok': copiedIdx === step.idx }"
+                type="button"
+                :title="copyTitle(step.idx)"
+                :aria-label="copyTitle(step.idx)"
+                @click="copyStep(step)"
+              >
+                <Icon :name="copiedIdx === step.idx ? 'check' : 'copy'" :size="14" />
+              </button>
+            </span>
+            <span v-if="step.kind === 'lifecycle'" class="health-step__detail">{{ t('setup.cli.restartHint') }}</span>
+            <span v-else-if="step.detail" class="health-step__detail">{{ step.detail }}</span>
           </span>
-          <span v-if="step.detail" class="health-step__detail">{{ step.detail }}</span>
-        </span>
-      </li>
-    </ol>
+        </li>
+      </ol>
+    </template>
   </div>
 </template>
 
@@ -71,7 +65,7 @@ import { computed, onUnmounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import Icon from '@/components/Icon.vue'
 import { usePlatform } from '@/platform'
-import { useCliInvocation } from '@/composables/useCliInvocation'
+import { isGatewayLifecycleCommand, useCliInvocation } from '@/composables/useCliInvocation'
 import { useToasts } from '@/composables/useToasts'
 import { copyTextWithFallback } from '@/utils/browser'
 
@@ -81,9 +75,19 @@ interface CliStep {
   detail?: string
 }
 
+// 'command' = copyable command; 'lifecycle' = gateway restart/start/stop that
+// cannot run from a copied command on desktop, shown as guidance; 'guidance' =
+// no command.
+type StepKind = 'command' | 'lifecycle' | 'guidance'
+
 interface IndexedStep extends CliStep {
   idx: number
+  kind: StepKind
 }
+
+interface FoldBlock { kind: 'fold'; steps: IndexedStep[] }
+interface InlineBlock { kind: 'inline'; steps: IndexedStep[] }
+type Block = FoldBlock | InlineBlock
 
 const props = defineProps<{
   steps: CliStep[]
@@ -98,13 +102,39 @@ const { format, invocation } = useCliInvocation()
 // behind an advanced disclosure; web keeps the flat authored list.
 const folded = !usePlatform().capabilities.hasTerminalWorkflow
 
-// Numbering always follows the authored order — findings sequence their fix
-// steps deliberately (inspect → fix → restart), so the fold must not renumber.
+// Classify each step, preserving authored order (findings sequence their steps
+// deliberately: inspect → fix → restart). On desktop, gateway lifecycle
+// commands become guidance because a copied restart cannot drive the
+// shell-supervised gateway.
 const indexedSteps = computed<IndexedStep[]>(() =>
-  props.steps.map((step, idx) => ({ ...step, idx })),
+  props.steps.map((step, idx) => {
+    let kind: StepKind = 'guidance'
+    if (step.command) {
+      kind = folded && isGatewayLifecycleCommand(step.command) ? 'lifecycle' : 'command'
+    }
+    return { ...step, idx, kind }
+  }),
 )
-const guidanceSteps = computed(() => indexedSteps.value.filter(step => !step.command))
-const cliSteps = computed(() => indexedSteps.value.filter(step => Boolean(step.command)))
+
+// Group consecutive foldable commands (desktop only) into one disclosure;
+// everything else renders inline in authored order.
+const blocks = computed<Block[]>(() => {
+  const out: Block[] = []
+  for (const step of indexedSteps.value) {
+    const foldable = folded && step.kind === 'command'
+    const last = out[out.length - 1]
+    if (foldable && last?.kind === 'fold') {
+      last.steps.push(step)
+    } else if (foldable) {
+      out.push({ kind: 'fold', steps: [step] })
+    } else if (last?.kind === 'inline') {
+      last.steps.push(step)
+    } else {
+      out.push({ kind: 'inline', steps: [step] })
+    }
+  }
+  return out
+})
 
 const copiedIdx = ref<number | null>(null)
 let copiedResetId: ReturnType<typeof setTimeout> | null = null

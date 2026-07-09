@@ -26,6 +26,13 @@ Three user populations are affected:
 3. **Existing desktop users** — affected indirectly by the state-dir semantics
    fix this design requires (see Phase 1).
 
+Installs whose program and data are decoupled need **no** migration: uv
+tool, pipx, pip, and source checkouts share `~/.opensquilla` across upgrades
+and reinstalls, and a Docker install with a persistent volume keeps
+`/var/lib/opensquilla` across image updates. For those users only the
+Phase 4 config-compatibility fixes apply. Migration is for changing the
+*installation form*, not for upgrading in place.
+
 The existing `opensquilla migrate` command imports foreign agent homes only:
 `migration/orchestrator.py` hard-locks `SourceName` to that source list, and
 `cli/migrate_cmd.py` auto-detects only those foreign home paths. There is no
@@ -56,6 +63,14 @@ OpenSquilla-to-OpenSquilla import anywhere in the codebase.
   with explicit overwrite plus backups.
 - **No ongoing config synchronization** between a CLI home and a desktop home
   after the copy.
+- **No multi-profile fan-in.** Profile homes under
+  `~/.opensquilla/profiles/<name>` are excluded from a `cli-home` copy; a
+  single profile home can be imported explicitly via `--source <path>`, but
+  merging several profiles into one target is out of scope.
+- **No in-place Docker volume adoption flow.** A bind-mounted Docker home
+  can already be adopted in place by pointing `OPENSQUILLA_STATE_DIR` at
+  it; a named volume must be extracted to a local directory first and
+  imported via `--source <path>`. No container orchestration is included.
 
 ## Background: What Each Release Wrote to Disk
 
@@ -80,7 +95,11 @@ following load-bearing facts.
   release) through current `main`: `userData/opensquilla` with
   `userData/opensquilla/state` and `userData/desktop-credential.json`.
   One locator suffices, but four credential schema cohorts exist (see
-  Secrets below).
+  Secrets below). Desktop builds ship for macOS and Windows only; the
+  locator is Electron `userData` resolution (which covers Linux dev builds
+  for free), and Python-side code must not hardcode the platform paths.
+  Note that OS-level desktop uninstall leaves this data in place on both
+  shipped platforms — only the in-app cleanup removes it.
 
 ### The state-dir semantics mismatch
 
@@ -222,30 +241,53 @@ for where `.env`, skills, and workspace belong.
 ### Phase 2 — Self-migration source
 
 Add an `opensquilla` source to the migration orchestrator (extending the
-source literal, detection, and per-source option validation), with two
+source literal, detection, and per-source option validation), with three
 source kinds:
 
-- `cli-home` — default `~/.opensquilla`, excluding `profiles/`.
+- `cli-home` — default `~/.opensquilla`, excluding `profiles/`. Accepts an
+  explicit `--source <path>` (matching the existing migrate convention for
+  foreign homes), which also covers Docker volumes and bind mounts
+  (extracted or mounted locally), homes relocated via
+  `OPENSQUILLA_STATE_DIR`, restored backups, and individual profile homes —
+  all shape-identical to a CLI home.
 - `windows-portable` — enumerate `%LOCALAPPDATA%\OpenSquilla\portable\*` and
   the `%TEMP%` fallback base, pair with wheelhouse venv markers, era-detect,
-  and present a chooser sorted by mtime with size/date shown.
+  and present a chooser showing size, era, and last-used derived from
+  `config.toml` mtime or the newest `sessions.db` row (directory mtime can
+  mislead), with an optional read-only session count reusing the read-only
+  open pattern required for the ledger pre-flight.
+- `desktop-home` — the platform Electron `userData/opensquilla` directory,
+  for users moving from the desktop app to a CLI install or to a new
+  machine (OS-level desktop uninstall strands this data on both shipped
+  platforms). Reuses the credential-cohort reader described above;
+  keychain-bound credential values cannot be decrypted outside the
+  originating app and OS user and are always flagged for re-entry. This
+  kind ships after the first two.
 
 Copy protocol:
 
 1. **Pre-flight**: refuse (or require explicit acknowledgement) when the
    source home's gateway pid lock is held; read the source `sessions.db`
    migration ledger read-only and reject newer-than-binary homes before
-   copying anything; pre-validate the source config through
-   `migrate_config_payload` plus schema validation in a sandbox pass,
-   quarantining unknown keys instead of letting fail-closed validation brick
-   the first boot.
+   copying anything; verify free space — sum the source home size (already
+   computed for the chooser) and refuse when it exceeds the target volume's
+   free space minus a margin, surfacing the shortfall in the report; and
+   pre-validate the source config through `migrate_config_payload` plus
+   schema validation in a sandbox pass, quarantining unknown keys instead
+   of letting fail-closed validation brick the first boot.
 2. **Copy**: whole-home copy (completeness over curation — the layouts are
    shape-identical), deriving scope from the uninstall inventory bucket list
    plus the home-root router self-learning directory, including
    `-wal`/`-shm` sidecars for all five SQLite stores (or checkpoint first),
-   and snapshotting all five databases before first open. Refuse a non-empty
-   target state unless `--overwrite` is given (per-item timestamped backups,
-   matching the existing migration convention).
+   and snapshotting all five databases before first open. The write is
+   **transactional**: copy into a temporary sibling directory of the target
+   and atomically rename into place, so an interrupted or cancelled import
+   never leaves a partial target — and never trips the non-empty-target
+   refusal on re-run. On Windows, normalize source and destination paths to
+   extended-length (`\\?\`) form before copy operations; deep portable
+   workspace trees routinely exceed the 260-character default limit. Refuse
+   a non-empty target state unless `--overwrite` is given (per-item
+   timestamped backups, matching the existing migration convention).
 3. **Transform (the part that is not a copy)**:
    - rewrite or drop absolute `state_dir` / `workspace_dir` / media-root
      config values; coerce a pinned legacy default port to the current
@@ -259,33 +301,79 @@ Copy protocol:
      target home `.env`; document that desktop-owned config sections are
      regenerated from the desktop credential.
 4. **Report**: dry-run by default, emitting a machine-readable report —
-   discovered homes, per-data-kind verdict, path-rewrite plan, secret
+   discovered homes (with the candidate list, so non-interactive callers
+   can choose), per-data-kind verdict, path-rewrite plan, secret
    relocation plan, and unrecoverable items (keychain-bound credentials)
-   flagged for re-prompt. The report shape is pinned as a contract
-   (documented next to the session-view contract, tested in
-   `tests/test_contracts/`).
+   flagged for re-prompt. The contract covers the **apply result** too:
+   per-bucket applied/failed/backed-up status and an enumeration of
+   imported scheduler jobs (id, name, schedule) so entry points can tell
+   the user what was paused. In overwrite mode, a partially failed apply
+   reports which buckets failed and were restored from their timestamped
+   backups; failed buckets are retryable once the cause is fixed. The
+   report shape is pinned as a contract (documented next to the
+   session-view contract, tested in `tests/test_contracts/`).
 
 ### Phase 3 — Entry points
 
-- **CLI**: wiring the new source into the orchestrator's default detection
-  surfaces it automatically in both the onboarding wizard's existing
-  migration pre-step and bare `opensquilla migrate`. No new UI.
+- **CLI**: wire the new source into **both** detection sites — the
+  orchestrator's default detection *and* the migrate command's own
+  duplicated detection list (or fold the latter onto the former as part of
+  this change) — so it surfaces in the onboarding wizard's existing
+  migration pre-step and in bare `opensquilla migrate`. Non-interactive
+  selection is explicit: `--source windows-portable --home <path>` names
+  one of the enumerated candidate homes, and the JSON dry-run report lists
+  the candidates so scripts can choose without a prompt.
 - **Desktop onboarding (primary)**: a migration step at the *start* of the
   onboarding window flow, before provider setup — the only interaction point
   before the gateway first boots (import must precede first boot because
   boot creates `sessions.db` and the scheduler-pause transform must land
   before jobs are scanned). Detecting a legacy home offers dry-run → apply,
-  then prefills the provider step from the imported config.
+  then prefills the provider step from the imported config. The copy
+  streams per-bucket progress to the onboarding window over a desktop IPC
+  event channel (modeled on the existing update-state events) with a cancel
+  action; cancellation or a crash leaves no partial target thanks to the
+  transactional write. Unrecoverable credentials surface per class: the
+  primary provider key lands in the (empty) provider step, while secondary
+  keys and channel tokens are listed in a post-import notice pointing at
+  Settings / the target `.env`. The completion screen states how many
+  scheduler jobs were imported paused (linking to the Cron view) and that
+  the source home was left untouched at its original path, including how
+  to reclaim that space later.
 - **Desktop settings (rescue)**: an "Import legacy data" action beside the
   existing desktop settings IPC handlers, for users past first run. Stricter
   semantics: stop the gateway, dry-run, explicit overwrite confirmation with
-  backups, apply, restart. It follows the existing uninstall flow's shape —
-  the Electron main process orchestrates lifecycle and spawns the bundled
-  CLI (`opensquilla migrate ...`) so the migration logic exists exactly once,
-  in Python.
-- Both desktop entries live at the Electron layer, not in the Web UI
-  console: migration requires a quiesced gateway, and only the Electron main
-  process owns the gateway lifecycle.
+  backups, apply, restart. It combines two existing precedents: the
+  uninstall flow's stop → dry-run → confirm → apply-via-bundled-CLI shape,
+  and the settings-reset flow's restart-with-boot-splash pattern (the
+  uninstall flow deliberately leaves the gateway down). The Electron main
+  process orchestrates lifecycle and spawns the bundled CLI
+  (`opensquilla migrate ...`) so the migration logic exists exactly once,
+  in Python. Because the gateway is stopped during the operation, the
+  rescue flow's UI runs over desktop IPC — the Web UI console's RPC
+  transport dies with the gateway.
+- **Web UI console (advisory only)**: executing the migration stays at the
+  Electron/CLI layer because it requires a quiesced gateway — but
+  *detection* is a read-only path scan that is safe under a running
+  gateway. The onboarding status payload (or a doctor finding) gains a
+  legacy-data block, rendered in the Web UI setup flow as "legacy
+  OpenSquilla data found at `<path>` — stop the gateway and run
+  `opensquilla migrate`". This is the route that reaches ex-portable users
+  who wheel-install per the release notes and onboard via the browser.
+- **Headless and channels-first users**: a one-line gateway boot warning
+  when the active home looks freshly created and detection finds a legacy
+  home, plus an `opensquilla doctor` finding recommending the migrate
+  command — both read-only reuses of the Phase 2 detection code. TUI and
+  channels-first setups have no wizard of their own and funnel through
+  `opensquilla onboard` or these surfaces.
+- Execution always lives at the Electron/CLI layer: migration requires a
+  quiesced gateway, and only the Electron main process (or the user's own
+  shell) owns the gateway lifecycle. The Web UI's role is detection and
+  advice only.
+- **Localization**: every new user-facing string (onboarding step, settings
+  action, progress, report and error text) ships in all desktop locale
+  table entries, and the Web UI advisory strings in the Web UI locale
+  files; the machine-readable report is rendered to localized text on the
+  Electron side rather than shown raw.
 
 ### Phase 4 — Compatibility fixes in product code
 
@@ -308,15 +396,18 @@ migrator (they also fix in-place upgrades):
    with config fixtures frozen from each tag's real default full dump plus
    adversarial variants for every named gap (the four config gaps, the
    legacy port pin, legacy tier spellings, absolute portable paths, inline
-   keys). Database fixtures are built at test time from each tag's schema
-   DDL with a few synthetic rows.
+   keys, and a Windows fixture with a nested workspace path exceeding 260
+   characters). Database fixtures are built at test time from each tag's
+   schema DDL with a few synthetic rows.
 2. **Upgrade tests in existing shapes**: parametrized
    load-every-golden-config-on-current-code tests beside the existing config
    legacy tests; end-to-end import tests in `tests/test_migration/` (copy
    fixture home → import → boot components → assert latest sessions schema,
    scheduler opens with jobs paused, memory relocation shims fire, approval
    queue backfills); a WAL-safety test asserting the checkpoint step
-   prevents loss.
+   prevents loss; an interrupted-copy test asserting the transactional
+   write leaves no partial target; and an apply-failure test asserting the
+   overwrite-mode backup restore reaches a consistent state.
 3. **Report contract**: the dry-run report schema is documented and pinned
    by a wire-shape test in `tests/test_contracts/`.
 4. **Matrix as contract**: a test asserts the fixture set enumerates every
@@ -334,11 +425,14 @@ migrator (they also fix in-place upgrades):
   from the migrated `.env`.
 - Markdown memory and the memory index agree (no stranded index entries);
   skills and taps load.
-- Migrated scheduler jobs are present and paused, with a visible way to
-  re-enable them.
+- Migrated scheduler jobs are present and paused; the completion surfaces
+  say how many were paused and link to the Cron view to re-enable them.
 - Imported non-desktop config sections survive a desktop settings save.
 - Keychain-bound desktop credentials are reported as requiring re-entry, not
   silently dropped.
+- The user is told where the untouched source home remains on disk and how
+  to reclaim the space (manual removal for CLI/portable/Docker homes — the
+  desktop cannot uninstall a foreign home).
 
 ## Documentation Corrections (ship with any phase)
 
@@ -351,6 +445,8 @@ migrator (they also fix in-place upgrades):
 
 1. Phase 1 (desktop alignment + relocation + contract-test pins).
 2. Phase 4 compatibility fixes + golden fixtures (independently valuable).
-3. Phase 2 self-migration source + CLI entry.
-4. Phase 3 desktop onboarding and settings entries.
+3. Phase 2 self-migration source + CLI entry (`cli-home` and
+   `windows-portable` first; the `desktop-home` source kind follows).
+4. Phase 3 desktop onboarding and settings entries, Web UI advisory, and
+   the boot/doctor detection surfaces.
 5. Documentation corrections ride along with the first phase that lands.

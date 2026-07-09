@@ -137,6 +137,205 @@ def source_diff_preservation_block_json(
     return json.dumps(decision.payload, ensure_ascii=False)
 
 
+# `git stash` subcommands that move or drop worktree changes. Bare `git stash`
+# (implicit push) and option-only forms like `git stash -u` count as push.
+_DESTRUCTIVE_GIT_STASH_SUBCOMMANDS = frozenset({"push", "save", "drop", "clear"})
+
+
+def endgame_git_freeze_decision(
+    *,
+    command: str,
+    ctx: ToolContext | None = None,
+) -> dict[str, Any] | None:
+    """Return a block payload for destructive git commands during the freeze.
+
+    Armed by the engine (ToolContext.endgame_git_freeze_active) once remaining
+    wall-clock time drops below OPENSQUILLA_ENDGAME_GIT_FREEZE_MARGIN_SECONDS.
+    Unlike source_diff_preservation_decision there is no protected-path
+    intersection: every parsed workspace-reverting operation — including
+    branch switches and stashes — is blocked outright so the current
+    workspace diff survives runner-side collection.
+    """
+
+    active = ctx if ctx is not None else current_tool_context.get()
+    if active is None:
+        return None
+    if getattr(active, "endgame_git_freeze_active", False) is not True:
+        return None
+    parsed = _parse_endgame_frozen_git_command(command)
+    if parsed is None:
+        return None
+    payload: dict[str, Any] = {
+        "status": "blocked",
+        "reason": "endgame_git_freeze",
+        "matched_operation": parsed.operation,
+        "target_paths": list(parsed.targets),
+        "retry_allowed": True,
+        "recommended_next_action": (
+            "The run is in its final wrap-up window and workspace-reverting git "
+            "commands are frozen so the pending changes stay intact. Keep "
+            "or edit the existing changes in place instead of restoring, "
+            "resetting, cleaning, stashing, or switching branches."
+        ),
+    }
+    _emit_freeze_event(active, payload, command=command)
+    return payload
+
+
+def endgame_git_freeze_block_json(
+    *,
+    command: str,
+    ctx: ToolContext | None = None,
+) -> str | None:
+    payload = endgame_git_freeze_decision(command=command, ctx=ctx)
+    if payload is None:
+        return None
+    return json.dumps(payload, ensure_ascii=False)
+
+
+def _parse_endgame_frozen_git_command(
+    command: str,
+    depth: int = 0,
+) -> _ParsedDestructiveGitCommand | None:
+    try:
+        tokens = shlex.split(command)
+    except ValueError:
+        return None
+    if not tokens:
+        return None
+    for raw_segment in _shell_sequence_segments(tokens):
+        segment = _strip_git_global_options(_strip_shell_redirections(raw_segment))
+        parsed = _parse_git_segment(segment)
+        if parsed is None:
+            parsed = _parse_git_stash_segment(segment)
+        if parsed is None:
+            parsed = _parse_git_switch_segment(segment)
+        if parsed is not None:
+            return parsed
+        if depth < 2:
+            wrapped = _shell_wrapper_command(segment)
+            if wrapped is not None:
+                parsed = _parse_endgame_frozen_git_command(wrapped, depth + 1)
+                if parsed is not None:
+                    return parsed
+    return None
+
+
+# git global options the freeze parser skips before reading the verb. Applied
+# in the freeze path only, so shared source_diff_preservation parsing is
+# untouched.
+_FREEZE_GIT_GLOBAL_VALUE_OPTIONS = frozenset({"-C", "-c", "--git-dir", "--work-tree"})
+
+
+def _strip_git_global_options(tokens: list[str]) -> list[str]:
+    if not tokens or tokens[0] != "git":
+        return tokens
+    index = 1
+    while index < len(tokens):
+        token = tokens[index]
+        if token in _FREEZE_GIT_GLOBAL_VALUE_OPTIONS:
+            index += 2
+            continue
+        if token == "--no-pager" or token.startswith(("--git-dir=", "--work-tree=")):
+            index += 1
+            continue
+        break
+    if index == 1:
+        return tokens
+    return ["git", *tokens[index:]]
+
+
+_SHELL_WRAPPER_NAMES = frozenset({"sh", "bash", "zsh", "dash", "ksh"})
+
+
+def _shell_wrapper_command(tokens: list[str]) -> str | None:
+    # Freeze-only extension: `sh -c "git checkout -- ."` reverts just as
+    # effectively as the bare command.
+    if not tokens:
+        return None
+    name = tokens[0].replace("\\", "/").rsplit("/", 1)[-1]
+    if name not in _SHELL_WRAPPER_NAMES:
+        return None
+    take_next = False
+    for token in tokens[1:]:
+        if take_next:
+            return token
+        if token.startswith("--"):
+            continue
+        if token.startswith("-") and len(token) > 1 and token.endswith("c"):
+            take_next = True
+            continue
+        if token.startswith("-"):
+            continue
+        return None
+    return None
+
+
+def _parse_git_stash_segment(tokens: list[str]) -> _ParsedDestructiveGitCommand | None:
+    # Freeze-only extension: the shared _parse_git_segment intentionally stays
+    # unchanged so default source_diff_preservation behavior is untouched.
+    tokens = _strip_shell_redirections(tokens)
+    if len(tokens) < 2 or tokens[0] != "git" or tokens[1] != "stash":
+        return None
+    subcommand = None
+    index = 2
+    while index < len(tokens):
+        token = tokens[index]
+        if token in ("-m", "--message"):
+            # The option value is a message, not a subcommand:
+            # `git stash -m wip` is still an implicit push.
+            index += 2
+            continue
+        if token.startswith("-"):
+            index += 1
+            continue
+        subcommand = token
+        break
+    if subcommand is None or subcommand in _DESTRUCTIVE_GIT_STASH_SUBCOMMANDS:
+        return _ParsedDestructiveGitCommand(operation="git_stash", whole_worktree=True)
+    return None
+
+
+def _parse_git_switch_segment(tokens: list[str]) -> _ParsedDestructiveGitCommand | None:
+    # Freeze-only extension: plain `git switch` refuses to clobber local
+    # changes on its own, so only the change-discarding forms are frozen.
+    tokens = _strip_shell_redirections(tokens)
+    if len(tokens) < 2 or tokens[0] != "git" or tokens[1] != "switch":
+        return None
+    if any(arg in {"-f", "--force", "--discard-changes"} for arg in tokens[2:]):
+        return _ParsedDestructiveGitCommand(
+            operation="git_switch_force", whole_worktree=True
+        )
+    return None
+
+
+def _emit_freeze_event(
+    active: ToolContext,
+    payload: dict[str, Any],
+    *,
+    command: str,
+) -> None:
+    callback = getattr(active, "on_runtime_event", None)
+    if callback is None:
+        return
+    try:
+        callback(
+            {
+                "feature": "endgame_git_freeze",
+                "name": "endgame_git_freeze.blocked",
+                "reason": payload.get("reason"),
+                "matched_operation": payload.get("matched_operation"),
+                "target_paths": payload.get("target_paths", []),
+                "status": payload.get("status"),
+                "command": command,
+                "session_key": getattr(active, "session_key", None),
+                "agent_id": getattr(active, "agent_id", None),
+            }
+        )
+    except Exception:
+        return
+
+
 def _normalize_mode(raw: object) -> SourceDiffPreservationMode:
     value = str(raw or "log").strip().lower()
     if value in {"off", "log", "block"}:

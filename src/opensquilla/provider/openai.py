@@ -1711,13 +1711,54 @@ def _attach_reasoning_content(
 ) -> dict[str, Any]:
     if include_reasoning_content and msg.role == "assistant" and msg.reasoning_content:
         payload["reasoning_content"] = msg.reasoning_content
-    elif (
-        include_reasoning_content
-        and require_assistant_reasoning_content
-        and msg.role == "assistant"
-    ):
+    elif require_assistant_reasoning_content and msg.role == "assistant":
+        # Models that require the key on every assistant message get an
+        # empty string whenever the actual reasoning is absent or withheld
+        # (e.g. reasoning-echo truncation of older messages).
         payload["reasoning_content"] = ""
     return payload
+
+
+_REASONING_ECHO_TURNS_ENV = "OPENSQUILLA_REASONING_ECHO_TURNS"
+
+
+def _resolve_reasoning_echo_turns() -> int | None:
+    """Resolve the opt-in reasoning-echo truncation lever.
+
+    ``OPENSQUILLA_REASONING_ECHO_TURNS`` limits how many of the most recent
+    assistant messages replay their ``reasoning_content`` when the compat
+    policy replays reasoning at all: a non-negative integer keeps only the
+    last N assistant messages' reasoning (0 drops every echo), and unset or
+    "all" keeps the replay-all behavior byte-identical. Unrecognized values
+    raise instead of being silently ignored so a run manifest cannot record
+    an override the run did not actually apply.
+    """
+    env_value = os.environ.get(_REASONING_ECHO_TURNS_ENV, "").strip().lower()
+    if not env_value or env_value == "all":
+        return None
+    if env_value.isdigit():
+        return int(env_value)
+    raise ValueError(
+        f'{_REASONING_ECHO_TURNS_ENV} must be a non-negative integer or "all"'
+    )
+
+
+def _reasoning_echo_allowed_indexes(
+    messages: list[Message],
+    echo_turns: int | None,
+) -> set[int] | None:
+    """Indexes of assistant messages allowed to replay reasoning_content.
+
+    Returns ``None`` when the lever is unset (no per-message gating).
+    """
+    if echo_turns is None:
+        return None
+    assistant_indexes = [
+        index for index, message in enumerate(messages) if message.role == "assistant"
+    ]
+    if echo_turns <= 0:
+        return set()
+    return set(assistant_indexes[-echo_turns:])
 
 
 def _requires_assistant_reasoning_content(policy: OpenAICompatPolicy, model: str) -> bool:
@@ -1894,6 +1935,31 @@ class OpenAIProvider:
         self._compat = compat or compat_policy_for_kind(self._provider_kind)
         self._replay_provider_state = replay_provider_state
         self._provider_routing: Mapping[str, str] = provider_routing or {}
+        # Strict routing pin: send {"only": [...], "allow_fallbacks": false}
+        # instead of the default {"order": [...], "allow_fallbacks": true},
+        # so requests fail rather than silently reroute when the pinned
+        # upstream is unavailable. Off by default.
+        self._provider_routing_strict = (
+            os.environ.get("OPENSQUILLA_PROVIDER_ROUTING_STRICT", "").strip().lower()
+            in {"1", "true", "yes", "on", "enabled"}
+        )
+        # Opt-in mid-stream error-frame surfacing: OpenAI-compatible
+        # streams can carry an {"error": {...}} SSE data frame when the
+        # upstream fails after the response has started. Without handling,
+        # the frame is skipped and the call degrades to an empty response
+        # with no error signal. When armed, such frames end the call with
+        # an ErrorEvent so callers see the real failure and can retry.
+        # Off by default.
+        self._stream_error_frames = (
+            os.environ.get("OPENSQUILLA_PROVIDER_STREAM_ERROR_FRAMES", "").strip().lower()
+            in {"1", "true", "yes", "on", "enabled"}
+        )
+        # Opt-in reasoning-echo truncation: when a compat policy replays
+        # assistant reasoning_content, every historical assistant message
+        # carries its full reasoning bytes on every request. Limiting the
+        # echo to the last N assistant messages caps that growth. None
+        # (unset) keeps the replay-all behavior.
+        self._reasoning_echo_turns = _resolve_reasoning_echo_turns()
 
     @property
     def model(self) -> str:
@@ -1976,11 +2042,20 @@ class OpenAIProvider:
                 openai_messages.append({"role": "system", "content": content_blocks})
             else:
                 openai_messages.append({"role": "system", "content": cfg.system})
-        for m in messages:
+        reasoning_echo_allowed = (
+            _reasoning_echo_allowed_indexes(messages, self._reasoning_echo_turns)
+            if include_reasoning_content
+            else None
+        )
+        for message_index, m in enumerate(messages):
             openai_messages.extend(
                 _build_openai_messages(
                     m,
-                    include_reasoning_content=include_reasoning_content,
+                    include_reasoning_content=(
+                        include_reasoning_content
+                        if reasoning_echo_allowed is None
+                        else message_index in reasoning_echo_allowed
+                    ),
                     require_assistant_reasoning_content=(
                         _requires_assistant_reasoning_content(self._compat, self._model)
                     ),
@@ -2072,10 +2147,16 @@ class OpenAIProvider:
         if self._compat.supports_provider_routing_pin:
             pinned_provider = self._provider_routing.get(self._model)
             if pinned_provider:
-                payload["provider"] = {
-                    "order": [pinned_provider],
-                    "allow_fallbacks": True,
-                }
+                if self._provider_routing_strict:
+                    payload["provider"] = {
+                        "only": [pinned_provider],
+                        "allow_fallbacks": False,
+                    }
+                else:
+                    payload["provider"] = {
+                        "order": [pinned_provider],
+                        "allow_fallbacks": True,
+                    }
 
         # Reasoning injection (gated on thinking being enabled). Gating —
         # which model/capability profile triggers a payload at all — lives
@@ -2342,6 +2423,41 @@ class OpenAIProvider:
                             continue
 
                         trace.record_chunk(chunk)
+                        if self._stream_error_frames and isinstance(chunk, dict):
+                            error_obj = chunk.get("error")
+                            if isinstance(error_obj, Mapping) and error_obj:
+                                err_message = str(
+                                    error_obj.get("message") or "stream error frame"
+                                )
+                                raw_code = error_obj.get("code")
+                                err_code = (
+                                    str(raw_code)
+                                    if raw_code not in (None, "")
+                                    else "stream_error"
+                                )
+                                log.warning(
+                                    "provider.stream_error_frame",
+                                    provider=self._provider_kind,
+                                    model=self._model,
+                                    code=err_code,
+                                    message=err_message,
+                                )
+                                trace.record_error(
+                                    code=err_code,
+                                    message=err_message,
+                                    metadata={
+                                        "phase": "stream",
+                                        "cache_shape": cache_shape,
+                                    },
+                                )
+                                yield ErrorEvent(
+                                    message=(
+                                        f"{self._compat.display_name} stream error: "
+                                        f"{err_message}"
+                                    ),
+                                    code=err_code,
+                                )
+                                return
                         chunk_id = chunk.get("id")
                         if isinstance(chunk_id, str) and chunk_id:
                             response_ids.add(chunk_id)

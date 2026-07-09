@@ -578,6 +578,48 @@ class AgentConfig:
     # so the model can still apply and verify its final changes. Set via
     # OPENSQUILLA_DEADLINE_WRAPUP_MARGIN_SECONDS.
     deadline_wrapup_margin_seconds: int = 0
+    # Retry the reasoning-only provider failure with thinking disabled instead
+    # of re-requesting visible content with thinking still enabled. Off by
+    # default (the retry keeps thinking on). Set via
+    # OPENSQUILLA_REASONING_ONLY_THINKING_FALLBACK.
+    reasoning_only_thinking_fallback: bool = False
+    # Force thinking off for every provider call once remaining wall-clock
+    # time drops below this many seconds. 0 = off. Complements the wrap-up
+    # directive: the nudge alone leaves thinking enabled, so the model can
+    # still spend the entire margin inside a single reasoning stream. Set via
+    # OPENSQUILLA_DEADLINE_THINKING_OFF_MARGIN_SECONDS.
+    deadline_thinking_off_margin_seconds: int = 0
+    # Preempt a runaway reasoning-only stream once its streamed reasoning text
+    # exceeds this many characters. 0 = off. The partial reasoning is
+    # discarded and the call retries immediately with thinking disabled for
+    # that retry only (the next iteration re-enables thinking), so the budget
+    # goes to tool calls instead of one unbounded reasoning stream. One
+    # preempt per iteration; attempts that already emitted user-visible text
+    # or tool calls are never preempted. Set via
+    # OPENSQUILLA_REASONING_STREAM_CHAR_CAP.
+    reasoning_stream_char_cap: int = 0
+    # Re-apply captured source-diff candidates whose paths end the turn with
+    # no live workspace diff (that path's earlier work would otherwise be
+    # missing from the collected patch). Off by default. Runs once per turn
+    # end — normal finalization and terminal errors alike — applying the
+    # newest candidate per path, each guarded by `git apply --check`. Set via
+    # OPENSQUILLA_FINAL_DIFF_SALVAGE.
+    final_diff_salvage: bool = False
+    # Freeze workspace-reverting git commands (restore, checkout paths or
+    # branches, reset --hard, clean -fd, stash) in the shell tools once
+    # remaining wall-clock time drops below this many seconds. 0 = off.
+    # Unlike source_diff_preservation_mode="block", the freeze blocks the
+    # operations outright — no protected-path intersection — so a last-minute
+    # revert cannot empty the collected diff. Set via
+    # OPENSQUILLA_ENDGAME_GIT_FREEZE_MARGIN_SECONDS.
+    endgame_git_freeze_margin_seconds: int = 0
+    # Mid-budget progress nudges. Off by default. When enabled and the turn
+    # has a wall-clock budget (timeout > 0), a one-shot user message is
+    # appended after tool results the first time elapsed time crosses 50% and
+    # again at 75% of the budget while the workspace shows no change yet (no
+    # write receipts, no captured diff candidates, empty live workspace
+    # diff). Set via OPENSQUILLA_MID_BUDGET_NO_DIFF_NUDGE.
+    mid_budget_no_diff_nudge: bool = False
     # Provider-view dedup of byte-identical repeated tool results. Off by
     # default. When enabled, older duplicate tool_result payloads (same content
     # emitted N+ times across iterations) are replaced in the provider request

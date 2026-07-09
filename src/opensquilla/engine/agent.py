@@ -10,6 +10,7 @@ import contextlib
 import functools
 import hashlib
 import json
+import os
 import re
 import subprocess
 import time
@@ -192,6 +193,37 @@ from .types import (
 logger = structlog.get_logger("opensquilla.engine.agent")
 
 _TURN_OBJECTIVE_REMINDER_MAX_CHARS = 2000
+
+_TURN_OBJECTIVE_REMINDER_ENV = "OPENSQUILLA_TURN_OBJECTIVE_REMINDER"
+_TURN_OBJECTIVE_REMINDER_ON = {"on", "1", "true", "yes"}
+_TURN_OBJECTIVE_REMINDER_OFF = {"off", "0", "false", "no"}
+_TURN_OBJECTIVE_REMINDER_TRIM_PREFIX = "trim:"
+
+
+def _resolve_turn_objective_reminder() -> tuple[bool, int]:
+    """Resolve the opt-in turn-objective reminder override.
+
+    ``OPENSQUILLA_TURN_OBJECTIVE_REMINDER`` accepts "on"/"off" or
+    "trim:<chars>" (a positive integer replacing the default truncation cap).
+    Unset or "on" keeps the shipped reminder byte-identical; "off" suppresses
+    the per-turn "[Current user request reminder]" message entirely.
+    Unrecognized values raise instead of being silently ignored so a run
+    manifest cannot record an override the run did not actually apply.
+    """
+    env_value = os.environ.get(_TURN_OBJECTIVE_REMINDER_ENV, "").strip().lower()
+    if not env_value or env_value in _TURN_OBJECTIVE_REMINDER_ON:
+        return True, _TURN_OBJECTIVE_REMINDER_MAX_CHARS
+    if env_value in _TURN_OBJECTIVE_REMINDER_OFF:
+        return False, _TURN_OBJECTIVE_REMINDER_MAX_CHARS
+    if env_value.startswith(_TURN_OBJECTIVE_REMINDER_TRIM_PREFIX):
+        raw_chars = env_value[len(_TURN_OBJECTIVE_REMINDER_TRIM_PREFIX) :]
+        if raw_chars.isdigit() and int(raw_chars) > 0:
+            return True, int(raw_chars)
+    raise ValueError(
+        f"{_TURN_OBJECTIVE_REMINDER_ENV} must be one of: "
+        + ", ".join(sorted(_TURN_OBJECTIVE_REMINDER_ON | _TURN_OBJECTIVE_REMINDER_OFF))
+        + ", or trim:<positive integer>"
+    )
 
 _PROVIDER_OUTPUT_TRUNCATED_REPLY = build_terminal_reply(
     {
@@ -735,6 +767,18 @@ _DEADLINE_WRAPUP_DIRECTIVE_TEMPLATE = (
     "final answer. Finishing your best-supported work now is better than "
     "further investigation that the clock will cut off."
 )
+_MID_BUDGET_NO_DIFF_NUDGE_FRACTIONS: tuple[float, ...] = (0.5, 0.75)
+_MID_BUDGET_NO_DIFF_NUDGE_TEMPLATE = (
+    "Progress check: about {percent}% of the wall-clock budget for this task "
+    "is spent and the workspace has no source change yet. If you already "
+    "know the fix, start implementing it now and verify it against the "
+    "existing tests. If you are still investigating, pick the most likely "
+    "file and make the smallest reasonable edit now, then refine it with the "
+    "remaining time instead of leaving the whole budget to analysis."
+)
+_MID_BUDGET_NO_DIFF_NUDGE_PREFIX = _MID_BUDGET_NO_DIFF_NUDGE_TEMPLATE.split(
+    "{percent}", 1
+)[0]
 _LARGE_CONTEXT_INVALID_RESPONSE_INPUT_TOKENS = 30_000
 _COMPACTED_TOOL_ARGUMENT_MARKERS = frozenset(
     {
@@ -977,6 +1021,27 @@ def _tail_has_tool_result(messages: list[Message], *, lookback: int = 2) -> bool
     if not messages:
         return False
     return any(_message_has_tool_result(message) for message in messages[-lookback:])
+
+
+def _is_mid_budget_nudge_message(message: Message) -> bool:
+    return (
+        message.role == "user"
+        and isinstance(message.content, str)
+        and message.content.startswith(_MID_BUDGET_NO_DIFF_NUDGE_PREFIX)
+    )
+
+
+def _tail_has_tool_result_ignoring_nudges(messages: list[Message]) -> bool:
+    """Post-tool shape of the turn with runtime-injected nudges removed.
+
+    A mid-budget nudge stacked after watchdog or pending-input messages
+    pushes the tool results out of the plain lookback window; the nudge is
+    not conversation history, so the shape is judged as if it were absent.
+    """
+
+    return _tail_has_tool_result(
+        [message for message in messages[-4:] if not _is_mid_budget_nudge_message(message)]
+    )
 
 
 def _message_has_visible_text(message: Message) -> bool:
@@ -1376,6 +1441,10 @@ class Agent:
             )
         self._meta_run_writer = (self.config.metadata or {}).get("meta_run_writer")
         self._pending_warnings: list[WarningEvent] = []
+        (
+            self._turn_objective_reminder_enabled,
+            self._turn_objective_reminder_max_chars,
+        ) = _resolve_turn_objective_reminder()
 
         self._state: AgentState = AgentState.IDLE
         self._history: list[Message] = []
@@ -3766,7 +3835,9 @@ class Agent:
         runtime_context_message = self._runtime_context_message(runtime_context)
         request_context_message = self._request_context_message(self.config.request_context_prompt)
         turn_objective_message = self._turn_objective_message(
-            semantic_message if semantic_message is not None else message
+            semantic_message if semantic_message is not None else message,
+            enabled=self._turn_objective_reminder_enabled,
+            max_chars=self._turn_objective_reminder_max_chars,
         )
         runtime_context_hash = hashlib.sha256(runtime_context.encode("utf-8")).hexdigest()[:16]
 
@@ -3795,6 +3866,9 @@ class Agent:
         )
         _thinking_fallback_done = False
         _disable_thinking_for_next_provider_call = False
+        _reasoning_stream_char_cap = max(
+            0, int(getattr(self.config, "reasoning_stream_char_cap", 0) or 0)
+        )
 
         _log = structlog.get_logger("opensquilla.engine.agent")
 
@@ -3854,6 +3928,9 @@ class Agent:
         placeholder_offense_iterations = 0
         deadline_wrapup_armed = False
         deadline_wrapup_message: Message | None = None
+        deadline_thinking_off_armed = False
+        endgame_git_freeze_armed = False
+        mid_budget_nudge_fired_fractions: set[float] = set()
         workspace_diff_recovery_attempted = False
         failed_tool_finalization_recovery_keys: set[str] = set()
         post_tool_empty_recovery_attempted = False
@@ -3975,6 +4052,41 @@ class Agent:
         # and per-tool execution budget.
         _loop = asyncio.get_running_loop()
         _total_deadline = _loop.time() + self.config.timeout if self.config.timeout > 0 else None
+
+        # Endgame git freeze: once remaining wall clock drops below the margin,
+        # the shell tools block workspace-reverting git commands outright so
+        # the current diff survives runner-side collection. The armed flag
+        # rides the ToolContext in place (router_control precedent); it is
+        # reset here because the context outlives the turn.
+        endgame_git_freeze_margin_seconds = max(
+            0,
+            int(getattr(self.config, "endgame_git_freeze_margin_seconds", 0) or 0),
+        )
+        if endgame_git_freeze_margin_seconds > 0 and self._tool_context is not None:
+            self._tool_context.endgame_git_freeze_active = False
+
+        def _arm_endgame_git_freeze_if_due() -> None:
+            nonlocal endgame_git_freeze_armed
+            if (
+                endgame_git_freeze_armed
+                or endgame_git_freeze_margin_seconds <= 0
+                or _total_deadline is None
+                or _loop.time() <= _total_deadline - endgame_git_freeze_margin_seconds
+            ):
+                return
+            endgame_git_freeze_armed = True
+            if self._tool_context is not None:
+                self._tool_context.endgame_git_freeze_active = True
+            self._write_turn_call_log(
+                "turn_policy_decision",
+                action="endgame_git_freeze",
+                reason="deadline_margin",
+                code="endgame_git_freeze",
+                iteration=iterations,
+                remaining_seconds=int(max(0.0, _total_deadline - _loop.time())),
+                margin_seconds=endgame_git_freeze_margin_seconds,
+            )
+
         tools_supported = True
         if self.config.model_capabilities is not None:
             tools_supported = bool(getattr(self.config.model_capabilities, "supports_tools", True))
@@ -4209,6 +4321,41 @@ class Agent:
                             margin_seconds=wrapup_margin_seconds,
                         )
 
+                # Pre-deadline thinking cutoff: once remaining wall clock drops
+                # below the configured margin, thinking stays off for every
+                # remaining provider call so the final stretch is spent on tool
+                # calls rather than a single long reasoning stream.
+                thinking_off_margin_seconds = max(
+                    0,
+                    int(
+                        getattr(self.config, "deadline_thinking_off_margin_seconds", 0)
+                        or 0
+                    ),
+                )
+                if (
+                    thinking_off_margin_seconds > 0
+                    and _total_deadline is not None
+                    and not deadline_thinking_off_armed
+                    and _loop.time() > _total_deadline - thinking_off_margin_seconds
+                ):
+                    deadline_thinking_off_armed = True
+                    self._write_turn_call_log(
+                        "turn_policy_decision",
+                        action="deadline_thinking_off",
+                        reason="deadline_margin",
+                        code="deadline_thinking_off",
+                        iteration=iterations,
+                        remaining_seconds=int(
+                            max(0.0, _total_deadline - _loop.time())
+                        ),
+                        margin_seconds=thinking_off_margin_seconds,
+                    )
+
+                # Endgame git freeze arming; re-checked before tool execution
+                # because a long provider stream can cross the margin
+                # mid-iteration.
+                _arm_endgame_git_freeze_if_due()
+
                 iterations += 1
 
                 # ------ THINKING → STREAMING ------
@@ -4228,6 +4375,8 @@ class Agent:
 
                 _retry_attempt = 0
                 _call_attempt = 0
+                _reasoning_cap_preempt_done = False
+                attempt_reasoning_stream_chars = 0
                 _retry_policy = _ProviderRetryPolicy.from_provider_budget(
                     _fallback.max_retries,
                     length_capped_continuations=self.config.length_capped_continuations,
@@ -4251,6 +4400,8 @@ class Agent:
                     iter_reasoning_content = None
                     iter_thinking_signature = None
                     _got_error = False
+                    _stream_policy_preempt = False
+                    attempt_reasoning_stream_chars = 0
                     provider_done_for_log: ProviderDoneEvent | None = None
                     provider_error_for_log: ProviderErrorEvent | None = None
                     call_id = f"{iterations}.{_call_attempt}"
@@ -4430,9 +4581,14 @@ class Agent:
                         call_chat_cfg = call_chat_cfg.model_copy(
                             update={"tool_choice": forced_tool_choice}
                         )
+                    _attempt_thinking_disabled = False
                     if _disable_thinking_for_next_provider_call:
                         call_chat_cfg = _chat_config_with_thinking_disabled(call_chat_cfg)
                         _disable_thinking_for_next_provider_call = False
+                        _attempt_thinking_disabled = True
+                    if deadline_thinking_off_armed:
+                        call_chat_cfg = _chat_config_with_thinking_disabled(call_chat_cfg)
+                        _attempt_thinking_disabled = True
 
                     self._write_turn_call_log(
                         "llm_request",
@@ -4533,6 +4689,142 @@ class Agent:
                                 # out of assistant_text_parts. The joined text
                                 # still arrives via DoneEvent.reasoning_content.
                                 yield ThinkingEvent(text=raw_ev.text)
+                                if (
+                                    wrapup_margin_seconds > 0
+                                    and _total_deadline is not None
+                                    and not deadline_wrapup_armed
+                                    and not attempt_user_visible_emitted
+                                    and not pending_tools
+                                    and not tool_calls
+                                    # Mirror the request-splice gates: the
+                                    # finalization messages take precedence
+                                    # over the directive, and the splice is
+                                    # withheld on an assistant tail. Preempting
+                                    # a stream the retry cannot splice into
+                                    # discards reasoning for a directive-free,
+                                    # otherwise identical request.
+                                    and not artifact_delivery_final_response_pending
+                                    and not max_iterations_finalization_pending
+                                    and not post_write_convergence_finalization_pending
+                                    and (
+                                        not turn_messages
+                                        or turn_messages[-1].role != "assistant"
+                                    )
+                                    and _loop.time()
+                                    > _total_deadline - wrapup_margin_seconds
+                                ):
+                                    # The wrap-up directive arms only at
+                                    # iteration boundaries, so a reasoning-only
+                                    # stream that consumes the whole margin ends
+                                    # at the hard deadline without the directive
+                                    # ever being delivered. Preempt while margin
+                                    # remains and retry the call with the
+                                    # directive spliced in; the discarded
+                                    # reasoning prefix was running into the hard
+                                    # kill anyway. One-shot: arming makes this
+                                    # branch unreachable afterwards.
+                                    remaining_seconds = max(
+                                        0.0, _total_deadline - _loop.time()
+                                    )
+                                    deadline_wrapup_message = Message(
+                                        role="user",
+                                        content=_DEADLINE_WRAPUP_DIRECTIVE_TEMPLATE.format(
+                                            minutes=max(
+                                                1, int(remaining_seconds // 60)
+                                            ),
+                                        ),
+                                    )
+                                    deadline_wrapup_armed = True
+                                    self._write_turn_call_log(
+                                        "turn_policy_decision",
+                                        action="deadline_wrapup",
+                                        reason="reasoning_stream_preempt",
+                                        code="deadline_wrapup_preempt",
+                                        iteration=iterations,
+                                        attempt=_call_attempt,
+                                        remaining_seconds=int(remaining_seconds),
+                                        margin_seconds=wrapup_margin_seconds,
+                                    )
+                                    _got_error = True
+                                    _stream_policy_preempt = True
+                                    break  # break stream, retry with directive
+                                if (
+                                    _reasoning_stream_char_cap > 0
+                                    and not _reasoning_cap_preempt_done
+                                ):
+                                    attempt_reasoning_stream_chars += len(
+                                        raw_ev.text or ""
+                                    )
+                                    if (
+                                        attempt_reasoning_stream_chars
+                                        > _reasoning_stream_char_cap
+                                        and not attempt_user_visible_emitted
+                                        and not pending_tools
+                                        and not tool_calls
+                                        # Thinking already off for this call:
+                                        # a retry sans thinking changes
+                                        # nothing, so let the stream run.
+                                        and not _attempt_thinking_disabled
+                                    ):
+                                        # Runaway reasoning-only stream: discard
+                                        # the partial reasoning and retry the
+                                        # call with thinking disabled for that
+                                        # retry only, so the budget goes to
+                                        # tool calls instead of one unbounded
+                                        # reasoning stream. One preempt per
+                                        # iteration: if the provider keeps
+                                        # streaming reasoning on the retry, it
+                                        # runs to completion.
+                                        _reasoning_cap_preempt_done = True
+                                        _disable_thinking_for_next_provider_call = True
+                                        self._write_turn_call_log(
+                                            "turn_policy_decision",
+                                            action="reasoning_cap",
+                                            reason="reasoning_stream_char_cap",
+                                            code="reasoning_cap_preempt",
+                                            iteration=iterations,
+                                            attempt=_call_attempt,
+                                            reasoning_chars=(
+                                                attempt_reasoning_stream_chars
+                                            ),
+                                            cap_chars=_reasoning_stream_char_cap,
+                                        )
+                                        # The turn-call log is a raw debug
+                                        # stream that run harnesses do not
+                                        # collect; the runtime event is what
+                                        # lets delivery gates tell a designed
+                                        # cap preempt (whose retry runs
+                                        # thinking-disabled) apart from a
+                                        # treatment delivery failure.
+                                        append_runtime_event(
+                                            self.config.runtime_events_path,
+                                            {
+                                                "feature": "reasoning_cap",
+                                                "name": "reasoning_cap.preempt",
+                                                "action": "retry_without_thinking",
+                                                "reason": (
+                                                    "reasoning_stream_char_cap"
+                                                ),
+                                                "iteration": iterations,
+                                                "attempt": _call_attempt,
+                                                "reasoning_chars": (
+                                                    attempt_reasoning_stream_chars
+                                                ),
+                                                "cap_chars": (
+                                                    _reasoning_stream_char_cap
+                                                ),
+                                                "session_key": self._session_key,
+                                                "agent_id": (
+                                                    self.config.tool_result_store_agent_id
+                                                    or self.config.metadata.get(
+                                                        "agent_id"
+                                                    )
+                                                ),
+                                            },
+                                        )
+                                        _got_error = True
+                                        _stream_policy_preempt = True
+                                        break  # break stream, retry sans thinking
 
                             elif isinstance(raw_ev, ProviderToolUseStart):
                                 if not tools_supported_for_call:
@@ -4884,7 +5176,14 @@ class Agent:
                             yield terminal_error
                         break
                     response_text = "".join(assistant_text_parts)
-                    if ignored_post_delivery_tool_use and not response_text.strip():
+                    if (
+                        ignored_post_delivery_tool_use
+                        and not response_text.strip()
+                        # A policy preempt retries this call; emitting the
+                        # canned finalization text first would surface it
+                        # before the retried attempt's real answer.
+                        and not _stream_policy_preempt
+                    ):
                         if artifact_delivery_final_response_pending:
                             response_text = self._artifact_delivery_final_response_text(
                                 artifact_delivery_final_response_artifacts
@@ -4912,10 +5211,27 @@ class Agent:
                     ):
                         # The spliced wrap-up directive is not conversation
                         # history; empty-response recovery must still see the
-                        # post-tool shape of the underlying turn.
-                        post_tool_turn = bool(turn_messages) and _message_has_tool_result(
-                            turn_messages[-1]
+                        # post-tool shape of the underlying turn. A mid-budget
+                        # nudge stacked after the tool results is likewise
+                        # runtime-injected and must not hide that shape.
+                        tail_index = len(turn_messages) - 1
+                        while tail_index >= 0 and _is_mid_budget_nudge_message(
+                            turn_messages[tail_index]
+                        ):
+                            tail_index -= 1
+                        post_tool_turn = tail_index >= 0 and _message_has_tool_result(
+                            turn_messages[tail_index]
                         )
+                    if not post_tool_turn and bool(
+                        getattr(self.config, "mid_budget_no_diff_nudge", False)
+                    ):
+                        # A nudge stacked after watchdog or recovery guidance
+                        # pushes the tool results out of the lookback window,
+                        # which would disable empty-response retry/recovery on
+                        # exactly the stalled turns the lever targets. The
+                        # nudge is runtime-injected, not conversation history:
+                        # recompute the turn shape as if it were absent.
+                        post_tool_turn = _tail_has_tool_result_ignoring_nudges(turn_messages)
                     stop_reason = (
                         getattr(provider_done_for_log, "stop_reason", None)
                         if provider_done_for_log is not None
@@ -4931,7 +5247,13 @@ class Agent:
                         reasoning_tokens=iter_reasoning_tokens,
                         user_visible_emitted=attempt_user_visible_emitted,
                     )
-                    if attempt_classification.kind != _ProviderAttemptKind.OK:
+                    if (
+                        attempt_classification.kind != _ProviderAttemptKind.OK
+                        # An engine-chosen preempt truncated the stream; the
+                        # incomplete attempt is self-inflicted, not a provider
+                        # failure signal for the tool-loop observer.
+                        and not _stream_policy_preempt
+                    ):
                         self._record_tool_loop_runtime_event(
                             reason=attempt_classification.kind.value,
                             iteration=iterations,
@@ -5254,13 +5576,26 @@ class Agent:
                             )
                         ):
                             _attempt_retries_used[_ProviderAttemptKind.REASONING_ONLY] += 1
-                            yield WarningEvent(
-                                code="provider_reasoning_only_retry",
-                                message=(
-                                    "The provider returned reasoning without visible content; "
-                                    "retrying once to request visible content."
-                                ),
-                            )
+                            if getattr(
+                                self.config, "reasoning_only_thinking_fallback", False
+                            ):
+                                _thinking_fallback_done = True
+                                _disable_thinking_for_next_provider_call = True
+                                yield WarningEvent(
+                                    code="provider_reasoning_only_retry",
+                                    message=(
+                                        "The provider returned reasoning without visible "
+                                        "content; retrying once with thinking disabled."
+                                    ),
+                                )
+                            else:
+                                yield WarningEvent(
+                                    code="provider_reasoning_only_retry",
+                                    message=(
+                                        "The provider returned reasoning without visible content; "
+                                        "retrying once to request visible content."
+                                    ),
+                                )
                             _call_attempt += 1
                             continue
 
@@ -6503,6 +6838,7 @@ class Agent:
                 tool_calls = self._force_matched_meta_invoke_tool_calls(tool_calls)
 
                 tool_deadline = _loop.time() + self.config.iteration_timeout
+                _arm_endgame_git_freeze_if_due()
 
                 # ------ STREAMING → TOOL_CALLING ------
                 yield self._transition(AgentState.TOOL_CALLING)
@@ -7406,7 +7742,58 @@ class Agent:
                     turn_messages.append(
                         Message(role="user", content=post_write_convergence_guidance)
                     )
+                if (
+                    bool(getattr(self.config, "mid_budget_no_diff_nudge", False))
+                    and _total_deadline is not None
+                    and self.config.timeout > 0
+                ):
+                    elapsed_fraction = 1.0 - (
+                        max(0.0, _total_deadline - _loop.time()) / self.config.timeout
+                    )
+                    due_fractions = [
+                        fraction
+                        for fraction in _MID_BUDGET_NO_DIFF_NUDGE_FRACTIONS
+                        if fraction not in mid_budget_nudge_fired_fractions
+                        and elapsed_fraction >= fraction
+                    ]
+                    if due_fractions:
+                        # Checkpoints are consumed when crossed whether or not
+                        # a nudge fires: one crossed while a diff existed must
+                        # not fire late if that diff is reverted, and crossing
+                        # several at once yields a single nudge.
+                        mid_budget_nudge_fired_fractions.update(due_fractions)
+                        nudge_fraction = max(due_fractions)
+                        # The evidence probe shells out to git; keep it off
+                        # the event loop.
+                        has_change_evidence = await asyncio.to_thread(
+                            self._workspace_has_source_change_evidence
+                        )
+                        if not has_change_evidence:
+                            turn_messages.append(
+                                Message(
+                                    role="user",
+                                    # Report real elapsed time, not the
+                                    # checkpoint constant: one long stream can
+                                    # carry the turn far past the checkpoint
+                                    # before it is noticed.
+                                    content=_MID_BUDGET_NO_DIFF_NUDGE_TEMPLATE.format(
+                                        percent=int(elapsed_fraction * 100),
+                                    ),
+                                )
+                            )
+                            self._write_turn_call_log(
+                                "turn_policy_decision",
+                                action="mid_budget_no_diff_nudge",
+                                reason="budget_fraction",
+                                code="mid_budget_no_diff_nudge",
+                                iteration=iterations,
+                                budget_fraction=nudge_fraction,
+                                elapsed_fraction=round(elapsed_fraction, 3),
+                            )
                 if source_loop_recovery_guidance is not None:
+                    # Appended last: _drop_runtime_recovery_scaffolding pops
+                    # the one-shot directive from the end of the turn, so no
+                    # other runtime-injected message may follow it.
                     turn_messages.append(
                         Message(role="user", content=source_loop_recovery_guidance)
                     )
@@ -7596,6 +7983,16 @@ class Agent:
                 diff_fingerprint=self._workspace_diff_fingerprint_for_runtime_event(),
             ):
                 append_runtime_event(self.config.runtime_events_path, runtime_event)
+        if bool(getattr(self.config, "final_diff_salvage", False)):
+            # Last engine-controlled moment before the runner collects the
+            # patch from the worktree: if prior source writes ended in an
+            # empty workspace diff, re-apply the newest captured candidate per
+            # path. Runs for normal finalization and terminal errors alike;
+            # the contract observation below then reflects the salvaged state.
+            self._attempt_final_diff_salvage(
+                trigger="terminal_error" if terminal_error is not None else "finalize",
+                iteration=iterations,
+            )
         if terminal_error is not None:
             final_diff_contract_mode = getattr(
                 self.config,
@@ -7653,6 +8050,67 @@ class Agent:
             return []
         records = getattr(ctx, "workspace_file_writes", []) or []
         return [record for record in records if isinstance(record, dict)]
+
+    def _workspace_has_source_change_evidence(self) -> bool:
+        """Best-effort check that this agent's run produced a source change.
+
+        Used by the mid-budget nudge: write receipts and captured diff
+        candidates cover tool-mediated edits, and the live tracked diff
+        covers shell-made edits that leave no receipts. Only this agent's
+        own ToolContext counts — the contextvar fallback inside a child
+        agent resolves to the parent's context — and untracked files do
+        not: scratch artifacts from merely running the code (caches,
+        coverage files, logs) are not source progress.
+        """
+
+        ctx = self._tool_context
+        if ctx is not None:
+            records = getattr(ctx, "workspace_file_writes", []) or []
+            if any(
+                isinstance(record, dict)
+                and not self._workspace_write_record_looks_synthetic(record)
+                for record in records
+            ):
+                return True
+            if getattr(ctx, "source_diff_candidates", []) or []:
+                return True
+        return bool(self._workspace_tracked_diff_paths_for_nudge())
+
+    def _workspace_tracked_diff_paths_for_nudge(self) -> list[str]:
+        ctx = self._tool_context
+        raw_workspace = getattr(ctx, "workspace_dir", None) if ctx is not None else None
+        if not raw_workspace:
+            raw_workspace = self.config.workspace_dir
+        if not raw_workspace:
+            return []
+        workspace_dir = Path(raw_workspace).expanduser().resolve(strict=False)
+        if not workspace_dir.exists():
+            return []
+        ignored_paths = self._workspace_gitlink_paths(workspace_dir) | (
+            self._workspace_internal_diagnostic_paths(workspace_dir)
+        )
+        paths: set[str] = set()
+        for args in (("diff", "--name-only"), ("diff", "--cached", "--name-only")):
+            try:
+                result = subprocess.run(
+                    ["git", "-C", str(workspace_dir), *args],
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    timeout=2.0,
+                    check=False,
+                )
+            except (OSError, subprocess.SubprocessError):
+                continue
+            for line in (result.stdout or "").splitlines():
+                text = line.strip()
+                if text:
+                    normalized = text.replace("\\", "/").lstrip("./")
+                    if normalized in ignored_paths:
+                        continue
+                    paths.add(normalized)
+        return sorted(paths)
 
     def _effective_workspace_write_records(self) -> list[dict[str, Any]]:
         return [
@@ -7813,6 +8271,162 @@ class Agent:
                 else None
             ),
             "trigger_confidence": "final_diff_contract_gate",
+        }
+        append_runtime_event(self.config.runtime_events_path, event)
+
+    # Cap on blocking `git apply` churn per salvage pass: the calls run on the
+    # event loop thread, so a pathological candidate list must not be able to
+    # stall the turn for the whole wrap-up window.
+    _FINAL_DIFF_SALVAGE_TIME_BUDGET_SECONDS = 20.0
+
+    def _attempt_final_diff_salvage(
+        self,
+        *,
+        trigger: str,
+        iteration: int,
+    ) -> list[dict[str, Any]]:
+        """Re-apply captured source-diff candidates whose paths lost their diff.
+
+        Opt-in via final_diff_salvage (OPENSQUILLA_FINAL_DIFF_SALVAGE). Fires
+        only when no tracked path carries a live diff: a healthy non-empty
+        tracked diff means the agent finished with work it chose to keep, and
+        re-applying a candidate the agent deliberately reverted would append
+        abandoned edits to a scoring patch. With the tracked diff empty the
+        collection is losing that path's earlier work anyway, so applying a
+        stale candidate can only help. Untracked files (scratch repros and
+        the like) never veto. Applies the newest candidate per path whose
+        path shows no live diff, oldest-fallback on conflict,
+        each guarded by `git apply --check`; applied candidates are marked
+        restored, and a stale marker from an earlier turn is cleared once the
+        path's diff is gone again so a later revert stays salvageable. The
+        pass stops once its time budget is spent.
+        """
+
+        if not bool(getattr(self.config, "final_diff_salvage", False)):
+            return []
+        ctx = self._tool_context
+        candidates = (
+            list(getattr(ctx, "source_diff_candidates", []) or []) if ctx is not None else []
+        )
+        if not candidates:
+            return []
+        workspace = self._workspace_dir_for_status()
+        if workspace is None:
+            return []
+        if self._workspace_diff_paths_for_final_diff_contract(include_untracked=False):
+            # A tracked path still carries a live diff: the run ends with a
+            # non-empty scored patch the agent chose to keep, and candidates
+            # for clean paths are exactly the edits it deliberately reverted.
+            # Resurrecting those here would corrupt a healthy final diff.
+            return []
+        live_diff_paths = set(self._workspace_diff_paths_for_final_diff_contract())
+        deadline = time.monotonic() + self._FINAL_DIFF_SALVAGE_TIME_BUDGET_SECONDS
+        applied: list[dict[str, Any]] = []
+        handled_paths: set[str] = set()
+        for candidate in reversed(candidates):
+            paths = [
+                path for path in candidate.get("paths", []) if isinstance(path, str) and path
+            ]
+            if not paths or paths[0] in handled_paths:
+                continue
+            path = paths[0]
+            if path in live_diff_paths:
+                # The path already carries a live diff; there is nothing to
+                # salvage and stacking a stale candidate on top would clobber
+                # newer in-worktree work.
+                handled_paths.add(path)
+                continue
+            if candidate.get("restored") is True:
+                # An earlier pass applied this candidate but its diff is gone
+                # again, so the restore was undone; clear the stale marker
+                # instead of skipping the path forever.
+                candidate["restored"] = False
+            patch = candidate.get("patch")
+            if not isinstance(patch, str) or not patch.strip():
+                continue
+            if time.monotonic() >= deadline:
+                self._record_final_diff_salvage_event(
+                    candidate,
+                    trigger=trigger,
+                    iteration=iteration,
+                    action="time_budget_exhausted",
+                )
+                break
+            if not self._apply_final_diff_salvage_patch(workspace, patch, check_only=True):
+                self._record_final_diff_salvage_event(
+                    candidate, trigger=trigger, iteration=iteration, action="check_failed"
+                )
+                continue
+            if not self._apply_final_diff_salvage_patch(workspace, patch, check_only=False):
+                self._record_final_diff_salvage_event(
+                    candidate, trigger=trigger, iteration=iteration, action="apply_failed"
+                )
+                continue
+            candidate["restored"] = True
+            handled_paths.add(path)
+            applied.append(candidate)
+            self._record_final_diff_salvage_event(
+                candidate, trigger=trigger, iteration=iteration, action="applied"
+            )
+        if applied:
+            self._write_turn_call_log(
+                "turn_policy_decision",
+                action="final_diff_salvage",
+                reason=trigger,
+                code="final_diff_salvage",
+                iteration=iteration,
+                candidate_ids=[candidate.get("candidate_id") for candidate in applied],
+                paths=sorted(handled_paths),
+            )
+        return applied
+
+    def _apply_final_diff_salvage_patch(
+        self,
+        workspace: Path,
+        patch: str,
+        *,
+        check_only: bool,
+    ) -> bool:
+        args = ["git", "-C", str(workspace), "apply"]
+        if check_only:
+            args.append("--check")
+        args.append("-")
+        try:
+            result = subprocess.run(
+                args,
+                input=patch,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=10.0,
+                check=False,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return False
+        return result.returncode == 0
+
+    def _record_final_diff_salvage_event(
+        self,
+        candidate: dict[str, Any],
+        *,
+        trigger: str,
+        iteration: int,
+        action: str,
+    ) -> None:
+        event = {
+            "feature": "final_diff_salvage",
+            "name": f"final_diff_salvage.{action}",
+            "action": action,
+            "trigger": trigger,
+            "iteration": iteration,
+            "candidate_id": candidate.get("candidate_id"),
+            "paths": list(candidate.get("paths", []) or []),
+            "patch_sha256": candidate.get("patch_sha256"),
+            "patch_chars": len(candidate.get("patch") or ""),
+            "session_key": self._session_key,
+            "agent_id": self.config.tool_result_store_agent_id
+            or self.config.metadata.get("agent_id"),
         }
         append_runtime_event(self.config.runtime_events_path, event)
 
@@ -8760,19 +9374,23 @@ class Agent:
                     paths.add(normalized)
         return sorted(paths)
 
-    def _workspace_diff_paths_for_final_diff_contract(self) -> list[str]:
+    def _workspace_diff_paths_for_final_diff_contract(
+        self, *, include_untracked: bool = True
+    ) -> list[str]:
         workspace_dir = self._workspace_dir_for_status()
         if workspace_dir is None:
             return []
         ignored_paths = self._workspace_gitlink_paths(workspace_dir) | (
             self._workspace_internal_diagnostic_paths(workspace_dir)
         )
-        paths: set[str] = set()
-        for args in (
+        commands: tuple[tuple[str, ...], ...] = (
             ("diff", "--name-only"),
             ("diff", "--cached", "--name-only"),
-            ("status", "--porcelain=v1", "--untracked-files=all"),
-        ):
+        )
+        if include_untracked:
+            commands += (("status", "--porcelain=v1", "--untracked-files=all"),)
+        paths: set[str] = set()
+        for args in commands:
             try:
                 result = subprocess.run(
                     ["git", "-C", str(workspace_dir), *args],
@@ -9241,12 +9859,19 @@ class Agent:
         return Message(role="user", content="\n".join(lines))
 
     @staticmethod
-    def _turn_objective_message(turn_objective: str | None) -> Message | None:
+    def _turn_objective_message(
+        turn_objective: str | None,
+        *,
+        enabled: bool = True,
+        max_chars: int = _TURN_OBJECTIVE_REMINDER_MAX_CHARS,
+    ) -> Message | None:
+        if not enabled:
+            return None
         if not turn_objective or not turn_objective.strip():
             return None
         objective = turn_objective.strip()
-        if len(objective) > _TURN_OBJECTIVE_REMINDER_MAX_CHARS:
-            objective = objective[:_TURN_OBJECTIVE_REMINDER_MAX_CHARS].rstrip() + "..."
+        if len(objective) > max_chars:
+            objective = objective[:max_chars].rstrip() + "..."
         lines = [
             "[Current user request reminder]",
             "This is the active user request for this same turn, not a new request.",
@@ -11748,6 +12373,16 @@ class Agent:
             ),
             placeholder_escalation_threshold=self.config.placeholder_escalation_threshold,
             deadline_wrapup_margin_seconds=self.config.deadline_wrapup_margin_seconds,
+            reasoning_only_thinking_fallback=self.config.reasoning_only_thinking_fallback,
+            deadline_thinking_off_margin_seconds=(
+                self.config.deadline_thinking_off_margin_seconds
+            ),
+            reasoning_stream_char_cap=self.config.reasoning_stream_char_cap,
+            final_diff_salvage=self.config.final_diff_salvage,
+            endgame_git_freeze_margin_seconds=(
+                self.config.endgame_git_freeze_margin_seconds
+            ),
+            mid_budget_no_diff_nudge=self.config.mid_budget_no_diff_nudge,
             repeated_tool_call_recovery_threshold=(
                 self.config.repeated_tool_call_recovery_threshold
             ),

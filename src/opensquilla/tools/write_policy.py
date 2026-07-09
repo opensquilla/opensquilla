@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import re
 from dataclasses import dataclass
 from fnmatch import fnmatchcase
@@ -60,6 +61,8 @@ def _candidate_strings(
     resolved: Path,
     original_path: str,
     workspace: Path | None,
+    *,
+    as_directory: bool = False,
 ) -> tuple[str, ...]:
     candidates: list[str] = [
         original_path.replace("\\", "/").lstrip("./"),
@@ -72,6 +75,10 @@ def _candidate_strings(
             relative = ""
         if relative:
             candidates.extend([relative, f"./{relative}"])
+    if as_directory:
+        # A directory operand mutates everything beneath it; the trailing
+        # slash lets dir/** style globs match the directory itself.
+        candidates = [f"{candidate.rstrip('/')}/" for candidate in candidates]
     return tuple(dict.fromkeys(candidates))
 
 
@@ -81,6 +88,7 @@ def match_workspace_write_deny(
     original_path: str | None = None,
     workspace: Path | None = None,
     ctx: ToolContext | None = None,
+    as_directory: bool = False,
 ) -> WorkspaceWriteDenyMatch | None:
     """Return the deny rule matching a write target, if any.
 
@@ -99,7 +107,7 @@ def match_workspace_write_deny(
         except ValueError:
             return None
     original = original_path if original_path is not None else str(path)
-    candidates = _candidate_strings(resolved, original, workspace)
+    candidates = _candidate_strings(resolved, original, workspace, as_directory=as_directory)
 
     for pattern in patterns:
         normalized_pattern = pattern.replace("\\", "/").lstrip("./")
@@ -209,7 +217,7 @@ def workspace_write_deny_block(
     *,
     command: str | None = None,
 ) -> dict[str, object]:
-    guidance = _scratch_retry_guidance()
+    guidance = _deny_retry_guidance()
     payload: dict[str, object] = {
         "status": "blocked",
         "reason": "workspace_write_deny",
@@ -239,10 +247,19 @@ def gate_workspace_write_deny(
     match = match_workspace_write_deny(path, original_path=original_path, workspace=workspace)
     if match is None:
         return
-    raise SafeToolError(
-        f"{tool_name} blocked by workspace write deny policy: "
-        f"{match.path} matches {match.pattern}.{_scratch_retry_guidance()}"
-    )
+    raise SafeToolError(str(workspace_write_deny_block(tool_name, match)["message"]))
+
+
+def _deny_retry_guidance(ctx: ToolContext | None = None) -> str:
+    # Opt-in override for the remediation sentence appended to deny messages.
+    # The scratch-dir guidance below tells the model to recreate the file in
+    # scratch, which is the wrong instruction when deny globs protect files
+    # that must not be modified or copied at all (e.g. test files); deployments
+    # using deny globs that way can supply intent-appropriate wording here.
+    override = os.environ.get("OPENSQUILLA_WORKSPACE_WRITE_DENY_GUIDANCE", "").strip()
+    if override:
+        return f" {override}"
+    return _scratch_retry_guidance(ctx)
 
 
 def _scratch_retry_guidance(ctx: ToolContext | None = None) -> str:

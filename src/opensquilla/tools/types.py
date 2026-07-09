@@ -101,6 +101,10 @@ class ToolContext:
     router_control_hold_store: Any | None = None
     router_control_replay_depth: int = 0
     router_control_turn_hold_applied: bool = False
+    # Armed by the engine (mutated in place, same pattern as
+    # router_control_turn_hold_applied) once the endgame git freeze margin is
+    # reached; shell tools then block workspace-reverting git commands.
+    endgame_git_freeze_active: bool = False
 
 
 # Request-scoped context — set by build_tool_handler before each dispatch.

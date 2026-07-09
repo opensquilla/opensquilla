@@ -5,6 +5,7 @@ import pytest
 from opensquilla.engine.runtime import (
     _resolve_finalize_evidence_gate,
     _resolve_identity_prompt_mode,
+    _resolve_legacy_prompt_style,
     _resolve_patch_evidence_protocol,
 )
 from opensquilla.engine.turn_runner.agent_bootstrap_stage import (
@@ -183,3 +184,43 @@ def test_bootstrap_finalize_evidence_gate_env_off_overrides_config_on(monkeypatc
     monkeypatch.setenv("OPENSQUILLA_FINALIZE_EVIDENCE_GATE", "off")
 
     assert _finalize_evidence_gate_from_env(True) is False
+
+
+def test_legacy_prompt_style_defaults_off(monkeypatch) -> None:
+    monkeypatch.delenv("OPENSQUILLA_LEGACY_PROMPT_STYLE", raising=False)
+
+    assert _resolve_legacy_prompt_style(GatewayConfig()) is False
+
+
+def test_legacy_prompt_style_config_opt_in(monkeypatch) -> None:
+    monkeypatch.delenv("OPENSQUILLA_LEGACY_PROMPT_STYLE", raising=False)
+    cfg = GatewayConfig(prompt={"legacy_prompt_style": True})
+
+    assert _resolve_legacy_prompt_style(cfg) is True
+
+
+def test_legacy_prompt_style_env_on_overrides_config_off(monkeypatch) -> None:
+    monkeypatch.setenv("OPENSQUILLA_LEGACY_PROMPT_STYLE", "on")
+
+    assert _resolve_legacy_prompt_style(GatewayConfig()) is True
+
+
+def test_legacy_prompt_style_env_off_overrides_config_on(monkeypatch) -> None:
+    monkeypatch.setenv("OPENSQUILLA_LEGACY_PROMPT_STYLE", "off")
+    cfg = GatewayConfig(prompt={"legacy_prompt_style": True})
+
+    assert _resolve_legacy_prompt_style(cfg) is False
+
+
+def test_legacy_prompt_style_env_blank_falls_through_to_config(monkeypatch) -> None:
+    monkeypatch.setenv("OPENSQUILLA_LEGACY_PROMPT_STYLE", "  ")
+    cfg = GatewayConfig(prompt={"legacy_prompt_style": True})
+
+    assert _resolve_legacy_prompt_style(cfg) is True
+
+
+def test_legacy_prompt_style_env_rejects_unrecognized_value(monkeypatch) -> None:
+    monkeypatch.setenv("OPENSQUILLA_LEGACY_PROMPT_STYLE", "enabled")
+
+    with pytest.raises(ValueError, match="OPENSQUILLA_LEGACY_PROMPT_STYLE"):
+        _resolve_legacy_prompt_style(GatewayConfig())

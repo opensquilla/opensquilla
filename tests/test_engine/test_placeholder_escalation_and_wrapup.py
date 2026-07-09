@@ -9,6 +9,8 @@ runs can be cut off mid-exploration with no wrap-up attempt.
 
 from __future__ import annotations
 
+import asyncio
+import json
 from collections.abc import AsyncIterator
 from typing import Any
 
@@ -28,6 +30,7 @@ from opensquilla.provider import (
     ToolInputSchema,
 )
 from opensquilla.provider import DoneEvent as ProviderDone
+from opensquilla.provider import ReasoningDeltaEvent as ProviderReasoning
 from opensquilla.provider import TextDeltaEvent as ProviderText
 from opensquilla.provider import ToolUseEndEvent as ProviderToolUseEnd
 from opensquilla.provider import ToolUseStartEvent as ProviderToolUseStart
@@ -55,6 +58,11 @@ class _SequenceProvider:
 
     async def _stream(self, events: list[Any]) -> AsyncIterator[Any]:
         for event in events:
+            if isinstance(event, float):
+                # Wall-clock gap between stream events, for tests that need a
+                # stream to span a deadline margin mid-flight.
+                await asyncio.sleep(event)
+                continue
             yield event
 
     async def list_models(self) -> list[Any]:
@@ -403,6 +411,312 @@ async def test_deadline_wrapup_skips_splice_on_reasoning_prefill_tail() -> None:
         for text in _user_texts(provider.calls[1]["messages"])
         if text.startswith(_WRAPUP_PREFIX)
     ]
+
+
+@pytest.mark.asyncio
+async def test_deadline_wrapup_preempts_reasoning_only_stream() -> None:
+    # A reasoning-only stream that spans the margin boundary is preempted while
+    # margin remains; the retried call carries the directive. Without the
+    # preempt, arming waits for the next iteration boundary, which for this
+    # stream would land past the hard deadline with no directive delivered.
+    provider = _SequenceProvider(
+        [
+            [
+                ProviderReasoning(text="deep thought"),
+                2.5,
+                ProviderReasoning(text="more thought"),
+                ProviderText(text="never reached in the preempted attempt"),
+                ProviderDone(stop_reason="stop", input_tokens=5, output_tokens=2),
+            ],
+            _final_text(),
+        ]
+    )
+    # timeout 8 / margin 6: the preempt threshold sits 2s in; the first
+    # reasoning delta arrives before it, the second lands past it.
+    agent = Agent(
+        provider=provider,
+        config=AgentConfig(
+            timeout=8.0,
+            deadline_wrapup_margin_seconds=6,
+            retry_base_backoff_ms=0,
+            retry_max_backoff_ms=0,
+        ),
+    )
+
+    events = [event async for event in agent.run_turn("fix the bug")]
+
+    assert any(event.kind == "done" for event in events)
+    assert len(provider.calls) == 2
+    assert not [
+        text
+        for text in _user_texts(provider.calls[0]["messages"])
+        if text.startswith(_WRAPUP_PREFIX)
+    ]
+    wrapup_texts = [
+        text
+        for text in _user_texts(provider.calls[1]["messages"])
+        if text.startswith(_WRAPUP_PREFIX)
+    ]
+    assert len(wrapup_texts) == 1
+
+
+@pytest.mark.asyncio
+async def test_deadline_wrapup_preempt_skips_streams_past_reasoning_phase() -> None:
+    # Once the attempt has emitted user-visible output, the stream may be
+    # writing the final answer; it must run to completion even when a late
+    # reasoning delta arrives inside the margin.
+    provider = _SequenceProvider(
+        [
+            [
+                ProviderText(text="working on it"),
+                2.5,
+                ProviderReasoning(text="late reasoning"),
+                ProviderText(text=" done"),
+                ProviderDone(stop_reason="stop", input_tokens=5, output_tokens=2),
+            ],
+        ]
+    )
+    agent = Agent(
+        provider=provider,
+        config=AgentConfig(
+            timeout=8.0,
+            deadline_wrapup_margin_seconds=6,
+            retry_base_backoff_ms=0,
+            retry_max_backoff_ms=0,
+        ),
+    )
+
+    events = [event async for event in agent.run_turn("fix the bug")]
+
+    assert any(event.kind == "done" for event in events)
+    assert len(provider.calls) == 1
+    assert not [
+        text
+        for text in _user_texts(provider.calls[0]["messages"])
+        if text.startswith(_WRAPUP_PREFIX)
+    ]
+
+
+@pytest.mark.asyncio
+async def test_deadline_wrapup_preempt_default_off() -> None:
+    # Margin unset: the same margin-spanning reasoning stream runs to
+    # completion in a single call with no directive anywhere.
+    provider = _SequenceProvider(
+        [
+            [
+                ProviderReasoning(text="deep thought"),
+                2.5,
+                ProviderReasoning(text="more thought"),
+                ProviderText(text="answer"),
+                ProviderDone(stop_reason="stop", input_tokens=5, output_tokens=2),
+            ],
+        ]
+    )
+    agent = Agent(provider=provider, config=AgentConfig(timeout=8.0))
+
+    events = [event async for event in agent.run_turn("fix the bug")]
+
+    assert any(event.kind == "done" for event in events)
+    assert len(provider.calls) == 1
+    for call in provider.calls:
+        assert not [
+            text
+            for text in _user_texts(call["messages"])
+            if text.startswith(_WRAPUP_PREFIX)
+        ]
+
+
+@pytest.mark.asyncio
+async def test_deadline_wrapup_preempt_one_shot_once_armed() -> None:
+    # Already-armed turns keep the upstream behavior: the directive is in the
+    # request, and the reasoning stream runs to completion without a second
+    # splice or a preempt retry.
+    provider = _SequenceProvider(
+        [
+            [
+                ProviderReasoning(text="thinking"),
+                0.2,
+                ProviderReasoning(text="still thinking"),
+                ProviderText(text="answer"),
+                ProviderDone(stop_reason="stop", input_tokens=5, output_tokens=2),
+            ],
+        ]
+    )
+    # margin > timeout: armed at the first loop-top check, before streaming.
+    agent = Agent(
+        provider=provider,
+        config=AgentConfig(
+            timeout=30.0,
+            deadline_wrapup_margin_seconds=60,
+        ),
+    )
+
+    events = [event async for event in agent.run_turn("fix the bug")]
+
+    assert any(event.kind == "done" for event in events)
+    assert len(provider.calls) == 1
+    wrapup_texts = [
+        text
+        for text in _user_texts(provider.calls[0]["messages"])
+        if text.startswith(_WRAPUP_PREFIX)
+    ]
+    assert len(wrapup_texts) == 1
+
+
+@pytest.mark.asyncio
+async def test_deadline_wrapup_preempt_skipped_during_finalization() -> None:
+    # The preempt exists to get the directive spliced into a retry; during the
+    # max-iterations finalization the finalization message takes precedence
+    # and the directive would never be spliced, so preempting only discards
+    # the finalization stream for a byte-identical retry.
+    provider = _SequenceProvider(
+        [
+            _echo_tool_call("use-1"),
+            [
+                ProviderReasoning(text="summarizing"),
+                2.5,
+                ProviderReasoning(text="still summarizing"),
+                ProviderText(text="final summary"),
+                ProviderDone(stop_reason="stop", input_tokens=5, output_tokens=2),
+            ],
+        ]
+    )
+    # timeout 8 / margin 6: the preempt threshold sits 2s in; the tool
+    # iteration finishes before it, the finalization stream crosses it.
+    agent = _echo_agent(
+        provider,
+        AgentConfig(
+            timeout=8.0,
+            deadline_wrapup_margin_seconds=6,
+            max_iterations=1,
+            retry_base_backoff_ms=0,
+            retry_max_backoff_ms=0,
+        ),
+    )
+
+    events = [event async for event in agent.run_turn("fix the bug")]
+
+    assert any(event.kind == "done" for event in events)
+    # No preempt retry of the finalization call.
+    assert len(provider.calls) == 2
+    assert [
+        text
+        for text in _user_texts(provider.calls[1]["messages"])
+        if "iteration limit has been reached" in text
+    ]
+    for call in provider.calls:
+        assert not [
+            text
+            for text in _user_texts(call["messages"])
+            if text.startswith(_WRAPUP_PREFIX)
+        ]
+
+
+@pytest.mark.asyncio
+async def test_deadline_wrapup_preempt_skipped_on_reasoning_prefill_tail() -> None:
+    # The splice is withheld while the turn ends on the prefill assistant
+    # tail; a preempt there would discard the continuation stream for a
+    # directive-free, byte-identical retry.
+    provider = _SequenceProvider(
+        [
+            [
+                ProviderDone(
+                    stop_reason="stop",
+                    input_tokens=10,
+                    output_tokens=5,
+                    reasoning_tokens=5,
+                    reasoning_content="internal reasoning",
+                )
+            ],
+            [
+                ProviderReasoning(text="continuing"),
+                2.5,
+                ProviderReasoning(text="still continuing"),
+                ProviderText(text="answer"),
+                ProviderDone(stop_reason="stop", input_tokens=5, output_tokens=2),
+            ],
+        ]
+    )
+    agent = Agent(
+        provider=provider,
+        config=AgentConfig(
+            timeout=8.0,
+            deadline_wrapup_margin_seconds=6,
+            thinking=ThinkingLevel.MEDIUM,
+            model_capabilities=ModelCapabilities(
+                supports_reasoning=True,
+                supports_tools=True,
+                reasoning_format="openrouter",
+            ),
+            reasoning_prefill_recovery_mode="recover",
+            retry_base_backoff_ms=0,
+            retry_max_backoff_ms=0,
+        ),
+    )
+
+    events = [event async for event in agent.run_turn("fix the bug")]
+
+    assert any(event.kind == "done" for event in events)
+    # The continuation call crosses the preempt threshold mid-stream but runs
+    # to completion: no preempt retry.
+    assert len(provider.calls) == 2
+    prefill_tail = provider.calls[1]["messages"][-1]
+    assert prefill_tail.role == "assistant"
+    for call in provider.calls:
+        assert not [
+            text
+            for text in _user_texts(call["messages"])
+            if text.startswith(_WRAPUP_PREFIX)
+        ]
+
+
+@pytest.mark.asyncio
+async def test_deadline_wrapup_preempt_records_no_tool_loop_event(tmp_path) -> None:
+    # The preempted attempt is incomplete by engine choice; it must not be
+    # reported to the tool-loop observer as a provider stream failure.
+    runtime_events_path = tmp_path / "runtime_events.jsonl"
+    provider = _SequenceProvider(
+        [
+            [
+                ProviderReasoning(text="deep thought"),
+                2.5,
+                ProviderReasoning(text="more thought"),
+                ProviderDone(stop_reason="stop", input_tokens=5, output_tokens=2),
+            ],
+            _final_text(),
+        ]
+    )
+    agent = Agent(
+        provider=provider,
+        config=AgentConfig(
+            timeout=8.0,
+            deadline_wrapup_margin_seconds=6,
+            tool_loop_observer_mode="log",
+            runtime_events_path=str(runtime_events_path),
+            retry_base_backoff_ms=0,
+            retry_max_backoff_ms=0,
+        ),
+    )
+
+    events = [event async for event in agent.run_turn("fix the bug")]
+
+    assert any(event.kind == "done" for event in events)
+    # The preempt itself still happened: the retry carries the directive.
+    assert len(provider.calls) == 2
+    assert [
+        text
+        for text in _user_texts(provider.calls[1]["messages"])
+        if text.startswith(_WRAPUP_PREFIX)
+    ]
+    observer_events = []
+    if runtime_events_path.exists():
+        observer_events = [
+            json.loads(line)
+            for line in runtime_events_path.read_text().splitlines()
+            if line.strip()
+            and json.loads(line).get("mechanism") == "tool_loop_observer"
+        ]
+    assert observer_events == []
 
 
 def test_env_plumbing_for_both_levers(monkeypatch: pytest.MonkeyPatch) -> None:

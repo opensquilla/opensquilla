@@ -682,6 +682,12 @@ class PromptConfig(BaseModel):
     # Overridable per run via the OPENSQUILLA_FINALIZE_EVIDENCE_GATE env var
     # ("on"/"off").
     finalize_evidence_gate: bool = False
+    # Opt-in switch restoring the earlier compact "Tool Call Style" and
+    # "Reply Guidelines" system-prompt directives (single-line narration,
+    # concise replies) for deployments tuned against the previous wording.
+    # Overridable per run via the OPENSQUILLA_LEGACY_PROMPT_STYLE env var
+    # ("on"/"off"). Off keeps the current wording unchanged.
+    legacy_prompt_style: bool = False
 
 
 MemoryEmbeddingProvider = Literal[

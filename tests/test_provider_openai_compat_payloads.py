@@ -4314,3 +4314,354 @@ def test_tencent_token_plan_thinking_payload_and_url_join(monkeypatch: Any) -> N
     assert captured["url"] == "https://api.lkeap.cloud.tencent.com/plan/v3/chat/completions"
     assert captured["payload"]["thinking"] == {"type": "enabled"}
     assert captured["payload"]["reasoning_effort"] == "low"
+
+def test_openrouter_routing_pin_strict_env_sends_only_without_fallbacks(
+    monkeypatch: Any,
+) -> None:
+    captured: dict[str, Any] = {}
+    chunks = [
+        {
+            "model": "deepseek/deepseek-v4-flash",
+            "choices": [{"delta": {"content": "ok"}, "finish_reason": None}],
+        },
+        {
+            "model": "deepseek/deepseek-v4-flash",
+            "choices": [{"delta": {}, "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": 2, "completion_tokens": 1},
+        },
+    ]
+    body = b"".join(f"data: {json.dumps(chunk)}\n\n".encode() for chunk in chunks)
+    body += b"data: [DONE]\n\n"
+    _patch_transport_body(monkeypatch, captured, body)
+    monkeypatch.setenv("OPENSQUILLA_PROVIDER_ROUTING_STRICT", "on")
+    provider = OpenAIProvider(
+        api_key="test",
+        model="deepseek/deepseek-v4-flash",
+        base_url="https://openrouter.ai/api/v1",
+        provider_kind="openrouter",
+        provider_routing={"deepseek/deepseek-v4-flash": "deepseek"},
+    )
+
+    done = _collect(provider, ChatConfig())
+
+    assert captured["payload"]["provider"] == {
+        "only": ["deepseek"],
+        "allow_fallbacks": False,
+    }
+    assert done.stop_reason == "stop"
+
+
+def test_openrouter_routing_pin_default_keeps_order_with_fallbacks(
+    monkeypatch: Any,
+) -> None:
+    captured: dict[str, Any] = {}
+    chunks = [
+        {
+            "model": "deepseek/deepseek-v4-flash",
+            "choices": [{"delta": {"content": "ok"}, "finish_reason": None}],
+        },
+        {
+            "model": "deepseek/deepseek-v4-flash",
+            "choices": [{"delta": {}, "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": 2, "completion_tokens": 1},
+        },
+    ]
+    body = b"".join(f"data: {json.dumps(chunk)}\n\n".encode() for chunk in chunks)
+    body += b"data: [DONE]\n\n"
+    _patch_transport_body(monkeypatch, captured, body)
+    monkeypatch.delenv("OPENSQUILLA_PROVIDER_ROUTING_STRICT", raising=False)
+    provider = OpenAIProvider(
+        api_key="test",
+        model="deepseek/deepseek-v4-flash",
+        base_url="https://openrouter.ai/api/v1",
+        provider_kind="openrouter",
+        provider_routing={"deepseek/deepseek-v4-flash": "deepseek"},
+    )
+
+    done = _collect(provider, ChatConfig())
+
+    assert captured["payload"]["provider"] == {
+        "order": ["deepseek"],
+        "allow_fallbacks": True,
+    }
+    assert done.stop_reason == "stop"
+
+
+def _stream_error_frame_handler(request: httpx.Request) -> httpx.Response:
+    chunks = [
+        {
+            "model": "glm-5.1",
+            "choices": [{"delta": {"content": "partial"}, "finish_reason": None}],
+        },
+        {
+            "error": {"code": 502, "message": "Provider returned error"},
+        },
+        {
+            "model": "glm-5.1",
+            "choices": [{"delta": {}, "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": 4, "completion_tokens": 2},
+        },
+    ]
+    body = b"".join(f"data: {json.dumps(chunk)}\n\n".encode() for chunk in chunks)
+    return httpx.Response(
+        200,
+        headers={"content-type": "text/event-stream"},
+        content=body + b"data: [DONE]\n\n",
+    )
+
+
+def _patch_stream_transport(monkeypatch: Any, handler: Any) -> None:
+    transport = httpx.MockTransport(handler)
+    real_async_client = httpx.AsyncClient
+
+    def patched_async_client(*args: Any, **kwargs: Any) -> httpx.AsyncClient:
+        kwargs["transport"] = transport
+        return real_async_client(*args, **kwargs)
+
+    monkeypatch.setattr("opensquilla.provider.openai.httpx.AsyncClient", patched_async_client)
+
+
+def test_stream_error_frame_skipped_by_default(monkeypatch: Any) -> None:
+    monkeypatch.delenv("OPENSQUILLA_PROVIDER_STREAM_ERROR_FRAMES", raising=False)
+    _patch_stream_transport(monkeypatch, _stream_error_frame_handler)
+    provider = OpenAIProvider(
+        api_key="test",
+        model="glm-5.1",
+        base_url="https://openrouter.ai/api/v1",
+        provider_kind="openrouter",
+    )
+
+    events = _collect_events(provider, ChatConfig())
+
+    assert not any(isinstance(event, ErrorEvent) for event in events)
+    done = next(event for event in events if isinstance(event, DoneEvent))
+    assert done.stop_reason == "stop"
+
+
+def test_stream_error_frame_env_surfaces_error_event(monkeypatch: Any) -> None:
+    monkeypatch.setenv("OPENSQUILLA_PROVIDER_STREAM_ERROR_FRAMES", "1")
+    _patch_stream_transport(monkeypatch, _stream_error_frame_handler)
+    provider = OpenAIProvider(
+        api_key="test",
+        model="glm-5.1",
+        base_url="https://openrouter.ai/api/v1",
+        provider_kind="openrouter",
+    )
+
+    events = _collect_events(provider, ChatConfig())
+
+    error = next(event for event in events if isinstance(event, ErrorEvent))
+    assert error.code == "502"
+    assert "stream error" in error.message
+    assert "Provider returned error" in error.message
+    assert not any(isinstance(event, DoneEvent) for event in events)
+    assert isinstance(events[-1], ErrorEvent)
+
+
+def test_stream_error_frame_without_code_uses_stream_error(monkeypatch: Any) -> None:
+    monkeypatch.setenv("OPENSQUILLA_PROVIDER_STREAM_ERROR_FRAMES", "on")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = f"data: {json.dumps({'error': {'message': 'upstream reset'}})}\n\n".encode()
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/event-stream"},
+            content=body + b"data: [DONE]\n\n",
+        )
+
+    _patch_stream_transport(monkeypatch, handler)
+    provider = OpenAIProvider(
+        api_key="test",
+        model="glm-5.1",
+        base_url="https://openrouter.ai/api/v1",
+        provider_kind="openrouter",
+    )
+
+    events = _collect_events(provider, ChatConfig())
+
+    error = next(event for event in events if isinstance(event, ErrorEvent))
+    assert error.code == "stream_error"
+    assert "upstream reset" in error.message
+    assert not any(isinstance(event, DoneEvent) for event in events)
+
+
+def _reasoning_echo_provider(monkeypatch: Any, captured: dict[str, Any]) -> OpenAIProvider:
+    _patch_transport(monkeypatch, captured)
+    return OpenAIProvider(
+        api_key="test",
+        model="anthropic/claude-sonnet-4.5",
+        base_url="https://openrouter.ai/api/v1",
+        provider_kind="openrouter",
+    )
+
+
+_REASONING_ECHO_MESSAGES = [
+    Message(role="assistant", content="answer one", reasoning_content="thinking one"),
+    Message(role="user", content="next"),
+    Message(role="assistant", content="answer two", reasoning_content="thinking two"),
+    Message(role="user", content="next again"),
+    Message(role="assistant", content="answer three", reasoning_content="thinking three"),
+    Message(role="user", content="continue"),
+]
+
+_REASONING_ECHO_CFG = ChatConfig(
+    thinking=True,
+    model_capabilities=ModelCapabilities(
+        supports_reasoning=True,
+        supports_tools=True,
+        reasoning_format="openrouter",
+    ),
+)
+
+
+def _run_reasoning_echo_chat(provider: OpenAIProvider) -> None:
+    async def _run() -> None:
+        async for _ in provider.chat(_REASONING_ECHO_MESSAGES, config=_REASONING_ECHO_CFG):
+            pass
+
+    asyncio.run(_run())
+
+
+def test_reasoning_echo_default_replays_all_assistant_messages(monkeypatch: Any) -> None:
+    monkeypatch.delenv("OPENSQUILLA_REASONING_ECHO_TURNS", raising=False)
+    captured: dict[str, Any] = {}
+    provider = _reasoning_echo_provider(monkeypatch, captured)
+
+    _run_reasoning_echo_chat(provider)
+
+    payload_messages = captured["payload"]["messages"]
+    assert payload_messages[0]["reasoning_content"] == "thinking one"
+    assert payload_messages[2]["reasoning_content"] == "thinking two"
+    assert payload_messages[4]["reasoning_content"] == "thinking three"
+
+
+def test_reasoning_echo_all_matches_default(monkeypatch: Any) -> None:
+    monkeypatch.setenv("OPENSQUILLA_REASONING_ECHO_TURNS", "all")
+    captured: dict[str, Any] = {}
+    provider = _reasoning_echo_provider(monkeypatch, captured)
+
+    _run_reasoning_echo_chat(provider)
+
+    payload_messages = captured["payload"]["messages"]
+    assert payload_messages[0]["reasoning_content"] == "thinking one"
+    assert payload_messages[2]["reasoning_content"] == "thinking two"
+    assert payload_messages[4]["reasoning_content"] == "thinking three"
+
+
+def test_reasoning_echo_turns_keeps_only_last_n(monkeypatch: Any) -> None:
+    monkeypatch.setenv("OPENSQUILLA_REASONING_ECHO_TURNS", "1")
+    captured: dict[str, Any] = {}
+    provider = _reasoning_echo_provider(monkeypatch, captured)
+
+    _run_reasoning_echo_chat(provider)
+
+    payload_messages = captured["payload"]["messages"]
+    assert "reasoning_content" not in payload_messages[0]
+    assert "reasoning_content" not in payload_messages[2]
+    assert payload_messages[4]["reasoning_content"] == "thinking three"
+
+
+def test_reasoning_echo_turns_zero_drops_all(monkeypatch: Any) -> None:
+    monkeypatch.setenv("OPENSQUILLA_REASONING_ECHO_TURNS", "0")
+    captured: dict[str, Any] = {}
+    provider = _reasoning_echo_provider(monkeypatch, captured)
+
+    _run_reasoning_echo_chat(provider)
+
+    payload_messages = captured["payload"]["messages"]
+    for payload_message in payload_messages:
+        assert "reasoning_content" not in payload_message
+
+
+def test_reasoning_echo_turns_larger_than_history_keeps_all(monkeypatch: Any) -> None:
+    monkeypatch.setenv("OPENSQUILLA_REASONING_ECHO_TURNS", "99")
+    captured: dict[str, Any] = {}
+    provider = _reasoning_echo_provider(monkeypatch, captured)
+
+    _run_reasoning_echo_chat(provider)
+
+    payload_messages = captured["payload"]["messages"]
+    assert payload_messages[0]["reasoning_content"] == "thinking one"
+    assert payload_messages[4]["reasoning_content"] == "thinking three"
+
+
+def test_reasoning_echo_turns_rejects_unrecognized_value(monkeypatch: Any) -> None:
+    monkeypatch.setenv("OPENSQUILLA_REASONING_ECHO_TURNS", "some")
+
+    with pytest.raises(ValueError, match="OPENSQUILLA_REASONING_ECHO_TURNS"):
+        OpenAIProvider(
+            api_key="test",
+            model="anthropic/claude-sonnet-4.5",
+            base_url="https://openrouter.ai/api/v1",
+            provider_kind="openrouter",
+        )
+
+
+def test_reasoning_echo_truncation_keeps_required_empty_key(monkeypatch: Any) -> None:
+    monkeypatch.setenv("OPENSQUILLA_REASONING_ECHO_TURNS", "1")
+    captured: dict[str, Any] = {}
+    _patch_transport(monkeypatch, captured)
+    provider = OpenAIProvider(
+        api_key="test",
+        model="deepseek-v4-flash",
+        base_url="https://api.deepseek.com",
+        provider_kind="deepseek",
+    )
+    messages = [
+        Message(role="assistant", content="answer one", reasoning_content="thinking one"),
+        Message(role="user", content="next"),
+        Message(role="assistant", content="answer two", reasoning_content="thinking two"),
+        Message(role="user", content="continue"),
+    ]
+    cfg = ChatConfig(
+        thinking=True,
+        model_capabilities=ModelCapabilities(
+            supports_reasoning=True,
+            supports_tools=True,
+            reasoning_format="deepseek",
+        ),
+    )
+
+    async def _run() -> None:
+        async for _ in provider.chat(messages, config=cfg):
+            pass
+
+    asyncio.run(_run())
+
+    payload_messages = captured["payload"]["messages"]
+    # The required-key model must keep reasoning_content on every assistant
+    # message: truncated turns carry "" instead of losing the key.
+    assert payload_messages[0]["reasoning_content"] == ""
+    assert payload_messages[2]["reasoning_content"] == "thinking two"
+
+
+def test_reasoning_echo_env_is_inert_for_non_replay_model(monkeypatch: Any) -> None:
+    monkeypatch.setenv("OPENSQUILLA_REASONING_ECHO_TURNS", "1")
+    captured: dict[str, Any] = {}
+    _patch_transport(monkeypatch, captured)
+    provider = OpenAIProvider(
+        api_key="test",
+        model="gemini-2.5-pro",
+        base_url="https://generativelanguage.googleapis.com/v1beta/openai",
+        provider_kind="gemini",
+    )
+    messages = [
+        Message(role="assistant", content="prior", reasoning_content="never replayed"),
+        Message(role="user", content="continue"),
+    ]
+    cfg = ChatConfig(
+        thinking=True,
+        model_capabilities=ModelCapabilities(
+            supports_reasoning=True,
+            supports_tools=True,
+            reasoning_format="gemini",
+        ),
+    )
+
+    async def _run() -> None:
+        async for _ in provider.chat(messages, config=cfg):
+            pass
+
+    asyncio.run(_run())
+
+    assert "reasoning_content" not in captured["payload"]["messages"][0]

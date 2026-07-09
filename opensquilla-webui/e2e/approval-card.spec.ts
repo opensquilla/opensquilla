@@ -143,18 +143,15 @@ test.describe('In-thread approval card (mocked snapshot)', () => {
   })
 })
 
-test.describe('Approval flow (live gateway, Ask-every-time strategy)', () => {
+test.describe('Approval flow (live gateway, Standard execution mode)', () => {
   test.skip(!LIVE, 'Live gateway test; set OPENSQUILLA_E2E_LIVE=1 to run.')
 
-  test.beforeEach(async ({ request }) => {
-    const res = await request.post('/api/approvals/settings', {
-      data: { mode: 'prompt' },
+  test.beforeEach(async ({ page }) => {
+    // Run mode is the execution authority. The retired approval-policy setting
+    // is intentionally not consulted by sandbox execution.
+    await page.addInitScript(() => {
+      localStorage.setItem('opensquilla.chat.runMode', 'standard')
     })
-    expect(res.ok()).toBeTruthy()
-  })
-
-  test.afterEach(async ({ request }) => {
-    await request.post('/api/approvals/settings', { data: { mode: 'prompt' } })
   })
 
   test('blocked shell command surfaces a card; Allow once resumes the run', async ({ page }) => {

@@ -1185,6 +1185,8 @@ const chatSessionSubscription = useChatSessionSubscription({
   lastStreamSeq,
   runStatus,
   isStreaming,
+  hasActiveInterrupt: computed(() =>
+    Array.from(interruptState.value.values()).some(state => !state.resolution)),
   sessionRunStatus,
   loadHistory,
   resetStreamIdleTimer,

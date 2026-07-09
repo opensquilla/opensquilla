@@ -193,3 +193,23 @@ def test_build_approval_event_payload_includes_sandbox_kind() -> None:
     )
 
     assert payload["approval_kind"] == "sandbox_network"
+
+
+def test_build_approval_event_payload_maps_sandbox_session_id() -> None:
+    payload = build_approval_event_payload(
+        {
+            "id": "sandbox-shell-123",
+            "namespace": "exec",
+            "params": {
+                "action_kind": "shell.exec",
+                "argv": ["exec_command", "rm -f approval-e2e-ok.txt"],
+                "session_id": "agent:main:webchat:demo",
+            },
+            "created_at": 1.0,
+            "deadline": 2.0,
+            "resolved": False,
+            "approved": False,
+        }
+    )
+
+    assert payload["session_key"] == "agent:main:webchat:demo"

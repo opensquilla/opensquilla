@@ -323,19 +323,23 @@ class _TrustedWorkspaceDeleteVisitor(ast.NodeVisitor):
         for target in node.targets:
             self._clear_assignment(target)
 
-    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+    def _visit_function_signature(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> None:
         self._clear_name(node.name)
         for decorator in node.decorator_list:
             self.visit(decorator)
-        for default in node.args.defaults:
-            self.visit(default)
-        for default in node.args.kw_defaults:
-            if default is not None:
-                self.visit(default)
+        for default_expr in node.args.defaults:
+            self.visit(default_expr)
+        for kw_default_expr in node.args.kw_defaults:
+            if kw_default_expr is not None:
+                self.visit(kw_default_expr)
         if node.returns is not None:
             self.visit(node.returns)
 
-    visit_AsyncFunctionDef = visit_FunctionDef
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+        self._visit_function_signature(node)
+
+    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+        self._visit_function_signature(node)
 
     def visit_ClassDef(self, node: ast.ClassDef) -> None:
         self._clear_name(node.name)
@@ -366,7 +370,13 @@ class _TrustedWorkspaceDeleteVisitor(ast.NodeVisitor):
         self._visit_block_without_leaking_bindings(node.body, body_snapshot)
         self._visit_block_without_leaking_bindings(node.orelse, snapshot)
 
-    visit_AsyncFor = visit_For
+    def visit_AsyncFor(self, node: ast.AsyncFor) -> None:
+        self.visit(node.iter)
+        snapshot = self._snapshot_bindings()
+        self._clear_assignment(node.target)
+        body_snapshot = self._snapshot_bindings()
+        self._visit_block_without_leaking_bindings(node.body, body_snapshot)
+        self._visit_block_without_leaking_bindings(node.orelse, snapshot)
 
     def visit_With(self, node: ast.With) -> None:
         for item in node.items:
@@ -379,7 +389,16 @@ class _TrustedWorkspaceDeleteVisitor(ast.NodeVisitor):
         self._visit_block_without_leaking_bindings(node.body, body_snapshot)
         self._restore_bindings(snapshot)
 
-    visit_AsyncWith = visit_With
+    def visit_AsyncWith(self, node: ast.AsyncWith) -> None:
+        for item in node.items:
+            self.visit(item.context_expr)
+        snapshot = self._snapshot_bindings()
+        for item in node.items:
+            if item.optional_vars is not None:
+                self._clear_assignment(item.optional_vars)
+        body_snapshot = self._snapshot_bindings()
+        self._visit_block_without_leaking_bindings(node.body, body_snapshot)
+        self._restore_bindings(snapshot)
 
     def visit_Try(self, node: ast.Try) -> None:
         snapshot = self._snapshot_bindings()

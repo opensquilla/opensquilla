@@ -567,9 +567,11 @@ class _DoneHandler:
         )
         provider_cache_hit = (event.cached_tokens or 0) > 0
         opensquilla_cache_hit = metadata.get("cache_mode") == "hit"
+        decision_id = metadata.get("router_decision_id")
         event = replace(
             event,
             text=normalized_text,
+            decision_id=str(decision_id) if decision_id else None,
             routed_tier=routed_tier,
             routing_source=routing_source or "none",
             routing_confidence=routing_confidence,

@@ -79,6 +79,7 @@ def evaluate_training_gates(
             stats={
                 "total": stats.total,
                 "high_value": stats.high_value,
+                "feedback_down": stats.feedback_down,
                 "distinct_classes": stats.distinct_classes,
                 "last_ts": stats.last_ts,
                 "consecutive_failures": state.consecutive_failures,
@@ -105,7 +106,7 @@ def evaluate_training_gates(
         return result(False, COOLDOWN)
 
     # Volume gate (high-value correction signals, scaled by failure backoff).
-    if stats.high_value < effective_min:
+    if stats.high_value + stats.feedback_down < effective_min:
         return result(False, INSUFFICIENT_DATA)
 
     # Quality floor: need at least two classes or there is nothing to separate.

@@ -934,6 +934,11 @@ class RouterSelfLearningConfig(BaseModel):
     # Online rollback monitor (M4).
     min_monitor_samples: int = Field(default=30, ge=1)
     complaint_regression_delta: float = Field(default=0.05, ge=0.0, le=1.0)
+    # Second rollback trigger: explicit down-vote-rate regression (F7).
+    # Feedback is far sparser than samples, hence its own minimum and a
+    # wider delta than the complaint monitor.
+    min_feedback_monitor_samples: int = Field(default=5, ge=1)
+    downvote_regression_delta: float = Field(default=0.15, ge=0.0, le=1.0)
     # Rolling holdout (per-agent progress metric).
     holdout_pct: float = Field(default=0.10, ge=0.0, le=0.5)
     holdout_repeats: int = Field(default=5, ge=1)

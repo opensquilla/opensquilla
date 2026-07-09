@@ -408,6 +408,32 @@ class RouterDecisionWriter:
             out.append(record)
         return out
 
+    def get_decision(self, decision_id: str) -> dict[str, Any] | None:
+        """Return one sanitized decision row by id, or ``None``.
+
+        Reverse-lookup surface for feedback attribution
+        (``router.feedback.submit`` resolves ``decisionId`` to the
+        ``(session_key, turn_index, executed_kind)`` the sidecar needs).
+        Same privacy posture and best-effort error handling as
+        :meth:`list_decisions`.
+        """
+        token = sanitize_token(decision_id)
+        if token is None:
+            return None
+        sql = f"SELECT {', '.join(_COLUMNS)} FROM router_decisions WHERE decision_id = ?"
+        try:
+            with self._lock:
+                row = self._conn.execute(sql, (token,)).fetchone()
+        except Exception as exc:  # noqa: BLE001
+            log.warning("router_decision_writer.get_failed: %s", exc)
+            return None
+        if row is None:
+            return None
+        record: dict[str, Any] = {column: row[column] for column in _COLUMNS}
+        for json_column in ("probs", "flags", "trail"):
+            record[json_column] = _load_json_list(record.get(json_column))
+        return record
+
 
 # ---------------------------------------------------------------------------
 # Constructor with full PRAGMA contract

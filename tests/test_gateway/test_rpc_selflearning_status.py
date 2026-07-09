@@ -139,3 +139,37 @@ async def test_status_never_errors_on_broken_state(tmp_path, monkeypatch) -> Non
 
 if __name__ == "__main__":  # pragma: no cover
     pytest.main([__file__, "-q"])
+
+
+async def test_status_includes_feedback_block(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("OPENSQUILLA_STATE_DIR", str(tmp_path))
+    from opensquilla.squilla_router.self_learning.feedback import write_feedback
+
+    for i in range(5):
+        write_sample(_sample(i), "main", home=tmp_path)
+    write_feedback(
+        "main",
+        decision_id="f1",
+        session_key="agent:main:webchat:s1",
+        turn_index=0,
+        rating="down",
+        home=tmp_path,
+    )
+    write_feedback(
+        "main",
+        decision_id="f2",
+        session_key="agent:main:webchat:s1",
+        turn_index=1,
+        rating="down",
+        executed_kind="ensemble",
+        home=tmp_path,
+    )
+
+    payload = await _handle_selflearning_status(
+        {},
+        RpcContext(
+            conn_id="t",
+            config=_config(sl_enabled=True, dream_enabled=True, auto_schedule=True),
+        ),
+    )
+    assert payload["samples"]["feedback"] == {"up": 0, "down": 2, "downSingle": 1}

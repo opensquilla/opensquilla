@@ -276,18 +276,37 @@ def should_rollback(
     post_complaint_rate: float,
     post_n: int,
     config: Any,
+    pre_downvote_rate: float | None = None,
+    post_downvote_rate: float = 0.0,
+    post_feedback_n: int = 0,
 ) -> bool:
     """Decide whether a live candidate has regressed enough to revert.
 
-    Requires a minimum post-swap sample count before acting, then trips when the
-    complaint rate rises beyond the configured delta over the pre-swap baseline.
+    Two independent triggers, either of which reverts:
+
+    * Complaint-rate regression over the pre-swap baseline, after a minimum
+      post-swap sample count (the original M4 monitor).
+    * Explicit down-vote-rate regression (single-model feedback only —
+      ensemble ratings co-vary with candidate/aggregator changes, not the
+      promoted classifier). Feedback is far sparser than samples, so it has
+      its own minimum count and a wider delta.
     """
 
     if not bool(getattr(config, "auto_rollback", True)):
         return False
-    if pre_complaint_rate is None:
-        return False
-    if post_n < int(getattr(config, "min_monitor_samples", 30)):
-        return False
-    delta = float(getattr(config, "complaint_regression_delta", 0.05))
-    return post_complaint_rate > pre_complaint_rate + delta
+
+    if pre_complaint_rate is not None and post_n >= int(
+        getattr(config, "min_monitor_samples", 30)
+    ):
+        delta = float(getattr(config, "complaint_regression_delta", 0.05))
+        if post_complaint_rate > pre_complaint_rate + delta:
+            return True
+
+    if pre_downvote_rate is not None and post_feedback_n >= int(
+        getattr(config, "min_feedback_monitor_samples", 5)
+    ):
+        fb_delta = float(getattr(config, "downvote_regression_delta", 0.15))
+        if post_downvote_rate > pre_downvote_rate + fb_delta:
+            return True
+
+    return False

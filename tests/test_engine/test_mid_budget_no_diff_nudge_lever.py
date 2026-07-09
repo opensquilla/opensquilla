@@ -5,13 +5,15 @@ run that spends most of its wall-clock budget investigating without ever
 editing a file usually ends with no diff at all; a one-shot progress nudge
 when 50% and again when 75% of the budget is spent with no workspace change
 prompts the model to start implementing while there is still time. The nudge
-stays quiet whenever any change evidence exists (write receipts, captured
-diff candidates, or a live workspace diff).
+stays quiet whenever change evidence from this agent's own run exists (write
+receipts, captured diff candidates, or a live tracked diff); untracked
+scratch artifacts do not count.
 """
 
 from __future__ import annotations
 
 import asyncio
+import re
 import subprocess
 from collections.abc import AsyncIterator
 from pathlib import Path
@@ -30,7 +32,7 @@ from opensquilla.provider import DoneEvent as ProviderDone
 from opensquilla.provider import TextDeltaEvent as ProviderText
 from opensquilla.provider import ToolUseEndEvent as ProviderToolUseEnd
 from opensquilla.provider import ToolUseStartEvent as ProviderToolUseStart
-from opensquilla.tools.types import CallerKind, ToolContext
+from opensquilla.tools.types import CallerKind, ToolContext, current_tool_context
 
 _NUDGE_MARKER = "Progress check: about"
 
@@ -136,10 +138,42 @@ def _nudge_texts(call: dict[str, Any]) -> list[str]:
     ]
 
 
+def _nudge_percent(text: str) -> int:
+    match = re.search(r"about (\d+)% of the wall-clock budget", text)
+    assert match is not None, text
+    return int(match.group(1))
+
+
+def _init_repo(repo: Path) -> Path:
+    repo.mkdir(parents=True)
+    subprocess.run(["git", "-C", str(repo), "init", "-q"], check=True)
+    subprocess.run(
+        ["git", "-C", str(repo), "config", "user.email", "agent@test.invalid"],
+        check=True,
+    )
+    subprocess.run(["git", "-C", str(repo), "config", "user.name", "agent"], check=True)
+    (repo / "pkg.py").write_text("value = 1\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True)
+    subprocess.run(["git", "-C", str(repo), "commit", "-q", "-m", "init"], check=True)
+    return repo
+
+
+def _workspace_ctx(repo: Path) -> ToolContext:
+    return ToolContext(
+        is_owner=True,
+        caller_kind=CallerKind.CLI,
+        session_key="agent:main:test",
+        workspace_dir=str(repo),
+    )
+
+
+# The budget is generous relative to the sleeps so scheduling overhead on a
+# loaded runner cannot push a turn past the next checkpoint (or the hard
+# deadline) and flip an assertion: every window leaves >= 1.2s of slack.
 def _lever_config(**overrides: Any) -> AgentConfig:
     settings: dict[str, Any] = {
         "mid_budget_no_diff_nudge": True,
-        "timeout": 2.0,
+        "timeout": 6.0,
         "max_iterations": 6,
         "retry_base_backoff_ms": 0,
         "retry_max_backoff_ms": 0,
@@ -150,7 +184,7 @@ def _lever_config(**overrides: Any) -> AgentConfig:
 
 @pytest.mark.asyncio
 async def test_nudge_fires_once_past_half_budget_without_diff() -> None:
-    provider = _SequenceProvider([[1.2, *_echo_tool_call("use-1")], _final_text()])
+    provider = _SequenceProvider([[3.3, *_echo_tool_call("use-1")], _final_text()])
     agent = _echo_agent(provider, _lever_config())
 
     events = [event async for event in agent.run_turn("fix the bug")]
@@ -160,16 +194,18 @@ async def test_nudge_fires_once_past_half_budget_without_diff() -> None:
     assert _nudge_texts(provider.calls[0]) == []
     nudges = _nudge_texts(provider.calls[1])
     assert len(nudges) == 1
-    assert "50%" in nudges[0]
+    # The message reports real elapsed budget, not the checkpoint constant:
+    # the 3.3s sleep guarantees at least 55% of the 6s budget was spent.
+    assert 55 <= _nudge_percent(nudges[0]) < 75
 
 
 @pytest.mark.asyncio
 async def test_nudge_default_off() -> None:
-    provider = _SequenceProvider([[1.2, *_echo_tool_call("use-1")], _final_text()])
+    provider = _SequenceProvider([[3.3, *_echo_tool_call("use-1")], _final_text()])
     agent = _echo_agent(
         provider,
         AgentConfig(
-            timeout=2.0,
+            timeout=6.0,
             max_iterations=6,
             retry_base_backoff_ms=0,
             retry_max_backoff_ms=0,
@@ -184,7 +220,7 @@ async def test_nudge_default_off() -> None:
 
 @pytest.mark.asyncio
 async def test_nudge_not_fired_before_half_budget() -> None:
-    provider = _SequenceProvider([[0.3, *_echo_tool_call("use-1")], _final_text()])
+    provider = _SequenceProvider([[0.9, *_echo_tool_call("use-1")], _final_text()])
     agent = _echo_agent(provider, _lever_config())
 
     events = [event async for event in agent.run_turn("fix the bug")]
@@ -197,8 +233,8 @@ async def test_nudge_not_fired_before_half_budget() -> None:
 async def test_nudge_fires_at_both_checkpoints_in_sequence() -> None:
     provider = _SequenceProvider(
         [
-            [1.1, *_echo_tool_call("use-1")],
-            [0.5, *_echo_tool_call("use-2")],
+            [3.3, *_echo_tool_call("use-1")],
+            [1.5, *_echo_tool_call("use-2")],
             _final_text(),
         ]
     )
@@ -210,18 +246,19 @@ async def test_nudge_fires_at_both_checkpoints_in_sequence() -> None:
     assert len(provider.calls) == 3
     second_call = _nudge_texts(provider.calls[1])
     assert len(second_call) == 1
-    assert "50%" in second_call[0]
+    assert 55 <= _nudge_percent(second_call[0]) < 75
     third_call = _nudge_texts(provider.calls[2])
     assert len(third_call) == 2
-    assert "50%" in third_call[0]
-    assert "75%" in third_call[1]
+    assert 55 <= _nudge_percent(third_call[0]) < 75
+    # 3.3s + 1.5s of sleeps: at least 80% of the budget is truly spent.
+    assert _nudge_percent(third_call[1]) >= 80
 
 
 @pytest.mark.asyncio
 async def test_crossing_both_checkpoints_at_once_fires_single_nudge() -> None:
-    # One long stream past 75%: both checkpoints are consumed but only the
-    # latest one nudges — never two messages in the same iteration.
-    provider = _SequenceProvider([[1.7, *_echo_tool_call("use-1")], _final_text()])
+    # One long stream past 75%: both checkpoints are consumed but only one
+    # nudge is emitted — never two messages in the same iteration.
+    provider = _SequenceProvider([[4.8, *_echo_tool_call("use-1")], _final_text()])
     agent = _echo_agent(provider, _lever_config())
 
     events = [event async for event in agent.run_turn("fix the bug")]
@@ -229,7 +266,9 @@ async def test_crossing_both_checkpoints_at_once_fires_single_nudge() -> None:
     assert any(event.kind == "done" for event in events)
     nudges = _nudge_texts(provider.calls[1])
     assert len(nudges) == 1
-    assert "75%" in nudges[0]
+    # 4.8s of the 6s budget slept: real elapsed is at least 80%, and the
+    # message must say so rather than echo the 75% checkpoint constant.
+    assert _nudge_percent(nudges[0]) >= 80
 
 
 @pytest.mark.asyncio
@@ -240,7 +279,7 @@ async def test_nudge_suppressed_by_captured_diff_candidates() -> None:
         session_key="agent:main:test",
         source_diff_candidates=[{"candidate_id": "srcdiff-1", "paths": ["pkg.py"]}],
     )
-    provider = _SequenceProvider([[1.2, *_echo_tool_call("use-1")], _final_text()])
+    provider = _SequenceProvider([[3.3, *_echo_tool_call("use-1")], _final_text()])
     agent = _echo_agent(provider, _lever_config(), tool_context=ctx)
 
     events = [event async for event in agent.run_turn("fix the bug")]
@@ -250,35 +289,72 @@ async def test_nudge_suppressed_by_captured_diff_candidates() -> None:
 
 
 @pytest.mark.asyncio
-async def test_nudge_suppressed_by_live_workspace_diff(tmp_path: Path) -> None:
-    # Shell-made edits leave no receipts or candidates; the live workspace
+async def test_nudge_suppressed_by_live_tracked_diff(tmp_path: Path) -> None:
+    # Shell-made edits leave no receipts or candidates; the live tracked
     # diff must still count as change evidence.
-    repo = tmp_path / "workspace"
-    repo.mkdir()
-    subprocess.run(["git", "-C", str(repo), "init", "-q"], check=True)
-    subprocess.run(
-        ["git", "-C", str(repo), "config", "user.email", "agent@test.invalid"],
-        check=True,
-    )
-    subprocess.run(["git", "-C", str(repo), "config", "user.name", "agent"], check=True)
-    target = repo / "pkg.py"
-    target.write_text("value = 1\n", encoding="utf-8")
-    subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True)
-    subprocess.run(["git", "-C", str(repo), "commit", "-q", "-m", "init"], check=True)
-    target.write_text("value = 2\n", encoding="utf-8")
-    ctx = ToolContext(
-        is_owner=True,
-        caller_kind=CallerKind.CLI,
-        session_key="agent:main:test",
-        workspace_dir=str(repo),
-    )
-    provider = _SequenceProvider([[1.2, *_echo_tool_call("use-1")], _final_text()])
-    agent = _echo_agent(provider, _lever_config(), tool_context=ctx)
+    repo = _init_repo(tmp_path / "workspace")
+    (repo / "pkg.py").write_text("value = 2\n", encoding="utf-8")
+    provider = _SequenceProvider([[3.3, *_echo_tool_call("use-1")], _final_text()])
+    agent = _echo_agent(provider, _lever_config(), tool_context=_workspace_ctx(repo))
 
     events = [event async for event in agent.run_turn("fix the bug")]
 
     assert any(event.kind == "done" for event in events)
     assert all(_nudge_texts(call) == [] for call in provider.calls)
+
+
+@pytest.mark.asyncio
+async def test_nudge_not_suppressed_by_untracked_scratch_files(tmp_path: Path) -> None:
+    # Untracked artifacts from merely running the code (caches, coverage
+    # files, scratch notes) are not source progress; the nudge still fires.
+    repo = _init_repo(tmp_path / "workspace")
+    (repo / "notes.txt").write_text("scratch\n", encoding="utf-8")
+    (repo / "__pycache__").mkdir()
+    (repo / "__pycache__" / "pkg.cpython-312.pyc").write_bytes(b"\x00")
+    provider = _SequenceProvider([[3.3, *_echo_tool_call("use-1")], _final_text()])
+    agent = _echo_agent(provider, _lever_config(), tool_context=_workspace_ctx(repo))
+
+    events = [event async for event in agent.run_turn("fix the bug")]
+
+    assert any(event.kind == "done" for event in events)
+    nudges = _nudge_texts(provider.calls[1])
+    assert len(nudges) == 1
+
+
+def test_evidence_check_reads_own_workspace_not_contextvar(tmp_path: Path) -> None:
+    # A child agent is constructed without a ToolContext of its own, and the
+    # engine-loop task inherits the PARENT context via contextvar. Evidence
+    # must come from the agent's own configured workspace, not the parent's
+    # receipts or diff.
+    parent_repo = _init_repo(tmp_path / "parent")
+    (parent_repo / "pkg.py").write_text("value = 2\n", encoding="utf-8")
+    child_repo = _init_repo(tmp_path / "child")
+    parent_ctx = _workspace_ctx(parent_repo)
+    parent_ctx.workspace_file_writes = [{"path": "pkg.py", "relative_path": "pkg.py"}]
+    token = current_tool_context.set(parent_ctx)
+    try:
+        agent = _echo_agent(
+            _SequenceProvider([_final_text()]),
+            _lever_config(workspace_dir=str(child_repo)),
+        )
+        assert agent._workspace_has_source_change_evidence() is False
+    finally:
+        current_tool_context.reset(token)
+
+
+def test_evidence_check_uses_config_workspace_for_contextless_agent(
+    tmp_path: Path,
+) -> None:
+    # Child agents carry the workspace on AgentConfig; a tracked change
+    # there counts even with no ToolContext attached to the agent.
+    repo = _init_repo(tmp_path / "workspace")
+    (repo / "pkg.py").write_text("value = 2\n", encoding="utf-8")
+    agent = _echo_agent(
+        _SequenceProvider([_final_text()]),
+        _lever_config(workspace_dir=str(repo)),
+    )
+
+    assert agent._workspace_has_source_change_evidence() is True
 
 
 @pytest.mark.asyncio

@@ -776,6 +776,9 @@ _MID_BUDGET_NO_DIFF_NUDGE_TEMPLATE = (
     "file and make the smallest reasonable edit now, then refine it with the "
     "remaining time instead of leaving the whole budget to analysis."
 )
+_MID_BUDGET_NO_DIFF_NUDGE_PREFIX = _MID_BUDGET_NO_DIFF_NUDGE_TEMPLATE.split(
+    "{percent}", 1
+)[0]
 _LARGE_CONTEXT_INVALID_RESPONSE_INPUT_TOKENS = 30_000
 _COMPACTED_TOOL_ARGUMENT_MARKERS = frozenset(
     {
@@ -1018,6 +1021,14 @@ def _tail_has_tool_result(messages: list[Message], *, lookback: int = 2) -> bool
     if not messages:
         return False
     return any(_message_has_tool_result(message) for message in messages[-lookback:])
+
+
+def _is_mid_budget_nudge_message(message: Message) -> bool:
+    return (
+        message.role == "user"
+        and isinstance(message.content, str)
+        and message.content.startswith(_MID_BUDGET_NO_DIFF_NUDGE_PREFIX)
+    )
 
 
 def _message_has_visible_text(message: Message) -> bool:
@@ -5085,9 +5096,16 @@ class Agent:
                     ):
                         # The spliced wrap-up directive is not conversation
                         # history; empty-response recovery must still see the
-                        # post-tool shape of the underlying turn.
-                        post_tool_turn = bool(turn_messages) and _message_has_tool_result(
-                            turn_messages[-1]
+                        # post-tool shape of the underlying turn. A mid-budget
+                        # nudge stacked after the tool results is likewise
+                        # runtime-injected and must not hide that shape.
+                        tail_index = len(turn_messages) - 1
+                        while tail_index >= 0 and _is_mid_budget_nudge_message(
+                            turn_messages[tail_index]
+                        ):
+                            tail_index -= 1
+                        post_tool_turn = tail_index >= 0 and _message_has_tool_result(
+                            turn_messages[tail_index]
                         )
                     stop_reason = (
                         getattr(provider_done_for_log, "stop_reason", None)
@@ -7599,10 +7617,6 @@ class Agent:
                     turn_messages.append(
                         Message(role="user", content=post_write_convergence_guidance)
                     )
-                if source_loop_recovery_guidance is not None:
-                    turn_messages.append(
-                        Message(role="user", content=source_loop_recovery_guidance)
-                    )
                 if (
                     bool(getattr(self.config, "mid_budget_no_diff_nudge", False))
                     and _total_deadline is not None
@@ -7624,12 +7638,21 @@ class Agent:
                         # several at once yields a single nudge.
                         mid_budget_nudge_fired_fractions.update(due_fractions)
                         nudge_fraction = max(due_fractions)
-                        if not self._workspace_has_source_change_evidence():
+                        # The evidence probe shells out to git; keep it off
+                        # the event loop.
+                        has_change_evidence = await asyncio.to_thread(
+                            self._workspace_has_source_change_evidence
+                        )
+                        if not has_change_evidence:
                             turn_messages.append(
                                 Message(
                                     role="user",
+                                    # Report real elapsed time, not the
+                                    # checkpoint constant: one long stream can
+                                    # carry the turn far past the checkpoint
+                                    # before it is noticed.
                                     content=_MID_BUDGET_NO_DIFF_NUDGE_TEMPLATE.format(
-                                        percent=int(nudge_fraction * 100),
+                                        percent=int(elapsed_fraction * 100),
                                     ),
                                 )
                             )
@@ -7642,6 +7665,13 @@ class Agent:
                                 budget_fraction=nudge_fraction,
                                 elapsed_fraction=round(elapsed_fraction, 3),
                             )
+                if source_loop_recovery_guidance is not None:
+                    # Appended last: _drop_runtime_recovery_scaffolding pops
+                    # the one-shot directive from the end of the turn, so no
+                    # other runtime-injected message may follow it.
+                    turn_messages.append(
+                        Message(role="user", content=source_loop_recovery_guidance)
+                    )
                 if terminal_projection_preflight_error:
                     self._write_turn_call_log(
                         "tool_argument_projection_rehydrate_recovery",
@@ -7897,20 +7927,65 @@ class Agent:
         return [record for record in records if isinstance(record, dict)]
 
     def _workspace_has_source_change_evidence(self) -> bool:
-        """Best-effort check that this run produced any workspace change.
+        """Best-effort check that this agent's run produced a source change.
 
         Used by the mid-budget nudge: write receipts and captured diff
-        candidates cover tool-mediated edits, and the live workspace diff
-        covers shell-made edits that leave no receipts. Any changed path
-        counts — when in doubt the nudge stays quiet.
+        candidates cover tool-mediated edits, and the live tracked diff
+        covers shell-made edits that leave no receipts. Only this agent's
+        own ToolContext counts — the contextvar fallback inside a child
+        agent resolves to the parent's context — and untracked files do
+        not: scratch artifacts from merely running the code (caches,
+        coverage files, logs) are not source progress.
         """
 
-        if self._effective_workspace_write_records():
-            return True
         ctx = self._tool_context
-        if ctx is not None and (getattr(ctx, "source_diff_candidates", []) or []):
-            return True
-        return bool(self._workspace_diff_paths_for_final_diff_contract())
+        if ctx is not None:
+            records = getattr(ctx, "workspace_file_writes", []) or []
+            if any(
+                isinstance(record, dict)
+                and not self._workspace_write_record_looks_synthetic(record)
+                for record in records
+            ):
+                return True
+            if getattr(ctx, "source_diff_candidates", []) or []:
+                return True
+        return bool(self._workspace_tracked_diff_paths_for_nudge())
+
+    def _workspace_tracked_diff_paths_for_nudge(self) -> list[str]:
+        ctx = self._tool_context
+        raw_workspace = getattr(ctx, "workspace_dir", None) if ctx is not None else None
+        if not raw_workspace:
+            raw_workspace = self.config.workspace_dir
+        if not raw_workspace:
+            return []
+        workspace_dir = Path(raw_workspace).expanduser().resolve(strict=False)
+        if not workspace_dir.exists():
+            return []
+        ignored_paths = self._workspace_gitlink_paths(workspace_dir) | (
+            self._workspace_internal_diagnostic_paths(workspace_dir)
+        )
+        paths: set[str] = set()
+        for args in (("diff", "--name-only"), ("diff", "--cached", "--name-only")):
+            try:
+                result = subprocess.run(
+                    ["git", "-C", str(workspace_dir), *args],
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    timeout=2.0,
+                    check=False,
+                )
+            except (OSError, subprocess.SubprocessError):
+                continue
+            for line in (result.stdout or "").splitlines():
+                text = line.strip()
+                if text:
+                    normalized = text.replace("\\", "/").lstrip("./")
+                    if normalized in ignored_paths:
+                        continue
+                    paths.add(normalized)
+        return sorted(paths)
 
     def _effective_workspace_write_records(self) -> list[dict[str, Any]]:
         return [

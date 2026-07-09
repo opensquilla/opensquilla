@@ -353,6 +353,31 @@ async def test_final_diff_salvage_and_endgame_freeze_env_thread_to_agent_config(
 
 
 @pytest.mark.asyncio
+async def test_reasoning_cap_and_mid_budget_nudge_env_thread_to_agent_config(
+    monkeypatch,
+) -> None:
+    stage = _make_stage()
+    monkeypatch.delenv("OPENSQUILLA_REASONING_STREAM_CHAR_CAP", raising=False)
+    monkeypatch.delenv("OPENSQUILLA_MID_BUDGET_NO_DIFF_NUDGE", raising=False)
+    default_out = await stage.run(_make_input())
+    assert default_out.output.agent_config.reasoning_stream_char_cap == 0
+    assert default_out.output.agent_config.mid_budget_no_diff_nudge is False
+
+    monkeypatch.setenv("OPENSQUILLA_REASONING_STREAM_CHAR_CAP", "20000")
+    monkeypatch.setenv("OPENSQUILLA_MID_BUDGET_NO_DIFF_NUDGE", "1")
+    enabled_out = await stage.run(_make_input())
+    assert enabled_out.output.agent_config.reasoning_stream_char_cap == 20000
+    assert enabled_out.output.agent_config.mid_budget_no_diff_nudge is True
+
+    # Garbage values fall back to the defaults instead of raising.
+    monkeypatch.setenv("OPENSQUILLA_REASONING_STREAM_CHAR_CAP", "banana")
+    monkeypatch.setenv("OPENSQUILLA_MID_BUDGET_NO_DIFF_NUDGE", "banana")
+    garbage_out = await stage.run(_make_input())
+    assert garbage_out.output.agent_config.reasoning_stream_char_cap == 0
+    assert garbage_out.output.agent_config.mid_budget_no_diff_nudge is False
+
+
+@pytest.mark.asyncio
 async def test_source_diff_preservation_config_threads_to_agent_config(monkeypatch) -> None:
     monkeypatch.delenv("OPENSQUILLA_SOURCE_DIFF_PRESERVATION_MODE", raising=False)
     builder = _RecordingAgentConfigBuilder(

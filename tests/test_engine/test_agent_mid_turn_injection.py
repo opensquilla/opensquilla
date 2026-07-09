@@ -191,7 +191,10 @@ async def test_multiple_pending_inputs_are_merged_into_one_user_message() -> Non
 
 
 @pytest.mark.asyncio
-async def test_no_pending_provider_anchors_current_request_after_tool_result() -> None:
+async def test_no_pending_provider_anchors_current_request_after_tool_result(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("OPENSQUILLA_TURN_OBJECTIVE_REMINDER", "on")
     provider = _ToolBoundaryProvider()
     agent = _agent(provider)
 
@@ -205,6 +208,23 @@ async def test_no_pending_provider_anchors_current_request_after_tool_result() -
     assert "run echo" in reminder_text
     assert not any(
         "Current user request" in _message_text(message) for message in agent._history
+    )
+
+
+@pytest.mark.asyncio
+async def test_no_pending_default_sends_no_reminder_after_tool_result(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("OPENSQUILLA_TURN_OBJECTIVE_REMINDER", raising=False)
+    provider = _ToolBoundaryProvider()
+    agent = _agent(provider)
+
+    _events = [event async for event in agent.run_turn("run echo")]
+
+    assert len(provider.calls) == 2
+    second_request = provider.calls[1]
+    assert not any(
+        "Current user request" in _message_text(message) for message in second_request
     )
 
 

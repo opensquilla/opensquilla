@@ -201,20 +201,20 @@ _TURN_OBJECTIVE_REMINDER_TRIM_PREFIX = "trim:"
 
 
 def _resolve_turn_objective_reminder() -> tuple[bool, int]:
-    """Resolve the opt-in turn-objective reminder override.
+    """Resolve the turn-objective reminder override.
 
     ``OPENSQUILLA_TURN_OBJECTIVE_REMINDER`` accepts "on"/"off" or
     "trim:<chars>" (a positive integer replacing the default truncation cap).
-    Unset or "on" keeps the shipped reminder byte-identical; "off" suppresses
-    the per-turn "[Current user request reminder]" message entirely.
+    Unset or "off" suppresses the per-turn "[Current user request reminder]"
+    message; "on" restores it with the shipped truncation cap.
     Unrecognized values raise instead of being silently ignored so a run
     manifest cannot record an override the run did not actually apply.
     """
     env_value = os.environ.get(_TURN_OBJECTIVE_REMINDER_ENV, "").strip().lower()
-    if not env_value or env_value in _TURN_OBJECTIVE_REMINDER_ON:
-        return True, _TURN_OBJECTIVE_REMINDER_MAX_CHARS
-    if env_value in _TURN_OBJECTIVE_REMINDER_OFF:
+    if not env_value or env_value in _TURN_OBJECTIVE_REMINDER_OFF:
         return False, _TURN_OBJECTIVE_REMINDER_MAX_CHARS
+    if env_value in _TURN_OBJECTIVE_REMINDER_ON:
+        return True, _TURN_OBJECTIVE_REMINDER_MAX_CHARS
     if env_value.startswith(_TURN_OBJECTIVE_REMINDER_TRIM_PREFIX):
         raw_chars = env_value[len(_TURN_OBJECTIVE_REMINDER_TRIM_PREFIX) :]
         if raw_chars.isdigit() and int(raw_chars) > 0:

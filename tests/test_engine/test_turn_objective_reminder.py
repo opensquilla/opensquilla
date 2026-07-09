@@ -1,9 +1,9 @@
-"""Tests for the opt-in turn-objective reminder override.
+"""Tests for the turn-objective reminder override.
 
 OPENSQUILLA_TURN_OBJECTIVE_REMINDER gates the per-turn
 "[Current user request reminder]" user message appended after tool results.
-Unset/"on" must keep the shipped behavior byte-identical; "off" suppresses
-the message; "trim:<chars>" replaces the truncation cap.
+Unset/"off" suppresses the message (the default); "on" restores it;
+"trim:<chars>" restores it with a replacement truncation cap.
 """
 
 import pytest
@@ -17,22 +17,18 @@ from opensquilla.engine.agent import (
 ENV = "OPENSQUILLA_TURN_OBJECTIVE_REMINDER"
 
 
-def test_resolver_defaults_on_with_shipped_cap(monkeypatch) -> None:
+def test_resolver_defaults_off(monkeypatch) -> None:
     monkeypatch.delenv(ENV, raising=False)
 
-    assert _resolve_turn_objective_reminder() == (
-        True,
-        _TURN_OBJECTIVE_REMINDER_MAX_CHARS,
-    )
+    enabled, _ = _resolve_turn_objective_reminder()
+    assert enabled is False
 
 
-def test_resolver_blank_env_keeps_default(monkeypatch) -> None:
+def test_resolver_blank_env_keeps_default_off(monkeypatch) -> None:
     monkeypatch.setenv(ENV, "  ")
 
-    assert _resolve_turn_objective_reminder() == (
-        True,
-        _TURN_OBJECTIVE_REMINDER_MAX_CHARS,
-    )
+    enabled, _ = _resolve_turn_objective_reminder()
+    assert enabled is False
 
 
 def test_resolver_on_keeps_shipped_cap(monkeypatch) -> None:
@@ -115,8 +111,16 @@ def test_agent_init_resolves_env(monkeypatch) -> None:
     assert agent._turn_objective_reminder_max_chars == 1234
 
 
-def test_agent_init_default_matches_shipped_behavior(monkeypatch) -> None:
+def test_agent_init_default_disables_reminder(monkeypatch) -> None:
     monkeypatch.delenv(ENV, raising=False)
+
+    agent = Agent(provider=object())
+
+    assert agent._turn_objective_reminder_enabled is False
+
+
+def test_agent_init_on_restores_shipped_behavior(monkeypatch) -> None:
+    monkeypatch.setenv(ENV, "on")
 
     agent = Agent(provider=object())
 

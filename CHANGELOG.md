@@ -124,6 +124,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Changed
 
+- The per-turn `[Current user request reminder]` message appended after
+  tool-result turns is now off by default. Re-presenting the objective as a
+  fresh user message every turn re-triggered model reasoning on nearly every
+  request (observed 96–99% of requests emitting reasoning tokens, vs 14–31%
+  without it) and broke the provider prompt-cache suffix each turn, which in
+  internal evaluation cut agent throughput roughly 2.5× on long tool-loop
+  tasks without improving outcomes. Set
+  `OPENSQUILLA_TURN_OBJECTIVE_REMINDER=on` to restore the previous behavior
+  byte-identically, or `trim:<chars>` for a shortened variant.
 - An explicitly configured `llm.base_url` now wins over the provider's
   derived environment variable (`OPENAI_BASE_URL`, `OPENROUTER_BASE_URL`, …),
   mirroring the existing api_key rule. Previously the env var silently

@@ -79,6 +79,14 @@
       "connecting": "Conectando",
       "disconnected": "Desconectado"
     },
+    "bgm": {
+      "label": "Música de fondo",
+      "play": "Reproducir música de fondo",
+      "pause": "Pausar música de fondo",
+      "volume": "Volumen",
+      "chooseLocalFile": "Elegir archivo local…",
+      "noTracks": "Sin pistas — añade archivos a music/ o elige un archivo local"
+    },
     "brandHome": "Inicio de OpenSquilla",
     "controlNav": "Navegación de control",
     "primaryNav": "Principal",
@@ -98,7 +106,9 @@
       "themeLabel": "Tema",
       "themeDesc": "Sigue tu sistema o fuerza el modo claro u oscuro. El conmutador de la barra lateral es un atajo a este mismo ajuste.",
       "languageLabel": "Idioma",
-      "languageDesc": "Idioma de visualización de la interfaz. Se aplica al instante a este navegador."
+      "languageDesc": "Idioma de visualización de la interfaz. Se aplica al instante a este navegador.",
+      "bgmLabel": "Música de fondo",
+      "bgmDesc": "Muestra el control de música de fondo en la barra superior. Desactivado por defecto; también se puede alternar desde la paleta de comandos."
     },
     "dialog": {
       "title": "Ajustes",
@@ -1992,7 +2002,9 @@
       "groupMessages": "Mensajes",
       "actionNewChat": "Nuevo chat",
       "actionOpenSettings": "Abrir Ajustes",
-      "actionToggleTheme": "Cambiar tema"
+      "actionToggleTheme": "Cambiar tema",
+      "actionBgmEnable": "Activar música de fondo",
+      "actionBgmDisable": "Desactivar música de fondo"
     },
     "toast": {
       "dismiss": "Descartar notificación"

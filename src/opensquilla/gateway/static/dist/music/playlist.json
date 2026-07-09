@@ -1,0 +1,13 @@
+{
+  "//": [
+    "This tracked manifest deliberately ships empty — no audio files are committed to the repository.",
+    "To add your own music, create playlist.local.json (gitignored) beside this file, for example:",
+    {
+      "tracks": [
+        { "id": "sun-yanzi-yujian", "title": "孙燕姿 - 遇见", "src": "yu-jian.mp3" }
+      ]
+    },
+    "Keys other than 'tracks' are ignored by the loader. See README.md in this directory for the full format."
+  ],
+  "tracks": []
+}

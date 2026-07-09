@@ -235,6 +235,9 @@
         >{{ connectionStateLabel }}</button>
         <span v-else class="conn-pill" :class="rpcStore.state">{{ connectionStateLabel }}</span>
         <DesktopUpdateIndicator />
+        <!-- Opt-in (Settings → Appearance or the command palette); off by
+             default so the topbar stays music-free until asked for. -->
+        <BgmControl v-if="bgmEnabled" />
         <LanguageSwitcher />
         <div class="theme-menu-wrap">
           <button
@@ -403,6 +406,8 @@ import SidebarConversations from './components/SidebarConversations.vue'
 import SidebarSetupBanner from './components/SidebarSetupBanner.vue'
 import CommandPalette from './components/CommandPalette.vue'
 import LanguageSwitcher from './components/LanguageSwitcher.vue'
+import BgmControl from './components/BgmControl.vue'
+import { useBgm } from './composables/useBgm'
 import { useDocumentEvent } from './composables/useDocumentEvent'
 import { useAgentOptions } from './composables/useAgentOptions'
 import { useToasts } from './composables/useToasts'
@@ -455,6 +460,9 @@ const { consoleSections, bottomRoutes, workNav } = useNavigation()
 // Axis-B: the active expressive skin for the routed content area (meta.skin).
 const { skinId, variants } = useSurfaceSkin()
 const { pushToast } = useToasts()
+// Feature-gated topbar music control; the singleton `enabled` ref is written by
+// Settings → Appearance and the command palette.
+const { enabled: bgmEnabled } = useBgm()
 const webConfigEnabled = getPlatform().capabilities.hasWebConfig
 
 installSessionNavigationDiagConsole()

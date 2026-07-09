@@ -79,6 +79,14 @@
       "connecting": "连接中",
       "disconnected": "已断开"
     },
+    "bgm": {
+      "label": "背景音乐",
+      "play": "播放背景音乐",
+      "pause": "暂停背景音乐",
+      "volume": "音量",
+      "chooseLocalFile": "选择本地文件…",
+      "noTracks": "暂无内置曲目 — 请将音频放入 music/ 目录或选择本地文件"
+    },
     "brandHome": "OpenSquilla 主页",
     "controlNav": "控制台导航",
     "primaryNav": "主导航",
@@ -98,7 +106,9 @@
       "themeLabel": "主题",
       "themeDesc": "跟随系统，或强制使用浅色或深色。侧边栏的切换按钮是此设置的快捷方式。",
       "languageLabel": "语言",
-      "languageDesc": "界面的显示语言。即时应用于此浏览器。"
+      "languageDesc": "界面的显示语言。即时应用于此浏览器。",
+      "bgmLabel": "背景音乐",
+      "bgmDesc": "在顶栏显示背景音乐控件。默认关闭；也可通过命令面板切换。"
     },
     "dialog": {
       "title": "设置",
@@ -1992,7 +2002,9 @@
       "groupMessages": "消息",
       "actionNewChat": "新建会话",
       "actionOpenSettings": "打开设置",
-      "actionToggleTheme": "切换主题"
+      "actionToggleTheme": "切换主题",
+      "actionBgmEnable": "开启背景音乐",
+      "actionBgmDisable": "关闭背景音乐"
     },
     "toast": {
       "dismiss": "关闭通知"

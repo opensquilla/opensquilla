@@ -79,6 +79,14 @@
       "connecting": "Wird verbunden",
       "disconnected": "Getrennt"
     },
+    "bgm": {
+      "label": "Hintergrundmusik",
+      "play": "Hintergrundmusik abspielen",
+      "pause": "Hintergrundmusik pausieren",
+      "volume": "Lautstärke",
+      "chooseLocalFile": "Lokale Datei auswählen…",
+      "noTracks": "Keine Titel — Dateien in music/ ablegen oder lokale Datei wählen"
+    },
     "brandHome": "OpenSquilla Startseite",
     "controlNav": "Navigation steuern",
     "primaryNav": "Primär",
@@ -98,7 +106,9 @@
       "themeLabel": "Design",
       "themeDesc": "Dem System folgen oder hell bzw. dunkel erzwingen. Der Schalter in der Seitenleiste ist eine Verknüpfung zu dieser Einstellung.",
       "languageLabel": "Sprache",
-      "languageDesc": "Anzeigesprache der Oberfläche. Wird sofort in diesem Browser übernommen."
+      "languageDesc": "Anzeigesprache der Oberfläche. Wird sofort in diesem Browser übernommen.",
+      "bgmLabel": "Hintergrundmusik",
+      "bgmDesc": "Zeigt das Hintergrundmusik-Element in der oberen Leiste. Standardmäßig aus; auch über die Befehlspalette umschaltbar."
     },
     "dialog": {
       "title": "Einstellungen",
@@ -1992,7 +2002,9 @@
       "groupMessages": "Nachrichten",
       "actionNewChat": "Neuer Chat",
       "actionOpenSettings": "Einstellungen öffnen",
-      "actionToggleTheme": "Design umschalten"
+      "actionToggleTheme": "Design umschalten",
+      "actionBgmEnable": "Hintergrundmusik aktivieren",
+      "actionBgmDisable": "Hintergrundmusik deaktivieren"
     },
     "toast": {
       "dismiss": "Benachrichtigung schließen"

@@ -186,7 +186,7 @@
             <span>Top K</span>
             <input v-model.number="topK" class="control-input control-input--narrow" type="number" min="1" max="20" />
           </label>
-          <button class="btn btn--primary" type="submit" :disabled="searching || !query.trim()">
+          <button class="btn btn--primary" type="submit" :disabled="searching || !query.trim() || !searchProfilePayload">
             <Icon name="search" :size="16" />
             <span>{{ searchActionLabel }}</span>
           </button>
@@ -223,7 +223,7 @@
                 <span class="control-pill">{{ result.languageBucket || 'text' }}</span>
                 <span class="control-pill">{{ result.chunkingStrategy || 'chunker' }}</span>
                 <span class="rag-result__score">
-                  {{ formatResultScorePrimary(result, activeRetrievalProfile.id) }}
+                  {{ formatResultScorePrimary(result, activeRetrievalProfile) }}
                 </span>
               </div>
 
@@ -236,12 +236,12 @@
               <div class="rag-result__meta">
                 <span><strong>Citation</strong>{{ result.citation }}</span>
                 <span><strong>Source</strong>{{ result.source }}</span>
-                <span><strong>Retrieval</strong>{{ result.retrievalProfile || retrievalProfile }}</span>
+                <span><strong>Retrieval</strong>{{ result.retrievalProfile || activeRetrievalProfile.id }}</span>
                 <span
-                  v-for="meta in formatResultScoreMeta(result, activeRetrievalProfile.id)"
-                  :key="`${result.chunkId}-${meta}`"
+                  v-for="meta in formatResultScoreMeta(result, activeRetrievalProfile)"
+                  :key="`${result.chunkId}-${meta.label}-${meta.value}`"
                 >
-                  <strong>{{ meta.split(' ')[0] }}</strong>{{ meta.split(' ').slice(1).join(' ') }}
+                  <strong>{{ meta.label }}</strong> {{ meta.value }}
                 </span>
                 <span v-if="result.pageStart"><strong>Page</strong>{{ result.pageStart }}</span>
                 <span><strong>Chunk</strong>{{ shortId(result.chunkId) }}</span>
@@ -486,13 +486,36 @@ const sourceLabel = computed(() => basename(status.value?.rootDir || sourceRoot.
 const searchLimitLabel = computed(() => `top ${Number(topK.value || 0) || 8}`)
 const activeIndexProfile = computed(() => status.value?.indexProfiles?.[0] || indexProfile.value)
 const retrievalProfiles = computed(() => retrievalProfilesFromStatus(status.value))
-const activeRetrievalProfile = computed(() => selectedRetrievalProfile(status.value, retrievalProfile.value))
+const activeRetrievalProfile = computed(() => (
+  selectedRetrievalProfile(status.value, retrievalProfile.value)
+  || retrievalProfiles.value.find((profile) => profile.id === retrievalProfile.value)
+  || retrievalProfiles.value[0]
+))
+const searchProfilePayload = computed(() => buildSearchProfilePayload(status.value, retrievalProfile.value))
+const hasVectorStatus = computed(() => (
+  hasStatusField('vectorCoveragePct') || hasStatusField('vectorChunksIndexed')
+))
+const hasEmbeddingStatus = computed(() => (
+  hasStatusField('embeddingModel')
+  || hasStatusField('embeddingDimensions')
+  || hasStatusField('embeddingWarnings')
+))
 const embeddingHint = computed(() => {
+  if (!hasEmbeddingStatus.value) return 'not reported'
   const model = status.value?.embeddingModel
   const dimensions = status.value?.embeddingDimensions
   return model && dimensions ? `${model} · ${dimensions}d` : 'not indexed'
 })
+const embeddingStatusLabel = computed(() => {
+  if (!hasEmbeddingStatus.value) return 'Unknown'
+  return status.value?.embeddingModel ? 'Ready' : 'Missing'
+})
+const embeddingStatusClass = computed(() => {
+  if (!hasEmbeddingStatus.value) return ''
+  return status.value?.embeddingModel ? 'control-stat--accent' : 'control-stat--warn'
+})
 const vectorCoverageLabel = computed(() => {
+  if (!hasVectorStatus.value) return 'N/A'
   const coverage = status.value?.vectorCoveragePct
   return coverage === null || coverage === undefined ? '-' : `${Number(coverage).toFixed(1)}%`
 })
@@ -528,7 +551,7 @@ const statusMetrics = computed(() => [
     label: 'Vector',
     value: vectorCoverageLabel.value,
     hint: 'Embedding coverage',
-    className: Number(status.value?.vectorCoveragePct || 0) >= 99
+    className: hasVectorStatus.value && Number(status.value?.vectorCoveragePct || 0) >= 99
       ? 'control-stat--accent'
       : '',
   },
@@ -540,9 +563,9 @@ const statusMetrics = computed(() => [
   },
   {
     label: 'Embedding',
-    value: status.value?.embeddingModel ? 'Ready' : 'Missing',
+    value: embeddingStatusLabel.value,
     hint: embeddingHint.value,
-    className: status.value?.embeddingModel ? 'control-stat--accent' : 'control-stat--warn',
+    className: embeddingStatusClass.value,
   },
 ])
 
@@ -621,6 +644,11 @@ function selectQuestion(question: KnowledgeQuestion): void {
 async function runSearch(): Promise<void> {
   const cleanQuery = query.value.trim()
   if (!cleanQuery) return
+  const profilePayload = searchProfilePayload.value
+  if (!profilePayload) {
+    error.value = 'No retrieval profile available'
+    return
+  }
   searching.value = true
   error.value = ''
   selectedDetail.value = null
@@ -630,7 +658,7 @@ async function runSearch(): Promise<void> {
       query: cleanQuery,
       topK: Number(topK.value || 8),
       collectionId: collectionName.value.trim() || 'datasets',
-      ...buildSearchProfilePayload(status.value, retrievalProfile.value),
+      ...profilePayload,
     })
     results.value = payload.results || []
   } catch (err) {
@@ -704,6 +732,10 @@ function shortId(value?: string): string {
 
 function formatCount(value: unknown): string {
   return new Intl.NumberFormat().format(Number(value || 0))
+}
+
+function hasStatusField(field: keyof KnowledgeStatus): boolean {
+  return Boolean(status.value && Object.prototype.hasOwnProperty.call(status.value, field))
 }
 
 function messageFromError(err: unknown): string {

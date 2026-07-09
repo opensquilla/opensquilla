@@ -29,14 +29,14 @@ describe('knowledge retrieval helpers', () => {
         {
           id: 'sqlite_fts5_default',
           label: 'SQLite FTS5',
-          kind: 'lexical',
+          kind: 'lexical' as const,
           available: true,
           reason: null,
         },
         {
           id: 'hybrid_rrf_bge_m3_fts5',
           label: 'Hybrid RRF',
-          kind: 'hybrid',
+          kind: 'hybrid' as const,
           available: true,
           reason: null,
           model: 'baai/bge-m3',
@@ -65,14 +65,14 @@ describe('knowledge retrieval helpers', () => {
           {
             id: 'sqlite_fts5_default',
             label: 'SQLite FTS5',
-            kind: 'lexical',
+            kind: 'lexical' as const,
             available: true,
             reason: null,
           },
           {
             id: 'hybrid_rrf_bge_m3_fts5',
             label: 'Hybrid RRF',
-            kind: 'hybrid',
+            kind: 'hybrid' as const,
             available: true,
             reason: null,
             model: 'baai/bge-m3',
@@ -91,14 +91,14 @@ describe('knowledge retrieval helpers', () => {
           {
             id: 'sqlite_fts5_default',
             label: 'SQLite FTS5',
-            kind: 'lexical',
+            kind: 'lexical' as const,
             available: true,
             reason: null,
           },
           {
             id: 'hybrid_rrf_bge_m3_fts5',
             label: 'Hybrid RRF',
-            kind: 'hybrid',
+            kind: 'hybrid' as const,
             available: false,
             reason: 'fts_or_vector_index_empty',
             model: 'baai/bge-m3',
@@ -118,14 +118,14 @@ describe('knowledge retrieval helpers', () => {
             {
               id: 'sqlite_fts5_default',
               label: 'SQLite FTS5',
-              kind: 'lexical',
+              kind: 'lexical' as const,
               available: false,
               reason: 'fts_index_empty',
             },
             {
               id: 'hybrid_rrf_bge_m3_fts5',
               label: 'Hybrid RRF',
-              kind: 'hybrid',
+              kind: 'hybrid' as const,
               available: true,
               reason: null,
               model: 'baai/bge-m3',
@@ -146,7 +146,7 @@ describe('knowledge retrieval helpers', () => {
             {
               id: 'hybrid_rrf_bge_m3_fts5',
               label: 'Hybrid RRF',
-              kind: 'hybrid',
+              kind: 'hybrid' as const,
               available: true,
               reason: null,
               model: 'baai/bge-m3',
@@ -172,14 +172,14 @@ describe('knowledge retrieval helpers', () => {
             {
               id: 'sqlite_fts5_default',
               label: 'SQLite FTS5',
-              kind: 'lexical',
+              kind: 'lexical' as const,
               available: true,
               reason: null,
             },
             {
               id: 'hybrid_rrf_bge_m3_fts5',
               label: 'Hybrid RRF',
-              kind: 'hybrid',
+              kind: 'hybrid' as const,
               available: true,
               reason: null,
               model: 'baai/bge-m3',
@@ -202,14 +202,14 @@ describe('knowledge retrieval helpers', () => {
             {
               id: 'sqlite_fts5_default',
               label: 'SQLite FTS5',
-              kind: 'lexical',
+              kind: 'lexical' as const,
               available: true,
               reason: null,
             },
             {
               id: 'hybrid_rrf_bge_m3_fts5',
               label: 'Hybrid RRF',
-              kind: 'hybrid',
+              kind: 'hybrid' as const,
               available: true,
               reason: null,
               model: 'baai/bge-m3',
@@ -231,7 +231,7 @@ describe('knowledge retrieval helpers', () => {
             {
               id: 'hybrid_rrf_bge_m3_fts5',
               label: 'Hybrid RRF',
-              kind: 'hybrid',
+              kind: 'hybrid' as const,
               available: true,
               reason: null,
               model: 'baai/bge-m3',
@@ -240,7 +240,7 @@ describe('knowledge retrieval helpers', () => {
             {
               id: 'vector_bge_m3_1024',
               label: 'Vector bge-m3',
-              kind: 'vector',
+              kind: 'vector' as const,
               available: false,
               reason: 'vector_index_empty',
               model: 'baai/bge-m3',
@@ -266,14 +266,14 @@ describe('knowledge retrieval helpers', () => {
             {
               id: 'sqlite_fts5_default',
               label: 'SQLite FTS5',
-              kind: 'lexical',
+              kind: 'lexical' as const,
               available: true,
               reason: null,
             },
             {
               id: 'vector_bge_m3_1024',
               label: 'Vector bge-m3',
-              kind: 'vector',
+              kind: 'vector' as const,
               available: false,
               reason: 'vector_index_empty',
               model: 'baai/bge-m3',
@@ -286,40 +286,51 @@ describe('knowledge retrieval helpers', () => {
     ).toBe('Searching')
   })
 
-  it('uses fallback payload when all service profiles are unavailable', () => {
-    expect(
-      buildSearchProfilePayload(
+  it('does not build a search payload when all service profiles are unavailable', () => {
+    const allUnavailableStatus = {
+      defaultRetrievalProfile: 'vector_bge_m3_1024',
+      retrievalProfiles: [
         {
-          defaultRetrievalProfile: 'vector_bge_m3_1024',
-          retrievalProfiles: [
-            {
-              id: 'vector_bge_m3_1024',
-              label: 'Vector bge-m3',
-              kind: 'vector',
-              available: false,
-              reason: 'vector_index_empty',
-              model: 'baai/bge-m3',
-              dimensions: 1024,
-            },
-            {
-              id: 'hybrid_rrf_bge_m3_fts5',
-              label: 'Hybrid RRF',
-              kind: 'hybrid',
-              available: false,
-              reason: 'fts_or_vector_index_empty',
-              model: 'baai/bge-m3',
-              dimensions: 1024,
-            },
-          ],
+          id: 'vector_bge_m3_1024',
+          label: 'Vector bge-m3',
+          kind: 'vector' as const,
+          available: false,
+          reason: 'vector_index_empty',
+          model: 'baai/bge-m3',
+          dimensions: 1024,
         },
-        'vector_bge_m3_1024',
-      ),
-    ).toEqual({
-      retrievalProfile: 'sqlite_fts5_default',
-    })
+        {
+          id: 'hybrid_rrf_bge_m3_fts5',
+          label: 'Hybrid RRF',
+          kind: 'hybrid' as const,
+          available: false,
+          reason: 'fts_or_vector_index_empty',
+          model: 'baai/bge-m3',
+          dimensions: 1024,
+        },
+      ],
+    }
+
+    expect(buildSearchProfilePayload(allUnavailableStatus, 'vector_bge_m3_1024')).toBeNull()
+    expect(defaultRetrievalProfileId(allUnavailableStatus, 'missing_profile')).toBe('vector_bge_m3_1024')
   })
 
-  it('formats hybrid and vector scores', () => {
+  it('formats hybrid and vector scores from resolved profile kind', () => {
+    const hybridProfile = {
+      id: 'hybrid_rrf_bge_m3_fts5',
+      label: 'Hybrid RRF',
+      kind: 'hybrid' as const,
+      available: true,
+      reason: null,
+    }
+    const vectorProfile = {
+      id: 'vector_bge_m3_1024',
+      label: 'Vector bge-m3',
+      kind: 'vector' as const,
+      available: true,
+      reason: null,
+    }
+
     expect(
       formatResultScorePrimary(
         {
@@ -327,7 +338,7 @@ describe('knowledge retrieval helpers', () => {
           fusionScore: 0.022529,
           retrievalProfile: 'hybrid_rrf_bge_m3_fts5',
         },
-        'sqlite_fts5_default',
+        hybridProfile,
       ),
     ).toBe('fusion 0.023')
     expect(
@@ -340,9 +351,13 @@ describe('knowledge retrieval helpers', () => {
           fusionScore: 0.022529,
           retrievalProfile: 'hybrid_rrf_bge_m3_fts5',
         },
-        'sqlite_fts5_default',
+        hybridProfile,
       ),
-    ).toEqual(['BM25 -12.346', 'Vector #4', 'Vector score 0.789'])
+    ).toEqual([
+      { label: 'BM25', value: '-12.346' },
+      { label: 'Vector', value: '#4' },
+      { label: 'Vector score', value: '0.789' },
+    ])
 
     expect(
       formatResultScorePrimary(
@@ -351,7 +366,7 @@ describe('knowledge retrieval helpers', () => {
           vectorScore: 0.81234,
           retrievalProfile: 'vector_bge_m3_1024',
         },
-        'sqlite_fts5_default',
+        vectorProfile,
       ),
     ).toBe('vector 0.812')
     expect(
@@ -363,9 +378,50 @@ describe('knowledge retrieval helpers', () => {
           vectorScore: 0.81234,
           retrievalProfile: 'vector_bge_m3_1024',
         },
-        'sqlite_fts5_default',
+        vectorProfile,
       ),
-    ).toEqual(['Vector #2', 'Vector score 0.812'])
+    ).toEqual([
+      { label: 'Vector', value: '#2' },
+      { label: 'Vector score', value: '0.812' },
+    ])
+  })
+
+  it('formats custom hybrid profile ids by kind', () => {
+    const customHybridProfile = {
+      id: 'hybrid_custom_rrf',
+      label: 'Custom Hybrid',
+      kind: 'hybrid' as const,
+      available: true,
+      reason: null,
+    }
+
+    expect(
+      formatResultScorePrimary(
+        {
+          score: 0.11,
+          fusionScore: 0.4567,
+          retrievalProfile: 'hybrid_custom_rrf',
+        },
+        customHybridProfile,
+      ),
+    ).toBe('fusion 0.457')
+    expect(
+      formatResultScoreMeta(
+        {
+          score: 0.11,
+          bm25Rank: -3.2,
+          vectorRank: 3,
+          vectorScore: 0.7654,
+          fusionScore: 0.4567,
+          retrievalProfile: 'hybrid_custom_rrf',
+        },
+        customHybridProfile,
+      ),
+    ).toEqual([
+      { label: 'BM25', value: '-3.200' },
+      { label: 'Vector', value: '#3' },
+      { label: 'Vector score', value: '0.765' },
+    ])
   })
 
   it('uses embedding retrieval label for vector and hybrid searches', () => {
@@ -376,7 +432,7 @@ describe('knowledge retrieval helpers', () => {
             {
               id: 'vector_bge_m3_1024',
               label: 'Vector bge-m3',
-              kind: 'vector',
+              kind: 'vector' as const,
               available: true,
               reason: null,
               model: 'baai/bge-m3',
@@ -395,7 +451,7 @@ describe('knowledge retrieval helpers', () => {
             {
               id: 'hybrid_rrf_bge_m3_fts5',
               label: 'Hybrid RRF',
-              kind: 'hybrid',
+              kind: 'hybrid' as const,
               available: true,
               reason: null,
               model: 'baai/bge-m3',
@@ -416,7 +472,7 @@ describe('knowledge retrieval helpers', () => {
             {
               id: 'sqlite_fts5_default',
               label: 'SQLite FTS5',
-              kind: 'lexical',
+              kind: 'lexical' as const,
               available: true,
               reason: null,
             },
@@ -436,14 +492,14 @@ const SERVICE_PROFILES = [
   {
     id: 'sqlite_fts5_default',
     label: 'SQLite FTS5',
-    kind: 'lexical',
+    kind: 'lexical' as const,
     available: true,
     reason: null,
   },
   {
     id: 'hybrid_rrf_bge_m3_fts5',
     label: 'Hybrid RRF',
-    kind: 'hybrid',
+    kind: 'hybrid' as const,
     available: true,
     reason: null,
     model: 'baai/bge-m3',
@@ -452,7 +508,7 @@ const SERVICE_PROFILES = [
   {
     id: 'vector_bge_m3_1024',
     label: 'Vector bge-m3',
-    kind: 'vector',
+    kind: 'vector' as const,
     available: false,
     reason: 'vector_index_empty',
     model: 'baai/bge-m3',
@@ -508,8 +564,8 @@ async function flushUi(): Promise<void> {
   await nextTick()
 }
 
-async function mountKnowledgeView(options: { status?: Record<string, unknown>; results?: Array<Record<string, unknown>> } = {}) {
-  const status = statusPayload(options.status)
+async function mountKnowledgeView(options: { status?: Record<string, unknown>; rawStatus?: Record<string, unknown>; results?: Array<Record<string, unknown>> } = {}) {
+  const status = options.rawStatus || statusPayload(options.status)
   const results = options.results || [searchResult()]
 
   rpcMock.waitForConnection.mockResolvedValue(undefined)
@@ -598,7 +654,8 @@ describe('KnowledgeView retrieval UI wiring', () => {
       embeddingDimensions: 1024,
     })
     expect(el.textContent).toContain('fusion 0.023')
-    expect(el.textContent).toContain('Vector#2')
+    expect(el.textContent).toContain('Vector #2')
+    expect(el.textContent).not.toContain('Vector#2')
   })
 
   it('keeps ingest index profile separate from the selected retrieval profile', async () => {
@@ -615,5 +672,71 @@ describe('KnowledgeView retrieval UI wiring', () => {
     expect(rpcCall('knowledge.ingest')?.[1]).toMatchObject({
       indexProfiles: ['sqlite_fts5_default'],
     })
+  })
+
+  it('disables search and avoids RPC when service profiles are all unavailable', async () => {
+    const { el } = await mountKnowledgeView({
+      status: {
+        retrievalProfiles: [
+          {
+            id: 'vector_bge_m3_1024',
+            label: 'Vector bge-m3',
+            kind: 'vector' as const,
+            available: false,
+            reason: 'vector_index_empty',
+            model: 'baai/bge-m3',
+            dimensions: 1024,
+          },
+          {
+            id: 'hybrid_custom_rrf',
+            label: 'Custom Hybrid',
+            kind: 'hybrid' as const,
+            available: false,
+            reason: 'fts_or_vector_index_empty',
+            model: 'baai/bge-m3',
+            dimensions: 1024,
+          },
+        ],
+        defaultRetrievalProfile: 'vector_bge_m3_1024',
+      },
+    })
+
+    const query = el.querySelector<HTMLTextAreaElement>('.rag-searchbar__query')
+    if (!query) throw new Error('search query input not found')
+    setInputValue(query, 'Can I search?')
+    await flushUi()
+
+    const button = el.querySelector<HTMLButtonElement>('form.rag-searchbar button[type="submit"]')
+    if (!button) throw new Error('search button not found')
+    expect(button.disabled).toBe(true)
+
+    const form = el.querySelector<HTMLFormElement>('form.rag-searchbar')
+    if (!form) throw new Error('search form not found')
+    form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
+    await flushUi()
+
+    expect(rpcMock.call.mock.calls.filter((call) => call[0] === 'knowledge.search')).toHaveLength(0)
+    expect(el.textContent).toContain('No retrieval profile available')
+  })
+
+  it('shows unknown embedding status without warning class for legacy status payloads', async () => {
+    const { el } = await mountKnowledgeView({
+      rawStatus: {
+        rootDir: '/mnt/data/datasets',
+        documentsIndexed: 3,
+        chunksIndexed: 12,
+        filesIndexed: 3,
+        pipeline: 'legacy pipeline',
+        indexProfiles: ['sqlite_fts5_default'],
+      },
+    })
+
+    const embeddingCard = Array.from(el.querySelectorAll<HTMLElement>('.control-stat'))
+      .find((card) => card.querySelector('.control-stat__label')?.textContent?.trim() === 'Embedding')
+    if (!embeddingCard) throw new Error('embedding metric not found')
+
+    expect(embeddingCard.textContent).toContain('Unknown')
+    expect(embeddingCard.textContent).not.toContain('Missing')
+    expect(embeddingCard.classList.contains('control-stat--warn')).toBe(false)
   })
 })

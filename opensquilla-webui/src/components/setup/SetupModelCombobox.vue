@@ -47,8 +47,20 @@ const fieldName = computed(() => `setup_provider_${String(props.field.name || 'm
 
 const query = computed(() => String(props.value || '').trim().toLowerCase())
 
+// The discovered id exactly matching the field's current value, if any.
+const selectedId = computed(() => {
+  const typed = String(props.value || '').trim()
+  return typed && props.models.some(model => model.id === typed) ? typed : ''
+})
+
 const matches = computed(() => {
-  if (!query.value || !typedSinceOpen.value) return props.models
+  if (!query.value || !typedSinceOpen.value) {
+    // Full-list mode: pin the current model first so it stays rendered and
+    // findable even when the list is longer than the MAX_ROWS window.
+    const idx = selectedId.value ? props.models.findIndex(m => m.id === selectedId.value) : -1
+    if (idx <= 0) return props.models
+    return [props.models[idx], ...props.models.slice(0, idx), ...props.models.slice(idx + 1)]
+  }
   return props.models.filter(model =>
     model.id.toLowerCase().includes(query.value) || model.name.toLowerCase().includes(query.value),
   )
@@ -62,15 +74,19 @@ const truncatedCount = computed(() => Math.max(0, matches.value.length - visible
 const showFreeTextRow = computed(() => {
   const typed = String(props.value || '').trim()
   if (!typed) return false
-  return !props.models.some(model => model.id === typed)
+  return !selectedId.value
 })
 
 const optionCount = computed(() => visibleModels.value.length + (showFreeTextRow.value ? 1 : 0))
 
 // Muted provenance footer (progressive disclosure): where the list and the
-// per-model metadata came from, once, instead of per-row badges.
+// per-model metadata came from, once, instead of per-row badges. Empty (and
+// hidden) unless the list really is live and at least one row names a source —
+// the copy asserts "live list from the provider".
 const provenance = computed(() => {
+  if (props.modelSource !== 'live') return ''
   const sources = Array.from(new Set(props.models.map(model => model.capabilitySource).filter(Boolean)))
+  if (!sources.length) return ''
   return t('setup.provider.modelProvenance', { sources: sources.join(', ') })
 })
 
@@ -99,10 +115,19 @@ function onInput(event: Event) {
   activeIndex.value = -1
 }
 
-function onFocus() {
+// The single way to open in full-list mode; every open path that is not a
+// text edit must go through it so the filter never leaks across opens.
+function openList() {
   open.value = true
   typedSinceOpen.value = false
   activeIndex.value = -1
+}
+
+function onClick() {
+  // Reopen on click for a still-focused input (row click / Escape keep DOM
+  // focus, so no new `focus` event will fire). Never touch an open list —
+  // caret moves while editing must not clear an in-progress filter.
+  if (!open.value) openList()
 }
 
 function close() {
@@ -124,13 +149,19 @@ function selectAt(index: number) {
 
 function onKeydown(event: KeyboardEvent) {
   if (event.key === 'Escape') {
-    close()
+    // Consume Escape only when it dismisses the list; a closed combobox lets
+    // it bubble so enclosing dialogs keep their Escape-to-close behavior.
+    if (open.value) {
+      event.preventDefault()
+      event.stopPropagation()
+      close()
+    }
     return
   }
   if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
     event.preventDefault()
     if (!open.value) {
-      open.value = true
+      openList()
       return
     }
     if (!optionCount.value) return
@@ -166,7 +197,8 @@ function onKeydown(event: KeyboardEvent) {
         :value="value"
         :placeholder="field.placeholder || ''"
         @input="onInput"
-        @focus="onFocus"
+        @focus="openList"
+        @click="onClick"
         @blur="close"
         @keydown="onKeydown"
       >
@@ -185,7 +217,7 @@ function onKeydown(event: KeyboardEvent) {
           class="setup-model-combobox__row"
           :class="{ 'is-active': index === activeIndex }"
           role="option"
-          :aria-selected="model.id === value ? 'true' : 'false'"
+          :aria-selected="model.id === selectedId ? 'true' : 'false'"
           @mousedown.prevent
           @click="selectModel(model.id)"
         >
@@ -210,7 +242,7 @@ function onKeydown(event: KeyboardEvent) {
         <div v-if="truncatedCount" class="setup-model-combobox__footer">
           {{ t('setup.provider.modelListTruncated', { shown: visibleModels.length, total: matches.length }) }}
         </div>
-        <div class="setup-model-combobox__footer">{{ provenance }}</div>
+        <div v-if="provenance" class="setup-model-combobox__footer">{{ provenance }}</div>
       </div>
     </div>
   </div>

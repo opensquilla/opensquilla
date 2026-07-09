@@ -1,5 +1,5 @@
 // @vitest-environment happy-dom
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createApp, nextTick } from 'vue'
 import i18n from '@/i18n'
 import SetupModelCombobox from './SetupModelCombobox.vue'
@@ -28,6 +28,20 @@ const MODELS: DiscoveredModel[] = [
 
 const FIELD = { name: 'model', label: 'Model' }
 
+function makeModel(id: string, capabilitySource = 'provider'): DiscoveredModel {
+  return {
+    id,
+    name: id,
+    contextWindow: 32768,
+    maxOutputTokens: null,
+    capabilities: ['chat'],
+    pricing: null,
+    capabilitySource,
+  }
+}
+
+const mountedApps: ReturnType<typeof createApp>[] = []
+
 async function mountCombobox(props: Record<string, unknown> = {}) {
   const el = document.createElement('div')
   document.body.appendChild(el)
@@ -40,8 +54,9 @@ async function mountCombobox(props: Record<string, unknown> = {}) {
   })
   app.use(i18n)
   app.mount(el)
+  mountedApps.push(app)
   await nextTick()
-  return { app, el }
+  return { el }
 }
 
 async function openList(el: HTMLElement) {
@@ -53,20 +68,25 @@ async function openList(el: HTMLElement) {
 
 beforeEach(() => {
   i18n.global.locale.value = 'en'
+})
+
+afterEach(() => {
+  // Unmount here, not per-test, so a failed assertion cannot leak a live app
+  // (and its focus/blur handlers) into the next test.
+  mountedApps.splice(0).forEach(app => app.unmount())
   document.body.innerHTML = ''
 })
 
 describe('SetupModelCombobox', () => {
   it('is a plain text input until opened — free text always works', async () => {
-    const { app, el } = await mountCombobox({ value: 'my/custom-model' })
+    const { el } = await mountCombobox({ value: 'my/custom-model' })
     const input = el.querySelector<HTMLInputElement>('input[name="setup_provider_model"]')
     expect(input?.value).toBe('my/custom-model')
     expect(el.querySelector('[role="listbox"]')).toBeNull()
-    app.unmount()
   })
 
   it('opens on focus and lists models with compact context window and capability hints', async () => {
-    const { app, el } = await mountCombobox()
+    const { el } = await mountCombobox()
     await openList(el)
 
     const rows = Array.from(el.querySelectorAll('[role="option"]'))
@@ -77,24 +97,37 @@ describe('SetupModelCombobox', () => {
     expect(rows[0].textContent).not.toContain('chat') // baseline capability is noise
     expect(rows[1].textContent).toContain('128k')
     expect(rows[1].textContent).toContain('vision')
-    app.unmount()
   })
 
   it('shows the full list on focus even when the field holds a saved model id', async () => {
     // Regression: filtering against the pre-filled value on open used to hide
     // every other discovered model behind an exact match.
-    const { app, el } = await mountCombobox({ value: 'test-vendor/alpha' })
+    const { el } = await mountCombobox({ value: 'test-vendor/alpha' })
     await openList(el)
 
     const rows = Array.from(el.querySelectorAll('[role="option"]'))
     expect(rows).toHaveLength(2) // both models, no escape row for an exact id
     expect(rows[0].getAttribute('aria-selected')).toBe('true')
     expect(rows[1].textContent).toContain('test-vendor/beta-vision')
-    app.unmount()
+  })
+
+  it('pins the saved model to the top when the list exceeds the visible window', async () => {
+    // Regression: with >MAX_ROWS discovered models, a saved id sorted past the
+    // window used to be truncated out of the dropdown entirely.
+    const many = Array.from({ length: 60 }, (_, i) => makeModel(`test-vendor/bulk-${i}`))
+    const { el } = await mountCombobox({ models: [...many, makeModel('test-vendor/omega')], value: 'test-vendor/omega' })
+    await openList(el)
+
+    const rows = Array.from(el.querySelectorAll('[role="option"]'))
+    expect(rows).toHaveLength(40) // MAX_ROWS window
+    expect(rows[0].textContent).toContain('test-vendor/omega')
+    expect(rows[0].getAttribute('aria-selected')).toBe('true')
+    const footers = Array.from(el.querySelectorAll('.setup-model-combobox__footer'))
+    expect(footers.some(f => (f.textContent || '').includes('Showing 40 of 61'))).toBe(true)
   })
 
   it('filters rows once the user types and offers a free-text escape row', async () => {
-    const { app, el } = await mountCombobox({ value: 'beta' })
+    const { el } = await mountCombobox({ value: 'beta' })
     const input = await openList(el)
     input.dispatchEvent(new Event('input'))
     await nextTick()
@@ -104,11 +137,10 @@ describe('SetupModelCombobox', () => {
     expect(rows).toHaveLength(2)
     expect(rows[0].textContent).toContain('test-vendor/beta-vision')
     expect(rows[1].textContent).toContain('Use "beta"')
-    app.unmount()
   })
 
   it('drops the filter again on the next open after blur', async () => {
-    const { app, el } = await mountCombobox({ value: 'beta' })
+    const { el } = await mountCombobox({ value: 'beta' })
     const input = await openList(el)
     input.dispatchEvent(new Event('input'))
     await nextTick()
@@ -120,12 +152,11 @@ describe('SetupModelCombobox', () => {
 
     const rows = Array.from(el.querySelectorAll('[role="option"]'))
     expect(rows).toHaveLength(3) // full list again + escape row for "beta"
-    app.unmount()
   })
 
   it('emits update with the model id when a row is clicked and closes the list', async () => {
     const onUpdate = vi.fn()
-    const { app, el } = await mountCombobox({ onUpdate })
+    const { el } = await mountCombobox({ onUpdate })
     await openList(el)
 
     const rows = el.querySelectorAll<HTMLButtonElement>('[role="option"]')
@@ -134,12 +165,41 @@ describe('SetupModelCombobox', () => {
 
     expect(onUpdate).toHaveBeenCalledWith('test-vendor/beta-vision')
     expect(el.querySelector('[role="listbox"]')).toBeNull()
-    app.unmount()
+  })
+
+  it('reopens the full list when the still-focused input is clicked again', async () => {
+    // Row clicks keep DOM focus on the input (mousedown is prevented), so no
+    // new `focus` event will fire — the click handler must reopen the list.
+    const { el } = await mountCombobox()
+    const input = await openList(el)
+    el.querySelectorAll<HTMLButtonElement>('[role="option"]')[0].click()
+    await nextTick()
+    expect(el.querySelector('[role="listbox"]')).toBeNull()
+
+    input.dispatchEvent(new MouseEvent('click'))
+    await nextTick()
+    expect(el.querySelectorAll('[role="option"]')).toHaveLength(2) // full list again
+  })
+
+  it('consumes Escape while the list is open and lets it bubble once closed', async () => {
+    const { el } = await mountCombobox()
+    const input = await openList(el)
+
+    const whileOpen = new KeyboardEvent('keydown', { key: 'Escape', cancelable: true, bubbles: true })
+    input.dispatchEvent(whileOpen)
+    await nextTick()
+    expect(el.querySelector('[role="listbox"]')).toBeNull()
+    expect(whileOpen.defaultPrevented).toBe(true) // dropdown-only dismiss
+
+    const whileClosed = new KeyboardEvent('keydown', { key: 'Escape', cancelable: true, bubbles: true })
+    input.dispatchEvent(whileClosed)
+    await nextTick()
+    expect(whileClosed.defaultPrevented).toBe(false) // enclosing dialog may close
   })
 
   it('clicking the free-text escape row keeps the typed value and just closes', async () => {
     const onUpdate = vi.fn()
-    const { app, el } = await mountCombobox({ value: 'my/custom-model', onUpdate })
+    const { el } = await mountCombobox({ value: 'my/custom-model', onUpdate })
     await openList(el)
 
     const rows = Array.from(el.querySelectorAll<HTMLButtonElement>('[role="option"]'))
@@ -150,12 +210,11 @@ describe('SetupModelCombobox', () => {
 
     expect(onUpdate).not.toHaveBeenCalled() // the typed value is already the field value
     expect(el.querySelector('[role="listbox"]')).toBeNull()
-    app.unmount()
   })
 
   it('typing emits update and reopens the list', async () => {
     const onUpdate = vi.fn()
-    const { app, el } = await mountCombobox({ onUpdate })
+    const { el } = await mountCombobox({ onUpdate })
     const input = el.querySelector<HTMLInputElement>('input[role="combobox"]')!
     input.value = 'alp'
     input.dispatchEvent(new Event('input'))
@@ -163,12 +222,11 @@ describe('SetupModelCombobox', () => {
 
     expect(onUpdate).toHaveBeenCalledWith('alp')
     expect(el.querySelector('[role="listbox"]')).toBeTruthy()
-    app.unmount()
   })
 
   it('selects the active row with Enter after arrow-key navigation', async () => {
     const onUpdate = vi.fn()
-    const { app, el } = await mountCombobox({ onUpdate })
+    const { el } = await mountCombobox({ onUpdate })
     const input = await openList(el)
 
     input.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown' }))
@@ -177,11 +235,10 @@ describe('SetupModelCombobox', () => {
     await nextTick()
 
     expect(onUpdate).toHaveBeenCalledWith('test-vendor/alpha')
-    app.unmount()
   })
 
   it('shows provenance once in a muted footer, not per-row badges', async () => {
-    const { app, el } = await mountCombobox()
+    const { el } = await mountCombobox()
     await openList(el)
 
     const footers = Array.from(el.querySelectorAll('.setup-model-combobox__footer'))
@@ -190,6 +247,16 @@ describe('SetupModelCombobox', () => {
     // per-row rows never carry the capabilitySource enum
     const rows = Array.from(el.querySelectorAll('[role="option"]'))
     expect(rows.every(row => !(row.textContent || '').includes('synthesized'))).toBe(true)
-    app.unmount()
+  })
+
+  it('omits the provenance footer when no row names a metadata source', async () => {
+    const { el } = await mountCombobox({
+      models: [makeModel('test-vendor/plain', ''), makeModel('test-vendor/other', '')],
+    })
+    await openList(el)
+
+    const footers = Array.from(el.querySelectorAll('.setup-model-combobox__footer'))
+    // No dangling "details from " sentence with an empty source list.
+    expect(footers.every(f => !(f.textContent || '').includes('Live list'))).toBe(true)
   })
 })

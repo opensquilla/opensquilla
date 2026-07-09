@@ -9,9 +9,20 @@ const PNG_1x1 = Buffer.from(
   'base64',
 )
 
-// Seed one finished assistant turn carrying a single image artifact with a
-// thumbnail variant, rewriting chat.history in flight.
-async function seedHistory(page: Page) {
+const DEFAULT_ARTIFACTS = [
+  {
+    id: 'art-preview-img',
+    name: 'render.png',
+    mime: 'image/png',
+    size: 744448,
+    download_url: '/api/v1/artifacts/art-preview-img',
+    thumbnail_url: '/api/v1/artifacts/art-preview-img?variant=thumb',
+  },
+]
+
+// Seed one finished assistant turn carrying image artifacts with thumbnail
+// variants, rewriting chat.history in flight.
+async function seedHistory(page: Page, artifacts: object[] = DEFAULT_ARTIFACTS) {
   await page.routeWebSocket(/\/ws$/, ws => {
     const server = ws.connectToServer()
     const historyIds = new Set<string>()
@@ -44,16 +55,7 @@ async function seedHistory(page: Page) {
                 text: 'Here it is.',
                 id: 'msg-preview-assistant',
                 timestamp: Math.floor(Date.now() / 1000) - 60,
-                artifacts: [
-                  {
-                    id: 'art-preview-img',
-                    name: 'render.png',
-                    mime: 'image/png',
-                    size: 744448,
-                    download_url: '/api/v1/artifacts/art-preview-img',
-                    thumbnail_url: '/api/v1/artifacts/art-preview-img?variant=thumb',
-                  },
-                ],
+                artifacts,
               },
             ],
             has_more: false,
@@ -71,8 +73,8 @@ function fulfillPng(route: Route) {
   return route.fulfill({ status: 200, contentType: 'image/png', body: PNG_1x1 })
 }
 
-async function openSeeded(page: Page) {
-  await seedHistory(page)
+async function openSeeded(page: Page, artifacts?: object[]) {
+  await seedHistory(page, artifacts)
   await page.goto(CONTROL_URL + 'chat?session=' + encodeURIComponent(SESSION_KEY))
   await page.waitForSelector('.conn-pill', { timeout: 10000 })
   await page.waitForSelector('.chat-header', { timeout: 10000 })
@@ -165,6 +167,65 @@ test.describe('Artifact preview performance and slow-network states', () => {
 
     expect(popupOpened).toBe(false)
     expect(downloadTriggered).toBe(false)
+  })
+
+  test('the lightbox frame stays the same size when navigating between images', async ({ page }) => {
+    // Two SVGs whose declared intrinsic sizes differ wildly: a small explicit
+    // pixel size vs. a viewBox with no width/height at all. Before the fixed
+    // media frame, the shrink-wrapped panel resized to each image's intrinsic
+    // box, so prev/next made the whole dialog jump.
+    const svgSmall = Buffer.from(
+      '<svg xmlns="http://www.w3.org/2000/svg" width="240" height="280" viewBox="0 0 240 280">' +
+      '<rect width="240" height="280" fill="#c8d6f0"/></svg>',
+    )
+    const svgLarge = Buffer.from(
+      '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 900">' +
+      '<rect width="800" height="900" fill="#f0d6c8"/></svg>',
+    )
+    await page.route('**/api/v1/artifacts/**', route => {
+      const body = route.request().url().includes('art-nav-small') ? svgSmall : svgLarge
+      return route.fulfill({ status: 200, contentType: 'image/svg+xml', body })
+    })
+    await openSeeded(page, [
+      {
+        id: 'art-nav-small',
+        name: 'small.svg',
+        mime: 'image/svg+xml',
+        size: 512,
+        download_url: '/api/v1/artifacts/art-nav-small',
+        thumbnail_url: '/api/v1/artifacts/art-nav-small?variant=thumb',
+      },
+      {
+        id: 'art-nav-large',
+        name: 'large.svg',
+        mime: 'image/svg+xml',
+        size: 512,
+        download_url: '/api/v1/artifacts/art-nav-large',
+        thumbnail_url: '/api/v1/artifacts/art-nav-large?variant=thumb',
+      },
+    ])
+
+    await expect(page.locator('.msg-media-card__img img').first()).toBeVisible({ timeout: 10000 })
+    await page.locator('.msg-media-card__img').first().click()
+
+    const dialog = page.locator('.deliv-preview[role="dialog"]')
+    const image = dialog.locator('.deliv-preview__image')
+    await expect(image).toBeVisible({ timeout: 10000 })
+    const panel = dialog.locator('.deliv-preview__panel')
+    const before = await panel.boundingBox()
+    expect(before).not.toBeNull()
+
+    const srcBefore = await image.getAttribute('src')
+    await dialog.getByRole('button', { name: 'Next image' }).click()
+    await expect(image).toBeVisible({ timeout: 10000 })
+    // The full image is served as a fresh blob URL, so a changed src proves
+    // the second image actually rendered before we measure.
+    await expect.poll(() => image.getAttribute('src'), { timeout: 10000 }).not.toBe(srcBefore)
+
+    const after = await panel.boundingBox()
+    expect(after).not.toBeNull()
+    expect(Math.round(after!.width)).toBe(Math.round(before!.width))
+    expect(Math.round(after!.height)).toBe(Math.round(before!.height))
   })
 
   test('the caption Download control works regardless of preview state', async ({ page }) => {

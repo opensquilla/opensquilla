@@ -9,7 +9,7 @@
 id = "tokenrhythm"
 provider = "tokenrhythm"
 label = "TokenRhythm"
-description = "Curated TokenRhythm router ladder (DeepSeek V4 Flash/Pro, Kimi K2.7 Code, GLM 5.1), applied as inline tiers."
+description = "Curated TokenRhythm router ladder (DeepSeek V4 Flash/Pro, Kimi K2.7 Code, GLM 5.2), applied as inline tiers."
 default_model = "deepseek-v4-pro"
 
 [tiers.c0]
@@ -32,8 +32,8 @@ supports_image = false
 
 [tiers.c3]
 provider = "tokenrhythm"
-model = "glm-5.1"
-description = "Highest-tier GLM 5.1 route for difficult planning, deep review, complex debugging, and high-stakes synthesis"
+model = "glm-5.2"
+description = "Highest-tier GLM 5.2 route for difficult planning, deep review, complex debugging, and high-stakes synthesis"
 supports_image = false
 
 [tiers.image_model]

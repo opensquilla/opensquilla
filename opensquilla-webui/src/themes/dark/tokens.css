@@ -28,6 +28,10 @@
   --card: #161719;
   --hairline: #202327;
 
+  /* User bubble: the deeper graphite canvas needs one more step than the
+     foundation's 7% default for the fill to read at a glance. */
+  --msg-bubble: color-mix(in srgb, var(--text) 8%, var(--bg-surface));
+
   /* One disciplined strike — refined off the old #EC6A1A for AA on the deeper
      canvas. Reserved for the primary action, focus and running-state only. */
   --accent: #F26A1B;

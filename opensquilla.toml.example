@@ -192,7 +192,7 @@ base_url = "https://tokenrhythm.studio/v1"
 # `opensquilla doctor` reports this as the llm_ensemble finding
 # "LLM ensemble is enabled but cannot run".
 # "static_tokenrhythm_b5" is the TokenRhythm mirror of the same lineup
-# (deepseek-v4-pro, glm-5.1, kimi-k2.7-code, qwen3.7-max + glm-5.1
+# (deepseek-v4-pro, glm-5.2, kimi-k2.7-code, qwen3.7-max + glm-5.2
 # aggregator) and needs a TokenRhythm credential the same way (the [llm]
 # api_key when the active provider is "tokenrhythm", or
 # TOKENRHYTHM_API_KEY in the environment).
@@ -399,8 +399,8 @@ supports_image = false
 
 [squilla_router.tiers.c3]
 provider = "tokenrhythm"
-model = "glm-5.1"
-description = "Highest-tier GLM 5.1 route for difficult planning, deep review, complex debugging, and high-stakes synthesis"
+model = "glm-5.2"
+description = "Highest-tier GLM 5.2 route for difficult planning, deep review, complex debugging, and high-stakes synthesis"
 supports_image = false
 
 [squilla_router.tiers.image_model]

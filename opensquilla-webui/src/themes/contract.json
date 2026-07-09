@@ -14,6 +14,7 @@
     "ok-fill", "warn-fill", "danger-fill", "info-fill", "queued-fill",
     "chart-2",
     "shadow", "shadow-color", "scrim", "grain-opacity",
+    "msg-bubble", "msg-obj-border",
     "surface-2", "surface-3",
     "color-green", "color-red", "color-blue", "text-secondary",
     "sidebar-bg", "sidebar-control-bg", "sidebar-control-hover", "sidebar-item-hover",

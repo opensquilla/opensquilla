@@ -260,6 +260,7 @@
       "viewCredential": "查看",
       "replaceCredential": "更换密钥",
       "credentialReplacePlaceholder": "粘贴新的 API key",
+      "credentialEnterPlaceholder": "粘贴你的 API key",
       "showApiKey": "显示 API key",
       "hideApiKey": "隐藏 API key",
       "credentialAdvanced": "高级",

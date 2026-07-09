@@ -173,7 +173,7 @@ TOKENRHYTHM_EXPECTED_TIER_MODELS = {
     "c0": "deepseek-v4-flash",
     "c1": "deepseek-v4-pro",
     "c2": "kimi-k2.7-code",
-    "c3": "glm-5.1",
+    "c3": "glm-5.2",
 }
 
 
@@ -409,7 +409,7 @@ def test_example_toml_enables_runtime_router_defaults() -> None:
     assert tiers["c0"]["model"] == "deepseek-v4-flash"
     assert tiers["c1"]["model"] == "deepseek-v4-pro"
     assert tiers["c2"]["model"] == "kimi-k2.7-code"
-    assert tiers["c3"]["model"] == "glm-5.1"
+    assert tiers["c3"]["model"] == "glm-5.2"
     assert tiers["image_model"]["model"] == "kimi-k2.6"
     assert tiers["image_model"]["supports_image"] is True
     assert tiers["image_model"]["image_only"] is True

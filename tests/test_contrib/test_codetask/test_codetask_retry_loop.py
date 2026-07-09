@@ -45,10 +45,9 @@ def _vout(state, *, nf=None, failing=None):
 
 def _wire(monkeypatch, tmp_path, outcomes, collects=None):
     monkeypatch.setenv("OPENSQUILLA_STATE_DIR", str(tmp_path / "state"))
-    # Keep the subagent-config assembly hermetic: no developer config/env may
-    # leak into the merged payload solve() now builds up front.
-    monkeypatch.delenv("OPENSQUILLA_GATEWAY_CONFIG_PATH", raising=False)
-    monkeypatch.delenv("OPENSQUILLA_CODETASK_AGENT_CONFIG", raising=False)
+    # Subagent-config assembly is kept hermetic by the package autouse fixture
+    # (_isolate_agent_config_discovery), so solve()'s up-front build reads no
+    # developer config/env.
     _FakeAdapter.runs = 0
     repo = tmp_path / "repo"
     repo.mkdir()

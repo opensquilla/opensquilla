@@ -170,14 +170,12 @@ class LocalAdapter:
         if not isinstance(_attachments, dict):
             raise RuntimeError("code-task agent config has invalid [attachments]")
         _attachments["media_root"] = str(run_media_root)
-        per_run_config.write_text(tomli_w.dumps(_cfg), encoding="utf-8")
-        try:
-            # The file can carry [llm_profiles] credentials (they have no env
-            # transport channel); read-only-owner on POSIX, best effort on
-            # Windows. Attempt snapshots preserve the mode (copy2).
-            os.chmod(per_run_config, 0o600)
-        except OSError:
-            pass
+        # The file can carry [llm_profiles] credentials (they have no env
+        # transport channel), so create it owner-only from the start — a
+        # post-write chmod leaves a world-readable window under umask 022.
+        # POSIX mode is honored; a no-op on Windows (best effort). Attempt
+        # snapshots preserve the mode (copy2).
+        _write_owner_only(per_run_config, tomli_w.dumps(_cfg))
         agent_env = {
             **os.environ,
             **bundle.child_env,
@@ -490,6 +488,19 @@ def _kill_process_group(proc) -> None:
         proc.kill()
     except OSError:
         pass
+
+
+def _write_owner_only(path: Path, text: str) -> None:
+    """Write ``text`` to ``path``, creating it readable only by the owner.
+
+    ``os.open`` with mode 0o600 applies the mode at creation (subject to
+    umask, which only removes bits), so credentials in the file are never
+    briefly world-readable — unlike write-then-chmod. On Windows the mode
+    bits are largely inert; this is best effort there.
+    """
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as handle:
+        handle.write(text)
 
 
 def _agent_command(executable: str, argv: list[str], py_code: str) -> list[str]:

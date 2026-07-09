@@ -54,6 +54,16 @@ def test_primary_api_key_moves_to_child_env():
     assert user["llm"]["api_key"] == "sk-secret"
 
 
+def test_empty_api_key_is_not_stripped():
+    # An explicitly empty api_key must stay in the written [llm] (the operator
+    # resolves via api_key_env); dropping it would let a stale inherited
+    # OPENSQUILLA_LLM_API_KEY fill the field in the child.
+    user = {"llm": {"provider": "deepseek", "model": "m", "api_key": "", "api_key_env": "DS_KEY"}}
+    bundle = build_per_run_agent_config(dict(_TEMPLATE), user)
+    assert bundle.payload["llm"]["api_key"] == ""
+    assert bundle.child_env == {}
+
+
 def test_profile_api_keys_stay_in_payload():
     # Profile keys have no env transport channel; they ride in the 0600 file.
     user = {
@@ -158,6 +168,18 @@ def test_override_env_skips_inheritance(monkeypatch, tmp_path):
     assert bundle.payload["llm"]["provider"] == "deepseek"
     assert bundle.payload["llm"]["api_key"] == "sk-keep"  # full authority, untouched
     assert bundle.child_env == {}
+
+
+def test_blank_override_env_is_treated_as_unset(monkeypatch, tmp_path):
+    # A quoted-empty OPENSQUILLA_CODETASK_AGENT_CONFIG must not be taken as a
+    # path (which would hard-fail every run reading a whitespace filename);
+    # inheritance proceeds normally.
+    operator = tmp_path / "operator.toml"
+    operator.write_text('[llm]\nprovider = "deepseek"\nmodel = "m"\n', encoding="utf-8")
+    monkeypatch.setenv("OPENSQUILLA_CODETASK_AGENT_CONFIG", "   ")
+    monkeypatch.setenv("OPENSQUILLA_GATEWAY_CONFIG_PATH", str(operator))
+    bundle = load_agent_config_bundle()
+    assert bundle.payload["llm"]["provider"] == "deepseek"
 
 
 def test_bundled_template_pins_no_provider_sections():

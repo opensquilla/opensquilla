@@ -19,7 +19,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from opensquilla.contrib.codetask.config import agent_config_path
+from opensquilla.contrib.codetask.config import agent_config_override, agent_config_path
 from opensquilla.paths import default_opensquilla_home
 
 # Sections that follow the OPERATOR's config into the subagent. [llm] and
@@ -29,8 +29,6 @@ from opensquilla.paths import default_opensquilla_home
 # its static profiles opt back in on env-key presence alone, which would
 # re-pin the subagent to a provider the operator moved away from.
 OPERATOR_SECTIONS = ("llm", "squilla_router", "llm_profiles", "models", "model_catalog")
-
-AGENT_CONFIG_OVERRIDE_ENV = "OPENSQUILLA_CODETASK_AGENT_CONFIG"
 
 # Field-level pydantic precedence is init (TOML) > env, and env fills fields
 # ABSENT from the TOML section — so a key stripped from the written file is
@@ -81,14 +79,14 @@ def _read_payload(path: Path) -> dict[str, Any]:
 
 def load_agent_config_bundle() -> AgentConfigBundle:
     """Assemble and validate the subagent config for one code-task run."""
-    base_path = agent_config_path()
-    template_payload = _read_payload(base_path)
-    if os.environ.get(AGENT_CONFIG_OVERRIDE_ENV, "").strip():
+    override = agent_config_override()
+    if override is not None:
         # An explicit operator override is fully authoritative: no provider
         # inheritance, so a hand-tuned subagent config (the documented #541
         # escape hatch) is never partially rewritten.
-        payload = _validated(template_payload, source=str(base_path))
-        return AgentConfigBundle(payload=payload, source_path=str(base_path))
+        payload = _validated(_read_payload(override), source=str(override))
+        return AgentConfigBundle(payload=payload, source_path=str(override))
+    template_payload = _read_payload(agent_config_path())
     user_payload, source = user_config_payload()
     return build_per_run_agent_config(template_payload, user_payload, user_config_path=source)
 
@@ -116,11 +114,16 @@ def build_per_run_agent_config(
 
     llm = merged.get("llm")
     if isinstance(llm, dict):
-        api_key = llm.pop("api_key", "")
+        api_key = llm.get("api_key")
         if isinstance(api_key, str) and api_key:
             # Keep the literal out of the on-disk per-run config (which is
             # snapshotted per attempt); the child re-reads it from env.
+            del llm["api_key"]
             child_env[_PRIMARY_KEY_ENV] = api_key
+        # An explicitly EMPTY api_key stays in place: the operator relies on
+        # api_key_env resolution, and dropping the key would let a stale
+        # OPENSQUILLA_LLM_API_KEY in the inherited env fill it in the child
+        # (init "" beats env, but an absent field does not).
 
     payload = _validated(merged, source=user_config_path or "built-in defaults")
     return AgentConfigBundle(payload=payload, child_env=child_env, source_path=user_config_path)
@@ -136,11 +139,8 @@ def _validated(payload: dict[str, Any], *, source: str) -> dict[str, Any]:
     try:
         migration = migrate_config_payload(copy.deepcopy(payload))
         GatewayConfig(**migration.payload)
-    except AgentConfigError:
-        raise
     except Exception as exc:
         raise AgentConfigError(
-            "code-task subagent config is invalid after inheriting provider "
-            f"settings from {source}: {exc}"
+            f"code-task subagent config (from {source}) is invalid: {exc}"
         ) from exc
     return migration.payload

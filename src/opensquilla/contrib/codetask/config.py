@@ -144,6 +144,20 @@ def prompt_template_path(verification_mode: str = "red-green", is_edit: bool = F
     return _DATA_DIR / "prompts" / name
 
 
+AGENT_CONFIG_OVERRIDE_ENV = "OPENSQUILLA_CODETASK_AGENT_CONFIG"
+
+
+def agent_config_override() -> Path | None:
+    """The operator's fully-authoritative agent-config override, if set.
+
+    A single decoder of the ``OPENSQUILLA_CODETASK_AGENT_CONFIG`` contract so
+    the escape hatch and the inheritance gate never disagree — a blank value
+    (e.g. a quoted empty shell export) is treated as unset, not as a path.
+    """
+    raw = os.environ.get(AGENT_CONFIG_OVERRIDE_ENV, "").strip()
+    return Path(raw).expanduser() if raw else None
+
+
 def agent_config_path() -> Path:
     """Run-policy template the per-run subagent config is assembled from.
 
@@ -155,10 +169,7 @@ def agent_config_path() -> Path:
     When OPENSQUILLA_CODETASK_AGENT_CONFIG points at a custom config, that
     file is fully authoritative and no provider inheritance is applied.
     """
-    override = os.environ.get("OPENSQUILLA_CODETASK_AGENT_CONFIG")
-    if override:
-        return Path(override).expanduser()
-    return _DATA_DIR / "agent_config" / "config.toml"
+    return agent_config_override() or (_DATA_DIR / "agent_config" / "config.toml")
 
 
 def agent_python() -> str:

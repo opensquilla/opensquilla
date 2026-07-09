@@ -1,7 +1,15 @@
 from __future__ import annotations
 
+import pytest
+
 from opensquilla.provider.failures import ProviderFailureKind
-from opensquilla.provider.selector import ModelSelector, ProviderConfig, SelectorConfig
+from opensquilla.provider.selector import (
+    ModelSelector,
+    ProviderBuildError,
+    ProviderConfig,
+    ProviderNotConfiguredError,
+    SelectorConfig,
+)
 from opensquilla.provider.types import ModelInfo
 
 HIGH_TIER_MODEL = "openrouter/high-tier-region-locked"
@@ -193,3 +201,51 @@ async def test_list_models_detailed_reports_every_failed_chain_link(monkeypatch)
         ("openrouter", "openrouter/auth-locked-a"),
         ("deepseek", "deepseek/auth-locked-b"),
     ]
+
+
+# ---------------------------------------------------------------------------
+# Unconfigured-selector state (cold-boot gateways)
+# ---------------------------------------------------------------------------
+
+
+def test_is_configured_false_without_key_for_key_requiring_provider() -> None:
+    selector = ModelSelector(
+        SelectorConfig(primary=ProviderConfig(provider="openrouter", model="m", api_key=""))
+    )
+    assert selector.is_configured is False
+
+
+def test_is_configured_false_without_provider_id() -> None:
+    selector = ModelSelector(
+        SelectorConfig(primary=ProviderConfig(provider="", model="", api_key=""))
+    )
+    assert selector.is_configured is False
+
+
+def test_is_configured_true_for_keyless_local_provider() -> None:
+    selector = ModelSelector(
+        SelectorConfig(primary=ProviderConfig(provider="ollama", model="llama3", api_key=""))
+    )
+    assert selector.is_configured is True
+
+
+def test_resolve_raises_not_configured_instead_of_building_keyless_provider() -> None:
+    selector = ModelSelector(
+        SelectorConfig(primary=ProviderConfig(provider="openrouter", model="m", api_key=""))
+    )
+    with pytest.raises(ProviderNotConfiguredError) as exc_info:
+        selector.resolve()
+    # Subclasses ProviderBuildError so existing resolve() handlers degrade the same.
+    assert isinstance(exc_info.value, ProviderBuildError)
+
+
+def test_sync_primary_transitions_unconfigured_selector_live() -> None:
+    selector = ModelSelector(
+        SelectorConfig(primary=ProviderConfig(provider="openrouter", model="m", api_key=""))
+    )
+    assert selector.is_configured is False
+
+    selector.sync_primary(ProviderConfig(provider="openrouter", model="m", api_key="test-key"))
+
+    assert selector.is_configured is True
+    assert selector.resolve() is not None

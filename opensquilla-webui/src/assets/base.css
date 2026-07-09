@@ -12,6 +12,14 @@
 
 html, body {
   height: 100%;
+  /* Chromium (the desktop shell included) turns a two-finger horizontal
+     overscroll into history navigation on macOS ("swipe between pages").
+     Routed overlays — Settings, chat sessions — are history entries, so an
+     accidental swipe would dismiss them wholesale. Opt the viewport out on the
+     x axis only; vertical overscroll keeps its native feel. One declaration on
+     the html/body pair covers both propagation models (legacy Chromium reads
+     <body>, the spec reads the root). */
+  overscroll-behavior-x: none;
   font-family: var(--font-sans);
   font-size: var(--fs-md);
   color: var(--text);

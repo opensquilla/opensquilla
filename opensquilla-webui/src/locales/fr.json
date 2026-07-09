@@ -79,6 +79,14 @@
       "connecting": "Connexion…",
       "disconnected": "Déconnecté"
     },
+    "bgm": {
+      "label": "Musique de fond",
+      "play": "Lire la musique de fond",
+      "pause": "Mettre la musique en pause",
+      "volume": "Volume",
+      "chooseLocalFile": "Choisir un fichier local…",
+      "noTracks": "Aucune piste — ajoutez des fichiers dans music/ ou choisissez un fichier local"
+    },
     "brandHome": "Accueil OpenSquilla",
     "controlNav": "Navigation de contrôle",
     "primaryNav": "Principale",
@@ -98,7 +106,9 @@
       "themeLabel": "Thème",
       "themeDesc": "Suivez votre système, ou forcez le mode clair ou sombre. Le bouton de la barre latérale est un raccourci vers ce même paramètre.",
       "languageLabel": "Langue",
-      "languageDesc": "Langue d'affichage de l'interface. S'applique immédiatement à ce navigateur."
+      "languageDesc": "Langue d'affichage de l'interface. S'applique immédiatement à ce navigateur.",
+      "bgmLabel": "Musique de fond",
+      "bgmDesc": "Affiche la commande de musique de fond dans la barre supérieure. Désactivé par défaut ; modifiable aussi depuis la palette de commandes."
     },
     "dialog": {
       "title": "Paramètres",
@@ -162,6 +172,12 @@
     }
   },
   "setup": {
+    "cli": {
+      "advancedTitle": "Avancé · CLI intégrée",
+      "hintBundled": "Ces commandes utilisent la CLI intégrée à l'application ; collez-les dans un terminal pour les exécuter.",
+      "hintDev": "Mode dev : les commandes s'exécutent depuis la copie source via uv.",
+      "restartHint": "Utilisez Réglages → Runtime → Redémarrer de l'application pour appliquer."
+    },
     "common": {
       "apiKey": "Clé API",
       "apiKeyEnv": "Variable d'env. de la clé API",
@@ -299,6 +315,8 @@
       "providerFirst": "Choisissez d’abord un Chat Model, puis le fonctionnement du routage.",
       "providerAction": "Aller au Chat Model →",
       "routerTitle": "Routage IA à modèle unique",
+      "visualModeLabel": "Style du panneau de routage",
+      "visualModeDesc": "Présentation du panneau de décision de routage dans les réponses du chat.",
       "crossProviderNotice": "Le routage inter-fournisseurs est actif. Vérifie chaque niveau avant d’enregistrer.",
       "cards": {
         "router": {
@@ -329,8 +347,8 @@
       "candidateSourceLegacy": "Depuis l’ancienne configuration",
       "candidateSourceOpenRouterFixed": "Ensemble OpenRouter fixe",
       "customCandidatesLabel": "Candidats personnalisés inter-fournisseurs",
-      "openrouterFixedTitle": "Ensemble OpenRouter fixe",
-      "openrouterFixedDesc": "Quand le modèle de chat utilise OpenRouter, le routage agrégé utilise quatre modèles proposants et un agrégateur.",
+      "openrouterFixedTitle": "Ensemble {provider} fixe",
+      "openrouterFixedDesc": "Quand le modèle de chat utilise {provider}, le routage agrégé utilise quatre modèles proposants et un agrégateur.",
       "customizeOpenRouterLabel": "Personnaliser l’ensemble",
       "customizeOpenRouterDesc": "Passer au routage d’ensemble basé sur le routeur avec l’ancien modèle de candidats OpenRouter.",
       "openrouterFixedProposer": "Modèle proposant",
@@ -408,6 +426,7 @@
       "selectionLabel": "Sélection des modèles",
       "selectionDesc": "Comment l'ensemble choisit les modèles à interroger.",
       "selectionStatic": "Jeu de modèles intégré hérité",
+      "selectionStaticTokenrhythm": "Jeu de modèles intégré TokenRhythm",
       "selectionDynamic": "Dynamique (suit les niveaux de modèle)",
       "rawValueTooltip": "Valeur de configuration : {value}",
       "modelsLabel": "Modèles candidats",
@@ -669,6 +688,35 @@
       "offSurfacesError": "off affiche l'erreur d'origine du fournisseur.",
       "audioEnvVar": "Variable d'environnement à lire pour l'accès au fournisseur audio.",
       "remoteEmbeddingKey": "Clé API d'embedding distant ou référence d'environnement."
+    },
+    "memoryLearning": {
+      "groupTitle": "Mémoire et auto-apprentissage",
+      "dreamLabel": "Consolidation de la mémoire (dream)",
+      "tokenBadge": "consommation de tokens",
+      "dreamDesc": "Exécute périodiquement un passage du modèle pour consolider la mémoire de session (toutes les 24 h). L’auto-apprentissage du routage s’appuie sur ces fenêtres d’inactivité pour s’entraîner.",
+      "selfLearningLabel": "Auto-apprentissage du routage de modèles",
+      "selfLearningDesc": "Apprend vos préférences de routage à partir de vos corrections. Entièrement local — stocke des vecteurs de caractéristiques, jamais le texte des conversations.",
+      "depDefault": "Dépend de la consolidation de la mémoire ci-dessus : l’activer ici l’active aussi ; désactiver la consolidation seule maintient la collecte mais suspend l’entraînement automatique.",
+      "depLinked": "La consolidation de la mémoire a été activée en même temps. Vous pouvez la désactiver séparément — la collecte continue, seul l’entraînement automatique est suspendu.",
+      "depPaused": "La consolidation de la mémoire est désactivée — les échantillons sont toujours collectés, mais aucun entraînement automatique n’a lieu. Réactivez-la pour reprendre.",
+      "restartRequired": "Un redémarrage de la passerelle est nécessaire pour appliquer le changement de planification.",
+      "statusModel": "Modèle de routage",
+      "statusSamples": "Corrections",
+      "statusLastAction": "Dernière action",
+      "modelBaseline": "Référence d’usine",
+      "modelLearned": "Version apprise v{version}",
+      "samplesTotal": "{total} collectés au total",
+      "gatePausedDream": "Entraînement suspendu — en attente de la réactivation de la consolidation de la mémoire",
+      "gateReason": {
+        "ready": "Prêt — s’entraînera à la prochaine fenêtre",
+        "disabled": "Désactivé",
+        "no_data": "Aucun échantillon collecté pour l’instant",
+        "agent_active": "En attente d’une fenêtre d’inactivité",
+        "cooldown": "En refroidissement après un entraînement récent",
+        "insufficient_data": "Pas encore entraîné — corrections insuffisantes",
+        "insufficient_class_diversity": "Pas encore entraîné — les corrections couvrent trop peu de niveaux de routage"
+      },
+      "detachedNote": "Les poids de base du routage ont été mis à niveau. L’apprentissage bâti sur les anciens poids a été archivé ; vos corrections sont conservées et seront réapprises automatiquement sur les nouveaux poids. Aucune action requise."
     }
   },
   "sessions": {
@@ -1973,6 +2021,14 @@
     },
     "modelRouting": {
       "updateFailed": "Impossible de changer le routage des modèles — rétabli. Vérifiez la connexion à la passerelle et réessayez."
+    },
+    "routeFeedback": {
+      "up": "Bon choix de modèle pour ce tour",
+      "down": "Mauvais choix de modèle pour ce tour",
+      "upEnsemble": "Satisfait de cette réponse agrégée",
+      "downEnsemble": "Insatisfait de cette réponse agrégée",
+      "expired": "L’enregistrement de routage de ce message a expiré",
+      "failed": "Impossible d’enregistrer votre évaluation"
     }
   },
   "shared": {
@@ -1992,7 +2048,9 @@
       "groupMessages": "Messages",
       "actionNewChat": "Nouveau chat",
       "actionOpenSettings": "Ouvrir les Paramètres",
-      "actionToggleTheme": "Basculer le thème"
+      "actionToggleTheme": "Basculer le thème",
+      "actionBgmEnable": "Activer la musique de fond",
+      "actionBgmDisable": "Désactiver la musique de fond"
     },
     "toast": {
       "dismiss": "Ignorer la notification"

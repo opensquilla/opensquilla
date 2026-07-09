@@ -57,6 +57,7 @@ _MODEL_ENV = {
     "tencent_tokenhub_intl": "TENCENT_TOKENHUB_INTL_MODEL",
     "tencent_token_plan": "TENCENT_TOKEN_PLAN_MODEL",
     "tencent_token_plan_anthropic": "TENCENT_TOKEN_PLAN_MODEL",
+    "tokenrhythm": "TOKENRHYTHM_MODEL",
 }
 
 _BASE_ENV = {
@@ -79,6 +80,7 @@ _BASE_ENV = {
     "tencent_tokenhub_intl": "TENCENT_TOKENHUB_INTL_BASE_URL",
     "tencent_token_plan": "TENCENT_TOKEN_PLAN_BASE_URL",
     "tencent_token_plan_anthropic": "TENCENT_TOKEN_PLAN_ANTHROPIC_BASE_URL",
+    "tokenrhythm": "TOKENRHYTHM_BASE_URL",
 }
 
 _DEFAULT_MODELS = {
@@ -101,6 +103,14 @@ _DEFAULT_MODELS = {
     "tencent_tokenhub_intl": "deepseek-v3.2",
     "tencent_token_plan": "hy3",
     "tencent_token_plan_anthropic": "hy3",
+    "tokenrhythm": "deepseek-v4-flash",
+}
+
+# Providers whose models spend reasoning tokens out of max_tokens before any
+# text: the CLI default budget of 64 would come back as empty content with
+# finish_reason "length", failing the smoke for provider-independent reasons.
+_MIN_MAX_TOKENS = {
+    "tokenrhythm": 1024,
 }
 
 
@@ -345,6 +355,7 @@ async def smoke_provider(
     spec = get_provider_spec(provider)
     env_key = spec.env_key
     api_key = os.environ.get(env_key, "").strip()
+    max_tokens = max(max_tokens, _MIN_MAX_TOKENS.get(provider, 0))
     model = (
         model_override
         or os.environ.get(_MODEL_ENV.get(provider, ""), "").strip()

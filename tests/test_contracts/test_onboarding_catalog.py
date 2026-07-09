@@ -112,6 +112,10 @@ FROZEN_ROUTER_PROFILE_IDS = frozenset(
         "zhipu",
     }
 )
+# Curated presets that are NOT persistable tier_profile ids: packaged tier
+# data applied as inline tiers (synthesized=False on the wire, but the id
+# stays outside FROZEN_ROUTER_PROFILE_IDS).
+FROZEN_CURATED_INLINE_PRESET_IDS = frozenset({"tokenrhythm"})
 
 
 async def test_onboarding_catalog_top_level_sections_are_frozen() -> None:
@@ -160,13 +164,15 @@ def test_provider_catalog_preset_keys_are_frozen() -> None:
         assert entry["defaultModel"] == presets[0]["defaultModel"], entry["providerId"]
 
 
-def test_provider_catalog_preset_synthesized_flag_tracks_legacy_nine() -> None:
-    # The legacy nine ship packaged (curated) presets; everything else is
-    # synthesized. A packaged preset silently degrading to synthesized (or
-    # vice versa) changes what onboarding clients offer to apply.
+def test_provider_catalog_preset_synthesized_flag_tracks_packaged_presets() -> None:
+    # The legacy nine plus the curated-inline set ship packaged (curated)
+    # presets; everything else is synthesized. A packaged preset silently
+    # degrading to synthesized (or vice versa) changes what onboarding
+    # clients offer to apply.
+    packaged = FROZEN_ROUTER_PROFILE_IDS | FROZEN_CURATED_INLINE_PRESET_IDS
     entries = {entry["providerId"]: entry for entry in provider_catalog_payload()}
     for provider_id, entry in entries.items():
-        expected_synthesized = provider_id not in FROZEN_ROUTER_PROFILE_IDS
+        expected_synthesized = provider_id not in packaged
         assert entry["presets"][0]["synthesized"] is expected_synthesized, provider_id
 
 

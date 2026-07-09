@@ -247,6 +247,12 @@ def test_quote_cli_arg_uses_powershell_quoting_on_windows(monkeypatch):
     )
     assert next_steps.quote_cli_arg("C:\\it's.toml") == "'C:\\it''s.toml'"
     assert '"\'"' not in next_steps.quote_cli_arg("C:\\it's.toml")
+    # PowerShell also treats Unicode smart quotes as single-quote delimiters,
+    # so they must be doubled as well or the literal terminates early.
+    assert (
+        next_steps.quote_cli_arg("C:\\Users\\O’Brien\\config.toml")
+        == "'C:\\Users\\O’’Brien\\config.toml'"
+    )
 
 
 def test_config_cli_arg_is_powershell_safe_on_windows(monkeypatch):

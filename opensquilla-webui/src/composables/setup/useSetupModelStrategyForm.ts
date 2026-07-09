@@ -1,6 +1,7 @@
 import { computed, type ComputedRef } from 'vue'
 import type { useSetupRouterForm } from '@/composables/setup/useSetupRouterForm'
 import type { useSetupEnsembleForm } from '@/composables/setup/useSetupEnsembleForm'
+import { staticB5ModeForProvider } from '@/composables/setup/useSetupEnsembleForm'
 
 export type ModelStrategy = 'router' | 'ensemble' | 'single'
 
@@ -34,9 +35,9 @@ export function useSetupModelStrategyForm(
     if (next === 'ensemble') {
       routerForm.setRouterMode('disabled')
       ensembleForm.setEnabled(true)
-      ensembleForm.setSelectionMode(activeProvider?.value.toLowerCase() === 'openrouter'
-        ? 'static_openrouter_b5'
-        : 'router_dynamic')
+      ensembleForm.setSelectionMode(
+        staticB5ModeForProvider(activeProvider?.value) ?? 'router_dynamic',
+      )
       return
     }
     if (next === 'router') {

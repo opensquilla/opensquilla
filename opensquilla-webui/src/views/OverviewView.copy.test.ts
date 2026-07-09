@@ -1,13 +1,19 @@
 import { describe, expect, it } from 'vitest'
 
-import source from './OverviewView.vue?raw'
+import overviewSource from './OverviewView.vue?raw'
+import cliStepsSource from '@/components/overview/AdvancedCliSteps.vue?raw'
 
-describe('OverviewView health command copy feedback', () => {
-  it('shows visible copy success feedback and reports copy failures', () => {
-    expect(source).toContain('health-step__copy--ok')
-    expect(source).toContain("t('setup.toast.copiedCommand')")
-    expect(source).toContain("pushToast(t('setup.toast.copiedCommand'), { tone: 'ok' })")
-    expect(source).toContain("pushToast(t('setup.toast.copyFailed', { error }), { tone: 'danger' })")
-    expect(source).not.toContain('Silently ignore copy failures')
+describe('health command copy feedback', () => {
+  it('the CLI steps component shows visible copy success feedback and reports copy failures', () => {
+    expect(cliStepsSource).toContain('health-step__copy--ok')
+    expect(cliStepsSource).toContain("t('setup.toast.copiedCommand')")
+    expect(cliStepsSource).toContain("pushToast(t('setup.toast.copiedCommand'), { tone: 'ok' })")
+    expect(cliStepsSource).toContain("pushToast(t('setup.toast.copyFailed', { error }), { tone: 'danger' })")
+    expect(cliStepsSource).not.toContain('Silently ignore copy failures')
+  })
+
+  it('the overview keeps toast feedback for its remaining copy paths', () => {
+    expect(overviewSource).toContain("pushToast(t('setup.toast.copiedCommand'), { tone: 'ok' })")
+    expect(overviewSource).toContain("pushToast(t('setup.toast.copyFailed', { error }), { tone: 'danger' })")
   })
 })

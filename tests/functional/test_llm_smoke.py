@@ -46,3 +46,36 @@ async def test_openrouter_live_smoke_returns_expected_token() -> None:
 
     assert done is True
     assert _EXPECTED_TOKEN in "".join(text_parts).strip().lower()
+
+
+@pytest.mark.asyncio
+async def test_tokenrhythm_live_smoke_returns_expected_token() -> None:
+    api_key = os.environ.get("TOKENRHYTHM_API_KEY")
+    if not api_key:
+        pytest.skip("TOKENRHYTHM_API_KEY not set")
+
+    provider = OpenAIProvider(
+        api_key=api_key,
+        model=os.environ.get("TOKENRHYTHM_MODEL", "deepseek-v4-flash"),
+        base_url=os.environ.get("TOKENRHYTHM_BASE_URL", "https://tokenrhythm.studio/v1"),
+        provider_kind="tokenrhythm",
+    )
+    text_parts: list[str] = []
+    done = False
+
+    async for event in provider.chat(
+        [Message(role="user", content=f"Reply with exactly {_EXPECTED_TOKEN}.")],
+        # Every TokenRhythm model spends reasoning_content tokens out of
+        # max_tokens before any text; a small budget returns empty content
+        # with finish_reason "length".
+        config=ChatConfig(max_tokens=1024, temperature=0.0, timeout=90.0),
+    ):
+        if isinstance(event, ErrorEvent):
+            pytest.fail(f"live LLM smoke failed: {event.code} {event.message}")
+        if isinstance(event, TextDeltaEvent):
+            text_parts.append(event.text)
+        if isinstance(event, DoneEvent):
+            done = True
+
+    assert done is True
+    assert _EXPECTED_TOKEN in "".join(text_parts).strip().lower()

@@ -27,7 +27,11 @@ from pathlib import Path
 import numpy as np
 
 from opensquilla.squilla_router.self_learning.alignment import (
+    EXCLUDED_REASONS,
     REASON_CONFIDENCE_BACKOFF,
+    REASON_EXPLICIT_DOWNVOTE,
+    REASON_EXPLICIT_UPVOTE,
+    REASON_EXPLICIT_UPVOTE_ENSEMBLE,
     REASON_IMMEDIATE_COMPLAINT,
     REASON_NORMAL,
     REASON_RETROSPECTIVE,
@@ -36,16 +40,32 @@ from opensquilla.squilla_router.self_learning.alignment import (
 )
 from opensquilla.squilla_router.self_learning.store import iter_samples, router_data_root
 
-# Base weight by alignment reason (correction signals dominate).
+# Base weight by alignment reason (correction signals dominate). Explicit
+# down-votes outrank retrospective inference (a deliberate user action beats a
+# heuristic); explicit up-votes are confirmations, deliberately below every
+# correction. Ensemble up-votes fall to normal level — the endorsement covers
+# the whole candidates+aggregator chain, so its information about the tier
+# choice is diluted. Excluded reasons (ensemble/high-tier down-votes) get
+# weight 0: the user said the outcome was bad, so the turn must not train as
+# a confirmation, yet the blame cannot be pinned on the tier.
 _BASE_WEIGHT = {
+    REASON_EXPLICIT_DOWNVOTE: 1.2,
     REASON_RETROSPECTIVE: 1.0,
     REASON_IMMEDIATE_COMPLAINT: 0.9,
+    REASON_EXPLICIT_UPVOTE: 0.6,
     REASON_CONFIDENCE_BACKOFF: 0.5,
     REASON_NORMAL: 0.3,
+    REASON_EXPLICIT_UPVOTE_ENSEMBLE: 0.3,
 }
 # Reasons that merely confirm the served decision; these can flood, so damp them
-# by frequency of the identical feature vector.
-_FLOOD_DAMPED = {REASON_NORMAL, REASON_CONFIDENCE_BACKOFF}
+# by frequency of the identical feature vector. Up-votes are confirmations too
+# (polite users up-vote everything).
+_FLOOD_DAMPED = {
+    REASON_NORMAL,
+    REASON_CONFIDENCE_BACKOFF,
+    REASON_EXPLICIT_UPVOTE,
+    REASON_EXPLICIT_UPVOTE_ENSEMBLE,
+}
 _UNCONFIRMED_RETRO_FACTOR = 0.5
 _CROSS_DAY_PER_DAY = 0.15
 _CROSS_DAY_CAP = 1.6
@@ -146,9 +166,25 @@ def build_training_dataset(
     for s in kept:
         by_session[s.session_key].append(s)
 
+    from opensquilla.squilla_router.self_learning.feedback import load_feedback_map
+
+    feedback = load_feedback_map(agent_id, home=home) or None
+
     aligned: list[AlignedSample] = []
     for session_samples in by_session.values():
-        aligned.extend(align_session(session_samples))
+        aligned.extend(align_session(session_samples, feedback))
+
+    # Drop excluded rows from the matrix entirely, not just from the weights:
+    # their target is the served tier the user rejected, and the unweighted
+    # holdout/cost metrics in evaluate.py would otherwise score agreement with
+    # a label the pipeline explicitly declared untrainable-because-bad.
+    aligned = [a for a in aligned if a.reason not in EXCLUDED_REASONS]
+    if not aligned:
+        ds = _empty_dataset()
+        ds.feature_schema_version = target_version
+        ds.skipped_schema_mismatch = skipped_schema
+        ds.skipped_bypass = skipped_bypass
+        return ds
 
     weights = _compute_weights(aligned)
 
@@ -183,8 +219,14 @@ def _compute_weights(aligned: list[AlignedSample]) -> list[float]:
 
     weights: list[float] = []
     for a in aligned:
+        if a.reason in EXCLUDED_REASONS:
+            weights.append(0.0)
+            continue
         w = _BASE_WEIGHT.get(a.reason, _BASE_WEIGHT[REASON_NORMAL])
-        if a.reason == REASON_RETROSPECTIVE and not a.confirmed:
+        if (
+            a.reason in (REASON_RETROSPECTIVE, REASON_EXPLICIT_DOWNVOTE)
+            and not a.confirmed
+        ):
             w *= _UNCONFIRMED_RETRO_FACTOR
         if a.reason in _FLOOD_DAMPED:
             w /= math.sqrt(freq[a.feature_hash])

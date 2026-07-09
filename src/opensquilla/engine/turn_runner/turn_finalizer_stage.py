@@ -301,6 +301,10 @@ def _turn_usage_payload(
         # Additive: quality label of the estimate behind cost_usd
         # ("cache_aware" | "cache_blind" | "free" | None).
         "estimate_basis": getattr(done_event, "estimate_basis", None),
+        # Additive: V017 decision-record id so chat clients can attribute
+        # feedback (router.feedback.submit) to this exact routing decision.
+        # None when no decision was staged (router off / bypass / no writer).
+        "decision_id": getattr(done_event, "decision_id", None),
     }
     optional_fields = {
         "image_route_reason": getattr(done_event, "image_route_reason", None),

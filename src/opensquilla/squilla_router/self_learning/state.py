@@ -29,6 +29,9 @@ class TrainState:
     active_version: str | None = None  # currently promoted learned version
     promoted_at: str | None = None  # ts of the last promotion (monitor window start)
     pre_promotion_complaint_rate: float | None = None  # baseline before the swap
+    # Explicit-feedback baseline (single-model down-vote rate) captured at
+    # promotion; the rollback monitor's second trigger compares against it.
+    pre_promotion_downvote_rate: float | None = None
 
     def to_json(self) -> dict:
         return asdict(self)
@@ -67,6 +70,10 @@ class EventStoreStats:
     distinct_classes: int = 0  # distinct final_route_class values
     last_ts: str | None = None  # most recent sample ts (idle signal)
     dominant_schema_version: str | None = None
+    # Explicit down-votes with a joinable sample (filled by the orchestrator
+    # from the feedback sidecar, not by scan_event_store). They are correction
+    # signals, so the volume gate counts them toward high_value.
+    feedback_down: int = 0
 
     @property
     def complaint_rate(self) -> float:

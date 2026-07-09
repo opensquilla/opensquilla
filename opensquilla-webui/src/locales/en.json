@@ -79,6 +79,14 @@
       "connecting": "Connecting",
       "disconnected": "Disconnected"
     },
+    "bgm": {
+      "label": "Background music",
+      "play": "Play background music",
+      "pause": "Pause background music",
+      "volume": "Volume",
+      "chooseLocalFile": "Choose local file…",
+      "noTracks": "No tracks bundled — add files to music/ or pick a local file"
+    },
     "brandHome": "OpenSquilla home",
     "controlNav": "Control navigation",
     "primaryNav": "Primary",
@@ -98,7 +106,9 @@
       "themeLabel": "Theme",
       "themeDesc": "Follow your system, or force light or dark. The sidebar toggle is a shortcut to this same setting.",
       "languageLabel": "Language",
-      "languageDesc": "Display language for the interface. Applies instantly to this browser."
+      "languageDesc": "Display language for the interface. Applies instantly to this browser.",
+      "bgmLabel": "Background music",
+      "bgmDesc": "Show the background-music control in the top bar. Off by default; also toggleable from the command palette."
     },
     "dialog": {
       "title": "Settings",
@@ -162,6 +172,12 @@
     }
   },
   "setup": {
+    "cli": {
+      "advancedTitle": "Advanced · built-in CLI",
+      "hintBundled": "These commands use the CLI bundled with the app; paste into a terminal to run.",
+      "hintDev": "Dev mode: commands run from the source checkout via uv.",
+      "restartHint": "Use the app's Settings → Runtime → Restart to apply."
+    },
     "common": {
       "apiKey": "API key",
       "apiKeyEnv": "API key env",
@@ -299,6 +315,8 @@
       "providerFirst": "Choose a Chat Model first, then choose how routing should work.",
       "providerAction": "Go to Chat Model →",
       "routerTitle": "AI single-model routing",
+      "visualModeLabel": "Routing panel style",
+      "visualModeDesc": "How the routing decision panel renders in chat replies.",
       "routerDependency": "Uses {provider} credentials; default model is {model}.",
       "ensembleTitle": "AI ensemble routing",
       "ensembleDependency": "Uses {provider} credentials; default model is {model}.",
@@ -329,8 +347,8 @@
       "candidateSourceLegacy": "From old config",
       "candidateSourceOpenRouterFixed": "OpenRouter fixed ensemble",
       "customCandidatesLabel": "Custom cross-provider candidates",
-      "openrouterFixedTitle": "OpenRouter fixed ensemble",
-      "openrouterFixedDesc": "When Chat Model uses OpenRouter, ensemble routing uses four proposer models and one aggregator.",
+      "openrouterFixedTitle": "{provider} fixed ensemble",
+      "openrouterFixedDesc": "When Chat Model uses {provider}, ensemble routing uses four proposer models and one aggregator.",
       "customizeOpenRouterLabel": "Customize ensemble",
       "customizeOpenRouterDesc": "Switch to router-based ensemble routing with the legacy OpenRouter candidate template.",
       "openrouterFixedProposer": "Proposer model",
@@ -408,6 +426,7 @@
       "selectionLabel": "Model selection",
       "selectionDesc": "How the ensemble picks which models to ask.",
       "selectionStatic": "Legacy built-in model set",
+      "selectionStaticTokenrhythm": "TokenRhythm built-in model set",
       "selectionDynamic": "Dynamic (follows model tiers)",
       "rawValueTooltip": "Config value: {value}",
       "modelsLabel": "Candidate models",
@@ -669,6 +688,35 @@
       "offSurfacesError": "off surfaces the original provider error.",
       "audioEnvVar": "Environment variable to read for audio provider access.",
       "remoteEmbeddingKey": "Remote embedding API key or env reference."
+    },
+    "memoryLearning": {
+      "groupTitle": "Memory & self-learning",
+      "dreamLabel": "Memory consolidation (dream)",
+      "tokenBadge": "token usage",
+      "dreamDesc": "Periodically runs a model pass to consolidate session memory (every 24h). Model-routing self-learning relies on it for idle training windows.",
+      "selfLearningLabel": "Model-routing self-learning",
+      "selfLearningDesc": "Learns routing preferences from your corrections. Fully on-device — stores feature vectors, never raw conversation text.",
+      "depDefault": "Depends on memory consolidation above: turning this on enables it too; turning consolidation off alone keeps sampling but pauses automatic training.",
+      "depLinked": "Memory consolidation was enabled together with this. You can switch it off independently — self-learning keeps sampling, only automatic training pauses.",
+      "depPaused": "Memory consolidation is off — samples are still collected, but no automatic training runs. Re-enable it to resume.",
+      "restartRequired": "A gateway restart is needed for the schedule change to take effect.",
+      "statusModel": "Routing model",
+      "statusSamples": "Corrections",
+      "statusLastAction": "Last action",
+      "modelBaseline": "Factory baseline",
+      "modelLearned": "Learned v{version}",
+      "samplesTotal": "{total} collected in total",
+      "gatePausedDream": "Training paused — waiting for memory consolidation to be re-enabled",
+      "gateReason": {
+        "ready": "Ready — will train at the next window",
+        "disabled": "Disabled",
+        "no_data": "No samples collected yet",
+        "agent_active": "Waiting for an idle window",
+        "cooldown": "Cooling down after a recent training run",
+        "insufficient_data": "Not trained yet — not enough corrections",
+        "insufficient_class_diversity": "Not trained yet — corrections cover too few routing tiers"
+      },
+      "detachedNote": "The base routing weights were upgraded. Learning built on the old weights was archived; your corrections are unaffected and will retrain automatically on the new weights. No action needed."
     }
   },
   "sessions": {
@@ -1973,6 +2021,14 @@
     },
     "modelRouting": {
       "updateFailed": "Couldn't switch model routing — reverted. Check the gateway connection and try again."
+    },
+    "routeFeedback": {
+      "up": "Right model choice for this turn",
+      "down": "Wrong model choice for this turn",
+      "upEnsemble": "Satisfied with this aggregated answer",
+      "downEnsemble": "Unsatisfied with this aggregated answer",
+      "expired": "This message’s routing record has expired",
+      "failed": "Could not record your rating"
     }
   },
   "shared": {
@@ -1992,7 +2048,9 @@
       "groupMessages": "Messages",
       "actionNewChat": "New chat",
       "actionOpenSettings": "Open Settings",
-      "actionToggleTheme": "Toggle theme"
+      "actionToggleTheme": "Toggle theme",
+      "actionBgmEnable": "Enable background music",
+      "actionBgmDisable": "Disable background music"
     },
     "toast": {
       "dismiss": "Dismiss notification"

@@ -10,7 +10,9 @@ export type IconName =
   | 'pencil' | 'fork' | 'listChecks' | 'chevronDown' | 'chevronRight' | 'arrowUp'
   | 'panel-left-open' | 'panel-left-close' | 'clock' | 'microphone'
   | 'cloud' | 'fileText' | 'fileCode' | 'image' | 'table' | 'externalLink'
-  | 'keyboard' | 'languages' | 'shield';
+  | 'keyboard' | 'languages' | 'shield'
+  | 'thumbs-up' | 'thumbs-down'
+  | 'music' | 'pause' | 'volume';
 
 interface IconDef {
   path: string;
@@ -37,6 +39,8 @@ const ICONS: Record<IconName, IconDef> = {
   x:          { path: '<line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>' },
   copy:       { path: '<rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>' },
   check:      { path: '<polyline points="20 6 9 17 4 12"/>' },
+  'thumbs-up':   { path: '<path d="M7 10v12"/><path d="M15 5.88 14 10h5.83a2 2 0 0 1 1.92 2.56l-2.33 8A2 2 0 0 1 17.5 22H4a2 2 0 0 1-2-2v-8a2 2 0 0 1 2-2h2.76a2 2 0 0 0 1.79-1.11L12 2a3.13 3.13 0 0 1 3 3.88Z"/>' },
+  'thumbs-down': { path: '<path d="M17 14V2"/><path d="M9 18.12 10 14H4.17a2 2 0 0 1-1.92-2.56l2.33-8A2 2 0 0 1 6.5 2H20a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2h-2.76a2 2 0 0 0-1.79 1.11L12 22a3.13 3.13 0 0 1-3-3.88Z"/>' },
   send:       { path: '<line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/>' },
   stop:       { path: '<rect x="3" y="3" width="18" height="18" rx="2" ry="2"/>' },
   paperclip:  { path: '<path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/>' },
@@ -77,6 +81,9 @@ const ICONS: Record<IconName, IconDef> = {
   externalLink: { path: '<path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>', strokeWidth: 1.5 },
   keyboard:   { path: '<rect width="20" height="16" x="2" y="4" rx="2"/><path d="M6 8h.01"/><path d="M10 8h.01"/><path d="M14 8h.01"/><path d="M18 8h.01"/><path d="M8 12h.01"/><path d="M12 12h.01"/><path d="M16 12h.01"/><path d="M7 16h10"/>' },
   shield:     { path: '<path d="M20 13c0 5-3.5 7.5-8 9-4.5-1.5-8-4-8-9V5l8-3 8 3v8z"/>', strokeWidth: 1.7 },
+  music:      { path: '<path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/>', strokeWidth: 1.7 },
+  pause:      { path: '<rect x="6" y="4" width="4" height="16" rx="1"/><rect x="14" y="4" width="4" height="16" rx="1"/>', strokeWidth: 1.7 },
+  volume:     { path: '<polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/>', strokeWidth: 1.7 },
 };
 
 export function getIconSvg(name: IconName, size: number = 16): string {

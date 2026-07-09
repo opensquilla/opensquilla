@@ -206,6 +206,7 @@ def maybe_run_update_router(
         rolled_back = _check_and_maybe_rollback(agent_id, sl_cfg, state, home, now)
 
         stats = scan_event_store(agent_id, home=home)
+        stats = _with_feedback_stats(stats, agent_id, home)
         gate: GateResult = evaluate_training_gates(
             config=sl_cfg, state=state, stats=stats, now=now
         )
@@ -285,6 +286,14 @@ def maybe_run_update_router(
         state.active_version = info.version
         state.promoted_at = _now_iso(now)
         state.pre_promotion_complaint_rate = stats.complaint_rate
+        # Baseline requires at least as many ratings as the monitor minimum:
+        # a rate measured from 2-3 ratings is noise, and comparing post-swap
+        # traffic against it would make early rollbacks near-arbitrary.
+        state.pre_promotion_downvote_rate = _downvote_rate(
+            agent_id,
+            home,
+            min_ratings=int(getattr(sl_cfg, "min_feedback_monitor_samples", 5)),
+        )
         save_train_state(state, agent_id, home)
         write_receipt(
             agent_id,
@@ -296,6 +305,7 @@ def maybe_run_update_router(
                 "n_samples": info.n_samples,
                 "used_init_model": info.used_init_model,
                 "pre_promotion_complaint_rate": stats.complaint_rate,
+                "pre_promotion_downvote_rate": state.pre_promotion_downvote_rate,
                 "metrics": decision.metrics,
             },
             home,
@@ -388,6 +398,7 @@ def _reconcile_detached_state(
         state.active_version = None
         state.promoted_at = None
         state.pre_promotion_complaint_rate = None
+        state.pre_promotion_downvote_rate = None
         save_train_state(state, agent_id, home)
         _invalidate_router_strategy_cache()
     except Exception as exc:  # noqa: BLE001 — reconcile must not block training
@@ -437,6 +448,43 @@ def _evaluate_candidate(info: CandidateInfo, base_dir: Path, config: Any):
     )
 
 
+def _feedback_stats(agent_id: str, home: Path | None, *, since_ts: str | None = None):
+    """Best-effort feedback aggregate; None when the sidecar is unreadable."""
+
+    try:
+        from opensquilla.squilla_router.self_learning.feedback import scan_feedback_stats
+
+        return scan_feedback_stats(agent_id, since_ts=since_ts, home=home)
+    except Exception:  # noqa: BLE001 — feedback must never block the loop
+        return None
+
+
+def _downvote_rate(
+    agent_id: str, home: Path | None, *, min_ratings: int = 1
+) -> float | None:
+    """Single-model down-vote rate, or ``None`` when there is no baseline.
+
+    Too few recorded single-model ratings means "unmeasured", not "0.0":
+    stamping a noise-floor baseline would let the first few post-promotion
+    down-votes trip the rollback trigger against a fabricated reference.
+    ``should_rollback`` skips the feedback trigger when the baseline is None,
+    mirroring pre_complaint_rate's None semantics.
+    """
+
+    stats = _feedback_stats(agent_id, home)
+    if stats is None or stats.total_single < max(1, min_ratings):
+        return None
+    return float(stats.downvote_rate)
+
+
+def _with_feedback_stats(stats: Any, agent_id: str, home: Path | None) -> Any:
+    """Volume-gate feedback merge — shared implementation in ``gates``."""
+
+    from opensquilla.squilla_router.self_learning.gates import merge_feedback_into_stats
+
+    return merge_feedback_into_stats(stats, agent_id, home)
+
+
 def _check_and_maybe_rollback(
     agent_id: str,
     config: Any,
@@ -456,22 +504,28 @@ def _check_and_maybe_rollback(
     )
 
     post = scan_event_store(agent_id, home=home, since_ts=state.promoted_at)
+    post_fb = _feedback_stats(agent_id, home, since_ts=state.promoted_at)
     if not should_rollback(
         pre_complaint_rate=state.pre_promotion_complaint_rate,
         post_complaint_rate=post.complaint_rate,
         post_n=post.total,
         config=config,
+        pre_downvote_rate=state.pre_promotion_downvote_rate,
+        post_downvote_rate=post_fb.downvote_rate if post_fb else 0.0,
+        post_feedback_n=post_fb.total_single if post_fb else 0,
     ):
         return False
 
     bad_version = state.active_version
     pre_rate = state.pre_promotion_complaint_rate
+    pre_fb_rate = state.pre_promotion_downvote_rate
     rollback_active(home)
     quarantine_candidate(bad_version, home)
     _invalidate_router_strategy_cache()
     state.active_version = None
     state.promoted_at = None
     state.pre_promotion_complaint_rate = None
+    state.pre_promotion_downvote_rate = None
     state.consecutive_failures += 1  # don't immediately re-promote the same data
     save_train_state(state, agent_id, home)
     write_receipt(
@@ -483,6 +537,9 @@ def _check_and_maybe_rollback(
             "pre_complaint_rate": pre_rate,
             "post_complaint_rate": post.complaint_rate,
             "post_samples": post.total,
+            "pre_downvote_rate": pre_fb_rate,
+            "post_downvote_rate": post_fb.downvote_rate if post_fb else None,
+            "post_feedback_samples": post_fb.total if post_fb else 0,
         },
         home,
     )

@@ -45,7 +45,7 @@ gemeinsame Turn-Schleife.
 Jeder Einstiegspunkt — Web UI, CLI und Chat-Kanäle — läuft durch
 dieselbe Schleife, sodass sich Tool-Dispatch, Wiederholungsversuche und
 Entscheidungs-Logging überall identisch verhalten. Eine modulare
-Provider-Schicht spricht mit OpenRouter, OpenAI, Anthropic, Ollama,
+Provider-Schicht spricht mit TokenRhythm, OpenRouter, OpenAI, Anthropic, Ollama,
 DeepSeek, Gemini, Qwen/DashScope und über 20 weiteren LLM-Providern —
 ohne Änderung an deinem Code oder deinem Konfigurationsschema.
 
@@ -687,7 +687,7 @@ Vollständige Hinweise: [`CHANGELOG.md`](CHANGELOG.md) ·
 | --- | --- |
 | **Token-effizientes Routing** | `SquillaRouter` — ein lokaler LightGBM-+-ONNX-Klassifizierer im Extra `recommended` — bewertet jeden Turn nach Länge, Sprache, Code, Stichwörtern und semantischen Embeddings und routet ihn dann über vier Tiers (C0–C3; die alten Namen T0–T3 sind Aliase) zum günstigsten leistungsfähigen Modell. Die Klassifizierung läuft auf dem Gerät; dein Prompt verlässt die Maschine für diese Entscheidung nie. |
 | **Adaptives Reasoning und Prompts** | OpenSquilla fordert erweitertes Reasoning nur für Turns an, die der Router als komplex bewertet, und der System-Prompt skaliert mit der Aufgabenkomplexität — schlank für triviale Turns, vollständige Anweisungen für komplexe. |
-| **Über 20 LLM-Provider** | Die Provider-Registry zielt auf über 20 LLM-Backends — OpenRouter, OpenAI, Anthropic, Ollama, DeepSeek, Gemini, DashScope/Qwen, Moonshot, Mistral, Groq, Zhipu, SiliconFlow, vLLM, LM Studio und mehr — mit Primär-plus-Fallback-Auswahl; das Erst-Onboarding legt die verifizierte Teilmenge offen. |
+| **Über 20 LLM-Provider** | Die Provider-Registry zielt auf über 20 LLM-Backends — TokenRhythm, OpenRouter, OpenAI, Anthropic, Ollama, DeepSeek, Gemini, DashScope/Qwen, Moonshot, Mistral, Groq, Zhipu, SiliconFlow, vLLM, LM Studio und mehr — mit Primär-plus-Fallback-Auswahl; das Erst-Onboarding legt die verifizierte Teilmenge offen. |
 | **Bedarfsgesteuerte Skills und MCP** | 15 gebündelte Skills (Coding, GitHub, Cron, pptx/docx/xlsx/pdf, Zusammenfassung, tmux, Wetter und mehr) werden nur geladen, wenn die Aufgabe sie braucht. OpenSquilla ist ein MCP-Client und kann auch als MCP-Server laufen — `opensquilla mcp-server run` benötigt das Extra `mcp` (installiere `opensquilla[recommended,mcp]`). Skills lassen sich über die CLI erstellen, installieren und veröffentlichen. |
 | **Dauerhaftes lokales Gedächtnis** | Eine kuratierte `MEMORY.md` plus datierte Markdown-Notizen, durchsucht mit SQLite-Volltext-Stichwortsuche und `sqlite-vec`-Semantikabruf. Embeddings laufen über gebündeltes ONNX auf dem Gerät oder wechseln zu OpenAI/Ollama. Optionaler exponentieller Decay und eine aktivierbare „Dream“-Konsolidierung sind verfügbar. |
 | **Geschichtete Sicherheits-Sandbox** | Drei Richtlinien-Tiers (Standard / Strict / Locked) auf einer Berechtigungsmatrix. Bubblewrap isoliert die Codeausführung unter Linux; das macOS-Seatbelt-Backend rendert derzeit nur Profile (Ausführung ausstehend), und unter Windows gibt es noch kein Sandbox-Backend. Ein Denial-Ledger pausiert autonome Läufe nach wiederholten Ablehnungen automatisch, abgelehnte Ausgaben werden verworfen, und Skill-Metadaten sowie Tool-Ergebnisse werden gegen Prompt-Injection XML-escaped. |

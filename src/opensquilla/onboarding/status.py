@@ -12,7 +12,11 @@ import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from opensquilla.gateway.config import LEGACY_OPENROUTER_MODEL_OPTIONS, GatewayConfig
+from opensquilla.gateway.config import (
+    LEGACY_OPENROUTER_MODEL_OPTIONS,
+    STATIC_B5_SELECTION_MODE_PROVIDERS,
+    GatewayConfig,
+)
 from opensquilla.onboarding.audio_specs import get_audio_provider_setup_spec
 from opensquilla.onboarding.config_store import default_config_path
 from opensquilla.onboarding.image_generation_specs import (
@@ -179,8 +183,7 @@ def _ensemble_candidate_provider_ids(cfg: GatewayConfig) -> list[str]:
     add(getattr(llm, "provider", ""))
 
     selection_mode = str(getattr(ensemble, "selection_mode", "") or "")
-    if selection_mode == "static_openrouter_b5":
-        add("openrouter")
+    add(STATIC_B5_SELECTION_MODE_PROVIDERS.get(selection_mode, ""))
 
     router = getattr(cfg, "squilla_router", None)
     tiers = getattr(router, "tiers", {}) or {}

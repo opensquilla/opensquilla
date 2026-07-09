@@ -79,6 +79,14 @@
       "connecting": "连接中",
       "disconnected": "已断开"
     },
+    "bgm": {
+      "label": "背景音乐",
+      "play": "播放背景音乐",
+      "pause": "暂停背景音乐",
+      "volume": "音量",
+      "chooseLocalFile": "选择本地文件…",
+      "noTracks": "暂无内置曲目 — 请将音频放入 music/ 目录或选择本地文件"
+    },
     "brandHome": "OpenSquilla 主页",
     "controlNav": "控制台导航",
     "primaryNav": "主导航",
@@ -98,7 +106,9 @@
       "themeLabel": "主题",
       "themeDesc": "跟随系统，或强制使用浅色或深色。侧边栏的切换按钮是此设置的快捷方式。",
       "languageLabel": "语言",
-      "languageDesc": "界面的显示语言。即时应用于此浏览器。"
+      "languageDesc": "界面的显示语言。即时应用于此浏览器。",
+      "bgmLabel": "背景音乐",
+      "bgmDesc": "在顶栏显示背景音乐控件。默认关闭；也可通过命令面板切换。"
     },
     "dialog": {
       "title": "设置",
@@ -162,6 +172,12 @@
     }
   },
   "setup": {
+    "cli": {
+      "advancedTitle": "高级 · 内置 CLI",
+      "hintBundled": "以下命令使用应用内置的 CLI，可直接粘贴到终端运行。",
+      "hintDev": "开发模式：命令经 uv 从源码检出运行。",
+      "restartHint": "请用应用的「设置 → 运行时 → 重启」来生效。"
+    },
     "common": {
       "apiKey": "API 密钥",
       "apiKeyEnv": "API 密钥环境变量",
@@ -299,6 +315,8 @@
       "providerFirst": "请先配置聊天模型，然后选择路由方式。",
       "providerAction": "前往聊天模型 →",
       "routerTitle": "AI 智能单模型路由",
+      "visualModeLabel": "路由面板样式",
+      "visualModeDesc": "聊天回复中路由决策面板的呈现方式。",
       "crossProviderNotice": "跨服务商路由已启用。保存前请检查每个分层。",
       "cards": {
         "router": {
@@ -329,8 +347,8 @@
       "candidateSourceLegacy": "来自旧配置",
       "candidateSourceOpenRouterFixed": "OpenRouter 固定聚合",
       "customCandidatesLabel": "自定义跨服务商候选",
-      "openrouterFixedTitle": "OpenRouter 固定聚合",
-      "openrouterFixedDesc": "当聊天模型使用 OpenRouter 时，聚合路由固定使用四个候选生成模型和一个综合模型。",
+      "openrouterFixedTitle": "{provider} 固定聚合",
+      "openrouterFixedDesc": "当聊天模型使用 {provider} 时，聚合路由固定使用四个候选生成模型和一个综合模型。",
       "customizeOpenRouterLabel": "自定义聚合",
       "customizeOpenRouterDesc": "切换为基于路由的聚合，并用旧 OpenRouter 候选模板预填。",
       "openrouterFixedProposer": "候选生成模型",
@@ -408,6 +426,7 @@
       "selectionLabel": "模型选择",
       "selectionDesc": "聚合如何决定询问哪些模型。",
       "selectionStatic": "旧版内置多模型集",
+      "selectionStaticTokenrhythm": "TokenRhythm 内置多模型集",
       "selectionDynamic": "动态(跟随模型分层)",
       "rawValueTooltip": "配置值:{value}",
       "modelsLabel": "候选模型",
@@ -669,6 +688,35 @@
       "offSurfacesError": "off 会显示原始的服务商错误。",
       "audioEnvVar": "用于读取音频服务商访问凭据的环境变量。",
       "remoteEmbeddingKey": "远程嵌入 API 密钥或环境变量引用。"
+    },
+    "memoryLearning": {
+      "groupTitle": "记忆与自学习",
+      "dreamLabel": "记忆整理(dream)",
+      "tokenBadge": "token 消耗",
+      "dreamDesc": "周期性调用模型整理会话记忆(每 24h)。模型路由自学习依赖它提供空闲训练时机。",
+      "selfLearningLabel": "模型路由自学习",
+      "selfLearningDesc": "从你的纠错中学习路由偏好。完全在本机进行——存储特征向量,从不存储对话原文。",
+      "depDefault": "依赖上方的记忆整理:开启本项会一并启用它;单独关闭记忆整理后,自学习仍会采集样本但不会自动训练。",
+      "depLinked": "已随本项开启记忆整理。可随时单独关闭它——自学习会继续采集,只是暂停自动训练。",
+      "depPaused": "记忆整理已关闭——样本仍在采集,但不会自动训练。重新开启记忆整理即可恢复。",
+      "restartRequired": "调度变更需要重启网关后生效。",
+      "statusModel": "路由模型",
+      "statusSamples": "纠错样本",
+      "statusLastAction": "上次动作",
+      "modelBaseline": "出厂基线",
+      "modelLearned": "学习版 v{version}",
+      "samplesTotal": "共采集 {total} 条",
+      "gatePausedDream": "训练已暂停——等待记忆整理重新开启",
+      "gateReason": {
+        "ready": "就绪——将在下次训练窗口训练",
+        "disabled": "已停用",
+        "no_data": "尚未采集到样本",
+        "agent_active": "等待空闲窗口",
+        "cooldown": "近期已训练,冷却中",
+        "insufficient_data": "未训练——纠错样本不足",
+        "insufficient_class_diversity": "未训练——纠错样本覆盖的路由档位过少"
+      },
+      "detachedNote": "模型路由基础权重已升级。基于旧权重的学习成果已归档;纠错样本不受影响,将基于新权重自动重新学习。无需任何操作。"
     }
   },
   "sessions": {
@@ -1973,6 +2021,14 @@
     },
     "modelRouting": {
       "updateFailed": "切换模型路由失败，已恢复原设置。请检查网关连接后重试。"
+    },
+    "routeFeedback": {
+      "up": "这次路由选对了",
+      "down": "这次路由选错了",
+      "upEnsemble": "这次聚合回答满意",
+      "downEnsemble": "这次聚合回答不满意",
+      "expired": "这条消息的路由记录已过期",
+      "failed": "未能记录你的评价"
     }
   },
   "shared": {
@@ -1992,7 +2048,9 @@
       "groupMessages": "消息",
       "actionNewChat": "新建会话",
       "actionOpenSettings": "打开设置",
-      "actionToggleTheme": "切换主题"
+      "actionToggleTheme": "切换主题",
+      "actionBgmEnable": "开启背景音乐",
+      "actionBgmDisable": "关闭背景音乐"
     },
     "toast": {
       "dismiss": "关闭通知"

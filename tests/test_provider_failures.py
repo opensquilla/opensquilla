@@ -8,6 +8,19 @@ from opensquilla.provider.failures import (
     ProviderFailureKind,
     classify_provider_error,
 )
+from opensquilla.provider.openai import _http_error_body_text
+
+
+def test_http_error_body_text_prefixes_top_level_code() -> None:
+    """Non-OpenAI envelopes ({"code","message","traceId"} — TokenRhythm)
+    carry the machine-readable kind in a top-level code; it must ride along
+    with the localized message so classification substrings can match."""
+    body = '{"code": "MODEL_NOT_AVAILABLE", "message": "模型不可用：xyz", "traceId": "trace_0"}'
+    assert _http_error_body_text(body.encode()) == "MODEL_NOT_AVAILABLE: 模型不可用：xyz"
+    # OpenAI envelopes keep their message untouched.
+    assert _http_error_body_text(b'{"error": {"message": "boom", "code": "x"}}') == "boom"
+    # A top-level message without a code stays bare.
+    assert _http_error_body_text(b'{"message": "plain"}') == "plain"
 
 
 def test_provider_request_budget_exhausted_is_context_overflow() -> None:

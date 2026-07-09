@@ -80,6 +80,13 @@ class RouterTrainSample:
     # --- Opt-in audit sidecar (default off); never used for training ---
     audit_summary: str | None = None
 
+    # V017 decision-record id for this turn. The explicit-feedback join key:
+    # (session_key, turn_index) is NOT unique (the routing-history-derived
+    # turn_index saturates at the history cap and resets after idle), so
+    # ratings attach to samples through this id. None on legacy rows — those
+    # simply never match feedback.
+    decision_id: str | None = None
+
     schema_version: int = SCHEMA_VERSION
 
     def to_json_dict(self) -> dict[str, Any]:

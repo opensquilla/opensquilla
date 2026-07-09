@@ -144,6 +144,7 @@ def _provider_display_name(provider_kind: str) -> str:
         "qianfan": "Qianfan",
         "volcengine": "Volcengine",
         "tencent_tokenhub": "Tencent TokenHub",
+        "tokenrhythm": "TokenRhythm",
     }.get(provider_kind, "Provider")
 
 
@@ -176,6 +177,13 @@ def _http_error_body_text(body: bytes | str) -> str:
             return message.strip()
     message = payload.get("message") if isinstance(payload, dict) else None
     if isinstance(message, str) and message.strip():
+        # Non-OpenAI envelopes ({"code","message","traceId"} — TokenRhythm
+        # and similar gateways) carry the machine-readable kind in a
+        # top-level code; keep it with the (often localized) text so
+        # failure-classification substrings have something stable to match.
+        code = payload.get("code") if isinstance(payload, dict) else None
+        if isinstance(code, str) and code.strip():
+            return f"{code.strip()}: {message.strip()}"
         return message.strip()
     return text
 

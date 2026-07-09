@@ -82,6 +82,13 @@ export interface PlatformCapabilities {
   hasDesktopOnboarding: boolean
   hasWebConfig: boolean
   /**
+   * The operator likely has a terminal where `opensquilla` resolves (web
+   * installs are CLI-launched). Desktop is false: copyable CLI commands fold
+   * behind an advanced disclosure and get rewritten to the shell-reported
+   * invocation prefix so they run against the app's config and state roots.
+   */
+  hasTerminalWorkflow: boolean
+  /**
    * The host can open a generated artifact with the OS default application.
    * Set on desktop, where `window.open` is denied by the shell handler so the
    * in-browser blob-popup path can never succeed.
@@ -108,10 +115,19 @@ export interface PlatformFilesApi {
   openArtifact?: (payload: ArtifactOpenRequest) => Promise<ArtifactNativeOpenResult>
 }
 
+export interface CliInvocation {
+  mode: 'bundled' | 'dev'
+  /** Paste-ready replacement for the leading `opensquilla` CLI token. */
+  prefix: string
+}
+
 export interface PlatformGatewayApi {
   getStatus(): Promise<GatewayStatus>
   revealLog?: () => Promise<boolean>
   retryStartup?: () => Promise<unknown>
+  /** null when the shell predates the bridge or the lookup fails; callers
+   *  fall back to the raw command. */
+  getCliInvocation?: () => Promise<CliInvocation | null>
 }
 
 export interface PlatformSettingsApi {

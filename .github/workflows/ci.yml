@@ -109,6 +109,10 @@ jobs:
         working-directory: opensquilla-webui
         run: npm ci
 
+      - name: Run frontend unit tests
+        working-directory: opensquilla-webui
+        run: npm run test:unit
+
       - name: Build frontend
         working-directory: opensquilla-webui
         run: npm run build

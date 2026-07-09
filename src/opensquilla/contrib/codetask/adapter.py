@@ -2,13 +2,14 @@
 
 Unlike the swebench OpenSquillaAdapter (which crosses a Docker boundary via
 ``docker exec``), this runs ``opensquilla agent`` directly on the host with
-the repo as the working directory. The provider API key is inherited from
+the repo as the working directory. Provider credentials are inherited from
 the runner's environment — no env-file is needed because there is no
 container boundary to cross (codex review #3).
 """
 
 from __future__ import annotations
 
+import copy
 import json
 import logging
 import os
@@ -18,7 +19,6 @@ import shutil
 import subprocess
 import threading
 import time
-import tomllib
 from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
@@ -26,12 +26,15 @@ from typing import Any
 
 import tomli_w
 
+from opensquilla.contrib.codetask.agent_config import (
+    AgentConfigBundle,
+    load_agent_config_bundle,
+)
 from opensquilla.contrib.codetask.config import (
     DEFAULT_AGENT_TIMEOUT,
     DEFAULT_ITERATION_TIMEOUT,
     DEFAULT_MAX_ITERATIONS,
     DEFAULT_MAX_PROVIDER_RETRIES,
-    agent_config_path,
     agent_python,
 )
 from opensquilla.contrib.codetask.types import AgentOutcome
@@ -57,11 +60,13 @@ class LocalAdapter:
         thinking: str = "",
         timeout: int = DEFAULT_AGENT_TIMEOUT,
         max_iterations: int = DEFAULT_MAX_ITERATIONS,
+        agent_config: AgentConfigBundle | None = None,
     ):
         self.model = model
         self.thinking = thinking
         self.timeout = timeout
         self.max_iterations = max_iterations
+        self.agent_config = agent_config
 
     def run(
         self,
@@ -142,9 +147,9 @@ class LocalAdapter:
         stalled = False
         stall_error = ""
         # cwd = repo so relative tool paths and test commands resolve there.
-        # env inherits OPENROUTER_API_KEY and points the agent at code-task's
-        # own config (OPENSQUILLA_GATEWAY_CONFIG_PATH) so coding-irrelevant tools
-        # are denied while network + squilla_router stay on.
+        # env inherits provider credentials and points the agent at the per-run
+        # config (OPENSQUILLA_GATEWAY_CONFIG_PATH): the operator's provider
+        # sections carried in, coding-irrelevant tools denied, network kept.
         # Isolate the agent and any install/test descendants into their own
         # process group / job so a timeout can kill the WHOLE tree, not just
         # the direct python child (codex review #6). POSIX uses
@@ -159,14 +164,21 @@ class LocalAdapter:
         # media_root_from_config(); tool_result_store_dir = media_root/tool-results.
         run_media_root = scratch_dir.expanduser().resolve() / "media"
         per_run_config = artifact_dir / "agent-config.toml"
-        _base_cfg = tomllib.loads(agent_config_path().read_text(encoding="utf-8"))
-        _attachments = _base_cfg.setdefault("attachments", {})
+        bundle = self.agent_config or load_agent_config_bundle()
+        _cfg = copy.deepcopy(bundle.payload)
+        _attachments = _cfg.setdefault("attachments", {})
         if not isinstance(_attachments, dict):
             raise RuntimeError("code-task agent config has invalid [attachments]")
         _attachments["media_root"] = str(run_media_root)
-        per_run_config.write_text(tomli_w.dumps(_base_cfg), encoding="utf-8")
+        # The file can carry [llm_profiles] credentials (they have no env
+        # transport channel), so create it owner-only from the start — a
+        # post-write chmod leaves a world-readable window under umask 022.
+        # POSIX mode is honored; a no-op on Windows (best effort). Attempt
+        # snapshots preserve the mode (copy2).
+        _write_owner_only(per_run_config, tomli_w.dumps(_cfg))
         agent_env = {
             **os.environ,
+            **bundle.child_env,
             "OPENSQUILLA_GATEWAY_CONFIG_PATH": str(per_run_config),
         }
         popen_kwargs: dict[str, Any] = dict(
@@ -233,6 +245,7 @@ class LocalAdapter:
         duration = time.time() - start
 
         envelope = _parse_json_envelope(stdout)
+        envelope_errors = [e for e in ((envelope or {}).get("errors") or []) if isinstance(e, dict)]
         if stalled:
             finish = "stalled"
         elif timed_out:
@@ -244,10 +257,9 @@ class LocalAdapter:
         else:
             status = envelope.get("status")
             text = (envelope.get("text") or "").strip()
-            errors = envelope.get("errors") or []
             if status == "ok" and text:
                 finish = "stop"
-            elif errors:
+            elif envelope_errors:
                 finish = "error"
             else:
                 finish = "empty"
@@ -262,6 +274,7 @@ class LocalAdapter:
             session_id=(envelope or {}).get("session_key"),
             usage=usage,
             error=stall_error or None,
+            errors=envelope_errors,
         )
 
 
@@ -476,6 +489,19 @@ def _kill_process_group(proc) -> None:
         proc.kill()
     except OSError:
         pass
+
+
+def _write_owner_only(path: Path, text: str) -> None:
+    """Write ``text`` to ``path``, creating it readable only by the owner.
+
+    ``os.open`` with mode 0o600 applies the mode at creation (subject to
+    umask, which only removes bits), so credentials in the file are never
+    briefly world-readable — unlike write-then-chmod. On Windows the mode
+    bits are largely inert; this is best effort there.
+    """
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as handle:
+        handle.write(text)
 
 
 def _agent_command(executable: str, argv: list[str], py_code: str) -> list[str]:

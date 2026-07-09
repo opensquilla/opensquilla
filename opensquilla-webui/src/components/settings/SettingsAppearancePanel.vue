@@ -4,6 +4,8 @@ import { useAppStore, type ThemeMode } from '@/stores/app'
 import { themePickerOptions } from '@/themes/registry'
 import { SUPPORTED_LOCALES, type LocaleCode } from '@/i18n'
 import Icon from '@/components/Icon.vue'
+import ControlSwitch from '@/components/ControlSwitch.vue'
+import { useBgm } from '@/composables/useBgm'
 
 // Client-only preferences: applied instantly to this browser and persisted via
 // the app store. No readiness state; never part of the settings dirty bar.
@@ -36,6 +38,10 @@ function pickTheme(mode: ThemeMode) {
 function pickLocale(code: LocaleCode) {
   void appStore.setLocale(code)
 }
+
+// Background-music feature gate (off by default). Same singleton the topbar
+// control and the command palette read, so all three surfaces stay in lockstep.
+const { enabled: bgmEnabled, setEnabled: setBgmEnabled } = useBgm()
 </script>
 
 <template>
@@ -106,6 +112,22 @@ function pickLocale(code: LocaleCode) {
             <span>{{ opt.label }}</span>
           </label>
         </div>
+      </div>
+    </div>
+
+    <div class="control-row control-row--stack">
+      <div class="control-row__label-block">
+        <span class="control-row__label">{{ t('settings.appearance.bgmLabel') }}</span>
+        <span class="control-row__desc">{{ t('settings.appearance.bgmDesc') }}</span>
+      </div>
+      <div class="control-row__control">
+        <ControlSwitch
+          :checked="bgmEnabled"
+          :aria-label="t('settings.appearance.bgmLabel')"
+          name="appearance-bgm"
+          data-testid="settings-bgm-toggle"
+          @change="setBgmEnabled"
+        />
       </div>
     </div>
   </section>

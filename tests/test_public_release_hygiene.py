@@ -12,6 +12,9 @@ from opensquilla.gateway.config import GatewayConfig
 # before the public tree is published.
 SECRET_PATTERNS = {
     "openrouter": re.compile(r"sk-or-v1-[A-Za-z0-9_-]{32,}"),
+    # Real TokenRhythm keys carry a 40+ char base62 tail; the floor keeps
+    # short synthetic fixtures (sk_tr_FAKE...) legal.
+    "tokenrhythm": re.compile(r"\bsk_tr_[A-Za-z0-9]{32,}\b"),
     "brave": re.compile(r"\bBSA[A-Za-z0-9_-]{20,}\b"),
     "github_pat": re.compile(r"\b(?:ghp|github_pat)_[A-Za-z0-9_]{20,}\b"),
     "private_key": re.compile(r"-----BEGIN (?:RSA |OPENSSH |EC |DSA )?PRIVATE KEY-----"),

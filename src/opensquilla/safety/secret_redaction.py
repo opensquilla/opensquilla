@@ -10,6 +10,11 @@ _REDACTED = "[REDACTED]"
 _SECRET_TOKEN_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"\bsk-or-v1-[A-Za-z0-9_-]{16,}\b"),
     re.compile(r"\bsk-[A-Za-z0-9_-]{20,}\b"),
+    # TokenRhythm keys use underscores (sk_tr_...), invisible to the
+    # hyphen-anchored patterns above. The tail class includes -_ like the
+    # sk- pattern's so a key abutting punctuation over-masks instead of
+    # failing the trailing \b and leaking whole.
+    re.compile(r"\bsk_tr_[A-Za-z0-9_-]{16,}\b"),
     re.compile(r"\bgh[pousr]_[A-Za-z0-9_]{20,}\b"),
 )
 _AUTH_BEARER_RE = re.compile(r"(?i)(authorization\s*:\s*bearer\s+)[^\s,;'\")}\]]+")

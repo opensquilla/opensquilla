@@ -936,6 +936,66 @@ async def test_doctor_status_reports_static_b5_ensemble_ready_when_keyed(
 
 
 @pytest.mark.asyncio
+async def test_doctor_status_warns_when_static_tokenrhythm_b5_has_no_credential(
+    monkeypatch,
+) -> None:
+    import opensquilla.gateway.rpc_doctor as rpc_doctor
+
+    monkeypatch.delenv("TOKENRHYTHM_API_KEY", raising=False)
+    # An OpenRouter key must NOT satisfy the tokenrhythm profile.
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-synthetic")
+    _patch_all_but_llm_ensemble(monkeypatch, rpc_doctor)
+
+    config = GatewayConfig(
+        llm={"provider": "groq", "api_key": "sk-groq-synthetic"},
+        llm_ensemble={"enabled": True, "selection_mode": "static_tokenrhythm_b5"},
+    )
+    response = await get_dispatcher().dispatch(
+        "req-1",
+        "doctor.status",
+        {},
+        RpcContext(conn_id="test", config=config),
+    )
+
+    assert response.ok is True
+    finding = next(
+        finding
+        for finding in response.payload["findings"]
+        if finding["id"] == "llm_ensemble.static_tokenrhythm_b5.credentials.missing"
+    )
+    assert finding["severity"] == "warn"
+    assert "TOKENRHYTHM_API_KEY" in finding["detail"]
+    assert "TokenRhythm" in finding["detail"]
+    assert finding["evidence"]["credentialAvailable"] is False
+
+
+@pytest.mark.asyncio
+async def test_doctor_status_reports_static_tokenrhythm_b5_ready_when_keyed(
+    monkeypatch,
+) -> None:
+    import opensquilla.gateway.rpc_doctor as rpc_doctor
+
+    monkeypatch.setenv("TOKENRHYTHM_API_KEY", "sk-tr-synthetic")
+    _patch_all_but_llm_ensemble(monkeypatch, rpc_doctor)
+
+    config = GatewayConfig(
+        llm={"provider": "groq", "api_key": "sk-groq-synthetic"},
+        llm_ensemble={"enabled": True, "selection_mode": "static_tokenrhythm_b5"},
+    )
+    response = await get_dispatcher().dispatch(
+        "req-1",
+        "doctor.status",
+        {},
+        RpcContext(conn_id="test", config=config),
+    )
+
+    assert response.ok is True
+    ids = [finding["id"] for finding in response.payload["findings"]]
+    assert "llm_ensemble.static_tokenrhythm_b5.credentials.missing" not in ids
+    assert "llm_ensemble.static_tokenrhythm_b5.ready" in ids
+
+
+@pytest.mark.asyncio
 async def test_doctor_status_skips_ensemble_finding_when_ensemble_disabled(
     monkeypatch,
 ) -> None:

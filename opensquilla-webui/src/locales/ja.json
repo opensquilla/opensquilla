@@ -79,6 +79,14 @@
       "connecting": "接続中",
       "disconnected": "切断済み"
     },
+    "bgm": {
+      "label": "BGM",
+      "play": "BGMを再生",
+      "pause": "BGMを一時停止",
+      "volume": "音量",
+      "chooseLocalFile": "ローカルファイルを選択…",
+      "noTracks": "曲がありません — music/ にファイルを追加するかローカルファイルを選択してください"
+    },
     "brandHome": "OpenSquilla ホーム",
     "controlNav": "ナビゲーションの操作",
     "primaryNav": "メイン",
@@ -98,7 +106,9 @@
       "themeLabel": "テーマ",
       "themeDesc": "システムに従うか、ライトまたはダークを指定します。サイドバーの切り替えはこの設定へのショートカットです。",
       "languageLabel": "言語",
-      "languageDesc": "インターフェースの表示言語です。このブラウザーに即時に適用されます。"
+      "languageDesc": "インターフェースの表示言語です。このブラウザーに即時に適用されます。",
+      "bgmLabel": "BGM",
+      "bgmDesc": "トップバーにBGMコントロールを表示します。既定ではオフで、コマンドパレットからも切り替えられます。"
     },
     "dialog": {
       "title": "設定",
@@ -162,6 +172,12 @@
     }
   },
   "setup": {
+    "cli": {
+      "advancedTitle": "詳細 · 内蔵 CLI",
+      "hintBundled": "これらのコマンドはアプリ内蔵の CLI を使用します。ターミナルに貼り付けて実行できます。",
+      "hintDev": "開発モード：コマンドは uv 経由でソースチェックアウトから実行されます。",
+      "restartHint": "アプリの「設定 → ランタイム → 再起動」で反映してください。"
+    },
     "common": {
       "apiKey": "API キー",
       "apiKeyEnv": "API キーの環境変数",
@@ -299,6 +315,8 @@
       "providerFirst": "先に Chat Model を設定してから、ルーティング方法を選んでください。",
       "providerAction": "Chat Model へ →",
       "routerTitle": "AI 単一モデルルーティング",
+      "visualModeLabel": "ルーティングパネルの表示スタイル",
+      "visualModeDesc": "チャット返信に表示されるルーティング決定パネルの表示方法。",
       "crossProviderNotice": "プロバイダー横断ルーティングが有効です。保存前に各ティアを確認してください。",
       "cards": {
         "router": {
@@ -329,8 +347,8 @@
       "candidateSourceLegacy": "旧設定から",
       "candidateSourceOpenRouterFixed": "OpenRouter 固定集約",
       "customCandidatesLabel": "プロバイダー横断のカスタム候補",
-      "openrouterFixedTitle": "OpenRouter 固定集約",
-      "openrouterFixedDesc": "Chat Model が OpenRouter を使う場合、集約ルーティングは 4 つの提案モデルと 1 つの集約モデルを使います。",
+      "openrouterFixedTitle": "{provider} 固定集約",
+      "openrouterFixedDesc": "Chat Model が {provider} を使う場合、集約ルーティングは 4 つの提案モデルと 1 つの集約モデルを使います。",
       "customizeOpenRouterLabel": "集約をカスタマイズ",
       "customizeOpenRouterDesc": "旧 OpenRouter 候補テンプレートを使い、ルーター基準の集約ルーティングに切り替えます。",
       "openrouterFixedProposer": "提案モデル",
@@ -408,6 +426,7 @@
       "selectionLabel": "モデル選択",
       "selectionDesc": "アンサンブルが質問するモデルの選び方。",
       "selectionStatic": "旧来の組み込みモデルセット",
+      "selectionStaticTokenrhythm": "TokenRhythm 組み込みモデルセット",
       "selectionDynamic": "動的(モデル階層に従う)",
       "rawValueTooltip": "設定値: {value}",
       "modelsLabel": "候補モデル",
@@ -669,6 +688,35 @@
       "offSurfacesError": "off は元のプロバイダーエラーを表示します。",
       "audioEnvVar": "音声プロバイダーへのアクセスに読み取る環境変数。",
       "remoteEmbeddingKey": "リモート埋め込み API キーまたは環境変数参照。"
+    },
+    "memoryLearning": {
+      "groupTitle": "メモリと自己学習",
+      "dreamLabel": "メモリ整理(dream)",
+      "tokenBadge": "トークン消費",
+      "dreamDesc": "定期的にモデルを呼び出してセッションメモリを整理します(24 時間ごと)。モデルルーティングの自己学習はこの空き時間を訓練の契機として利用します。",
+      "selfLearningLabel": "モデルルーティング自己学習",
+      "selfLearningDesc": "あなたの修正からルーティングの傾向を学習します。すべて端末内で完結——特徴ベクトルのみを保存し、会話の原文は保存しません。",
+      "depDefault": "上のメモリ整理に依存します。これを有効にするとメモリ整理も有効になります。メモリ整理だけを無効にした場合、サンプル収集は続きますが自動訓練は停止します。",
+      "depLinked": "メモリ整理はこの項目と同時に有効化されました。個別に無効化できます——自己学習は収集を続け、自動訓練のみ停止します。",
+      "depPaused": "メモリ整理が無効です——サンプルは収集されていますが、自動訓練は行われません。再度有効にすると再開します。",
+      "restartRequired": "スケジュール変更を反映するにはゲートウェイの再起動が必要です。",
+      "statusModel": "ルーティングモデル",
+      "statusSamples": "修正サンプル",
+      "statusLastAction": "前回の動作",
+      "modelBaseline": "工場出荷ベースライン",
+      "modelLearned": "学習版 v{version}",
+      "samplesTotal": "累計 {total} 件収集",
+      "gatePausedDream": "訓練は一時停止中——メモリ整理の再有効化を待っています",
+      "gateReason": {
+        "ready": "準備完了——次の訓練ウィンドウで実行されます",
+        "disabled": "無効",
+        "no_data": "サンプルはまだありません",
+        "agent_active": "アイドル時間を待機中",
+        "cooldown": "最近訓練したためクールダウン中",
+        "insufficient_data": "未訓練——修正サンプルが不足しています",
+        "insufficient_class_diversity": "未訓練——修正サンプルのルーティング階層が偏っています"
+      },
+      "detachedNote": "ルーティングの基本重みがアップグレードされました。旧重みに基づく学習成果はアーカイブされました。修正サンプルは影響を受けず、新しい重みで自動的に再学習されます。操作は不要です。"
     }
   },
   "sessions": {
@@ -1973,6 +2021,14 @@
     },
     "modelRouting": {
       "updateFailed": "モデルルーティングを切り替えられませんでした。元に戻しました。ゲートウェイ接続を確認して再試行してください。"
+    },
+    "routeFeedback": {
+      "up": "このターンのモデル選択は適切だった",
+      "down": "このターンのモデル選択は不適切だった",
+      "upEnsemble": "この統合回答に満足",
+      "downEnsemble": "この統合回答に不満",
+      "expired": "このメッセージのルーティング記録は期限切れです",
+      "failed": "評価を記録できませんでした"
     }
   },
   "shared": {
@@ -1992,7 +2048,9 @@
       "groupMessages": "メッセージ",
       "actionNewChat": "新規チャット",
       "actionOpenSettings": "設定を開く",
-      "actionToggleTheme": "テーマを切り替え"
+      "actionToggleTheme": "テーマを切り替え",
+      "actionBgmEnable": "BGMを有効にする",
+      "actionBgmDisable": "BGMを無効にする"
     },
     "toast": {
       "dismiss": "通知を閉じる"

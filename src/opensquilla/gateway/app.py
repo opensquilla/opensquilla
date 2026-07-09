@@ -165,7 +165,7 @@ def create_gateway_app(
     async def api_system_status(request: Request) -> JSONResponse:
         uptime = int((time.time() - _start_time) * 1000)
         provider_name = None
-        if provider_selector is not None:
+        if provider_selector is not None and getattr(provider_selector, "is_configured", True):
             # Report the *configured* provider id (e.g. "openrouter"), not the
             # wire-protocol backend class. OpenAI-compatible providers
             # (openrouter / deepseek / gemini) are all served by OpenAIProvider,

@@ -19,6 +19,7 @@ from opensquilla.onboarding.status import get_onboarding_status
 from opensquilla.paths import default_opensquilla_home
 
 _KEY_URLS = {
+    "tokenrhythm": "https://tokenrhythm.studio/account/keys",
     "openrouter": "https://openrouter.ai/keys",
     "openai": "https://platform.openai.com/api-keys",
     "anthropic": "https://console.anthropic.com/settings/keys",
@@ -114,6 +115,10 @@ def _is_windows() -> bool:
 # PowerShell quoting agree on *when* to quote and only differ in *how*.
 _SHELL_UNSAFE_RE = re.compile(r"[^\w@%+=:,./-]", re.ASCII)
 
+# PowerShell's tokenizer treats the Unicode smart quotes U+2018-U+201B as
+# single-quote delimiters too; doubling is the only escape for any of them.
+_POWERSHELL_QUOTE_RE = re.compile(r"['‘’‚‛]")
+
 
 def quote_cli_arg(value: str | Path) -> str:
     """Quote one copy-paste CLI argument for the operator's shell.
@@ -130,7 +135,7 @@ def quote_cli_arg(value: str | Path) -> str:
         return "''"
     if _SHELL_UNSAFE_RE.search(text) is None:
         return text
-    return "'" + text.replace("'", "''") + "'"
+    return "'" + _POWERSHELL_QUOTE_RE.sub(lambda match: match.group(0) * 2, text) + "'"
 
 
 def persistent_env_file() -> str:

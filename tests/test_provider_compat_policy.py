@@ -63,6 +63,25 @@ def test_api_url_absorbs_any_version_suffix() -> None:
         assert provider._api_url("/v1/chat/completions") == expected, base
 
 
+def test_tokenrhythm_never_toggles_thinking_but_replays_v4_reasoning() -> None:
+    """TokenRhythm rejects unknown request fields (a DeepSeek ``thinking``
+    toggle is an UNKNOWN_FIELD 400), so the policy must never declare toggle
+    ids or a default reasoning format; the V4 ids keep only the
+    reasoning_content replay requirement."""
+    policy = compat_policy_for_kind("tokenrhythm")
+    assert policy.thinking_toggle_model_ids == frozenset()
+    assert policy.default_reasoning_format == ""
+    assert policy.replay_reasoning_format == ""
+    # cost_cny is CNY — booking it as USD would corrupt cost rollups.
+    assert policy.trust_billed_cost is False
+    assert _should_replay_reasoning_content(
+        policy=policy, model="deepseek-v4-flash", caps=None
+    )
+    assert not _should_replay_reasoning_content(
+        policy=policy, model="glm-5", caps=None
+    )
+
+
 def test_deepseek_replay_stays_v4_gated() -> None:
     deepseek = compat_policy_for_kind("deepseek")
     caps = ModelCapabilities(supports_reasoning=True, reasoning_format="deepseek")

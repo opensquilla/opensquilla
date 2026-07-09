@@ -197,11 +197,21 @@ def test_run_clears_stale_scratch_manifest(monkeypatch, tmp_path):
     assert scratch.is_dir()
 
 
+def _isolate_operator_config(monkeypatch, tmp_path):
+    """Point operator-config discovery at a missing file so tests exercise the
+    pure template regardless of the developer's real config/env."""
+    monkeypatch.setenv(
+        "OPENSQUILLA_GATEWAY_CONFIG_PATH", str(tmp_path / "no-operator-config.toml")
+    )
+    monkeypatch.delenv("OPENSQUILLA_CODETASK_AGENT_CONFIG", raising=False)
+
+
 def test_run_points_agent_at_codetask_config(monkeypatch, tmp_path):
-    # The agent subprocess must load code-task's own config (deny list + router)
+    # The agent subprocess must load code-task's own config (deny list etc.)
     # via OPENSQUILLA_GATEWAY_CONFIG_PATH, while still inheriting the parent env.
     from opensquilla.contrib.codetask.config import agent_config_path
 
+    _isolate_operator_config(monkeypatch, tmp_path)
     captured = {}
     _install_popen(monkeypatch, captured, stdout='{"status": "ok", "text": "done"}')
     repo = tmp_path / "repo"
@@ -221,7 +231,7 @@ def test_run_points_agent_at_codetask_config(monkeypatch, tmp_path):
     cfg_text = per_run_cfg.read_text(encoding="utf-8")
     parsed = tomllib.loads(cfg_text)
     base = tomllib.loads(agent_config_path().read_text(encoding="utf-8"))
-    # every base section survives the merge (deny list + router preserved)...
+    # every base section survives the merge (deny list + policy preserved)...
     for section in base:
         assert section in parsed, section
     # ...and media_root is pinned under THIS run's scratch (absolute).
@@ -233,7 +243,7 @@ def test_run_points_agent_at_codetask_config(monkeypatch, tmp_path):
 
     conf = GatewayConfig.load(str(per_run_cfg))
     assert media_root_from_config(conf) == (tmp_path / "s").resolve() / "media"
-    assert "PATH" in env  # inherits parent env (OPENROUTER_API_KEY passes through)
+    assert "PATH" in env  # inherits parent env (provider keys pass through)
 
 
 def test_per_run_config_merges_existing_attachments(monkeypatch, tmp_path):
@@ -243,14 +253,16 @@ def test_per_run_config_merges_existing_attachments(monkeypatch, tmp_path):
     import tomllib
 
     from opensquilla.contrib.codetask import adapter as adapter_mod
+    from opensquilla.contrib.codetask import agent_config as agent_config_mod
 
+    _isolate_operator_config(monkeypatch, tmp_path)
     base = tmp_path / "base.toml"
     base.write_text(
         '[attachments]\nmedia_root = "/old/global"\npersist_transcripts = true\n'
         "[tools]\ndeny = [\"x\"]\n",
         encoding="utf-8",
     )
-    monkeypatch.setattr(adapter_mod, "agent_config_path", lambda: base)
+    monkeypatch.setattr(agent_config_mod, "agent_config_path", lambda: base)
 
     captured = {}
     _install_popen(monkeypatch, captured, stdout='{"status": "ok", "text": "done"}')
@@ -264,3 +276,143 @@ def test_per_run_config_merges_existing_attachments(monkeypatch, tmp_path):
     assert cfg["attachments"]["media_root"] == str((tmp_path / "s").resolve() / "media")
     assert cfg["attachments"]["persist_transcripts"] is True
     assert cfg["tools"]["deny"] == ["x"]
+
+
+def test_per_run_config_inherits_operator_provider(monkeypatch, tmp_path):
+    """The operator's provider stack replaces the template's; credentials are
+    kept out of the written file and travel via the child env instead
+    (issue #541)."""
+    import tomllib
+
+    operator_cfg = tmp_path / "operator.toml"
+    operator_cfg.write_text(
+        "[llm]\n"
+        'provider = "deepseek"\n'
+        'model = "deepseek-chat"\n'
+        'api_key = "sk-user-typed-secret"\n'
+        "[squilla_router]\n"
+        "enabled = true\n"
+        "[llm_profiles.moonshot]\n"
+        'api_key = "sk-profile-secret"\n'
+        "[llm_ensemble]\n"
+        "enabled = true\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("OPENSQUILLA_GATEWAY_CONFIG_PATH", str(operator_cfg))
+    monkeypatch.delenv("OPENSQUILLA_CODETASK_AGENT_CONFIG", raising=False)
+
+    captured = {}
+    _install_popen(monkeypatch, captured, stdout='{"status": "ok", "text": "done"}')
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    LocalAdapter().run(
+        "x", repo=repo, scratch_dir=tmp_path / "s", artifact_dir=tmp_path / "a"
+    )
+
+    written = (tmp_path / "a" / "agent-config.toml").read_text(encoding="utf-8")
+    parsed = tomllib.loads(written)
+    # Operator provider stack carried in...
+    assert parsed["llm"]["provider"] == "deepseek"
+    assert parsed["llm"]["model"] == "deepseek-chat"
+    assert parsed["squilla_router"]["enabled"] is True
+    # ...primary credential stripped from the on-disk file (snapshotted per
+    # attempt) and transported via the child env instead...
+    assert "api_key" not in parsed["llm"]
+    assert "sk-user-typed-secret" not in written
+    assert captured["env"]["OPENSQUILLA_LLM_API_KEY"] == "sk-user-typed-secret"
+    # ...profile keys stay in the 0600 file (no env transport channel exists)...
+    assert parsed["llm_profiles"]["moonshot"]["api_key"] == "sk-profile-secret"
+    # ...[llm_ensemble] deliberately not carried (env-key auto-opt-in would
+    # re-pin the subagent to a provider the operator moved away from)...
+    assert "llm_ensemble" not in parsed
+    # ...and the template's run policy stays authoritative.
+    for section in ("tools", "sandbox", "meta_skill", "memory"):
+        assert section in parsed, section
+    assert parsed["meta_skill"]["enabled"] is False
+
+
+def test_per_run_config_without_operator_config_keeps_default_behavior(
+    monkeypatch, tmp_path
+):
+    """Upgrade parity: with no operator config anywhere, the subagent resolves
+    the same built-in default provider as before the inheritance change."""
+    import tomllib
+
+    _isolate_operator_config(monkeypatch, tmp_path)
+    monkeypatch.delenv("OPENSQUILLA_LLM_PROVIDER", raising=False)
+    monkeypatch.delenv("OPENSQUILLA_LLM_API_KEY", raising=False)
+    captured = {}
+    _install_popen(monkeypatch, captured, stdout='{"status": "ok", "text": "done"}')
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    LocalAdapter().run(
+        "x", repo=repo, scratch_dir=tmp_path / "s", artifact_dir=tmp_path / "a"
+    )
+    per_run_cfg = tmp_path / "a" / "agent-config.toml"
+    parsed = tomllib.loads(per_run_cfg.read_text(encoding="utf-8"))
+    # No pinned [llm]: provider resolution falls to defaults + env, exactly
+    # like the operator's own gateway with no config file.
+    assert "llm" not in parsed
+    from opensquilla.gateway.config import GatewayConfig
+
+    # Whatever a bare gateway would default to (don't hard-code the vendor —
+    # the built-in default provider changes over time), the subagent must
+    # resolve the SAME thing.
+    bare_default = GatewayConfig.load(str(tmp_path / "no-such-config.toml")).llm.provider
+    conf = GatewayConfig.load(str(per_run_cfg))
+    assert conf.llm.provider == bare_default
+    # No key to transport, so no injection either.
+    assert "OPENSQUILLA_LLM_API_KEY" not in captured["env"]
+
+
+def test_agent_config_override_env_is_fully_authoritative(monkeypatch, tmp_path):
+    """OPENSQUILLA_CODETASK_AGENT_CONFIG (the documented #541 escape hatch)
+    disables provider inheritance: the custom file is used as-is, apart from
+    the per-run media_root injection."""
+    import tomllib
+
+    override_cfg = tmp_path / "override.toml"
+    override_cfg.write_text(
+        '[llm]\nprovider = "deepseek"\nmodel = "deepseek-chat"\napi_key = "sk-in-override"\n',
+        encoding="utf-8",
+    )
+    operator_cfg = tmp_path / "operator.toml"
+    operator_cfg.write_text('[llm]\nprovider = "moonshot"\nmodel = "kimi-k2.6"\n', "utf-8")
+    monkeypatch.setenv("OPENSQUILLA_CODETASK_AGENT_CONFIG", str(override_cfg))
+    monkeypatch.setenv("OPENSQUILLA_GATEWAY_CONFIG_PATH", str(operator_cfg))
+    monkeypatch.delenv("OPENSQUILLA_LLM_API_KEY", raising=False)
+
+    captured = {}
+    _install_popen(monkeypatch, captured, stdout='{"status": "ok", "text": "done"}')
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    LocalAdapter().run(
+        "x", repo=repo, scratch_dir=tmp_path / "s", artifact_dir=tmp_path / "a"
+    )
+    parsed = tomllib.loads((tmp_path / "a" / "agent-config.toml").read_text("utf-8"))
+    assert parsed["llm"]["provider"] == "deepseek"  # override wins, no merge
+    assert parsed["llm"]["api_key"] == "sk-in-override"  # untouched (full authority)
+    assert parsed["attachments"]["media_root"] == str((tmp_path / "s").resolve() / "media")
+    assert "OPENSQUILLA_LLM_API_KEY" not in captured["env"]  # no inheritance, no injection
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX file modes")
+def test_per_run_config_is_owner_only(monkeypatch, tmp_path):
+    # The per-run file can carry [llm_profiles] credentials.
+    import stat
+
+    operator_cfg = tmp_path / "operator.toml"
+    operator_cfg.write_text(
+        '[llm]\nprovider = "deepseek"\nmodel = "deepseek-chat"\n', encoding="utf-8"
+    )
+    monkeypatch.setenv("OPENSQUILLA_GATEWAY_CONFIG_PATH", str(operator_cfg))
+    monkeypatch.delenv("OPENSQUILLA_CODETASK_AGENT_CONFIG", raising=False)
+    captured = {}
+    _install_popen(monkeypatch, captured, stdout='{"status": "ok", "text": "done"}')
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    LocalAdapter().run(
+        "x", repo=repo, scratch_dir=tmp_path / "s", artifact_dir=tmp_path / "a"
+    )
+    mode = stat.S_IMODE((tmp_path / "a" / "agent-config.toml").stat().st_mode)
+    assert mode == 0o600

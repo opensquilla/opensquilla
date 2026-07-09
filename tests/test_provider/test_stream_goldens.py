@@ -235,6 +235,15 @@ CASES: list[GoldenCase] = [
             deterministic_uuid=True,
         ),
     ),
+    # TokenRhythm's live stream tail: a duplicate finish_reason chunk plus
+    # TWO usage-bearing chunks (a details chunk with reasoning/cached token
+    # counts, then a finish repeat with cost_cny/trace_id extras). Finish
+    # and usage handling are last-wins, so this must stay one clean turn.
+    GoldenCase(
+        "openai_compat",
+        "tokenrhythm_duplicate_finish_usage.sse",
+        _openai_collector(model="deepseek-v4-flash", provider_kind="tokenrhythm"),
+    ),
     # anthropic (AnthropicProvider, Messages SSE)
     GoldenCase("anthropic", "text_content_blocks.sse", _anthropic_collector()),
     GoldenCase("anthropic", "thinking_signature_then_text.sse", _anthropic_collector()),

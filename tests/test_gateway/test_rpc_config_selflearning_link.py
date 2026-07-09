@@ -200,5 +200,34 @@ async def test_linkage_reports_live_reconcile_state(tmp_path) -> None:
         reset_dream_reconciler()
 
 
+async def test_patch_safe_allows_memory_learning_toggles(tmp_path) -> None:
+    """The Settings > Advanced group writes through config.patch.safe
+    (operator.write): the three boolean opt-ins must be allowlisted, and the
+    safe path must still run the dream linkage (it delegates to the full
+    patch handler)."""
+
+    from opensquilla.gateway.rpc_config import (
+        _SAFE_WRITE_PATCH_PATHS,
+        _handle_config_patch_safe,
+    )
+
+    assert "squilla_router.self_learning.enabled" in _SAFE_WRITE_PATCH_PATHS
+    assert "memory.dream.enabled" in _SAFE_WRITE_PATCH_PATHS
+    assert "memory.dream.auto_schedule" in _SAFE_WRITE_PATCH_PATHS
+    # Thresholds/schedules stay admin-only.
+    assert "squilla_router.self_learning.train_min_samples" not in _SAFE_WRITE_PATCH_PATHS
+
+    ctx = _ctx(tmp_path)
+    res = await _handle_config_patch_safe(
+        {"patches": {"squilla_router.self_learning.enabled": True}}, ctx
+    )
+    assert ctx.config.squilla_router.self_learning.enabled is True
+    assert ctx.config.memory.dream.enabled is True
+    assert sorted(res["linked"]) == [
+        "memory.dream.auto_schedule",
+        "memory.dream.enabled",
+    ]
+
+
 if __name__ == "__main__":  # pragma: no cover
     pytest.main([__file__, "-q"])

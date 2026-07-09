@@ -419,6 +419,11 @@ _PRICING_TABLE: list[tuple[str, PriceEntry]] = [
     ("glm-4.5", PriceEntry(0.115, 0.287)),
     ("kimi-k2.6", PriceEntry(0.95, 4.0)),
     ("minimax-m2.7", PriceEntry(0.118, 0.99)),
+    # TokenRhythm platform list prices, converted from CNY per 1M tokens to
+    # USD at roughly 6.975 CNY/USD (no origin USD list price published for
+    # these ids).
+    ("minimax-m2.5", PriceEntry(0.30, 1.20)),
+    ("mimo-v2.5-pro", PriceEntry(0.43, 0.86)),
     # Direct provider profile estimates.
     # OpenAI-compatible Chat Completions returns token usage, not billed cost.
     # These values prevent profile defaults from falling through to generic

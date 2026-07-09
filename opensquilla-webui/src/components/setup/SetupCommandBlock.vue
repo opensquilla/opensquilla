@@ -1,5 +1,5 @@
 <template>
-  <div class="setup-command-block">
+  <div class="setup-command-block" :class="{ 'setup-command-block--wrap': wrap }">
     <span v-if="label" class="setup-cli__label">{{ label }}</span>
     <code>{{ formattedCommand }}</code>
     <button
@@ -23,6 +23,9 @@ const props = defineProps<{
   command: string
   label?: string
   copyLabel?: string
+  /** Wrap onto multiple lines instead of single-line horizontal scroll — for
+      narrow containers (the sidebar) where the scroll strip hides the text. */
+  wrap?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -57,6 +60,16 @@ const copyTitle = computed(() => props.copyLabel || (props.label ? `Copy ${props
   overflow-x: auto;
   padding: var(--sp-2) var(--sp-3);
   white-space: nowrap;
+}
+
+.setup-command-block--wrap {
+  align-items: flex-start;
+}
+
+.setup-command-block--wrap code {
+  overflow-wrap: anywhere;
+  overflow-x: visible;
+  white-space: pre-wrap;
 }
 
 .setup-cli__label {

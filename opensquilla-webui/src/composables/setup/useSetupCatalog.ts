@@ -14,6 +14,7 @@ import {
   type EnsembleCredentialStatus,
 } from '@/composables/setup/useSetupEnsembleForm'
 import { useSetupModelStrategyForm } from '@/composables/setup/useSetupModelStrategyForm'
+import { invalidateReadiness } from '@/composables/setup/useReadinessSummary'
 import { useSettingsPromotedForm, DEFAULT_LLM_TIMEOUT_SECONDS } from '@/composables/setup/useSettingsPromotedForm'
 import { useSettingsSection } from '@/composables/setup/useSettingsSection'
 import { SETTINGS_SECTIONS, type SettingsSectionId } from '@/composables/setup/settingsSections'
@@ -312,6 +313,10 @@ async function loadData() {
     channelsForm.initFromCatalog(catalog.value.channels || [])
     promotedForm.initFromConfig(config.value)
     disableNetworkObservability.value = currentDisableNetworkObservability.value
+    // Every save funnels through this reload, so this is the one spot that can
+    // tell snapshot holders outside the dialog (the sidebar banner) that the
+    // hot-applied config may have changed readiness.
+    invalidateReadiness()
   } catch (err) {
     pushToast(t('setup.toast.loadFailed', { error: err instanceof Error ? err.message : String(err) }), { tone: 'danger' })
   }

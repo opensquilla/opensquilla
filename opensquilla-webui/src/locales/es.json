@@ -260,6 +260,7 @@
       "viewCredential": "View",
       "replaceCredential": "Cambiar clave",
       "credentialReplacePlaceholder": "Paste a replacement API key",
+      "credentialEnterPlaceholder": "Paste your API key",
       "showApiKey": "Show API key",
       "hideApiKey": "Hide API key",
       "credentialAdvanced": "Advanced",

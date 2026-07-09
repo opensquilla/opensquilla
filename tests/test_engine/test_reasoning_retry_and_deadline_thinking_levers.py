@@ -13,6 +13,7 @@ tool call happens.
 
 from __future__ import annotations
 
+import json
 from collections.abc import AsyncIterator
 from typing import Any
 
@@ -379,6 +380,211 @@ async def test_reasoning_stream_char_cap_one_preempt_per_iteration() -> None:
     done = next(event for event in events if event.kind == "done")
     assert done.text == "ok"
     assert len(provider.calls) == 2
+    # The retry is the cap preempt's (thinking disabled for it), not the
+    # generic reasoning-only recovery, which would keep thinking on here.
+    assert provider.calls[0]["config"].thinking is True
+    assert provider.calls[1]["config"].thinking is False
+
+
+@pytest.mark.asyncio
+async def test_reasoning_stream_char_cap_skips_streams_in_tool_call_phase() -> None:
+    # Reasoning deltas interleaved with an in-flight tool call must not
+    # preempt: the stream already carries work product, and discarding it
+    # would drop the tool call.
+    provider = _SequenceProvider(
+        [
+            [
+                ProviderToolUseStart(tool_use_id="use-1", tool_name="echo"),
+                ProviderReasoning(text=_REASONING_CHUNK),
+                ProviderReasoning(text=_REASONING_CHUNK),
+                ProviderToolUseEnd(
+                    tool_use_id="use-1",
+                    tool_name="echo",
+                    arguments={"value": "hi"},
+                ),
+                ProviderDone(stop_reason="tool_use", input_tokens=3, output_tokens=1),
+            ],
+            _final_text(),
+        ]
+    )
+    agent = _echo_agent(
+        provider,
+        AgentConfig(
+            thinking=ThinkingLevel.MEDIUM,
+            reasoning_stream_char_cap=500,
+            max_iterations=5,
+            retry_base_backoff_ms=0,
+            retry_max_backoff_ms=0,
+        ),
+    )
+
+    events = [event async for event in agent.run_turn("fix the bug")]
+
+    assert [event for event in events if event.kind == "error"] == []
+    assert any(event.kind == "done" for event in events)
+    # No preempt retry: the tool iteration and the final answer, nothing else,
+    # and thinking is never disabled.
+    assert len(provider.calls) == 2
+    assert provider.calls[0]["config"].thinking is True
+    assert provider.calls[1]["config"].thinking is True
+
+
+@pytest.mark.asyncio
+async def test_reasoning_stream_char_cap_preempt_keeps_provider_retry_budget() -> None:
+    # The preempt is an engine choice, not a provider failure: with a provider
+    # retry budget of zero, the preempted attempt's retry must still run.
+    provider = _SequenceProvider(
+        [
+            [
+                ProviderReasoning(text=_REASONING_CHUNK),
+                ProviderReasoning(text=_REASONING_CHUNK),
+                ProviderDone(stop_reason="stop", input_tokens=5, output_tokens=2),
+            ],
+            _final_text(),
+        ]
+    )
+    agent = Agent(
+        provider=provider,
+        config=AgentConfig(
+            thinking=ThinkingLevel.MEDIUM,
+            reasoning_stream_char_cap=500,
+            max_provider_retries=0,
+            retry_base_backoff_ms=0,
+            retry_max_backoff_ms=0,
+        ),
+    )
+
+    events = [event async for event in agent.run_turn("fix the bug")]
+
+    assert [event for event in events if event.kind == "error"] == []
+    done = next(event for event in events if event.kind == "done")
+    assert done.text == "ok"
+    assert len(provider.calls) == 2
+    assert provider.calls[1]["config"].thinking is False
+
+
+@pytest.mark.asyncio
+async def test_reasoning_stream_char_cap_skips_when_thinking_already_disabled() -> None:
+    # The preempt's remedy is "retry without thinking"; when the call already
+    # ran without thinking (deadline cutoff armed), a retry changes nothing,
+    # so the stream must run to completion instead of being discarded.
+    provider = _SequenceProvider(
+        [
+            [
+                ProviderReasoning(text=_REASONING_CHUNK),
+                ProviderReasoning(text=_REASONING_CHUNK),
+                ProviderText(text="ok"),
+                ProviderDone(stop_reason="stop", input_tokens=5, output_tokens=2),
+            ],
+        ]
+    )
+    # margin > timeout: the thinking cutoff arms at the first loop-top check.
+    agent = Agent(
+        provider=provider,
+        config=AgentConfig(
+            thinking=ThinkingLevel.MEDIUM,
+            reasoning_stream_char_cap=500,
+            timeout=30.0,
+            deadline_thinking_off_margin_seconds=60,
+            retry_base_backoff_ms=0,
+            retry_max_backoff_ms=0,
+        ),
+    )
+
+    events = [event async for event in agent.run_turn("fix the bug")]
+
+    done = next(event for event in events if event.kind == "done")
+    assert done.text == "ok"
+    assert len(provider.calls) == 1
+    assert provider.calls[0]["config"].thinking is False
+
+
+@pytest.mark.asyncio
+async def test_reasoning_stream_char_cap_preempt_no_canned_finalization_text() -> None:
+    # Cap preempt during the max-iterations finalization call, after the model
+    # attempted a (stripped) tool call: the preempt retries the call, so the
+    # canned "iteration limit" text must not be emitted for the discarded
+    # attempt — the retry produces the real final answer.
+    provider = _SequenceProvider(
+        [
+            _echo_tool_call("use-1"),
+            [
+                ProviderToolUseStart(tool_use_id="use-2", tool_name="echo"),
+                ProviderReasoning(text=_REASONING_CHUNK),
+                ProviderReasoning(text=_REASONING_CHUNK),
+                ProviderDone(stop_reason="stop", input_tokens=5, output_tokens=2),
+            ],
+            _final_text(),
+        ]
+    )
+    agent = _echo_agent(
+        provider,
+        AgentConfig(
+            thinking=ThinkingLevel.MEDIUM,
+            reasoning_stream_char_cap=500,
+            max_iterations=1,
+            retry_base_backoff_ms=0,
+            retry_max_backoff_ms=0,
+        ),
+    )
+
+    events = [event async for event in agent.run_turn("fix the bug")]
+
+    assert any(event.kind == "done" for event in events)
+    assert len(provider.calls) == 3
+    assert provider.calls[2]["config"].thinking is False
+    canned = [
+        event
+        for event in events
+        if event.kind == "text_delta"
+        and "reached the configured iteration limit" in event.text
+    ]
+    assert canned == []
+
+
+@pytest.mark.asyncio
+async def test_reasoning_stream_char_cap_preempt_records_no_tool_loop_event(
+    tmp_path,
+) -> None:
+    # The preempted attempt is incomplete by engine choice; it must not be
+    # reported to the tool-loop observer as a provider stream failure.
+    runtime_events_path = tmp_path / "runtime_events.jsonl"
+    provider = _SequenceProvider(
+        [
+            [
+                ProviderReasoning(text=_REASONING_CHUNK),
+                ProviderReasoning(text=_REASONING_CHUNK),
+                ProviderDone(stop_reason="stop", input_tokens=5, output_tokens=2),
+            ],
+            _final_text(),
+        ]
+    )
+    agent = Agent(
+        provider=provider,
+        config=AgentConfig(
+            thinking=ThinkingLevel.MEDIUM,
+            reasoning_stream_char_cap=500,
+            tool_loop_observer_mode="log",
+            runtime_events_path=str(runtime_events_path),
+            retry_base_backoff_ms=0,
+            retry_max_backoff_ms=0,
+        ),
+    )
+
+    events = [event async for event in agent.run_turn("fix the bug")]
+
+    done = next(event for event in events if event.kind == "done")
+    assert done.text == "ok"
+    assert len(provider.calls) == 2
+    observer_events = []
+    if runtime_events_path.exists():
+        observer_events = [
+            json.loads(line)
+            for line in runtime_events_path.read_text().splitlines()
+            if line.strip()
+            and json.loads(line).get("mechanism") == "tool_loop_observer"
+        ]
+    assert observer_events == []
 
 
 @pytest.mark.asyncio

@@ -4345,6 +4345,7 @@ class Agent:
                     iter_reasoning_content = None
                     iter_thinking_signature = None
                     _got_error = False
+                    _stream_policy_preempt = False
                     attempt_reasoning_stream_chars = 0
                     provider_done_for_log: ProviderDoneEvent | None = None
                     provider_error_for_log: ProviderErrorEvent | None = None
@@ -4525,11 +4526,14 @@ class Agent:
                         call_chat_cfg = call_chat_cfg.model_copy(
                             update={"tool_choice": forced_tool_choice}
                         )
+                    _attempt_thinking_disabled = False
                     if _disable_thinking_for_next_provider_call:
                         call_chat_cfg = _chat_config_with_thinking_disabled(call_chat_cfg)
                         _disable_thinking_for_next_provider_call = False
+                        _attempt_thinking_disabled = True
                     if deadline_thinking_off_armed:
                         call_chat_cfg = _chat_config_with_thinking_disabled(call_chat_cfg)
+                        _attempt_thinking_disabled = True
 
                     self._write_turn_call_log(
                         "llm_request",
@@ -4619,6 +4623,20 @@ class Agent:
                                     and not attempt_user_visible_emitted
                                     and not pending_tools
                                     and not tool_calls
+                                    # Mirror the request-splice gates: the
+                                    # finalization messages take precedence
+                                    # over the directive, and the splice is
+                                    # withheld on an assistant tail. Preempting
+                                    # a stream the retry cannot splice into
+                                    # discards reasoning for a directive-free,
+                                    # otherwise identical request.
+                                    and not artifact_delivery_final_response_pending
+                                    and not max_iterations_finalization_pending
+                                    and not post_write_convergence_finalization_pending
+                                    and (
+                                        not turn_messages
+                                        or turn_messages[-1].role != "assistant"
+                                    )
                                     and _loop.time()
                                     > _total_deadline - wrapup_margin_seconds
                                 ):
@@ -4655,6 +4673,7 @@ class Agent:
                                         margin_seconds=wrapup_margin_seconds,
                                     )
                                     _got_error = True
+                                    _stream_policy_preempt = True
                                     break  # break stream, retry with directive
                                 if (
                                     _reasoning_stream_char_cap > 0
@@ -4669,6 +4688,10 @@ class Agent:
                                         and not attempt_user_visible_emitted
                                         and not pending_tools
                                         and not tool_calls
+                                        # Thinking already off for this call:
+                                        # a retry sans thinking changes
+                                        # nothing, so let the stream run.
+                                        and not _attempt_thinking_disabled
                                     ):
                                         # Runaway reasoning-only stream: discard
                                         # the partial reasoning and retry the
@@ -4694,6 +4717,7 @@ class Agent:
                                             cap_chars=_reasoning_stream_char_cap,
                                         )
                                         _got_error = True
+                                        _stream_policy_preempt = True
                                         break  # break stream, retry sans thinking
 
                             elif isinstance(raw_ev, ProviderToolUseStart):
@@ -5026,7 +5050,14 @@ class Agent:
                             yield terminal_error
                         break
                     response_text = "".join(assistant_text_parts)
-                    if ignored_post_delivery_tool_use and not response_text.strip():
+                    if (
+                        ignored_post_delivery_tool_use
+                        and not response_text.strip()
+                        # A policy preempt retries this call; emitting the
+                        # canned finalization text first would surface it
+                        # before the retried attempt's real answer.
+                        and not _stream_policy_preempt
+                    ):
                         if artifact_delivery_final_response_pending:
                             response_text = self._artifact_delivery_final_response_text(
                                 artifact_delivery_final_response_artifacts
@@ -5073,7 +5104,13 @@ class Agent:
                         reasoning_tokens=iter_reasoning_tokens,
                         user_visible_emitted=attempt_user_visible_emitted,
                     )
-                    if attempt_classification.kind != _ProviderAttemptKind.OK:
+                    if (
+                        attempt_classification.kind != _ProviderAttemptKind.OK
+                        # An engine-chosen preempt truncated the stream; the
+                        # incomplete attempt is self-inflicted, not a provider
+                        # failure signal for the tool-loop observer.
+                        and not _stream_policy_preempt
+                    ):
                         self._record_tool_loop_runtime_event(
                             reason=attempt_classification.kind.value,
                             iteration=iterations,

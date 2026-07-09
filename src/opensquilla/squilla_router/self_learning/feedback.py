@@ -243,6 +243,23 @@ def _prune_expired(
         pass
 
 
+def prune_expired_feedback(
+    agent_id: str,
+    retention_days: int,
+    *,
+    home: Path | None = None,
+    now: datetime | None = None,
+) -> None:
+    """Apply configured retention even when no new rating is submitted."""
+
+    with _write_lock:
+        _prune_expired(
+            feedback_path(agent_id, home),
+            now=now,
+            retention_days=retention_days,
+        )
+
+
 __all__ = [
     "EXECUTED_KINDS",
     "FEEDBACK_FILENAME",
@@ -252,6 +269,7 @@ __all__ = [
     "FeedbackStats",
     "feedback_path",
     "load_feedback_map",
+    "prune_expired_feedback",
     "scan_feedback_stats",
     "write_feedback",
 ]

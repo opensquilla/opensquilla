@@ -134,6 +134,67 @@ async def test_meta_match_upgrades_low_router_tier_to_c2_entry_model():
 
 
 @pytest.mark.asyncio
+async def test_meta_upgrade_realigns_routed_provider_to_upgraded_tier():
+    skills = [_meta_spec(name="meta-short-drama", triggers=("生成一个短剧",))]
+    tiers = {
+        "c0": {"model": "small-model-1", "provider": "provider-a"},
+        "c1": {"model": "mid-model-1", "provider": "provider-a"},
+        "c2": {"model": "big-model-1", "provider": "provider-b"},
+        "c3": {"model": "max-model-1", "provider": "provider-b"},
+    }
+    ctx = _ctx(
+        message="生成一个短剧，啥都行",
+        session_id="S-META-PROVIDER-REALIGN",
+        skills=skills,
+        model="small-model-1",
+        tiers=tiers,
+        metadata={
+            "routed_tier": "c0",
+            "routed_model": "small-model-1",
+            "routed_provider": "provider-a",
+            "routing_source": "v4_phase3",
+            "routing_applied": True,
+        },
+    )
+
+    out = await meta_resolution(ctx)
+
+    assert out.metadata["routed_tier"] == "c2"
+    assert out.metadata["routed_model"] == "big-model-1"
+    assert out.metadata["routed_provider"] == "provider-b"
+
+
+@pytest.mark.asyncio
+async def test_meta_upgrade_clears_routed_provider_when_upgraded_tier_declares_none():
+    skills = [_meta_spec(name="meta-short-drama", triggers=("生成一个短剧",))]
+    tiers = {
+        "c0": {"model": "small-model-1", "provider": "provider-a"},
+        "c1": {"model": "mid-model-1", "provider": "provider-a"},
+        "c2": {"model": "big-model-1"},
+        "c3": {"model": "max-model-1"},
+    }
+    ctx = _ctx(
+        message="生成一个短剧，啥都行",
+        session_id="S-META-PROVIDER-CLEAR",
+        skills=skills,
+        model="small-model-1",
+        tiers=tiers,
+        metadata={
+            "routed_tier": "c0",
+            "routed_model": "small-model-1",
+            "routed_provider": "provider-a",
+            "routing_source": "v4_phase3",
+            "routing_applied": True,
+        },
+    )
+
+    out = await meta_resolution(ctx)
+
+    assert out.metadata["routed_tier"] == "c2"
+    assert "routed_provider" not in out.metadata
+
+
+@pytest.mark.asyncio
 async def test_meta_match_without_router_tier_does_not_force_entry_model():
     skills = [_meta_spec(name="meta-short-drama", triggers=("生成一个短剧",))]
     tiers = {"c2": {"model": "deepseek-v4-pro"}}

@@ -193,6 +193,18 @@ def test_complaint_upgrade_caps_at_highest_tier() -> None:
     assert (result.tier, result.applied) == ("c3", False)
 
 
+def test_complaint_upgrade_ranks_canonically_when_tiers_declared_out_of_order() -> None:
+    result = complaint_upgrade(
+        "c2",
+        message="wrong",
+        router_cfg=router_cfg(),
+        valid_tiers=["c3", "c2", "c1", "c0"],
+        pre_confidence_tier="c2",
+        previous_tier=None,
+    )
+    assert (result.tier, result.applied) == ("c3", True)
+
+
 def test_detect_complaint_matches_zh_and_en_terms() -> None:
     assert detect_complaint("这个不对，请重写") == ["不对", "重写"]
     assert "try again" in detect_complaint("please try again")
@@ -228,6 +240,16 @@ def test_anti_downgrade_previous_lower_is_ignored() -> None:
         "c2", router_cfg=router_cfg(), valid_tiers=VALID_TIERS, previous_tier="c0"
     )
     assert (result.tier, result.applied) == ("c2", False)
+
+
+def test_anti_downgrade_ranks_canonically_when_tiers_declared_out_of_order() -> None:
+    result = anti_downgrade(
+        "c3",
+        router_cfg=router_cfg(),
+        valid_tiers=["c3", "c2", "c1", "c0"],
+        previous_tier="c0",
+    )
+    assert (result.tier, result.applied) == ("c3", False)
 
 
 def test_anti_downgrade_disabled() -> None:

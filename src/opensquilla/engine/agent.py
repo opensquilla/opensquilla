@@ -9628,15 +9628,31 @@ class Agent:
                     return None
 
         # --- Compaction ---
-        entries = [
-            {
-                "role": m.role,
-                "content": (
-                    m.content if isinstance(m.content, str) else _flatten_content_blocks(m.content)
-                ),
-            }
-            for m in messages
-        ]
+        # Flatten each message for the compaction LLM's *input* text, but size
+        # the budget/skip/cut decisions on the ORIGINAL structured content.
+        # _flatten_content_blocks clips tool results to 200 chars, so sizing on
+        # the flattened view made a tool-heavy (overflowing) context look tiny,
+        # so compaction always skipped and the CONTEXT_OVERFLOW retry died with
+        # compaction_not_smaller. Attaching a real token_count makes the
+        # compactor's estimator (which prefers a persisted token_count) measure
+        # the true replay size.
+        entries = []
+        for m in messages:
+            if isinstance(m.content, str):
+                flat = m.content
+                real_tokens = get_approx_tokens(m.content)
+            else:
+                flat = _flatten_content_blocks(m.content)
+                real_tokens = get_approx_tokens(
+                    json.dumps(Agent._live_request_jsonable(m.content))
+                )
+            entries.append(
+                {
+                    "role": m.role,
+                    "content": flat,
+                    "token_count": real_tokens,
+                }
+            )
 
         request = CompactionRequest(
             session_id="agent-turn",
@@ -9733,11 +9749,18 @@ class Agent:
                 )
             return None
 
-        has_structured_content = any(not isinstance(m.content, str) for m in messages)
-        if result.removed_count == 0 and not result.summary and has_structured_content:
+        # A skip (nothing removed, no summary) is a no-op regardless of whether
+        # the in-memory history is structured or string-only. Reporting it as
+        # compacted=True (the old behavior for string-only history) emits a
+        # spurious CompactionEvent that rewrites the durable transcript and
+        # corrupts row metadata, so short-circuit every no-op skip here.
+        if result.removed_count == 0 and not result.summary:
+            has_structured_content = any(not isinstance(m.content, str) for m in messages)
             await _await_flush_task()
             self._flush_done_this_cycle = False
-            skip_reason = result.skip_reason or "structured_content_noop"
+            skip_reason = getattr(result, "skip_reason", None) or (
+                "structured_content_noop" if has_structured_content else "noop"
+            )
             if self._session_key:
                 notify_compaction(
                     self._session_key,

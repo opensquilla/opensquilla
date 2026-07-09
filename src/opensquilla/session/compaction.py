@@ -234,7 +234,12 @@ def estimate_entry_model_replay_tokens(entry: Any) -> int:
 
 
 def _entry_tokens(entry: dict[str, Any]) -> int:
-    return estimate_entry_replay_tokens(entry)
+    # Budget/skip/cut decisions must measure what the model actually replays
+    # (the full tool_calls JSON), NOT the summarized compaction-LLM input. The
+    # preflight trigger (runtime.py) uses the model-replay estimator; using the
+    # smaller summarized estimate here made compaction veto itself on
+    # tool-heavy transcripts that genuinely overflow the window.
+    return estimate_entry_model_replay_tokens(entry)
 
 
 def _profile_protected_recent_messages(cfg: CompactionConfig) -> int:

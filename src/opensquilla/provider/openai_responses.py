@@ -13,6 +13,7 @@ from typing import Any
 from uuid import uuid4
 
 import httpx
+import structlog
 
 from opensquilla.env import trust_env as _trust_env
 from opensquilla.secrets import clean_header_secret
@@ -24,6 +25,7 @@ from .stream_assembly import ToolStreamAccumulator
 from .trace_recorder import LLMTraceRecorder
 from .types import (
     ChatConfig,
+    ContentBlockImage,
     ContentBlockText,
     ContentBlockToolResult,
     ContentBlockToolUse,
@@ -38,6 +40,8 @@ from .types import (
 )
 
 _OPENAI_RESPONSES_BASE = "https://api.openai.com/v1"
+
+log = structlog.get_logger(__name__)
 
 
 def _responses_tool(tool: ToolDefinition) -> dict[str, Any]:
@@ -81,6 +85,21 @@ def _responses_input(messages: list[Message]) -> list[dict[str, Any]]:
             if isinstance(block, ContentBlockText):
                 content_type = "output_text" if message.role == "assistant" else "input_text"
                 pending_content.append({"type": content_type, "text": block.text})
+            elif isinstance(block, ContentBlockImage):
+                # input_image is only valid on user/system input, not assistant
+                # output. Drop (with a warning) on assistant turns rather than
+                # emit an invalid part.
+                if message.role == "assistant":
+                    log.warning(
+                        "openai_responses.dropped_assistant_image",
+                        note="input_image is not valid on assistant output",
+                    )
+                    continue
+                if block.source_type == "url":
+                    image_url = block.data
+                else:
+                    image_url = f"data:{block.media_type};base64,{block.data}"
+                pending_content.append({"type": "input_image", "image_url": image_url})
             elif isinstance(block, ContentBlockToolUse):
                 flush_pending_message()
                 items.append(
@@ -343,6 +362,21 @@ class OpenAIResponsesProvider:
             data.get("usage")
         )
         actual_model = data.get("model") or self._model
+        # Map an incomplete response truncated by the output-token cap to the
+        # "length" stop reason so the length-capped continuation logic (and
+        # telemetry) see the truncation, matching the chat-completions backend.
+        incomplete = data.get("incomplete_details") or {}
+        truncated_by_length = (
+            data.get("status") == "incomplete"
+            and isinstance(incomplete, dict)
+            and incomplete.get("reason") == "max_output_tokens"
+        )
+        if emitted_tool:
+            stop_reason = "tool_use"
+        elif truncated_by_length:
+            stop_reason = "length"
+        else:
+            stop_reason = "end_turn"
         trace.record_response(
             response=data,
             usage={
@@ -351,14 +385,14 @@ class OpenAIResponsesProvider:
                 "reasoning_tokens": reasoning_tokens,
                 "cached_tokens": cached_tokens,
             },
-            stop_reason="tool_use" if emitted_tool else "end_turn",
+            stop_reason=stop_reason,
             actual_model=actual_model,
             assistant_text="".join(assistant_text_parts),
             tool_calls=trace_tool_calls,
             response_ids=[str(data["id"])] if data.get("id") else [],
         )
         yield DoneEvent(
-            stop_reason="tool_use" if emitted_tool else "end_turn",
+            stop_reason=stop_reason,
             input_tokens=input_tokens,
             output_tokens=output_tokens,
             reasoning_tokens=reasoning_tokens,

@@ -228,3 +228,41 @@ async def test_missing_bound_id_falls_back_and_warns() -> None:
 
     assert _history_user_texts(messages) == ["First question A"]
     assert sum(1 for t in _user_texts(messages) if t.startswith("Second question B")) == 1
+
+
+@pytest.mark.asyncio
+async def test_router_context_excludes_current_bound_prompt_when_followup_queued() -> None:
+    manager = _FakeSessionManager()
+    key = "agent:main:router-queued"
+    runner = _new_runner(manager)
+    await manager.create(key)
+    entry_a = await manager.append_message(key, "user", "First question A")
+    await manager.append_message(key, "user", "Second question B")
+
+    ctx = await runner._router_previous_assistant_context(
+        key, exclude_last_user=True, bound_user_message_id=entry_a.message_id
+    )
+
+    history = ctx.get("history_user_texts") or []
+    assert "First question A" not in history
+    assert "Second question B" not in history
+
+
+@pytest.mark.asyncio
+async def test_router_context_excludes_queued_prompts_when_last_entry_is_assistant() -> None:
+    # While turn Z runs, A and B are persisted at ingress; Z's reply lands last,
+    # so a positional last-entry trim would skip nothing.
+    manager = _FakeSessionManager()
+    key = "agent:main:router-queued-reply-after"
+    runner = _new_runner(manager)
+    await manager.create(key)
+    await manager.append_message(key, "user", "Prior question Z")
+    entry_a = await manager.append_message(key, "user", "First question A")
+    await manager.append_message(key, "user", "Second question B")
+    await manager.append_message(key, "assistant", "Answer to Z")
+
+    ctx = await runner._router_previous_assistant_context(
+        key, exclude_last_user=True, bound_user_message_id=entry_a.message_id
+    )
+
+    assert ctx.get("history_user_texts") == ["Prior question Z"]

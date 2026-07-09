@@ -162,6 +162,44 @@ def _within_budget_transcript() -> list[TranscriptEntry]:
     ]
 
 
+def _tool_heavy_transcript() -> list[TranscriptEntry]:
+    line = "drwxr-xr-x staff 4096 synthetic/file.txt "
+    result_text = (line * 50)[:2000]
+    entries: list[TranscriptEntry] = []
+    for turn in range(10):
+        tool_calls: list[dict[str, Any]] = []
+        for pair in range(4):
+            tool_id = f"tool-{turn}-{pair}"
+            tool_calls.append(
+                {
+                    "type": "tool_use",
+                    "tool_use_id": tool_id,
+                    "name": "exec_shell",
+                    "input": {"command": f"ls batch_{turn}/{pair}"},
+                }
+            )
+            tool_calls.append(
+                {
+                    "type": "tool_result",
+                    "tool_use_id": tool_id,
+                    "name": "exec_shell",
+                    "result": result_text,
+                    "is_error": False,
+                }
+            )
+        entries.append(
+            TranscriptEntry(
+                session_id="s1",
+                session_key="agent:main:webchat:default",
+                role="assistant",
+                content=f"inspected batch {turn}",
+                token_count=120,
+                tool_calls=tool_calls,
+            )
+        )
+    return entries
+
+
 def _make_turn(
     routed_tier: str = "c3",
     previous_tier: str | None = "c2",
@@ -290,6 +328,32 @@ async def test_t3_within_budget_skips_flush_and_compact() -> None:
     await asyncio.sleep(0)
     assert fs.execute_calls == []
     assert sm.compact_calls == []
+
+
+@pytest.mark.asyncio
+async def test_t3_budget_check_counts_full_tool_call_replay() -> None:
+    from opensquilla.session.compaction import (
+        estimate_entry_model_replay_tokens,
+        estimate_entry_replay_tokens,
+    )
+
+    transcript = _tool_heavy_transcript()
+    window = 30_000
+    summarized = sum(estimate_entry_replay_tokens(e) for e in transcript)
+    model_replay = sum(estimate_entry_model_replay_tokens(e) for e in transcript)
+    # The summarized estimate looks within budget while the model replay overflows.
+    assert summarized * 1.2 <= window < model_replay * 1.2
+
+    sm = _FakeSessionManager(transcript)
+    fs = _FakeFlushService()
+    runner = _make_runner(session_manager=sm, flush_service=fs)
+
+    turn = _make_turn(routed_tier="c3", previous_tier="c2")
+    result = await runner._maybe_compact_on_t3_upgrade("agent:main:webchat:default", turn, window)
+
+    assert result == "handled"
+    await asyncio.sleep(0)
+    assert sm.compact_calls == [("agent:main:webchat:default", window)]
 
 
 @pytest.mark.asyncio

@@ -25,6 +25,7 @@ from opensquilla.provider.types import ContentBlockImage
 class _TranscriptEntry:
     role: str
     content: str
+    message_id: str | None = None
     tool_calls: list[Any] | None = None
     reasoning_content: str | None = None
     token_count: int | None = None
@@ -47,8 +48,14 @@ class _FakeSessionManager:
         self._transcripts.setdefault(session_key, [])
         return node
 
-    async def append_message(self, session_key: str, role: str, content: str) -> _TranscriptEntry:
-        entry = _TranscriptEntry(role=role, content=content)
+    async def append_message(
+        self,
+        session_key: str,
+        role: str,
+        content: str,
+        message_id: str | None = None,
+    ) -> _TranscriptEntry:
+        entry = _TranscriptEntry(role=role, content=content, message_id=message_id)
         self._transcripts.setdefault(session_key, []).append(entry)
         return entry
 
@@ -452,6 +459,49 @@ async def test_image_history_outside_sticky_window_does_not_route_or_replay() ->
 
     assert any(event.kind == "done" for event in events)
     assert not any(_message_has_image(message) for message in provider.calls[0]["messages"])
+
+
+@pytest.mark.asyncio
+async def test_queued_prompts_do_not_consume_image_replay_window() -> None:
+    # Queued sends persisted after the bound message are excluded from replayed
+    # history, so they must not occupy tail slots of the vision lookback window.
+    manager = _FakeSessionManager()
+    key = "agent:main:image-replay-queued"
+    config = GatewayConfig()
+    config.squilla_router.vision_history_lookback_turns = 3
+    runner = TurnRunner(provider_selector=MagicMock(), session_manager=manager, config=config)
+    await manager.create(key)
+    for index in range(1, 4):
+        await manager.append_message(
+            key,
+            "user",
+            _inline_image_envelope(f"Image {index}.", b"\x89PNG\r\n\x1a\n" + bytes([index])),
+            message_id=f"m{index}",
+        )
+        await manager.append_message(key, "assistant", f"Answer {index}.")
+    await manager.append_message(
+        key, "user", "Tell me about all three images.", message_id="m-current"
+    )
+    await manager.append_message(key, "user", "Queued follow-up B.", message_id="m-queued-b")
+    await manager.append_message(key, "user", "Queued follow-up C.", message_id="m-queued-c")
+
+    provider = _CapturingProvider()
+    agent = Agent(
+        provider=provider,
+        config=AgentConfig(
+            max_iterations=1,
+            model_capabilities=ModelCapabilities(supports_vision=True),
+            preserve_historical_images=True,
+        ),
+    )
+    await runner._load_history(agent, key, bound_user_message_id="m-current")
+    async for _ in agent.run_turn("Tell me about all three images."):
+        pass
+
+    replayed = sum(
+        1 for message in provider.calls[0]["messages"] if _message_has_image(message)
+    )
+    assert replayed == 3
 
 
 @pytest.mark.asyncio

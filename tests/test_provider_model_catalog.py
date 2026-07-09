@@ -215,6 +215,97 @@ def test_openrouter_safe_default_never_raises_smaller_provider_limit() -> None:
     assert catalog.resolve_max_tokens("provider/smaller-output-model") == 4096
 
 
+def _catalog_with_live_reasoning_model() -> ModelCatalog:
+    catalog = ModelCatalog()
+    catalog._populate_from_data(
+        [
+            {
+                "id": "vendor/reasoning-model",
+                "context_length": 200_000,
+                "top_provider": {"max_completion_tokens": 128_000},
+                "supported_parameters": ["reasoning", "tools", "tool_choice"],
+                "architecture": {"input_modalities": ["text", "image"]},
+            }
+        ]
+    )
+    return catalog
+
+
+def test_get_capabilities_honors_user_reasoning_override() -> None:
+    catalog = _catalog_with_live_reasoning_model()
+    catalog.set_user_overrides(
+        {
+            "vendor/reasoning-model": {
+                "supports_reasoning": False,
+                "reasoning_format": "none",
+            }
+        }
+    )
+
+    caps = catalog.get_capabilities("vendor/reasoning-model", provider_name="openrouter")
+
+    assert caps.supports_reasoning is False
+    assert caps.reasoning_format == "none"
+
+
+def test_get_capabilities_honors_user_vision_override_on_live_reasoning_model() -> None:
+    catalog = _catalog_with_live_reasoning_model()
+    catalog.set_user_overrides({"vendor/reasoning-model": {"supports_vision": False}})
+
+    caps = catalog.get_capabilities("vendor/reasoning-model", provider_name="openrouter")
+
+    assert caps.supports_reasoning is True
+    assert caps.supports_vision is False
+
+
+@pytest.mark.parametrize(
+    ("reasoning_format", "supports_reasoning"),
+    [("deepseek", True), ("none", False)],
+)
+def test_get_capabilities_honors_user_reasoning_format_override_on_live_model(
+    reasoning_format: str,
+    supports_reasoning: bool,
+) -> None:
+    catalog = _catalog_with_live_reasoning_model()
+    catalog.set_user_overrides(
+        {"vendor/reasoning-model": {"reasoning_format": reasoning_format}}
+    )
+
+    caps = catalog.get_capabilities("vendor/reasoning-model", provider_name="openrouter")
+
+    assert caps.supports_reasoning is supports_reasoning
+    assert caps.reasoning_format == reasoning_format
+
+
+def test_resolve_context_window_honors_user_override() -> None:
+    catalog = ModelCatalog()
+    catalog.set_user_overrides({"vllm/self-hosted-model": {"context_window": 131_072}})
+
+    window, source = catalog.resolve_context_window_with_source("self-hosted-model", "vllm")
+
+    assert window == 131_072
+    assert source == "override"
+
+
+def test_resolve_max_tokens_honors_user_override() -> None:
+    catalog = ModelCatalog()
+    catalog.set_user_overrides(
+        {
+            "vllm/self-hosted-model": {
+                "context_window": 131_072,
+                "max_output_tokens": 32_768,
+            }
+        }
+    )
+
+    effective, source = catalog.resolve_max_tokens_with_source(
+        "self-hosted-model", provider="vllm"
+    )
+
+    assert effective == 32_768
+    assert source == "override"
+
+
 @pytest.mark.asyncio
 async def test_fetch_openrouter_adds_app_attribution_headers() -> None:
     captured: dict[str, object] = {}

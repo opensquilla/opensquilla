@@ -436,13 +436,38 @@ class ModelCatalog:
         # the same answer, but the explicit branch keeps the ladder's
         # historical ordering — a live reasoning hit outranks the
         # api.openai.com host guard below.
+        #
         info = self._models.get(model_id)
-        if info and info.supports_reasoning:
+        override_fields = self._user_override_fields(
+            model_id.strip(), (provider_name or "").strip().lower()
+        )
+        override_reasoning = override_fields.get("supports_reasoning")
+        override_reasoning_format = override_fields.get("reasoning_format")
+        # An override that turns reasoning OFF must fall through to
+        # resolve_entry (which ranks user > live) rather than taking the live
+        # reasoning early return. When reasoning stays on, still let the
+        # override correct the tool/vision flags.
+        if (
+            info
+            and info.supports_reasoning
+            and override_reasoning is not False
+            and override_reasoning_format not in ("", "none")
+        ):
+            supports_tools = info.supports_tools
+            supports_vision = info.supports_vision
+            if isinstance(override_fields.get("supports_tools"), bool):
+                supports_tools = override_fields["supports_tools"]
+            if isinstance(override_fields.get("supports_vision"), bool):
+                supports_vision = override_fields["supports_vision"]
             return ModelCapabilities(
                 supports_reasoning=True,
-                supports_tools=info.supports_tools,
-                supports_vision=info.supports_vision,
-                reasoning_format="openrouter",
+                supports_tools=supports_tools,
+                supports_vision=supports_vision,
+                reasoning_format=(
+                    override_reasoning_format
+                    if isinstance(override_reasoning_format, str)
+                    else "openrouter"
+                ),
             )
         model_l = model_id.strip().lower()
         # HOST TRUST (code, not data): only api.openai.com is trusted to
@@ -653,6 +678,11 @@ class ModelCatalog:
         scoped_live = self._live_provider_fields(model_id, provider)
         scoped_max_output = int(scoped_live.get("max_output_tokens") or 0)
 
+        override_fields = self._user_override_fields(
+            model_id.strip(), (provider or "").strip().lower()
+        )
+        override_max = override_fields.get("max_output_tokens")
+
         using_user_override = user_override > 0
         provider_budget = _provider_corrections_budget(provider, model_id)
         snapshot_limits = _models_dev_limits(provider, model_id)
@@ -660,6 +690,13 @@ class ModelCatalog:
         if using_user_override:
             effective = user_override
             source = "override"
+        elif isinstance(override_max, int) and override_max > 0:
+            # A [models.*] operator override is authoritative for budgeting;
+            # treat it like an explicit user override (skip the safe-default
+            # reduction, but keep the context-window clamp).
+            effective = override_max
+            source = "override"
+            using_user_override = True
         elif scoped_max_output > 0:
             effective = scoped_max_output
             source = "catalog"

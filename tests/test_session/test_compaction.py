@@ -8,6 +8,7 @@ from opensquilla.session.compaction import (
     build_compaction_config_from_provider,
     call_compaction_llm,
     compact_context,
+    estimate_entry_model_replay_tokens,
     estimate_entry_replay_tokens,
 )
 from opensquilla.session.compaction_lifecycle import (
@@ -98,6 +99,67 @@ async def test_compaction_occurs_when_over_budget():
     assert result.tokens_before == 4000
     assert result.tokens_after < result.tokens_before
     assert result.remaining_budget_tokens >= 0
+
+
+def _make_tool_heavy_entries(
+    turns: int = 10, pairs: int = 4, result_chars: int = 2000
+) -> list[dict]:
+    line = "drwxr-xr-x staff 4096 synthetic/file.txt "
+    result_text = (line * (result_chars // len(line) + 1))[:result_chars]
+    entries: list[dict] = []
+    for turn in range(turns):
+        tool_calls: list[dict] = []
+        for pair in range(pairs):
+            tool_id = f"tool-{turn}-{pair}"
+            tool_calls.append(
+                {
+                    "type": "tool_use",
+                    "tool_use_id": tool_id,
+                    "name": "exec_shell",
+                    "input": {"command": f"ls batch_{turn}/{pair}"},
+                }
+            )
+            tool_calls.append(
+                {
+                    "type": "tool_result",
+                    "tool_use_id": tool_id,
+                    "name": "exec_shell",
+                    "result": result_text,
+                    "is_error": False,
+                }
+            )
+        entries.append({"role": "user", "content": f"inspect batch {turn}", "token_count": None})
+        entries.append(
+            {
+                "role": "assistant",
+                "content": f"inspected batch {turn}",
+                "token_count": 120,
+                "tool_calls": tool_calls,
+            }
+        )
+    return entries
+
+
+@pytest.mark.asyncio
+async def test_budget_check_counts_full_tool_call_replay_not_summarized_previews():
+    entries = _make_tool_heavy_entries()
+    window = 16_000
+    summarized = sum(estimate_entry_replay_tokens(e) for e in entries)
+    model_replay = sum(estimate_entry_model_replay_tokens(e) for e in entries)
+    # The summarized estimate looks within budget while the model replay overflows.
+    assert summarized * 1.2 <= window < model_replay
+
+    result = await compact_context(
+        CompactionRequest(
+            session_id="s1",
+            entries=entries,
+            context_window_tokens=window,
+            config=CompactionConfig(model=None, api_key=""),
+        )
+    )
+
+    assert result.skip_reason != "within_compaction_budget"
+    assert result.removed_count > 0
 
 
 def test_replay_token_estimate_uses_tool_payload_summary_not_raw_arguments():

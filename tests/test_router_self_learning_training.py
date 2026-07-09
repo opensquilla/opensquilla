@@ -10,6 +10,10 @@ import pytest
 from opensquilla.gateway.config import RouterSelfLearningConfig, SquillaRouterConfig
 from opensquilla.squilla_router.self_learning import encode_features, write_sample
 from opensquilla.squilla_router.self_learning.dataset import TrainingDataset
+from opensquilla.squilla_router.self_learning.feedback import (
+    load_feedback_map,
+    write_feedback,
+)
 from opensquilla.squilla_router.self_learning.gates import (
     AGENT_ACTIVE,
     COOLDOWN,
@@ -32,7 +36,11 @@ from opensquilla.squilla_router.self_learning.state import (
     save_train_state,
     scan_event_store,
 )
-from opensquilla.squilla_router.self_learning.store import ENV_DISABLE
+from opensquilla.squilla_router.self_learning.store import (
+    ENV_DISABLE,
+    agent_data_dir,
+    prune_expired_samples,
+)
 
 NOW = datetime(2026, 6, 6, 12, 0, 0, tzinfo=UTC)
 
@@ -333,6 +341,78 @@ def test_orchestrator_noop_when_gates_fail(tmp_path) -> None:
         base_dir=tmp_path / "base",
     )
     assert not res.ran and res.reason == NO_DATA and not calls
+
+
+def test_prune_expired_samples_removes_only_files_past_retention(tmp_path) -> None:
+    data_dir = agent_data_dir("ag", tmp_path)
+    data_dir.mkdir(parents=True)
+    stale = data_dir / "samples-20260401.jsonl"
+    fresh = data_dir / "samples-20260605.jsonl"
+    stale.write_text("{}\n", encoding="utf-8")
+    fresh.write_text("{}\n", encoding="utf-8")
+
+    removed = prune_expired_samples("ag", 7, home=tmp_path, now=NOW)
+
+    assert removed == 1
+    assert not stale.exists()
+    assert fresh.exists()
+
+
+def test_orchestrator_enforces_retention_before_gates_and_training(tmp_path) -> None:
+    import json
+
+    data_dir = agent_data_dir("ag", tmp_path)
+    data_dir.mkdir(parents=True)
+    stale_path = data_dir / "samples-20260401.jsonl"
+    rows = [
+        mk("s1", i, "R0" if i % 2 else "R1", final="R2" if i % 2 else "R3",
+           complaint=True, ts=f"2026-04-01T00:00:{i:02d}Z")
+        for i in range(8)
+    ]
+    rows.append(mk("s2", 0, "R1", final="R1", ts="2026-04-01T01:00:00Z"))
+    stale_path.write_text(
+        "".join(json.dumps(s.to_json_dict(), ensure_ascii=False) + "\n" for s in rows),
+        encoding="utf-8",
+    )
+    calls = []
+
+    res = maybe_run_update_router(
+        "ag",
+        router_cfg=_router_cfg(train_min_samples=5, retention_days=7),
+        home=tmp_path,
+        now=NOW,
+        trainer=lambda *a, **k: calls.append(1),
+        base_dir=tmp_path / "base",
+    )
+
+    assert not stale_path.exists()
+    assert not res.ran and res.reason == NO_DATA and not calls
+
+
+def test_orchestrator_applies_sample_retention_to_feedback(tmp_path) -> None:
+    write_feedback(
+        "ag",
+        decision_id="stale-rating",
+        session_key="agent:ag:webchat:s1",
+        turn_index=0,
+        rating="down",
+        home=tmp_path,
+        now=NOW - timedelta(days=10),
+        retention_days=30,
+    )
+    assert "stale-rating" in load_feedback_map("ag", home=tmp_path)
+
+    res = maybe_run_update_router(
+        "ag",
+        router_cfg=_router_cfg(train_min_samples=5, retention_days=7),
+        home=tmp_path,
+        now=NOW,
+        trainer=lambda *a, **k: None,
+        base_dir=tmp_path / "base",
+    )
+
+    assert not res.ran and res.reason == NO_DATA
+    assert load_feedback_map("ag", home=tmp_path) == {}
 
 
 def test_orchestrator_trains_and_records_state(tmp_path) -> None:

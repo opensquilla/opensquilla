@@ -74,8 +74,23 @@ from opensquilla.router_tiers import (
     TIER_TO_ROUTE_CLASS,
     TierConfig,
     normalize_text_tier,
+    tier_index,
 )
 from opensquilla.squilla_router.controller import normalize_decisions
+
+
+def _canonical_order(valid_tiers: list[str]) -> list[str]:
+    """Order tiers by the canonical c0<c1<c2<c3 ladder, not dict/TOML order.
+
+    Ranking on raw ``valid_tiers`` positions let a config that declared tiers
+    out of order (e.g. ``c3`` first) invert upgrades into downgrades. Unknown
+    custom tier names sort after the canonical ones, keeping their relative
+    order (stable sort).
+    """
+    return sorted(
+        valid_tiers,
+        key=lambda name: (0, tier_index(name)) if tier_index(name) >= 0 else (1, 0),
+    )
 
 log = structlog.get_logger(__name__)
 
@@ -100,14 +115,17 @@ class RoutingDecision:
 
 def _tier_index(tier: str, valid_tiers: list[str]) -> int:
     normalized = normalize_text_tier(tier) or tier
-    return valid_tiers.index(normalized) if normalized in valid_tiers else -1
+    ordered = _canonical_order(valid_tiers)
+    return ordered.index(normalized) if normalized in ordered else -1
 
 
 def _upgrade_tier(tier: str, valid_tiers: list[str], steps: int) -> str:
-    idx = _tier_index(tier, valid_tiers)
+    ordered = _canonical_order(valid_tiers)
+    normalized = normalize_text_tier(tier) or tier
+    idx = ordered.index(normalized) if normalized in ordered else -1
     if idx < 0:
         return tier
-    return valid_tiers[min(idx + max(steps, 0), len(valid_tiers) - 1)]
+    return ordered[min(idx + max(steps, 0), len(ordered) - 1)]
 
 
 def _tier_config_value(tier_cfg: object, key: str, default: object = None) -> object:
@@ -370,10 +388,14 @@ def capability_gate(
     """
     if not tier_capabilities:
         return CapabilityGateResult(tier)
-    idx = _tier_index(tier, valid_tiers)
+    # Walk the canonically-ordered ladder so "nearest higher tier" is c0<c1<c2<c3,
+    # not TOML declaration order.
+    ordered = _canonical_order(valid_tiers)
+    normalized = normalize_text_tier(tier) or tier
+    idx = ordered.index(normalized) if normalized in ordered else -1
     if idx < 0:
         return CapabilityGateResult(tier)
-    current = valid_tiers[idx]
+    current = ordered[idx]
     actions: list[CapabilityGateAction] = []
 
     def _caps(name: str) -> TierCapability:
@@ -381,23 +403,23 @@ def capability_gate(
         return capability if capability is not None else TierCapability()
 
     if turn_has_image and _caps(current).supports_vision is False:
-        for candidate in valid_tiers[idx + 1 :]:
+        for candidate in ordered[idx + 1 :]:
             if _caps(candidate).supports_vision is True:
                 actions.append(CapabilityGateAction("vision_walk_up", current, candidate))
                 current = candidate
-                idx = _tier_index(current, valid_tiers)
+                idx = ordered.index(current)
                 break
 
     window = _caps(current).context_window
     if material_tokens > 0 and window is not None and material_tokens > window:
         target: str | None = None
-        for candidate in valid_tiers[idx + 1 :]:
+        for candidate in ordered[idx + 1 :]:
             candidate_window = _caps(candidate).context_window
             if candidate_window is not None and material_tokens <= candidate_window:
                 target = candidate
                 break
-        if target is None and idx < len(valid_tiers) - 1:
-            target = valid_tiers[-1]  # nothing definitely fits: saturate at the top
+        if target is None and idx < len(ordered) - 1:
+            target = ordered[-1]  # nothing definitely fits: saturate at the top
         if target is not None and target != current:
             actions.append(CapabilityGateAction("context_walk_up", current, target))
             current = target

@@ -27,6 +27,7 @@ from opensquilla.squilla_router.self_learning.dataset import (
     build_training_dataset,
     export_training_dataset,
 )
+from opensquilla.squilla_router.self_learning.feedback import prune_expired_feedback
 from opensquilla.squilla_router.self_learning.gates import (
     READY,
     GateResult,
@@ -37,7 +38,10 @@ from opensquilla.squilla_router.self_learning.state import (
     save_train_state,
     scan_event_store,
 )
-from opensquilla.squilla_router.self_learning.store import router_data_root
+from opensquilla.squilla_router.self_learning.store import (
+    prune_expired_samples,
+    router_data_root,
+)
 from opensquilla.squilla_router.self_learning.train import CandidateInfo, build_candidate_bundle
 
 log = structlog.get_logger(__name__)
@@ -201,6 +205,21 @@ def maybe_run_update_router(
         # Base-upgrade guard: detach a promoted candidate whose base bundle was
         # replaced (package upgrade) before the regression monitor reads it.
         _reconcile_detached_state(agent_id, state, resolved_base, home, now)
+
+        # Enforce the retention_days knob before any store scan: prune sample
+        # files older than the window so stale samples (and their redacted
+        # prompt summaries) stop entering gate counts and training datasets.
+        try:
+            retention_days = int(getattr(sl_cfg, "retention_days", 30) or 0)
+            if retention_days > 0:
+                prune_expired_samples(
+                    agent_id, retention_days, home=home, now=now
+                )
+                prune_expired_feedback(
+                    agent_id, retention_days, home=home, now=now
+                )
+        except Exception:  # noqa: BLE001 - pruning must never break a turn/train pass
+            pass
 
         # M4: before anything else, check whether a live candidate has regressed.
         rolled_back = _check_and_maybe_rollback(agent_id, sl_cfg, state, home, now)

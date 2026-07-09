@@ -171,6 +171,12 @@ async def _handle_router_feedback_submit(params: Any, ctx: RpcContext) -> dict[s
     from opensquilla.squilla_router.self_learning.feedback import write_feedback
 
     agent_id = parse_agent_id(session_key)
+    router_cfg = getattr(ctx.config, "squilla_router", None)
+    sl_cfg = getattr(router_cfg, "self_learning", None)
+    try:
+        retention_days = int(getattr(sl_cfg, "retention_days", 30))
+    except (TypeError, ValueError):
+        retention_days = 30
 
     def _write() -> None:
         write_feedback(
@@ -181,6 +187,7 @@ async def _handle_router_feedback_submit(params: Any, ctx: RpcContext) -> dict[s
             rating=rating,
             executed_kind=executed_kind,
             decision_ts=decision_ts,
+            retention_days=retention_days,
         )
 
     try:

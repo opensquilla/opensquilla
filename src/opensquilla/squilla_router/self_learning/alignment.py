@@ -114,7 +114,12 @@ def align_session(
     confirmation sample.
     """
 
-    ordered = sorted(samples, key=lambda s: (s.turn_index, s.ts))
+    # Sort by capture timestamp, not turn_index: turn_index can saturate/reset
+    # across a history reset (e.g. 5 -> 0), which would scramble the true
+    # chronological order and misattribute retrospective complaint labels.
+    # Python's sort is stable and iter_samples yields in append order, so
+    # same-second ties keep their real capture order.
+    ordered = sorted(samples, key=lambda s: s.ts)
     n = len(ordered)
     out: list[AlignedSample] = []
 

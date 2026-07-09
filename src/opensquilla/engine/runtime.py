@@ -2859,6 +2859,11 @@ class TurnRunner:
         turn_segments: list[dict] = []
         turn_artifacts: list[dict[str, Any]] = []
         artifact_delivery_failures: list[str] = []
+        # current_text_parts holds text streamed since the last tool boundary;
+        # hoisted here (passed by reference into _StreamState) so the
+        # CancelledError handler can flush a trailing text segment the same way
+        # the normal-completion path does.
+        current_text_parts: list[str] = []
         self._emit_turn_event(
             "turn_start",
             trace_context,
@@ -2951,6 +2956,7 @@ class TurnRunner:
                     model=model,
                     history_has_persisted_user=history_has_persisted_user,
                     persist_input=persist_input,
+                    bound_user_message_id=bound_user_message_id,
                     fresh_user_session=(
                         fresh_user_session
                         if fresh_user_session is not None
@@ -3149,7 +3155,6 @@ class TurnRunner:
             # artifact_delivery_failures) stay declared in this scope and
             # are PASSED BY REFERENCE into _StreamState so the
             # CancelledError handler below still sees them.
-            current_text_parts: list[str] = []
             error_message: str | None = None
             pending_error_event: ErrorEvent | None = None
             done_event: DoneEvent | None = None
@@ -3214,6 +3219,7 @@ class TurnRunner:
                     session_intent=session_intent,
                     semantic_message=semantic_message,
                     pending_input_provider=pending_input_provider,
+                    bound_user_message_id=bound_user_message_id,
                     run_kind=run_kind,
                     heartbeat_ack_max_chars=heartbeat_ack_max_chars,
                     bootstrap_context_mode=bootstrap_context_mode,
@@ -3237,6 +3243,7 @@ class TurnRunner:
             # fired (it is the last action of the stage body).
             if current_text_parts:
                 turn_segments.append({"type": "text", "text": "".join(current_text_parts)})
+                current_text_parts.clear()
 
             # 10. Persist assistant response (filter sentinel tokens).
             # TurnFinalizerStage owns the slice. The four side effects
@@ -3357,6 +3364,15 @@ class TurnRunner:
             # transcript with an orphan user message. Marker `[interrupted]`
             # lets future turns (and users reading history) recognise the
             # response is incomplete.
+            # Flush trailing text streamed since the last tool boundary into
+            # turn_segments, mirroring the normal-completion path — otherwise a
+            # tool-using turn cancelled mid-answer persists segments with no
+            # text and the UI (which renders reloaded turns from the segment
+            # timeline) drops the visible partial answer.
+            trailing = "".join(current_text_parts)
+            if trailing:
+                turn_segments.append({"type": "text", "text": trailing})
+                current_text_parts.clear()
             partial_text = "".join(final_text_parts).rstrip()
             if (
                 partial_text or turn_segments or turn_artifacts
@@ -5206,6 +5222,7 @@ class TurnRunner:
         session_key: str,
         *,
         exclude_last_user: bool = False,
+        bound_user_message_id: str | None = None,
     ) -> dict[str, Any]:
         """Return transcript context for the V4 router, excluding the current user turn."""
         if self._session_manager is None:
@@ -5221,12 +5238,27 @@ class TurnRunner:
             log.debug("turn_runner.router_context_failed", session_key=session_key)
             return {}
         entries = list(transcript or [])
+        # When the turn is bound to a specific user message id (queued-sends
+        # path), exclude the bound current prompt AND every later user entry
+        # (still-queued future prompts persisted at ingress), mirroring
+        # _load_history's id-bound slice. The positional exclude_last_user
+        # fallback only handles the simple no-queue case and misclassifies the
+        # current/queued prompts as history under queued sends.
+        bound_index: int | None = None
+        if bound_user_message_id is not None:
+            for idx, entry in enumerate(entries):
+                if getattr(entry, "message_id", None) == bound_user_message_id:
+                    bound_index = idx
+                    break
         user_texts: list[str] = []
         user_contents: list[str] = []
         for index, entry in enumerate(entries):
             if getattr(entry, "role", None) != "user":
                 continue
-            if exclude_last_user and index == len(entries) - 1:
+            if bound_index is not None and index >= bound_index:
+                # The bound current prompt and any later (queued) user entry.
+                continue
+            if bound_index is None and exclude_last_user and index == len(entries) - 1:
                 continue
             content = getattr(entry, "content", None)
             if not isinstance(content, str) or not content.strip():
@@ -5881,9 +5913,16 @@ class TurnRunner:
                 compaction_config=configured_compaction,
             )
 
-        from opensquilla.session.compaction import CompactionConfig, estimate_entry_replay_tokens
+        from opensquilla.session.compaction import (
+            CompactionConfig,
+            estimate_entry_model_replay_tokens,
+        )
 
-        total_tokens = sum(estimate_entry_replay_tokens(e) for e in transcript)
+        # Measure what the model actually replays (full tool_calls JSON), the
+        # same estimator preflight uses. The summarized estimator undercounts
+        # tool-heavy transcripts, so a within-budget "handled" verdict computed
+        # from it would suppress the correct-estimator preflight fallback.
+        total_tokens = sum(estimate_entry_model_replay_tokens(e) for e in transcript)
         safety_margin = float(
             getattr(compaction_config or CompactionConfig(), "safety_margin", 1.2) or 1.2
         )
@@ -6989,6 +7028,7 @@ class TurnRunner:
                 for index, entry in enumerate(transcript)
                 if getattr(entry, "role", None) == "user"
                 and index != current_user_entry_index
+                and index not in bound_skip_indexes
                 and isinstance(getattr(entry, "content", None), str)
                 and bool(str(getattr(entry, "content", "")).strip())
             ]

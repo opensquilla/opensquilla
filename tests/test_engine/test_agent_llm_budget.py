@@ -27,6 +27,8 @@ from opensquilla.engine.runtime import TurnRunner
 from opensquilla.engine.session_sanitize import session_payload_chars
 from opensquilla.provider import (
     ChatConfig,
+    ContentBlockToolResult,
+    ContentBlockToolUse,
     Message,
     ProviderHeartbeatEvent,
     ToolDefinition,
@@ -3491,6 +3493,74 @@ async def test_context_overflow_effective_compaction_allows_single_retry(
     assert len(provider.calls) == 2
     assert _provider_payload_is_smaller(provider.calls[0], provider.calls[1])
     assert any(event.kind == "done" and getattr(event, "text", "") == "ok" for event in events)
+
+
+@pytest.mark.asyncio
+async def test_inline_overflow_compaction_reduces_tool_heavy_structured_context() -> None:
+    big_output = ("synthetic log line: lorem ipsum dolor sit amet 0123456789\n" * 700)[:40_000]
+    window_tokens = 8_000
+    messages: list[Message] = [
+        Message(role="user", content="Please analyze every log file in the workspace."),
+        Message(role="assistant", content="Reading the logs now."),
+    ]
+    for i in range(6):
+        messages.append(
+            Message(
+                role="assistant",
+                content=[
+                    ContentBlockToolUse(
+                        id=f"tool-{i}",
+                        name="read_file",
+                        input={"path": f"logs/part-{i}.log"},
+                    )
+                ],
+            )
+        )
+        messages.append(
+            Message(
+                role="user",
+                content=[ContentBlockToolResult(tool_use_id=f"tool-{i}", content=big_output)],
+            )
+        )
+    agent = Agent(
+        provider=_ContextOverflowProvider(),
+        config=AgentConfig(context_window_tokens=window_tokens, flush_enabled=False),
+    )
+    original_chars = session_payload_chars(messages)
+
+    outcome = await agent._check_context_overflow(
+        messages,
+        estimated_context_tokens=window_tokens + 1,
+        compaction_window_tokens=window_tokens,
+    )
+
+    assert outcome is not None
+    assert outcome.compacted
+    assert session_payload_chars(outcome.messages) < original_chars
+
+
+@pytest.mark.asyncio
+async def test_within_budget_skip_on_string_only_history_is_not_reported_as_compacted() -> None:
+    agent = Agent(
+        provider=_ContextOverflowProvider(),
+        config=AgentConfig(
+            context_window_tokens=1000,
+            context_overflow_threshold=0.85,
+            flush_enabled=False,
+        ),
+    )
+    messages = [
+        Message(role="user", content="my project is called Zephyr"),
+        Message(role="assistant", content="Understood, the project is Zephyr."),
+        Message(role="user", content="tell me a short story about it"),
+    ]
+
+    outcome = await agent._check_context_overflow(messages, estimated_context_tokens=900)
+
+    assert outcome is not None
+    assert outcome.removed_count == 0
+    assert outcome.summary == ""
+    assert outcome.compacted is False
 
 
 @pytest.mark.asyncio

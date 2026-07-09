@@ -238,7 +238,9 @@ class _RecordingPromptAssembler(PromptAssemblerPort):
 
 
 class _RecordingRouterContext(RouterContextPort):
-    async def fetch_router_context(self, session_key, *, exclude_last_user):  # noqa: ANN001, ARG002
+    async def fetch_router_context(
+        self, session_key, *, exclude_last_user, bound_user_message_id=None  # noqa: ANN001, ARG002
+    ):
         return {}
 
 

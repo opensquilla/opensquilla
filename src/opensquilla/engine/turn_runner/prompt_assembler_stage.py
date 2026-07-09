@@ -136,6 +136,7 @@ class RouterContextPort(Protocol):
         session_key: str,
         *,
         exclude_last_user: bool,
+        bound_user_message_id: str | None = None,
     ) -> dict[str, Any]: ...
 
 @runtime_checkable
@@ -235,6 +236,7 @@ class PromptAssemblerStageInput:
     history_has_persisted_user: bool
     persist_input: bool
     fresh_user_session: bool = False
+    bound_user_message_id: str | None = None
     ingress_pipeline_steps: list[PipelineStepRecord] | None = None
     normalization_metadata: dict[str, Any] | None = None
     input_provenance: dict[str, Any] | str | None = None
@@ -369,6 +371,7 @@ class PromptAssemblerStage:
             exclude_last_user=(
                 inp.history_has_persisted_user or inp.persist_input
             ),
+            bound_user_message_id=inp.bound_user_message_id,
         )
 
         raw_history_image_turn_count = router_context.get("history_image_turn_count")

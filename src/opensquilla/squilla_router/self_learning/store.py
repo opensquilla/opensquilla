@@ -115,6 +115,48 @@ def cursor_path(agent_id: str, home: Path | None = None) -> Path:
     return agent_data_dir(agent_id, home) / ".train_cursor"
 
 
+_SAMPLES_DAY_RE = re.compile(r"^samples-(\d{8})\.jsonl$")
+
+
+def prune_expired_samples(
+    agent_id: str,
+    retention_days: int,
+    *,
+    home: Path | None = None,
+    now: datetime | None = None,
+) -> int:
+    """Delete ``samples-YYYYMMDD.jsonl`` files older than ``retention_days``.
+
+    Enforces the ``self_learning.retention_days`` knob so captured router
+    samples (including redacted prompt summaries) do not accumulate forever.
+    Returns the number of files removed. Best-effort per file: a locked/absent
+    file cannot abort a turn or training pass. Never touches ``.train_cursor``
+    or state files.
+    """
+    if retention_days <= 0:
+        return 0
+    data_dir = agent_data_dir(agent_id, home)
+    if not data_dir.is_dir():
+        return 0
+    current = (now or datetime.now(UTC)).date()
+    removed = 0
+    for path in data_dir.glob("samples-*.jsonl"):
+        match = _SAMPLES_DAY_RE.match(path.name)
+        if match is None:
+            continue
+        try:
+            day = datetime.strptime(match.group(1), "%Y%m%d").date()
+        except ValueError:
+            continue
+        if (current - day).days > retention_days:
+            try:
+                path.unlink()
+                removed += 1
+            except OSError:
+                continue
+    return removed
+
+
 def read_cursor(agent_id: str, home: Path | None = None) -> str | None:
     path = cursor_path(agent_id, home)
     if not path.is_file():

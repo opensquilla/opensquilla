@@ -48,6 +48,7 @@ from opensquilla.router_tiers import (
     TEXT_TIERS,
     TierConfig,
     normalize_text_tier,
+    tier_index,
 )
 from opensquilla.squilla_router.controller import (
     derive_prompt_policy,
@@ -1076,8 +1077,6 @@ async def apply_squilla_router(ctx: TurnContext) -> TurnContext:
         semantic_message = getattr(ctx, "raw_message", None)
     if semantic_message is None:
         semantic_message = ctx.message
-    if not semantic_message.strip():
-        return ctx
     if ":subagent:" in ctx.session_key:
         return ctx
 
@@ -1087,6 +1086,11 @@ async def apply_squilla_router(ctx: TurnContext) -> TurnContext:
     # for current uploads. Historical images require the upstream semantic
     # follow-up gate; recent-image/sticky metadata alone is observability and
     # replay context, not enough to force vision.
+    #
+    # This runs BEFORE the empty-text guard below: the image route is
+    # deterministic and never consumes the message text, so an image turn with
+    # an empty/whitespace caption must still be routed to a vision tier rather
+    # than falling through the empty-text early return.
     current_turn_has_image = _attachments_include_image(ctx.attachments)
     history_gate_needs_image = (
         ctx.metadata.get("router_vision_followup_needs_image") is True
@@ -1138,12 +1142,31 @@ async def apply_squilla_router(ctx: TurnContext) -> TurnContext:
             )
         ctx.metadata["route_max_history_turns"] = history_turns
         ctx.metadata.update(_compute_savings(decision.model, tiers))
+        # Record the image tier's provider (and assess cross-provider/mismatch)
+        # like the hold and classify paths — without this, a vision tier that
+        # declares provider=X never executes the cross-provider switch and no
+        # mismatch telemetry is emitted.
+        _flag_tier_provider_mismatch(ctx, tiers, decision.tier, routing_applied=True)
         _record_thinking_metadata(ctx, router_cfg, image_tiers[tier_name])
         stage_router_decision(ctx, decision=decision)
         log.debug("squilla_router.image_routed", tier=decision.tier, model=decision.model)
         return ctx
 
+    # Empty-text guard for the ML text classifier: only reached for non-image
+    # turns (the vision bypass above already handled empty-caption images).
+    if not semantic_message.strip():
+        return ctx
+
+    # Order valid_tiers by the canonical c0<c1<c2<c3 ladder rather than TOML
+    # insertion order — downstream policy stages rank tiers by position in this
+    # list, so trusting declaration order inverted upgrades/holds for configs
+    # that list tiers out of order. Unknown/custom tier names (tier_index == -1)
+    # sort after the canonical ones, preserving their relative order (stable).
     valid_tiers = [name for name, tier in tiers.items() if not tier.get("image_only", False)]
+    valid_tiers = sorted(
+        valid_tiers,
+        key=lambda name: (0, tier_index(name)) if tier_index(name) >= 0 else (1, 0),
+    )
     if not valid_tiers:
         return ctx
 

@@ -1980,7 +1980,11 @@ async def test_agent_canonicalizes_large_tool_result_for_event_history_and_provi
     agent = Agent(
         provider=provider,
         config=AgentConfig(
-            context_window_tokens=200,
+            # Window large enough that the projected (~250-token) tool result
+            # fits: this test exercises tool-result projection/canonicalization,
+            # not compaction. A 200-token window is below the projection floor,
+            # so inline compaction would legitimately fire and prune the result.
+            context_window_tokens=200_000,
             max_iterations=2,
             tool_result_projection_max_inline_chars=1000,
         ),

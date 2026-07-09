@@ -609,6 +609,20 @@ def _upgrade_meta_entry_model(
     ctx.metadata["routing_confidence"] = 1.0
     ctx.metadata["routing_applied"] = True
     ctx.metadata["applied_model"] = model
+    # Realign routed_provider with the UPGRADED tier: the router set it from the
+    # original (cheaper) tier, and the selector-apply tail pairs routed_provider
+    # with routed_model. Without this, the upgraded model would be sent to the
+    # wrong provider. Look up the target tier's provider from config; pop the
+    # key when the tier declares none (so a stale value can't linger).
+    tiers = getattr(getattr(ctx.config, "squilla_router", None), "tiers", None)
+    tier_cfg = tiers.get(tier_name) if isinstance(tiers, dict) else None
+    tier_provider = ""
+    if isinstance(tier_cfg, dict):
+        tier_provider = str(tier_cfg.get("provider") or "").strip().lower()
+    if tier_provider:
+        ctx.metadata["routed_provider"] = tier_provider
+    else:
+        ctx.metadata.pop("routed_provider", None)
     ctx.metadata["meta_resolution_model_upgrade"] = {
         "from_model": baseline_model,
         "to_model": model,
@@ -910,6 +924,13 @@ async def meta_resolution(ctx: TurnContext) -> TurnContext:
             schema = _deserialize_awaiting_schema(awaiting.awaiting_schema_json)
             now = time.time()
 
+            # Parse the clarify reply from the UNMUTATED user text. Earlier
+            # pipeline steps (e.g. the router) may append a RESPONSE_POLICY hint
+            # to ctx.message for the LLM path; the deterministic clarify parser
+            # must see only what the user typed, or that suffix corrupts field
+            # parsing and cancel-keyword matching.
+            reply_text = _current_semantic_text(ctx)
+
             if now - awaiting.awaiting_since > schema.timeout_hours * 3600:
                 await asyncio.to_thread(
                     writer.mark_expired, run_id=awaiting.run_id,
@@ -917,7 +938,7 @@ async def meta_resolution(ctx: TurnContext) -> TurnContext:
                 ctx.metadata["meta_clarify_expired"] = awaiting
                 return ctx
 
-            if _hits_cancel_keywords(ctx.message, schema.cancel_keywords):
+            if _hits_cancel_keywords(reply_text, schema.cancel_keywords):
                 await asyncio.to_thread(
                     writer.mark_cancelled,
                     run_id=awaiting.run_id,
@@ -966,7 +987,7 @@ async def meta_resolution(ctx: TurnContext) -> TurnContext:
                     )
                     try:
                         nl_result = await _nl_extract(
-                            reply_text=ctx.message,
+                            reply_text=reply_text,
                             schema=schema,
                             active_fields=active,
                             llm_chat=nl_chat,
@@ -1117,12 +1138,12 @@ async def meta_resolution(ctx: TurnContext) -> TurnContext:
                     )
                     effective_schema = replace(schema, fields=relaxed_fields)
                 parsed, errors = parse_clarify_reply(
-                    ctx.message, effective_schema,
+                    reply_text, effective_schema,
                     surface=getattr(ctx, "surface_kind", "unknown"),
                 )
                 if not errors and parsed and previously_filled:
                     parsed = {**previously_filled, **parsed}
-            if errors and not parsed and ctx.message.strip():
+            if errors and not parsed and reply_text.strip():
                 from dataclasses import replace
 
                 relaxed_schema = replace(
@@ -1130,7 +1151,7 @@ async def meta_resolution(ctx: TurnContext) -> TurnContext:
                     fields=tuple(replace(field, required=False) for field in schema.fields),
                 )
                 partial, partial_errors = parse_clarify_reply(
-                    ctx.message,
+                    reply_text,
                     relaxed_schema,
                     surface=getattr(ctx, "surface_kind", "unknown"),
                 )
@@ -1149,7 +1170,7 @@ async def meta_resolution(ctx: TurnContext) -> TurnContext:
                         schema=schema,
                         filled_fields=candidate_fields,
                         user_message=str(inputs_for_autofill.get("user_message") or ""),
-                        clarify_reply=ctx.message,
+                        clarify_reply=reply_text,
                         prior_step_outputs=outputs_for_autofill,
                         llm_chat=ctx.metadata.get("meta_llm_chat"),
                         infer_optional_fields=infer_optional_fields,

@@ -264,6 +264,7 @@ def _patch_run_pipeline(runner, turn_factory, provider):
 def _patch_router_context(runner):
     async def _router_previous_assistant_context(
         self, session_key, *, exclude_last_user=False,  # noqa: ARG001, ARG002
+        bound_user_message_id=None,  # noqa: ARG001
     ):
         return {}
 

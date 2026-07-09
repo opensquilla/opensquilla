@@ -71,9 +71,13 @@ class _RecordingPromptAssembler:
 class _RecordingRouterContext:
     context: dict[str, Any] = field(default_factory=dict)
     calls: list[tuple[str, bool]] = field(default_factory=list)
+    bound_user_message_ids: list[str | None] = field(default_factory=list)
 
-    async def fetch_router_context(self, session_key, *, exclude_last_user):
+    async def fetch_router_context(
+        self, session_key, *, exclude_last_user, bound_user_message_id=None
+    ):
         self.calls.append((session_key, exclude_last_user))
+        self.bound_user_message_ids.append(bound_user_message_id)
         return dict(self.context)
 
 
@@ -215,6 +219,7 @@ def _make_input(
     history_has_persisted_user=True,
     persist_input=False,
     fresh_user_session=False,
+    bound_user_message_id=None,
     ingress_pipeline_steps=None,
     input_provenance=None,
 ):
@@ -236,6 +241,7 @@ def _make_input(
         history_has_persisted_user=history_has_persisted_user,
         persist_input=persist_input,
         fresh_user_session=fresh_user_session,
+        bound_user_message_id=bound_user_message_id,
         ingress_pipeline_steps=ingress_pipeline_steps,
         input_provenance=input_provenance,
     )
@@ -300,6 +306,16 @@ async def test_prompt_assembler_forwards_fresh_user_session_flag():
     await stage.run(_make_input(fresh_user_session=True))
 
     assert prompt_assembler.last_kwargs["fresh_user_session"] is True
+
+
+async def test_prompt_assembler_forwards_bound_user_message_id_to_router_context():
+    router_context = _RecordingRouterContext()
+    stage = _make_stage(router=router_context)
+
+    await stage.run(_make_input(bound_user_message_id="msg-bound"))
+
+    assert router_context.calls == [("agent:main:s1", True)]
+    assert router_context.bound_user_message_ids == ["msg-bound"]
 
 
 @pytest.mark.asyncio

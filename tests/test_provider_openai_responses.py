@@ -19,6 +19,7 @@ from opensquilla.provider.openai import OpenAIProvider
 from opensquilla.provider.openai_responses import OpenAIResponsesProvider
 from opensquilla.provider.registry import get_provider_spec
 from opensquilla.provider.selector import build_provider
+from opensquilla.provider.types import ContentBlockImage
 
 
 def _patch_transport(
@@ -369,3 +370,106 @@ def test_openai_responses_chat_replays_tool_items(monkeypatch: Any) -> None:
         },
         {"role": "user", "content": "continue"},
     ]
+
+
+def test_openai_responses_chat_sends_image_blocks_as_input_image(monkeypatch: Any) -> None:
+    image_b64 = (
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk"
+        "YPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=="
+    )
+    captured: dict[str, Any] = {}
+    _patch_transport(
+        monkeypatch,
+        captured,
+        httpx.Response(
+            200,
+            json={
+                "id": "resp_image",
+                "model": "gpt-5.5",
+                "output": [
+                    {
+                        "type": "message",
+                        "role": "assistant",
+                        "content": [{"type": "output_text", "text": "ok"}],
+                    }
+                ],
+                "usage": {"input_tokens": 4, "output_tokens": 1},
+            },
+        ),
+    )
+    provider = OpenAIResponsesProvider(api_key="test", model="gpt-5.5")
+
+    async def _run() -> list[Any]:
+        return [
+            event
+            async for event in provider.chat(
+                [
+                    Message(
+                        role="user",
+                        content=[
+                            ContentBlockText(text="what does this dialog say?"),
+                            ContentBlockImage(media_type="image/png", data=image_b64),
+                        ],
+                    )
+                ],
+                config=ChatConfig(max_tokens=16),
+            )
+        ]
+
+    asyncio.run(_run())
+
+    assert captured["payload"]["input"] == [
+        {
+            "type": "message",
+            "role": "user",
+            "content": [
+                {"type": "input_text", "text": "what does this dialog say?"},
+                {
+                    "type": "input_image",
+                    "image_url": f"data:image/png;base64,{image_b64}",
+                },
+            ],
+        }
+    ]
+
+
+def test_openai_responses_incomplete_max_output_tokens_reports_length(
+    monkeypatch: Any,
+) -> None:
+    captured: dict[str, Any] = {}
+    _patch_transport(
+        monkeypatch,
+        captured,
+        httpx.Response(
+            200,
+            json={
+                "id": "resp_trunc",
+                "model": "gpt-5.5",
+                "status": "incomplete",
+                "incomplete_details": {"reason": "max_output_tokens"},
+                "output": [
+                    {
+                        "type": "message",
+                        "role": "assistant",
+                        "content": [{"type": "output_text", "text": "def solve(n):"}],
+                    }
+                ],
+                "usage": {"input_tokens": 40, "output_tokens": 16},
+            },
+        ),
+    )
+    provider = OpenAIResponsesProvider(api_key="test", model="gpt-5.5")
+
+    async def _run() -> list[Any]:
+        return [
+            event
+            async for event in provider.chat(
+                [Message(role="user", content="write solve")],
+                config=ChatConfig(max_tokens=16),
+            )
+        ]
+
+    events = asyncio.run(_run())
+
+    done = next(event for event in events if isinstance(event, DoneEvent))
+    assert done.stop_reason == "length"

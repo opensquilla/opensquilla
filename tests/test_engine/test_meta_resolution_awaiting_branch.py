@@ -701,6 +701,24 @@ async def test_real_parser_positional_success_claims_resume(tmp_path):
     assert parsed == {"x": "Shanghai"}
 
 
+@pytest.mark.asyncio
+async def test_clarify_reply_parses_raw_message_when_pipeline_appends_hint(tmp_path):
+    """The clarify parser must see the user's text, not pipeline-mutated ctx.message."""
+    writer = _writer(tmp_path)
+    _seed_awaiting(writer)
+    ctx = _ctx(
+        writer,
+        message="x: Tokyo\n\n---\n[RESPONSE_POLICY: answer briefly]",
+        session_id="S1",
+    )
+    ctx.raw_message = "x: Tokyo"
+    out = await meta_resolution(ctx)
+    assert "meta_clarify_errors" not in out.metadata
+    assert "meta_resume" in out.metadata
+    _, parsed = out.metadata["meta_resume"]
+    assert parsed == {"x": "Tokyo"}
+
+
 # ── Bug-X (required completeness) + Bug-Y (awaiting_filled merge) ──
 
 

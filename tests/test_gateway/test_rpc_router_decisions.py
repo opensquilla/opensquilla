@@ -7,6 +7,7 @@ All fixture data is synthetic.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -16,6 +17,7 @@ from opensquilla.engine.steps.router_decision_record import (
     set_decision_writer,
 )
 from opensquilla.gateway.auth import Principal
+from opensquilla.gateway.config import GatewayConfig
 from opensquilla.gateway.protocol import ERROR_INVALID_REQUEST, ERROR_UNAUTHORIZED
 from opensquilla.gateway.rpc import get_dispatcher, validate_classification
 from opensquilla.gateway.rpc.registry import RpcContext
@@ -257,6 +259,39 @@ async def test_feedback_submit_records_to_sidecar(
     fb = load_feedback_map("main", home=tmp_path)
     assert fb["d" * 32].rating == "down"
     assert fb["d" * 32].executed_kind == "single"
+
+
+async def test_feedback_submit_uses_configured_retention_days(
+    writer: RouterDecisionWriter, tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setenv("OPENSQUILLA_STATE_DIR", str(tmp_path))
+    writer.record_decision(_base_record())
+
+    from opensquilla.squilla_router.self_learning.feedback import (
+        load_feedback_map,
+        write_feedback,
+    )
+
+    write_feedback(
+        "main",
+        decision_id="old-rating",
+        session_key="agent:main:webchat:s1",
+        turn_index=1,
+        rating="up",
+        now=datetime.now(UTC) - timedelta(days=40),
+        retention_days=60,
+    )
+    cfg = GatewayConfig(
+        squilla_router={"self_learning": {"retention_days": 60}}
+    )
+
+    payload = await _handle_router_feedback_submit(
+        {"decisionId": "d" * 32, "rating": "down"},
+        RpcContext(conn_id="test", config=cfg),
+    )
+
+    assert payload == {"accepted": True, "recorded": "down"}
+    assert "old-rating" in load_feedback_map("main", home=tmp_path)
 
 
 async def test_feedback_submit_unknown_decision_is_soft_failure(

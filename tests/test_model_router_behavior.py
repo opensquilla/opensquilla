@@ -939,6 +939,69 @@ async def test_image_route_uses_first_configured_image_tier_without_random_choic
 
 
 @pytest.mark.asyncio
+async def test_image_route_records_tier_provider_for_cross_provider_execution(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        squilla_router_step,
+        "_get_strategy",
+        lambda _config: pytest.fail("image routing should not invoke text strategy"),
+    )
+    ctx = make_context(
+        "What is in this screenshot?",
+        attachments=[{"type": "image", "mime_type": "image/png"}],
+    )
+    ctx.config.llm.provider = "anthropic"
+    ctx.config.squilla_router.cross_provider_tiers = True
+    ctx.config.squilla_router.tiers = {
+        "image_model": {
+            "model": "vision/model-1",
+            "provider": "openai",
+            "supports_image": True,
+            "image_only": True,
+        },
+        "c1": {"model": "text/model-1"},
+    }
+
+    routed = await apply_squilla_router(ctx)
+
+    assert routed.metadata["routing_source"] == "image_route"
+    assert routed.metadata["routing_applied"] is True
+    assert routed.metadata.get("routed_provider") == "openai"
+
+
+@pytest.mark.asyncio
+async def test_image_route_flags_tier_provider_mismatch_when_cross_provider_disabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        squilla_router_step,
+        "_get_strategy",
+        lambda _config: pytest.fail("image routing should not invoke text strategy"),
+    )
+    ctx = make_context(
+        "Describe this screenshot.",
+        attachments=[{"type": "image", "mime_type": "image/png"}],
+    )
+    ctx.config.llm.provider = "anthropic"
+    ctx.config.squilla_router.cross_provider_tiers = False
+    ctx.config.squilla_router.tiers = {
+        "image_model": {
+            "model": "vision/model-1",
+            "provider": "openai",
+            "supports_image": True,
+            "image_only": True,
+        },
+        "c1": {"model": "text/model-1"},
+    }
+
+    routed = await apply_squilla_router(ctx)
+
+    assert routed.metadata["routing_source"] == "image_route"
+    assert routed.metadata.get("router_tier_provider_mismatch") == "openai"
+
+
+@pytest.mark.asyncio
 async def test_gate_needs_image_routes_followup_to_vision_model(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1022,6 +1085,51 @@ async def test_image_attachment_without_image_tier_fails_locally(
     )
     ctx = make_context(
         "What is in this screenshot?",
+        attachments=[{"type": "image", "mime_type": "image/png"}],
+    )
+    ctx.config.squilla_router.tiers["image_model"]["supports_image"] = False
+
+    with pytest.raises(
+        RuntimeError,
+        match="No image-capable SquillaRouter tier is configured",
+    ):
+        await apply_squilla_router(ctx)
+
+
+@pytest.mark.asyncio
+async def test_caption_less_image_attachment_still_routes_to_vision_tier(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        squilla_router_step,
+        "_get_strategy",
+        lambda _config: pytest.fail("image routing should not invoke text strategy"),
+    )
+    for caption in ("", "   \n\t "):
+        ctx = make_context(
+            caption,
+            attachments=[{"type": "image", "mime_type": "image/png"}],
+        )
+
+        routed = await apply_squilla_router(ctx)
+
+        assert routed.metadata["routing_source"] == "image_route"
+        assert routed.metadata["routed_tier"] == "image_model"
+
+
+@pytest.mark.asyncio
+async def test_caption_less_image_attachment_without_image_tier_fails_locally(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        squilla_router_step,
+        "_get_strategy",
+        lambda _config: pytest.fail(
+            "image routing without image tier should not invoke text strategy"
+        ),
+    )
+    ctx = make_context(
+        "",
         attachments=[{"type": "image", "mime_type": "image/png"}],
     )
     ctx.config.squilla_router.tiers["image_model"]["supports_image"] = False

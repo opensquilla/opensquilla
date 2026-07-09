@@ -130,6 +130,31 @@ def test_normal_reason_default() -> None:
     assert aligned[0].reason == REASON_NORMAL
 
 
+def test_alignment_orders_by_capture_time_across_turn_index_reset() -> None:
+    # turn_index saturates and resets across engine history resets, so the
+    # capture timestamp decides which turn chronologically precedes a complaint.
+    samples = [mk("s", turn, "R0", day=1) for turn in range(6)]
+    samples.append(
+        mk(
+            "s",
+            0,
+            "R0",
+            final="R2",
+            complaint=True,
+            feats=np.full(390, 99.0, dtype=np.float32),
+            day=2,
+        )
+    )
+
+    aligned = align_session(samples)
+
+    assert [a.turn_index for a in aligned] == [0, 1, 2, 3, 4, 5, 0]
+    assert aligned[0].reason == REASON_NORMAL
+    assert aligned[5].reason == REASON_RETROSPECTIVE
+    assert aligned[5].target_idx == 2
+    assert aligned[6].reason == REASON_IMMEDIATE_COMPLAINT
+
+
 # --------------------------------------------------------------------------- #
 # Dataset building (end-to-end through the store)
 # --------------------------------------------------------------------------- #

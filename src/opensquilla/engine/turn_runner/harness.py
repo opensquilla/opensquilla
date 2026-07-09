@@ -250,10 +250,12 @@ class _TurnRunnerRouterContextAdapter(RouterContextPort):
         session_key: str,
         *,
         exclude_last_user: bool,
+        bound_user_message_id: str | None = None,
     ) -> dict[str, Any]:
         return await self._runner._router_previous_assistant_context(
             session_key,
             exclude_last_user=exclude_last_user,
+            bound_user_message_id=bound_user_message_id,
         )
 
 class _TurnRunnerPromptConfigResolverAdapter(PromptConfigResolverPort):

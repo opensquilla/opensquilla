@@ -761,6 +761,7 @@ const sidebarSections = computed((): SidebarSection[] => {
   return arrangeSidebarSections(sidebarSessionItems.value).map(section => ({
     ...section,
     rows: section.rows.map((row): SidebarSectionRow => {
+      if (row.rowKind === 'workspace') return { ...row, agentName: '' }
       const source = byKey.get(row.key)
       const title = renameOverrides.value[row.key]
         || (source ? sidebarConversationTitle(source) : row.title)

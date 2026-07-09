@@ -56,6 +56,9 @@ export interface RawSessionItem {
   title?: string
   subtitle?: string
   groupLabel?: string
+  workspace?: string
+  workspaceLabel?: string
+  workspaceDisplayPath?: string
   updatedAt?: number | string
   updated_at?: number | string
   lastActivityAt?: number | string

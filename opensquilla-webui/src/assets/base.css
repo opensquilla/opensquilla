@@ -932,6 +932,30 @@ pre {
   margin: 1px var(--sp-1);
 }
 
+.sidebar-history-row--workspace {
+  margin-top: var(--sp-2);
+}
+
+.sidebar-workspace-header {
+  flex: 1;
+  min-width: 0;
+  min-height: 24px;
+  display: flex;
+  align-items: center;
+  padding: 4px 9px 3px;
+  color: var(--sidebar-text-soft);
+  font-size: 0.6875rem;
+  font-weight: 700;
+  line-height: 1.25;
+}
+
+.sidebar-workspace-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .sidebar-history-row.is-selected .sidebar-history-item {
   background: var(--sidebar-selection-bg);
   color: var(--sidebar-text-strong);

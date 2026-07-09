@@ -124,7 +124,8 @@
       :aria-label="t('chat.previewOf', { title: artifactFileTitle(active) })"
       @click.self="closePreview"
     >
-      <div ref="lightboxPanel" class="deliv-preview__panel">
+      <!-- Always media mode: this lightbox only ever opens image artifacts. -->
+      <div ref="lightboxPanel" class="deliv-preview__panel deliv-preview__panel--media">
         <header class="deliv-preview__head">
           <span class="deliv-preview__title">{{ artifactFileTitle(active) }}</span>
           <button

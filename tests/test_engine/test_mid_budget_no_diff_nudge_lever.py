@@ -371,6 +371,83 @@ async def test_nudge_noops_without_wall_clock_budget() -> None:
     assert all(_nudge_texts(call) == [] for call in provider.calls)
 
 
+class _OneShotPendingInput:
+    def __init__(self, texts: list[str]) -> None:
+        self._texts = list(texts)
+
+    def drain_pending(self) -> list[str]:
+        texts, self._texts = self._texts, []
+        return texts
+
+
+@pytest.mark.asyncio
+async def test_stacked_nudge_keeps_empty_response_retry_alive() -> None:
+    # Tail [tool_results, pending input, nudge]: the two messages after the
+    # tool results push it out of the plain lookback window, so the turn no
+    # longer counts as post-tool once the malformed-empty retry budget is
+    # spent and the warn_model continue-once recovery is suppressed. The
+    # nudge is runtime-injected: the turn must still count as post-tool and
+    # the recovery must fire instead of ending the turn with a terminal
+    # provider error. Same shape as watchdog guidance stacking.
+    empty = [ProviderDone(stop_reason="stop", input_tokens=4, output_tokens=0)]
+    provider = _SequenceProvider(
+        [
+            [3.3, *_echo_tool_call("use-1")],
+            empty,
+            empty,
+            _final_text(),
+        ]
+    )
+    agent = _echo_agent(
+        provider,
+        _lever_config(post_tool_empty_recovery_mode="warn_model"),
+    )
+
+    events = [
+        event
+        async for event in agent.run_turn(
+            "fix the bug",
+            pending_input_provider=_OneShotPendingInput(["also check the docs"]),
+        )
+    ]
+
+    assert not any(event.kind == "error" for event in events)
+    assert any(event.kind == "done" for event in events)
+    assert len(provider.calls) == 4
+    nudges = _nudge_texts(provider.calls[1])
+    assert len(nudges) == 1
+
+
+def test_tail_shape_helper_skips_nudges_only() -> None:
+    from opensquilla.engine.agent import (
+        _MID_BUDGET_NO_DIFF_NUDGE_TEMPLATE,
+        _tail_has_tool_result_ignoring_nudges,
+    )
+    from opensquilla.provider import ContentBlockToolResult
+
+    tool_results = Message(
+        role="user",
+        content=[
+            ContentBlockToolResult(tool_use_id="use-1", content="tool ok"),
+        ],
+    )
+    nudge = Message(
+        role="user",
+        content=_MID_BUDGET_NO_DIFF_NUDGE_TEMPLATE.format(percent=55),
+    )
+    guidance = Message(role="user", content="[Progress warning] no forward progress")
+
+    assert _tail_has_tool_result_ignoring_nudges([tool_results, guidance, nudge])
+    assert _tail_has_tool_result_ignoring_nudges([tool_results, nudge, guidance])
+    # Without a tool result in the tail the shape stays non-post-tool: the
+    # helper only removes nudges, it never widens what counts as a tool turn.
+    assert not _tail_has_tool_result_ignoring_nudges(
+        [Message(role="user", content="question"), guidance, nudge]
+    )
+    assert not _tail_has_tool_result_ignoring_nudges([nudge])
+    assert not _tail_has_tool_result_ignoring_nudges([])
+
+
 def test_env_plumbing_for_mid_budget_nudge(monkeypatch: pytest.MonkeyPatch) -> None:
     # Helper-level check only; the full env -> bootstrap-stage -> AgentConfig
     # threading is covered in turn_runner/test_agent_bootstrap_stage_unit.py.

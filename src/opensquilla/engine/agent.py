@@ -1031,6 +1031,19 @@ def _is_mid_budget_nudge_message(message: Message) -> bool:
     )
 
 
+def _tail_has_tool_result_ignoring_nudges(messages: list[Message]) -> bool:
+    """Post-tool shape of the turn with runtime-injected nudges removed.
+
+    A mid-budget nudge stacked after watchdog or pending-input messages
+    pushes the tool results out of the plain lookback window; the nudge is
+    not conversation history, so the shape is judged as if it were absent.
+    """
+
+    return _tail_has_tool_result(
+        [message for message in messages[-4:] if not _is_mid_budget_nudge_message(message)]
+    )
+
+
 def _message_has_visible_text(message: Message) -> bool:
     if isinstance(message.content, str):
         return bool(message.content.strip())
@@ -5107,6 +5120,16 @@ class Agent:
                         post_tool_turn = tail_index >= 0 and _message_has_tool_result(
                             turn_messages[tail_index]
                         )
+                    if not post_tool_turn and bool(
+                        getattr(self.config, "mid_budget_no_diff_nudge", False)
+                    ):
+                        # A nudge stacked after watchdog or recovery guidance
+                        # pushes the tool results out of the lookback window,
+                        # which would disable empty-response retry/recovery on
+                        # exactly the stalled turns the lever targets. The
+                        # nudge is runtime-injected, not conversation history:
+                        # recompute the turn shape as if it were absent.
+                        post_tool_turn = _tail_has_tool_result_ignoring_nudges(turn_messages)
                     stop_reason = (
                         getattr(provider_done_for_log, "stop_reason", None)
                         if provider_done_for_log is not None

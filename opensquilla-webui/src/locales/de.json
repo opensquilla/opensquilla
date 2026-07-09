@@ -165,7 +165,8 @@
     "cli": {
       "advancedTitle": "Erweitert · integrierte CLI",
       "hintBundled": "Diese Befehle verwenden die in der App integrierte CLI; zum Ausführen in ein Terminal einfügen.",
-      "hintDev": "Dev-Modus: Befehle laufen über uv aus dem Quell-Checkout."
+      "hintDev": "Dev-Modus: Befehle laufen über uv aus dem Quell-Checkout.",
+      "restartHint": "Zum Anwenden Einstellungen → Runtime → Neu starten der App verwenden."
     },
     "common": {
       "apiKey": "API-Schlüssel",

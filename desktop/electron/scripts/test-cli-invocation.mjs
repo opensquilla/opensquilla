@@ -8,14 +8,14 @@ import { buildCliInvocation } from '../dist/cli-invocation.js'
     platform: 'darwin',
     mode: 'bundled',
     binaryPath: '/Applications/OpenSquilla.app/Contents/Resources/runtime/gateway/opensquilla-gateway/opensquilla-gateway',
-    stateDir: '/Users/jo/Library/Application Support/OpenSquilla/opensquilla/state',
-    configPath: '/Users/jo/Library/Application Support/OpenSquilla/opensquilla/config.toml',
+    stateDir: '/opt/OpenSquilla Data/state',
+    configPath: '/opt/OpenSquilla Data/config.toml',
   })
   assert.equal(result.mode, 'bundled')
   assert.equal(
     result.prefix,
-    "OPENSQUILLA_STATE_DIR='/Users/jo/Library/Application Support/OpenSquilla/opensquilla/state' "
-      + "OPENSQUILLA_GATEWAY_CONFIG_PATH='/Users/jo/Library/Application Support/OpenSquilla/opensquilla/config.toml' "
+    "OPENSQUILLA_STATE_DIR='/opt/OpenSquilla Data/state' "
+      + "OPENSQUILLA_GATEWAY_CONFIG_PATH='/opt/OpenSquilla Data/config.toml' "
       + "'/Applications/OpenSquilla.app/Contents/Resources/runtime/gateway/opensquilla-gateway/opensquilla-gateway'",
   )
 }
@@ -25,12 +25,12 @@ import { buildCliInvocation } from '../dist/cli-invocation.js'
   const result = buildCliInvocation({
     platform: 'linux',
     mode: 'bundled',
-    binaryPath: "/home/o'brien/apps/opensquilla-gateway",
-    stateDir: "/home/o'brien/state",
-    configPath: "/home/o'brien/config.toml",
+    binaryPath: "/opt/o'brien apps/opensquilla-gateway",
+    stateDir: "/opt/o'brien data/state",
+    configPath: "/opt/o'brien data/config.toml",
   })
-  assert.ok(result.prefix.includes("'/home/o'\\''brien/apps/opensquilla-gateway'"))
-  assert.ok(result.prefix.includes("OPENSQUILLA_STATE_DIR='/home/o'\\''brien/state'"))
+  assert.ok(result.prefix.includes("'/opt/o'\\''brien apps/opensquilla-gateway'"))
+  assert.ok(result.prefix.includes("OPENSQUILLA_STATE_DIR='/opt/o'\\''brien data/state'"))
 }
 
 // --- windows: PowerShell $env: syntax, '' doubling, & call operator ---
@@ -79,12 +79,12 @@ import { buildCliInvocation } from '../dist/cli-invocation.js'
   const result = buildCliInvocation({
     platform: 'darwin',
     mode: 'dev',
-    repoRoot: '/Users/jo/Developer/projects/opensquilla',
-    stateDir: '/Users/jo/Library/Application Support/OpenSquilla/opensquilla/state',
-    configPath: '/Users/jo/Library/Application Support/OpenSquilla/opensquilla/config.toml',
+    repoRoot: '/opt/dev projects/opensquilla',
+    stateDir: '/opt/OpenSquilla Data/state',
+    configPath: '/opt/OpenSquilla Data/config.toml',
   })
   assert.equal(result.mode, 'dev')
-  assert.ok(result.prefix.endsWith("uv run --directory '/Users/jo/Developer/projects/opensquilla' opensquilla"))
+  assert.ok(result.prefix.endsWith("uv run --directory '/opt/dev projects/opensquilla' opensquilla"))
 }
 
 console.log('cli-invocation: all assertions passed')

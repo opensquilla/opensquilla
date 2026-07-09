@@ -356,6 +356,35 @@ def test_gateway_start_uses_same_interpreter_cli_boundary(tmp_path, monkeypatch)
     assert kwargs["shell"] is False
 
 
+def test_gateway_start_frozen_binary_invokes_subcommand_directly(tmp_path, monkeypatch) -> None:
+    # In a PyInstaller-frozen desktop bundle sys.executable already is the CLI
+    # entrypoint, so "-m opensquilla.cli.main" would be handed to Typer as
+    # arguments and the child would exit on a usage error.
+    monkeypatch.setenv("OPENSQUILLA_STATE_DIR", str(tmp_path / "home"))
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    calls = []
+
+    def fake_popen(argv, **kwargs):
+        calls.append((argv, kwargs))
+        return SimpleNamespace(pid=4243)
+
+    monkeypatch.setattr(gateway_lifecycle.subprocess, "Popen", fake_popen)
+    _patch_health(monkeypatch, False)
+    _patch_wait_for_health(monkeypatch, True)
+
+    result = runner.invoke(
+        app,
+        ["gateway", "start", "--listen", "127.0.0.2", "--port", "18888", "--json"],
+    )
+
+    assert result.exit_code == 0, result.stdout
+    argv, _ = calls[0]
+    assert argv[:3] == [sys.executable, "gateway", "run"]
+    assert "-m" not in argv
+    assert "opensquilla.cli.main" not in argv
+    assert argv[argv.index("--listen") + 1] == "127.0.0.2"
+
+
 def test_gateway_start_uses_explicit_config_path(tmp_path, monkeypatch) -> None:
     monkeypatch.setenv("OPENSQUILLA_STATE_DIR", str(tmp_path / "home"))
     default_config = tmp_path / "default.toml"

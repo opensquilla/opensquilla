@@ -165,7 +165,8 @@
     "cli": {
       "advancedTitle": "Advanced · built-in CLI",
       "hintBundled": "These commands use the CLI bundled with the app; paste into a terminal to run.",
-      "hintDev": "Dev mode: commands run from the source checkout via uv."
+      "hintDev": "Dev mode: commands run from the source checkout via uv.",
+      "restartHint": "Use the app's Settings → Runtime → Restart to apply."
     },
     "common": {
       "apiKey": "API key",

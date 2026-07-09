@@ -1,5 +1,6 @@
+// @vitest-environment happy-dom
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { resetCliInvocationForTest, useCliInvocation } from './useCliInvocation'
+import { isGatewayLifecycleCommand, resetCliInvocationForTest, useCliInvocation } from './useCliInvocation'
 import type { CliInvocation } from '@/platform'
 
 const platformMock = {
@@ -19,11 +20,24 @@ async function flushLoad() {
 const PREFIX =
   "OPENSQUILLA_STATE_DIR='/tmp/state' OPENSQUILLA_GATEWAY_CONFIG_PATH='/tmp/config.toml' '/apps/opensquilla-gateway'"
 
+describe('isGatewayLifecycleCommand', () => {
+  it('matches gateway restart/start/stop but not other gateway subcommands', () => {
+    expect(isGatewayLifecycleCommand('opensquilla gateway restart')).toBe(true)
+    expect(isGatewayLifecycleCommand('opensquilla gateway restart --config /x')).toBe(true)
+    expect(isGatewayLifecycleCommand('opensquilla gateway start --port 18791')).toBe(true)
+    expect(isGatewayLifecycleCommand('opensquilla gateway stop')).toBe(true)
+    expect(isGatewayLifecycleCommand('opensquilla gateway status --json')).toBe(false)
+    expect(isGatewayLifecycleCommand('opensquilla configure --section channels')).toBe(false)
+    expect(isGatewayLifecycleCommand('opensquilla gateway restarter')).toBe(false)
+  })
+})
+
 describe('useCliInvocation', () => {
   beforeEach(() => {
     resetCliInvocationForTest()
     platformMock.capabilities = { hasTerminalWorkflow: false }
     platformMock.gateway = {}
+    try { window.localStorage.clear() } catch { /* node env */ }
   })
 
   it('rewrites the leading opensquilla token with the shell prefix', async () => {
@@ -74,6 +88,22 @@ describe('useCliInvocation', () => {
     const { format } = useCliInvocation()
     await flushLoad()
     expect(format('opensquilla doctor --json')).toBe('opensquilla doctor --json')
+  })
+
+  it('is the identity when the connection points at a non-owned (remote) gateway', async () => {
+    window.localStorage.setItem('opensquilla.wsUrl', 'ws://remote.example:9/ws')
+    platformMock.gateway.getCliInvocation = async () => ({ mode: 'bundled', prefix: PREFIX })
+    const { format } = useCliInvocation()
+    await flushLoad()
+    expect(format('opensquilla doctor --json')).toBe('opensquilla doctor --json')
+  })
+
+  it('rewrites when the connection URL host matches the owned gateway origin', async () => {
+    window.localStorage.setItem('opensquilla.wsUrl', `ws://${window.location.host}/ws`)
+    platformMock.gateway.getCliInvocation = async () => ({ mode: 'bundled', prefix: PREFIX })
+    const { format } = useCliInvocation()
+    await flushLoad()
+    expect(format('opensquilla doctor --json')).toBe(`${PREFIX} doctor --json`)
   })
 
   it('degrades to the identity when the bridge lookup fails or is empty', async () => {

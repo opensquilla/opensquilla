@@ -15,6 +15,7 @@ pinned wire contract: see ``docs/self-migration-report-contract.md`` and
 
 from __future__ import annotations
 
+import hashlib
 import importlib
 import json
 import os
@@ -22,10 +23,11 @@ import re
 import shutil
 import sqlite3
 import sys
+import tempfile
 import tomllib
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
 
 import structlog
@@ -91,6 +93,30 @@ def _same_path(first: Path, second: Path) -> bool:
         return first == second
 
 
+def _path_pin_is_absolute(value: str) -> bool:
+    """Recognize native, POSIX, and Windows drive/UNC absolute config pins."""
+    stripped = value.strip()
+    if not stripped:
+        return False
+    return (
+        Path(stripped).expanduser().is_absolute()
+        or PurePosixPath(stripped).is_absolute()
+        or PureWindowsPath(stripped).is_absolute()
+    )
+
+
+def _paths_overlap(first: Path, second: Path) -> bool:
+    """Return whether either resolved path contains the other."""
+    try:
+        resolved_first = first.resolve(strict=False)
+        resolved_second = second.resolve(strict=False)
+    except OSError:
+        resolved_first, resolved_second = first, second
+    return resolved_first.is_relative_to(resolved_second) or resolved_second.is_relative_to(
+        resolved_first
+    )
+
+
 def is_valid_opensquilla_home(path: Path) -> bool:
     """Return True when ``path`` plausibly holds an OpenSquilla home."""
     if not path.is_dir():
@@ -115,7 +141,111 @@ def detect_legacy_cli_home(target: Path) -> Path | None:
         return None
     if _same_path(legacy, target):
         return None
+    if _source_marker_matches_target(legacy, target):
+        return None
     return legacy
+
+
+def _source_marker_matches_target(source: Path, target: Path) -> bool:
+    marker = source / IMPORT_MARKER_FILENAME
+    try:
+        payload = json.loads(marker.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False
+    if not isinstance(payload, dict):
+        return False
+    marked_target = payload.get("target")
+    if not isinstance(marked_target, str) or not _same_path(Path(marked_target), target):
+        return False
+    transaction_id = payload.get("transaction_id")
+    if not isinstance(transaction_id, str) or not re.fullmatch(
+        r"[A-Za-z0-9][A-Za-z0-9._-]*", transaction_id
+    ):
+        return False
+    report_path = target / "migration" / "opensquilla" / transaction_id / "report.json"
+    try:
+        receipt = json.loads(report_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False
+    return _valid_import_receipt(receipt, source=source, target=target, report_path=report_path)
+
+
+def _valid_import_receipt(
+    receipt: object,
+    *,
+    source: Path,
+    target: Path,
+    report_path: Path,
+) -> bool:
+    if not isinstance(receipt, dict):
+        return False
+    receipt_source = receipt.get("source")
+    receipt_target = receipt.get("target")
+    output_dir = receipt.get("output_dir")
+    if (
+        not isinstance(receipt_source, str)
+        or not _same_path(Path(receipt_source), source)
+        or not isinstance(receipt_target, str)
+        or not _same_path(Path(receipt_target), target)
+        or receipt.get("apply") is not True
+        or not isinstance(output_dir, str)
+        or not _same_path(Path(output_dir), report_path.parent)
+        or receipt.get("source_kind") not in OPENSQUILLA_SOURCE_KINDS
+    ):
+        return False
+    items = receipt.get("items")
+    if not isinstance(items, list) or not items:
+        return False
+    for item in items:
+        if (
+            not isinstance(item, dict)
+            or not isinstance(item.get("kind"), str)
+            or item.get("status") not in {"migrated", "planned", "skipped"}
+            or not isinstance(item.get("reason"), str)
+            or (item.get("source") is not None and not isinstance(item.get("source"), str))
+            or (
+                item.get("destination") is not None
+                and not isinstance(item.get("destination"), str)
+            )
+            or not isinstance(item.get("details"), dict)
+        ):
+            return False
+    return True
+
+
+def _commit_journal_path(target: Path) -> Path:
+    return target.parent / f".{target.name}.{_COMMIT_JOURNAL}"
+
+
+def _fsync_directory(path: Path) -> None:
+    try:
+        descriptor = os.open(path, os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def _atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
+    )
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, ensure_ascii=False, indent=2)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chmod(temporary, 0o600)
+        os.replace(_ext(temporary), _ext(path))
+        _fsync_directory(path.parent)
+    except Exception:
+        temporary.unlink(missing_ok=True)
+        raise
 
 
 @dataclass
@@ -333,34 +463,45 @@ def _known_migration_ids() -> set[str]:
 def _read_applied_migration_ids(db_path: Path) -> set[str] | None:
     """Read the yoyo ledger read-only; ``None`` when the db cannot be inspected."""
     try:
-        connection = sqlite3.connect(f"{db_path.as_uri()}?mode=ro", uri=True)
-    except sqlite3.Error:
+        with tempfile.TemporaryDirectory(prefix="opensquilla-sqlite-inspect-") as temporary:
+            copied_db = _copy_sqlite_bundle(db_path, Path(temporary))
+            connection = sqlite3.connect(
+                f"{copied_db.resolve().as_uri()}?mode=ro",
+                uri=True,
+            )
+            try:
+                table_rows = connection.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table' "
+                    "AND name LIKE '%yoyo_migration'"
+                ).fetchall()
+                table = next(
+                    (
+                        name
+                        for (name,) in table_rows
+                        if isinstance(name, str) and name.endswith("yoyo_migration")
+                    ),
+                    None,
+                )
+                if table is None:
+                    return set()
+                rows = connection.execute(f'SELECT migration_id FROM "{table}"').fetchall()
+            finally:
+                connection.close()
+    except (OSError, sqlite3.Error):
         return None
-    try:
-        try:
-            table_rows = connection.execute(
-                "SELECT name FROM sqlite_master WHERE type='table' "
-                "AND name LIKE '%yoyo_migration'"
-            ).fetchall()
-        except sqlite3.Error:
-            return None
-        table = next(
-            (
-                name
-                for (name,) in table_rows
-                if isinstance(name, str) and name.endswith("yoyo_migration")
-            ),
-            None,
-        )
-        if table is None:
-            return set()
-        try:
-            rows = connection.execute(f'SELECT migration_id FROM "{table}"').fetchall()
-        except sqlite3.Error:
-            return None
-    finally:
-        connection.close()
     return {str(migration_id) for (migration_id,) in rows if migration_id}
+
+
+def _copy_sqlite_bundle(source_db: Path, destination_dir: Path) -> Path:
+    """Copy a SQLite database and present sidecars for mutation-free inspection."""
+    destination_db = destination_dir / source_db.name
+    for suffix in ("", *_SQLITE_SIDECAR_SUFFIXES):
+        source_file = source_db.with_name(source_db.name + suffix)
+        if not source_file.is_file():
+            continue
+        destination_file = destination_db.with_name(destination_db.name + suffix)
+        shutil.copyfile(_ext(source_file), _ext(destination_file))
+    return destination_db
 
 
 # ---------------------------------------------------------------------------
@@ -416,7 +557,7 @@ class OpenSquillaHomeMigrator:
         self.kind = options.kind
         self.source: Path | None = _as_path(options.source)
         self.target = _as_path(options.target) or default_opensquilla_home()
-        self.timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
+        self.timestamp = datetime.now().strftime("%Y%m%d%H%M%S%f")
         self.output_dir = self.target / "migration" / "opensquilla" / self.timestamp
         self.items: list[ItemResult] = []
         self.candidates: list[PortableCandidate] = []
@@ -433,6 +574,13 @@ class OpenSquillaHomeMigrator:
         }
         self._env_additions: dict[str, str] = {}
         self._config_payload: dict[str, Any] | None = None
+        self._raw_config_payload: dict[str, Any] | None = None
+        self._data_roots: dict[str, list[Path]] = {
+            "state": [],
+            "workspace": [],
+            "media": [],
+        }
+        self._sqlite_stores_cache: dict[Path, Path] | None = None
         self._blocked = False
         self._wrote_output_dir = False
         self._committed = False
@@ -452,11 +600,28 @@ class OpenSquillaHomeMigrator:
                 f"(known: {', '.join(OPENSQUILLA_SOURCE_KINDS)})",
             )
             return self._report()
+        if self.options.config_path is not None:
+            self._record(
+                "options",
+                self.options.config_path,
+                None,
+                "error",
+                "config_path is not supported for OpenSquilla self-migration; "
+                "select the target home through the active OpenSquilla environment",
+            )
+            self._blocked = True
+            return self._report()
         self._resolve_source()
         if self.source is None:
             return self._report()
+        if not self._recover_interrupted_commit():
+            return self._report()
         if not self._validate_paths():
             return self._report()
+        source = self.source
+        assert source is not None
+        self._sandbox_config_pass(source)
+        self._plan_data_roots()
         self._run_preflight()
         if self._blocked:
             return self._report()
@@ -472,18 +637,92 @@ class OpenSquillaHomeMigrator:
                 self._record(
                     "home-entry", entry, self.target / entry.name, "planned", details=details
                 )
-            source = self.source
-            jobs = self._read_scheduler_jobs(source / "state" / "scheduler.db")
-            if jobs is not None:
-                self.paused_jobs = jobs
+            planned_data_entries = {entry.name for entry in entries}
+            for name, roots in self._data_roots.items():
+                for root in roots:
+                    if name not in planned_data_entries or root != source / name:
+                        self._record(
+                            "data-root", root, self.target / name, "planned"
+                        )
+            for root in self._data_roots.get("state", []):
+                jobs = self._read_scheduler_jobs(root / "scheduler.db")
+                if jobs is not None:
+                    self.paused_jobs = jobs
+                    break
             return self._report()
 
         self._apply(entries)
-        if self._committed or self._wrote_output_dir:
-            self._write_report_files()
-        if self._committed:
+        if self._committed and not self._has_error():
             self._write_source_marker()
         return self._report()
+
+    def _recover_interrupted_commit(self) -> bool:
+        journal = _commit_journal_path(self.target)
+        if not journal.is_file():
+            return True
+        if not self.options.apply:
+            self._record(
+                "preflight/recovery",
+                journal,
+                self.target,
+                "error",
+                "an interrupted import transaction needs recovery; rerun with --apply",
+            )
+            self._blocked = True
+            return False
+        try:
+            payload = json.loads(journal.read_text(encoding="utf-8"))
+            if not isinstance(payload, dict):
+                raise ValueError("journal root is not an object")
+            recorded_target = Path(str(payload.get("target", "")))
+            staging = Path(str(payload.get("staging", "")))
+            backup = Path(str(payload.get("backup", "")))
+            phase = str(payload.get("phase", ""))
+            if not _same_path(recorded_target, self.target):
+                raise ValueError("journal target does not match the active target")
+            if staging.parent != self.target.parent or not staging.name.startswith(
+                ".opensquilla-import-"
+            ):
+                raise ValueError("journal staging path is outside the target parent")
+            if backup.parent != self.target.parent or not backup.name.startswith(
+                f"{self.target.name}.backup."
+            ):
+                raise ValueError("journal backup path is outside the target parent")
+            if phase not in {"prepared", "target-backed-up", "published"}:
+                raise ValueError(f"unknown journal phase: {phase}")
+
+            if not self.target.exists() and backup.exists():
+                os.replace(_ext(backup), _ext(self.target))
+                recovery_reason = "restored the complete target backup"
+            elif self.target.exists():
+                recovery_reason = "target was already present; cleaned the interrupted transaction"
+            elif phase == "prepared" and staging.exists():
+                recovery_reason = "discarded an unpublished staging tree"
+            else:
+                raise OSError("neither the target nor its rollback backup exists")
+
+            if staging.exists() or staging.is_symlink():
+                self._remove_path(staging)
+            journal.unlink(missing_ok=True)
+            _fsync_directory(journal.parent)
+            self._record(
+                "recovery",
+                journal,
+                self.target,
+                "migrated",
+                recovery_reason,
+            )
+            return True
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            self._record(
+                "preflight/recovery",
+                journal,
+                self.target,
+                "error",
+                f"could not safely recover the interrupted import: {exc}",
+            )
+            self._blocked = True
+            return False
 
     # ------------------------------------------------------------------
     # Source resolution and validation
@@ -583,7 +822,15 @@ class OpenSquillaHomeMigrator:
         source = self.source
         assert source is not None
 
-        source_running = _gateway_running(source)
+        source_state_roots = self._data_roots.get("state") or [source / "state"]
+        source_running = any(
+            _read_pid_file(root / "gateway.pid") is not None
+            and (
+                (pid := _read_pid_file(root / "gateway.pid")) is not None
+                and _pid_is_alive(pid)
+            )
+            for root in source_state_roots
+        )
         target_running = _gateway_running(self.target)
         self.preflight["source_gateway_running"] = source_running
         self.preflight["target_gateway_running"] = target_running
@@ -618,8 +865,21 @@ class OpenSquillaHomeMigrator:
         self.preflight["schema_ahead"] = schema_ahead
         if schema_ahead:
             self._blocked = True
+        if self._check_sqlite_integrity():
+            self._blocked = True
 
-        required = _tree_size_bytes(source) + _DISK_MARGIN_BYTES
+        # The preview must discover split-root conflicts before the user
+        # approves an apply. This walk is read-only and also re-runs during
+        # staging to catch a source that changed after preview.
+        for name, roots in self._data_roots.items():
+            if len(roots) < 2:
+                continue
+            try:
+                self._validate_data_root_conflicts(name, roots)
+            except OSError:
+                self._blocked = True
+
+        required = self._required_disk_bytes()
         free = self._target_free_bytes()
         self.preflight["disk_required_bytes"] = required
         self.preflight["disk_free_bytes"] = free
@@ -636,17 +896,17 @@ class OpenSquillaHomeMigrator:
         else:
             self._record("preflight/disk", source, self.target, "skipped", "ok")
 
-        self._sandbox_config_pass(source)
-
-        if (self.target / "state" / "sessions.db").exists():
+        collisions = self._target_collisions()
+        if collisions:
             if not self.options.overwrite:
                 self._record(
                     "preflight/target",
                     None,
                     self.target,
                     "error",
-                    "target home already contains session data; pass --overwrite to "
-                    "replace it (timestamped backups are taken)",
+                    "target home contains entries that the import would replace "
+                    f"({', '.join(collisions)}); pass --overwrite to replace them "
+                    "after taking a complete timestamped home backup",
                 )
                 self._blocked = True
             else:
@@ -655,7 +915,7 @@ class OpenSquillaHomeMigrator:
                     None,
                     self.target,
                     "skipped",
-                    "target home is not empty; colliding entries will be backed up",
+                    "target collisions will be replaced after a complete home backup",
                 )
         else:
             self._record("preflight/target", None, self.target, "skipped", "ok")
@@ -672,45 +932,205 @@ class OpenSquillaHomeMigrator:
         except OSError:
             return 0
 
+    def _required_disk_bytes(self) -> int:
+        """Return source + external roots + target staging headroom without double-counting."""
+        source = self.source
+        assert source is not None
+        total = _tree_size_bytes(source)
+        resolved_source = source.resolve(strict=False)
+        seen: set[Path] = set()
+        for roots in self._data_roots.values():
+            for root in roots:
+                resolved = root.resolve(strict=False)
+                if resolved in seen or resolved == resolved_source:
+                    continue
+                seen.add(resolved)
+                if resolved.is_relative_to(resolved_source):
+                    continue
+                total += _tree_size_bytes(root)
+        if self.target.exists():
+            total += _tree_size_bytes(self.target)
+        return total + _DISK_MARGIN_BYTES
+
+    def _target_collisions(self) -> list[str]:
+        source = self.source
+        assert source is not None
+        planned_names = {
+            entry.name
+            for entry in source.iterdir()
+            if entry.name not in {IMPORT_MARKER_FILENAME, "profiles"}
+        }
+        planned_names.update(name for name, roots in self._data_roots.items() if roots)
+        return sorted(name for name in planned_names if (self.target / name).exists())
+
     def _check_schema_ahead(self, source: Path) -> bool:
-        db_path = source / "state" / "sessions.db"
-        if not db_path.is_file():
+        db_paths = [root / "sessions.db" for root in self._data_roots.get("state", [])]
+        db_paths = [path for path in db_paths if path.is_file()]
+        if not db_paths:
+            db_path = source / "state" / "sessions.db"
             self._record("preflight/schema", db_path, None, "skipped", "no sessions.db in source")
-            return False
-        applied = _read_applied_migration_ids(db_path)
-        if applied is None:
-            self._record(
-                "preflight/schema",
-                db_path,
-                None,
-                "skipped",
-                "source sessions.db could not be inspected read-only; schema check skipped",
-            )
             return False
         known = _known_migration_ids()
         if not known:
-            self._note("no migration set was found for this binary; schema check skipped")
+            self._note("no migration set was found for this binary")
             self._record(
                 "preflight/schema",
-                db_path,
-                None,
-                "skipped",
-                "no migration set found for this binary; schema check skipped",
-            )
-            return False
-        unknown = sorted(applied - known)
-        if unknown:
-            self._record(
-                "preflight/schema",
-                db_path,
+                db_paths[0],
                 None,
                 "error",
-                "source home was written by a newer OpenSquilla "
-                f"(unknown migrations: {', '.join(unknown)}); update OpenSquilla first",
+                "no migration set found for this binary; refusing an unverifiable import",
             )
             return True
-        self._record("preflight/schema", db_path, None, "skipped", "ok")
+        for db_path in db_paths:
+            applied = _read_applied_migration_ids(db_path)
+            if applied is None:
+                self._record(
+                    "preflight/schema",
+                    db_path,
+                    None,
+                    "error",
+                    "source sessions.db could not be inspected read-only; "
+                    "refusing an unverifiable import",
+                )
+                return True
+            unknown = sorted(applied - known)
+            if unknown:
+                self._record(
+                    "preflight/schema",
+                    db_path,
+                    None,
+                    "error",
+                    "source home was written by a newer OpenSquilla "
+                    f"(unknown migrations: {', '.join(unknown)}); update OpenSquilla first",
+                )
+                return True
+            self._record("preflight/schema", db_path, None, "skipped", "ok")
         return False
+
+    def _source_sqlite_stores(self) -> dict[Path, Path]:
+        if self._sqlite_stores_cache is not None:
+            return dict(self._sqlite_stores_cache)
+        candidates: dict[Path, list[Path]] = {}
+        for state_root in self._data_roots.get("state", []):
+            store_rels = [rel.relative_to("state") for rel in _SQLITE_STORES]
+            agents_dir = state_root / "agents"
+            if agents_dir.is_dir():
+                store_rels.extend(
+                    memory_db.relative_to(state_root)
+                    for memory_db in sorted(agents_dir.glob("*/memory.db"))
+                )
+            for relative in store_rels:
+                source_db = state_root / relative
+                if source_db.is_file():
+                    candidates.setdefault(relative, []).append(source_db)
+        stores = {
+            relative: self._select_sqlite_bundle(relative, paths)
+            for relative, paths in candidates.items()
+        }
+        self._sqlite_stores_cache = stores
+        return dict(stores)
+
+    def _select_sqlite_bundle(self, relative: Path, candidates: list[Path]) -> Path:
+        if len(candidates) == 1:
+            return candidates[0]
+        try:
+            fingerprints = {
+                candidate: self._sqlite_logical_fingerprint(candidate)
+                for candidate in candidates
+            }
+        except (OSError, sqlite3.Error) as exc:
+            self._record(
+                "preflight/sqlite",
+                candidates[-1],
+                self.target / "state" / relative,
+                "error",
+                f"could not compare duplicate SQLite bundles for state/{relative}: {exc}",
+            )
+            self._blocked = True
+            return candidates[-1]
+
+        wal_candidates = [
+            candidate
+            for candidate in candidates
+            if self._sqlite_wal_has_frames(candidate)
+        ]
+        if len(set(fingerprints.values())) == 1:
+            return wal_candidates[-1] if wal_candidates else candidates[-1]
+
+        first = candidates[0]
+        main_files_match = all(self._files_equal(first, candidate) for candidate in candidates[1:])
+        if main_files_match and len(wal_candidates) == 1:
+            # The roots hold the same checkpointed database, but one bundle has
+            # additional committed WAL frames. That bundle is the complete store.
+            return wal_candidates[0]
+
+        rendered = ", ".join(str(candidate) for candidate in candidates)
+        self._record(
+            "preflight/data-root",
+            candidates[-1],
+            self.target / "state" / relative,
+            "error",
+            f"conflicting logical SQLite stores exist in multiple state roots: {rendered}",
+        )
+        self._blocked = True
+        return candidates[-1]
+
+    @staticmethod
+    def _sqlite_wal_has_frames(source_db: Path) -> bool:
+        wal = source_db.with_name(source_db.name + "-wal")
+        try:
+            return wal.stat().st_size > 32
+        except OSError:
+            return False
+
+    @staticmethod
+    def _sqlite_logical_fingerprint(source_db: Path) -> str:
+        with tempfile.TemporaryDirectory(prefix="opensquilla-sqlite-compare-") as temporary:
+            copied_db = _copy_sqlite_bundle(source_db, Path(temporary))
+            connection = sqlite3.connect(
+                f"{copied_db.resolve().as_uri()}?mode=ro",
+                uri=True,
+            )
+            try:
+                result = connection.execute("PRAGMA quick_check").fetchone()
+                if result != ("ok",):
+                    raise sqlite3.DatabaseError(f"quick_check returned {result!r}")
+                digest = hashlib.sha256()
+                for statement in connection.iterdump():
+                    digest.update(statement.encode("utf-8", errors="surrogatepass"))
+                    digest.update(b"\n")
+                return digest.hexdigest()
+            finally:
+                connection.close()
+
+    def _check_sqlite_integrity(self) -> bool:
+        failed = False
+        for relative, source_db in sorted(self._source_sqlite_stores().items()):
+            try:
+                with tempfile.TemporaryDirectory(
+                    prefix="opensquilla-sqlite-inspect-"
+                ) as temporary:
+                    copied_db = _copy_sqlite_bundle(source_db, Path(temporary))
+                    connection = sqlite3.connect(
+                        f"{copied_db.resolve().as_uri()}?mode=ro",
+                        uri=True,
+                    )
+                    try:
+                        result = connection.execute("PRAGMA quick_check").fetchone()
+                    finally:
+                        connection.close()
+                if result != ("ok",):
+                    raise sqlite3.DatabaseError(f"quick_check returned {result!r}")
+            except (OSError, sqlite3.Error) as exc:
+                failed = True
+                self._record(
+                    "preflight/sqlite",
+                    source_db,
+                    self.target / "state" / relative,
+                    "error",
+                    f"source SQLite store state/{relative} failed integrity check: {exc}",
+                )
+        return failed
 
     def _sandbox_config_pass(self, source: Path) -> None:
         config_path = source / "config.toml"
@@ -725,11 +1145,12 @@ class OpenSquillaHomeMigrator:
                 config_path,
                 None,
                 "error",
-                f"source config.toml could not be parsed ({exc}); it will be copied "
-                "as-is and the target will boot from defaults",
+                f"source config.toml could not be parsed ({exc}); import blocked",
             )
+            self._blocked = True
             return
-        candidate = migrate_config_payload(payload).payload
+        self._raw_config_payload = payload
+        candidate = migrate_config_payload(payload, emit_diagnostics=False).payload
         errors = self._validate_config_payload(candidate)
         quarantined: list[str] = []
         if errors is not None:
@@ -768,8 +1189,86 @@ class OpenSquillaHomeMigrator:
             None,
             "error",
             "source config.toml does not validate against the current schema "
-            f"({summary}); it will be copied as-is and the target will boot from defaults",
+            f"({summary}); import blocked",
         )
+        self._blocked = True
+
+    def _plan_data_roots(self) -> None:
+        """Discover canonical and configured data roots before path pins are dropped."""
+        source = self.source
+        assert source is not None
+        payload = self._raw_config_payload or {}
+        configured: dict[str, Path | None] = {
+            "state": self._configured_path(payload.get("state_dir")),
+            "workspace": self._configured_path(payload.get("workspace_dir")),
+            "media": None,
+        }
+        attachments = payload.get("attachments")
+        if isinstance(attachments, dict):
+            configured["media"] = self._configured_path(attachments.get("media_root"))
+
+        for name in ("state", "workspace", "media"):
+            roots: list[Path] = []
+            canonical = source / name
+            if canonical.is_dir():
+                roots.append(canonical)
+            explicit = configured[name]
+            if explicit is not None and explicit.is_dir():
+                roots.append(explicit)
+            if name == "media" and explicit is None:
+                state_root = configured["state"]
+                if state_root is not None:
+                    for candidate in (state_root.parent / "media", state_root / "media"):
+                        if candidate.is_dir():
+                            roots.append(candidate)
+            unique: list[Path] = []
+            seen: set[Path] = set()
+            for root in roots:
+                resolved = root.resolve(strict=False)
+                if resolved in seen:
+                    continue
+                seen.add(resolved)
+                if _paths_overlap(root, self.target):
+                    self._record(
+                        "preflight/data-root",
+                        root,
+                        self.target / name,
+                        "error",
+                        f"configured {name} root overlaps the target home; "
+                        "refusing a recursive import",
+                    )
+                    self._blocked = True
+                    continue
+                unique.append(root)
+            self._data_roots[name] = unique
+
+        for name in ("state", "workspace", "media"):
+            explicit = configured[name]
+            if explicit is None or explicit.is_dir() or self._data_roots[name]:
+                continue
+            reason = (
+                f"configured {name} directory does not exist"
+                if not explicit.exists()
+                else f"configured {name} path is not a directory"
+            )
+            self._record(
+                "preflight/data-root",
+                explicit,
+                self.target / name,
+                "error",
+                f"{reason}; refusing to drop its config pin",
+            )
+            self._blocked = True
+
+    def _configured_path(self, value: object) -> Path | None:
+        if not isinstance(value, str) or not value.strip():
+            return None
+        path = Path(value).expanduser()
+        if _path_pin_is_absolute(value):
+            return path
+        source = self.source
+        assert source is not None
+        return source / path
 
     def _validate_config_payload(self, payload: dict[str, Any]) -> list[dict[str, Any]] | None:
         """Return ``None`` when the payload validates, else pydantic error dicts."""
@@ -827,7 +1326,7 @@ class OpenSquillaHomeMigrator:
             return
         for key in ("state_dir", "workspace_dir"):
             value = payload.get(key)
-            if isinstance(value, str) and value.strip() and Path(value).is_absolute():
+            if isinstance(value, str) and _path_pin_is_absolute(value):
                 payload.pop(key)
                 self.config_transforms.append(
                     f"dropped {key} (absolute path pinned to the old home; "
@@ -838,8 +1337,7 @@ class OpenSquillaHomeMigrator:
             media_root = attachments.get("media_root")
             if (
                 isinstance(media_root, str)
-                and media_root.strip()
-                and Path(media_root).is_absolute()
+                and _path_pin_is_absolute(media_root)
             ):
                 attachments.pop("media_root")
                 self.config_transforms.append(
@@ -914,13 +1412,18 @@ class OpenSquillaHomeMigrator:
             )
             return
         try:
+            if self.target.exists():
+                shutil.copytree(_ext(self.target), _ext(staging), dirs_exist_ok=True)
             self._copy_entries(entries, staging)
-            self._verify_sqlite_sidecars(staging)
+            self._copy_data_roots(staging)
+            self._snapshot_sqlite_stores(staging)
             self._transform_staged_config(staging)
             self._write_staged_env(staging)
             staged_scheduler = staging / "state" / "scheduler.db"
             if staged_scheduler.is_file():
-                self._pause_scheduler_jobs(staged_scheduler)
+                self._pause_scheduler_jobs(staged_scheduler, staging)
+            if self._has_error():
+                raise OSError("one or more staged migration transforms failed")
             self._commit(staging)
         except OSError as exc:
             log.error(
@@ -934,46 +1437,187 @@ class OpenSquillaHomeMigrator:
                 self.source,
                 self.target,
                 "error",
-                f"import failed before completion: {exc}; the staging directory "
-                f"{staging} was left in place for diagnosis and the target was "
-                "not partially overwritten",
+                f"import failed before completion: {exc}; the transaction was not "
+                "completed and the staging directory was left for diagnosis",
             )
+            if not self._committed:
+                self._wrote_output_dir = False
 
     def _copy_entries(self, entries: list[Path], staging: Path) -> None:
-        for entry in entries:
-            destination = staging / entry.name
-            if entry.is_dir():
-                if entry.name == "state":
-                    # gateway.pid / gateway.pid.lock are per-process runtime
-                    # locks; carrying them over would make the imported home
-                    # look owned by a dead (or worse, unrelated live) process.
-                    ignore = shutil.ignore_patterns(*_EXCLUDED_STATE_FILES)
-                    shutil.copytree(_ext(entry), _ext(destination), ignore=ignore)
-                else:
-                    shutil.copytree(_ext(entry), _ext(destination))
-            else:
-                shutil.copy2(_ext(entry), _ext(destination))
-
-    def _verify_sqlite_sidecars(self, staging: Path) -> None:
-        """Ensure ``-wal``/``-shm`` sidecars travelled with every SQLite store."""
         source = self.source
         assert source is not None
-        store_rels = list(_SQLITE_STORES)
-        agents_dir = source / "state" / "agents"
-        if agents_dir.is_dir():
-            for memory_db in sorted(agents_dir.glob("*/memory.db")):
-                store_rels.append(memory_db.relative_to(source))
-        for rel in store_rels:
-            for suffix in ("", *_SQLITE_SIDECAR_SUFFIXES):
-                source_file = source / rel.parent / (rel.name + suffix)
-                if not source_file.is_file():
+        for entry in entries:
+            if entry.name in self._data_roots:
+                continue
+            destination = staging / entry.name
+            if destination.exists() or destination.is_symlink():
+                if entry.name == "migration" and entry.is_dir() and destination.is_dir():
+                    shutil.copytree(
+                        _ext(entry),
+                        _ext(destination),
+                        dirs_exist_ok=True,
+                    )
+                    self._record(
+                        "home-entry",
+                        entry,
+                        self.target / entry.name,
+                        "migrated",
+                        "merged migration reports in staging",
+                    )
                     continue
-                staged_file = staging / rel.parent / (rel.name + suffix)
-                if staged_file.is_file():
-                    continue
-                staged_file.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(_ext(source_file), _ext(staged_file))
-                self._note(f"copied missing sqlite sidecar {rel}{suffix}")
+                self._remove_path(destination)
+            if entry.is_dir():
+                shutil.copytree(_ext(entry), _ext(destination))
+            else:
+                shutil.copy2(_ext(entry), _ext(destination))
+            self._record("home-entry", entry, self.target / entry.name, "migrated")
+
+    def _copy_data_roots(self, staging: Path) -> None:
+        for name, roots in self._data_roots.items():
+            if not roots:
+                continue
+            self._validate_data_root_conflicts(name, roots)
+            destination = staging / name
+            self._remove_path(destination)
+            destination.mkdir(parents=True, exist_ok=True)
+            for root in roots:
+                ignore = (
+                    shutil.ignore_patterns(*_EXCLUDED_STATE_FILES)
+                    if name == "state"
+                    else None
+                )
+                shutil.copytree(
+                    _ext(root),
+                    _ext(destination),
+                    dirs_exist_ok=True,
+                    ignore=ignore,
+                )
+                self._record("data-root", root, self.target / name, "migrated")
+            for dirpath, _dirnames, _filenames in os.walk(destination):
+                directory = Path(dirpath)
+                try:
+                    os.chmod(directory, directory.stat().st_mode | 0o700)
+                except OSError as exc:
+                    raise OSError(f"could not make imported {name} writable: {directory}") from exc
+
+    def _validate_data_root_conflicts(self, name: str, roots: list[Path]) -> None:
+        seen: dict[Path, Path] = {}
+        sqlite_bundle_members: set[Path] = set()
+        if name == "state":
+            for relative in self._source_sqlite_stores():
+                sqlite_bundle_members.update(
+                    relative.with_name(relative.name + suffix)
+                    for suffix in ("", *_SQLITE_SIDECAR_SUFFIXES)
+                )
+        for root in roots:
+            for dirpath, _dirnames, filenames in os.walk(root):
+                directory = Path(dirpath)
+                for filename in filenames:
+                    if name == "state" and filename in _EXCLUDED_STATE_FILES:
+                        continue
+                    source_file = directory / filename
+                    relative = source_file.relative_to(root)
+                    if relative in sqlite_bundle_members:
+                        continue
+                    previous = seen.get(relative)
+                    if previous is None:
+                        seen[relative] = source_file
+                        continue
+                    if not self._files_equal(previous, source_file):
+                        self._record(
+                            "preflight/data-root",
+                            source_file,
+                            self.target / name / relative,
+                            "error",
+                            f"conflicting {name} files exist in multiple source roots: "
+                            f"{previous} and {source_file}",
+                        )
+                        raise OSError(f"conflicting {name} source roots")
+
+    @staticmethod
+    def _files_equal(first: Path, second: Path) -> bool:
+        try:
+            if first.stat().st_size != second.stat().st_size:
+                return False
+            with first.open("rb") as first_handle, second.open("rb") as second_handle:
+                while True:
+                    first_chunk = first_handle.read(1024 * 1024)
+                    second_chunk = second_handle.read(1024 * 1024)
+                    if first_chunk != second_chunk:
+                        return False
+                    if not first_chunk:
+                        return True
+        except OSError:
+            return False
+
+    @staticmethod
+    def _remove_path(path: Path) -> None:
+        if path.is_dir() and not path.is_symlink():
+            shutil.rmtree(_ext(path))
+        else:
+            path.unlink(missing_ok=True)
+
+    def _snapshot_sqlite_stores(self, staging: Path) -> None:
+        """Create consistent WAL-aware SQLite snapshots and validate every store."""
+        snapshot_root = self._staged_output_dir(staging) / "db-snapshots"
+        for relative, source_db in sorted(self._source_sqlite_stores().items()):
+            destination = staging / "state" / relative
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            temporary = destination.with_name(
+                f".{destination.name}.snapshot-{self.timestamp}.tmp"
+            )
+            temporary.unlink(missing_ok=True)
+            try:
+                with tempfile.TemporaryDirectory(
+                    prefix="opensquilla-sqlite-snapshot-"
+                ) as inspection_dir:
+                    copied_db = _copy_sqlite_bundle(source_db, Path(inspection_dir))
+                    source_connection = sqlite3.connect(
+                        f"{copied_db.resolve().as_uri()}?mode=ro",
+                        uri=True,
+                    )
+                    try:
+                        target_connection = sqlite3.connect(temporary)
+                        try:
+                            source_connection.backup(target_connection)
+                            result = target_connection.execute("PRAGMA quick_check").fetchone()
+                            if result != ("ok",):
+                                raise sqlite3.DatabaseError(
+                                    f"quick_check failed for {relative}: {result!r}"
+                                )
+                        finally:
+                            target_connection.close()
+                    finally:
+                        source_connection.close()
+            except (OSError, sqlite3.Error) as exc:
+                temporary.unlink(missing_ok=True)
+                self._record(
+                    "sqlite",
+                    source_db,
+                    self.target / "state" / relative,
+                    "error",
+                    f"could not create a consistent snapshot for state/{relative}: {exc}",
+                )
+                raise OSError(f"sqlite snapshot failed for state/{relative}") from exc
+
+            destination.unlink(missing_ok=True)
+            for suffix in _SQLITE_SIDECAR_SUFFIXES:
+                destination.with_name(destination.name + suffix).unlink(missing_ok=True)
+            os.replace(_ext(temporary), _ext(destination))
+            try:
+                os.chmod(destination, (source_db.stat().st_mode & 0o777) | 0o600)
+            except OSError:
+                pass
+            snapshot = snapshot_root / relative
+            snapshot.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(_ext(destination), _ext(snapshot))
+            self._record(
+                "sqlite",
+                source_db,
+                self.target / "state" / relative,
+                "migrated",
+                "consistent snapshot verified",
+            )
 
     def _transform_staged_config(self, staging: Path) -> None:
         staged_config = staging / "config.toml"
@@ -981,21 +1625,19 @@ class OpenSquillaHomeMigrator:
             return
         payload = self._config_payload
         if payload is None:
-            # Sandbox validation failed: the config was copied as-is and the
-            # error was already recorded during pre-flight.
-            return
+            raise OSError("validated source config is unavailable")
         try:
             staged_config.write_text(tomli_w.dumps(payload), encoding="utf-8")
+            os.chmod(staged_config, 0o600)
         except (OSError, TypeError, ValueError) as exc:
             self._record(
                 "config",
                 staged_config,
                 self.target / "config.toml",
                 "error",
-                f"could not write the transformed config ({exc}); the original was "
-                "copied as-is",
+                f"could not write the transformed config ({exc}); import blocked",
             )
-            return
+            raise OSError("could not serialize transformed config") from exc
         source = self.source
         assert source is not None
         self._record(
@@ -1007,9 +1649,11 @@ class OpenSquillaHomeMigrator:
         )
 
     def _write_staged_env(self, staging: Path) -> None:
-        if not self._env_additions:
-            return
         env_path = staging / ".env"
+        if not self._env_additions:
+            if env_path.is_file():
+                os.chmod(env_path, 0o600)
+            return
         existing_lines = (
             env_path.read_text(encoding="utf-8", errors="replace").splitlines()
             if env_path.exists()
@@ -1025,10 +1669,10 @@ class OpenSquillaHomeMigrator:
             details={"env_keys": sorted(self._env_additions)},
         )
 
-    def _pause_scheduler_jobs(self, staged_db: Path) -> None:
+    def _pause_scheduler_jobs(self, staged_db: Path, staging: Path) -> None:
         # Snapshot the pristine copy before mutating it, so a bad pause can
         # always be diagnosed/recovered from the migration report dir.
-        snapshot_dir = self.output_dir / "db-snapshots"
+        snapshot_dir = self._staged_output_dir(staging) / "db-snapshots"
         snapshot_dir.mkdir(parents=True, exist_ok=True)
         self._wrote_output_dir = True
         shutil.copy2(_ext(staged_db), _ext(snapshot_dir / staged_db.name))
@@ -1067,7 +1711,7 @@ class OpenSquillaHomeMigrator:
             self._record(
                 "scheduler", staged_db, None, "error", f"could not pause scheduler jobs: {exc}"
             )
-            return
+            raise OSError("could not pause imported scheduler jobs") from exc
         self.paused_jobs = [
             {"id": row[0], "name": row[1], "cron_expr": row[2]} for row in rows
         ]
@@ -1084,89 +1728,102 @@ class OpenSquillaHomeMigrator:
         if not db_path.is_file():
             return None
         try:
-            connection = sqlite3.connect(f"{db_path.as_uri()}?mode=ro", uri=True)
-        except sqlite3.Error:
+            with tempfile.TemporaryDirectory(prefix="opensquilla-sqlite-inspect-") as temporary:
+                copied_db = _copy_sqlite_bundle(db_path, Path(temporary))
+                connection = sqlite3.connect(
+                    f"{copied_db.resolve().as_uri()}?mode=ro",
+                    uri=True,
+                )
+                try:
+                    columns = {
+                        row[1]
+                        for row in connection.execute("PRAGMA table_info(scheduler_jobs)")
+                    }
+                    if not columns:
+                        return None
+                    rows = connection.execute(
+                        "SELECT id, name, cron_expr FROM scheduler_jobs"
+                    ).fetchall()
+                finally:
+                    connection.close()
+        except (OSError, sqlite3.Error):
             return None
-        try:
-            try:
-                columns = {
-                    row[1] for row in connection.execute("PRAGMA table_info(scheduler_jobs)")
-                }
-                if not columns:
-                    return None
-                rows = connection.execute(
-                    "SELECT id, name, cron_expr FROM scheduler_jobs"
-                ).fetchall()
-            except sqlite3.Error:
-                return None
-        finally:
-            connection.close()
         return [{"id": row[0], "name": row[1], "cron_expr": row[2]} for row in rows]
 
     def _commit(self, staging: Path) -> None:
-        source = self.source
-        assert source is not None
-        self.target.mkdir(parents=True, exist_ok=True)
-        entries = sorted(
-            entry for entry in staging.iterdir() if entry.name != _COMMIT_JOURNAL
-        )
-        plan: list[dict[str, Any]] = []
-        for entry in entries:
-            destination = self.target / entry.name
-            backup = (
-                str(destination.with_name(f"{destination.name}.backup.{self.timestamp}"))
-                if destination.exists()
-                else None
+        self.target.parent.mkdir(parents=True, exist_ok=True)
+        backup = self.target.with_name(f"{self.target.name}.backup.{self.timestamp}")
+        journal = _commit_journal_path(self.target)
+        target_existed = self.target.exists()
+        journal_payload: dict[str, Any] = {
+            "target": str(self.target),
+            "staging": str(staging),
+            "backup": str(backup),
+            "phase": "prepared",
+            "target_existed": target_existed,
+        }
+        backup_item: ItemResult | None = None
+        if target_existed:
+            self._record(
+                "backup",
+                self.target,
+                backup,
+                "migrated",
+                "complete previous target home backup retained for rollback",
             )
-            plan.append({"from": str(entry), "to": str(destination), "backup": backup})
-        journal = staging / _COMMIT_JOURNAL
-        journal.write_text(
-            json.dumps({"target": str(self.target), "renames": plan}, indent=2) + "\n",
-            encoding="utf-8",
-        )
-        for entry in entries:
-            destination = self.target / entry.name
-            if destination.exists():
-                if entry.name == "migration" and entry.is_dir() and destination.is_dir():
-                    # The target migration/ dir may already hold this run's
-                    # own output_dir (db snapshots); merge instead of
-                    # clobbering it.
-                    self._merge_into_existing_dir(entry, destination)
-                    self._record(
-                        "home-entry",
-                        source / entry.name,
-                        destination,
-                        "migrated",
-                        "merged with existing migration reports",
-                    )
-                    continue
-                backup_path = destination.with_name(
-                    f"{destination.name}.backup.{self.timestamp}"
-                )
-                os.replace(_ext(destination), _ext(backup_path))
-                self._record(
-                    "backup",
-                    destination,
-                    backup_path,
-                    "migrated",
-                    "existing target entry backed up",
-                )
-            os.replace(_ext(entry), _ext(destination))
-            self._record("home-entry", source / entry.name, destination, "migrated")
-        journal.unlink(missing_ok=True)
-        shutil.rmtree(_ext(staging), ignore_errors=True)
-        self._committed = True
+            backup_item = self.items[-1]
 
-    def _merge_into_existing_dir(self, staged_dir: Path, destination_dir: Path) -> None:
-        for child in sorted(staged_dir.iterdir()):
-            dest_child = destination_dir / child.name
-            if dest_child.exists():
-                if child.is_dir() and dest_child.is_dir():
-                    self._merge_into_existing_dir(child, dest_child)
-                    continue
-                backup = dest_child.with_name(f"{dest_child.name}.backup.{self.timestamp}")
-                os.replace(_ext(dest_child), _ext(backup))
-            os.replace(_ext(child), _ext(dest_child))
+        target_backed_up = False
+        published = False
+        try:
+            self._write_report_files(staging)
+            _atomic_write_json(journal, journal_payload)
+            if target_existed:
+                os.replace(_ext(self.target), _ext(backup))
+                target_backed_up = True
+                _fsync_directory(self.target.parent)
+                journal_payload["phase"] = "target-backed-up"
+                _atomic_write_json(journal, journal_payload)
+            os.replace(_ext(staging), _ext(self.target))
+            published = True
+            _fsync_directory(self.target.parent)
+            journal_payload["phase"] = "published"
+            _atomic_write_json(journal, journal_payload)
+        except OSError as exc:
+            rollback_error: OSError | None = None
+            try:
+                if published and (self.target.exists() or self.target.is_symlink()):
+                    if staging.exists() or staging.is_symlink():
+                        raise OSError("staging path unexpectedly exists during rollback")
+                    os.replace(_ext(self.target), _ext(staging))
+                if target_backed_up:
+                    if not (backup.exists() or backup.is_symlink()):
+                        raise OSError("complete target backup is missing during rollback")
+                    os.replace(_ext(backup), _ext(self.target))
+                _fsync_directory(self.target.parent)
+            except OSError as rollback_exc:
+                rollback_error = rollback_exc
+            if rollback_error is None:
+                try:
+                    journal.unlink(missing_ok=True)
+                    _fsync_directory(journal.parent)
+                except OSError as cleanup_exc:
+                    rollback_error = cleanup_exc
+            if backup_item is not None:
+                self.items.remove(backup_item)
+            if rollback_error is not None:
+                raise OSError(f"{exc}; rollback failed: {rollback_error}") from exc
+            raise
+
+        self._committed = True
+        try:
+            journal.unlink(missing_ok=True)
+            _fsync_directory(journal.parent)
+        except OSError:
+            self._note(
+                f"committed import journal could not be removed: {journal}; "
+                "a later apply can clean it safely"
+            )
 
     # ------------------------------------------------------------------
     # Reporting
@@ -1223,15 +1880,19 @@ class OpenSquillaHomeMigrator:
             "notes": list(self.notes),
         }
 
-    def _write_report_files(self) -> None:
+    def _staged_output_dir(self, staging: Path) -> Path:
+        return staging / "migration" / "opensquilla" / self.timestamp
+
+    def _write_report_files(self, staging: Path) -> None:
+        output_dir = self._staged_output_dir(staging)
         try:
-            self.output_dir.mkdir(parents=True, exist_ok=True)
-        except OSError:
+            output_dir.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
             self._note("could not create the migration report directory")
-            return
+            raise OSError("could not create migration report directory") from exc
         self._wrote_output_dir = True
         report = self._report()
-        (self.output_dir / "report.json").write_text(
+        (output_dir / "report.json").write_text(
             json.dumps(report, ensure_ascii=False, indent=2) + "\n",
             encoding="utf-8",
         )
@@ -1252,7 +1913,7 @@ class OpenSquillaHomeMigrator:
         for status, count in sorted(counts.items()):
             lines.append(f"- {status}: {count}")
         lines.append("")
-        (self.output_dir / "summary.md").write_text("\n".join(lines), encoding="utf-8")
+        (output_dir / "summary.md").write_text("\n".join(lines), encoding="utf-8")
 
     def _write_source_marker(self) -> None:
         source = self.source
@@ -1261,11 +1922,9 @@ class OpenSquillaHomeMigrator:
         payload = {
             "imported_at": datetime.now(UTC).isoformat(),
             "target": str(self.target),
+            "transaction_id": self.timestamp,
         }
         try:
-            (source / IMPORT_MARKER_FILENAME).write_text(
-                json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
-                encoding="utf-8",
-            )
+            _atomic_write_json(source / IMPORT_MARKER_FILENAME, payload)
         except OSError:
             self._note("could not write the completion marker into the source home")

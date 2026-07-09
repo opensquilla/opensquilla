@@ -13,6 +13,7 @@ guarantee strategy).
 
 from __future__ import annotations
 
+import shutil
 import tomllib
 from pathlib import Path
 
@@ -21,6 +22,10 @@ import pytest
 import opensquilla.gateway.config as config_module
 from opensquilla.gateway.config import GatewayConfig
 from opensquilla.gateway.config_migration import migrate_config_payload
+from opensquilla.migration.opensquilla_home import (
+    OpenSquillaHomeMigrator,
+    OpenSquillaMigrationOptions,
+)
 
 FIXTURES_ROOT = Path(__file__).parent / "fixtures" / "homes"
 
@@ -63,6 +68,29 @@ def test_every_released_era_config_loads_on_current_code(era: str) -> None:
     config_path = FIXTURES_ROOT / era / "config.toml"
     cfg = _load_fixture(config_path)
     assert cfg is not None
+
+
+@pytest.mark.parametrize("era", ERA_DIRS)
+def test_every_released_era_survives_cross_install_import(
+    era: str, tmp_path: Path
+) -> None:
+    source = tmp_path / f"source-{era}"
+    source.mkdir()
+    shutil.copy2(FIXTURES_ROOT / era / "config.toml", source / "config.toml")
+    (source / "state").mkdir()
+    (source / "workspace").mkdir()
+    (source / "workspace" / "era.txt").write_text(era, encoding="utf-8")
+    target = tmp_path / f"target-{era}"
+
+    report = OpenSquillaHomeMigrator(
+        OpenSquillaMigrationOptions(source=source, target=target, apply=True)
+    ).migrate()
+
+    errors = [item for item in report["items"] if item["status"] == "error"]
+    assert not errors, errors
+    assert (target / "workspace" / "era.txt").read_text(encoding="utf-8") == era
+    imported = tomllib.loads((target / "config.toml").read_text(encoding="utf-8"))
+    assert GatewayConfig(**imported) is not None
 
 
 def test_cli_01_era_migrates_with_expected_strips() -> None:

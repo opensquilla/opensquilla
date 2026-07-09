@@ -33,6 +33,14 @@ const reportNeedingOverwrite = {
   notes: [],
 }
 
+const reportNeedingOverwriteWithBlockingError = {
+  ...reportNeedingOverwrite,
+  items: [
+    ...reportNeedingOverwrite.items,
+    { kind: 'preflight/disk', status: 'error', reason: 'not enough free disk space' },
+  ],
+}
+
 async function mountPanel(api: ReturnType<typeof desktopApi>) {
   vi.resetModules()
   document.body.innerHTML = ''
@@ -64,9 +72,12 @@ describe('DesktopRuntimePanel legacy-data import', () => {
 
   it('shows the dry-run summary and gates Import behind the overwrite checkbox', async () => {
     const migrationSummary = vi.fn(async () => ({
-      ok: true,
+      // The CLI exits nonzero for a blocked dry run even though stdout carries
+      // the valid report that explains how the operator can unblock it.
+      ok: false,
       candidate: { kind: 'windows-portable', path: '/tmp/legacy-home' },
       report: reportNeedingOverwrite,
+      previewId: 'preview-overwrite',
     }))
     const progressUnsub = vi.fn()
     // Holder object: TS narrowing does not track assignments made from callbacks.
@@ -119,6 +130,36 @@ describe('DesktopRuntimePanel legacy-data import', () => {
     app.unmount()
   })
 
+  it('keeps Import disabled when overwrite is acknowledged but another error remains', async () => {
+    const api = desktopApi({
+      migrationSummary: vi.fn(async () => ({
+        ok: false,
+        candidate: { kind: 'cli-home', path: '/tmp/legacy-home' },
+        report: reportNeedingOverwriteWithBlockingError,
+        previewId: 'preview-blocked',
+      })),
+      migrationRun: vi.fn(async () => ({ ok: true })),
+    })
+    const { app, el } = await mountPanel(api)
+
+    ;(el.querySelector('[data-testid="runtime-migration-open"]') as HTMLButtonElement).click()
+    await settle()
+
+    const summary = el.querySelector('[data-testid="runtime-migration-summary"]')
+    expect(summary?.textContent).toContain('not enough free disk space')
+    const run = el.querySelector<HTMLButtonElement>('[data-testid="runtime-migration-run"]')
+    const checkbox = el.querySelector<HTMLInputElement>(
+      '[data-testid="runtime-migration-overwrite"] input[type="checkbox"]',
+    )
+    expect(run?.disabled).toBe(true)
+    checkbox!.checked = true
+    checkbox!.dispatchEvent(new Event('change', { bubbles: true }))
+    await settle()
+    expect(run?.disabled).toBe(true)
+
+    app.unmount()
+  })
+
   it('reports when no legacy data is found instead of opening the summary', async () => {
     const api = desktopApi({
       migrationSummary: vi.fn(async () => ({ ok: true, candidate: null, report: null })),
@@ -130,6 +171,38 @@ describe('DesktopRuntimePanel legacy-data import', () => {
     await settle()
 
     expect(el.querySelector('[data-testid="runtime-migration-summary"]')).toBeNull()
+    app.unmount()
+  })
+
+  it('rejects a report that is not bound to a trusted main-process preview', async () => {
+    const api = desktopApi({
+      migrationSummary: vi.fn(async () => ({
+        ok: true,
+        candidate: { kind: 'cli-home', path: '/tmp/legacy-home' },
+        report: reportNeedingOverwrite,
+      })),
+      migrationRun: vi.fn(async () => ({ ok: true })),
+    })
+    const { app, el } = await mountPanel(api)
+
+    ;(el.querySelector('[data-testid="runtime-migration-open"]') as HTMLButtonElement).click()
+    await settle()
+
+    expect(el.querySelector('[data-testid="runtime-migration-summary"]')).toBeNull()
+    app.unmount()
+  })
+
+  it('consumes a durable terminal result when the replacement renderer mounts', async () => {
+    const migrationTakeLastResult = vi.fn(async () => ({
+      ok: false,
+      migrationApplied: true,
+      restartOk: false,
+      requiresProviderSetup: false,
+      detail: 'import applied but restart failed',
+    }))
+    const { app } = await mountPanel(desktopApi({ migrationTakeLastResult }))
+
+    expect(migrationTakeLastResult).toHaveBeenCalledTimes(1)
     app.unmount()
   })
 })

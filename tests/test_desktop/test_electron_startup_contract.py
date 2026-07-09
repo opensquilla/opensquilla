@@ -1182,6 +1182,21 @@ def test_gateway_spawn_state_dir_is_the_desktop_home_root() -> None:
     assert "state_dir = ${tomlString(desktopStateDir())}" in main_ts
 
 
+def test_copyable_desktop_cli_targets_the_desktop_home_root() -> None:
+    main_ts = _read("desktop/electron/src/main.ts")
+    cli_invocation = _section(
+        main_ts,
+        "ipcMain.handle('gateway:cli-invocation'",
+        "ipcMain.handle('gateway:reveal-log'",
+    )
+
+    # The copyable CLI prefix must resolve the same home-derived files as the
+    # gateway child. Passing <home>/state would nest workspace, skills, and
+    # other home data one level too deep for pasted commands.
+    assert "stateDir: desktopHome()," in cli_invocation
+    assert "stateDir: desktopStateDir()," not in cli_invocation
+
+
 def test_legacy_desktop_layout_relocation_runs_before_gateway_spawn() -> None:
     main_ts = _read("desktop/electron/src/main.ts")
     start = _section(
@@ -1258,11 +1273,14 @@ def test_onboarding_migration_ipc_is_guarded_and_prefills_from_imported_config()
     # Detection happens on the no-credential path only, before the onboarding
     # window is created, and the result is JSON-injected into the page.
     onboarding = _section(main_ts, "async function runOnboarding", "async function pathExists")
-    assert "onboardingMigrationCandidate = detectLegacyImportCandidate()" in onboarding
+    assert (
+        "onboardingMigrationCandidate = pendingProviderSetup ? null : "
+        "detectLegacyImportCandidate()"
+    ) in onboarding
     assert onboarding.index("detectLegacyImportCandidate()") < onboarding.index(
         "new BrowserWindow"
     )
-    assert "onboardingHtml(onboardingMigrationCandidate)" in onboarding
+    assert "onboardingHtml(onboardingMigrationCandidate, pendingProviderSetup)" in onboarding
 
 
 def test_run_migrate_cli_targets_desktop_home_via_bundled_cli() -> None:
@@ -1315,8 +1333,13 @@ def test_desktop_migration_run_quiesces_then_restarts_without_forcing_onboarding
     # boot splash — without forcing onboarding on the next startup.
     assert "stopGateway()" in run
     assert "await waitForGatewayProcessExit(child)" in run
+    assert "const exited = await waitForGatewayProcessExit(child)" in run
+    assert "if (!exited)" in run
     assert run.index("stopGateway()") < run.index("await runMigrateCli(")
     assert "A gateway is still serving this profile" in run
+    assert run.index("(!gatewayProcess || !gatewayState.owned)") < run.index(
+        "isQuitting = true"
+    )
     assert run.index("A gateway is still serving this profile") < run.index(
         "await runMigrateCli("
     )
@@ -1326,9 +1349,149 @@ def test_desktop_migration_run_quiesces_then_restarts_without_forcing_onboarding
     assert "forceOnboardingOnNextStartup" not in run
     assert "bootError = null" in run
     assert "loadFile(bootPagePath())" in run
-    assert "void openOrResumeDesktopApp()" in run
+    assert "await openOrResumeDesktopApp()" in run
     # The restart happens after the CLI finished, regardless of the outcome.
     assert run.index("await runMigrateCli(") < run.index("loadFile(bootPagePath())")
+
+
+def test_desktop_migration_detection_respects_matching_completion_marker() -> None:
+    main_ts = _read("desktop/electron/src/main.ts")
+    detection = _section(
+        main_ts,
+        "function detectLegacyImportCandidate",
+        "function bootPagePath",
+    )
+
+    assert "sourceWasImportedToTarget" in main_ts
+    assert "!sourceWasImportedToTarget(cliHome, desktopHome())" in detection
+    assert "sourceWasImportedToTarget(candidate, desktopHome())" in detection
+    assert "'.opensquilla-imported.json'" in main_ts
+    assert "payload.transaction_id" in main_ts
+    assert "join(target, 'migration', 'opensquilla', transactionId, 'report.json')" in main_ts
+
+
+def test_desktop_boot_recovers_interrupted_import_before_profile_use() -> None:
+    main_ts = _read("desktop/electron/src/main.ts")
+    start = _section(
+        main_ts,
+        "async function startGateway",
+        "async function startGatewayWithPortRecovery",
+    )
+
+    assert "function recoverInterruptedDesktopImport" in main_ts
+    assert "recoverInterruptedDesktopImport()" in start
+    assert "await recoverPendingMigrationReconciliation()" in start
+    assert start.index("recoverInterruptedDesktopImport()") < start.index(
+        "relocateLegacyDesktopStateLayout()"
+    )
+    assert start.index("recoverInterruptedDesktopImport()") < start.index("runOnboarding()")
+
+
+def test_desktop_migration_run_requires_valid_report_and_restarts_in_finally() -> None:
+    main_ts = _read("desktop/electron/src/main.ts")
+    run = _section(
+        main_ts,
+        "ipcMain.handle('desktop:migration:run'",
+        "ipcMain.handle('desktop:boot:state'",
+    )
+
+    assert "migrationReportValidationError(report" in run
+    assert "migrationReportErrors(report)" in run
+    assert "findAppliedReceiptForIntent(intent)" in run
+    receipt_branch = run.split("if (receipt)", 1)[1]
+    assert "report = receipt.report" in receipt_branch
+    assert "migrationVerified = true" in receipt_branch
+    assert "finally" in run
+    finally_body = run.split("finally", 1)[1]
+    assert "isQuitting = false" in finally_body
+    assert "await openOrResumeDesktopApp()" in finally_body
+    assert "restartOk" in run
+
+
+def test_desktop_migration_apply_is_bound_to_one_trusted_preview_and_native_overwrite() -> None:
+    main_ts = _read("desktop/electron/src/main.ts")
+    summary = _section(
+        main_ts,
+        "ipcMain.handle('desktop:migration:summary'",
+        "ipcMain.handle('desktop:migration:run'",
+    )
+    run = _section(
+        main_ts,
+        "ipcMain.handle('desktop:migration:run'",
+        "ipcMain.handle('desktop:migration:last-result'",
+    )
+
+    assert "trustedDesktopMigrationPreview = preview" in summary
+    assert "payload?.previewId !== preview.id" in run
+    assert "DESKTOP_MIGRATION_PREVIEW_TTL_MS" in run
+    assert "migrationPreviewAllowsApply(preview.report, overwrite)" in run
+    assert "dialog.showMessageBox" in run
+    assert "trustedDesktopMigrationPreview = null" in run
+
+
+def test_desktop_migration_writes_reconciliation_intent_before_apply() -> None:
+    main_ts = _read("desktop/electron/src/main.ts")
+    run = _section(
+        main_ts,
+        "ipcMain.handle('desktop:migration:run'",
+        "ipcMain.handle('desktop:migration:last-result'",
+    )
+    onboarding_apply = _section(
+        main_ts,
+        "ipcMain.handle('desktop:onboarding:migrate:apply'",
+        "// Set once the Windows graceful-drain",
+    )
+
+    for handler, invocation in (
+        (run, "await runMigrateCli(["),
+        (onboarding_apply, "migrateSummaryJson(["),
+    ):
+        assert "beginMigrationReconciliationIntent(candidate)" in handler
+        assert handler.index("beginMigrationReconciliationIntent(candidate)") < handler.index(
+            invocation
+        )
+        assert "findAppliedReceiptForIntent(intent)" in handler
+
+
+def test_settings_import_reconciles_or_prompts_for_imported_provider() -> None:
+    main_ts = _read("desktop/electron/src/main.ts")
+    run = _section(
+        main_ts,
+        "ipcMain.handle('desktop:migration:run'",
+        "ipcMain.handle('desktop:boot:state'",
+    )
+    onboarding = _section(main_ts, "async function runOnboarding", "async function pathExists")
+    save = _section(
+        main_ts,
+        "ipcMain.handle('desktop:onboarding:save'",
+        "ipcMain.handle('desktop:onboarding:cancel'",
+    )
+
+    assert "reconcileImportedDesktopCredential" in run
+    assert "loadPendingMigrationProviderSetup" in onboarding
+    assert "pendingProviderSetup" in onboarding
+    assert "clearPendingMigrationProviderSetup" in save
+    assert "scrubImportedProviderEnvEntry" in save
+    assert "onboardingHtml(onboardingMigrationCandidate, pendingProviderSetup)" in onboarding
+    assert "desktopSecretStoragePolicyBackend() === 'safeStorage'" in onboarding
+
+    reconcile = _section(
+        main_ts,
+        "async function reconcileImportedDesktopCredential",
+        "async function recoverPendingMigrationReconciliation",
+    )
+    assert reconcile.index("await saveDesktopCredential(prefill)") < reconcile.index(
+        "await scrubImportedProviderEnvEntry(prefill.apiKeyEnv)"
+    )
+    assert reconcile.index("await scrubImportedProviderEnvEntry") < reconcile.index(
+        "await clearPendingMigrationProviderSetup()"
+    )
+
+    encryption = _section(main_ts, "function encryptSecret", "function decryptSecret")
+    assert "desktopSecretStoragePolicyBackend()" in encryption
+    assert "if (availableBackend !== 'safeStorage')" in encryption
+    assert "The OS keychain is unavailable" in encryption
+    assert "catch {\n      return plainSecret(secret)" not in encryption
 
 
 def test_migration_locale_keys_exist_in_all_six_locale_blocks() -> None:
@@ -1354,6 +1517,11 @@ def test_migration_locale_keys_exist_in_all_six_locale_blocks() -> None:
         "migration.step.preview",
         "migration.step.import",
         "migration.step.skip",
+        "migration.overwriteTitle",
+        "migration.overwriteMessage",
+        "migration.overwriteDetail",
+        "migration.overwriteCancel",
+        "migration.overwriteConfirm",
     ]
     for key in desktop_keys:
         assert desktop_catalog.count(f"'{key}':") == 6, key
@@ -1394,6 +1562,7 @@ def test_migration_preload_bridge_and_progress_channel() -> None:
 
     assert "'desktop:migration:summary'" in preload
     assert "'desktop:migration:run'" in preload
+    assert "'desktop:migration:last-result'" in preload
     assert "'desktop:onboarding:migrate:preview'" in preload
     assert "'desktop:onboarding:migrate:apply'" in preload
     assert "onMigrationProgress" in preload
@@ -1401,3 +1570,4 @@ def test_migration_preload_bridge_and_progress_channel() -> None:
 
     assert "function publishDesktopMigrationProgress" in main_ts
     assert "webContents.send('desktop:migration:progress', payload)" in main_ts
+    assert "persistDesktopMigrationResult" in main_ts

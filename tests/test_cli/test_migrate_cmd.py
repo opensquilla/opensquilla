@@ -189,6 +189,63 @@ def test_migrate_openclaw_rejects_unknown_skill_conflict(tmp_path: Path) -> None
 
 
 # ---------------------------------------------------------------------------
+# OpenSquilla self-migration CLI contract
+# ---------------------------------------------------------------------------
+
+
+def test_migrate_opensquilla_plain_error_reports_failure(tmp_path: Path) -> None:
+    result = runner.invoke(
+        app,
+        ["migrate", "opensquilla", "--source", str(tmp_path / "missing")],
+    )
+
+    assert result.exit_code == 1
+    assert "OpenSquilla self-migration failed" in result.stdout
+    assert "error: 1" in result.stdout
+    assert "complete" not in result.stdout.lower()
+
+
+def test_migrate_opensquilla_json_error_is_parseable_and_exits_nonzero(
+    tmp_path: Path,
+) -> None:
+    result = runner.invoke(
+        app,
+        [
+            "migrate",
+            "opensquilla",
+            "--source",
+            str(tmp_path / "missing"),
+            "--json",
+        ],
+    )
+
+    assert result.exit_code == 1
+    payload = json.loads(result.stdout)
+    assert payload["items"][0]["status"] == "error"
+
+
+def test_migrate_opensquilla_rejects_config_with_target_home_guidance(
+    tmp_path: Path,
+) -> None:
+    result = runner.invoke(
+        app,
+        [
+            "migrate",
+            "opensquilla",
+            "--source",
+            str(tmp_path / "source"),
+            "--config",
+            str(tmp_path / "config.toml"),
+        ],
+    )
+
+    assert result.exit_code == 2
+    assert "--config is not supported for OpenSquilla self-migration" in result.stdout
+    assert "OPENSQUILLA_STATE_DIR" in result.stdout
+    assert "target home" in result.stdout
+
+
+# ---------------------------------------------------------------------------
 # Auto-detect entry point: ``opensquilla migrate`` (no subcommand)
 # ---------------------------------------------------------------------------
 
@@ -201,6 +258,37 @@ def _seed_openclaw(home: Path) -> Path:
     (workspace / "MEMORY.md").write_text("openclaw memory\n", encoding="utf-8")
     (source / "openclaw.json").write_text("{}", encoding="utf-8")
     return source
+
+
+def _seed_opensquilla(home: Path) -> Path:
+    source = home / ".opensquilla"
+    source.mkdir(parents=True)
+    (source / "config.toml").write_text("port = 18790\n", encoding="utf-8")
+    return source
+
+
+def test_migrate_batch_rejects_config_when_opensquilla_is_selected(
+    tmp_path: Path, monkeypatch
+) -> None:
+    fake_home = tmp_path / "fake-home"
+    fake_home.mkdir()
+    _seed_opensquilla(fake_home)
+    _set_fake_home(monkeypatch, fake_home)
+    monkeypatch.setenv("OPENSQUILLA_STATE_DIR", str(tmp_path / "desktop-home"))
+
+    result = runner.invoke(
+        app,
+        [
+            "migrate",
+            "--source",
+            "opensquilla",
+            "--config",
+            str(tmp_path / "custom-config.toml"),
+        ],
+    )
+
+    assert result.exit_code == 2, result.stdout
+    assert "--config is not supported for OpenSquilla self-migration" in result.stdout
 
 
 def _seed_hermes(home: Path) -> Path:

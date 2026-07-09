@@ -98,6 +98,23 @@ def test_preflight_skips_keyless_provider(monkeypatch):
     assert calls == []  # keyless: no network probe at all
 
 
+def test_preflight_skips_cross_provider_tier_configs(monkeypatch):
+    # Cross-provider tiers resolve credentials per tier from profiles/pools the
+    # primary-provider probe can't see, so the preflight must not false-block
+    # a keyless primary there — skip without probing.
+    calls = []
+    _probe(monkeypatch, calls=calls)
+    bundle = _bundle(
+        {
+            "llm": {"provider": "deepseek", "model": "deepseek-chat"},
+            "squilla_router": {"enabled": True, "cross_provider_tiers": True},
+        }
+    )
+    ok, reason = provider_preflight(bundle)
+    assert ok is True and reason == ""
+    assert calls == []
+
+
 def test_preflight_fails_open_on_probe_exception(monkeypatch):
     async def _boom(**_kw):
         raise RuntimeError("probe exploded")
@@ -109,13 +126,16 @@ def test_preflight_fails_open_on_probe_exception(monkeypatch):
 
 
 def test_provider_block_reason_matches_credential_codes():
+    # The engine emits code="no_provider" and str(status_code) for HTTP errors.
     assert provider_block_reason([{"code": "no_provider", "message": "none"}]) is not None
     assert provider_block_reason([{"code": "402", "message": "no credits"}]) is not None
     assert provider_block_reason([{"code": "401"}]) is not None
-    assert provider_block_reason([{"code": "auth_invalid"}]) is not None
+    assert provider_block_reason([{"code": "403"}]) is not None
 
 
 def test_provider_block_reason_ignores_non_credential_codes():
     assert provider_block_reason([{"code": "429", "message": "rate limited"}]) is None
     assert provider_block_reason([{"code": "tool_error"}]) is None
     assert provider_block_reason([]) is None
+    # Non-dict items are tolerated (defensive) rather than crashing.
+    assert provider_block_reason(["oops", None]) is None

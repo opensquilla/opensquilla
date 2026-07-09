@@ -38,17 +38,11 @@ _CREDENTIAL_BLOCK_KINDS = frozenset(
     {ProviderFailureKind.AUTH_INVALID.value, ProviderFailureKind.INSUFFICIENT_CREDITS.value}
 )
 
-# Envelope error codes/kinds from the child agent that mean the same thing.
-_CREDENTIAL_BLOCK_CODES = frozenset(
-    {
-        "no_provider",  # no provider/key configured at all
-        "401",
-        "403",
-        "auth_invalid",
-        "402",
-        "insufficient_credits",
-    }
-)
+# Envelope error codes from the child agent that mean the same thing. The
+# engine emits "no_provider" (provider_and_tools_stage) and the HTTP status as
+# a string ("401"/"402"/"403", from the provider adapters); these are the codes
+# that actually reach result.errors.
+_CREDENTIAL_BLOCK_CODES = frozenset({"no_provider", "401", "402", "403"})
 
 
 def _effective_provider_config(
@@ -66,6 +60,12 @@ def _effective_provider_config(
     try:
         cfg = GatewayConfig(**bundle.payload)
     except Exception:  # already validated in load_agent_config_bundle; defensive
+        return None
+    # Cross-provider router tiers resolve credentials per tier from
+    # [llm_profiles]/pools that a primary-provider probe cannot see, and may
+    # bypass the primary entirely — probing only the primary would risk a
+    # false block. Skip the preflight for those (preview) configs.
+    if bool(getattr(getattr(cfg, "squilla_router", None), "cross_provider_tiers", False)):
         return None
     runtime = resolve_llm_runtime_config(cfg)
     provider = (runtime.provider or "").strip()
@@ -145,6 +145,8 @@ def provider_block_reason(errors: list[dict]) -> str | None:
     keeps its existing verification path.
     """
     for err in errors:
+        if not isinstance(err, dict):
+            continue
         code = str(err.get("code") or "").strip().lower()
         if code in _CREDENTIAL_BLOCK_CODES:
             message = str(err.get("message") or "").strip()

@@ -22,6 +22,26 @@ def test_deepseek_v4_direct_models_use_models_dev_limits() -> None:
         assert caps.reasoning_format == "deepseek"
 
 
+def test_provider_scoped_corrections_budget_outranks_snapshot_merge() -> None:
+    """tokenrhythm has no models.dev table: without the provider-scoped
+    corrections layer, the snapshot's cross-provider bare-id merge would
+    serve foreign windows (1M for deepseek-v4-flash) against the relay's
+    published 64k — over-estimation means silent server-side truncation."""
+    catalog = ModelCatalog()
+
+    assert catalog.resolve_context_window_with_source(
+        "deepseek-v4-flash", provider="tokenrhythm"
+    ) == (64_000, "catalog")
+    assert catalog.resolve_max_tokens("deepseek-v4-flash", provider="tokenrhythm") == 16_384
+    assert catalog.resolve_context_window("kimi-k2.7-code", provider="tokenrhythm") == 262_144
+    assert catalog.resolve_max_tokens("kimi-k2.7-code", provider="tokenrhythm") == 32_768
+    assert catalog.resolve_context_window("qwen3.7-max", provider="tokenrhythm") == 1_000_000
+    assert catalog.resolve_max_tokens("qwen3.7-max", provider="tokenrhythm") == 65_536
+    # The same bare id on direct DeepSeek keeps its own snapshot-table
+    # budgets — the provider-scoped layer never leaks across providers.
+    assert catalog.resolve_context_window("deepseek-v4-flash", "deepseek") == 1_000_000
+
+
 def test_direct_profile_windows_resolve_from_models_dev_snapshot() -> None:
     catalog = ModelCatalog()
 

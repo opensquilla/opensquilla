@@ -106,6 +106,13 @@ _DEFAULT_MODELS = {
     "tokenrhythm": "deepseek-v4-flash",
 }
 
+# Providers whose models spend reasoning tokens out of max_tokens before any
+# text: the CLI default budget of 64 would come back as empty content with
+# finish_reason "length", failing the smoke for provider-independent reasons.
+_MIN_MAX_TOKENS = {
+    "tokenrhythm": 1024,
+}
+
 
 def _csv_values(raw: str | None) -> list[str]:
     if not raw:
@@ -348,6 +355,7 @@ async def smoke_provider(
     spec = get_provider_spec(provider)
     env_key = spec.env_key
     api_key = os.environ.get(env_key, "").strip()
+    max_tokens = max(max_tokens, _MIN_MAX_TOKENS.get(provider, 0))
     model = (
         model_override
         or os.environ.get(_MODEL_ENV.get(provider, ""), "").strip()

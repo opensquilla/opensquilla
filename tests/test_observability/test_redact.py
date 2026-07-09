@@ -180,6 +180,16 @@ def test_bare_token_prose_non_matches() -> None:
         assert scrub_text(text) == text, f"ordinary prose was mangled: {text!r}"
 
 
+def test_masks_bare_tokens_abutting_run_punctuation() -> None:
+    # A branch whose tail class excludes -_ dies against the shared (?!RUN)
+    # trailing guard when the key abuts punctuation — failing closed and
+    # leaking the WHOLE key. Every branch must over-mask here instead.
+    for suffix in ("-rotated", "_old"):
+        text = f"old key {FAKE_TOKENRHYTHM}{suffix} was replaced"
+        scrubbed = scrub_text(text)
+        assert "FAKEabc123def456ghi789" not in scrubbed, suffix
+
+
 def test_bare_token_masking_is_idempotent() -> None:
     for token in BARE_TOKENS:
         text = f"log line with {token} embedded"

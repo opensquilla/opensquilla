@@ -535,8 +535,10 @@ cache_read_cost_per_mtok = 0.34
 
 # Catch-all for models TokenRhythm adds later: everything on this relay
 # so far streams reasoning and takes tools; vision stays off until
-# verified per model. Glob rows never feed the budget fallback, so
-# new models keep default windows until they get an exact row.
+# verified per model. Glob rows never carry budgets — a newly served
+# model budgets from the snapshot's cross-provider merge until it gets an
+# exact row here, so add one (with the platform's published window) per
+# new model.
 [tokenrhythm."*"]
 supports_reasoning = true
 supports_tools = true

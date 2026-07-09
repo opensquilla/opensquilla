@@ -51,45 +51,46 @@ export function retrievalProfilesFromStatus(
   return profiles.length ? profiles : [FALLBACK_RETRIEVAL_PROFILE]
 }
 
+function availableRetrievalProfile(
+  status: KnowledgeStatusLike | null | undefined,
+  currentProfileId = '',
+): RetrievalProfileStatus | undefined {
+  const profiles = retrievalProfilesFromStatus(status)
+  if (currentProfileId) {
+    const currentProfile = profiles.find(
+      (profile) => profile.id === currentProfileId && profile.available,
+    )
+    if (currentProfile) {
+      return currentProfile
+    }
+  }
+  const serviceDefault = status?.defaultRetrievalProfile
+  if (serviceDefault) {
+    const defaultProfile = profiles.find(
+      (profile) => profile.id === serviceDefault && profile.available,
+    )
+    if (defaultProfile) {
+      return defaultProfile
+    }
+  }
+  return profiles.find((profile) => profile.available)
+}
+
 export function selectedRetrievalProfile(
   status: KnowledgeStatusLike | null | undefined,
   profileId: string,
 ): RetrievalProfileStatus {
-  const profiles = retrievalProfilesFromStatus(status)
-  const selected = profiles.find((profile) => profile.id === profileId)
-  if (selected) {
-    return selected
-  }
   if (!serviceRetrievalProfiles(status).length) {
     return FALLBACK_RETRIEVAL_PROFILE
   }
-  const defaultProfileId = defaultRetrievalProfileId(status)
-  return (
-    profiles.find((profile) => profile.id === defaultProfileId)
-    || profiles[0]
-    || FALLBACK_RETRIEVAL_PROFILE
-  )
+  return availableRetrievalProfile(status, profileId) || FALLBACK_RETRIEVAL_PROFILE
 }
 
 export function defaultRetrievalProfileId(
   status: KnowledgeStatusLike | null | undefined,
   currentProfileId = '',
 ): string {
-  const profiles = retrievalProfilesFromStatus(status)
-  if (
-    currentProfileId
-    && profiles.some((profile) => profile.id === currentProfileId && profile.available)
-  ) {
-    return currentProfileId
-  }
-  const serviceDefault = status?.defaultRetrievalProfile
-  if (
-    serviceDefault
-    && profiles.some((profile) => profile.id === serviceDefault && profile.available)
-  ) {
-    return serviceDefault
-  }
-  return profiles.find((profile) => profile.available)?.id || FALLBACK_RETRIEVAL_PROFILE.id
+  return availableRetrievalProfile(status, currentProfileId)?.id || FALLBACK_RETRIEVAL_PROFILE.id
 }
 
 export function buildSearchProfilePayload(

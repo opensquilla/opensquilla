@@ -80,6 +80,7 @@ import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
 import Icon from './Icon.vue'
 import { useDialogA11y } from '@/composables/useDialogA11y'
+import { useBgm } from '@/composables/useBgm'
 import { getConsoleNavigationSections, getWorkNavigationSection } from '@/router/nav'
 import { useRpcStore } from '@/stores/rpc'
 import { highlightFtsSnippet } from '@/utils/searchSnippet'
@@ -98,6 +99,7 @@ const emit = defineEmits<{
 const { t } = useI18n()
 const router = useRouter()
 const rpcStore = useRpcStore()
+const { enabled: bgmEnabled, setEnabled: setBgmEnabled } = useBgm()
 
 const dialogRef = ref<HTMLElement | null>(null)
 const inputRef = ref<HTMLInputElement | null>(null)
@@ -237,6 +239,17 @@ const allCommands = computed<Command[]>(() => {
       keywords: 'theme dark light appearance toggle',
       group: 'Actions',
       run: () => emit('toggle-theme'),
+    },
+    // Background-music gate: writes the useBgm singleton directly (no App-level
+    // routing or handler to reuse, unlike the emit-based actions above). The
+    // title tracks the current state via the reactive `enabled` ref.
+    {
+      id: 'action:toggle-bgm',
+      title: bgmEnabled.value ? t('shared.cmdp.actionBgmDisable') : t('shared.cmdp.actionBgmEnable'),
+      icon: 'music',
+      keywords: 'music bgm background sound audio 音乐 背景音乐',
+      group: 'Actions',
+      run: () => setBgmEnabled(!bgmEnabled.value),
     },
   )
 

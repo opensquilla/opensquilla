@@ -105,3 +105,22 @@ test-results/
 
 # Runtime config-write backups the gateway leaves when it rewrites config.toml.
 opensquilla.toml.backup.*
+
+# Background-music audio dropped in by the user for local builds. The manifest
+# (playlist.json) and README stay tracked; copyrighted audio never does.
+opensquilla-webui/public/music/**/*.mp3
+opensquilla-webui/public/music/**/*.m4a
+opensquilla-webui/public/music/**/*.ogg
+opensquilla-webui/public/music/**/*.flac
+opensquilla-webui/public/music/**/*.wav
+opensquilla-webui/public/music/playlist.local.json
+
+# The same user-supplied music files after the webui build copies them into
+# the tracked gateway static dist: keep personal audio + manifest out of git
+# while the built playlist.json/README.md stay tracked with the rest of dist.
+src/opensquilla/gateway/static/dist/music/playlist.local.json
+src/opensquilla/gateway/static/dist/music/**/*.mp3
+src/opensquilla/gateway/static/dist/music/**/*.m4a
+src/opensquilla/gateway/static/dist/music/**/*.ogg
+src/opensquilla/gateway/static/dist/music/**/*.flac
+src/opensquilla/gateway/static/dist/music/**/*.wav

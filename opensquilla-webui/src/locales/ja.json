@@ -79,6 +79,14 @@
       "connecting": "接続中",
       "disconnected": "切断済み"
     },
+    "bgm": {
+      "label": "BGM",
+      "play": "BGMを再生",
+      "pause": "BGMを一時停止",
+      "volume": "音量",
+      "chooseLocalFile": "ローカルファイルを選択…",
+      "noTracks": "曲がありません — music/ にファイルを追加するかローカルファイルを選択してください"
+    },
     "brandHome": "OpenSquilla ホーム",
     "controlNav": "ナビゲーションの操作",
     "primaryNav": "メイン",
@@ -98,7 +106,9 @@
       "themeLabel": "テーマ",
       "themeDesc": "システムに従うか、ライトまたはダークを指定します。サイドバーの切り替えはこの設定へのショートカットです。",
       "languageLabel": "言語",
-      "languageDesc": "インターフェースの表示言語です。このブラウザーに即時に適用されます。"
+      "languageDesc": "インターフェースの表示言語です。このブラウザーに即時に適用されます。",
+      "bgmLabel": "BGM",
+      "bgmDesc": "トップバーにBGMコントロールを表示します。既定ではオフで、コマンドパレットからも切り替えられます。"
     },
     "dialog": {
       "title": "設定",
@@ -2061,7 +2071,9 @@
       "groupMessages": "メッセージ",
       "actionNewChat": "新規チャット",
       "actionOpenSettings": "設定を開く",
-      "actionToggleTheme": "テーマを切り替え"
+      "actionToggleTheme": "テーマを切り替え",
+      "actionBgmEnable": "BGMを有効にする",
+      "actionBgmDisable": "BGMを無効にする"
     },
     "toast": {
       "dismiss": "通知を閉じる"

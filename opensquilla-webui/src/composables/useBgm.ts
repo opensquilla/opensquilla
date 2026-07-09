@@ -242,9 +242,15 @@ export function useBgm() {
       const savedId = String(saved.trackId || '')
       const restorable = savedId !== BGM_LOCAL_TRACK_ID && !!trackById(savedId)
       currentTrackId.value = restorable ? savedId : tracks.value[0]?.id || ''
+      // Object URLs and removed playlist entries cannot survive a reload.
+      // Normalize that stale persisted state now so the fallback selection is
+      // visibly paused and a later reload cannot reinterpret it as playable.
+      if (!restorable && (savedId !== '' || saved.playing === true)) persist()
       // Resume only while the feature gate is on: a disable while a session
-      // was left playing must never come back as sound on the next launch.
-      if (enabled.value && saved.playing === true && currentTrackId.value) {
+      // was left playing must never come back as sound on the next launch. A
+      // stale/local selection also falls back paused instead of silently
+      // switching to and starting the playlist default.
+      if (enabled.value && saved.playing === true && restorable) {
         await playTrack(currentTrackId.value)
       }
     })()

@@ -163,6 +163,26 @@ describe('useBgm — init', () => {
     expect(bgm.currentTrackId.value).toBe('sun-yanzi-yujian')
   })
 
+  it('falls back from a persisted local track without resuming playback', async () => {
+    localStorage.setItem(
+      'opensquilla-bgm',
+      JSON.stringify({ enabled: true, playing: true, trackId: '__local__' }),
+    )
+    stubFetch()
+    const { useBgm } = await freshBgm()
+    const bgm = useBgm()
+
+    await bgm.initBgm()
+
+    expect(bgm.currentTrackId.value).toBe('sun-yanzi-yujian')
+    expect(bgm.playing.value).toBe(false)
+    expect(FakeAudio.instances).toHaveLength(0)
+    expect(JSON.parse(localStorage.getItem('opensquilla-bgm')!)).toMatchObject({
+      trackId: 'sun-yanzi-yujian',
+      playing: false,
+    })
+  })
+
   it('prefers the gitignored playlist.local.json over the tracked manifest', async () => {
     stubFetch(PLAYLIST, true, {
       tracks: [{ id: 'personal-default', title: '孙燕姿 - 遇见', src: 'yu-jian.mp3' }],

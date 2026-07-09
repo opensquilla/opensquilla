@@ -38,19 +38,35 @@ export const FALLBACK_RETRIEVAL_PROFILE: RetrievalProfileStatus = {
   reason: null,
 }
 
+function serviceRetrievalProfiles(
+  status: KnowledgeStatusLike | null | undefined,
+): RetrievalProfileStatus[] {
+  return status?.retrievalProfiles?.filter((profile) => profile?.id) || []
+}
+
 export function retrievalProfilesFromStatus(
   status: KnowledgeStatusLike | null | undefined,
 ): RetrievalProfileStatus[] {
-  const profiles = status?.retrievalProfiles?.filter((profile) => profile?.id)
-  return profiles?.length ? profiles : [FALLBACK_RETRIEVAL_PROFILE]
+  const profiles = serviceRetrievalProfiles(status)
+  return profiles.length ? profiles : [FALLBACK_RETRIEVAL_PROFILE]
 }
 
 export function selectedRetrievalProfile(
   status: KnowledgeStatusLike | null | undefined,
   profileId: string,
 ): RetrievalProfileStatus {
+  const profiles = retrievalProfilesFromStatus(status)
+  const selected = profiles.find((profile) => profile.id === profileId)
+  if (selected) {
+    return selected
+  }
+  if (!serviceRetrievalProfiles(status).length) {
+    return FALLBACK_RETRIEVAL_PROFILE
+  }
+  const defaultProfileId = defaultRetrievalProfileId(status)
   return (
-    retrievalProfilesFromStatus(status).find((profile) => profile.id === profileId)
+    profiles.find((profile) => profile.id === defaultProfileId)
+    || profiles[0]
     || FALLBACK_RETRIEVAL_PROFILE
   )
 }
@@ -60,7 +76,10 @@ export function defaultRetrievalProfileId(
   currentProfileId = '',
 ): string {
   const profiles = retrievalProfilesFromStatus(status)
-  if (currentProfileId && profiles.some((profile) => profile.id === currentProfileId)) {
+  if (
+    currentProfileId
+    && profiles.some((profile) => profile.id === currentProfileId && profile.available)
+  ) {
     return currentProfileId
   }
   const serviceDefault = status?.defaultRetrievalProfile

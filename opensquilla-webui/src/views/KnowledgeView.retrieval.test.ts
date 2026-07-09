@@ -95,6 +95,35 @@ describe('knowledge retrieval helpers', () => {
     ).toBe('sqlite_fts5_default')
   })
 
+  it('skips disabled current profile and selects available service default', () => {
+    expect(
+      defaultRetrievalProfileId(
+        {
+          defaultRetrievalProfile: 'hybrid_rrf_bge_m3_fts5',
+          retrievalProfiles: [
+            {
+              id: 'sqlite_fts5_default',
+              label: 'SQLite FTS5',
+              kind: 'lexical',
+              available: false,
+              reason: 'fts_index_empty',
+            },
+            {
+              id: 'hybrid_rrf_bge_m3_fts5',
+              label: 'Hybrid RRF',
+              kind: 'hybrid',
+              available: true,
+              reason: null,
+              model: 'baai/bge-m3',
+              dimensions: 1024,
+            },
+          ],
+        },
+        'sqlite_fts5_default',
+      ),
+    ).toBe('hybrid_rrf_bge_m3_fts5')
+  })
+
   it('builds search payload with selected embedding metadata', () => {
     expect(
       buildSearchProfilePayload(
@@ -118,6 +147,65 @@ describe('knowledge retrieval helpers', () => {
       embeddingModel: 'baai/bge-m3',
       embeddingDimensions: 1024,
     })
+  })
+
+  it('uses service default metadata when selected profile is unknown', () => {
+    expect(
+      buildSearchProfilePayload(
+        {
+          defaultRetrievalProfile: 'hybrid_rrf_bge_m3_fts5',
+          retrievalProfiles: [
+            {
+              id: 'sqlite_fts5_default',
+              label: 'SQLite FTS5',
+              kind: 'lexical',
+              available: true,
+              reason: null,
+            },
+            {
+              id: 'hybrid_rrf_bge_m3_fts5',
+              label: 'Hybrid RRF',
+              kind: 'hybrid',
+              available: true,
+              reason: null,
+              model: 'baai/bge-m3',
+              dimensions: 1024,
+            },
+          ],
+        },
+        'missing_profile',
+      ),
+    ).toEqual({
+      retrievalProfile: 'hybrid_rrf_bge_m3_fts5',
+      embeddingModel: 'baai/bge-m3',
+      embeddingDimensions: 1024,
+    })
+    expect(
+      searchProgressLabel(
+        {
+          defaultRetrievalProfile: 'hybrid_rrf_bge_m3_fts5',
+          retrievalProfiles: [
+            {
+              id: 'sqlite_fts5_default',
+              label: 'SQLite FTS5',
+              kind: 'lexical',
+              available: true,
+              reason: null,
+            },
+            {
+              id: 'hybrid_rrf_bge_m3_fts5',
+              label: 'Hybrid RRF',
+              kind: 'hybrid',
+              available: true,
+              reason: null,
+              model: 'baai/bge-m3',
+              dimensions: 1024,
+            },
+          ],
+        },
+        'missing_profile',
+      ),
+    ).toBe('Embedding retrieval')
   })
 
   it('formats hybrid and vector scores', () => {
@@ -207,5 +295,25 @@ describe('knowledge retrieval helpers', () => {
         'hybrid_rrf_bge_m3_fts5',
       ),
     ).toBe('Embedding retrieval')
+  })
+
+  it('uses searching progress label for lexical and fallback retrieval', () => {
+    expect(
+      searchProgressLabel(
+        {
+          retrievalProfiles: [
+            {
+              id: 'sqlite_fts5_default',
+              label: 'SQLite FTS5',
+              kind: 'lexical',
+              available: true,
+              reason: null,
+            },
+          ],
+        },
+        'sqlite_fts5_default',
+      ),
+    ).toBe('Searching')
+    expect(searchProgressLabel({}, 'missing_profile')).toBe('Searching')
   })
 })

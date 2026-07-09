@@ -370,6 +370,14 @@ def _resolve_workspace(runtime: SandboxRuntime, cwd: str | None) -> Path:
 
 
 def _resolve_request_run_mode(runtime: SandboxRuntime | None) -> str:
+    try:
+        from opensquilla.tools.run_mode import current_run_mode
+
+        mode = current_run_mode()
+        if mode is not None:
+            return mode
+    except Exception:  # pragma: no cover - defensive against tool-context imports
+        pass
     context = current_tool_run_context()
     if isinstance(context, RunContext):
         return context.run_mode.value

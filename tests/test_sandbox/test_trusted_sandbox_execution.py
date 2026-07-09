@@ -194,6 +194,145 @@ async def test_trusted_workspace_shell_cleanup_stays_out_of_locked_approval(
 
 
 @pytest.mark.asyncio
+async def test_trusted_workspace_code_delete_stays_out_of_locked_approval(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    from opensquilla.gateway.approval_queue import get_approval_queue, reset_approval_queue
+    from opensquilla.tools.builtin import code_exec
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    calls: list[tuple[str, object]] = []
+    reset_approval_queue()
+
+    runtime = SimpleNamespace(
+        effective=SimpleNamespace(sandbox_enabled=True),
+        workspace=workspace,
+    )
+
+    async def _fake_gate_action(**kwargs):
+        calls.append(("gate", kwargs))
+        policy = SimpleNamespace()
+        request = SimpleNamespace(
+            cwd=workspace,
+            action_kind="code.exec",
+            policy=policy,
+            reason="",
+            session_id="s1",
+            run_mode="trusted",
+        )
+        return object(), policy, request
+
+    async def _fake_run_under_backend(request, *, runtime=None):
+        calls.append(("backend", request))
+        return SimpleNamespace(
+            returncode=0,
+            stdout="exists=False\n",
+            stderr="",
+            backend_notes=(),
+            timed_out=False,
+        )
+
+    monkeypatch.setattr(code_exec, "get_runtime", lambda: runtime)
+    monkeypatch.setattr(code_exec, "gate_action", _fake_gate_action)
+    monkeypatch.setattr(code_exec, "run_under_backend", _fake_run_under_backend)
+    monkeypatch.setattr(
+        code_exec,
+        "_resolve_python_bin",
+        lambda *, sandbox_enabled: "/usr/bin/python3",
+    )
+
+    token = current_tool_context.set(
+        ToolContext(
+            is_owner=True,
+            caller_kind=CallerKind.WEB,
+            session_key="s1",
+            run_mode="trusted",
+            workspace_dir=str(workspace),
+        )
+    )
+    try:
+        result = await code_exec.execute_code(
+            "from pathlib import Path\n"
+            "p = Path('rpo-contract-generator.html')\n"
+            "if p.exists():\n"
+            "    p.unlink()\n"
+            "print('exists=' + str(p.exists()))"
+        )
+    finally:
+        current_tool_context.reset(token)
+        reset_approval_queue()
+
+    payload = json.loads(result)
+    assert payload["exit_code"] == 0
+    assert get_approval_queue().list_pending("exec") == []
+    assert [name for name, _ in calls] == ["gate", "backend"]
+    hints = calls[0][1]["hints"]  # type: ignore[index]
+    assert hints.high_impact is False
+
+
+@pytest.mark.asyncio
+async def test_trusted_mode_returns_soft_denial_instead_of_hidden_approval_wait(
+    tmp_path,
+) -> None:
+    from opensquilla.sandbox.config import SandboxSettings
+    from opensquilla.sandbox.integration import configure_runtime, gate_action, reset_runtime
+    from opensquilla.sandbox.policy import LevelHints
+    from opensquilla.sandbox.types import DenialReason, DenialResult
+
+    class _Queue:
+        requests: list[dict | None]
+
+        def __init__(self) -> None:
+            self.requests = []
+
+        def request(self, namespace: str = "exec", params: dict | None = None) -> str:
+            self.requests.append(params)
+            return "approval:hidden"
+
+        async def wait(self, approval_id: str, timeout: float | None = None) -> bool:
+            raise AssertionError("trusted mode must not wait on hidden approval")
+
+        def resolve(self, approval_id: str, approved: bool) -> None:
+            return None
+
+    queue = _Queue()
+    configure_runtime(
+        SandboxSettings(run_mode="standard", backend="noop", allow_legacy_mode=True),
+        approval_queue=queue,
+        workspace=tmp_path,
+    )
+    token = current_tool_context.set(
+        ToolContext(
+            is_owner=True,
+            caller_kind=CallerKind.WEB,
+            session_key="s1",
+            run_mode="trusted",
+            workspace_dir=str(tmp_path),
+        )
+    )
+    try:
+        decision, policy, _request = await gate_action(
+            action_kind="code.exec",
+            argv=("python", "-c", "import shutil; shutil.rmtree('build')"),
+            cwd=tmp_path,
+            hints=LevelHints(high_impact=True),
+        )
+    finally:
+        current_tool_context.reset(token)
+        reset_runtime()
+
+    assert policy.require_approval is True
+    assert isinstance(decision, DenialResult)
+    assert _request.run_mode == "trusted"
+    assert decision.reason == DenialReason.POLICY_DENIED
+    assert "Trusted-Sandbox" in decision.message
+    assert "Full Host Access" in decision.message
+    assert queue.requests == []
+
+
+@pytest.mark.asyncio
 async def test_backend_denial_suspends_before_any_host_retry(monkeypatch) -> None:
     from opensquilla.sandbox.elevation import ElevationGateResult
     from opensquilla.tools.builtin import shell

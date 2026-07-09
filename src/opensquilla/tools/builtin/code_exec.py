@@ -68,6 +68,8 @@ _DESTRUCTIVE_PY_PATTERNS: list[tuple[str, str]] = [
         "subprocess invoking rmdir",
     ),
 ]
+_PROTECTED_DELETE_SUBPATH_NAMES = frozenset({".git", ".codex", ".agents"})
+_UNSUPPORTED_DELETE_CALL = object()
 
 
 def _check_code_destructive(code: str) -> str | None:
@@ -76,6 +78,227 @@ def _check_code_destructive(code: str) -> str | None:
         if re.search(pattern, code):
             return f"destructive Python operation detected: {label}"
     return None
+
+
+def _literal_string(node: ast.AST) -> str | None:
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    if isinstance(node, ast.JoinedStr):
+        parts: list[str] = []
+        for value in node.values:
+            if isinstance(value, ast.Constant) and isinstance(value.value, str):
+                parts.append(value.value)
+            else:
+                return None
+        return "".join(parts)
+    return None
+
+
+def _is_path_constructor(node: ast.AST) -> bool:
+    if isinstance(node, ast.Name):
+        return node.id == "Path"
+    return (
+        isinstance(node, ast.Attribute)
+        and node.attr == "Path"
+        and isinstance(node.value, ast.Name)
+        and node.value.id == "pathlib"
+    )
+
+
+def _path_constructor_literal(node: ast.AST) -> str | None:
+    if not isinstance(node, ast.Call) or not _is_path_constructor(node.func) or node.keywords:
+        return None
+    parts = [_literal_string(arg) for arg in node.args]
+    if not parts or any(part is None for part in parts):
+        return None
+    path = Path(parts[0] or ".")
+    for part in parts[1:]:
+        path /= part or "."
+    return str(path)
+
+
+def _path_target_literal(
+    node: ast.AST,
+    *,
+    path_bindings: dict[str, str],
+    string_bindings: dict[str, str],
+    allow_string: bool,
+) -> str | None:
+    if isinstance(node, ast.Name):
+        if node.id in path_bindings:
+            return path_bindings[node.id]
+        if allow_string:
+            return string_bindings.get(node.id)
+        return None
+    if allow_string:
+        literal = _literal_string(node)
+        if literal is not None:
+            return literal
+    constructor = _path_constructor_literal(node)
+    if constructor is not None:
+        return constructor
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div):
+        left = _path_target_literal(
+            node.left,
+            path_bindings=path_bindings,
+            string_bindings=string_bindings,
+            allow_string=allow_string,
+        )
+        right = _literal_string(node.right)
+        if left is not None and right is not None:
+            return str(Path(left) / right)
+    return None
+
+
+def _safe_workspace_delete_target(raw_target: str, workspace: Path | None) -> bool:
+    if workspace is None or not raw_target.strip():
+        return False
+    try:
+        root = workspace.expanduser().resolve(strict=False)
+        raw_path = Path(raw_target).expanduser()
+        target = raw_path if raw_path.is_absolute() else root / raw_path
+        resolved = target.resolve(strict=False)
+        relative = resolved.relative_to(root)
+    except (OSError, RuntimeError, ValueError):
+        return False
+    if not relative.parts:
+        return False
+    if any(part in _PROTECTED_DELETE_SUBPATH_NAMES for part in relative.parts):
+        return False
+
+    from opensquilla.sandbox.sensitive_paths import sensitive_path_marker
+
+    if sensitive_path_marker(raw_target, workspace=root) is not None:
+        return False
+    return sensitive_path_marker(str(resolved), workspace=root) is None
+
+
+def _assignment_names(target: ast.AST) -> list[str]:
+    if isinstance(target, ast.Name):
+        return [target.id]
+    return [node.id for node in ast.walk(target) if isinstance(node, ast.Name)]
+
+
+class _TrustedWorkspaceDeleteVisitor(ast.NodeVisitor):
+    def __init__(self, workspace: Path | None) -> None:
+        self.workspace = workspace
+        self.path_bindings: dict[str, str] = {}
+        self.string_bindings: dict[str, str] = {}
+        self.found_delete = False
+        self.safe = True
+
+    def _clear_assignment(self, target: ast.AST) -> None:
+        for name in _assignment_names(target):
+            self.path_bindings.pop(name, None)
+            self.string_bindings.pop(name, None)
+
+    def _bind_assignment(self, target: ast.AST, value: ast.AST) -> None:
+        names = _assignment_names(target)
+        if len(names) != 1 or not isinstance(target, ast.Name):
+            self._clear_assignment(target)
+            return
+        path_literal = _path_constructor_literal(value)
+        string_literal = _literal_string(value)
+        self._clear_assignment(target)
+        if path_literal is not None:
+            self.path_bindings[names[0]] = path_literal
+        elif string_literal is not None:
+            self.string_bindings[names[0]] = string_literal
+
+    def visit_Assign(self, node: ast.Assign) -> None:
+        self.visit(node.value)
+        for target in node.targets:
+            self._bind_assignment(target, node.value)
+
+    def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
+        if node.value is not None:
+            self.visit(node.value)
+            self._bind_assignment(node.target, node.value)
+        else:
+            self._clear_assignment(node.target)
+
+    def visit_AugAssign(self, node: ast.AugAssign) -> None:
+        self.visit(node.value)
+        self._clear_assignment(node.target)
+
+    def visit_For(self, node: ast.For) -> None:
+        self.visit(node.iter)
+        self._clear_assignment(node.target)
+        for child in node.body:
+            self.visit(child)
+        for child in node.orelse:
+            self.visit(child)
+
+    def visit_With(self, node: ast.With) -> None:
+        for item in node.items:
+            self.visit(item.context_expr)
+            if item.optional_vars is not None:
+                self._clear_assignment(item.optional_vars)
+        for child in node.body:
+            self.visit(child)
+
+    def _target_for_delete_call(self, node: ast.Call) -> str | object | None:
+        func = node.func
+        if not isinstance(func, ast.Attribute):
+            return None
+
+        owner = func.value
+        if isinstance(owner, ast.Name) and owner.id == "os":
+            if func.attr in {"remove", "unlink"} and node.args:
+                target = _path_target_literal(
+                    node.args[0],
+                    path_bindings=self.path_bindings,
+                    string_bindings=self.string_bindings,
+                    allow_string=True,
+                )
+                return target if target is not None else _UNSUPPORTED_DELETE_CALL
+            if func.attr in {"rmdir", "removedirs", "system"}:
+                return _UNSUPPORTED_DELETE_CALL
+
+        if isinstance(owner, ast.Name) and owner.id == "shutil" and func.attr == "rmtree":
+            return _UNSUPPORTED_DELETE_CALL
+
+        if isinstance(owner, ast.Name) and owner.id == "subprocess":
+            if func.attr in {"run", "call", "Popen", "check_output", "check_call"}:
+                literals = [
+                    literal
+                    for arg in node.args
+                    for literal in _iter_code_string_literals(ast.unparse(arg))
+                ]
+                if any(re.search(r"\brm(?:dir)?\b", literal) for literal in literals):
+                    return _UNSUPPORTED_DELETE_CALL
+
+        if func.attr == "unlink":
+            target = _path_target_literal(
+                owner,
+                path_bindings=self.path_bindings,
+                string_bindings=self.string_bindings,
+                allow_string=False,
+            )
+            return target if target is not None else _UNSUPPORTED_DELETE_CALL
+        if func.attr == "rmdir":
+            return _UNSUPPORTED_DELETE_CALL
+        return None
+
+    def visit_Call(self, node: ast.Call) -> None:
+        target = self._target_for_delete_call(node)
+        if target is _UNSUPPORTED_DELETE_CALL:
+            self.safe = False
+        elif isinstance(target, str):
+            self.found_delete = True
+            if not _safe_workspace_delete_target(target, self.workspace):
+                self.safe = False
+        self.generic_visit(node)
+
+
+def _trusted_code_delete_stays_in_workspace(code: str, workspace: Path | None) -> bool:
+    try:
+        tree = ast.parse(code)
+    except SyntaxError:
+        return False
+    visitor = _TrustedWorkspaceDeleteVisitor(workspace)
+    visitor.visit(tree)
+    return visitor.found_delete and visitor.safe
 
 
 _CODE_SENSITIVE_READ_TOKENS = (
@@ -378,6 +601,7 @@ _SAFE_ENV_KEYS = frozenset(
     }
 )
 
+
 async def _run_backend_with_managed_network_if_needed(
     request: SandboxRequest,
     *,
@@ -626,12 +850,20 @@ async def execute_code(
     apply_utf8_child_env(safe_env)
     if sandbox_enabled and _windows_sandbox_backend_active(runtime):
         _apply_windows_session_tmp_env(safe_env)
+    destructive_high_impact = destructive_warning is not None
+    if (
+        destructive_high_impact
+        and trusted_sandbox_active()
+        and _trusted_code_delete_stays_in_workspace(code, workspace)
+    ):
+        destructive_high_impact = False
+
     hints = (
         LevelHints()
         if full_host
         else LevelHints(
             needs_network=_code_needs_network(code),
-            high_impact=destructive_warning is not None,
+            high_impact=destructive_high_impact,
         )
     )
     mutation_before = {} if full_host else snapshot_current_workspace_mutations()

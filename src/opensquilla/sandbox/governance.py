@@ -295,6 +295,31 @@ class ApprovalGate:
                 session_id=session_id,
             )
             return ALLOW
+        if request.run_mode == "trusted":
+            result = DenialResult(
+                reason=DenialReason.POLICY_DENIED,
+                suggested_next_step=SuggestedNextStep.ASK_USER,
+                level=policy.level,
+                action_fingerprint=fingerprint,
+                message=(
+                    "Trusted-Sandbox blocked this action before requesting approval. "
+                    "This operation requires elevated approval, but Trusted-Sandbox "
+                    "does not expose a visible approval surface for this tool call. "
+                    "Ask the user to switch to Full Host Access or retry with a "
+                    "narrower workspace-safe operation."
+                ),
+                retryable=False,
+            )
+            _log_decision(
+                request,
+                policy,
+                fingerprint,
+                decision="deny",
+                approval_required=True,
+                session_id=session_id,
+                reason=result.reason.value,
+            )
+            return result
         params: dict[str, object] = {
             "action_kind": request.action_kind,
             "argv": list(request.argv),

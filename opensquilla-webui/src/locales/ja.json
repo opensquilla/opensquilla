@@ -50,7 +50,6 @@
   "nav": {
     "chat": "チャット",
     "sessions": "セッション",
-    "approvals": "承認",
     "agents": "エージェント",
     "channels": "チャンネル",
     "cron": "スケジュール",
@@ -146,12 +145,7 @@
         "delivery": "配信",
         "preferences": "環境設定",
         "capabilities": "機能"
-      },
-      "safety": "安全"
-    },
-    "safety": {
-      "title": "承認ポリシー",
-      "desc": "すべてのエージェントとチャンネルで、リスクのあるツール実行をどのように扱うかを選びます。"
+      }
     }
   },
   "errorBoundary": {
@@ -1099,40 +1093,6 @@
       "hintRestarting": "ディスパッチエラーの後、アダプターを再起動しています。",
       "hintExhausted": "アダプターは再試行の上限に達しました。`{cmd}` を試してください。",
       "hintConfiguredInactive": "ディスク上に設定されていますが、このゲートウェイプロセスではアクティブではありません — ゲートウェイを再起動して読み込んでください。"
-    },
-    "approvals": {
-      "eyebrow": "操作 · 承認",
-      "title": "承認",
-      "subtitle": "ツール実行のゲートです — リスクの高い操作は、あなたが許可するまで保留します。",
-      "pending": "保留中",
-      "awaitingDecision": "判断待ち",
-      "allClear": "問題なし",
-      "strategy": "ストラテジー",
-      "strategyTitle": "承認の処理方法",
-      "strategyAriaLabel": "承認のストラテジー",
-      "modePromptLabel": "毎回確認",
-      "modePromptDesc": "リスクの高いツール実行ごとに承認プロンプトを開きます。",
-      "modeAutoApproveLabel": "自動承認",
-      "modeAutoApproveDesc": "すべてのツール実行を自動的に承認します。",
-      "modeAutoDenyLabel": "自動拒否",
-      "modeAutoDenyDesc": "すべてのツール実行を自動的に拒否します。",
-      "emptyTitle": "保留中の承認はありません。",
-      "emptyText": "エージェントがリスクの高いツール呼び出しに到達すると、あなたの承認を求めてここに表示されます。",
-      "pendingRequests": "保留中のリクエスト",
-      "agent": "エージェント",
-      "session": "セッション",
-      "command": "コマンド",
-      "details": "詳細",
-      "unknownTool": "不明",
-      "approveOnce": "1 回だけ承認",
-      "allowSameType": "同じ種類を許可",
-      "deny": "拒否",
-      "loadFailed": "承認の読み込みに失敗しました: {msg}",
-      "approved": "承認済み",
-      "denied": "拒否済み",
-      "toastFailed": "失敗しました: {msg}",
-      "toastStrategy": "承認のストラテジー: {mode}",
-      "toastStrategyFailed": "ストラテジーの保存に失敗しました: {msg}"
     }
   },
   "cronSkills": {

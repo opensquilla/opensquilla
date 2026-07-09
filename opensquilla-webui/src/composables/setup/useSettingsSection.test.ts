@@ -13,6 +13,20 @@ describe('settings section IA', () => {
     expect(ids.indexOf('modelStrategy')).toBeLessThan(ids.indexOf('capabilities'))
   })
 
+  it('retires the obsolete approval-policy Safety section', () => {
+    const ids = SETTINGS_SECTIONS.map(s => s.id)
+    expect(ids).not.toContain('safety')
+    expect(sectionFromRouteParam('safety')).toBe('provider')
+    expect(isKnownSectionParam('safety')).toBe(false)
+  })
+
+  it('does not ship copy for retired approval-policy destinations', () => {
+    expect(en.settings.rail).not.toHaveProperty('safety')
+    expect(en.settings).not.toHaveProperty('safety')
+    expect(en.console).not.toHaveProperty('approvals')
+    expect(en.nav).not.toHaveProperty('approvals')
+  })
+
   it('passes through every canonical section id unchanged', () => {
     for (const s of SETTINGS_SECTIONS) {
       expect(sectionFromRouteParam(s.id)).toBe(s.id)

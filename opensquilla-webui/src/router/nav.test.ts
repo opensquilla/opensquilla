@@ -10,7 +10,7 @@ import { getConsoleNavigationSections, getMoreNavigationSections, getWorkNavigat
 // Current IA: the Work band pins Sessions + Overview (the Monitor hub, which
 // hosts Channels/Usage/Logs as tabs), the Build band (group Operate) holds
 // Agents/Skills/Cron, and Approvals is retired from the nav (/approvals
-// redirects to /sessions; the strategy moved to Settings → Safety).
+// redirects to /sessions).
 
 describe('getConsoleNavigationSections', () => {
   it('resolves to the Build band with the expected members in order', () => {

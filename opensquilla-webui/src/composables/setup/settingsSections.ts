@@ -22,11 +22,6 @@ export const SETTINGS_SECTIONS = [
   { id: 'provider', label: 'Chat Model', icon: 'agents', client: false, desktopOnly: false, group: 'ai' },
   { id: 'modelStrategy', label: 'Model Routing', icon: 'router', client: false, desktopOnly: false, group: 'ai' },
   { id: 'capabilities', label: 'Capabilities', icon: 'skills', client: false, desktopOnly: false, group: 'capabilities' },
-  // Safety: the tool-execution approval strategy (Ask / Auto-approve / Auto-deny).
-  // A global, safety-critical gate — its own rail entry so it stays discoverable
-  // rather than buried in Behavior. Applies via its own POST, not the config
-  // dirty bar, so it is client-like for save purposes.
-  { id: 'safety', label: 'Safety', icon: 'shield', client: true, desktopOnly: false, group: 'capabilities' },
   // --- Delivery: where the assistant reaches users ---
   { id: 'channels', label: 'Channels', icon: 'channels', client: false, desktopOnly: false, group: 'delivery' },
   // --- Preferences: assistant behaviour + local app settings ---

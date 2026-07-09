@@ -2,10 +2,10 @@ import { test, expect } from '@playwright/test'
 
 const CONTROL_URL = '/control/'
 // Backend-config sections carry a readiness/status dot; Connection is the first
-// entry (live socket state). Safety, Appearance, Keyboard, and Advanced are
-// client-only. (Runtime exists too, but it is desktop-only so the web rail hides it.)
+// entry (live socket state). Appearance, Keyboard, and Advanced are client-only.
+// (Runtime exists too, but it is desktop-only so the web rail hides it.)
 const SECTIONS = ['Connection', 'Chat Model', 'Model Routing', 'Capabilities', 'Channels', 'Behavior', 'Privacy']
-const CLIENT_SECTIONS = ['Safety', 'Appearance', 'Keyboard', 'Advanced']
+const CLIENT_SECTIONS = ['Appearance', 'Keyboard', 'Advanced']
 
 const settingsRow = (page: import('@playwright/test').Page) =>
   page.locator('.sidebar-foot button')

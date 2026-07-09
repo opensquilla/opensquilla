@@ -44,7 +44,9 @@ def build_approval_event_payload(info: dict[str, Any]) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "approval_id": str(info.get("id") or ""),
         "namespace": str(info.get("namespace") or "exec"),
-        "session_key": str(params.get("sessionKey") or ""),
+        "session_key": str(
+            params.get("sessionKey") or params.get("session_key") or params.get("session_id") or ""
+        ),
         "tool_name": str(tool_name),
         "command": command,
         "approval_kind": str(params.get("approvalKind") or ""),

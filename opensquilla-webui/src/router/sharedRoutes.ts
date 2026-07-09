@@ -44,8 +44,8 @@ export const sharedRoutes: RouteRecordRaw[] = [
   { path: '/logs',      name: 'logs',      component: MonitorHubView, meta: { title: 'Logs', icon: 'logs', platforms: ['web', 'desktop'], keepAlive: true, viewKey: 'monitor-hub' } },
   // Approvals retired as a front-end destination: the pending queue resolves
   // inline in the chat transcript (ApprovalCard) and via the topbar interrupt
-  // pill; the global approval strategy moved to Settings → Safety. The old deep
-  // link redirects to Sessions so bookmarks and the pill degrade gracefully
+  // pill. The old deep link redirects to Sessions so bookmarks and the pill
+  // degrade gracefully
   // (openBlockedApprovalSession() routes straight to the blocked chat first).
   { path: '/approvals', redirect: '/sessions' },
   { path: '/agents',    name: 'agents',    component: AgentsView,    meta: { title: 'Agents', group: 'Operate', icon: 'agents', nav: 'primary', navOrder: 40, platforms: ['web', 'desktop'], keepAlive: true } },

@@ -50,7 +50,6 @@
   "nav": {
     "chat": "对话",
     "sessions": "会话",
-    "approvals": "审批",
     "agents": "智能体",
     "channels": "频道",
     "cron": "定时任务",
@@ -146,12 +145,7 @@
         "delivery": "分发",
         "preferences": "偏好设置",
         "capabilities": "能力"
-      },
-      "safety": "安全"
-    },
-    "safety": {
-      "title": "审批策略",
-      "desc": "选择 OpenSquilla 如何在所有智能体和频道中处理有风险的工具执行。"
+      }
     }
   },
   "errorBoundary": {
@@ -1099,40 +1093,6 @@
       "hintRestarting": "适配器在调度错误后正在重启。",
       "hintExhausted": "适配器已耗尽重试预算。请尝试 `{cmd}`。",
       "hintConfiguredInactive": "已在磁盘上配置，但在当前网关进程中未激活——请重启网关以加载它。"
-    },
-    "approvals": {
-      "eyebrow": "控制 · 审批",
-      "title": "审批",
-      "subtitle": "工具执行的把关——在你确认之前，让有风险的操作保持暂停。",
-      "pending": "待处理",
-      "awaitingDecision": "等待裁决",
-      "allClear": "一切就绪",
-      "strategy": "策略",
-      "strategyTitle": "审批的处理方式",
-      "strategyAriaLabel": "审批策略",
-      "modePromptLabel": "每次都询问",
-      "modePromptDesc": "每次有风险的工具执行都会弹出审批提示。",
-      "modeAutoApproveLabel": "自动批准",
-      "modeAutoApproveDesc": "所有工具执行都会自动批准。",
-      "modeAutoDenyLabel": "自动拒绝",
-      "modeAutoDenyDesc": "所有工具执行都会自动拒绝。",
-      "emptyTitle": "没有待处理的审批。",
-      "emptyText": "当智能体触发有风险的工具调用时，会在此处显示以供你审批。",
-      "pendingRequests": "待处理请求",
-      "agent": "智能体",
-      "session": "会话",
-      "command": "命令",
-      "details": "详情",
-      "unknownTool": "未知",
-      "approveOnce": "批准一次",
-      "allowSameType": "允许同类型",
-      "deny": "拒绝",
-      "loadFailed": "加载审批失败：{msg}",
-      "approved": "已批准",
-      "denied": "已拒绝",
-      "toastFailed": "失败：{msg}",
-      "toastStrategy": "审批策略：{mode}",
-      "toastStrategyFailed": "保存策略失败：{msg}"
     }
   },
   "cronSkills": {

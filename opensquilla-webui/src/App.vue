@@ -1101,8 +1101,8 @@ function errorMessage(err: unknown): string {
 // ---------------------------------------------------------------------------
 // App-wide approval awareness
 //
-// The Approvals page only updates the count while it is mounted; a tool that
-// blocks a background/queued turn must surface the badge from any view. The
+// A view-local snapshot is not enough; a tool that blocks a background/queued
+// turn must surface the badge from any view. The
 // gateway pushes `<namespace>.approval.requested|resolved` the moment a run
 // blocks or a decision lands, so we keep `pendingApprovals`/`approvalCount`
 // live here, seeded once on (re)connect to recover requests that predate the
@@ -1156,7 +1156,7 @@ function snapshotItemToPending(item: ApprovalSnapshotItem): PendingApproval | nu
 }
 
 // Seed the live list from the snapshot so the count is correct after a reload
-// while a request is already pending; mirrors how ApprovalsView fetches it. The
+// while a request is already pending. The
 // snapshot is ordered oldest-first, which the deep-link relies on.
 async function seedPendingApprovals() {
   try {
@@ -1252,7 +1252,7 @@ onMounted(() => {
   loadAgents()
   loadSessions()
   rpcUnsubSessionsChanged = rpcStore.on('sessions.changed', scheduleSessionRefresh)
-  // Keep the approval badge/count live app-wide, not just on the Approvals page.
+  // Keep the approval badge/count live app-wide.
   subscribeApprovals()
   // Seed now in case the socket is already connected (the `_state` listener
   // covers later reconnects); recovers a request pending before mount.

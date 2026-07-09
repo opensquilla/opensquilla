@@ -50,7 +50,6 @@
   "nav": {
     "chat": "Chat",
     "sessions": "Sessions",
-    "approvals": "Approbations",
     "agents": "Agents",
     "channels": "Canaux",
     "cron": "Cron",
@@ -146,12 +145,7 @@
         "delivery": "Diffusion",
         "preferences": "Préférences",
         "capabilities": "Capacités"
-      },
-      "safety": "Sécurité"
-    },
-    "safety": {
-      "title": "Stratégie d’approbation",
-      "desc": "Choisissez comment OpenSquilla gère les exécutions d’outils à risque sur tous les agents et canaux."
+      }
     }
   },
   "errorBoundary": {
@@ -1099,40 +1093,6 @@
       "hintRestarting": "L'adaptateur redémarre après des erreurs de répartition.",
       "hintExhausted": "L'adaptateur a épuisé son budget de nouvelles tentatives. Essayez `{cmd}`.",
       "hintConfiguredInactive": "Configuré sur le disque mais non actif dans ce processus de passerelle — redémarrez la passerelle pour le charger."
-    },
-    "approvals": {
-      "eyebrow": "Contrôle · Approbations",
-      "title": "Approbations",
-      "subtitle": "Barrière d'exécution des outils — gardez les actions risquées en pause jusqu'à votre feu vert.",
-      "pending": "En attente",
-      "awaitingDecision": "en attente de décision",
-      "allClear": "tout est en ordre",
-      "strategy": "Stratégie",
-      "strategyTitle": "Comment les approbations sont gérées",
-      "strategyAriaLabel": "Stratégie d'approbation",
-      "modePromptLabel": "Demander à chaque fois",
-      "modePromptDesc": "Chaque exécution d'outil risquée ouvre une invite d'approbation.",
-      "modeAutoApproveLabel": "Approbation automatique",
-      "modeAutoApproveDesc": "Toutes les exécutions d'outils sont automatiquement approuvées.",
-      "modeAutoDenyLabel": "Refus automatique",
-      "modeAutoDenyDesc": "Toutes les exécutions d'outils sont automatiquement refusées.",
-      "emptyTitle": "Aucune approbation en attente.",
-      "emptyText": "Lorsqu'un agent atteint un appel d'outil risqué, il apparaîtra ici pour votre validation.",
-      "pendingRequests": "Demandes en attente",
-      "agent": "Agent",
-      "session": "Session",
-      "command": "Commande",
-      "details": "Détails",
-      "unknownTool": "Inconnu",
-      "approveOnce": "Approuver une fois",
-      "allowSameType": "Autoriser le même type",
-      "deny": "Refuser",
-      "loadFailed": "Échec du chargement des approbations : {msg}",
-      "approved": "Approuvé",
-      "denied": "Refusé",
-      "toastFailed": "Échec : {msg}",
-      "toastStrategy": "Stratégie d'approbation : {mode}",
-      "toastStrategyFailed": "Échec de l'enregistrement de la stratégie : {msg}"
     }
   },
   "cronSkills": {

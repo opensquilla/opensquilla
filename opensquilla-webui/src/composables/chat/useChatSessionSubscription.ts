@@ -19,6 +19,7 @@ export interface UseChatSessionSubscriptionOptions {
   lastStreamSeq: Ref<number>
   runStatus: Ref<ChatRunStatus>
   isStreaming: Ref<boolean>
+  hasActiveInterrupt: Ref<boolean>
   sessionRunStatus: (source: ChatRunStatusSource | null | undefined) => ChatRunStatus
   loadHistory: () => void | Promise<void>
   resetStreamIdleTimer: () => void
@@ -40,12 +41,27 @@ export function useChatSessionSubscription(options: UseChatSessionSubscriptionOp
       if (key !== options.sessionKey.value) return
       if (res && res.subscribed === false) throw new Error('No subscription manager available')
       applySessionRunState(res)
+      // A pending inline interrupt is newer, stronger evidence than an idle
+      // subscription snapshot that raced with the approval request.
+      if (
+        options.hasActiveInterrupt.value
+        && !LIVE_RUN_STATES.includes(options.runStatus.value.status)
+      ) {
+        options.runStatus.value = options.sessionRunStatus({
+          run_status: 'approval_pending',
+          active_task: options.runStatus.value.task,
+        })
+      }
       // Replayed events arrive before this response and can rebuild a live
       // bubble for a run that already ended (a stopped run leaves no terminal
       // event in the replay buffer), duplicating the partial reply that
       // chat.history already persists. When the subscribe snapshot says
       // nothing is live, drop that stale bubble without emitting a message.
-      if (options.isStreaming.value && !LIVE_RUN_STATES.includes(options.runStatus.value.status)) {
+      if (
+        options.isStreaming.value
+        && !options.hasActiveInterrupt.value
+        && !LIVE_RUN_STATES.includes(options.runStatus.value.status)
+      ) {
         options.resetStreamLiveTurnState()
       }
       if (res && res.replay_complete === false) {

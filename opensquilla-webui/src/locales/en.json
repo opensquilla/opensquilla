@@ -50,7 +50,6 @@
   "nav": {
     "chat": "Chat",
     "sessions": "Sessions",
-    "approvals": "Approvals",
     "agents": "Agents",
     "channels": "Channels",
     "cron": "Cron",
@@ -146,12 +145,7 @@
         "delivery": "Delivery",
         "preferences": "Preferences",
         "capabilities": "Capabilities"
-      },
-      "safety": "Safety"
-    },
-    "safety": {
-      "title": "Approval strategy",
-      "desc": "Choose how OpenSquilla handles risky tool executions across every agent and channel."
+      }
     }
   },
   "errorBoundary": {
@@ -1099,40 +1093,6 @@
       "hintRestarting": "Adapter is restarting after dispatch errors.",
       "hintExhausted": "Adapter exhausted its retry budget. Try `{cmd}`.",
       "hintConfiguredInactive": "Configured on disk but not active in this gateway process — restart the gateway to load it."
-    },
-    "approvals": {
-      "eyebrow": "Control · Approvals",
-      "title": "Approvals",
-      "subtitle": "Tool execution gate — keep risky actions paused until you say go.",
-      "pending": "Pending",
-      "awaitingDecision": "awaiting decision",
-      "allClear": "all clear",
-      "strategy": "Strategy",
-      "strategyTitle": "How approvals are handled",
-      "strategyAriaLabel": "Approval strategy",
-      "modePromptLabel": "Ask every time",
-      "modePromptDesc": "Every risky tool execution opens an approval prompt.",
-      "modeAutoApproveLabel": "Auto approve",
-      "modeAutoApproveDesc": "All tool executions are automatically approved.",
-      "modeAutoDenyLabel": "Auto deny",
-      "modeAutoDenyDesc": "All tool executions are automatically denied.",
-      "emptyTitle": "No pending approvals.",
-      "emptyText": "When an agent reaches a risky tool call, it will appear here for your sign-off.",
-      "pendingRequests": "Pending requests",
-      "agent": "Agent",
-      "session": "Session",
-      "command": "Command",
-      "details": "Details",
-      "unknownTool": "Unknown",
-      "approveOnce": "Approve once",
-      "allowSameType": "Allow same type",
-      "deny": "Deny",
-      "loadFailed": "Failed to load approvals: {msg}",
-      "approved": "Approved",
-      "denied": "Denied",
-      "toastFailed": "Failed: {msg}",
-      "toastStrategy": "Approval strategy: {mode}",
-      "toastStrategyFailed": "Failed to save strategy: {msg}"
     }
   },
   "cronSkills": {

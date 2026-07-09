@@ -50,7 +50,6 @@
   "nav": {
     "chat": "Chat",
     "sessions": "Sesiones",
-    "approvals": "Aprobaciones",
     "agents": "Agentes",
     "channels": "Canales",
     "cron": "Cron",
@@ -146,12 +145,7 @@
         "delivery": "Entrega",
         "preferences": "Preferencias",
         "capabilities": "Capacidades"
-      },
-      "safety": "Seguridad"
-    },
-    "safety": {
-      "title": "Estrategia de aprobación",
-      "desc": "Elige cómo OpenSquilla gestiona las ejecuciones de herramientas arriesgadas en todos los agentes y canales."
+      }
     }
   },
   "errorBoundary": {
@@ -1099,40 +1093,6 @@
       "hintRestarting": "El adaptador se está reiniciando tras errores de despacho.",
       "hintExhausted": "El adaptador agotó su presupuesto de reintentos. Prueba `{cmd}`.",
       "hintConfiguredInactive": "Configurado en disco pero no activo en este proceso de la puerta de enlace; reinicia la puerta de enlace para cargarlo."
-    },
-    "approvals": {
-      "eyebrow": "Control · Aprobaciones",
-      "title": "Aprobaciones",
-      "subtitle": "Compuerta de ejecución de herramientas: mantén las acciones arriesgadas en pausa hasta que des la orden.",
-      "pending": "Pendientes",
-      "awaitingDecision": "a la espera de decisión",
-      "allClear": "todo en orden",
-      "strategy": "Estrategia",
-      "strategyTitle": "Cómo se gestionan las aprobaciones",
-      "strategyAriaLabel": "Estrategia de aprobación",
-      "modePromptLabel": "Preguntar siempre",
-      "modePromptDesc": "Cada ejecución de herramienta arriesgada abre una solicitud de aprobación.",
-      "modeAutoApproveLabel": "Aprobar automáticamente",
-      "modeAutoApproveDesc": "Todas las ejecuciones de herramientas se aprueban automáticamente.",
-      "modeAutoDenyLabel": "Denegar automáticamente",
-      "modeAutoDenyDesc": "Todas las ejecuciones de herramientas se deniegan automáticamente.",
-      "emptyTitle": "No hay aprobaciones pendientes.",
-      "emptyText": "Cuando un agente llegue a una llamada de herramienta arriesgada, aparecerá aquí para tu visto bueno.",
-      "pendingRequests": "Solicitudes pendientes",
-      "agent": "Agente",
-      "session": "Sesión",
-      "command": "Comando",
-      "details": "Detalles",
-      "unknownTool": "Desconocida",
-      "approveOnce": "Aprobar una vez",
-      "allowSameType": "Permitir el mismo tipo",
-      "deny": "Denegar",
-      "loadFailed": "No se pudieron cargar las aprobaciones: {msg}",
-      "approved": "Aprobada",
-      "denied": "Denegada",
-      "toastFailed": "Error: {msg}",
-      "toastStrategy": "Estrategia de aprobación: {mode}",
-      "toastStrategyFailed": "No se pudo guardar la estrategia: {msg}"
     }
   },
   "cronSkills": {

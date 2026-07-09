@@ -223,7 +223,6 @@
               @save-audio="saveAudio"
               @copy="copyCommand"
             />
-            <SettingsSafetyPanel v-else-if="section === 'safety'" />
             <SettingsAppearancePanel v-else-if="section === 'appearance'" />
             <SettingsKeyboardPanel v-else-if="section === 'keyboard'" />
             <SettingsAdvancedPanel v-else-if="section === 'advanced'" />
@@ -273,7 +272,6 @@ import SetupModelStrategyPanel from '@/components/setup/SetupModelStrategyPanel.
 import SetupChannelsPanel from '@/components/setup/SetupChannelsPanel.vue'
 import SetupCapabilitiesPanel from '@/components/setup/SetupCapabilitiesPanel.vue'
 import SettingsPrivacyPanel from '@/components/settings/SettingsPrivacyPanel.vue'
-import SettingsSafetyPanel from '@/components/settings/SettingsSafetyPanel.vue'
 import SettingsAppearancePanel from '@/components/settings/SettingsAppearancePanel.vue'
 import SettingsKeyboardPanel from '@/components/settings/SettingsKeyboardPanel.vue'
 import SettingsAdvancedPanel from '@/components/settings/SettingsAdvancedPanel.vue'

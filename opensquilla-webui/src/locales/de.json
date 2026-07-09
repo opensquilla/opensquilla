@@ -671,6 +671,35 @@
       "offSurfacesError": "off zeigt den ursprünglichen Anbieterfehler an.",
       "audioEnvVar": "Umgebungsvariable, die für den Zugriff auf den Audioanbieter gelesen wird.",
       "remoteEmbeddingKey": "Remote-Embedding-API-Schlüssel oder Umgebungsreferenz."
+    },
+    "memoryLearning": {
+      "groupTitle": "Gedächtnis & Selbstlernen",
+      "dreamLabel": "Gedächtniskonsolidierung (dream)",
+      "tokenBadge": "Token-Verbrauch",
+      "dreamDesc": "Führt regelmäßig einen Modelldurchlauf zur Konsolidierung des Sitzungsgedächtnisses aus (alle 24 h). Das Selbstlernen des Modell-Routings nutzt diese Leerlauffenster zum Trainieren.",
+      "selfLearningLabel": "Modell-Routing-Selbstlernen",
+      "selfLearningDesc": "Lernt Routing-Präferenzen aus Ihren Korrekturen. Vollständig lokal — speichert Merkmalsvektoren, niemals Gesprächstexte.",
+      "depDefault": "Hängt von der Gedächtniskonsolidierung oben ab: Das Einschalten aktiviert sie mit; wird nur die Konsolidierung abgeschaltet, läuft die Erfassung weiter, das automatische Training pausiert.",
+      "depLinked": "Die Gedächtniskonsolidierung wurde zusammen mit dieser Option aktiviert. Sie können sie separat abschalten — die Erfassung läuft weiter, nur das automatische Training pausiert.",
+      "depPaused": "Die Gedächtniskonsolidierung ist aus — Stichproben werden weiter erfasst, aber es findet kein automatisches Training statt. Zum Fortsetzen wieder aktivieren.",
+      "restartRequired": "Für die Zeitplanänderung ist ein Gateway-Neustart erforderlich.",
+      "statusModel": "Routing-Modell",
+      "statusSamples": "Korrekturen",
+      "statusLastAction": "Letzte Aktion",
+      "modelBaseline": "Werksbasislinie",
+      "modelLearned": "Gelernt v{version}",
+      "samplesTotal": "Insgesamt {total} erfasst",
+      "gatePausedDream": "Training pausiert — wartet auf die Reaktivierung der Gedächtniskonsolidierung",
+      "gateReason": {
+        "ready": "Bereit — trainiert im nächsten Zeitfenster",
+        "disabled": "Deaktiviert",
+        "no_data": "Noch keine Stichproben erfasst",
+        "agent_active": "Wartet auf ein Leerlauffenster",
+        "cooldown": "Abklingzeit nach kürzlichem Training",
+        "insufficient_data": "Noch nicht trainiert — zu wenige Korrekturen",
+        "insufficient_class_diversity": "Noch nicht trainiert — Korrekturen decken zu wenige Routing-Stufen ab"
+      },
+      "detachedNote": "Die Basisgewichte des Routings wurden aktualisiert. Auf den alten Gewichten aufgebautes Lernen wurde archiviert; Ihre Korrekturen bleiben erhalten und werden auf den neuen Gewichten automatisch neu gelernt. Keine Aktion nötig."
     }
   },
   "sessions": {
@@ -1975,6 +2004,14 @@
     },
     "modelRouting": {
       "updateFailed": "Modell-Routing konnte nicht umgeschaltet werden – zurückgesetzt. Prüfen Sie die Gateway-Verbindung und versuchen Sie es erneut."
+    },
+    "routeFeedback": {
+      "up": "Richtige Modellwahl für diesen Zug",
+      "down": "Falsche Modellwahl für diesen Zug",
+      "upEnsemble": "Mit dieser aggregierten Antwort zufrieden",
+      "downEnsemble": "Mit dieser aggregierten Antwort unzufrieden",
+      "expired": "Der Routing-Eintrag dieser Nachricht ist abgelaufen",
+      "failed": "Bewertung konnte nicht gespeichert werden"
     }
   },
   "shared": {

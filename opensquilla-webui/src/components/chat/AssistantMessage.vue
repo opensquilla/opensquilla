@@ -182,6 +182,32 @@
             <button type="button" class="msg-action" :title="t('chat.regenerate')" :aria-label="t('chat.regenerate')" @click="$emit('regenerate', message)">
               <Icon name="refresh" :size="12" />
             </button>
+            <template v-if="feedbackDecisionId">
+              <button
+                type="button"
+                class="msg-action msg-action--vote"
+                :class="{ 'msg-action--ok': feedbackRating === 'up' }"
+                :disabled="feedbackBusy"
+                :aria-pressed="feedbackRating === 'up'"
+                :title="feedbackUpTitle"
+                :aria-label="feedbackUpTitle"
+                @click="onFeedbackClick('up')"
+              >
+                <Icon name="thumbs-up" :size="12" />
+              </button>
+              <button
+                type="button"
+                class="msg-action msg-action--vote"
+                :class="{ 'msg-action--err': feedbackRating === 'down' }"
+                :disabled="feedbackBusy"
+                :aria-pressed="feedbackRating === 'down'"
+                :title="feedbackDownTitle"
+                :aria-label="feedbackDownTitle"
+                @click="onFeedbackClick('down')"
+              >
+                <Icon name="thumbs-down" :size="12" />
+              </button>
+            </template>
             <button
               v-if="isTip"
               type="button"
@@ -217,6 +243,7 @@ import InterruptPart from '@/components/chat/parts/InterruptPart.vue'
 import ReasoningPart from '@/components/chat/parts/ReasoningPart.vue'
 import StatusHistoryPart from '@/components/chat/parts/StatusHistoryPart.vue'
 import TextPart from '@/components/chat/parts/TextPart.vue'
+import { useChatRouteFeedback } from '@/composables/chat/useChatRouteFeedback'
 import { useCopyFeedback } from '@/composables/chat/useCopyFeedback'
 import { useRelativeNow } from '@/composables/useRelativeNow'
 import type {
@@ -270,6 +297,25 @@ const emit = defineEmits<{
 // Absolute label is static; only the relative label subscribes to the shared
 // clock, so a tick re-evaluates one cheap computed per visible bubble.
 const { t } = useI18n()
+
+// Routing feedback: buttons only exist when the turn carries a V017 decision
+// id (router actually decided this turn). The copy differs by execution kind —
+// a single-model rating judges the tier choice, an ensemble rating judges the
+// aggregated answer (backend excludes it from tier training accordingly).
+const routeFeedback = useChatRouteFeedback()
+const feedbackDecisionId = computed(() => props.message.meta?.decisionId)
+const feedbackRating = computed(() => routeFeedback.ratingFor(feedbackDecisionId.value))
+const feedbackBusy = computed(() => routeFeedback.busy(feedbackDecisionId.value))
+const feedbackUpTitle = computed(() =>
+  props.message.meta?.ensemble ? t('chat.routeFeedback.upEnsemble') : t('chat.routeFeedback.up'),
+)
+const feedbackDownTitle = computed(() =>
+  props.message.meta?.ensemble ? t('chat.routeFeedback.downEnsemble') : t('chat.routeFeedback.down'),
+)
+function onFeedbackClick(rating: 'up' | 'down') {
+  const id = feedbackDecisionId.value
+  if (id) void routeFeedback.submit(id, rating)
+}
 
 const now = useRelativeNow()
 const timeIso = computed(() => isoTime(props.message.ts))
@@ -648,6 +694,17 @@ function ensembleRole(role: string, label: string): string {
 .msg-action.msg-action--err,
 .msg-action.msg-action--err:hover {
   color: var(--danger);
+}
+
+.msg-action--vote:disabled {
+  cursor: progress;
+  opacity: 0.55;
+}
+
+/* A cast vote stays visible without hover — the row otherwise fades out and
+   the user would lose the only cue that their rating registered. */
+.msg-ai-actions:has(.msg-action--vote[aria-pressed='true']) {
+  opacity: 1;
 }
 
 .msg-copy-live {

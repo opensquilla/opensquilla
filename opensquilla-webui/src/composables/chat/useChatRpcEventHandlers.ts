@@ -117,6 +117,7 @@ type ChatDoneUsageFields = {
   modelUsageBreakdown?: unknown
   ensemble_trace?: unknown
   ensembleTrace?: unknown
+  decision_id?: string
 }
 
 type ChatDoneUsagePayload = SessionEventPayload & ChatDoneUsageFields & {

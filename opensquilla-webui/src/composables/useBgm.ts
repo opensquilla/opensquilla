@@ -255,10 +255,20 @@ export function useBgm() {
     if (initPromise) return initPromise
     initPromise = (async () => {
       const saved = readPersisted()
+      const restoreGeneration = playbackGeneration
       if (typeof saved.volume === 'number' && Number.isFinite(saved.volume)) {
         volume.value = Math.min(1, Math.max(0, saved.volume))
       }
       await loadPlaylist()
+      // Loading manifests yields to user interaction. Never apply the stale
+      // startup snapshot over a local-file selection or an intervening
+      // disable/re-enable cycle. Keep a real selection, otherwise choose the
+      // new default, and persist the current (necessarily non-stale) state.
+      if (restoreGeneration !== playbackGeneration) {
+        if (!currentTrackId.value) currentTrackId.value = tracks.value[0]?.id || ''
+        persist()
+        return
+      }
       // Restore the selection: a persisted playlist id wins; the session-only
       // local slot (or an id gone from the manifest) falls back to the first
       // manifest entry — the designated default track — unplayed.

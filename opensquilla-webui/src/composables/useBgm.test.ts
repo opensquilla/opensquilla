@@ -54,6 +54,22 @@ function stubFetch(payload: unknown = PLAYLIST, ok = true, localPayload: unknown
   return fetchMock
 }
 
+function stubDeferredBaseManifest(payload: unknown = PLAYLIST) {
+  let resolveBase!: (response: unknown) => void
+  const baseResponse = new Promise<unknown>((resolve) => { resolveBase = resolve })
+  const fetchMock = vi.fn(async (url: unknown) => {
+    if (String(url).includes('playlist.local.json')) {
+      return { ok: false, status: 404, json: async () => ({}) }
+    }
+    return baseResponse
+  })
+  vi.stubGlobal('fetch', fetchMock)
+  return {
+    fetchMock,
+    resolve: () => resolveBase({ ok: true, status: 200, json: async () => payload }),
+  }
+}
+
 async function freshBgm() {
   vi.resetModules()
   return import('./useBgm')
@@ -185,6 +201,53 @@ describe('useBgm — init', () => {
     expect(bgm.playing.value).toBe(false)
     expect(FakeAudio.instances).toHaveLength(0)
     expect(JSON.parse(localStorage.getItem('opensquilla-bgm')!)).toMatchObject({
+      trackId: 'sun-yanzi-yujian',
+      playing: false,
+    })
+  })
+
+  it('does not overwrite a local file chosen while the playlist is loading', async () => {
+    localStorage.setItem('opensquilla-bgm', JSON.stringify({ enabled: true }))
+    vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:during-init')
+    const manifest = stubDeferredBaseManifest()
+    const { useBgm, BGM_LOCAL_TRACK_ID } = await freshBgm()
+    const bgm = useBgm()
+
+    const pendingInit = bgm.initBgm()
+    await bgm.playLocalFile(new File(['music'], 'chosen.mp3', { type: 'audio/mpeg' }))
+    manifest.resolve()
+    await pendingInit
+
+    expect(bgm.currentTrackId.value).toBe(BGM_LOCAL_TRACK_ID)
+    expect(bgm.currentTitle.value).toBe('chosen.mp3')
+    expect(bgm.playing.value).toBe(true)
+    expect(FakeAudio.instances[0].src).toBe('blob:during-init')
+    expect(JSON.parse(localStorage.getItem('opensquilla-bgm')!)).toMatchObject({
+      trackId: BGM_LOCAL_TRACK_ID,
+      playing: true,
+    })
+  })
+
+  it('does not resume a stale snapshot after disable and re-enable during init', async () => {
+    localStorage.setItem(
+      'opensquilla-bgm',
+      JSON.stringify({ enabled: true, playing: true, trackId: 'sun-yanzi-yujian' }),
+    )
+    const manifest = stubDeferredBaseManifest()
+    const { useBgm } = await freshBgm()
+    const bgm = useBgm()
+
+    const pendingInit = bgm.initBgm()
+    bgm.setEnabled(false)
+    bgm.setEnabled(true)
+    manifest.resolve()
+    await pendingInit
+
+    expect(bgm.currentTrackId.value).toBe('sun-yanzi-yujian')
+    expect(bgm.playing.value).toBe(false)
+    expect(FakeAudio.instances).toHaveLength(0)
+    expect(JSON.parse(localStorage.getItem('opensquilla-bgm')!)).toMatchObject({
+      enabled: true,
       trackId: 'sun-yanzi-yujian',
       playing: false,
     })

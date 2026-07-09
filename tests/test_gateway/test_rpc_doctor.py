@@ -1312,6 +1312,10 @@ def test_legacy_home_payload_reads_config_home_and_freshness(
         "targetFresh": True,
         "path": str(tmp_path / "legacy-home"),
         "kind": "windows-portable",
+        "command": (
+            "opensquilla migrate opensquilla --kind windows-portable "
+            f"--source {tmp_path / 'legacy-home'}"
+        ),
     }
     # Detection targeted the home the gateway actually runs from.
     assert seen_targets == [(tmp_path / "home").resolve()]

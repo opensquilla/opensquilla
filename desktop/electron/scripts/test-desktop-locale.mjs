@@ -21,6 +21,7 @@ assert.equal(resolveLocaleFromTags(['zh-Hans-MO']), 'zh-Hans')
 assert.equal(resolveLocaleFromTags(['zh-CN']), 'zh-Hans')
 assert.equal(resolveLocaleFromTags(['zh']), 'zh-Hans')
 assert.equal(resolveLocaleFromTags(['zh-Hans-CN']), 'zh-Hans')
+assert.equal(resolveLocaleFromTags(['zh_Hans_HK']), 'zh-Hans')
 
 // Traditional variants (explicit Hant, or bare Traditional-default regions)
 // skip to the next preference rather than forcing Simplified text.
@@ -29,10 +30,17 @@ assert.equal(resolveLocaleFromTags(['zh-Hant-HK', 'ja-JP']), 'ja')
 assert.equal(resolveLocaleFromTags(['zh-TW']), 'en')
 assert.equal(resolveLocaleFromTags(['zh-HK', 'fr-FR']), 'fr')
 assert.equal(resolveLocaleFromTags(['zh-MO', 'de']), 'de')
+assert.equal(resolveLocaleFromTags(['zh_HK', 'fr-FR']), 'fr')
+
+// Script detection is structural, never a substring match against extensions
+// or private-use subtags.
+assert.equal(resolveLocaleFromTags(['zh-Hant-x-hans', 'ja-JP']), 'ja')
+assert.equal(resolveLocaleFromTags(['zh-CN-x-hant', 'fr-FR']), 'zh-Hans')
 
 // --- other bundled languages and fallback ---
 
 assert.equal(resolveLocaleFromTags(['fr-CA']), 'fr')
+assert.equal(resolveLocaleFromTags(['fr_CA']), 'fr')
 assert.equal(resolveLocaleFromTags(['de-AT']), 'de')
 assert.equal(resolveLocaleFromTags(['es-419']), 'es')
 // Unsupported languages skip to the next preference; nothing matches → 'en'.
@@ -41,5 +49,7 @@ assert.equal(resolveLocaleFromTags(['ko-KR', 'th-TH']), 'en')
 assert.equal(resolveLocaleFromTags([]), 'en')
 // Malformed entries (Electron APIs can surface non-strings) are skipped.
 assert.equal(resolveLocaleFromTags([undefined, null, 42, 'ja']), 'ja')
+assert.equal(resolveLocaleFromTags(['en--US', 'ja']), 'ja')
+assert.equal(resolveLocaleFromTags(['zh-Hans-Hant', 'fr']), 'fr')
 
 console.log('desktop-locale resolution tests passed')

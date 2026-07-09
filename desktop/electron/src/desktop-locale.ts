@@ -15,24 +15,35 @@ export const DESKTOP_LOCALES: DesktopLocale[] = ['en', 'zh-Hans', 'ja', 'fr', 'd
 export function resolveLocaleFromTags(tags: readonly unknown[]): DesktopLocale {
   for (const raw of tags) {
     if (typeof raw !== 'string') continue
-    const t = raw.toLowerCase()
+    let locale: Intl.Locale
+    try {
+      // Electron returns canonical BCP-47 tags. Accept underscores too for
+      // compatibility with legacy locale strings, but let Intl.Locale reject
+      // malformed tags instead of matching them by substring.
+      locale = new Intl.Locale(raw.trim().replaceAll('_', '-'))
+    } catch {
+      continue
+    }
+    const language = locale.language.toLowerCase()
     // English is a bundled locale and must match here: without this branch a
     // top-preference en-* tag falls through and a LOWER-preference language
     // (e.g. fr-HK behind en-HK on a Hong Kong system) wins the loop.
-    if (t === 'en' || t.startsWith('en-') || t.startsWith('en_')) return 'en'
-    if (t.startsWith('zh')) {
+    if (language === 'en') return 'en'
+    if (language === 'zh') {
       // Only Simplified Chinese is bundled. An explicit script subtag wins
       // over region: zh-Hans-HK/TW/MO is Simplified wherever the reader
       // lives. Only then route Traditional variants — explicit zh-Hant, or
       // bare region tags that default to Traditional (zh-TW / zh-HK /
       // zh-MO) — to the English fallback rather than forcing Simplified
       // text a Traditional reader may not want.
-      if (t.includes('hans')) return 'zh-Hans'
-      if (t.includes('hant') || /-(tw|hk|mo)\b/.test(t)) continue
+      const script = locale.script?.toLowerCase()
+      const region = locale.region?.toLowerCase()
+      if (script === 'hans') return 'zh-Hans'
+      if (script === 'hant' || region === 'tw' || region === 'hk' || region === 'mo') continue
       return 'zh-Hans'
     }
     for (const code of ['ja', 'fr', 'de', 'es'] as const) {
-      if (t === code || t.startsWith(code + '-')) return code
+      if (language === code) return code
     }
   }
   return 'en'

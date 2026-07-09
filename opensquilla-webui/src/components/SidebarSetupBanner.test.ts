@@ -75,13 +75,13 @@ describe('readinessLegacyData', () => {
     expect(
       readinessLegacyData({
         legacyData: {
-          path: '/home/user/.opensquilla-legacy',
+          path: '/srv/dummy-legacy/.opensquilla',
           kind: 'cli-home',
           command: 'opensquilla migrate opensquilla',
         },
       }),
     ).toEqual({
-      path: '/home/user/.opensquilla-legacy',
+      path: '/srv/dummy-legacy/.opensquilla',
       kind: 'cli-home',
       command: 'opensquilla migrate opensquilla',
     })

@@ -61,6 +61,8 @@ def _candidate_strings(
     resolved: Path,
     original_path: str,
     workspace: Path | None,
+    *,
+    as_directory: bool = False,
 ) -> tuple[str, ...]:
     candidates: list[str] = [
         original_path.replace("\\", "/").lstrip("./"),
@@ -73,6 +75,10 @@ def _candidate_strings(
             relative = ""
         if relative:
             candidates.extend([relative, f"./{relative}"])
+    if as_directory:
+        # A directory operand mutates everything beneath it; the trailing
+        # slash lets dir/** style globs match the directory itself.
+        candidates = [f"{candidate.rstrip('/')}/" for candidate in candidates]
     return tuple(dict.fromkeys(candidates))
 
 
@@ -82,6 +88,7 @@ def match_workspace_write_deny(
     original_path: str | None = None,
     workspace: Path | None = None,
     ctx: ToolContext | None = None,
+    as_directory: bool = False,
 ) -> WorkspaceWriteDenyMatch | None:
     """Return the deny rule matching a write target, if any.
 
@@ -100,7 +107,7 @@ def match_workspace_write_deny(
         except ValueError:
             return None
     original = original_path if original_path is not None else str(path)
-    candidates = _candidate_strings(resolved, original, workspace)
+    candidates = _candidate_strings(resolved, original, workspace, as_directory=as_directory)
 
     for pattern in patterns:
         normalized_pattern = pattern.replace("\\", "/").lstrip("./")

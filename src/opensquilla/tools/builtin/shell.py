@@ -2730,10 +2730,104 @@ def _write_deny_lever_enabled(name: str) -> bool:
     return os.environ.get(name, "").strip().lower() in _WRITE_DENY_TRUE_ENV_VALUES
 
 
-_MUTATOR_SEGMENT_SPLIT_RE = re.compile(r"\|\||&&|;|\||\n")
 _SHORT_OPTIONS_WITH_I_RE = re.compile(r"^-[A-Za-z]*i")
 _ENV_ASSIGNMENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 _COMMAND_PREFIX_WORDS = frozenset({"command", "env", "nohup", "sudo", "time"})
+
+
+def _mutator_command_segments(command: str) -> list[str]:
+    """Split a shell command on unquoted ``|``, ``||``, ``&&``, ``;``, newlines.
+
+    Operators inside quotes stay in their segment (``sed 's|a|b|'``,
+    ``git commit -m 'a; b'``) and heredoc bodies are dropped entirely: their
+    text is data, not commands. Best-effort, like the extraction it feeds.
+    """
+
+    segments: list[str] = []
+    current: list[str] = []
+    heredoc_delimiters: list[str] = []
+    index = 0
+    length = len(command)
+
+    def flush() -> None:
+        segment = "".join(current)
+        current.clear()
+        if segment.strip():
+            segments.append(segment)
+
+    while index < length:
+        char = command[index]
+        if char == "\\":
+            current.append(command[index : index + 2])
+            index += 2
+            continue
+        if char == "'":
+            end = command.find("'", index + 1)
+            end = length - 1 if end == -1 else end
+            current.append(command[index : end + 1])
+            index = end + 1
+            continue
+        if char == '"':
+            scan = index + 1
+            while scan < length and command[scan] != '"':
+                scan += 2 if command[scan] == "\\" else 1
+            current.append(command[index : min(scan + 1, length)])
+            index = scan + 1
+            continue
+        if command.startswith("<<", index) and not command.startswith("<<<", index):
+            scan = index + 2
+            if scan < length and command[scan] == "-":
+                scan += 1
+            while scan < length and command[scan] in " \t":
+                scan += 1
+            quote = command[scan] if scan < length and command[scan] in "'\"" else ""
+            if quote:
+                scan += 1
+            start = scan
+            if quote:
+                while scan < length and command[scan] != quote:
+                    scan += 1
+                delimiter = command[start:scan]
+                if scan < length:
+                    scan += 1
+            else:
+                while scan < length and command[scan] not in " \t\n;|&<>":
+                    scan += 1
+                delimiter = command[start:scan]
+            if delimiter:
+                heredoc_delimiters.append(delimiter)
+            current.append(command[index:scan])
+            index = scan
+            continue
+        if char == "\n":
+            flush()
+            index += 1
+            if heredoc_delimiters:
+                while heredoc_delimiters and index < length:
+                    line_end = command.find("\n", index)
+                    if line_end == -1:
+                        line_end = length
+                    if command[index:line_end].strip() == heredoc_delimiters[0]:
+                        heredoc_delimiters.pop(0)
+                    index = line_end + 1
+                heredoc_delimiters.clear()
+            continue
+        if char == ";":
+            flush()
+            index += 1
+            continue
+        if char == "|":
+            flush()
+            index += 2 if command.startswith("||", index) else 1
+            continue
+        if command.startswith("&&", index):
+            flush()
+            index += 2
+            continue
+        current.append(char)
+        index += 1
+    flush()
+    return segments
 
 
 def _segment_argv(segment: str) -> list[str]:
@@ -2784,16 +2878,36 @@ def _sed_write_targets(argv: list[str]) -> list[str]:
     positionals = _positional_args(
         options, value_flags=frozenset({"-e", "-f", "--expression", "--file"})
     )
+    if not script_from_flag and positionals and positionals[0] == "":
+        # BSD sed -i '' idiom: the empty token is -i's backup suffix.
+        positionals = positionals[1:]
     if not script_from_flag and positionals:
         # Without -e/-f the first positional is the sed script, not a file.
         positionals = positionals[1:]
     return positionals
 
 
+_PERL_REST_ARG_OPTION_CHARS = frozenset("0CDFIeEmMx")
+
+
+def _perl_token_enables_inplace(token: str) -> bool:
+    # Perl bundles single-char switches, and several consume the rest of the
+    # token as their argument (-Ilib, -MSome::Module, -e'code'); an 'i'
+    # inside such an argument is not the in-place switch.
+    if not token.startswith("-") or token == "--":
+        return False
+    for char in token[1:]:
+        if char == "i":
+            return True
+        if char in _PERL_REST_ARG_OPTION_CHARS or not char.isalnum():
+            return False
+    return False
+
+
 def _perl_write_targets(argv: list[str]) -> list[str]:
     options = argv[1:]
     inplace = any(
-        _SHORT_OPTIONS_WITH_I_RE.match(token)
+        _perl_token_enables_inplace(token)
         for token in options
         if token.startswith("-") and token != "--"
     )
@@ -2876,7 +2990,12 @@ def _git_write_targets(argv: list[str]) -> list[str]:
         return []
     if tokens[index] not in ("rm", "mv"):
         return []
-    return _positional_args(tokens[index + 1 :])
+    sub_args = tokens[index + 1 :]
+    option_args = sub_args[: sub_args.index("--")] if "--" in sub_args else sub_args
+    if tokens[index] == "rm" and "--cached" in option_args:
+        # git rm --cached only unstages; the worktree file is untouched.
+        return []
+    return _positional_args(sub_args)
 
 
 _MUTATOR_WRITE_TARGET_EXTRACTORS: dict[str, Callable[[list[str]], list[str]]] = {
@@ -2904,7 +3023,7 @@ def _mutating_command_write_targets(command: str) -> list[str]:
     """
 
     targets: list[str] = []
-    for segment in _MUTATOR_SEGMENT_SPLIT_RE.split(command):
+    for segment in _mutator_command_segments(command):
         argv = _segment_argv(segment)
         while argv and (
             _ENV_ASSIGNMENT_RE.match(argv[0])
@@ -3449,10 +3568,12 @@ def _workspace_write_deny_shell_block(
     )
     target_workdir = _shell_redirection_workdir(command, workdir)
     candidate_targets = list(_shell_write_targets_from_inputs(command, stdin))
+    mutator_targets: set[str] = set()
     if _write_deny_lever_enabled("OPENSQUILLA_WORKSPACE_WRITE_DENY_COMMAND_TARGETS"):
         for extra_target in _mutating_command_write_targets_from_inputs(command, stdin):
             if extra_target not in candidate_targets:
                 candidate_targets.append(extra_target)
+                mutator_targets.add(extra_target)
     for target in candidate_targets:
         resolved = _resolve_shell_write_target(target, target_workdir)
         deny_match = match_workspace_write_deny(
@@ -3461,6 +3582,20 @@ def _workspace_write_deny_shell_block(
             workspace=workspace,
             ctx=ctx,
         )
+        if (
+            deny_match is None
+            and target in mutator_targets
+            and resolved.is_dir()
+        ):
+            # A directory operand (rm -rf tests) mutates everything beneath
+            # it; match it against dir/** style globs as well.
+            deny_match = match_workspace_write_deny(
+                resolved,
+                original_path=target,
+                workspace=workspace,
+                ctx=ctx,
+                as_directory=True,
+            )
         if deny_match is not None:
             return workspace_write_deny_block(tool_name, deny_match, command=command)
     return None

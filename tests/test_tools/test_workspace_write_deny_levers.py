@@ -70,12 +70,21 @@ def _configure_ctx(workspace: Path, globs: list[str]) -> ToolContext:
             ["tests/test_a.py", "tests/test_b.py"],
         ),
         ("sed --in-place=.bak 's/a/b/' tests/test_a.py", ["tests/test_a.py"]),
+        # BSD sed: the empty token is -i's backup suffix, not the script.
+        ("sed -i '' 's/a/b/' tests/test_a.py", ["tests/test_a.py"]),
+        # Script delimiters and separators are not shell operators.
+        ("sed -i 's|a|b|' tests/test_a.py", ["tests/test_a.py"]),
+        ("sed -i 's/a/b/; s/c/d/' tests/test_a.py", ["tests/test_a.py"]),
         # No in-place flag: read-only sed must not produce write targets.
         ("sed -n '1p' tests/test_a.py", []),
         ("perl -pi -e 's/a/b/' tests/test_a.py", ["tests/test_a.py"]),
         ("perl -i.bak -pe 's/a/b/' tests/test_a.py", ["tests/test_a.py"]),
         ("perl -e 'print 1' tests/test_a.py", []),
+        # -I consumes the rest of the token; its 'i' is not the in-place switch.
+        ("perl -Ilib -e 'print 1' tests/test_a.py", []),
         ("rm -f tests/test_a.py", ["tests/test_a.py"]),
+        # Directory operands are extracted; the gate matches them as dir/**.
+        ("rm -rf tests", ["tests"]),
         ("unlink tests/test_a.py", ["tests/test_a.py"]),
         # mv mutates both operands: the source is removed, the dest written.
         ("mv tests/test_a.py /tmp/aside.py", ["tests/test_a.py", "/tmp/aside.py"]),
@@ -84,6 +93,8 @@ def _configure_ctx(workspace: Path, globs: list[str]) -> ToolContext:
         ("dd if=/dev/zero of=tests/test_a.py bs=1", ["tests/test_a.py"]),
         ("truncate -s 0 tests/test_a.py", ["tests/test_a.py"]),
         ("git rm tests/test_a.py", ["tests/test_a.py"]),
+        # git rm --cached only unstages; the worktree file is untouched.
+        ("git rm --cached tests/test_a.py", []),
         ("git -C sub mv tests/test_a.py aside.py", ["tests/test_a.py", "aside.py"]),
         # git checkout/restore recover original content; not treated as writes.
         ("git checkout -- tests/test_a.py", []),
@@ -92,6 +103,10 @@ def _configure_ctx(workspace: Path, globs: list[str]) -> ToolContext:
             "cat tests/test_a.py | grep x && sed -i 's/a/b/' tests/test_b.py",
             ["tests/test_b.py"],
         ),
+        # Operators inside quotes are data, not command separators.
+        ("git commit -m 'cleanup; rm tests/test_a.py'", []),
+        # Heredoc bodies are data, not commands.
+        ("cat <<'EOF' > /tmp/notes.txt\nrm tests/test_a.py\nEOF", []),
         ("pytest tests/test_a.py", []),
         ("cat tests/test_a.py", []),
     ],
@@ -132,6 +147,65 @@ def test_command_targets_lever_adds_mutator_targets(
     assert block["target"] == "tests/test_a.py"
 
 
+def test_command_targets_lever_blocks_directory_operands(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv(_COMMAND_TARGETS_ENV, "1")
+    workspace = tmp_path / "workspace"
+    tests_dir = workspace / "tests"
+    tests_dir.mkdir(parents=True)
+    (tests_dir / "test_a.py").write_text("assert a\n", encoding="utf-8")
+    _configure_ctx(workspace, ["tests/**"])
+
+    for command in ("rm -rf tests", "cp -t tests src_a.py"):
+        block = shell._workspace_write_deny_shell_block(
+            "exec_command", command, str(workspace)
+        )
+        assert block is not None, command
+        assert block["reason"] == "workspace_write_deny"
+        assert block["matched_pattern"] == "tests/**"
+        assert block["target"] == "tests"
+
+
+def test_command_targets_quoted_operators_and_heredocs_stay_data(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv(_COMMAND_TARGETS_ENV, "1")
+    workspace = tmp_path / "workspace"
+    tests_dir = workspace / "tests"
+    tests_dir.mkdir(parents=True)
+    (tests_dir / "test_a.py").write_text("assert a\n", encoding="utf-8")
+    _configure_ctx(workspace, ["tests/**"])
+
+    for command in (
+        "git commit -m 'cleanup; rm tests/test_a.py'",
+        "cat <<'EOF' > notes.txt\nrm tests/test_a.py\nEOF",
+    ):
+        block = shell._workspace_write_deny_shell_block(
+            "exec_command", command, str(workspace)
+        )
+        assert block is None, command
+
+
+def test_match_workspace_write_deny_directory_form_is_opt_in(
+    tmp_path: Path,
+) -> None:
+    # The trailing-slash candidates only apply on request; existing callers
+    # (file tools, patch gate) keep byte-identical matching for bare dirs.
+    workspace = tmp_path / "workspace"
+    (workspace / "tests").mkdir(parents=True)
+    _configure_ctx(workspace, ["tests/**"])
+    target = workspace / "tests"
+
+    assert write_policy.match_workspace_write_deny(target, workspace=workspace) is None
+
+    match = write_policy.match_workspace_write_deny(
+        target, workspace=workspace, as_directory=True
+    )
+    assert match is not None
+    assert match.pattern == "tests/**"
+
+
 @pytest.mark.asyncio
 async def test_exec_command_blocks_mutator_on_denied_path_when_lever_on(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -152,6 +226,29 @@ async def test_exec_command_blocks_mutator_on_denied_path_when_lever_on(
     assert payload["status"] == "blocked"
     assert payload["reason"] == "workspace_write_deny"
     assert payload["matched_pattern"] == "tests/**"
+    assert target.read_text(encoding="utf-8") == "assert a\n"
+
+
+@pytest.mark.asyncio
+async def test_background_process_blocks_mutator_on_denied_path_when_lever_on(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv(_COMMAND_TARGETS_ENV, "1")
+    workspace = tmp_path / "workspace"
+    tests_dir = workspace / "tests"
+    tests_dir.mkdir(parents=True)
+    target = tests_dir / "test_a.py"
+    target.write_text("assert a\n", encoding="utf-8")
+    _configure_ctx(workspace, ["tests/**"])
+
+    result = await shell.background_process(
+        "sed -i 's/a/b/' tests/test_a.py", workdir=str(workspace)
+    )
+
+    payload = json.loads(result)
+    assert payload["status"] == "blocked"
+    assert payload["reason"] == "workspace_write_deny"
+    assert payload["tool"] == "background_process"
     assert target.read_text(encoding="utf-8") == "assert a\n"
 
 

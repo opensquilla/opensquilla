@@ -9,10 +9,12 @@ import sqlite3
 import time
 import uuid
 from dataclasses import asdict, replace
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
 import structlog
 
+from opensquilla.agents.scope import default_workspace_dir, resolve_agent_workspace_dir
 from opensquilla.artifacts import enrich_artifact_event_dict
 from opensquilla.engine.cache_break_monitor import notify_compaction
 from opensquilla.engine.start_turn import reserve_turn_via_runtime, start_turn_via_runtime
@@ -41,6 +43,7 @@ from opensquilla.gateway.turn_ingress import (
 )
 from opensquilla.paths import media_root_from_config
 from opensquilla.sandbox.run_context import (
+    RUN_CONTEXT_ORIGIN_KEY,
     get_run_context,
     run_context_from_origin_payload,
 )
@@ -626,6 +629,58 @@ async def _bootstrap_agent_identity(ctx: RpcContext, agent_id: str) -> dict[str,
     return payload
 
 
+def _normalize_workspace_display_path(value: Any) -> str | None:
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    if not text:
+        return None
+    try:
+        return str(Path(text).expanduser().resolve(strict=False))
+    except (OSError, RuntimeError, ValueError):
+        return text
+
+
+def _same_workspace_path(left: str, right: str | Path) -> bool:
+    try:
+        return Path(left).expanduser().resolve(strict=False) == Path(right).expanduser().resolve(
+            strict=False
+        )
+    except (OSError, RuntimeError, ValueError):
+        return str(left).rstrip("/\\") == str(right).rstrip("/\\")
+
+
+def _is_default_opensquilla_workspace(workspace: str) -> bool:
+    return _same_workspace_path(workspace, default_workspace_dir())
+
+
+def _workspace_metadata_for_session(session: Any, config: Any) -> dict[str, str]:
+    origin = getattr(session, "origin", None)
+    origin_map = origin if isinstance(origin, dict) else {}
+    context_payload = origin_map.get(RUN_CONTEXT_ORIGIN_KEY)
+    workspace = (
+        context_payload.get("workspace") if isinstance(context_payload, dict) else None
+    )
+    workspace_path = _normalize_workspace_display_path(workspace)
+
+    if workspace_path is None:
+        session_key = str(getattr(session, "session_key", "") or "")
+        agent_id = _effective_agent_id_for_session(session, session_key)
+        workspace_path = _normalize_workspace_display_path(
+            str(resolve_agent_workspace_dir(agent_id, config))
+        )
+
+    if workspace_path is None or _is_default_opensquilla_workspace(workspace_path):
+        return {}
+
+    label = Path(workspace_path).name or workspace_path
+    return {
+        "workspace": workspace_path,
+        "workspaceLabel": label,
+        "workspaceDisplayPath": workspace_path,
+    }
+
+
 def _context_window_tokens(params: dict | None, ctx: RpcContext) -> int:
     raw: Any = None
     if isinstance(params, dict):
@@ -1128,6 +1183,7 @@ async def _handle_sessions_list(params: dict | None, ctx: RpcContext) -> dict:
         )
         row.update(task_summary)
         row.update(view_fields)
+        row.update(_workspace_metadata_for_session(s, ctx.config))
         result.append(row)
 
     return {"sessions": result, "count": len(result), "ts": now_ms}

@@ -14,6 +14,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from opensquilla.agents.registry import AgentRegistry
+from opensquilla.agents.scope import default_workspace_dir
 from opensquilla.attachment_refs import transcript_material_path
 from opensquilla.engine.types import DoneEvent, ErrorEvent
 from opensquilla.gateway import rpc_chat, rpc_sessions
@@ -30,6 +31,7 @@ from opensquilla.gateway.rpc_sessions import _normalize_terminal_event_payload
 from opensquilla.gateway.session_streams import get_session_streams
 from opensquilla.gateway.uploads import set_upload_store
 from opensquilla.gateway.websocket import SubscriptionManager, get_registry
+from opensquilla.sandbox.run_context import RUN_CONTEXT_ORIGIN_KEY
 from opensquilla.session.compaction import CompactionConfig
 from opensquilla.session.models import TranscriptEntry
 
@@ -731,6 +733,76 @@ class TestSessionsList:
         assert row["messageCount"] == row["message_count"]
         assert row["runStatus"] == "idle"
         assert row["interactive"] is True
+
+    @pytest.mark.asyncio
+    async def test_list_includes_workspace_from_run_context(self, dispatcher, tmp_path):
+        workspace = tmp_path / "project-alpha"
+        workspace.mkdir()
+        session = FakeSession(
+            session_key="agent:main:webchat:workspace",
+            origin={
+                RUN_CONTEXT_ORIGIN_KEY: {
+                    "workspace": str(workspace),
+                    "run_mode": "trusted",
+                }
+            },
+        )
+        ctx = make_ctx(session_manager=FakeSessionManager([session]))
+
+        res = await dispatcher.dispatch("r1", "sessions.list", None, ctx)
+
+        assert res.ok is True
+        row = res.payload["sessions"][0]
+        assert row["workspace"] == str(workspace)
+        assert row["workspaceLabel"] == "project-alpha"
+        assert row["workspaceDisplayPath"] == str(workspace)
+
+    @pytest.mark.asyncio
+    async def test_list_uses_explicit_config_workspace(self, dispatcher, tmp_path):
+        workspace = tmp_path / "project-beta"
+        workspace.mkdir()
+        session = FakeSession(session_key="agent:main:webchat:workspace-config")
+        ctx = make_ctx(
+            session_manager=FakeSessionManager([session]),
+            config=GatewayConfig(workspace_dir=str(workspace), memory={"flush_enabled": False}),
+        )
+
+        res = await dispatcher.dispatch("r1", "sessions.list", None, ctx)
+
+        assert res.ok is True
+        row = res.payload["sessions"][0]
+        assert row["workspace"] == str(workspace)
+        assert row["workspaceLabel"] == "project-beta"
+        assert row["workspaceDisplayPath"] == str(workspace)
+
+    @pytest.mark.asyncio
+    async def test_list_keeps_default_opensquilla_workspace_flat(
+        self, dispatcher, tmp_path, monkeypatch
+    ):
+        monkeypatch.setenv("OPENSQUILLA_STATE_DIR", str(tmp_path / "opensquilla-home"))
+        workspace = default_workspace_dir()
+        workspace.mkdir(parents=True)
+        session = FakeSession(
+            session_key="agent:main:webchat:default-workspace",
+            origin={
+                RUN_CONTEXT_ORIGIN_KEY: {
+                    "workspace": str(workspace),
+                    "run_mode": "trusted",
+                }
+            },
+        )
+        ctx = make_ctx(
+            session_manager=FakeSessionManager([session]),
+            config=GatewayConfig(memory={"flush_enabled": False}),
+        )
+
+        res = await dispatcher.dispatch("r1", "sessions.list", None, ctx)
+
+        assert res.ok is True
+        row = res.payload["sessions"][0]
+        assert "workspace" not in row
+        assert "workspaceLabel" not in row
+        assert "workspaceDisplayPath" not in row
 
     @pytest.mark.asyncio
     async def test_list_returns_each_session_once(self, dispatcher):

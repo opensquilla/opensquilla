@@ -102,6 +102,45 @@ def test_discord_parse_event_preserves_thread_native_metadata() -> None:
     )
 
 
+def test_discord_streaming_reply_kwargs_target_inbound_channel() -> None:
+    channel = DiscordChannel(
+        DiscordChannelConfig(token="token", default_channel_id="static-channel")
+    )
+
+    msg = channel.parse_event(
+        {
+            "id": "msg-1",
+            "channel_id": "origin-channel",
+            "guild_id": "guild-1",
+            "author": {"id": "user-1"},
+            "content": "hello",
+        }
+    )
+
+    assert channel.streaming_reply_kwargs(msg) == {"channel_id": "origin-channel"}
+
+
+def test_discord_build_reply_message_targets_inbound_channel() -> None:
+    channel = DiscordChannel(
+        DiscordChannelConfig(token="token", default_channel_id="static-channel")
+    )
+
+    msg = channel.parse_event(
+        {
+            "id": "msg-1",
+            "channel_id": "origin-channel",
+            "guild_id": "guild-1",
+            "author": {"id": "user-1"},
+            "content": "hello",
+        }
+    )
+
+    reply = channel.build_reply_message("answer", msg)
+
+    assert reply.reply_to == "origin-channel"
+    assert reply.metadata["reply_to_message_id"] == "msg-1"
+
+
 async def test_discord_gateway_channel_create_cache_classifies_group_dm() -> None:
     channel = DiscordChannel(DiscordChannelConfig(token="token"))
 

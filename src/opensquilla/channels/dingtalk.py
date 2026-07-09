@@ -17,6 +17,7 @@ import json
 import platform
 import socket
 import time
+from collections import OrderedDict
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -52,6 +53,11 @@ CAPABILITY_TIER = "GREEN-shipping"
 
 # DingTalk is a DM/group channel — the permission matrix denies admin-only.
 DM_SAFETY_TIERS: tuple[str, ...] = ("safe", "confirm")
+
+# Bounded number of recent inbound messages kept so a reply can be routed back
+# to the exact message that triggered the turn, immune to concurrent inbound
+# frames overwriting a single shared slot.
+_REPLY_CONTEXT_MAX = 256
 
 RETRYABLE_ERROR_CLASSES: tuple[str, ...] = (
     "transport_transient",
@@ -129,6 +135,12 @@ class DingTalkChannel:
     _run_task: asyncio.Task[None] | None = field(default=None, init=False, repr=False)
     _loop: asyncio.AbstractEventLoop | None = field(default=None, init=False, repr=False)
     _last_incoming: Any = field(default=None, init=False, repr=False)
+    _msg_by_id: OrderedDict[str, Any] = field(
+        default_factory=OrderedDict, init=False, repr=False
+    )
+    _msg_by_conversation: OrderedDict[str, Any] = field(
+        default_factory=OrderedDict, init=False, repr=False
+    )
     _last_card_instance: Any = field(default=None, init=False, repr=False)
     _last_message_at: datetime | None = field(default=None, init=False, repr=False)
     _msg_count: int = field(default=0, init=False, repr=False)
@@ -227,6 +239,23 @@ class DingTalkChannel:
             "is_group": is_group,
             "bot_mentioned": self._bot_mentioned(msg),
         }
+
+        # Bind the reply target to THIS message rather than resolving it from
+        # the channel-global _last_incoming at send time. That slot is
+        # overwritten by every inbound frame (on the SDK worker thread), so a
+        # concurrent conversation would otherwise steal the reply target and
+        # leak one user's answer into another user's chat. Keep a bounded
+        # msg_id -> ChatbotMessage map and reference it by id in metadata.
+        if msg_id:
+            self._msg_by_id[msg_id] = msg
+            while len(self._msg_by_id) > _REPLY_CONTEXT_MAX:
+                self._msg_by_id.popitem(last=False)
+        conv_key = str(conversation_id)
+        if conv_key and conv_key != "unknown":
+            self._msg_by_conversation[conv_key] = msg
+            self._msg_by_conversation.move_to_end(conv_key)
+            while len(self._msg_by_conversation) > _REPLY_CONTEXT_MAX:
+                self._msg_by_conversation.popitem(last=False)
 
         return IncomingMessage(
             sender_id=str(sender_id),
@@ -476,14 +505,59 @@ class DingTalkChannel:
         """
         if self._handler is None:
             raise RuntimeError("dingtalk.send: adapter is not started")
-        last = self._last_incoming
-        if last is None:
+        target = self._resolve_reply_target(message)
+        if target is None:
+            metadata = message.metadata or {}
+            if (
+                metadata.get("dingtalk_reply_msg_id")
+                or metadata.get("msg_id")
+                or message.reply_to
+                or metadata.get("conversation_id")
+            ):
+                raise RuntimeError("dingtalk.send: reply context is missing or expired")
             raise RuntimeError(
                 "dingtalk.send: no inbound context yet — robot replies "
                 "require the original ChatbotMessage to resolve sessionWebhook"
             )
-        await asyncio.to_thread(self._handler.reply_text, message.content, last)
+        await asyncio.to_thread(self._handler.reply_text, message.content, target)
         log.debug("dingtalk.outbound_sent", length=len(message.content))
+
+    def _resolve_reply_target(self, message: OutgoingMessage) -> Any:
+        """Resolve the ChatbotMessage a reply must be delivered to.
+
+        Prefers the per-message reply context threaded through the envelope
+        (immune to concurrent inbound frames): first by ``msg_id``, then by the
+        target conversation id. Falls back to ``_last_incoming`` only for
+        direct/tool-initiated sends that carry no inbound context.
+        """
+        metadata = message.metadata or {}
+        msg_id = metadata.get("dingtalk_reply_msg_id") or metadata.get("msg_id")
+        if msg_id:
+            return self._msg_by_id.get(msg_id)
+        conv = message.reply_to or metadata.get("conversation_id")
+        if conv:
+            return self._msg_by_conversation.get(conv)
+        return self._last_incoming
+
+    def build_reply_message(self, content: str, inbound: IncomingMessage) -> OutgoingMessage:
+        """Bind the reply to the triggering message's DingTalk session.
+
+        Carries the inbound ``msg_id`` so :meth:`send` can resolve the exact
+        ``ChatbotMessage`` (and therefore the correct ``sessionWebhook``)
+        instead of the channel-global ``_last_incoming``.
+        """
+        metadata: dict[str, Any] = {}
+        msg_id = inbound.metadata.get("msg_id")
+        if msg_id:
+            metadata["dingtalk_reply_msg_id"] = msg_id
+        return OutgoingMessage(
+            content=content, reply_to=inbound.channel_id, metadata=metadata
+        )
+
+    def streaming_reply_kwargs(self, inbound: IncomingMessage) -> dict[str, Any]:
+        """Pin the streamed card to the triggering message."""
+        msg_id = inbound.metadata.get("msg_id")
+        return {"reply_msg_id": msg_id} if msg_id else {}
 
     async def edit(self, message_id: str, content: str) -> None:
         """Raise: DingTalk has no public edit-message API for robot text.
@@ -515,6 +589,7 @@ class DingTalkChannel:
         chunks: AsyncIterator[str],
         *,
         update_interval_s: float | None = None,
+        reply_msg_id: str | None = None,
     ) -> str | None:
         """Stream a markdown card: send first chunk, edit on a throttle.
 
@@ -524,11 +599,23 @@ class DingTalkChannel:
         the same card via ``async_put_card_data`` no more often than
         ``update_interval_s`` (default ~2 s, matching plan Section G).
 
+        ``reply_msg_id`` binds the card to the triggering inbound message so a
+        concurrent conversation cannot redirect the card via the shared
+        ``_last_incoming`` slot; it falls back to ``_last_incoming`` only when
+        no reply context is available (direct/tool-initiated sends).
+
         Returns the card-instance ID, or ``None`` if the iterator was empty.
         """
         if self._client is None:
             raise RuntimeError("dingtalk.send_streaming: adapter is not started")
-        last = self._last_incoming
+        if reply_msg_id:
+            last = self._msg_by_id.get(reply_msg_id)
+            if last is None:
+                raise RuntimeError(
+                    "dingtalk.send_streaming: reply context is missing or expired"
+                )
+        else:
+            last = self._last_incoming
         if last is None:
             raise RuntimeError(
                 "dingtalk.send_streaming: no inbound context yet — card "

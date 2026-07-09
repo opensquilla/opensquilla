@@ -299,3 +299,38 @@ async def retry_request(
                 continue
             raise
     raise last_exc or RuntimeError("retry_request exhausted")
+
+
+def split_text_for_channel(text: str, limit: int) -> list[str]:
+    """Split ``text`` into chunks no longer than ``limit`` characters.
+
+    Splitting prefers paragraph (blank-line) then line then word boundaries,
+    hard-splitting only as a last resort for a single token longer than
+    ``limit``. Used to keep outbound replies under a platform's per-message
+    length cap (Telegram 4096, Discord 2000, ...) instead of letting the API
+    reject the whole message. An empty ``text`` yields ``[""]`` so callers
+    always make at least one send; a non-positive ``limit`` disables splitting.
+    """
+    if limit <= 0 or len(text) <= limit:
+        return [text]
+
+    chunks: list[str] = []
+    remaining = text
+    while len(remaining) > limit:
+        # Include the chosen separator in the preceding chunk. Splitting via
+        # ``str.split`` and reconstructing later loses blank lines/spaces when
+        # a boundary itself triggers a flush.
+        paragraph_at = remaining.rfind("\n\n", 0, limit)
+        if paragraph_at >= 0:
+            end = paragraph_at + 2
+        else:
+            line_at = remaining.rfind("\n", 0, limit)
+            if line_at >= 0:
+                end = line_at + 1
+            else:
+                word_at = remaining.rfind(" ", 0, limit)
+                end = word_at + 1 if word_at >= 0 else limit
+        chunks.append(remaining[:end])
+        remaining = remaining[end:]
+    chunks.append(remaining)
+    return chunks

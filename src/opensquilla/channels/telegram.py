@@ -21,7 +21,11 @@ from opensquilla.channels._attachment_io import (
     fetch_httpx_bytes_limited,
     preferred_attachment_mime,
 )
-from opensquilla.channels._util import ChannelAccessPolicy, EventDedupeCache
+from opensquilla.channels._util import (
+    ChannelAccessPolicy,
+    EventDedupeCache,
+    split_text_for_channel,
+)
 from opensquilla.channels.contract import (
     ChannelCapabilities,
     ChannelCapabilityProfile,
@@ -55,6 +59,8 @@ FATAL_ERROR_CLASSES: tuple[str, ...] = (
 _DEFAULT_TIMEOUT_S = 30.0
 _DEDUPE_SIZE = 4096
 _ALLOWED_UPDATES = ("message", "edited_message", "channel_post", "edited_channel_post")
+# Telegram Bot API hard limit on sendMessage text length.
+_TELEGRAM_MAX_MESSAGE_CHARS = 4096
 
 
 class TelegramApiError(RuntimeError):
@@ -537,8 +543,15 @@ class TelegramChannel:
         return OutgoingMessage(content=content, reply_to=inbound.channel_id, metadata=metadata)
 
     async def send(self, message: OutgoingMessage) -> dict[str, Any]:
-        payload = self._build_send_payload(message)
-        result = await self._api("sendMessage", payload)
+        # Telegram hard-rejects sendMessage when text exceeds 4096 chars, which
+        # would otherwise drop the entire reply. Split long content into
+        # sequential messages so the full answer is delivered.
+        chunks = split_text_for_channel(message.content, _TELEGRAM_MAX_MESSAGE_CHARS)
+        result: Any = None
+        for chunk in chunks:
+            payload = self._build_send_payload(message)
+            payload["text"] = chunk
+            result = await self._api("sendMessage", payload)
         return result if isinstance(result, dict) else {"result": result}
 
     async def send_file(

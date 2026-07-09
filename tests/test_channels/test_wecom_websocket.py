@@ -15,7 +15,7 @@ from opensquilla.channels.contract import (
     ChannelPlatformCategories,
 )
 from opensquilla.channels.registry import parse_channel_entry
-from opensquilla.channels.types import OutgoingMessage
+from opensquilla.channels.types import IncomingMessage, OutgoingMessage
 from opensquilla.channels.wecom import WeComChannel, WeComChannelConfig
 from opensquilla.gateway.config import WeComChannelEntry
 
@@ -441,6 +441,23 @@ def test_wecom_websocket_config_requires_bot_credentials() -> None:
     )
     assert isinstance(entry, WeComChannelEntry)
     assert entry.websocket_url == "wss://openws.work.weixin.qq.com"
+
+
+def test_wecom_webhook_streaming_reply_kwargs_pin_inbound_sender() -> None:
+    channel = WeComChannel(WeComChannelConfig(name="wecom", agent_id_int=1))
+    assert channel.config.connection_mode == "webhook"
+
+    inbound = IncomingMessage(
+        sender_id="user-1",
+        channel_id="user-1",
+        content="hello",
+        metadata={"toparty": "party-1"},
+    )
+
+    assert channel.streaming_reply_kwargs(inbound) == {
+        "reply_to": "user-1",
+        "metadata": {"toparty": "party-1"},
+    }
 
 
 def test_wecom_webhook_config_remains_supported() -> None:

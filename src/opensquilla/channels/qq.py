@@ -374,6 +374,34 @@ class QQChannel(_QQClientBase):  # type: ignore[misc, valid-type]
 
         return OutgoingMessage(content=content)
 
+    def streaming_reply_kwargs(self, inbound: IncomingMessage) -> dict[str, Any]:
+        """Pin the streamed reply to the triggering message, not ``_last_incoming``.
+
+        Without this, ``send_streaming`` resolves the target from the shared
+        ``_last_incoming_envelope`` slot, which a concurrent inbound message
+        overwrites — leaking user A's answer to user B. Derive the target from
+        the inbound envelope exactly as :meth:`build_reply_message` does.
+        """
+        meta = inbound.metadata or {}
+        chat_type = meta.get("chat_type", "")
+        msg_id = meta.get("msg_id") or meta.get("reply_to_msg_id")
+        kwargs: dict[str, Any] = {}
+        if chat_type == "group":
+            kwargs["chat_type"] = "group"
+            kwargs["target"] = meta.get("group_openid") or inbound.channel_id or ""
+        elif chat_type == "c2c":
+            kwargs["chat_type"] = "c2c"
+            kwargs["target"] = (
+                meta.get("openid")
+                or meta.get("user_openid")
+                or meta.get("author_id")
+                or inbound.sender_id
+                or ""
+            )
+        if msg_id:
+            kwargs["msg_id"] = msg_id
+        return kwargs
+
     async def send(self, message: OutgoingMessage) -> None:
         """Route by ``metadata['chat_type']`` to the right SDK call.
 

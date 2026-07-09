@@ -889,7 +889,14 @@ class WeComChannel:
 
     def streaming_reply_kwargs(self, inbound: IncomingMessage) -> dict[str, Any]:
         if self.config.connection_mode != "websocket":
-            return {}
+            # Webhook (corp-app) mode: pin the reply to the inbound sender so a
+            # concurrent inbound message cannot redirect it via the shared
+            # _last_incoming_envelope slot. Inherit toparty/totag from inbound.
+            out_meta: dict[str, Any] = {}
+            for inherit_key in ("toparty", "totag"):
+                if inherit_key in inbound.metadata:
+                    out_meta[inherit_key] = inbound.metadata[inherit_key]
+            return {"reply_to": inbound.sender_id, "metadata": out_meta}
         return {
             "reply_to": inbound.channel_id,
             "metadata": self._websocket_reply_metadata(inbound),

@@ -22,7 +22,12 @@ from starlette.responses import JSONResponse, Response
 from starlette.routing import Route
 
 from opensquilla.channels._reactions import NULL_STATUS_REACTOR, SlackStatusReactor
-from opensquilla.channels._util import ChannelAccessPolicy, EventDedupeCache, StreamThrottle
+from opensquilla.channels._util import (
+    ChannelAccessPolicy,
+    EventDedupeCache,
+    StreamThrottle,
+    split_text_for_channel,
+)
 from opensquilla.channels.contract import (
     ChannelCapabilities,
     ChannelCapabilityProfile,
@@ -38,6 +43,8 @@ from opensquilla.env import trust_env as _trust_env
 log = structlog.get_logger(__name__)
 
 SLACK_API_BASE = "https://slack.com/api"
+# Slack rejects chat.postMessage text longer than ~40000 characters.
+_SLACK_MAX_MESSAGE_CHARS = 40000
 
 _MENTION_RE = re.compile(r"<@(U[A-Z0-9]+)(?:\|[^>]*)?>")
 
@@ -310,12 +317,17 @@ class SlackChannel:
             payload[key] = value
 
         client = self._get_client()
-        resp = await client.post("/chat.postMessage", json=payload)
-        resp.raise_for_status()
-        data = resp.json()
-        if not data.get("ok"):
-            log.error("slack.send_failed", channel=channel, error=data.get("error"))
-            raise RuntimeError(f"Slack API error: {data.get('error')}")
+        # Slack rejects text longer than 40000 chars; split so the full answer
+        # is delivered across sequential messages instead of being dropped.
+        chunks = split_text_for_channel(message.content, _SLACK_MAX_MESSAGE_CHARS)
+        for chunk in chunks:
+            payload["text"] = chunk
+            resp = await client.post("/chat.postMessage", json=payload)
+            resp.raise_for_status()
+            data = resp.json()
+            if not data.get("ok"):
+                log.error("slack.send_failed", channel=channel, error=data.get("error"))
+                raise RuntimeError(f"Slack API error: {data.get('error')}")
         log.debug("slack.send", channel=channel, ts=data.get("ts"))
 
     async def send_file(
@@ -452,6 +464,12 @@ class SlackChannel:
                 },
             )
             resp.raise_for_status()
+            data = resp.json()
+            # Slack signals errors (e.g. msg_too_long) as HTTP 200 + ok:false;
+            # check the envelope like _post so a rejected update surfaces and
+            # the stream relay can fall back instead of silently truncating.
+            if not data.get("ok"):
+                raise RuntimeError(f"Slack API error: {data.get('error')}")
 
         async for chunk in chunks:
             throttle.add(chunk)

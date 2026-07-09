@@ -30,6 +30,7 @@ from opensquilla.channels._util import (
     RateLimiter,
     StreamThrottle,
     retry_request,
+    split_text_for_channel,
 )
 from opensquilla.channels.contract import (
     ChannelCapabilities,
@@ -52,6 +53,8 @@ log = structlog.get_logger(__name__)
 
 _DISCORD_MENTION_RE = re.compile(r"<@!?(\d+)>")
 _DISCORD_DM_CHANNEL_TYPES = {1}
+# Discord rejects message content longer than 2000 characters.
+_DISCORD_MAX_MESSAGE_CHARS = 2000
 _DISCORD_GROUP_DM_CHANNEL_TYPES = {3}
 _DISCORD_THREAD_CHANNEL_TYPES = {10, 11, 12}
 
@@ -703,29 +706,35 @@ class DiscordChannel:
     # ------------------------------------------------------------------
 
     async def send(self, message: OutgoingMessage) -> ChannelSendResult:
-        await self._rate_limiter.acquire()
         client = self._get_client()
         channel_id = message.reply_to or self.config.default_channel_id
 
-        payload: dict[str, Any] = {"content": message.content}
+        # Discord rejects message content over 2000 chars; split long replies
+        # so the whole answer is delivered across sequential messages instead
+        # of the API rejecting (and dropping) it.
+        chunks = split_text_for_channel(message.content, _DISCORD_MAX_MESSAGE_CHARS)
+        data: dict[str, Any] = {}
+        for idx, chunk in enumerate(chunks):
+            await self._rate_limiter.acquire()
+            payload: dict[str, Any] = {"content": chunk}
 
-        if message.metadata.get("embeds"):
-            payload["embeds"] = message.metadata["embeds"]
+            if idx == 0 and message.metadata.get("embeds"):
+                payload["embeds"] = message.metadata["embeds"]
 
-        if message.metadata.get("reply_to_message_id"):
-            payload["message_reference"] = {
-                "message_id": message.metadata["reply_to_message_id"],
-            }
+            if idx == 0 and message.metadata.get("reply_to_message_id"):
+                payload["message_reference"] = {
+                    "message_id": message.metadata["reply_to_message_id"],
+                }
 
-        resp = await retry_request(
-            client.post,
-            f"/channels/{channel_id}/messages",
-            json=payload,
-            headers=self._auth_headers(),
-        )
-        resp.raise_for_status()
-        data = resp.json()
-        self._sent_messages[data["id"]] = channel_id
+            resp = await retry_request(
+                client.post,
+                f"/channels/{channel_id}/messages",
+                json=payload,
+                headers=self._auth_headers(),
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            self._sent_messages[data["id"]] = channel_id
         log.debug("discord.send", channel_id=channel_id, message_id=data.get("id"))
         return ChannelSendResult.sent(
             capability=ChannelCapabilities.GROUP_CHAT,
@@ -893,12 +902,17 @@ class DiscordChannel:
 
         async def _edit(text: str) -> None:
             await self._rate_limiter.acquire()
-            await retry_request(
+            resp = await retry_request(
                 client.patch,
                 f"/channels/{target}/messages/{message_id}",
                 json={"content": text},
                 headers=self._auth_headers(),
             )
+            # retry_request returns 4xx as-is; surface them like every other
+            # REST helper so a rejected edit (e.g. 400 code 50035 for >2000
+            # chars) triggers the stream relay's batch fallback instead of
+            # silently truncating the reply.
+            resp.raise_for_status()
 
         async for chunk in chunks:
             throttle.add(chunk)
@@ -906,6 +920,32 @@ class DiscordChannel:
 
         await throttle.force_flush(post=_post, edit=_edit)
         return message_id
+
+    # ------------------------------------------------------------------
+    # Reply routing (ChannelTransport hooks)
+    # ------------------------------------------------------------------
+
+    def streaming_reply_kwargs(self, inbound: IncomingMessage) -> dict[str, Any]:
+        """Stream the reply into the channel/thread that triggered the turn.
+
+        Without this, ``send_streaming`` falls back to
+        ``config.default_channel_id`` and every streamed reply lands in one
+        static channel regardless of who asked. Discord thread IDs are channel
+        IDs, so ``inbound.channel_id`` is the correct target for threads too.
+        """
+        return {"channel_id": inbound.channel_id}
+
+    def build_reply_message(self, content: str, inbound: IncomingMessage) -> OutgoingMessage:
+        """Target the inbound channel so batch replies need no static channel id."""
+        metadata: dict[str, Any] = {}
+        message_id = inbound.metadata.get("message_id") or inbound.metadata.get(
+            "native_message_id"
+        )
+        if isinstance(message_id, str) and message_id:
+            metadata["reply_to_message_id"] = message_id
+        return OutgoingMessage(
+            content=content, reply_to=inbound.channel_id, metadata=metadata
+        )
 
     # ------------------------------------------------------------------
     # Session key

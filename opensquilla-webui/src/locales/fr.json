@@ -162,6 +162,11 @@
     }
   },
   "setup": {
+    "cli": {
+      "advancedTitle": "Avancé · CLI intégrée",
+      "hintBundled": "Ces commandes utilisent la CLI intégrée à l'application ; collez-les dans un terminal pour les exécuter.",
+      "hintDev": "Mode dev : les commandes s'exécutent depuis la copie source via uv."
+    },
     "common": {
       "apiKey": "Clé API",
       "apiKeyEnv": "Variable d'env. de la clé API",
@@ -331,8 +336,8 @@
       "candidateSourceLegacy": "Depuis l’ancienne configuration",
       "candidateSourceOpenRouterFixed": "Ensemble OpenRouter fixe",
       "customCandidatesLabel": "Candidats personnalisés inter-fournisseurs",
-      "openrouterFixedTitle": "Ensemble OpenRouter fixe",
-      "openrouterFixedDesc": "Quand le modèle de chat utilise OpenRouter, le routage agrégé utilise quatre modèles proposants et un agrégateur.",
+      "openrouterFixedTitle": "Ensemble {provider} fixe",
+      "openrouterFixedDesc": "Quand le modèle de chat utilise {provider}, le routage agrégé utilise quatre modèles proposants et un agrégateur.",
       "customizeOpenRouterLabel": "Personnaliser l’ensemble",
       "customizeOpenRouterDesc": "Passer au routage d’ensemble basé sur le routeur avec l’ancien modèle de candidats OpenRouter.",
       "openrouterFixedProposer": "Modèle proposant",
@@ -410,6 +415,7 @@
       "selectionLabel": "Sélection des modèles",
       "selectionDesc": "Comment l'ensemble choisit les modèles à interroger.",
       "selectionStatic": "Jeu de modèles intégré hérité",
+      "selectionStaticTokenrhythm": "Jeu de modèles intégré TokenRhythm",
       "selectionDynamic": "Dynamique (suit les niveaux de modèle)",
       "rawValueTooltip": "Valeur de configuration : {value}",
       "modelsLabel": "Modèles candidats",

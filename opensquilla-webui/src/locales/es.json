@@ -162,6 +162,11 @@
     }
   },
   "setup": {
+    "cli": {
+      "advancedTitle": "Avanzado · CLI integrada",
+      "hintBundled": "Estos comandos usan la CLI integrada en la aplicación; pégalos en una terminal para ejecutarlos.",
+      "hintDev": "Modo dev: los comandos se ejecutan desde el checkout del código fuente vía uv."
+    },
     "common": {
       "apiKey": "Clave de API",
       "apiKeyEnv": "Variable de entorno de la clave de API",
@@ -331,8 +336,8 @@
       "candidateSourceLegacy": "Desde configuración antigua",
       "candidateSourceOpenRouterFixed": "Conjunto fijo de OpenRouter",
       "customCandidatesLabel": "Candidatos personalizados entre proveedores",
-      "openrouterFixedTitle": "Conjunto fijo de OpenRouter",
-      "openrouterFixedDesc": "Cuando el modelo de chat usa OpenRouter, el enrutamiento agregado usa cuatro modelos proponentes y un agregador.",
+      "openrouterFixedTitle": "Conjunto fijo de {provider}",
+      "openrouterFixedDesc": "Cuando el modelo de chat usa {provider}, el enrutamiento agregado usa cuatro modelos proponentes y un agregador.",
       "customizeOpenRouterLabel": "Personalizar conjunto",
       "customizeOpenRouterDesc": "Cambiar al enrutamiento de conjunto basado en router con la plantilla antigua de candidatos OpenRouter.",
       "openrouterFixedProposer": "Modelo proponente",
@@ -410,6 +415,7 @@
       "selectionLabel": "Selección de modelos",
       "selectionDesc": "Cómo elige el conjunto a qué modelos preguntar.",
       "selectionStatic": "Conjunto de modelos integrado heredado",
+      "selectionStaticTokenrhythm": "Conjunto de modelos integrado de TokenRhythm",
       "selectionDynamic": "Dinámico (sigue niveles de modelo)",
       "rawValueTooltip": "Valor de configuración: {value}",
       "modelsLabel": "Modelos candidatos",

@@ -162,6 +162,11 @@
     }
   },
   "setup": {
+    "cli": {
+      "advancedTitle": "Erweitert · integrierte CLI",
+      "hintBundled": "Diese Befehle verwenden die in der App integrierte CLI; zum Ausführen in ein Terminal einfügen.",
+      "hintDev": "Dev-Modus: Befehle laufen über uv aus dem Quell-Checkout."
+    },
     "common": {
       "apiKey": "API-Schlüssel",
       "apiKeyEnv": "API-Schlüssel-Umgebungsvariable",
@@ -331,8 +336,8 @@
       "candidateSourceLegacy": "Aus alter Konfiguration",
       "candidateSourceOpenRouterFixed": "Feste OpenRouter-Ensemble-Konfiguration",
       "customCandidatesLabel": "Benutzerdefinierte providerübergreifende Kandidaten",
-      "openrouterFixedTitle": "Feste OpenRouter-Ensemble-Konfiguration",
-      "openrouterFixedDesc": "Wenn das Chat Model OpenRouter nutzt, verwendet Ensemble-Routing vier Vorschlagsmodelle und einen Aggregator.",
+      "openrouterFixedTitle": "Feste {provider}-Ensemble-Konfiguration",
+      "openrouterFixedDesc": "Wenn das Chat Model {provider} nutzt, verwendet Ensemble-Routing vier Vorschlagsmodelle und einen Aggregator.",
       "customizeOpenRouterLabel": "Ensemble anpassen",
       "customizeOpenRouterDesc": "Zu routerbasiertem Ensemble-Routing mit der alten OpenRouter-Kandidatenvorlage wechseln.",
       "openrouterFixedProposer": "Vorschlagsmodell",
@@ -410,6 +415,7 @@
       "selectionLabel": "Modellauswahl",
       "selectionDesc": "Wie das Ensemble entscheidet, welche Modelle gefragt werden.",
       "selectionStatic": "Legacy-internes Modellset",
+      "selectionStaticTokenrhythm": "Internes TokenRhythm-Modellset",
       "selectionDynamic": "Dynamisch (folgt Modellstufen)",
       "rawValueTooltip": "Konfigurationswert: {value}",
       "modelsLabel": "Kandidatenmodelle",

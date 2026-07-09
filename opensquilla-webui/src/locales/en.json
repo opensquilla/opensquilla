@@ -162,6 +162,11 @@
     }
   },
   "setup": {
+    "cli": {
+      "advancedTitle": "Advanced · built-in CLI",
+      "hintBundled": "These commands use the CLI bundled with the app; paste into a terminal to run.",
+      "hintDev": "Dev mode: commands run from the source checkout via uv."
+    },
     "common": {
       "apiKey": "API key",
       "apiKeyEnv": "API key env",
@@ -331,8 +336,8 @@
       "candidateSourceLegacy": "From old config",
       "candidateSourceOpenRouterFixed": "OpenRouter fixed ensemble",
       "customCandidatesLabel": "Custom cross-provider candidates",
-      "openrouterFixedTitle": "OpenRouter fixed ensemble",
-      "openrouterFixedDesc": "When Chat Model uses OpenRouter, ensemble routing uses four proposer models and one aggregator.",
+      "openrouterFixedTitle": "{provider} fixed ensemble",
+      "openrouterFixedDesc": "When Chat Model uses {provider}, ensemble routing uses four proposer models and one aggregator.",
       "customizeOpenRouterLabel": "Customize ensemble",
       "customizeOpenRouterDesc": "Switch to router-based ensemble routing with the legacy OpenRouter candidate template.",
       "openrouterFixedProposer": "Proposer model",
@@ -410,6 +415,7 @@
       "selectionLabel": "Model selection",
       "selectionDesc": "How the ensemble picks which models to ask.",
       "selectionStatic": "Legacy built-in model set",
+      "selectionStaticTokenrhythm": "TokenRhythm built-in model set",
       "selectionDynamic": "Dynamic (follows model tiers)",
       "rawValueTooltip": "Config value: {value}",
       "modelsLabel": "Candidate models",

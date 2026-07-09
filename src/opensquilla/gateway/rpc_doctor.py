@@ -8,7 +8,11 @@ from collections.abc import Awaitable, Callable
 from dataclasses import replace
 from typing import Any, cast
 
-from opensquilla.gateway.config import GatewayConfig, static_openrouter_b5_ensemble_enabled
+from opensquilla.gateway.config import (
+    STATIC_B5_SELECTION_MODE_PROVIDERS,
+    GatewayConfig,
+    static_b5_ensemble_enabled,
+)
 from opensquilla.gateway.rpc import RpcContext, get_dispatcher
 from opensquilla.gateway.rpc_channels import _handle_channels_status
 from opensquilla.gateway.rpc_logs import _build_logs_status
@@ -329,14 +333,18 @@ def _llm_ensemble_payload(ctx: RpcContext) -> dict[str, Any]:
             getattr(getattr(config, "llm", None), "provider", "") or ""
         ),
     }
-    if config is not None and static_openrouter_b5_ensemble_enabled(config):
-        from opensquilla.provider.ensemble import static_openrouter_b5_credential_available
+    if config is not None and static_b5_ensemble_enabled(config):
+        from opensquilla.provider.ensemble import static_b5_credential_available
         from opensquilla.provider.registry import get_provider_spec
 
-        payload["apiKeyEnv"] = str(get_provider_spec("openrouter").env_key or "")
-        payload["credentialAvailable"] = static_openrouter_b5_credential_available(
+        selection_mode = str(getattr(ensemble_cfg, "selection_mode", "") or "")
+        member_provider = STATIC_B5_SELECTION_MODE_PROVIDERS.get(selection_mode, "openrouter")
+        payload["memberProvider"] = member_provider
+        payload["apiKeyEnv"] = str(get_provider_spec(member_provider).env_key or "")
+        payload["credentialAvailable"] = static_b5_credential_available(
             config,
             getattr(config, "llm", None),
+            selection_mode,
         )
     return payload
 

@@ -133,17 +133,26 @@ def test_explicit_other_provider_is_untouched(
 def test_tokenrhythm_default_binds_router_tiers_to_tokenrhythm() -> None:
     cfg = GatewayConfig()
     tiers = cfg.squilla_router.tiers
-    for name in ("c0", "c1", "c2", "c3"):
+    expected_models = {
+        "c0": "deepseek-v4-flash",
+        "c1": "deepseek-v4-pro",
+        "c2": "kimi-k2.7-code",
+        "c3": "glm-5.1",
+        "image_model": "kimi-k2.6",
+    }
+    for name, model in expected_models.items():
         assert tiers[name]["provider"] == "tokenrhythm"
-        assert tiers[name]["model"] == "deepseek-v4-pro"
-    # Synthesized presets carry no curated image tier.
-    assert "image_model" not in tiers
+        assert tiers[name]["model"] == model
     assert cfg.squilla_router.tier_profile is None
 
 
-def test_tokenrhythm_tiers_follow_the_effective_model() -> None:
+def test_tokenrhythm_curated_ladder_is_not_rebound_to_the_direct_model() -> None:
+    # The curated preset is fully model-bound, so an explicit llm.model stays
+    # the direct/fallback model only — the same contract as the legacy-nine
+    # packaged profiles.
     cfg = GatewayConfig(llm={"provider": "tokenrhythm", "model": "glm-5.1"})
-    assert cfg.squilla_router.tiers["c1"]["model"] == "glm-5.1"
+    assert cfg.llm.model == "glm-5.1"
+    assert cfg.squilla_router.tiers["c1"]["model"] == "deepseek-v4-pro"
 
 
 def test_tokenrhythm_custom_tiers_are_preserved() -> None:

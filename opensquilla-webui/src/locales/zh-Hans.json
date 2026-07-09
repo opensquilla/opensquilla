@@ -162,6 +162,11 @@
     }
   },
   "setup": {
+    "cli": {
+      "advancedTitle": "高级 · 内置 CLI",
+      "hintBundled": "以下命令使用应用内置的 CLI，可直接粘贴到终端运行。",
+      "hintDev": "开发模式：命令经 uv 从源码检出运行。"
+    },
     "common": {
       "apiKey": "API 密钥",
       "apiKeyEnv": "API 密钥环境变量",
@@ -331,8 +336,8 @@
       "candidateSourceLegacy": "来自旧配置",
       "candidateSourceOpenRouterFixed": "OpenRouter 固定聚合",
       "customCandidatesLabel": "自定义跨服务商候选",
-      "openrouterFixedTitle": "OpenRouter 固定聚合",
-      "openrouterFixedDesc": "当聊天模型使用 OpenRouter 时，聚合路由固定使用四个候选生成模型和一个综合模型。",
+      "openrouterFixedTitle": "{provider} 固定聚合",
+      "openrouterFixedDesc": "当聊天模型使用 {provider} 时，聚合路由固定使用四个候选生成模型和一个综合模型。",
       "customizeOpenRouterLabel": "自定义聚合",
       "customizeOpenRouterDesc": "切换为基于路由的聚合，并用旧 OpenRouter 候选模板预填。",
       "openrouterFixedProposer": "候选生成模型",
@@ -410,6 +415,7 @@
       "selectionLabel": "模型选择",
       "selectionDesc": "聚合如何决定询问哪些模型。",
       "selectionStatic": "旧版内置多模型集",
+      "selectionStaticTokenrhythm": "TokenRhythm 内置多模型集",
       "selectionDynamic": "动态(跟随模型分层)",
       "rawValueTooltip": "配置值:{value}",
       "modelsLabel": "候选模型",

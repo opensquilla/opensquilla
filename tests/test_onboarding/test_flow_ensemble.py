@@ -59,6 +59,7 @@ def test_interactive_ensemble_configure_persists(tmp_path, monkeypatch):
                 assert kwargs.get("choices") == [
                     "router_dynamic",
                     "static_openrouter_b5",
+                    "static_tokenrhythm_b5",
                 ]
                 assert kwargs.get("default") == "static_openrouter_b5"
                 return _Answer("router_dynamic")

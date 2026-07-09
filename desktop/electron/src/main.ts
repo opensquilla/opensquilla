@@ -7,6 +7,7 @@ import { access, constants, readFile, readdir, rename, rm, stat, unlink, writeFi
 import net from 'node:net'
 import { basename, dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { buildCliInvocation } from './cli-invocation.js'
 import { secretStorageBackendForPolicy, shouldUseChromiumMockKeychainForPolicy } from './secret-storage-policy.js'
 import {
   GITHUB_UPDATE_OWNER,
@@ -5204,6 +5205,17 @@ ipcMain.handle('desktop:theme:set', (_event, payload: unknown) => (
   applyDesktopNativeTheme(normalizeDesktopNativeThemeSource(payload))
 ))
 ipcMain.handle('gateway:status', () => ({ ...gatewayState }))
+ipcMain.handle('gateway:cli-invocation', async () => {
+  const runtime = await resolveGatewayRuntime()
+  return buildCliInvocation({
+    platform: process.platform,
+    mode: runtime.mode,
+    binaryPath: runtime.mode === 'bundled' ? runtime.command : undefined,
+    repoRoot: runtime.mode === 'dev' ? repoRoot : undefined,
+    stateDir: desktopStateDir(),
+    configPath: desktopConfigPath(),
+  })
+})
 ipcMain.handle('gateway:reveal-log', async () => {
   if (gatewayState.logPath) {
     await shell.showItemInFolder(gatewayState.logPath)

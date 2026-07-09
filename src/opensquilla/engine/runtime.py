@@ -5145,7 +5145,8 @@ class TurnRunner:
         if provider is not None and getattr(ensemble_cfg, "enabled", False):
             from opensquilla.provider.ensemble import (
                 build_ensemble_provider_from_config,
-                static_openrouter_b5_credential_available,
+                static_b5_credential_available,
+                static_b5_profile,
             )
 
             current_provider_config = (
@@ -5168,22 +5169,23 @@ class TurnRunner:
                     "llm_ensemble.wrap_skipped",
                     reason="incomplete_provider_selector_current_config",
                 )
-            elif selection_mode == "static_openrouter_b5" and not (
-                static_openrouter_b5_credential_available(
+            elif static_b5_profile(selection_mode) is not None and not (
+                static_b5_credential_available(
                     self._config,
                     current_provider_config,
+                    selection_mode,
                 )
             ):
-                # Without an OpenRouter credential the static-B5 members can
-                # never succeed; wrapping would still post the conversation to
-                # OpenRouter with an empty bearer token on every turn. Keep the
-                # single-model provider instead.
+                # Without a credential for the static profile's provider the
+                # members can never succeed; wrapping would still post the
+                # conversation upstream with an empty bearer token on every
+                # turn. Keep the single-model provider instead.
                 log.warning(
                     "llm_ensemble.wrap_skipped",
-                    reason="static_openrouter_b5_no_credential",
+                    reason=f"{selection_mode}_no_credential",
                 )
                 turn.metadata["ensemble_wrap_skipped_reason"] = (
-                    "static_openrouter_b5_no_credential"
+                    f"{selection_mode}_no_credential"
                 )
             else:
                 turn.metadata["ensemble_enabled"] = True

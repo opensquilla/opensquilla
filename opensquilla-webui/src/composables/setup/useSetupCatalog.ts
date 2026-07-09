@@ -6,6 +6,8 @@ import { useSetupBehaviorForm } from '@/composables/setup/useSetupBehaviorForm'
 import { hasEffectiveProvider, useSetupProviderForm } from '@/composables/setup/useSetupProviderForm'
 import { useSetupRouterForm, type SetupTierRow } from '@/composables/setup/useSetupRouterForm'
 import {
+  STATIC_B5_PROFILES,
+  staticB5ModeForProvider,
   useSetupEnsembleForm,
   type EnsembleCandidateConfig,
   type EnsembleCandidateView,
@@ -574,19 +576,23 @@ const privacyPanel = computed(() => ({
 }))
 
 const isOpenrouterProvider = computed(() => currentProvider.value.toLowerCase() === 'openrouter')
+const normalizedProvider = computed(() => currentProvider.value.toLowerCase())
 function reconcileEnsembleProviderCompatibility() {
-  const provider = currentProvider.value.toLowerCase()
-  if (provider && provider !== 'openrouter' && ensembleForm.selectionMode.value === 'static_openrouter_b5') {
-    ensembleForm.setSelectionMode('router_dynamic')
+  const provider = normalizedProvider.value
+  const staticProfile = STATIC_B5_PROFILES[ensembleForm.selectionMode.value]
+  if (provider && staticProfile && provider !== staticProfile.provider) {
+    // The stored static profile belongs to another provider: move to this
+    // provider's own static profile when it has one, else to dynamic.
+    ensembleForm.setSelectionMode(staticB5ModeForProvider(provider) ?? 'router_dynamic')
   }
 }
 
 // openrouter-mix is only valid for the openrouter provider. When the selection
 // moves off openrouter while a stored mix mode is loaded, coerce the mode back
 // to recommended so the save payload stays valid for the new provider. watch
-// only fires on transitions, so an initial non-openrouter load never trips this.
-watch(isOpenrouterProvider, (isOpenrouter) => {
-  if (!isOpenrouter && routerForm.mode.value === 'openrouter-mix') {
+// only fires on transitions, so an initial load never trips this.
+watch(normalizedProvider, (provider) => {
+  if (provider !== 'openrouter' && routerForm.mode.value === 'openrouter-mix') {
     routerForm.setRouterMode('recommended')
   }
   reconcileEnsembleProviderCompatibility()
@@ -1139,7 +1145,10 @@ function resetEnsembleCandidates() {
 }
 
 function setOpenRouterCustomEnsemble(value: boolean) {
-  ensembleForm.setOpenRouterCustomEnsemble(value)
+  ensembleForm.setOpenRouterCustomEnsemble(
+    value,
+    staticB5ModeForProvider(currentProvider.value) ?? 'static_openrouter_b5',
+  )
 }
 
 function setEnsembleMinSuccessful(value: number) {

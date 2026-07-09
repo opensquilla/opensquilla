@@ -6,7 +6,11 @@ import { computed, ref, type ComputedRef } from 'vue'
 // KEY and payload() only carries the keys the user actually changed — an
 // enabled-only save can never clobber an operator's other customizations.
 
-export const ENSEMBLE_SELECTION_MODES = ['static_openrouter_b5', 'router_dynamic'] as const
+export const ENSEMBLE_SELECTION_MODES = [
+  'static_openrouter_b5',
+  'static_tokenrhythm_b5',
+  'router_dynamic',
+] as const
 export const ENSEMBLE_ALL_FAILED_POLICIES = ['fallback_single', 'error'] as const
 export const OPENROUTER_FIXED_ENSEMBLE_PROPOSERS = [
   'deepseek/deepseek-v4-pro',
@@ -15,6 +19,46 @@ export const OPENROUTER_FIXED_ENSEMBLE_PROPOSERS = [
   'qwen/qwen3.7-max',
 ] as const
 export const OPENROUTER_FIXED_ENSEMBLE_AGGREGATOR = 'z-ai/glm-5.2'
+export const TOKENRHYTHM_FIXED_ENSEMBLE_PROPOSERS = [
+  'deepseek-v4-pro',
+  'glm-5.1',
+  'kimi-k2.7-code',
+  'qwen3.7-max',
+] as const
+export const TOKENRHYTHM_FIXED_ENSEMBLE_AGGREGATOR = 'glm-5.1'
+
+// Static B5 lineups keyed by selection mode. Mirrors the gateway's
+// STATIC_B5_SELECTION_MODE_PROVIDERS + provider.ensemble.STATIC_B5_PROFILES.
+export interface StaticB5Profile {
+  provider: string
+  label: string
+  proposers: readonly string[]
+  aggregator: string
+}
+
+export const STATIC_B5_PROFILES: Record<string, StaticB5Profile> = {
+  static_openrouter_b5: {
+    provider: 'openrouter',
+    label: 'OpenRouter',
+    proposers: OPENROUTER_FIXED_ENSEMBLE_PROPOSERS,
+    aggregator: OPENROUTER_FIXED_ENSEMBLE_AGGREGATOR,
+  },
+  static_tokenrhythm_b5: {
+    provider: 'tokenrhythm',
+    label: 'TokenRhythm',
+    proposers: TOKENRHYTHM_FIXED_ENSEMBLE_PROPOSERS,
+    aggregator: TOKENRHYTHM_FIXED_ENSEMBLE_AGGREGATOR,
+  },
+}
+
+export function staticB5ModeForProvider(provider: unknown): string | null {
+  const id = String(provider || '').trim().toLowerCase()
+  if (!id) return null
+  for (const [mode, profile] of Object.entries(STATIC_B5_PROFILES)) {
+    if (profile.provider === id) return mode
+  }
+  return null
+}
 export const LEGACY_OPENROUTER_MODEL_OPTIONS = [
   'deepseek/deepseek-v4-pro',
   'z-ai/glm-5.2',
@@ -56,6 +100,7 @@ export interface EnsembleCandidateView {
 }
 
 export interface EnsembleFixedOpenRouterProfile {
+  providerLabel: string
   proposers: EnsembleCandidateView[]
   aggregator: EnsembleCandidateView
   credential?: EnsembleCredentialStatus
@@ -150,13 +195,26 @@ function legacyDefaultModelOptions(options: readonly string[]): boolean {
   return options.every((option, index) => option === LEGACY_OPENROUTER_MODEL_OPTIONS[index])
 }
 
-function legacyOpenRouterCandidateConfigs(): EnsembleCandidateConfig[] {
-  return LEGACY_OPENROUTER_MODEL_OPTIONS.map(model => ({
-    provider: 'openrouter',
+function customEnsembleSeedConfigs(staticMode: string): EnsembleCandidateConfig[] {
+  // OpenRouter keeps the historical candidate template; other static
+  // profiles seed from their own B5 lineup (proposers + aggregator, deduped
+  // by normalizeCandidates).
+  if (staticMode === 'static_openrouter_b5') {
+    return LEGACY_OPENROUTER_MODEL_OPTIONS.map(model => ({
+      provider: 'openrouter',
+      model,
+      source: 'custom',
+      enabled: true,
+    }))
+  }
+  const profile = STATIC_B5_PROFILES[staticMode]
+  if (!profile) return []
+  return normalizeCandidates([...profile.proposers, profile.aggregator].map(model => ({
+    provider: profile.provider,
     model,
     source: 'custom',
     enabled: true,
-  }))
+  })))
 }
 
 function candidateKey(candidate: { provider: string; model: string; source: string }): string {
@@ -322,14 +380,15 @@ export function useSetupEnsembleForm() {
     }
   }
 
-  function setOpenRouterCustomEnsemble(value: boolean) {
+  function setOpenRouterCustomEnsemble(value: boolean, staticMode = 'static_openrouter_b5') {
+    const mode = staticMode in STATIC_B5_PROFILES ? staticMode : 'static_openrouter_b5'
     if (value) {
       selectionMode.value = 'router_dynamic'
       modelOptions.value = []
-      candidates.value = legacyOpenRouterCandidateConfigs()
+      candidates.value = customEnsembleSeedConfigs(mode)
       return
     }
-    selectionMode.value = 'static_openrouter_b5'
+    selectionMode.value = mode
     restoreBaselineCandidateInputs()
   }
 
@@ -363,9 +422,9 @@ export function useSetupEnsembleForm() {
     return computed(() => {
       const credentialStatus = context.credentialStatus?.value ?? []
       const activeProvider = normalizeProvider(context.activeProvider.value)
-      const isOpenRouter = activeProvider === 'openrouter'
-      const openRouterCustomEnsemble = isOpenRouter
-        ? selectionMode.value !== 'static_openrouter_b5'
+      const providerStaticMode = staticB5ModeForProvider(activeProvider)
+      const openRouterCustomEnsemble = providerStaticMode !== null
+        ? selectionMode.value !== providerStaticMode
         : false
       const tierCandidates = uniqueCandidateViews((context.tierCandidates?.value ?? [])
         .map(candidate => withCredential(candidate.provider, candidate.model, 'tier', credentialStatus))
@@ -380,14 +439,17 @@ export function useSetupEnsembleForm() {
           return withCredential(provider, model, 'legacy_model_options', credentialStatus)
         })
       const customCandidates = uniqueCandidateViews([...structuredCandidates, ...legacyCandidates])
-      const fixedOpenRouterProfile: EnsembleFixedOpenRouterProfile | null = (
-        isOpenRouter
-        && selectionMode.value === 'static_openrouter_b5'
+      const activeStaticProfile = (
+        providerStaticMode !== null && selectionMode.value === providerStaticMode
       )
+        ? STATIC_B5_PROFILES[providerStaticMode]
+        : null
+      const fixedOpenRouterProfile: EnsembleFixedOpenRouterProfile | null = activeStaticProfile
         ? {
-            proposers: OPENROUTER_FIXED_ENSEMBLE_PROPOSERS.map(model => withCredential('openrouter', model, 'openrouter_fixed', credentialStatus)),
-            aggregator: withCredential('openrouter', OPENROUTER_FIXED_ENSEMBLE_AGGREGATOR, 'openrouter_fixed', credentialStatus),
-            credential: credentialFor('openrouter', credentialStatus),
+            providerLabel: activeStaticProfile.label,
+            proposers: activeStaticProfile.proposers.map(model => withCredential(activeStaticProfile.provider, model, 'openrouter_fixed', credentialStatus)),
+            aggregator: withCredential(activeStaticProfile.provider, activeStaticProfile.aggregator, 'openrouter_fixed', credentialStatus),
+            credential: credentialFor(activeStaticProfile.provider, credentialStatus),
           }
         : null
 
@@ -399,15 +461,17 @@ export function useSetupEnsembleForm() {
         tierCandidates,
         customCandidates,
         fixedOpenRouterProfile,
-        showOpenRouterFixedSwitch: isOpenRouter,
+        showOpenRouterFixedSwitch: providerStaticMode !== null,
         openRouterCustomEnsemble,
+        staticSelectionMode: providerStaticMode,
         minSuccessfulProposers: minSuccessfulProposers.value,
         allFailedPolicy: allFailedPolicy.value,
         // model_options only drives the dynamic selection; static ignores it.
-        showModelOptions: selectionMode.value === 'router_dynamic' || !isOpenRouter,
-        showCandidateEditor: selectionMode.value === 'router_dynamic' || !isOpenRouter,
-        // Static selection routes through OpenRouter regardless of the primary
-        // provider — surface the credential dependency instead of failing quietly.
+        showModelOptions: selectionMode.value === 'router_dynamic' || activeStaticProfile === null,
+        showCandidateEditor: selectionMode.value === 'router_dynamic' || activeStaticProfile === null,
+        // A static selection routes through its profile provider regardless of
+        // the primary provider — surface the credential dependency instead of
+        // failing quietly.
         showOpenrouterHint: false,
         advancedOpen: (
           minSuccessfulProposers.value !== DEFAULT_MIN_SUCCESSFUL_PROPOSERS

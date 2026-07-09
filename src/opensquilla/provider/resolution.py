@@ -123,15 +123,16 @@ def _tier_preset_baseline(router_cfg: Any) -> dict[str, Any]:
     return tiers if isinstance(tiers, dict) else {}
 
 
-def _tier_synthesized_baseline(provider: str, model: str) -> dict[str, Any]:
-    """Synthesized-preset ladder for ``provider``, empty models completed.
+def _tier_inline_preset_baseline(provider: str, model: str) -> dict[str, Any]:
+    """Inline-applied preset ladder for ``provider``, empty models completed.
 
-    Providers without a packaged tier_profile (e.g. tokenrhythm) get their
-    synthesized preset expanded inline — by the gateway's default-tiers
-    validator at load time and by provider saves — with empty tier model
-    slots completed from the effective ``llm.model``. A live tier table
-    matching that shape was derived, not operator-chosen, so it counts as a
-    ``preset`` baseline alongside the tier-profile table.
+    Providers without a persistable tier_profile (e.g. tokenrhythm) get their
+    preset — a curated-inline packaged ladder or a synthesized one — expanded
+    inline by the gateway's default-tiers validator at load time and by
+    provider saves, with empty tier model slots completed from the effective
+    ``llm.model``. A live tier table matching that shape was derived, not
+    operator-chosen, so it counts as a ``preset`` baseline alongside the
+    tier-profile table.
     """
     if not provider:
         return {}
@@ -139,7 +140,7 @@ def _tier_synthesized_baseline(provider: str, model: str) -> dict[str, Any]:
         preset = get_preset(provider)
     except Exception:
         return {}
-    if preset is None or not preset.synthesized:
+    if preset is None or preset.persistable:
         return {}
     tiers = preset.tier_defaults()
     for tier in tiers.values():
@@ -218,10 +219,10 @@ def resolve_effective_llm(config: Any, catalog: ModelCatalog) -> dict[str, Resol
     tiers = getattr(router_cfg, "tiers", None)
     if isinstance(tiers, dict):
         baseline_tiers = _tier_preset_baseline(router_cfg)
-        synthesized_tiers = (
+        inline_preset_tiers = (
             {}
             if getattr(router_cfg, "tier_profile", None)
-            else _tier_synthesized_baseline(provider, model)
+            else _tier_inline_preset_baseline(provider, model)
         )
         for tier_name in sorted(tiers):
             tier = tiers[tier_name]
@@ -230,7 +231,7 @@ def resolve_effective_llm(config: Any, catalog: ModelCatalog) -> dict[str, Resol
             tier_baseline = baseline_tiers.get(tier_name)
             if not isinstance(tier_baseline, dict):
                 tier_baseline = {}
-            tier_synth = synthesized_tiers.get(tier_name)
+            tier_synth = inline_preset_tiers.get(tier_name)
             if not isinstance(tier_synth, dict):
                 tier_synth = {}
             for key in ("provider", "model"):

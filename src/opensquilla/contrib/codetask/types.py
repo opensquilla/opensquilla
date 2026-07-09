@@ -106,6 +106,10 @@ class AgentOutcome:
     session_id: str | None = None
     usage: dict = field(default_factory=dict)
     error: str | None = None
+    # Provider/tool errors from the agent's JSON envelope (each {message, code});
+    # the child exits 0 in --json mode even when a turn errored, so this is the
+    # only channel carrying the real reason (e.g. code "no_provider"/"402").
+    errors: list[dict] = field(default_factory=list)
 
 
 @dataclass

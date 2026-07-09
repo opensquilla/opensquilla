@@ -11,7 +11,6 @@ from pydantic import ValidationError
 
 from opensquilla.channels.registry import discover_all, parse_channel_entry
 from opensquilla.gateway.config import (
-    ROUTER_TIER_PROFILE_IDS,
     ChannelsConfig,
     GatewayConfig,
     LlmEnsembleConfig,
@@ -19,7 +18,6 @@ from opensquilla.gateway.config import (
     MemoryEmbeddingConfig,
     SquillaRouterConfig,
     _default_tiers,
-    _router_tier_profile_defaults,
 )
 from opensquilla.gateway.config_secrets import (
     clear_runtime_secret_paths,
@@ -115,7 +113,7 @@ def _reconcile_router_profile_for_provider(
     if preset is None:
         router_payload["enabled"] = False
         router_payload["tier_profile"] = None
-    elif not preset.synthesized and router_enabled:
+    elif preset.persistable and router_enabled:
         router_payload["tier_profile"] = provider_id
     else:
         router_payload["tier_profile"] = None
@@ -145,9 +143,10 @@ def _normalize_explicit_text_tier(default_tier: str | None) -> str | None:
 
 
 def _router_default_model_for_provider(provider_id: str, default_tier: str | None) -> str:
-    if provider_id not in ROUTER_TIER_PROFILE_IDS:
+    preset = get_preset(provider_id)
+    if preset is None or preset.synthesized:
         return ""
-    tiers = _router_tier_profile_defaults(provider_id)
+    tiers = preset.tier_defaults()
     tier = tiers.get(_default_text_tier(default_tier)) or tiers.get("c1") or {}
     return str(tier.get("model") or "").strip()
 
@@ -388,21 +387,23 @@ def _apply_provider_preset(cfg: GatewayConfig, preset: ProviderPreset, model: st
     goes through ``_reconcile_router_profile_for_provider`` unchanged, so save
     paths stay pinned to the legacy nine unless the user asked for a preset.
 
-    Packaged (legacy-nine) preset → exactly today's recommended write shape:
-    ``enabled=True`` with the persisted ``tier_profile`` id and no inline
-    tiers, so ``to_toml_dict`` keeps persisting the compact profile form.
+    Persistable (legacy-nine) preset → exactly today's recommended write
+    shape: ``enabled=True`` with the persisted ``tier_profile`` id and no
+    inline tiers, so ``to_toml_dict`` keeps persisting the compact profile
+    form.
 
-    Synthesized preset → the custom-mode write shape: ``enabled=True``,
-    ``tier_profile=None`` (non-legacy ids must never persist — downgrade
-    contract) plus the preset's expanded tiers. A synthesized preset carries
-    no curated model ladder (its ``default_model`` may be empty), so empty
-    tier model slots are completed with this save's effective model — the
-    operator's explicit model is the only model binding this save knows.
+    Curated-inline or synthesized preset → the custom-mode write shape:
+    ``enabled=True``, ``tier_profile=None`` (non-legacy ids must never
+    persist — downgrade contract) plus the preset's expanded tiers. A
+    synthesized preset carries no curated model ladder (its ``default_model``
+    may be empty), so empty tier model slots are completed with this save's
+    effective model — the operator's explicit model is the only model binding
+    this save knows; a curated-inline ladder is already fully bound.
     """
     router_payload = cfg.squilla_router.model_dump(mode="python")
     router_payload.pop("tiers", None)
     router_payload["enabled"] = True
-    if not preset.synthesized:
+    if preset.persistable:
         router_payload["tier_profile"] = preset.preset_id
     else:
         router_payload["tier_profile"] = None
@@ -667,7 +668,7 @@ def upsert_router(
         writes_packaged_profile = (
             router_mode in {"recommended", "openrouter-mix"}
             and preset is not None
-            and not preset.synthesized
+            and preset.persistable
             and _tiers_equal_after_canonical_normalization(merged_tiers, base_tiers)
         )
         if writes_packaged_profile:

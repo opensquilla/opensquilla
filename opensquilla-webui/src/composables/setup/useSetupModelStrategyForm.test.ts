@@ -106,6 +106,16 @@ describe('useSetupModelStrategyForm', () => {
     expect(ensemble.selectionMode.value).toBe('static_openrouter_b5')
   })
 
+  it('selecting model ensemble uses the fixed TokenRhythm profile for TokenRhythm providers', () => {
+    const { router, ensemble, strategy } = makeForm('tokenrhythm')
+
+    strategy.setStrategy('ensemble')
+
+    expect(router.mode.value).toBe('disabled')
+    expect(ensemble.enabled.value).toBe(true)
+    expect(ensemble.selectionMode.value).toBe('static_tokenrhythm_b5')
+  })
+
   it('builds the three strategy rows with model router first and no badge metadata', () => {
     const { router, ensemble, strategy } = makeForm()
     const routerPanel = router.createPanel({

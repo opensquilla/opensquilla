@@ -79,6 +79,7 @@ function submitModel() {
           @change="emit('updateSelectionMode', ($event.target as HTMLSelectElement).value)"
         >
           <option value="static_openrouter_b5">{{ t('setup.ensemble.selectionStatic') }}</option>
+          <option value="static_tokenrhythm_b5">{{ t('setup.ensemble.selectionStaticTokenrhythm') }}</option>
           <option value="router_dynamic">{{ t('setup.ensemble.selectionDynamic') }}</option>
         </select>
       </div>

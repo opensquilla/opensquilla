@@ -245,13 +245,21 @@ def test_full_default_tree_round_trips_via_to_toml_dict(tmp_path: Path) -> None:
     dump2 = cfg.to_toml_dict()
 
     assert dump2 == dump1
-    # The default tree carries the synthesized tokenrhythm ladder (the
-    # built-in default provider has no packaged tier_profile).
+    # The default tree carries the curated tokenrhythm ladder (the built-in
+    # default provider ships packaged tier data but no persistable
+    # tier_profile, so its ladder is applied inline).
     tiers = cfg.squilla_router.tiers
-    assert set(tiers) == {"c0", "c1", "c2", "c3"}
-    for tier in tiers.values():
+    assert set(tiers) == {"c0", "c1", "c2", "c3", "image_model"}
+    expected_models = {
+        "c0": "deepseek-v4-flash",
+        "c1": "deepseek-v4-pro",
+        "c2": "kimi-k2.7-code",
+        "c3": "glm-5.1",
+        "image_model": "kimi-k2.6",
+    }
+    for name, tier in tiers.items():
         assert tier["provider"] == "tokenrhythm"
-        assert tier["model"] == "deepseek-v4-pro"
+        assert tier["model"] == expected_models[name]
 
 
 # --- H4: downgrade chokepoint at to_toml_dict --------------------------------

@@ -38,8 +38,8 @@ FIELD_RECORD_KEYS = frozenset({"value", "source"})
 # but is part of the contract so clients can pre-wire rendering for it.
 ALLOWED_SOURCES = frozenset({"default", "catalog", "preset", "config", "session"})
 
-# Exact field-path set for a default config (the synthesized tokenrhythm
-# default ladder: text tiers c0-c3, no curated image tier). Tier paths follow
+# Exact field-path set for a default config (the curated tokenrhythm default
+# ladder: text tiers c0-c3 plus the packaged image tier). Tier paths follow
 # whichever tiers the config actually carries; an image_model tier emits its
 # provider/model paths when present. Conscious decision required to change:
 # each entry is an individually vetted non-secret path — renames, removals,
@@ -62,6 +62,8 @@ EXPECTED_FIELD_PATHS = frozenset(
         "squilla_router.tiers.c2.model",
         "squilla_router.tiers.c3.provider",
         "squilla_router.tiers.c3.model",
+        "squilla_router.tiers.image_model.provider",
+        "squilla_router.tiers.image_model.model",
     }
 )
 

@@ -2,6 +2,25 @@
 
 import pytest
 
+from opensquilla.contrib.codetask import preflight as _preflight
+from opensquilla.onboarding.probe import ProviderProbeResult
+
+
+@pytest.fixture(autouse=True)
+def _stub_provider_probe(monkeypatch):
+    """Make the credential preflight offline-safe by default.
+
+    The default suite runs keyless (the global conftest strips provider keys),
+    so a real probe would classify every run as auth_invalid and block it
+    before clone. Stub the network round-trip to succeed; tests that exercise
+    the preflight override this with their own probe result.
+    """
+
+    async def _ok(*, provider_id, model, **_kw):
+        return ProviderProbeResult(ok=True, provider_id=provider_id, model=model)
+
+    monkeypatch.setattr(_preflight, "probe_llm_provider", _ok)
+
 
 @pytest.fixture(autouse=True)
 def _isolate_agent_config_discovery(monkeypatch, tmp_path_factory):

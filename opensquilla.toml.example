@@ -191,6 +191,11 @@ base_url = "https://tokenrhythm.studio/v1"
 # every turn falls back to the single configured provider —
 # `opensquilla doctor` reports this as the llm_ensemble finding
 # "LLM ensemble is enabled but cannot run".
+# "static_tokenrhythm_b5" is the TokenRhythm mirror of the same lineup
+# (deepseek-v4-pro, glm-5.1, kimi-k2.7-code, qwen3.7-max + glm-5.1
+# aggregator) and needs a TokenRhythm credential the same way (the [llm]
+# api_key when the active provider is "tokenrhythm", or
+# TOKENRHYTHM_API_KEY in the environment).
 #
 # The keys below are also writable at runtime via the Web UI / the
 # `onboarding.ensemble.configure` RPC; omitted keys keep their current
@@ -198,9 +203,10 @@ base_url = "https://tokenrhythm.studio/v1"
 [llm_ensemble]
 enabled = true
 # "static_openrouter_b5": fixed five-member OpenRouter proposer set (default).
+# "static_tokenrhythm_b5": the same lineup served through TokenRhythm.
 # "router_dynamic": the local router picks proposers from model_options.
 selection_mode = "static_openrouter_b5"
-# Candidate pool for router_dynamic (ignored by static_openrouter_b5).
+# Candidate pool for router_dynamic (ignored by the static profiles).
 model_options = [
   "deepseek/deepseek-v4-pro",
   "z-ai/glm-5.2",
@@ -387,14 +393,14 @@ supports_image = false
 
 [squilla_router.tiers.c2]
 provider = "tokenrhythm"
-model = "glm-5.1"
-description = "Stronger GLM 5.1 route for multi-step coding, structured reasoning, larger context synthesis, and harder analysis"
+model = "kimi-k2.7-code"
+description = "Stronger Kimi K2.7 Code route for multi-step coding, structured reasoning, larger context synthesis, and harder analysis"
 supports_image = false
 
 [squilla_router.tiers.c3]
 provider = "tokenrhythm"
-model = "qwen3.7-max"
-description = "Highest-tier Qwen 3.7 Max route with a very large context window for difficult planning, deep review, complex debugging, and high-stakes synthesis"
+model = "glm-5.1"
+description = "Highest-tier GLM 5.1 route for difficult planning, deep review, complex debugging, and high-stakes synthesis"
 supports_image = false
 
 [squilla_router.tiers.image_model]

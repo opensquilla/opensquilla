@@ -416,7 +416,9 @@ class LlmEnsembleConfig(BaseSettings):
     # operator explicitly enables the ensemble surface.
     enabled: bool = False
     mode: Literal["b5_fusion"] = "b5_fusion"
-    selection_mode: Literal["router_dynamic", "static_openrouter_b5"] = "static_openrouter_b5"
+    selection_mode: Literal[
+        "router_dynamic", "static_openrouter_b5", "static_tokenrhythm_b5"
+    ] = "static_openrouter_b5"
     proposer_tools: bool = False
     min_successful_proposers: int = Field(default=1, ge=1)
     all_failed_policy: Literal["fallback_single", "error"] = "fallback_single"
@@ -443,6 +445,15 @@ class LlmEnsembleConfig(BaseSettings):
 
 
 STATIC_OPENROUTER_B5_SELECTION_MODE = "static_openrouter_b5"
+STATIC_TOKENRHYTHM_B5_SELECTION_MODE = "static_tokenrhythm_b5"
+# selection_mode → member provider id for the static B5 profiles. Must stay
+# in lockstep with provider.ensemble.STATIC_B5_PROFILES (gateway must not be
+# imported from provider, so a parity test pins the two tables together).
+STATIC_B5_SELECTION_MODE_PROVIDERS: dict[str, str] = {
+    STATIC_OPENROUTER_B5_SELECTION_MODE: "openrouter",
+    STATIC_TOKENRHYTHM_B5_SELECTION_MODE: "tokenrhythm",
+}
+STATIC_B5_SELECTION_MODES = frozenset(STATIC_B5_SELECTION_MODE_PROVIDERS)
 STATIC_OPENROUTER_B5_MIN_AGENT_STREAM_IDLE_TIMEOUT_SECONDS = 1200.0
 STATIC_OPENROUTER_B5_MIN_WEBUI_STREAM_IDLE_GRACE_SECONDS = 1260.0
 
@@ -455,31 +466,35 @@ def _non_negative_float(value: Any, default: float) -> float:
     return max(0.0, parsed)
 
 
-def static_openrouter_b5_ensemble_enabled(config: Any) -> bool:
+def static_b5_ensemble_enabled(config: Any) -> bool:
     ensemble_cfg = getattr(config, "llm_ensemble", None)
     if ensemble_cfg is None:
         return False
     return bool(getattr(ensemble_cfg, "enabled", False)) and (
-        str(getattr(ensemble_cfg, "selection_mode", "") or "")
-        == STATIC_OPENROUTER_B5_SELECTION_MODE
+        str(getattr(ensemble_cfg, "selection_mode", "") or "") in STATIC_B5_SELECTION_MODES
     )
 
 
-def static_openrouter_b5_ensemble_active(config: Any) -> bool:
-    """True when static-B5 is enabled *and* its members resolve a credential.
+def static_b5_ensemble_active(config: Any) -> bool:
+    """True when a static-B5 profile is enabled *and* resolves a credential.
 
     The stream-idle floors below exist for the real (slow) static-B5
-    ensemble. A keyless install can never run those members — the wrap is
+    ensembles. A keyless install can never run those members — the wrap is
     skipped at turn time — so it keeps the default hang-detection budgets.
     The credential check is the shared ensemble-side helper (lazy import;
     ``provider`` never imports from ``gateway``, so no cycle) and therefore
     cannot disagree with the turn-time wrap guard.
     """
-    if not static_openrouter_b5_ensemble_enabled(config):
+    if not static_b5_ensemble_enabled(config):
         return False
-    from opensquilla.provider.ensemble import static_openrouter_b5_credential_available
+    from opensquilla.provider.ensemble import static_b5_credential_available
 
-    return static_openrouter_b5_credential_available(config, getattr(config, "llm", None))
+    selection_mode = str(
+        getattr(getattr(config, "llm_ensemble", None), "selection_mode", "") or ""
+    )
+    return static_b5_credential_available(
+        config, getattr(config, "llm", None), selection_mode
+    )
 
 
 def effective_agent_stream_idle_timeout_seconds(config: Any) -> float:
@@ -487,7 +502,7 @@ def effective_agent_stream_idle_timeout_seconds(config: Any) -> float:
         getattr(config, "agent_stream_idle_timeout_seconds", 600.0),
         600.0,
     )
-    if static_openrouter_b5_ensemble_active(config):
+    if static_b5_ensemble_active(config):
         value = max(value, STATIC_OPENROUTER_B5_MIN_AGENT_STREAM_IDLE_TIMEOUT_SECONDS)
     return value
 
@@ -497,7 +512,7 @@ def effective_webui_stream_idle_grace_seconds(config: Any) -> float:
         getattr(config, "webui_stream_idle_grace_seconds", 630.0),
         630.0,
     )
-    if static_openrouter_b5_ensemble_active(config):
+    if static_b5_ensemble_active(config):
         server_idle = effective_agent_stream_idle_timeout_seconds(config)
         value = max(
             value,
@@ -1998,50 +2013,6 @@ class GatewayConfig(BaseSettings):
         return self
 
     @model_validator(mode="after")
-    def _default_squilla_router_tiers_for_tokenrhythm(self) -> GatewayConfig:
-        """Bind the default router ladder to tokenrhythm when it is the provider.
-
-        The ``tiers`` field default is the packaged openrouter preset, which a
-        tokenrhythm turn cannot execute (openrouter model ids on the active
-        provider's credentials). tokenrhythm has no packaged tier_profile —
-        the accepted set is pinned to the legacy nine by the downgrade
-        contract — so when the router is enabled with no profile and the
-        ladder was left at its default, expand the synthesized tokenrhythm
-        preset inline with empty tier models completed from the effective
-        ``llm.model``, the same shape a provider save writes. In-memory only:
-        the load-time sparse-persist baseline keeps it out of config.toml.
-        """
-        router = self.squilla_router
-        if not router or not getattr(router, "enabled", False):
-            return self
-        if getattr(router, "tier_profile", None):
-            return self
-        provider = str(getattr(self.llm, "provider", "") or "").strip().lower()
-        if provider != "tokenrhythm":
-            return self
-        if getattr(router, "tiers", {}) != _default_tiers():
-            return self
-        preset = get_preset(provider)
-        if preset is None or not preset.synthesized:
-            return self
-        tiers = preset.tier_defaults()
-        model = str(getattr(self.llm, "model", "") or "").strip()
-        for tier in tiers.values():
-            if not str(tier.get("model") or "").strip():
-                tier["model"] = model
-        router_fields_set = set(router.model_fields_set)
-        payload = router.model_dump(mode="python")
-        payload["tiers"] = tiers
-        self.squilla_router = SquillaRouterConfig(**payload)
-        # The rebuild marks every field explicitly set; restore the original
-        # provenance so a fresh default config still reads as one (onboard's
-        # keep-current router gate and custom-tiers detection rely on it).
-        object.__setattr__(
-            self.squilla_router, "__pydantic_fields_set__", router_fields_set
-        )
-        return self
-
-    @model_validator(mode="after")
     def _default_squilla_router_profile_for_direct_provider(self) -> GatewayConfig:
         router = self.squilla_router
         if not router or not getattr(router, "enabled", False):
@@ -2049,11 +2020,19 @@ class GatewayConfig(BaseSettings):
         if getattr(router, "tier_profile", None):
             return self
         provider = str(getattr(self.llm, "provider", "") or "").strip().lower()
-        # Boot auto-default stays pinned to the persistable packaged profiles.
-        # Synthesized presets are applied by onboarding/provider saves as
-        # inline tiers, never as a persisted tier_profile.
-        if provider == "openrouter" or provider not in ROUTER_TIER_PROFILE_IDS:
+        # Boot auto-default: persistable packaged profiles write the compact
+        # tier_profile form; curated-inline presets (e.g. tokenrhythm) apply
+        # their ladder as inline tiers because their ids must never persist
+        # as a tier_profile (downgrade contract). Synthesized presets are
+        # applied by onboarding/provider saves only, never at boot.
+        if provider == "openrouter":
             return self
+        curated_inline_preset = None
+        if provider not in ROUTER_TIER_PROFILE_IDS:
+            preset = get_preset(provider)
+            if preset is None or preset.synthesized or preset.persistable:
+                return self
+            curated_inline_preset = preset
         fields_set = set(getattr(router, "model_fields_set", set()))
         has_custom_tiers = (
             "tiers" in fields_set and getattr(router, "tiers", {}) != _default_tiers()
@@ -2061,9 +2040,20 @@ class GatewayConfig(BaseSettings):
         if "tier_profile" in fields_set or has_custom_tiers:
             return self
         payload = router.model_dump(mode="python")
-        payload["tier_profile"] = provider
-        payload.pop("tiers", None)
+        if curated_inline_preset is None:
+            payload["tier_profile"] = provider
+            payload.pop("tiers", None)
+            self.squilla_router = SquillaRouterConfig(**payload)
+            return self
+        payload["tier_profile"] = None
+        payload["tiers"] = curated_inline_preset.tier_defaults()
         self.squilla_router = SquillaRouterConfig(**payload)
+        # The rebuild marks every field explicitly set; restore the original
+        # provenance so the seeded ladder stays in-memory only (the load-time
+        # sparse-persist baseline keeps it out of config.toml) and a fresh
+        # default config still reads as one (onboard's keep-current router
+        # gate and custom-tiers detection rely on it).
+        object.__setattr__(self.squilla_router, "__pydantic_fields_set__", fields_set)
         return self
 
     @model_validator(mode="after")

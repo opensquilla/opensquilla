@@ -1,5 +1,5 @@
 import { desktopCapabilities } from './capabilities'
-import type { DesktopUpdateState, DesktopUpdateStatus, Platform } from './types'
+import type { CliInvocation, DesktopUpdateState, DesktopUpdateStatus, Platform } from './types'
 
 function requireDesktopApi(): OpenSquillaDesktopApi {
   const api = window.opensquillaDesktop
@@ -86,6 +86,17 @@ export function createDesktopPlatform(): Platform {
       getStatus: () => requireDesktopApi().getGatewayStatus(),
       revealLog: () => requireDesktopApi().revealGatewayLog(),
       retryStartup: () => requireDesktopApi().retryStartup(),
+      async getCliInvocation(): Promise<CliInvocation | null> {
+        const api = requireDesktopApi()
+        if (typeof api.getCliInvocation !== 'function') return null
+        try {
+          const raw = await api.getCliInvocation() as Partial<CliInvocation> | null
+          if (!raw || typeof raw.prefix !== 'string' || !raw.prefix.trim()) return null
+          return { mode: raw.mode === 'dev' ? 'dev' : 'bundled', prefix: raw.prefix }
+        } catch {
+          return null
+        }
+      },
     },
     settings: {
       getDesktopSettings: () => requireDesktopApi().getDesktopSettings(),

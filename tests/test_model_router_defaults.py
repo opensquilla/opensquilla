@@ -169,6 +169,61 @@ def test_direct_legacy_openrouter_router_defaults_are_migrated(provider_id: str)
         assert cfg.squilla_router.tiers[tier]["model"] == expected[tier]["model"]
 
 
+TOKENRHYTHM_EXPECTED_TIER_MODELS = {
+    "c0": "deepseek-v4-flash",
+    "c1": "deepseek-v4-pro",
+    "c2": "kimi-k2.7-code",
+    "c3": "glm-5.1",
+}
+
+
+def test_unset_tier_profile_seeds_tokenrhythm_curated_inline_tiers() -> None:
+    # tokenrhythm has a curated ladder but must never persist as a
+    # tier_profile id (downgrade contract): boot seeds it as inline tiers.
+    gateway_config_cls = _gateway_config_cls()
+
+    cfg = gateway_config_cls(llm={"provider": "tokenrhythm", "model": "deepseek-v4-pro"})
+
+    assert cfg.squilla_router.tier_profile is None
+    for tier, model in TOKENRHYTHM_EXPECTED_TIER_MODELS.items():
+        assert cfg.squilla_router.tiers[tier]["provider"] == "tokenrhythm"
+        assert cfg.squilla_router.tiers[tier]["model"] == model
+    assert cfg.squilla_router.tiers["image_model"]["model"] == "kimi-k2.6"
+
+
+def test_tokenrhythm_direct_legacy_openrouter_router_defaults_are_migrated() -> None:
+    from opensquilla.gateway.config import _router_tier_profile_defaults
+
+    gateway_config_cls = _gateway_config_cls()
+
+    cfg = gateway_config_cls(
+        llm={"provider": "tokenrhythm", "model": "deepseek-v4-pro"},
+        squilla_router={"enabled": True, "tiers": _router_tier_profile_defaults("openrouter")},
+    )
+
+    assert cfg.squilla_router.tier_profile is None
+    for tier, model in TOKENRHYTHM_EXPECTED_TIER_MODELS.items():
+        assert cfg.squilla_router.tiers[tier]["provider"] == "tokenrhythm"
+        assert cfg.squilla_router.tiers[tier]["model"] == model
+
+
+def test_tokenrhythm_boot_seed_respects_custom_inline_tiers() -> None:
+    gateway_config_cls = _gateway_config_cls()
+
+    custom = {
+        tier: {"provider": "tokenrhythm", "model": "glm-5", "description": "custom"}
+        for tier in ("c0", "c1", "c2", "c3")
+    }
+    cfg = gateway_config_cls(
+        llm={"provider": "tokenrhythm", "model": "deepseek-v4-pro"},
+        squilla_router={"enabled": True, "tiers": custom},
+    )
+
+    assert cfg.squilla_router.tier_profile is None
+    for tier in ("c0", "c1", "c2", "c3"):
+        assert cfg.squilla_router.tiers[tier]["model"] == "glm-5"
+
+
 def test_deepseek_direct_legacy_openrouter_model_default_is_normalized() -> None:
     gateway_config_cls = _gateway_config_cls()
 
@@ -353,8 +408,8 @@ def test_example_toml_enables_runtime_router_defaults() -> None:
         assert "thinking_level" not in tiers[name]
     assert tiers["c0"]["model"] == "deepseek-v4-flash"
     assert tiers["c1"]["model"] == "deepseek-v4-pro"
-    assert tiers["c2"]["model"] == "glm-5.1"
-    assert tiers["c3"]["model"] == "qwen3.7-max"
+    assert tiers["c2"]["model"] == "kimi-k2.7-code"
+    assert tiers["c3"]["model"] == "glm-5.1"
     assert tiers["image_model"]["model"] == "kimi-k2.6"
     assert tiers["image_model"]["supports_image"] is True
     assert tiers["image_model"]["image_only"] is True

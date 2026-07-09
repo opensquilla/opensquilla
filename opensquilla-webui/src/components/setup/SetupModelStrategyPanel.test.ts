@@ -375,6 +375,7 @@ describe('SetupModelStrategyPanel', () => {
         enabled: true,
         selectionMode: 'static_openrouter_b5',
         fixedOpenRouterProfile: {
+          providerLabel: 'OpenRouter',
           proposers: [
             { key: 'openrouter-fixed:openrouter:deepseek/deepseek-v4-pro', provider: 'openrouter', model: 'deepseek/deepseek-v4-pro', source: 'openrouter_fixed', enabled: true },
             { key: 'openrouter-fixed:openrouter:z-ai/glm-5.2', provider: 'openrouter', model: 'z-ai/glm-5.2', source: 'openrouter_fixed', enabled: true },

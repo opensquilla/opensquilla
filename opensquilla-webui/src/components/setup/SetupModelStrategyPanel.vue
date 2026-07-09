@@ -288,8 +288,8 @@ function credentialLabel(candidate: EnsembleCandidateView): string {
 
         <div v-if="panel.ensemble.fixedOpenRouterProfile" class="control-row control-row--stack">
           <div class="control-row__label-block">
-            <span class="control-row__label">{{ t('setup.modelStrategy.openrouterFixedTitle') }}</span>
-            <span class="control-row__desc">{{ t('setup.modelStrategy.openrouterFixedDesc') }}</span>
+            <span class="control-row__label">{{ t('setup.modelStrategy.openrouterFixedTitle', { provider: panel.ensemble.fixedOpenRouterProfile.providerLabel }) }}</span>
+            <span class="control-row__desc">{{ t('setup.modelStrategy.openrouterFixedDesc', { provider: panel.ensemble.fixedOpenRouterProfile.providerLabel }) }}</span>
           </div>
           <div class="setup-model-strategy__candidate-list" role="list">
             <div

@@ -798,12 +798,12 @@ def _static_b5_gateway_config() -> Any:
 def test_static_b5_credential_unavailable_for_keyless_non_openrouter_provider(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from opensquilla.provider.ensemble import static_openrouter_b5_credential_available
+    from opensquilla.provider.ensemble import static_b5_credential_available
 
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
     inherited = ProviderConfig(provider="groq", model="m", api_key="sk-groq-synthetic")
 
-    assert static_openrouter_b5_credential_available(_static_b5_gateway_config(), inherited) is (
+    assert static_b5_credential_available(_static_b5_gateway_config(), inherited) is (
         False
     )
 
@@ -811,12 +811,12 @@ def test_static_b5_credential_unavailable_for_keyless_non_openrouter_provider(
 def test_static_b5_credential_env_key_is_an_opt_in_for_other_providers(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from opensquilla.provider.ensemble import static_openrouter_b5_credential_available
+    from opensquilla.provider.ensemble import static_b5_credential_available
 
     monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-synthetic")
     inherited = ProviderConfig(provider="groq", model="m", api_key="sk-groq-synthetic")
 
-    assert static_openrouter_b5_credential_available(_static_b5_gateway_config(), inherited) is (
+    assert static_b5_credential_available(_static_b5_gateway_config(), inherited) is (
         True
     )
 
@@ -824,12 +824,12 @@ def test_static_b5_credential_env_key_is_an_opt_in_for_other_providers(
 def test_static_b5_credential_resolves_from_inherited_openrouter_key(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from opensquilla.provider.ensemble import static_openrouter_b5_credential_available
+    from opensquilla.provider.ensemble import static_b5_credential_available
 
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
     inherited = ProviderConfig(provider="openrouter", model="m", api_key="sk-or-synthetic")
 
-    assert static_openrouter_b5_credential_available(_static_b5_gateway_config(), inherited) is (
+    assert static_b5_credential_available(_static_b5_gateway_config(), inherited) is (
         True
     )
 
@@ -837,12 +837,12 @@ def test_static_b5_credential_resolves_from_inherited_openrouter_key(
 def test_static_b5_credential_unavailable_for_keyless_openrouter_provider(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from opensquilla.provider.ensemble import static_openrouter_b5_credential_available
+    from opensquilla.provider.ensemble import static_b5_credential_available
 
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
     inherited = ProviderConfig(provider="openrouter", model="m", api_key="")
 
-    assert static_openrouter_b5_credential_available(_static_b5_gateway_config(), inherited) is (
+    assert static_b5_credential_available(_static_b5_gateway_config(), inherited) is (
         False
     )
 
@@ -852,16 +852,45 @@ def test_static_b5_credential_accepts_non_selector_provider_config_shapes(
 ) -> None:
     """The gateway floor/doctor call sites pass ``config.llm`` (no org_id field)."""
     from opensquilla.gateway.config import LlmProviderConfig
-    from opensquilla.provider.ensemble import static_openrouter_b5_credential_available
+    from opensquilla.provider.ensemble import static_b5_credential_available
 
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
     config = _static_b5_gateway_config()
 
     keyless = LlmProviderConfig(provider="groq", model="m", api_key="sk-groq-synthetic")
-    assert static_openrouter_b5_credential_available(config, keyless) is False
+    assert static_b5_credential_available(config, keyless) is False
 
     keyed = LlmProviderConfig(provider="openrouter", model="m", api_key="sk-or-synthetic")
-    assert static_openrouter_b5_credential_available(config, keyed) is True
+    assert static_b5_credential_available(config, keyed) is True
+
+
+def test_static_tokenrhythm_b5_credential_resolution(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from opensquilla.gateway.config import GatewayConfig
+    from opensquilla.provider.ensemble import static_b5_credential_available
+
+    config = GatewayConfig(
+        llm_ensemble={"enabled": True, "selection_mode": "static_tokenrhythm_b5"},
+    )
+    mode = "static_tokenrhythm_b5"
+
+    # Inherited tokenrhythm key satisfies the profile.
+    monkeypatch.delenv("TOKENRHYTHM_API_KEY", raising=False)
+    inherited = ProviderConfig(provider="tokenrhythm", model="m", api_key="sk-tr-synthetic")
+    assert static_b5_credential_available(config, inherited, mode) is True
+
+    # An OpenRouter key never satisfies the tokenrhythm profile.
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-synthetic")
+    keyless = ProviderConfig(provider="groq", model="m", api_key="sk-groq-synthetic")
+    assert static_b5_credential_available(config, keyless, mode) is False
+
+    # The registry env key is an opt-in for other active providers.
+    monkeypatch.setenv("TOKENRHYTHM_API_KEY", "sk-tr-synthetic")
+    assert static_b5_credential_available(config, keyless, mode) is True
+
+    # Unknown selection modes resolve to no credential.
+    assert static_b5_credential_available(config, inherited, "static_unknown_b5") is False
 
 
 def test_static_b5_credential_gate_agrees_with_config_side_floor_gate(
@@ -869,10 +898,10 @@ def test_static_b5_credential_gate_agrees_with_config_side_floor_gate(
 ) -> None:
     from opensquilla.gateway.config import (
         GatewayConfig,
-        static_openrouter_b5_ensemble_active,
-        static_openrouter_b5_ensemble_enabled,
+        static_b5_ensemble_active,
+        static_b5_ensemble_enabled,
     )
-    from opensquilla.provider.ensemble import static_openrouter_b5_credential_available
+    from opensquilla.provider.ensemble import static_b5_credential_available
 
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
     configs = [
@@ -885,7 +914,8 @@ def test_static_b5_credential_gate_agrees_with_config_side_floor_gate(
         ),
     ]
     for config in configs:
-        expected = static_openrouter_b5_ensemble_enabled(
-            config
-        ) and static_openrouter_b5_credential_available(config, config.llm)
-        assert static_openrouter_b5_ensemble_active(config) is expected
+        selection_mode = str(config.llm_ensemble.selection_mode or "")
+        expected = static_b5_ensemble_enabled(config) and static_b5_credential_available(
+            config, config.llm, selection_mode
+        )
+        assert static_b5_ensemble_active(config) is expected

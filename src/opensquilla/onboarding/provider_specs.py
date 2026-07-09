@@ -5,7 +5,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Literal
 
-from opensquilla.gateway.config import ROUTER_TIER_PROFILE_IDS, _router_tier_profile_defaults
 from opensquilla.provider.preset_registry import ProviderPreset, get_preset
 from opensquilla.provider.registry import ProviderSpec, list_provider_specs
 
@@ -136,9 +135,19 @@ def _deployment_for(spec: ProviderSpec) -> Deployment:
     return "cloud"
 
 
+def _has_curated_router_ladder(provider_id: str) -> bool:
+    """True when the provider ships a curated tier ladder (packaged or inline).
+
+    Synthesized presets carry no per-tier model ladder, so they do not count:
+    their providers still need an operator-supplied model id.
+    """
+    preset = get_preset(provider_id)
+    return preset is not None and not preset.synthesized
+
+
 def _what_you_need(spec: ProviderSpec) -> tuple[str, ...]:
     needs: list[str] = []
-    if spec.provider_id not in ROUTER_TIER_PROFILE_IDS:
+    if not _has_curated_router_ladder(spec.provider_id):
         needs.append(
             "A local model name available from your model server."
             if spec.provider_id in _LOCAL_PROVIDER_IDS
@@ -159,20 +168,13 @@ def _what_you_need(spec: ProviderSpec) -> tuple[str, ...]:
     return tuple(needs)
 
 
-# Direct-model defaults for providers without a packaged tier profile: the
-# model field stays required, but setup surfaces prefill this id so a fresh
-# user is not staring at an empty required field.
-_DIRECT_MODEL_DEFAULTS = {
-    "tokenrhythm": "deepseek-v4-pro",
-}
-
-
 def _default_direct_model(provider_id: str) -> str:
-    if provider_id in ROUTER_TIER_PROFILE_IDS:
-        tiers = _router_tier_profile_defaults(provider_id)
-        tier = tiers.get("c1") or tiers.get("c0") or {}
-        return str(tier.get("model") or "")
-    return _DIRECT_MODEL_DEFAULTS.get(provider_id, "")
+    preset = get_preset(provider_id)
+    if preset is None or preset.synthesized:
+        return ""
+    tiers = preset.tier_defaults()
+    tier = tiers.get("c1") or tiers.get("c0") or {}
+    return str(tier.get("model") or "")
 
 
 def _model_description(spec: ProviderSpec, *, router_supported: bool) -> str:
@@ -187,7 +189,7 @@ def _model_description(spec: ProviderSpec, *, router_supported: bool) -> str:
 
 
 def _fields_for(spec: ProviderSpec) -> tuple[ProviderSetupField, ...]:
-    router_supported = spec.provider_id in ROUTER_TIER_PROFILE_IDS
+    router_supported = _has_curated_router_ladder(spec.provider_id)
     return (
         ProviderSetupField(
             name="model",
@@ -275,7 +277,7 @@ def _to_setup_spec(spec: ProviderSpec) -> ProviderSetupSpec:
         default_base_url=spec.default_base_url,
         requires_api_key=spec.requires_api_key(),
         requires_base_url=spec.requires_base_url(),
-        router_supported=spec.provider_id in ROUTER_TIER_PROFILE_IDS,
+        router_supported=_has_curated_router_ladder(spec.provider_id),
         deployment=_deployment_for(spec),
         blocking=True,
         # Runtime-supported providers can be probed live (one-token chat via

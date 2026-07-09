@@ -43,6 +43,11 @@ APPROVED_PACKAGE_IMPORTS: frozenset[tuple[str, str]] = frozenset({
     # schema before spawning (lazy import; gateway never imports contrib, so
     # no cycle).
     ("contrib", "gateway"),
+    # code-task's credential preflight reuses the onboarding provider probe and
+    # the provider failure taxonomy / registry to classify results; neither
+    # onboarding nor provider imports contrib, so no cycle.
+    ("contrib", "onboarding"),
+    ("contrib", "provider"),
     # The diagnostics-bundle shim composes gateway redaction, the offline
     # doctor, and onboarding config resolution lazily for the bundle
     # generator; a top-level module (permissions.py precedent) so the

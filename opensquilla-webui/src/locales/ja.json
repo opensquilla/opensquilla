@@ -162,6 +162,11 @@
     }
   },
   "setup": {
+    "cli": {
+      "advancedTitle": "詳細 · 内蔵 CLI",
+      "hintBundled": "これらのコマンドはアプリ内蔵の CLI を使用します。ターミナルに貼り付けて実行できます。",
+      "hintDev": "開発モード：コマンドは uv 経由でソースチェックアウトから実行されます。"
+    },
     "common": {
       "apiKey": "API キー",
       "apiKeyEnv": "API キーの環境変数",
@@ -331,8 +336,8 @@
       "candidateSourceLegacy": "旧設定から",
       "candidateSourceOpenRouterFixed": "OpenRouter 固定集約",
       "customCandidatesLabel": "プロバイダー横断のカスタム候補",
-      "openrouterFixedTitle": "OpenRouter 固定集約",
-      "openrouterFixedDesc": "Chat Model が OpenRouter を使う場合、集約ルーティングは 4 つの提案モデルと 1 つの集約モデルを使います。",
+      "openrouterFixedTitle": "{provider} 固定集約",
+      "openrouterFixedDesc": "Chat Model が {provider} を使う場合、集約ルーティングは 4 つの提案モデルと 1 つの集約モデルを使います。",
       "customizeOpenRouterLabel": "集約をカスタマイズ",
       "customizeOpenRouterDesc": "旧 OpenRouter 候補テンプレートを使い、ルーター基準の集約ルーティングに切り替えます。",
       "openrouterFixedProposer": "提案モデル",
@@ -410,6 +415,7 @@
       "selectionLabel": "モデル選択",
       "selectionDesc": "アンサンブルが質問するモデルの選び方。",
       "selectionStatic": "旧来の組み込みモデルセット",
+      "selectionStaticTokenrhythm": "TokenRhythm 組み込みモデルセット",
       "selectionDynamic": "動的(モデル階層に従う)",
       "rawValueTooltip": "設定値: {value}",
       "modelsLabel": "候補モデル",

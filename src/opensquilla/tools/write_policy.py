@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import re
 from dataclasses import dataclass
 from fnmatch import fnmatchcase
@@ -209,7 +210,7 @@ def workspace_write_deny_block(
     *,
     command: str | None = None,
 ) -> dict[str, object]:
-    guidance = _scratch_retry_guidance()
+    guidance = _deny_retry_guidance()
     payload: dict[str, object] = {
         "status": "blocked",
         "reason": "workspace_write_deny",
@@ -239,10 +240,19 @@ def gate_workspace_write_deny(
     match = match_workspace_write_deny(path, original_path=original_path, workspace=workspace)
     if match is None:
         return
-    raise SafeToolError(
-        f"{tool_name} blocked by workspace write deny policy: "
-        f"{match.path} matches {match.pattern}.{_scratch_retry_guidance()}"
-    )
+    raise SafeToolError(str(workspace_write_deny_block(tool_name, match)["message"]))
+
+
+def _deny_retry_guidance(ctx: ToolContext | None = None) -> str:
+    # Opt-in override for the remediation sentence appended to deny messages.
+    # The scratch-dir guidance below tells the model to recreate the file in
+    # scratch, which is the wrong instruction when deny globs protect files
+    # that must not be modified or copied at all (e.g. test files); deployments
+    # using deny globs that way can supply intent-appropriate wording here.
+    override = os.environ.get("OPENSQUILLA_WORKSPACE_WRITE_DENY_GUIDANCE", "").strip()
+    if override:
+        return f" {override}"
+    return _scratch_retry_guidance(ctx)
 
 
 def _scratch_retry_guidance(ctx: ToolContext | None = None) -> str:

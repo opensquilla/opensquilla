@@ -2720,6 +2720,219 @@ def _shell_write_targets_from_inputs(command: str, stdin: str | None = None) -> 
     return targets
 
 
+_WRITE_DENY_TRUE_ENV_VALUES = frozenset({"1", "true", "yes", "on", "enabled"})
+
+
+def _write_deny_lever_enabled(name: str) -> bool:
+    return os.environ.get(name, "").strip().lower() in _WRITE_DENY_TRUE_ENV_VALUES
+
+
+_MUTATOR_SEGMENT_SPLIT_RE = re.compile(r"\|\||&&|;|\||\n")
+_SHORT_OPTIONS_WITH_I_RE = re.compile(r"^-[A-Za-z]*i")
+_ENV_ASSIGNMENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
+_COMMAND_PREFIX_WORDS = frozenset({"command", "env", "nohup", "sudo", "time"})
+
+
+def _segment_argv(segment: str) -> list[str]:
+    try:
+        return shlex.split(segment, posix=True)
+    except ValueError:
+        return segment.split()
+
+
+def _positional_args(
+    argv: list[str],
+    value_flags: frozenset[str] = frozenset(),
+) -> list[str]:
+    args: list[str] = []
+    skip_value = False
+    positional_only = False
+    for token in argv:
+        if skip_value:
+            skip_value = False
+            continue
+        if positional_only:
+            args.append(token)
+            continue
+        if token == "--":
+            positional_only = True
+            continue
+        if token.startswith("-") and token != "-":
+            if token in value_flags:
+                skip_value = True
+            continue
+        args.append(token)
+    return args
+
+
+def _sed_write_targets(argv: list[str]) -> list[str]:
+    options = argv[1:]
+    inplace = any(
+        _SHORT_OPTIONS_WITH_I_RE.match(token) or token.startswith("--in-place")
+        for token in options
+        if token.startswith("-") and token != "--"
+    )
+    if not inplace:
+        return []
+    script_from_flag = any(
+        token in ("-e", "-f") or token.startswith(("--expression", "--file"))
+        for token in options
+    )
+    positionals = _positional_args(
+        options, value_flags=frozenset({"-e", "-f", "--expression", "--file"})
+    )
+    if not script_from_flag and positionals:
+        # Without -e/-f the first positional is the sed script, not a file.
+        positionals = positionals[1:]
+    return positionals
+
+
+def _perl_write_targets(argv: list[str]) -> list[str]:
+    options = argv[1:]
+    inplace = any(
+        _SHORT_OPTIONS_WITH_I_RE.match(token)
+        for token in options
+        if token.startswith("-") and token != "--"
+    )
+    if not inplace:
+        return []
+    script_from_flag = any(token.startswith(("-e", "-E")) for token in options)
+    positionals = _positional_args(options, value_flags=frozenset({"-e", "-E"}))
+    if not script_from_flag and positionals:
+        # Without -e/-E the first positional is the program file, not input.
+        positionals = positionals[1:]
+    return positionals
+
+
+def _rm_write_targets(argv: list[str]) -> list[str]:
+    return _positional_args(argv[1:])
+
+
+def _mv_write_targets(argv: list[str]) -> list[str]:
+    # mv mutates every operand: sources are removed, the destination written.
+    options = argv[1:]
+    targets = [
+        token.split("=", 1)[1]
+        for token in options
+        if token.startswith("--target-directory=")
+    ]
+    targets.extend(
+        options[index + 1]
+        for index, token in enumerate(options)
+        if token in ("-t", "--target-directory") and index + 1 < len(options)
+    )
+    targets.extend(
+        _positional_args(options, value_flags=frozenset({"-t", "--target-directory"}))
+    )
+    return targets
+
+
+def _cp_write_targets(argv: list[str]) -> list[str]:
+    options = argv[1:]
+    targets = [
+        token.split("=", 1)[1]
+        for token in options
+        if token.startswith("--target-directory=")
+    ]
+    targets.extend(
+        options[index + 1]
+        for index, token in enumerate(options)
+        if token in ("-t", "--target-directory") and index + 1 < len(options)
+    )
+    positionals = _positional_args(
+        options, value_flags=frozenset({"-t", "--target-directory"})
+    )
+    if not targets and len(positionals) >= 2:
+        targets.append(positionals[-1])
+    return targets
+
+
+def _dd_write_targets(argv: list[str]) -> list[str]:
+    return [token[3:] for token in argv[1:] if token.startswith("of=")]
+
+
+def _truncate_write_targets(argv: list[str]) -> list[str]:
+    return _positional_args(
+        argv[1:], value_flags=frozenset({"-s", "--size", "-r", "--reference"})
+    )
+
+
+def _git_write_targets(argv: list[str]) -> list[str]:
+    tokens = argv[1:]
+    index = 0
+    while index < len(tokens):
+        token = tokens[index]
+        if token in ("-C", "-c", "--git-dir", "--work-tree"):
+            index += 2
+            continue
+        if token.startswith("-"):
+            index += 1
+            continue
+        break
+    if index >= len(tokens):
+        return []
+    if tokens[index] not in ("rm", "mv"):
+        return []
+    return _positional_args(tokens[index + 1 :])
+
+
+_MUTATOR_WRITE_TARGET_EXTRACTORS: dict[str, Callable[[list[str]], list[str]]] = {
+    "sed": _sed_write_targets,
+    "gsed": _sed_write_targets,
+    "perl": _perl_write_targets,
+    "rm": _rm_write_targets,
+    "unlink": _rm_write_targets,
+    "mv": _mv_write_targets,
+    "cp": _cp_write_targets,
+    "dd": _dd_write_targets,
+    "truncate": _truncate_write_targets,
+    "git": _git_write_targets,
+}
+
+
+def _mutating_command_write_targets(command: str) -> list[str]:
+    """Best-effort write targets of common in-place file mutators.
+
+    Only consulted by the workspace write deny gate when
+    OPENSQUILLA_WORKSPACE_WRITE_DENY_COMMAND_TARGETS is enabled; plain
+    redirection and tee targets are covered by _shell_write_targets_from_inputs
+    unconditionally. Variable expansion, command substitution, and interpreter
+    one-liners are out of scope.
+    """
+
+    targets: list[str] = []
+    for segment in _MUTATOR_SEGMENT_SPLIT_RE.split(command):
+        argv = _segment_argv(segment)
+        while argv and (
+            _ENV_ASSIGNMENT_RE.match(argv[0])
+            or argv[0].lower() in _COMMAND_PREFIX_WORDS
+        ):
+            argv = argv[1:]
+        if not argv:
+            continue
+        name = argv[0].replace("\\", "/").rsplit("/", 1)[-1].lower()
+        extractor = _MUTATOR_WRITE_TARGET_EXTRACTORS.get(name)
+        if extractor is None:
+            continue
+        for target in extractor(argv):
+            if target and target not in targets:
+                targets.append(target)
+    return targets
+
+
+def _mutating_command_write_targets_from_inputs(
+    command: str,
+    stdin: str | None = None,
+) -> list[str]:
+    targets = _mutating_command_write_targets(command)
+    if stdin is not None:
+        for stdin_chunk in _iter_stdin_guard_chunks(stdin):
+            for target in _mutating_command_write_targets(stdin_chunk):
+                if target not in targets:
+                    targets.append(target)
+    return targets
+
+
 def _shell_workdir_requires_write(
     command: str,
     profile: OperationProfile,
@@ -3232,7 +3445,12 @@ def _workspace_write_deny_shell_block(
         else None
     )
     target_workdir = _shell_redirection_workdir(command, workdir)
-    for target in _shell_write_targets_from_inputs(command, stdin):
+    candidate_targets = list(_shell_write_targets_from_inputs(command, stdin))
+    if _write_deny_lever_enabled("OPENSQUILLA_WORKSPACE_WRITE_DENY_COMMAND_TARGETS"):
+        for extra_target in _mutating_command_write_targets_from_inputs(command, stdin):
+            if extra_target not in candidate_targets:
+                candidate_targets.append(extra_target)
+    for target in candidate_targets:
         resolved = _resolve_shell_write_target(target, target_workdir)
         deny_match = match_workspace_write_deny(
             resolved,
@@ -3898,6 +4116,15 @@ async def exec_command(
         )
         if deny_block is not None:
             return json.dumps(deny_block, ensure_ascii=False)
+    elif _write_deny_lever_enabled("OPENSQUILLA_WORKSPACE_WRITE_DENY_HOST_SHELL"):
+        # Host execution skips the sandbox policy block above entirely, which
+        # also skips deny-glob enforcement. This opt-in keeps just the deny
+        # check active for host-executed shell commands.
+        deny_block = _workspace_write_deny_shell_block(
+            "exec_command", command, cwd, stdin=stdin
+        )
+        if deny_block is not None:
+            return json.dumps(deny_block, ensure_ascii=False)
 
     merged_env = os.environ.copy()
     if env:
@@ -4149,6 +4376,12 @@ async def background_process(
         lockdown_block = _workspace_lockdown_shell_block("background_process", command, cwd)
         if lockdown_block is not None:
             return json.dumps(lockdown_block, ensure_ascii=False)
+        deny_block = _workspace_write_deny_shell_block("background_process", command, cwd)
+        if deny_block is not None:
+            return json.dumps(deny_block, ensure_ascii=False)
+    elif _write_deny_lever_enabled("OPENSQUILLA_WORKSPACE_WRITE_DENY_HOST_SHELL"):
+        # Same opt-in as exec_command: keep deny-glob enforcement active for
+        # host-executed background commands.
         deny_block = _workspace_write_deny_shell_block("background_process", command, cwd)
         if deny_block is not None:
             return json.dumps(deny_block, ensure_ascii=False)

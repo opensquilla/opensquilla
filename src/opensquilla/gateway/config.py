@@ -308,14 +308,23 @@ class TaskRuntimeConfig(BaseModel):
         return value
 
 
+# Pre-tokenrhythm built-in defaults. Configs authored while openrouter was
+# the built-in default may rely on them without naming a provider, so the
+# load-time resolution in ``GatewayConfig._resolve_default_llm_provider``
+# restores this trio whenever such a config is detected.
+LEGACY_DEFAULT_LLM_PROVIDER = "openrouter"
+LEGACY_DEFAULT_LLM_MODEL = "deepseek/deepseek-v4-pro"
+LEGACY_DEFAULT_LLM_BASE_URL = "https://openrouter.ai/api/v1"
+
+
 class LlmProviderConfig(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="OPENSQUILLA_LLM_")
 
-    provider: str = "openrouter"
-    model: str = "deepseek/deepseek-v4-pro"
+    provider: str = "tokenrhythm"
+    model: str = "deepseek-v4-pro"
     api_key: str = ""
     api_key_env: str = ""
-    base_url: str = "https://openrouter.ai/api/v1"
+    base_url: str = "https://tokenrhythm.studio/v1"
     proxy: str = ""  # explicit HTTP proxy URL (e.g. http://127.0.0.1:7890)
     max_tokens: int = 0  # 0 = auto-resolve from model catalog; >0 = explicit override
     # 0 = auto-resolve from model catalog; >0 = explicit context-window override
@@ -1936,6 +1945,101 @@ class GatewayConfig(BaseSettings):
     privacy: PrivacyConfig = Field(default_factory=PrivacyConfig)
     diagnostics_enabled: bool = False
     channel_admin_senders: dict[str, list[str]] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def _resolve_default_llm_provider(self) -> GatewayConfig:
+        """Resolve the built-in provider default for configs that never chose one.
+
+        The built-in default is tokenrhythm, but configs authored while
+        openrouter was the default may rely on it without naming a provider.
+        With ``llm.provider`` unset, openrouter intent is detected from
+        provider-coupled fields authored against the old default (an explicit
+        ``model``/``base_url``/``api_key``/``api_key_env``, or a persisted
+        ``squilla_router.tier_profile = "openrouter"``, which validation
+        requires to match the provider) or from the environment carrying only
+        the openrouter credential. Detected intent restores the full legacy
+        trio for whichever of provider/model/base_url is unset; the same
+        model/base_url backfill applies to an explicit ``provider =
+        "openrouter"``, whose unset fields meant the old defaults when they
+        were written. Runs before the router-profile validators so the
+        tier_profile match check sees the resolved provider.
+
+        Resolution never persists: it lands in the load-time sparse-persist
+        baseline, so saves keep the file provider-less and every boot
+        re-resolves against the then-current environment.
+        """
+        llm = self.llm
+        fields_set = set(getattr(llm, "model_fields_set", set()))
+        provider = str(llm.provider or "").strip().lower()
+        if "provider" not in fields_set:
+            profile = str(getattr(self.squilla_router, "tier_profile", "") or "")
+            legacy_intent = bool(
+                {"model", "base_url", "api_key", "api_key_env"} & fields_set
+            ) or profile.strip().lower() == LEGACY_DEFAULT_LLM_PROVIDER
+            env_openrouter = bool(os.environ.get("OPENROUTER_API_KEY", "").strip())
+            env_tokenrhythm = bool(os.environ.get("TOKENRHYTHM_API_KEY", "").strip())
+            if legacy_intent or (env_openrouter and not env_tokenrhythm):
+                provider = LEGACY_DEFAULT_LLM_PROVIDER
+        if provider != LEGACY_DEFAULT_LLM_PROVIDER:
+            return self
+        payload = llm.model_dump(mode="python")
+        payload["provider"] = LEGACY_DEFAULT_LLM_PROVIDER
+        if "model" not in fields_set:
+            payload["model"] = LEGACY_DEFAULT_LLM_MODEL
+        if "base_url" not in fields_set:
+            payload["base_url"] = LEGACY_DEFAULT_LLM_BASE_URL
+        if payload != llm.model_dump(mode="python"):
+            self.llm = LlmProviderConfig(**payload)
+            # The rebuild marks every field explicitly set; restore the
+            # operator's actual field provenance so fresh-install detection
+            # (e.g. onboard's keep-current router gate) still sees a config
+            # that never chose these values.
+            object.__setattr__(self.llm, "__pydantic_fields_set__", fields_set)
+        return self
+
+    @model_validator(mode="after")
+    def _default_squilla_router_tiers_for_tokenrhythm(self) -> GatewayConfig:
+        """Bind the default router ladder to tokenrhythm when it is the provider.
+
+        The ``tiers`` field default is the packaged openrouter preset, which a
+        tokenrhythm turn cannot execute (openrouter model ids on the active
+        provider's credentials). tokenrhythm has no packaged tier_profile —
+        the accepted set is pinned to the legacy nine by the downgrade
+        contract — so when the router is enabled with no profile and the
+        ladder was left at its default, expand the synthesized tokenrhythm
+        preset inline with empty tier models completed from the effective
+        ``llm.model``, the same shape a provider save writes. In-memory only:
+        the load-time sparse-persist baseline keeps it out of config.toml.
+        """
+        router = self.squilla_router
+        if not router or not getattr(router, "enabled", False):
+            return self
+        if getattr(router, "tier_profile", None):
+            return self
+        provider = str(getattr(self.llm, "provider", "") or "").strip().lower()
+        if provider != "tokenrhythm":
+            return self
+        if getattr(router, "tiers", {}) != _default_tiers():
+            return self
+        preset = get_preset(provider)
+        if preset is None or not preset.synthesized:
+            return self
+        tiers = preset.tier_defaults()
+        model = str(getattr(self.llm, "model", "") or "").strip()
+        for tier in tiers.values():
+            if not str(tier.get("model") or "").strip():
+                tier["model"] = model
+        router_fields_set = set(router.model_fields_set)
+        payload = router.model_dump(mode="python")
+        payload["tiers"] = tiers
+        self.squilla_router = SquillaRouterConfig(**payload)
+        # The rebuild marks every field explicitly set; restore the original
+        # provenance so a fresh default config still reads as one (onboard's
+        # keep-current router gate and custom-tiers detection rely on it).
+        object.__setattr__(
+            self.squilla_router, "__pydantic_fields_set__", router_fields_set
+        )
+        return self
 
     @model_validator(mode="after")
     def _default_squilla_router_profile_for_direct_provider(self) -> GatewayConfig:

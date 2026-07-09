@@ -42,6 +42,9 @@ def test_non_packaged_chat_model_save_seeds_synthesized_router_tiers() -> None:
 
 def test_legacy_openrouter_mix_exact_preset_save_writes_canonical_recommended() -> None:
     cfg = GatewayConfig(
+        # openrouter-mix requires the openrouter provider, which is no longer
+        # the built-in default.
+        llm={"provider": "openrouter"},
         squilla_router={
             "enabled": True,
             "tier_profile": None,
@@ -60,6 +63,9 @@ def test_legacy_openrouter_mix_model_difference_saves_custom_inline_tiers() -> N
     tiers = _router_tier_profile_defaults("openrouter")
     tiers["c3"] = dict(tiers["c3"], model="anthropic/claude-opus-4.8")
     cfg = GatewayConfig(
+        # openrouter-mix requires the openrouter provider, which is no longer
+        # the built-in default.
+        llm={"provider": "openrouter"},
         squilla_router={
             "enabled": True,
             "tier_profile": None,
@@ -79,6 +85,9 @@ def test_legacy_openrouter_mix_description_difference_saves_custom_inline_tiers(
     tiers = _router_tier_profile_defaults("openrouter")
     tiers["c1"] = dict(tiers["c1"], description="Operator edited description.")
     cfg = GatewayConfig(
+        # openrouter-mix requires the openrouter provider, which is no longer
+        # the built-in default.
+        llm={"provider": "openrouter"},
         squilla_router={
             "enabled": True,
             "tier_profile": None,

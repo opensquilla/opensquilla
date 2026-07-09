@@ -1409,7 +1409,11 @@ def test_router_tier_overrides_edit_only_selected_tiers():
                 return _Answer("custom/reasoner")
             raise AssertionError(f"unexpected text prompt: {message}")
 
-    overrides = _router_tier_overrides(_Questionary(), GatewayConfig())
+    # Pin the packaged openrouter ladder: the prompt list and per-tier
+    # defaults asserted above include its curated image tier.
+    overrides = _router_tier_overrides(
+        _Questionary(), GatewayConfig(llm={"provider": "openrouter"})
+    )
 
     assert calls == ["Tier to edit", "c2 provider", "c2 model", "Tier to edit"]
     assert overrides == {"c2": {"provider": "openrouter", "model": "custom/reasoner"}}

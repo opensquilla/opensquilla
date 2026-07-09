@@ -57,6 +57,7 @@ from opensquilla.provider.model_catalog import (
     ModelCatalog,
     resolve_effective_context_window,
 )
+from opensquilla.provider.preset_registry import get_preset
 from opensquilla.provider.registry import UnknownProviderError, get_provider_spec
 
 FieldSource = Literal["default", "catalog", "preset", "config", "session"]
@@ -122,6 +123,31 @@ def _tier_preset_baseline(router_cfg: Any) -> dict[str, Any]:
     return tiers if isinstance(tiers, dict) else {}
 
 
+def _tier_synthesized_baseline(provider: str, model: str) -> dict[str, Any]:
+    """Synthesized-preset ladder for ``provider``, empty models completed.
+
+    Providers without a packaged tier_profile (e.g. tokenrhythm) get their
+    synthesized preset expanded inline — by the gateway's default-tiers
+    validator at load time and by provider saves — with empty tier model
+    slots completed from the effective ``llm.model``. A live tier table
+    matching that shape was derived, not operator-chosen, so it counts as a
+    ``preset`` baseline alongside the tier-profile table.
+    """
+    if not provider:
+        return {}
+    try:
+        preset = get_preset(provider)
+    except Exception:
+        return {}
+    if preset is None or not preset.synthesized:
+        return {}
+    tiers = preset.tier_defaults()
+    for tier in tiers.values():
+        if not str(tier.get("model") or "").strip():
+            tier["model"] = model
+    return tiers
+
+
 def _value_vs_baseline(value: Any, baselines: set[Any]) -> FieldSource:
     return "default" if value in baselines else "config"
 
@@ -150,8 +176,9 @@ def resolve_effective_llm(config: Any, catalog: ModelCatalog) -> dict[str, Resol
         )
 
         # Spec-default provenance: boot fills an unset base_url from the
-        # provider spec (and the class default is itself the openrouter spec
-        # URL), so anything matching either baseline was not operator-chosen.
+        # provider spec (and the class default is itself the default
+        # provider's spec URL), so anything matching either baseline was not
+        # operator-chosen.
         base_url = str(getattr(llm, "base_url", "") or "")
         base_url_baselines = {
             baseline
@@ -191,6 +218,11 @@ def resolve_effective_llm(config: Any, catalog: ModelCatalog) -> dict[str, Resol
     tiers = getattr(router_cfg, "tiers", None)
     if isinstance(tiers, dict):
         baseline_tiers = _tier_preset_baseline(router_cfg)
+        synthesized_tiers = (
+            {}
+            if getattr(router_cfg, "tier_profile", None)
+            else _tier_synthesized_baseline(provider, model)
+        )
         for tier_name in sorted(tiers):
             tier = tiers[tier_name]
             if not isinstance(tier, dict):
@@ -198,12 +230,18 @@ def resolve_effective_llm(config: Any, catalog: ModelCatalog) -> dict[str, Resol
             tier_baseline = baseline_tiers.get(tier_name)
             if not isinstance(tier_baseline, dict):
                 tier_baseline = {}
+            tier_synth = synthesized_tiers.get(tier_name)
+            if not isinstance(tier_synth, dict):
+                tier_synth = {}
             for key in ("provider", "model"):
                 if key not in tier:
                     continue
                 value = tier[key]
                 source: FieldSource = (
-                    "preset" if tier_baseline and tier_baseline.get(key) == value else "config"
+                    "preset"
+                    if (tier_baseline and tier_baseline.get(key) == value)
+                    or (tier_synth and tier_synth.get(key) == value)
+                    else "config"
                 )
                 fields[f"squilla_router.tiers.{tier_name}.{key}"] = ResolvedField(value, source)
 

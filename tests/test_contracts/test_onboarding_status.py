@@ -147,8 +147,14 @@ async def test_router_mode_computation_is_frozen(tmp_path) -> None:
         payload = _status_payload(RpcContext(conn_id="contract", config=cfg))
         return payload["sectionDetails"]["router"]["routerMode"]
 
-    # Default config: openrouter provider, router enabled, no tier_profile.
-    assert mode_for(_synthetic_config(tmp_path)) == "openrouter-mix"
+    # Default config: tokenrhythm provider, router enabled, no tier_profile.
+    assert mode_for(_synthetic_config(tmp_path)) == "custom"
+
+    # Explicit openrouter with no tier_profile is the openrouter-mix alias.
+    assert (
+        mode_for(_synthetic_config(tmp_path, llm={"provider": "openrouter"}))
+        == "openrouter-mix"
+    )
 
     # Router off wins regardless of provider/profile.
     assert (

@@ -114,7 +114,9 @@ def test_router_recommended_save_preserves_llm_ensemble_subtree() -> None:
 
 
 def test_router_openrouter_mix_save_preserves_llm_ensemble_subtree() -> None:
-    cfg = _config_with_custom_ensemble()
+    # openrouter-mix is only valid for the openrouter provider, which is no
+    # longer the built-in default.
+    cfg = _config_with_custom_ensemble(llm={"provider": "openrouter"})
     assert cfg.llm.provider == "openrouter"
     before = _ensemble_subtree_bytes(cfg)
 

@@ -96,18 +96,18 @@ frontend = "vue"
 # artifact_disk_budget_bytes = 536870912
 
 [llm]
-provider = "openrouter"
-model = "deepseek/deepseek-v4-pro"
-# api_key = ""          # OpenRouter API key; env OPENROUTER_API_KEY also works
-base_url = "https://openrouter.ai/api/v1"
+provider = "tokenrhythm"
+model = "deepseek-v4-pro"
+# api_key = ""          # TokenRhythm API key; env TOKENRHYTHM_API_KEY also works
+base_url = "https://tokenrhythm.studio/v1"
 # proxy = ""            # e.g. http://127.0.0.1:7890
 
 # Provider quick reference. Support levels marked compat_mock_verified are
 # verified by local mocked-contract tests, not by live vendor calls.
 #
 # provider      env var                 default base_url
-# openrouter    OPENROUTER_API_KEY       https://openrouter.ai/api/v1
 # tokenrhythm   TOKENRHYTHM_API_KEY      https://tokenrhythm.studio/v1
+# openrouter    OPENROUTER_API_KEY       https://openrouter.ai/api/v1
 # openai        OPENAI_API_KEY           https://api.openai.com/v1
 # openai_responses OPENAI_API_KEY        https://api.openai.com/v1  (native Responses-API shape; chat+responses)
 # anthropic     ANTHROPIC_API_KEY        https://api.anthropic.com
@@ -371,41 +371,38 @@ upgrade_to_c3_compaction_enabled = true
 # that executes on the active provider (or the default tier).
 # tier_provider_mismatch = "route"  # route | veto
 
+# TokenRhythm serves every model in reasoning-streaming mode and rejects
+# thinking-toggle request fields, so these tiers set no thinking_level.
 [squilla_router.tiers.c0]
-provider = "openrouter"
-model = "deepseek/deepseek-v4-flash"
+provider = "tokenrhythm"
+model = "deepseek-v4-flash"
 description = "Fast DeepSeek V4 Flash route for trivial chat, short rewrites, extraction, and low-risk simple Q&A"
 supports_image = false
-thinking_level = "high"
 
 [squilla_router.tiers.c1]
-provider = "openrouter"
-model = "deepseek/deepseek-v4-pro"
+provider = "tokenrhythm"
+model = "deepseek-v4-pro"
 description = "Default balanced text model for normal agent work, coding assistance, debugging, and moderate analysis"
 supports_image = false
-thinking_level = "high"
 
 [squilla_router.tiers.c2]
-provider = "openrouter"
-model = "z-ai/glm-5.2"
-description = "Stronger GLM 5.2 route for multi-step coding, structured reasoning, larger context synthesis, and harder analysis"
+provider = "tokenrhythm"
+model = "glm-5.1"
+description = "Stronger GLM 5.1 route for multi-step coding, structured reasoning, larger context synthesis, and harder analysis"
 supports_image = false
-thinking_level = "high"
 
 [squilla_router.tiers.c3]
-provider = "openrouter"
-model = "z-ai/glm-5.2"
-description = "Highest-tier GLM 5.2 route for difficult planning, deep review, complex debugging, and high-stakes synthesis"
+provider = "tokenrhythm"
+model = "qwen3.7-max"
+description = "Highest-tier Qwen 3.7 Max route with a very large context window for difficult planning, deep review, complex debugging, and high-stakes synthesis"
 supports_image = false
-thinking_level = "high"
 
 [squilla_router.tiers.image_model]
-provider = "openrouter"
-model = "moonshotai/kimi-k2.6"
+provider = "tokenrhythm"
+model = "kimi-k2.6"
 description = "Image model: vision-capable route for user-supplied image attachments, screenshots, diagrams, and visual question answering"
 supports_image = true
 image_only = true
-thinking_level = "medium"
 
 # Example: DashScope profile requires:
 # [llm]

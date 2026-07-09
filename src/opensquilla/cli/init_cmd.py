@@ -12,6 +12,8 @@ from opensquilla.paths import default_opensquilla_home
 
 def _default_model_for_provider(provider: str) -> str:
     normalized = provider.strip().lower()
+    if normalized == "tokenrhythm":
+        return "deepseek-v4-pro"
     if normalized == "openrouter":
         return "deepseek/deepseek-v4-pro"
     if normalized == "deepseek":
@@ -29,8 +31,8 @@ def run_init() -> None:
 
     provider = questionary.select(
         "Choose provider:",
-        choices=["openrouter", "openai", "anthropic", "deepseek", "custom"],
-        default="openrouter",
+        choices=["tokenrhythm", "openrouter", "openai", "anthropic", "deepseek", "custom"],
+        default="tokenrhythm",
     ).ask()
     if not provider:
         raise typer.Exit(1)

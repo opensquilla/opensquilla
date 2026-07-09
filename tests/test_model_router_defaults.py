@@ -328,8 +328,8 @@ def test_example_toml_enables_runtime_router_defaults() -> None:
     data = tomllib.loads(example.read_text(encoding="utf-8"))
     squilla_router = data["squilla_router"]
 
-    assert data["llm"]["provider"] == "openrouter"
-    assert data["llm"]["model"] == "deepseek/deepseek-v4-pro"
+    assert data["llm"]["provider"] == "tokenrhythm"
+    assert data["llm"]["model"] == "deepseek-v4-pro"
     assert squilla_router["enabled"] is True
     assert squilla_router["auto_thinking"] is True
     assert squilla_router["rollout_phase"] == "full"
@@ -346,15 +346,16 @@ def test_example_toml_enables_runtime_router_defaults() -> None:
     assert squilla_router["require_router_runtime"] is True
 
     tiers = squilla_router["tiers"]
-    assert tiers["c0"]["model"] == "deepseek/deepseek-v4-flash"
-    assert tiers["c0"]["thinking_level"] == "high"
-    assert tiers["c1"]["model"] == "deepseek/deepseek-v4-pro"
-    assert tiers["c1"]["thinking_level"] == "high"
-    assert tiers["c2"]["model"] == "z-ai/glm-5.2"
-    assert tiers["c2"]["thinking_level"] == "high"
-    assert tiers["c3"]["model"] == "z-ai/glm-5.2"
-    assert tiers["c3"]["thinking_level"] == "high"
-    assert tiers["image_model"]["model"] == "moonshotai/kimi-k2.6"
+    # TokenRhythm rejects thinking-toggle request fields, so the example
+    # ladder deliberately carries no thinking_level.
+    for name in ("c0", "c1", "c2", "c3", "image_model"):
+        assert tiers[name]["provider"] == "tokenrhythm"
+        assert "thinking_level" not in tiers[name]
+    assert tiers["c0"]["model"] == "deepseek-v4-flash"
+    assert tiers["c1"]["model"] == "deepseek-v4-pro"
+    assert tiers["c2"]["model"] == "glm-5.1"
+    assert tiers["c3"]["model"] == "qwen3.7-max"
+    assert tiers["image_model"]["model"] == "kimi-k2.6"
     assert tiers["image_model"]["supports_image"] is True
     assert tiers["image_model"]["image_only"] is True
 

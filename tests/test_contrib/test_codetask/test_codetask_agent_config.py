@@ -84,16 +84,20 @@ def test_llm_ensemble_is_never_carried():
     assert "llm_ensemble" not in bundle.payload
 
 
-def test_inconsistent_operator_sections_fail_actionably():
-    # tier_profile must match llm.provider; the merged config must fail in the
-    # runner process with the source named, not at subagent boot.
+def test_mismatched_tier_profile_heals_in_merged_config():
+    # A tier_profile that no longer matches llm.provider used to hard-fail
+    # validation; the config-migration layer now clears it (the same healing
+    # gateway boot applies to hand-edited configs), so the merged per-run
+    # config builds cleanly with the profile pointer dropped instead of
+    # failing at subagent boot.
     user = {
         "llm": {"provider": "deepseek", "model": "deepseek-chat"},
         "squilla_router": {"enabled": True, "tier_profile": "moonshot"},
     }
-    with pytest.raises(AgentConfigError) as exc:
-        build_per_run_agent_config(dict(_TEMPLATE), user, user_config_path="/x/config.toml")
-    assert "/x/config.toml" in str(exc.value)
+    bundle = build_per_run_agent_config(
+        dict(_TEMPLATE), user, user_config_path="/x/config.toml"
+    )
+    assert "tier_profile" not in bundle.payload.get("squilla_router", {})
 
 
 def test_user_config_payload_explicit_env_path(monkeypatch, tmp_path):

@@ -214,3 +214,59 @@ def test_solve_blocks_early_on_invalid_agent_config(monkeypatch, tmp_path):
     status = json.loads((run_dir / "status.json").read_text(encoding="utf-8"))
     assert status["phase"] == "completed"
     assert "tier_profile mismatch" in status["error"]
+
+
+def test_solve_blocks_before_clone_on_preflight_failure(monkeypatch, tmp_path):
+    """A rejected/missing credential fails the run before the clone, with the
+    actionable reason persisted for the calling agent."""
+    import json
+
+    monkeypatch.setenv("OPENSQUILLA_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setattr(
+        runner, "provider_preflight", lambda *a, **k: (False, "provider X has no usable key")
+    )
+    cloned = []
+    monkeypatch.setattr(runner.workspace, "prepare_repo", lambda *a, **k: cloned.append(1))
+
+    res = runner.solve(repo="/tmp/x", task="do")
+
+    assert res.state == TaskState.ENVIRONMENT_BLOCKED
+    assert res.error == "provider X has no usable key"
+    assert res.final_failure_reason == res.error
+    assert cloned == []
+    run_dir = runner.config.run_dir(res.run_id)
+    status = json.loads((run_dir / "status.json").read_text(encoding="utf-8"))
+    assert status["phase"] == "completed"
+    assert "no usable key" in status["error"]
+
+
+class _ProviderErrorAdapter:
+    def __init__(self, **kw):
+        pass
+
+    def run(self, prompt, *, repo, scratch_dir, artifact_dir, **kw):
+        (artifact_dir / "agent_stdout.log").write_text("boom", encoding="utf-8")
+        return SimpleNamespace(
+            timeout=False,
+            finish_reason="error",
+            error=None,
+            errors=[{"code": "402", "message": "insufficient balance"}],
+            usage={},
+            duration_seconds=1.0,
+        )
+
+
+def test_solve_maps_midrun_credential_error_to_blocked(monkeypatch, tmp_path):
+    """A credential-class provider error mid-run stops as ENVIRONMENT_BLOCKED
+    with the real reason, instead of retrying into a misleading manifest error."""
+    _wire(monkeypatch, tmp_path, [])  # verify is never reached
+    monkeypatch.setattr(runner, "LocalAdapter", _ProviderErrorAdapter)
+    verify_calls = []
+    monkeypatch.setattr(runner, "verify", lambda **k: verify_calls.append(1))
+
+    res = runner.solve(repo="/tmp/x", task="do", max_attempts=3, timeout=3600)
+
+    assert res.state == TaskState.ENVIRONMENT_BLOCKED
+    assert res.attempts == 1  # not retried
+    assert verify_calls == []  # short-circuited before verification
+    assert "provider" in (res.error or "").lower()

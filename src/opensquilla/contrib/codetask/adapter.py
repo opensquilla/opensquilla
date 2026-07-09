@@ -245,6 +245,7 @@ class LocalAdapter:
         duration = time.time() - start
 
         envelope = _parse_json_envelope(stdout)
+        envelope_errors = [e for e in ((envelope or {}).get("errors") or []) if isinstance(e, dict)]
         if stalled:
             finish = "stalled"
         elif timed_out:
@@ -256,10 +257,9 @@ class LocalAdapter:
         else:
             status = envelope.get("status")
             text = (envelope.get("text") or "").strip()
-            errors = envelope.get("errors") or []
             if status == "ok" and text:
                 finish = "stop"
-            elif errors:
+            elif envelope_errors:
                 finish = "error"
             else:
                 finish = "empty"
@@ -274,6 +274,7 @@ class LocalAdapter:
             session_id=(envelope or {}).get("session_key"),
             usage=usage,
             error=stall_error or None,
+            errors=envelope_errors,
         )
 
 

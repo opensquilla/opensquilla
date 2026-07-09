@@ -261,6 +261,8 @@ def migrate_config_payload(data: dict[str, Any]) -> ConfigMigrationResult:
     _normalize_memory_fields(builder)
     _normalize_agent_token_saving_fields(builder)
     _clamp_search_max_results(builder)
+    _park_unknown_channel_entries(builder)
+    _clear_mismatched_router_tier_profile(builder)
 
     stamped_version = _payload_config_version(builder.payload)
     for version, migrate in _MIGRATIONS:
@@ -321,6 +323,17 @@ def _normalize_memory_fields(builder: _MigrationBuilder) -> None:
                 deprecated[f"memory.cost.{leaf}"] = cost.pop(leaf)
         if not cost:
             memory.pop("cost", None)
+
+    # memory.dream.model_override was a legal, settable field through 0.2.x;
+    # 0.3.0 removed it and made DreamConfig extra='forbid' with no strip, so
+    # a carried-over config that set it hard-fails validation. Strip it here.
+    dream = memory.get("dream")
+    if isinstance(dream, dict) and "model_override" in dream:
+        deprecated["memory.dream.model_override"] = dream.pop("model_override")
+        builder.warnings.append(
+            "memory.dream.model_override was removed in 0.3.0; the dream "
+            "consolidation model now follows the configured provider"
+        )
 
     if deprecated:
         builder.removed_fields.extend(sorted(deprecated))
@@ -390,6 +403,92 @@ def _clamp_search_max_results(builder: _MigrationBuilder) -> None:
             f"search_max_results: {search_max_results} -> {coerced} "
             f"(clamped to [1, {MAX_SEARCH_RESULTS}])"
         )
+
+
+def _park_unknown_channel_entries(builder: _MigrationBuilder) -> None:
+    """Always-run: drop channel entries whose type is no longer registered.
+
+    ``parse_channel_entry`` raises for unregistered channel types during
+    GatewayConfig validation even when the entry is disabled, so one stale
+    entry (e.g. ``type = "msteams"``, configurable only in early releases)
+    rejects the entire config file. Park such entries instead: remove them
+    from the payload with a logged warning — the pre-migration backup written
+    beside the file preserves the original entry.
+    """
+    channels_section = builder.payload.get("channels")
+    if not isinstance(channels_section, dict):
+        return
+    entries = channels_section.get("channels")
+    if not isinstance(entries, list):
+        return
+
+    try:
+        from opensquilla.channels.registry import get_channel_registration
+    except Exception:  # pragma: no cover - registry import must not brick loads
+        return
+
+    parked: dict[str, object] = {}
+    kept: list[Any] = []
+    for entry in entries:
+        channel_type = entry.get("type") if isinstance(entry, dict) else None
+        if (
+            isinstance(channel_type, str)
+            and channel_type
+            and get_channel_registration(channel_type) is None
+        ):
+            name = entry.get("name") if isinstance(entry, dict) else None
+            label = f"channels.channels[type={channel_type}"
+            label += f", name={name}]" if isinstance(name, str) and name else "]"
+            parked[label] = entry
+            continue
+        kept.append(entry)
+
+    if not parked:
+        return
+    channels_section["channels"] = kept
+    builder.removed_fields.extend(sorted(parked))
+    for label in sorted(parked):
+        builder.warnings.append(
+            f"{label} references an unregistered channel type and was parked "
+            "(kept in the config backup); re-add it when the channel returns"
+        )
+    _write_legacy_field_log(parked, "config_migration")
+
+
+def _clear_mismatched_router_tier_profile(builder: _MigrationBuilder) -> None:
+    """Always-run: clear ``squilla_router.tier_profile`` on provider mismatch.
+
+    Validation hard-fails when ``tier_profile`` no longer matches
+    ``llm.provider`` — the classic hand-edit trap of switching providers
+    without clearing the profile pointer. Clear the profile instead: the
+    inline ``tiers`` table (full dumps always carry one) keeps governing.
+    Only fires when the payload states both values explicitly, so an
+    env-provided provider can never trigger a spurious clear.
+    """
+    router = builder.payload.get("squilla_router")
+    if not isinstance(router, dict):
+        return
+    profile = router.get("tier_profile")
+    if not isinstance(profile, str) or not profile.strip():
+        return
+    llm = builder.payload.get("llm")
+    if not isinstance(llm, dict):
+        return
+    provider = llm.get("provider")
+    if not isinstance(provider, str) or not provider.strip():
+        return
+    if profile.strip().lower() == provider.strip().lower():
+        return
+
+    router.pop("tier_profile", None)
+    builder.changes.append(
+        f"squilla_router.tier_profile: {profile!r} cleared "
+        f"(no longer matches llm.provider {provider!r})"
+    )
+    builder.warnings.append(
+        "squilla_router.tier_profile no longer matches llm.provider and was "
+        "cleared; the router keeps using the inline tiers table"
+    )
 
 
 def _migrate_v1_llm_ensemble_legacy_timeouts(builder: _MigrationBuilder) -> None:

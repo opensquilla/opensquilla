@@ -2512,7 +2512,7 @@ class GatewayConfig(BaseSettings):
         migration = migrate_config_payload(data)
         cfg = cls(**migration.payload)
         if migration.changed:
-            backup_and_write_migrated_config(target, migration.payload, migration)
+            _rewrite_migrated_config_best_effort(target, migration)
         return cfg
 
     @classmethod
@@ -2538,7 +2538,7 @@ class GatewayConfig(BaseSettings):
                 migration = migrate_config_payload(data)
                 cfg = cls(**migration.payload)
                 if migration.changed:
-                    backup_and_write_migrated_config(path, migration.payload, migration)
+                    _rewrite_migrated_config_best_effort(path, migration)
                 cfg.config_path = str(path)
                 return cfg
 
@@ -2546,6 +2546,27 @@ class GatewayConfig(BaseSettings):
 
 
 # --- bind-address resolution ----------------------------------------------
+
+
+def _rewrite_migrated_config_best_effort(path: Path, migration: Any) -> None:
+    """Persist a migrated config, degrading to a warning when not writable.
+
+    The migrated payload already validated and the gateway can run from it;
+    a read-only config location (mounted backup, locked-down home) must not
+    turn that into a boot failure. The rewrite is retried on the next load.
+    """
+    try:
+        backup_and_write_migrated_config(path, migration.payload, migration)
+    except OSError as error:
+        import logging
+
+        logging.getLogger(__name__).warning(
+            "OpenSquilla config migration could not rewrite %s (%s); running "
+            "from the migrated payload in memory. Make the file writable to "
+            "persist the migration and silence this warning.",
+            path,
+            error,
+        )
 
 # Wildcard addresses that expose the gateway on every interface. Used by the
 # boot banner and the install-script post-install message.

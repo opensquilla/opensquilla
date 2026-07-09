@@ -1,4 +1,4 @@
-# OpenSquilla Preview Knowledge Hybrid Retrieval Design
+# OpenSquilla Preview Knowledge Retrieval Capability Discovery Design
 
 ## 背景
 
@@ -23,7 +23,7 @@ OpenSquilla 当前通过 `KnowledgeBackend -> HttpKnowledgeBackend -> opensquill
 - agent 工具只能通过 `filters` 隐式传入 `retrievalProfile`
 - preview `[knowledge].timeout_seconds = 30.0`，对慢 vector/hybrid 查询不够
 
-本设计只优化 preview 对新检索能力的承载体验，不改 U1-U4 的 shared knowledge 链路，不新增 vector build job API。
+本设计优化 preview 对新检索能力的承载体验，并增加一个轻量能力发现契约：`opensquilla-knowledge` 在 `/v1/status` 中声明当前数据库可用的检索模式，OpenSquilla 动态消费该声明。设计不改 U1-U4 的 shared knowledge 链路，不新增 vector build job API。
 
 ## 目标
 
@@ -31,17 +31,18 @@ OpenSquilla 当前通过 `KnowledgeBackend -> HttpKnowledgeBackend -> opensquill
 
 具体目标：
 
-1. RAG 页面支持选择 `FTS / Vector / Hybrid` 检索模式。
-2. 拆分入库索引配置和查询检索配置，避免把 hybrid 查询策略误传为 ingest index profile。
-3. RAG 页面展示向量索引状态和 hybrid/vector 结果分数字段。
-4. `knowledge_search` agent 工具显式支持 `retrieval_profile` 和 `collection_id`。
-5. preview gateway 的 knowledge HTTP timeout 调整为 90 秒，缓解当前 query embedding 慢导致的 30 秒超时。
+1. `opensquilla-knowledge-preview` 在 `/v1/status` 中返回 `retrievalProfiles`，根据当前数据库状态声明 `FTS / Vector / Hybrid` 是否可用。
+2. RAG 页面从 `knowledge.status` 动态读取可用检索模式，而不是在前端写死 profile 列表。
+3. 拆分入库索引配置和查询检索配置，避免把 hybrid 查询策略误传为 ingest index profile。
+4. RAG 页面展示向量索引状态和 hybrid/vector 结果分数字段。
+5. `knowledge_search` agent 工具显式支持 `retrieval_profile` 和 `collection_id`，并提示可通过 `knowledge_status` 发现可用 profile。
+6. preview gateway 的 knowledge HTTP timeout 调整为 90 秒，缓解当前 query embedding 慢导致的 30 秒超时。
 
 ## 非目标
 
 本轮不做：
 
-- 不新增 `/v1/capabilities`
+- 不新增独立 `/v1/capabilities`，本轮复用 `/v1/status`
 - 不新增 vector index build HTTP job API
 - 不改 `opensquilla-knowledge` shared service `18765`
 - 不改 U1-U4 的 endpoint 或 timeout
@@ -50,13 +51,15 @@ OpenSquilla 当前通过 `KnowledgeBackend -> HttpKnowledgeBackend -> opensquill
 
 ## 方案选择
 
-采用方案 A：只改 OpenSquilla 侧的 preview 承载能力。
+采用方案 A+：OpenSquilla 侧承载能力 + `opensquilla-knowledge-preview` 的轻量 status 能力发现。
 
 理由：
 
 - 现有 HTTP backend 已能透传 `filters`，无需重写后端适配层。
 - preview 已隔离到 `18766`，可以独立验证 hybrid/vector。
-- 改动范围集中在 UI、RPC 参数透传、agent 工具 schema、preview runtime 配置。
+- OpenSquilla RAG 页面启动时已经调用 `knowledge.status`，复用该响应比新增 `/v1/capabilities` 更小。
+- 检索模式由 knowledge 服务根据数据库状态声明，避免前端和服务端能力再次耦合。
+- 改动范围集中在 status contract、UI、RPC 参数透传、agent 工具 schema、preview runtime 配置。
 - 避免把本轮扩大成 `opensquilla-knowledge` 服务端任务系统。
 
 ## 架构
@@ -77,10 +80,8 @@ KnowledgeView.vue
 ```text
 indexProfile = "sqlite_fts5_default"
 
-retrievalProfile =
-  | "sqlite_fts5_default"
-  | "vector_bge_m3_1024"
-  | "hybrid_rrf_bge_m3_fts5"
+retrievalProfiles = status.retrievalProfiles ?? [sqlite_fts5_default fallback]
+retrievalProfile = 当前选中的 retrievalProfiles[].id
 ```
 
 `knowledge.ingest` 只使用 `indexProfile`：
@@ -102,6 +103,78 @@ retrievalProfile =
 }
 ```
 
+## opensquilla-knowledge 能力发现设计
+
+文件：
+
+- `src/opensquilla_knowledge/manager.py`
+- `src/opensquilla_knowledge/api.py`
+
+`/v1/status` 继续由 `KnowledgeManager.status()` 返回 dict。本轮在该 dict 中增加：
+
+```ts
+interface RetrievalProfileStatus {
+  id: string
+  label: string
+  kind: 'lexical' | 'vector' | 'hybrid'
+  available: boolean
+  reason: string | null
+  model?: string
+  dimensions?: number
+}
+```
+
+响应示例：
+
+```json
+{
+  "retrievalProfiles": [
+    {
+      "id": "sqlite_fts5_default",
+      "label": "SQLite FTS5",
+      "kind": "lexical",
+      "available": true,
+      "reason": null
+    },
+    {
+      "id": "vector_bge_m3_1024",
+      "label": "Vector bge-m3",
+      "kind": "vector",
+      "available": true,
+      "reason": null,
+      "model": "baai/bge-m3",
+      "dimensions": 1024
+    },
+    {
+      "id": "hybrid_rrf_bge_m3_fts5",
+      "label": "Hybrid RRF",
+      "kind": "hybrid",
+      "available": true,
+      "reason": null,
+      "model": "baai/bge-m3",
+      "dimensions": 1024
+    }
+  ],
+  "defaultRetrievalProfile": "sqlite_fts5_default"
+}
+```
+
+可用性计算：
+
+- `sqlite_fts5_default`：`ftsChunksIndexed > 0` 时可用，否则 `available=false`，`reason="fts_index_empty"`。
+- `vector_bge_m3_1024`：`vectorChunksIndexed > 0` 且存在 `embeddingModel/embeddingDimensions` 时可用，否则 `available=false`，`reason="vector_index_empty"`。
+- `hybrid_rrf_bge_m3_fts5`：FTS 与 vector 都可用时可用；否则禁用，`reason="fts_or_vector_index_empty"`。
+
+默认值：
+
+- `defaultRetrievalProfile` 固定为 `sqlite_fts5_default`。
+- 即使 hybrid 可用，前端也不默认选择 hybrid，避免慢 query embedding 给用户造成意外卡顿。
+
+兼容性：
+
+- 旧 shared service 没有 `retrievalProfiles` 字段时，OpenSquilla 前端 fallback 到单一 `sqlite_fts5_default`。
+- 不新增 HTTP route，不改变现有 `/v1/search` payload。
+
 ## 前端设计
 
 文件：
@@ -119,6 +192,22 @@ embeddingModel?: string
 embeddingDimensions?: number
 embeddingWarnings?: string[]
 retrievalWarnings?: string[]
+retrievalProfiles?: RetrievalProfileStatus[]
+defaultRetrievalProfile?: string
+```
+
+新增类型：
+
+```ts
+interface RetrievalProfileStatus {
+  id: string
+  label: string
+  kind: 'lexical' | 'vector' | 'hybrid'
+  available: boolean
+  reason: string | null
+  model?: string
+  dimensions?: number
+}
 ```
 
 `KnowledgeResult` 增加可选字段：
@@ -154,13 +243,14 @@ retrievalProfile: retrievalProfile.value
 
 ### 检索模式控件
 
-现有 `Retrieval` 下拉框扩展为：
+现有 `Retrieval` 下拉框改为动态渲染：
 
-```text
-SQLite FTS5        sqlite_fts5_default
-Vector bge-m3     vector_bge_m3_1024
-Hybrid RRF        hybrid_rrf_bge_m3_fts5
-```
+- 如果 `status.retrievalProfiles` 存在，使用服务端返回的 profile 列表。
+- 如果不存在，fallback 到只包含 `SQLite FTS5 / sqlite_fts5_default` 的列表。
+- `available=false` 的 profile 显示但禁用，并展示 `reason`。
+- 默认选中 `status.defaultRetrievalProfile`；如果该字段不存在或不可用，则选中第一个可用 profile；如果没有任何可用 profile，则保留 `sqlite_fts5_default` 并让后端返回错误。
+
+fallback 常量只作为旧服务兼容兜底，不作为新能力的来源。
 
 控件仍位于现有 RAG 页面，不新增页面。
 
@@ -211,6 +301,8 @@ Hybrid RRF        hybrid_rrf_bge_m3_fts5
 
 - `src/opensquilla/gateway/rpc_knowledge.py`
 
+`knowledge.status` 不需要新增 RPC 方法；OpenSquilla 继续通过现有 `knowledge.status` 获取 status dict，并把新增字段原样返回给 UI。
+
 `knowledge.search` 保持现有行为，并增加顶层参数透传：
 
 - `embeddingModel`
@@ -232,6 +324,8 @@ Hybrid RRF        hybrid_rrf_bge_m3_fts5
 
 - `src/opensquilla/tools/builtin/knowledge_tools.py`
 
+`knowledge_status` 描述更新为：可用于查看知识库状态和可用 retrieval profile。
+
 `knowledge_search` 新增参数：
 
 ```text
@@ -249,9 +343,8 @@ retrieval_profile?: string
 
 工具描述中列出支持的 profile：
 
-- `sqlite_fts5_default`
-- `vector_bge_m3_1024`
-- `hybrid_rrf_bge_m3_fts5`
+- 推荐先调用 `knowledge_status` 查看 `retrievalProfiles`。
+- 常见 profile 包括 `sqlite_fts5_default`、`vector_bge_m3_1024`、`hybrid_rrf_bge_m3_fts5`，但最终以 `knowledge_status` 返回为准。
 
 ## Preview 配置设计
 
@@ -294,16 +387,19 @@ systemctl restart opensquilla-demo@preview
 
 文件：
 
+- `opensquilla-knowledge-preview/tests/...`
 - `tests/test_knowledge/test_rpc_knowledge.py`
 - `tests/test_knowledge/test_tools.py`
 - `tests/test_knowledge/test_http_backend.py`
 
 测试点：
 
-1. `knowledge.search` 会把 `retrievalProfile`、`embeddingModel`、`embeddingDimensions` 合并进 filters。
-2. 顶层 search 参数优先覆盖 filters 中同名字段。
-3. `knowledge_search` 工具会把 `collection_id` / `collection` / `retrieval_profile` 转成 backend filters。
-4. `HttpKnowledgeBackend.search()` 继续发送 `{query, topK, filters}`，避免协议回退。
+1. `opensquilla-knowledge-preview` 的 `status()` 在无向量索引时返回 FTS fallback profile，并把 vector/hybrid 标记为不可用。
+2. `opensquilla-knowledge-preview` 的 `status()` 在存在向量索引时返回 vector/hybrid 可用 profile，包含 model/dimensions。
+3. OpenSquilla `knowledge.search` 会把 `retrievalProfile`、`embeddingModel`、`embeddingDimensions` 合并进 filters。
+4. 顶层 search 参数优先覆盖 filters 中同名字段。
+5. `knowledge_search` 工具会把 `collection_id` / `collection` / `retrieval_profile` 转成 backend filters。
+6. `HttpKnowledgeBackend.search()` 继续发送 `{query, topK, filters}`，避免协议回退。
 
 ### 前端测试
 
@@ -317,22 +413,29 @@ systemctl restart opensquilla-demo@preview
 
 helper 负责：
 
-- retrieval profile 选项列表
+- 从 `status.retrievalProfiles` 派生 retrieval profile 选项列表
 - status metric fallback
 - result score label/meta formatting
 
 测试点：
 
-1. profile 选项包含 FTS、Vector、Hybrid。
-2. ingest payload 使用 `indexProfile`，不使用 hybrid/vector retrieval profile。
-3. search payload 使用当前 `retrievalProfile`。
-4. hybrid 结果格式化包含 `fusionScore`、`bm25Rank`、`vectorRank`。
-5. vector 结果格式化包含 `vectorScore`、`vectorRank`。
-6. 缺少 vector status 字段时 fallback 不报错。
+1. status 返回 `retrievalProfiles` 时，profile 选项完全来自服务端。
+2. status 不返回 `retrievalProfiles` 时，profile 选项 fallback 到 FTS。
+3. `available=false` 的 profile 被禁用并保留 reason。
+4. ingest payload 使用 `indexProfile`，不使用 hybrid/vector retrieval profile。
+5. search payload 使用当前 `retrievalProfile`。
+6. hybrid 结果格式化包含 `fusionScore`、`bm25Rank`、`vectorRank`。
+7. vector 结果格式化包含 `vectorScore`、`vectorRank`。
+8. 缺少 vector status 字段时 fallback 不报错。
 
 ## 验证命令
 
 Python：
+
+```bash
+cd /root/Q3WORK/opensquilla-knowledge-preview
+pytest tests -q
+```
 
 ```bash
 cd /root/Q3WORK/opensquilla-knowledge-rag-phase01
@@ -389,10 +492,12 @@ U1-U4 未改 endpoint、服务模板或 runtime，因此不需要客户侧回滚
 ## 成功标准
 
 1. preview RAG 页面能选择 FTS、Vector、Hybrid。
-2. 点击构建知识库时，只发送 `indexProfiles: ["sqlite_fts5_default"]`。
-3. 点击搜索时，发送当前 `retrievalProfile`。
-4. preview 页面能展示 vector coverage 和 embedding model。
-5. hybrid/vector 返回结果时，页面能展示对应分数和 rank 字段。
-6. agent 工具 schema 明确暴露 `collection_id` 和 `retrieval_profile`。
-7. preview timeout 为 90 秒，U1-U4 timeout 和 endpoint 不变。
-8. 相关 Python 测试、前端单测、前端 typecheck 通过。
+2. 检索模式来自 `/v1/status.retrievalProfiles`；旧服务没有该字段时自动 fallback 到 FTS。
+3. 不可用 profile 能显示但禁用，并展示原因。
+4. 点击构建知识库时，只发送 `indexProfiles: ["sqlite_fts5_default"]`。
+5. 点击搜索时，发送当前 `retrievalProfile`。
+6. preview 页面能展示 vector coverage 和 embedding model。
+7. hybrid/vector 返回结果时，页面能展示对应分数和 rank 字段。
+8. agent 工具 schema 明确暴露 `collection_id` 和 `retrieval_profile`，并提示用 `knowledge_status` 发现可用 profile。
+9. preview timeout 为 90 秒，U1-U4 timeout 和 endpoint 不变。
+10. 相关 Python 测试、前端单测、前端 typecheck 通过。

@@ -383,16 +383,47 @@ def _default_llm_ensemble_model_options() -> list[str]:
     return []
 
 
+# Candidate roles for the custom B5 lineup. Proposer roles are advisory
+# labels surfaced in the UI and the decision trace; "aggregator" is
+# structural — it marks the single member that fuses drafts and produces
+# the final answer. Empty string = unassigned (runs as a proposer).
+LLM_ENSEMBLE_CANDIDATE_ROLES = (
+    "",
+    "primary",
+    "contrast",
+    "fast_check",
+    "critic",
+    "aggregator",
+)
+
+# custom_b5 lineup bounds. The proposer cap covers total per-turn proposer
+# calls; the aggregator adds one more. See the ensemble builder for how the
+# lineup maps onto the shared B5 fusion defaults.
+CUSTOM_B5_MIN_PROPOSERS = 2
+CUSTOM_B5_MAX_PROPOSERS = 6
+CUSTOM_B5_MAX_TOTAL_CALLS = 8
+
+
 class LlmEnsembleCandidateConfig(BaseModel):
     provider: str
     model: str
     source: Literal["custom", "legacy_model_options"] = "custom"
     enabled: bool = True
+    # Advisory role label; unknown values coerce to "" (unassigned) instead of
+    # failing validation so a hand-edited config never blocks gateway boot.
+    # Strict role/lineup checks live on the RPC save path (upsert mutation).
+    role: str = ""
 
     @field_validator("provider", "model", mode="before")
     @classmethod
     def _strip_required_text(cls, value: object) -> str:
         return str(value or "").strip()
+
+    @field_validator("role", mode="before")
+    @classmethod
+    def _normalize_role(cls, value: object) -> str:
+        normalized = str(value or "").strip().lower()
+        return normalized if normalized in LLM_ENSEMBLE_CANDIDATE_ROLES else ""
 
     @model_validator(mode="after")
     def _validate_candidate(self) -> LlmEnsembleCandidateConfig:
@@ -417,7 +448,7 @@ class LlmEnsembleConfig(BaseSettings):
     enabled: bool = False
     mode: Literal["b5_fusion"] = "b5_fusion"
     selection_mode: Literal[
-        "router_dynamic", "static_openrouter_b5", "static_tokenrhythm_b5"
+        "router_dynamic", "static_openrouter_b5", "static_tokenrhythm_b5", "custom_b5"
     ] = "static_openrouter_b5"
     proposer_tools: bool = False
     min_successful_proposers: int = Field(default=1, ge=1)
@@ -441,6 +472,58 @@ class LlmEnsembleConfig(BaseSettings):
             seen_options.add(normalized)
             model_options.append(normalized)
         self.model_options = model_options
+        return self
+
+    @model_validator(mode="after")
+    def _validate_custom_b5_lineup(self) -> LlmEnsembleConfig:
+        """Bound the explicit custom_b5 lineup.
+
+        Only the custom mode is checked: static profiles carry fixed lineups
+        and router_dynamic selects members per turn, so neither can exceed the
+        cap. The aggregator is structural — at most one candidate may carry
+        the role; the last enabled proposer count must stay within
+        [CUSTOM_B5_MIN_PROPOSERS, CUSTOM_B5_MAX_PROPOSERS]. Disabled rows are
+        kept (read compatibility) but never counted.
+        """
+        aggregators = [
+            candidate
+            for candidate in self.candidates
+            if candidate.enabled and candidate.role == "aggregator"
+        ]
+        if len(aggregators) > 1:
+            raise ValueError(
+                "llm_ensemble.candidates may mark at most one enabled "
+                "candidate with role='aggregator'"
+            )
+        if self.selection_mode != "custom_b5":
+            return self
+        proposers = [
+            candidate
+            for candidate in self.candidates
+            if candidate.enabled and candidate.role != "aggregator"
+        ]
+        if len(proposers) < CUSTOM_B5_MIN_PROPOSERS:
+            raise ValueError(
+                "llm_ensemble.selection_mode='custom_b5' needs at least "
+                f"{CUSTOM_B5_MIN_PROPOSERS} enabled proposer candidates"
+            )
+        if len(proposers) > CUSTOM_B5_MAX_PROPOSERS:
+            raise ValueError(
+                "llm_ensemble.selection_mode='custom_b5' allows at most "
+                f"{CUSTOM_B5_MAX_PROPOSERS} enabled proposer candidates"
+            )
+        # Total per-turn call ceiling (proposers + aggregator). Today k is
+        # fixed at 1 per member; the ceiling still guards a future k surface.
+        if len(proposers) + 1 > CUSTOM_B5_MAX_TOTAL_CALLS:
+            raise ValueError(
+                "llm_ensemble custom_b5 lineup exceeds "
+                f"{CUSTOM_B5_MAX_TOTAL_CALLS} total per-turn calls"
+            )
+        if self.min_successful_proposers > len(proposers):
+            raise ValueError(
+                "llm_ensemble.min_successful_proposers cannot exceed the "
+                f"custom_b5 proposer count ({len(proposers)})"
+            )
         return self
 
 

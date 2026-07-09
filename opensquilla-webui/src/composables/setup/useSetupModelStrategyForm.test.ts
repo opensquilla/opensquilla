@@ -85,15 +85,38 @@ describe('useSetupModelStrategyForm', () => {
     expect(strategy.activeStrategy.value).toBe('router')
   })
 
-  it('selecting model ensemble disables router and switches to dynamic selection', () => {
+  it('selecting model ensemble gives non-preset providers an explicit custom lineup', () => {
     const { router, ensemble, strategy } = makeForm()
 
     strategy.setStrategy('ensemble')
 
     expect(router.mode.value).toBe('disabled')
     expect(ensemble.enabled.value).toBe(true)
-    expect(ensemble.selectionMode.value).toBe('router_dynamic')
+    // Never the hidden legacy dynamic mode — an explicit custom lineup keeps
+    // the edited pool effective at runtime.
+    expect(ensemble.selectionMode.value).toBe('custom_b5')
     expect(strategy.activeStrategy.value).toBe('ensemble')
+  })
+
+  it('selecting model ensemble seeds the custom lineup from the router tiers', () => {
+    const router = useSetupRouterForm()
+    const ensemble = useSetupEnsembleForm()
+    router.initFromConfig({ enabled: true, tier_profile: 'openai' }, {}, 'openai')
+    ensemble.initFromConfig({ enabled: false })
+    const strategy = useSetupModelStrategyForm(
+      router,
+      ensemble,
+      computed(() => 'openai'),
+      computed(() => [
+        { provider: 'openai', model: 'gpt-5.5', tier: 'c3' },
+        { provider: 'openai', model: 'gpt-5.4-mini', tier: 'c0' },
+      ]),
+    )
+
+    strategy.setStrategy('ensemble')
+
+    expect(ensemble.selectionMode.value).toBe('custom_b5')
+    expect(ensemble.candidates.value.map(c => c.model)).toEqual(['gpt-5.5', 'gpt-5.4-mini'])
   })
 
   it('selecting model ensemble uses the fixed OpenRouter profile for OpenRouter providers', () => {

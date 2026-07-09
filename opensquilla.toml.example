@@ -205,9 +205,25 @@ base_url = "https://tokenrhythm.studio/v1"
 enabled = true
 # "static_openrouter_b5": fixed five-member OpenRouter proposer set (default).
 # "static_tokenrhythm_b5": the same lineup served through TokenRhythm.
-# "router_dynamic": the local router picks proposers from model_options.
+# "custom_b5": an explicit user-authored lineup from [[llm_ensemble.candidates]]
+#   — 2-6 enabled proposer rows plus at most one role = "aggregator" row (the
+#   member that fuses drafts into the final answer; omitted = the current chat
+#   model fuses). Proposer roles ("primary", "contrast", "fast_check",
+#   "critic") are advisory labels shown in the UI and decision trace.
+# "router_dynamic": legacy automatic selection; kept readable for existing
+#   configs but no longer offered in the Web UI.
 selection_mode = "static_openrouter_b5"
-# Candidate pool for router_dynamic (ignored by the static profiles).
+# Explicit lineup for custom_b5 (ignored by the static profiles):
+# [[llm_ensemble.candidates]]
+# provider = "volcengine"
+# model = "doubao-2.0-pro"
+# role = "primary"
+# [[llm_ensemble.candidates]]
+# provider = "volcengine"
+# model = "deepseek-v4-pro"
+# role = "aggregator"
+#
+# Candidate pool for the legacy router_dynamic mode (ignored otherwise).
 model_options = [
   "deepseek/deepseek-v4-pro",
   "z-ai/glm-5.2",
@@ -218,9 +234,12 @@ model_options = [
   "moonshotai/kimi-k2.7-code",
   "minimax/minimax-m3",
 ]
-# Minimum proposers that must succeed before aggregation (>= 1).
+# Minimum proposers that must succeed before aggregation (>= 1). The fixed
+# lineups (static profiles and custom_b5) replace the untouched default of 1
+# with their own quorum at runtime: 3-of-4 for the static profiles, N-1 for a
+# custom lineup of N proposers.
 min_successful_proposers = 1
-# When every proposer fails: "fallback_single" (single-provider turn) or "error".
+# When aggregation cannot proceed: "fallback_single" (single-provider turn) or "error".
 all_failed_policy = "fallback_single"
 
 # Advanced knobs — TOML-only (not on the configure RPC surface). Defaults:

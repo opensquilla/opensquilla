@@ -1,7 +1,6 @@
 import { computed, type ComputedRef } from 'vue'
 import type { useSetupRouterForm } from '@/composables/setup/useSetupRouterForm'
 import type { useSetupEnsembleForm } from '@/composables/setup/useSetupEnsembleForm'
-import { staticB5ModeForProvider } from '@/composables/setup/useSetupEnsembleForm'
 
 export type ModelStrategy = 'router' | 'ensemble' | 'single'
 
@@ -10,6 +9,12 @@ type EnsembleForm = ReturnType<typeof useSetupEnsembleForm>
 type ComputedValue<T> = T extends ComputedRef<infer Value> ? Value : never
 type RouterPanel = ComputedValue<ReturnType<RouterForm['createPanel']>>
 type EnsemblePanel = ComputedValue<ReturnType<EnsembleForm['createPanel']>>
+
+interface EnsembleTierCandidate {
+  provider: string
+  model: string
+  tier?: string
+}
 
 interface ModelStrategyPanelContext {
   hasSavedProvider: ComputedRef<boolean>
@@ -23,6 +28,7 @@ export function useSetupModelStrategyForm(
   routerForm: RouterForm,
   ensembleForm: EnsembleForm,
   activeProvider?: ComputedRef<string>,
+  tierCandidates?: ComputedRef<EnsembleTierCandidate[]>,
 ) {
   const activeStrategy = computed<ModelStrategy>(() => {
     if (ensembleForm.enabled.value) return 'ensemble'
@@ -35,8 +41,12 @@ export function useSetupModelStrategyForm(
     if (next === 'ensemble') {
       routerForm.setRouterMode('disabled')
       ensembleForm.setEnabled(true)
-      ensembleForm.setSelectionMode(
-        staticB5ModeForProvider(activeProvider?.value) ?? 'router_dynamic',
+      // Providers with an official preset land on it; every other provider
+      // gets an explicit custom lineup (seeded from the router tiers), never
+      // the hidden legacy dynamic mode.
+      ensembleForm.activateForProvider(
+        activeProvider?.value,
+        tierCandidates?.value ?? [],
       )
       return
     }

@@ -1559,6 +1559,8 @@ _STATIC_B5_MODE_DETAILS = {
 def evaluate_llm_ensemble(payload: dict[str, Any]) -> list[HealthFinding]:
     enabled = bool(payload.get("enabled"))
     selection_mode = str(payload.get("selectionMode") or "")
+    if enabled and selection_mode == "custom_b5":
+        return _evaluate_custom_b5_ensemble(payload)
     mode_details = _STATIC_B5_MODE_DETAILS.get(selection_mode)
     if not enabled or mode_details is None:
         return []
@@ -1615,6 +1617,83 @@ def evaluate_llm_ensemble(payload: dict[str, Any]) -> list[HealthFinding]:
                 FixStep(label="Restart gateway", command="opensquilla gateway restart"),
             ],
             restart_required=True,
+        )
+    ]
+
+
+def _evaluate_custom_b5_ensemble(payload: dict[str, Any]) -> list[HealthFinding]:
+    """Readiness finding for the explicit custom lineup.
+
+    ``lineupReady``/``lineupBlockedReason`` come from the doctor collector
+    (``custom_b5_lineup_ready``): False means the turn-time wrap is being
+    skipped — either the lineup has no enabled proposers or a member's
+    provider resolves no API key.
+    """
+    ready = bool(payload.get("lineupReady"))
+    reason = str(payload.get("lineupBlockedReason") or "")
+    evidence = {
+        "enabled": True,
+        "selectionMode": "custom_b5",
+        "activeProvider": payload.get("activeProvider"),
+        "lineupReady": ready,
+        "lineupBlockedReason": reason,
+    }
+    if ready:
+        return [
+            HealthFinding(
+                id="llm_ensemble.custom_b5.ready",
+                severity="ok",
+                surface="llm_ensemble",
+                title="LLM ensemble ready",
+                detail=(
+                    "The custom ensemble lineup resolves credentials for every "
+                    "member and is active for turns."
+                ),
+                evidence=evidence,
+            )
+        ]
+    if reason.startswith("missing_credential:"):
+        provider_id = reason.split(":", 1)[1]
+        detail = (
+            "LLM ensemble (custom lineup) is enabled but the "
+            f"{provider_id} member resolves no API key — the ensemble is "
+            "inactive and every turn falls back to the single configured "
+            "provider. Set the provider key, remove the member, or disable "
+            "the ensemble."
+        )
+    elif reason == "no_proposers":
+        detail = (
+            "LLM ensemble (custom lineup) is enabled but has no enabled "
+            "proposer candidates — add candidates or disable the ensemble."
+        )
+    else:
+        detail = (
+            "LLM ensemble (custom lineup) is enabled but cannot run "
+            f"({reason or 'unknown reason'}) — every turn falls back to the "
+            "single configured provider."
+        )
+    return [
+        HealthFinding(
+            id="llm_ensemble.custom_b5.not_ready",
+            severity="warn",
+            surface="llm_ensemble",
+            title="LLM ensemble is enabled but cannot run",
+            detail=detail,
+            evidence=evidence,
+            fix_steps=[
+                FixStep(
+                    label="Review the ensemble lineup",
+                    detail=(
+                        "Open Settings → Model routing and fix the flagged "
+                        "member, or remove it from the lineup."
+                    ),
+                ),
+                FixStep(
+                    label="Disable the ensemble",
+                    command="opensquilla config set llm_ensemble.enabled false",
+                ),
+            ],
+            restart_required=False,
         )
     ]
 

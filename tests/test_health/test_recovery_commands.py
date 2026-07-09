@@ -532,3 +532,43 @@ def test_doctor_offline_recovery_commands_resolve_to_cli_help() -> None:
         help_text = _help(list(path))
         for option in _command_options(command, path):
             assert option in help_text, f"{command} uses {option}, missing from {' '.join(path)}"
+
+
+def test_llm_ensemble_custom_b5_health_findings_cover_ready_and_blocked() -> None:
+    ready = evaluate_llm_ensemble(
+        {
+            "enabled": True,
+            "selectionMode": "custom_b5",
+            "activeProvider": "volcengine",
+            "lineupReady": True,
+            "lineupBlockedReason": "",
+        }
+    )
+    assert [finding.id for finding in ready] == ["llm_ensemble.custom_b5.ready"]
+    assert ready[0].severity == "ok"
+
+    blocked = evaluate_llm_ensemble(
+        {
+            "enabled": True,
+            "selectionMode": "custom_b5",
+            "activeProvider": "volcengine",
+            "lineupReady": False,
+            "lineupBlockedReason": "missing_credential:openrouter",
+        }
+    )
+    assert [finding.id for finding in blocked] == ["llm_ensemble.custom_b5.not_ready"]
+    assert blocked[0].severity == "warn"
+    assert "openrouter" in blocked[0].detail
+    # The lineup is fixable live from settings; no restart demanded.
+    assert blocked[0].restart_required is False
+
+    empty = evaluate_llm_ensemble(
+        {
+            "enabled": True,
+            "selectionMode": "custom_b5",
+            "activeProvider": "volcengine",
+            "lineupReady": False,
+            "lineupBlockedReason": "no_proposers",
+        }
+    )
+    assert "no enabled proposer" in empty[0].detail

@@ -4555,6 +4555,50 @@ class Agent:
                                 # out of assistant_text_parts. The joined text
                                 # still arrives via DoneEvent.reasoning_content.
                                 yield ThinkingEvent(text=raw_ev.text)
+                                if (
+                                    wrapup_margin_seconds > 0
+                                    and _total_deadline is not None
+                                    and not deadline_wrapup_armed
+                                    and not attempt_user_visible_emitted
+                                    and not pending_tools
+                                    and not tool_calls
+                                    and _loop.time()
+                                    > _total_deadline - wrapup_margin_seconds
+                                ):
+                                    # The wrap-up directive arms only at
+                                    # iteration boundaries, so a reasoning-only
+                                    # stream that consumes the whole margin ends
+                                    # at the hard deadline without the directive
+                                    # ever being delivered. Preempt while margin
+                                    # remains and retry the call with the
+                                    # directive spliced in; the discarded
+                                    # reasoning prefix was running into the hard
+                                    # kill anyway. One-shot: arming makes this
+                                    # branch unreachable afterwards.
+                                    remaining_seconds = max(
+                                        0.0, _total_deadline - _loop.time()
+                                    )
+                                    deadline_wrapup_message = Message(
+                                        role="user",
+                                        content=_DEADLINE_WRAPUP_DIRECTIVE_TEMPLATE.format(
+                                            minutes=max(
+                                                1, int(remaining_seconds // 60)
+                                            ),
+                                        ),
+                                    )
+                                    deadline_wrapup_armed = True
+                                    self._write_turn_call_log(
+                                        "turn_policy_decision",
+                                        action="deadline_wrapup",
+                                        reason="reasoning_stream_preempt",
+                                        code="deadline_wrapup_preempt",
+                                        iteration=iterations,
+                                        attempt=_call_attempt,
+                                        remaining_seconds=int(remaining_seconds),
+                                        margin_seconds=wrapup_margin_seconds,
+                                    )
+                                    _got_error = True
+                                    break  # break stream, retry with directive
 
                             elif isinstance(raw_ev, ProviderToolUseStart):
                                 if not tools_supported_for_call:

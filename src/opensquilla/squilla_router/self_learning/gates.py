@@ -79,6 +79,7 @@ def evaluate_training_gates(
             stats={
                 "total": stats.total,
                 "high_value": stats.high_value,
+                "feedback_down": stats.feedback_down,
                 "distinct_classes": stats.distinct_classes,
                 "last_ts": stats.last_ts,
                 "consecutive_failures": state.consecutive_failures,
@@ -105,7 +106,7 @@ def evaluate_training_gates(
         return result(False, COOLDOWN)
 
     # Volume gate (high-value correction signals, scaled by failure backoff).
-    if stats.high_value < effective_min:
+    if stats.high_value + stats.feedback_down < effective_min:
         return result(False, INSUFFICIENT_DATA)
 
     # Quality floor: need at least two classes or there is nothing to separate.
@@ -113,6 +114,34 @@ def evaluate_training_gates(
         return result(False, INSUFFICIENT_CLASS_DIVERSITY)
 
     return result(True, READY)
+
+
+def merge_feedback_into_stats(stats: Any, agent_id: str, home: Any = None) -> Any:
+    """Return ``stats`` with single-model down-votes counted for the volume gate.
+
+    Ensemble down-votes never become training labels (alignment excludes
+    them), so they are not counted. The count is a deliberate approximation:
+    it does not verify each rating joins a live sample or survives the
+    high-tier exclusion (both would need a full sample scan at gate time),
+    and a down-voted complaint turn also counts once in high_value. A gate
+    opened on non-training ratings yields an uninformative candidate, which
+    the promotion gate rejects and the consecutive-failure backoff then
+    doubles the bar — bounded churn, not silent corruption. Fail-open: a
+    broken sidecar returns ``stats`` unchanged. Shared by the orchestrator
+    and the status RPC so both gates see identical inputs.
+    """
+
+    try:
+        from opensquilla.squilla_router.self_learning.feedback import scan_feedback_stats
+
+        fb = scan_feedback_stats(agent_id, home=home)
+    except Exception:  # noqa: BLE001 — feedback must never block the gate
+        return stats
+    if fb.down_single == 0:
+        return stats
+    from dataclasses import replace
+
+    return replace(stats, feedback_down=fb.down_single)
 
 
 def evaluate_gates_for_agent(

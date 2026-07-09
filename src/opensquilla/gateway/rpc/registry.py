@@ -278,7 +278,9 @@ async def _status(params: Any, ctx: RpcContext) -> dict[str, Any]:
     uptime = now - _boot_time_ms if _boot_time_ms > 0 else 0
 
     provider_name = None
-    if ctx.provider_selector is not None:
+    if ctx.provider_selector is not None and getattr(
+        ctx.provider_selector, "is_configured", True
+    ):
         # Configured provider id (e.g. "openrouter"), not the OpenAI-compatible
         # backend class physically serving it. See app.api_system_status.
         provider_name = getattr(ctx.provider_selector, "active_provider_id", None)

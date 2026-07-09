@@ -172,6 +172,11 @@
     }
   },
   "setup": {
+    "cli": {
+      "advancedTitle": "Avanzado · CLI integrada",
+      "hintBundled": "Estos comandos usan la CLI integrada en la aplicación; pégalos en una terminal para ejecutarlos.",
+      "hintDev": "Modo dev: los comandos se ejecutan desde el checkout del código fuente vía uv."
+    },
     "common": {
       "apiKey": "Clave de API",
       "apiKeyEnv": "Variable de entorno de la clave de API",
@@ -309,6 +314,8 @@
       "providerFirst": "Configura primero un Chat Model y luego elige cómo debe funcionar el enrutamiento.",
       "providerAction": "Ir a Chat Model →",
       "routerTitle": "Enrutamiento IA de un solo modelo",
+      "visualModeLabel": "Estilo del panel de enrutamiento",
+      "visualModeDesc": "Cómo se muestra el panel de decisión de enrutamiento en las respuestas del chat.",
       "crossProviderNotice": "El routing entre proveedores está activo. Revisa cada nivel antes de guardar.",
       "cards": {
         "router": {
@@ -339,8 +346,8 @@
       "candidateSourceLegacy": "Desde configuración antigua",
       "candidateSourceOpenRouterFixed": "Conjunto fijo de OpenRouter",
       "customCandidatesLabel": "Candidatos personalizados entre proveedores",
-      "openrouterFixedTitle": "Conjunto fijo de OpenRouter",
-      "openrouterFixedDesc": "Cuando el modelo de chat usa OpenRouter, el enrutamiento agregado usa cuatro modelos proponentes y un agregador.",
+      "openrouterFixedTitle": "Conjunto fijo de {provider}",
+      "openrouterFixedDesc": "Cuando el modelo de chat usa {provider}, el enrutamiento agregado usa cuatro modelos proponentes y un agregador.",
       "customizeOpenRouterLabel": "Personalizar conjunto",
       "customizeOpenRouterDesc": "Cambiar al enrutamiento de conjunto basado en router con la plantilla antigua de candidatos OpenRouter.",
       "openrouterFixedProposer": "Modelo proponente",
@@ -418,6 +425,7 @@
       "selectionLabel": "Selección de modelos",
       "selectionDesc": "Cómo elige el conjunto a qué modelos preguntar.",
       "selectionStatic": "Conjunto de modelos integrado heredado",
+      "selectionStaticTokenrhythm": "Conjunto de modelos integrado de TokenRhythm",
       "selectionDynamic": "Dinámico (sigue niveles de modelo)",
       "rawValueTooltip": "Valor de configuración: {value}",
       "modelsLabel": "Modelos candidatos",
@@ -679,6 +687,35 @@
       "offSurfacesError": "off muestra el error original del proveedor.",
       "audioEnvVar": "Variable de entorno que se lee para el acceso al proveedor de audio.",
       "remoteEmbeddingKey": "Clave API de embedding remoto o referencia de entorno."
+    },
+    "memoryLearning": {
+      "groupTitle": "Memoria y autoaprendizaje",
+      "dreamLabel": "Consolidación de memoria (dream)",
+      "tokenBadge": "consumo de tokens",
+      "dreamDesc": "Ejecuta periódicamente una pasada del modelo para consolidar la memoria de sesión (cada 24 h). El autoaprendizaje del enrutamiento de modelos depende de estas ventanas de inactividad para entrenar.",
+      "selfLearningLabel": "Autoaprendizaje del enrutamiento de modelos",
+      "selfLearningDesc": "Aprende preferencias de enrutamiento a partir de tus correcciones. Totalmente local: almacena vectores de características, nunca el texto de las conversaciones.",
+      "depDefault": "Depende de la consolidación de memoria de arriba: activarlo aquí también la habilita; desactivar solo la consolidación mantiene la recopilación pero pausa el entrenamiento automático.",
+      "depLinked": "La consolidación de memoria se habilitó junto con esta opción. Puedes desactivarla por separado: el autoaprendizaje sigue recopilando, solo se pausa el entrenamiento automático.",
+      "depPaused": "La consolidación de memoria está desactivada: las muestras se siguen recopilando, pero no hay entrenamiento automático. Reactívala para reanudarlo.",
+      "restartRequired": "Se necesita reiniciar la pasarela para aplicar el cambio de programación.",
+      "statusModel": "Modelo de enrutamiento",
+      "statusSamples": "Correcciones",
+      "statusLastAction": "Última acción",
+      "modelBaseline": "Línea base de fábrica",
+      "modelLearned": "Versión aprendida v{version}",
+      "samplesTotal": "{total} recopiladas en total",
+      "gatePausedDream": "Entrenamiento en pausa: esperando a que se reactive la consolidación de memoria",
+      "gateReason": {
+        "ready": "Listo: entrenará en la próxima ventana",
+        "disabled": "Desactivado",
+        "no_data": "Aún no hay muestras recopiladas",
+        "agent_active": "Esperando una ventana de inactividad",
+        "cooldown": "En enfriamiento tras un entrenamiento reciente",
+        "insufficient_data": "Sin entrenar: correcciones insuficientes",
+        "insufficient_class_diversity": "Sin entrenar: las correcciones cubren muy pocos niveles de enrutamiento"
+      },
+      "detachedNote": "Los pesos base del enrutamiento se han actualizado. El aprendizaje construido sobre los pesos antiguos se archivó; tus correcciones no se ven afectadas y se reentrenarán automáticamente con los nuevos pesos. No se requiere ninguna acción."
     }
   },
   "sessions": {
@@ -1983,6 +2020,14 @@
     },
     "modelRouting": {
       "updateFailed": "No se pudo cambiar el enrutamiento de modelos — revertido. Comprueba la conexión con la pasarela e inténtalo de nuevo."
+    },
+    "routeFeedback": {
+      "up": "Buena elección de modelo para este turno",
+      "down": "Mala elección de modelo para este turno",
+      "upEnsemble": "Satisfecho con esta respuesta agregada",
+      "downEnsemble": "Insatisfecho con esta respuesta agregada",
+      "expired": "El registro de enrutamiento de este mensaje ha caducado",
+      "failed": "No se pudo registrar tu valoración"
     }
   },
   "shared": {

@@ -38,10 +38,13 @@ FIELD_RECORD_KEYS = frozenset({"value", "source"})
 # but is part of the contract so clients can pre-wire rendering for it.
 ALLOWED_SOURCES = frozenset({"default", "catalog", "preset", "config", "session"})
 
-# Exact field-path set for a default config (default router tiers c0-c3 +
-# image_model). Conscious decision required to change: each entry is an
-# individually vetted non-secret path — renames, removals, AND additions are
-# contract changes that must update clients and this list together.
+# Exact field-path set for a default config (the curated tokenrhythm default
+# ladder: text tiers c0-c3 plus the packaged image tier). Tier paths follow
+# whichever tiers the config actually carries; an image_model tier emits its
+# provider/model paths when present. Conscious decision required to change:
+# each entry is an individually vetted non-secret path — renames, removals,
+# AND additions are contract changes that must update clients and this list
+# together.
 EXPECTED_FIELD_PATHS = frozenset(
     {
         "llm.provider",
@@ -103,7 +106,10 @@ async def test_no_secret_value_ever_reaches_the_wire(
     monkeypatch.setenv("OPENSQUILLA_STATE_DIR", str(tmp_path / "state"))
     cfg = GatewayConfig(
         config_path=str(tmp_path / "opensquilla.toml"),
-        llm=LlmProviderConfig(api_key=SYNTHETIC_SECRET),
+        # provider named explicitly: a bare api_key would resolve to the
+        # legacy openrouter default, whose curated ladder adds image_model
+        # paths beyond EXPECTED_FIELD_PATHS.
+        llm=LlmProviderConfig(provider="tokenrhythm", api_key=SYNTHETIC_SECRET),
         channels={
             "channels": [
                 {

@@ -267,6 +267,7 @@ def test_packaged_corrections_file_parses_with_expected_tables() -> None:
         "zhipu",
         "tencent_tokenhub",
         "tencent_token_plan",
+        "tokenrhythm",
     }
     assert set(payload["moonshot"]) == {
         "moonshot-v1-8k",
@@ -318,6 +319,7 @@ def test_ladder_glob_rows_keep_specific_before_general_file_order() -> None:
         "zhipu",
         "tencent_tokenhub",
         "tencent_token_plan",
+        "tokenrhythm",
     ):
         keys = list(payload[provider])
         assert keys[-1] == "*", provider

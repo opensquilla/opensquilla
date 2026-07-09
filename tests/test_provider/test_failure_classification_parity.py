@@ -89,12 +89,18 @@ _OPENAI_COMPAT_CASES: list[Case] = [
     ("openrouter", None, "", "not available in the requested region", K.MODEL_NOT_FOUND),
     # Model-unavailable marker outranks the 403 auth branch.
     ("openai", 403, "", "This model is not available in your region.", K.MODEL_NOT_FOUND),
+    # TokenRhythm's custom envelope arrives as HTTP 400 with a top-level
+    # code + localized message; _http_error_body_text prefixes the code, and
+    # either marker (code or Chinese text) must outrank BAD_REQUEST.
+    ("tokenrhythm", 400, "", "MODEL_NOT_AVAILABLE: 模型不可用：some-model", K.MODEL_NOT_FOUND),
+    ("tokenrhythm", 400, "", "模型不可用：some-model", K.MODEL_NOT_FOUND),
     # Status 404 outranks the auth substring branch.
     ("openai", 404, "", "unauthorized", K.MODEL_NOT_FOUND),
     # AUTH_INVALID: 401/403 OR "invalid api key" / "unauthorized".
     ("openai", 401, "", "", K.AUTH_INVALID),
     ("openrouter", 403, "", "HTTP 403: forbidden", K.AUTH_INVALID),
     ("deepseek", None, "", "invalid api key", K.AUTH_INVALID),
+    ("tokenrhythm", 401, "", "UNAUTHORIZED: 未认证或登录已过期", K.AUTH_INVALID),
     ("openai", None, "", "Unauthorized", K.AUTH_INVALID),
     ("openai_responses", 401, "", "invalid api key", K.AUTH_INVALID),
     # INSUFFICIENT_CREDITS: 402 OR "insufficient credits" / "no credits".

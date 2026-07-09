@@ -406,6 +406,20 @@ for _provider_spec in [
         capabilities=frozenset({"chat", "coding_plan"}),
         catalog_source=("tencent-token-plan",),
     ),
+    # TokenRhythm — hosted aggregator relaying the DeepSeek/GLM/MiniMax/
+    # Kimi/MiMo/Qwen families behind one OpenAI-protocol host (Bearer auth,
+    # chat completions only — no Responses API). Every served model streams
+    # DeepSeek-style reasoning_content. Not on models.dev, so no
+    # catalog_source — per-model metadata ships as catalog_overrides.toml
+    # corrections instead.
+    _spec(
+        "tokenrhythm",
+        "openai_compat",
+        "tokenrhythm",
+        "TOKENRHYTHM_API_KEY",
+        "https://tokenrhythm.studio/v1",
+        reasoning_shape="deepseek",
+    ),
     # First-class id for any self-hosted or otherwise unlisted
     # OpenAI-compatible endpoint (vLLM, SGLang, TGI, llama.cpp server, a
     # bespoke proxy, ...). Pure registry metadata — the openai_compat backend

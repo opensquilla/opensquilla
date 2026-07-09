@@ -20,6 +20,7 @@ from __future__ import annotations
 import os
 import re
 from collections.abc import Mapping
+from datetime import UTC, datetime
 from typing import Any
 
 import structlog
@@ -110,16 +111,20 @@ async def _handle_router_decisions_list(params: Any, ctx: RpcContext) -> dict[st
     return {"decisions": [_wire_decision(row) for row in rows]}
 
 
-@_d.method("router.feedback.submit", scope="operator.admin")
+@_d.method("router.feedback.submit", scope="operator.write")
 async def _handle_router_feedback_submit(params: Any, ctx: RpcContext) -> dict[str, Any]:
-    """Accept operator feedback about one routing decision.
+    """Record a user rating (up/down/neutral) for one routing decision.
 
-    Dormant until F7; recorded for later, never read by the router. The
-    handler validates ``decisionId`` as an enum-like id token (free text is
-    rejected) and ``rating`` against a closed enum, emits one redacted
-    structlog event, and returns. Nothing consumes the event: it has zero
-    effect on routing, calibration, tier selection, or the
-    ``router_decisions`` table.
+    The F7 feedback intake, live: ``decisionId`` is resolved through the
+    decision writer (V017) to the ``(session_key, turn_index)`` the
+    self-learning trainer joins on, then appended to the per-agent feedback
+    sidecar. Revisions are last-write-wins; ``neutral`` revokes. A decision
+    that is unknown (retention pruned, ``:memory:`` writer, or never staged)
+    returns ``accepted: false`` rather than an error — clients surface it as
+    "this message's routing record expired".
+
+    The rating never mutates the ``router_decisions`` table or routing state;
+    consumption happens offline at dataset-build time.
     """
     p = params if isinstance(params, dict) else {}
     decision_id = sanitize_token(p.get("decisionId") or p.get("decision_id"))
@@ -134,12 +139,66 @@ async def _handle_router_feedback_submit(params: Any, ctx: RpcContext) -> dict[s
             ERROR_INVALID_REQUEST,
             "rating must be one of: up, down, neutral",
         )
+
+    import anyio
+
+    writer = get_decision_writer()
+    if writer is not None:
+        # SQLite read via a threading.Lock'd connection — keep it (and any
+        # writer-lock contention) off the gateway event loop.
+        record = await anyio.to_thread.run_sync(writer.get_decision, decision_id)
+    else:
+        record = None
+    if record is None:
+        log.info(
+            "router_feedback.decision_not_found",
+            decision_id=decision_id,
+            rating=rating,
+        )
+        return {"accepted": False, "reason": "decision_not_found"}
+
+    session_key = str(record.get("session_key") or "")
+    turn_index = int(record.get("turn_index") or 0)
+    executed_kind = str(record.get("executed_kind") or "single")
+    ts_ms = record.get("ts_ms")
+    decision_ts = (
+        datetime.fromtimestamp(int(ts_ms) / 1000, tz=UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+        if ts_ms
+        else None
+    )
+
+    from opensquilla.session.keys import parse_agent_id
+    from opensquilla.squilla_router.self_learning.feedback import write_feedback
+
+    agent_id = parse_agent_id(session_key)
+
+    def _write() -> None:
+        write_feedback(
+            agent_id,
+            decision_id=decision_id,
+            session_key=session_key,
+            turn_index=turn_index,
+            rating=rating,
+            executed_kind=executed_kind,
+            decision_ts=decision_ts,
+        )
+
+    try:
+        await anyio.to_thread.run_sync(_write)
+    except Exception as exc:  # noqa: BLE001 — a lost rating must not error the client
+        log.warning(
+            "router_feedback.write_failed", decision_id=decision_id, error=str(exc)
+        )
+        return {"accepted": False, "reason": "write_failed"}
+
     log.info(
         "router_feedback.submitted",
         decision_id=decision_id,
         rating=rating,
+        executed_kind=executed_kind,
+        agent_id=agent_id,
     )
-    return {"accepted": True}
+    return {"accepted": True, "recorded": rating}
 
 
 @_d.method("router.selflearning.status", scope="operator.read")
@@ -208,6 +267,13 @@ async def _handle_selflearning_status(params: Any, ctx: RpcContext) -> dict[str,
 
         state = load_train_state(agent_id)
         stats = scan_event_store(agent_id)
+        # Same feedback merge the orchestrator applies before ITS gate —
+        # otherwise wouldTrain/reason here could contradict the actual run.
+        from opensquilla.squilla_router.self_learning.gates import (
+            merge_feedback_into_stats,
+        )
+
+        stats = merge_feedback_into_stats(stats, agent_id)
         gate = evaluate_training_gates(config=sl_cfg, state=state, stats=stats)
 
         out: dict[str, Any] = {}
@@ -218,6 +284,9 @@ async def _handle_selflearning_status(params: Any, ctx: RpcContext) -> dict[str,
                 "version": state.active_version,
                 "promotedAt": state.promoted_at,
             }
+        from opensquilla.squilla_router.self_learning.feedback import scan_feedback_stats
+
+        fb = scan_feedback_stats(agent_id)
         out["samples"] = {
             "total": stats.total,
             "highValue": stats.high_value,
@@ -225,6 +294,9 @@ async def _handle_selflearning_status(params: Any, ctx: RpcContext) -> dict[str,
             "distinctClasses": stats.distinct_classes,
             "complaintRate": round(stats.complaint_rate, 4),
             "lastCapturedAt": stats.last_ts,
+            # Explicit thumbs feedback (F7). downSingle is the slice the
+            # rollback monitor actually uses (ensemble ratings excluded).
+            "feedback": {"up": fb.up, "down": fb.down, "downSingle": fb.down_single},
         }
         out["gate"] = {
             "wouldTrain": gate.should_train,

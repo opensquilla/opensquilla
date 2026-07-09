@@ -98,6 +98,12 @@ COMPAT_THINKING_MODELS: dict[str, tuple[str, str]] = {
     # "tencent_tokenhub" dialect; the policy also requires assistant
     # reasoning_content replay for the hy3 ids, frozen by the tools golden.
     "tencent_tokenhub": ("hy3", "tencent_tokenhub"),
+    # [tokenrhythm."deepseek-v4-flash"] corrections row pins
+    # reasoning_format="none": the relay streams reasoning_content on its
+    # own but 400s on any thinking payload, so the thinking golden freezes
+    # the omission. The id is also in require_reasoning_content_model_ids,
+    # so the tools golden freezes assistant reasoning_content replay.
+    "tokenrhythm": ("deepseek-v4-flash", "none"),
     "lm_studio": (_NEUTRAL_MODEL, "none"),
     "ovms": (_NEUTRAL_MODEL, "none"),
     "litellm_proxy": (_NEUTRAL_MODEL, "none"),

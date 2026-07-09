@@ -140,7 +140,7 @@ def _message_has_image(message: Message) -> bool:
 async def test_image_followup_routes_vision_and_replays_inline_history_image() -> None:
     manager = _FakeSessionManager()
     key = "agent:main:image-followup-inline"
-    config = GatewayConfig()
+    config = GatewayConfig(llm={"provider": "openrouter"})
     runner = TurnRunner(provider_selector=MagicMock(), session_manager=manager, config=config)
     await manager.create(key)
     await manager.append_message(key, "user", _inline_image_envelope("Describe this image."))
@@ -212,7 +212,7 @@ async def test_image_followup_routes_vision_and_replays_inline_history_image() -
 @pytest.mark.asyncio
 async def test_gate_text_only_followup_does_not_image_route() -> None:
     key = "agent:main:image-followup-gate-text"
-    config = GatewayConfig()
+    config = GatewayConfig(llm={"provider": "openrouter"})
     provider = _GateThenCaptureProvider(
         '{"decision":"text_only","confidence":0.9,"reason":"new coding task"}'
     )
@@ -247,7 +247,7 @@ async def test_gate_text_only_followup_does_not_image_route() -> None:
 
 @pytest.mark.asyncio
 async def test_gate_unknown_recent_fallback_routes_image() -> None:
-    config = GatewayConfig()
+    config = GatewayConfig(llm={"provider": "openrouter"})
     provider = _GateThenCaptureProvider(
         '{"decision":"unknown","confidence":0.2,"reason":"ambiguous pronoun"}'
     )
@@ -281,7 +281,7 @@ async def test_gate_unknown_recent_fallback_routes_image() -> None:
 
 @pytest.mark.asyncio
 async def test_gate_unknown_old_fallback_uses_text_router() -> None:
-    config = GatewayConfig()
+    config = GatewayConfig(llm={"provider": "openrouter"})
     provider = _GateThenCaptureProvider(
         '{"decision":"unknown","confidence":0.2,"reason":"ambiguous but old"}'
     )
@@ -316,7 +316,7 @@ async def test_gate_unknown_old_fallback_uses_text_router() -> None:
 async def test_historical_image_ref_replays_from_real_material_store(tmp_path: Path) -> None:
     manager = _FakeSessionManager()
     key = "agent:main:image-followup-ref"
-    config = GatewayConfig()
+    config = GatewayConfig(llm={"provider": "openrouter"})
     config.attachments.media_root = str(tmp_path / "media")
     runner = TurnRunner(provider_selector=MagicMock(), session_manager=manager, config=config)
     node = await manager.create(key)
@@ -377,7 +377,7 @@ async def test_historical_image_ref_replays_from_real_material_store(tmp_path: P
 async def test_default_sticky_window_keeps_third_followup_active() -> None:
     manager = _FakeSessionManager()
     key = "agent:main:image-followup-third"
-    config = GatewayConfig()
+    config = GatewayConfig(llm={"provider": "openrouter"})
     runner = TurnRunner(provider_selector=MagicMock(), session_manager=manager, config=config)
 
     await manager.create(key)
@@ -403,7 +403,7 @@ async def test_default_sticky_window_keeps_third_followup_active() -> None:
 async def test_image_history_outside_sticky_window_does_not_route_or_replay() -> None:
     manager = _FakeSessionManager()
     key = "agent:main:image-followup-sticky-expired"
-    config = GatewayConfig()
+    config = GatewayConfig(llm={"provider": "openrouter"})
     config.squilla_router.vision_history_lookback_turns = 4
     config.squilla_router.vision_sticky_followup_turns = 1
     runner = TurnRunner(provider_selector=MagicMock(), session_manager=manager, config=config)
@@ -458,7 +458,7 @@ async def test_image_history_outside_sticky_window_does_not_route_or_replay() ->
 async def test_text_model_history_keeps_image_as_marker_not_provider_image() -> None:
     manager = _FakeSessionManager()
     key = "agent:main:image-followup-text-model"
-    config = GatewayConfig()
+    config = GatewayConfig(llm={"provider": "openrouter"})
     runner = TurnRunner(provider_selector=MagicMock(), session_manager=manager, config=config)
     await manager.create(key)
     await manager.append_message(key, "user", _inline_image_envelope("Describe this image."))
@@ -486,7 +486,7 @@ async def test_text_model_history_keeps_image_as_marker_not_provider_image() -> 
 async def test_text_only_followup_does_not_replay_history_image_on_vision_model() -> None:
     manager = _FakeSessionManager()
     key = "agent:main:image-followup-text-only-vision-model"
-    config = GatewayConfig()
+    config = GatewayConfig(llm={"provider": "openrouter"})
     runner = TurnRunner(provider_selector=MagicMock(), session_manager=manager, config=config)
     await manager.create(key)
     await manager.append_message(key, "user", _inline_image_envelope("Describe this image."))

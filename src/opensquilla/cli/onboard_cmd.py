@@ -1428,7 +1428,10 @@ def configure_command(
     selection_mode: str = typer.Option(
         "",
         "--selection-mode",
-        help="Ensemble selection mode: router_dynamic or static_openrouter_b5.",
+        help=(
+            "Ensemble selection mode: router_dynamic, static_openrouter_b5, "
+            "or static_tokenrhythm_b5."
+        ),
         rich_help_panel="LLM ensemble",
     ),
     model_options: str = typer.Option(

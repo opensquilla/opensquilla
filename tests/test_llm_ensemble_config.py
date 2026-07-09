@@ -83,6 +83,65 @@ def test_static_openrouter_b5_does_not_need_model_options() -> None:
     assert provider.aggregator.provider_config.model == "z-ai/glm-5.2"
 
 
+def test_static_tokenrhythm_b5_mirrors_the_openrouter_lineup() -> None:
+    cfg = GatewayConfig(
+        llm_ensemble={
+            "enabled": True,
+            "selection_mode": "static_tokenrhythm_b5",
+        }
+    )
+
+    provider = build_ensemble_provider_from_config(
+        config=cfg,
+        inherited_provider_config=ProviderConfig(
+            provider="tokenrhythm",
+            model="deepseek-v4-pro",
+            api_key="fake",
+            base_url="https://tokenrhythm.example/v1",
+        ),
+        fallback_provider=None,
+    )
+
+    assert provider.profile_name == "static_tokenrhythm_b5"
+    assert [member.provider_config.model for member in provider.proposers] == [
+        "deepseek-v4-pro",
+        "glm-5.1",
+        "kimi-k2.7-code",
+        "qwen3.7-max",
+    ]
+    assert all(
+        member.provider_config.provider == "tokenrhythm" for member in provider.proposers
+    )
+    assert provider.aggregator.provider_config.provider == "tokenrhythm"
+    assert provider.aggregator.provider_config.model == "glm-5.1"
+    # Same aggregation defaults as the static OpenRouter profile.
+    assert provider.min_successful_proposers == 3
+    assert provider.proposer_timeout_seconds == 300.0
+    assert provider.aggregator_timeout_seconds == 480.0
+    assert provider.shuffle_candidates is False
+    assert provider.quorum_grace_seconds == 30.0
+
+
+def test_static_b5_mode_tables_agree_across_gateway_and_provider() -> None:
+    # gateway must not be imported from provider, so the selection-mode →
+    # provider table exists on both sides; this pins them together.
+    from typing import get_args
+
+    from opensquilla.gateway.config import (
+        STATIC_B5_SELECTION_MODE_PROVIDERS,
+        LlmEnsembleConfig,
+    )
+    from opensquilla.provider.ensemble import STATIC_B5_PROFILES
+
+    assert {
+        mode: profile.provider_id for mode, profile in STATIC_B5_PROFILES.items()
+    } == STATIC_B5_SELECTION_MODE_PROVIDERS
+    literal_modes = set(
+        get_args(LlmEnsembleConfig.model_fields["selection_mode"].annotation)
+    )
+    assert literal_modes == {"router_dynamic", *STATIC_B5_SELECTION_MODE_PROVIDERS}
+
+
 def test_router_dynamic_ensemble_allows_empty_custom_model_options() -> None:
     cfg = GatewayConfig(
         llm_ensemble={

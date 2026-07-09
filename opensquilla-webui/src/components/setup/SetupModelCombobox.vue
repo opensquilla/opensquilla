@@ -3,7 +3,7 @@
 // the primary control (free text ALWAYS works — discovery is an accelerator,
 // never a gate), with an optional dropdown of live-discovered models layered
 // on top. Presentational only: props in, events out (panel-contract pattern).
-import { computed, ref } from 'vue'
+import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import type { DiscoveredModel } from '@/composables/setup/useSetupProviderForm'
 
@@ -35,16 +35,42 @@ const emit = defineEmits<{
 
 const MAX_ROWS = 40
 
+// Dropdown geometry: the listbox is teleported to <body> because both hosts
+// live inside the settings dialog's scrolling panels, which clip an in-flow
+// absolute dropdown. Position is computed from the input's viewport rect.
+const DROPDOWN_MAX_HEIGHT = 280
+const DROPDOWN_MIN_WIDTH = 260
+const DROPDOWN_GAP = 4
+const DROPDOWN_MARGIN = 8
+
 const open = ref(false)
 const activeIndex = ref(-1)
+const inputEl = ref<HTMLInputElement | null>(null)
+const listStyle = ref<Record<string, string>>({})
+// A saved model id must not hide the rest of the discovered list: opening the
+// dropdown (focus / arrow keys) always shows every model, and the query filter
+// only kicks in once the user edits the text during this open.
+const typedSinceOpen = ref(false)
 
 const fieldId = computed(() => `setup-provider-${String(props.field.name || 'model')}`)
 const fieldName = computed(() => `setup_provider_${String(props.field.name || 'model')}`)
 
 const query = computed(() => String(props.value || '').trim().toLowerCase())
 
+// The discovered id exactly matching the field's current value, if any.
+const selectedId = computed(() => {
+  const typed = String(props.value || '').trim()
+  return typed && props.models.some(model => model.id === typed) ? typed : ''
+})
+
 const matches = computed(() => {
-  if (!query.value) return props.models
+  if (!query.value || !typedSinceOpen.value) {
+    // Full-list mode: pin the current model first so it stays rendered and
+    // findable even when the list is longer than the MAX_ROWS window.
+    const idx = selectedId.value ? props.models.findIndex(m => m.id === selectedId.value) : -1
+    if (idx <= 0) return props.models
+    return [props.models[idx], ...props.models.slice(0, idx), ...props.models.slice(idx + 1)]
+  }
   return props.models.filter(model =>
     model.id.toLowerCase().includes(query.value) || model.name.toLowerCase().includes(query.value),
   )
@@ -58,15 +84,19 @@ const truncatedCount = computed(() => Math.max(0, matches.value.length - visible
 const showFreeTextRow = computed(() => {
   const typed = String(props.value || '').trim()
   if (!typed) return false
-  return !props.models.some(model => model.id === typed)
+  return !selectedId.value
 })
 
 const optionCount = computed(() => visibleModels.value.length + (showFreeTextRow.value ? 1 : 0))
 
 // Muted provenance footer (progressive disclosure): where the list and the
-// per-model metadata came from, once, instead of per-row badges.
+// per-model metadata came from, once, instead of per-row badges. Empty (and
+// hidden) unless the list really is live and at least one row names a source —
+// the copy asserts "live list from the provider".
 const provenance = computed(() => {
+  if (props.modelSource !== 'live') return ''
   const sources = Array.from(new Set(props.models.map(model => model.capabilitySource).filter(Boolean)))
+  if (!sources.length) return ''
   return t('setup.provider.modelProvenance', { sources: sources.join(', ') })
 })
 
@@ -91,16 +121,28 @@ function rowMeta(model: DiscoveredModel): string {
 function onInput(event: Event) {
   emit('update', (event.target as HTMLInputElement).value)
   open.value = true
+  typedSinceOpen.value = true
   activeIndex.value = -1
 }
 
-function onFocus() {
+// The single way to open in full-list mode; every open path that is not a
+// text edit must go through it so the filter never leaks across opens.
+function openList() {
   open.value = true
+  typedSinceOpen.value = false
   activeIndex.value = -1
+}
+
+function onClick() {
+  // Reopen on click for a still-focused input (row click / Escape keep DOM
+  // focus, so no new `focus` event will fire). Never touch an open list —
+  // caret moves while editing must not clear an in-progress filter.
+  if (!open.value) openList()
 }
 
 function close() {
   open.value = false
+  typedSinceOpen.value = false
   activeIndex.value = -1
 }
 
@@ -115,15 +157,62 @@ function selectAt(index: number) {
   else close() // free-text row: the typed value is already the field value
 }
 
+// Anchor the teleported listbox to the input: below by default, flipped above
+// when the space under the input is too short, clamped to the viewport.
+function updateListPosition() {
+  const input = inputEl.value
+  if (!input) return
+  const rect = input.getBoundingClientRect()
+  const viewportW = window.innerWidth
+  const viewportH = window.innerHeight
+  const spaceBelow = viewportH - rect.bottom - DROPDOWN_GAP - DROPDOWN_MARGIN
+  const spaceAbove = rect.top - DROPDOWN_GAP - DROPDOWN_MARGIN
+  const openUp = spaceBelow < DROPDOWN_MAX_HEIGHT && spaceAbove > spaceBelow
+  const maxHeight = Math.max(120, Math.min(DROPDOWN_MAX_HEIGHT, openUp ? spaceAbove : spaceBelow))
+  const width = Math.min(Math.max(rect.width, DROPDOWN_MIN_WIDTH), viewportW - 2 * DROPDOWN_MARGIN)
+  const left = Math.min(Math.max(rect.left, DROPDOWN_MARGIN), viewportW - width - DROPDOWN_MARGIN)
+  listStyle.value = {
+    left: `${left}px`,
+    width: `${width}px`,
+    maxHeight: `${maxHeight}px`,
+    top: openUp ? 'auto' : `${rect.bottom + DROPDOWN_GAP}px`,
+    bottom: openUp ? `${viewportH - rect.top + DROPDOWN_GAP}px` : 'auto',
+  }
+}
+
+watch(open, isOpen => {
+  if (isOpen) {
+    updateListPosition()
+    // Capture-phase scroll also catches the settings panel's inner scrolling,
+    // which never bubbles to window.
+    window.addEventListener('scroll', updateListPosition, { capture: true, passive: true })
+    window.addEventListener('resize', updateListPosition)
+  } else {
+    window.removeEventListener('scroll', updateListPosition, { capture: true })
+    window.removeEventListener('resize', updateListPosition)
+  }
+})
+
+onBeforeUnmount(() => {
+  window.removeEventListener('scroll', updateListPosition, { capture: true })
+  window.removeEventListener('resize', updateListPosition)
+})
+
 function onKeydown(event: KeyboardEvent) {
   if (event.key === 'Escape') {
-    close()
+    // Consume Escape only when it dismisses the list; a closed combobox lets
+    // it bubble so enclosing dialogs keep their Escape-to-close behavior.
+    if (open.value) {
+      event.preventDefault()
+      event.stopPropagation()
+      close()
+    }
     return
   }
   if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
     event.preventDefault()
     if (!open.value) {
-      open.value = true
+      openList()
       return
     }
     if (!optionCount.value) return
@@ -147,6 +236,7 @@ function onKeydown(event: KeyboardEvent) {
     <div class="setup-model-combobox" :class="cell ? undefined : 'control-row__control'">
       <input
         :id="fieldId"
+        ref="inputEl"
         :class="cell ? undefined : 'control-input'"
         :name="fieldName"
         type="text"
@@ -159,63 +249,63 @@ function onKeydown(event: KeyboardEvent) {
         :value="value"
         :placeholder="field.placeholder || ''"
         @input="onInput"
-        @focus="onFocus"
+        @focus="openList"
+        @click="onClick"
         @blur="close"
         @keydown="onKeydown"
       >
-      <div
-        v-if="open"
-        :id="`${fieldId}-listbox`"
-        class="setup-model-combobox__list"
-        role="listbox"
-        :aria-label="t('setup.provider.modelListLabel')"
-        @mousedown.prevent
-      >
-        <button
-          v-for="(model, index) in visibleModels"
-          :key="model.id"
-          type="button"
-          class="setup-model-combobox__row"
-          :class="{ 'is-active': index === activeIndex }"
-          role="option"
-          :aria-selected="model.id === value ? 'true' : 'false'"
+      <Teleport to="body">
+        <div
+          v-if="open"
+          :id="`${fieldId}-listbox`"
+          class="setup-model-combobox__list"
+          :style="listStyle"
+          role="listbox"
+          :aria-label="t('setup.provider.modelListLabel')"
           @mousedown.prevent
-          @click="selectModel(model.id)"
         >
-          <span class="setup-model-combobox__id">{{ model.id }}</span>
-          <span v-if="rowMeta(model)" class="setup-model-combobox__meta">{{ rowMeta(model) }}</span>
-        </button>
-        <button
-          v-if="showFreeTextRow"
-          type="button"
-          class="setup-model-combobox__row setup-model-combobox__row--freetext"
-          :class="{ 'is-active': activeIndex === visibleModels.length }"
-          role="option"
-          aria-selected="false"
-          @mousedown.prevent
-          @click="close()"
-        >
-          <span class="setup-model-combobox__id">{{ t('setup.provider.modelUseTyped', { value: String(value || '').trim() }) }}</span>
-        </button>
-        <div v-if="!visibleModels.length && !showFreeTextRow" class="setup-model-combobox__footer">
-          {{ t('setup.provider.modelNoMatches') }}
+          <button
+            v-for="(model, index) in visibleModels"
+            :key="model.id"
+            type="button"
+            class="setup-model-combobox__row"
+            :class="{ 'is-active': index === activeIndex }"
+            role="option"
+            :aria-selected="model.id === selectedId ? 'true' : 'false'"
+            @mousedown.prevent
+            @click="selectModel(model.id)"
+          >
+            <span class="setup-model-combobox__id">{{ model.id }}</span>
+            <span v-if="rowMeta(model)" class="setup-model-combobox__meta">{{ rowMeta(model) }}</span>
+          </button>
+          <button
+            v-if="showFreeTextRow"
+            type="button"
+            class="setup-model-combobox__row setup-model-combobox__row--freetext"
+            :class="{ 'is-active': activeIndex === visibleModels.length }"
+            role="option"
+            aria-selected="false"
+            @mousedown.prevent
+            @click="close()"
+          >
+            <span class="setup-model-combobox__id">{{ t('setup.provider.modelUseTyped', { value: String(value || '').trim() }) }}</span>
+          </button>
+          <div v-if="!visibleModels.length && !showFreeTextRow" class="setup-model-combobox__footer">
+            {{ t('setup.provider.modelNoMatches') }}
+          </div>
+          <div v-if="truncatedCount" class="setup-model-combobox__footer">
+            {{ t('setup.provider.modelListTruncated', { shown: visibleModels.length, total: matches.length }) }}
+          </div>
+          <div v-if="provenance" class="setup-model-combobox__footer">{{ provenance }}</div>
         </div>
-        <div v-if="truncatedCount" class="setup-model-combobox__footer">
-          {{ t('setup.provider.modelListTruncated', { shown: visibleModels.length, total: matches.length }) }}
-        </div>
-        <div class="setup-model-combobox__footer">{{ provenance }}</div>
-      </div>
+      </Teleport>
     </div>
   </div>
 </template>
 
 <style scoped>
-.setup-model-combobox {
-  position: relative;
-}
-
-/* Cell mode: the wrapper is a grid/table cell — the input fills it and the
-   dropdown anchors to the cell. No label chrome. */
+/* Cell mode: the wrapper is a grid/table cell — the input fills it. No label
+   chrome. The dropdown is teleported to <body>, so the cell never clips it. */
 .setup-model-combobox--cellwrap {
   min-width: 0;
 }
@@ -232,13 +322,12 @@ function onKeydown(event: KeyboardEvent) {
   box-shadow: var(--shadow-md);
   display: flex;
   flex-direction: column;
-  left: 0;
-  max-height: 280px;
   overflow-y: auto;
-  position: absolute;
-  right: 0;
-  top: calc(100% + var(--sp-1));
-  z-index: 30;
+  /* Teleported to <body>; left/top/bottom/width/max-height come from the
+     inline style computed off the input's viewport rect. Sits above the
+     settings dialog (z-index 300). */
+  position: fixed;
+  z-index: 400;
 }
 
 .setup-model-combobox__row {
@@ -263,6 +352,12 @@ function onKeydown(event: KeyboardEvent) {
 .setup-model-combobox__row--freetext {
   border-top: 1px solid var(--border);
   color: var(--text-muted);
+}
+
+/* The row matching the field's current value, visible when the full list is
+   shown over a saved model id. */
+.setup-model-combobox__row[aria-selected='true'] .setup-model-combobox__id {
+  color: var(--accent);
 }
 
 .setup-model-combobox__id {

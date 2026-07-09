@@ -207,6 +207,11 @@ class DoneEvent:
     # "cache_aware" | "cache_blind" | "free" | None (None when the reported
     # cost has no estimated component, e.g. fully provider-billed turns).
     estimate_basis: str | None = None
+    # V017 router-decision record id for this turn, when one was staged.
+    # Lets chat clients attribute feedback (router.feedback.submit) to the
+    # exact routing decision. None when the router is disabled, the turn
+    # bypassed classification, or no decision writer is registered.
+    decision_id: str | None = None
 
     @property
     def upstream_cost_usd(self) -> float:

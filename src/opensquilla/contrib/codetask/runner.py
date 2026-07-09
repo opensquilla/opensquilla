@@ -22,7 +22,9 @@ from typing import Any
 
 from opensquilla.contrib.codetask import config, envprobe, workspace
 from opensquilla.contrib.codetask.adapter import LocalAdapter, _kill_process_group
+from opensquilla.contrib.codetask.agent_config import AgentConfigError, load_agent_config_bundle
 from opensquilla.contrib.codetask.inputs import InputError, TaskSpec, render_task_md, resolve_task
+from opensquilla.contrib.codetask.preflight import provider_block_reason, provider_preflight
 from opensquilla.contrib.codetask.types import TaskResult, TaskState
 from opensquilla.contrib.codetask.verification import verify
 
@@ -225,6 +227,53 @@ def solve(
     run_id = run_id or _default_run_id("task")
     from_scratch_build = verification_mode == "build" and not repo
 
+    # Assemble the subagent config up front (operator provider sections over
+    # the policy template) so a broken operator config fails loud in
+    # milliseconds — BEFORE the potentially minutes-long clone — with the
+    # actionable reason in result.json/status.json.
+    try:
+        agent_config = load_agent_config_bundle()
+    except AgentConfigError as exc:
+        detail = str(exc)
+        blocked = TaskResult(
+            task_slug="task",
+            run_id=run_id,
+            state=TaskState.ENVIRONMENT_BLOCKED,
+            repo=repo,
+            base_ref="",
+            branch="",
+            source="config",
+            artifact_dir=str(config.run_dir(run_id)),
+            error=detail,
+        )
+        blocked.final_failure_reason = detail
+        config.run_dir(run_id).mkdir(parents=True, exist_ok=True)
+        _persist(blocked)
+        return blocked
+
+    # Credential preflight: one throwaway request against the SAME provider the
+    # subagent will use, before the minutes-long clone/install, so a missing or
+    # rejected key fails loud and actionable now instead of opaquely mid-run.
+    config.run_dir(run_id).mkdir(parents=True, exist_ok=True)
+    _write_status(run_id, "provider_preflight", repo=repo)
+    preflight_ok, preflight_reason = provider_preflight(agent_config, model)
+    if not preflight_ok:
+        blocked = TaskResult(
+            task_slug="task",
+            run_id=run_id,
+            state=TaskState.ENVIRONMENT_BLOCKED,
+            repo=repo,
+            base_ref="",
+            branch="",
+            source="config",
+            artifact_dir=str(config.run_dir(run_id)),
+            error=preflight_reason,
+        )
+        blocked.final_failure_reason = preflight_reason
+        _write_status(run_id, "provider_preflight_failed", repo=repo, error=preflight_reason)
+        _persist(blocked)
+        return blocked
+
     if verification_mode == "scratch":
         # No repo: write self-contained code from scratch in an empty git repo.
         spec = resolve_task(task_text=task, task_file=task_file)
@@ -376,7 +425,9 @@ def solve(
             rid, "agent_running", repo=repo, run_dir=str(artifact_dir),
             attempt=attempt, max_attempts=max_attempts,
         )
-        adapter = LocalAdapter(model=model, thinking=thinking, timeout=agent_budget)
+        adapter = LocalAdapter(
+            model=model, thinking=thinking, timeout=agent_budget, agent_config=agent_config
+        )
         agent_status_base = {
             "repo": repo,
             "run_dir": str(artifact_dir),
@@ -461,6 +512,23 @@ def solve(
                 attempt=attempt,
                 max_attempts=max_attempts,
                 error=result.error,
+            )
+            break
+        # A credential/config-class provider error is not retryable: stop with
+        # the real reason instead of falling through to verification (which
+        # would report a misleading "no valid manifest" and burn more attempts).
+        credential_block = provider_block_reason(getattr(outcome, "errors", []))
+        if outcome_finish_reason == "error" and credential_block is not None:
+            result.state = TaskState.ENVIRONMENT_BLOCKED
+            result.error = credential_block
+            result.final_failure_reason = credential_block
+            _write_status(
+                rid,
+                "provider_error",
+                run_dir=str(artifact_dir),
+                attempt=attempt,
+                max_attempts=max_attempts,
+                error=credential_block,
             )
             break
 

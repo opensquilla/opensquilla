@@ -4,6 +4,9 @@ import {
   LEGACY_OPENROUTER_MODEL_OPTIONS,
   OPENROUTER_FIXED_ENSEMBLE_AGGREGATOR,
   OPENROUTER_FIXED_ENSEMBLE_PROPOSERS,
+  TOKENRHYTHM_FIXED_ENSEMBLE_AGGREGATOR,
+  TOKENRHYTHM_FIXED_ENSEMBLE_PROPOSERS,
+  staticB5ModeForProvider,
   useSetupEnsembleForm,
   type EnsembleConfigSlice,
 } from './useSetupEnsembleForm'
@@ -291,6 +294,42 @@ describe('useSetupEnsembleForm — panel contract', () => {
     expect(panel.showCandidateEditor).toBe(false)
     expect(panel.showOpenRouterFixedSwitch).toBe(true)
     expect(panel.openRouterCustomEnsemble).toBe(false)
+  })
+
+  it('uses the fixed TokenRhythm 4+1 profile for the tokenrhythm static selection', () => {
+    const f = useSetupEnsembleForm()
+    f.initFromConfig({ selection_mode: 'static_tokenrhythm_b5' })
+
+    // The stored mode round-trips (it must not normalize back to the default).
+    expect(f.selectionMode.value).toBe('static_tokenrhythm_b5')
+    expect(staticB5ModeForProvider('tokenrhythm')).toBe('static_tokenrhythm_b5')
+
+    const panel = makePanel(f, 'tokenrhythm').value
+    const profile = panel.fixedOpenRouterProfile
+
+    expect(profile?.providerLabel).toBe('TokenRhythm')
+    expect(profile?.proposers.map(candidate => candidate.model)).toEqual([...TOKENRHYTHM_FIXED_ENSEMBLE_PROPOSERS])
+    expect(profile?.aggregator.model).toBe(TOKENRHYTHM_FIXED_ENSEMBLE_AGGREGATOR)
+    expect(profile?.proposers.every(candidate => candidate.provider === 'tokenrhythm')).toBe(true)
+    expect(panel.showCandidateEditor).toBe(false)
+    expect(panel.showOpenRouterFixedSwitch).toBe(true)
+    expect(panel.openRouterCustomEnsemble).toBe(false)
+  })
+
+  it('switches the tokenrhythm fixed ensemble into custom candidates seeded from its own lineup', () => {
+    const f = useSetupEnsembleForm()
+    f.initFromConfig({ selection_mode: 'static_tokenrhythm_b5' })
+
+    f.setOpenRouterCustomEnsemble(true, 'static_tokenrhythm_b5')
+    expect(f.selectionMode.value).toBe('router_dynamic')
+    expect(f.candidates.value.every(candidate => candidate.provider === 'tokenrhythm')).toBe(true)
+    expect(f.candidates.value.map(candidate => candidate.model)).toEqual([
+      ...TOKENRHYTHM_FIXED_ENSEMBLE_PROPOSERS,
+    ])
+
+    f.setOpenRouterCustomEnsemble(false, 'static_tokenrhythm_b5')
+    expect(f.selectionMode.value).toBe('static_tokenrhythm_b5')
+    expect(f.isDirty.value).toBe(false)
   })
 
   it('uses the custom candidate panel for non-OpenRouter providers even if static mode is stored', () => {

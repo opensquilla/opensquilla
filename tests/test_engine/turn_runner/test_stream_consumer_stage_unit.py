@@ -1178,3 +1178,22 @@ def test_turn_context_surface_kind_defaults_to_unknown() -> None:
         system_prompt="",
     )
     assert ctx.surface_kind == "unknown"
+
+
+def test_done_handler_stamps_decision_id() -> None:
+    state = _make_state()
+    handler = _DoneHandler()
+    inp = _make_input(
+        state=state,
+        turn=_make_turn(metadata={"router_decision_id": "b" * 32}),
+    )
+    done = DoneEvent(text="result", input_tokens=1, output_tokens=1)
+    transformed, _ = handler.handle(done, inp, state)
+    assert transformed.decision_id == "b" * 32
+
+    # Missing/empty metadata -> None, never "".
+    inp2 = _make_input(state=_make_state(), turn=_make_turn(metadata={}))
+    transformed2, _ = handler.handle(
+        DoneEvent(text="r", input_tokens=1, output_tokens=1), inp2, _make_state()
+    )
+    assert transformed2.decision_id is None

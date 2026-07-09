@@ -307,7 +307,9 @@ def _ask_provider_choice(questionary, options: OnboardOptions):
         return spec, spec.provider_id
     supported = [s for s in list_provider_setup_specs() if s.runtime_supported]
     choices = [f"{s.provider_id} ({s.label})" for s in supported]
-    default = next((choice for choice in choices if choice.startswith("openrouter ")), None)
+    default = next(
+        (choice for choice in choices if choice.startswith("tokenrhythm ")), None
+    ) or next((choice for choice in choices if choice.startswith("openrouter ")), None)
     pid = _ask_or_cancel(
         questionary.select(
             "LLM provider",

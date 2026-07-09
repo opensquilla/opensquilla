@@ -13,6 +13,7 @@ FAKE_KEY = "sk-FAKE1234567890abcdef"
 FAKE_OPENAI = "sk-FAKEabc123def456ghi789"
 FAKE_OPENAI_PROJ = "sk-proj-FAKEabc123def456ghi789"
 FAKE_OPENAI_ANT = "sk-ant-api03-FAKEabc123def456ghi789"
+FAKE_TOKENRHYTHM = "sk_tr_FAKEabc123def456ghi789"
 FAKE_SLACK_BOT = "xoxb-FAKE1234567890-abcdefghij"
 FAKE_SLACK_WEBHOOK = "https://hooks.slack.com/services/T0FAKE123/B0FAKE456/FAKEabcdefFAKE"
 # Assembled at runtime so the tracked source never contains a GitHub-token-
@@ -27,6 +28,7 @@ BARE_TOKENS = [
     FAKE_OPENAI,
     FAKE_OPENAI_PROJ,
     FAKE_OPENAI_ANT,
+    FAKE_TOKENRHYTHM,
     FAKE_SLACK_BOT,
     FAKE_GITHUB_PAT,
     FAKE_GITHUB_FINE_PAT,
@@ -176,6 +178,16 @@ def test_bare_token_prose_non_matches() -> None:
         "see https://hooks.slack.com/services for docs",
     ]:
         assert scrub_text(text) == text, f"ordinary prose was mangled: {text!r}"
+
+
+def test_masks_bare_tokens_abutting_run_punctuation() -> None:
+    # A branch whose tail class excludes -_ dies against the shared (?!RUN)
+    # trailing guard when the key abuts punctuation — failing closed and
+    # leaking the WHOLE key. Every branch must over-mask here instead.
+    for suffix in ("-rotated", "_old"):
+        text = f"old key {FAKE_TOKENRHYTHM}{suffix} was replaced"
+        scrubbed = scrub_text(text)
+        assert "FAKEabc123def456ghi789" not in scrubbed, suffix
 
 
 def test_bare_token_masking_is_idempotent() -> None:

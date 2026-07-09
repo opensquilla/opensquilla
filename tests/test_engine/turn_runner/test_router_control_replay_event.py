@@ -96,12 +96,13 @@ async def test_router_control_replay_event_replays_turn_once(monkeypatch) -> Non
     monkeypatch.setattr(squilla_router_step, "_get_strategy", lambda _cfg: _Strategy())
     provider = _ReplayProvider()
     cfg = GatewayConfig(
+        llm={"provider": "openrouter"},
         squilla_router=SquillaRouterConfig(
             enabled=True,
             rollout_phase="full",
             require_router_runtime=False,
             tiers=_router_tier_profile_defaults("openrouter"),
-        )
+        ),
     )
     runner = TurnRunner(
         provider_selector=_Selector(provider),

@@ -27,6 +27,10 @@ LEGACY_PRESET_IDS = (
     "volcengine",
     "zhipu",
 )
+# Curated-inline presets also ship packaged TOML, but never persist as a
+# tier_profile id (applied as inline tiers instead).
+CURATED_INLINE_PRESET_IDS = ("tokenrhythm",)
+PACKAGED_PRESET_IDS = LEGACY_PRESET_IDS + CURATED_INLINE_PRESET_IDS
 
 
 @pytest.mark.skipif(shutil.which("uv") is None, reason="uv not on PATH")
@@ -49,7 +53,7 @@ def test_wheel_contains_all_packaged_router_presets(tmp_path: Path) -> None:
 
     missing = [
         preset_id
-        for preset_id in LEGACY_PRESET_IDS
+        for preset_id in PACKAGED_PRESET_IDS
         if f"opensquilla/provider/presets/{preset_id}.toml" not in names
     ]
     assert not missing, (
@@ -62,4 +66,4 @@ def test_source_tree_ships_all_packaged_router_presets() -> None:
     """Cheap guard for the default test path: the preset files exist in-tree."""
     presets_dir = REPO_ROOT / "src" / "opensquilla" / "provider" / "presets"
     present = {p.stem for p in presets_dir.glob("*.toml")}
-    assert present == set(LEGACY_PRESET_IDS), present
+    assert present == set(PACKAGED_PRESET_IDS), present

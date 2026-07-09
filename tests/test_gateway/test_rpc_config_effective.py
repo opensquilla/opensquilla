@@ -59,8 +59,8 @@ async def test_effective_envelope_and_provenance(cfg: GatewayConfig) -> None:
     result = await rpc_config._handle_config_effective(None, _ctx(cfg))
     assert set(result) == {"fields"}
     fields = result["fields"]
-    assert fields["llm.provider"] == {"value": "openrouter", "source": "default"}
-    assert fields["llm.model"] == {"value": "deepseek/deepseek-v4-pro", "source": "default"}
+    assert fields["llm.provider"] == {"value": "tokenrhythm", "source": "default"}
+    assert fields["llm.model"] == {"value": "deepseek-v4-pro", "source": "default"}
     assert fields["squilla_router.tiers.c1.model"]["source"] == "preset"
     for record in fields.values():
         assert set(record) == {"value", "source"}

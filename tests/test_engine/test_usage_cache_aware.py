@@ -300,3 +300,15 @@ def test_turn_usage_payload_carries_estimate_basis() -> None:
     legacy = _turn_usage_payload(DoneEvent(input_tokens=5, output_tokens=3), resolved_model="m")
     assert legacy is not None
     assert legacy["estimate_basis"] is None
+
+
+def test_turn_usage_payload_carries_decision_id() -> None:
+    """The feedback loop's client entry point: decisionId on the wire."""
+    done = DoneEvent(input_tokens=5, output_tokens=3, decision_id="a" * 32)
+    payload = _turn_usage_payload(done, resolved_model="m")
+    assert payload is not None
+    assert payload["decision_id"] == "a" * 32
+
+    legacy = _turn_usage_payload(DoneEvent(input_tokens=5, output_tokens=3), resolved_model="m")
+    assert legacy is not None
+    assert legacy["decision_id"] is None

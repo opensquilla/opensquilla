@@ -210,6 +210,38 @@ def test_provider_save_outside_packaged_presets_seeds_inline_router_tiers():
     assert persisted["tiers"]["c0"]["model"] == "test-model"
 
 
+def test_tokenrhythm_provider_save_seeds_curated_inline_ladder():
+    """A tokenrhythm key alone yields the curated c0-c3 ladder as inline tiers.
+
+    The tokenrhythm preset is curated but non-persistable (its id must never
+    appear as a tier_profile — downgrade contract), and the model field may be
+    omitted because the preset supplies the default direct model.
+    """
+    cfg = GatewayConfig()
+    res = upsert_llm_provider(
+        cfg,
+        provider_id="tokenrhythm",
+        api_key="sk-test",
+    )
+    assert res.config.llm.provider == "tokenrhythm"
+    assert res.config.llm.model == "deepseek-v4-pro"
+    assert res.config.squilla_router.enabled is True
+    assert res.config.squilla_router.tier_profile is None
+    expected = {
+        "c0": "deepseek-v4-flash",
+        "c1": "deepseek-v4-pro",
+        "c2": "kimi-k2.7-code",
+        "c3": "glm-5.1",
+        "image_model": "kimi-k2.6",
+    }
+    for tier, model in expected.items():
+        assert res.config.squilla_router.tiers[tier]["provider"] == "tokenrhythm"
+        assert res.config.squilla_router.tiers[tier]["model"] == model
+    persisted = res.config.to_toml_dict()["squilla_router"]
+    assert "tier_profile" not in persisted
+    assert persisted["tiers"]["c3"]["model"] == "glm-5.1"
+
+
 def test_upsert_channel_appends_new():
     cfg = GatewayConfig()
     res = upsert_channel(

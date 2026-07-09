@@ -121,6 +121,7 @@ opensquilla providers status
 
 Onboarding-verified providers include:
 
+- TokenRhythm
 - OpenRouter
 - OpenAI
 - Anthropic

@@ -77,6 +77,7 @@ API keys follow the same explicit-config-first rule via `api_key` /
 
 This build exposes onboarding support for:
 
+- TokenRhythm
 - OpenRouter
 - OpenAI
 - Anthropic

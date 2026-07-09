@@ -2,9 +2,10 @@ import { test, expect } from '@playwright/test'
 
 const CONTROL_URL = '/control/'
 // Backend-config sections carry a readiness/status dot; Connection is the first
-// entry (live socket state). Appearance, Keyboard, and Advanced are client-only.
-const SECTIONS = ['Connection', 'Provider', 'Router', 'Ensemble', 'Capabilities', 'Channels', 'Behavior', 'Privacy']
-const CLIENT_SECTIONS = ['Appearance', 'Keyboard', 'Advanced']
+// entry (live socket state). Safety, Appearance, Keyboard, and Advanced are
+// client-only. (Runtime exists too, but it is desktop-only so the web rail hides it.)
+const SECTIONS = ['Connection', 'Chat Model', 'Model Routing', 'Capabilities', 'Channels', 'Behavior', 'Privacy']
+const CLIENT_SECTIONS = ['Safety', 'Appearance', 'Keyboard', 'Advanced']
 
 const settingsRow = (page: import('@playwright/test').Page) =>
   page.locator('.sidebar-foot button')
@@ -85,10 +86,10 @@ test.describe('Settings modal', () => {
     // Memory, Image, Audio) rather than a redundant "Capabilities" card heading.
     await expect(dialog(page).getByRole('heading', { name: 'Web search' })).toBeVisible()
 
-    await railTab(page, 'Router').click()
-    await expect(railTab(page, 'Router')).toHaveAttribute('aria-selected', 'true')
-    await expect(page).toHaveURL(/\/settings\/router$/)
-    await expect(dialog(page).getByRole('heading', { name: 'Router Tiers' })).toBeVisible()
+    await railTab(page, 'Model Routing').click()
+    await expect(railTab(page, 'Model Routing')).toHaveAttribute('aria-selected', 'true')
+    await expect(page).toHaveURL(/\/settings\/modelStrategy$/)
+    await expect(dialog(page).getByRole('heading', { name: 'Model routing', exact: true })).toBeVisible()
 
     // Section navigation uses replace, so a single Back exits Settings rather
     // than walking section history.
@@ -200,21 +201,28 @@ test.describe('Settings modal', () => {
     expect(probe.routeFadeSeen).toBe(false)
   })
 
-  test('Router section saves the router panel visualization mode', async ({ page }) => {
+  test('Model Routing section saves the routing panel style', async ({ page }) => {
     test.setTimeout(90000)
     await openFromSidebar(page)
 
-    const visualMode = () => dialog(page).locator('select[name="setup_router_visual_mode"]')
+    const visualMode = () => dialog(page).locator('select[name="setup_model_strategy_router_visual_mode"]')
     const dirtybar = dialog(page).locator('.settings-dirtybar')
 
-    await railTab(page, 'Router').click()
+    await railTab(page, 'Model Routing').click()
+    // The picker rides with the router details, so make the router strategy
+    // active first if the gateway under test starts on another strategy (the
+    // strategy choice is then saved along with the style — acceptable for the
+    // disposable gateways this suite runs against).
+    const routerCard = dialog(page).locator('[data-strategy-id="router"]')
+    await expect(routerCard).toBeVisible()
+    if ((await routerCard.getAttribute('aria-checked')) !== 'true') await routerCard.click()
     await expect(visualMode()).toBeVisible()
     const initial = await visualMode().inputValue()
     const next = initial === 'legacy_grid' ? 'real_candidates' : 'legacy_grid'
 
     await visualMode().selectOption(next)
     await expect(dirtybar).toBeVisible()
-    await expect(dirtybar).toContainText('Unsaved changes in Router')
+    await expect(dirtybar).toContainText('Unsaved changes in Model Routing')
     await dirtybar.getByRole('button', { name: 'Save' }).click()
     await expect(page.locator('.toast', { hasText: /Router saved/ }).first()).toBeVisible()
     await expect(dirtybar).toBeHidden({ timeout: 10000 })
@@ -222,7 +230,7 @@ test.describe('Settings modal', () => {
     await page.reload()
     await page.waitForSelector('.conn-pill', { timeout: 10000 })
     await expect(dialog(page)).toBeVisible()
-    await railTab(page, 'Router').click()
+    await railTab(page, 'Model Routing').click()
     await expect(visualMode()).toHaveValue(next)
 
     await visualMode().selectOption(initial)
@@ -281,7 +289,7 @@ test.describe('Settings modal', () => {
     await expect(dialog(page)).toBeVisible()
     // /config now redirects to /settings (default section).
     await expect(page).toHaveURL(/\/settings$/)
-    await expect(railTab(page, 'Provider')).toHaveAttribute('aria-selected', 'true')
+    await expect(railTab(page, 'Chat Model')).toHaveAttribute('aria-selected', 'true')
   })
 
   test('/setup deep link redirects into the overlay on the first not-ready section', async ({ page }) => {
@@ -293,12 +301,12 @@ test.describe('Settings modal', () => {
     await expect(page).toHaveURL(/\/settings\/auto$/)
 
     // The selected tab matches the readiness state: with everything ready it
-    // is Provider, otherwise the first section whose rail dot needs action.
+    // is Chat Model, otherwise the first section whose rail dot needs action.
     await expect(dialog(page).getByRole('tab', { selected: true })).toHaveCount(1)
     const banner = dialog(page).locator('.settings-banner')
     const ready = await banner.locator('.settings-banner__row').textContent()
     if (ready && ready.includes('Ready to run')) {
-      await expect(railTab(page, 'Provider')).toHaveAttribute('aria-selected', 'true')
+      await expect(railTab(page, 'Chat Model')).toHaveAttribute('aria-selected', 'true')
     } else {
       const selected = dialog(page).getByRole('tab', { selected: true })
       await expect(selected).toHaveAttribute('aria-label', /Needs action|Provider first|Missing/)
@@ -329,6 +337,52 @@ test.describe('Settings modal', () => {
     await dirtybar.getByRole('button', { name: 'Discard' }).click()
     await expect(dirtybar).toBeHidden()
     await expect(maxResults).toHaveValue(original)
+  })
+
+  test('history Back with dirty edits raises the discard confirm instead of silently closing', async ({ page }) => {
+    await openFromSidebar(page)
+
+    await railTab(page, 'Capabilities').click()
+    await expect(page).toHaveURL(/\/settings\/capabilities$/)
+    const maxResults = dialog(page).locator('input[name="setup_search_max_results"]')
+    await expect(maxResults).toBeVisible()
+    const original = await maxResults.inputValue()
+    await maxResults.fill(String(Number(original || '5') + 3))
+    await expect(dialog(page).locator('.settings-dirtybar')).toBeVisible()
+
+    // History traversal (browser Back, a trackpad back-swipe) unmounts the
+    // route-mounted overlay without passing through requestClose, so the
+    // router-level guard must raise the same confirm. Declining cancels the
+    // navigation and restores the /settings URL.
+    await page.goBack()
+    const confirm = page.getByRole('dialog', { name: 'Discard unsaved changes?' })
+    await expect(confirm).toBeVisible()
+    await confirm.getByRole('button', { name: 'Cancel' }).click()
+    await expect(confirm).toBeHidden()
+    await expect(dialog(page)).toBeVisible()
+    await expect(page).toHaveURL(/\/settings\/capabilities$/)
+    await expect(maxResults).not.toHaveValue(original)
+
+    // Accepting the discard lets the same Back proceed and close the overlay.
+    await page.goBack()
+    await expect(confirm).toBeVisible()
+    await confirm.getByRole('button', { name: 'Discard' }).click()
+    await expect(dialog(page)).toBeHidden()
+    await expect(page).not.toHaveURL(/\/settings/)
+    await expect(settingsRow(page)).toBeFocused()
+  })
+
+  test('viewport opts out of horizontal overscroll so a trackpad swipe cannot pop history', async ({ page }) => {
+    await page.goto(CONTROL_URL)
+    await page.waitForSelector('.conn-pill', { timeout: 10000 })
+    // Chromium turns a two-finger horizontal overscroll into history navigation;
+    // with Settings and chat sessions living on the history stack that gesture
+    // would dismiss them wholesale. Both propagation roots must opt out.
+    const behaviors = await page.evaluate(() => [
+      getComputedStyle(document.documentElement).overscrollBehaviorX,
+      getComputedStyle(document.body).overscrollBehaviorX,
+    ])
+    expect(behaviors).toEqual(['none', 'none'])
   })
 
   test('live save round-trip persists a harmless Capabilities toggle', async ({ page }) => {

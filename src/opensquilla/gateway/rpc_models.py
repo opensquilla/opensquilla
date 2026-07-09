@@ -55,7 +55,9 @@ async def _handle_models_list(params: dict | None, ctx: RpcContext) -> dict[str,
 
     models: list[dict[str, Any]] = []
     errors: list[dict[str, Any]] = []
-    if ctx.provider_selector is not None:
+    if ctx.provider_selector is not None and getattr(
+        ctx.provider_selector, "is_configured", True
+    ):
         try:
             detailed = await ctx.provider_selector.list_models_detailed()
             models = [_model_info_to_wire(m) for m in detailed.models]

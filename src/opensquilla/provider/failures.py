@@ -171,6 +171,10 @@ _MODEL_UNAVAILABLE_SUBSTRINGS = (
     "model not available",
     "not available in your region",
     "not available in the requested region",
+    # TokenRhythm's non-OpenAI envelope: top-level code MODEL_NOT_AVAILABLE
+    # with a localized Chinese message ("模型不可用：<model>").
+    "model_not_available",
+    "模型不可用",
 )
 
 # Family-independent kinds checked before any family table.

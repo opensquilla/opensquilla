@@ -30,7 +30,11 @@ def _ctx(**kwargs: object) -> RpcContext:
 def _openrouter_selector() -> ModelSelector:
     return ModelSelector(
         SelectorConfig(
-            primary=ProviderConfig(provider="openrouter", model="deepseek/deepseek-v4-flash")
+            primary=ProviderConfig(
+                provider="openrouter",
+                model="deepseek/deepseek-v4-flash",
+                api_key="test-key",
+            )
         )
     )
 

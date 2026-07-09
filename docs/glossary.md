@@ -76,8 +76,8 @@ Read: [`approvals-and-permissions.md`](approvals-and-permissions.md)
 
 ## Provider
 
-An LLM backend configured for OpenSquilla, such as OpenRouter, OpenAI,
-Anthropic, Gemini, DeepSeek, DashScope, or Ollama.
+An LLM backend configured for OpenSquilla, such as TokenRhythm, OpenRouter,
+OpenAI, Anthropic, Gemini, DeepSeek, DashScope, or Ollama.
 
 Read: [`providers-and-models.md`](providers-and-models.md)
 

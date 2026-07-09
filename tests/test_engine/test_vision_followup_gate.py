@@ -126,7 +126,7 @@ class _RecordingSelector:
 
 
 def _ctx(message: str, metadata: dict[str, Any] | None = None) -> TurnContext:
-    config = GatewayConfig()
+    config = GatewayConfig(llm={"provider": "openrouter"})
     return TurnContext(
         message=message,
         session_key="agent:main:test",
@@ -209,7 +209,8 @@ async def test_gate_prefers_dedicated_gate_chat_over_primary_provider() -> None:
 
 @pytest.mark.asyncio
 async def test_runtime_gate_chat_uses_configured_lightweight_tier_model() -> None:
-    runner = TurnRunner(provider_selector=None, config=GatewayConfig())
+    config = GatewayConfig(llm={"provider": "openrouter"})
+    runner = TurnRunner(provider_selector=None, config=config)
     selector = _RecordingSelector()
 
     chat, model = runner._make_vision_followup_gate_chat(selector)

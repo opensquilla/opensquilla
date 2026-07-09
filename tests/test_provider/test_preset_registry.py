@@ -12,6 +12,7 @@ import json
 from pathlib import Path
 
 from opensquilla.provider.preset_registry import (
+    CURATED_INLINE_PRESET_IDS,
     LEGACY_PROVIDER_PRESET_IDS,
     ProviderPreset,
     get_preset,
@@ -49,10 +50,20 @@ def test_legacy_profile_ids_equal_the_literal_nine() -> None:
     assert LEGACY_PROVIDER_PRESET_IDS == LEGACY_NINE
 
 
-def test_non_synthesized_registry_ids_equal_the_literal_nine() -> None:
+def test_non_synthesized_registry_ids_equal_legacy_plus_curated() -> None:
     packaged = list_presets(include_synthesized=False)
-    assert frozenset(p.preset_id for p in packaged) == LEGACY_NINE
+    assert frozenset(p.preset_id for p in packaged) == LEGACY_NINE | CURATED_INLINE_PRESET_IDS
     assert all(not p.synthesized for p in packaged)
+
+
+def test_only_legacy_ids_are_persistable() -> None:
+    for preset in list_presets():
+        assert preset.persistable is (preset.preset_id in LEGACY_NINE)
+    for preset_id in sorted(CURATED_INLINE_PRESET_IDS):
+        preset = get_preset(preset_id)
+        assert preset is not None
+        assert preset.synthesized is False
+        assert preset.persistable is False
 
 
 def test_packaged_presets_match_golden_tier_data_exactly() -> None:
@@ -110,6 +121,38 @@ def test_tier_defaults_returns_fresh_copies() -> None:
     first["extra"] = {}
     assert preset.tier_defaults()["c0"]["model"] != "mutated"
     assert "extra" not in preset.tier_defaults()
+
+
+# --- curated inline presets --------------------------------------------------
+
+
+def test_tokenrhythm_curated_ladder() -> None:
+    preset = get_preset("tokenrhythm")
+    assert preset is not None
+    assert preset.synthesized is False
+    assert preset.persistable is False
+    assert preset.default_model == "deepseek-v4-pro"
+    expected_models = {
+        "c0": "deepseek-v4-flash",
+        "c1": "deepseek-v4-pro",
+        "c2": "kimi-k2.7-code",
+        "c3": "glm-5.1",
+        "image_model": "kimi-k2.6",
+    }
+    tiers = preset.tier_defaults()
+    assert set(tiers) == set(expected_models)
+    for name, model in expected_models.items():
+        assert tiers[name]["provider"] == "tokenrhythm", name
+        assert tiers[name]["model"] == model, name
+        # The endpoint rejects thinking-toggle request fields, so the curated
+        # ladder must not carry a thinking_level for the request builder.
+        assert "thinking_level" not in tiers[name], name
+    assert tiers["image_model"]["supports_image"] is True
+    assert tiers["image_model"]["image_only"] is True
+
+
+def test_curated_inline_ids_are_never_legacy_profile_ids() -> None:
+    assert not (CURATED_INLINE_PRESET_IDS & legacy_profile_ids())
 
 
 # --- synthesized presets ----------------------------------------------------

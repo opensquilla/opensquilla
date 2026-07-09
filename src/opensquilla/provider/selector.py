@@ -82,6 +82,17 @@ class ProviderBuildError(Exception):
     """Raised when a provider cannot be instantiated."""
 
 
+class ProviderNotConfiguredError(ProviderBuildError):
+    """Raised when resolving a selector whose active link is not usable yet.
+
+    A gateway can boot before the operator has supplied an API key; the
+    selector then exists in an unconfigured state so that a later
+    ``sync_primary`` (Web UI / RPC config edit) can bring it live in place
+    without a restart. Subclasses ``ProviderBuildError`` so every existing
+    resolve() error handler degrades the same way.
+    """
+
+
 def _unsupported_runtime_message(provider: str) -> str:
     return (
         f"Provider '{provider}' is registered but runtime support "
@@ -298,8 +309,33 @@ class ModelSelector:
         self._index = 0
         self._plugin = plugin
 
+    @property
+    def is_configured(self) -> bool:
+        """True when the active chain link can serve requests.
+
+        Mirrors the boot gate: a provider id must be set, and an API key must
+        be present unless the provider spec says none is required (Ollama,
+        LM Studio, …). A selector can exist unconfigured so config hot-apply
+        (``sync_primary``) can bring it live without a gateway restart.
+        """
+        cfg = self._chain[self._index]
+        if not (cfg.provider or "").strip():
+            return False
+        try:
+            requires_key = get_provider_spec(cfg.provider).requires_api_key()
+        except Exception:  # noqa: BLE001 - unknown providers still need a key
+            requires_key = True
+        return bool(cfg.api_key) or not requires_key
+
     def resolve(self) -> LLMProvider:
         """Return the current provider (primary on first call)."""
+        if not self.is_configured:
+            cfg = self._chain[self._index]
+            raise ProviderNotConfiguredError(
+                f"Provider '{cfg.provider or '(unset)'}' is not configured yet "
+                "(missing API key); add one via the Web UI settings or the "
+                "[llm] section of config.toml"
+            )
         return _build_provider(self._chain[self._index])
 
     @property

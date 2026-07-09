@@ -138,11 +138,16 @@ def test_ensemble_never_blocks_onboarding(cfg):
 
 def test_ensemble_status_reports_candidate_provider_credentials(cfg, monkeypatch):
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
-    cfg.llm = LlmProviderConfig(
-        provider="deepseek",
-        model="deepseek-v4-flash",
-        api_key="sk-deepseek",
-        base_url="https://api.deepseek.com",
+    # Construct with the llm section so the router ladder follows the provider;
+    # a post-construction reassignment would leave the built-in default
+    # provider's ladder in place and add its provider to the credential list.
+    cfg = GatewayConfig(
+        llm={
+            "provider": "deepseek",
+            "model": "deepseek-v4-flash",
+            "api_key": "sk-deepseek",
+            "base_url": "https://api.deepseek.com",
+        }
     )
     cfg.llm_ensemble.enabled = True
     cfg.llm_ensemble.selection_mode = "router_dynamic"

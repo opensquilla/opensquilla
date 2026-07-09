@@ -390,6 +390,7 @@ export function useChatRenderedMessages(options: UseChatRenderedMessagesOptions)
       turnSavedPct,
       savedLabel: turnSavedPct > 0 ? `Saved ~${Math.round(turnSavedPct)}%` : 'Cost optimized',
       ensemble,
+      decisionId: typeof u.decision_id === 'string' && u.decision_id ? u.decision_id : undefined,
     }
   }
 

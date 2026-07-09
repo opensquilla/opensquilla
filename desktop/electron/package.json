@@ -19,6 +19,7 @@
     "verify:icons": "node scripts/verify-icon-config.mjs",
     "verify:package": "npm run verify:icons && node scripts/verify-package.mjs",
     "verify:gateway-smoke": "node scripts/smoke-gateway.mjs",
+    "test:cli-invocation": "npm run build && node scripts/test-cli-invocation.mjs",
     "test:secret-storage": "npm run build && node scripts/test-secret-storage-policy.mjs",
     "test:update-resolver": "npm run build && node scripts/test-update-resolver.mjs",
     "test:mock-update-flow": "npm run build && node scripts/test-mock-update-flow.mjs",

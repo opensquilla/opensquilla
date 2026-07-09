@@ -165,7 +165,7 @@ def _provider_base_url(provider_id: str, default_base_url: str, ctx: RpcContext)
 
 async def _model_probe(provider_id: str, ctx: RpcContext) -> dict[str, Any]:
     selector = getattr(ctx, "provider_selector", None)
-    if selector is None:
+    if selector is None or not getattr(selector, "is_configured", True):
         return {
             "attempted": True,
             "status": "unavailable",

@@ -98,7 +98,10 @@ def make_context(
     raw_message: str | None = None,
     attachments: list[dict] | None = None,
 ) -> TurnContext:
-    config = GatewayConfig()
+    # Pin the packaged openrouter ladder: these tests assert tier moves by
+    # their distinct per-tier models, which the tokenrhythm default's uniform
+    # synthesized ladder cannot express.
+    config = GatewayConfig(llm={"provider": "openrouter"})
     config.squilla_router.rollout_phase = rollout_phase
     return TurnContext(
         message=message,

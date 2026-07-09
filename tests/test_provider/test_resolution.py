@@ -49,22 +49,24 @@ def _catalog_with_model() -> ModelCatalog:
 
 def test_default_llm_identity_fields_report_default() -> None:
     fields = resolve_effective_llm(_config(), ModelCatalog())
-    assert fields["llm.provider"] == ResolvedField("openrouter", "default")
-    assert fields["llm.model"] == ResolvedField("deepseek/deepseek-v4-pro", "default")
-    assert fields["llm.base_url"] == ResolvedField("https://openrouter.ai/api/v1", "default")
+    assert fields["llm.provider"] == ResolvedField("tokenrhythm", "default")
+    assert fields["llm.model"] == ResolvedField("deepseek-v4-pro", "default")
+    assert fields["llm.base_url"] == ResolvedField("https://tokenrhythm.studio/v1", "default")
 
 
 def test_explicit_llm_identity_fields_report_config() -> None:
+    # The model deliberately differs from the field default: value-vs-baseline
+    # attribution cannot distinguish an explicit value that coincides with it.
     cfg = _config(
         llm=LlmProviderConfig(
             provider="deepseek",
-            model="deepseek-v4-pro",
+            model="deepseek-chat",
             base_url="https://proxy.example/v1",
         )
     )
     fields = resolve_effective_llm(cfg, ModelCatalog())
     assert fields["llm.provider"] == ResolvedField("deepseek", "config")
-    assert fields["llm.model"] == ResolvedField("deepseek-v4-pro", "config")
+    assert fields["llm.model"] == ResolvedField("deepseek-chat", "config")
     assert fields["llm.base_url"] == ResolvedField("https://proxy.example/v1", "config")
 
 

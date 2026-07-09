@@ -191,6 +191,8 @@ export interface ChatUsagePayload {
   modelUsageBreakdown?: ChatEnsembleUsageRow[]
   ensemble_trace?: ChatEnsembleTrace
   ensembleTrace?: ChatEnsembleTrace
+  /** V017 routing-decision id — presence is what makes a turn rateable. */
+  decision_id?: string
   __savings_ui_suppressed?: boolean
   [key: string]: unknown
 }
@@ -315,6 +317,8 @@ export interface ChatMessageMeta {
   savedLabel: string
   turnSavedPct?: number
   ensemble?: ChatEnsembleMeta
+  /** Routing-decision id from turn usage; thumbs render only when present. */
+  decisionId?: string
 }
 
 export interface ChatRenderedMessage {

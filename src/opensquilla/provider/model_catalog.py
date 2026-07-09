@@ -144,6 +144,35 @@ def _corrections_tables() -> dict[str, dict[str, dict[str, Any]]]:
     return _normalize_corrections(payload)
 
 
+def _provider_corrections_budget(provider_id: str, model_id: str) -> tuple[int, int] | None:
+    """Exact provider-scoped ``(max_output_tokens, context_window)`` correction.
+
+    An exact (non-glob) corrections row keyed by the resolving provider is
+    that provider's hand-authored budget contract, so it outranks the
+    models.dev snapshot in the budget chain — matching ``resolve_entry``'s
+    corrections-above-snapshot order. This is load-bearing for providers
+    with no snapshot table (hosted aggregators like tokenrhythm): without
+    it, the snapshot's cross-provider bare-id merge would serve foreign
+    windows several times larger than the provider's real ones, and
+    over-estimating a window causes silent server-side truncation. A
+    dimension the row does not carry is returned as 0 (callers treat 0 as
+    unknown); glob rows belong to the capability ladder and are never
+    consulted for budgets.
+    """
+    provider_l = (provider_id or "").strip().lower()
+    model_l = (model_id or "").strip().lower()
+    if not provider_l or not model_l:
+        return None
+    entry = _corrections_tables().get(provider_l, {}).get(model_l)
+    if not entry:
+        return None
+    max_output = int(entry.get("max_output_tokens") or 0)
+    window = int(entry.get("context_window") or 0)
+    if max_output <= 0 and window <= 0:
+        return None
+    return max_output, window
+
+
 def _corrections_budget_fallback(model_id: str) -> tuple[int, int] | None:
     """Conservative ``(max_output_tokens, context_window)`` from corrections.
 
@@ -539,7 +568,8 @@ class ModelCatalog:
     def resolve_max_tokens(
         self, model_id: str, user_override: int = 0, provider: str = ""
     ) -> int:
-        """Resolve max_tokens: user > catalog > corrections budgets > default, then clamp."""
+        """Resolve max_tokens: user > live > provider corrections > snapshot >
+        basename corrections > default, then clamp."""
         return self.resolve_max_tokens_with_source(model_id, user_override, provider)[0]
 
     def resolve_max_tokens_with_source(
@@ -548,9 +578,10 @@ class ModelCatalog:
         """Resolve max_tokens and name the layer that decided the value.
 
         ``override`` = the caller-supplied ``user_override`` (an explicit
-        config value); ``catalog`` = live provider catalog, models.dev
-        snapshot, or the packaged corrections budget rows; ``default`` =
-        :data:`DEFAULT_MAX_TOKENS`. :meth:`resolve_max_tokens` delegates
+        config value); ``catalog`` = live provider catalog, exact
+        provider-scoped corrections row, models.dev snapshot, or the
+        provider-agnostic corrections budget fallback (in that order);
+        ``default`` = :data:`DEFAULT_MAX_TOKENS`. :meth:`resolve_max_tokens` delegates
         here (single implementation), so value and attribution can never
         drift apart. The clamp below may lower the number without changing
         the attribution: the source names the layer that supplied the
@@ -560,6 +591,7 @@ class ModelCatalog:
         info = self._models.get(model_id)
 
         using_user_override = user_override > 0
+        provider_budget = _provider_corrections_budget(provider, model_id)
         snapshot_limits = _models_dev_limits(provider, model_id)
         source: MaxTokensSource
         if using_user_override:
@@ -567,6 +599,9 @@ class ModelCatalog:
             source = "override"
         elif info and info.max_output_tokens > 0:
             effective = info.max_output_tokens
+            source = "catalog"
+        elif provider_budget is not None and provider_budget[0] > 0:
+            effective = provider_budget[0]
             source = "catalog"
         elif snapshot_limits is not None and snapshot_limits[0] > 0:
             effective = snapshot_limits[0]
@@ -594,7 +629,8 @@ class ModelCatalog:
         return effective, source
 
     def resolve_context_window(self, model_id: str, provider: str = "") -> int:
-        """Resolve context window: user override > catalog > models.dev > corrections > default."""
+        """Resolve context window: user override > live > provider corrections >
+        snapshot > basename corrections > default."""
         return self.resolve_context_window_with_source(model_id, provider)[0]
 
     def user_context_window_override(self, model_id: str, provider: str = "") -> int | None:
@@ -617,8 +653,9 @@ class ModelCatalog:
         """Resolve the context window and name the layer that decided it.
 
         ``override`` = a positive ``[models.*]`` user-override value
-        (``set_user_overrides``); ``catalog`` = live provider catalog,
-        models.dev snapshot, or the packaged corrections budget rows;
+        (``set_user_overrides``); ``catalog`` = live provider catalog, exact
+        provider-scoped corrections row, models.dev snapshot, or the
+        provider-agnostic corrections budget fallback (in that order);
         ``default`` = the local-runtime or cloud default window.
         :meth:`resolve_context_window` delegates here (single
         implementation), so value and attribution can never drift apart.
@@ -631,6 +668,9 @@ class ModelCatalog:
         info = self._models.get(model_id)
         if info and info.context_window > 0:
             return info.context_window, "catalog"
+        provider_budget = _provider_corrections_budget(provider, model_id)
+        if provider_budget is not None and provider_budget[1] > 0:
+            return provider_budget[1], "catalog"
         snapshot_limits = _models_dev_limits(provider, model_id)
         if snapshot_limits is not None and snapshot_limits[1] > 0:
             return snapshot_limits[1], "catalog"

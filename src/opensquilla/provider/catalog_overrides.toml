@@ -402,3 +402,145 @@ supports_reasoning = false
 supports_tools = true
 supports_vision = false
 reasoning_format = "none"
+
+# tokenrhythm (TokenRhythm aggregator, tokenrhythm.studio): not on
+# models.dev, so these rows are the canonical metadata for its catalog.
+# Windows and prices come from the platform's public model listing
+# (https://tokenrhythm.studio/api/models, CNY per Mtok converted at
+# ~6.975 CNY/USD); the platform publishes no max-output limit and does not
+# reject large max_tokens at request time, so outputs are conservative
+# floors. Every served model streams DeepSeek-style reasoning_content
+# unconditionally, but the endpoint rejects thinking-toggle payloads
+# (UNKNOWN_FIELD 400), so reasoning_format stays "none": display-side
+# parsing needs no format, and "none" keeps the request builder from
+# injecting a deepseek thinking object. Vision is live-verified on the
+# kimi rows only.
+
+[tokenrhythm."deepseek-v4-flash"]
+context_window = 64000
+max_output_tokens = 16384
+supports_reasoning = true
+supports_tools = true
+supports_vision = false
+reasoning_format = "none"
+input_cost_per_mtok = 0.14
+output_cost_per_mtok = 0.29
+cache_read_cost_per_mtok = 0.03
+
+[tokenrhythm."deepseek-v4-pro"]
+context_window = 64000
+max_output_tokens = 16384
+supports_reasoning = true
+supports_tools = true
+supports_vision = false
+reasoning_format = "none"
+input_cost_per_mtok = 1.72
+output_cost_per_mtok = 3.44
+cache_read_cost_per_mtok = 0.14
+
+[tokenrhythm."glm-5"]
+context_window = 64000
+max_output_tokens = 16384
+supports_reasoning = true
+supports_tools = true
+supports_vision = false
+reasoning_format = "none"
+input_cost_per_mtok = 0.86
+output_cost_per_mtok = 3.15
+cache_read_cost_per_mtok = 0.22
+
+[tokenrhythm."glm-5.1"]
+context_window = 64000
+max_output_tokens = 16384
+supports_reasoning = true
+supports_tools = true
+supports_vision = false
+reasoning_format = "none"
+input_cost_per_mtok = 1.15
+output_cost_per_mtok = 4.01
+cache_read_cost_per_mtok = 0.29
+
+[tokenrhythm."minimax-m2.5"]
+context_window = 64000
+max_output_tokens = 16384
+supports_reasoning = true
+supports_tools = true
+supports_vision = false
+reasoning_format = "none"
+input_cost_per_mtok = 0.30
+output_cost_per_mtok = 1.20
+
+[tokenrhythm."minimax-m2.7"]
+context_window = 64000
+max_output_tokens = 16384
+supports_reasoning = true
+supports_tools = true
+supports_vision = false
+reasoning_format = "none"
+input_cost_per_mtok = 0.30
+output_cost_per_mtok = 1.20
+
+[tokenrhythm."kimi-k2.5"]
+context_window = 64000
+max_output_tokens = 16384
+supports_reasoning = true
+supports_tools = true
+supports_vision = true
+reasoning_format = "none"
+input_cost_per_mtok = 0.57
+output_cost_per_mtok = 3.01
+cache_read_cost_per_mtok = 0.11
+
+[tokenrhythm."kimi-k2.6"]
+context_window = 64000
+max_output_tokens = 16384
+supports_reasoning = true
+supports_tools = true
+supports_vision = true
+reasoning_format = "none"
+input_cost_per_mtok = 0.93
+output_cost_per_mtok = 3.87
+cache_read_cost_per_mtok = 0.19
+
+[tokenrhythm."kimi-k2.7-code"]
+context_window = 262144
+max_output_tokens = 32768
+supports_reasoning = true
+supports_tools = true
+supports_vision = true
+reasoning_format = "none"
+input_cost_per_mtok = 0.93
+output_cost_per_mtok = 3.87
+
+[tokenrhythm."mimo-v2.5-pro"]
+context_window = 64000
+max_output_tokens = 16384
+supports_reasoning = true
+supports_tools = true
+supports_vision = false
+reasoning_format = "none"
+input_cost_per_mtok = 0.43
+output_cost_per_mtok = 0.86
+
+[tokenrhythm."qwen3.7-max"]
+context_window = 1000000
+max_output_tokens = 65536
+supports_reasoning = true
+supports_tools = true
+supports_vision = false
+reasoning_format = "none"
+input_cost_per_mtok = 1.72
+output_cost_per_mtok = 5.16
+cache_read_cost_per_mtok = 0.34
+
+# Catch-all for models TokenRhythm adds later: everything on this relay
+# so far streams reasoning and takes tools; vision stays off until
+# verified per model. Glob rows never carry budgets — a newly served
+# model budgets from the snapshot's cross-provider merge until it gets an
+# exact row here, so add one (with the platform's published window) per
+# new model.
+[tokenrhythm."*"]
+supports_reasoning = true
+supports_tools = true
+supports_vision = false
+reasoning_format = "none"

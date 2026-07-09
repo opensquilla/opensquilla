@@ -2104,43 +2104,44 @@ async def build_services(
     resolved_base = llm_runtime.base_url
     proxy = llm_runtime.proxy
     if provider_selector is None:
-        # Local providers (Ollama, LM Studio, …) need no API key, so gating
-        # provider setup on a key would leave the gateway with "no provider".
-        provider_requires_key = True
-        if llm_runtime.provider:
-            try:
-                from opensquilla.provider.registry import get_provider_spec
+        # Always build the selector, even before an API key exists: every
+        # service (TurnRunner, RPC contexts, flush, auto-propose) captures
+        # this one object at boot, and config hot-apply mutates it in place
+        # via sync_primary. Booting without a selector would strand the
+        # gateway on "No provider available" until a restart even after the
+        # operator configures a key in the Web UI. An unconfigured selector
+        # refuses resolve() cleanly (ProviderNotConfiguredError) instead.
+        from opensquilla.provider.selector import (
+            ModelSelector,
+            ProviderConfig,
+            SelectorConfig,
+        )
 
-                provider_requires_key = get_provider_spec(
-                    llm_runtime.provider
-                ).requires_api_key()
-            except Exception:
-                provider_requires_key = True
-        if llm_runtime.provider and (api_key or not provider_requires_key):
-            from opensquilla.provider.selector import (
-                ModelSelector,
-                ProviderConfig,
-                SelectorConfig,
-            )
-
-            if resolved_base.endswith("/v1"):
-                resolved_base = resolved_base[:-3]
-            provider_selector = ModelSelector(
-                SelectorConfig(
-                    primary=ProviderConfig(
-                        provider=llm_runtime.provider,
-                        model=llm_runtime.model,
-                        api_key=api_key,
-                        base_url=resolved_base,
-                        proxy=proxy,
-                        provider_routing=llm_runtime.provider_routing,
-                    )
+        if resolved_base.endswith("/v1"):
+            resolved_base = resolved_base[:-3]
+        provider_selector = ModelSelector(
+            SelectorConfig(
+                primary=ProviderConfig(
+                    provider=llm_runtime.provider,
+                    model=llm_runtime.model,
+                    api_key=api_key,
+                    base_url=resolved_base,
+                    proxy=proxy,
+                    provider_routing=llm_runtime.provider_routing,
                 )
             )
+        )
+        if provider_selector.is_configured:
             log.info(
                 "build_services.provider_ready",
                 provider=llm_runtime.provider,
                 model=llm_runtime.model,
+            )
+        else:
+            log.info(
+                "build_services.provider_pending_configuration",
+                provider=llm_runtime.provider or "",
+                hint="configure an API key via the Web UI or config.toml [llm]; applies live",
             )
 
     # ── Model catalog (boot order: after provider selector) ──────────
@@ -3195,7 +3196,9 @@ async def start_gateway_server(
             *,
             triggered_by: str,
         ) -> MetaOrchestrator:
-            if svc.provider_selector is None:
+            if svc.provider_selector is None or not getattr(
+                svc.provider_selector, "is_configured", True
+            ):
                 raise RuntimeError("auto_propose provider not configured")
             provider_selector = svc.provider_selector
             router_cfg = getattr(config, "squilla_router", None)

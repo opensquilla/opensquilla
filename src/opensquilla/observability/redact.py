@@ -68,6 +68,7 @@ _BARE_TOKEN_RE = re.compile(
     (?<!{_RUN})
     (?:
         sk-{_RUN}{{16,}}                          # OpenAI-style (incl. sk-proj-, sk-ant-)
+        |sk_tr_{_RUN}{{16,}}                      # TokenRhythm keys (underscore, not hyphen)
         |xox[abposr]-[A-Za-z0-9-]{{10,}}          # Slack bot/user/app/legacy tokens
         |gh[pousr]_[A-Za-z0-9_]{{16,}}            # GitHub classic tokens (ghp/gho/ghu/ghs/ghr)
         |github_pat_[A-Za-z0-9_]{{16,}}           # GitHub fine-grained PATs

@@ -98,4 +98,11 @@ def build_train_sample(
         image_route=source == "image_route",
         exploration=bool(metadata.get("routing_exploration")),
         audit_summary=audit_summary,
+        # Key mirrors engine/steps/router_decision_record.DECISION_ID_METADATA_KEY
+        # (not imported: this package must not depend on the engine).
+        decision_id=(
+            str(metadata["router_decision_id"])
+            if metadata.get("router_decision_id")
+            else None
+        ),
     )

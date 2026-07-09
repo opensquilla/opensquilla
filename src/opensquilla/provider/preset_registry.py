@@ -3,12 +3,15 @@
 The nine legacy router-tier profiles (the "packaged" presets) ship as one
 TOML file per provider under ``opensquilla/provider/presets/<id>.toml`` and are
 transcribed byte-for-byte from the historical ``_router_tier_profile_defaults``
-dict literals. Every other runtime-supported provider gets a *synthesized*
-preset built from its onboarding default model. Synthesized presets are
-registry-only view objects: they are never persisted into a config file and
-are never accepted as a ``squilla_router.tier_profile`` value (see the gateway
-config validator — rc1 configs brick on unknown tier_profile ids, so the
-accepted set stays pinned to the legacy nine).
+dict literals. A small set of *curated-inline* presets
+(``CURATED_INLINE_PRESET_IDS``) also ship packaged TOML ladders but stay
+outside the persistable set: their tiers are applied inline, never as a
+``tier_profile`` id. Every other runtime-supported provider gets a
+*synthesized* preset built from its onboarding default model. Synthesized
+presets are registry-only view objects: they are never persisted into a
+config file and are never accepted as a ``squilla_router.tier_profile`` value
+(see the gateway config validator — rc1 configs brick on unknown tier_profile
+ids, so the accepted set stays pinned to the legacy nine).
 
 Loading is lazy via ``importlib.resources`` (same pattern as
 ``catalog_overrides.toml``); a missing/corrupt file degrades to an empty
@@ -45,6 +48,12 @@ LEGACY_PROVIDER_PRESET_IDS: frozenset[str] = frozenset(
     }
 )
 
+# Curated presets that ship packaged tier data but must never persist as a
+# ``squilla_router.tier_profile`` id: the accepted set stays pinned to the
+# legacy nine (downgrade contract), so provider saves and boot defaults apply
+# these ladders as inline tiers instead.
+CURATED_INLINE_PRESET_IDS: frozenset[str] = frozenset({"tokenrhythm"})
+
 _PRESETS_SUBDIR = "presets"
 
 
@@ -65,6 +74,17 @@ class ProviderPreset:
     default_model: str
     tiers: Mapping[str, dict]
     synthesized: bool = False
+
+    @property
+    def persistable(self) -> bool:
+        """True when this id may persist as ``squilla_router.tier_profile``.
+
+        Only the legacy nine qualify; curated-inline and synthesized presets
+        apply as inline tiers (a persisted unknown id bricks rc1 loaders on
+        downgrade).
+        """
+
+        return not self.synthesized and self.preset_id in LEGACY_PROVIDER_PRESET_IDS
 
     def tier_defaults(self) -> dict[str, dict]:
         """Return a deep-enough copy of the tier mapping for merging.
@@ -110,10 +130,10 @@ def _load_packaged_preset(preset_id: str) -> ProviderPreset | None:
 
 @cache
 def _packaged_presets() -> dict[str, ProviderPreset]:
-    """Lazily load the nine packaged presets, keyed by preset id."""
+    """Lazily load the packaged presets (legacy nine + curated), keyed by id."""
 
     presets: dict[str, ProviderPreset] = {}
-    for preset_id in sorted(LEGACY_PROVIDER_PRESET_IDS):
+    for preset_id in sorted(LEGACY_PROVIDER_PRESET_IDS | CURATED_INLINE_PRESET_IDS):
         preset = _load_packaged_preset(preset_id)
         if preset is not None:
             presets[preset.preset_id] = preset
@@ -187,7 +207,11 @@ def legacy_profile_ids() -> frozenset[str]:
     silently widening the accepted set.
     """
 
-    packaged_ids = frozenset(_packaged_presets())
+    packaged_ids = frozenset(
+        preset_id
+        for preset_id in _packaged_presets()
+        if preset_id not in CURATED_INLINE_PRESET_IDS
+    )
     if packaged_ids != LEGACY_PROVIDER_PRESET_IDS:
         # Packaged data drifted from the pinned legacy set. Fall back to the
         # literal so validation never widens/narrows silently.

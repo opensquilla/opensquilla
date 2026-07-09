@@ -187,6 +187,20 @@ _POLICIES_BY_KIND: dict[str, OpenAICompatPolicy] = {
         replay_reasoning_format="tencent_tokenhub",
         require_reasoning_content_model_ids=_TOKENHUB_HY3_MODEL_IDS,
     ),
+    # TokenRhythm relays the DeepSeek/GLM/MiniMax/Kimi/MiMo/Qwen families
+    # behind one host, and every served model streams DeepSeek-style
+    # reasoning_content unconditionally (the parse side needs no config).
+    # The endpoint rejects unknown request fields — a DeepSeek ``thinking``
+    # toggle is an UNKNOWN_FIELD 400 — so no default_reasoning_format and no
+    # thinking_toggle_model_ids here, and the packaged catalog rows pin
+    # reasoning_format="none" to keep dialect injection off. The V4 ids keep
+    # only the reasoning_content replay requirement (live-verified accepted).
+    "tokenrhythm": OpenAICompatPolicy(
+        display_name="TokenRhythm",
+        official_host="tokenrhythm.studio",
+        text_tool_synthesis=True,
+        require_reasoning_content_model_ids=_DEEPSEEK_V4_MODEL_IDS,
+    ),
     "lm_studio": OpenAICompatPolicy(display_name="LM Studio"),
     "ovms": OpenAICompatPolicy(display_name="OpenVINO Model Server"),
     "litellm_proxy": OpenAICompatPolicy(

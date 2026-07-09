@@ -27,7 +27,7 @@ metadata:
     "platform":
       {
         "emoji": "🛠️",
-        "requires": { "bins": ["git"], "env": ["OPENROUTER_API_KEY"] },
+        "requires": { "bins": ["git"], "env": [] },
         "install": [],
       },
   }

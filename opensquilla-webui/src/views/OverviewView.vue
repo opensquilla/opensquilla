@@ -165,39 +165,11 @@
                   <b>{{ evidenceLabel(key) }}</b>{{ evidenceValue(value) }}
                 </span>
               </div>
-              <div v-if="(finding.fixSteps || []).length" class="health-steps">
-                <div class="health-steps__heading">{{ stepsHeading(findingGroupKind(finding)) }}</div>
-                <ol>
-                  <li
-                    v-for="(step, sIdx) in finding.fixSteps"
-                    :key="sIdx"
-                    class="health-step"
-                  >
-                    <span class="health-step__number">{{ sIdx + 1 }}</span>
-                    <span class="health-step__body">
-                      <b>{{ step.label || t('sessions.overview.step') }}</b>
-                      <span v-if="step.command" class="health-step__command">
-                        <code>{{ step.command }}</code>
-                        <button
-                          class="health-step__copy"
-                          :class="{ 'health-step__copy--ok': copiedCommandKey === healthStepCopyKey(finding, fIdx, sIdx) }"
-                          type="button"
-                          :title="copiedCommandKey === healthStepCopyKey(finding, fIdx, sIdx)
-                            ? t('setup.toast.copiedCommand')
-                            : t('sessions.overview.copyCommand')"
-                          :aria-label="copiedCommandKey === healthStepCopyKey(finding, fIdx, sIdx)
-                            ? t('setup.toast.copiedCommand')
-                            : t('sessions.overview.copyCommand')"
-                          @click="copyCommand(step.command!, healthStepCopyKey(finding, fIdx, sIdx))"
-                        >
-                          <Icon :name="copiedCommandKey === healthStepCopyKey(finding, fIdx, sIdx) ? 'check' : 'copy'" :size="14" />
-                        </button>
-                      </span>
-                      <span v-if="step.detail" class="health-step__detail">{{ step.detail }}</span>
-                    </span>
-                  </li>
-                </ol>
-              </div>
+              <AdvancedCliSteps
+                v-if="(finding.fixSteps || []).length"
+                :steps="normalizedFixSteps(finding)"
+                :heading="stepsHeading(findingGroupKind(finding))"
+              />
             </div>
           </article>
         </section>
@@ -316,6 +288,7 @@ import {
 } from '@/utils/overviewDiagnostics'
 import Icon from '@/components/Icon.vue'
 import ErrorState from '@/components/ErrorState.vue'
+import AdvancedCliSteps from '@/components/overview/AdvancedCliSteps.vue'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -750,8 +723,12 @@ function clearCopiedCommandTimer() {
   }
 }
 
-function healthStepCopyKey(finding: Finding, findingIndex: number, stepIndex: number): string {
-  return `${findingGroupKind(finding)}:${finding.id || finding.title || findingIndex}:${stepIndex}`
+function normalizedFixSteps(finding: Finding): Array<{ label: string; command?: string; detail?: string }> {
+  return (finding.fixSteps || []).map(step => ({
+    label: step.label || t('sessions.overview.step'),
+    command: step.command,
+    detail: step.detail,
+  }))
 }
 
 // Shared check-icon swap (1600ms) for the command and diagnostics copies.
@@ -1877,111 +1854,6 @@ function gatewayContextUrl(): string {
   font-weight: 700;
 }
 
-.health-steps {
-  display: grid;
-  gap: 8px;
-  margin-top: var(--sp-3);
-}
-
-.health-steps__heading {
-  color: var(--text-dim);
-  font-size: 10.5px;
-  font-weight: 700;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
-}
-
-.health-steps ol {
-  display: grid;
-  gap: 8px;
-  list-style: none;
-  margin: 0;
-  padding: 0;
-}
-
-.health-step {
-  align-items: start;
-  display: grid;
-  gap: 10px;
-  grid-template-columns: 24px minmax(0, 1fr);
-}
-
-.health-step__number {
-  align-items: center;
-  background: var(--bg-elevated);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-full);
-  color: var(--text-muted);
-  display: inline-flex;
-  font-family: var(--font-mono);
-  font-size: 11px;
-  height: 24px;
-  justify-content: center;
-  width: 24px;
-}
-
-.health-step__body {
-  color: var(--text-muted);
-  min-width: 0;
-}
-
-.health-step__body b {
-  color: var(--text);
-  display: inline-block;
-  margin-right: 8px;
-}
-
-.health-step__body code {
-  background: var(--bg-elevated);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  color: var(--text);
-  display: inline-block;
-  font-size: 12px;
-  max-width: 100%;
-  overflow-wrap: anywhere;
-  padding: 3px 7px;
-}
-
-.health-step__command {
-  align-items: center;
-  display: inline-flex;
-  gap: 6px;
-  max-width: 100%;
-  min-width: 0;
-  overflow-wrap: anywhere;
-  vertical-align: middle;
-}
-
-.health-step__copy {
-  align-items: center;
-  background: var(--bg-elevated);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  color: var(--text-muted);
-  cursor: pointer;
-  display: inline-flex;
-  flex: 0 0 auto;
-  height: 40px;
-  justify-content: center;
-  padding: 0;
-  transition: background var(--dur-fast) var(--ease-standard), border-color var(--dur-fast) var(--ease-standard), color var(--dur-fast) var(--ease-standard);
-  width: 40px;
-}
-
-.health-step__copy:hover {
-  background: var(--bg-hover);
-  border-color: var(--accent);
-  color: var(--text);
-}
-
-.health-step__copy--ok,
-.health-step__copy--ok:hover {
-  background: color-mix(in srgb, var(--ok) 14%, var(--bg-elevated));
-  border-color: var(--ok);
-  color: var(--ok);
-}
-
 .health-empty {
   color: var(--text-muted);
   padding: var(--sp-4);
@@ -2014,15 +1886,6 @@ function gatewayContextUrl(): string {
   .ov-readiness__counts {
     flex-wrap: wrap;
     gap: var(--sp-2) var(--sp-4);
-  }
-  .health-step__command {
-    display: flex;
-    width: 100%;
-  }
-
-  .health-step__command code {
-    flex: 1 1 auto;
-    min-width: 0;
   }
 }
 </style>

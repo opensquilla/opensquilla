@@ -2,6 +2,7 @@
 import { computed, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import ControlSwitch from '@/components/ControlSwitch.vue'
+import MemoryLearningGroup from '@/components/settings/MemoryLearningGroup.vue'
 
 const { t } = useI18n()
 
@@ -139,6 +140,8 @@ function localStorageGet(key: string): string | null {
         <ControlSwitch name="labs_history_merge" :checked="historyMerge" :aria-label="t('setup.advanced.historyMergeAria')" @change="setHistoryMerge" />
       </div>
     </label>
+
+    <MemoryLearningGroup />
 
     <label class="control-row">
       <div class="control-row__label-block">

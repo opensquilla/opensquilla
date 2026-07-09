@@ -268,12 +268,12 @@ def test_curated_synthesized_presets_pin_live_verified_ladders() -> None:
             },
         },
         "volcengine_coding_plan": {
-            "default": "doubao-seed-2-0-pro-260215",
+            "default": "doubao-seed-2.0-pro",
             "tiers": {
-                "c0": "doubao-seed-2-0-lite-260215",
-                "c1": "doubao-seed-2-0-pro-260215",
-                "c2": "doubao-seed-2-0-code-preview-260215",
-                "c3": "doubao-seed-2-0-code-preview-260215",
+                "c0": "doubao-seed-2.0-lite",
+                "c1": "doubao-seed-2.0-pro",
+                "c2": "doubao-seed-2.0-code",
+                "c3": "doubao-seed-2.0-code",
             },
         },
     }

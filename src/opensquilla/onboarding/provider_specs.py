@@ -90,7 +90,7 @@ _PROVIDER_LABELS: dict[str, str] = {
     "litellm_proxy": "LiteLLM Proxy",
     "lm_studio": "LM Studio (local)",
     "ovms": "OpenVINO Model Server",
-    "volcengine_coding_plan": "Volcengine Coding Plan OpenAI-compatible",
+    "volcengine_coding_plan": "Volcengine Coding Plan (OpenAI Responses)",
     "volcengine_coding_plan_anthropic": "Volcengine Coding Plan (Anthropic)",
     "byteplus_coding_plan": "BytePlus Coding Plan (OpenAI Responses)",
     "byteplus_coding_plan_anthropic": "BytePlus Coding Plan (Anthropic)",

@@ -103,7 +103,7 @@ _DEFAULT_MODELS = {
     "deepseek": "deepseek-v4-flash",
     "gemini": "gemini-3.5-flash",
     "volcengine": "doubao-seed-2-0-lite-260215",
-    "volcengine_coding_plan": "doubao-seed-2-0-pro-260215",
+    "volcengine_coding_plan": "doubao-seed-2.0-pro",
     "byteplus": "seed-2-0-lite-260228",
     "bailian_coding": "kimi-k2.5",
     "moonshot": "kimi-k2.6",

@@ -747,7 +747,7 @@ const PROVIDER_CATALOG: ProviderCatalogEntry[] = [
   {
     id: 'volcengine_coding_plan',
     label: 'Volcengine Coding Plan',
-    model: 'doubao-seed-2-0-pro-260215',
+    model: 'doubao-seed-2.0-pro',
     baseUrl: 'https://ark.cn-beijing.volces.com/api/coding/v3',
     apiKeyEnv: 'VOLCENGINE_API_KEY',
     requiresApiKey: true,
@@ -914,10 +914,10 @@ const ROUTER_PROFILES: Record<string, Record<string, RouterTier>> = {
   },
   volcengine_coding_plan: textRouterProfile(
     'volcengine_coding_plan',
-    'doubao-seed-2-0-lite-260215',
-    'doubao-seed-2-0-pro-260215',
-    'doubao-seed-2-0-code-preview-260215',
-    'doubao-seed-2-0-code-preview-260215',
+    'doubao-seed-2.0-lite',
+    'doubao-seed-2.0-pro',
+    'doubao-seed-2.0-code',
+    'doubao-seed-2.0-code',
     'Volcengine Coding Plan',
   ),
   zhipu: {

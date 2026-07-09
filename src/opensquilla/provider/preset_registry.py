@@ -223,13 +223,13 @@ _CURATED_SYNTHESIZED_PRESETS: Mapping[str, tuple[str, dict[str, dict]]] = {
         ),
     ),
     "volcengine_coding_plan": (
-        "doubao-seed-2-0-pro-260215",
+        "doubao-seed-2.0-pro",
         _text_ladder(
             "volcengine_coding_plan",
-            "doubao-seed-2-0-lite-260215",
-            "doubao-seed-2-0-pro-260215",
-            "doubao-seed-2-0-code-preview-260215",
-            "doubao-seed-2-0-code-preview-260215",
+            "doubao-seed-2.0-lite",
+            "doubao-seed-2.0-pro",
+            "doubao-seed-2.0-code",
+            "doubao-seed-2.0-code",
             subject="Volcengine Coding Plan",
         ),
     ),

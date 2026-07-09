@@ -185,17 +185,17 @@ def test_volcengine_coding_plan_provider_configurable():
     res = upsert_llm_provider(
         cfg,
         provider_id="volcengine_coding_plan",
-        model="doubao-seed-2-0-pro-260215",
+        model="doubao-seed-2.0-pro",
         api_key="k",
     )
 
     assert res.changed is True
     assert res.config.llm.provider == "volcengine_coding_plan"
-    assert res.config.llm.model == "doubao-seed-2-0-pro-260215"
+    assert res.config.llm.model == "doubao-seed-2.0-pro"
     assert res.config.llm.api_key == "k"
     assert res.config.llm.base_url == "https://ark.cn-beijing.volces.com/api/coding/v3"
-    assert res.config.squilla_router.tiers["c0"]["model"] == "doubao-seed-2-0-lite-260215"
-    assert res.config.squilla_router.tiers["c3"]["model"] == "doubao-seed-2-0-code-preview-260215"
+    assert res.config.squilla_router.tiers["c0"]["model"] == "doubao-seed-2.0-lite"
+    assert res.config.squilla_router.tiers["c3"]["model"] == "doubao-seed-2.0-code"
 
 
 def test_ollama_does_not_require_api_key():

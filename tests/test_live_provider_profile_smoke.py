@@ -38,7 +38,7 @@ def test_live_smoke_env_maps_cover_openai_zhipu_kimi_and_minimax() -> None:
 
     assert smoke._MODEL_ENV["volcengine_coding_plan"] == "VOLCENGINE_CODING_MODEL"
     assert smoke._BASE_ENV["volcengine_coding_plan"] == "VOLCENGINE_CODING_BASE_URL"
-    assert smoke._DEFAULT_MODELS["volcengine_coding_plan"] == "doubao-seed-2-0-pro-260215"
+    assert smoke._DEFAULT_MODELS["volcengine_coding_plan"] == "doubao-seed-2.0-pro"
 
     assert smoke._MODEL_ENV["zhipu"] == "ZAI_MODEL"
     assert smoke._BASE_ENV["zhipu"] == "ZAI_BASE_URL"

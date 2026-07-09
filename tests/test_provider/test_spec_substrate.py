@@ -45,6 +45,7 @@ _CATALOG_SOURCE_WAIVERS: frozenset[str] = frozenset(
         "openai_codex",
         # Coding-plan subscription endpoints expose a fixed subscription
         # surface rather than a models.dev-backed catalog.
+        "volcengine_coding_plan",
         "volcengine_coding_plan_anthropic",
         "byteplus_coding_plan",
         "byteplus_coding_plan_anthropic",
@@ -79,7 +80,6 @@ _EXPECTED_CATALOG_SOURCES: dict[str, tuple[str, ...]] = {
     "groq": ("groq",),
     "siliconflow": ("siliconflow",),
     "volcengine": ("volcengine",),
-    "volcengine_coding_plan": ("volcengine",),
     "byteplus": ("byteplus",),
     "tencent_tokenhub": ("tencent-tokenhub",),
     "tencent_tokenhub_anthropic": ("tencent-tokenhub",),
@@ -151,9 +151,9 @@ def test_coding_plan_specs_expose_protocol_specific_runtime_surfaces() -> None:
     """Coding-plan provider ids map the official protocol-specific URLs."""
     expected = {
         "volcengine_coding_plan": (
-            "openai_compat",
+            "openai_responses",
             "https://ark.cn-beijing.volces.com/api/coding/v3",
-            frozenset({"chat", "coding_plan"}),
+            frozenset({"chat", "coding_plan", "responses"}),
         ),
         "volcengine_coding_plan_anthropic": (
             "anthropic",

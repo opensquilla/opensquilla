@@ -4,6 +4,7 @@ import pytest
 
 from opensquilla.provider.anthropic import AnthropicProvider
 from opensquilla.provider.openai import OpenAIProvider
+from opensquilla.provider.openai_responses import OpenAIResponsesProvider
 from opensquilla.provider.registry import get_provider_spec
 from opensquilla.provider.selector import ProviderBuildError, ProviderConfig, _build_provider
 
@@ -24,7 +25,6 @@ from opensquilla.provider.selector import ProviderBuildError, ProviderConfig, _b
         ("zhipu", "zhipu"),
         ("siliconflow", "siliconflow"),
         ("volcengine", "volcengine"),
-        ("volcengine_coding_plan", "volcengine"),
         ("byteplus", "byteplus"),
         ("tencent_tokenhub", "tencent_tokenhub"),
         ("tencent_tokenhub_intl", "tencent_tokenhub"),
@@ -79,11 +79,6 @@ def test_new_openai_compatible_profiles_have_vendor_provider_kind(
         ("zhipu", "ZAI_API_KEY", "https://open.bigmodel.cn/api/paas/v4"),
         ("siliconflow", "SILICONFLOW_API_KEY", "https://api.siliconflow.cn/v1"),
         ("volcengine", "VOLCENGINE_API_KEY", "https://ark.cn-beijing.volces.com/api/v3"),
-        (
-            "volcengine_coding_plan",
-            "VOLCENGINE_API_KEY",
-            "https://ark.cn-beijing.volces.com/api/coding/v3",
-        ),
         ("byteplus", "BYTEPLUS_API_KEY", "https://ark.ap-southeast.bytepluses.com/api/v3"),
         ("tencent_tokenhub", "TENCENT_TOKENHUB_API_KEY", "https://tokenhub.tencentmaas.com/v1"),
         (
@@ -261,7 +256,6 @@ def test_mimo_anthropic_profile_is_explicit_anthropic_compatible() -> None:
         ("zhipu", "glm-4.5"),
         ("siliconflow", "deepseek-ai/DeepSeek-V3"),
         ("volcengine", "ark-model-id"),
-        ("volcengine_coding_plan", "doubao-seed-2-0-pro-260215"),
         ("byteplus", "ark-endpoint-id"),
         ("qianfan", "ernie-4.5-turbo-128k"),
         ("aihubmix", "openai/gpt-5-mini"),
@@ -282,6 +276,26 @@ def test_model_selector_builds_registered_openai_compatible_providers(
     built = _build_provider(ProviderConfig(provider=provider, model=model, api_key="test-key"))
 
     assert isinstance(built, OpenAIProvider)
+
+
+def test_model_selector_preserves_volcengine_coding_plan_responses_contract() -> None:
+    spec = get_provider_spec("volcengine_coding_plan")
+
+    assert spec.backend == "openai_responses"
+    assert spec.provider_kind == "volcengine_coding_plan"
+    assert spec.env_key == "VOLCENGINE_API_KEY"
+    assert spec.default_base_url == "https://ark.cn-beijing.volces.com/api/coding/v3"
+    assert spec.capabilities == frozenset({"chat", "coding_plan", "responses"})
+
+    built = _build_provider(
+        ProviderConfig(
+            provider="volcengine_coding_plan",
+            model="doubao-seed-2.0-pro",
+            api_key="test-key",
+        )
+    )
+
+    assert isinstance(built, OpenAIResponsesProvider)
 
 
 def test_model_selector_builds_minimax_mainland_anthropic_provider() -> None:

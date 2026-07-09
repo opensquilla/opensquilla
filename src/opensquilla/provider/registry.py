@@ -519,12 +519,11 @@ for _provider_spec in [
     ),
     _spec(
         "volcengine_coding_plan",
-        "openai_compat",
-        "volcengine",
+        "openai_responses",
+        "volcengine_coding_plan",
         "VOLCENGINE_API_KEY",
         "https://ark.cn-beijing.volces.com/api/coding/v3",
-        capabilities=frozenset({"chat", "coding_plan"}),
-        catalog_source=("volcengine",),
+        capabilities=frozenset({"chat", "coding_plan", "responses"}),
     ),
     _spec(
         "volcengine_coding_plan_anthropic",

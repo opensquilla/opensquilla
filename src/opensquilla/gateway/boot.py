@@ -2163,6 +2163,31 @@ async def build_services(
     apply_model_catalog_overrides(model_catalog, config)
 
     async def _warm_model_catalog_and_pricing() -> None:
+        # Registry-driven live listing first: when the primary provider's
+        # spec names a keyless public model listing (live_catalog_url),
+        # ingest its platform-published windows/limits into the shared
+        # catalog's provider-scoped live layer so request budgeting tracks
+        # the platform instead of the packaged fallback rows. Gated on the
+        # resolved credential like the OpenRouter fetch below — an
+        # unconfigured provider cannot serve turns, so warming it would
+        # only add network I/O to keyless boots (and to the offline default
+        # test suite, which relies on credential stripping for isolation).
+        # Warmed once per process with a hard deadline; provider hot-apply
+        # keeps the packaged rows until the next restart, matching the
+        # OpenRouter warm.
+        if api_key:
+            try:
+                from opensquilla.provider.live_catalog import warm_live_provider_catalogs
+
+                await asyncio.wait_for(
+                    warm_live_provider_catalogs(
+                        model_catalog, [config.llm.provider], proxy=proxy
+                    ),
+                    timeout=5.0,
+                )
+            except Exception as e:  # noqa: BLE001 - live metadata must never block boot
+                log.warning("build_services.live_catalog_warm_failed", error=str(e))
+
         if not (api_key and config.llm.provider == "openrouter"):
             return
         try:

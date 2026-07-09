@@ -83,6 +83,13 @@ class ProviderSpec:
     # (merged in order; first source of a model id wins). Empty for
     # local/self-hosted or OAuth-only providers with no public catalog.
     catalog_source: tuple[str, ...] = ()
+    # Keyless public model-listing endpoint + payload shape for the
+    # boot-time provider-scoped live catalog ingest (see
+    # provider/live_catalog.py). Set only for hosted aggregators whose
+    # platform publishes per-model windows/limits without auth; the
+    # OpenRouter live cache keeps its bespoke authenticated fetch.
+    live_catalog_url: str = ""
+    live_catalog_shape: str = ""
 
     def requires_api_key(self) -> bool:
         """True if onboarding must collect an API key for this provider."""
@@ -121,6 +128,8 @@ def _spec(
     auth_header_style: AuthHeaderStyle = "bearer",
     context_profile: ProviderContextProfile | None = None,
     catalog_source: tuple[str, ...] = (),
+    live_catalog_url: str = "",
+    live_catalog_shape: str = "",
 ) -> ProviderSpec:
     if required_fields is None:
         required_fields = frozenset({"api_key", "model"}) if env_key else frozenset({"model"})
@@ -139,6 +148,8 @@ def _spec(
         auth_header_style=auth_header_style,
         context_profile=context_profile,
         catalog_source=catalog_source,
+        live_catalog_url=live_catalog_url,
+        live_catalog_shape=live_catalog_shape,
     )
 
 
@@ -410,8 +421,10 @@ for _provider_spec in [
     # Kimi/MiMo/Qwen families behind one OpenAI-protocol host (Bearer auth,
     # chat completions only — no Responses API). Every served model streams
     # DeepSeek-style reasoning_content. Not on models.dev, so no
-    # catalog_source — per-model metadata ships as catalog_overrides.toml
-    # corrections instead.
+    # catalog_source; instead the platform's keyless public listing is
+    # ingested at boot into the provider-scoped live layer (windows,
+    # output limits, prices), with the catalog_overrides.toml rows as the
+    # offline fallback beneath it.
     _spec(
         "tokenrhythm",
         "openai_compat",
@@ -419,6 +432,8 @@ for _provider_spec in [
         "TOKENRHYTHM_API_KEY",
         "https://tokenrhythm.studio/v1",
         reasoning_shape="deepseek",
+        live_catalog_url="https://tokenrhythm.studio/api/models",
+        live_catalog_shape="tokenrhythm",
     ),
     # First-class id for any self-hosted or otherwise unlisted
     # OpenAI-compatible endpoint (vLLM, SGLang, TGI, llama.cpp server, a

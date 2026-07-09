@@ -587,6 +587,21 @@ class AgentConfig:
     # or tool calls are never preempted. Set via
     # OPENSQUILLA_REASONING_STREAM_CHAR_CAP.
     reasoning_stream_char_cap: int = 0
+    # Re-apply captured source-diff candidates when the turn ends with prior
+    # source writes but an empty workspace diff (the collected patch would
+    # otherwise be empty). Off by default. Runs once per turn end — normal
+    # finalization and terminal errors alike — applying the newest unrestored
+    # candidate per path, each guarded by `git apply --check`; applied
+    # candidates are marked restored. Set via OPENSQUILLA_FINAL_DIFF_SALVAGE.
+    final_diff_salvage: bool = False
+    # Freeze workspace-reverting git commands (restore, checkout paths or
+    # branches, reset --hard, clean -fd, stash) in the shell tools once
+    # remaining wall-clock time drops below this many seconds. 0 = off.
+    # Unlike source_diff_preservation_mode="block", the freeze blocks the
+    # operations outright — no protected-path intersection — so a last-minute
+    # revert cannot empty the collected diff. Set via
+    # OPENSQUILLA_ENDGAME_GIT_FREEZE_MARGIN_SECONDS.
+    endgame_git_freeze_margin_seconds: int = 0
     # Provider-view dedup of byte-identical repeated tool results. Off by
     # default. When enabled, older duplicate tool_result payloads (same content
     # emitted N+ times across iterations) are replaced in the provider request

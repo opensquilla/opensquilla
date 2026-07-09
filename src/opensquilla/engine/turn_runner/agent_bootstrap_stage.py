@@ -743,6 +743,14 @@ class AgentBootstrapStage:
                 "OPENSQUILLA_REASONING_STREAM_CHAR_CAP",
                 AgentConfig().reasoning_stream_char_cap,
             ),
+            final_diff_salvage=_bool_from_env(
+                "OPENSQUILLA_FINAL_DIFF_SALVAGE",
+                AgentConfig().final_diff_salvage,
+            ),
+            endgame_git_freeze_margin_seconds=_nonnegative_int_from_env(
+                "OPENSQUILLA_ENDGAME_GIT_FREEZE_MARGIN_SECONDS",
+                AgentConfig().endgame_git_freeze_margin_seconds,
+            ),
             repeated_tool_call_recovery_threshold=_nonnegative_int_from_env(
                 "OPENSQUILLA_TOOL_REPEAT_NUDGE_THRESHOLD",
                 AgentConfig().repeated_tool_call_recovery_threshold,

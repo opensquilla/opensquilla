@@ -101,7 +101,10 @@ from opensquilla.tools.run_mode import (
     full_host_access_active,
     trusted_sandbox_active,
 )
-from opensquilla.tools.source_diff_preservation import source_diff_preservation_block_json
+from opensquilla.tools.source_diff_preservation import (
+    endgame_git_freeze_block_json,
+    source_diff_preservation_block_json,
+)
 from opensquilla.tools.types import (
     CallerKind,
     ToolError,
@@ -3521,6 +3524,23 @@ def _source_diff_preservation_shell_block(
     return None
 
 
+def _endgame_git_freeze_shell_block(
+    command: str,
+    *,
+    stdin: str | None = None,
+) -> str | None:
+    freeze_block = endgame_git_freeze_block_json(command=command)
+    if freeze_block is not None:
+        return freeze_block
+    if stdin is None:
+        return None
+    for stdin_chunk in _iter_stdin_guard_chunks(stdin):
+        freeze_block = endgame_git_freeze_block_json(command=stdin_chunk)
+        if freeze_block is not None:
+            return freeze_block
+    return None
+
+
 def _resolve_exec_timeout(timeout: float | int | None) -> float:
     if timeout is None:
         return _DEFAULT_EXEC_TIMEOUT
@@ -4081,6 +4101,9 @@ async def exec_command(
     source_diff_block = _source_diff_preservation_shell_block(command, cwd, stdin=stdin)
     if source_diff_block is not None:
         return source_diff_block
+    endgame_freeze_block = _endgame_git_freeze_shell_block(command, stdin=stdin)
+    if endgame_freeze_block is not None:
+        return endgame_freeze_block
     if not host_execution:
         path_access = _sandbox_workdir_access_envelope(
             cwd,
@@ -4349,6 +4372,9 @@ async def background_process(
     source_diff_block = _source_diff_preservation_shell_block(command, cwd)
     if source_diff_block is not None:
         return source_diff_block
+    endgame_freeze_block = _endgame_git_freeze_shell_block(command)
+    if endgame_freeze_block is not None:
+        return endgame_freeze_block
     if not host_execution:
         path_access = _sandbox_workdir_access_envelope(
             cwd,

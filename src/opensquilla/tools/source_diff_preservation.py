@@ -137,6 +137,119 @@ def source_diff_preservation_block_json(
     return json.dumps(decision.payload, ensure_ascii=False)
 
 
+# `git stash` subcommands that move or drop worktree changes. Bare `git stash`
+# (implicit push) and option-only forms like `git stash -u` count as push.
+_DESTRUCTIVE_GIT_STASH_SUBCOMMANDS = frozenset({"push", "save", "drop", "clear"})
+
+
+def endgame_git_freeze_decision(
+    *,
+    command: str,
+    ctx: ToolContext | None = None,
+) -> dict[str, Any] | None:
+    """Return a block payload for destructive git commands during the freeze.
+
+    Armed by the engine (ToolContext.endgame_git_freeze_active) once remaining
+    wall-clock time drops below OPENSQUILLA_ENDGAME_GIT_FREEZE_MARGIN_SECONDS.
+    Unlike source_diff_preservation_decision there is no protected-path
+    intersection: every parsed workspace-reverting operation — including
+    branch switches and stashes — is blocked outright so the current
+    workspace diff survives runner-side collection.
+    """
+
+    active = ctx if ctx is not None else current_tool_context.get()
+    if active is None:
+        return None
+    if getattr(active, "endgame_git_freeze_active", False) is not True:
+        return None
+    parsed = _parse_endgame_frozen_git_command(command)
+    if parsed is None:
+        return None
+    payload: dict[str, Any] = {
+        "status": "blocked",
+        "reason": "endgame_git_freeze",
+        "matched_operation": parsed.operation,
+        "target_paths": list(parsed.targets),
+        "retry_allowed": True,
+        "recommended_next_action": (
+            "The run is in its final wrap-up window and workspace-reverting git "
+            "commands are frozen so the current diff survives collection. Keep "
+            "or edit the existing changes in place instead of restoring, "
+            "resetting, cleaning, stashing, or switching branches."
+        ),
+    }
+    _emit_freeze_event(active, payload, command=command)
+    return payload
+
+
+def endgame_git_freeze_block_json(
+    *,
+    command: str,
+    ctx: ToolContext | None = None,
+) -> str | None:
+    payload = endgame_git_freeze_decision(command=command, ctx=ctx)
+    if payload is None:
+        return None
+    return json.dumps(payload, ensure_ascii=False)
+
+
+def _parse_endgame_frozen_git_command(
+    command: str,
+) -> _ParsedDestructiveGitCommand | None:
+    try:
+        tokens = shlex.split(command)
+    except ValueError:
+        return None
+    if not tokens:
+        return None
+    for segment in _shell_sequence_segments(tokens):
+        parsed = _parse_git_segment(segment)
+        if parsed is None:
+            parsed = _parse_git_stash_segment(segment)
+        if parsed is not None:
+            return parsed
+    return None
+
+
+def _parse_git_stash_segment(tokens: list[str]) -> _ParsedDestructiveGitCommand | None:
+    # Freeze-only extension: the shared _parse_git_segment intentionally stays
+    # unchanged so default source_diff_preservation behavior is untouched.
+    tokens = _strip_shell_redirections(tokens)
+    if len(tokens) < 2 or tokens[0] != "git" or tokens[1] != "stash":
+        return None
+    subcommand = next((token for token in tokens[2:] if not token.startswith("-")), None)
+    if subcommand is None or subcommand in _DESTRUCTIVE_GIT_STASH_SUBCOMMANDS:
+        return _ParsedDestructiveGitCommand(operation="git_stash", whole_worktree=True)
+    return None
+
+
+def _emit_freeze_event(
+    active: ToolContext,
+    payload: dict[str, Any],
+    *,
+    command: str,
+) -> None:
+    callback = getattr(active, "on_runtime_event", None)
+    if callback is None:
+        return
+    try:
+        callback(
+            {
+                "feature": "endgame_git_freeze",
+                "name": "endgame_git_freeze.blocked",
+                "reason": payload.get("reason"),
+                "matched_operation": payload.get("matched_operation"),
+                "target_paths": payload.get("target_paths", []),
+                "status": payload.get("status"),
+                "command": command,
+                "session_key": getattr(active, "session_key", None),
+                "agent_id": getattr(active, "agent_id", None),
+            }
+        )
+    except Exception:
+        return
+
+
 def _normalize_mode(raw: object) -> SourceDiffPreservationMode:
     value = str(raw or "log").strip().lower()
     if value in {"off", "log", "block"}:

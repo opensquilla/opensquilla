@@ -3865,6 +3865,7 @@ class Agent:
         deadline_wrapup_armed = False
         deadline_wrapup_message: Message | None = None
         deadline_thinking_off_armed = False
+        endgame_git_freeze_armed = False
         workspace_diff_recovery_attempted = False
         failed_tool_finalization_recovery_keys: set[str] = set()
         post_tool_empty_recovery_attempted = False
@@ -3986,6 +3987,41 @@ class Agent:
         # and per-tool execution budget.
         _loop = asyncio.get_running_loop()
         _total_deadline = _loop.time() + self.config.timeout if self.config.timeout > 0 else None
+
+        # Endgame git freeze: once remaining wall clock drops below the margin,
+        # the shell tools block workspace-reverting git commands outright so
+        # the current diff survives runner-side collection. The armed flag
+        # rides the ToolContext in place (router_control precedent); it is
+        # reset here because the context outlives the turn.
+        endgame_git_freeze_margin_seconds = max(
+            0,
+            int(getattr(self.config, "endgame_git_freeze_margin_seconds", 0) or 0),
+        )
+        if endgame_git_freeze_margin_seconds > 0 and self._tool_context is not None:
+            self._tool_context.endgame_git_freeze_active = False
+
+        def _arm_endgame_git_freeze_if_due() -> None:
+            nonlocal endgame_git_freeze_armed
+            if (
+                endgame_git_freeze_armed
+                or endgame_git_freeze_margin_seconds <= 0
+                or _total_deadline is None
+                or _loop.time() <= _total_deadline - endgame_git_freeze_margin_seconds
+            ):
+                return
+            endgame_git_freeze_armed = True
+            if self._tool_context is not None:
+                self._tool_context.endgame_git_freeze_active = True
+            self._write_turn_call_log(
+                "turn_policy_decision",
+                action="endgame_git_freeze",
+                reason="deadline_margin",
+                code="endgame_git_freeze",
+                iteration=iterations,
+                remaining_seconds=int(max(0.0, _total_deadline - _loop.time())),
+                margin_seconds=endgame_git_freeze_margin_seconds,
+            )
+
         tools_supported = True
         if self.config.model_capabilities is not None:
             tools_supported = bool(getattr(self.config.model_capabilities, "supports_tools", True))
@@ -4249,6 +4285,11 @@ class Agent:
                         ),
                         margin_seconds=thinking_off_margin_seconds,
                     )
+
+                # Endgame git freeze arming; re-checked before tool execution
+                # because a long provider stream can cross the margin
+                # mid-iteration.
+                _arm_endgame_git_freeze_if_due()
 
                 iterations += 1
 
@@ -6607,6 +6648,7 @@ class Agent:
                 tool_calls = self._force_matched_meta_invoke_tool_calls(tool_calls)
 
                 tool_deadline = _loop.time() + self.config.iteration_timeout
+                _arm_endgame_git_freeze_if_due()
 
                 # ------ STREAMING → TOOL_CALLING ------
                 yield self._transition(AgentState.TOOL_CALLING)
@@ -7700,6 +7742,16 @@ class Agent:
                 diff_fingerprint=self._workspace_diff_fingerprint_for_runtime_event(),
             ):
                 append_runtime_event(self.config.runtime_events_path, runtime_event)
+        if bool(getattr(self.config, "final_diff_salvage", False)):
+            # Last engine-controlled moment before the runner collects the
+            # patch from the worktree: if prior source writes ended in an
+            # empty workspace diff, re-apply the newest captured candidate per
+            # path. Runs for normal finalization and terminal errors alike;
+            # the contract observation below then reflects the salvaged state.
+            self._attempt_final_diff_salvage(
+                trigger="terminal_error" if terminal_error is not None else "finalize",
+                iteration=iterations,
+            )
         if terminal_error is not None:
             final_diff_contract_mode = getattr(
                 self.config,
@@ -7917,6 +7969,129 @@ class Agent:
                 else None
             ),
             "trigger_confidence": "final_diff_contract_gate",
+        }
+        append_runtime_event(self.config.runtime_events_path, event)
+
+    def _attempt_final_diff_salvage(
+        self,
+        *,
+        trigger: str,
+        iteration: int,
+    ) -> list[dict[str, Any]]:
+        """Re-apply captured source-diff candidates into an empty worktree.
+
+        Opt-in via final_diff_salvage (OPENSQUILLA_FINAL_DIFF_SALVAGE). Only
+        acts when the workspace diff is empty right now while candidates were
+        captured earlier — the exact state in which runner-side collection
+        would produce an empty patch. Applies the newest unrestored candidate
+        per path, oldest-fallback on conflict, each guarded by
+        `git apply --check`; applied candidates are marked restored so a later
+        pass never double-applies.
+        """
+
+        if not bool(getattr(self.config, "final_diff_salvage", False)):
+            return []
+        ctx = self._tool_context
+        candidates = (
+            list(getattr(ctx, "source_diff_candidates", []) or []) if ctx is not None else []
+        )
+        if not candidates:
+            return []
+        workspace = self._workspace_dir_for_status()
+        if workspace is None:
+            return []
+        if self._workspace_diff_paths_for_final_diff_contract():
+            return []
+        applied: list[dict[str, Any]] = []
+        handled_paths: set[str] = set()
+        for candidate in reversed(candidates):
+            paths = [
+                path for path in candidate.get("paths", []) if isinstance(path, str) and path
+            ]
+            if not paths or paths[0] in handled_paths:
+                continue
+            path = paths[0]
+            if candidate.get("restored") is True:
+                handled_paths.add(path)
+                continue
+            patch = candidate.get("patch")
+            if not isinstance(patch, str) or not patch.strip():
+                continue
+            if not self._apply_final_diff_salvage_patch(workspace, patch, check_only=True):
+                self._record_final_diff_salvage_event(
+                    candidate, trigger=trigger, iteration=iteration, action="check_failed"
+                )
+                continue
+            if not self._apply_final_diff_salvage_patch(workspace, patch, check_only=False):
+                self._record_final_diff_salvage_event(
+                    candidate, trigger=trigger, iteration=iteration, action="apply_failed"
+                )
+                continue
+            candidate["restored"] = True
+            handled_paths.add(path)
+            applied.append(candidate)
+            self._record_final_diff_salvage_event(
+                candidate, trigger=trigger, iteration=iteration, action="applied"
+            )
+        if applied:
+            self._write_turn_call_log(
+                "turn_policy_decision",
+                action="final_diff_salvage",
+                reason=trigger,
+                code="final_diff_salvage",
+                iteration=iteration,
+                candidate_ids=[candidate.get("candidate_id") for candidate in applied],
+                paths=sorted(handled_paths),
+            )
+        return applied
+
+    def _apply_final_diff_salvage_patch(
+        self,
+        workspace: Path,
+        patch: str,
+        *,
+        check_only: bool,
+    ) -> bool:
+        args = ["git", "-C", str(workspace), "apply"]
+        if check_only:
+            args.append("--check")
+        args.append("-")
+        try:
+            result = subprocess.run(
+                args,
+                input=patch,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=10.0,
+                check=False,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return False
+        return result.returncode == 0
+
+    def _record_final_diff_salvage_event(
+        self,
+        candidate: dict[str, Any],
+        *,
+        trigger: str,
+        iteration: int,
+        action: str,
+    ) -> None:
+        event = {
+            "feature": "final_diff_salvage",
+            "name": f"final_diff_salvage.{action}",
+            "action": action,
+            "trigger": trigger,
+            "iteration": iteration,
+            "candidate_id": candidate.get("candidate_id"),
+            "paths": list(candidate.get("paths", []) or []),
+            "patch_sha256": candidate.get("patch_sha256"),
+            "patch_chars": len(candidate.get("patch") or ""),
+            "session_key": self._session_key,
+            "agent_id": self.config.tool_result_store_agent_id
+            or self.config.metadata.get("agent_id"),
         }
         append_runtime_event(self.config.runtime_events_path, event)
 
@@ -11839,6 +12014,10 @@ class Agent:
                 self.config.deadline_thinking_off_margin_seconds
             ),
             reasoning_stream_char_cap=self.config.reasoning_stream_char_cap,
+            final_diff_salvage=self.config.final_diff_salvage,
+            endgame_git_freeze_margin_seconds=(
+                self.config.endgame_git_freeze_margin_seconds
+            ),
             repeated_tool_call_recovery_threshold=(
                 self.config.repeated_tool_call_recovery_threshold
             ),

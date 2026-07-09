@@ -8074,21 +8074,29 @@ class Agent:
         }
         append_runtime_event(self.config.runtime_events_path, event)
 
+    # Cap on blocking `git apply` churn per salvage pass: the calls run on the
+    # event loop thread, so a pathological candidate list must not be able to
+    # stall the turn for the whole wrap-up window.
+    _FINAL_DIFF_SALVAGE_TIME_BUDGET_SECONDS = 20.0
+
     def _attempt_final_diff_salvage(
         self,
         *,
         trigger: str,
         iteration: int,
     ) -> list[dict[str, Any]]:
-        """Re-apply captured source-diff candidates into an empty worktree.
+        """Re-apply captured source-diff candidates whose paths lost their diff.
 
-        Opt-in via final_diff_salvage (OPENSQUILLA_FINAL_DIFF_SALVAGE). Only
-        acts when the workspace diff is empty right now while candidates were
-        captured earlier — the exact state in which runner-side collection
-        would produce an empty patch. Applies the newest unrestored candidate
-        per path, oldest-fallback on conflict, each guarded by
-        `git apply --check`; applied candidates are marked restored so a later
-        pass never double-applies.
+        Opt-in via final_diff_salvage (OPENSQUILLA_FINAL_DIFF_SALVAGE). Gates
+        per path: a candidate is only re-applied when its path shows no live
+        workspace diff right now — the exact state in which that path's
+        earlier work would be missing from the collected patch. Unrelated
+        changed or untracked files never veto salvage of a reverted path.
+        Applies the newest candidate per path, oldest-fallback on conflict,
+        each guarded by `git apply --check`; applied candidates are marked
+        restored, and a stale marker from an earlier turn is cleared once the
+        path's diff is gone again so a later revert stays salvageable. The
+        pass stops once its time budget is spent.
         """
 
         if not bool(getattr(self.config, "final_diff_salvage", False)):
@@ -8102,8 +8110,8 @@ class Agent:
         workspace = self._workspace_dir_for_status()
         if workspace is None:
             return []
-        if self._workspace_diff_paths_for_final_diff_contract():
-            return []
+        live_diff_paths = set(self._workspace_diff_paths_for_final_diff_contract())
+        deadline = time.monotonic() + self._FINAL_DIFF_SALVAGE_TIME_BUDGET_SECONDS
         applied: list[dict[str, Any]] = []
         handled_paths: set[str] = set()
         for candidate in reversed(candidates):
@@ -8113,12 +8121,28 @@ class Agent:
             if not paths or paths[0] in handled_paths:
                 continue
             path = paths[0]
-            if candidate.get("restored") is True:
+            if path in live_diff_paths:
+                # The path already carries a live diff; there is nothing to
+                # salvage and stacking a stale candidate on top would clobber
+                # newer in-worktree work.
                 handled_paths.add(path)
                 continue
+            if candidate.get("restored") is True:
+                # An earlier pass applied this candidate but its diff is gone
+                # again, so the restore was undone; clear the stale marker
+                # instead of skipping the path forever.
+                candidate["restored"] = False
             patch = candidate.get("patch")
             if not isinstance(patch, str) or not patch.strip():
                 continue
+            if time.monotonic() >= deadline:
+                self._record_final_diff_salvage_event(
+                    candidate,
+                    trigger=trigger,
+                    iteration=iteration,
+                    action="time_budget_exhausted",
+                )
+                break
             if not self._apply_final_diff_salvage_patch(workspace, patch, check_only=True):
                 self._record_final_diff_salvage_event(
                     candidate, trigger=trigger, iteration=iteration, action="check_failed"

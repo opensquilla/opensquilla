@@ -331,6 +331,135 @@ async def test_final_diff_salvage_applies_on_terminal_timeout(tmp_path: Path) ->
 
 
 @pytest.mark.asyncio
+async def test_final_diff_salvage_ignores_unrelated_untracked_files(
+    tmp_path: Path,
+) -> None:
+    # The gate is per path: an untracked scratch file elsewhere in the
+    # worktree does not mean the reverted candidate path was collected.
+    repo, target = _init_repo(tmp_path)
+    candidate = _candidate(repo, target, "value = 2\n", candidate_id="srcdiff-1")
+    scratch = repo / "notes.txt"
+    scratch.write_text("scratch\n", encoding="utf-8")
+    agent = Agent(
+        provider=_SequenceProvider([_final_text()]),
+        config=AgentConfig(final_diff_salvage=True),
+        tool_context=_ctx(repo, [candidate]),
+    )
+
+    events = [event async for event in agent.run_turn("fix the bug")]
+
+    assert any(event.kind == "done" for event in events)
+    assert target.read_text(encoding="utf-8") == "value = 2\n"
+    assert candidate["restored"] is True
+    assert scratch.read_text(encoding="utf-8") == "scratch\n"
+
+
+@pytest.mark.asyncio
+async def test_final_diff_salvage_recovers_again_after_later_turn_revert(
+    tmp_path: Path,
+) -> None:
+    # The restored marker only reflects the pass that set it; if the path's
+    # diff disappears again in a later turn, the candidate must stay eligible.
+    repo, target = _init_repo(tmp_path)
+    candidate = _candidate(repo, target, "value = 2\n", candidate_id="srcdiff-1")
+    agent = Agent(
+        provider=_SequenceProvider([_final_text()]),
+        config=AgentConfig(final_diff_salvage=True),
+        tool_context=_ctx(repo, [candidate]),
+    )
+
+    first = [event async for event in agent.run_turn("fix the bug")]
+    assert any(event.kind == "done" for event in first)
+    assert target.read_text(encoding="utf-8") == "value = 2\n"
+    assert candidate["restored"] is True
+
+    _run_git(repo, "checkout", "--", target.name)
+    assert target.read_text(encoding="utf-8") == "value = 1\n"
+
+    second = [event async for event in agent.run_turn("try again")]
+
+    assert any(event.kind == "done" for event in second)
+    assert target.read_text(encoding="utf-8") == "value = 2\n"
+    assert candidate["restored"] is True
+
+
+@pytest.mark.asyncio
+async def test_final_diff_salvage_falls_back_when_apply_fails_after_check(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # `git apply --check` passing does not guarantee the real apply succeeds
+    # (e.g. the worktree changes between the two calls); a failed apply must
+    # fall through to the older candidate, not mark the path handled.
+    repo, target = _init_repo(tmp_path)
+    older = _candidate(repo, target, "value = 2\n", candidate_id="srcdiff-1")
+    newer = _candidate(repo, target, "value = 3\n", candidate_id="srcdiff-2")
+    events_path = tmp_path / "events.jsonl"
+    real_apply = Agent._apply_final_diff_salvage_patch
+
+    def flaky_apply(self, workspace, patch, *, check_only):
+        if patch == newer["patch"] and not check_only:
+            return False
+        return real_apply(self, workspace, patch, check_only=check_only)
+
+    monkeypatch.setattr(Agent, "_apply_final_diff_salvage_patch", flaky_apply)
+    agent = Agent(
+        provider=_SequenceProvider([_final_text()]),
+        config=AgentConfig(
+            final_diff_salvage=True,
+            runtime_events_path=str(events_path),
+        ),
+        tool_context=_ctx(repo, [older, newer]),
+    )
+
+    events = [event async for event in agent.run_turn("fix the bug")]
+
+    assert any(event.kind == "done" for event in events)
+    assert target.read_text(encoding="utf-8") == "value = 2\n"
+    assert newer["restored"] is False
+    assert older["restored"] is True
+    recorded = [
+        json.loads(line)
+        for line in events_path.read_text(encoding="utf-8").splitlines()
+        if '"final_diff_salvage' in line
+    ]
+    names = [event["name"] for event in recorded]
+    assert "final_diff_salvage.apply_failed" in names
+    assert "final_diff_salvage.applied" in names
+
+
+@pytest.mark.asyncio
+async def test_final_diff_salvage_stops_when_time_budget_exhausted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo, target = _init_repo(tmp_path)
+    candidate = _candidate(repo, target, "value = 2\n", candidate_id="srcdiff-1")
+    events_path = tmp_path / "events.jsonl"
+    monkeypatch.setattr(Agent, "_FINAL_DIFF_SALVAGE_TIME_BUDGET_SECONDS", 0.0)
+    agent = Agent(
+        provider=_SequenceProvider([_final_text()]),
+        config=AgentConfig(
+            final_diff_salvage=True,
+            runtime_events_path=str(events_path),
+        ),
+        tool_context=_ctx(repo, [candidate]),
+    )
+
+    events = [event async for event in agent.run_turn("fix the bug")]
+
+    assert any(event.kind == "done" for event in events)
+    assert target.read_text(encoding="utf-8") == "value = 1\n"
+    assert candidate["restored"] is False
+    recorded = [
+        json.loads(line)
+        for line in events_path.read_text(encoding="utf-8").splitlines()
+        if '"final_diff_salvage' in line
+    ]
+    assert [event["name"] for event in recorded] == [
+        "final_diff_salvage.time_budget_exhausted"
+    ]
+
+
+@pytest.mark.asyncio
 async def test_endgame_git_freeze_arms_tool_context_flag() -> None:
     ctx = ToolContext(
         is_owner=True, caller_kind=CallerKind.CLI, session_key="agent:main:test"

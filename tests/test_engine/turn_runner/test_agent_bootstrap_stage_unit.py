@@ -334,6 +334,25 @@ async def test_placeholder_escalation_and_wrapup_env_thread_to_agent_config(
 
 
 @pytest.mark.asyncio
+async def test_final_diff_salvage_and_endgame_freeze_env_thread_to_agent_config(
+    monkeypatch,
+) -> None:
+    stage = _make_stage()
+    monkeypatch.delenv("OPENSQUILLA_FINAL_DIFF_SALVAGE", raising=False)
+    monkeypatch.delenv("OPENSQUILLA_ENDGAME_GIT_FREEZE_MARGIN_SECONDS", raising=False)
+    default_out = await stage.run(_make_input())
+    assert default_out.output.agent_config.final_diff_salvage is False
+    assert default_out.output.agent_config.endgame_git_freeze_margin_seconds == 0
+
+    monkeypatch.setenv("OPENSQUILLA_FINAL_DIFF_SALVAGE", "1")
+    monkeypatch.setenv("OPENSQUILLA_ENDGAME_GIT_FREEZE_MARGIN_SECONDS", "300")
+    enabled_out = await stage.run(_make_input())
+
+    assert enabled_out.output.agent_config.final_diff_salvage is True
+    assert enabled_out.output.agent_config.endgame_git_freeze_margin_seconds == 300
+
+
+@pytest.mark.asyncio
 async def test_source_diff_preservation_config_threads_to_agent_config(monkeypatch) -> None:
     monkeypatch.delenv("OPENSQUILLA_SOURCE_DIFF_PRESERVATION_MODE", raising=False)
     builder = _RecordingAgentConfigBuilder(

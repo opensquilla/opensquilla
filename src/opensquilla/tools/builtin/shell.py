@@ -4233,12 +4233,15 @@ async def exec_command(
     scratch_block = _workspace_scratch_artifact_shell_block("exec_command", command, cwd)
     if scratch_block is not None:
         return json.dumps(scratch_block, ensure_ascii=False)
-    source_diff_block = _source_diff_preservation_shell_block(command, cwd, stdin=stdin)
-    if source_diff_block is not None:
-        return source_diff_block
+    # Freeze first: when both guards would fire, the source-diff decision's
+    # candidate-lost marking and revert-observed events must not run for a
+    # command the freeze block prevents from executing at all.
     endgame_freeze_block = _endgame_git_freeze_shell_block(command, stdin=stdin)
     if endgame_freeze_block is not None:
         return endgame_freeze_block
+    source_diff_block = _source_diff_preservation_shell_block(command, cwd, stdin=stdin)
+    if source_diff_block is not None:
+        return source_diff_block
     if not host_execution:
         path_access = _sandbox_workdir_access_envelope(
             cwd,
@@ -4504,12 +4507,14 @@ async def background_process(
     )
     if scratch_block is not None:
         return json.dumps(scratch_block, ensure_ascii=False)
-    source_diff_block = _source_diff_preservation_shell_block(command, cwd)
-    if source_diff_block is not None:
-        return source_diff_block
+    # Freeze first, as in exec_command: no candidate-lost bookkeeping for a
+    # command the freeze block prevents from executing.
     endgame_freeze_block = _endgame_git_freeze_shell_block(command)
     if endgame_freeze_block is not None:
         return endgame_freeze_block
+    source_diff_block = _source_diff_preservation_shell_block(command, cwd)
+    if source_diff_block is not None:
+        return source_diff_block
     if not host_execution:
         path_access = _sandbox_workdir_access_envelope(
             cwd,

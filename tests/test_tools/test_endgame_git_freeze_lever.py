@@ -92,10 +92,24 @@ def test_decision_none_when_flag_unset() -> None:
         ("git clean -fd", "git_clean"),
         ("git stash", "git_stash"),
         ("git stash -u", "git_stash"),
+        # -m consumes a message, not a subcommand: still an implicit push.
+        ("git stash -m wip", "git_stash"),
+        ("git stash --message wip", "git_stash"),
         ("git stash push -m wip", "git_stash"),
         ("git stash save wip", "git_stash"),
         ("git stash drop", "git_stash"),
         ("git stash clear", "git_stash"),
+        # Global options before the verb revert just as effectively.
+        ("git -C . checkout -- pkg.py", "git_checkout"),
+        ("git --no-pager reset --hard", "git_reset_hard"),
+        ("git -c core.pager=cat restore pkg.py", "git_restore"),
+        ("git --git-dir=.git --work-tree=. reset --hard", "git_reset_hard"),
+        # switch only freezes in its change-discarding forms.
+        ("git switch -f main", "git_switch_force"),
+        ("git switch --discard-changes main", "git_switch_force"),
+        # Shell wrappers around a frozen command are unwrapped.
+        ("sh -c 'git reset --hard'", "git_reset_hard"),
+        ("bash -lc 'git checkout -- .'", "git_checkout"),
         ("echo done && git reset --hard", "git_reset_hard"),
     ],
 )
@@ -124,6 +138,11 @@ def test_decision_blocks_destructive_git_when_frozen(command: str, operation: st
         "git stash list",
         "git stash show -p",
         "git checkout -b feature",
+        # Plain switch refuses to clobber local changes on its own.
+        "git switch main",
+        "git switch -c feature",
+        "git -C . diff",
+        "sh -c 'git status'",
         "ls -la",
         "sed -i 's/a/b/' pkg.py",
     ],
@@ -150,6 +169,19 @@ def test_decision_emits_runtime_event() -> None:
     assert events[0]["name"] == "endgame_git_freeze.blocked"
     assert events[0]["matched_operation"] == "git_reset_hard"
     assert events[0]["command"] == "git reset --hard"
+
+
+def test_block_guidance_speaks_of_pending_changes_only() -> None:
+    # The model-facing guidance describes the effect on the pending changes;
+    # it must not reference runner internals.
+    _configure_ctx(frozen=True)
+
+    payload = endgame_git_freeze_decision(command="git reset --hard")
+
+    assert payload is not None
+    guidance = str(payload["recommended_next_action"])
+    assert "pending changes stay intact" in guidance
+    assert "collection" not in guidance
 
 
 def test_block_json_round_trips_payload() -> None:
@@ -222,4 +254,56 @@ async def test_background_process_blocks_destructive_git_when_frozen(
     payload = json.loads(result)
     assert payload["status"] == "blocked"
     assert payload["reason"] == "endgame_git_freeze"
+    assert target.read_text(encoding="utf-8") == "value = 2\n"
+
+
+@pytest.mark.asyncio
+async def test_exec_command_blocks_checkout_when_frozen_under_host_execution(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The freeze check sits before the host-execution branch, so host-executed
+    # shells are frozen too — unlike the sandbox-only policy block.
+    monkeypatch.setattr(shell, "_host_execution_allowed", lambda: True)
+    repo, target = _init_repo(tmp_path)
+    target.write_text("value = 2\n", encoding="utf-8")
+    _configure_ctx(repo, frozen=True)
+
+    result = await shell.exec_command("git checkout -- pkg.py", workdir=str(repo))
+
+    payload = json.loads(result)
+    assert payload["status"] == "blocked"
+    assert payload["reason"] == "endgame_git_freeze"
+    assert target.read_text(encoding="utf-8") == "value = 2\n"
+
+
+@pytest.mark.asyncio
+async def test_freeze_short_circuits_before_source_diff_bookkeeping(
+    tmp_path: Path,
+) -> None:
+    # When the freeze blocks a command, the source-diff preservation guard
+    # must not run first: its log-mode side effects (candidate marked lost,
+    # revert-observed event) describe a revert that never executed.
+    repo, target = _init_repo(tmp_path)
+    target.write_text("value = 2\n", encoding="utf-8")
+    ctx = _configure_ctx(repo, frozen=True)
+    ctx.source_diff_preservation_mode = "log"
+    candidate = {
+        "candidate_id": "srcdiff-1",
+        "paths": ["pkg.py"],
+        "patch": "stub\n",
+        "lost": False,
+        "restored": False,
+    }
+    ctx.source_diff_candidates = [candidate]
+    events: list[dict] = []
+    ctx.on_runtime_event = events.append
+
+    result = await shell.exec_command("git checkout -- pkg.py", workdir=str(repo))
+
+    payload = json.loads(result)
+    assert payload["status"] == "blocked"
+    assert payload["reason"] == "endgame_git_freeze"
+    assert candidate["lost"] is False
+    assert all(event.get("feature") != "source_diff_preservation" for event in events)
+    assert all(event.get("name") != "source_diff_candidate.marked_lost" for event in events)
     assert target.read_text(encoding="utf-8") == "value = 2\n"

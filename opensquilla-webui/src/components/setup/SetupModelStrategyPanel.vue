@@ -231,6 +231,27 @@ function credentialLabel(candidate: EnsembleCandidateView): string {
           </div>
         </label>
 
+        <label class="control-row">
+          <div class="control-row__label-block">
+            <span class="control-row__label">{{ t('setup.modelStrategy.visualModeLabel') }}</span>
+            <span class="control-row__desc">{{ t('setup.modelStrategy.visualModeDesc') }}</span>
+          </div>
+          <div class="control-row__control">
+            <!-- Chat-panel visualization for routing decisions (squilla_router.visual_mode):
+                 cosmetic only, but user-persisted — without this row a saved
+                 legacy_grid choice becomes unreachable from the UI. -->
+            <select
+              class="control-input"
+              :value="panel.router.routerVisualMode"
+              name="setup_model_strategy_router_visual_mode"
+              :disabled="routerEditingDisabled"
+              @change="emit('updateRouterVisualMode', ($event.target as HTMLSelectElement).value)"
+            >
+              <option v-for="option in panel.router.routerVisualModeOptions" :key="option.value" :value="option.value">{{ option.label }}</option>
+            </select>
+          </div>
+        </label>
+
         <SetupTierTable
           :rows="panel.router.tierRows"
           :tier-label="panel.router.tierLabel"

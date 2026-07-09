@@ -140,8 +140,36 @@ describe('SetupModelStrategyPanel', () => {
     expect(el.textContent).toContain('Uses OpenRouter credentials; default model is deepseek/deepseek-v4-pro.')
     expect(el.textContent).not.toContain('Preset and credentials from OpenRouter')
     expect(el.querySelector('[role="table"]')).toBeTruthy()
-    expect(el.querySelector('select[name="setup_model_strategy_router_visual_mode"]')).toBeNull()
+    // The chat-panel visualization picker rides with the router details; losing
+    // it strands a saved legacy_grid choice with no UI path back.
+    const visualMode = el.querySelector<HTMLSelectElement>('select[name="setup_model_strategy_router_visual_mode"]')
+    expect(visualMode?.value).toBe('real_candidates')
+    expect(el.textContent).toContain('Routing panel style')
 
+    app.unmount()
+  })
+
+  it('emits the routing panel style from the visual-mode select', async () => {
+    const onUpdateRouterVisualMode = vi.fn()
+    const { app, el } = await mountPanel(
+      {
+        router: {
+          routerVisualModeOptions: [
+            { value: 'real_candidates', label: 'Real routing candidates' },
+            { value: 'legacy_grid', label: 'Three-tier visual panel' },
+          ],
+        },
+      },
+      { onUpdateRouterVisualMode },
+    )
+
+    const select = el.querySelector<HTMLSelectElement>('select[name="setup_model_strategy_router_visual_mode"]')
+    expect(select).toBeTruthy()
+    select!.value = 'legacy_grid'
+    select!.dispatchEvent(new Event('change', { bubbles: true }))
+    await nextTick()
+
+    expect(onUpdateRouterVisualMode).toHaveBeenCalledWith('legacy_grid')
     app.unmount()
   })
 

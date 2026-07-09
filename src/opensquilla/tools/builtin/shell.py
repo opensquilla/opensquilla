@@ -87,7 +87,11 @@ from opensquilla.sandbox.operation_profile import (
     shell_command_approval_variants,
 )
 from opensquilla.sandbox.operation_runtime import SandboxToolDescriptor
-from opensquilla.sandbox.path_validation import MountDecision, decide_path_access
+from opensquilla.sandbox.path_validation import (
+    MountDecision,
+    decide_path_access,
+    trusted_write_auto_grant_allowed,
+)
 from opensquilla.sandbox.policy import LevelHints
 from opensquilla.sandbox.types import (
     DenialResult,
@@ -2573,6 +2577,13 @@ def _sandbox_workdir_access_envelope(
     if (
         allow_trusted_auto_mount
         and trusted_sandbox_active()
+        and (
+            not write
+            or trusted_write_auto_grant_allowed(
+                decision.normalized_path,
+                workspace=_workspace_root_for_path_access(),
+            )
+        )
         and grant_temporary_mount_for_current_tool(decision)
     ):
         return None
@@ -2668,6 +2679,10 @@ def _sandbox_write_path_access_envelope(
         if (
             allow_trusted_auto_mount
             and trusted_sandbox_active()
+            and trusted_write_auto_grant_allowed(
+                decision.normalized_path,
+                workspace=_workspace_root_for_path_access(),
+            )
             and grant_temporary_mount_for_current_tool(
                 decision,
                 prefer_file=_shell_write_target_prefers_file(raw_path, shell_file_targets),

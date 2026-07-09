@@ -35,7 +35,11 @@ from opensquilla.sandbox.operation_runtime import (
     SandboxOperationRuntime,
     SandboxToolDescriptor,
 )
-from opensquilla.sandbox.path_validation import MountDecision, decide_path_access
+from opensquilla.sandbox.path_validation import (
+    MountDecision,
+    decide_path_access,
+    trusted_write_auto_grant_allowed,
+)
 from opensquilla.sandbox.permissions import FileSystemAccess
 from opensquilla.tools.mutation_receipts import (
     fingerprint_path,
@@ -666,6 +670,12 @@ def _sandbox_path_access_envelope(
         return None
     if decision.status == "blocked":
         return _path_access_blocked_envelope(decision)
+    if trusted_sandbox_active() and trusted_write_auto_grant_allowed(
+        decision.normalized_path,
+        workspace=_workspace_root(),
+    ):
+        if grant_temporary_mount_for_current_tool(decision):
+            return None
     if write:
         return {
             "status": "elevation_required",

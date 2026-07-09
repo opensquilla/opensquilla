@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import tempfile
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path, PurePath, PurePosixPath
@@ -27,6 +28,15 @@ class MountDecision:
     reason: str = ""
 
 
+@dataclass(frozen=True)
+class PathRiskClassification:
+    normalized_path: str
+    within_workspace: bool = False
+    protected: bool = False
+    low_risk_user_area: bool = False
+    reason: str = ""
+
+
 _POSIX_BLOCKED_PREFIXES: tuple[str, ...] = (
     "/proc",
     "/sys",
@@ -37,6 +47,33 @@ _POSIX_BLOCKED_PREFIXES: tuple[str, ...] = (
     "/run/docker.sock",
     "/private/var/run/docker.sock",
 )
+
+_POSIX_SYSTEM_WRITE_PREFIXES: tuple[str, ...] = (
+    "/Applications",
+    "/Library",
+    "/System",
+    "/bin",
+    "/opt",
+    "/sbin",
+    "/usr",
+)
+_PROTECTED_METADATA_PARTS: frozenset[str] = frozenset(
+    {
+        ".aws",
+        ".azure",
+        ".codex",
+        ".docker",
+        ".git",
+        ".gnupg",
+        ".kube",
+        ".ssh",
+        "id_rsa",
+        "id_dsa",
+        "id_ecdsa",
+        "id_ed25519",
+    }
+)
+
 
 def normalize_mount_access(value: Any, default: MountAccess = "ro") -> MountAccess:
     return "rw" if isinstance(value, str) and value.lower().strip() == "rw" else default
@@ -152,6 +189,57 @@ def decide_path_access(
     )
 
 
+def classify_path_for_sandbox(
+    path: str | os.PathLike[str],
+    *,
+    workspace: str | os.PathLike[str] | None,
+) -> PathRiskClassification:
+    normalized = _normalize_decision_path(path)
+    normalized_text = str(normalized)
+    workspace_path = _normalize_decision_path(workspace) if workspace is not None else None
+    within_workspace = (
+        workspace_path is not None and is_relative_to_path(normalized, workspace_path)
+    )
+    if _is_blocked_path(normalized, workspace_path):
+        return PathRiskClassification(
+            normalized_path=normalized_text,
+            within_workspace=within_workspace,
+            protected=True,
+            reason="sensitive_path",
+        )
+    if _is_system_write_path(normalized):
+        return PathRiskClassification(
+            normalized_path=normalized_text,
+            within_workspace=within_workspace,
+            protected=True,
+            reason="system_path",
+        )
+    if not within_workspace and _has_protected_metadata_part(normalized):
+        return PathRiskClassification(
+            normalized_path=normalized_text,
+            within_workspace=False,
+            protected=True,
+            reason="protected_metadata",
+        )
+    return PathRiskClassification(
+        normalized_path=normalized_text,
+        within_workspace=within_workspace,
+        low_risk_user_area=_is_low_risk_user_area(normalized),
+    )
+
+
+def trusted_write_auto_grant_allowed(
+    path: str | os.PathLike[str],
+    *,
+    workspace: str | os.PathLike[str] | None,
+) -> bool:
+    classification = classify_path_for_sandbox(path, workspace=workspace)
+    return (
+        not classification.protected
+        and (classification.within_workspace or classification.low_risk_user_area)
+    )
+
+
 def _iter_mount_roots(mounts: Iterable[Any]) -> Iterable[tuple[DecisionPath, MountAccess]]:
     for item in mounts:
         raw_path: Any
@@ -187,6 +275,54 @@ def _is_blocked_path(path: PurePath, workspace: PurePath | None) -> bool:
     return _is_windows_sensitive_path(str(path))
 
 
+def _is_system_write_path(path: PurePath) -> bool:
+    if os.name == "nt":
+        return False
+    normalized = str(path).replace("\\", "/")
+    for prefix in _POSIX_SYSTEM_WRITE_PREFIXES:
+        if normalized == prefix or normalized.startswith(prefix.rstrip("/") + "/"):
+            return True
+    return False
+
+
+def _has_protected_metadata_part(path: PurePath) -> bool:
+    for part in path.parts:
+        lower = part.lower()
+        if lower in _PROTECTED_METADATA_PARTS:
+            return True
+        if lower.startswith(".") and lower not in {".", ".."}:
+            return True
+    return False
+
+
+def _is_low_risk_user_area(path: PurePath) -> bool:
+    roots = _low_risk_user_roots()
+    return any(is_relative_to_path(path, root) for root in roots)
+
+
+def _low_risk_user_roots() -> tuple[DecisionPath, ...]:
+    roots: list[DecisionPath] = []
+    for raw in (
+        os.environ.get("TMPDIR"),
+        os.environ.get("TEMP"),
+        os.environ.get("TMP"),
+        tempfile.gettempdir(),
+        "/tmp",
+        "/private/tmp",
+        "/var/tmp",
+        str(Path.home()),
+    ):
+        if not raw:
+            continue
+        try:
+            root = _normalize_decision_path(raw)
+        except (OSError, RuntimeError, ValueError):
+            continue
+        if root not in roots:
+            roots.append(root)
+    return tuple(roots)
+
+
 def _is_filesystem_root(path: PurePath) -> bool:
     try:
         if not path.anchor:
@@ -206,8 +342,11 @@ __all__ = [
     "MountAccess",
     "MountDecision",
     "MountStatus",
+    "PathRiskClassification",
+    "classify_path_for_sandbox",
     "decide_path_access",
     "is_relative_to_path",
     "normalize_mount_access",
     "normalize_path",
+    "trusted_write_auto_grant_allowed",
 ]

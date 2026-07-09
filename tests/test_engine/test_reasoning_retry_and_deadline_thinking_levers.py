@@ -588,6 +588,53 @@ async def test_reasoning_stream_char_cap_preempt_records_no_tool_loop_event(
 
 
 @pytest.mark.asyncio
+async def test_reasoning_stream_char_cap_preempt_writes_runtime_event(
+    tmp_path,
+) -> None:
+    # Delivery gates read runtime_events.jsonl (the turn-call log is a raw
+    # debug stream run harnesses do not collect): each preempt must leave a
+    # reasoning_cap.preempt event so its thinking-disabled retry can be told
+    # apart from a treatment delivery failure.
+    runtime_events_path = tmp_path / "runtime_events.jsonl"
+    provider = _SequenceProvider(
+        [
+            [
+                ProviderReasoning(text=_REASONING_CHUNK),
+                ProviderReasoning(text=_REASONING_CHUNK),
+                ProviderDone(stop_reason="stop", input_tokens=5, output_tokens=2),
+            ],
+            _final_text(),
+        ]
+    )
+    agent = Agent(
+        provider=provider,
+        config=AgentConfig(
+            thinking=ThinkingLevel.MEDIUM,
+            reasoning_stream_char_cap=500,
+            runtime_events_path=str(runtime_events_path),
+            retry_base_backoff_ms=0,
+            retry_max_backoff_ms=0,
+        ),
+    )
+
+    events = [event async for event in agent.run_turn("fix the bug")]
+
+    assert any(event.kind == "done" for event in events)
+    assert len(provider.calls) == 2
+    preempt_events = [
+        json.loads(line)
+        for line in runtime_events_path.read_text().splitlines()
+        if line.strip() and json.loads(line).get("name") == "reasoning_cap.preempt"
+    ]
+    assert len(preempt_events) == 1
+    event = preempt_events[0]
+    assert event["feature"] == "reasoning_cap"
+    assert event["action"] == "retry_without_thinking"
+    assert event["cap_chars"] == 500
+    assert event["reasoning_chars"] > 500
+
+
+@pytest.mark.asyncio
 async def test_reasoning_stream_char_cap_skips_streams_past_reasoning_phase() -> None:
     # Once the attempt has emitted user-visible output, the stream may be
     # writing the final answer; it must run to completion even when reasoning

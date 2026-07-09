@@ -4740,6 +4740,39 @@ class Agent:
                                             ),
                                             cap_chars=_reasoning_stream_char_cap,
                                         )
+                                        # The turn-call log is a raw debug
+                                        # stream that run harnesses do not
+                                        # collect; the runtime event is what
+                                        # lets delivery gates tell a designed
+                                        # cap preempt (whose retry runs
+                                        # thinking-disabled) apart from a
+                                        # treatment delivery failure.
+                                        append_runtime_event(
+                                            self.config.runtime_events_path,
+                                            {
+                                                "feature": "reasoning_cap",
+                                                "name": "reasoning_cap.preempt",
+                                                "action": "retry_without_thinking",
+                                                "reason": (
+                                                    "reasoning_stream_char_cap"
+                                                ),
+                                                "iteration": iterations,
+                                                "attempt": _call_attempt,
+                                                "reasoning_chars": (
+                                                    attempt_reasoning_stream_chars
+                                                ),
+                                                "cap_chars": (
+                                                    _reasoning_stream_char_cap
+                                                ),
+                                                "session_key": self._session_key,
+                                                "agent_id": (
+                                                    self.config.tool_result_store_agent_id
+                                                    or self.config.metadata.get(
+                                                        "agent_id"
+                                                    )
+                                                ),
+                                            },
+                                        )
                                         _got_error = True
                                         _stream_policy_preempt = True
                                         break  # break stream, retry sans thinking

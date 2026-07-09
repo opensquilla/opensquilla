@@ -84,17 +84,24 @@ describe('useBgm — init', () => {
     stubFetch({
       tracks: [
         { id: 'relative', title: 'Relative', src: 'relative.mp3' },
+        { id: 'nested', title: 'Nested', src: 'album/track.mp3' },
         { id: 'https', title: 'HTTPS', src: 'https://example.com/track.mp3' },
         { id: 'http', title: 'HTTP', src: 'http://example.com/track.mp3' },
         { id: 'scheme-relative', title: 'Scheme relative', src: '//example.com/track.mp3' },
         { id: 'data', title: 'Data', src: 'data:audio/mpeg;base64,AA==' },
+        { id: 'root-relative', title: 'Root relative', src: '/outside.mp3' },
+        { id: 'parent', title: 'Parent traversal', src: '../outside.mp3' },
+        { id: 'nested-parent', title: 'Nested traversal', src: 'album/../outside.mp3' },
+        { id: 'encoded-parent', title: 'Encoded traversal', src: '%2e%2e/outside.mp3' },
+        { id: 'double-encoded-parent', title: 'Double encoded traversal', src: '%252e%252e%252foutside.mp3' },
+        { id: 'backslash-parent', title: 'Backslash traversal', src: '..\\outside.mp3' },
       ],
     })
     const { useBgm } = await freshBgm()
     const bgm = useBgm()
     await bgm.initBgm()
 
-    expect(bgm.tracks.value.map(t => t.id)).toEqual(['relative', 'https'])
+    expect(bgm.tracks.value.map(t => t.id)).toEqual(['relative', 'nested', 'https'])
   })
 
   it('restores the persisted track and volume', async () => {

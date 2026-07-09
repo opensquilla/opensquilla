@@ -25,7 +25,9 @@ Drop in your own legally-obtained files locally.
 - `title` — display name in the picker menu.
 - `src` — either a filename relative to this directory (bundled at build
   time) or an absolute `https://` URL (streamed at runtime). Other absolute
-  URL schemes and scheme-relative URLs are ignored.
+  URL schemes, root-relative paths, path traversal (`.` / `..`, including
+  encoded or backslash forms), and scheme-relative URLs are ignored. Nested
+  subdirectories such as `album/track.mp3` are supported.
 
 Playing an HTTPS stream contacts that third-party host directly and exposes
 ordinary request metadata to it, including your IP address and browser user

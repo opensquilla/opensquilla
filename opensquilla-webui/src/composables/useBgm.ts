@@ -22,6 +22,7 @@ const STORAGE_KEY = 'opensquilla-bgm'
 const DEFAULT_VOLUME = 0.6
 const ABSOLUTE_URL_SCHEME = /^[a-z][a-z\d+.-]*:/i
 const HTTPS_STREAM = /^https:\/\//i
+const URL_ESCAPE = /%[0-9a-f]{2}/i
 
 // Module-level singleton state (mirrors useAgentOptions/useConfirm): one
 // <audio> element and one state tree app-wide, however many components mount.
@@ -79,6 +80,28 @@ function persist() {
   } catch {}
 }
 
+function isSafeRelativeMusicSource(file: string): boolean {
+  if (!file || ABSOLUTE_URL_SCHEME.test(file) || file.startsWith('//')) return false
+
+  // Check the path independently from its query/fragment. Repeated decoding
+  // catches both ordinary and nested percent-encoded traversal; every
+  // successful pass shortens the string, so the loop is naturally bounded.
+  let decodedPath = file.split(/[?#]/, 1)[0]
+  try {
+    while (URL_ESCAPE.test(decodedPath)) {
+      const next = decodeURIComponent(decodedPath)
+      if (next === decodedPath) break
+      decodedPath = next
+    }
+  } catch {
+    return false
+  }
+
+  const slashPath = decodedPath.replace(/\\/g, '/')
+  if (!slashPath || slashPath.startsWith('/')) return false
+  return slashPath.split('/').every(segment => segment !== '.' && segment !== '..')
+}
+
 /**
  * Resolve a playlist `src` to a fetchable URL. Absolute HTTPS URLs pass
  * through; bundled filenames mirror App.vue's brandMarkUrl: Vite serves
@@ -87,7 +110,7 @@ function persist() {
  */
 function musicAssetUrl(file: string): string {
   if (HTTPS_STREAM.test(file)) return file
-  if (ABSOLUTE_URL_SCHEME.test(file) || file.startsWith('//')) return ''
+  if (!isSafeRelativeMusicSource(file)) return ''
   if (import.meta.env.DEV) return `/music/${file}`
   const base = document.getElementById('opensquilla-data')?.dataset.basePath || '/control'
   return `${base.replace(/\/$/, '')}/static/dist/music/${file}`
@@ -155,7 +178,7 @@ async function fetchManifest(name: string): Promise<BgmTrack[] | null> {
     .filter(t => (
       !!t.id
       && !!t.src
-      && (HTTPS_STREAM.test(t.src) || (!ABSOLUTE_URL_SCHEME.test(t.src) && !t.src.startsWith('//')))
+      && (HTTPS_STREAM.test(t.src) || isSafeRelativeMusicSource(t.src))
     ))
     .map(t => ({ ...t, title: t.title || t.src }))
 }

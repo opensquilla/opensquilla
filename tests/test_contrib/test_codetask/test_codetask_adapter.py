@@ -335,7 +335,7 @@ def test_per_run_config_without_operator_config_keeps_default_behavior(
     monkeypatch, tmp_path
 ):
     """Upgrade parity: with no operator config anywhere, the subagent resolves
-    the same built-in defaults (openrouter) as before the inheritance change."""
+    the same built-in default provider as before the inheritance change."""
     import tomllib
 
     _isolate_operator_config(monkeypatch, tmp_path)
@@ -355,8 +355,12 @@ def test_per_run_config_without_operator_config_keeps_default_behavior(
     assert "llm" not in parsed
     from opensquilla.gateway.config import GatewayConfig
 
+    # Whatever a bare gateway would default to (don't hard-code the vendor —
+    # the built-in default provider changes over time), the subagent must
+    # resolve the SAME thing.
+    bare_default = GatewayConfig.load(str(tmp_path / "no-such-config.toml")).llm.provider
     conf = GatewayConfig.load(str(per_run_cfg))
-    assert conf.llm.provider == "openrouter"
+    assert conf.llm.provider == bare_default
     # No key to transport, so no injection either.
     assert "OPENSQUILLA_LLM_API_KEY" not in captured["env"]
 

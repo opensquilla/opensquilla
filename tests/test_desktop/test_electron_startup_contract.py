@@ -1159,3 +1159,70 @@ def test_desktop_macos_prerelease_update_resolver_wires_generic_feed() -> None:
     assert package_json["scripts"]["test:update-resolver"] == (
         "npm run build && node scripts/test-update-resolver.mjs"
     )
+
+
+def test_gateway_spawn_state_dir_is_the_desktop_home_root() -> None:
+    main_ts = _read("desktop/electron/src/main.ts")
+    start = _section(
+        main_ts,
+        "async function startGateway",
+        "async function loadControlUi",
+    )
+
+    # OPENSQUILLA_STATE_DIR names the OpenSquilla HOME ROOT on the Python side
+    # (paths.default_opensquilla_home); runtime state lives in its state/
+    # subdir. The gateway child must receive desktopHome(), not the state
+    # subdir, or home-derived data (managed skills, workspace/MEMORY.md,
+    # session-archive, .env) nests one level too deep — the pre-0.5.x layout
+    # bug that relocateLegacyDesktopStateLayout() heals.
+    assert "OPENSQUILLA_STATE_DIR: desktopHome()," in start
+    assert "OPENSQUILLA_STATE_DIR: desktopStateDir()" not in main_ts
+    # The generated TOML keeps pinning the runtime state dir to <home>/state so
+    # database paths (sessions.db, scheduler.db, agents/) never move.
+    assert "state_dir = ${tomlString(desktopStateDir())}" in main_ts
+
+
+def test_legacy_desktop_layout_relocation_runs_before_gateway_spawn() -> None:
+    main_ts = _read("desktop/electron/src/main.ts")
+    start = _section(
+        main_ts,
+        "async function startGateway",
+        "async function loadControlUi",
+    )
+    relocation = _section(
+        main_ts,
+        "function relocateLegacyDesktopStateLayout",
+        "function bootPagePath",
+    )
+
+    # The one-time relocation must run inside startGateway before onboarding
+    # and before the child spawn, while no owned gateway is running.
+    relocate_index = start.index("relocateLegacyDesktopStateLayout()")
+    assert relocate_index < start.index("await runOnboarding()")
+    assert relocate_index < start.index("const child = spawn(")
+
+    # It moves exactly the home-derived legacy entries and flattens the nested
+    # state/state tree; the config-pinned databases are never in its move list.
+    for entry in (
+        "'skills'",
+        "'skills-taps.json'",
+        "'skills-lock.json'",
+        "'workspace'",
+        "'session-archive'",
+        "'router'",
+        "'.env'",
+    ):
+        assert entry in main_ts
+    assert "const nested = join(state, 'state')" in relocation
+    for forbidden in ("'sessions.db'", "'scheduler.db'", "'agents'"):
+        assert forbidden not in relocation
+
+    # Idempotency and failure semantics: marker short-circuits reruns, and a
+    # failed move defers (no marker) instead of stranding half the layout.
+    # rindex: the first marker write is the fresh-profile early stamp; the
+    # failure gate must precede the final (post-move) marker write.
+    assert "const DESKTOP_LAYOUT_MARKER = 'desktop-layout-v2.json'" in main_ts
+    assert "if (existsSync(markerPath)) return" in relocation
+    assert relocation.index("if (failed)") < relocation.rindex("writeFileSync(markerPath")
+    # Collisions are parked, never merged or overwritten.
+    assert ".pre-relocation" in relocation

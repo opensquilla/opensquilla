@@ -2,7 +2,7 @@ import { app, BrowserWindow, dialog, Menu, ipcMain, nativeTheme, safeStorage, sh
 import electronUpdater from 'electron-updater'
 import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
-import { appendFileSync, createWriteStream, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
+import { appendFileSync, createWriteStream, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmdirSync, statSync, writeFileSync } from 'node:fs'
 import { access, constants, readFile, readdir, rename, rm, stat, unlink, writeFile } from 'node:fs/promises'
 import net from 'node:net'
 import { basename, dirname, join, resolve } from 'node:path'
@@ -231,6 +231,81 @@ function desktopStateDir(): string {
 
 function credentialPath(): string {
   return join(app.getPath('userData'), 'desktop-credential.json')
+}
+
+// ── Legacy desktop layout relocation (one-time) ────────────────────────────
+// Until 0.5.x the gateway child ran with OPENSQUILLA_STATE_DIR=desktopStateDir()
+// (<home>/state). The Python side treats that env var as the OpenSquilla HOME
+// ROOT, so home-derived data — managed skills, the default workspace with
+// MEMORY.md, session-archive, router self-learning, a user .env, and the
+// paths.state_dir() consumers that nested a second state/ level — landed one
+// level too deep. The gateway spawn now passes desktopHome(); this moves the
+// legacy nested layout up one level, once, before the first spawn with the new
+// env. Databases under state/ (sessions.db, scheduler.db, agents/) are pinned
+// by the TOML state_dir and were always correct — they are never touched.
+// Design: docs/features/legacy-home-migration-design.md (Phase 1).
+const DESKTOP_LAYOUT_MARKER = 'desktop-layout-v2.json'
+const LEGACY_HOME_ENTRIES = [
+  'skills',
+  'skills-taps.json',
+  'skills-lock.json',
+  'workspace',
+  'session-archive',
+  'router',
+  '.env',
+]
+
+function relocateLegacyDesktopStateLayout(): void {
+  const home = desktopHome()
+  const state = desktopStateDir()
+  const markerPath = join(home, DESKTOP_LAYOUT_MARKER)
+  if (existsSync(markerPath)) return
+  if (!existsSync(state)) {
+    // Fresh profile: nothing nested to move; stamp so we never rescan.
+    mkdirSync(home, { recursive: true })
+    writeFileSync(markerPath, JSON.stringify({ migratedAt: new Date().toISOString(), moved: [] }) + '\n', 'utf-8')
+    return
+  }
+  const moved: string[] = []
+  let failed = false
+  const moveUp = (sourceDir: string, name: string, label: string) => {
+    const src = join(sourceDir, name)
+    if (!existsSync(src)) return
+    const dst = join(sourceDir === state ? home : state, name)
+    try {
+      if (existsSync(dst)) {
+        // Never merge or overwrite: park the legacy copy beside the new one.
+        const parked = join(sourceDir, `${name}.pre-relocation`)
+        if (!existsSync(parked)) renameSync(src, parked)
+      } else {
+        renameSync(src, dst)
+        moved.push(label)
+      }
+    } catch (error) {
+      failed = true
+      desktopLog('desktop_layout_relocation_entry_failed', { name: label, error: String(error) })
+    }
+  }
+  for (const name of LEGACY_HOME_ENTRIES) moveUp(state, name, name)
+  // Flatten the nested state/state tree written by direct paths.state_dir()
+  // consumers (router calibration, sandbox grants, approval queue, safety log).
+  const nested = join(state, 'state')
+  if (existsSync(nested)) {
+    for (const name of readdirSync(nested)) moveUp(nested, name, `state/${name}`)
+    try {
+      if (readdirSync(nested).length === 0) rmdirSync(nested)
+    } catch {
+      // A non-empty or locked nested dir stays in place; harmless.
+    }
+  }
+  if (failed) {
+    // No marker on failure: a locked entry (e.g. a lingering gateway) defers
+    // the whole relocation to the next boot instead of stranding half of it.
+    desktopLog('desktop_layout_relocation_deferred', { moved })
+    return
+  }
+  writeFileSync(markerPath, JSON.stringify({ migratedAt: new Date().toISOString(), moved }) + '\n', 'utf-8')
+  if (moved.length > 0) desktopLog('desktop_layout_relocated', { moved })
 }
 
 function bootPagePath(): string {
@@ -3915,6 +3990,7 @@ async function startGateway(): Promise<GatewayState> {
   }
 
   sendBootStatus('profile')
+  relocateLegacyDesktopStateLayout()
   const connection = await runOnboarding()
   forceOnboardingOnNextStartup = false
   const apiKey = decryptApiKey(connection)
@@ -3970,7 +4046,12 @@ async function startGateway(): Promise<GatewayState> {
     OPENSQUILLA_INSTALL_METHOD: 'desktop',
     OPENSQUILLA_GATEWAY_CONFIG_PATH: desktopConfigPath(),
     OPENSQUILLA_NODE_BIN_DIR: nodeBinCandidates.join(pathDelimiter()),
-    OPENSQUILLA_STATE_DIR: desktopStateDir(),
+    // OPENSQUILLA_STATE_DIR names the OpenSquilla HOME ROOT on the Python side
+    // (runtime state goes into its state/ subdir, matching the TOML-pinned
+    // state_dir below). Passing the state subdir here would re-root skills,
+    // workspace, session-archive, and .env one level too deep — see
+    // relocateLegacyDesktopStateLayout().
+    OPENSQUILLA_STATE_DIR: desktopHome(),
     ...(connection.disableNetworkObservability ? { OPENSQUILLA_PRIVACY_DISABLE_NETWORK_OBSERVABILITY: '1' } : {}),
     PYTHONUNBUFFERED: '1',
     PYTHONUTF8: '1',
@@ -5262,10 +5343,10 @@ ipcMain.handle('desktop:artifact:open', async (_event, payload: ArtifactOpenRequ
 // credential and gateway logs under userData/). It intentionally does not
 // remove the installed .app / NSIS application; users do that through the OS.
 //
-// Path note: the gateway runs with OPENSQUILLA_STATE_DIR=desktopStateDir()
-// (<userData>/opensquilla/state), but the uninstaller's "home" must be
-// desktopHome() (<userData>/opensquilla) so it resolves config.toml + state/
-// correctly. So we run the CLI with OPENSQUILLA_STATE_DIR=desktopHome().
+// Path note: OPENSQUILLA_STATE_DIR names the OpenSquilla home root. Both the
+// gateway spawn and this uninstall CLI pass desktopHome()
+// (<userData>/opensquilla), so config.toml + state/ resolve identically
+// everywhere.
 async function runUninstallCli(
   extraArgs: string[],
 ): Promise<{ ok: boolean; stdout: string; stderr: string }> {

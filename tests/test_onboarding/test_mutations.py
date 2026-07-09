@@ -231,7 +231,7 @@ def test_tokenrhythm_provider_save_seeds_curated_inline_ladder():
         "c0": "deepseek-v4-flash",
         "c1": "deepseek-v4-pro",
         "c2": "kimi-k2.7-code",
-        "c3": "glm-5.1",
+        "c3": "glm-5.2",
         "image_model": "kimi-k2.6",
     }
     for tier, model in expected.items():
@@ -239,7 +239,7 @@ def test_tokenrhythm_provider_save_seeds_curated_inline_ladder():
         assert res.config.squilla_router.tiers[tier]["model"] == model
     persisted = res.config.to_toml_dict()["squilla_router"]
     assert "tier_profile" not in persisted
-    assert persisted["tiers"]["c3"]["model"] == "glm-5.1"
+    assert persisted["tiers"]["c3"]["model"] == "glm-5.2"
 
 
 def test_upsert_channel_appends_new():

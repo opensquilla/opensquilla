@@ -1219,15 +1219,14 @@ _STATIC_OPENROUTER_B5_PROPOSER_MODELS = (
 _STATIC_OPENROUTER_B5_AGGREGATOR_MODEL = "z-ai/glm-5.2"
 _STATIC_TOKENRHYTHM_B5_PROFILE_NAME = "static_tokenrhythm_b5"
 # The TokenRhythm mirror of the static OpenRouter B5 lineup: same aggregation
-# shape and defaults, model ids in TokenRhythm's bare naming, and GLM 5.2
-# swapped for GLM 5.1 (the strongest GLM the relay serves).
+# shape and defaults, model ids in TokenRhythm's bare naming.
 _STATIC_TOKENRHYTHM_B5_PROPOSER_MODELS = (
     "deepseek-v4-pro",
-    "glm-5.1",
+    "glm-5.2",
     "kimi-k2.7-code",
     "qwen3.7-max",
 )
-_STATIC_TOKENRHYTHM_B5_AGGREGATOR_MODEL = "glm-5.1"
+_STATIC_TOKENRHYTHM_B5_AGGREGATOR_MODEL = "glm-5.2"
 
 
 @dataclass(frozen=True)

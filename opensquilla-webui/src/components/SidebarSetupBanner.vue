@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, onUnmounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
 import Icon from './Icon.vue'
@@ -7,6 +7,7 @@ import SetupCommandBlock from './setup/SetupCommandBlock.vue'
 import { useRpcCall } from '@/composables/useRpc'
 import { useToasts } from '@/composables/useToasts'
 import {
+  onReadinessInvalidated,
   readinessLegacyData,
   useReadinessSummary,
   type ReadinessStatus,
@@ -18,8 +19,17 @@ const { t } = useI18n()
 const router = useRouter()
 const { pushToast } = useToasts()
 const platform = usePlatform()
-const { data: status } = useRpcCall<ReadinessStatus>('onboarding.status')
+const { data: status, execute } = useRpcCall<ReadinessStatus>('onboarding.status')
 const { needsAction, actionCount } = useReadinessSummary(status)
+
+// This banner outlives the Settings dialog (it is mounted once in App.vue), so
+// its status snapshot goes stale the moment a save hot-applies config. Re-fetch
+// whenever a save signals, otherwise "Setup needed" survives a completed setup
+// until the next full page reload.
+const stopReadinessSync = onReadinessInvalidated(() => {
+  execute().catch(() => { /* error already captured in the rpc-call state */ })
+})
+onUnmounted(stopReadinessSync)
 
 // Per-session dismissal that re-arms when the readiness signal changes.
 const dismissedSignature = ref<string | null>(null)
@@ -143,6 +153,7 @@ async function copyMigrateCommand(command: string) {
       <SetupCommandBlock
         :command="legacy.command"
         :copy-label="t('shared.legacyDataBanner.copyCommand')"
+        wrap
         @copy="copyMigrateCommand"
       />
     </template>

@@ -68,3 +68,25 @@ export function useReadinessSummary(status: Ref<ReadinessStatus | null>) {
   const actionCount = computed(() => readinessActionCount(status.value))
   return { needsAction, actionCount }
 }
+
+// ---------------------------------------------------------------------------
+// Cross-component invalidation. Settings saves hot-apply config on the
+// gateway, but there is no server push for it, so long-lived holders of an
+// `onboarding.status` snapshot (the sidebar banner) would keep stale state
+// until a full page reload. Saves signal through this module-scope registry;
+// subscribers re-fetch on their own RPC handle.
+
+type ReadinessListener = () => void
+
+const readinessListeners = new Set<ReadinessListener>()
+
+/** Subscribe to readiness invalidations; returns an unsubscribe function. */
+export function onReadinessInvalidated(listener: ReadinessListener): () => void {
+  readinessListeners.add(listener)
+  return () => { readinessListeners.delete(listener) }
+}
+
+/** Signal that gateway config changed and readiness snapshots must re-fetch. */
+export function invalidateReadiness(): void {
+  for (const listener of Array.from(readinessListeners)) listener()
+}

@@ -37,10 +37,6 @@ const emit = defineEmits<{
 const showApiKey = ref(false)
 const detailsOpen = ref(false)
 
-watch(() => props.panel.replacing, replacing => {
-  if (!replacing) showApiKey.value = false
-})
-
 const title = computed(() => t('setup.provider.credentialTitle', { provider: props.panel.providerLabel }))
 const statusText = computed(() => (
   props.panel.available
@@ -66,6 +62,21 @@ const displayValue = computed(() => props.panel.revealed || props.panel.masked |
 const showRevealButton = computed(() => props.panel.revealAllowed && Boolean(props.panel.masked))
 const showPublicHint = computed(() => !props.panel.revealAllowed && Boolean(props.panel.masked))
 const showCredentialControls = computed(() => props.panel.providerSelected && props.panel.source !== 'not_required')
+// The masked/readonly display plus the "Replace key" guard only make sense
+// when a saved secret actually exists; an empty credential must be directly
+// typable (first-run setup would otherwise dead-end on a locked input).
+const hasSavedKey = computed(() => Boolean(props.panel.masked))
+const editingCredential = computed(() => props.panel.replacing || !hasSavedKey.value)
+
+// A secret input must always start hidden. The plaintext toggle is local
+// state on a card that stays mounted across saves and provider switches, so
+// reset it whenever the editable input goes away or the card starts showing
+// a different provider's credential — otherwise a toggle made while typing a
+// first key would reopen the next secret in plaintext.
+watch(editingCredential, editing => {
+  if (!editing) showApiKey.value = false
+})
+watch(() => props.panel.providerLabel, () => { showApiKey.value = false })
 const probing = computed(() => props.panel.connection.phase === 'probing')
 
 const FAILURE_SENTENCE_KEYS: Record<string, string> = {
@@ -142,7 +153,7 @@ const verdictModelsText = computed(() => {
     </div>
 
     <div class="setup-provider-credential__body">
-      <template v-if="!panel.replacing">
+      <template v-if="!editingCredential">
         <label v-if="showCredentialControls" class="control-row control-row--stack setup-provider-credential__field">
           <div class="control-row__label-block">
             <span class="control-row__label">{{ t('setup.common.apiKey') }}</span>
@@ -176,7 +187,7 @@ const verdictModelsText = computed(() => {
       </template>
 
       <template v-else>
-        <label class="control-row control-row--stack setup-provider-credential__field">
+        <label v-if="showCredentialControls" class="control-row control-row--stack setup-provider-credential__field">
           <div class="control-row__label-block">
             <span class="control-row__label">{{ t('setup.common.apiKey') }}</span>
           </div>
@@ -187,7 +198,7 @@ const verdictModelsText = computed(() => {
                 :value="panel.apiKeyValue"
                 name="setup_provider_api_key"
                 :type="showApiKey ? 'text' : 'password'"
-                :placeholder="t('setup.provider.credentialReplacePlaceholder')"
+                :placeholder="panel.replacing ? t('setup.provider.credentialReplacePlaceholder') : t('setup.provider.credentialEnterPlaceholder')"
                 autocomplete="off"
                 @input="emit('updateField', 'api_key', ($event.target as HTMLInputElement).value)"
               >
@@ -202,6 +213,7 @@ const verdictModelsText = computed(() => {
               </button>
             </div>
             <button
+              v-if="panel.replacing"
               type="button"
               class="btn setup-provider-credential__replace"
               @click="emit('cancelReplace')"

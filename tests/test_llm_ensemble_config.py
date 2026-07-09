@@ -105,7 +105,7 @@ def test_static_tokenrhythm_b5_mirrors_the_openrouter_lineup() -> None:
     assert provider.profile_name == "static_tokenrhythm_b5"
     assert [member.provider_config.model for member in provider.proposers] == [
         "deepseek-v4-pro",
-        "glm-5.1",
+        "glm-5.2",
         "kimi-k2.7-code",
         "qwen3.7-max",
     ]
@@ -113,7 +113,7 @@ def test_static_tokenrhythm_b5_mirrors_the_openrouter_lineup() -> None:
         member.provider_config.provider == "tokenrhythm" for member in provider.proposers
     )
     assert provider.aggregator.provider_config.provider == "tokenrhythm"
-    assert provider.aggregator.provider_config.model == "glm-5.1"
+    assert provider.aggregator.provider_config.model == "glm-5.2"
     # Same aggregation defaults as the static OpenRouter profile.
     assert provider.min_successful_proposers == 3
     assert provider.proposer_timeout_seconds == 300.0

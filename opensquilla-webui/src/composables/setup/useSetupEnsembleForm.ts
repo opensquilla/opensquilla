@@ -21,11 +21,11 @@ export const OPENROUTER_FIXED_ENSEMBLE_PROPOSERS = [
 export const OPENROUTER_FIXED_ENSEMBLE_AGGREGATOR = 'z-ai/glm-5.2'
 export const TOKENRHYTHM_FIXED_ENSEMBLE_PROPOSERS = [
   'deepseek-v4-pro',
-  'glm-5.1',
+  'glm-5.2',
   'kimi-k2.7-code',
   'qwen3.7-max',
 ] as const
-export const TOKENRHYTHM_FIXED_ENSEMBLE_AGGREGATOR = 'glm-5.1'
+export const TOKENRHYTHM_FIXED_ENSEMBLE_AGGREGATOR = 'glm-5.2'
 
 // Static B5 lineups keyed by selection mode. Mirrors the gateway's
 // STATIC_B5_SELECTION_MODE_PROVIDERS + provider.ensemble.STATIC_B5_PROFILES.

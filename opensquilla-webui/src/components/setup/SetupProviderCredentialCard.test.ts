@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { readFileSync } from 'node:fs'
-import { createApp, nextTick } from 'vue'
+import { createApp, nextTick, reactive } from 'vue'
 import i18n from '@/i18n'
 import SetupProviderCredentialCard from './SetupProviderCredentialCard.vue'
 
@@ -32,6 +32,19 @@ async function mountCard(props: Record<string, unknown> = {}, listeners: Record<
   app.mount(el)
   await nextTick()
   return { app, el }
+}
+
+// The real card stays mounted across saves and provider switches, so these
+// tests need a panel whose fields mutate in place after mount.
+async function mountReactiveCard(props: Record<string, unknown> = {}) {
+  const el = document.createElement('div')
+  document.body.appendChild(el)
+  const livePanel = reactive(panel(props))
+  const app = createApp(SetupProviderCredentialCard, { panel: livePanel })
+  app.use(i18n)
+  app.mount(el)
+  await nextTick()
+  return { app, el, livePanel }
 }
 
 beforeEach(() => {
@@ -157,6 +170,111 @@ describe('SetupProviderCredentialCard', () => {
     await nextTick()
 
     expect(el.querySelector<HTMLInputElement>('input[name="setup_provider_api_key"]')?.type).toBe('text')
+
+    app.unmount()
+  })
+
+  it('renders a directly editable input when no key was ever saved', async () => {
+    const onUpdateField = vi.fn()
+    const { app, el } = await mountCard(
+      { masked: '', source: 'none', available: false },
+      { onUpdateField },
+    )
+
+    // First-run setup: no saved secret to guard, so no readonly display, no
+    // "Replace key" detour, and nothing to cancel back to.
+    expect(el.querySelector('input[name="setup_provider_api_key_display"]')).toBeNull()
+    expect(Array.from(el.querySelectorAll('button')).some(btn => (btn.textContent || '').includes('Replace key'))).toBe(false)
+    expect(Array.from(el.querySelectorAll('button')).some(btn => (btn.textContent || '').includes('Cancel'))).toBe(false)
+
+    const input = el.querySelector<HTMLInputElement>('input[name="setup_provider_api_key"]')
+    expect(input).toBeTruthy()
+    expect(input?.placeholder).toBe('Paste your API key')
+
+    input!.value = 'sk-first'
+    input!.dispatchEvent(new Event('input', { bubbles: true }))
+    await nextTick()
+    expect(onUpdateField).toHaveBeenCalledWith('api_key', 'sk-first')
+
+    app.unmount()
+  })
+
+  it('keeps the editable input directly available when a declared env var is not visible', async () => {
+    const { app, el } = await mountCard({ masked: '', source: 'missing_env', available: false })
+
+    expect(el.querySelector('input[name="setup_provider_api_key"]')).toBeTruthy()
+    expect(el.querySelector('input[name="setup_provider_api_key_display"]')).toBeNull()
+
+    app.unmount()
+  })
+
+  it('renders no key input at all when the provider requires no key', async () => {
+    const { app, el } = await mountCard({ masked: '', source: 'not_required' })
+
+    expect(el.querySelector('input[name="setup_provider_api_key"]')).toBeNull()
+    expect(el.querySelector('input[name="setup_provider_api_key_display"]')).toBeNull()
+
+    app.unmount()
+  })
+
+  it('keeps the masked display and Replace key guard while a saved key exists', async () => {
+    const { app, el } = await mountCard({ masked: 'sk-••••7890', source: 'explicit' })
+
+    expect(el.querySelector('input[name="setup_provider_api_key_display"]')).toBeTruthy()
+    expect(el.querySelector('input[name="setup_provider_api_key"]')).toBeNull()
+    expect(Array.from(el.querySelectorAll('button')).some(btn => (btn.textContent || '').includes('Replace key'))).toBe(true)
+
+    app.unmount()
+  })
+
+  it('re-hides the secret input when first-run editing ends in a saved key', async () => {
+    const { app, el, livePanel } = await mountReactiveCard({ masked: '', source: 'none', available: false })
+
+    // First-run: user toggles the key to plaintext while typing it.
+    const toggle = () => Array.from(el.querySelectorAll<HTMLButtonElement>('button'))
+      .find(btn => /^(Show|Hide) API key$/.test(btn.getAttribute('aria-label') || ''))
+    toggle()!.click()
+    await nextTick()
+    expect(el.querySelector<HTMLInputElement>('input[name="setup_provider_api_key"]')?.type).toBe('text')
+
+    // Save lands: the masked display takes over without replacing ever flipping.
+    livePanel.masked = 'sk-••••1234'
+    livePanel.source = 'explicit'
+    await nextTick()
+    expect(el.querySelector('input[name="setup_provider_api_key"]')).toBeNull()
+
+    // A later Replace must start hidden again, not inherit the old toggle.
+    livePanel.replacing = true
+    await nextTick()
+    expect(el.querySelector<HTMLInputElement>('input[name="setup_provider_api_key"]')?.type).toBe('password')
+
+    app.unmount()
+  })
+
+  it('re-hides the secret input when the card switches to another provider mid-edit', async () => {
+    const { app, el, livePanel } = await mountReactiveCard({ masked: '', source: 'none', available: false })
+
+    const toggle = Array.from(el.querySelectorAll<HTMLButtonElement>('button'))
+      .find(btn => btn.getAttribute('aria-label') === 'Show API key')
+    toggle!.click()
+    await nextTick()
+    expect(el.querySelector<HTMLInputElement>('input[name="setup_provider_api_key"]')?.type).toBe('text')
+
+    livePanel.providerLabel = 'OpenRouter'
+    livePanel.envKey = 'OPENROUTER_API_KEY'
+    await nextTick()
+
+    expect(el.querySelector<HTMLInputElement>('input[name="setup_provider_api_key"]')?.type).toBe('password')
+
+    app.unmount()
+  })
+
+  it('shows the replacement placeholder and Cancel when replacing a saved key', async () => {
+    const { app, el } = await mountCard({ replacing: true })
+
+    const input = el.querySelector<HTMLInputElement>('input[name="setup_provider_api_key"]')
+    expect(input?.placeholder).toBe('Paste a replacement API key')
+    expect(Array.from(el.querySelectorAll('button')).some(btn => (btn.textContent || '').includes('Cancel'))).toBe(true)
 
     app.unmount()
   })

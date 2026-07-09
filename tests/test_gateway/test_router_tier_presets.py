@@ -254,7 +254,7 @@ def test_full_default_tree_round_trips_via_to_toml_dict(tmp_path: Path) -> None:
         "c0": "deepseek-v4-flash",
         "c1": "deepseek-v4-pro",
         "c2": "kimi-k2.7-code",
-        "c3": "glm-5.1",
+        "c3": "glm-5.2",
         "image_model": "kimi-k2.6",
     }
     for name, tier in tiers.items():

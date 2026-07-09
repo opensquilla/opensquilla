@@ -136,7 +136,7 @@ def test_tokenrhythm_curated_ladder() -> None:
         "c0": "deepseek-v4-flash",
         "c1": "deepseek-v4-pro",
         "c2": "kimi-k2.7-code",
-        "c3": "glm-5.1",
+        "c3": "glm-5.2",
         "image_model": "kimi-k2.6",
     }
     tiers = preset.tier_defaults()

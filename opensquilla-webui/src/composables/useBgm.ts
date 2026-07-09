@@ -3,7 +3,7 @@ import { computed, ref } from 'vue'
 /**
  * One entry from `public/music/playlist.json`. `src` is either a filename
  * relative to the music directory (bundled into the build) or an absolute
- * http(s) URL streamed at runtime.
+ * HTTPS URL streamed at runtime.
  */
 export interface BgmTrack {
   id: string
@@ -20,6 +20,8 @@ export const BGM_LOCAL_TRACK_ID = '__local__'
 
 const STORAGE_KEY = 'opensquilla-bgm'
 const DEFAULT_VOLUME = 0.6
+const ABSOLUTE_URL_SCHEME = /^[a-z][a-z\d+.-]*:/i
+const HTTPS_STREAM = /^https:\/\//i
 
 // Module-level singleton state (mirrors useAgentOptions/useConfirm): one
 // <audio> element and one state tree app-wide, however many components mount.
@@ -73,13 +75,14 @@ function persist() {
 }
 
 /**
- * Resolve a playlist `src` to a fetchable URL. Absolute http(s) URLs pass
+ * Resolve a playlist `src` to a fetchable URL. Absolute HTTPS URLs pass
  * through; bundled filenames mirror App.vue's brandMarkUrl: Vite serves
  * `public/` at the root in dev, while the packaged UI serves those assets from
  * `${base}/static/dist/` under the gateway's base path.
  */
 function musicAssetUrl(file: string): string {
-  if (/^https?:\/\//i.test(file)) return file
+  if (HTTPS_STREAM.test(file)) return file
+  if (ABSOLUTE_URL_SCHEME.test(file) || file.startsWith('//')) return ''
   if (import.meta.env.DEV) return `/music/${file}`
   const base = document.getElementById('opensquilla-data')?.dataset.basePath || '/control'
   return `${base.replace(/\/$/, '')}/static/dist/music/${file}`
@@ -123,7 +126,11 @@ async function fetchManifest(name: string): Promise<BgmTrack[] | null> {
       title: String(t.title || '').trim(),
       src: String(t.src || '').trim(),
     }))
-    .filter(t => !!t.id && !!t.src)
+    .filter(t => (
+      !!t.id
+      && !!t.src
+      && (HTTPS_STREAM.test(t.src) || (!ABSOLUTE_URL_SCHEME.test(t.src) && !t.src.startsWith('//')))
+    ))
     .map(t => ({ ...t, title: t.title || t.src }))
 }
 

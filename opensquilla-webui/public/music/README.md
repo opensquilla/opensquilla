@@ -24,7 +24,12 @@ Drop in your own legally-obtained files locally.
 - `id` — stable unique key; the last-selected track is remembered by id.
 - `title` — display name in the picker menu.
 - `src` — either a filename relative to this directory (bundled at build
-  time) or an absolute `http(s)://` URL (streamed at runtime).
+  time) or an absolute `https://` URL (streamed at runtime). Other absolute
+  URL schemes and scheme-relative URLs are ignored.
+
+Playing an HTTPS stream contacts that third-party host directly and exposes
+ordinary request metadata to it, including your IP address and browser user
+agent.
 
 The first entry in `tracks` is the default selection. A track whose file is
 missing simply fails to play; the music control itself always works and can

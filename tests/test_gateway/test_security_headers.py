@@ -50,6 +50,15 @@ def test_csp_still_constrains_default_and_connect_sources() -> None:
     assert "blob:" not in csp.split("img-src", 1)[0], csp
 
 
+def test_csp_allows_only_same_origin_blob_and_https_media() -> None:
+    csp = _client().get("/control/ping").headers.get("content-security-policy", "")
+    directives = [directive.strip() for directive in csp.split(";") if directive.strip()]
+
+    assert [
+        directive for directive in directives if directive.startswith("media-src ")
+    ] == ["media-src 'self' blob: https:"], csp
+
+
 def test_security_headers_scoped_to_control_prefix() -> None:
     response = _client().get("/other")
 

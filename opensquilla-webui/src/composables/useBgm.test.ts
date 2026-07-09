@@ -76,6 +76,23 @@ describe('useBgm — init', () => {
     expect(FakeAudio.instances.every(a => !a.play.mock.calls.length)).toBe(true)
   })
 
+  it('keeps relative and HTTPS sources while rejecting other absolute sources', async () => {
+    stubFetch({
+      tracks: [
+        { id: 'relative', title: 'Relative', src: 'relative.mp3' },
+        { id: 'https', title: 'HTTPS', src: 'https://example.com/track.mp3' },
+        { id: 'http', title: 'HTTP', src: 'http://example.com/track.mp3' },
+        { id: 'scheme-relative', title: 'Scheme relative', src: '//example.com/track.mp3' },
+        { id: 'data', title: 'Data', src: 'data:audio/mpeg;base64,AA==' },
+      ],
+    })
+    const { useBgm } = await freshBgm()
+    const bgm = useBgm()
+    await bgm.initBgm()
+
+    expect(bgm.tracks.value.map(t => t.id)).toEqual(['relative', 'https'])
+  })
+
   it('restores the persisted track and volume', async () => {
     localStorage.setItem(
       'opensquilla-bgm',

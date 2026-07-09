@@ -73,7 +73,7 @@
       :aria-label="t('chat.previewOf', { title: artifactFileTitle(active) })"
       @click.self="closePreview"
     >
-      <div class="deliv-preview__panel">
+      <div class="deliv-preview__panel" :class="{ 'deliv-preview__panel--media': isVisual(active) }">
         <header class="deliv-preview__head">
           <span class="deliv-preview__title">{{ artifactFileTitle(active) }}</span>
           <button

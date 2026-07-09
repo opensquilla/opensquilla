@@ -205,6 +205,18 @@
   box-shadow: var(--shadow-xl);
 }
 
+/* Image previews get a fixed frame. The default panel shrink-wraps to its
+   content, and an <img> sizes to the file's declared intrinsic dimensions —
+   SVGs from the same conversation often declare wildly different width/height
+   (or none at all), so prev/next navigation made the whole dialog jump between
+   a tiny card and a full-screen sheet. Pinning the frame keeps the chrome
+   (title, arrows, download) still; the image letterboxes inside. Non-image
+   fallback cards keep the compact shrink-wrapped panel. */
+.deliv-preview__panel--media {
+  width: min(880px, 100%);
+  height: 100%;
+}
+
 .deliv-preview__head {
   display: flex;
   align-items: center;
@@ -298,6 +310,14 @@
   max-height: 100%;
   min-height: 0;
   object-fit: contain;
+}
+
+/* Inside the fixed media frame, fill the body and let `contain` letterbox.
+   This normalizes display size across files regardless of their declared
+   pixel dimensions, matching the inline media card's fit behavior. */
+.deliv-preview__panel--media .deliv-preview__image {
+  width: 100%;
+  height: 100%;
 }
 
 /* The non-image states aren't height-capped, and the body is `overflow:hidden`

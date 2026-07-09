@@ -258,6 +258,35 @@ async def test_final_diff_salvage_skips_when_workspace_diff_exists(
 
 
 @pytest.mark.asyncio
+async def test_final_diff_salvage_never_resurrects_reverted_path_next_to_kept_work(
+    tmp_path: Path,
+) -> None:
+    # Abandon-approach-A, fix-file-B: the agent captures a candidate on
+    # pkg.py, deliberately reverts it, then lands its real fix in a second
+    # tracked file. The final diff is healthy and non-empty, so salvage must
+    # not append the abandoned pkg.py edits to the scored patch.
+    repo, target = _init_repo(tmp_path)
+    other = repo / "other.py"
+    other.write_text("keep = 1\n", encoding="utf-8")
+    _run_git(repo, "add", "-A")
+    _run_git(repo, "commit", "-q", "-m", "add other")
+    abandoned = _candidate(repo, target, "value = 999\n", candidate_id="srcdiff-1")
+    other.write_text("keep = 2\n", encoding="utf-8")
+    agent = Agent(
+        provider=_SequenceProvider([_final_text()]),
+        config=AgentConfig(final_diff_salvage=True),
+        tool_context=_ctx(repo, [abandoned]),
+    )
+
+    events = [event async for event in agent.run_turn("fix the bug")]
+
+    assert any(event.kind == "done" for event in events)
+    assert target.read_text(encoding="utf-8") == "value = 1\n"
+    assert abandoned["restored"] is False
+    assert _run_git(repo, "diff", "--name-only").split() == ["other.py"]
+
+
+@pytest.mark.asyncio
 async def test_final_diff_salvage_applies_newest_candidate_per_path(
     tmp_path: Path,
 ) -> None:

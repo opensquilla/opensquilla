@@ -8162,12 +8162,15 @@ class Agent:
     ) -> list[dict[str, Any]]:
         """Re-apply captured source-diff candidates whose paths lost their diff.
 
-        Opt-in via final_diff_salvage (OPENSQUILLA_FINAL_DIFF_SALVAGE). Gates
-        per path: a candidate is only re-applied when its path shows no live
-        workspace diff right now — the exact state in which that path's
-        earlier work would be missing from the collected patch. Unrelated
-        changed or untracked files never veto salvage of a reverted path.
-        Applies the newest candidate per path, oldest-fallback on conflict,
+        Opt-in via final_diff_salvage (OPENSQUILLA_FINAL_DIFF_SALVAGE). Fires
+        only when no tracked path carries a live diff: a healthy non-empty
+        tracked diff means the agent finished with work it chose to keep, and
+        re-applying a candidate the agent deliberately reverted would append
+        abandoned edits to a scoring patch. With the tracked diff empty the
+        collection is losing that path's earlier work anyway, so applying a
+        stale candidate can only help. Untracked files (scratch repros and
+        the like) never veto. Applies the newest candidate per path whose
+        path shows no live diff, oldest-fallback on conflict,
         each guarded by `git apply --check`; applied candidates are marked
         restored, and a stale marker from an earlier turn is cleared once the
         path's diff is gone again so a later revert stays salvageable. The
@@ -8184,6 +8187,12 @@ class Agent:
             return []
         workspace = self._workspace_dir_for_status()
         if workspace is None:
+            return []
+        if self._workspace_diff_paths_for_final_diff_contract(include_untracked=False):
+            # A tracked path still carries a live diff: the run ends with a
+            # non-empty scored patch the agent chose to keep, and candidates
+            # for clean paths are exactly the edits it deliberately reverted.
+            # Resurrecting those here would corrupt a healthy final diff.
             return []
         live_diff_paths = set(self._workspace_diff_paths_for_final_diff_contract())
         deadline = time.monotonic() + self._FINAL_DIFF_SALVAGE_TIME_BUDGET_SECONDS
@@ -9240,19 +9249,23 @@ class Agent:
                     paths.add(normalized)
         return sorted(paths)
 
-    def _workspace_diff_paths_for_final_diff_contract(self) -> list[str]:
+    def _workspace_diff_paths_for_final_diff_contract(
+        self, *, include_untracked: bool = True
+    ) -> list[str]:
         workspace_dir = self._workspace_dir_for_status()
         if workspace_dir is None:
             return []
         ignored_paths = self._workspace_gitlink_paths(workspace_dir) | (
             self._workspace_internal_diagnostic_paths(workspace_dir)
         )
-        paths: set[str] = set()
-        for args in (
+        commands: tuple[tuple[str, ...], ...] = (
             ("diff", "--name-only"),
             ("diff", "--cached", "--name-only"),
-            ("status", "--porcelain=v1", "--untracked-files=all"),
-        ):
+        )
+        if include_untracked:
+            commands += (("status", "--porcelain=v1", "--untracked-files=all"),)
+        paths: set[str] = set()
+        for args in commands:
             try:
                 result = subprocess.run(
                     ["git", "-C", str(workspace_dir), *args],

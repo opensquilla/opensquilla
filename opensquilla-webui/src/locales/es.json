@@ -162,6 +162,11 @@
     }
   },
   "setup": {
+    "cli": {
+      "advancedTitle": "Avanzado · CLI integrada",
+      "hintBundled": "Estos comandos usan la CLI integrada en la aplicación; pégalos en una terminal para ejecutarlos.",
+      "hintDev": "Modo dev: los comandos se ejecutan desde el checkout del código fuente vía uv."
+    },
     "common": {
       "apiKey": "Clave de API",
       "apiKeyEnv": "Variable de entorno de la clave de API",

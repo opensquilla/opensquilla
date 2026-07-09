@@ -1,13 +1,13 @@
 <template>
   <div class="setup-command-block">
     <span v-if="label" class="setup-cli__label">{{ label }}</span>
-    <code>{{ command }}</code>
+    <code>{{ formattedCommand }}</code>
     <button
       class="setup-cli__copy"
       type="button"
       :title="copyTitle"
       :aria-label="copyTitle"
-      @click="emit('copy', command)"
+      @click="emit('copy', formattedCommand)"
     >
       <Icon name="copy" :size="14" />
     </button>
@@ -17,6 +17,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import Icon from '@/components/Icon.vue'
+import { useCliInvocation } from '@/composables/useCliInvocation'
 
 const props = defineProps<{
   command: string
@@ -27,6 +28,11 @@ const props = defineProps<{
 const emit = defineEmits<{
   copy: [command: string]
 }>()
+
+// On the desktop shell `opensquilla …` commands are rewritten to the bundled
+// CLI invocation so pasting them actually works; identity everywhere else.
+const { format } = useCliInvocation()
+const formattedCommand = computed(() => format(props.command))
 
 const copyTitle = computed(() => props.copyLabel || (props.label ? `Copy ${props.label} command` : 'Copy command'))
 </script>

@@ -162,6 +162,11 @@
     }
   },
   "setup": {
+    "cli": {
+      "advancedTitle": "高级 · 内置 CLI",
+      "hintBundled": "以下命令使用应用内置的 CLI，可直接粘贴到终端运行。",
+      "hintDev": "开发模式：命令经 uv 从源码检出运行。"
+    },
     "common": {
       "apiKey": "API 密钥",
       "apiKeyEnv": "API 密钥环境变量",

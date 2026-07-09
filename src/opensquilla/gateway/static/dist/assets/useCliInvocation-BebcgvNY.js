@@ -1,0 +1,2 @@
+import{nt as e}from"./_plugin-vue_export-helper-BHEaST3B.js";import{B as t}from"./index-C-5bsfUX.js";var n=/^opensquilla(?=\s|$)/,r=e(null),i=null;function a(){return i||=(async()=>{let e=t();e.capabilities.hasTerminalWorkflow||(r.value=await e.gateway.getCliInvocation?.()??null)})().catch(()=>{r.value=null}),i}function o(){a();function e(e){let t=r.value?.prefix;return!t||!n.test(e)?e:e.replace(n,()=>t)}return{format:e,invocation:r}}export{o as t};
+//# sourceMappingURL=useCliInvocation-BebcgvNY.js.map

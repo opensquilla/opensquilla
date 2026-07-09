@@ -162,6 +162,11 @@
     }
   },
   "setup": {
+    "cli": {
+      "advancedTitle": "Avancé · CLI intégrée",
+      "hintBundled": "Ces commandes utilisent la CLI intégrée à l'application ; collez-les dans un terminal pour les exécuter.",
+      "hintDev": "Mode dev : les commandes s'exécutent depuis la copie source via uv."
+    },
     "common": {
       "apiKey": "Clé API",
       "apiKeyEnv": "Variable d'env. de la clé API",

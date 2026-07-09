@@ -162,6 +162,11 @@
     }
   },
   "setup": {
+    "cli": {
+      "advancedTitle": "Erweitert · integrierte CLI",
+      "hintBundled": "Diese Befehle verwenden die in der App integrierte CLI; zum Ausführen in ein Terminal einfügen.",
+      "hintDev": "Dev-Modus: Befehle laufen über uv aus dem Quell-Checkout."
+    },
     "common": {
       "apiKey": "API-Schlüssel",
       "apiKeyEnv": "API-Schlüssel-Umgebungsvariable",

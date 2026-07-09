@@ -21,6 +21,7 @@ export function usePlatform(): Platform {
 export type {
   ArtifactNativeOpenResult,
   ArtifactOpenRequest,
+  CliInvocation,
   DesktopSettings,
   DesktopSettingsPayload,
   DesktopUpdateState,

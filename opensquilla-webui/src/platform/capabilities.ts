@@ -8,6 +8,7 @@ export const webCapabilities: PlatformCapabilities = {
   canRestartGateway: false,
   hasDesktopOnboarding: false,
   hasWebConfig: true,
+  hasTerminalWorkflow: true,
   canOpenArtifactsNatively: false,
 }
 
@@ -22,6 +23,9 @@ export const desktopCapabilities: PlatformCapabilities = {
   // gateway serves the same Control UI RPC); a desktop-only Runtime section adds
   // the owned-gateway controls. See router/index.ts + SettingsDialog.
   hasWebConfig: true,
+  // Desktop users did not install a CLI: the gateway binary ships inside the
+  // app bundle, off PATH. Command blocks fold away and rewrite instead.
+  hasTerminalWorkflow: false,
   canOpenArtifactsNatively: true,
 }
 

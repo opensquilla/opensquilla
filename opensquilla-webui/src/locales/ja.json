@@ -162,6 +162,11 @@
     }
   },
   "setup": {
+    "cli": {
+      "advancedTitle": "詳細 · 内蔵 CLI",
+      "hintBundled": "これらのコマンドはアプリ内蔵の CLI を使用します。ターミナルに貼り付けて実行できます。",
+      "hintDev": "開発モード：コマンドは uv 経由でソースチェックアウトから実行されます。"
+    },
     "common": {
       "apiKey": "API キー",
       "apiKeyEnv": "API キーの環境変数",

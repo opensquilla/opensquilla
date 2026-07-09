@@ -19,6 +19,7 @@ declare global {
     dismissUpdate?: () => Promise<DesktopUpdateState>
     onUpdateState?: (callback: (payload: unknown) => void) => () => void
     getGatewayStatus: () => Promise<DesktopSettings['gateway']>
+    getCliInvocation?: () => Promise<unknown>
     revealGatewayLog: () => Promise<boolean>
     getDesktopSettings: () => Promise<DesktopSettings>
     saveDesktopSettings: (payload: DesktopSettingsPayload) => Promise<DesktopSettings>

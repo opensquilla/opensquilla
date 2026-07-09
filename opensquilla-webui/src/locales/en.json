@@ -162,6 +162,11 @@
     }
   },
   "setup": {
+    "cli": {
+      "advancedTitle": "Advanced · built-in CLI",
+      "hintBundled": "These commands use the CLI bundled with the app; paste into a terminal to run.",
+      "hintDev": "Dev mode: commands run from the source checkout via uv."
+    },
     "common": {
       "apiKey": "API key",
       "apiKeyEnv": "API key env",

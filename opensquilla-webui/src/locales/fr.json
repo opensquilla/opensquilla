@@ -299,6 +299,8 @@
       "providerFirst": "Choisissez d’abord un Chat Model, puis le fonctionnement du routage.",
       "providerAction": "Aller au Chat Model →",
       "routerTitle": "Routage IA à modèle unique",
+      "visualModeLabel": "Style du panneau de routage",
+      "visualModeDesc": "Présentation du panneau de décision de routage dans les réponses du chat.",
       "crossProviderNotice": "Le routage inter-fournisseurs est actif. Vérifie chaque niveau avant d’enregistrer.",
       "cards": {
         "router": {

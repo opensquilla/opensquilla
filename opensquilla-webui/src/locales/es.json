@@ -299,6 +299,8 @@
       "providerFirst": "Configura primero un Chat Model y luego elige cómo debe funcionar el enrutamiento.",
       "providerAction": "Ir a Chat Model →",
       "routerTitle": "Enrutamiento IA de un solo modelo",
+      "visualModeLabel": "Estilo del panel de enrutamiento",
+      "visualModeDesc": "Cómo se muestra el panel de decisión de enrutamiento en las respuestas del chat.",
       "crossProviderNotice": "El routing entre proveedores está activo. Revisa cada nivel antes de guardar.",
       "cards": {
         "router": {

@@ -299,6 +299,8 @@
       "providerFirst": "先に Chat Model を設定してから、ルーティング方法を選んでください。",
       "providerAction": "Chat Model へ →",
       "routerTitle": "AI 単一モデルルーティング",
+      "visualModeLabel": "ルーティングパネルの表示スタイル",
+      "visualModeDesc": "チャット返信に表示されるルーティング決定パネルの表示方法。",
       "crossProviderNotice": "プロバイダー横断ルーティングが有効です。保存前に各ティアを確認してください。",
       "cards": {
         "router": {

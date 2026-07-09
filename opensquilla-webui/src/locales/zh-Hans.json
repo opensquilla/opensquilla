@@ -299,6 +299,8 @@
       "providerFirst": "请先配置聊天模型，然后选择路由方式。",
       "providerAction": "前往聊天模型 →",
       "routerTitle": "AI 智能单模型路由",
+      "visualModeLabel": "路由面板样式",
+      "visualModeDesc": "聊天回复中路由决策面板的呈现方式。",
       "crossProviderNotice": "跨服务商路由已启用。保存前请检查每个分层。",
       "cards": {
         "router": {

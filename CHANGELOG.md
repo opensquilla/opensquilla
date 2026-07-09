@@ -179,6 +179,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Fixed
 
+- The desktop shell resolves the UI language from the OS preference list
+  correctly: English tags now match in place instead of falling through (a
+  Hong Kong list like `en-HK, zh-Hans-HK, …, fr-HK` previously landed on
+  French), and an explicit `Hans` script subtag wins over a
+  Traditional-default region, so `zh-Hans-HK`/`zh-Hans-TW` readers get
+  Simplified Chinese instead of the English fallback. The resolver is
+  extracted to `desktop/electron/src/desktop-locale.ts` with a regression
+  suite (`npm run test:desktop-locale`).
 - Dream (memory consolidation) now resolves its provider credentials through
   the shared explicit-config-first resolver: previously `OPENROUTER_API_KEY` /
   `OPENROUTER_BASE_URL` in the gateway environment unconditionally overrode

@@ -7,6 +7,7 @@ import { access, constants, readFile, readdir, rename, rm, stat, unlink, writeFi
 import net from 'node:net'
 import { basename, dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { DESKTOP_LOCALES, resolveLocaleFromTags, type DesktopLocale } from './desktop-locale.js'
 import { buildCliInvocation } from './cli-invocation.js'
 import { secretStorageBackendForPolicy, shouldUseChromiumMockKeychainForPolicy } from './secret-storage-policy.js'
 import {
@@ -1259,8 +1260,6 @@ async function openArtifactWithDefaultApp(payload: ArtifactOpenRequest): Promise
 // the main-process surfaces that live OUTSIDE the BrowserWindow (app-authored
 // menu group labels and the onboarding window title), keyed off the OS locale.
 // Role-based menu items (Cut/Copy/Paste/…) are localized by Electron itself.
-type DesktopLocale = 'en' | 'zh-Hans' | 'ja' | 'fr' | 'de' | 'es'
-const DESKTOP_LOCALES: DesktopLocale[] = ['en', 'zh-Hans', 'ja', 'fr', 'de', 'es']
 const DESKTOP_LOCALE_LABELS: Record<DesktopLocale, string> = {
   en: 'English',
   'zh-Hans': '简体中文',
@@ -1423,21 +1422,7 @@ function resolveDesktopLocale(): DesktopLocale {
   const preferred = typeof app.getPreferredSystemLanguages === 'function'
     ? app.getPreferredSystemLanguages()
     : []
-  for (const raw of [...preferred, app.getLocale()]) {
-    if (typeof raw !== 'string') continue
-    const t = raw.toLowerCase()
-    if (t.startsWith('zh')) {
-      // Only Simplified Chinese is bundled. Route Traditional variants
-      // (zh-Hant / zh-TW / zh-HK / zh-MO) to the English fallback rather than
-      // forcing Simplified text a Traditional reader may not want.
-      if (t.includes('hant') || /-(tw|hk|mo)\b/.test(t)) continue
-      return 'zh-Hans'
-    }
-    for (const code of ['ja', 'fr', 'de', 'es'] as const) {
-      if (t === code || t.startsWith(code + '-')) return code
-    }
-  }
-  return 'en'
+  return resolveLocaleFromTags([...preferred, app.getLocale()])
 }
 
 function desktopLocalePath(): string {

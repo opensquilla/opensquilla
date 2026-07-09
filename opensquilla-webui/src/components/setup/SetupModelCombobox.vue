@@ -37,6 +37,10 @@ const MAX_ROWS = 40
 
 const open = ref(false)
 const activeIndex = ref(-1)
+// A saved model id must not hide the rest of the discovered list: opening the
+// dropdown (focus / arrow keys) always shows every model, and the query filter
+// only kicks in once the user edits the text during this open.
+const typedSinceOpen = ref(false)
 
 const fieldId = computed(() => `setup-provider-${String(props.field.name || 'model')}`)
 const fieldName = computed(() => `setup_provider_${String(props.field.name || 'model')}`)
@@ -44,7 +48,7 @@ const fieldName = computed(() => `setup_provider_${String(props.field.name || 'm
 const query = computed(() => String(props.value || '').trim().toLowerCase())
 
 const matches = computed(() => {
-  if (!query.value) return props.models
+  if (!query.value || !typedSinceOpen.value) return props.models
   return props.models.filter(model =>
     model.id.toLowerCase().includes(query.value) || model.name.toLowerCase().includes(query.value),
   )
@@ -91,16 +95,19 @@ function rowMeta(model: DiscoveredModel): string {
 function onInput(event: Event) {
   emit('update', (event.target as HTMLInputElement).value)
   open.value = true
+  typedSinceOpen.value = true
   activeIndex.value = -1
 }
 
 function onFocus() {
   open.value = true
+  typedSinceOpen.value = false
   activeIndex.value = -1
 }
 
 function close() {
   open.value = false
+  typedSinceOpen.value = false
   activeIndex.value = -1
 }
 
@@ -263,6 +270,12 @@ function onKeydown(event: KeyboardEvent) {
 .setup-model-combobox__row--freetext {
   border-top: 1px solid var(--border);
   color: var(--text-muted);
+}
+
+/* The row matching the field's current value, visible when the full list is
+   shown over a saved model id. */
+.setup-model-combobox__row[aria-selected='true'] .setup-model-combobox__id {
+  color: var(--accent);
 }
 
 .setup-model-combobox__id {

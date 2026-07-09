@@ -80,15 +80,46 @@ describe('SetupModelCombobox', () => {
     app.unmount()
   })
 
-  it('filters rows against the typed value and offers a free-text escape row', async () => {
-    const { app, el } = await mountCombobox({ value: 'beta' })
+  it('shows the full list on focus even when the field holds a saved model id', async () => {
+    // Regression: filtering against the pre-filled value on open used to hide
+    // every other discovered model behind an exact match.
+    const { app, el } = await mountCombobox({ value: 'test-vendor/alpha' })
     await openList(el)
+
+    const rows = Array.from(el.querySelectorAll('[role="option"]'))
+    expect(rows).toHaveLength(2) // both models, no escape row for an exact id
+    expect(rows[0].getAttribute('aria-selected')).toBe('true')
+    expect(rows[1].textContent).toContain('test-vendor/beta-vision')
+    app.unmount()
+  })
+
+  it('filters rows once the user types and offers a free-text escape row', async () => {
+    const { app, el } = await mountCombobox({ value: 'beta' })
+    const input = await openList(el)
+    input.dispatchEvent(new Event('input'))
+    await nextTick()
 
     const rows = Array.from(el.querySelectorAll('[role="option"]'))
     // one match + the "use what you typed" escape row
     expect(rows).toHaveLength(2)
     expect(rows[0].textContent).toContain('test-vendor/beta-vision')
     expect(rows[1].textContent).toContain('Use "beta"')
+    app.unmount()
+  })
+
+  it('drops the filter again on the next open after blur', async () => {
+    const { app, el } = await mountCombobox({ value: 'beta' })
+    const input = await openList(el)
+    input.dispatchEvent(new Event('input'))
+    await nextTick()
+    expect(el.querySelectorAll('[role="option"]')).toHaveLength(2) // filtered + escape row
+
+    input.dispatchEvent(new Event('blur'))
+    await nextTick()
+    await openList(el)
+
+    const rows = Array.from(el.querySelectorAll('[role="option"]'))
+    expect(rows).toHaveLength(3) // full list again + escape row for "beta"
     app.unmount()
   })
 

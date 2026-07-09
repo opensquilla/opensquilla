@@ -94,19 +94,37 @@ def _literal_string(node: ast.AST) -> str | None:
     return None
 
 
-def _is_path_constructor(node: ast.AST) -> bool:
+def _is_path_constructor(
+    node: ast.AST,
+    *,
+    path_constructor_names: set[str],
+    path_module_names: set[str],
+) -> bool:
     if isinstance(node, ast.Name):
-        return node.id == "Path"
+        return node.id in path_constructor_names
     return (
         isinstance(node, ast.Attribute)
         and node.attr == "Path"
         and isinstance(node.value, ast.Name)
-        and node.value.id == "pathlib"
+        and node.value.id in path_module_names
     )
 
 
-def _path_constructor_literal(node: ast.AST) -> str | None:
-    if not isinstance(node, ast.Call) or not _is_path_constructor(node.func) or node.keywords:
+def _path_constructor_literal(
+    node: ast.AST,
+    *,
+    path_constructor_names: set[str],
+    path_module_names: set[str],
+) -> str | None:
+    if (
+        not isinstance(node, ast.Call)
+        or not _is_path_constructor(
+            node.func,
+            path_constructor_names=path_constructor_names,
+            path_module_names=path_module_names,
+        )
+        or node.keywords
+    ):
         return None
     parts = [_literal_string(arg) for arg in node.args]
     if not parts or any(part is None for part in parts):
@@ -122,6 +140,8 @@ def _path_target_literal(
     *,
     path_bindings: dict[str, str],
     string_bindings: dict[str, str],
+    path_constructor_names: set[str],
+    path_module_names: set[str],
     allow_string: bool,
 ) -> str | None:
     if isinstance(node, ast.Name):
@@ -134,7 +154,11 @@ def _path_target_literal(
         literal = _literal_string(node)
         if literal is not None:
             return literal
-    constructor = _path_constructor_literal(node)
+    constructor = _path_constructor_literal(
+        node,
+        path_constructor_names=path_constructor_names,
+        path_module_names=path_module_names,
+    )
     if constructor is not None:
         return constructor
     if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div):
@@ -142,6 +166,8 @@ def _path_target_literal(
             node.left,
             path_bindings=path_bindings,
             string_bindings=string_bindings,
+            path_constructor_names=path_constructor_names,
+            path_module_names=path_module_names,
             allow_string=allow_string,
         )
         right = _literal_string(node.right)
@@ -184,26 +210,94 @@ class _TrustedWorkspaceDeleteVisitor(ast.NodeVisitor):
         self.workspace = workspace
         self.path_bindings: dict[str, str] = {}
         self.string_bindings: dict[str, str] = {}
+        self.path_constructor_names: set[str] = set()
+        self.path_module_names: set[str] = set()
         self.found_delete = False
         self.safe = True
 
+    def _snapshot_bindings(
+        self,
+    ) -> tuple[dict[str, str], dict[str, str], set[str], set[str]]:
+        return (
+            dict(self.path_bindings),
+            dict(self.string_bindings),
+            set(self.path_constructor_names),
+            set(self.path_module_names),
+        )
+
+    def _restore_bindings(
+        self,
+        snapshot: tuple[dict[str, str], dict[str, str], set[str], set[str]],
+    ) -> None:
+        (
+            self.path_bindings,
+            self.string_bindings,
+            self.path_constructor_names,
+            self.path_module_names,
+        ) = (
+            dict(snapshot[0]),
+            dict(snapshot[1]),
+            set(snapshot[2]),
+            set(snapshot[3]),
+        )
+
+    def _visit_block_without_leaking_bindings(
+        self,
+        body: list[ast.stmt],
+        snapshot: tuple[dict[str, str], dict[str, str], set[str], set[str]] | None = None,
+    ) -> None:
+        original = self._snapshot_bindings() if snapshot is None else snapshot
+        self._restore_bindings(original)
+        try:
+            for child in body:
+                self.visit(child)
+        finally:
+            self._restore_bindings(original)
+
+    def _clear_name(self, name: str) -> None:
+        self.path_bindings.pop(name, None)
+        self.string_bindings.pop(name, None)
+        self.path_constructor_names.discard(name)
+        self.path_module_names.discard(name)
+
     def _clear_assignment(self, target: ast.AST) -> None:
         for name in _assignment_names(target):
-            self.path_bindings.pop(name, None)
-            self.string_bindings.pop(name, None)
+            self._clear_name(name)
 
     def _bind_assignment(self, target: ast.AST, value: ast.AST) -> None:
         names = _assignment_names(target)
         if len(names) != 1 or not isinstance(target, ast.Name):
             self._clear_assignment(target)
             return
-        path_literal = _path_constructor_literal(value)
+        path_literal = _path_constructor_literal(
+            value,
+            path_constructor_names=self.path_constructor_names,
+            path_module_names=self.path_module_names,
+        )
         string_literal = _literal_string(value)
         self._clear_assignment(target)
         if path_literal is not None:
             self.path_bindings[names[0]] = path_literal
         elif string_literal is not None:
             self.string_bindings[names[0]] = string_literal
+
+    def visit_Import(self, node: ast.Import) -> None:
+        for alias in node.names:
+            bound_name = alias.asname or alias.name.split(".", 1)[0]
+            self._clear_name(bound_name)
+            if alias.name == "pathlib":
+                self.path_module_names.add(bound_name)
+
+    def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
+        if node.module != "pathlib":
+            for alias in node.names:
+                self._clear_name(alias.asname or alias.name)
+            return
+        for alias in node.names:
+            bound_name = alias.asname or alias.name
+            self._clear_name(bound_name)
+            if alias.name == "Path":
+                self.path_constructor_names.add(bound_name)
 
     def visit_Assign(self, node: ast.Assign) -> None:
         self.visit(node.value)
@@ -221,21 +315,86 @@ class _TrustedWorkspaceDeleteVisitor(ast.NodeVisitor):
         self.visit(node.value)
         self._clear_assignment(node.target)
 
+    def visit_NamedExpr(self, node: ast.NamedExpr) -> None:
+        self.visit(node.value)
+        self._clear_assignment(node.target)
+
+    def visit_Delete(self, node: ast.Delete) -> None:
+        for target in node.targets:
+            self._clear_assignment(target)
+
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+        self._clear_name(node.name)
+        for decorator in node.decorator_list:
+            self.visit(decorator)
+        for default in node.args.defaults:
+            self.visit(default)
+        for default in node.args.kw_defaults:
+            if default is not None:
+                self.visit(default)
+        if node.returns is not None:
+            self.visit(node.returns)
+
+    visit_AsyncFunctionDef = visit_FunctionDef
+
+    def visit_ClassDef(self, node: ast.ClassDef) -> None:
+        self._clear_name(node.name)
+        for decorator in node.decorator_list:
+            self.visit(decorator)
+        for base in node.bases:
+            self.visit(base)
+        for keyword in node.keywords:
+            self.visit(keyword.value)
+
+    def visit_If(self, node: ast.If) -> None:
+        self.visit(node.test)
+        snapshot = self._snapshot_bindings()
+        self._visit_block_without_leaking_bindings(node.body, snapshot)
+        self._visit_block_without_leaking_bindings(node.orelse, snapshot)
+
+    def visit_While(self, node: ast.While) -> None:
+        self.visit(node.test)
+        snapshot = self._snapshot_bindings()
+        self._visit_block_without_leaking_bindings(node.body, snapshot)
+        self._visit_block_without_leaking_bindings(node.orelse, snapshot)
+
     def visit_For(self, node: ast.For) -> None:
         self.visit(node.iter)
+        snapshot = self._snapshot_bindings()
         self._clear_assignment(node.target)
-        for child in node.body:
-            self.visit(child)
-        for child in node.orelse:
-            self.visit(child)
+        body_snapshot = self._snapshot_bindings()
+        self._visit_block_without_leaking_bindings(node.body, body_snapshot)
+        self._visit_block_without_leaking_bindings(node.orelse, snapshot)
+
+    visit_AsyncFor = visit_For
 
     def visit_With(self, node: ast.With) -> None:
         for item in node.items:
             self.visit(item.context_expr)
+        snapshot = self._snapshot_bindings()
+        for item in node.items:
             if item.optional_vars is not None:
                 self._clear_assignment(item.optional_vars)
-        for child in node.body:
-            self.visit(child)
+        body_snapshot = self._snapshot_bindings()
+        self._visit_block_without_leaking_bindings(node.body, body_snapshot)
+        self._restore_bindings(snapshot)
+
+    visit_AsyncWith = visit_With
+
+    def visit_Try(self, node: ast.Try) -> None:
+        snapshot = self._snapshot_bindings()
+        self._visit_block_without_leaking_bindings(node.body, snapshot)
+        for handler in node.handlers:
+            if handler.type is not None:
+                self.visit(handler.type)
+            handler_snapshot = self._snapshot_bindings()
+            if handler.name:
+                self._clear_name(handler.name)
+                handler_snapshot = self._snapshot_bindings()
+            self._visit_block_without_leaking_bindings(handler.body, handler_snapshot)
+            self._restore_bindings(snapshot)
+        self._visit_block_without_leaking_bindings(node.orelse, snapshot)
+        self._visit_block_without_leaking_bindings(node.finalbody, snapshot)
 
     def _target_for_delete_call(self, node: ast.Call) -> str | object | None:
         func = node.func
@@ -245,10 +404,14 @@ class _TrustedWorkspaceDeleteVisitor(ast.NodeVisitor):
         owner = func.value
         if isinstance(owner, ast.Name) and owner.id == "os":
             if func.attr in {"remove", "unlink"} and node.args:
+                if node.keywords or len(node.args) != 1:
+                    return _UNSUPPORTED_DELETE_CALL
                 target = _path_target_literal(
                     node.args[0],
                     path_bindings=self.path_bindings,
                     string_bindings=self.string_bindings,
+                    path_constructor_names=self.path_constructor_names,
+                    path_module_names=self.path_module_names,
                     allow_string=True,
                 )
                 return target if target is not None else _UNSUPPORTED_DELETE_CALL
@@ -273,6 +436,8 @@ class _TrustedWorkspaceDeleteVisitor(ast.NodeVisitor):
                 owner,
                 path_bindings=self.path_bindings,
                 string_bindings=self.string_bindings,
+                path_constructor_names=self.path_constructor_names,
+                path_module_names=self.path_module_names,
                 allow_string=False,
             )
             return target if target is not None else _UNSUPPORTED_DELETE_CALL

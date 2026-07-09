@@ -272,6 +272,120 @@ async def test_trusted_workspace_code_delete_stays_out_of_locked_approval(
     assert hints.high_impact is False
 
 
+async def _capture_trusted_code_exec_high_impact(
+    monkeypatch,
+    tmp_path,
+    code: str,
+) -> bool:
+    from opensquilla.gateway.approval_queue import reset_approval_queue
+    from opensquilla.tools.builtin import code_exec
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    calls: list[tuple[str, object]] = []
+    reset_approval_queue()
+
+    runtime = SimpleNamespace(
+        effective=SimpleNamespace(sandbox_enabled=True),
+        workspace=workspace,
+    )
+
+    async def _fake_gate_action(**kwargs):
+        calls.append(("gate", kwargs))
+        policy = SimpleNamespace()
+        request = SimpleNamespace(
+            cwd=workspace,
+            action_kind="code.exec",
+            policy=policy,
+            reason="",
+            session_id="s1",
+            run_mode="trusted",
+        )
+        return object(), policy, request
+
+    async def _fake_run_under_backend(request, *, runtime=None):
+        calls.append(("backend", request))
+        return SimpleNamespace(
+            returncode=0,
+            stdout="ok\n",
+            stderr="",
+            backend_notes=(),
+            timed_out=False,
+        )
+
+    monkeypatch.setattr(code_exec, "get_runtime", lambda: runtime)
+    monkeypatch.setattr(code_exec, "gate_action", _fake_gate_action)
+    monkeypatch.setattr(code_exec, "run_under_backend", _fake_run_under_backend)
+    monkeypatch.setattr(
+        code_exec,
+        "_resolve_python_bin",
+        lambda *, sandbox_enabled: "/usr/bin/python3",
+    )
+
+    token = current_tool_context.set(
+        ToolContext(
+            is_owner=True,
+            caller_kind=CallerKind.WEB,
+            session_key="s1",
+            run_mode="trusted",
+            workspace_dir=str(workspace),
+        )
+    )
+    try:
+        result = await code_exec.execute_code(code)
+    finally:
+        current_tool_context.reset(token)
+        reset_approval_queue()
+
+    payload = json.loads(result)
+    assert payload["exit_code"] == 0
+    assert [name for name, _ in calls] == ["gate", "backend"]
+    hints = calls[0][1]["hints"]  # type: ignore[index]
+    return bool(hints.high_impact)
+
+
+@pytest.mark.parametrize(
+    "code",
+    [
+        (
+            "from pathlib import Path\n"
+            "p = Path('/some/extra-rw-mount/file')\n"
+            "def unused():\n"
+            "    p = Path('safe.txt')\n"
+            "p.unlink()\n"
+        ),
+        (
+            "from pathlib import Path\n"
+            "p = Path('/some/extra-rw-mount/file')\n"
+            "if cond:\n"
+            "    p = Path('safe.txt')\n"
+            "p.unlink()\n"
+        ),
+        (
+            "import os\n"
+            "fd = os.open('/some/extra-rw-mount', os.O_RDONLY)\n"
+            "os.remove('target', dir_fd=fd)\n"
+        ),
+        (
+            "class Path:\n"
+            "    def __init__(self, value):\n"
+            "        self.value = value\n"
+            "    def unlink(self):\n"
+            "        pass\n"
+            "p = Path('safe.txt')\n"
+            "p.unlink()\n"
+        ),
+    ],
+)
+@pytest.mark.asyncio
+async def test_trusted_code_delete_keeps_high_impact_when_target_proof_is_unsound(
+    monkeypatch,
+    tmp_path,
+    code: str,
+) -> None:
+    assert await _capture_trusted_code_exec_high_impact(monkeypatch, tmp_path, code)
+
+
 @pytest.mark.asyncio
 async def test_trusted_mode_returns_soft_denial_instead_of_hidden_approval_wait(
     tmp_path,

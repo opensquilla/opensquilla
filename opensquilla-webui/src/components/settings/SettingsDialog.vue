@@ -531,19 +531,41 @@ function closeOverlay() {
   visible.value = false
 }
 
+// One discard prompt shared by every exit path: requestClose (Escape, the
+// close button, backdrop click) and the history-back leave guard below.
+function confirmDiscard(): Promise<boolean> {
+  return confirm({
+    title: 'Discard unsaved changes?',
+    body: 'You have unsaved edits. Closing now will lose them.',
+    primaryLabel: 'Discard',
+  })
+}
+
 // Closes unless a section carries unsaved edits and the user keeps them.
 async function requestClose(): Promise<boolean> {
-  if (hasUnsavedChanges.value) {
-    const ok = await confirm({
-      title: 'Discard unsaved changes?',
-      body: 'You have unsaved edits. Closing now will lose them.',
-      primaryLabel: 'Discard',
-    })
-    if (!ok) return false
-  }
+  if (hasUnsavedChanges.value && !(await confirmDiscard())) return false
   closeOverlay()
   return true
 }
+
+// History traversal (browser Back, a trackpad back-swipe) pops the /settings
+// route and unmounts the overlay without passing through requestClose, which
+// would silently drop unsaved edits. This router-level guard runs the same
+// discard prompt for any navigation that leaves /settings while the dialog is
+// mounted; cancelling restores the URL. Registered on the router rather than
+// via onBeforeRouteLeave because selectSection's replace swaps the matched
+// record between `settings` and `settings-section` while the viewKey-keyed
+// component instance survives — a component guard would stay bound to the
+// stale record and never fire on the real exit.
+const removeLeaveGuard = router.beforeEach(async (to) => {
+  if (closing) return true
+  if (to.path === '/settings' || to.path.startsWith('/settings/')) return true
+  if (!hasUnsavedChanges.value) return true
+  // requestClose already has the prompt up — hold this navigation instead of
+  // stacking a second prompt (useConfirm cancels a pending request).
+  if (confirmState.value) return false
+  return confirmDiscard()
+})
 
 function onDocumentKeydown(event: KeyboardEvent) {
   // The confirm modal owns the keyboard while it is open; let it handle Escape
@@ -618,6 +640,7 @@ onMounted(() => {
 })
 
 onUnmounted(() => {
+  removeLeaveGuard()
   document.removeEventListener('keydown', onDocumentKeydown)
   mq?.removeEventListener('change', onViewportChange)
   mq = null

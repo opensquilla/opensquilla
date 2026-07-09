@@ -299,6 +299,8 @@
       "providerFirst": "Choose a Chat Model first, then choose how routing should work.",
       "providerAction": "Go to Chat Model →",
       "routerTitle": "AI single-model routing",
+      "visualModeLabel": "Routing panel style",
+      "visualModeDesc": "How the routing decision panel renders in chat replies.",
       "routerDependency": "Uses {provider} credentials; default model is {model}.",
       "ensembleTitle": "AI ensemble routing",
       "ensembleDependency": "Uses {provider} credentials; default model is {model}.",

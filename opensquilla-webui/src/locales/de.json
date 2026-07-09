@@ -299,6 +299,8 @@
       "providerFirst": "Wähle zuerst ein Chat Model, dann die Routing-Art.",
       "providerAction": "Zum Chat Model →",
       "routerTitle": "AI-Routing mit einem Modell",
+      "visualModeLabel": "Stil des Routing-Panels",
+      "visualModeDesc": "Darstellung des Routing-Entscheidungspanels in Chat-Antworten.",
       "crossProviderNotice": "Provider-übergreifendes Routing ist aktiv. Prüfe jeden Tier vor dem Speichern.",
       "cards": {
         "router": {

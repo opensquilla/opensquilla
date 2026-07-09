@@ -1,4 +1,18 @@
-import { describe, expect, it } from 'vitest'
+// @vitest-environment happy-dom
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { createApp, nextTick, type App } from 'vue'
+import i18n from '@/i18n'
+
+const rpcMock = vi.hoisted(() => ({
+  call: vi.fn(),
+  waitForConnection: vi.fn(),
+}))
+
+vi.mock('@/stores/rpc', () => ({
+  useRpcStore: () => rpcMock,
+}))
+
+import KnowledgeView from './KnowledgeView.vue'
 import {
   buildSearchProfilePayload,
   defaultRetrievalProfileId,
@@ -412,5 +426,194 @@ describe('knowledge retrieval helpers', () => {
       ),
     ).toBe('Searching')
     expect(searchProgressLabel({}, 'missing_profile')).toBe('Searching')
+  })
+})
+
+
+const mountedApps: App<Element>[] = []
+
+const SERVICE_PROFILES = [
+  {
+    id: 'sqlite_fts5_default',
+    label: 'SQLite FTS5',
+    kind: 'lexical',
+    available: true,
+    reason: null,
+  },
+  {
+    id: 'hybrid_rrf_bge_m3_fts5',
+    label: 'Hybrid RRF',
+    kind: 'hybrid',
+    available: true,
+    reason: null,
+    model: 'baai/bge-m3',
+    dimensions: 1024,
+  },
+  {
+    id: 'vector_bge_m3_1024',
+    label: 'Vector bge-m3',
+    kind: 'vector',
+    available: false,
+    reason: 'vector_index_empty',
+    model: 'baai/bge-m3',
+    dimensions: 1024,
+  },
+]
+
+function statusPayload(overrides: Record<string, unknown> = {}) {
+  return {
+    rootDir: '/mnt/data/datasets',
+    documentsIndexed: 3,
+    chunksIndexed: 12,
+    filesIndexed: 3,
+    pipeline: 'test pipeline',
+    indexProfiles: ['sqlite_fts5_default'],
+    vectorChunksIndexed: 12,
+    vectorCoveragePct: 100,
+    embeddingModel: 'baai/bge-m3',
+    embeddingDimensions: 1024,
+    retrievalProfiles: SERVICE_PROFILES,
+    defaultRetrievalProfile: 'hybrid_rrf_bge_m3_fts5',
+    ...overrides,
+  }
+}
+
+function searchResult(overrides: Record<string, unknown> = {}) {
+  return {
+    evidenceId: 'ev-1',
+    documentId: 'doc-1',
+    chunkId: 'chunk-1',
+    title: 'Annual filing',
+    source: 'filing.pdf',
+    sourcePath: '/mnt/data/datasets/filing.pdf',
+    pageStart: 1,
+    pageEnd: 1,
+    section: null,
+    snippet: 'Revenue increased in the quarter.',
+    score: 0.022529,
+    bm25Rank: -12.34567,
+    vectorRank: 2,
+    vectorScore: 0.81234,
+    fusionScore: 0.022529,
+    citation: 'filing.pdf#p1',
+    languageBucket: 'en',
+    chunkingStrategy: 'paragraph',
+    ...overrides,
+  }
+}
+
+async function flushUi(): Promise<void> {
+  await Promise.resolve()
+  await Promise.resolve()
+  await nextTick()
+}
+
+async function mountKnowledgeView(options: { status?: Record<string, unknown>; results?: Array<Record<string, unknown>> } = {}) {
+  const status = statusPayload(options.status)
+  const results = options.results || [searchResult()]
+
+  rpcMock.waitForConnection.mockResolvedValue(undefined)
+  rpcMock.call.mockImplementation(async (method: string) => {
+    if (method === 'knowledge.status') return status
+    if (method === 'knowledge.questions') return { questions: [] }
+    if (method === 'tools.catalog') return { tools: [{ name: 'knowledge_search' }] }
+    if (method === 'knowledge.search') return { results }
+    if (method === 'knowledge.ingest') return { jobId: 'job-1' }
+    throw new Error(`Unexpected RPC method: ${method}`)
+  })
+
+  const el = document.createElement('div')
+  document.body.appendChild(el)
+  const app = createApp(KnowledgeView)
+  app.use(i18n)
+  app.mount(el)
+  mountedApps.push(app)
+  await flushUi()
+  return { el }
+}
+
+function retrievalSelect(el: HTMLElement): HTMLSelectElement {
+  const select = el.querySelector<HTMLSelectElement>('.rag-source-panel select.control-input')
+  if (!select) throw new Error('retrieval select not found')
+  return select
+}
+
+function setInputValue(element: HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement, value: string): void {
+  element.value = value
+  element.dispatchEvent(new Event(element instanceof HTMLSelectElement ? 'change' : 'input', { bubbles: true }))
+}
+
+function rpcCall(method: string): unknown[] | undefined {
+  return rpcMock.call.mock.calls.find((call) => call[0] === method)
+}
+
+beforeEach(() => {
+  document.body.innerHTML = ''
+  rpcMock.call.mockReset()
+  rpcMock.waitForConnection.mockReset()
+})
+
+afterEach(() => {
+  while (mountedApps.length) {
+    mountedApps.pop()?.unmount()
+  }
+  document.body.innerHTML = ''
+})
+
+describe('KnowledgeView retrieval UI wiring', () => {
+  it('renders service retrieval profiles and keeps the current profile when available', async () => {
+    const { el } = await mountKnowledgeView()
+    const select = retrievalSelect(el)
+
+    expect(select.value).toBe('sqlite_fts5_default')
+    expect(Array.from(select.options).map((option) => ({
+      value: option.value,
+      text: option.textContent?.trim(),
+      disabled: option.disabled,
+    }))).toEqual([
+      { value: 'sqlite_fts5_default', text: 'SQLite FTS5', disabled: false },
+      { value: 'hybrid_rrf_bge_m3_fts5', text: 'Hybrid RRF', disabled: false },
+      { value: 'vector_bge_m3_1024', text: 'Vector bge-m3 (vector_index_empty)', disabled: true },
+    ])
+  })
+
+  it('sends selected retrieval metadata and renders scores using the active profile fallback', async () => {
+    const { el } = await mountKnowledgeView({ results: [searchResult({ retrievalProfile: null })] })
+    setInputValue(retrievalSelect(el), 'hybrid_rrf_bge_m3_fts5')
+    await flushUi()
+
+    const query = el.querySelector<HTMLTextAreaElement>('.rag-searchbar__query')
+    if (!query) throw new Error('search query input not found')
+    setInputValue(query, 'What changed in revenue?')
+    await flushUi()
+
+    const form = el.querySelector<HTMLFormElement>('form.rag-searchbar')
+    if (!form) throw new Error('search form not found')
+    form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
+    await flushUi()
+
+    expect(rpcCall('knowledge.search')?.[1]).toMatchObject({
+      retrievalProfile: 'hybrid_rrf_bge_m3_fts5',
+      embeddingModel: 'baai/bge-m3',
+      embeddingDimensions: 1024,
+    })
+    expect(el.textContent).toContain('fusion 0.023')
+    expect(el.textContent).toContain('Vector#2')
+  })
+
+  it('keeps ingest index profile separate from the selected retrieval profile', async () => {
+    const { el } = await mountKnowledgeView()
+    setInputValue(retrievalSelect(el), 'hybrid_rrf_bge_m3_fts5')
+    await flushUi()
+
+    const buildButton = Array.from(el.querySelectorAll<HTMLButtonElement>('.rag-source-panel button.btn--primary'))
+      .find((button) => button.textContent?.includes('Build collection'))
+    if (!buildButton) throw new Error('build collection button not found')
+    buildButton.click()
+    await flushUi()
+
+    expect(rpcCall('knowledge.ingest')?.[1]).toMatchObject({
+      indexProfiles: ['sqlite_fts5_default'],
+    })
   })
 })

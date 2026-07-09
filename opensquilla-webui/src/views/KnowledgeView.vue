@@ -78,7 +78,14 @@
           <label class="rag-field">
             <span>Retrieval</span>
             <select v-model="retrievalProfile" class="control-input">
-              <option value="sqlite_fts5_default">SQLite FTS5</option>
+              <option
+                v-for="profile in retrievalProfiles"
+                :key="profile.id"
+                :value="profile.id"
+                :disabled="!profile.available"
+              >
+                {{ profile.label }}{{ profile.available ? '' : ` (${profile.reason || 'unavailable'})` }}
+              </option>
             </select>
           </label>
           <label class="rag-field rag-field--wide">
@@ -181,7 +188,7 @@
           </label>
           <button class="btn btn--primary" type="submit" :disabled="searching || !query.trim()">
             <Icon name="search" :size="16" />
-            <span>{{ searching ? 'Searching' : 'Search' }}</span>
+            <span>{{ searchActionLabel }}</span>
           </button>
         </form>
 
@@ -216,7 +223,7 @@
                 <span class="control-pill">{{ result.languageBucket || 'text' }}</span>
                 <span class="control-pill">{{ result.chunkingStrategy || 'chunker' }}</span>
                 <span class="rag-result__score">
-                  lexical {{ fixed(result.score) }}
+                  {{ formatResultScorePrimary(result, activeRetrievalProfile.id) }}
                 </span>
               </div>
 
@@ -230,10 +237,13 @@
                 <span><strong>Citation</strong>{{ result.citation }}</span>
                 <span><strong>Source</strong>{{ result.source }}</span>
                 <span><strong>Retrieval</strong>{{ result.retrievalProfile || retrievalProfile }}</span>
-                <span v-if="result.pageStart"><strong>Page</strong>{{ result.pageStart }}</span>
-                <span v-if="result.bm25Rank !== null && result.bm25Rank !== undefined">
-                  <strong>BM25</strong>{{ fixed(result.bm25Rank) }}
+                <span
+                  v-for="meta in formatResultScoreMeta(result, activeRetrievalProfile.id)"
+                  :key="`${result.chunkId}-${meta}`"
+                >
+                  <strong>{{ meta.split(' ')[0] }}</strong>{{ meta.split(' ').slice(1).join(' ') }}
                 </span>
+                <span v-if="result.pageStart"><strong>Page</strong>{{ result.pageStart }}</span>
                 <span><strong>Chunk</strong>{{ shortId(result.chunkId) }}</span>
               </div>
 
@@ -357,6 +367,16 @@ import ErrorState from '@/components/ErrorState.vue'
 import Icon from '@/components/Icon.vue'
 import LoadingSpinner from '@/components/LoadingSpinner.vue'
 import { useRpcStore } from '@/stores/rpc'
+import {
+  buildSearchProfilePayload,
+  defaultRetrievalProfileId,
+  formatResultScoreMeta,
+  formatResultScorePrimary,
+  retrievalProfilesFromStatus,
+  searchProgressLabel,
+  selectedRetrievalProfile,
+} from './knowledgeRetrieval'
+import type { RetrievalProfileStatus } from './knowledgeRetrieval'
 
 interface KnowledgeStatus {
   rootDir: string
@@ -365,6 +385,14 @@ interface KnowledgeStatus {
   filesIndexed?: number
   pipeline?: string
   indexProfiles?: string[]
+  vectorChunksIndexed?: number
+  vectorCoveragePct?: number
+  embeddingModel?: string
+  embeddingDimensions?: number
+  embeddingWarnings?: string[]
+  retrievalWarnings?: string[]
+  retrievalProfiles?: RetrievalProfileStatus[]
+  defaultRetrievalProfile?: string
   latestJob?: {
     status: string
     filesSeen: number
@@ -393,6 +421,9 @@ interface KnowledgeResult {
   snippet: string
   score: number
   bm25Rank?: number | null
+  vectorRank?: number | null
+  vectorScore?: number | null
+  fusionScore?: number | null
   rankPosition?: number
   citation: string
   languageBucket: string
@@ -421,6 +452,7 @@ interface KnowledgeDetail {
 const rpc = useRpcStore()
 const sourceRoot = ref('/mnt/data/datasets')
 const collectionName = ref('datasets')
+const indexProfile = ref('sqlite_fts5_default')
 const retrievalProfile = ref('sqlite_fts5_default')
 const sampleLimit = ref(30)
 const topK = ref(8)
@@ -452,7 +484,21 @@ const toolCount = computed(() => toolNames.value.filter((name) => name.startsWit
 const hasIndex = computed(() => Number(status.value?.chunksIndexed || 0) > 0)
 const sourceLabel = computed(() => basename(status.value?.rootDir || sourceRoot.value) || 'local')
 const searchLimitLabel = computed(() => `top ${Number(topK.value || 0) || 8}`)
-const activeIndexProfile = computed(() => status.value?.indexProfiles?.[0] || retrievalProfile.value)
+const activeIndexProfile = computed(() => status.value?.indexProfiles?.[0] || indexProfile.value)
+const retrievalProfiles = computed(() => retrievalProfilesFromStatus(status.value))
+const activeRetrievalProfile = computed(() => selectedRetrievalProfile(status.value, retrievalProfile.value))
+const embeddingHint = computed(() => {
+  const model = status.value?.embeddingModel
+  const dimensions = status.value?.embeddingDimensions
+  return model && dimensions ? `${model} · ${dimensions}d` : 'not indexed'
+})
+const vectorCoverageLabel = computed(() => {
+  const coverage = status.value?.vectorCoveragePct
+  return coverage === null || coverage === undefined ? '-' : `${Number(coverage).toFixed(1)}%`
+})
+const searchActionLabel = computed(() => (
+  searching.value ? searchProgressLabel(status.value, retrievalProfile.value) : 'Search'
+))
 const latestJobHint = computed(() => {
   const job = status.value?.latestJob
   if (!job) return 'Analyzed files'
@@ -479,10 +525,12 @@ const statusMetrics = computed(() => [
     className: hasIndex.value ? 'control-stat--accent' : '',
   },
   {
-    label: 'Questions',
-    value: formatCount(questions.value.length),
-    hint: 'Evaluation prompts',
-    className: '',
+    label: 'Vector',
+    value: vectorCoverageLabel.value,
+    hint: 'Embedding coverage',
+    className: Number(status.value?.vectorCoveragePct || 0) >= 99
+      ? 'control-stat--accent'
+      : '',
   },
   {
     label: 'Tools',
@@ -491,10 +539,10 @@ const statusMetrics = computed(() => [
     className: toolCount.value > 0 ? 'control-stat--accent' : 'control-stat--warn',
   },
   {
-    label: 'Index',
-    value: activeIndexProfile.value.replace('sqlite_', '').toUpperCase(),
-    hint: status.value?.pipeline || 'Local SQLite store',
-    className: '',
+    label: 'Embedding',
+    value: status.value?.embeddingModel ? 'Ready' : 'Missing',
+    hint: embeddingHint.value,
+    className: status.value?.embeddingModel ? 'control-stat--accent' : 'control-stat--warn',
   },
 ])
 
@@ -522,6 +570,7 @@ async function refreshAll(): Promise<void> {
 async function loadStatus(): Promise<void> {
   await rpc.waitForConnection()
   status.value = await rpc.call<KnowledgeStatus>('knowledge.status', {})
+  retrievalProfile.value = defaultRetrievalProfileId(status.value, retrievalProfile.value)
 }
 
 async function loadQuestions(): Promise<void> {
@@ -553,7 +602,7 @@ async function prepareSample(): Promise<void> {
       limit: Number(sampleLimit.value || 30),
       collectionName: collectionId,
       collectionId,
-      indexProfiles: [retrievalProfile.value],
+      indexProfiles: [indexProfile.value],
     })
     await refreshAll()
   } catch (err) {
@@ -581,7 +630,7 @@ async function runSearch(): Promise<void> {
       query: cleanQuery,
       topK: Number(topK.value || 8),
       collectionId: collectionName.value.trim() || 'datasets',
-      retrievalProfile: retrievalProfile.value,
+      ...buildSearchProfilePayload(status.value, retrievalProfile.value),
     })
     results.value = payload.results || []
   } catch (err) {
@@ -651,10 +700,6 @@ function shortId(value?: string): string {
   const raw = String(value || '')
   if (!raw) return ''
   return raw.length > 16 ? `${raw.slice(0, 12)}...` : raw
-}
-
-function fixed(value: unknown): string {
-  return Number(value || 0).toFixed(3)
 }
 
 function formatCount(value: unknown): string {

@@ -20,6 +20,7 @@ from __future__ import annotations
 import os
 import re
 from collections.abc import Mapping
+from datetime import UTC, datetime
 from typing import Any
 
 import structlog
@@ -139,10 +140,10 @@ async def _handle_router_feedback_submit(params: Any, ctx: RpcContext) -> dict[s
             "rating must be one of: up, down, neutral",
         )
 
+    import anyio
+
     writer = get_decision_writer()
     if writer is not None:
-        import anyio
-
         # SQLite read via a threading.Lock'd connection — keep it (and any
         # writer-lock contention) off the gateway event loop.
         record = await anyio.to_thread.run_sync(writer.get_decision, decision_id)
@@ -159,6 +160,12 @@ async def _handle_router_feedback_submit(params: Any, ctx: RpcContext) -> dict[s
     session_key = str(record.get("session_key") or "")
     turn_index = int(record.get("turn_index") or 0)
     executed_kind = str(record.get("executed_kind") or "single")
+    ts_ms = record.get("ts_ms")
+    decision_ts = (
+        datetime.fromtimestamp(int(ts_ms) / 1000, tz=UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+        if ts_ms
+        else None
+    )
 
     from opensquilla.session.keys import parse_agent_id
     from opensquilla.squilla_router.self_learning.feedback import write_feedback
@@ -173,11 +180,10 @@ async def _handle_router_feedback_submit(params: Any, ctx: RpcContext) -> dict[s
             turn_index=turn_index,
             rating=rating,
             executed_kind=executed_kind,
+            decision_ts=decision_ts,
         )
 
     try:
-        import anyio
-
         await anyio.to_thread.run_sync(_write)
     except Exception as exc:  # noqa: BLE001 — a lost rating must not error the client
         log.warning(
@@ -261,6 +267,13 @@ async def _handle_selflearning_status(params: Any, ctx: RpcContext) -> dict[str,
 
         state = load_train_state(agent_id)
         stats = scan_event_store(agent_id)
+        # Same feedback merge the orchestrator applies before ITS gate —
+        # otherwise wouldTrain/reason here could contradict the actual run.
+        from opensquilla.squilla_router.self_learning.gates import (
+            merge_feedback_into_stats,
+        )
+
+        stats = merge_feedback_into_stats(stats, agent_id)
         gate = evaluate_training_gates(config=sl_cfg, state=state, stats=stats)
 
         out: dict[str, Any] = {}

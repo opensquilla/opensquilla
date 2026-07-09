@@ -13,6 +13,7 @@ from opensquilla.squilla_router.self_learning.alignment import (
     REASON_CONFIDENCE_BACKOFF,
     REASON_EXPLICIT_DOWNVOTE,
     REASON_EXPLICIT_DOWNVOTE_ENSEMBLE,
+    REASON_EXPLICIT_DOWNVOTE_HIGH_TIER,
     REASON_EXPLICIT_UPVOTE,
     REASON_EXPLICIT_UPVOTE_ENSEMBLE,
     REASON_IMMEDIATE_COMPLAINT,
@@ -123,7 +124,7 @@ def test_downvote_on_high_prediction_never_upgrades() -> None:
     aligned = align_session(samples, fb)
 
     for a, expected_target in zip(aligned, (2, 3), strict=True):
-        assert a.reason == REASON_EXPLICIT_DOWNVOTE_ENSEMBLE  # excluded bucket
+        assert a.reason == REASON_EXPLICIT_DOWNVOTE_HIGH_TIER  # excluded bucket
         assert a.target_idx == expected_target  # target unchanged — no upgrade
 
 
@@ -133,6 +134,17 @@ def test_downvote_endorses_existing_complaint_upgrade() -> None:
 
     assert aligned[0].reason == REASON_EXPLICIT_DOWNVOTE  # upgraded from complaint
     assert aligned[0].target_idx == 2  # complaint target kept
+
+
+def test_downvote_on_capped_complaint_does_not_endorse_served_tier() -> None:
+    """A complaint whose upgrade was capped (final == route) is not a real
+    upgrade; the down-vote must take the standalone +1 path, never train the
+    rejected tier at the table's highest weight."""
+    samples = [_sample(0, route="R0", final="R0", complaint=True)]
+    aligned = align_session(samples, _fbmap(0, "down"))
+
+    assert aligned[0].reason == REASON_EXPLICIT_DOWNVOTE
+    assert aligned[0].target_idx == 1  # +1 from served, NOT the served R0
 
 
 def test_downvote_endorses_retrospective() -> None:
@@ -248,6 +260,7 @@ def test_weight_table_and_exclusion() -> None:
             (REASON_EXPLICIT_UPVOTE, True),
             (REASON_EXPLICIT_UPVOTE_ENSEMBLE, True),
             (REASON_EXPLICIT_DOWNVOTE_ENSEMBLE, True),
+            (REASON_EXPLICIT_DOWNVOTE_HIGH_TIER, True),
             (REASON_NORMAL, True),
         ]
     )
@@ -256,7 +269,8 @@ def test_weight_table_and_exclusion() -> None:
     assert weights[2] == pytest.approx(0.6)
     assert weights[3] == pytest.approx(0.3)  # ensemble upvote = normal level
     assert weights[4] == 0.0  # excluded entirely
-    assert weights[5] == pytest.approx(0.3)
+    assert weights[5] == 0.0  # high-tier exclusion, distinct reason
+    assert weights[6] == pytest.approx(0.3)
 
 
 def test_unconfirmed_downvote_halved() -> None:
@@ -609,5 +623,5 @@ def test_downvote_anchor_is_served_aware() -> None:
     # eligibility cap -> excluded, no upgrade label pointing below the served.
     held = _sample(0, route="R0", final="R2")
     aligned2 = align_session([held], _fbmap(0, "down"))
-    assert aligned2[0].reason == REASON_EXPLICIT_DOWNVOTE_ENSEMBLE
+    assert aligned2[0].reason == REASON_EXPLICIT_DOWNVOTE_HIGH_TIER
     assert aligned2[0].target_idx == 2

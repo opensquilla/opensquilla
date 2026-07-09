@@ -121,3 +121,74 @@ def test_unknown_executed_kind_coerces_to_single(tmp_path) -> None:
     _write(tmp_path, "d1", "down", kind="mystery")
     fb = load_feedback_map("main", home=tmp_path)
     assert fb["d1"].executed_kind == "single"
+
+
+def test_rollback_window_keys_on_decision_ts_not_rating_ts(tmp_path) -> None:
+    """A post-promotion rating of a PRE-promotion decision must not count
+    against the newly promoted classifier."""
+    promo_ts = "2026-07-05T00:00:00Z"
+    # Decision made before promotion, rated after.
+    write_feedback(
+        "main",
+        decision_id="old-turn",
+        session_key="agent:main:webchat:s1",
+        turn_index=0,
+        rating="down",
+        decision_ts="2026-07-01T00:00:00Z",
+        home=tmp_path,
+        now=NOW,  # rating arrives 2026-07-09, after promotion
+    )
+    # Decision made after promotion, rated after.
+    write_feedback(
+        "main",
+        decision_id="new-turn",
+        session_key="agent:main:webchat:s1",
+        turn_index=1,
+        rating="down",
+        decision_ts="2026-07-06T00:00:00Z",
+        home=tmp_path,
+        now=NOW,
+    )
+
+    post = scan_feedback_stats("main", since_ts=promo_ts, home=tmp_path)
+    assert post.down == 1  # only the new-model decision counts
+
+
+def test_retention_keys_on_rating_ts(tmp_path) -> None:
+    """Rating an old-but-valid decision must survive the retention prune."""
+    old_decision = "2026-05-01T00:00:00Z"  # decision older than retention
+    _write(tmp_path, "d1", "down", now=NOW)  # trigger prune context
+    write_feedback(
+        "main",
+        decision_id="d2",
+        session_key="agent:main:webchat:s1",
+        turn_index=1,
+        rating="down",
+        decision_ts=old_decision,
+        home=tmp_path,
+        now=NOW,  # the rating itself is fresh
+    )
+    fb = load_feedback_map("main", home=tmp_path)
+    assert "d2" in fb  # not pruned despite the old decision
+
+
+def test_concurrent_writes_with_prune_lose_nothing(tmp_path) -> None:
+    """The write lock serializes append+prune; parallel ratings all survive."""
+    import threading
+    from datetime import timedelta
+
+    # Seed one expired row so every write triggers a real prune rewrite.
+    _write(tmp_path, "expired", "down", now=NOW - timedelta(days=40))
+
+    def submit(i: int) -> None:
+        _write(tmp_path, f"c{i}", "up", turn=i, now=NOW)
+
+    threads = [threading.Thread(target=submit, args=(i,)) for i in range(16)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    fb = load_feedback_map("main", home=tmp_path)
+    assert "expired" not in fb
+    assert all(f"c{i}" in fb for i in range(16))  # no rating lost

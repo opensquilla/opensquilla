@@ -19,6 +19,7 @@ raw prompt text, best-effort retention pruning at write time.
 from __future__ import annotations
 
 import json
+import threading
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -63,6 +64,12 @@ def feedback_path(agent_id: str, home: Path | None = None) -> Path:
     return agent_data_dir(agent_id, home) / FEEDBACK_FILENAME
 
 
+# Serializes append + prune within the gateway process (RPC submissions run on
+# worker threads). Without it a prune's read-rewrite-replace can clobber a
+# rating another thread appended in between — and a lost rating is a defect.
+_write_lock = threading.Lock()
+
+
 def write_feedback(
     agent_id: str,
     *,
@@ -71,6 +78,7 @@ def write_feedback(
     turn_index: int,
     rating: str,
     executed_kind: str = "single",
+    decision_ts: str | None = None,
     home: Path | None = None,
     now: datetime | None = None,
     retention_days: int = 30,
@@ -78,7 +86,9 @@ def write_feedback(
     """Append one rating row. Revisions append; readers merge last-write-wins.
 
     ``neutral`` is a revocation: it is stored (audit trail) and drops the
-    decision from the effective map on read.
+    decision from the effective map on read. ``decision_ts`` is when the rated
+    decision itself was made — the rollback monitor windows on it so a rating
+    of an old model's turn never counts against a newly promoted classifier.
     """
 
     if rating not in RATINGS:
@@ -92,13 +102,15 @@ def write_feedback(
         "rating": rating,
         "executed_kind": kind,
         "ts": stamp,
+        "decision_ts": decision_ts or stamp,
         "schema_version": FEEDBACK_SCHEMA_VERSION,
     }
     path = feedback_path(agent_id, home)
     path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a", encoding="utf-8") as handle:
-        handle.write(json.dumps(row, ensure_ascii=False) + "\n")
-    _prune_expired(path, now=now, retention_days=retention_days)
+    with _write_lock:
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(row, ensure_ascii=False) + "\n")
+        _prune_expired(path, now=now, retention_days=retention_days)
     return path
 
 
@@ -166,11 +178,13 @@ def scan_feedback_stats(
     since_ts: str | None = None,
     home: Path | None = None,
 ) -> FeedbackStats:
-    """Aggregate effective ratings, optionally restricted to ``ts > since_ts``.
+    """Aggregate effective ratings, optionally restricted to a decision window.
 
-    ``since_ts`` compares the *latest* row's timestamp per decision, so a
-    pre-promotion rating that is revised post-promotion counts toward the
-    post-promotion window — the revision is the operative user judgment.
+    ``since_ts`` compares the **decision's own timestamp** (``decision_ts``,
+    falling back to the rating ts for legacy rows): the rollback monitor asks
+    "how are decisions made *after* the promotion being judged", and a rating
+    of an old model's turn — however recent — must not count against the newly
+    promoted classifier.
     """
 
     total = up = down = total_single = down_single = 0
@@ -178,7 +192,8 @@ def scan_feedback_stats(
         rating = row.get("rating")
         if rating not in ("up", "down"):
             continue
-        if since_ts is not None and str(row.get("ts", "")) <= since_ts:
+        window_ts = str(row.get("decision_ts") or row.get("ts", ""))
+        if since_ts is not None and window_ts <= since_ts:
             continue
         total += 1
         is_single = row.get("executed_kind") != "ensemble"
@@ -212,6 +227,10 @@ def _prune_expired(
             "%Y-%m-%dT%H:%M:%SZ"
         )
         rows = _iter_rows(path)
+        # Retention keys on the RATING's own timestamp: the user acted
+        # recently, so the row is alive — even when the decision it rates is
+        # older than the window (the monitor separately windows on
+        # decision_ts and will simply not count it).
         kept = [r for r in rows if str(r.get("ts", "")) > cutoff]
         if len(kept) == len(rows):
             return

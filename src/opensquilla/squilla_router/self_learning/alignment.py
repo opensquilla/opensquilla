@@ -38,10 +38,17 @@ REASON_EXPLICIT_DOWNVOTE = "explicit_downvote"
 REASON_EXPLICIT_UPVOTE = "explicit_upvote"
 REASON_EXPLICIT_DOWNVOTE_ENSEMBLE = "explicit_downvote_ensemble"
 REASON_EXPLICIT_UPVOTE_ENSEMBLE = "explicit_upvote_ensemble"
-# A down-voted turn whose signal cannot become an upgrade label (predicted
-# high already, or ensemble) is *excluded* from training rather than kept as
-# a confirmation: the user just said the outcome was bad.
-EXCLUDED_REASONS = frozenset({REASON_EXPLICIT_DOWNVOTE_ENSEMBLE})
+# Single-model down-vote on an already-high tier: not attributable to
+# under-routing, so no upgrade label. A distinct reason (not the _ENSEMBLE
+# one) because reasons persist into datasets/receipts and the two exclusion
+# causes must stay distinguishable for diagnostics.
+REASON_EXPLICIT_DOWNVOTE_HIGH_TIER = "explicit_downvote_high_tier"
+# A down-voted turn whose signal cannot become an upgrade label is *excluded*
+# from training rather than kept as a confirmation: the user just said the
+# outcome was bad.
+EXCLUDED_REASONS = frozenset(
+    {REASON_EXPLICIT_DOWNVOTE_ENSEMBLE, REASON_EXPLICIT_DOWNVOTE_HIGH_TIER}
+)
 
 
 def route_index(route_class: str) -> int:
@@ -210,7 +217,16 @@ def _apply_downvote(
     if is_ensemble:
         return route_index(s.final_route_class), REASON_EXPLICIT_DOWNVOTE_ENSEMBLE, base_confirmed
 
-    if base_reason in (REASON_IMMEDIATE_COMPLAINT, REASON_RETROSPECTIVE):
+    served_idx = route_index(s.final_route_class)
+    if (
+        base_reason in (REASON_IMMEDIATE_COMPLAINT, REASON_RETROSPECTIVE)
+        and base_target > route_index(s.route_class)
+    ):
+        # The correction's label genuinely exceeds the model's raw prediction;
+        # the down-vote endorses it. A complaint whose upgrade was capped/held
+        # (final == route, so the label IS the rejected tier) is NOT an
+        # upgrade to endorse — falling through would train the rejected tier
+        # at the table's highest weight; the standalone path below handles it.
         return base_target, REASON_EXPLICIT_DOWNVOTE, base_confirmed
 
     # Anchor on what actually SERVED, not just the raw prediction: a
@@ -218,10 +234,10 @@ def _apply_downvote(
     # model predicted, and the user's judgment is about the served response.
     # Bumping from the prediction alone could train the very tier the user
     # rejected (gate case) or a tier below it (hold case).
-    cur_idx = max(route_index(s.route_class), route_index(s.final_route_class))
+    cur_idx = max(route_index(s.route_class), served_idx)
     if cur_idx > RETRO_ELIGIBLE_MAX_IDX:
         # Not attributable to under-routing; drop the confirmation instead.
-        return route_index(s.final_route_class), REASON_EXPLICIT_DOWNVOTE_ENSEMBLE, base_confirmed
+        return served_idx, REASON_EXPLICIT_DOWNVOTE_HIGH_TIER, base_confirmed
 
     target_idx = min(cur_idx + 1, len(ROUTE_CLASSES) - 1)
     # Confirmation mirror of retrospective: a calm follow-up turn confirms the

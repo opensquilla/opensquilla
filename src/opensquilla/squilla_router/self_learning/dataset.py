@@ -174,6 +174,18 @@ def build_training_dataset(
     for session_samples in by_session.values():
         aligned.extend(align_session(session_samples, feedback))
 
+    # Drop excluded rows from the matrix entirely, not just from the weights:
+    # their target is the served tier the user rejected, and the unweighted
+    # holdout/cost metrics in evaluate.py would otherwise score agreement with
+    # a label the pipeline explicitly declared untrainable-because-bad.
+    aligned = [a for a in aligned if a.reason not in EXCLUDED_REASONS]
+    if not aligned:
+        ds = _empty_dataset()
+        ds.feature_schema_version = target_version
+        ds.skipped_schema_mismatch = skipped_schema
+        ds.skipped_bypass = skipped_bypass
+        return ds
+
     weights = _compute_weights(aligned)
 
     feature_matrix = np.vstack([a.features_390.astype(np.float32) for a in aligned])

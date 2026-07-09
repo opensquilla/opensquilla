@@ -286,7 +286,14 @@ def maybe_run_update_router(
         state.active_version = info.version
         state.promoted_at = _now_iso(now)
         state.pre_promotion_complaint_rate = stats.complaint_rate
-        state.pre_promotion_downvote_rate = _downvote_rate(agent_id, home)
+        # Baseline requires at least as many ratings as the monitor minimum:
+        # a rate measured from 2-3 ratings is noise, and comparing post-swap
+        # traffic against it would make early rollbacks near-arbitrary.
+        state.pre_promotion_downvote_rate = _downvote_rate(
+            agent_id,
+            home,
+            min_ratings=int(getattr(sl_cfg, "min_feedback_monitor_samples", 5)),
+        )
         save_train_state(state, agent_id, home)
         write_receipt(
             agent_id,
@@ -452,36 +459,30 @@ def _feedback_stats(agent_id: str, home: Path | None, *, since_ts: str | None = 
         return None
 
 
-def _downvote_rate(agent_id: str, home: Path | None) -> float | None:
+def _downvote_rate(
+    agent_id: str, home: Path | None, *, min_ratings: int = 1
+) -> float | None:
     """Single-model down-vote rate, or ``None`` when there is no baseline.
 
-    Zero recorded single-model ratings means "unmeasured", not "0.0": stamping
-    0.0 as the pre-promotion baseline would let the first few post-promotion
+    Too few recorded single-model ratings means "unmeasured", not "0.0":
+    stamping a noise-floor baseline would let the first few post-promotion
     down-votes trip the rollback trigger against a fabricated reference.
     ``should_rollback`` skips the feedback trigger when the baseline is None,
     mirroring pre_complaint_rate's None semantics.
     """
 
     stats = _feedback_stats(agent_id, home)
-    if stats is None or stats.total_single == 0:
+    if stats is None or stats.total_single < max(1, min_ratings):
         return None
     return float(stats.downvote_rate)
 
 
 def _with_feedback_stats(stats: Any, agent_id: str, home: Path | None) -> Any:
-    """Count correction-producing down-votes toward the volume gate.
+    """Volume-gate feedback merge — shared implementation in ``gates``."""
 
-    Single-model down-votes only: ensemble down-votes never become training
-    labels (alignment excludes them), so counting them would open the gate on
-    data that cannot train.
-    """
+    from opensquilla.squilla_router.self_learning.gates import merge_feedback_into_stats
 
-    fb = _feedback_stats(agent_id, home)
-    if fb is None or fb.down_single == 0:
-        return stats
-    from dataclasses import replace as _dc_replace
-
-    return _dc_replace(stats, feedback_down=fb.down_single)
+    return merge_feedback_into_stats(stats, agent_id, home)
 
 
 def _check_and_maybe_rollback(

@@ -165,7 +165,8 @@
     "cli": {
       "advancedTitle": "Avanzado · CLI integrada",
       "hintBundled": "Estos comandos usan la CLI integrada en la aplicación; pégalos en una terminal para ejecutarlos.",
-      "hintDev": "Modo dev: los comandos se ejecutan desde el checkout del código fuente vía uv."
+      "hintDev": "Modo dev: los comandos se ejecutan desde el checkout del código fuente vía uv.",
+      "restartHint": "Usa Ajustes → Runtime → Reiniciar de la aplicación para aplicar."
     },
     "common": {
       "apiKey": "Clave de API",

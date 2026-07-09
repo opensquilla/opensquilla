@@ -487,17 +487,15 @@ class GatewayLifecycleManager:
         return value if isinstance(value, str) else None
 
     def _gateway_run_argv(self) -> list[str]:
-        argv = [
-            sys.executable,
-            "-m",
-            "opensquilla.cli.main",
-            "gateway",
-            "run",
-            "--listen",
-            self.host,
-            "--port",
-            str(self.port),
-        ]
+        # A PyInstaller-frozen build (the desktop bundle) has sys.executable
+        # already pointing at the CLI entrypoint, so "-m opensquilla.cli.main"
+        # would be passed through as arguments and the child would exit on a
+        # usage error. Invoke the subcommand directly there.
+        if getattr(sys, "frozen", False):
+            argv = [sys.executable, "gateway", "run"]
+        else:
+            argv = [sys.executable, "-m", "opensquilla.cli.main", "gateway", "run"]
+        argv += ["--listen", self.host, "--port", str(self.port)]
         if self.config_path:
             argv.extend(["--config", self.config_path])
         return argv

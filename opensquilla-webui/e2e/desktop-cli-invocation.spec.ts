@@ -57,6 +57,10 @@ test.describe('desktop shell CLI invocation', () => {
     const firstCommand = firstFold.locator('code').first()
     await expect(firstCommand).toContainText("OPENSQUILLA_STATE_DIR='/tmp/e2e desk/state'")
     await expect(firstCommand).toContainText('opensquilla-gateway')
+
+    // Gateway lifecycle commands are guidance on desktop, never a rewritten,
+    // runnable command that would fight the shell-supervised gateway.
+    await expect(page.locator('.health-step__command code', { hasText: 'gateway restart' })).toHaveCount(0)
   })
 
   test('hides the CLI handoff disclosure in settings', async ({ page }) => {

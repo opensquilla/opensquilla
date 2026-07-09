@@ -206,6 +206,7 @@ jobs:
         run: |
           node scripts/test-secret-storage-policy.mjs
           node scripts/test-update-resolver.mjs
+          node scripts/test-desktop-locale.mjs
 
   ubuntu-quality:
     name: Lint, test, and build (ubuntu-latest, 3.12)

@@ -10,8 +10,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 - The Web UI gains an opt-in background-music player. Enabling it (Settings →
   Appearance, or the command palette action) reveals a topbar control that
-  loops tracks from a user-supplied library: `public/music/playlist.json`
-  lists bundled filenames or http(s) URLs, and a session-only "Choose local
+  loops tracks from a user-supplied library: `public/music/playlist.local.json`
+  lists bundled filenames or HTTPS URLs, and a session-only "Choose local
   file…" picker plays ad-hoc audio. Track choice, volume, and play state
   persist per browser; the feature is off by default and no audio files ship
   with the repository (see `opensquilla-webui/public/music/README.md`).

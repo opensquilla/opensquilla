@@ -578,6 +578,15 @@ class AgentConfig:
     # still spend the entire margin inside a single reasoning stream. Set via
     # OPENSQUILLA_DEADLINE_THINKING_OFF_MARGIN_SECONDS.
     deadline_thinking_off_margin_seconds: int = 0
+    # Preempt a runaway reasoning-only stream once its streamed reasoning text
+    # exceeds this many characters. 0 = off. The partial reasoning is
+    # discarded and the call retries immediately with thinking disabled for
+    # that retry only (the next iteration re-enables thinking), so the budget
+    # goes to tool calls instead of one unbounded reasoning stream. One
+    # preempt per iteration; attempts that already emitted user-visible text
+    # or tool calls are never preempted. Set via
+    # OPENSQUILLA_REASONING_STREAM_CHAR_CAP.
+    reasoning_stream_char_cap: int = 0
     # Provider-view dedup of byte-identical repeated tool results. Off by
     # default. When enabled, older duplicate tool_result payloads (same content
     # emitted N+ times across iterations) are replaced in the provider request

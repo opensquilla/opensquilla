@@ -1,11 +1,14 @@
-"""Opt-in levers: reasoning-only thinking fallback + pre-deadline thinking cutoff.
+"""Opt-in levers: thinking fallback, deadline thinking cutoff, reasoning cap.
 
-Covers OPENSQUILLA_REASONING_ONLY_THINKING_FALLBACK and
-OPENSQUILLA_DEADLINE_THINKING_OFF_MARGIN_SECONDS (both off by default).
-Motivation: with some providers a reasoning-only response is best retried with
-thinking disabled (the retry otherwise re-enters a long reasoning stream), and
+Covers OPENSQUILLA_REASONING_ONLY_THINKING_FALLBACK,
+OPENSQUILLA_DEADLINE_THINKING_OFF_MARGIN_SECONDS and
+OPENSQUILLA_REASONING_STREAM_CHAR_CAP (all off by default). Motivation: with
+some providers a reasoning-only response is best retried with thinking
+disabled (the retry otherwise re-enters a long reasoning stream),
 deadline-capped runs can spend their whole final margin inside one reasoning
-stream instead of applying and verifying changes.
+stream instead of applying and verifying changes, and a single runaway
+reasoning stream can consume an unbounded share of the turn budget before any
+tool call happens.
 """
 
 from __future__ import annotations
@@ -23,6 +26,7 @@ from opensquilla.provider import (
     ToolInputSchema,
 )
 from opensquilla.provider import DoneEvent as ProviderDone
+from opensquilla.provider import ReasoningDeltaEvent as ProviderReasoning
 from opensquilla.provider import TextDeltaEvent as ProviderText
 from opensquilla.provider import ToolUseEndEvent as ProviderToolUseEnd
 from opensquilla.provider import ToolUseStartEvent as ProviderToolUseStart
@@ -266,6 +270,176 @@ async def test_deadline_thinking_off_not_armed_when_margin_not_reached() -> None
     assert provider.calls[0]["config"].thinking is True
 
 
+_REASONING_CHUNK = "x" * 300
+
+
+@pytest.mark.asyncio
+async def test_reasoning_stream_char_cap_preempts_and_retries_without_thinking() -> None:
+    # The cap is cumulative across deltas within one attempt: the first chunk
+    # stays under it, the second crosses it mid-stream. The partial attempt is
+    # discarded and retried with thinking disabled for that retry only.
+    provider = _SequenceProvider(
+        [
+            [
+                ProviderReasoning(text=_REASONING_CHUNK),
+                ProviderReasoning(text=_REASONING_CHUNK),
+                ProviderText(text="never reached in the preempted attempt"),
+                ProviderDone(stop_reason="stop", input_tokens=5, output_tokens=2),
+            ],
+            _final_text(),
+        ]
+    )
+    agent = Agent(
+        provider=provider,
+        config=AgentConfig(
+            thinking=ThinkingLevel.MEDIUM,
+            reasoning_stream_char_cap=500,
+            retry_base_backoff_ms=0,
+            retry_max_backoff_ms=0,
+        ),
+    )
+
+    events = [event async for event in agent.run_turn("fix the bug")]
+
+    assert [event for event in events if event.kind == "error"] == []
+    done = next(event for event in events if event.kind == "done")
+    assert done.text == "ok"
+    assert len(provider.calls) == 2
+    assert provider.calls[0]["config"].thinking is True
+    assert provider.calls[1]["config"].thinking is False
+
+
+@pytest.mark.asyncio
+async def test_reasoning_stream_char_cap_restores_thinking_next_iteration() -> None:
+    # The thinking cutoff applies to the preempt retry only; once the retry
+    # produces a tool call, the following iteration thinks again.
+    provider = _SequenceProvider(
+        [
+            [
+                ProviderReasoning(text=_REASONING_CHUNK),
+                ProviderReasoning(text=_REASONING_CHUNK),
+                ProviderDone(stop_reason="stop", input_tokens=5, output_tokens=2),
+            ],
+            _echo_tool_call("use-1"),
+            _final_text(),
+        ]
+    )
+    agent = _echo_agent(
+        provider,
+        AgentConfig(
+            thinking=ThinkingLevel.MEDIUM,
+            reasoning_stream_char_cap=500,
+            max_iterations=5,
+            retry_base_backoff_ms=0,
+            retry_max_backoff_ms=0,
+        ),
+    )
+
+    events = [event async for event in agent.run_turn("fix the bug")]
+
+    assert any(event.kind == "done" for event in events)
+    assert len(provider.calls) == 3
+    assert provider.calls[0]["config"].thinking is True
+    assert provider.calls[1]["config"].thinking is False
+    assert provider.calls[2]["config"].thinking is True
+
+
+@pytest.mark.asyncio
+async def test_reasoning_stream_char_cap_one_preempt_per_iteration() -> None:
+    # If the retry also streams reasoning past the cap, it runs to completion:
+    # exactly one preempt per iteration, never a preempt loop.
+    provider = _SequenceProvider(
+        [
+            [
+                ProviderReasoning(text=_REASONING_CHUNK),
+                ProviderReasoning(text=_REASONING_CHUNK),
+                ProviderDone(stop_reason="stop", input_tokens=5, output_tokens=2),
+            ],
+            [
+                ProviderReasoning(text=_REASONING_CHUNK),
+                ProviderReasoning(text=_REASONING_CHUNK),
+                ProviderReasoning(text=_REASONING_CHUNK),
+                ProviderText(text="ok"),
+                ProviderDone(stop_reason="stop", input_tokens=5, output_tokens=2),
+            ],
+        ]
+    )
+    agent = Agent(
+        provider=provider,
+        config=AgentConfig(
+            thinking=ThinkingLevel.MEDIUM,
+            reasoning_stream_char_cap=500,
+            retry_base_backoff_ms=0,
+            retry_max_backoff_ms=0,
+        ),
+    )
+
+    events = [event async for event in agent.run_turn("fix the bug")]
+
+    done = next(event for event in events if event.kind == "done")
+    assert done.text == "ok"
+    assert len(provider.calls) == 2
+
+
+@pytest.mark.asyncio
+async def test_reasoning_stream_char_cap_skips_streams_past_reasoning_phase() -> None:
+    # Once the attempt has emitted user-visible output, the stream may be
+    # writing the final answer; it must run to completion even when reasoning
+    # deltas later cross the cap.
+    provider = _SequenceProvider(
+        [
+            [
+                ProviderText(text="working"),
+                ProviderReasoning(text=_REASONING_CHUNK),
+                ProviderReasoning(text=_REASONING_CHUNK),
+                ProviderText(text=" ok"),
+                ProviderDone(stop_reason="stop", input_tokens=5, output_tokens=2),
+            ],
+        ]
+    )
+    agent = Agent(
+        provider=provider,
+        config=AgentConfig(
+            thinking=ThinkingLevel.MEDIUM,
+            reasoning_stream_char_cap=500,
+            retry_base_backoff_ms=0,
+            retry_max_backoff_ms=0,
+        ),
+    )
+
+    events = [event async for event in agent.run_turn("fix the bug")]
+
+    assert any(event.kind == "done" for event in events)
+    assert len(provider.calls) == 1
+    assert provider.calls[0]["config"].thinking is True
+
+
+@pytest.mark.asyncio
+async def test_reasoning_stream_char_cap_default_off() -> None:
+    # Cap unset: a reasoning stream far past any plausible cap value runs to
+    # completion in a single call with thinking untouched.
+    provider = _SequenceProvider(
+        [
+            [
+                ProviderReasoning(text=_REASONING_CHUNK * 100),
+                ProviderText(text="ok"),
+                ProviderDone(stop_reason="stop", input_tokens=5, output_tokens=2),
+            ],
+        ]
+    )
+    agent = Agent(
+        provider=provider,
+        config=AgentConfig(thinking=ThinkingLevel.MEDIUM),
+    )
+
+    events = [event async for event in agent.run_turn("fix the bug")]
+
+    done = next(event for event in events if event.kind == "done")
+    assert done.text == "ok"
+    assert len(provider.calls) == 1
+    assert provider.calls[0]["config"].thinking is True
+
+
 def test_env_plumbing_for_both_levers(monkeypatch: pytest.MonkeyPatch) -> None:
     # Helper-level check only; the full env -> bootstrap-stage -> AgentConfig
     # threading is covered in turn_runner/test_agent_bootstrap_stage_unit.py.
@@ -290,8 +464,24 @@ def test_env_plumbing_for_both_levers(monkeypatch: pytest.MonkeyPatch) -> None:
     )
 
 
+def test_env_plumbing_for_reasoning_stream_char_cap(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from opensquilla.engine.turn_runner.agent_bootstrap_stage import (
+        _nonnegative_int_from_env,
+    )
+
+    monkeypatch.delenv("OPENSQUILLA_REASONING_STREAM_CHAR_CAP", raising=False)
+    assert _nonnegative_int_from_env("OPENSQUILLA_REASONING_STREAM_CHAR_CAP", 0) == 0
+    monkeypatch.setenv("OPENSQUILLA_REASONING_STREAM_CHAR_CAP", "15000")
+    assert (
+        _nonnegative_int_from_env("OPENSQUILLA_REASONING_STREAM_CHAR_CAP", 0) == 15000
+    )
+
+
 def test_agent_config_defaults_keep_both_levers_off() -> None:
     config = AgentConfig()
 
     assert config.reasoning_only_thinking_fallback is False
     assert config.deadline_thinking_off_margin_seconds == 0
+    assert config.reasoning_stream_char_cap == 0

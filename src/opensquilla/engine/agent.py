@@ -3802,6 +3802,9 @@ class Agent:
         )
         _thinking_fallback_done = False
         _disable_thinking_for_next_provider_call = False
+        _reasoning_stream_char_cap = max(
+            0, int(getattr(self.config, "reasoning_stream_char_cap", 0) or 0)
+        )
 
         _log = structlog.get_logger("opensquilla.engine.agent")
 
@@ -4266,6 +4269,8 @@ class Agent:
 
                 _retry_attempt = 0
                 _call_attempt = 0
+                _reasoning_cap_preempt_done = False
+                attempt_reasoning_stream_chars = 0
                 _retry_policy = _ProviderRetryPolicy.from_provider_budget(
                     _fallback.max_retries,
                     length_capped_continuations=self.config.length_capped_continuations,
@@ -4289,6 +4294,7 @@ class Agent:
                     iter_reasoning_content = None
                     iter_thinking_signature = None
                     _got_error = False
+                    attempt_reasoning_stream_chars = 0
                     provider_done_for_log: ProviderDoneEvent | None = None
                     provider_error_for_log: ProviderErrorEvent | None = None
                     call_id = f"{iterations}.{_call_attempt}"
@@ -4599,6 +4605,45 @@ class Agent:
                                     )
                                     _got_error = True
                                     break  # break stream, retry with directive
+                                if (
+                                    _reasoning_stream_char_cap > 0
+                                    and not _reasoning_cap_preempt_done
+                                ):
+                                    attempt_reasoning_stream_chars += len(
+                                        raw_ev.text or ""
+                                    )
+                                    if (
+                                        attempt_reasoning_stream_chars
+                                        > _reasoning_stream_char_cap
+                                        and not attempt_user_visible_emitted
+                                        and not pending_tools
+                                        and not tool_calls
+                                    ):
+                                        # Runaway reasoning-only stream: discard
+                                        # the partial reasoning and retry the
+                                        # call with thinking disabled for that
+                                        # retry only, so the budget goes to
+                                        # tool calls instead of one unbounded
+                                        # reasoning stream. One preempt per
+                                        # iteration: if the provider keeps
+                                        # streaming reasoning on the retry, it
+                                        # runs to completion.
+                                        _reasoning_cap_preempt_done = True
+                                        _disable_thinking_for_next_provider_call = True
+                                        self._write_turn_call_log(
+                                            "turn_policy_decision",
+                                            action="reasoning_cap",
+                                            reason="reasoning_stream_char_cap",
+                                            code="reasoning_cap_preempt",
+                                            iteration=iterations,
+                                            attempt=_call_attempt,
+                                            reasoning_chars=(
+                                                attempt_reasoning_stream_chars
+                                            ),
+                                            cap_chars=_reasoning_stream_char_cap,
+                                        )
+                                        _got_error = True
+                                        break  # break stream, retry sans thinking
 
                             elif isinstance(raw_ev, ProviderToolUseStart):
                                 if not tools_supported_for_call:
@@ -11793,6 +11838,7 @@ class Agent:
             deadline_thinking_off_margin_seconds=(
                 self.config.deadline_thinking_off_margin_seconds
             ),
+            reasoning_stream_char_cap=self.config.reasoning_stream_char_cap,
             repeated_tool_call_recovery_threshold=(
                 self.config.repeated_tool_call_recovery_threshold
             ),

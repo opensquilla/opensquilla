@@ -739,6 +739,10 @@ class AgentBootstrapStage:
                 "OPENSQUILLA_DEADLINE_THINKING_OFF_MARGIN_SECONDS",
                 AgentConfig().deadline_thinking_off_margin_seconds,
             ),
+            reasoning_stream_char_cap=_nonnegative_int_from_env(
+                "OPENSQUILLA_REASONING_STREAM_CHAR_CAP",
+                AgentConfig().reasoning_stream_char_cap,
+            ),
             repeated_tool_call_recovery_threshold=_nonnegative_int_from_env(
                 "OPENSQUILLA_TOOL_REPEAT_NUDGE_THRESHOLD",
                 AgentConfig().repeated_tool_call_recovery_threshold,

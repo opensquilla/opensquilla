@@ -35,7 +35,10 @@ def test_codetask_skill_declares_requirements(loader):
     assert meta is not None
     assert meta.requires is not None
     assert "git" in meta.requires.bins
-    assert "OPENROUTER_API_KEY" in meta.requires.env
+    # No env-var requirement: the subagent inherits the operator's configured
+    # provider (any provider), so gating on one vendor's key would hide the
+    # skill from every non-OpenRouter user (issue #499).
+    assert meta.requires.env == []
 
 
 def test_codetask_skill_body_documents_cli_and_states(loader):

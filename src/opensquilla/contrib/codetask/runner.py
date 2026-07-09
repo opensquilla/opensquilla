@@ -22,6 +22,7 @@ from typing import Any
 
 from opensquilla.contrib.codetask import config, envprobe, workspace
 from opensquilla.contrib.codetask.adapter import LocalAdapter, _kill_process_group
+from opensquilla.contrib.codetask.agent_config import AgentConfigError, load_agent_config_bundle
 from opensquilla.contrib.codetask.inputs import InputError, TaskSpec, render_task_md, resolve_task
 from opensquilla.contrib.codetask.types import TaskResult, TaskState
 from opensquilla.contrib.codetask.verification import verify
@@ -225,6 +226,30 @@ def solve(
     run_id = run_id or _default_run_id("task")
     from_scratch_build = verification_mode == "build" and not repo
 
+    # Assemble the subagent config up front (operator provider sections over
+    # the policy template) so a broken operator config fails loud in
+    # milliseconds — BEFORE the potentially minutes-long clone — with the
+    # actionable reason in result.json/status.json.
+    try:
+        agent_config = load_agent_config_bundle()
+    except AgentConfigError as exc:
+        detail = str(exc)
+        blocked = TaskResult(
+            task_slug="task",
+            run_id=run_id,
+            state=TaskState.ENVIRONMENT_BLOCKED,
+            repo=repo,
+            base_ref="",
+            branch="",
+            source="config",
+            artifact_dir=str(config.run_dir(run_id)),
+            error=detail,
+        )
+        blocked.final_failure_reason = detail
+        config.run_dir(run_id).mkdir(parents=True, exist_ok=True)
+        _persist(blocked)
+        return blocked
+
     if verification_mode == "scratch":
         # No repo: write self-contained code from scratch in an empty git repo.
         spec = resolve_task(task_text=task, task_file=task_file)
@@ -376,7 +401,9 @@ def solve(
             rid, "agent_running", repo=repo, run_dir=str(artifact_dir),
             attempt=attempt, max_attempts=max_attempts,
         )
-        adapter = LocalAdapter(model=model, thinking=thinking, timeout=agent_budget)
+        adapter = LocalAdapter(
+            model=model, thinking=thinking, timeout=agent_budget, agent_config=agent_config
+        )
         agent_status_base = {
             "repo": repo,
             "run_dir": str(artifact_dir),

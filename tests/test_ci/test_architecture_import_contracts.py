@@ -38,6 +38,11 @@ APPROVED_PACKAGE_IMPORTS: frozenset[tuple[str, str]] = frozenset({
     ("cli", "skills"),
     ("cli", "tools"),
     ("cli", "uninstall"),
+    # code-task assembles the subagent's per-run config from the operator's
+    # own provider sections and validates it against the gateway config
+    # schema before spawning (lazy import; gateway never imports contrib, so
+    # no cycle).
+    ("contrib", "gateway"),
     # The diagnostics-bundle shim composes gateway redaction, the offline
     # doctor, and onboarding config resolution lazily for the bundle
     # generator; a top-level module (permissions.py precedent) so the

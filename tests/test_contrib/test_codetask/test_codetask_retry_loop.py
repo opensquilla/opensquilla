@@ -45,6 +45,9 @@ def _vout(state, *, nf=None, failing=None):
 
 def _wire(monkeypatch, tmp_path, outcomes, collects=None):
     monkeypatch.setenv("OPENSQUILLA_STATE_DIR", str(tmp_path / "state"))
+    # Subagent-config assembly is kept hermetic by the package autouse fixture
+    # (_isolate_agent_config_discovery), so solve()'s up-front build reads no
+    # developer config/env.
     _FakeAdapter.runs = 0
     repo = tmp_path / "repo"
     repo.mkdir()
@@ -178,3 +181,36 @@ def test_redact_masks_secrets():
     r2 = runner._redact("Authorization: Bearer xyztoken")
     assert "<redacted>" in r2 and "xyztoken" not in r2
     assert runner._redact("normal output line") == "normal output line"
+
+
+def test_solve_blocks_early_on_invalid_agent_config(monkeypatch, tmp_path):
+    """A broken operator config fails loud BEFORE the clone, with the reason
+    persisted where the calling agent reads it (result.json + status.json)."""
+    import json
+
+    monkeypatch.setenv("OPENSQUILLA_STATE_DIR", str(tmp_path / "state"))
+
+    def _boom():
+        raise runner.AgentConfigError(
+            "code-task subagent config is invalid after inheriting provider "
+            "settings from /x/config.toml: tier_profile mismatch"
+        )
+
+    monkeypatch.setattr(runner, "load_agent_config_bundle", _boom)
+    cloned = []
+    monkeypatch.setattr(
+        runner.workspace, "prepare_repo", lambda *a, **k: cloned.append(1)
+    )
+
+    res = runner.solve(repo="/tmp/x", task="do")
+
+    assert res.state == TaskState.ENVIRONMENT_BLOCKED
+    assert "tier_profile mismatch" in (res.error or "")
+    assert res.final_failure_reason == res.error
+    assert cloned == []  # failed before any expensive work
+    run_dir = runner.config.run_dir(res.run_id)
+    persisted = json.loads((run_dir / "result.json").read_text(encoding="utf-8"))
+    assert persisted["state"] == "environment_blocked"
+    status = json.loads((run_dir / "status.json").read_text(encoding="utf-8"))
+    assert status["phase"] == "completed"
+    assert "tier_profile mismatch" in status["error"]

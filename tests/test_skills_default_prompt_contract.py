@@ -217,15 +217,16 @@ async def test_coding_mode_on_surfaces_code_task(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # code-task requires the ``git`` bin + ``OPENROUTER_API_KEY``; fake them so
-    # the test asserts the coding-mode gate, not the host environment.
+    # code-task requires the ``git`` bin (no env-var requirement: the subagent
+    # inherits the operator's provider config); fake it so the test asserts
+    # the coding-mode gate, not the host environment.
     monkeypatch.setattr(
         skills_filter_step,
         "_elig_ctx",
         EligibilityContext(
             os_name="linux",
             has_bin_cache={"git": True},
-            env_cache={"OPENROUTER_API_KEY": "set"},
+            env_cache={},
         ),
     )
     loader = SkillLoader(bundled_dir=BUNDLED, snapshot_path=tmp_path / "snapshot.json")

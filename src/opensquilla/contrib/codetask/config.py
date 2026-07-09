@@ -144,18 +144,32 @@ def prompt_template_path(verification_mode: str = "red-green", is_edit: bool = F
     return _DATA_DIR / "prompts" / name
 
 
+AGENT_CONFIG_OVERRIDE_ENV = "OPENSQUILLA_CODETASK_AGENT_CONFIG"
+
+
+def agent_config_override() -> Path | None:
+    """The operator's fully-authoritative agent-config override, if set.
+
+    A single decoder of the ``OPENSQUILLA_CODETASK_AGENT_CONFIG`` contract so
+    the escape hatch and the inheritance gate never disagree — a blank value
+    (e.g. a quoted empty shell export) is treated as unset, not as a path.
+    """
+    raw = os.environ.get(AGENT_CONFIG_OVERRIDE_ENV, "").strip()
+    return Path(raw).expanduser() if raw else None
+
+
 def agent_config_path() -> Path:
-    """OpenSquilla config the code-task agent loads via OPENSQUILLA_GATEWAY_CONFIG_PATH.
+    """Run-policy template the per-run subagent config is assembled from.
 
     Gives the agent a focused tool set — coding-irrelevant tools (memory,
-    sessions, sub-agents, cron, messaging, image/media) are denied, but network
-    and the squilla_router stay ON (code-task legitimately fetches docs and
-    installs deps, and the router still picks the model per task).
+    sessions, sub-agents, cron, messaging, image/media) are denied, but
+    network stays ON (code-task legitimately fetches docs and installs deps).
+    Provider/model/router settings are NOT pinned here: agent_config.py
+    carries the operator's own provider sections into the per-run config.
+    When OPENSQUILLA_CODETASK_AGENT_CONFIG points at a custom config, that
+    file is fully authoritative and no provider inheritance is applied.
     """
-    override = os.environ.get("OPENSQUILLA_CODETASK_AGENT_CONFIG")
-    if override:
-        return Path(override).expanduser()
-    return _DATA_DIR / "agent_config" / "config.toml"
+    return agent_config_override() or (_DATA_DIR / "agent_config" / "config.toml")
 
 
 def agent_python() -> str:

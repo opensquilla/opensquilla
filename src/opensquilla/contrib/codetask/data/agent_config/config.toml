@@ -1,22 +1,19 @@
-# OpenSquilla agent config for the code-task host real-repo solver.
+# OpenSquilla agent RUN-POLICY template for the code-task host real-repo solver.
 #
-# Loaded by LocalAdapter via OPENSQUILLA_GATEWAY_CONFIG_PATH so the code-task
-# agent runs with a focused tool set: coding-irrelevant tools are denied (like
-# the SWE-bench adapter) BUT network stays enabled — code-task legitimately
-# reads docs and installs dependencies — and the squilla_router stays ON so the
-# model is picked per task.
+# Loaded by LocalAdapter via OPENSQUILLA_GATEWAY_CONFIG_PATH (which REPLACES
+# the normal config chain) so the code-task agent runs with a focused tool
+# set: coding-irrelevant tools are denied (like the SWE-bench adapter) BUT
+# network stays enabled — code-task legitimately reads docs and installs
+# dependencies.
+#
+# Provider selection does NOT live here: the operator's own provider stack
+# ([llm], [squilla_router], [llm_profiles], [models], [model_catalog]) is
+# carried into the per-run config by contrib/codetask/agent_config.py, so the
+# subagent uses the same provider, model, credentials, and router tiers as
+# every other surface. Adding an [llm] or [squilla_router] section here would
+# pin the subagent to it and shadow the operator's env config — don't.
 
 workspace_strict = false
-
-[llm]
-provider = "openrouter"
-model = "deepseek/deepseek-v4-pro"            # fallback only; router decides per task
-base_url = "https://openrouter.ai/api/v1"
-# api_key comes from $OPENROUTER_API_KEY (inherited env).
-max_tokens = 32768
-
-[squilla_router]
-enabled = true                                # v4_phase3 by default; router self-decides
 
 [sandbox]
 # code-task runs on the host against a TRUSTED repo; no double sandbox.

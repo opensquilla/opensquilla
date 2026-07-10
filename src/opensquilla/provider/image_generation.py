@@ -10,7 +10,7 @@ from typing import Protocol
 import httpx
 
 from opensquilla.env import trust_env as _trust_env
-from opensquilla.provider.openrouter_attribution import openrouter_app_headers
+from opensquilla.provider.app_attribution import provider_app_headers
 from opensquilla.secrets import clean_header_secret
 
 
@@ -175,7 +175,7 @@ class OpenRouterImageGenerationProvider:
                 headers={
                     "Authorization": f"Bearer {api_key}",
                     "Content-Type": "application/json",
-                    **openrouter_app_headers(self._base_url),
+                    **provider_app_headers(self._base_url),
                 },
                 json=payload,
             )

@@ -25,7 +25,7 @@ import httpx
 import structlog
 
 from opensquilla.env import trust_env as _trust_env
-from opensquilla.provider.openrouter_attribution import openrouter_app_headers
+from opensquilla.provider.app_attribution import provider_app_headers
 from opensquilla.provider.protocol import provider_connection_config
 from opensquilla.router_tiers import DEFAULT_TEXT_TIER, normalize_text_tier
 
@@ -256,7 +256,7 @@ async def call_naming_llm(
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
     }
-    headers.update(openrouter_app_headers(url))
+    headers.update(provider_app_headers(url))
 
     try:
         async with httpx.AsyncClient(timeout=timeout, trust_env=_trust_env()) as client:

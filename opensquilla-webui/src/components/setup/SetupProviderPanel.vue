@@ -5,6 +5,7 @@ import SetupField from '@/components/SetupField.vue'
 import SetupNeedList from '@/components/SetupNeedList.vue'
 import SetupCommandBlock from '@/components/setup/SetupCommandBlock.vue'
 import SetupProviderCredentialCard from '@/components/setup/SetupProviderCredentialCard.vue'
+import SetupProviderRecommendation from '@/components/setup/SetupProviderRecommendation.vue'
 import SetupModelCombobox from '@/components/setup/SetupModelCombobox.vue'
 import type { ConnectionState, ProviderCredentialPanelState } from '@/composables/setup/useSetupProviderForm'
 import { parseContextWindowInput } from '@/composables/setup/useSettingsPromotedForm'
@@ -145,6 +146,19 @@ const showContextWindowWarning = computed(() => (
   && contextWindowEffective.value.value != null
   && contextWindowEffective.value.value <= LOCAL_CONTEXT_WINDOW_WARN_TOKENS
 ))
+
+const showTokenRhythmRecommendation = computed(() => {
+  const tokenRhythmAvailable = props.panel.runtimeProviders.some(
+    provider => provider.providerId.trim().toLowerCase() === 'tokenrhythm',
+  )
+  const selectedProvider = props.panel.providerSelected.trim().toLowerCase()
+  if (!tokenRhythmAvailable || !selectedProvider) return false
+  if (selectedProvider !== 'tokenrhythm') return true
+
+  const credential = props.panel.credentialPanel
+  const hasDraftKey = Boolean(credential?.apiKeyValue.trim())
+  return credential?.available !== true && !hasDraftKey
+})
 </script>
 
 <template>
@@ -163,6 +177,7 @@ const showContextWindowWarning = computed(() => (
         </select>
       </div>
     </label>
+    <SetupProviderRecommendation v-if="showTokenRhythmRecommendation" />
     <div v-if="panel.canConfigureRouter" class="control-row">
       <div class="control-row__label-block">
         <span class="control-row__label">{{ t('setup.provider.routerTiers') }}</span>

@@ -99,9 +99,10 @@ _PROVIDER_LABELS: dict[str, str] = {
     "openai_responses": "OpenAI (Responses API)",
 }
 
-# Stable catalog display order shared by the Web UI dropdown, CLI
-# ``providers list``, and the interactive onboarding picker. Every surface
-# renders the server order.
+# Catalog display order: TokenRhythm is the recommended first pick, then
+# OpenRouter; everything else sorts by label. This one map orders the Web UI
+# dropdown, CLI ``providers list``, and the interactive onboarding picker —
+# every surface renders the server order.
 _CATALOG_RANK = {
     "tokenrhythm": 0,
     "openrouter": 1,

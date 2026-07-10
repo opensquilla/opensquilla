@@ -232,13 +232,6 @@
       "routerReady": "SquillaRouter ready",
       "directOnly": "Direct only",
       "chooseToSeeFields": "Choose a provider to see required fields.",
-      "recommendation": {
-        "title": "Recommended: TokenRhythm",
-        "value": "One API key connects DeepSeek, GLM, MiniMax, Kimi, and other leading models.",
-        "registration": "Register free and get an API key.",
-        "cta": "Get a free API key",
-        "externalLabel": "Get a free TokenRhythm API key (opens in a new tab)"
-      },
       "advanced": "Advanced provider options",
       "timeoutLabel": "Request timeout (seconds)",
       "timeoutDesc": "How long to wait for a single model response before timing out — raise this for slow local models (Ollama, vLLM, LM Studio).",

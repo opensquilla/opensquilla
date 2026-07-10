@@ -232,13 +232,6 @@
       "routerReady": "SquillaRouter 已就绪",
       "directOnly": "仅直连",
       "chooseToSeeFields": "选择服务商以查看所需字段。",
-      "recommendation": {
-        "title": "推荐使用 TokenRhythm",
-        "value": "一个 API Key，统一接入 DeepSeek、GLM、MiniMax、Kimi 等主流模型。",
-        "registration": "免费注册，立即获取 API Key。",
-        "cta": "免费获取 API Key",
-        "externalLabel": "免费获取 TokenRhythm API Key（在新标签页中打开）"
-      },
       "advanced": "高级服务商选项",
       "timeoutLabel": "请求超时（秒）",
       "timeoutDesc": "等待单次模型响应的超时时长——对于较慢的本地模型（Ollama、vLLM、LM Studio）可调高此值。",

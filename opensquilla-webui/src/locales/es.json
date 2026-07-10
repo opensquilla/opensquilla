@@ -232,13 +232,6 @@
       "routerReady": "SquillaRouter listo",
       "directOnly": "Solo directo",
       "chooseToSeeFields": "Elige un proveedor para ver los campos requeridos.",
-      "recommendation": {
-        "title": "Recomendado: TokenRhythm",
-        "value": "Una sola clave API conecta DeepSeek, GLM, MiniMax, Kimi y otros modelos líderes.",
-        "registration": "Regístrate gratis y obtén una clave API.",
-        "cta": "Obtener una clave API gratis",
-        "externalLabel": "Obtener una clave API gratuita de TokenRhythm (se abre en una pestaña nueva)"
-      },
       "advanced": "Opciones avanzadas del proveedor",
       "timeoutLabel": "Tiempo de espera de la solicitud (segundos)",
       "timeoutDesc": "Cuánto esperar la respuesta de un modelo antes de agotar el tiempo de espera; aumenta este valor para modelos locales lentos (Ollama, vLLM, LM Studio).",

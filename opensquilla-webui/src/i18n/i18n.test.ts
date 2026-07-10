@@ -186,32 +186,4 @@ describe('catalog parity', () => {
     })
   })
 
-  it('ships localized TokenRhythm recommendation copy with exact English and zh-Hans wording', () => {
-    expect(en.setup.provider.recommendation).toEqual({
-      title: 'Recommended: TokenRhythm',
-      value: 'One API key connects DeepSeek, GLM, MiniMax, Kimi, and other leading models.',
-      registration: 'Register free and get an API key.',
-      cta: 'Get a free API key',
-      externalLabel: 'Get a free TokenRhythm API key (opens in a new tab)',
-    })
-    expect(zhHans.setup.provider.recommendation).toEqual({
-      title: '推荐使用 TokenRhythm',
-      value: '一个 API Key，统一接入 DeepSeek、GLM、MiniMax、Kimi 等主流模型。',
-      registration: '免费注册，立即获取 API Key。',
-      cta: '免费获取 API Key',
-      externalLabel: '免费获取 TokenRhythm API Key（在新标签页中打开）',
-    })
-
-    for (const messages of [ja, fr, de, es]) {
-      const copy = messages.setup.provider.recommendation
-      expect(copy.title).toContain('TokenRhythm')
-      expect(copy.value).toContain('DeepSeek')
-      expect(copy.value).toContain('GLM')
-      expect(copy.value).toContain('MiniMax')
-      expect(copy.value).toContain('Kimi')
-      expect(copy.registration).toBeTruthy()
-      expect(copy.cta).toBeTruthy()
-      expect(copy.externalLabel).toBeTruthy()
-    }
-  })
 })

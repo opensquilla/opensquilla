@@ -247,57 +247,21 @@ def test_desktop_onboarding_is_owned_modal_child_of_main_window() -> None:
     assert "onboardingWindow?.focus()" in onboarding
 
 
-def test_desktop_onboarding_defaults_to_tokenrhythm_with_trusted_registration_cta() -> None:
+def test_desktop_onboarding_keeps_supported_providers_in_one_picker() -> None:
     main_ts = _read("desktop/electron/src/main.ts")
     html = _section(main_ts, "function onboardingHtml", "async function runOnboarding")
 
-    assert (
-        "const TOKENRHYTHM_REGISTER_URL = 'https://tokenrhythm.studio/register'"
-        in main_ts
-    )
-    assert '<input id="provider" type="hidden" value="tokenrhythm" />' in html
-    assert 'id="tokenrhythmRegister"' in html
-    assert 'href="${TOKENRHYTHM_REGISTER_URL}"' in html
-    assert 'target="_blank"' in html
-    assert 'rel="noopener noreferrer"' in html
-    assert 'data-i18n-aria="onboarding.step2.tokenrhythmCtaExternalLabel"' in html
-    assert ".provider-feature-select:focus-visible" in html
-    assert ".provider-disclosure-toggle:focus-visible" in html
+    assert '<div class="provider-grid" id="providerGrid"></div>' in html
+    assert '<input id="provider" type="hidden" value="openrouter" />' in html
+    assert "providers.map((item)" in html
+    assert "id: 'tokenrhythm'" in main_ts
+    assert "data-provider-feature" not in html
+    assert "providerMoreToggle" not in html
+    assert "tokenrhythmRegister" not in html
+    assert "TOKENRHYTHM_REGISTER_URL" not in main_ts
     assert html.rindex("syncProviderDefaults(true);") < html.rindex(
         "applyMigrationPrefill(initialProviderPrefill);"
     )
-    for key in (
-        "onboarding.step2.tokenrhythmTitle",
-        "onboarding.step2.tokenrhythmValue",
-        "onboarding.step2.tokenrhythmRegistration",
-        "onboarding.step2.tokenrhythmCta",
-        "onboarding.step2.tokenrhythmCtaExternalLabel",
-        "onboarding.step2.otherProviders",
-    ):
-        assert main_ts.count(f"'{key}':") == 6, key
-
-
-def test_desktop_onboarding_opens_only_trusted_registration_url_outside_renderer() -> None:
-    main_ts = _read("desktop/electron/src/main.ts")
-    preload = _read("desktop/electron/src/preload.cts")
-    onboarding = _section(
-        main_ts,
-        "async function runOnboarding",
-        "async function pathExists",
-    )
-    window_open = _section(
-        onboarding,
-        "onboardingWindow.webContents.setWindowOpenHandler",
-        "const guardOnboardingNavigation",
-    )
-
-    assert "if (url === TOKENRHYTHM_REGISTER_URL)" in window_open
-    assert "void shell.openExternal(TOKENRHYTHM_REGISTER_URL)" in window_open
-    assert "return { action: 'deny' }" in window_open
-    assert "shell.openExternal(url)" not in window_open
-    assert "openExternal" not in preload
-    assert "desktop:external:open" not in main_ts
-    assert "desktop:external:open" not in preload
 
 
 def test_desktop_focus_prefers_open_onboarding_window() -> None:

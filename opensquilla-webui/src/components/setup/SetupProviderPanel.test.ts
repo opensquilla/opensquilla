@@ -2,7 +2,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { createApp, nextTick } from 'vue'
 import i18n from '@/i18n'
-import zhHans from '@/locales/zh-Hans.json'
 import SetupProviderPanel from './SetupProviderPanel.vue'
 import type { ConnectionState, DiscoveredModel } from '@/composables/setup/useSetupProviderForm'
 
@@ -30,10 +29,6 @@ const DISCOVERED: DiscoveredModel[] = [
     capabilitySource: 'provider',
   },
 ]
-
-const TOKENRHYTHM_REGISTRATION_URL = 'https://tokenrhythm.studio/register'
-const TOKENRHYTHM_PROVIDER = { providerId: 'tokenrhythm', label: 'TokenRhythm' }
-const OPENROUTER_PROVIDER = { providerId: 'openrouter', label: 'OpenRouter' }
 
 function panel(overrides: Record<string, unknown> = {}) {
   const base = {
@@ -223,132 +218,23 @@ describe('SetupProviderPanel — model field', () => {
   })
 })
 
-describe('SetupProviderPanel — TokenRhythm recommendation', () => {
-  function recommendation(el: HTMLElement): HTMLElement | null {
-    return el.querySelector<HTMLElement>('[data-testid="tokenrhythm-recommendation"]')
-  }
-
-  function tokenRhythmCredential(overrides: Record<string, unknown> = {}) {
-    return {
-      ...(panel().credentialPanel as Record<string, unknown>),
-      providerLabel: 'TokenRhythm',
-      available: false,
-      source: 'none',
-      envKey: 'TOKENRHYTHM_API_KEY',
-      apiKeyValue: '',
-      apiKeyEnvValue: 'TOKENRHYTHM_API_KEY',
-      ...overrides,
-    }
-  }
-
-  it('keeps OpenRouter selected while showing exactly one TokenRhythm recommendation', async () => {
-    const onUpdateProviderSelected = vi.fn()
-    const onProviderChange = vi.fn()
-    const onUpdateProviderField = vi.fn()
-    const { app, el } = await mountPanel(
-      {
-        providerSelected: 'openrouter',
-        runtimeProviders: [OPENROUTER_PROVIDER, TOKENRHYTHM_PROVIDER],
-        credentialPanel: {
-          ...(panel().credentialPanel as Record<string, unknown>),
-          providerLabel: 'OpenRouter',
-        },
-      },
-      { onUpdateProviderSelected, onProviderChange, onUpdateProviderField },
-    )
+describe('SetupProviderPanel — provider options', () => {
+  it('renders TokenRhythm as a peer option without a recommendation surface', async () => {
+    const { app, el } = await mountPanel({
+      providerSelected: 'openrouter',
+      runtimeProviders: [
+        { providerId: 'tokenrhythm', label: 'TokenRhythm' },
+        { providerId: 'openrouter', label: 'OpenRouter' },
+      ],
+    })
 
     const select = el.querySelector<HTMLSelectElement>('select[name="setup_provider"]')
-    const recommendations = el.querySelectorAll('[data-testid="tokenrhythm-recommendation"]')
-    const link = el.querySelector<HTMLAnchorElement>(`a[href="${TOKENRHYTHM_REGISTRATION_URL}"]`)
+    const options = Array.from(select?.options || []).map(option => option.textContent)
 
     expect(select?.value).toBe('openrouter')
-    expect(recommendations).toHaveLength(1)
-    expect(recommendation(el)?.textContent).toContain('Recommended: TokenRhythm')
-    expect(recommendation(el)?.textContent)
-      .toContain('One API key connects DeepSeek, GLM, MiniMax, Kimi, and other leading models.')
-    expect(recommendation(el)?.textContent).toContain('Register free and get an API key.')
-
-    link?.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }))
-    await nextTick()
-
-    expect(select?.value).toBe('openrouter')
-    expect(onUpdateProviderSelected).not.toHaveBeenCalled()
-    expect(onProviderChange).not.toHaveBeenCalled()
-    expect(onUpdateProviderField).not.toHaveBeenCalled()
-    app.unmount()
-  })
-
-  it('uses the exact safe external URL without graphical assets or alert semantics', async () => {
-    const { app, el } = await mountPanel({
-      providerSelected: 'openrouter',
-      runtimeProviders: [OPENROUTER_PROVIDER, TOKENRHYTHM_PROVIDER],
-    })
-    const card = recommendation(el)
-    const link = card?.querySelector<HTMLAnchorElement>('a')
-
-    expect(link?.href).toBe(TOKENRHYTHM_REGISTRATION_URL)
-    expect(link?.getAttribute('target')).toBe('_blank')
-    expect(link?.getAttribute('rel')).toBe('noopener noreferrer')
-    expect(link?.getAttribute('aria-label')).toContain('opens in a new tab')
-    expect(link?.textContent).toContain('Get a free API key')
-    expect(card?.querySelector('img, svg, canvas')).toBeNull()
-    expect(card?.querySelector('[role="alert"]')).toBeNull()
-    app.unmount()
-  })
-
-  it('shows the recommendation when TokenRhythm is selected without an available or draft key', async () => {
-    const { app, el } = await mountPanel({
-      providerSelected: 'tokenrhythm',
-      runtimeProviders: [OPENROUTER_PROVIDER, TOKENRHYTHM_PROVIDER],
-      credentialPanel: tokenRhythmCredential(),
-    })
-
-    expect(recommendation(el)).toBeTruthy()
-    expect(el.querySelectorAll('[data-testid="tokenrhythm-recommendation"]')).toHaveLength(1)
-    app.unmount()
-  })
-
-  it.each([
-    ['an available credential', { available: true }],
-    ['a supplied draft key', { apiKeyValue: 'tr-test-key' }],
-  ])('hides the recommendation when selected TokenRhythm has %s', async (_case, credential) => {
-    const { app, el } = await mountPanel({
-      providerSelected: 'tokenrhythm',
-      runtimeProviders: [OPENROUTER_PROVIDER, TOKENRHYTHM_PROVIDER],
-      credentialPanel: tokenRhythmCredential(credential),
-    })
-
-    expect(recommendation(el)).toBeNull()
-    app.unmount()
-  })
-
-  it('hides the recommendation when TokenRhythm is absent from the runtime catalog', async () => {
-    const { app, el } = await mountPanel({
-      providerSelected: 'openrouter',
-      runtimeProviders: [OPENROUTER_PROVIDER],
-    })
-
-    expect(recommendation(el)).toBeNull()
-    app.unmount()
-  })
-
-  it('renders the approved zh-Hans copy exactly', async () => {
-    i18n.global.setLocaleMessage('zh-Hans', zhHans)
-    i18n.global.locale.value = 'zh-Hans'
-    const { app, el } = await mountPanel({
-      providerSelected: 'openrouter',
-      runtimeProviders: [OPENROUTER_PROVIDER, TOKENRHYTHM_PROVIDER],
-    })
-    const card = recommendation(el)
-
-    expect(card?.querySelector('[data-testid="tokenrhythm-recommendation-title"]')?.textContent)
-      .toBe('推荐使用 TokenRhythm')
-    expect(card?.querySelector('[data-testid="tokenrhythm-recommendation-value"]')?.textContent)
-      .toBe('一个 API Key，统一接入 DeepSeek、GLM、MiniMax、Kimi 等主流模型。')
-    expect(card?.querySelector('[data-testid="tokenrhythm-recommendation-registration"]')?.textContent)
-      .toBe('免费注册，立即获取 API Key。')
-    expect(card?.querySelector('a')?.textContent?.trim()).toBe('免费获取 API Key')
-    expect(card?.querySelector('a')?.getAttribute('aria-label')).toContain('在新标签页中打开')
+    expect(options).toEqual(['Choose a provider', 'TokenRhythm', 'OpenRouter'])
+    expect(el.querySelector('[data-testid="tokenrhythm-recommendation"]')).toBeNull()
+    expect(el.querySelector('a[href="https://tokenrhythm.studio/register"]')).toBeNull()
     app.unmount()
   })
 })

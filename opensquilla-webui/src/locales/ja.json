@@ -232,13 +232,6 @@
       "routerReady": "SquillaRouter 準備完了",
       "directOnly": "ダイレクトのみ",
       "chooseToSeeFields": "必須項目を表示するにはプロバイダーを選択してください。",
-      "recommendation": {
-        "title": "おすすめ: TokenRhythm",
-        "value": "1つの API キーで DeepSeek、GLM、MiniMax、Kimi などの主要モデルに接続できます。",
-        "registration": "無料登録して API キーを取得できます。",
-        "cta": "無料で API キーを取得",
-        "externalLabel": "TokenRhythm の無料 API キーを取得（新しいタブで開きます）"
-      },
       "advanced": "プロバイダーの詳細オプション",
       "timeoutLabel": "リクエストのタイムアウト（秒）",
       "timeoutDesc": "1 回のモデル応答がタイムアウトするまでの待機時間です。低速なローカルモデル（Ollama、vLLM、LM Studio）では値を大きくしてください。",

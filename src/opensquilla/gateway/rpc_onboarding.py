@@ -438,20 +438,21 @@ async def _provider_credential_reveal(params: Any, ctx: RpcContext) -> dict[str,
 
 @_d.method("onboarding.models.discover", scope="operator.admin")
 async def _models_discover(params: Any, ctx: RpcContext) -> dict[str, Any]:
-    """List a candidate provider's live models without persisting anything.
+    """List verified picker-safe models without persisting anything.
 
     Admin-scoped (like ``onboarding.provider.probe``): the request carries
     candidate credentials, so it must not be reachable at the read/write
     tiers even though it changes no state.
 
-    No SSRF guard by design: discovery legitimately targets self-hosted and
-    loopback model servers (Ollama, vLLM, LM Studio), and the admin gate is
-    the trust boundary — an SSRF filter would break exactly those setups.
+    Selector discovery is fail-closed: only registry-verified providers on
+    their official hosts are queried. Self-hosted and arbitrary endpoints
+    remain manual-entry surfaces; raw CLI diagnostics retain their broader
+    endpoint-probing behavior.
 
     Blank credentials fall back to the stored config's, mirroring
     ``upsert_llm_provider``'s keep semantics.
     """
-    from opensquilla.onboarding.probe import discover_provider_models
+    from opensquilla.onboarding.probe import discover_selectable_provider_models
 
     provider_id = _require(params, "providerId")
     p = params if isinstance(params, dict) else {}
@@ -471,7 +472,7 @@ async def _models_discover(params: Any, ctx: RpcContext) -> dict[str, Any]:
         if not proxy:
             proxy = str(getattr(cfg.llm, "proxy", "") or "")
     with _validation_error("onboarding.provider.invalid"):
-        result = await discover_provider_models(
+        result = await discover_selectable_provider_models(
             provider_id=provider_id,
             api_key=api_key,
             api_key_env=api_key_env,

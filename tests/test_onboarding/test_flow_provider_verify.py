@@ -584,7 +584,7 @@ def test_wizard_discovery_suppresses_provider_log_noise(monkeypatch, capsys):
         )
         return sentinel
 
-    monkeypatch.setattr(probe_module, "discover_provider_models", _noisy_discovery)
+    monkeypatch.setattr(probe_module, "discover_selectable_provider_models", _noisy_discovery)
 
     result = flow._run_provider_discovery(provider_id="openrouter")
 
@@ -719,7 +719,7 @@ def test_discovery_keyboard_interrupt_skips_discovery_not_the_wizard(monkeypatch
     async def _stalled_discovery(**_kwargs: Any) -> Any:
         raise KeyboardInterrupt
 
-    monkeypatch.setattr(probe_module, "discover_provider_models", _stalled_discovery)
+    monkeypatch.setattr(probe_module, "discover_selectable_provider_models", _stalled_discovery)
 
     result = flow._run_provider_discovery(provider_id="groq", api_key="sk-live")
 

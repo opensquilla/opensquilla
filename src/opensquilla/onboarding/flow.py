@@ -664,12 +664,12 @@ def _run_provider_discovery(
     """
     import asyncio
 
-    from opensquilla.onboarding.probe import discover_provider_models
+    from opensquilla.onboarding.probe import discover_selectable_provider_models
 
     try:
         with _quiet_provider_logs():
             return asyncio.run(
-                discover_provider_models(
+                discover_selectable_provider_models(
                     provider_id=provider_id,
                     api_key=api_key,
                     api_key_env=api_key_env,

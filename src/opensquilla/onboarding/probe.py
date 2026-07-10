@@ -6,9 +6,12 @@ first chat. The probe runs a one-token chat turn against the candidate
 configuration *before* it is saved, classifies any failure through the
 standard provider taxonomy, and reports an actionable result.
 
-Model discovery (:func:`discover_provider_models`) builds the same kind of
-throwaway, never-persisted provider from candidate credentials and asks it
+Raw model discovery (:func:`discover_provider_models`) builds the same kind
+of throwaway, never-persisted provider from candidate credentials and asks it
 for its live model list, enriching each row from the layered model catalog.
+Selector surfaces use :func:`discover_selectable_provider_models` instead;
+that fail-closed wrapper admits only provider/host pairs whose listing has
+been verified as an accurate source of user-selectable model ids.
 """
 
 from __future__ import annotations
@@ -22,6 +25,7 @@ from typing import Any, cast
 import httpx
 import structlog
 
+from opensquilla.provider.app_attribution import is_provider_app_host
 from opensquilla.provider.failures import ProviderFailureKind, classify_provider_error
 from opensquilla.provider.protocol import LLMProvider
 from opensquilla.provider.registry import get_provider_spec
@@ -376,4 +380,48 @@ async def discover_provider_models(
         provider_id=provider_id,
         source="live",
         models=[_discover_model_row(m, provider_id) for m in provider_models],
+    )
+
+
+async def discover_selectable_provider_models(
+    *,
+    provider_id: str,
+    api_key: str = "",
+    api_key_env: str = "",
+    base_url: str = "",
+    proxy: str = "",
+) -> ProviderModelsDiscoverResult:
+    """Return only verified live catalogs suitable for a model picker.
+
+    This is the selector-facing policy boundary. Unknown and unsupported
+    provider ids remain validation errors, matching raw discovery. All other
+    providers default to an empty, successful catalog *before* credential
+    resolution or provider construction, preserving the manual model-id
+    escape hatch without presenting guessed data as authoritative.
+
+    A trusted provider id is not enough on its own: an operator-supplied
+    OpenAI-compatible re-host can serve a completely different model set.
+    Live selection is therefore allowed only when the effective base URL is
+    the provider's allowlisted official host (or one of its subdomains).
+    """
+    provider_id = (provider_id or "").strip()
+    spec = get_provider_spec(provider_id)  # raises UnknownProviderError(ValueError)
+    if not spec.runtime_supported:
+        raise ValueError(f"Provider '{provider_id}' has no runtime support to discover.")
+
+    if spec.selectable_model_catalog != "verified_live":
+        return ProviderModelsDiscoverResult(ok=True, provider_id=provider_id)
+
+    effective_base_url = base_url.strip() or spec.default_base_url
+    if not spec.compat.official_host or not is_provider_app_host(
+        effective_base_url, spec.compat.official_host
+    ):
+        return ProviderModelsDiscoverResult(ok=True, provider_id=provider_id)
+
+    return await discover_provider_models(
+        provider_id=provider_id,
+        api_key=api_key,
+        api_key_env=api_key_env,
+        base_url=base_url.strip(),
+        proxy=proxy,
     )

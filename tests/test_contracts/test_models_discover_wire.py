@@ -9,8 +9,8 @@ key sets:
 - Adding a key requires deliberately extending the frozen sets in this file —
   that friction is the point: wire additions should be a conscious decision.
 
-Everything below drives the real RPC handler and the underlying
-``discover_provider_models`` against a stubbed httpx transport (the provider
+Everything below drives the real RPC handler and the trusted selector-facing
+discovery wrapper against a stubbed httpx transport (the provider
 probe's test pattern) — zero network, zero credentials (tests/conftest.py
 strips provider keys from the environment; only synthetic keys appear here).
 """
@@ -94,7 +94,7 @@ async def test_discover_envelope_keys_are_frozen(tmp_path, monkeypatch: Any) -> 
     _patch_models_response(monkeypatch, _ok_models_response())
 
     payload = await rpc_onboarding._models_discover(
-        {"providerId": "openai", "apiKey": "sk-test"}, _ctx(tmp_path)
+        {"providerId": "openrouter", "apiKey": "sk-test"}, _ctx(tmp_path)
     )
 
     assert set(payload) == DISCOVER_ENVELOPE_KEYS
@@ -107,7 +107,7 @@ async def test_discover_model_row_keys_are_frozen(tmp_path, monkeypatch: Any) ->
     _patch_models_response(monkeypatch, _ok_models_response())
 
     payload = await rpc_onboarding._models_discover(
-        {"providerId": "openai", "apiKey": "sk-test"}, _ctx(tmp_path)
+        {"providerId": "openrouter", "apiKey": "sk-test"}, _ctx(tmp_path)
     )
 
     (row,) = payload["models"]
@@ -138,7 +138,7 @@ async def test_discover_pricing_keys_are_frozen_when_present(tmp_path, monkeypat
     catalog = ModelCatalog()
     catalog.set_user_overrides(
         {
-            "openai/test-vendor/test-model": {
+            "openrouter/test-vendor/test-model": {
                 "input_cost_per_mtok": 1.0,
                 "output_cost_per_mtok": 2.0,
             }
@@ -148,7 +148,7 @@ async def test_discover_pricing_keys_are_frozen_when_present(tmp_path, monkeypat
     try:
         _patch_models_response(monkeypatch, _ok_models_response())
         payload = await rpc_onboarding._models_discover(
-            {"providerId": "openai", "apiKey": "sk-test"}, _ctx(tmp_path)
+            {"providerId": "openrouter", "apiKey": "sk-test"}, _ctx(tmp_path)
         )
     finally:
         set_shared_catalog(None)
@@ -176,7 +176,7 @@ async def test_discover_empty_listing_is_ok_with_source_none(tmp_path, monkeypat
     )
 
     payload = await rpc_onboarding._models_discover(
-        {"providerId": "openai", "apiKey": "sk-test"}, _ctx(tmp_path)
+        {"providerId": "openrouter", "apiKey": "sk-test"}, _ctx(tmp_path)
     )
 
     assert set(payload) == DISCOVER_ENVELOPE_KEYS
@@ -190,10 +190,10 @@ async def test_discover_classified_failure_envelope_is_frozen(tmp_path, monkeypa
     """A raising provider produces ok=false with a classified, redacted error."""
 
     class _RaisingProvider:
-        provider_name = "openai"
+        provider_name = "openrouter"
 
         async def list_models(self):  # noqa: ANN202 - test stub
-            request = httpx.Request("GET", "https://api.openai.com/v1/models")
+            request = httpx.Request("GET", "https://openrouter.ai/api/v1/models")
             response = httpx.Response(
                 401,
                 request=request,
@@ -207,7 +207,7 @@ async def test_discover_classified_failure_envelope_is_frozen(tmp_path, monkeypa
     )
 
     payload = await rpc_onboarding._models_discover(
-        {"providerId": "openai", "apiKey": "sk-test"}, _ctx(tmp_path)
+        {"providerId": "openrouter", "apiKey": "sk-test"}, _ctx(tmp_path)
     )
 
     assert set(payload) == DISCOVER_ENVELOPE_KEYS

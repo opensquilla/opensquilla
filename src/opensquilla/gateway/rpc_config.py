@@ -2,11 +2,7 @@
 
 from __future__ import annotations
 
-import contextlib
 import copy
-import os
-import tempfile
-from pathlib import Path
 from typing import Any, cast
 
 import structlog
@@ -57,40 +53,40 @@ def _update_config_in_place(old: Any, new: Any) -> None:
 
 
 def _persist_config(config: Any) -> None:
-    """Write config to TOML, defaulting to the user config path when unset."""
+    """Write config to TOML, defaulting to the user config path when unset.
+
+    Delegates to the shared sparse persister so every gateway write path has
+    one persistence contract: diff-merge onto the on-disk TOML (hand-edits
+    and unknown keys survive, defaults are not materialized), a timestamped
+    backup of the previous file, pre-write re-validation, fsync-before-rename
+    and 0600 modes. The outcome is logged either way — a config rewrite must
+    never be invisible in the gateway log.
+    """
     if not getattr(config, "config_path", None) and hasattr(config, "config_path"):
         config.config_path = str(default_opensquilla_home() / "config.toml")
 
     if not getattr(config, "config_path", None):
         return
 
-    import tomli_w  # TOML writer (tomllib is read-only)
+    from opensquilla.onboarding.config_store import persist_config
 
-    from opensquilla.onboarding.config_store import restore_runtime_overrides
-
-    payload = config.to_toml_dict()
-    # Undo boot/reload-time env materializations (llm.base_url, llm.proxy,
-    # CLI --listen/--port/--debug) before writing, exactly like the sparse
-    # persister: this dump is the full model, and without the restore an
-    # unrelated config.set would bake the env value into config.toml.
-    restore_runtime_overrides(payload, config)
-    path = Path(config.config_path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    # Write atomically with 0o600 so a freshly created config.toml (which may
-    # carry secrets) is never group/other-readable, matching config_store's
-    # persist_config hardening.
-    fd, tmp_name = tempfile.mkstemp(prefix=".config.", suffix=".toml", dir=str(path.parent))
+    path = str(config.config_path)
     try:
-        with os.fdopen(fd, "wb") as f:
-            tomli_w.dump(payload, f)
-        os.chmod(tmp_name, 0o600)
-        os.replace(tmp_name, path)
-    except BaseException:
-        with contextlib.suppress(OSError):
-            os.unlink(tmp_name)
+        result = persist_config(config, path=path)
+    except Exception as exc:
+        # Only the exception type: a pydantic ValidationError repr can embed
+        # rejected field values, and secrets must never reach the log.
+        log.error(
+            "gateway.config_persist_failed",
+            path=path,
+            error=type(exc).__name__,
+        )
         raise
-    with contextlib.suppress(OSError):
-        os.chmod(path, 0o600)
+    log.info(
+        "gateway.config_persisted",
+        path=str(result.path),
+        backup=str(result.backup_path) if result.backup_path else None,
+    )
 
 
 def _strip_public_derived_config_fields(payload: dict[str, Any]) -> dict[str, Any]:
@@ -612,11 +608,18 @@ async def _handle_config_set(params: dict | None, ctx: RpcContext) -> dict[str, 
     if _memory_restart_required_for_paths({path}):
         _validate_memory_embedding_semantics(new_config)
     inherit_then_clear_explicit(ctx.config, new_config, explicit_paths - redacted_paths)
+    # Runtime-override provenance must ride the candidate BEFORE the selector
+    # sync re-resolves env values onto it, so persist can un-bake them.
+    if hasattr(new_config, "inherit_persist_provenance"):
+        new_config.inherit_persist_provenance(ctx.config)
     _sync_provider_selector(ctx, new_config)
+    # Persist the candidate BEFORE mutating the live config: if the write
+    # fails, memory and disk stay consistent (both keep the old state)
+    # instead of silently diverging until the next restart reverts memory.
+    _persist_config(new_config)
     _update_config_in_place(ctx.config, new_config)
     _sync_image_generation(new_config)
     _sync_model_catalog_overrides(new_config)
-    _persist_config(ctx.config)
     response = _change_meta(
         old_memory_fingerprint=old_memory_fingerprint,
         old_channels_fingerprint=old_channels_fingerprint,
@@ -695,13 +698,19 @@ async def _handle_config_patch(params: dict | None, ctx: RpcContext) -> dict[str
         _validate_memory_embedding_semantics(new_config)
     inherit_then_clear_explicit(ctx.config, new_config, explicit_paths - redacted_paths)
 
+    # Runtime-override provenance must ride the candidate BEFORE the selector
+    # sync re-resolves env values onto it, so persist can un-bake them.
+    if hasattr(new_config, "inherit_persist_provenance"):
+        new_config.inherit_persist_provenance(ctx.config)
     _sync_provider_selector(ctx, new_config)
+    # Persist the candidate BEFORE mutating the live config: if the write
+    # fails, memory and disk stay consistent (both keep the old state).
+    _persist_config(new_config)
     # Update in-memory config so subsequent requests see changes immediately
     _update_config_in_place(ctx.config, new_config)
     _sync_image_generation(new_config)
     _sync_model_catalog_overrides(new_config)
 
-    _persist_config(ctx.config)
     change_meta = _change_meta(
         old_memory_fingerprint=old_memory_fingerprint,
         old_channels_fingerprint=old_channels_fingerprint,
@@ -775,12 +784,18 @@ async def _handle_config_apply(params: dict | None, ctx: RpcContext) -> dict[str
     inherit_then_clear_explicit(
         ctx.config, new_config, _collect_paths(config_payload) - redacted_paths
     )
+    # Runtime-override provenance must ride the candidate BEFORE the selector
+    # sync re-resolves env values onto it, so persist can un-bake them.
+    if ctx.config is not None and hasattr(new_config, "inherit_persist_provenance"):
+        new_config.inherit_persist_provenance(ctx.config)
     _sync_provider_selector(ctx, new_config)
+    # Persist the candidate BEFORE mutating the live config: if the write
+    # fails, memory and disk stay consistent (both keep the old state).
+    _persist_config(new_config)
     if ctx.config is not None:
         _update_config_in_place(ctx.config, new_config)
     _sync_image_generation(new_config)
     _sync_model_catalog_overrides(new_config)
-    _persist_config(ctx.config if ctx.config is not None else new_config)
     return _change_meta(
         old_memory_fingerprint=old_memory_fingerprint,
         old_channels_fingerprint=old_channels_fingerprint,

@@ -138,6 +138,19 @@ def _mark_env_absorbed_runtime_secrets(cfg: GatewayConfig, raw: Any) -> None:
         cfg.mark_runtime_secret("llm.api_key")
     if cfg.search_api_key and not _raw_key_present(raw, "search_api_key"):
         cfg.mark_runtime_secret("search_api_key")
+    # Memory embedding keys are absorbed from OPENSQUILLA_MEMORY_EMBEDDING__
+    # [REMOTE__]API_KEY (MemoryConfig is pydantic-settings with a nested
+    # delimiter). Unmarked, a full-model persist writes them verbatim into
+    # config.toml.
+    embedding = getattr(getattr(cfg, "memory", None), "embedding", None)
+    if getattr(embedding, "api_key", "") and not _raw_key_present(
+        raw, "memory.embedding.api_key"
+    ):
+        cfg.mark_runtime_secret("memory.embedding.api_key")
+    if getattr(getattr(embedding, "remote", None), "api_key", "") and not _raw_key_present(
+        raw, "memory.embedding.remote.api_key"
+    ):
+        cfg.mark_runtime_secret("memory.embedding.remote.api_key")
     # Auth secrets are absorbed from OPENSQUILLA_AUTH_TOKEN / _PASSWORD into
     # the AuthConfig pydantic-settings model. Without marking them, any
     # full-dump persist bakes the env-sourced token into config.toml, where

@@ -1,0 +1,269 @@
+"""Regressions for the gateway config-RPC persistence contract.
+
+The incident this pins: ``config.set``/``patch``/``patch.safe``/``apply``
+used to (a) rewrite config.toml as a FULL materialized dump with no backup
+and no log line — a Web-UI chat-composer toggle silently rewrote the file
+and forensics had nothing to go on — and (b) mutate the live config BEFORE
+persisting, so a failed write left memory and disk silently diverged until
+a restart reverted memory.
+
+Everything below runs against synthetic in-memory configs; no network, no
+credentials (tests/conftest.py strips provider keys from the environment).
+"""
+
+from __future__ import annotations
+
+import tomllib
+from types import SimpleNamespace
+
+import pytest
+import structlog.testing
+
+import opensquilla.gateway.rpc_config as rpc_config
+from opensquilla.gateway.config import GatewayConfig
+from opensquilla.gateway.rpc import RpcContext
+from opensquilla.gateway.rpc_config import (
+    _handle_config_patch_safe,
+    _handle_config_set,
+)
+
+
+@pytest.fixture()
+def cfg_path(tmp_path, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("OPENSQUILLA_STATE_DIR", str(tmp_path / "state"))
+    return tmp_path / "config.toml"
+
+
+def _ctx(config: GatewayConfig) -> RpcContext:
+    return RpcContext(conn_id="test", config=config)
+
+
+def _write_small_config(path) -> None:
+    path.write_text(
+        'config_version = 1\n\n'
+        '[llm]\nprovider = "openai"\nmodel = "gpt-test"\n\n'
+        '[channels.demo_extra]\nnote = "keep-me"\n'
+    )
+
+
+# --- sparse persist -----------------------------------------------------------
+
+
+async def test_config_set_is_sparse_and_preserves_foreign_disk_keys(cfg_path) -> None:
+    _write_small_config(cfg_path)
+    cfg = GatewayConfig.load(str(cfg_path))
+    before_lines = len(cfg_path.read_text().splitlines())
+
+    await _handle_config_set({"path": "naming.enabled", "value": False}, _ctx(cfg))
+
+    text = cfg_path.read_text()
+    data = tomllib.loads(text)
+    # The changed key landed; defaults were NOT materialized; a raw key the
+    # model never saw survived the save.
+    assert data["naming"]["enabled"] is False
+    assert data["channels"]["demo_extra"]["note"] == "keep-me"
+    assert "[memory]" not in text
+    assert "host =" not in text
+    assert len(text.splitlines()) < before_lines + 10
+
+
+async def test_config_set_creates_timestamped_backup(cfg_path, tmp_path) -> None:
+    _write_small_config(cfg_path)
+    original = cfg_path.read_text()
+    cfg = GatewayConfig.load(str(cfg_path))
+
+    await _handle_config_set({"path": "naming.enabled", "value": False}, _ctx(cfg))
+
+    backups = sorted(tmp_path.glob("config.toml.backup.*"))
+    assert len(backups) == 1
+    assert backups[0].read_text() == original
+
+
+async def test_config_set_emits_persist_log_without_values(cfg_path) -> None:
+    _write_small_config(cfg_path)
+    cfg = GatewayConfig.load(str(cfg_path))
+    sentinel = "sk-sentinel-secret-value"
+    cfg.llm.api_key = sentinel
+
+    with structlog.testing.capture_logs() as captured:
+        await _handle_config_set({"path": "naming.enabled", "value": False}, _ctx(cfg))
+
+    events = [entry["event"] for entry in captured]
+    assert "gateway.config_persisted" in events
+    persisted = next(e for e in captured if e["event"] == "gateway.config_persisted")
+    assert persisted["path"] == str(cfg_path)
+    assert sentinel not in str(captured)
+
+
+# --- transactionality ---------------------------------------------------------
+
+
+async def test_persist_failure_leaves_live_config_and_disk_unchanged(
+    cfg_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _write_small_config(cfg_path)
+    original = cfg_path.read_text()
+    cfg = GatewayConfig.load(str(cfg_path))
+    naming_before = cfg.naming.enabled
+
+    import opensquilla.onboarding.config_store as config_store
+
+    def _boom(*args, **kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(config_store.os, "replace", _boom)
+
+    with pytest.raises(OSError):
+        await _handle_config_set({"path": "naming.enabled", "value": False}, _ctx(cfg))
+
+    # Neither surface moved: live config still serves the old value, disk
+    # bytes are untouched, so a restart cannot silently revert anything.
+    assert cfg.naming.enabled == naming_before
+    assert cfg_path.read_text() == original
+
+
+# --- the incident payload -----------------------------------------------------
+
+
+async def test_routing_mode_toggle_persists_only_its_paths(cfg_path) -> None:
+    """The exact silent Web-UI chat toggle that rewrote the file in the
+    incident: three keys in, three keys (plus migration stamp) out."""
+    _write_small_config(cfg_path)
+    cfg = GatewayConfig.load(str(cfg_path))
+
+    res = await _handle_config_patch_safe(
+        {
+            "patches": {
+                "llm_ensemble.enabled": True,
+                "squilla_router.enabled": True,
+                "squilla_router.rollout_phase": "full",
+            }
+        },
+        _ctx(cfg),
+    )
+
+    assert set(res["patched"]) == {
+        "llm_ensemble.enabled",
+        "squilla_router.enabled",
+        "squilla_router.rollout_phase",
+    }
+    data = tomllib.loads(cfg_path.read_text())
+    assert data["llm_ensemble"]["enabled"] is True
+    # Values equal to the model default (router enabled/full) may be omitted
+    # by the sparse diff; the round-trip contract is what matters.
+    reloaded = GatewayConfig.load(str(cfg_path))
+    assert reloaded.llm_ensemble.enabled is True
+    assert reloaded.squilla_router.enabled is True
+    assert reloaded.squilla_router.rollout_phase == "full"
+    # No default-bake: sections the toggle never touched stay absent.
+    assert "memory" not in data
+    assert "auth" not in data
+
+
+# --- set-heartbeats (third _persist_config caller) -----------------------------
+
+
+async def test_set_heartbeats_persists_sparsely_and_atomically(cfg_path) -> None:
+    import opensquilla.gateway.rpc_system as rpc_system
+
+    _write_small_config(cfg_path)
+    cfg = GatewayConfig.load(str(cfg_path))
+    ctx = SimpleNamespace(config=cfg, heartbeat_loop=None)
+
+    res = await rpc_system._handle_set_heartbeats(
+        {"enabled": True, "intervalMs": 120000}, ctx
+    )
+
+    assert res["enabled"] is True
+    assert cfg.heartbeat.enabled is True
+    data = tomllib.loads(cfg_path.read_text())
+    assert data["heartbeat"]["enabled"] is True
+    assert data["heartbeat"]["interval_ms"] == 120000
+    assert "memory" not in data
+
+
+async def test_set_heartbeats_validation_failure_leaves_live_config_clean(
+    cfg_path,
+) -> None:
+    """A ValueError on the second parameter must not leave the first one
+    half-applied on the live config (the old code mutated field-by-field)."""
+    import opensquilla.gateway.rpc_system as rpc_system
+
+    _write_small_config(cfg_path)
+    cfg = GatewayConfig.load(str(cfg_path))
+    assert cfg.heartbeat.enabled is False
+    ctx = SimpleNamespace(config=cfg, heartbeat_loop=None)
+
+    with pytest.raises(ValueError):
+        await rpc_system._handle_set_heartbeats(
+            {"enabled": True, "intervalMs": -5}, ctx
+        )
+
+    assert cfg.heartbeat.enabled is False
+    assert "heartbeat" not in tomllib.loads(cfg_path.read_text())
+
+
+# --- env-secret hygiene --------------------------------------------------------
+
+
+async def test_env_absorbed_memory_embedding_key_never_persisted(
+    cfg_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    secret = "sk-envonly-memembed"
+    monkeypatch.setenv("OPENSQUILLA_MEMORY_EMBEDDING__REMOTE__API_KEY", secret)
+    _write_small_config(cfg_path)
+    cfg = GatewayConfig.load(str(cfg_path))
+    assert cfg.memory.embedding.remote.api_key == secret
+
+    await _handle_config_set({"path": "naming.enabled", "value": False}, _ctx(cfg))
+
+    assert secret not in cfg_path.read_text()
+
+
+async def test_explicit_memory_embedding_key_still_persisted(cfg_path) -> None:
+    """The counterpart contract: a key the operator wrote INTO the file must
+    survive an unrelated save (env-absorption marking must not eat it)."""
+    cfg_path.write_text(
+        'config_version = 1\n\n'
+        '[memory.embedding.remote]\napi_key = "sk-explicit-on-disk"\n'
+    )
+    cfg = GatewayConfig.load(str(cfg_path))
+
+    await _handle_config_set({"path": "naming.enabled", "value": False}, _ctx(cfg))
+
+    data = tomllib.loads(cfg_path.read_text())
+    assert data["memory"]["embedding"]["remote"]["api_key"] == "sk-explicit-on-disk"
+
+
+# --- onboarding handlers persist-first ------------------------------------------
+
+
+async def test_onboarding_persist_failure_leaves_live_config_unchanged(
+    cfg_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import opensquilla.gateway.rpc_onboarding as rpc_onboarding
+    import opensquilla.onboarding.config_store as config_store
+
+    _write_small_config(cfg_path)
+    cfg = GatewayConfig.load(str(cfg_path))
+    original = cfg_path.read_text()
+    ensemble_before = cfg.llm_ensemble.enabled
+
+    def _boom(*args, **kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(config_store.os, "replace", _boom)
+
+    with pytest.raises(OSError):
+        await rpc_onboarding._ensemble_configure({"enabled": True}, _ctx(cfg))
+
+    assert cfg.llm_ensemble.enabled == ensemble_before
+    assert cfg_path.read_text() == original
+
+
+def test_rpc_config_persist_delegates_to_sparse_persister() -> None:
+    """_persist_config with no config_path is a no-op (pre-existing
+    contract), and the function is the shared entry for rpc_system too."""
+    cfg = GatewayConfig()
+    cfg.config_path = ""
+    rpc_config._persist_config(cfg)  # must not raise, must not write

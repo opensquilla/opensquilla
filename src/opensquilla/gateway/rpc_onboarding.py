@@ -381,10 +381,12 @@ async def _provider_configure(params: Any, ctx: RpcContext) -> dict[str, Any]:
             # the client sends presetId; a plain save never auto-applies one.
             preset_id=_param(params, "presetId", ""),
         )
+    # Persist first: if the write fails, the live config is untouched and
+    # memory/disk stay consistent. Tool syncs run only on applied state.
+    config_path = _persist(ctx, res.config, restart_required=res.restart_required)
     _apply_inplace(ctx, res.config)
     _sync_provider_selector(ctx, res.config.llm)
     _sync_image_generation(res.config)
-    config_path = _persist(ctx, res.config, restart_required=res.restart_required)
     return {
         "changed": res.changed,
         "restartRequired": res.restart_required,
@@ -507,9 +509,11 @@ async def _router_configure(params: Any, ctx: RpcContext) -> dict[str, Any]:
             cross_provider_tiers=cross_provider_tiers,
             tier_provider_mismatch=tier_provider_mismatch,
         )
+    # Persist first: if the write fails, the live config is untouched and
+    # memory/disk stay consistent. Tool syncs run only on applied state.
+    config_path = _persist(ctx, res.config, restart_required=res.restart_required)
     _apply_inplace(ctx, res.config)
     _sync_provider_selector(ctx, res.config.llm)
-    config_path = _persist(ctx, res.config, restart_required=res.restart_required)
     return {
         "changed": res.changed,
         "restartRequired": res.restart_required,
@@ -540,8 +544,10 @@ async def _ensemble_configure(params: Any, ctx: RpcContext) -> dict[str, Any]:
             min_successful_proposers=p.get("minSuccessfulProposers"),
             all_failed_policy=p.get("allFailedPolicy"),
         )
-    _apply_inplace(ctx, res.config)
+    # Persist first: if the write fails, the live config is untouched and
+    # memory/disk stay consistent. Tool syncs run only on applied state.
     config_path = _persist(ctx, res.config, restart_required=res.restart_required)
+    _apply_inplace(ctx, res.config)
     return {
         "changed": res.changed,
         "restartRequired": res.restart_required,
@@ -600,9 +606,11 @@ async def _search_configure(params: Any, ctx: RpcContext) -> dict[str, Any]:
             fallback_policy=_param(params, "fallbackPolicy", "off"),
             diagnostics=_param(params, "diagnostics", False),
         )
+    # Persist first: if the write fails, the live config is untouched and
+    # memory/disk stay consistent. Tool syncs run only on applied state.
+    config_path = _persist(ctx, res.config, restart_required=res.restart_required)
     _apply_inplace(ctx, res.config)
     _sync_search_provider(res.config)
-    config_path = _persist(ctx, res.config, restart_required=res.restart_required)
     return {
         "changed": res.changed,
         "restartRequired": res.restart_required,
@@ -632,9 +640,11 @@ async def _image_generation_configure(params: Any, ctx: RpcContext) -> dict[str,
             output_format=params.get("outputFormat", "") if isinstance(params, dict) else "",
             fallbacks=list(fallbacks) if isinstance(fallbacks, list) else None,
         )
+    # Persist first: if the write fails, the live config is untouched and
+    # memory/disk stay consistent. Tool syncs run only on applied state.
+    config_path = _persist(ctx, res.config, restart_required=res.restart_required)
     _apply_inplace(ctx, res.config)
     _sync_image_generation(res.config)
-    config_path = _persist(ctx, res.config, restart_required=res.restart_required)
     return {
         "changed": res.changed,
         "restartRequired": res.restart_required,
@@ -659,8 +669,10 @@ async def _memory_embedding_configure(params: Any, ctx: RpcContext) -> dict[str,
         base_url=params.get("baseUrl", "") if isinstance(params, dict) else "",
         onnx_dir=params.get("onnxDir", "") if isinstance(params, dict) else "",
     )
-    _apply_inplace(ctx, res.config)
+    # Persist first: if the write fails, the live config is untouched and
+    # memory/disk stay consistent. Tool syncs run only on applied state.
     config_path = _persist(ctx, res.config, restart_required=res.restart_required)
+    _apply_inplace(ctx, res.config)
     return {
         "changed": res.changed,
         "restartRequired": res.restart_required,
@@ -687,9 +699,11 @@ async def _audio_configure(params: Any, ctx: RpcContext) -> dict[str, Any]:
         tts_model=params.get("ttsModel", "") if isinstance(params, dict) else "",
         language_code=params.get("languageCode", "") if isinstance(params, dict) else "",
     )
+    # Persist first: if the write fails, the live config is untouched and
+    # memory/disk stay consistent. Tool syncs run only on applied state.
+    config_path = _persist(ctx, res.config, restart_required=res.restart_required)
     _apply_inplace(ctx, res.config)
     _sync_image_generation(res.config)
-    config_path = _persist(ctx, res.config, restart_required=res.restart_required)
     return {
         "changed": res.changed,
         "restartRequired": res.restart_required,
@@ -709,8 +723,10 @@ async def _channel_upsert(params: Any, ctx: RpcContext) -> dict[str, Any]:
     cfg = _active_config(ctx)
     with _channel_error():
         res = upsert_channel(cfg, entry_payload=entry)
-    _apply_inplace(ctx, res.config)
+    # Persist first: if the write fails, the live config is untouched and
+    # memory/disk stay consistent. Tool syncs run only on applied state.
     config_path = _persist(ctx, res.config, restart_required=True)
+    _apply_inplace(ctx, res.config)
     return {
         "changed": res.changed,
         "restartRequired": True,
@@ -728,8 +744,10 @@ async def _channel_remove(params: Any, ctx: RpcContext) -> dict[str, Any]:
     cfg = _active_config(ctx)
     with _channel_error():
         res = remove_channel(cfg, name=name)
-    _apply_inplace(ctx, res.config)
+    # Persist first: if the write fails, the live config is untouched and
+    # memory/disk stay consistent. Tool syncs run only on applied state.
     config_path = _persist(ctx, res.config, restart_required=True)
+    _apply_inplace(ctx, res.config)
     return {
         "changed": res.changed,
         "restartRequired": True,
@@ -745,8 +763,10 @@ async def _toggle(ctx: RpcContext, params: Any, enabled: bool) -> dict[str, Any]
     cfg = _active_config(ctx)
     with _channel_error():
         res = set_channel_enabled(cfg, name=name, enabled=enabled)
-    _apply_inplace(ctx, res.config)
+    # Persist first: if the write fails, the live config is untouched and
+    # memory/disk stay consistent. Tool syncs run only on applied state.
     config_path = _persist(ctx, res.config, restart_required=True)
+    _apply_inplace(ctx, res.config)
     return {
         "changed": res.changed,
         "restartRequired": True,

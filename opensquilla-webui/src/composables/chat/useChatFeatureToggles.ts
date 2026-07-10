@@ -216,10 +216,13 @@ export function useChatFeatureToggles(options: UseChatFeatureTogglesOptions) {
     const nextMode = normalizeModelRoutingMode(mode)
     const previousRouter = routerEnabled.value
     const previousEnsemble = llmEnsembleEnabled.value
-    const nextRouter = nextMode !== 'off'
     const nextEnsemble = nextMode === 'llm_ensemble'
+    // Strategies are exclusive: ensemble on means the router is off. This is
+    // the same encoding the Settings "Model strategy" card persists, so the
+    // two surfaces can no longer flip squilla_router.enabled back and forth.
+    const nextRouter = nextMode === 'squilla_router'
 
-    routerEnabled.value = nextRouter
+    routerEnabled.value = nextEnsemble || nextRouter
     llmEnsembleEnabled.value = nextEnsemble
     modelRoutingSettingsBusy.value = true
     routerSettingsBusy.value = true
@@ -230,7 +233,11 @@ export function useChatFeatureToggles(options: UseChatFeatureTogglesOptions) {
         patches: {
           'llm_ensemble.enabled': nextEnsemble,
           'squilla_router.enabled': nextRouter,
-          'squilla_router.rollout_phase': nextRouter ? 'full' : 'observe',
+          // 'observe' only for a real off: while ensemble holds the router
+          // disabled, the phase must stay 'full' so re-enabling the router
+          // from any surface (including the Settings card, which never
+          // writes rollout_phase) routes immediately instead of shadowing.
+          'squilla_router.rollout_phase': nextMode === 'off' ? 'observe' : 'full',
         },
       })
       await loadFeatureToggles()

@@ -156,7 +156,16 @@ async def _handle_set_heartbeats(params: dict | None, ctx: RpcContext) -> dict[s
     if not hasattr(ctx.config, "heartbeat"):
         raise ValueError("No heartbeat config available")
 
-    heartbeat = ctx.config.heartbeat
+    # Validate and mutate a clone; the live config is only touched after
+    # every parameter validated AND the persist succeeded, so a mid-way
+    # ValueError or a failed write can never leave live state diverged
+    # from disk (or a half-applied heartbeat section in memory).
+    candidate = (
+        ctx.config.model_copy(deep=True)
+        if hasattr(ctx.config, "model_copy")
+        else ctx.config
+    )
+    heartbeat = candidate.heartbeat
 
     if "enabled" in params:
         enabled = params["enabled"]
@@ -216,14 +225,16 @@ async def _handle_set_heartbeats(params: dict | None, ctx: RpcContext) -> dict[s
             raise ValueError("params.lightContext must be a boolean")
         heartbeat.light_context = light_context
 
-    heartbeat_loop = getattr(ctx, "heartbeat_loop", None)
-    if heartbeat_loop is not None and hasattr(heartbeat_loop, "nudge"):
-        heartbeat_loop.nudge()
-
     from opensquilla.gateway.rpc_config import _persist_config
 
     if should_persist:
-        _persist_config(ctx.config)
+        _persist_config(candidate)
+    if candidate is not ctx.config:
+        ctx.config.heartbeat = heartbeat
+
+    heartbeat_loop = getattr(ctx, "heartbeat_loop", None)
+    if heartbeat_loop is not None and hasattr(heartbeat_loop, "nudge"):
+        heartbeat_loop.nudge()
 
     return {
         "enabled": heartbeat.enabled,

@@ -164,26 +164,31 @@ async def test_config_patch_provider_realign_preserves_llm_ensemble_subtree(
 ) -> None:
     """A provider patch that fires the auto-router-profile realigner must not
     touch the [llm_ensemble] subtree — in memory or in the persisted file."""
+    from opensquilla.onboarding.config_store import persist_config
+
     cfg = GatewayConfig(
         config_path=str(tmp_path / "config.toml"),
         llm={"provider": "openai", "api_key": "", "base_url": ""},
         llm_ensemble=dict(CUSTOM_LLM_ENSEMBLE),
     )
     ctx = SimpleNamespace(config=cfg)
-    before = _ensemble_subtree_bytes(cfg)
+    # Persist the customized config first: the sparse persister writes only
+    # the operator's explicit [llm_ensemble] keys, and the on-disk subtree
+    # is the contract an unrelated patch must leave byte-identical.
+    persist_config(cfg, path=cfg.config_path)
+    disk_before = tomllib.loads((tmp_path / "config.toml").read_text())["llm_ensemble"]
+    memory_before = _ensemble_subtree_bytes(cfg)
 
     await _handle_config_patch({"patch": {"llm": {"provider": "deepseek"}}}, ctx)
 
     # The realigner actually ran: the auto profile followed the provider.
     assert ctx.config.squilla_router.tier_profile == "deepseek"
-    assert _ensemble_subtree_bytes(ctx.config) == before
+    assert _ensemble_subtree_bytes(ctx.config) == memory_before
     _assert_custom_values(ctx.config)
 
     persisted = tomllib.loads((tmp_path / "config.toml").read_text())
-    persisted_bytes = tomli_w.dumps(
-        {"llm_ensemble": persisted["llm_ensemble"]}
-    ).encode()
-    assert persisted_bytes == before
+    assert persisted["llm_ensemble"] == disk_before
+    assert tomli_w.dumps({"llm_ensemble": persisted["llm_ensemble"]}).encode()
 
 
 # ---------------------------------------------------------------------------

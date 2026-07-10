@@ -247,9 +247,12 @@ describe('useChatFeatureToggles model routing mode', () => {
       'squilla_router.enabled': true,
       'squilla_router.rollout_phase': 'full',
     }],
+    // Ensemble persists router-disabled — the same exclusive-strategy
+    // encoding the Settings "Model strategy" card writes, so the two
+    // surfaces never flip squilla_router.enabled back and forth on disk.
     ['llm_ensemble', {
       'llm_ensemble.enabled': true,
-      'squilla_router.enabled': true,
+      'squilla_router.enabled': false,
       'squilla_router.rollout_phase': 'full',
     }],
   ]
@@ -340,7 +343,7 @@ describe('useChatFeatureToggles model routing mode', () => {
     expect(rpc.call).toHaveBeenCalledWith('config.patch.safe', {
       patches: {
         'llm_ensemble.enabled': true,
-        'squilla_router.enabled': true,
+        'squilla_router.enabled': false,
         'squilla_router.rollout_phase': 'full',
       },
     })

@@ -415,6 +415,7 @@ def test_upsert_llm_ensemble_accepts_structured_candidates_partial_merge():
             "model": "qwen/qwen3.7-max",
             "source": "custom",
             "enabled": True,
+            "role": "",
         }
     ]
     assert res.public_payload["candidates"] == [
@@ -423,6 +424,7 @@ def test_upsert_llm_ensemble_accepts_structured_candidates_partial_merge():
             "model": "qwen/qwen3.7-max",
             "source": "custom",
             "enabled": True,
+            "role": "",
         }
     ]
 

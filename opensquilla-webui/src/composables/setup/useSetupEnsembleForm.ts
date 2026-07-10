@@ -5,13 +5,43 @@ import { computed, ref, type ComputedRef } from 'vue'
 // gateway merges over the current section), so this form tracks dirtiness PER
 // KEY and payload() only carries the keys the user actually changed — an
 // enabled-only save can never clobber an operator's other customizations.
+//
+// The UI exposes exactly two schemes:
+// - "preset": the provider's fixed B5 lineup (OpenRouter / TokenRhythm only).
+// - "custom": an explicit user-authored lineup saved as selection_mode
+//   "custom_b5" (roles per candidate, single aggregator).
+// The legacy "router_dynamic" mode is read-compatible but hidden: stored
+// configs surface a migration banner that converts them to a custom lineup.
+
+export const CUSTOM_B5_SELECTION_MODE = 'custom_b5'
 
 export const ENSEMBLE_SELECTION_MODES = [
   'static_openrouter_b5',
   'static_tokenrhythm_b5',
+  CUSTOM_B5_SELECTION_MODE,
   'router_dynamic',
 ] as const
 export const ENSEMBLE_ALL_FAILED_POLICIES = ['fallback_single', 'error'] as const
+
+export type EnsembleCandidateRole =
+  | ''
+  | 'primary'
+  | 'contrast'
+  | 'fast_check'
+  | 'critic'
+  | 'aggregator'
+
+export const ENSEMBLE_PROPOSER_ROLES = ['primary', 'contrast', 'fast_check', 'critic'] as const
+
+// Custom lineup bounds. Mirrors the gateway's CUSTOM_B5_* constants: 2 is the
+// smallest lineup where fusion means anything, 3-4 is the value sweet spot
+// (the preset lineups run 4), 6 is the hard ceiling before aggregator-context
+// and cost pressure outweigh the marginal draft.
+export const CUSTOM_B5_MIN_PROPOSERS = 2
+export const CUSTOM_B5_MAX_PROPOSERS = 6
+export const CUSTOM_B5_RECOMMENDED_MIN = 3
+export const CUSTOM_B5_RECOMMENDED_MAX = 4
+
 export const OPENROUTER_FIXED_ENSEMBLE_PROPOSERS = [
   'deepseek/deepseek-v4-pro',
   'z-ai/glm-5.2',
@@ -74,6 +104,16 @@ const DEFAULT_SELECTION_MODE = 'static_openrouter_b5'
 const DEFAULT_MIN_SUCCESSFUL_PROPOSERS = 1
 const DEFAULT_ALL_FAILED_POLICY = 'fallback_single'
 
+// Runtime default replacements applied by the ensemble builder when the
+// stored value still equals the legacy default. The panel surfaces EFFECTIVE
+// values so what the user reads matches what actually runs.
+const STATIC_B5_EFFECTIVE_QUORUM = 3
+const STATIC_B5_PROPOSER_TIMEOUT_SECONDS = 300
+const STATIC_B5_AGGREGATOR_TIMEOUT_SECONDS = 480
+const STATIC_B5_QUORUM_GRACE_SECONDS = 30
+
+export type EnsembleScheme = 'preset' | 'custom' | 'legacy'
+
 export type EnsembleCandidateSource = 'tier' | 'custom' | 'legacy_model_options' | 'openrouter_fixed'
 
 export interface EnsembleCandidateConfig {
@@ -81,6 +121,7 @@ export interface EnsembleCandidateConfig {
   model: string
   source?: 'custom' | 'legacy_model_options'
   enabled?: boolean
+  role?: EnsembleCandidateRole
 }
 
 export interface EnsembleCredentialStatus {
@@ -96,14 +137,44 @@ export interface EnsembleCandidateView {
   model: string
   source: EnsembleCandidateSource
   enabled: boolean
+  role: EnsembleCandidateRole
   credential?: EnsembleCredentialStatus
 }
 
-export interface EnsembleFixedOpenRouterProfile {
+export interface EnsembleFixedProfileView {
   providerLabel: string
   proposers: EnsembleCandidateView[]
   aggregator: EnsembleCandidateView
   credential?: EnsembleCredentialStatus
+}
+
+export interface EnsembleEffectiveFacts {
+  perTurnCalls: number
+  quorum: number
+  proposerCount: number
+  proposerTimeoutSeconds: number
+  aggregatorTimeoutSeconds: number
+  quorumGraceSeconds: number
+}
+
+export type EnsembleCapacityState = 'ok' | 'warn' | 'full'
+
+export interface EnsembleCustomLineupView {
+  aggregator: EnsembleCandidateView | null
+  aggregatorInherited: boolean
+  inheritedAggregatorProvider: string
+  inheritedAggregatorModel: string
+  proposers: EnsembleCandidateView[]
+  proposerCount: number
+  minProposers: number
+  maxProposers: number
+  recommendedMin: number
+  recommendedMax: number
+  capacity: EnsembleCapacityState
+  canAddProposer: boolean
+  belowMinimum: boolean
+  diversityWarning: boolean
+  facts: EnsembleEffectiveFacts
 }
 
 export interface EnsembleConfigSlice {
@@ -115,10 +186,17 @@ export interface EnsembleConfigSlice {
   all_failed_policy?: string
 }
 
+interface EnsembleTierCandidate {
+  provider: string
+  model: string
+  tier?: string
+}
+
 interface EnsemblePanelContext {
   statusText: ComputedRef<string>
   activeProvider: ComputedRef<string>
-  tierCandidates?: ComputedRef<Array<{ provider: string; model: string }>>
+  activeModel?: ComputedRef<string>
+  tierCandidates?: ComputedRef<EnsembleTierCandidate[]>
   credentialStatus?: ComputedRef<EnsembleCredentialStatus[]>
 }
 
@@ -166,6 +244,14 @@ function normalizeCandidateSource(value: unknown): 'custom' | 'legacy_model_opti
   return value === 'legacy_model_options' ? 'legacy_model_options' : 'custom'
 }
 
+export function normalizeCandidateRole(value: unknown): EnsembleCandidateRole {
+  const raw = String(value || '').trim().toLowerCase()
+  if (raw === 'aggregator') return 'aggregator'
+  return (ENSEMBLE_PROPOSER_ROLES as readonly string[]).includes(raw)
+    ? raw as EnsembleCandidateRole
+    : ''
+}
+
 function normalizeCandidates(value: unknown): EnsembleCandidateConfig[] {
   if (!Array.isArray(value)) return []
   const seen = new Set<string>()
@@ -177,7 +263,11 @@ function normalizeCandidates(value: unknown): EnsembleCandidateConfig[] {
     const model = normalizeModel(raw.model)
     if (!provider || !model) continue
     const source = normalizeCandidateSource(raw.source)
-    const key = `${provider}\n${model}\n${source}`
+    const role = normalizeCandidateRole(raw.role)
+    // The aggregator row may legitimately duplicate a proposer row (the same
+    // model can both draft and fuse), so the identity includes the
+    // aggregator/proposer distinction.
+    const key = `${provider}\n${model}\n${source}\n${role === 'aggregator' ? 'aggregator' : 'proposer'}`
     if (seen.has(key)) continue
     seen.add(key)
     out.push({
@@ -185,6 +275,7 @@ function normalizeCandidates(value: unknown): EnsembleCandidateConfig[] {
       model,
       source,
       enabled: raw.enabled === false ? false : true,
+      role,
     })
   }
   return out
@@ -195,30 +286,49 @@ function legacyDefaultModelOptions(options: readonly string[]): boolean {
   return options.every((option, index) => option === LEGACY_OPENROUTER_MODEL_OPTIONS[index])
 }
 
-function customEnsembleSeedConfigs(staticMode: string): EnsembleCandidateConfig[] {
-  // OpenRouter keeps the historical candidate template; other static
-  // profiles seed from their own B5 lineup (proposers + aggregator, deduped
-  // by normalizeCandidates).
-  if (staticMode === 'static_openrouter_b5') {
-    return LEGACY_OPENROUTER_MODEL_OPTIONS.map(model => ({
-      provider: 'openrouter',
-      model,
-      source: 'custom',
-      enabled: true,
-    }))
-  }
-  const profile = STATIC_B5_PROFILES[staticMode]
-  if (!profile) return []
-  return normalizeCandidates([...profile.proposers, profile.aggregator].map(model => ({
+// Seed roles for lineup rows in display order (advisory labels only).
+function seedRoleForIndex(index: number): EnsembleCandidateRole {
+  return (ENSEMBLE_PROPOSER_ROLES[index] ?? '') as EnsembleCandidateRole
+}
+
+export function roleForTier(tier: unknown): EnsembleCandidateRole {
+  const raw = String(tier || '').trim().toLowerCase()
+  if (raw === 'c0' || raw === 'c1' || raw === 't0' || raw === 't1') return 'fast_check'
+  if (raw === 'c2' || raw === 't2') return 'contrast'
+  if (raw === 'c3' || raw === 't3') return 'critic'
+  return ''
+}
+
+// Model-family key used for the diversity hint; mirrors the backend's model
+// identity split (vendor prefix stripped, first two hyphen tokens).
+export function modelFamilyKey(model: string): string {
+  const bare = String(model || '').trim().toLowerCase()
+  const name = bare.includes('/') ? bare.split('/').slice(1).join('/') : bare
+  const pieces = name.replace(/_/g, '-').split('-')
+  return pieces.length >= 2 ? pieces.slice(0, 2).join('-') : (name || 'unknown')
+}
+
+function customSeedFromProfile(profile: StaticB5Profile): EnsembleCandidateConfig[] {
+  const rows: EnsembleCandidateConfig[] = profile.proposers.map((model, index) => ({
     provider: profile.provider,
     model,
     source: 'custom',
     enabled: true,
-  })))
+    role: seedRoleForIndex(index),
+  }))
+  rows.push({
+    provider: profile.provider,
+    model: profile.aggregator,
+    source: 'custom',
+    enabled: true,
+    role: 'aggregator',
+  })
+  return normalizeCandidates(rows)
 }
 
-function candidateKey(candidate: { provider: string; model: string; source: string }): string {
-  return `${candidate.source}:${candidate.provider}:${candidate.model}`
+function candidateKey(candidate: { provider: string; model: string; source: string; role?: string }): string {
+  const slot = candidate.role === 'aggregator' ? 'aggregator' : 'proposer'
+  return `${candidate.source}:${slot}:${candidate.provider}:${candidate.model}`
 }
 
 function credentialFor(provider: string, statuses: readonly EnsembleCredentialStatus[]): EnsembleCredentialStatus | undefined {
@@ -232,15 +342,17 @@ function withCredential(
   source: EnsembleCandidateSource,
   status: readonly EnsembleCredentialStatus[],
   enabled = true,
+  role: EnsembleCandidateRole = '',
 ): EnsembleCandidateView {
   const normalizedProvider = normalizeProvider(provider)
   const cleanModel = normalizeModel(model)
   return {
-    key: candidateKey({ provider: normalizedProvider, model: cleanModel, source }),
+    key: candidateKey({ provider: normalizedProvider, model: cleanModel, source, role }),
     provider: normalizedProvider,
     model: cleanModel,
     source,
     enabled,
+    role,
     credential: credentialFor(normalizedProvider, status),
   }
 }
@@ -281,7 +393,11 @@ export function useSetupEnsembleForm() {
   const selectionModeDirty = computed(() => selectionMode.value !== baseline.value.selectionMode)
   const modelOptionsDirty = computed(() => JSON.stringify(modelOptions.value) !== baseline.value.modelOptions)
   const candidatesDirty = computed(() => JSON.stringify(candidates.value) !== baseline.value.candidates)
-  const dynamicCandidateInputsActive = computed(() => selectionMode.value === 'router_dynamic')
+  // Candidate/model-option inputs only drive the lineup-based modes; static
+  // preset saves must not carry stale editor state.
+  const dynamicCandidateInputsActive = computed(() => (
+    selectionMode.value === 'router_dynamic' || selectionMode.value === CUSTOM_B5_SELECTION_MODE
+  ))
   const effectiveModelOptionsDirty = computed(() => dynamicCandidateInputsActive.value && modelOptionsDirty.value)
   const effectiveCandidatesDirty = computed(() => dynamicCandidateInputsActive.value && candidatesDirty.value)
   const minSuccessfulDirty = computed(() => minSuccessfulProposers.value !== baseline.value.minSuccessfulProposers)
@@ -294,6 +410,10 @@ export function useSetupEnsembleForm() {
     || minSuccessfulDirty.value
     || allFailedPolicyDirty.value
   ))
+
+  const enabledProposerConfigs = computed(() => candidates.value.filter(candidate => (
+    candidate.enabled !== false && normalizeCandidateRole(candidate.role) !== 'aggregator'
+  )))
 
   function snapshotBaseline() {
     baseline.value = {
@@ -336,30 +456,129 @@ export function useSetupEnsembleForm() {
     modelOptions.value = modelOptions.value.filter(option => option !== value)
   }
 
-  function addCandidate(provider: string, model: string) {
+  // Lineup edits pin the mode to custom_b5 when a static preset is stored:
+  // editing candidates under a preset used to leave the pool ineffective at
+  // runtime — the root cause of the "edited pool, preset still runs" trap.
+  // A stored legacy router_dynamic mode is left alone (its pool IS read at
+  // runtime); the migration banner is the explicit conversion path.
+  function ensureCustomMode() {
+    if (
+      selectionMode.value !== CUSTOM_B5_SELECTION_MODE
+      && selectionMode.value !== 'router_dynamic'
+    ) {
+      selectionMode.value = CUSTOM_B5_SELECTION_MODE
+    }
+  }
+
+  // Keep an explicit quorum consistent with the lineup: quorum > N can never
+  // succeed and the gateway rejects it. The legacy default (1) means "auto"
+  // (the runtime derives N-1), so it is never clamped.
+  function clampQuorumToLineup() {
+    const count = enabledProposerConfigs.value.length
+    if (
+      minSuccessfulProposers.value > 1
+      && count >= 1
+      && minSuccessfulProposers.value > count
+    ) {
+      minSuccessfulProposers.value = count
+    }
+  }
+
+  function addCandidate(provider: string, model: string, role: EnsembleCandidateRole = '') {
     const cleanProvider = normalizeProvider(provider)
     const cleanModel = normalizeModel(model)
     if (!cleanProvider || !cleanModel) return
-    const next = normalizeCandidates([
+    const cleanRole = normalizeCandidateRole(role)
+    if (
+      cleanRole !== 'aggregator'
+      && enabledProposerConfigs.value.length >= CUSTOM_B5_MAX_PROPOSERS
+    ) return
+    ensureCustomMode()
+    let next = [
       ...candidates.value,
-      { provider: cleanProvider, model: cleanModel, source: 'custom', enabled: true },
-    ])
-    candidates.value = next
+      { provider: cleanProvider, model: cleanModel, source: 'custom' as const, enabled: true, role: cleanRole },
+    ]
+    if (cleanRole === 'aggregator') {
+      next = next.map((candidate, index) => (
+        index < next.length - 1 && normalizeCandidateRole(candidate.role) === 'aggregator'
+          ? { ...candidate, role: '' as EnsembleCandidateRole }
+          : candidate
+      ))
+    }
+    candidates.value = normalizeCandidates(next)
   }
 
-  function removeCandidate(candidate: { provider: string; model: string; source?: string }) {
+  function removeCandidate(candidate: { provider: string; model: string; source?: string; role?: string }) {
     const provider = normalizeProvider(candidate.provider)
     const model = normalizeModel(candidate.model)
     const source = normalizeCandidateSource(candidate.source)
+    const slot = normalizeCandidateRole(candidate.role) === 'aggregator' ? 'aggregator' : 'proposer'
+    ensureCustomMode()
     if (source === 'legacy_model_options') {
       removeModelOption(model)
+      clampQuorumToLineup()
       return
     }
     candidates.value = candidates.value.filter(entry => !(
       normalizeProvider(entry.provider) === provider
       && normalizeModel(entry.model) === model
       && normalizeCandidateSource(entry.source) === source
+      && (normalizeCandidateRole(entry.role) === 'aggregator' ? 'aggregator' : 'proposer') === slot
     ))
+    clampQuorumToLineup()
+  }
+
+  function setCandidateRole(
+    candidate: { provider: string; model: string; source?: string; role?: string },
+    role: EnsembleCandidateRole,
+  ) {
+    const provider = normalizeProvider(candidate.provider)
+    const model = normalizeModel(candidate.model)
+    const source = normalizeCandidateSource(candidate.source)
+    const currentSlot = normalizeCandidateRole(candidate.role) === 'aggregator' ? 'aggregator' : 'proposer'
+    const nextRole = normalizeCandidateRole(role)
+    ensureCustomMode()
+    const next = candidates.value.map((entry) => {
+      const matches = (
+        normalizeProvider(entry.provider) === provider
+        && normalizeModel(entry.model) === model
+        && normalizeCandidateSource(entry.source) === source
+        && (normalizeCandidateRole(entry.role) === 'aggregator' ? 'aggregator' : 'proposer') === currentSlot
+      )
+      if (matches) return { ...entry, role: nextRole }
+      // The aggregator is structurally single: promoting a row demotes any
+      // previous aggregator to an unassigned proposer.
+      if (nextRole === 'aggregator' && normalizeCandidateRole(entry.role) === 'aggregator') {
+        return { ...entry, role: '' as EnsembleCandidateRole }
+      }
+      return entry
+    })
+    candidates.value = normalizeCandidates(next)
+    clampQuorumToLineup()
+  }
+
+  function importTierCandidates(tierCandidates: readonly EnsembleTierCandidate[]) {
+    ensureCustomMode()
+    const existing = new Set(
+      enabledProposerConfigs.value.map(entry => `${entry.provider}\n${entry.model}`),
+    )
+    let added = candidates.value.slice()
+    let count = enabledProposerConfigs.value.length
+    for (const row of tierCandidates || []) {
+      if (count >= CUSTOM_B5_MAX_PROPOSERS) break
+      const provider = normalizeProvider(row.provider)
+      const model = normalizeModel(row.model)
+      if (!provider || !model) continue
+      const key = `${provider}\n${model}`
+      if (existing.has(key)) continue
+      existing.add(key)
+      count += 1
+      added = [
+        ...added,
+        { provider, model, source: 'custom' as const, enabled: true, role: roleForTier(row.tier) },
+      ]
+    }
+    candidates.value = normalizeCandidates(added)
   }
 
   function resetModelOptions() {
@@ -380,20 +599,84 @@ export function useSetupEnsembleForm() {
     }
   }
 
-  function setOpenRouterCustomEnsemble(value: boolean, staticMode = 'static_openrouter_b5') {
-    const mode = staticMode in STATIC_B5_PROFILES ? staticMode : 'static_openrouter_b5'
-    if (value) {
-      selectionMode.value = 'router_dynamic'
-      modelOptions.value = []
-      candidates.value = customEnsembleSeedConfigs(mode)
+  // Scheme switching between the provider preset and the explicit custom
+  // lineup. Switching to custom seeds the lineup from the preset (roles
+  // included) when the editor is empty, so the user starts from a working
+  // configuration instead of a blank pool.
+  function setScheme(scheme: 'preset' | 'custom', staticMode?: string | null) {
+    const presetMode = staticMode && staticMode in STATIC_B5_PROFILES ? staticMode : null
+    if (scheme === 'preset') {
+      if (presetMode) {
+        selectionMode.value = presetMode
+        restoreBaselineCandidateInputs()
+      }
       return
     }
-    selectionMode.value = mode
-    restoreBaselineCandidateInputs()
+    selectionMode.value = CUSTOM_B5_SELECTION_MODE
+    modelOptions.value = []
+    if (!candidates.value.some(candidate => candidate.enabled !== false)) {
+      const profile = presetMode ? STATIC_B5_PROFILES[presetMode] : null
+      if (profile) candidates.value = customSeedFromProfile(profile)
+    }
+  }
+
+  // Default activation when the ensemble strategy is switched on: providers
+  // with an official preset land on it; every other provider gets an explicit
+  // custom lineup seeded from the router tiers (the models the user already
+  // configured), never the hidden legacy dynamic mode.
+  function activateForProvider(provider: unknown, tierCandidates: readonly EnsembleTierCandidate[] = []) {
+    const presetMode = staticB5ModeForProvider(provider)
+    if (presetMode) {
+      selectionMode.value = presetMode
+      return
+    }
+    selectionMode.value = CUSTOM_B5_SELECTION_MODE
+    if (!candidates.value.some(candidate => candidate.enabled !== false)) {
+      importTierCandidates(tierCandidates)
+    }
+  }
+
+  // One-click migration off the hidden legacy router_dynamic mode: fold the
+  // legacy inputs (structured candidates + model_options + tier rows) into an
+  // explicit custom lineup, capped at the proposer maximum.
+  function migrateLegacyToCustom(tierCandidates: readonly EnsembleTierCandidate[] = []) {
+    const rows: EnsembleCandidateConfig[] = []
+    const seen = new Set<string>()
+    const push = (provider: string, model: string, role: EnsembleCandidateRole = '') => {
+      const cleanProvider = normalizeProvider(provider)
+      const cleanModel = normalizeModel(model)
+      if (!cleanProvider || !cleanModel) return
+      const key = `${cleanProvider}\n${cleanModel}`
+      if (seen.has(key) || rows.length >= CUSTOM_B5_MAX_PROPOSERS) return
+      seen.add(key)
+      rows.push({ provider: cleanProvider, model: cleanModel, source: 'custom', enabled: true, role })
+    }
+    for (const candidate of candidates.value) {
+      if (candidate.enabled === false) continue
+      push(candidate.provider, candidate.model, normalizeCandidateRole(candidate.role))
+    }
+    if (!legacyDefaultModelOptions(modelOptions.value)) {
+      for (const model of modelOptions.value) {
+        push(model.includes('/') ? 'openrouter' : '', model)
+      }
+    }
+    for (const row of tierCandidates || []) {
+      push(row.provider, row.model, roleForTier(row.tier))
+    }
+    selectionMode.value = CUSTOM_B5_SELECTION_MODE
+    modelOptions.value = []
+    candidates.value = normalizeCandidates(rows)
+    clampQuorumToLineup()
   }
 
   function setMinSuccessfulProposers(value: number) {
-    minSuccessfulProposers.value = normalizeMinSuccessful(value)
+    const clean = normalizeMinSuccessful(value)
+    const count = enabledProposerConfigs.value.length
+    minSuccessfulProposers.value = (
+      selectionMode.value === CUSTOM_B5_SELECTION_MODE && count >= 1
+    )
+      ? Math.min(clean, count)
+      : clean
   }
 
   function setAllFailedPolicy(value: string) {
@@ -412,26 +695,65 @@ export function useSetupEnsembleForm() {
       model: candidate.model,
       source: candidate.source || 'custom',
       enabled: candidate.enabled !== false,
+      role: normalizeCandidateRole(candidate.role),
     }))
     if (minSuccessfulDirty.value) params.minSuccessfulProposers = minSuccessfulProposers.value
     if (allFailedPolicyDirty.value) params.allFailedPolicy = allFailedPolicy.value
     return params
   }
 
+  function effectiveFacts(proposerCount: number, isPreset: boolean): EnsembleEffectiveFacts {
+    const configuredQuorum = minSuccessfulProposers.value
+    const autoQuorum = isPreset
+      ? STATIC_B5_EFFECTIVE_QUORUM
+      : Math.max(1, proposerCount - 1)
+    const quorum = Math.min(
+      configuredQuorum === DEFAULT_MIN_SUCCESSFUL_PROPOSERS ? autoQuorum : configuredQuorum,
+      Math.max(1, proposerCount),
+    )
+    return {
+      perTurnCalls: proposerCount + 1,
+      quorum,
+      proposerCount,
+      proposerTimeoutSeconds: STATIC_B5_PROPOSER_TIMEOUT_SECONDS,
+      aggregatorTimeoutSeconds: STATIC_B5_AGGREGATOR_TIMEOUT_SECONDS,
+      quorumGraceSeconds: STATIC_B5_QUORUM_GRACE_SECONDS,
+    }
+  }
+
   function createPanel(context: EnsemblePanelContext) {
     return computed(() => {
       const credentialStatus = context.credentialStatus?.value ?? []
       const activeProvider = normalizeProvider(context.activeProvider.value)
+      const activeModel = normalizeModel(context.activeModel?.value ?? '')
       const providerStaticMode = staticB5ModeForProvider(activeProvider)
-      const openRouterCustomEnsemble = providerStaticMode !== null
-        ? selectionMode.value !== providerStaticMode
-        : false
+
+      const scheme: EnsembleScheme = (
+        selectionMode.value === 'router_dynamic'
+          ? 'legacy'
+          : selectionMode.value === CUSTOM_B5_SELECTION_MODE
+            ? 'custom'
+            : providerStaticMode !== null
+              ? 'preset'
+              // A static preset stored for another provider cannot run against
+              // this one; the editor presents the custom scheme (edits pin
+              // custom_b5 explicitly via ensureCustomMode).
+              : 'custom'
+      )
+
       const tierCandidates = uniqueCandidateViews((context.tierCandidates?.value ?? [])
         .map(candidate => withCredential(candidate.provider, candidate.model, 'tier', credentialStatus))
         .filter(candidate => candidate.provider && candidate.model))
       const structuredCandidates = candidates.value
         .filter(candidate => candidate.enabled !== false)
-        .map(candidate => withCredential(candidate.provider, candidate.model, normalizeCandidateSource(candidate.source), credentialStatus))
+        .map(candidate => withCredential(
+          candidate.provider,
+          candidate.model,
+          normalizeCandidateSource(candidate.source),
+          credentialStatus,
+          true,
+          normalizeCandidateRole(candidate.role),
+        ))
       const legacyCandidates = legacyDefaultModelOptions(modelOptions.value)
         ? []
         : modelOptions.value.map((model) => {
@@ -439,39 +761,72 @@ export function useSetupEnsembleForm() {
           return withCredential(provider, model, 'legacy_model_options', credentialStatus)
         })
       const customCandidates = uniqueCandidateViews([...structuredCandidates, ...legacyCandidates])
+
       const activeStaticProfile = (
-        providerStaticMode !== null && selectionMode.value === providerStaticMode
+        scheme === 'preset' && providerStaticMode !== null
       )
         ? STATIC_B5_PROFILES[providerStaticMode]
         : null
-      const fixedOpenRouterProfile: EnsembleFixedOpenRouterProfile | null = activeStaticProfile
+      const fixedProfile: EnsembleFixedProfileView | null = activeStaticProfile
         ? {
             providerLabel: activeStaticProfile.label,
             proposers: activeStaticProfile.proposers.map(model => withCredential(activeStaticProfile.provider, model, 'openrouter_fixed', credentialStatus)),
-            aggregator: withCredential(activeStaticProfile.provider, activeStaticProfile.aggregator, 'openrouter_fixed', credentialStatus),
+            aggregator: withCredential(activeStaticProfile.provider, activeStaticProfile.aggregator, 'openrouter_fixed', credentialStatus, true, 'aggregator'),
             credential: credentialFor(activeStaticProfile.provider, credentialStatus),
           }
         : null
 
+      const proposerViews = structuredCandidates.filter(view => view.role !== 'aggregator')
+      const aggregatorView = structuredCandidates.find(view => view.role === 'aggregator') || null
+      const proposerCount = proposerViews.length
+      const families = new Set(proposerViews.map(view => `${modelFamilyKey(view.model)}`))
+      const capacity: EnsembleCapacityState = proposerCount >= CUSTOM_B5_MAX_PROPOSERS
+        ? 'full'
+        : proposerCount > CUSTOM_B5_RECOMMENDED_MAX
+          ? 'warn'
+          : 'ok'
+      const customLineup: EnsembleCustomLineupView = {
+        aggregator: aggregatorView,
+        aggregatorInherited: aggregatorView === null,
+        inheritedAggregatorProvider: activeProvider,
+        inheritedAggregatorModel: activeModel,
+        proposers: proposerViews,
+        proposerCount,
+        minProposers: CUSTOM_B5_MIN_PROPOSERS,
+        maxProposers: CUSTOM_B5_MAX_PROPOSERS,
+        recommendedMin: CUSTOM_B5_RECOMMENDED_MIN,
+        recommendedMax: CUSTOM_B5_RECOMMENDED_MAX,
+        capacity,
+        canAddProposer: proposerCount < CUSTOM_B5_MAX_PROPOSERS,
+        belowMinimum: proposerCount < CUSTOM_B5_MIN_PROPOSERS,
+        diversityWarning: proposerCount >= 2 && families.size < proposerCount,
+        facts: effectiveFacts(proposerCount, false),
+      }
+
       return {
         enabled: enabled.value,
         selectionMode: selectionMode.value,
+        scheme,
+        schemeCardsAvailable: providerStaticMode !== null,
         modelOptions: [...modelOptions.value],
         candidates: candidates.value.map(candidate => ({ ...candidate })),
         tierCandidates,
         customCandidates,
-        fixedOpenRouterProfile,
+        custom: customLineup,
+        fixedProfile,
+        presetFacts: effectiveFacts(
+          activeStaticProfile ? activeStaticProfile.proposers.length : 4,
+          true,
+        ),
+        // Back-compat aliases (older panel/test names).
+        fixedOpenRouterProfile: fixedProfile,
         showOpenRouterFixedSwitch: providerStaticMode !== null,
-        openRouterCustomEnsemble,
+        openRouterCustomEnsemble: scheme !== 'preset',
         staticSelectionMode: providerStaticMode,
         minSuccessfulProposers: minSuccessfulProposers.value,
         allFailedPolicy: allFailedPolicy.value,
-        // model_options only drives the dynamic selection; static ignores it.
-        showModelOptions: selectionMode.value === 'router_dynamic' || activeStaticProfile === null,
-        showCandidateEditor: selectionMode.value === 'router_dynamic' || activeStaticProfile === null,
-        // A static selection routes through its profile provider regardless of
-        // the primary provider — surface the credential dependency instead of
-        // failing quietly.
+        showModelOptions: scheme !== 'preset',
+        showCandidateEditor: scheme === 'custom' || scheme === 'legacy',
         showOpenrouterHint: false,
         advancedOpen: (
           minSuccessfulProposers.value !== DEFAULT_MIN_SUCCESSFUL_PROPOSERS
@@ -503,8 +858,12 @@ export function useSetupEnsembleForm() {
     removeModelOption,
     addCandidate,
     removeCandidate,
+    setCandidateRole,
+    importTierCandidates,
     resetModelOptions,
-    setOpenRouterCustomEnsemble,
+    setScheme,
+    activateForProvider,
+    migrateLegacyToCustom,
     setMinSuccessfulProposers,
     setAllFailedPolicy,
     payload,

@@ -209,3 +209,82 @@ async def test_router_dynamic_wrap_is_not_credential_gated(
     assert isinstance(provider, EnsembleProvider)
     assert turn.metadata["ensemble_enabled"] is True
     assert "ensemble_wrap_skipped_reason" not in turn.metadata
+
+
+def _custom_b5_guard_config(candidates: list[dict[str, Any]]) -> GatewayConfig:
+    return GatewayConfig(
+        squilla_router=SquillaRouterConfig(enabled=False),
+        llm={
+            "provider": "groq",
+            "model": "base-model",
+            "api_key": "sk-groq-synthetic",
+            "base_url": "https://example.invalid/api",
+        },
+        llm_ensemble={
+            "enabled": True,
+            "selection_mode": "custom_b5",
+            "candidates": candidates,
+        },
+    )
+
+
+async def test_custom_b5_wrap_skipped_when_a_member_credential_is_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    cfg = _custom_b5_guard_config(
+        [
+            {"provider": "groq", "model": "candidate-a"},
+            {"provider": "openrouter", "model": "z-ai/glm-5.2"},
+        ]
+    )
+    runner = TurnRunner(provider_selector=None, config=cfg)
+    selector = _FakeSelector(provider="groq", api_key="sk-groq-synthetic")
+
+    turn, provider = await runner._run_pipeline(
+        "hello",
+        "agent:main:test",
+        _Provider(),
+        selector,
+        [],
+        "system prompt",
+        [],
+    )
+
+    assert not isinstance(provider, EnsembleProvider)
+    assert turn.metadata["ensemble_wrap_skipped_reason"] == (
+        "custom_b5_not_ready:missing_credential:openrouter"
+    )
+    assert "ensemble_enabled" not in turn.metadata
+
+
+async def test_custom_b5_wraps_when_every_member_resolves_a_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-synthetic")
+    cfg = _custom_b5_guard_config(
+        [
+            {"provider": "groq", "model": "candidate-a", "role": "primary"},
+            {"provider": "openrouter", "model": "z-ai/glm-5.2", "role": "contrast"},
+            {"provider": "groq", "model": "fuser", "role": "aggregator"},
+        ]
+    )
+    runner = TurnRunner(provider_selector=None, config=cfg)
+    selector = _FakeSelector(provider="groq", api_key="sk-groq-synthetic")
+
+    turn, provider = await runner._run_pipeline(
+        "hello",
+        "agent:main:test",
+        _Provider(),
+        selector,
+        [],
+        "system prompt",
+        [],
+    )
+
+    assert isinstance(provider, EnsembleProvider)
+    assert provider.profile_name == "custom_b5"
+    assert [member.label for member in provider.proposers] == ["primary", "contrast"]
+    assert provider.aggregator.provider_config.model == "fuser"
+    assert turn.metadata["ensemble_enabled"] is True
+    assert "ensemble_wrap_skipped_reason" not in turn.metadata

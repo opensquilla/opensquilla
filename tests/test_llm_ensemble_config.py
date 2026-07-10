@@ -139,7 +139,11 @@ def test_static_b5_mode_tables_agree_across_gateway_and_provider() -> None:
     literal_modes = set(
         get_args(LlmEnsembleConfig.model_fields["selection_mode"].annotation)
     )
-    assert literal_modes == {"router_dynamic", *STATIC_B5_SELECTION_MODE_PROVIDERS}
+    assert literal_modes == {
+        "router_dynamic",
+        "custom_b5",
+        *STATIC_B5_SELECTION_MODE_PROVIDERS,
+    }
 
 
 def test_router_dynamic_ensemble_allows_empty_custom_model_options() -> None:
@@ -523,3 +527,221 @@ def test_static_openrouter_b5_ensemble_preserves_custom_effective_values() -> No
     assert provider.proposer_timeout_seconds == 180.0
     assert provider.aggregator_timeout_seconds == 900.0
     assert provider.shuffle_candidates is False
+
+
+def _custom_b5_config(**overrides: object) -> GatewayConfig:
+    payload: dict[str, object] = {
+        "enabled": True,
+        "selection_mode": "custom_b5",
+        "candidates": [
+            {"provider": "volcengine", "model": "doubao-2.0-pro", "role": "primary"},
+            {"provider": "volcengine", "model": "deepseek-v4-flash", "role": "fast_check"},
+            {"provider": "volcengine", "model": "kimi-k2.6", "role": "contrast"},
+            {"provider": "volcengine", "model": "deepseek-v4-pro", "role": "aggregator"},
+        ],
+    }
+    payload.update(overrides)
+    return GatewayConfig(llm_ensemble=payload)
+
+
+def _volcengine_inherited() -> ProviderConfig:
+    return ProviderConfig(
+        provider="volcengine",
+        model="deepseek-v4-pro",
+        api_key="fake",
+        base_url="https://volcengine.example/api/v3",
+    )
+
+
+def test_custom_b5_builds_role_labelled_proposers_and_single_aggregator() -> None:
+    provider = build_ensemble_provider_from_config(
+        config=_custom_b5_config(),
+        inherited_provider_config=_volcengine_inherited(),
+        fallback_provider=None,
+    )
+
+    assert provider.profile_name == "custom_b5"
+    assert [member.label for member in provider.proposers] == [
+        "primary",
+        "fast_check",
+        "contrast",
+    ]
+    assert [member.provider_config.model for member in provider.proposers] == [
+        "doubao-2.0-pro",
+        "deepseek-v4-flash",
+        "kimi-k2.6",
+    ]
+    assert provider.aggregator.provider_config.model == "deepseek-v4-pro"
+    assert provider.selection_plan["aggregator"]["source"] == "candidate_role"
+
+
+def test_custom_b5_uses_fixed_lineup_effective_defaults_with_auto_quorum() -> None:
+    cfg = _custom_b5_config()
+    provider = build_ensemble_provider_from_config(
+        config=cfg,
+        inherited_provider_config=_volcengine_inherited(),
+        fallback_provider=None,
+    )
+
+    # Stored legacy defaults are replaced by the fixed-lineup family; quorum
+    # is derived as N-1 for the 3-proposer lineup.
+    assert cfg.llm_ensemble.min_successful_proposers == 1
+    assert provider.min_successful_proposers == 2
+    assert provider.proposer_timeout_seconds == 300.0
+    assert provider.aggregator_timeout_seconds == 480.0
+    assert provider.shuffle_candidates is False
+    assert provider.quorum_grace_seconds == 30.0
+
+
+def test_custom_b5_preserves_explicit_quorum_and_timeouts() -> None:
+    cfg = _custom_b5_config(
+        min_successful_proposers=3,
+        proposer_timeout_seconds=120.0,
+        aggregator_timeout_seconds=600.0,
+    )
+    provider = build_ensemble_provider_from_config(
+        config=cfg,
+        inherited_provider_config=_volcengine_inherited(),
+        fallback_provider=None,
+    )
+
+    assert provider.min_successful_proposers == 3
+    assert provider.proposer_timeout_seconds == 120.0
+    assert provider.aggregator_timeout_seconds == 600.0
+
+
+def test_custom_b5_without_aggregator_row_inherits_the_routed_model() -> None:
+    cfg = GatewayConfig(
+        llm_ensemble={
+            "enabled": True,
+            "selection_mode": "custom_b5",
+            "candidates": [
+                {"provider": "volcengine", "model": "doubao-2.0-pro"},
+                {"provider": "volcengine", "model": "kimi-k2.6"},
+            ],
+        }
+    )
+    provider = build_ensemble_provider_from_config(
+        config=cfg,
+        inherited_provider_config=_volcengine_inherited(),
+        fallback_provider=None,
+    )
+
+    assert provider.aggregator.provider_config.model == "deepseek-v4-pro"
+    assert provider.selection_plan["aggregator"]["source"] == "inherited_model"
+
+
+def test_custom_b5_disabled_candidates_are_excluded_from_the_lineup() -> None:
+    cfg = GatewayConfig(
+        llm_ensemble={
+            "enabled": True,
+            "selection_mode": "custom_b5",
+            "candidates": [
+                {"provider": "volcengine", "model": "doubao-2.0-pro"},
+                {"provider": "volcengine", "model": "kimi-k2.6"},
+                {"provider": "volcengine", "model": "deepseek-v4-flash", "enabled": False},
+            ],
+        }
+    )
+    provider = build_ensemble_provider_from_config(
+        config=cfg,
+        inherited_provider_config=_volcengine_inherited(),
+        fallback_provider=None,
+    )
+
+    assert [member.provider_config.model for member in provider.proposers] == [
+        "doubao-2.0-pro",
+        "kimi-k2.6",
+    ]
+
+
+def test_custom_b5_validation_rejects_undersized_and_oversized_lineups() -> None:
+    with pytest.raises(Exception, match="at least 2"):
+        GatewayConfig(
+            llm_ensemble={
+                "enabled": True,
+                "selection_mode": "custom_b5",
+                "candidates": [{"provider": "a", "model": "m1"}],
+            }
+        )
+    with pytest.raises(Exception, match="at most 6"):
+        GatewayConfig(
+            llm_ensemble={
+                "enabled": True,
+                "selection_mode": "custom_b5",
+                "candidates": [
+                    {"provider": "a", "model": f"m{i}"} for i in range(7)
+                ],
+            }
+        )
+
+
+def test_custom_b5_validation_rejects_quorum_above_proposer_count() -> None:
+    with pytest.raises(Exception, match="min_successful_proposers"):
+        GatewayConfig(
+            llm_ensemble={
+                "enabled": True,
+                "selection_mode": "custom_b5",
+                "min_successful_proposers": 4,
+                "candidates": [
+                    {"provider": "a", "model": "m1"},
+                    {"provider": "a", "model": "m2"},
+                ],
+            }
+        )
+
+
+def test_candidate_roles_normalize_and_reject_dual_aggregators() -> None:
+    cfg = GatewayConfig(
+        llm_ensemble={
+            "candidates": [
+                {"provider": "a", "model": "m1", "role": "AGGREGATOR"},
+                {"provider": "a", "model": "m2", "role": "definitely-not-a-role"},
+            ],
+        }
+    )
+    assert cfg.llm_ensemble.candidates[0].role == "aggregator"
+    # Unknown roles coerce to unassigned instead of failing gateway boot.
+    assert cfg.llm_ensemble.candidates[1].role == ""
+
+    with pytest.raises(Exception, match="at most one"):
+        GatewayConfig(
+            llm_ensemble={
+                "candidates": [
+                    {"provider": "a", "model": "m1", "role": "aggregator"},
+                    {"provider": "a", "model": "m2", "role": "aggregator"},
+                ],
+            }
+        )
+
+
+def test_custom_b5_lineup_ready_gates_on_member_credentials(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from opensquilla.provider.ensemble import custom_b5_lineup_ready
+
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    cfg = GatewayConfig(
+        llm={
+            "provider": "volcengine",
+            "model": "deepseek-v4-pro",
+            "api_key": "fake",
+            "base_url": "https://volcengine.example/api/v3",
+        },
+        llm_ensemble={
+            "enabled": True,
+            "selection_mode": "custom_b5",
+            "candidates": [
+                {"provider": "volcengine", "model": "doubao-2.0-pro"},
+                {"provider": "openrouter", "model": "z-ai/glm-5.2"},
+            ],
+        },
+    )
+    ready, reason = custom_b5_lineup_ready(cfg)
+    assert ready is False
+    assert reason == "missing_credential:openrouter"
+
+    monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
+    ready, reason = custom_b5_lineup_ready(cfg)
+    assert ready is True
+    assert reason == ""

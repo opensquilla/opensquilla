@@ -10,6 +10,7 @@ import {
   staticB5ModeForProvider,
   useSetupEnsembleForm,
   type EnsembleCandidateConfig,
+  type EnsembleCandidateRole,
   type EnsembleCandidateView,
   type EnsembleCredentialStatus,
 } from '@/composables/setup/useSetupEnsembleForm'
@@ -344,8 +345,17 @@ function startChannelPolling() {
 
 const currentProvider = computed(() => (config.value.llm || {}).provider || '')
 const currentProviderConfig = computed(() => config.value.llm || {})
+const currentModel = computed(() => (config.value.llm || {}).model || '')
 const hasSavedProvider = computed(() => hasEffectiveProvider(currentProviderConfig.value, status.value))
-const modelStrategyForm = useSetupModelStrategyForm(routerForm, ensembleForm, currentProvider)
+// Lazy: routerPanel is declared below; this computed is only evaluated from
+// user-triggered strategy switches, long after setup completes.
+const modelStrategyTierCandidates = computed(() => ensembleTierCandidates.value)
+const modelStrategyForm = useSetupModelStrategyForm(
+  routerForm,
+  ensembleForm,
+  currentProvider,
+  modelStrategyTierCandidates,
+)
 
 const runtimeProviders = computed(() => (catalog.value.providers || []).filter(p => p.runtimeSupported))
 const catalogChannels = computed(() => catalog.value.channels || [])
@@ -589,8 +599,14 @@ function reconcileEnsembleProviderCompatibility() {
   const staticProfile = STATIC_B5_PROFILES[ensembleForm.selectionMode.value]
   if (provider && staticProfile && provider !== staticProfile.provider) {
     // The stored static profile belongs to another provider: move to this
-    // provider's own static profile when it has one, else to dynamic.
-    ensembleForm.setSelectionMode(staticB5ModeForProvider(provider) ?? 'router_dynamic')
+    // provider's own static profile when it has one, else to an explicit
+    // custom lineup (seeded from the router tiers so it can actually run).
+    const ownPreset = staticB5ModeForProvider(provider)
+    if (ownPreset) {
+      ensembleForm.setSelectionMode(ownPreset)
+    } else {
+      ensembleForm.activateForProvider(provider, ensembleTierCandidates.value)
+    }
   }
 }
 
@@ -621,6 +637,7 @@ const routerPanel = routerForm.createPanel({
 const ensembleTierCandidates = computed(() => routerPanel.value.tierRows.map(row => ({
   provider: row.provider,
   model: row.model,
+  tier: row.name,
 })))
 
 // ---------------------------------------------------------------------------
@@ -677,6 +694,7 @@ const ensembleStatusText = computed(() => (
 const ensemblePanel = ensembleForm.createPanel({
   statusText: ensembleStatusText,
   activeProvider: currentProvider,
+  activeModel: currentModel,
   tierCandidates: ensembleTierCandidates,
   credentialStatus: computed(() => status.value.ensembleCredentialStatus || []),
 })
@@ -1139,23 +1157,32 @@ function removeEnsembleModelOption(value: string) {
   ensembleForm.removeModelOption(value)
 }
 
-function addEnsembleCandidate(provider: string, model: string) {
-  ensembleForm.addCandidate(provider, model)
+function addEnsembleCandidate(provider: string, model: string, role: EnsembleCandidateRole = '') {
+  ensembleForm.addCandidate(provider, model, role)
 }
 
 function removeEnsembleCandidate(candidate: EnsembleCandidateView) {
   ensembleForm.removeCandidate(candidate)
 }
 
+function setEnsembleCandidateRole(candidate: EnsembleCandidateView, role: EnsembleCandidateRole) {
+  ensembleForm.setCandidateRole(candidate, role)
+}
+
+function importEnsembleTierCandidates() {
+  ensembleForm.importTierCandidates(ensembleTierCandidates.value)
+}
+
+function migrateEnsembleLegacy() {
+  ensembleForm.migrateLegacyToCustom(ensembleTierCandidates.value)
+}
+
 function resetEnsembleCandidates() {
   ensembleForm.resetModelOptions()
 }
 
-function setOpenRouterCustomEnsemble(value: boolean) {
-  ensembleForm.setOpenRouterCustomEnsemble(
-    value,
-    staticB5ModeForProvider(currentProvider.value) ?? 'static_openrouter_b5',
-  )
+function setEnsembleScheme(scheme: 'preset' | 'custom') {
+  ensembleForm.setScheme(scheme, staticB5ModeForProvider(currentProvider.value))
 }
 
 function setEnsembleMinSuccessful(value: number) {
@@ -1700,8 +1727,11 @@ async function copyConfigPath() {
     removeEnsembleModelOption,
     addEnsembleCandidate,
     removeEnsembleCandidate,
+    setEnsembleCandidateRole,
+    importEnsembleTierCandidates,
+    migrateEnsembleLegacy,
     resetEnsembleCandidates,
-    setOpenRouterCustomEnsemble,
+    setEnsembleScheme,
     setEnsembleMinSuccessful,
     setEnsembleAllFailedPolicy,
     selectChannelType,

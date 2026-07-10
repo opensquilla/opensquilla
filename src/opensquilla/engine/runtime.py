@@ -5191,7 +5191,9 @@ class TurnRunner:
         ensemble_cfg = getattr(self._config, "llm_ensemble", None)
         if provider is not None and getattr(ensemble_cfg, "enabled", False):
             from opensquilla.provider.ensemble import (
+                CUSTOM_B5_SELECTION_MODE,
                 build_ensemble_provider_from_config,
+                custom_b5_lineup_ready,
                 static_b5_credential_available,
                 static_b5_profile,
             )
@@ -5202,6 +5204,14 @@ class TurnRunner:
                 else None
             )
             selection_mode = str(getattr(ensemble_cfg, "selection_mode", "") or "")
+            # Gate against the same inherited config the builder will use, so
+            # the readiness check can never disagree with the actual members.
+            custom_b5_ready, custom_b5_reason = (
+                custom_b5_lineup_ready(self._config, current_provider_config)
+                if selection_mode == CUSTOM_B5_SELECTION_MODE
+                and current_provider_config is not None
+                else (True, "")
+            )
             if current_provider_config is None:
                 log.warning(
                     "llm_ensemble.wrap_skipped",
@@ -5233,6 +5243,17 @@ class TurnRunner:
                 )
                 turn.metadata["ensemble_wrap_skipped_reason"] = (
                     f"{selection_mode}_no_credential"
+                )
+            elif not custom_b5_ready:
+                # Same empty-bearer protection for the explicit custom
+                # lineup: a member whose provider resolves no key can never
+                # succeed, and a lineup without proposers cannot fuse.
+                log.warning(
+                    "llm_ensemble.wrap_skipped",
+                    reason=f"{selection_mode}_not_ready:{custom_b5_reason}",
+                )
+                turn.metadata["ensemble_wrap_skipped_reason"] = (
+                    f"{selection_mode}_not_ready:{custom_b5_reason}"
                 )
             else:
                 turn.metadata["ensemble_enabled"] = True

@@ -1,4 +1,13 @@
-# LLM Ensemble: `router_dynamic` Selection Strategy
+# LLM Ensemble: `router_dynamic` Selection Strategy (legacy)
+
+> **Status: legacy.** `router_dynamic` remains fully supported for existing
+> configs but is no longer offered in the Web UI, which now presents two
+> schemes: the provider's static preset (`static_openrouter_b5` /
+> `static_tokenrhythm_b5`) or an explicit user-authored lineup
+> (`custom_b5`, role-labelled candidates with a single aggregator). Stored
+> `router_dynamic` configs surface a one-click migration to `custom_b5` in
+> the settings UI. Direct TOML/RPC configuration keeps working as described
+> below.
 
 `router_dynamic` is the dynamic model-selection strategy used by
 `llm_ensemble` to pick which models act as proposers and which model acts as

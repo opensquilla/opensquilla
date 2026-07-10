@@ -4,6 +4,36 @@ import { createApp, nextTick } from 'vue'
 import i18n from '@/i18n'
 import SetupModelStrategyPanel from './SetupModelStrategyPanel.vue'
 
+const FACTS = {
+  perTurnCalls: 3,
+  quorum: 1,
+  proposerCount: 2,
+  proposerTimeoutSeconds: 300,
+  aggregatorTimeoutSeconds: 480,
+  quorumGraceSeconds: 30,
+}
+
+function customLineup(overrides: Record<string, unknown> = {}) {
+  return {
+    aggregator: null,
+    aggregatorInherited: true,
+    inheritedAggregatorProvider: 'openrouter',
+    inheritedAggregatorModel: 'deepseek/deepseek-v4-pro',
+    proposers: [],
+    proposerCount: 0,
+    minProposers: 2,
+    maxProposers: 6,
+    recommendedMin: 3,
+    recommendedMax: 4,
+    capacity: 'ok',
+    canAddProposer: true,
+    belowMinimum: true,
+    diversityWarning: false,
+    facts: FACTS,
+    ...overrides,
+  }
+}
+
 function panel(overrides: Record<string, unknown> = {}) {
   const base = {
     activeStrategy: 'router',
@@ -34,7 +64,9 @@ function panel(overrides: Record<string, unknown> = {}) {
     },
     ensemble: {
       enabled: false,
-      selectionMode: 'router_dynamic',
+      selectionMode: 'custom_b5',
+      scheme: 'custom',
+      schemeCardsAvailable: true,
       modelOptions: [],
       candidates: [],
       tierCandidates: [
@@ -44,6 +76,7 @@ function panel(overrides: Record<string, unknown> = {}) {
           model: 'deepseek/deepseek-v4-flash',
           source: 'tier',
           enabled: true,
+          role: '',
           credential: { provider: 'openrouter', available: true, source: 'env', envKey: 'OPENROUTER_API_KEY' },
         },
         {
@@ -52,19 +85,24 @@ function panel(overrides: Record<string, unknown> = {}) {
           model: 'deepseek/deepseek-v4-pro',
           source: 'tier',
           enabled: true,
+          role: '',
           credential: { provider: 'openrouter', available: true, source: 'env', envKey: 'OPENROUTER_API_KEY' },
         },
       ],
       customCandidates: [],
-      fixedOpenRouterProfile: null,
+      custom: customLineup(),
+      fixedProfile: null,
+      presetFacts: {
+        perTurnCalls: 5,
+        quorum: 3,
+        proposerCount: 4,
+        proposerTimeoutSeconds: 300,
+        aggregatorTimeoutSeconds: 480,
+        quorumGraceSeconds: 30,
+      },
       minSuccessfulProposers: 1,
       allFailedPolicy: 'fallback_single',
-      showModelOptions: true,
       showCandidateEditor: true,
-      showOpenRouterFixedSwitch: false,
-      openRouterCustomEnsemble: false,
-      showOpenrouterHint: false,
-      advancedOpen: false,
       statusText: 'Ensemble is on.',
     },
   }
@@ -208,92 +246,91 @@ describe('SetupModelStrategyPanel', () => {
     app.unmount()
   })
 
-  it('shows ensemble candidates derived from model tiers without an enable switch', async () => {
+  it('shows the custom lineup with aggregator-first sections and the pipeline explainer', async () => {
+    const proposer = {
+      key: 'custom:proposer:deepseek:deepseek-v4-pro',
+      provider: 'deepseek',
+      model: 'deepseek-v4-pro',
+      source: 'custom',
+      enabled: true,
+      role: 'primary',
+      credential: { provider: 'deepseek', available: true, source: 'explicit', envKey: 'DEEPSEEK_API_KEY' },
+    }
     const { app, el } = await mountPanel({
       activeStrategy: 'ensemble',
-      cards: [
-        { id: 'router', enabled: false, titleKey: 'setup.modelStrategy.cards.router.title', descKey: 'setup.modelStrategy.cards.router.desc' },
-        { id: 'ensemble', enabled: true, titleKey: 'setup.modelStrategy.cards.ensemble.title', descKey: 'setup.modelStrategy.cards.ensemble.desc' },
-        { id: 'single', enabled: false, titleKey: 'setup.modelStrategy.cards.single.title', descKey: 'setup.modelStrategy.cards.single.desc' },
-      ],
       ensemble: {
         enabled: true,
-        selectionMode: 'router_dynamic',
-        modelOptions: [],
-        minSuccessfulProposers: 1,
-        allFailedPolicy: 'fallback_single',
-        showModelOptions: true,
-        showOpenrouterHint: false,
-        advancedOpen: false,
-        statusText: 'Ensemble is on.',
+        scheme: 'custom',
+        custom: customLineup({
+          proposers: [proposer],
+          proposerCount: 1,
+          belowMinimum: true,
+        }),
       },
     })
 
-    expect(el.textContent).toContain('AI ensemble routing')
-    expect(el.textContent).toContain('Uses OpenRouter credentials; default model is deepseek/deepseek-v4-pro.')
-    expect(el.textContent).toContain('Candidate models')
-    expect(el.textContent).toContain('OpenRouter · deepseek/deepseek-v4-flash')
-    expect(el.textContent).toContain('OpenRouter · deepseek/deepseek-v4-pro')
-    expect(el.textContent).toContain('From model tiers')
-    expect(el.textContent).toContain('Reset to current tier candidates')
-    expect(el.textContent).toContain('Add candidate')
-    expect(el.textContent).toContain('If every candidate fails, fall back to the current model: OpenRouter · deepseek/deepseek-v4-pro.')
-    expect(el.textContent).not.toContain('Use a model ensemble')
+    expect(el.querySelector('[data-testid="ensemble-pipeline"]')?.textContent)
+      .toContain('Only the aggregator can call tools')
+    expect(el.textContent).toContain('Aggregator')
+    expect(el.querySelector('[data-testid="ensemble-custom-aggregator-inherited"]')?.textContent)
+      .toContain('deepseek/deepseek-v4-pro')
+    expect(el.textContent).toContain('Proposer models')
+    expect(el.textContent).toContain('DeepSeek · deepseek-v4-pro')
+    expect(el.textContent).toContain('Primary')
+    expect(el.querySelector('[data-testid="ensemble-below-minimum"]')).toBeTruthy()
+    expect(el.querySelector('[data-testid="ensemble-custom-facts"]')?.textContent)
+      .toContain('3 model calls')
     expect(el.querySelector('[role="table"]')).toBeNull()
 
     app.unmount()
   })
 
-  it('edits custom ensemble candidates and the failure policy', async () => {
+  it('edits custom lineup candidates, roles, and the failure policy', async () => {
     const onAddEnsembleCandidate = vi.fn()
     const onRemoveEnsembleCandidate = vi.fn()
-    const onResetEnsembleCandidates = vi.fn()
+    const onSetEnsembleCandidateRole = vi.fn()
+    const onImportEnsembleTierCandidates = vi.fn()
     const onUpdateEnsembleAllFailedPolicy = vi.fn()
     const customCandidate = {
-      key: 'custom:deepseek:deepseek-v4-pro',
+      key: 'custom:proposer:deepseek:deepseek-v4-pro',
       provider: 'deepseek',
       model: 'deepseek-v4-pro',
       source: 'custom',
       enabled: true,
+      role: '',
       credential: { provider: 'deepseek', available: true, source: 'explicit', envKey: 'DEEPSEEK_API_KEY' },
     }
     const { app, el } = await mountPanel(
       {
         activeStrategy: 'ensemble',
-        cards: [
-          { id: 'router', enabled: false, titleKey: 'setup.modelStrategy.cards.router.title', descKey: 'setup.modelStrategy.cards.router.desc' },
-          { id: 'ensemble', enabled: true, titleKey: 'setup.modelStrategy.cards.ensemble.title', descKey: 'setup.modelStrategy.cards.ensemble.desc' },
-          { id: 'single', enabled: false, titleKey: 'setup.modelStrategy.cards.single.title', descKey: 'setup.modelStrategy.cards.single.desc' },
-        ],
         ensemble: {
           enabled: true,
-          selectionMode: 'router_dynamic',
-          modelOptions: [],
-          customCandidates: [customCandidate],
-          minSuccessfulProposers: 1,
-          allFailedPolicy: 'fallback_single',
-          showModelOptions: true,
-          showCandidateEditor: true,
-          showOpenrouterHint: false,
-          advancedOpen: false,
-          statusText: 'Ensemble is on.',
+          scheme: 'custom',
+          custom: customLineup({ proposers: [customCandidate], proposerCount: 1 }),
         },
       },
       {
         onAddEnsembleCandidate,
         onRemoveEnsembleCandidate,
-        onResetEnsembleCandidates,
+        onSetEnsembleCandidateRole,
+        onImportEnsembleTierCandidates,
         onUpdateEnsembleAllFailedPolicy,
       },
     )
 
     expect(el.textContent).toContain('DeepSeek · deepseek-v4-pro')
-    expect(el.textContent).toContain('Custom')
     expect(el.textContent).toContain('Connected')
 
     el.querySelector<HTMLButtonElement>('[aria-label="Remove deepseek-v4-pro"]')?.click()
     await nextTick()
     expect(onRemoveEnsembleCandidate.mock.calls[0]?.[0]).toMatchObject(customCandidate)
+
+    const roleSelect = el.querySelector<HTMLSelectElement>('select[aria-label="Role for deepseek-v4-pro"]')
+    expect(roleSelect).toBeTruthy()
+    roleSelect!.value = 'critic'
+    roleSelect!.dispatchEvent(new Event('change', { bubbles: true }))
+    await nextTick()
+    expect(onSetEnsembleCandidateRole.mock.calls[0]?.[1]).toBe('critic')
 
     const provider = el.querySelector<HTMLInputElement>('input[name="setup_model_strategy_add_candidate_provider"]')
     provider!.value = 'anthropic'
@@ -303,11 +340,11 @@ describe('SetupModelStrategyPanel', () => {
     model!.dispatchEvent(new Event('input', { bubbles: true }))
     el.querySelector<HTMLButtonElement>('[data-testid="setup-model-strategy-add-candidate"]')?.click()
     await nextTick()
-    expect(onAddEnsembleCandidate).toHaveBeenCalledWith('anthropic', 'claude-opus')
+    expect(onAddEnsembleCandidate).toHaveBeenCalledWith('anthropic', 'claude-opus', '')
 
-    el.querySelector<HTMLButtonElement>('[data-testid="setup-model-strategy-reset-candidates"]')?.click()
+    el.querySelector<HTMLButtonElement>('[data-testid="setup-model-strategy-import-tiers"]')?.click()
     await nextTick()
-    expect(onResetEnsembleCandidates).toHaveBeenCalledOnce()
+    expect(onImportEnsembleTierCandidates).toHaveBeenCalledOnce()
 
     const failure = el.querySelector<HTMLSelectElement>('select[name="setup_model_strategy_all_failed_policy"]')
     failure!.value = 'error'
@@ -318,137 +355,113 @@ describe('SetupModelStrategyPanel', () => {
     app.unmount()
   })
 
-  it('explains that one ensemble candidate is only a baseline state', async () => {
+  it('surfaces capacity warnings and disables adding at the proposer cap', async () => {
     const { app, el } = await mountPanel({
       activeStrategy: 'ensemble',
-      cards: [
-        { id: 'router', enabled: false, titleKey: 'setup.modelStrategy.cards.router.title', descKey: 'setup.modelStrategy.cards.router.desc' },
-        { id: 'ensemble', enabled: true, titleKey: 'setup.modelStrategy.cards.ensemble.title', descKey: 'setup.modelStrategy.cards.ensemble.desc' },
-        { id: 'single', enabled: false, titleKey: 'setup.modelStrategy.cards.single.title', descKey: 'setup.modelStrategy.cards.single.desc' },
-      ],
-      router: {
-        ...panel().router,
-        textTiers: ['c1'],
-        tierRows: [
-          { name: 'c1', provider: 'openrouter', model: 'deepseek/deepseek-v4-pro', thinkingLevel: 'high', supportsImage: false },
-        ],
-      },
       ensemble: {
         enabled: true,
-        selectionMode: 'router_dynamic',
-        tierCandidates: [
-          {
-            key: 'tier:openrouter:deepseek/deepseek-v4-pro',
-            provider: 'openrouter',
-            model: 'deepseek/deepseek-v4-pro',
-            source: 'tier',
-            enabled: true,
-            credential: { provider: 'openrouter', available: true, source: 'env', envKey: 'OPENROUTER_API_KEY' },
-          },
-        ],
-        customCandidates: [],
-        modelOptions: [],
-        minSuccessfulProposers: 1,
-        allFailedPolicy: 'fallback_single',
-        showModelOptions: true,
-        showOpenrouterHint: false,
-        advancedOpen: false,
-        statusText: 'Ensemble is on.',
+        scheme: 'custom',
+        custom: customLineup({
+          proposerCount: 6,
+          capacity: 'full',
+          canAddProposer: false,
+          belowMinimum: false,
+          diversityWarning: true,
+          facts: { ...FACTS, perTurnCalls: 7, proposerCount: 6, quorum: 5 },
+        }),
       },
     })
 
-    expect(el.textContent).toContain('Add at least one more candidate to benefit from ensemble routing.')
+    expect(el.querySelector('[data-testid="ensemble-capacity-full"]')?.textContent).toContain('6')
+    expect(el.querySelector('[data-testid="ensemble-diversity-warn"]')).toBeTruthy()
+    expect(el.querySelector<HTMLButtonElement>('[data-testid="setup-model-strategy-add-candidate"]')?.disabled).toBe(true)
 
     app.unmount()
   })
 
-  it('shows the fixed OpenRouter ensemble profile without the custom candidate editor', async () => {
-    const onUpdateOpenrouterCustomEnsemble = vi.fn()
+  it('shows the preset lineup with member notes, effective facts, and scheme cards', async () => {
+    const onUpdateEnsembleScheme = vi.fn()
     const { app, el } = await mountPanel({
       activeStrategy: 'ensemble',
-      cards: [
-        { id: 'router', enabled: false, titleKey: 'setup.modelStrategy.cards.router.title', descKey: 'setup.modelStrategy.cards.router.desc' },
-        { id: 'ensemble', enabled: true, titleKey: 'setup.modelStrategy.cards.ensemble.title', descKey: 'setup.modelStrategy.cards.ensemble.desc' },
-        { id: 'single', enabled: false, titleKey: 'setup.modelStrategy.cards.single.title', descKey: 'setup.modelStrategy.cards.single.desc' },
-      ],
       ensemble: {
         enabled: true,
         selectionMode: 'static_openrouter_b5',
-        fixedOpenRouterProfile: {
+        scheme: 'preset',
+        schemeCardsAvailable: true,
+        fixedProfile: {
           providerLabel: 'OpenRouter',
           proposers: [
-            { key: 'openrouter-fixed:openrouter:deepseek/deepseek-v4-pro', provider: 'openrouter', model: 'deepseek/deepseek-v4-pro', source: 'openrouter_fixed', enabled: true },
-            { key: 'openrouter-fixed:openrouter:z-ai/glm-5.2', provider: 'openrouter', model: 'z-ai/glm-5.2', source: 'openrouter_fixed', enabled: true },
-            { key: 'openrouter-fixed:openrouter:moonshotai/kimi-k2.7-code', provider: 'openrouter', model: 'moonshotai/kimi-k2.7-code', source: 'openrouter_fixed', enabled: true },
-            { key: 'openrouter-fixed:openrouter:qwen/qwen3.7-max', provider: 'openrouter', model: 'qwen/qwen3.7-max', source: 'openrouter_fixed', enabled: true },
+            { key: 'openrouter-fixed:proposer:openrouter:deepseek/deepseek-v4-pro', provider: 'openrouter', model: 'deepseek/deepseek-v4-pro', source: 'openrouter_fixed', enabled: true, role: '' },
+            { key: 'openrouter-fixed:proposer:openrouter:z-ai/glm-5.2', provider: 'openrouter', model: 'z-ai/glm-5.2', source: 'openrouter_fixed', enabled: true, role: '' },
+            { key: 'openrouter-fixed:proposer:openrouter:moonshotai/kimi-k2.7-code', provider: 'openrouter', model: 'moonshotai/kimi-k2.7-code', source: 'openrouter_fixed', enabled: true, role: '' },
+            { key: 'openrouter-fixed:proposer:openrouter:qwen/qwen3.7-max', provider: 'openrouter', model: 'qwen/qwen3.7-max', source: 'openrouter_fixed', enabled: true, role: '' },
           ],
-          aggregator: { key: 'openrouter-fixed:openrouter:z-ai/glm-5.2:aggregator', provider: 'openrouter', model: 'z-ai/glm-5.2', source: 'openrouter_fixed', enabled: true },
+          aggregator: { key: 'openrouter-fixed:aggregator:openrouter:z-ai/glm-5.2', provider: 'openrouter', model: 'z-ai/glm-5.2', source: 'openrouter_fixed', enabled: true, role: 'aggregator' },
         },
         showCandidateEditor: false,
-        showOpenRouterFixedSwitch: true,
-        openRouterCustomEnsemble: false,
       },
-    }, { onUpdateOpenrouterCustomEnsemble })
+    }, { onUpdateEnsembleScheme })
 
     expect(el.textContent).toContain('OpenRouter fixed ensemble')
-    expect(el.textContent).toContain('Customize ensemble')
     expect(el.textContent).toContain('deepseek/deepseek-v4-pro')
     expect(el.textContent).toContain('moonshotai/kimi-k2.7-code')
-    expect(el.textContent).toContain('qwen/qwen3.7-max')
     expect(el.textContent).toContain('Aggregator')
-    const customize = el.querySelector<HTMLInputElement>('input[name="setup_model_strategy_openrouter_custom"]')
-    expect(customize?.checked).toBe(false)
-    customize!.checked = true
-    customize!.dispatchEvent(new Event('change', { bubbles: true }))
+    // Member notes + effective runtime facts are the new identity layer.
+    expect(el.textContent).toContain('Reasoning anchor')
+    expect(el.textContent).toContain('the only member that can call tools')
+    expect(el.querySelector('[data-testid="ensemble-preset-facts"]')?.textContent).toContain('3/4')
+    // Scheme cards replace the old customize toggle.
+    expect(el.querySelector('[data-testid="ensemble-scheme-preset"]')?.getAttribute('aria-checked')).toBe('true')
+    el.querySelector<HTMLButtonElement>('[data-testid="ensemble-scheme-custom"]')?.click()
     await nextTick()
-    expect(onUpdateOpenrouterCustomEnsemble).toHaveBeenCalledWith(true)
+    expect(onUpdateEnsembleScheme).toHaveBeenCalledWith('custom')
+    expect(el.textContent).not.toContain('legacy OpenRouter candidate template')
     expect(el.querySelector('input[name="setup_model_strategy_add_candidate_provider"]')).toBeNull()
-    expect(el.querySelector('[data-testid="setup-model-strategy-reset-candidates"]')).toBeNull()
 
     app.unmount()
   })
 
-  it('shows custom candidates rather than the fixed OpenRouter block for non-OpenRouter providers', async () => {
+  it('shows a migration banner for a stored legacy dynamic config', async () => {
+    const onMigrateEnsembleLegacy = vi.fn()
+    const { app, el } = await mountPanel(
+      {
+        activeStrategy: 'ensemble',
+        ensemble: {
+          enabled: true,
+          selectionMode: 'router_dynamic',
+          scheme: 'legacy',
+          schemeCardsAvailable: true,
+        },
+      },
+      { onMigrateEnsembleLegacy },
+    )
+
+    const banner = el.querySelector('[data-testid="ensemble-legacy-banner"]')
+    expect(banner).toBeTruthy()
+    // Legacy configs keep editing affordances but no scheme cards until migrated.
+    expect(el.querySelector('[data-testid="ensemble-scheme-preset"]')).toBeNull()
+    el.querySelector<HTMLButtonElement>('[data-testid="ensemble-migrate-legacy"]')?.click()
+    await nextTick()
+    expect(onMigrateEnsembleLegacy).toHaveBeenCalledOnce()
+
+    app.unmount()
+  })
+
+  it('hides scheme cards for providers without a preset', async () => {
     const { app, el } = await mountPanel({
       providerLabel: 'DeepSeek',
       activeStrategy: 'ensemble',
-      cards: [
-        { id: 'router', enabled: false, titleKey: 'setup.modelStrategy.cards.router.title', descKey: 'setup.modelStrategy.cards.router.desc' },
-        { id: 'ensemble', enabled: true, titleKey: 'setup.modelStrategy.cards.ensemble.title', descKey: 'setup.modelStrategy.cards.ensemble.desc' },
-        { id: 'single', enabled: false, titleKey: 'setup.modelStrategy.cards.single.title', descKey: 'setup.modelStrategy.cards.single.desc' },
-      ],
-      router: {
-        ...panel().router,
-        routerDefaultTier: 'c1',
-        textTiers: ['c1'],
-        tierRows: [
-          { name: 'c1', provider: 'deepseek', model: 'deepseek-v4-pro', thinkingLevel: 'high', supportsImage: false },
-        ],
-      },
       ensemble: {
         enabled: true,
-        selectionMode: 'static_openrouter_b5',
-        fixedOpenRouterProfile: null,
-        tierCandidates: [
-          {
-            key: 'tier:deepseek:deepseek-v4-pro',
-            provider: 'deepseek',
-            model: 'deepseek-v4-pro',
-            source: 'tier',
-            enabled: true,
-            credential: { provider: 'deepseek', available: true, source: 'explicit', envKey: 'DEEPSEEK_API_KEY' },
-          },
-        ],
-        customCandidates: [],
-        showCandidateEditor: true,
-        showOpenRouterFixedSwitch: false,
+        scheme: 'custom',
+        schemeCardsAvailable: false,
+        custom: customLineup({ inheritedAggregatorProvider: 'deepseek', inheritedAggregatorModel: 'deepseek-v4-pro' }),
       },
     })
 
+    expect(el.querySelector('[data-testid="ensemble-scheme-preset"]')).toBeNull()
     expect(el.textContent).not.toContain('OpenRouter fixed ensemble')
-    expect(el.textContent).not.toContain('Customize ensemble')
-    expect(el.textContent).toContain('Candidate models')
-    expect(el.textContent).toContain('DeepSeek · deepseek-v4-pro')
+    expect(el.textContent).toContain('Proposer models')
     expect(el.querySelector('input[name="setup_model_strategy_add_candidate_provider"]')).toBeTruthy()
 
     app.unmount()

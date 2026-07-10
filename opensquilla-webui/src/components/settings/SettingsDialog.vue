@@ -187,14 +187,12 @@
               @update-router-default-tier="setRouterDefaultTier"
               @update-router-visual-mode="setRouterVisualMode"
               @update-tier-field="updateTierField"
-              @update-ensemble-enabled="setEnsembleEnabled"
-              @update-ensemble-selection-mode="setEnsembleSelectionMode"
-              @add-ensemble-model-option="addEnsembleModelOption"
-              @remove-ensemble-model-option="removeEnsembleModelOption"
+              @update-ensemble-scheme="setEnsembleScheme"
               @add-ensemble-candidate="addEnsembleCandidate"
               @remove-ensemble-candidate="removeEnsembleCandidate"
-              @reset-ensemble-candidates="resetEnsembleCandidates"
-              @update-openrouter-custom-ensemble="setOpenRouterCustomEnsemble"
+              @set-ensemble-candidate-role="setEnsembleCandidateRole"
+              @import-ensemble-tier-candidates="importEnsembleTierCandidates"
+              @migrate-ensemble-legacy="migrateEnsembleLegacy"
               @update-ensemble-min-successful="setEnsembleMinSuccessful"
               @update-ensemble-all-failed-policy="setEnsembleAllFailedPolicy"
               @go-to-section="selectSection"
@@ -326,14 +324,12 @@ const {
   setModelStrategy,
   setRouterDefaultTier,
   setRouterVisualMode,
-  setEnsembleEnabled,
-  setEnsembleSelectionMode,
-  addEnsembleModelOption,
-  removeEnsembleModelOption,
   addEnsembleCandidate,
   removeEnsembleCandidate,
-  resetEnsembleCandidates,
-  setOpenRouterCustomEnsemble,
+  setEnsembleCandidateRole,
+  importEnsembleTierCandidates,
+  migrateEnsembleLegacy,
+  setEnsembleScheme,
   setEnsembleMinSuccessful,
   setEnsembleAllFailedPolicy,
   applyProviderPreset,

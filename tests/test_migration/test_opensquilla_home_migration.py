@@ -723,10 +723,10 @@ def test_windows_absolute_path_pins_are_dropped_on_posix_import(tmp_path: Path) 
     (source / "media").mkdir()
     (source / "media" / "sentinel.bin").write_bytes(b"media")
     payload = tomllib.loads((source / "config.toml").read_text(encoding="utf-8"))
-    payload["state_dir"] = r"C:\Users\Example\.opensquilla\state"
-    payload["workspace_dir"] = r"\\server\share\opensquilla\workspace"
+    payload["state_dir"] = r"C:\SyntheticOpenSquilla\state"
+    payload["workspace_dir"] = r"\\synthetic.invalid\share\workspace"
     payload.setdefault("attachments", {})["media_root"] = (
-        r"C:\Users\Example\.opensquilla\media"
+        r"C:\SyntheticOpenSquilla\media"
     )
     (source / "config.toml").write_text(tomli_w.dumps(payload), encoding="utf-8")
     target = tmp_path / "target-home"

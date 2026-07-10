@@ -10,7 +10,7 @@ import {
   normalizeRouterVisualMode,
   type RouterVisualMode,
 } from '@/utils/chat/routerVisualMode'
-import type { DiscoveredModel } from '@/composables/setup/useSetupProviderForm'
+import type { DiscoveredModelsByProvider } from '@/composables/setup/useSetupProviderForm'
 
 export interface SetupTierValue {
   provider: string
@@ -80,11 +80,9 @@ interface RouterPanelContext {
   isOpenrouter: ComputedRef<boolean>
   textTiers: readonly string[]
   tierLabel: (tier: string) => string
-  // Optional: live-discovered models (provider connection machine) so tier
-  // model cells can upgrade to the combobox. Absent = plain inputs, as before.
-  discoveredModels?: ComputedRef<DiscoveredModel[]>
-  discoveredModelsProvider?: ComputedRef<string>
-  discoveredModelSource?: ComputedRef<string>
+  // Optional provider-scoped catalogs so mixed-provider tier rows never share
+  // model ids. Missing/empty catalogs keep the existing free-text input.
+  discoveredModelsByProvider?: ComputedRef<DiscoveredModelsByProvider>
 }
 
 export function useSetupRouterForm() {
@@ -254,9 +252,7 @@ export function useSetupRouterForm() {
         tierRows: tierRows(context.textTiers),
         tierLabel: context.tierLabel,
         hasMixedTierProviders: hasMixedTierProviders.value,
-        discoveredModels: context.discoveredModels?.value ?? [],
-        discoveredModelsProvider: context.discoveredModelsProvider?.value ?? '',
-        discoveredModelSource: context.discoveredModelSource?.value ?? 'none',
+        discoveredModelsByProvider: context.discoveredModelsByProvider?.value ?? {},
       }
     })
   }

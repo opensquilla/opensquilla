@@ -133,6 +133,7 @@ _POLICIES_BY_KIND: dict[str, OpenAICompatPolicy] = {
     ),
     "openrouter": OpenAICompatPolicy(
         display_name="OpenRouter",
+        official_host="openrouter.ai",
         text_tool_synthesis=True,
         trust_billed_cost=True,
         sends_usage_include=True,

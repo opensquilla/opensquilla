@@ -1142,7 +1142,7 @@ async def test_models_discover_requires_admin_scope(tmp_path, monkeypatch):
     res = await get_dispatcher().dispatch(
         "r1",
         "onboarding.models.discover",
-        {"providerId": "openai", "apiKey": "sk-test"},
+        {"providerId": "openrouter", "apiKey": "sk-test"},
         _read_ctx(),
     )
     assert res.error is not None
@@ -1163,10 +1163,38 @@ async def test_models_discover_lists_live_models(tmp_path, monkeypatch):
     res = await get_dispatcher().dispatch(
         "r1",
         "onboarding.models.discover",
-        {"providerId": "openai", "apiKey": "sk-test"},
+        {"providerId": "openrouter", "apiKey": "sk-test"},
         _admin_ctx(),
     )
     assert res.error is None, res.error
     assert res.payload["ok"] is True
     assert res.payload["source"] == "live"
     assert [m["id"] for m in res.payload["models"]] == ["gpt-x"]
+
+
+@pytest.mark.asyncio
+async def test_models_discover_unverified_provider_stays_empty_without_build(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("OPENSQUILLA_GATEWAY_CONFIG_PATH", str(tmp_path / "c.toml"))
+
+    def _unexpected_build(*_args, **_kwargs):
+        raise AssertionError("unverified providers must not be built for selector discovery")
+
+    monkeypatch.setattr("opensquilla.onboarding.probe.build_provider", _unexpected_build)
+
+    res = await get_dispatcher().dispatch(
+        "r1",
+        "onboarding.models.discover",
+        {"providerId": "openai", "apiKey": "synthetic-key"},
+        _admin_ctx(),
+    )
+
+    assert res.error is None, res.error
+    assert res.payload == {
+        "ok": True,
+        "failureKind": "",
+        "detail": "",
+        "source": "none",
+        "models": [],
+    }

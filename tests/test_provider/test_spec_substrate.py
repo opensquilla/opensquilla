@@ -119,6 +119,19 @@ def test_catalog_sources_match_the_migrated_script_mapping() -> None:
     assert actual == _EXPECTED_CATALOG_SOURCES
 
 
+def test_selectable_model_catalog_is_enabled_only_for_verified_providers() -> None:
+    """A picker must never turn an unverified/static adapter list into truth."""
+    trusted = {
+        spec.provider_id
+        for spec in list_provider_specs()
+        if spec.selectable_model_catalog == "verified_live"
+    }
+    assert trusted == {"openrouter", "tokenrhythm"}
+
+    assert get_provider_spec("openrouter").compat.official_host == "openrouter.ai"
+    assert get_provider_spec("tokenrhythm").compat.official_host == "tokenrhythm.studio"
+
+
 def test_anthropic_backend_auth_header_styles() -> None:
     """Anthropic proper signs with x-api-key; the MiniMax Anthropic-compatible
     endpoints require Authorization: Bearer. The request goldens freeze the

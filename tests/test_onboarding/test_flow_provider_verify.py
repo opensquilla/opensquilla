@@ -147,6 +147,15 @@ def test_discovery_without_models_keeps_free_text_prompt(monkeypatch):
     _capture_console(monkeypatch)
     monkeypatch.setattr(
         flow,
+        "_run_provider_probe",
+        lambda **kwargs: ProviderProbeResult(
+            ok=True,
+            provider_id=kwargs["provider_id"],
+            model=kwargs["model"],
+        ),
+    )
+    monkeypatch.setattr(
+        flow,
         "_run_provider_discovery",
         lambda **_kw: ProviderModelsDiscoverResult(
             ok=True, provider_id="groq", source="none"
@@ -171,6 +180,57 @@ def test_discovery_without_models_keeps_free_text_prompt(monkeypatch):
     )
 
     assert answers["model"] == "typed-model"
+
+
+def test_unverified_catalog_still_probes_the_typed_model(monkeypatch):
+    from opensquilla.onboarding import probe as probe_module
+
+    output = _capture_console(monkeypatch)
+    probe_calls: list[dict[str, Any]] = []
+
+    async def _fake_probe(**kwargs: Any) -> ProviderProbeResult:
+        probe_calls.append(kwargs)
+        return ProviderProbeResult(
+            ok=True,
+            provider_id=kwargs["provider_id"],
+            model=kwargs["model"],
+        )
+
+    async def _unexpected_raw_discovery(**_kwargs: Any) -> ProviderModelsDiscoverResult:
+        raise AssertionError("an unverified catalog must stay free text")
+
+    monkeypatch.setattr(probe_module, "probe_llm_provider", _fake_probe)
+    monkeypatch.setattr(probe_module, "discover_provider_models", _unexpected_raw_discovery)
+
+    class _Questionary:
+        def text(self, message: str, **_kwargs: Any) -> _Answer:
+            assert message == "Model id"
+            return _Answer("typed-model")
+
+        def select(self, message: str, **_kwargs: Any) -> _Answer:
+            raise AssertionError(f"unexpected select prompt: {message}")
+
+        def confirm(self, message: str, **_kwargs: Any) -> _Answer:
+            raise AssertionError(f"unexpected confirm prompt: {message}")
+
+    answers = _ask_provider_fields(
+        _Questionary(),
+        get_provider_setup_spec("groq"),
+        OnboardOptions(api_key="synthetic-key"),
+    )
+
+    assert answers["model"] == "typed-model"
+    assert probe_calls == [
+        {
+            "provider_id": "groq",
+            "model": "typed-model",
+            "api_key": "synthetic-key",
+            "api_key_env": "",
+            "base_url": "https://api.groq.com/openai/v1",
+            "proxy": "",
+        }
+    ]
+    assert "connection verified" in output.getvalue()
 
 
 def test_failed_connection_check_shows_detail_and_never_blocks(monkeypatch):
@@ -584,7 +644,7 @@ def test_wizard_discovery_suppresses_provider_log_noise(monkeypatch, capsys):
         )
         return sentinel
 
-    monkeypatch.setattr(probe_module, "discover_provider_models", _noisy_discovery)
+    monkeypatch.setattr(probe_module, "discover_selectable_provider_models", _noisy_discovery)
 
     result = flow._run_provider_discovery(provider_id="openrouter")
 
@@ -719,7 +779,7 @@ def test_discovery_keyboard_interrupt_skips_discovery_not_the_wizard(monkeypatch
     async def _stalled_discovery(**_kwargs: Any) -> Any:
         raise KeyboardInterrupt
 
-    monkeypatch.setattr(probe_module, "discover_provider_models", _stalled_discovery)
+    monkeypatch.setattr(probe_module, "discover_selectable_provider_models", _stalled_discovery)
 
     result = flow._run_provider_discovery(provider_id="groq", api_key="sk-live")
 

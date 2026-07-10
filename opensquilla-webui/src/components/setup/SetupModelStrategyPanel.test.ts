@@ -57,9 +57,7 @@ function panel(overrides: Record<string, unknown> = {}) {
         { name: 'c1', provider: 'openrouter', model: 'deepseek/deepseek-v4-pro', thinkingLevel: 'high', supportsImage: false },
       ],
       tierLabel: (tier: string) => tier,
-      discoveredModels: [],
-      discoveredModelsProvider: '',
-      discoveredModelSource: 'none',
+      discoveredModelsByProvider: {},
       hasMixedTierProviders: false,
     },
     ensemble: {
@@ -184,6 +182,53 @@ describe('SetupModelStrategyPanel', () => {
     expect(visualMode?.value).toBe('real_candidates')
     expect(el.textContent).toContain('Routing panel style')
 
+    app.unmount()
+  })
+
+  it('lets a router tier choose a discovered model from the options trigger', async () => {
+    const onUpdateTierField = vi.fn()
+    const discoveredModels = [
+      {
+        id: 'test-vendor/alpha',
+        name: 'Alpha',
+        contextWindow: 262144,
+        maxOutputTokens: 16384,
+        capabilities: ['chat', 'tools'],
+        pricing: null,
+        capabilitySource: 'provider',
+      },
+    ]
+    const { app, el } = await mountPanel(
+      {
+        router: {
+          discoveredModelsByProvider: {
+            openrouter: { models: discoveredModels, source: 'live' },
+          },
+        },
+      },
+      { onUpdateTierField },
+    )
+
+    const input = el.querySelector<HTMLInputElement>(
+      'input[role="combobox"][aria-label="c0 model"]',
+    )!
+    const trigger = input.parentElement?.querySelector<HTMLButtonElement>(
+      '[data-testid="setup-model-options-toggle"]',
+    )
+
+    expect(trigger).toBeTruthy()
+    trigger!.click()
+    await nextTick()
+
+    const option = Array.from(
+      document.querySelectorAll<HTMLButtonElement>('[role="option"]'),
+    ).find(row => row.textContent?.includes('test-vendor/alpha'))
+
+    expect(option).toBeTruthy()
+    option!.click()
+    await nextTick()
+
+    expect(onUpdateTierField).toHaveBeenCalledWith('c0', 'model', 'test-vendor/alpha')
     app.unmount()
   })
 

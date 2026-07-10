@@ -3,7 +3,12 @@ import i18n from '@/i18n'
 import { useSetupChannelsForm } from '@/composables/setup/useSetupChannelsForm'
 import { useSetupCapabilitiesForm } from '@/composables/setup/useSetupCapabilitiesForm'
 import { useSetupBehaviorForm } from '@/composables/setup/useSetupBehaviorForm'
-import { hasEffectiveProvider, useSetupProviderForm } from '@/composables/setup/useSetupProviderForm'
+import {
+  hasEffectiveProvider,
+  normalizeDiscoveredModels,
+  useSetupProviderForm,
+  type DiscoveredModelsByProvider,
+} from '@/composables/setup/useSetupProviderForm'
 import { useSetupRouterForm, type SetupTierRow } from '@/composables/setup/useSetupRouterForm'
 import {
   STATIC_B5_PROFILES,
@@ -269,6 +274,92 @@ const capabilitiesForm = useSetupCapabilitiesForm()
 const promotedForm = useSettingsPromotedForm()
 
 let pollTimer: ReturnType<typeof setInterval> | null = null
+const tierModelCatalogs = ref<DiscoveredModelsByProvider>({})
+const tierModelDiscoveries = new Map<string, Promise<void>>()
+const tierModelDiscoveryCompleted = new Set<string>()
+let tierModelDiscoveryEpoch = 0
+
+function normalizeProviderId(value: unknown): string {
+  return String(value || '').trim().toLowerCase()
+}
+
+function resetTierModelDiscovery() {
+  tierModelDiscoveryEpoch += 1
+  tierModelCatalogs.value = {}
+  tierModelDiscoveries.clear()
+  tierModelDiscoveryCompleted.clear()
+}
+
+function discoverTierProviderModels(providerId: string): Promise<void> {
+  const provider = normalizeProviderId(providerId)
+  if (!provider) return Promise.resolve()
+
+  const selectedProvider = normalizeProviderId(providerForm.selectedProvider.value)
+  if (provider === selectedProvider) {
+    // Keep using the provider form's discovery path for the selected provider:
+    // it is the only path allowed to include unsaved credentials/endpoints.
+    if (providerForm.connection.value.models.length > 0) return Promise.resolve()
+    return providerForm.discoverModels()
+  }
+
+  const existing = tierModelDiscoveries.get(provider)
+  if (existing) return existing
+  if (tierModelDiscoveryCompleted.has(provider)) return Promise.resolve()
+
+  const epoch = tierModelDiscoveryEpoch
+  tierModelDiscoveryCompleted.add(provider)
+  const request = (async () => {
+    try {
+      // Deliberately provider-only. Never forward the selected provider's
+      // unsaved apiKey/baseUrl/proxy into another provider's request.
+      const res = await rpc.call<{
+        ok?: boolean
+        source?: string
+        models?: unknown
+      }>('onboarding.models.discover', { providerId: provider })
+      if (epoch !== tierModelDiscoveryEpoch) return
+      const source = res?.ok && res.source === 'live' ? 'live' : 'none'
+      tierModelCatalogs.value = {
+        ...tierModelCatalogs.value,
+        [provider]: source === 'live'
+          ? {
+              models: normalizeDiscoveredModels(res.models),
+              source,
+            }
+          : { models: [], source: 'none' },
+      }
+    } catch {
+      if (epoch !== tierModelDiscoveryEpoch) return
+      tierModelCatalogs.value = {
+        ...tierModelCatalogs.value,
+        [provider]: { models: [], source: 'none' },
+      }
+    }
+  })()
+  const tracked = request.finally(() => {
+    if (tierModelDiscoveries.get(provider) === tracked) {
+      tierModelDiscoveries.delete(provider)
+    }
+  })
+  tierModelDiscoveries.set(provider, tracked)
+  return tracked
+}
+
+async function maybeDiscoverModelsForStrategy(): Promise<void> {
+  if (section.value !== 'modelStrategy') return
+  const providers = new Set(
+    routerPanel.value.tierRows
+      .map(row => normalizeProviderId(row.provider))
+      .filter(Boolean),
+  )
+  const selectedProvider = normalizeProviderId(providerForm.selectedProvider.value)
+  if (selectedProvider) providers.add(selectedProvider)
+  await Promise.all(Array.from(providers, provider => discoverTierProviderModels(provider)))
+}
+
+watch(section, () => {
+  void maybeDiscoverModelsForStrategy()
+})
 
 // ---------------------------------------------------------------------------
 // Lifecycle
@@ -301,6 +392,7 @@ async function loadData() {
     status.value = st || {}
     config.value = cfg || {}
     channelStatus.value = chStatus || { channels: [] }
+    resetTierModelDiscovery()
 
     // Initialize form values from config
     providerForm.initFromConfig(config.value.llm || {}, status.value, runtimeProviders.value)
@@ -314,6 +406,10 @@ async function loadData() {
     channelsForm.initFromCatalog(catalog.value.channels || [])
     promotedForm.initFromConfig(config.value)
     disableNetworkObservability.value = currentDisableNetworkObservability.value
+    // Model listing is an optional UI accelerator and may involve an external
+    // provider. Start it after core state is ready, but never hold settings
+    // loading/saving open while that network request runs.
+    void maybeDiscoverModelsForStrategy()
     // Every save funnels through this reload, so this is the one spot that can
     // tell snapshot holders outside the dialog (the sidebar banner) that the
     // hot-applied config may have changed readiness.
@@ -627,11 +723,17 @@ const routerPanel = routerForm.createPanel({
   isOpenrouter: isOpenrouterProvider,
   textTiers: TEXT_TIERS,
   tierLabel,
-  // Discovered models (provider connection machine) upgrade matching tier
-  // model cells to the shared combobox; absent/mismatched = plain inputs.
-  discoveredModels: computed(() => providerForm.connection.value.models),
-  discoveredModelsProvider: computed(() => providerForm.selectedProvider.value),
-  discoveredModelSource: computed(() => providerForm.connection.value.modelSource),
+  discoveredModelsByProvider: computed(() => {
+    const catalogs: DiscoveredModelsByProvider = { ...tierModelCatalogs.value }
+    const provider = normalizeProviderId(providerForm.selectedProvider.value)
+    if (provider) {
+      catalogs[provider] = {
+        models: providerForm.connection.value.models,
+        source: providerForm.connection.value.modelSource,
+      }
+    }
+    return catalogs
+  }),
 })
 
 const ensembleTierCandidates = computed(() => routerPanel.value.tierRows.map(row => ({

@@ -61,6 +61,7 @@ _WEBSOCKET_HANDSHAKE_TIMEOUT_S = 10.0
 _WEBSOCKET_REQUEST_TIMEOUT_S = 10.0
 _WEBSOCKET_PING_INTERVAL_S = 30.0
 _WEBSOCKET_APP_PING_INTERVAL_S = 30.0
+_WEBSOCKET_CLOSE_TIMEOUT_S = 3.0
 _WEBSOCKET_REPLY_REQ_ID_TTL_S = 300.0
 _WEBSOCKET_RECONNECT_INITIAL_S = 1.0
 _WEBSOCKET_RECONNECT_MAX_S = 60.0
@@ -395,8 +396,12 @@ class WeComChannel:
 
         return await websockets.connect(
             self.config.websocket_url,
-            ping_interval=_WEBSOCKET_PING_INTERVAL_S,
-            ping_timeout=_WEBSOCKET_PING_INTERVAL_S,
+            # Disable protocol-level pings: WeCom AI Bot server does not
+            # handle WebSocket opcode-0x9 pings correctly and responds with
+            # "1002 incorrect masking". Application-level ping/pong is
+            # handled by _websocket_heartbeat_loop via _APP_CMD_PING.
+            ping_interval=None,
+            close_timeout=_WEBSOCKET_CLOSE_TIMEOUT_S,
         )
 
     async def _ws_send_json(self, payload: dict[str, Any]) -> None:
@@ -487,8 +492,10 @@ class WeComChannel:
             return
         close = getattr(ws, "close", None)
         if callable(close):
-            with contextlib.suppress(Exception):
-                await close()
+            with contextlib.suppress(asyncio.TimeoutError, Exception):
+                await asyncio.wait_for(
+                    close(), timeout=_WEBSOCKET_CLOSE_TIMEOUT_S
+                )
 
     def _fail_pending_ws_responses(self, exc: BaseException) -> None:
         for future in list(self._pending_ws_responses.values()):
@@ -547,7 +554,12 @@ class WeComChannel:
                 except Exception as exc:
                     self._connected = False
                     log.warning("wecom.websocket_heartbeat_failed", error=str(exc))
+                    # Close the broken socket but do not block on it.
                     await self._close_websocket()
+                    # Wait for the receive loop to detect the broken
+                    # connection and re-establish it before resuming pings.
+                    while not self._connected:
+                        await asyncio.sleep(1.0)
         except asyncio.CancelledError:
             raise
 

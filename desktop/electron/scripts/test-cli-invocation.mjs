@@ -8,13 +8,15 @@ import { buildCliInvocation } from '../dist/cli-invocation.js'
     platform: 'darwin',
     mode: 'bundled',
     binaryPath: '/Applications/OpenSquilla.app/Contents/Resources/runtime/gateway/opensquilla-gateway/opensquilla-gateway',
-    stateDir: '/opt/OpenSquilla Data/state',
+    // OPENSQUILLA_STATE_DIR is the OpenSquilla home root; runtime databases
+    // remain under the config-pinned <home>/state directory.
+    stateDir: '/opt/OpenSquilla Data',
     configPath: '/opt/OpenSquilla Data/config.toml',
   })
   assert.equal(result.mode, 'bundled')
   assert.equal(
     result.prefix,
-    "OPENSQUILLA_STATE_DIR='/opt/OpenSquilla Data/state' "
+    "OPENSQUILLA_STATE_DIR='/opt/OpenSquilla Data' "
       + "OPENSQUILLA_GATEWAY_CONFIG_PATH='/opt/OpenSquilla Data/config.toml' "
       + "'/Applications/OpenSquilla.app/Contents/Resources/runtime/gateway/opensquilla-gateway/opensquilla-gateway'",
   )
@@ -26,11 +28,11 @@ import { buildCliInvocation } from '../dist/cli-invocation.js'
     platform: 'linux',
     mode: 'bundled',
     binaryPath: "/opt/o'brien apps/opensquilla-gateway",
-    stateDir: "/opt/o'brien data/state",
+    stateDir: "/opt/o'brien data",
     configPath: "/opt/o'brien data/config.toml",
   })
   assert.ok(result.prefix.includes("'/opt/o'\\''brien apps/opensquilla-gateway'"))
-  assert.ok(result.prefix.includes("OPENSQUILLA_STATE_DIR='/opt/o'\\''brien data/state'"))
+  assert.ok(result.prefix.includes("OPENSQUILLA_STATE_DIR='/opt/o'\\''brien data'"))
 }
 
 // --- windows: PowerShell $env: syntax, '' doubling, & call operator ---
@@ -39,7 +41,7 @@ import { buildCliInvocation } from '../dist/cli-invocation.js'
     platform: 'win32',
     mode: 'bundled',
     binaryPath: 'C:\\Program Files\\OpenSquilla\\resources\\runtime\\gateway\\opensquilla-gateway.exe',
-    stateDir: "C:\\Users\\o'brien\\AppData\\Roaming\\OpenSquilla\\opensquilla\\state",
+    stateDir: "C:\\Users\\o'brien\\AppData\\Roaming\\OpenSquilla\\opensquilla",
     configPath: 'C:\\Users\\jo\\AppData\\Roaming\\OpenSquilla\\opensquilla\\config.toml',
   })
   assert.ok(result.prefix.startsWith("$env:OPENSQUILLA_STATE_DIR = 'C:\\Users\\o''brien\\AppData"))
@@ -53,7 +55,7 @@ import { buildCliInvocation } from '../dist/cli-invocation.js'
     platform: 'win32',
     mode: 'bundled',
     binaryPath: 'C:\\Apps\\OpenSquilla\\opensquilla-gateway.exe',
-    stateDir: 'C:\\Users\\O’Brien\\AppData\\Roaming\\OpenSquilla\\opensquilla\\state',
+    stateDir: 'C:\\Users\\O’Brien\\AppData\\Roaming\\OpenSquilla\\opensquilla',
     configPath: 'C:\\Users\\O’Brien\\AppData\\Roaming\\OpenSquilla\\opensquilla\\config.toml',
   })
   assert.ok(result.prefix.includes("$env:OPENSQUILLA_STATE_DIR = 'C:\\Users\\O’’Brien\\AppData"))
@@ -66,7 +68,7 @@ import { buildCliInvocation } from '../dist/cli-invocation.js'
     platform: 'win32',
     mode: 'dev',
     repoRoot: 'C:\\Dev Projects\\opensquilla',
-    stateDir: 'C:\\Users\\jo\\AppData\\Roaming\\OpenSquilla\\opensquilla\\state',
+    stateDir: 'C:\\Users\\jo\\AppData\\Roaming\\OpenSquilla\\opensquilla',
     configPath: 'C:\\Users\\jo\\AppData\\Roaming\\OpenSquilla\\opensquilla\\config.toml',
   })
   assert.equal(result.mode, 'dev')
@@ -80,7 +82,7 @@ import { buildCliInvocation } from '../dist/cli-invocation.js'
     platform: 'darwin',
     mode: 'dev',
     repoRoot: '/opt/dev projects/opensquilla',
-    stateDir: '/opt/OpenSquilla Data/state',
+    stateDir: '/opt/OpenSquilla Data',
     configPath: '/opt/OpenSquilla Data/config.toml',
   })
   assert.equal(result.mode, 'dev')

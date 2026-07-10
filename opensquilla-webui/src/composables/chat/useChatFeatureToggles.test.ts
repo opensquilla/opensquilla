@@ -236,35 +236,121 @@ describe('useChatFeatureToggles model routing mode', () => {
     expect(api.llmEnsembleEnabled.value).toBe(ensembleActive)
   })
 
-  const writeCases: Array<[ModelRoutingMode, Record<string, unknown>]> = [
-    ['off', {
+  const writeCases: Array<[
+    ModelRoutingMode,
+    Record<string, unknown>,
+    Record<string, unknown>,
+  ]> = [
+    ['off', {}, {
       'llm_ensemble.enabled': false,
       'squilla_router.enabled': false,
       'squilla_router.rollout_phase': 'observe',
     }],
-    ['squilla_router', {
+    ['squilla_router', {}, {
       'llm_ensemble.enabled': false,
       'squilla_router.enabled': true,
       'squilla_router.rollout_phase': 'full',
     }],
-    // Ensemble persists router-disabled — the same exclusive-strategy
-    // encoding the Settings "Model strategy" card writes, so the two
-    // surfaces never flip squilla_router.enabled back and forth on disk.
+    // Static/custom ensemble persists router-disabled — the same
+    // exclusive-strategy encoding the Settings "Model strategy" card writes.
     ['llm_ensemble', {
+      llm_ensemble: { selection_mode: 'static_openrouter_b5' },
+    }, {
       'llm_ensemble.enabled': true,
       'squilla_router.enabled': false,
       'squilla_router.rollout_phase': 'full',
     }],
   ]
 
-  it.each(writeCases)('writes %s through one safe backend patch', async (mode, patches) => {
+  it.each(writeCases)('writes %s through one safe backend patch', async (mode, config, patches) => {
     const { api, rpc } = createHarness({
-      configGetResults: [{}],
+      configGetResults: [config, config],
     })
 
+    await api.loadFeatureToggles()
     await api.setModelRoutingMode(mode)
 
     expect(rpc.call).toHaveBeenCalledWith('config.patch.safe', { patches })
+  })
+
+  it.each([
+    'static_openrouter_b5',
+    'static_tokenrhythm_b5',
+    'custom_b5',
+  ])('disables the router for known independent ensemble mode %s', async (selectionMode) => {
+    const config = {
+      squilla_router: { enabled: true, rollout_phase: 'full' },
+      llm_ensemble: { enabled: false, selection_mode: selectionMode },
+    }
+    const { api, rpc } = createHarness({
+      configGetResults: [config, config],
+    })
+
+    await api.loadFeatureToggles()
+    await api.setModelRoutingMode('llm_ensemble')
+
+    expect(rpc.call).toHaveBeenCalledWith('config.patch.safe', {
+      patches: {
+        'llm_ensemble.enabled': true,
+        'squilla_router.enabled': false,
+        'squilla_router.rollout_phase': 'full',
+      },
+    })
+  })
+
+  it('keeps the router enabled for a legacy router_dynamic ensemble', async () => {
+    const dynamicConfig = {
+      squilla_router: { enabled: true, rollout_phase: 'full' },
+      llm_ensemble: { enabled: false, selection_mode: 'router_dynamic' },
+    }
+    const { api, rpc } = createHarness({
+      configGetResults: [
+        dynamicConfig,
+        {
+          ...dynamicConfig,
+          llm_ensemble: { enabled: true, selection_mode: 'router_dynamic' },
+        },
+      ],
+    })
+
+    await api.loadFeatureToggles()
+    await api.setModelRoutingMode('llm_ensemble')
+
+    expect(rpc.call).toHaveBeenCalledWith('config.patch.safe', {
+      patches: {
+        'llm_ensemble.enabled': true,
+        'squilla_router.enabled': true,
+        'squilla_router.rollout_phase': 'full',
+      },
+    })
+    expect(api.modelRoutingMode.value).toBe('llm_ensemble')
+  })
+
+  it.each([
+    ['a missing selection mode', undefined],
+    ['an unknown selection mode', 'future_ensemble_mode'],
+  ])('keeps the router enabled for %s', async (_label, selectionMode) => {
+    const llmEnsemble = selectionMode
+      ? { enabled: false, selection_mode: selectionMode }
+      : { enabled: false }
+    const config = {
+      squilla_router: { enabled: true, rollout_phase: 'full' },
+      llm_ensemble: llmEnsemble,
+    }
+    const { api, rpc } = createHarness({
+      configGetResults: [config, config],
+    })
+
+    await api.loadFeatureToggles()
+    await api.setModelRoutingMode('llm_ensemble')
+
+    expect(rpc.call).toHaveBeenCalledWith('config.patch.safe', {
+      patches: {
+        'llm_ensemble.enabled': true,
+        'squilla_router.enabled': true,
+        'squilla_router.rollout_phase': 'full',
+      },
+    })
   })
 
   it('keeps the three modes mutually exclusive when switching to Squilla Router', async () => {
@@ -343,7 +429,7 @@ describe('useChatFeatureToggles model routing mode', () => {
     expect(rpc.call).toHaveBeenCalledWith('config.patch.safe', {
       patches: {
         'llm_ensemble.enabled': true,
-        'squilla_router.enabled': false,
+        'squilla_router.enabled': true,
         'squilla_router.rollout_phase': 'full',
       },
     })

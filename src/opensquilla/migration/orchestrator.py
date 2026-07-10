@@ -227,6 +227,11 @@ def _validate_opensquilla_options(options: MigrationBatchOptions) -> None:
         raise MigrationOptionError(
             "opensquilla source does not take preset/include/exclude"
         )
+    if options.config is not None:
+        raise MigrationOptionError(
+            "--config is not supported for OpenSquilla self-migration. "
+            "Set OPENSQUILLA_STATE_DIR to the target home and re-run without --config."
+        )
 
 
 def _validate_openclaw_options(options: MigrationBatchOptions) -> None:

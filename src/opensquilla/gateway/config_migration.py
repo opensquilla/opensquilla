@@ -223,20 +223,63 @@ def _write_legacy_field_log(found: dict[str, object], source: str) -> None:
         logs_dir.mkdir(parents=True, exist_ok=True)
         iso_now = datetime.datetime.now(tz=datetime.UTC).strftime("%Y%m%dT%H%M%SZ")
         log_path = logs_dir / f"legacy_config_{iso_now}.log"
-        with log_path.open("a", encoding="utf-8") as fh:
+        flags = os.O_WRONLY | os.O_CREAT | os.O_APPEND
+        with os.fdopen(os.open(log_path, flags, 0o600), "a", encoding="utf-8") as fh:
+            _set_owner_only_mode(fh.fileno(), log_path)
             for leaf, value in found.items():
                 entry = {
                     "timestamp": datetime.datetime.now(tz=datetime.UTC).isoformat(),
                     "field": leaf,
                     "source": source,
-                    "value_repr": str(value)[:200],
+                    **_legacy_value_metadata(value),
                 }
                 fh.write(json.dumps(entry) + "\n")
     except OSError:
         pass
 
 
-def migrate_config_payload(data: dict[str, Any]) -> ConfigMigrationResult:
+def _set_owner_only_mode(fd: int, path: Path) -> None:
+    """Restrict a log file without assuming descriptor chmod is available."""
+    fchmod = getattr(os, "fchmod", None)
+    if callable(fchmod):
+        try:
+            fchmod(fd, 0o600)
+            return
+        except (AttributeError, NotImplementedError, OSError):
+            pass
+    os.chmod(path, 0o600)
+
+
+def _legacy_value_metadata(value: object) -> dict[str, object]:
+    """Describe a discarded value without serializing any of its contents."""
+    if isinstance(value, str):
+        return {"value_type": "string", "value_shape": {"length": len(value)}}
+    if isinstance(value, dict):
+        return {"value_type": "mapping", "value_shape": {"entries": len(value)}}
+    if isinstance(value, (list, tuple)):
+        return {"value_type": "sequence", "value_shape": {"items": len(value)}}
+    if isinstance(value, (bytes, bytearray)):
+        return {"value_type": "bytes", "value_shape": {"length": len(value)}}
+    if value is None:
+        value_type = "null"
+    elif isinstance(value, bool):
+        value_type = "boolean"
+    elif isinstance(value, int):
+        value_type = "integer"
+    elif isinstance(value, float):
+        value_type = "number"
+    elif isinstance(value, (datetime.datetime, datetime.date, datetime.time)):
+        value_type = "temporal"
+    else:
+        value_type = "object"
+    return {"value_type": value_type, "value_shape": {"kind": "scalar"}}
+
+
+def migrate_config_payload(
+    data: dict[str, Any],
+    *,
+    emit_diagnostics: bool = True,
+) -> ConfigMigrationResult:
     """Return a config payload upgraded for the current strict schema.
 
     Call this only at user-owned disk-load boundaries, before GatewayConfig
@@ -255,13 +298,20 @@ def migrate_config_payload(data: dict[str, Any]) -> ConfigMigrationResult:
     The returned payload is always stamped with ``LATEST_CONFIG_VERSION``.
     Stamping alone never marks the result as changed, so a file is never
     rewritten solely to receive the stamp.
+
+    Set ``emit_diagnostics=False`` for a side-effect-free dry run. The result
+    still reports changes and migration warnings, but no compatibility log,
+    process warning, logging record, or process warning sentinel is touched.
     """
     builder = _MigrationBuilder(payload=copy.deepcopy(data))
 
-    _normalize_memory_fields(builder)
-    _normalize_agent_token_saving_fields(builder)
+    _normalize_memory_fields(builder, emit_diagnostics=emit_diagnostics)
+    _normalize_agent_token_saving_fields(
+        builder,
+        emit_diagnostics=emit_diagnostics,
+    )
     _clamp_search_max_results(builder)
-    _park_unknown_channel_entries(builder)
+    _park_unknown_channel_entries(builder, emit_diagnostics=emit_diagnostics)
     _clear_mismatched_router_tier_profile(builder)
 
     stamped_version = _payload_config_version(builder.payload)
@@ -292,7 +342,11 @@ def _payload_config_version(payload: dict[str, Any]) -> int:
     return int(value)
 
 
-def _normalize_memory_fields(builder: _MigrationBuilder) -> None:
+def _normalize_memory_fields(
+    builder: _MigrationBuilder,
+    *,
+    emit_diagnostics: bool,
+) -> None:
     """Always-run: strip/rename deprecated ``memory.*`` fields."""
     memory = builder.payload.get("memory")
     if not isinstance(memory, dict):
@@ -337,10 +391,15 @@ def _normalize_memory_fields(builder: _MigrationBuilder) -> None:
 
     if deprecated:
         builder.removed_fields.extend(sorted(deprecated))
-        handle_deprecated_memory_fields(deprecated, "config_migration")
+        if emit_diagnostics:
+            handle_deprecated_memory_fields(deprecated, "config_migration")
 
 
-def _normalize_agent_token_saving_fields(builder: _MigrationBuilder) -> None:
+def _normalize_agent_token_saving_fields(
+    builder: _MigrationBuilder,
+    *,
+    emit_diagnostics: bool,
+) -> None:
     """Always-run: migrate/strip deprecated ``agent_token_saving.*`` fields."""
     token_saving = builder.payload.get("agent_token_saving")
     if not isinstance(token_saving, dict):
@@ -362,10 +421,11 @@ def _normalize_agent_token_saving_fields(builder: _MigrationBuilder) -> None:
 
     if deprecated_token_saving:
         builder.removed_fields.extend(sorted(deprecated_token_saving))
-        handle_deprecated_agent_token_saving_fields(
-            deprecated_token_saving,
-            "config_migration",
-        )
+        if emit_diagnostics:
+            handle_deprecated_agent_token_saving_fields(
+                deprecated_token_saving,
+                "config_migration",
+            )
         if (
             deprecated_token_saving.get(
                 "agent_token_saving.tool_result_compression_enabled"
@@ -405,7 +465,11 @@ def _clamp_search_max_results(builder: _MigrationBuilder) -> None:
         )
 
 
-def _park_unknown_channel_entries(builder: _MigrationBuilder) -> None:
+def _park_unknown_channel_entries(
+    builder: _MigrationBuilder,
+    *,
+    emit_diagnostics: bool,
+) -> None:
     """Always-run: drop channel entries whose type is no longer registered.
 
     ``parse_channel_entry`` raises for unregistered channel types during
@@ -428,8 +492,9 @@ def _park_unknown_channel_entries(builder: _MigrationBuilder) -> None:
         return
 
     parked: dict[str, object] = {}
+    parked_log_fields: dict[str, object] = {}
     kept: list[Any] = []
-    for entry in entries:
+    for index, entry in enumerate(entries):
         channel_type = entry.get("type") if isinstance(entry, dict) else None
         if (
             isinstance(channel_type, str)
@@ -440,6 +505,7 @@ def _park_unknown_channel_entries(builder: _MigrationBuilder) -> None:
             label = f"channels.channels[type={channel_type}"
             label += f", name={name}]" if isinstance(name, str) and name else "]"
             parked[label] = entry
+            parked_log_fields[f"channels.channels[{index}]"] = entry
             continue
         kept.append(entry)
 
@@ -452,7 +518,8 @@ def _park_unknown_channel_entries(builder: _MigrationBuilder) -> None:
             f"{label} references an unregistered channel type and was parked "
             "(kept in the config backup); re-add it when the channel returns"
         )
-    _write_legacy_field_log(parked, "config_migration")
+    if emit_diagnostics:
+        _write_legacy_field_log(parked_log_fields, "config_migration")
 
 
 def _clear_mismatched_router_tier_profile(builder: _MigrationBuilder) -> None:

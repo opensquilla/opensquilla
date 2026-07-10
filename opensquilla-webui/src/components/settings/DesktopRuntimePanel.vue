@@ -68,9 +68,25 @@ interface MigrationBridge {
     ok: boolean
     candidate: { kind: string; path: string } | null
     report: unknown | null
+    previewId?: string
     raw?: string
   }>
-  migrationRun?: (opts: { overwrite?: boolean }) => Promise<{ ok: boolean; report?: unknown; detail?: string }>
+  migrationRun?: (opts: { overwrite?: boolean; previewId: string }) => Promise<{
+    ok: boolean
+    aborted?: boolean
+    migrationApplied?: boolean
+    restartOk?: boolean
+    requiresProviderSetup?: boolean
+    report?: unknown
+    detail?: string
+  }>
+  migrationTakeLastResult?: () => Promise<{
+    ok: boolean
+    migrationApplied: boolean
+    restartOk: boolean
+    requiresProviderSetup: boolean
+    detail?: string
+  } | null>
   onMigrationProgress?: (cb: (state: { phase: string; detail?: string }) => void) => () => void
 }
 
@@ -181,6 +197,7 @@ const migrationOpen = ref(false)
 const migrationBusy = ref(false)
 const migrationCandidate = ref<{ kind: string; path: string } | null>(null)
 const migrationSummary = shallowRef<MigrationReportSummary | null>(null)
+const migrationPreviewId = ref('')
 const migrationOverwrite = ref(false)
 const migrationPhase = ref('')
 let migrationProgressUnsub: (() => void) | null = null
@@ -204,6 +221,14 @@ const migrationDiskText = computed(() => {
     free: formatByteSize(summary.diskFreeBytes),
   })
 })
+const migrationHasBlockingErrors = computed(() => {
+  const summary = migrationSummary.value
+  if (!summary) return true
+  // The one preflight/target error is resolved by explicitly opting into
+  // overwrite-with-backups. Every other report error remains blocking.
+  const acknowledgedByOverwrite = summary.needsOverwrite ? 1 : 0
+  return summary.itemCounts.error > acknowledgedByOverwrite
+})
 
 function subscribeMigrationProgress() {
   if (migrationProgressUnsub || !desktopBridge?.onMigrationProgress) return
@@ -224,19 +249,27 @@ async function openMigration() {
   migrationBusy.value = true
   try {
     const result = await desktopBridge.migrationSummary()
-    if (!result?.ok) {
-      pushToast(t('setup.runtime.migrationSummaryFailed', { detail: result?.raw || t('setup.runtime.uninstallCheckLog') }), { tone: 'danger' })
-      return
-    }
     const candidate = result.candidate && typeof result.candidate.path === 'string'
       ? result.candidate
       : null
     if (!candidate) {
-      pushToast(t('setup.runtime.migrationNone'))
+      if (!result?.ok) {
+        pushToast(t('setup.runtime.migrationSummaryFailed', { detail: result?.raw || t('setup.runtime.uninstallCheckLog') }), { tone: 'danger' })
+      } else {
+        pushToast(t('setup.runtime.migrationNone'))
+      }
+      return
+    }
+    // A blocked dry run exits nonzero but still emits the report that explains
+    // the preflight failure. Treat parsing (report !== null), not exit status,
+    // as the preview-validity signal.
+    if (result.report == null || typeof result.previewId !== 'string' || !result.previewId) {
+      pushToast(t('setup.runtime.migrationSummaryFailed', { detail: result?.raw || t('setup.runtime.uninstallCheckLog') }), { tone: 'danger' })
       return
     }
     migrationCandidate.value = { kind: String(candidate.kind ?? ''), path: candidate.path }
     migrationSummary.value = summarizeMigrationReport(result.report)
+    migrationPreviewId.value = result.previewId
     migrationOverwrite.value = false
     migrationPhase.value = ''
     migrationOpen.value = true
@@ -252,12 +285,13 @@ function cancelMigration() {
   migrationOpen.value = false
   migrationCandidate.value = null
   migrationSummary.value = null
+  migrationPreviewId.value = ''
   migrationPhase.value = ''
   unsubscribeMigrationProgress()
 }
 
 async function runMigration() {
-  if (!desktopBridge?.migrationRun || !migrationOpen.value) return
+  if (!desktopBridge?.migrationRun || !migrationOpen.value || !migrationPreviewId.value) return
   const ok = await confirm({
     title: t('setup.runtime.migrationConfirmTitle'),
     body: t('setup.runtime.migrationConfirmBody'),
@@ -267,11 +301,16 @@ async function runMigration() {
   migrationBusy.value = true
   // The run quiesces the gateway and restarts it behind the boot splash, so
   // this page's RPC connection is expected to drop mid-run. Surface the
-  // restart notice up front (same post-action UX shape as the uninstall flow);
-  // the bridge promise itself rides desktop IPC and survives the restart.
+  // restart notice up front. The main process persists the terminal result so
+  // the replacement renderer can surface it the next time this panel mounts.
   pushToast(t('setup.runtime.migrationStarted'))
   try {
-    const result = await desktopBridge.migrationRun({ overwrite: migrationOverwrite.value })
+    const result = await desktopBridge.migrationRun({
+      overwrite: migrationOverwrite.value,
+      previewId: migrationPreviewId.value,
+    })
+    if (result?.aborted) return
+    await desktopBridge.migrationTakeLastResult?.().catch(() => null)
     if (!result?.ok) {
       pushToast(t('setup.runtime.migrationFailed', { detail: result?.detail || t('setup.runtime.uninstallCheckLog') }), { tone: 'danger' })
       return
@@ -285,7 +324,29 @@ async function runMigration() {
   }
 }
 
-onMounted(loadStatus)
+async function showLastMigrationResult() {
+  if (!desktopBridge?.migrationTakeLastResult) return
+  try {
+    const result = await desktopBridge.migrationTakeLastResult()
+    if (!result) return
+    if (result.ok) {
+      pushToast(t('setup.runtime.migrationDone'))
+    } else {
+      pushToast(t('setup.runtime.migrationFailed', {
+        detail: result.detail || t('setup.runtime.uninstallCheckLog'),
+      }), { tone: 'danger' })
+    }
+  } catch (err) {
+    pushToast(t('setup.runtime.migrationFailed', {
+      detail: err instanceof Error ? err.message : String(err),
+    }), { tone: 'danger' })
+  }
+}
+
+onMounted(() => {
+  void loadStatus()
+  void showLastMigrationResult()
+})
 onUnmounted(unsubscribeMigrationProgress)
 </script>
 
@@ -394,7 +455,7 @@ onUnmounted(unsubscribeMigrationProgress)
         <button
           type="button"
           class="btn"
-          :disabled="migrationBusy || (migrationSummary.needsOverwrite && !migrationOverwrite)"
+          :disabled="migrationBusy || migrationHasBlockingErrors || (migrationSummary.needsOverwrite && !migrationOverwrite)"
           data-testid="runtime-migration-run"
           @click="runMigration"
         >

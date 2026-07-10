@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import os
 import threading
 import warnings
@@ -2407,13 +2408,14 @@ class GatewayConfig(BaseSettings):
     #   llm.base_url from OPENAI_BASE_URL). Persisting restores stored_value
     #   whenever the field still equals applied_value, so env-derived values
     #   never leak into config.toml.
-    # - _force_persist_paths: paths an explicit mutation set that must be
-    #   written even when equal to the model default (e.g. a deliberate
-    #   image_generation.enabled = false on a fresh config), so keep-current
-    #   logic can see the decision on the next load.
+    # - _force_persist_paths: unambiguous path-segment tuples for explicit
+    #   mutations that must be written even when equal to the model default
+    #   (e.g. a deliberate image_generation.enabled = false on a fresh config).
+    #   Tuples preserve dynamic mapping keys that contain dots.
     _persist_baseline: dict[str, Any] | None = PrivateAttr(default=None)
+    _persist_raw_base: dict[str, Any] | None = PrivateAttr(default=None)
     _runtime_field_overrides: dict[str, tuple[Any, Any]] = PrivateAttr(default_factory=dict)
-    _force_persist_paths: set[str] = PrivateAttr(default_factory=set)
+    _force_persist_paths: set[tuple[str, ...]] = PrivateAttr(default_factory=set)
 
     def to_toml_dict(self) -> dict[str, Any]:
         """Convert config to a TOML-writable dict."""
@@ -2527,7 +2529,7 @@ class GatewayConfig(BaseSettings):
         return dict(self._runtime_field_overrides)
 
     def inherit_persist_provenance(self, other: GatewayConfig) -> None:
-        """Adopt ``other``'s runtime-override records and force-persist marks.
+        """Adopt ``other``'s sparse-persist snapshot and mutation provenance.
 
         For mirroring a mutation clone back onto the live gateway config:
         the clone started from a deep copy of THIS instance's provenance and
@@ -2537,8 +2539,19 @@ class GatewayConfig(BaseSettings):
         and the stale live record makes a later unrelated persist rewrite
         the field back to a value the operator just replaced.
         """
+        self._persist_baseline = copy.deepcopy(other._persist_baseline)
+        self._persist_raw_base = copy.deepcopy(other._persist_raw_base)
         self._runtime_field_overrides = dict(other._runtime_field_overrides)
         self._force_persist_paths = set(other._force_persist_paths)
+
+    def set_persist_snapshot(
+        self,
+        baseline: dict[str, Any],
+        raw_base: dict[str, Any] | None,
+    ) -> None:
+        """Record the model and raw-disk state represented by this instance."""
+        self._persist_baseline = copy.deepcopy(baseline)
+        self._persist_raw_base = copy.deepcopy(raw_base)
 
     def reconcile_runtime_overrides(self, other: GatewayConfig) -> None:
         """Refresh override records after ``other``'s values are applied here.
@@ -2579,16 +2592,36 @@ class GatewayConfig(BaseSettings):
                 stored = prior[0]
             merged[path] = (stored, applied)
         self._runtime_field_overrides = merged
+        # ``other`` is the config that was just loaded or successfully
+        # persisted. Its snapshot is therefore the baseline the live object
+        # must carry into the next sparse mutation.
+        self._persist_baseline = copy.deepcopy(other._persist_baseline)
+        self._persist_raw_base = copy.deepcopy(other._persist_raw_base)
+        self._force_persist_paths = set(other._force_persist_paths)
 
     def mark_force_persist(self, path: str) -> None:
         """Always write ``path`` on the next persist, even if it equals the
         model default — used for explicit boolean decisions (e.g. a
         deliberate ``image_generation.enabled = false``) that keep-current
         logic must be able to see in the file."""
-        self._force_persist_paths.add(path)
+        self.mark_force_persist_segments(tuple(path.split(".")))
+
+    def mark_force_persist_segments(self, path: tuple[str, ...]) -> None:
+        """Mark an exact config path while preserving dotted mapping keys."""
+        if path:
+            self._force_persist_paths.add(tuple(path))
+
+    def force_persist_path_segments(self) -> set[tuple[str, ...]]:
+        """Return exact one-shot force paths for the persistence layer."""
+        return set(self._force_persist_paths)
+
+    def consume_force_persist_path_segments(self, paths: set[tuple[str, ...]]) -> None:
+        """Clear force paths after their write commits successfully."""
+        self._force_persist_paths.difference_update(paths)
 
     def force_persist_paths(self) -> set[str]:
-        return set(self._force_persist_paths)
+        """Return dotted display paths for compatibility with existing callers."""
+        return {".".join(path) for path in self._force_persist_paths}
 
     @classmethod
     def load_from_toml(cls, path: str | Path) -> GatewayConfig:
@@ -2633,10 +2666,14 @@ class GatewayConfig(BaseSettings):
                     _rewrite_migrated_config_best_effort(path, migration)
                 cfg.config_path = str(path)
                 cfg._mark_env_absorbed_secrets(data)
+                cfg.set_persist_snapshot(cfg.to_toml_dict(), migration.payload)
                 return cfg
 
         cfg = cls()
         cfg._mark_env_absorbed_secrets(None)
+        if config_path:
+            cfg.config_path = str(candidates[0])
+        cfg.set_persist_snapshot(cfg.to_toml_dict(), None)
         return cfg
 
     def _mark_env_absorbed_secrets(self, raw: Any) -> None:

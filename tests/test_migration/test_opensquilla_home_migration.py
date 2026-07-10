@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import sqlite3
 import time
 import tomllib
@@ -16,8 +17,17 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+import pytest
 import tomli_w
 
+import opensquilla.gateway.config_migration as config_migration_module
+import opensquilla.migration.opensquilla_home as migration_module
+from opensquilla.artifacts import ArtifactStore
+from opensquilla.attachment_refs import (
+    make_attachment_ref,
+    read_attachment_ref_bytes,
+    write_transcript_material,
+)
 from opensquilla.migration import orchestrator
 from opensquilla.migration.opensquilla_home import (
     IMPORT_MARKER_FILENAME,
@@ -27,8 +37,13 @@ from opensquilla.migration.opensquilla_home import (
     enumerate_portable_homes,
     is_valid_opensquilla_home,
 )
+from opensquilla.persistence.migrator import apply_pending
+from opensquilla.session.manager import SessionManager
+from opensquilla.session.models import TranscriptEntry
+from opensquilla.session.storage import SessionStorage
 
 FIXTURE_CONFIG = Path(__file__).parent / "fixtures" / "homes" / "cli-0.1" / "config.toml"
+MIGRATIONS_DIR = Path(__file__).resolve().parents[2] / "migrations"
 
 DUMMY_INLINE_KEY = "dummy-inline-key-123"
 
@@ -178,6 +193,14 @@ def _scheduler_enabled_values(db_path: Path) -> list[int]:
         connection.close()
 
 
+def _file_bytes(root: Path) -> dict[str, bytes]:
+    return {
+        str(path.relative_to(root)): path.read_bytes()
+        for path in sorted(root.rglob("*"))
+        if path.is_file()
+    }
+
+
 # ---------------------------------------------------------------------------
 # 1. Dry-run
 # ---------------------------------------------------------------------------
@@ -228,6 +251,27 @@ def test_dry_run_produces_full_report_and_writes_nothing(tmp_path: Path) -> None
     source_config = tomllib.loads((source / "config.toml").read_text(encoding="utf-8"))
     assert source_config["port"] == 18790
     assert source_config["llm"]["api_key"] == DUMMY_INLINE_KEY
+
+
+def test_direct_migrator_rejects_config_path_without_writing(tmp_path: Path) -> None:
+    source = _build_source_home(tmp_path)
+    target = tmp_path / "target-home"
+
+    report = OpenSquillaHomeMigrator(
+        OpenSquillaMigrationOptions(
+            source=source,
+            target=target,
+            config_path=tmp_path / "unsupported.toml",
+            apply=True,
+        )
+    ).migrate()
+
+    assert any(
+        item["kind"] == "options" and "config_path is not supported" in item["reason"]
+        for item in _errors(report)
+    )
+    assert not target.exists()
+    assert not (source / IMPORT_MARKER_FILENAME).exists()
 
 
 # ---------------------------------------------------------------------------
@@ -292,6 +336,48 @@ def test_apply_imports_home_with_transforms(tmp_path: Path) -> None:
     assert DUMMY_INLINE_KEY not in json.dumps(report)
 
 
+def test_imported_config_and_env_are_owner_only_even_without_secret_rewrite(
+    tmp_path: Path,
+) -> None:
+    source = _build_source_home(tmp_path)
+    payload = tomllib.loads((source / "config.toml").read_text(encoding="utf-8"))
+    payload["llm"].pop("api_key", None)
+    payload["llm"]["api_key_env"] = "OPENROUTER_API_KEY"
+    (source / "config.toml").write_text(tomli_w.dumps(payload), encoding="utf-8")
+    os.chmod(source / "config.toml", 0o644)
+    os.chmod(source / ".env", 0o644)
+    target = tmp_path / "target-home"
+
+    report = _run(source, target, apply=True)
+
+    assert not _errors(report)
+    assert (target / "config.toml").stat().st_mode & 0o777 == 0o600
+    assert (target / ".env").stat().st_mode & 0o777 == 0o600
+
+
+def test_read_only_source_directories_produce_writable_imported_runtime(
+    tmp_path: Path,
+) -> None:
+    source = _build_source_home(tmp_path)
+    os.chmod(source / "state" / "sessions.db", 0o444)
+    os.chmod(source / "state", 0o555)
+    os.chmod(source / "workspace", 0o555)
+    target = tmp_path / "target-home"
+
+    report = _run(source, target, apply=True)
+
+    assert not _errors(report)
+    assert (target / "state").stat().st_mode & 0o700 == 0o700
+    assert (target / "workspace").stat().st_mode & 0o700 == 0o700
+    assert (target / "state" / "sessions.db").stat().st_mode & 0o600 == 0o600
+    connection = sqlite3.connect(target / "state" / "sessions.db")
+    try:
+        connection.execute("CREATE TABLE writable_after_import (id INTEGER)")
+        connection.commit()
+    finally:
+        connection.close()
+
+
 def test_apply_pauses_jobs_when_enabled_column_is_absent(tmp_path: Path) -> None:
     source = _build_source_home(tmp_path, with_enabled_column=False)
     target = tmp_path / "target-home"
@@ -338,11 +424,18 @@ def test_overwrite_takes_timestamped_backups(tmp_path: Path) -> None:
     report = _run(source, target, apply=True, overwrite=True)
 
     assert not _errors(report)
-    backups = list(target.glob("state.backup.*"))
+    backups = list(tmp_path.glob("target-home.backup.*"))
     assert len(backups) == 1
-    assert (backups[0] / "sessions.db").read_bytes() == b"dummy existing db"
+    assert (backups[0] / "state" / "sessions.db").read_bytes() == b"dummy existing db"
     # The imported store replaced the old one.
     assert (target / "state" / "sessions.db").read_bytes() != b"dummy existing db"
+    persisted = json.loads(
+        (Path(report["output_dir"]) / "report.json").read_text(encoding="utf-8")
+    )
+    returned_backups = [item for item in report["items"] if item["kind"] == "backup"]
+    persisted_backups = [item for item in persisted["items"] if item["kind"] == "backup"]
+    assert returned_backups
+    assert persisted_backups == returned_backups
 
 
 # ---------------------------------------------------------------------------
@@ -418,6 +511,28 @@ def test_detect_legacy_cli_home_guard(tmp_path: Path, monkeypatch) -> None:
     assert detect_legacy_cli_home(tmp_path / "electron-home") == legacy
 
 
+def test_detect_legacy_cli_home_skips_source_already_imported_to_target(
+    tmp_path: Path, monkeypatch
+) -> None:
+    fake_home = tmp_path / "userhome"
+    legacy = fake_home / ".opensquilla"
+    legacy.mkdir(parents=True)
+    (legacy / "config.toml").write_text("port = 18790\n", encoding="utf-8")
+    target = tmp_path / "desktop-home"
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: fake_home))
+
+    report = _run(legacy, target, apply=True)
+    assert not _errors(report)
+    assert detect_legacy_cli_home(target) is None
+    assert detect_legacy_cli_home(tmp_path / "different-target") == legacy
+
+    # A stale source marker must not hide import after the target was removed
+    # by an uninstall/reinstall. Suppression requires the matching target-side
+    # receipt produced by the completed transaction.
+    shutil.rmtree(target)
+    assert detect_legacy_cli_home(target) == legacy
+
+
 def test_is_valid_opensquilla_home_shapes(tmp_path: Path) -> None:
     assert not is_valid_opensquilla_home(tmp_path / "missing")
     empty = tmp_path / "empty"
@@ -469,7 +584,7 @@ def test_enumerate_portable_homes_orders_and_era_hints(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_wal_sidecar_travels_with_the_store(tmp_path: Path) -> None:
+def test_sqlite_snapshot_normalizes_empty_wal_sidecar(tmp_path: Path) -> None:
     source = _build_source_home(tmp_path)
     (source / "state" / "sessions.db-wal").write_bytes(b"")
     target = tmp_path / "target-home"
@@ -477,7 +592,731 @@ def test_wal_sidecar_travels_with_the_store(tmp_path: Path) -> None:
     report = _run(source, target, apply=True)
 
     assert not _errors(report)
-    assert (target / "state" / "sessions.db-wal").is_file()
+    assert not (target / "state" / "sessions.db-wal").exists()
+    connection = sqlite3.connect(target / "state" / "sessions.db")
+    try:
+        assert connection.execute("PRAGMA quick_check").fetchone() == ("ok",)
+    finally:
+        connection.close()
+
+
+def test_dry_run_does_not_create_sidecars_for_checkpointed_wal_store(
+    tmp_path: Path,
+) -> None:
+    source = _build_source_home(tmp_path)
+    db_path = source / "state" / "sessions.db"
+    connection = sqlite3.connect(db_path)
+    try:
+        assert connection.execute("PRAGMA journal_mode=WAL").fetchone() == ("wal",)
+        connection.commit()
+    finally:
+        connection.close()
+    assert not db_path.with_name("sessions.db-wal").exists()
+    assert not db_path.with_name("sessions.db-shm").exists()
+    before = _file_bytes(source)
+
+    report = _run(source, tmp_path / "target-home", apply=False)
+
+    assert not _errors(report)
+    assert _file_bytes(source) == before
+
+
+def test_dry_run_reads_committed_wal_without_mutating_source_bundle(
+    tmp_path: Path,
+) -> None:
+    source = _build_source_home(tmp_path)
+    db_path = source / "state" / "scheduler.db"
+    writer = sqlite3.connect(db_path)
+    try:
+        assert writer.execute("PRAGMA journal_mode=WAL").fetchone() == ("wal",)
+        writer.execute("PRAGMA wal_autocheckpoint=0")
+        writer.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        writer.execute(
+            "INSERT INTO scheduler_jobs "
+            "(id, name, cron_expr, handler_key, payload, status, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                "job-wal",
+                "committed only in WAL",
+                "30 10 * * *",
+                "agent_turn",
+                "{}",
+                "pending",
+                "2026-01-02 00:00:00",
+                "2026-01-02 00:00:00",
+            ),
+        )
+        writer.commit()
+        assert db_path.with_name("scheduler.db-wal").stat().st_size > 0
+        before = _file_bytes(source)
+
+        report = _run(source, tmp_path / "target-home", apply=False)
+
+        assert not _errors(report)
+        assert {job["id"] for job in report["paused_jobs"]} == {"job-1", "job-wal"}
+        assert _file_bytes(source) == before
+    finally:
+        writer.close()
+
+
+# ---------------------------------------------------------------------------
+# Safety regressions: split roots, fail-closed transforms, atomic publish
+# ---------------------------------------------------------------------------
+
+
+def _point_config_at_split_roots(
+    source: Path,
+    *,
+    state: Path,
+    workspace: Path,
+    media: Path,
+) -> None:
+    payload = tomllib.loads((source / "config.toml").read_text(encoding="utf-8"))
+    payload["state_dir"] = str(state)
+    payload["workspace_dir"] = str(workspace)
+    attachments = payload.setdefault("attachments", {})
+    attachments["media_root"] = str(media)
+    (source / "config.toml").write_text(tomli_w.dumps(payload), encoding="utf-8")
+
+
+def test_external_configured_roots_are_copied_to_canonical_target_paths(
+    tmp_path: Path,
+) -> None:
+    source = _build_source_home(tmp_path)
+    shutil.rmtree(source / "state")
+    shutil.rmtree(source / "workspace")
+    external_state = tmp_path / "external-state"
+    external_workspace = tmp_path / "external-workspace"
+    external_media = tmp_path / "external-media"
+    external_state.mkdir()
+    external_workspace.mkdir()
+    external_media.mkdir()
+    (external_state / "state-sentinel.bin").write_bytes(b"state-data")
+    (external_workspace / "workspace-sentinel.txt").write_text(
+        "workspace-data", encoding="utf-8"
+    )
+    (external_media / "media-sentinel.bin").write_bytes(b"media-data")
+    _point_config_at_split_roots(
+        source,
+        state=external_state,
+        workspace=external_workspace,
+        media=external_media,
+    )
+    target = tmp_path / "target-home"
+
+    report = _run(source, target, apply=True)
+
+    assert not _errors(report)
+    assert (target / "state" / "state-sentinel.bin").read_bytes() == b"state-data"
+    assert (target / "workspace" / "workspace-sentinel.txt").read_text(
+        encoding="utf-8"
+    ) == "workspace-data"
+    assert (target / "media" / "media-sentinel.bin").read_bytes() == b"media-data"
+    config = tomllib.loads((target / "config.toml").read_text(encoding="utf-8"))
+    assert "state_dir" not in config
+    assert "workspace_dir" not in config
+    assert "media_root" not in config.get("attachments", {})
+
+
+def test_windows_absolute_path_pins_are_dropped_on_posix_import(tmp_path: Path) -> None:
+    source = _build_source_home(tmp_path)
+    (source / "media").mkdir()
+    (source / "media" / "sentinel.bin").write_bytes(b"media")
+    payload = tomllib.loads((source / "config.toml").read_text(encoding="utf-8"))
+    payload["state_dir"] = r"C:\SyntheticOpenSquilla\state"
+    payload["workspace_dir"] = r"\\synthetic.invalid\share\workspace"
+    payload.setdefault("attachments", {})["media_root"] = (
+        r"C:\SyntheticOpenSquilla\media"
+    )
+    (source / "config.toml").write_text(tomli_w.dumps(payload), encoding="utf-8")
+    target = tmp_path / "target-home"
+
+    report = _run(source, target, apply=True)
+
+    assert not _errors(report)
+    config = tomllib.loads((target / "config.toml").read_text(encoding="utf-8"))
+    assert "state_dir" not in config
+    assert "workspace_dir" not in config
+    assert "media_root" not in config.get("attachments", {})
+    assert (target / "state" / "sessions.db").is_file()
+    assert (target / "workspace" / "MEMORY.md").is_file()
+    assert (target / "media" / "sentinel.bin").read_bytes() == b"media"
+
+
+def test_configured_data_root_overlapping_target_is_rejected(tmp_path: Path) -> None:
+    source = _build_source_home(tmp_path)
+    target = tmp_path / "target-home"
+    payload = tomllib.loads((source / "config.toml").read_text(encoding="utf-8"))
+    payload["state_dir"] = str(tmp_path)
+    (source / "config.toml").write_text(tomli_w.dumps(payload), encoding="utf-8")
+
+    report = _run(source, target, apply=True)
+
+    assert any(
+        item["kind"] == "preflight/data-root"
+        and "overlaps the target home" in item["reason"]
+        for item in _errors(report)
+    )
+    assert not target.exists()
+    assert not list(tmp_path.glob(".opensquilla-import-*"))
+
+
+def test_external_roots_are_included_in_disk_preflight(tmp_path: Path) -> None:
+    source = _build_source_home(tmp_path)
+    external_state = tmp_path / "external-state"
+    external_workspace = tmp_path / "external-workspace"
+    external_media = tmp_path / "external-media"
+    for root in (external_state, external_workspace, external_media):
+        root.mkdir()
+        (root / "payload.bin").write_bytes(b"x" * 4096)
+    _point_config_at_split_roots(
+        source,
+        state=external_state,
+        workspace=external_workspace,
+        media=external_media,
+    )
+
+    report = _run(source, tmp_path / "target-home")
+
+    source_only = migration_module._tree_size_bytes(source)
+    assert report["preflight"]["disk_required_bytes"] >= (
+        source_only + (3 * 4096) + migration_module._DISK_MARGIN_BYTES
+    )
+
+
+@pytest.mark.parametrize("root_name", ["state", "workspace", "media"])
+@pytest.mark.parametrize("invalid_shape", ["missing", "file"])
+def test_invalid_configured_data_root_without_canonical_fallback_blocks_apply(
+    tmp_path: Path,
+    root_name: str,
+    invalid_shape: str,
+) -> None:
+    source = _build_source_home(tmp_path)
+    canonical = source / root_name
+    if canonical.exists():
+        shutil.rmtree(canonical)
+    configured = tmp_path / f"invalid-{root_name}"
+    if invalid_shape == "file":
+        configured.write_text("not a directory", encoding="utf-8")
+    payload = tomllib.loads((source / "config.toml").read_text(encoding="utf-8"))
+    if root_name == "media":
+        payload.setdefault("attachments", {})["media_root"] = str(configured)
+    else:
+        payload[f"{root_name}_dir"] = str(configured)
+    (source / "config.toml").write_text(tomli_w.dumps(payload), encoding="utf-8")
+    target = tmp_path / "target-home"
+
+    report = _run(source, target, apply=True)
+
+    data_root_errors = [
+        item
+        for item in _errors(report)
+        if item["kind"] == "preflight/data-root" and item["source"] == str(configured)
+    ]
+    assert data_root_errors
+    assert "refusing to drop its config pin" in data_root_errors[0]["reason"]
+    assert not target.exists()
+    assert not (source / IMPORT_MARKER_FILENAME).exists()
+
+
+def test_malformed_config_blocks_apply_without_target_or_marker(tmp_path: Path) -> None:
+    source = _build_source_home(tmp_path)
+    (source / "config.toml").write_text("[llm\nprovider =", encoding="utf-8")
+    target = tmp_path / "target-home"
+
+    report = _run(source, target, apply=True)
+
+    assert any(item["kind"] == "preflight/config" for item in _errors(report))
+    assert not target.exists()
+    assert not (source / IMPORT_MARKER_FILENAME).exists()
+
+
+def test_schema_invalid_config_blocks_apply_without_target_or_marker(tmp_path: Path) -> None:
+    source = _build_source_home(tmp_path)
+    payload = tomllib.loads((source / "config.toml").read_text(encoding="utf-8"))
+    payload["port"] = "not-a-port"
+    (source / "config.toml").write_text(tomli_w.dumps(payload), encoding="utf-8")
+    target = tmp_path / "target-home"
+
+    report = _run(source, target, apply=True)
+
+    assert any(item["kind"] == "preflight/config" for item in _errors(report))
+    assert not target.exists()
+    assert not (source / IMPORT_MARKER_FILENAME).exists()
+
+
+def test_unreadable_sessions_database_blocks_apply(tmp_path: Path) -> None:
+    source = _build_source_home(tmp_path)
+    (source / "state" / "sessions.db").write_bytes(b"not a sqlite database")
+    target = tmp_path / "target-home"
+
+    report = _run(source, target, apply=True)
+
+    assert any(item["kind"] == "preflight/schema" for item in _errors(report))
+    assert not target.exists()
+    assert not (source / IMPORT_MARKER_FILENAME).exists()
+
+
+def test_corrupt_secondary_sqlite_store_blocks_dry_run_and_apply(tmp_path: Path) -> None:
+    source = _build_source_home(tmp_path)
+    corrupt = source / "state" / "approval_queue.sqlite"
+    corrupt.write_bytes(b"not a sqlite database")
+    target = tmp_path / "target-home"
+
+    preview = _run(source, target, apply=False)
+    applied = _run(source, target, apply=True)
+
+    for report in (preview, applied):
+        assert any(item["kind"] == "preflight/sqlite" for item in _errors(report))
+    assert not target.exists()
+    assert not (source / IMPORT_MARKER_FILENAME).exists()
+
+
+def test_scheduler_pause_failure_aborts_without_target_or_marker(tmp_path: Path) -> None:
+    source = _build_source_home(tmp_path)
+    connection = sqlite3.connect(source / "state" / "scheduler.db")
+    try:
+        connection.execute(
+            "CREATE TRIGGER reject_pause BEFORE UPDATE OF enabled ON scheduler_jobs "
+            "BEGIN SELECT RAISE(ABORT, 'pause rejected'); END"
+        )
+        connection.commit()
+    finally:
+        connection.close()
+    target = tmp_path / "target-home"
+
+    report = _run(source, target, apply=True)
+
+    assert any(item["kind"] == "scheduler" for item in _errors(report))
+    assert not target.exists()
+    assert not (source / IMPORT_MARKER_FILENAME).exists()
+
+
+def test_non_session_target_collision_requires_overwrite(tmp_path: Path) -> None:
+    source = _build_source_home(tmp_path)
+    target = tmp_path / "target-home"
+    (target / "workspace").mkdir(parents=True)
+    existing = target / "workspace" / "existing.txt"
+    existing.write_text("keep-me", encoding="utf-8")
+
+    report = _run(source, target, apply=True)
+
+    assert any(item["kind"] == "preflight/target" for item in _errors(report))
+    assert existing.read_text(encoding="utf-8") == "keep-me"
+    assert not (source / IMPORT_MARKER_FILENAME).exists()
+
+
+def test_overwrite_publish_failure_restores_complete_original_target(
+    tmp_path: Path, monkeypatch
+) -> None:
+    source = _build_source_home(tmp_path)
+    target = tmp_path / "target-home"
+    (target / "state").mkdir(parents=True)
+    (target / "state" / "sessions.db").write_bytes(b"original-session-store")
+    (target / "workspace").mkdir()
+    (target / "workspace" / "original.txt").write_text("original", encoding="utf-8")
+    original_replace = migration_module.os.replace
+
+    def fail_staging_publish(src: str, dst: str) -> None:
+        source_path = Path(src)
+        destination_path = Path(dst)
+        if source_path.name.startswith(".opensquilla-import-") and destination_path == target:
+            raise OSError("synthetic publish failure")
+        original_replace(src, dst)
+
+    monkeypatch.setattr(migration_module.os, "replace", fail_staging_publish)
+
+    report = _run(source, target, apply=True, overwrite=True)
+
+    assert _errors(report)
+    assert (target / "state" / "sessions.db").read_bytes() == b"original-session-store"
+    assert (target / "workspace" / "original.txt").read_text(encoding="utf-8") == "original"
+    assert not (source / IMPORT_MARKER_FILENAME).exists()
+
+
+@pytest.mark.parametrize("failed_phase", ["target-backed-up", "published"])
+def test_journal_phase_write_failure_rolls_back_complete_original_target(
+    tmp_path: Path,
+    monkeypatch,
+    failed_phase: str,
+) -> None:
+    source = _build_source_home(tmp_path)
+    target = tmp_path / "target-home"
+    (target / "state").mkdir(parents=True)
+    (target / "state" / "sessions.db").write_bytes(b"original-session-store")
+    (target / "workspace").mkdir()
+    (target / "workspace" / "original.txt").write_text("original", encoding="utf-8")
+    original_atomic_write = migration_module._atomic_write_json
+
+    def fail_phase_write(path: Path, payload: dict[str, Any]) -> None:
+        if payload.get("phase") == failed_phase:
+            raise OSError(f"synthetic {failed_phase} journal failure")
+        original_atomic_write(path, payload)
+
+    monkeypatch.setattr(migration_module, "_atomic_write_json", fail_phase_write)
+
+    report = _run(source, target, apply=True, overwrite=True)
+
+    assert _errors(report)
+    assert (target / "state" / "sessions.db").read_bytes() == b"original-session-store"
+    assert (target / "workspace" / "original.txt").read_text(encoding="utf-8") == "original"
+    assert not list(tmp_path.glob("target-home.backup.*"))
+    assert not (tmp_path / ".target-home.import-commit.json").exists()
+    assert list(tmp_path.glob(".opensquilla-import-*"))
+    assert not (source / IMPORT_MARKER_FILENAME).exists()
+
+
+def test_dry_run_config_compatibility_pass_has_no_global_side_effects(
+    tmp_path: Path, monkeypatch
+) -> None:
+    source = _build_source_home(tmp_path)
+    target = tmp_path / "target-home"
+    diagnostics_home = tmp_path / "diagnostics-home"
+    monkeypatch.setattr(
+        config_migration_module,
+        "default_opensquilla_home",
+        lambda: diagnostics_home,
+    )
+    memory_warned = config_migration_module._LEGACY_MEMORY_FIELDS_WARNED
+    memory_seen = set(config_migration_module._LEGACY_MEMORY_FIELDS_SEEN)
+    token_warned = config_migration_module._LEGACY_AGENT_TOKEN_SAVING_FIELDS_WARNED
+    token_seen = set(config_migration_module._LEGACY_AGENT_TOKEN_SAVING_FIELDS_SEEN)
+
+    report = _run(source, target)
+
+    assert not _errors(report)
+    assert not diagnostics_home.exists()
+    assert config_migration_module._LEGACY_MEMORY_FIELDS_WARNED is memory_warned
+    assert config_migration_module._LEGACY_MEMORY_FIELDS_SEEN == memory_seen
+    assert config_migration_module._LEGACY_AGENT_TOKEN_SAVING_FIELDS_WARNED is token_warned
+    assert config_migration_module._LEGACY_AGENT_TOKEN_SAVING_FIELDS_SEEN == token_seen
+
+
+def _write_simple_sqlite(path: Path, value: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    connection = sqlite3.connect(path)
+    try:
+        connection.execute("CREATE TABLE payload (value TEXT NOT NULL)")
+        connection.execute("INSERT INTO payload VALUES (?)", (value,))
+        connection.commit()
+    finally:
+        connection.close()
+
+
+def test_all_imported_sqlite_stores_have_consistent_pristine_snapshots(
+    tmp_path: Path,
+) -> None:
+    source = _build_source_home(tmp_path)
+    _write_simple_sqlite(source / "state" / "approval_queue.sqlite", "approval")
+    _write_simple_sqlite(source / "state" / "sandbox_user_grants.sqlite", "sandbox")
+    _write_simple_sqlite(source / "state" / "agents" / "main" / "memory.db", "memory")
+    target = tmp_path / "target-home"
+
+    report = _run(source, target, apply=True)
+
+    assert not _errors(report)
+    snapshots = Path(report["output_dir"]) / "db-snapshots"
+    expected = [
+        Path("sessions.db"),
+        Path("scheduler.db"),
+        Path("approval_queue.sqlite"),
+        Path("sandbox_user_grants.sqlite"),
+        Path("agents/main/memory.db"),
+    ]
+    for relative in expected:
+        snapshot = snapshots / relative
+        assert snapshot.is_file(), relative
+        connection = sqlite3.connect(snapshot)
+        try:
+            assert connection.execute("PRAGMA quick_check").fetchone() == ("ok",)
+        finally:
+            connection.close()
+
+
+def test_wal_only_committed_row_survives_as_normalized_sqlite_snapshot(
+    tmp_path: Path,
+) -> None:
+    source = _build_source_home(tmp_path)
+    db_path = source / "state" / "sessions.db"
+    writer = sqlite3.connect(db_path)
+    try:
+        assert writer.execute("PRAGMA journal_mode=WAL").fetchone() == ("wal",)
+        writer.execute("PRAGMA wal_autocheckpoint=0")
+        writer.execute("CREATE TABLE wal_payload (value TEXT NOT NULL)")
+        writer.commit()
+        writer.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        writer.execute("INSERT INTO wal_payload VALUES ('committed-in-wal')")
+        writer.commit()
+        assert db_path.with_name("sessions.db-wal").stat().st_size > 0
+        source_before = _file_bytes(source)
+
+        target = tmp_path / "target-home"
+        report = _run(source, target, apply=True)
+        source_after = _file_bytes(source)
+        source_after.pop(IMPORT_MARKER_FILENAME)
+    finally:
+        writer.close()
+
+    assert not _errors(report)
+    assert source_after == source_before
+    target_db = target / "state" / "sessions.db"
+    assert not target_db.with_name("sessions.db-wal").exists()
+    assert not target_db.with_name("sessions.db-shm").exists()
+    connection = sqlite3.connect(target_db)
+    try:
+        assert connection.execute("SELECT value FROM wal_payload").fetchall() == [
+            ("committed-in-wal",)
+        ]
+        assert connection.execute("PRAGMA quick_check").fetchone() == ("ok",)
+    finally:
+        connection.close()
+
+
+def test_complete_wal_bundle_wins_over_identical_duplicate_base_database(
+    tmp_path: Path,
+) -> None:
+    source = _build_source_home(tmp_path)
+    canonical_db = source / "state" / "sessions.db"
+    connection = sqlite3.connect(canonical_db)
+    try:
+        assert connection.execute("PRAGMA journal_mode=WAL").fetchone() == ("wal",)
+        connection.execute("PRAGMA wal_autocheckpoint=0")
+        connection.execute("CREATE TABLE wal_bundle_payload (value TEXT NOT NULL)")
+        connection.commit()
+        connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    finally:
+        connection.close()
+
+    external_state = tmp_path / "external-state"
+    external_state.mkdir()
+    external_db = external_state / "sessions.db"
+    shutil.copy2(canonical_db, external_db)
+    writer = sqlite3.connect(external_db)
+    try:
+        writer.execute("PRAGMA wal_autocheckpoint=0")
+        writer.execute("INSERT INTO wal_bundle_payload VALUES ('committed-in-external-wal')")
+        writer.commit()
+        assert external_db.with_name("sessions.db-wal").stat().st_size > 32
+        assert canonical_db.read_bytes() == external_db.read_bytes()
+        payload = tomllib.loads((source / "config.toml").read_text(encoding="utf-8"))
+        payload["state_dir"] = str(external_state)
+        (source / "config.toml").write_text(tomli_w.dumps(payload), encoding="utf-8")
+        target = tmp_path / "target-home"
+
+        report = _run(source, target, apply=True)
+    finally:
+        writer.close()
+
+    assert not _errors(report)
+    target_connection = sqlite3.connect(target / "state" / "sessions.db")
+    try:
+        assert target_connection.execute("SELECT value FROM wal_bundle_payload").fetchall() == [
+            ("committed-in-external-wal",)
+        ]
+    finally:
+        target_connection.close()
+
+
+def test_logically_conflicting_duplicate_sqlite_roots_fail_closed(tmp_path: Path) -> None:
+    source = _build_source_home(tmp_path)
+    canonical_db = source / "state" / "sessions.db"
+    external_state = tmp_path / "external-state"
+    external_state.mkdir()
+    external_db = external_state / "sessions.db"
+    shutil.copy2(canonical_db, external_db)
+    connection = sqlite3.connect(external_db)
+    try:
+        connection.execute("CREATE TABLE divergent_payload (value TEXT NOT NULL)")
+        connection.execute("INSERT INTO divergent_payload VALUES ('external-only')")
+        connection.commit()
+    finally:
+        connection.close()
+    payload = tomllib.loads((source / "config.toml").read_text(encoding="utf-8"))
+    payload["state_dir"] = str(external_state)
+    (source / "config.toml").write_text(tomli_w.dumps(payload), encoding="utf-8")
+    target = tmp_path / "target-home"
+
+    report = _run(source, target, apply=True)
+
+    assert any(
+        item["kind"] == "preflight/data-root"
+        and "conflicting logical SQLite stores" in item["reason"]
+        for item in _errors(report)
+    )
+    assert not target.exists()
+    assert not (source / IMPORT_MARKER_FILENAME).exists()
+
+
+def test_conflicting_split_state_roots_fail_without_publishing(tmp_path: Path) -> None:
+    source = _build_source_home(tmp_path)
+    (source / "state" / "collision.bin").write_bytes(b"canonical")
+    external_state = tmp_path / "external-state"
+    external_state.mkdir()
+    (external_state / "collision.bin").write_bytes(b"external")
+    payload = tomllib.loads((source / "config.toml").read_text(encoding="utf-8"))
+    payload["state_dir"] = str(external_state)
+    (source / "config.toml").write_text(tomli_w.dumps(payload), encoding="utf-8")
+    target = tmp_path / "target-home"
+
+    preview = _run(source, target, apply=False)
+    report = _run(source, target, apply=True)
+
+    for result in (preview, report):
+        assert any(item["kind"] == "preflight/data-root" for item in _errors(result))
+    assert not target.exists()
+    assert not (source / IMPORT_MARKER_FILENAME).exists()
+
+
+def test_interrupted_overwrite_is_restored_before_retry(tmp_path: Path) -> None:
+    source = _build_source_home(tmp_path)
+    target = tmp_path / "target-home"
+    interrupted_backup = tmp_path / "target-home.backup.interrupted"
+    (interrupted_backup / "workspace").mkdir(parents=True)
+    (interrupted_backup / "workspace" / "original.txt").write_text(
+        "original", encoding="utf-8"
+    )
+    interrupted_staging = tmp_path / ".opensquilla-import-interrupted"
+    interrupted_staging.mkdir()
+    (interrupted_staging / "partial.txt").write_text("partial", encoding="utf-8")
+    journal = tmp_path / ".target-home.import-commit.json"
+    journal.write_text(
+        json.dumps(
+            {
+                "target": str(target),
+                "staging": str(interrupted_staging),
+                "backup": str(interrupted_backup),
+                "phase": "target-backed-up",
+                "target_existed": True,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    report = _run(source, target, apply=True, overwrite=True)
+
+    assert not _errors(report)
+    assert any(item["kind"] == "recovery" for item in report["items"])
+    assert not journal.exists()
+    assert not interrupted_staging.exists()
+    assert not interrupted_backup.exists()
+    backups = list(tmp_path.glob("target-home.backup.*"))
+    assert len(backups) == 1
+    assert (backups[0] / "workspace" / "original.txt").read_text(
+        encoding="utf-8"
+    ) == "original"
+    assert (target / "workspace" / "MEMORY.md").is_file()
+
+
+def test_dry_run_reports_interrupted_commit_without_mutating_it(tmp_path: Path) -> None:
+    source = _build_source_home(tmp_path)
+    target = tmp_path / "target-home"
+    backup = tmp_path / "target-home.backup.interrupted"
+    backup.mkdir()
+    staging = tmp_path / ".opensquilla-import-interrupted"
+    staging.mkdir()
+    journal = tmp_path / ".target-home.import-commit.json"
+    payload = {
+        "target": str(target),
+        "staging": str(staging),
+        "backup": str(backup),
+        "phase": "target-backed-up",
+        "target_existed": True,
+    }
+    journal.write_text(json.dumps(payload), encoding="utf-8")
+
+    report = _run(source, target, apply=False)
+
+    assert any(item["kind"] == "preflight/recovery" for item in _errors(report))
+    assert json.loads(journal.read_text(encoding="utf-8")) == payload
+    assert backup.is_dir()
+    assert staging.is_dir()
+    assert not target.exists()
+
+
+@pytest.mark.asyncio
+async def test_real_session_transcript_workspace_and_media_survive_import(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "legacy-home"
+    source.mkdir()
+    _write_config(source)
+    source_db = source / "state" / "sessions.db"
+    source_db.parent.mkdir(parents=True)
+    apply_pending(f"sqlite:///{source_db}", MIGRATIONS_DIR)
+    storage = SessionStorage(str(source_db))
+    await storage.connect()
+    try:
+        manager = SessionManager(storage, inject_time_prefix=False, media_root=source / "media")
+        session = await manager.create("agent:main:direct:migration-e2e")
+        for role, content in (("user", "synthetic user prompt"), ("assistant", "synthetic reply")):
+            await storage.append_transcript_entry(
+                TranscriptEntry(
+                    session_id=session.session_id,
+                    session_key=session.session_key,
+                    role=role,
+                    content=content,
+                    token_count=3,
+                )
+            )
+    finally:
+        await storage.close()
+
+    (source / "workspace").mkdir()
+    (source / "workspace" / "important.txt").write_text(
+        "workspace survives", encoding="utf-8"
+    )
+    attachment_sha, _path, _wrote = write_transcript_material(
+        media_root=source / "media",
+        session_id=session.session_id,
+        payload=b"attachment survives",
+    )
+    artifact = ArtifactStore(source / "media").publish_bytes(
+        b"artifact survives",
+        session_id=session.session_id,
+        session_key=session.session_key,
+        name="result.bin",
+        mime="application/octet-stream",
+        source="migration-test",
+    )
+    _write_scheduler_db(source, with_enabled_column=True)
+    target = tmp_path / "target-home"
+
+    report = _run(source, target, apply=True)
+
+    assert not _errors(report)
+    apply_pending(f"sqlite:///{target / 'state' / 'sessions.db'}", MIGRATIONS_DIR)
+    reopened = SessionStorage(str(target / "state" / "sessions.db"))
+    await reopened.connect()
+    try:
+        restored = await reopened.get_session(session.session_key)
+        assert restored is not None
+        transcript = await reopened.get_transcript(session.session_id)
+        assert [(entry.role, entry.content) for entry in transcript] == [
+            ("user", "synthetic user prompt"),
+            ("assistant", "synthetic reply"),
+        ]
+    finally:
+        await reopened.close()
+
+    assert (target / "workspace" / "important.txt").read_text(
+        encoding="utf-8"
+    ) == "workspace survives"
+    attachment_ref = make_attachment_ref(
+        sha256=attachment_sha,
+        name="upload.bin",
+        mime="application/octet-stream",
+        size=len(b"attachment survives"),
+        session_id=session.session_id,
+        source="transcript",
+    )
+    assert read_attachment_ref_bytes(attachment_ref, media_root=target / "media") == (
+        b"attachment survives"
+    )
+    _ref, artifact_path = ArtifactStore(target / "media").resolve_for_download(
+        artifact.id, session_id=session.session_id
+    )
+    assert artifact_path.read_bytes() == b"artifact survives"
+    assert _scheduler_enabled_values(target / "state" / "scheduler.db") == [0]
 
 
 # ---------------------------------------------------------------------------

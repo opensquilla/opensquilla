@@ -177,6 +177,7 @@ async def test_config_patch_provider_realign_preserves_llm_ensemble_subtree(
     # is the contract an unrelated patch must leave byte-identical.
     persist_config(cfg, path=cfg.config_path)
     disk_before = tomllib.loads((tmp_path / "config.toml").read_text())["llm_ensemble"]
+    disk_before_bytes = tomli_w.dumps({"llm_ensemble": disk_before}).encode()
     memory_before = _ensemble_subtree_bytes(cfg)
 
     await _handle_config_patch({"patch": {"llm": {"provider": "deepseek"}}}, ctx)
@@ -188,7 +189,10 @@ async def test_config_patch_provider_realign_preserves_llm_ensemble_subtree(
 
     persisted = tomllib.loads((tmp_path / "config.toml").read_text())
     assert persisted["llm_ensemble"] == disk_before
-    assert tomli_w.dumps({"llm_ensemble": persisted["llm_ensemble"]}).encode()
+    assert (
+        tomli_w.dumps({"llm_ensemble": persisted["llm_ensemble"]}).encode()
+        == disk_before_bytes
+    )
 
 
 # ---------------------------------------------------------------------------

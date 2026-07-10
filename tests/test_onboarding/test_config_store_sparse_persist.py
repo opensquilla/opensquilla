@@ -14,7 +14,9 @@ Covers the onboarding persistence audit findings:
 from __future__ import annotations
 
 import os
+import threading
 import tomllib
+from concurrent.futures import ThreadPoolExecutor
 
 from opensquilla.gateway.config import GatewayConfig
 from opensquilla.onboarding.config_store import load_config, persist_config
@@ -252,6 +254,26 @@ def test_persist_fsyncs_tempfile_before_replace(tmp_path, monkeypatch):
     assert calls.index("fsync") < calls.index("replace")
 
 
+def test_replace_is_commit_point_with_no_target_chmod_afterward(tmp_path, monkeypatch):
+    target = tmp_path / "config.toml"
+    target.write_text("port = 18791\n")
+    cfg = load_config(target)
+    cfg.port = 18795
+    real_chmod = os.chmod
+
+    def reject_target_chmod(path, mode, *args, **kwargs):
+        if os.fspath(path) == os.fspath(target):
+            raise PermissionError("target chmod must not run after replace")
+        return real_chmod(path, mode, *args, **kwargs)
+
+    monkeypatch.setattr(os, "chmod", reject_target_chmod)
+
+    persist_config(cfg, path=target, backup=False)
+
+    assert tomllib.loads(target.read_text())["port"] == 18795
+    assert target.stat().st_mode & 0o777 == 0o600
+
+
 # ---------------------------------------------------------------------------
 # A4: non-conflicting concurrent edits survive a save
 # ---------------------------------------------------------------------------
@@ -286,6 +308,93 @@ def test_persist_merges_concurrent_disk_edits(tmp_path):
     assert data["port"] == 18793  # X survives
     assert data["memory"]["flush_enabled"] is True  # Y survives
     assert data["llm"]["provider"] == "openrouter"
+
+
+def test_persist_serializes_overlapping_nonconflicting_writers(tmp_path, monkeypatch):
+    import opensquilla.onboarding.config_store as config_store
+
+    target = tmp_path / "config.toml"
+    target.write_text("port = 18791\n")
+    first_cfg = load_config(target)
+    second_cfg = load_config(target)
+    first_cfg.port = 18795
+    second_cfg.memory.flush_enabled = True
+
+    first_planned = threading.Event()
+    release_first = threading.Event()
+    second_started = threading.Event()
+    second_planned = threading.Event()
+    call_guard = threading.Lock()
+    call_count = 0
+    original_plan = config_store._persist_plan
+
+    def gated_plan(*args, **kwargs):
+        nonlocal call_count
+        result = original_plan(*args, **kwargs)
+        with call_guard:
+            call_count += 1
+            position = call_count
+        if position == 1:
+            first_planned.set()
+            assert release_first.wait(timeout=5)
+        else:
+            second_planned.set()
+        return result
+
+    def persist_second() -> None:
+        second_started.set()
+        persist_config(second_cfg, path=target, backup=False)
+
+    monkeypatch.setattr(config_store, "_persist_plan", gated_plan)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first = pool.submit(persist_config, first_cfg, path=target, backup=False)
+        assert first_planned.wait(timeout=5)
+        second = pool.submit(persist_second)
+        assert second_started.wait(timeout=5)
+        overlapped_plan = second_planned.wait(timeout=0.5)
+        release_first.set()
+        first.result(timeout=5)
+        second.result(timeout=5)
+
+    assert overlapped_plan is False
+    data = tomllib.loads(target.read_text())
+    assert data["port"] == 18795
+    assert data["memory"]["flush_enabled"] is True
+
+
+def test_force_persist_paths_are_consumed_after_successful_commit(tmp_path):
+    target = tmp_path / "config.toml"
+    target.write_text("port = 18791\n")
+    cfg = load_config(target)
+    cfg.llm_ensemble.enabled = False
+    cfg.mark_force_persist("llm_ensemble.enabled")
+
+    persist_config(cfg, path=target, backup=False)
+
+    assert cfg.force_persist_paths() == set()
+    target.write_text(target.read_text().replace("enabled = false", "enabled = true"))
+    cfg.port = 18795
+    persist_config(cfg, path=target, backup=False)
+
+    data = tomllib.loads(target.read_text())
+    assert data["llm_ensemble"]["enabled"] is True
+    assert data["port"] == 18795
+
+
+def test_force_persist_none_removes_a_drifted_disk_value(tmp_path):
+    target = tmp_path / "config.toml"
+    target.write_text("port = 18791\n")
+    cfg = load_config(target)
+    target.write_text(
+        'port = 18791\n[memory.embedding.remote]\nbase_url = "https://drifted.test/v1"\n'
+    )
+    cfg.mark_force_persist("memory.embedding.remote.base_url")
+
+    persist_config(cfg, path=target, backup=False)
+
+    data = tomllib.loads(target.read_text())
+    assert "base_url" not in data.get("memory", {}).get("embedding", {}).get("remote", {})
+    assert cfg.force_persist_paths() == set()
 
 
 # ---------------------------------------------------------------------------

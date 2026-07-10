@@ -231,6 +231,8 @@ async def _handle_set_heartbeats(params: dict | None, ctx: RpcContext) -> dict[s
         _persist_config(candidate)
     if candidate is not ctx.config:
         ctx.config.heartbeat = heartbeat
+        if hasattr(ctx.config, "inherit_persist_provenance"):
+            ctx.config.inherit_persist_provenance(candidate)
 
     heartbeat_loop = getattr(ctx, "heartbeat_loop", None)
     if heartbeat_loop is not None and hasattr(heartbeat_loop, "nudge"):

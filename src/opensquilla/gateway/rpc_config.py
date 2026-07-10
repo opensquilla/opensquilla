@@ -409,29 +409,36 @@ def _validate_memory_embedding_semantics(config: Any) -> None:
     resolve_memory_embedding(memory_cfg, local_available=lambda *_: False)
 
 
-def _sync_provider_selector(ctx: RpcContext, config: Any) -> None:
+def _resolve_provider_selector_config(config: Any) -> Any | None:
     llm_cfg = getattr(config, "llm", None)
     if llm_cfg is None:
-        return
+        return None
 
     from opensquilla.gateway.llm_runtime import resolve_llm_runtime_config
     from opensquilla.provider.selector import ProviderConfig
 
     runtime = resolve_llm_runtime_config(config)
+    return ProviderConfig(
+        provider=runtime.provider,
+        model=runtime.model,
+        api_key=runtime.api_key,
+        base_url=runtime.base_url,
+        proxy=runtime.proxy,
+        provider_routing=runtime.provider_routing,
+    )
+
+
+def _sync_resolved_provider_selector(ctx: RpcContext, provider_config: Any | None) -> None:
+    if provider_config is None:
+        return
     selector = getattr(ctx, "provider_selector", None)
     if selector is None or not hasattr(selector, "sync_primary"):
         return
+    selector.sync_primary(provider_config)
 
-    selector.sync_primary(
-        ProviderConfig(
-            provider=runtime.provider,
-            model=runtime.model,
-            api_key=runtime.api_key,
-            base_url=runtime.base_url,
-            proxy=runtime.proxy,
-            provider_routing=runtime.provider_routing,
-        )
-    )
+
+def _sync_provider_selector(ctx: RpcContext, config: Any) -> None:
+    _sync_resolved_provider_selector(ctx, _resolve_provider_selector_config(config))
 
 
 def _sync_image_generation(config: Any) -> None:
@@ -465,12 +472,20 @@ def _sync_model_catalog_overrides(config: Any) -> None:
 # config_version is the migration stamp owned by migrate_config_payload;
 # client writes to it could re-run or skip one-time migrations.
 _READONLY_PATHS = frozenset({"auth.token", "auth.password", "config_version"})
+_READONLY_PATH_SEGMENTS = frozenset(tuple(path.split(".")) for path in _READONLY_PATHS)
 
 
 def _path_is_or_contains_readonly(path: str) -> bool:
     """Return whether setting ``path`` could replace a read-only descendant."""
 
     return any(readonly == path or readonly.startswith(f"{path}.") for readonly in _READONLY_PATHS)
+
+
+def _path_segments_is_or_contains_readonly(path: tuple[str, ...]) -> bool:
+    return any(
+        readonly == path or readonly[: len(path)] == path
+        for readonly in _READONLY_PATH_SEGMENTS
+    )
 
 
 def _prune_readonly_paths(patch: dict[str, Any]) -> dict[str, Any]:
@@ -569,6 +584,51 @@ def _deep_merge(base: dict, patch: dict) -> dict:
     return result
 
 
+def _collect_explicit_leaf_paths(
+    payload: Any,
+    prefix: tuple[str, ...] = (),
+    *,
+    empty_mapping_is_leaf: bool = False,
+) -> set[tuple[str, ...]]:
+    """Collect submitted leaf paths without force-writing parent sections."""
+    if not isinstance(payload, dict):
+        return {prefix} if prefix else set()
+    if not payload:
+        return {prefix} if prefix and empty_mapping_is_leaf else set()
+
+    paths: set[tuple[str, ...]] = set()
+    for key, value in payload.items():
+        path = (*prefix, str(key))
+        paths.update(
+            _collect_explicit_leaf_paths(
+                value,
+                path,
+                empty_mapping_is_leaf=empty_mapping_is_leaf,
+            )
+        )
+    return paths
+
+
+def _mark_force_persist_paths(config: Any, paths: set[tuple[str, ...]]) -> None:
+    """Make explicit writable values win over post-load disk drift once."""
+    if not hasattr(config, "mark_force_persist_segments"):
+        return
+    for path in sorted(paths):
+        if path == ("config_path",) or _path_segments_is_or_contains_readonly(path):
+            continue
+        config.mark_force_persist_segments(path)
+
+
+def _clear_runtime_override_paths(config: Any, paths: set[tuple[str, ...]]) -> None:
+    """Make explicitly submitted runtime values authoritative for persistence."""
+    if not hasattr(config, "clear_runtime_override"):
+        return
+    for path in sorted(paths):
+        if path == ("config_path",) or _path_segments_is_or_contains_readonly(path):
+            continue
+        config.clear_runtime_override(".".join(path))
+
+
 @_d.method("config.set", scope="operator.admin")
 async def _handle_config_set(params: dict | None, ctx: RpcContext) -> dict[str, Any]:
     if not isinstance(params, dict) or "path" not in params or "value" not in params:
@@ -598,8 +658,14 @@ async def _handle_config_set(params: dict | None, ctx: RpcContext) -> dict[str, 
     _set_path(cfg_dict, path, restored_value)
 
     explicit_paths = {path} | _collect_paths(value, path)
+    force_persist_paths = _collect_explicit_leaf_paths(
+        value,
+        tuple(path.split(".")),
+        empty_mapping_is_leaf=True,
+    )
     linked_paths = _link_dream_for_self_learning_patch(ctx.config, cfg_dict, explicit_paths)
     explicit_paths.update(linked_paths)
+    force_persist_paths.update(tuple(path.split(".")) for path in linked_paths)
 
     # Re-validate full config
     from opensquilla.gateway.config import GatewayConfig
@@ -608,16 +674,22 @@ async def _handle_config_set(params: dict | None, ctx: RpcContext) -> dict[str, 
     if _memory_restart_required_for_paths({path}):
         _validate_memory_embedding_semantics(new_config)
     inherit_then_clear_explicit(ctx.config, new_config, explicit_paths - redacted_paths)
-    # Runtime-override provenance must ride the candidate BEFORE the selector
-    # sync re-resolves env values onto it, so persist can un-bake them.
+    # Runtime-override provenance must ride the candidate BEFORE runtime
+    # resolution applies env values, so persist can un-bake them.
     if hasattr(new_config, "inherit_persist_provenance"):
         new_config.inherit_persist_provenance(ctx.config)
-    _sync_provider_selector(ctx, new_config)
+    explicit_force_paths = force_persist_paths - {
+        tuple(path.split(".")) for path in redacted_paths
+    }
+    _clear_runtime_override_paths(new_config, explicit_force_paths)
+    _mark_force_persist_paths(new_config, explicit_force_paths)
+    provider_config = _resolve_provider_selector_config(new_config)
     # Persist the candidate BEFORE mutating the live config: if the write
     # fails, memory and disk stay consistent (both keep the old state)
     # instead of silently diverging until the next restart reverts memory.
     _persist_config(new_config)
     _update_config_in_place(ctx.config, new_config)
+    _sync_resolved_provider_selector(ctx, provider_config)
     _sync_image_generation(new_config)
     _sync_model_catalog_overrides(new_config)
     response = _change_meta(
@@ -654,6 +726,7 @@ async def _handle_config_patch(params: dict | None, ctx: RpcContext) -> dict[str
     cfg_dict = ctx.config.model_dump() if hasattr(ctx.config, "model_dump") else {}
     source_cfg_dict = copy.deepcopy(cfg_dict) if isinstance(cfg_dict, dict) else {}
     redacted_paths: set[str] = set()
+    force_persist_paths: set[tuple[str, ...]] = set()
 
     # Apply dot-path patches (e.g. {"skills.filter_enabled": true})
     for path, value in dot_patches.items():
@@ -671,6 +744,13 @@ async def _handle_config_patch(params: dict | None, ctx: RpcContext) -> dict[str
         restored_value, restored_paths = _restore_redacted_values(value, source_value, path)
         redacted_paths.update(restored_paths)
         _set_path(cfg_dict, path, restored_value)
+        force_persist_paths.update(
+            _collect_explicit_leaf_paths(
+                value,
+                tuple(path.split(".")),
+                empty_mapping_is_leaf=True,
+            )
+        )
 
     # Apply dict merge patch
     if patch_data:
@@ -682,6 +762,7 @@ async def _handle_config_patch(params: dict | None, ctx: RpcContext) -> dict[str
         patch_data, merge_restored_paths = _restore_redacted_values(patch_data, source_cfg_dict)
         redacted_paths.update(merge_restored_paths)
         cfg_dict = _deep_merge(cfg_dict, patch_data)
+        force_persist_paths.update(_collect_explicit_leaf_paths(patch_data))
 
     explicit_paths = set(dot_patches.keys()) | _collect_paths(patch_data)
     for path, value in dot_patches.items():
@@ -690,6 +771,7 @@ async def _handle_config_patch(params: dict | None, ctx: RpcContext) -> dict[str
     _align_auto_router_profile_for_provider_patch(ctx.config, cfg_dict, explicit_paths)
     linked_paths = _link_dream_for_self_learning_patch(ctx.config, cfg_dict, explicit_paths)
     explicit_paths.update(linked_paths)
+    force_persist_paths.update(tuple(path.split(".")) for path in linked_paths)
 
     from opensquilla.gateway.config import GatewayConfig
 
@@ -698,16 +780,22 @@ async def _handle_config_patch(params: dict | None, ctx: RpcContext) -> dict[str
         _validate_memory_embedding_semantics(new_config)
     inherit_then_clear_explicit(ctx.config, new_config, explicit_paths - redacted_paths)
 
-    # Runtime-override provenance must ride the candidate BEFORE the selector
-    # sync re-resolves env values onto it, so persist can un-bake them.
+    # Runtime-override provenance must ride the candidate BEFORE runtime
+    # resolution applies env values, so persist can un-bake them.
     if hasattr(new_config, "inherit_persist_provenance"):
         new_config.inherit_persist_provenance(ctx.config)
-    _sync_provider_selector(ctx, new_config)
+    explicit_force_paths = force_persist_paths - {
+        tuple(path.split(".")) for path in redacted_paths
+    }
+    _clear_runtime_override_paths(new_config, explicit_force_paths)
+    _mark_force_persist_paths(new_config, explicit_force_paths)
+    provider_config = _resolve_provider_selector_config(new_config)
     # Persist the candidate BEFORE mutating the live config: if the write
     # fails, memory and disk stay consistent (both keep the old state).
     _persist_config(new_config)
     # Update in-memory config so subsequent requests see changes immediately
     _update_config_in_place(ctx.config, new_config)
+    _sync_resolved_provider_selector(ctx, provider_config)
     _sync_image_generation(new_config)
     _sync_model_catalog_overrides(new_config)
 
@@ -784,16 +872,17 @@ async def _handle_config_apply(params: dict | None, ctx: RpcContext) -> dict[str
     inherit_then_clear_explicit(
         ctx.config, new_config, _collect_paths(config_payload) - redacted_paths
     )
-    # Runtime-override provenance must ride the candidate BEFORE the selector
-    # sync re-resolves env values onto it, so persist can un-bake them.
+    # Runtime-override provenance must ride the candidate BEFORE runtime
+    # resolution applies env values, so persist can un-bake them.
     if ctx.config is not None and hasattr(new_config, "inherit_persist_provenance"):
         new_config.inherit_persist_provenance(ctx.config)
-    _sync_provider_selector(ctx, new_config)
+    provider_config = _resolve_provider_selector_config(new_config)
     # Persist the candidate BEFORE mutating the live config: if the write
     # fails, memory and disk stay consistent (both keep the old state).
     _persist_config(new_config)
     if ctx.config is not None:
         _update_config_in_place(ctx.config, new_config)
+    _sync_resolved_provider_selector(ctx, provider_config)
     _sync_image_generation(new_config)
     _sync_model_catalog_overrides(new_config)
     return _change_meta(

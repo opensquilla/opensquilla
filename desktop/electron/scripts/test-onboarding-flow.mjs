@@ -1,5 +1,5 @@
 import { strict as assert } from 'node:assert'
-import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
@@ -40,6 +40,8 @@ async function setupWindow(app) {
 
 const userDataRoot = await mkdtemp(join(tmpdir(), 'opensquilla-electron-onboarding-test-'))
 const userDataDir = join(userDataRoot, 'chromium-user-data')
+const isolatedHome = join(userDataRoot, 'home')
+await mkdir(isolatedHome, { recursive: true })
 const app = await electron.launch({
   args: [
     '--use-mock-keychain',
@@ -48,6 +50,8 @@ const app = await electron.launch({
   ],
   env: {
     ...process.env,
+    HOME: isolatedHome,
+    USERPROFILE: isolatedHome,
     OPENSQUILLA_DESKTOP_REPO_ROOT: repoRoot,
     OPENSQUILLA_DESKTOP_SECRET_STORAGE: 'plain',
     OPENSQUILLA_DESKTOP_GATEWAY_PORT: '18897',

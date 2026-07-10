@@ -67,6 +67,18 @@ async def test_config_set_is_sparse_and_preserves_foreign_disk_keys(cfg_path) ->
     assert len(text.splitlines()) < before_lines + 10
 
 
+async def test_config_set_preserves_known_field_edited_after_gateway_load(cfg_path) -> None:
+    _write_small_config(cfg_path)
+    cfg = GatewayConfig.load(str(cfg_path))
+    cfg_path.write_text(f"port = 2222\n{cfg_path.read_text()}")
+
+    await _handle_config_set({"path": "naming.enabled", "value": False}, _ctx(cfg))
+
+    data = tomllib.loads(cfg_path.read_text())
+    assert data["port"] == 2222
+    assert data["naming"]["enabled"] is False
+
+
 async def test_config_set_creates_timestamped_backup(cfg_path, tmp_path) -> None:
     _write_small_config(cfg_path)
     original = cfg_path.read_text()
@@ -235,6 +247,22 @@ async def test_explicit_memory_embedding_key_still_persisted(cfg_path) -> None:
     assert data["memory"]["embedding"]["remote"]["api_key"] == "sk-explicit-on-disk"
 
 
+async def test_explicit_memory_key_equal_to_env_is_persisted(
+    cfg_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    secret = "sk-explicit-equals-env"
+    monkeypatch.setenv("OPENSQUILLA_MEMORY_EMBEDDING__REMOTE__API_KEY", secret)
+    _write_small_config(cfg_path)
+    cfg = GatewayConfig.load(str(cfg_path))
+
+    await _handle_config_set(
+        {"path": "memory.embedding.remote.api_key", "value": secret}, _ctx(cfg)
+    )
+
+    monkeypatch.delenv("OPENSQUILLA_MEMORY_EMBEDDING__REMOTE__API_KEY")
+    assert GatewayConfig.load(str(cfg_path)).memory.embedding.remote.api_key == secret
+
+
 # --- onboarding handlers persist-first ------------------------------------------
 
 
@@ -261,9 +289,80 @@ async def test_onboarding_persist_failure_leaves_live_config_unchanged(
     assert cfg_path.read_text() == original
 
 
-def test_rpc_config_persist_delegates_to_sparse_persister() -> None:
-    """_persist_config with no config_path is a no-op (pre-existing
-    contract), and the function is the shared entry for rpc_system too."""
+async def test_onboarding_live_snapshot_advances_after_successful_persist(cfg_path) -> None:
+    import opensquilla.gateway.rpc_onboarding as rpc_onboarding
+
+    _write_small_config(cfg_path)
+    cfg = GatewayConfig.load(str(cfg_path))
+    ctx = _ctx(cfg)
+
+    await rpc_onboarding._ensemble_configure({"enabled": True}, ctx)
+    assert cfg._persist_baseline["llm_ensemble"]["enabled"] is True
+    cfg_path.write_text(cfg_path.read_text().replace("enabled = true", "enabled = false"))
+
+    await rpc_onboarding._search_configure({"providerId": "duckduckgo"}, ctx)
+
+    assert tomllib.loads(cfg_path.read_text())["llm_ensemble"]["enabled"] is False
+
+
+async def test_onboarding_first_save_establishes_path_and_snapshot(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import opensquilla.gateway.rpc_onboarding as rpc_onboarding
+
+    home = tmp_path / "home"
+    target = home / "config.toml"
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("OPENSQUILLA_STATE_DIR", str(home))
+    monkeypatch.delenv("OPENSQUILLA_GATEWAY_CONFIG_PATH", raising=False)
+    cfg = GatewayConfig.load(None)
+    assert cfg.config_path is None
+    ctx = _ctx(cfg)
+
+    await rpc_onboarding._ensemble_configure({"enabled": True}, ctx)
+
+    assert cfg.config_path == str(target)
+    assert cfg._persist_baseline["llm_ensemble"]["enabled"] is True
+    target.write_text(target.read_text().replace("enabled = true", "enabled = false"))
+
+    await rpc_onboarding._search_configure({"providerId": "duckduckgo"}, ctx)
+
+    assert tomllib.loads(target.read_text())["llm_ensemble"]["enabled"] is False
+
+
+async def test_heartbeat_live_snapshot_advances_after_successful_persist(cfg_path) -> None:
+    import opensquilla.gateway.rpc_system as rpc_system
+
+    _write_small_config(cfg_path)
+    cfg = GatewayConfig.load(str(cfg_path))
+    ctx = SimpleNamespace(config=cfg, heartbeat_loop=None)
+
+    await rpc_system._handle_set_heartbeats({"enabled": True}, ctx)
+    assert cfg._persist_baseline["heartbeat"]["enabled"] is True
+    cfg_path.write_text(cfg_path.read_text().replace("enabled = true", "enabled = false"))
+
+    await rpc_system._handle_set_heartbeats({"intervalMs": 120000}, ctx)
+
+    data = tomllib.loads(cfg_path.read_text())
+    assert data["heartbeat"]["enabled"] is False
+    assert data["heartbeat"]["interval_ms"] == 120000
+
+
+def test_rpc_config_persist_delegates_to_sparse_persister(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import opensquilla.onboarding.config_store as config_store
+
     cfg = GatewayConfig()
-    cfg.config_path = ""
-    rpc_config._persist_config(cfg)  # must not raise, must not write
+    cfg.config_path = str(tmp_path / "config.toml")
+    calls: list[tuple[GatewayConfig, str]] = []
+
+    def _record(config, *, path):
+        calls.append((config, str(path)))
+        return SimpleNamespace(path=path, backup_path=None)
+
+    monkeypatch.setattr(config_store, "persist_config", _record)
+
+    rpc_config._persist_config(cfg)
+
+    assert calls == [(cfg, cfg.config_path)]

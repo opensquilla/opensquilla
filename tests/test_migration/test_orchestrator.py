@@ -53,3 +53,11 @@ def test_run_migration_batch_validates_all_sources_before_running(monkeypatch, t
             ["openclaw", "hermes"],
             orchestrator.MigrationBatchOptions(persona_conflict="bogus"),
         )
+
+
+def test_opensquilla_batch_rejects_custom_config_path(tmp_path: Path) -> None:
+    with pytest.raises(orchestrator.MigrationOptionError, match="--config"):
+        orchestrator.validate_batch_options(
+            ("opensquilla",),
+            orchestrator.MigrationBatchOptions(config=tmp_path / "custom.toml"),
+        )

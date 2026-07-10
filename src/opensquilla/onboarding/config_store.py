@@ -17,9 +17,11 @@ import copy
 import os
 import tempfile
 import types
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Union, get_args, get_origin
+from typing import Any, BinaryIO, Union, cast, get_args, get_origin
 
 import structlog
 import tomli_w
@@ -231,7 +233,7 @@ def _config_to_toml_dict(cfg: GatewayConfig) -> dict[str, Any]:
 def _remember_load_baseline(
     cfg: GatewayConfig, raw_payload: dict[str, Any] | None = None
 ) -> None:
-    cfg._persist_baseline = copy.deepcopy(_model_toml_payload(cfg))
+    baseline = _model_toml_payload(cfg)
     # Also remember the raw (migrated) TOML payload the file held at load
     # time. If the file vanishes between load and persist (a reset from
     # another session, an operator ``mv``, cleanup during a long wizard run),
@@ -241,28 +243,108 @@ def _remember_load_baseline(
     # instance attribute so mutation clones (``model_copy(deep=True)``)
     # carry it; it never contains env-derived values because it came from
     # disk. ``None`` means the file did not exist at load time.
-    setattr(cfg, "_persist_raw_base", copy.deepcopy(raw_payload) if raw_payload else None)
+    cfg.set_persist_snapshot(baseline, raw_payload if raw_payload else None)
 
 
-def _get_dotted(obj: dict[str, Any], path: str) -> Any:
+def _lock_config_file(fh: BinaryIO) -> None:
+    if os.name == "nt":
+        import msvcrt
+
+        msvcrt_mod = cast(Any, msvcrt)
+        fh.seek(0)
+        msvcrt_mod.locking(fh.fileno(), msvcrt_mod.LK_LOCK, 1)
+        return
+
+    import fcntl
+
+    fcntl_mod = cast(Any, fcntl)
+    fcntl_mod.flock(fh.fileno(), fcntl_mod.LOCK_EX)
+
+
+def _unlock_config_file(fh: BinaryIO) -> None:
+    if os.name == "nt":
+        import msvcrt
+
+        msvcrt_mod = cast(Any, msvcrt)
+        fh.seek(0)
+        msvcrt_mod.locking(fh.fileno(), msvcrt_mod.LK_UNLCK, 1)
+        return
+
+    import fcntl
+
+    fcntl_mod = cast(Any, fcntl)
+    fcntl_mod.flock(fh.fileno(), fcntl_mod.LOCK_UN)
+
+
+@contextmanager
+def _config_write_lock(target: Path) -> Iterator[None]:
+    """Serialize read/merge/replace against every shared persister process."""
+    lock_path = target.with_name(f".{target.name}.lock")
+    fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o600)
+    if os.fstat(fd).st_size == 0:
+        os.write(fd, b"\0")
+    with os.fdopen(fd, "r+b", buffering=0) as fh:
+        _lock_config_file(fh)
+        try:
+            yield
+        finally:
+            try:
+                _unlock_config_file(fh)
+            except OSError:
+                # Closing the handle releases the OS lock too. An unlock
+                # bookkeeping error after replace must not turn a committed
+                # config write into an apparent failure.
+                pass
+
+
+def _get_path(obj: dict[str, Any], path: tuple[str, ...]) -> Any:
     current: Any = obj
-    for part in path.split("."):
+    for part in path:
         if not isinstance(current, dict) or part not in current:
             return None
         current = current[part]
     return current
 
 
-def _set_dotted(obj: dict[str, Any], path: str, value: Any) -> None:
-    parts = path.split(".")
+def _set_path(obj: dict[str, Any], path: tuple[str, ...], value: Any) -> None:
+    if not path:
+        return
     current = obj
-    for part in parts[:-1]:
+    for part in path[:-1]:
         child = current.get(part)
         if not isinstance(child, dict):
             child = {}
             current[part] = child
         current = child
-    current[parts[-1]] = value
+    current[path[-1]] = value
+
+
+def _remove_path(obj: dict[str, Any], path: tuple[str, ...]) -> None:
+    if not path:
+        return
+    current: Any = obj
+    parents: list[tuple[dict[str, Any], str]] = []
+    for part in path[:-1]:
+        if not isinstance(current, dict) or not isinstance(current.get(part), dict):
+            return
+        parents.append((current, part))
+        current = current[part]
+    if not isinstance(current, dict):
+        return
+    current.pop(path[-1], None)
+    for parent, key in reversed(parents):
+        child = parent.get(key)
+        if child != {}:
+            break
+        parent.pop(key, None)
+
+
+def _get_dotted(obj: dict[str, Any], path: str) -> Any:
+    return _get_path(obj, tuple(path.split(".")))
+
+
+def _set_dotted(obj: dict[str, Any], path: str, value: Any) -> None:
+    _set_path(obj, tuple(path.split(".")), value)
 
 
 def restore_runtime_overrides(dump: dict[str, Any], config: GatewayConfig) -> None:
@@ -445,85 +527,91 @@ def persist_config(
 ) -> PersistResult:
     resolved = _resolve_path(path)
     # The instance baseline only describes the file the config was loaded
-    # from; a save-as to a different path must not diff against it.
-    same_path = config.config_path == str(resolved)
+    # from; a save-as to a different path must not diff against it. A config
+    # with no associated path is different: its first successful save adopts
+    # the resolved target and the committed snapshot becomes its baseline.
+    establish_path = not bool(config.config_path)
+    same_path = establish_path or config.config_path == str(resolved)
     target = resolved
     if target.is_symlink():
         # Write through the symlink: update the real file in place so the
         # link (and anything else resolving through it) survives the swap.
         target = target.resolve()
 
-    baseline_dump, merged = _persist_plan(target, config, use_instance_baseline=same_path)
-    current_dump = _model_toml_payload(config)
-    restore_runtime_overrides(current_dump, config)
-    diff = _diff_payload(current_dump, baseline_dump, GatewayConfig)
-    for provenance_key in _NON_PERSISTED_TOP_LEVEL_FIELDS:
-        diff.pop(provenance_key, None)
-    _merge_diff(merged, diff)
-    # Force-persisted paths (explicit mutations that may equal the model
-    # default, e.g. a deliberate image_generation.enabled = false on a fresh
-    # config) are written regardless of the diff so the decision survives in
-    # the file for keep-current logic to see on the next load.
-    for force_path in sorted(getattr(config, "_force_persist_paths", set()) or set()):
-        forced_value = _get_dotted(current_dump, force_path)
-        if forced_value is not None:
-            _set_dotted(merged, force_path, _toml_safe(forced_value))
-
-    # Re-validate to catch any invariant breakage that survived model_dump.
-    GatewayConfig.model_validate(copy.deepcopy(merged))
-
     target.parent.mkdir(parents=True, exist_ok=True)
+    with _config_write_lock(target):
+        baseline_dump, merged = _persist_plan(
+            target, config, use_instance_baseline=same_path
+        )
+        current_dump = _model_toml_payload(config)
+        restore_runtime_overrides(current_dump, config)
+        diff = _diff_payload(current_dump, baseline_dump, GatewayConfig)
+        for provenance_key in _NON_PERSISTED_TOP_LEVEL_FIELDS:
+            diff.pop(provenance_key, None)
+        _merge_diff(merged, diff)
+        # Force-persisted paths are one-shot explicit mutations. They survive
+        # failed writes, but a successful commit consumes them so a later
+        # unrelated save cannot overwrite a newer on-disk edit.
+        force_paths = config.force_persist_path_segments()
+        for force_path in sorted(force_paths):
+            forced_value = _get_path(current_dump, force_path)
+            if forced_value is None:
+                _remove_path(merged, force_path)
+            else:
+                _set_path(merged, force_path, _toml_safe(forced_value))
 
-    backup_path: Path | None = None
-    if backup and target.exists():
-        backup_path = make_config_backup(target)
+        # Re-validate to catch any invariant breakage that survived model_dump.
+        GatewayConfig.model_validate(copy.deepcopy(merged))
+        next_baseline = copy.deepcopy(current_dump) if same_path else None
+        next_raw_base = copy.deepcopy(merged) if same_path else None
 
-    fd, tmp_name = tempfile.mkstemp(
-        prefix=f".{target.name}.", suffix=".tmp", dir=str(target.parent)
-    )
-    try:
-        with os.fdopen(fd, "wb") as fh:
-            tomli_w.dump(merged, fh)
-            # Flush user-space buffers and force the temp file to stable
-            # storage before the rename, so a power loss cannot leave a
-            # truncated config behind the atomic swap.
-            fh.flush()
-            os.fsync(fh.fileno())
-        os.chmod(tmp_name, 0o600)
-        os.replace(tmp_name, target)
-    except Exception:
+        backup_path: Path | None = None
+        if backup and target.exists():
+            backup_path = make_config_backup(target)
+
+        fd, tmp_name = tempfile.mkstemp(
+            prefix=f".{target.name}.", suffix=".tmp", dir=str(target.parent)
+        )
         try:
-            os.unlink(tmp_name)
-        except OSError:
-            pass
-        raise
+            with os.fdopen(fd, "wb") as fh:
+                tomli_w.dump(merged, fh)
+                # Flush user-space buffers and force the temp file to stable
+                # storage before the rename, so a power loss cannot leave a
+                # truncated config behind the atomic swap.
+                fh.flush()
+                os.fsync(fh.fileno())
+            # The temp file already carries the final restrictive mode. Rename
+            # is the commit point; no fallible chmod follows it and turns a
+            # successful disk commit into an apparent rollback.
+            os.chmod(tmp_name, 0o600)
+            os.replace(tmp_name, target)
+        except Exception:
+            try:
+                os.unlink(tmp_name)
+            except OSError:
+                pass
+            raise
 
-    os.chmod(target, 0o600)
+        config.consume_force_persist_path_segments(force_paths)
 
-    # The file now reflects this instance's state: refresh the instance's
-    # baseline so a later save of the same object diffs against what was
-    # just written instead of the original load snapshot. (current_dump has
-    # runtime overrides restored, matching what a fresh load would see.)
-    # A save-as leaves the baseline alone — the instance still describes the
-    # file it was loaded from, and a later save back there must diff against
-    # THAT snapshot, not the copy's contents.
-    if same_path:
-        config._persist_baseline = copy.deepcopy(current_dump)
-        # The written payload is the new on-disk truth: refresh the raw base
-        # so a later vanish-then-persist recreates from what was just
-        # written, not from the original load-time contents.
-        setattr(config, "_persist_raw_base", copy.deepcopy(merged))
+        # The file now reflects this instance's state: refresh the instance's
+        # baseline so a later save diffs against this committed model.
+        if establish_path:
+            config.config_path = str(resolved)
+        if next_baseline is not None and next_raw_base is not None:
+            config._persist_baseline = next_baseline
+            config._persist_raw_base = next_raw_base
 
-    log.debug(
-        "onboarding.config_persisted",
-        path=str(target),
-        backup=str(backup_path) if backup_path else None,
-        restart_required=restart_required,
-    )
+        log.debug(
+            "onboarding.config_persisted",
+            path=str(target),
+            backup=str(backup_path) if backup_path else None,
+            restart_required=restart_required,
+        )
 
-    return PersistResult(
-        path=target,
-        backup_path=backup_path,
-        restart_required=restart_required,
-        warnings=[],
-    )
+        return PersistResult(
+            path=target,
+            backup_path=backup_path,
+            restart_required=restart_required,
+            warnings=[],
+        )

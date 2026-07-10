@@ -133,7 +133,12 @@ def _run_one_migration(
 ) -> dict[str, Any]:
     """Run a single migrator. Validation errors raise typer.Exit(2)."""
     if name == "opensquilla":
-        _reject_invalid_opensquilla_options(preset=preset, include=include, exclude=exclude)
+        _reject_invalid_opensquilla_options(
+            config=config,
+            preset=preset,
+            include=include,
+            exclude=exclude,
+        )
         opensquilla_options = OpenSquillaMigrationOptions(
             source=source_path,
             kind="cli-home",
@@ -344,6 +349,7 @@ def migrate_root(
     for name in selected:
         if name == "opensquilla":
             _reject_invalid_opensquilla_options(
+                config=config,
                 preset=preset,
                 include=include_options,
                 exclude=exclude_options,
@@ -434,6 +440,7 @@ def _reject_invalid_options(
 
 def _reject_invalid_opensquilla_options(
     *,
+    config: Path | None,
     preset: str,
     include: tuple[str, ...],
     exclude: tuple[str, ...],
@@ -442,6 +449,12 @@ def _reject_invalid_opensquilla_options(
     # surface; only the shared defaults are accepted silently.
     if preset not in ("", "full") or include or exclude:
         typer.echo("opensquilla source does not take preset/include/exclude")
+        raise typer.Exit(2)
+    if config is not None:
+        typer.echo(
+            "--config is not supported for OpenSquilla self-migration. "
+            "Set OPENSQUILLA_STATE_DIR to the target home and re-run without --config."
+        )
         raise typer.Exit(2)
 
 
@@ -560,6 +573,12 @@ def migrate_opensquilla(
 ) -> None:
     """Import a legacy OpenSquilla home (CLI, Windows portable, or desktop)."""
 
+    if config is not None:
+        typer.echo(
+            "--config is not supported for OpenSquilla self-migration. "
+            "Set OPENSQUILLA_STATE_DIR to the target home and re-run without --config."
+        )
+        raise typer.Exit(2)
     if kind not in OPENSQUILLA_SOURCE_KINDS:
         typer.echo(
             f"Unknown source kind: {kind} (known: {', '.join(OPENSQUILLA_SOURCE_KINDS)})"
@@ -592,11 +611,14 @@ def migrate_opensquilla(
         typer.echo(json.dumps(report, ensure_ascii=False))
     else:
         mode = "applied" if apply else "dry-run"
-        console.print(f"[green]OpenSquilla self-migration complete[/green] ({mode})")
         counts: dict[str, int] = {}
         for item in report.get("items", []):
             status = str(item.get("status") or "unknown")
             counts[status] = counts.get(status, 0) + 1
+        if has_error:
+            console.print(f"[red]OpenSquilla self-migration failed[/red] ({mode})")
+        else:
+            console.print(f"[green]OpenSquilla self-migration complete[/green] ({mode})")
         if counts:
             summary = ", ".join(f"{status}: {count}" for status, count in sorted(counts.items()))
             console.print(f"[dim]Items:[/dim] {summary}")

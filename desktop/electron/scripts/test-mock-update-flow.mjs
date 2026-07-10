@@ -1,5 +1,7 @@
 import { strict as assert } from 'node:assert'
-import { dirname, resolve } from 'node:path'
+import { mkdir, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { dirname, join, resolve } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
 import { fileURLToPath } from 'node:url'
 import { _electron as electron } from 'playwright'
@@ -59,19 +61,64 @@ async function clickRelaunchToUpdate(app) {
   }, relaunchLabels)
 }
 
-const app = await electron.launch({
-  args: ['--use-mock-keychain', packageRoot],
-  env: {
-    ...process.env,
-    OPENSQUILLA_DESKTOP_REPO_ROOT: repoRoot,
-    OPENSQUILLA_DESKTOP_SECRET_STORAGE: 'plain',
-    OPENSQUILLA_DESKTOP_MOCK_UPDATE_VERSION: mockVersion,
-    // mock install: OK. Availability/download now stay in renderer state.
-    OPENSQUILLA_DESKTOP_MOCK_UPDATE_DIALOG_RESPONSES: '0',
-  },
-})
+const isolationRoot = await mkdtemp(join(tmpdir(), 'opensquilla-electron-mock-update-test-'))
+const userDataDir = join(isolationRoot, 'chromium-user-data')
+const isolatedHome = join(isolationRoot, 'home')
+let app
 
 try {
+  await mkdir(userDataDir, { recursive: true })
+  await mkdir(isolatedHome, { recursive: true })
+
+  // Seed a keyless, entirely synthetic profile so this update test reaches the
+  // Control UI without depending on a developer's real desktop credential.
+  const now = new Date().toISOString()
+  await writeFile(join(userDataDir, 'desktop-credential.json'), JSON.stringify({
+    provider: 'ollama',
+    model: 'opensquilla-update-test-model',
+    baseUrl: 'http://127.0.0.1:11434',
+    apiKeyEnv: '',
+    encryptedApiKey: '',
+    modelRoutingMode: 'direct',
+    routerMode: 'disabled',
+    routerDefaultTier: 'c1',
+    routerTiers: {},
+    searchProvider: 'duckduckgo',
+    searchApiKeyEnv: '',
+    encryptedSearchApiKey: '',
+    encryption: 'plain',
+    disableNetworkObservability: false,
+    createdAt: now,
+    updatedAt: now,
+  }, null, 2), { mode: 0o600 })
+
+  app = await electron.launch({
+    args: [
+      '--use-mock-keychain',
+      `--user-data-dir=${userDataDir}`,
+      packageRoot,
+    ],
+    env: {
+      ...process.env,
+      HOME: isolatedHome,
+      USERPROFILE: isolatedHome,
+      OPENSQUILLA_DESKTOP_REPO_ROOT: repoRoot,
+      OPENSQUILLA_DESKTOP_SECRET_STORAGE: 'plain',
+      OPENSQUILLA_DESKTOP_MOCK_UPDATE_VERSION: mockVersion,
+      // mock install: OK. Availability/download now stay in renderer state.
+      OPENSQUILLA_DESKTOP_MOCK_UPDATE_DIALOG_RESPONSES: '0',
+    },
+  })
+
+  const runtimeIsolation = await app.evaluate(({ app: electronApp }) => ({
+    userData: electronApp.getPath('userData'),
+    home: process.env.HOME,
+    userProfile: process.env.USERPROFILE,
+  }))
+  assert.equal(await realpath(runtimeIsolation.userData), await realpath(userDataDir))
+  assert.equal(resolve(runtimeIsolation.home), resolve(isolatedHome))
+  assert.equal(resolve(runtimeIsolation.userProfile), resolve(isolatedHome))
+
   const page = await app.firstWindow({ timeout: 60_000 })
   await page.waitForLoadState('domcontentloaded', { timeout: 60_000 }).catch(() => {})
   await waitFor(
@@ -138,5 +185,6 @@ try {
     title: await page.title(),
   }, null, 2))
 } finally {
-  await app.close().catch(() => {})
+  await app?.close().catch(() => {})
+  await rm(isolationRoot, { recursive: true, force: true }).catch(() => {})
 }

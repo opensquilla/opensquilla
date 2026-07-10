@@ -90,6 +90,11 @@ def test_preflight_probes_the_same_directory_persist_config_writes(
     assert result.path == real
     assert link.is_symlink(), "persist must write through the link, not replace it"
     assert real.exists()
-    # No stray probe files left behind on either side.
-    assert [p.name for p in dotfiles.iterdir()] == ["config.toml"]
+    # No stray probe files are left behind. The stable hidden lock is an
+    # intentional sibling of the resolved target; it must remain on disk so
+    # overlapping writers always contend on the same inode.
+    assert sorted(p.name for p in dotfiles.iterdir()) == [
+        ".config.toml.lock",
+        "config.toml",
+    ]
     assert [p.name for p in state.iterdir()] == ["config.toml"]

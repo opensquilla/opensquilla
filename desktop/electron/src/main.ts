@@ -2,7 +2,7 @@ import { app, BrowserWindow, dialog, Menu, ipcMain, nativeTheme, safeStorage, sh
 import electronUpdater from 'electron-updater'
 import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
-import { appendFileSync, createWriteStream, existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, rmdirSync, statSync, writeFileSync } from 'node:fs'
+import { appendFileSync, createWriteStream, existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, rmdirSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
 import { access, constants, readFile, readdir, rename, rm, stat, unlink, writeFile } from 'node:fs/promises'
 import net from 'node:net'
 import { homedir, tmpdir } from 'node:os'
@@ -204,6 +204,7 @@ let rejectOnboarding: ((error: Error) => void) | null = null
 // IPC handlers read the source path/kind from here (main-process truth), never
 // from the renderer payload.
 let onboardingMigrationCandidate: LegacyImportCandidate | null = null
+let onboardingMigrationPreviewApprovedAt = 0
 let secretStorageBackendCache: SecretEncryption | null = null
 let macCodeSignatureDiagnosticCache: string | null = null
 let bootStatus: BootStatus = {
@@ -353,6 +354,91 @@ function resolvedPathsEqual(a: string, b: string): boolean {
   return canonical(a) === canonical(b)
 }
 
+const MIGRATION_ITEM_STATUSES = new Set(['migrated', 'planned', 'skipped', 'error'])
+const MIGRATION_TRANSACTION_ID_RE = /^\d{20}$/
+
+interface MigrationReportExpectation {
+  source: string
+  sourceKind?: LegacyImportCandidate['kind']
+  target: string
+  apply: boolean
+}
+
+function migrationRecord(value: unknown): Record<string, unknown> | null {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null
+}
+
+function migrationReportValidationError(
+  value: unknown,
+  expected: MigrationReportExpectation,
+): string | null {
+  const report = migrationRecord(value)
+  if (!report) return 'migration report root is not an object'
+  if (typeof report.source !== 'string' || !resolvedPathsEqual(report.source, expected.source)) {
+    return 'migration report source does not match the approved preview'
+  }
+  if (
+    typeof report.source_kind !== 'string'
+    || !['cli-home', 'windows-portable', 'desktop-home'].includes(report.source_kind)
+    || (expected.sourceKind !== undefined && report.source_kind !== expected.sourceKind)
+  ) {
+    return 'migration report source kind is invalid'
+  }
+  if (typeof report.target !== 'string' || !resolvedPathsEqual(report.target, expected.target)) {
+    return 'migration report target does not match the desktop profile'
+  }
+  if (report.apply !== expected.apply) return 'migration report apply mode is invalid'
+  if (typeof report.output_dir !== 'string') return 'migration report output directory is invalid'
+
+  const items = report.items
+  if (!Array.isArray(items)) return 'migration report items are missing'
+  for (const value of items) {
+    const item = migrationRecord(value)
+    if (
+      !item
+      || typeof item.kind !== 'string'
+      || typeof item.status !== 'string'
+      || !MIGRATION_ITEM_STATUSES.has(item.status)
+      || typeof item.reason !== 'string'
+      || (item.source !== null && typeof item.source !== 'string')
+      || (item.destination !== null && typeof item.destination !== 'string')
+      || !migrationRecord(item.details)
+    ) {
+      return 'migration report contains an invalid item'
+    }
+  }
+
+  for (const key of [
+    'candidates',
+    'config_transforms',
+    'secret_relocations',
+    'paused_jobs',
+    'notes',
+  ]) {
+    if (!Array.isArray(report[key])) return `migration report ${key} is invalid`
+  }
+  const preflight = migrationRecord(report.preflight)
+  if (
+    !preflight
+    || typeof preflight.source_gateway_running !== 'boolean'
+    || typeof preflight.target_gateway_running !== 'boolean'
+    || typeof preflight.schema_ahead !== 'boolean'
+    || typeof preflight.disk_required_bytes !== 'number'
+    || typeof preflight.disk_free_bytes !== 'number'
+  ) {
+    return 'migration report preflight data is invalid'
+  }
+  return null
+}
+
+function migrationReportErrors(report: Record<string, unknown>): Record<string, unknown>[] {
+  return (report.items as unknown[])
+    .map((item) => migrationRecord(item))
+    .filter((item): item is Record<string, unknown> => item?.status === 'error')
+}
+
 function windowsPortableHomeRoots(): string[] {
   const roots: string[] = []
   if (process.env.LOCALAPPDATA) {
@@ -362,10 +448,77 @@ function windowsPortableHomeRoots(): string[] {
   return roots
 }
 
+function sourceWasImportedToTarget(source: string, target: string): boolean {
+  try {
+    const payload = JSON.parse(
+      readFileSync(join(source, '.opensquilla-imported.json'), 'utf8'),
+    ) as { target?: unknown; transaction_id?: unknown }
+    if (typeof payload.target !== 'string' || !resolvedPathsEqual(payload.target, target)) {
+      return false
+    }
+    const transactionId = typeof payload.transaction_id === 'string'
+      ? payload.transaction_id
+      : ''
+    if (!MIGRATION_TRANSACTION_ID_RE.test(transactionId)) return false
+    const receipt = JSON.parse(
+      readFileSync(
+        join(target, 'migration', 'opensquilla', transactionId, 'report.json'),
+        'utf8',
+      ),
+    ) as unknown
+    const validationError = migrationReportValidationError(receipt, {
+      source,
+      target,
+      apply: true,
+    })
+    return validationError === null
+      && migrationReportErrors(receipt as Record<string, unknown>).length === 0
+  } catch {
+    return false
+  }
+}
+
+// The Python importer publishes a complete sibling staging tree by renaming the
+// old target aside and then renaming staging into place. A crash between those
+// two operations leaves this durable journal. Recover it before onboarding or
+// layout relocation can create a fresh empty target over the missing profile.
+function recoverInterruptedDesktopImport(): void {
+  const target = desktopHome()
+  const parent = dirname(target)
+  const journal = join(parent, `.${basename(target)}.import-commit.json`)
+  if (!existsSync(journal)) return
+  const payload = JSON.parse(readFileSync(journal, 'utf8')) as Record<string, unknown>
+  const recordedTarget = String(payload.target || '')
+  const staging = String(payload.staging || '')
+  const backup = String(payload.backup || '')
+  const phase = String(payload.phase || '')
+  const validPhase = ['prepared', 'target-backed-up', 'published'].includes(phase)
+  const validStaging = dirname(resolve(staging)) === resolve(parent)
+    && basename(staging).startsWith('.opensquilla-import-')
+  const validBackup = dirname(resolve(backup)) === resolve(parent)
+    && basename(backup).startsWith(`${basename(target)}.backup.`)
+  if (!resolvedPathsEqual(recordedTarget, target) || !validPhase || !validStaging || !validBackup) {
+    throw new Error(`Unsafe or malformed desktop import recovery journal: ${journal}`)
+  }
+
+  if (!existsSync(target) && existsSync(backup)) {
+    renameSync(backup, target)
+  } else if (!existsSync(target) && phase !== 'prepared') {
+    throw new Error('Interrupted desktop import has no target or rollback backup.')
+  }
+  rmSync(staging, { recursive: true, force: true })
+  unlinkSync(journal)
+  desktopLog('migration_recovered', { phase, target })
+}
+
 function detectLegacyImportCandidate(): LegacyImportCandidate | null {
   // The plain CLI home wins over portable unpacks when both exist.
   const cliHome = join(homedir(), '.opensquilla')
-  if (looksLikeOpenSquillaHome(cliHome) && !resolvedPathsEqual(cliHome, desktopHome())) {
+  if (
+    looksLikeOpenSquillaHome(cliHome)
+    && !resolvedPathsEqual(cliHome, desktopHome())
+    && !sourceWasImportedToTarget(cliHome, desktopHome())
+  ) {
     return { kind: 'cli-home', path: cliHome }
   }
   if (process.platform !== 'win32') return null
@@ -383,6 +536,7 @@ function detectLegacyImportCandidate(): LegacyImportCandidate | null {
       const candidate = join(root, entry)
       if (!looksLikeOpenSquillaHome(candidate)) continue
       if (resolvedPathsEqual(candidate, desktopHome())) continue
+      if (sourceWasImportedToTarget(candidate, desktopHome())) continue
       let mtime = 0
       try {
         mtime = statSync(join(candidate, 'config.toml')).mtimeMs
@@ -1171,27 +1325,42 @@ function configureChromiumKeychainPolicy(): void {
   }
 }
 
-function desktopSecretStorageBackend(): SecretEncryption {
-  if (secretStorageBackendCache) return secretStorageBackendCache
-  const selected = secretStorageBackendForPolicy({
+function desktopSecretStoragePolicyBackend(): SecretEncryption {
+  return secretStorageBackendForPolicy({
     envMode: process.env.OPENSQUILLA_DESKTOP_SECRET_STORAGE,
     platform: process.platform,
     appPackaged: app.isPackaged,
     codesignDiagnostic: macCodeSignatureDiagnostic(),
   })
+}
+
+function desktopSecretStorageBackend(): SecretEncryption {
+  if (secretStorageBackendCache) return secretStorageBackendCache
+  const selected = desktopSecretStoragePolicyBackend()
   secretStorageBackendCache = selected === 'safeStorage' && safeStorage.isEncryptionAvailable() ? 'safeStorage' : 'plain'
   return secretStorageBackendCache
 }
 
 function encryptSecret(secret: string): { value: string; encryption: SecretEncryption } {
-  if (desktopSecretStorageBackend() === 'safeStorage') {
+  const policyBackend = desktopSecretStoragePolicyBackend()
+  const availableBackend = desktopSecretStorageBackend()
+  if (policyBackend === 'safeStorage') {
+    if (availableBackend !== 'safeStorage') {
+      throw new Error(
+        'The OS keychain is unavailable. Unlock it and reopen OpenSquilla before saving credentials.'
+      )
+    }
     try {
       return {
         value: safeStorage.encryptString(secret).toString('base64'),
         encryption: 'safeStorage',
       }
-    } catch {
-      return plainSecret(secret)
+    } catch (error) {
+      throw new Error(
+        `The OS keychain could not encrypt the credential: ${
+          error instanceof Error ? error.message : String(error)
+        }`
+      )
     }
   }
   return plainSecret(secret)
@@ -1501,6 +1670,9 @@ async function resetDesktopSettings(): Promise<void> {
   // source of truth, so it is no longer regenerated on every boot).
   await rm(credentialPath(), { force: true })
   await rm(desktopConfigPath(), { force: true })
+  transientPendingMigrationProviderSetup = null
+  await rm(pendingMigrationProviderSetupPath(), { force: true })
+  await rm(desktopMigrationResultPath(), { force: true })
 }
 
 function clearReusableGatewayState(): void {
@@ -1850,6 +2022,11 @@ const DESKTOP_MESSAGES: Record<DesktopLocale, Record<string, string>> = {
     'migration.step.preview': 'Preview import',
     'migration.step.import': 'Import',
     'migration.step.skip': 'Skip',
+    'migration.overwriteTitle': 'Replace conflicting desktop data?',
+    'migration.overwriteMessage': 'This import will replace data in the current desktop profile.',
+    'migration.overwriteDetail': 'A complete timestamped backup will be retained. Confirm the source below before continuing.',
+    'migration.overwriteCancel': 'Cancel',
+    'migration.overwriteConfirm': 'Import and replace',
     'launch.alreadyRunningTitle': 'OpenSquilla is already running',
     'launch.alreadyRunningMessage': 'Another OpenSquilla window is already open on this machine. Bringing it to the front.',
     'window.onboarding': 'Set up OpenSquilla',
@@ -1951,6 +2128,11 @@ const DESKTOP_MESSAGES: Record<DesktopLocale, Record<string, string>> = {
     'migration.step.preview': '预览导入',
     'migration.step.import': '导入',
     'migration.step.skip': '跳过',
+    'migration.overwriteTitle': '替换冲突的桌面数据？',
+    'migration.overwriteMessage': '此次导入将替换当前桌面配置中的数据。',
+    'migration.overwriteDetail': '系统会保留完整的时间戳备份。继续前请确认下方的数据来源。',
+    'migration.overwriteCancel': '取消',
+    'migration.overwriteConfirm': '导入并替换',
     'launch.alreadyRunningTitle': 'OpenSquilla 已在运行',
     'launch.alreadyRunningMessage': '本机已打开另一个 OpenSquilla 窗口。正在将其置于前台。',
     'window.onboarding': '设置 OpenSquilla',
@@ -2050,6 +2232,11 @@ const DESKTOP_MESSAGES: Record<DesktopLocale, Record<string, string>> = {
     'migration.step.preview': 'インポートをプレビュー',
     'migration.step.import': 'インポート',
     'migration.step.skip': 'スキップ',
+    'migration.overwriteTitle': '競合するデスクトップデータを置き換えますか？',
+    'migration.overwriteMessage': 'このインポートは現在のデスクトッププロファイルのデータを置き換えます。',
+    'migration.overwriteDetail': 'タイムスタンプ付きの完全なバックアップが保持されます。続行する前に以下の移行元を確認してください。',
+    'migration.overwriteCancel': 'キャンセル',
+    'migration.overwriteConfirm': 'インポートして置換',
     'launch.alreadyRunningTitle': 'OpenSquilla はすでに実行中です',
     'launch.alreadyRunningMessage': 'このマシンでは別の OpenSquilla ウィンドウがすでに開いています。前面に表示します。',
     'window.onboarding': 'OpenSquilla をセットアップ',
@@ -2149,6 +2336,11 @@ const DESKTOP_MESSAGES: Record<DesktopLocale, Record<string, string>> = {
     'migration.step.preview': 'Aperçu de l\'importation',
     'migration.step.import': 'Importer',
     'migration.step.skip': 'Ignorer',
+    'migration.overwriteTitle': 'Remplacer les données de bureau en conflit ?',
+    'migration.overwriteMessage': 'Cette importation remplacera des données du profil de bureau actuel.',
+    'migration.overwriteDetail': 'Une sauvegarde complète horodatée sera conservée. Vérifiez la source ci-dessous avant de continuer.',
+    'migration.overwriteCancel': 'Annuler',
+    'migration.overwriteConfirm': 'Importer et remplacer',
     'launch.alreadyRunningTitle': 'OpenSquilla est déjà en cours d’exécution',
     'launch.alreadyRunningMessage': 'Une autre fenêtre OpenSquilla est déjà ouverte sur cette machine. Elle va être mise au premier plan.',
     'window.onboarding': 'Configurer OpenSquilla',
@@ -2248,6 +2440,11 @@ const DESKTOP_MESSAGES: Record<DesktopLocale, Record<string, string>> = {
     'migration.step.preview': 'Import-Vorschau',
     'migration.step.import': 'Importieren',
     'migration.step.skip': 'Überspringen',
+    'migration.overwriteTitle': 'Konfliktierende Desktop-Daten ersetzen?',
+    'migration.overwriteMessage': 'Dieser Import ersetzt Daten im aktuellen Desktop-Profil.',
+    'migration.overwriteDetail': 'Eine vollständige Sicherung mit Zeitstempel bleibt erhalten. Prüfen Sie vor dem Fortfahren die Quelle unten.',
+    'migration.overwriteCancel': 'Abbrechen',
+    'migration.overwriteConfirm': 'Importieren und ersetzen',
     'launch.alreadyRunningTitle': 'OpenSquilla läuft bereits',
     'launch.alreadyRunningMessage': 'Auf diesem Gerät ist bereits ein anderes OpenSquilla-Fenster geöffnet. Es wird in den Vordergrund geholt.',
     'window.onboarding': 'OpenSquilla einrichten',
@@ -2347,6 +2544,11 @@ const DESKTOP_MESSAGES: Record<DesktopLocale, Record<string, string>> = {
     'migration.step.preview': 'Vista previa de la importación',
     'migration.step.import': 'Importar',
     'migration.step.skip': 'Omitir',
+    'migration.overwriteTitle': '¿Reemplazar los datos de escritorio en conflicto?',
+    'migration.overwriteMessage': 'Esta importación reemplazará datos del perfil de escritorio actual.',
+    'migration.overwriteDetail': 'Se conservará una copia de seguridad completa con marca de tiempo. Confirma la fuente indicada abajo antes de continuar.',
+    'migration.overwriteCancel': 'Cancelar',
+    'migration.overwriteConfirm': 'Importar y reemplazar',
     'launch.alreadyRunningTitle': 'OpenSquilla ya se está ejecutando',
     'launch.alreadyRunningMessage': 'Ya hay otra ventana de OpenSquilla abierta en esta máquina. Se traerá al frente.',
     'window.onboarding': 'Configurar OpenSquilla',
@@ -2794,7 +2996,10 @@ function localeOptionsHtml(): string {
   )).join('')
 }
 
-function onboardingHtml(detection: LegacyImportCandidate | null = null): string {
+function onboardingHtml(
+  detection: LegacyImportCandidate | null = null,
+  pendingProviderSetup: MigrationProviderPrefill | null = null,
+): string {
   return `<!doctype html>
 <html lang="${desktopLocale}">
 <head>
@@ -3620,6 +3825,7 @@ function onboardingHtml(detection: LegacyImportCandidate | null = null): string 
     const routerProfiles = ${JSON.stringify(ROUTER_PROFILES)};
     const textTiers = ${JSON.stringify(TEXT_ROUTER_TIERS)};
     const migrationCandidate = ${JSON.stringify(detection)};
+    const initialProviderPrefill = ${JSON.stringify(pendingProviderSetup)};
     let step = ${detection ? 5 : 0};
     let routerTiers = clone(routerProfiles.openrouter);
     const setupMode = document.getElementById('setupMode');
@@ -4102,6 +4308,7 @@ function onboardingHtml(detection: LegacyImportCandidate | null = null): string 
         syncProviderDefaults(false);
         render();
       }
+      applyMigrationPrefill(initialProviderPrefill);
       if (typeof window.opensquillaDesktop.onMigrationProgress === 'function') {
         window.opensquillaDesktop.onMigrationProgress((payload) => {
           const phase = payload && payload.phase;
@@ -4196,24 +4403,27 @@ function onboardingHtml(detection: LegacyImportCandidate | null = null): string 
 }
 
 async function runOnboarding(): Promise<DesktopConnection> {
+  const pendingProviderSetup = await loadPendingMigrationProviderSetup()
   const existing = await loadDesktopCredential()
   // A saved credential encrypted with the OS keychain that this session cannot
   // read (keychain locked or unavailable) must not be treated as "no credential":
   // silently re-onboarding would re-save the key as plaintext. Surface an
   // actionable error so the user can unlock and retry, or Reset setup.
   if (
-    existing
-    && existing.encryptedApiKey
-    && existing.encryption === 'safeStorage'
+    desktopSecretStoragePolicyBackend() === 'safeStorage'
     && desktopSecretStorageBackend() !== 'safeStorage'
+    && (
+      pendingProviderSetup !== null
+      || Boolean(existing?.encryptedApiKey && existing.encryption === 'safeStorage')
+    )
   ) {
     throw new Error(
-      'Your saved OpenSquilla credential is stored in the OS keychain, which is '
-      + 'currently unavailable (locked or inaccessible). Unlock it and reopen '
+      'OpenSquilla needs the OS keychain to read or safely adopt this credential, '
+      + 'but the keychain is currently unavailable. Unlock it and reopen '
       + 'OpenSquilla, or use "Reset setup" to start over.'
     )
   }
-  if (existing && isConnectionReady(existing)) {
+  if (!pendingProviderSetup && existing && isConnectionReady(existing)) {
     // Seed the gateway config from the saved credential only when it does not
     // exist yet. Once it exists the Control UI owns it via RPC, so regenerating
     // it from the credential template here would clobber provider/router/channel
@@ -4227,7 +4437,8 @@ async function runOnboarding(): Promise<DesktopConnection> {
   // No usable credential: this is the first-run (or reset) path, the only
   // interaction point before the gateway first boots — so offer the legacy home
   // import here, before provider setup (the import must precede first boot).
-  onboardingMigrationCandidate = detectLegacyImportCandidate()
+  onboardingMigrationCandidate = pendingProviderSetup ? null : detectLegacyImportCandidate()
+  onboardingMigrationPreviewApprovedAt = 0
 
   return new Promise((resolveCredential, rejectCredential) => {
     resolveOnboarding = resolveCredential
@@ -4286,7 +4497,7 @@ async function runOnboarding(): Promise<DesktopConnection> {
       }
     })
 
-    onboardingWindow.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(onboardingHtml(onboardingMigrationCandidate))}`).catch((error) => {
+    onboardingWindow.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(onboardingHtml(onboardingMigrationCandidate, pendingProviderSetup))}`).catch((error) => {
       rejectCredential(error instanceof Error ? error : new Error(String(error)))
     })
   })
@@ -4590,6 +4801,8 @@ async function startGateway(): Promise<GatewayState> {
   }
 
   sendBootStatus('profile')
+  recoverInterruptedDesktopImport()
+  await recoverPendingMigrationReconciliation()
   relocateLegacyDesktopStateLayout()
   const connection = await runOnboarding()
   forceOnboardingOnNextStartup = false
@@ -5893,7 +6106,7 @@ ipcMain.handle('gateway:cli-invocation', async () => {
     mode: runtime.mode,
     binaryPath: runtime.mode === 'bundled' ? runtime.command : undefined,
     repoRoot: runtime.mode === 'dev' ? repoRoot : undefined,
-    stateDir: desktopStateDir(),
+    stateDir: desktopHome(),
     configPath: desktopConfigPath(),
   })
 })
@@ -6056,6 +6269,9 @@ ipcMain.handle('desktop:uninstall:run', async (_event, payload?: { purgeData?: b
   // purge — these hold the encrypted credential and logs).
   if (purgeData) {
     await rm(credentialPath(), { force: true }).catch(() => null)
+    transientPendingMigrationProviderSetup = null
+    await rm(pendingMigrationProviderSetupPath(), { force: true }).catch(() => null)
+    await rm(desktopMigrationResultPath(), { force: true }).catch(() => null)
     await rm(join(app.getPath('userData'), 'logs'), { recursive: true, force: true }).catch(() => null)
   }
   // The app keeps running after a successful data cleanup (the user closes it
@@ -6129,7 +6345,12 @@ type DesktopMigrationPhase = 'preview' | 'applying' | 'done' | 'error'
 function publishDesktopMigrationProgress(phase: DesktopMigrationPhase, detail?: string): void {
   const payload = detail === undefined ? { phase } : { phase, detail }
   for (const window of BrowserWindow.getAllWindows()) {
-    if (!window.isDestroyed()) window.webContents.send('desktop:migration:progress', payload)
+    try {
+      if (!window.isDestroyed()) window.webContents.send('desktop:migration:progress', payload)
+    } catch {
+      // A renderer can disappear while the import replaces its gateway origin.
+      // Progress is advisory; lifecycle cleanup and restart must still run.
+    }
   }
 }
 
@@ -6139,6 +6360,259 @@ interface MigrationProviderPrefill {
   baseUrl: string
   apiKeyEnv: string
   apiKey: string
+}
+
+interface PendingMigrationProviderSetup extends MigrationProviderPrefill {
+  version: 1
+  phase: 'applying' | 'needs-setup'
+  source: string
+  sourceKind: LegacyImportCandidate['kind']
+  target: string
+  knownReceiptIds: string[]
+}
+
+let transientPendingMigrationProviderSetup: PendingMigrationProviderSetup | null = null
+
+function pendingMigrationProviderSetupPath(): string {
+  return join(app.getPath('userData'), 'migration-provider-setup.json')
+}
+
+function migrationReceiptRoot(): string {
+  return join(desktopHome(), 'migration', 'opensquilla')
+}
+
+async function listMigrationReceiptIds(): Promise<string[]> {
+  try {
+    const entries = await readdir(migrationReceiptRoot(), { withFileTypes: true })
+    return entries.filter((entry) => entry.isDirectory()).map((entry) => entry.name)
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return []
+    throw error
+  }
+}
+
+async function readPendingMigrationProviderSetup(): Promise<PendingMigrationProviderSetup | null> {
+  if (transientPendingMigrationProviderSetup) return transientPendingMigrationProviderSetup
+  let raw = ''
+  try {
+    raw = await readFile(pendingMigrationProviderSetupPath(), 'utf8')
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null
+    throw new Error(`Could not read the pending desktop import record: ${String(error)}`)
+  }
+  let payload: Record<string, unknown>
+  try {
+    const parsed = JSON.parse(raw) as unknown
+    const record = migrationRecord(parsed)
+    if (!record) throw new Error('record root is not an object')
+    payload = record
+  } catch (error) {
+    throw new Error(`The pending desktop import record is malformed: ${String(error)}`)
+  }
+
+  // Accept the short-lived pre-release marker shape as a needs-setup record so
+  // users who hit this recovery path while testing are not stranded.
+  const legacyShape = payload.phase === undefined
+  const phase = legacyShape ? 'needs-setup' : payload.phase
+  const source = legacyShape ? '' : String(payload.source || '')
+  const sourceKind = legacyShape ? 'cli-home' : String(payload.sourceKind || '')
+  const target = legacyShape ? desktopHome() : String(payload.target || '')
+  if (
+    !legacyShape
+    && (
+      payload.version !== 1
+      || !Array.isArray(payload.knownReceiptIds)
+      || payload.knownReceiptIds.some((value) => typeof value !== 'string')
+    )
+  ) {
+    throw new Error('The pending desktop import record has invalid transaction metadata.')
+  }
+  const knownReceiptIds = legacyShape
+    ? []
+    : payload.knownReceiptIds as string[]
+  if (
+    (phase !== 'applying' && phase !== 'needs-setup')
+    || !resolvedPathsEqual(target, desktopHome())
+    || (!legacyShape && !source)
+    || !['cli-home', 'windows-portable'].includes(sourceKind)
+  ) {
+    throw new Error('The pending desktop import record does not match this desktop profile.')
+  }
+  transientPendingMigrationProviderSetup = {
+    version: 1,
+    phase,
+    source,
+    sourceKind: sourceKind as LegacyImportCandidate['kind'],
+    target,
+    knownReceiptIds,
+    provider: String(payload.provider || ''),
+    model: String(payload.model || ''),
+    baseUrl: String(payload.baseUrl || ''),
+    apiKeyEnv: String(payload.apiKeyEnv || ''),
+    // Secrets are always re-read from the imported target, never the marker.
+    apiKey: '',
+  }
+  return transientPendingMigrationProviderSetup
+}
+
+async function persistPendingMigrationProviderSetup(
+  pending: PendingMigrationProviderSetup,
+): Promise<void> {
+  const durable = { ...pending, apiKey: '' }
+  mkdirSync(app.getPath('userData'), { recursive: true })
+  await atomicWriteFile(
+    pendingMigrationProviderSetupPath(),
+    JSON.stringify(durable, null, 2),
+    0o600,
+  )
+  transientPendingMigrationProviderSetup = durable
+}
+
+async function beginMigrationReconciliationIntent(
+  candidate: LegacyImportCandidate,
+): Promise<PendingMigrationProviderSetup> {
+  const intent: PendingMigrationProviderSetup = {
+    version: 1,
+    phase: 'applying',
+    source: candidate.path,
+    sourceKind: candidate.kind,
+    target: desktopHome(),
+    knownReceiptIds: await listMigrationReceiptIds(),
+    provider: '',
+    model: '',
+    baseUrl: '',
+    apiKeyEnv: '',
+    apiKey: '',
+  }
+  await persistPendingMigrationProviderSetup(intent)
+  return intent
+}
+
+async function findAppliedReceiptForIntent(
+  intent: PendingMigrationProviderSetup,
+): Promise<{ transactionId: string; report: Record<string, unknown> } | null> {
+  const known = new Set(intent.knownReceiptIds)
+  const candidates = (await listMigrationReceiptIds())
+    .filter((transactionId) => !known.has(transactionId))
+    .sort()
+    .reverse()
+  for (const transactionId of candidates) {
+    if (!MIGRATION_TRANSACTION_ID_RE.test(transactionId)) continue
+    try {
+      const report = JSON.parse(
+        await readFile(join(migrationReceiptRoot(), transactionId, 'report.json'), 'utf8'),
+      ) as unknown
+      if (
+        migrationReportValidationError(report, {
+          source: intent.source,
+          sourceKind: intent.sourceKind,
+          target: intent.target,
+          apply: true,
+        }) === null
+        && migrationReportErrors(report as Record<string, unknown>).length === 0
+      ) {
+        return { transactionId, report: report as Record<string, unknown> }
+      }
+    } catch {
+      // Ignore incomplete/unrelated report directories and keep looking.
+    }
+  }
+  return null
+}
+
+async function writePendingMigrationProviderSetup(
+  prefill: MigrationProviderPrefill | null,
+  intent: PendingMigrationProviderSetup,
+): Promise<void> {
+  const pending: PendingMigrationProviderSetup = {
+    ...intent,
+    phase: 'needs-setup',
+    provider: prefill?.provider || '',
+    model: prefill?.model || '',
+    baseUrl: prefill?.baseUrl || '',
+    apiKeyEnv: prefill?.apiKeyEnv || '',
+    // A provider key never belongs in this durable prompt marker. The imported
+    // target .env remains the source until the user confirms it into safeStorage.
+    apiKey: '',
+  }
+  await persistPendingMigrationProviderSetup(pending)
+}
+
+async function clearPendingMigrationProviderSetup(): Promise<void> {
+  transientPendingMigrationProviderSetup = null
+  await rm(pendingMigrationProviderSetupPath(), { force: true })
+}
+
+async function scrubImportedProviderEnvEntry(envKey: string): Promise<void> {
+  if (!envKey) return
+  const envPath = join(desktopHome(), '.env')
+  let raw = ''
+  try {
+    raw = await readFile(envPath, 'utf8')
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return
+    throw error
+  }
+  const lines = raw.split(/\r?\n/)
+  const kept = lines.filter((line) => {
+    const entry = line.match(/^\s*(?:export\s+)?([A-Za-z0-9_]+)\s*=/)
+    return !entry || entry[1] !== envKey
+  })
+  if (kept.length === lines.length) return
+  while (kept.length > 0 && kept[kept.length - 1] === '') kept.pop()
+  await atomicWriteFile(envPath, kept.length > 0 ? `${kept.join('\n')}\n` : '', 0o600)
+}
+
+async function loadPendingMigrationProviderSetup(): Promise<MigrationProviderPrefill | null> {
+  const pending = await readPendingMigrationProviderSetup()
+  if (!pending) return null
+  if (pending.phase === 'applying') {
+    throw new Error('An interrupted desktop import still needs reconciliation.')
+  }
+  const live = readMigratedProviderPrefill()
+  return {
+    provider: live?.provider || pending.provider,
+    model: live?.model || pending.model,
+    baseUrl: live?.baseUrl || pending.baseUrl,
+    apiKeyEnv: live?.apiKeyEnv || pending.apiKeyEnv,
+    apiKey: live?.apiKey || '',
+  }
+}
+
+async function reconcileImportedDesktopCredential(
+  intent: PendingMigrationProviderSetup,
+): Promise<{ requiresSetup: boolean }> {
+  const prefill = readMigratedProviderPrefill()
+  if (prefill?.provider) {
+    const defaults = providerDefaults(prefill.provider)
+    if (!defaults.requiresApiKey || prefill.apiKey) {
+      try {
+        await saveDesktopCredential(prefill)
+        await scrubImportedProviderEnvEntry(prefill.apiKeyEnv)
+        await clearPendingMigrationProviderSetup()
+        return { requiresSetup: false }
+      } catch (error) {
+        desktopLog('migration_credential_adoption_failed', {
+          error: error instanceof Error ? error.message : String(error),
+        })
+      }
+    }
+  }
+  await writePendingMigrationProviderSetup(prefill, intent)
+  return { requiresSetup: true }
+}
+
+async function recoverPendingMigrationReconciliation(): Promise<void> {
+  const pending = await readPendingMigrationProviderSetup()
+  if (!pending || pending.phase !== 'applying') return
+  const receipt = await findAppliedReceiptForIntent(pending)
+  if (!receipt) {
+    // The commit journal has already been recovered before this runs. With no
+    // new target-side applied receipt, the attempted import never published.
+    await clearPendingMigrationProviderSetup()
+    return
+  }
+  await reconcileImportedDesktopCredential(pending)
 }
 
 // After a successful apply the migrator has rewritten the target config.toml
@@ -6198,7 +6672,82 @@ function readMigratedProviderPrefill(): MigrationProviderPrefill | null {
   }
 }
 
+interface TrustedDesktopMigrationPreview {
+  id: string
+  candidate: LegacyImportCandidate
+  report: Record<string, unknown>
+  createdAt: number
+}
+
+interface DesktopMigrationResult {
+  id: string
+  at: string
+  ok: boolean
+  migrationApplied: boolean
+  restartOk: boolean
+  requiresProviderSetup: boolean
+  detail?: string
+}
+
+const DESKTOP_MIGRATION_PREVIEW_TTL_MS = 10 * 60 * 1000
+let trustedDesktopMigrationPreview: TrustedDesktopMigrationPreview | null = null
+
+function migrationPreviewAllowsApply(
+  report: Record<string, unknown>,
+  overwrite: boolean,
+): boolean {
+  const errors = migrationReportErrors(report)
+  if (errors.length === 0) return !overwrite
+  return overwrite
+    && errors.length === 1
+    && errors[0]?.kind === 'preflight/target'
+}
+
+function desktopMigrationResultPath(): string {
+  return join(app.getPath('userData'), 'migration-last-result.json')
+}
+
+async function persistDesktopMigrationResult(result: DesktopMigrationResult): Promise<void> {
+  try {
+    mkdirSync(app.getPath('userData'), { recursive: true })
+    await atomicWriteFile(
+      desktopMigrationResultPath(),
+      JSON.stringify(result, null, 2),
+      0o600,
+    )
+  } catch (error) {
+    desktopLog('migration_result_persist_failed', {
+      error: error instanceof Error ? error.message : String(error),
+    })
+  }
+}
+
+async function takeDesktopMigrationResult(): Promise<DesktopMigrationResult | null> {
+  let raw = ''
+  try {
+    raw = await readFile(desktopMigrationResultPath(), 'utf8')
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null
+    throw error
+  }
+  const parsed = migrationRecord(JSON.parse(raw))
+  if (!parsed) throw new Error('Saved desktop migration result is malformed.')
+  const result: DesktopMigrationResult = {
+    id: String(parsed.id || ''),
+    at: String(parsed.at || ''),
+    ok: parsed.ok === true,
+    migrationApplied: parsed.migrationApplied === true,
+    restartOk: parsed.restartOk === true,
+    requiresProviderSetup: parsed.requiresProviderSetup === true,
+    ...(typeof parsed.detail === 'string' && parsed.detail ? { detail: parsed.detail } : {}),
+  }
+  if (!result.id || !result.at) throw new Error('Saved desktop migration result is malformed.')
+  await rm(desktopMigrationResultPath(), { force: true })
+  return result
+}
+
 ipcMain.handle('desktop:migration:summary', async () => {
+  trustedDesktopMigrationPreview = null
   const candidate = detectLegacyImportCandidate()
   if (!candidate) return { ok: true, candidate: null, report: null }
   // Dry-run is read-only, so the running gateway is deliberately left alone.
@@ -6206,73 +6755,242 @@ ipcMain.handle('desktop:migration:summary', async () => {
   const { ok, report, raw } = await migrateSummaryJson([
     '--source', candidate.path, '--kind', candidate.kind,
   ])
+  const validationError = migrationReportValidationError(report, {
+    source: candidate.path,
+    sourceKind: candidate.kind,
+    target: desktopHome(),
+    apply: false,
+  })
+  if (validationError || !report) {
+    const detail = validationError || raw || 'Invalid migration report'
+    publishDesktopMigrationProgress('error', detail)
+    return { ok: false, candidate, report: null, raw: detail }
+  }
+  const preview: TrustedDesktopMigrationPreview = {
+    id: randomUUID(),
+    candidate,
+    report,
+    createdAt: Date.now(),
+  }
+  trustedDesktopMigrationPreview = preview
   publishDesktopMigrationProgress(ok ? 'done' : 'error')
-  return report ? { ok, candidate, report } : { ok, candidate, report, raw }
+  return { ok, candidate, report, previewId: preview.id }
 })
 
-ipcMain.handle('desktop:migration:run', async (_event, payload?: { overwrite?: boolean }) => {
-  const candidate = detectLegacyImportCandidate()
-  if (!candidate) {
-    return { ok: false, report: null, detail: 'No legacy OpenSquilla home was detected.' }
-  }
-  const overwrite = Boolean(payload?.overwrite)
-  publishDesktopMigrationProgress('applying')
-
-  // Quiesce the owned gateway before the CLI writes (the uninstall-run
-  // pattern): wait for the child to actually EXIT, bounded by the kill deadline.
-  isQuitting = true
-  if (gatewayProcess && gatewayState.owned) {
-    const child = gatewayProcess
-    // We stay alive and await the exit, so let the gateway take its Windows
-    // HTTP graceful drain instead of an immediate TerminateProcess.
-    allowGracefulShutdownWhileQuitting = true
-    try {
-      stopGateway()
-    } finally {
-      allowGracefulShutdownWhileQuitting = false
-    }
-    await waitForGatewayProcessExit(child)
-  }
-
-  // Refuse while an unmanaged gateway still serves this profile — the import
-  // must not race live sessions.db/scheduler.db writers.
-  if (gatewayState.url && (await healthCheck(gatewayState.url))) {
-    isQuitting = false
-    publishDesktopMigrationProgress('error', 'A gateway is still serving this profile.')
+ipcMain.handle('desktop:migration:run', async (
+  _event,
+  payload?: { overwrite?: boolean; previewId?: string },
+) => {
+  const preview = trustedDesktopMigrationPreview
+  if (
+    !preview
+    || payload?.previewId !== preview.id
+    || Date.now() - preview.createdAt > DESKTOP_MIGRATION_PREVIEW_TTL_MS
+  ) {
+    trustedDesktopMigrationPreview = null
     return {
       ok: false,
       report: null,
-      detail: 'A gateway is still serving this profile; stop it and retry.',
+      detail: 'The migration preview is missing or expired. Preview the import again.',
+    }
+  }
+  const candidate = preview.candidate
+  const overwrite = Boolean(payload?.overwrite)
+  if (!migrationPreviewAllowsApply(preview.report, overwrite)) {
+    trustedDesktopMigrationPreview = null
+    return {
+      ok: false,
+      report: preview.report,
+      detail: 'The approved preview does not permit this import mode. Preview again.',
+    }
+  }
+  if (
+    !looksLikeOpenSquillaHome(candidate.path)
+    || sourceWasImportedToTarget(candidate.path, desktopHome())
+  ) {
+    trustedDesktopMigrationPreview = null
+    return {
+      ok: false,
+      report: preview.report,
+      detail: 'The approved migration source changed after preview. Preview again.',
+    }
+  }
+  if (overwrite) {
+    const options: Electron.MessageBoxOptions = {
+      type: 'warning',
+      buttons: [desktopT('migration.overwriteCancel'), desktopT('migration.overwriteConfirm')],
+      defaultId: 0,
+      cancelId: 0,
+      title: desktopT('migration.overwriteTitle'),
+      message: desktopT('migration.overwriteMessage'),
+      detail: `${desktopT('migration.overwriteDetail')}\n\n${candidate.path}`,
+    }
+    const window = currentMainWindow()
+    const confirmation = window
+      ? await dialog.showMessageBox(window, options)
+      : await dialog.showMessageBox(options)
+    if (confirmation.response !== 1) {
+      return { ok: false, aborted: true, report: preview.report, detail: 'cancelled' }
+    }
+  }
+  trustedDesktopMigrationPreview = null
+
+  // A live gateway not owned by this process must remain attached and untouched.
+  // Do this before setting the quit latch so a refusal cannot suppress its later
+  // crash reporting or fall through into the owned-gateway restart path.
+  if ((!gatewayProcess || !gatewayState.owned) && gatewayState.url) {
+    if (await healthCheck(gatewayState.url)) {
+      const refused: DesktopMigrationResult = {
+        id: randomUUID(),
+        at: new Date().toISOString(),
+        ok: false,
+        migrationApplied: false,
+        restartOk: true,
+        requiresProviderSetup: false,
+        detail: 'A gateway is still serving this profile; stop it and retry.',
+      }
+      await persistDesktopMigrationResult(refused)
+      return { ...refused, report: null }
     }
   }
 
-  const result = await runMigrateCli([
-    '--source', candidate.path, '--kind', candidate.kind, '--apply',
-    ...(overwrite ? ['--overwrite'] : []),
-    '--json',
-  ])
+  publishDesktopMigrationProgress('applying')
   let report: Record<string, unknown> | null = null
+  let migrationVerified = false
+  let migrationApplied = false
+  let restartOk = false
+  let requiresProviderSetup = false
+  let detail = ''
+  let intent: PendingMigrationProviderSetup | null = null
+  let restartAllowed = true
+  let shouldRestart = true
+  isQuitting = true
   try {
-    report = JSON.parse(result.stdout) as Record<string, unknown>
-  } catch {
-    report = null
+    // Quiesce the owned gateway before the CLI writes (the uninstall-run
+    // pattern): wait for the child to actually EXIT, bounded by the kill deadline.
+    if (gatewayProcess && gatewayState.owned) {
+      const child = gatewayProcess
+      // We stay alive and await the exit, so let the gateway take its Windows
+      // HTTP graceful drain instead of an immediate TerminateProcess.
+      allowGracefulShutdownWhileQuitting = true
+      try {
+        stopGateway()
+      } finally {
+        allowGracefulShutdownWhileQuitting = false
+      }
+      const exited = await waitForGatewayProcessExit(child)
+      if (!exited) {
+        // Keep the still-live child visible to the rest of the lifecycle code and
+        // refuse both the import and a replacement spawn against the same profile.
+        gatewayProcess = child
+        gatewayState.owned = true
+        gatewayState.status = 'error'
+        gatewayState.error = 'The desktop gateway did not exit before the import deadline.'
+        restartAllowed = false
+        throw new Error(gatewayState.error)
+      }
+    }
+
+    // Refuse while an unmanaged gateway still serves this profile — the import
+    // must not race live sessions.db/scheduler.db writers.
+    if (gatewayState.url && (await healthCheck(gatewayState.url))) {
+      gatewayState.owned = false
+      gatewayState.status = 'ready'
+      shouldRestart = false
+      throw new Error('A gateway is still serving this profile; stop it and retry.')
+    }
+
+    // The intent is outside the target tree, so it survives target replacement.
+    // Startup can use it plus a new target-side receipt to finish credential
+    // adoption even if Electron dies after the Python commit but before this IPC
+    // handler receives stdout.
+    intent = await beginMigrationReconciliationIntent(candidate)
+    const result = await runMigrateCli([
+      '--source', candidate.path, '--kind', candidate.kind, '--apply',
+      ...(overwrite ? ['--overwrite'] : []),
+      '--json',
+    ])
+    try {
+      report = migrationRecord(JSON.parse(result.stdout))
+    } catch {
+      report = null
+    }
+    const validationError = migrationReportValidationError(report, {
+      source: candidate.path,
+      sourceKind: candidate.kind,
+      target: desktopHome(),
+      apply: true,
+    })
+    migrationVerified = result.ok
+      && report !== null
+      && validationError === null
+      && migrationReportErrors(report).length === 0
+    detail = migrationVerified
+      ? ''
+      : (validationError || result.stderr || result.stdout || 'Invalid migration report').slice(-2000)
+  } catch (error) {
+    detail = error instanceof Error ? error.message : String(error)
+  } finally {
+    if (intent) {
+      try {
+        const receipt = await findAppliedReceiptForIntent(intent)
+        if (receipt) {
+          migrationApplied = true
+          if (!migrationVerified) report = receipt.report
+          // Publication of a validated, previously-unseen target receipt is the
+          // durable commit authority. The CLI child can lose stdout or exit
+          // nonzero after that atomic rename without making the import a failure.
+          migrationVerified = true
+          const reconciliation = await reconcileImportedDesktopCredential(intent)
+          requiresProviderSetup = reconciliation.requiresSetup
+        } else {
+          if (migrationVerified) {
+            detail = 'The migration command succeeded without a valid target-side receipt.'
+            migrationVerified = false
+          }
+          await clearPendingMigrationProviderSetup()
+        }
+      } catch (error) {
+        migrationVerified = false
+        const reconciliationError = error instanceof Error ? error.message : String(error)
+        detail = detail ? `${detail}; ${reconciliationError}` : reconciliationError
+      }
+    }
+    publishDesktopMigrationProgress(migrationVerified ? 'done' : 'error', detail || undefined)
+    // Restart via the boot splash on every path. The imported profile is not
+    // considered ready until the replacement gateway is healthy (and, when a
+    // key could not be adopted, the durable provider-confirmation flow finishes).
+    isQuitting = false
+    if (restartAllowed && shouldRestart) {
+      clearReusableGatewayState()
+      bootError = null
+      await currentMainWindow()?.loadFile(bootPagePath()).catch(() => null)
+      await openOrResumeDesktopApp()
+      restartOk = gatewayState.status === 'ready'
+        && Boolean(gatewayState.url)
+        && await healthCheck(gatewayState.url)
+    } else if (!shouldRestart) {
+      restartOk = Boolean(gatewayState.url) && await healthCheck(gatewayState.url)
+    }
   }
-  publishDesktopMigrationProgress(result.ok ? 'done' : 'error')
 
-  // Restart via the boot splash regardless of the outcome — the owned gateway
-  // was stopped above, and the RPC transport the settings panel used died with
-  // it. This is a plain runtime restart (the settings-reset tail without the
-  // reset): the desktop credential is untouched, so onboarding is NOT re-run.
-  isQuitting = false
-  clearReusableGatewayState()
-  bootError = null
-  await currentMainWindow()?.loadFile(bootPagePath()).catch(() => null)
-  void openOrResumeDesktopApp()
-
-  return result.ok
-    ? { ok: true, report }
-    : { ok: false, report, detail: (result.stderr || result.stdout || '').slice(-2000) }
+  if (migrationApplied && !restartOk && !detail) {
+    detail = 'Import applied, but the desktop gateway did not become healthy.'
+  }
+  const finalResult: DesktopMigrationResult = {
+    id: randomUUID(),
+    at: new Date().toISOString(),
+    ok: migrationVerified && restartOk,
+    migrationApplied,
+    restartOk,
+    requiresProviderSetup,
+    ...(detail ? { detail } : {}),
+  }
+  await persistDesktopMigrationResult(finalResult)
+  return { ...finalResult, report }
 })
+
+ipcMain.handle('desktop:migration:last-result', takeDesktopMigrationResult)
 
 ipcMain.handle('desktop:boot:state', () => ({
   status: bootStatus,
@@ -6327,7 +7045,12 @@ ipcMain.handle('desktop:onboarding:save', async (_event, payload: OnboardingPayl
   // guard any script on the gateway-served page could rewrite the credential and
   // regenerate config.toml outside onboarding.
   if (!resolveOnboarding) return { ok: false, error: 'No onboarding in progress.' }
+  const pendingMigration = await readPendingMigrationProviderSetup()
   const credential = await saveDesktopCredential(payload)
+  if (pendingMigration?.phase === 'needs-setup') {
+    await scrubImportedProviderEnvEntry(pendingMigration.apiKeyEnv)
+  }
+  await clearPendingMigrationProviderSetup()
   applyDesktopLocaleChoice(payload.locale)
   const resolve = resolveOnboarding
   resolveOnboarding = null
@@ -6355,30 +7078,94 @@ ipcMain.handle('desktop:onboarding:migrate:preview', async () => {
   if (!resolveOnboarding) return { ok: false, error: 'No onboarding in progress.' }
   const candidate = onboardingMigrationCandidate
   if (!candidate) return { ok: false, error: 'No legacy OpenSquilla home was detected.' }
+  onboardingMigrationPreviewApprovedAt = 0
   publishDesktopMigrationProgress('preview')
   const { ok, report, raw } = await migrateSummaryJson([
     '--source', candidate.path, '--kind', candidate.kind,
   ])
-  publishDesktopMigrationProgress(ok ? 'done' : 'error')
-  return { ok, report, raw }
+  const validationError = migrationReportValidationError(report, {
+    source: candidate.path,
+    sourceKind: candidate.kind,
+    target: desktopHome(),
+    apply: false,
+  })
+  const approved = ok
+    && report !== null
+    && validationError === null
+    && migrationReportErrors(report).length === 0
+  if (approved) onboardingMigrationPreviewApprovedAt = Date.now()
+  publishDesktopMigrationProgress(approved ? 'done' : 'error', validationError || undefined)
+  return validationError
+    ? { ok: false, report: null, raw: validationError }
+    : { ok, report, raw }
 })
 ipcMain.handle('desktop:onboarding:migrate:apply', async () => {
   if (!resolveOnboarding) return { ok: false, error: 'No onboarding in progress.' }
   const candidate = onboardingMigrationCandidate
   if (!candidate) return { ok: false, error: 'No legacy OpenSquilla home was detected.' }
+  if (
+    !onboardingMigrationPreviewApprovedAt
+    || Date.now() - onboardingMigrationPreviewApprovedAt > DESKTOP_MIGRATION_PREVIEW_TTL_MS
+  ) {
+    onboardingMigrationPreviewApprovedAt = 0
+    return { ok: false, error: 'Preview the import again before applying it.' }
+  }
+  onboardingMigrationPreviewApprovedAt = 0
   // Onboarding runs before the first gateway spawn, so there is nothing to
   // quiesce here — the import lands before boot creates sessions.db and before
   // scheduler jobs (imported paused) are scanned.
   publishDesktopMigrationProgress('applying')
-  const { ok, report, raw } = await migrateSummaryJson([
-    '--source', candidate.path, '--kind', candidate.kind, '--apply',
-  ])
-  publishDesktopMigrationProgress(ok ? 'done' : 'error')
-  // The prefill (including the relocated api key) rides only on this IPC
-  // response into the onboarding window — the same trust boundary as
-  // saveOnboarding travels in the other direction.
-  const prefill = ok ? readMigratedProviderPrefill() : null
-  return { ok, report, raw, prefill }
+  let intent: PendingMigrationProviderSetup | null = null
+  try {
+    intent = await beginMigrationReconciliationIntent(candidate)
+    const result = await migrateSummaryJson([
+      '--source', candidate.path, '--kind', candidate.kind, '--apply',
+    ])
+    const validationError = migrationReportValidationError(result.report, {
+      source: candidate.path,
+      sourceKind: candidate.kind,
+      target: desktopHome(),
+      apply: true,
+    })
+    const receipt = await findAppliedReceiptForIntent(intent)
+    if (!receipt) {
+      await clearPendingMigrationProviderSetup()
+      const detail = validationError || result.raw || 'Import did not publish a valid receipt.'
+      publishDesktopMigrationProgress('error', detail)
+      return { ok: false, report: result.report, raw: detail, prefill: null }
+    }
+
+    const prefill = readMigratedProviderPrefill()
+    await writePendingMigrationProviderSetup(prefill, intent)
+    const outputVerified = result.ok
+      && result.report !== null
+      && validationError === null
+      && migrationReportErrors(result.report).length === 0
+    // The target-side receipt is the crash-safe publication authority. If the
+    // child lost stdout after commit, continue onboarding from that validated
+    // receipt rather than offering a destructive retry against imported data.
+    publishDesktopMigrationProgress('done')
+    return {
+      ok: true,
+      report: outputVerified ? result.report : receipt.report,
+      raw: outputVerified ? result.raw : (validationError || result.raw),
+      prefill,
+    }
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error)
+    if (intent) {
+      const receipt = await findAppliedReceiptForIntent(intent).catch(() => null)
+      if (receipt) {
+        const prefill = readMigratedProviderPrefill()
+        await writePendingMigrationProviderSetup(prefill, intent)
+        publishDesktopMigrationProgress('done')
+        return { ok: true, report: receipt.report, raw: detail, prefill }
+      }
+      await clearPendingMigrationProviderSetup().catch(() => null)
+    }
+    publishDesktopMigrationProgress('error', detail)
+    return { ok: false, report: null, raw: detail, prefill: null }
+  }
 })
 
 // Set once the Windows graceful-drain-on-quit sequence has run so the re-issued

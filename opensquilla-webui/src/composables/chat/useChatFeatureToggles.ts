@@ -43,11 +43,17 @@ interface ChatFeatureConfig {
   }
   llm_ensemble?: {
     enabled?: boolean
+    selection_mode?: string
   }
 }
 
 const ROUTER_FX_PREF_KEY = 'opensquilla.routerFx'
 const ROUTER_SHAPE_KEY = 'opensquilla.router.shape'
+const ROUTER_INDEPENDENT_ENSEMBLE_MODES = new Set([
+  'static_openrouter_b5',
+  'static_tokenrhythm_b5',
+  'custom_b5',
+])
 
 export function useChatFeatureToggles(options: UseChatFeatureTogglesOptions) {
   const { pushToast } = useToasts()
@@ -58,6 +64,7 @@ export function useChatFeatureToggles(options: UseChatFeatureTogglesOptions) {
   const codingModeEnabled = ref(false)
   const codingModeSettingsBusy = ref(false)
   const llmEnsembleEnabled = ref(false)
+  const llmEnsembleSelectionMode = ref('')
   const llmEnsembleSettingsBusy = ref(false)
   const modelRoutingSettingsBusy = ref(false)
   const routerSlots = ref<string[]>([])
@@ -80,6 +87,7 @@ export function useChatFeatureToggles(options: UseChatFeatureTogglesOptions) {
     routerEnabled.value = ensembleEnabled || Boolean(router.enabled && router.rollout_phase !== 'observe')
     codingModeEnabled.value = cfg?.skills?.coding_mode === true
     llmEnsembleEnabled.value = ensembleEnabled
+    llmEnsembleSelectionMode.value = String(cfg?.llm_ensemble?.selection_mode || '')
     routerVisualMode.value = normalizeRouterVisualMode(router.visual_mode)
     loadRouterVisualEffectsPreference()
 
@@ -217,10 +225,14 @@ export function useChatFeatureToggles(options: UseChatFeatureTogglesOptions) {
     const previousRouter = routerEnabled.value
     const previousEnsemble = llmEnsembleEnabled.value
     const nextEnsemble = nextMode === 'llm_ensemble'
-    // Strategies are exclusive: ensemble on means the router is off. This is
-    // the same encoding the Settings "Model strategy" card persists, so the
-    // two surfaces can no longer flip squilla_router.enabled back and forth.
+    // Only known static/custom ensembles are independent of the router. Legacy
+    // router_dynamic and unknown modes keep the pre-PR router-on behavior so a
+    // slow/older config.get cannot disable a routing dependency.
     const nextRouter = nextMode === 'squilla_router'
+      || (
+        nextEnsemble
+        && !ROUTER_INDEPENDENT_ENSEMBLE_MODES.has(llmEnsembleSelectionMode.value)
+      )
 
     routerEnabled.value = nextEnsemble || nextRouter
     llmEnsembleEnabled.value = nextEnsemble
@@ -233,10 +245,9 @@ export function useChatFeatureToggles(options: UseChatFeatureTogglesOptions) {
         patches: {
           'llm_ensemble.enabled': nextEnsemble,
           'squilla_router.enabled': nextRouter,
-          // 'observe' only for a real off: while ensemble holds the router
-          // disabled, the phase must stay 'full' so re-enabling the router
-          // from any surface (including the Settings card, which never
-          // writes rollout_phase) routes immediately instead of shadowing.
+          // 'observe' only for a real off. Independent ensembles keep the
+          // router disabled but leave its phase at 'full', so re-enabling it
+          // from any surface routes immediately instead of shadowing.
           'squilla_router.rollout_phase': nextMode === 'off' ? 'observe' : 'full',
         },
       })

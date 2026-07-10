@@ -26,6 +26,7 @@ contextBridge.exposeInMainWorld('opensquillaDesktop', {
   uninstallRun: (payload: unknown) => ipcRenderer.invoke('desktop:uninstall:run', payload),
   migrationSummary: () => ipcRenderer.invoke('desktop:migration:summary'),
   migrationRun: (payload: unknown) => ipcRenderer.invoke('desktop:migration:run', payload),
+  migrationTakeLastResult: () => ipcRenderer.invoke('desktop:migration:last-result'),
   previewOnboardingMigration: () => ipcRenderer.invoke('desktop:onboarding:migrate:preview'),
   applyOnboardingMigration: () => ipcRenderer.invoke('desktop:onboarding:migrate:apply'),
   onBootStatus: (callback: (payload: unknown) => void) => {

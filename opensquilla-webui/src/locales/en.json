@@ -1847,7 +1847,10 @@
     },
     "toolModal": {
       "tree": "Tree",
-      "raw": "Raw"
+      "raw": "Raw",
+      "wrapLines": "Wrap lines",
+      "preserveLines": "Preserve line width",
+      "contentMeta": "{type} · {lines} lines · {chars} chars"
     },
     "approval": {
       "required": "Approval required",

@@ -1847,7 +1847,10 @@
     },
     "toolModal": {
       "tree": "Arborescence",
-      "raw": "Brut"
+      "raw": "Brut",
+      "wrapLines": "Retour à la ligne",
+      "preserveLines": "Conserver la largeur des lignes",
+      "contentMeta": "{type} · {lines} lignes · {chars} caractères"
     },
     "approval": {
       "required": "Approbation requise",

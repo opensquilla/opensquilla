@@ -1847,7 +1847,10 @@
     },
     "toolModal": {
       "tree": "树视图",
-      "raw": "原始"
+      "raw": "原始",
+      "wrapLines": "自动换行",
+      "preserveLines": "保留行宽",
+      "contentMeta": "{type} · {lines} 行 · {chars} 个字符"
     },
     "approval": {
       "required": "需要审批",

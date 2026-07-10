@@ -74,6 +74,16 @@ export type ChatToolCallRenderItem = ChatToolCall & {
   renderKey: string
 }
 
+// Context travels with an expanded tool payload so the full-result viewer can
+// describe the content without trying to reverse-engineer it from its title.
+// `inputRaw` is already part of the rendered tool trace; the viewer only uses
+// it to extract safe display metadata such as a read_file path.
+export interface ToolResultContext {
+  toolName?: string
+  inputRaw?: string
+  section?: 'input' | 'result' | 'error'
+}
+
 export interface ChatToolCallGroup {
   groupId: string
   operationKey: string

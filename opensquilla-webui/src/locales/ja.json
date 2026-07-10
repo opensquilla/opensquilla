@@ -1847,7 +1847,10 @@
     },
     "toolModal": {
       "tree": "ツリー",
-      "raw": "Raw"
+      "raw": "Raw",
+      "wrapLines": "行を折り返す",
+      "preserveLines": "行幅を維持",
+      "contentMeta": "{type} · {lines} 行 · {chars} 文字"
     },
     "approval": {
       "required": "承認が必要です",

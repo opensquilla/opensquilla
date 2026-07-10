@@ -1847,7 +1847,10 @@
     },
     "toolModal": {
       "tree": "Árbol",
-      "raw": "Crudo"
+      "raw": "Crudo",
+      "wrapLines": "Ajustar líneas",
+      "preserveLines": "Conservar ancho de línea",
+      "contentMeta": "{type} · {lines} líneas · {chars} caracteres"
     },
     "approval": {
       "required": "Aprobación requerida",

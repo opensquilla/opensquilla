@@ -1847,7 +1847,10 @@
     },
     "toolModal": {
       "tree": "Baum",
-      "raw": "Roh"
+      "raw": "Roh",
+      "wrapLines": "Zeilen umbrechen",
+      "preserveLines": "Zeilenbreite beibehalten",
+      "contentMeta": "{type} · {lines} Zeilen · {chars} Zeichen"
     },
     "approval": {
       "required": "Genehmigung erforderlich",

@@ -287,6 +287,31 @@ def test_desktop_onboarding_defaults_to_tokenrhythm_with_trusted_registration_ct
         assert visible_cta in accessible_label
 
 
+def test_desktop_tokenrhythm_onboarding_supports_all_model_routing_modes() -> None:
+    main_ts = _read("desktop/electron/src/main.ts")
+    tokenrhythm_catalog = _section(main_ts, "id: 'tokenrhythm'", "id: 'openrouter'")
+    tokenrhythm_profile = _section(main_ts, "  tokenrhythm: {", "  openrouter: {")
+    onboarding_html = _section(main_ts, "function onboardingHtml", "async function runOnboarding")
+
+    assert "routerSupported: true" in tokenrhythm_catalog
+    assert "ensembleSelectionMode: 'static_tokenrhythm_b5'" in tokenrhythm_catalog
+    assert "const INLINE_ROUTER_PROFILE_IDS = new Set(['tokenrhythm'])" in main_ts
+    assert "!INLINE_ROUTER_PROFILE_IDS.has(credential.provider)" in main_ts
+    assert "Boolean(selected.ensembleSelectionMode)" in onboarding_html
+    assert "return provider.value;" in onboarding_html
+    assert "selection_mode = ${tomlString(selectionMode)}" in main_ts
+
+    expected_models = (
+        "deepseek-v4-flash",
+        "deepseek-v4-pro",
+        "kimi-k2.7-code",
+        "glm-5.2",
+        "kimi-k2.6",
+    )
+    for model in expected_models:
+        assert model in tokenrhythm_profile
+
+
 def test_desktop_onboarding_opens_only_trusted_registration_url_outside_renderer() -> None:
     main_ts = _read("desktop/electron/src/main.ts")
     preload = _read("desktop/electron/src/preload.cts")

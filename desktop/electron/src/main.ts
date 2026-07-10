@@ -31,6 +31,7 @@ interface GatewayState {
 type SecretEncryption = 'safeStorage' | 'plain'
 type RouterMode = 'recommended' | 'openrouter-mix' | 'disabled'
 type ModelRoutingMode = 'squilla_router' | 'direct' | 'llm_ensemble'
+type StaticEnsembleSelectionMode = 'static_openrouter_b5' | 'static_tokenrhythm_b5'
 type TextRouterTier = 'c0' | 'c1' | 'c2' | 'c3'
 
 interface ProviderCatalogEntry {
@@ -41,6 +42,7 @@ interface ProviderCatalogEntry {
   apiKeyEnv: string
   requiresApiKey: boolean
   routerSupported: boolean
+  ensembleSelectionMode?: StaticEnsembleSelectionMode
   deployment: 'cloud' | 'local'
   note: string
 }
@@ -687,7 +689,8 @@ const LEGACY_TEXT_TIER_ALIASES: Record<string, TextRouterTier> = {
 function canonicalTierKey(name: string): string {
   return LEGACY_TEXT_TIER_ALIASES[name] ?? name
 }
-const ROUTER_PROFILE_IDS = new Set(['openrouter', 'dashscope', 'deepseek', 'gemini', 'volcengine', 'openai', 'zhipu', 'moonshot'])
+const ROUTER_PROFILE_IDS = new Set(['tokenrhythm', 'openrouter', 'dashscope', 'deepseek', 'gemini', 'volcengine', 'openai', 'zhipu', 'moonshot'])
+const INLINE_ROUTER_PROFILE_IDS = new Set(['tokenrhythm'])
 const TOKENRHYTHM_REGISTER_URL = 'https://tokenrhythm.studio/register'
 
 const PROVIDER_CATALOG: ProviderCatalogEntry[] = [
@@ -698,7 +701,8 @@ const PROVIDER_CATALOG: ProviderCatalogEntry[] = [
     baseUrl: 'https://tokenrhythm.studio/v1',
     apiKeyEnv: 'TOKENRHYTHM_API_KEY',
     requiresApiKey: true,
-    routerSupported: false,
+    routerSupported: true,
+    ensembleSelectionMode: 'static_tokenrhythm_b5',
     deployment: 'cloud',
     note: 'DeepSeek, GLM, MiniMax and Kimi model families on one key.',
   },
@@ -710,6 +714,7 @@ const PROVIDER_CATALOG: ProviderCatalogEntry[] = [
     apiKeyEnv: 'OPENROUTER_API_KEY',
     requiresApiKey: true,
     routerSupported: true,
+    ensembleSelectionMode: 'static_openrouter_b5',
     deployment: 'cloud',
     note: 'One account for mixed-model routing.',
   },
@@ -1042,6 +1047,13 @@ function minimaxRouterProfile(provider: string): Record<string, RouterTier> {
 }
 
 const ROUTER_PROFILES: Record<string, Record<string, RouterTier>> = {
+  tokenrhythm: {
+    c0: { provider: 'tokenrhythm', model: 'deepseek-v4-flash', description: 'Fast DeepSeek route for simple work', supportsImage: false },
+    c1: { provider: 'tokenrhythm', model: 'deepseek-v4-pro', description: 'Balanced DeepSeek route for normal agent work', supportsImage: false },
+    c2: { provider: 'tokenrhythm', model: 'kimi-k2.7-code', description: 'Strong Kimi route for harder coding and analysis', supportsImage: false },
+    c3: { provider: 'tokenrhythm', model: 'glm-5.2', description: 'Highest-tier GLM route for deep review and planning', supportsImage: false },
+    image_model: { provider: 'tokenrhythm', model: 'kimi-k2.6', description: 'Vision route for image attachments', supportsImage: true, imageOnly: true },
+  },
   openrouter: {
     c0: { provider: 'openrouter', model: 'deepseek/deepseek-v4-flash', description: 'Fast everyday work', thinkingLevel: 'high' },
     c1: { provider: 'openrouter', model: 'deepseek/deepseek-v4-pro', description: 'Balanced agent work', thinkingLevel: 'high' },
@@ -1176,7 +1188,9 @@ function normalizeRouterMode(raw: unknown, provider: string): RouterMode {
 
 function modelRoutingModeAllowed(mode: ModelRoutingMode, provider: string): boolean {
   if (mode === 'direct') return true
-  if (mode === 'llm_ensemble') return provider === 'openrouter'
+  if (mode === 'llm_ensemble') {
+    return Boolean(PROVIDER_BY_ID.get(provider)?.ensembleSelectionMode)
+  }
   return ROUTER_PROFILE_IDS.has(provider)
 }
 
@@ -1201,7 +1215,7 @@ function normalizeModelRoutingMode(raw: unknown, provider: string, fallbackRoute
 
 function routerModeForModelRoutingMode(mode: ModelRoutingMode, provider: string): RouterMode {
   if (mode === 'direct') return 'disabled'
-  if (mode === 'llm_ensemble' && provider === 'openrouter') return 'recommended'
+  if (mode === 'llm_ensemble' && modelRoutingModeAllowed(mode, provider)) return 'recommended'
   return normalizeRouterMode('recommended', provider)
 }
 
@@ -1300,7 +1314,9 @@ function routerConfigTomlLines(credential: DesktopConnection): string[] {
     'enabled = true',
     'rollout_phase = "full"',
     `default_tier = ${tomlString(credential.routerDefaultTier)}`,
-    ...(credential.routerMode === 'recommended' ? [`tier_profile = ${tomlString(credential.provider)}`] : []),
+    ...(credential.routerMode === 'recommended' && !INLINE_ROUTER_PROFILE_IDS.has(credential.provider)
+      ? [`tier_profile = ${tomlString(credential.provider)}`]
+      : []),
     ...tierLines,
   ]
 }
@@ -1313,11 +1329,15 @@ function ensembleConfigTomlLines(credential: DesktopConnection): string[] {
       'enabled = false',
     ]
   }
+  const selectionMode = PROVIDER_BY_ID.get(credential.provider)?.ensembleSelectionMode
+  if (!selectionMode) {
+    throw new Error(`LLM Ensemble is not supported for provider ${credential.provider}.`)
+  }
   return [
     '',
     '[llm_ensemble]',
     'enabled = true',
-    'selection_mode = "static_openrouter_b5"',
+    `selection_mode = ${tomlString(selectionMode)}`,
   ]
 }
 
@@ -1532,7 +1552,9 @@ async function saveDesktopCredential(payload: OnboardingPayload): Promise<Deskto
     : configDisableNetworkObservability ?? existing?.disableNetworkObservability ?? false
 
   if (defaults.requiresApiKey && !encryptedApiKey) throw new Error('API key is required.')
-  if (modelRoutingMode === 'llm_ensemble' && provider !== 'openrouter') throw new Error('LLM Ensemble requires OpenRouter in desktop onboarding.')
+  if (modelRoutingMode === 'llm_ensemble' && !modelRoutingModeAllowed(modelRoutingMode, provider)) {
+    throw new Error('LLM Ensemble requires OpenRouter or TokenRhythm in desktop onboarding.')
+  }
   if (!routerModel && routerMode !== 'disabled') throw new Error('Router tiers require a default model.')
   if (!model) throw new Error('Model is required.')
   if (searchDefaults.requiresApiKey && !encryptedSearchApiKey) {
@@ -2117,7 +2139,7 @@ const DESKTOP_MESSAGES: Record<DesktopLocale, Record<string, string>> = {
     'onboarding.step2.next': 'Next',
     'onboarding.step3.badge': 'Advanced',
     'onboarding.step3.heading': 'Choose routing mode',
-    'onboarding.step3.subtitle': 'Decide whether OpenSquilla should use Smart Router tiers, call one fixed model, or use the OpenRouter ensemble.',
+    'onboarding.step3.subtitle': 'Decide whether OpenSquilla should use Smart Router tiers, call one fixed model, or use the current provider\'s ensemble.',
     'onboarding.step3.back': 'Back',
     'onboarding.step3.next': 'Next',
     'onboarding.step3.directModel': 'Direct model',
@@ -2229,7 +2251,7 @@ const DESKTOP_MESSAGES: Record<DesktopLocale, Record<string, string>> = {
     'onboarding.step2.next': '下一步',
     'onboarding.step3.badge': '高级',
     'onboarding.step3.heading': '选择路由模式',
-    'onboarding.step3.subtitle': '选择 OpenSquilla 使用 Smart Router 层级、直连一个固定模型，还是使用 OpenRouter Ensemble。',
+    'onboarding.step3.subtitle': '选择 OpenSquilla 使用 Smart Router 层级、直连一个固定模型，还是使用当前提供商的 Ensemble。',
     'onboarding.step3.back': '返回',
     'onboarding.step3.next': '下一步',
     'onboarding.step3.directModel': '直连模型',
@@ -2339,7 +2361,7 @@ const DESKTOP_MESSAGES: Record<DesktopLocale, Record<string, string>> = {
     'onboarding.aria.modelRoutingMode': 'ルーティングモード',
     'onboarding.step3.badge': '詳細',
     'onboarding.step3.heading': 'ルーティングモードを選択',
-    'onboarding.step3.subtitle': 'OpenSquilla が Smart Router のティアを使うか、固定モデルを 1 つ呼び出すか、OpenRouter アンサンブルを使うかを選びます。',
+    'onboarding.step3.subtitle': 'OpenSquilla が Smart Router のティアを使うか、固定モデルを 1 つ呼び出すか、現在のプロバイダーのアンサンブルを使うかを選びます。',
     'onboarding.step3.back': '戻る',
     'onboarding.step3.next': '次へ',
     'onboarding.step3.directModel': '直接モデル',
@@ -2449,7 +2471,7 @@ const DESKTOP_MESSAGES: Record<DesktopLocale, Record<string, string>> = {
     'onboarding.aria.modelRoutingMode': 'Mode de routage',
     'onboarding.step3.badge': 'Avancé',
     'onboarding.step3.heading': 'Choisir le mode de routage',
-    'onboarding.step3.subtitle': "Décidez si OpenSquilla doit utiliser les niveaux du Smart Router, appeler un seul modèle fixe, ou utiliser l'ensemble OpenRouter.",
+    'onboarding.step3.subtitle': "Décidez si OpenSquilla doit utiliser les niveaux du Smart Router, appeler un seul modèle fixe, ou utiliser l'ensemble du fournisseur actuel.",
     'onboarding.step3.back': 'Retour',
     'onboarding.step3.next': 'Suivant',
     'onboarding.step3.directModel': 'Modèle direct',
@@ -2559,7 +2581,7 @@ const DESKTOP_MESSAGES: Record<DesktopLocale, Record<string, string>> = {
     'onboarding.aria.modelRoutingMode': 'Routing-Modus',
     'onboarding.step3.badge': 'Erweitert',
     'onboarding.step3.heading': 'Routing-Modus wählen',
-    'onboarding.step3.subtitle': 'Legen Sie fest, ob OpenSquilla die Smart-Router-Stufen verwenden, ein festes Modell aufrufen oder das OpenRouter-Ensemble nutzen soll.',
+    'onboarding.step3.subtitle': 'Legen Sie fest, ob OpenSquilla die Smart-Router-Stufen verwenden, ein festes Modell aufrufen oder das Ensemble des aktuellen Anbieters nutzen soll.',
     'onboarding.step3.back': 'Zurück',
     'onboarding.step3.next': 'Weiter',
     'onboarding.step3.directModel': 'Direktes Modell',
@@ -2669,7 +2691,7 @@ const DESKTOP_MESSAGES: Record<DesktopLocale, Record<string, string>> = {
     'onboarding.aria.modelRoutingMode': 'Modo de enrutamiento',
     'onboarding.step3.badge': 'Avanzado',
     'onboarding.step3.heading': 'Elige el modo de enrutamiento',
-    'onboarding.step3.subtitle': 'Decide si OpenSquilla debe usar los niveles del Smart Router, llamar a un único modelo fijo o usar el ensemble de OpenRouter.',
+    'onboarding.step3.subtitle': 'Decide si OpenSquilla debe usar los niveles del Smart Router, llamar a un único modelo fijo o usar el ensemble del proveedor actual.',
     'onboarding.step3.back': 'Atrás',
     'onboarding.step3.next': 'Siguiente',
     'onboarding.step3.directModel': 'Modelo directo',
@@ -2701,9 +2723,9 @@ const ONBOARDING_SCRIPT_MESSAGES: Record<DesktopLocale, Record<string, string>> 
     modeDirectTitle: 'Direct single model',
     modeDirectDesc: 'Send every request to one provider model without tier routing or ensemble.',
     modeEnsembleTitle: 'Ensemble',
-    modeEnsembleDesc: 'Use the OpenRouter static B5 ensemble and skip the tier table.',
+    modeEnsembleDesc: "Use this provider's static B5 ensemble and skip the tier table.",
     modeSmartRouterUnavailable: 'This provider does not have desktop tier defaults yet.',
-    modeEnsembleUnavailable: 'Ensemble setup currently requires OpenRouter.',
+    modeEnsembleUnavailable: 'Ensemble setup currently requires OpenRouter or TokenRhythm.',
     directModelPrompt: 'Requests will use this model directly.',
     directModelLabel: 'Direct model',
     noModel: 'No model',
@@ -2739,9 +2761,9 @@ const ONBOARDING_SCRIPT_MESSAGES: Record<DesktopLocale, Record<string, string>> 
     modeDirectTitle: '直连单模型',
     modeDirectDesc: '每个请求都发送到一个固定模型，不使用层级路由或 Ensemble。',
     modeEnsembleTitle: 'Ensemble',
-    modeEnsembleDesc: '使用 OpenRouter static B5 Ensemble，并跳过层级表。',
+    modeEnsembleDesc: '使用当前提供商的 static B5 Ensemble，并跳过层级表。',
     modeSmartRouterUnavailable: '此提供商尚无桌面层级默认值。',
-    modeEnsembleUnavailable: '当前 onboarding 中 Ensemble 需要 OpenRouter。',
+    modeEnsembleUnavailable: '当前 onboarding 中 Ensemble 需要 OpenRouter 或 TokenRhythm。',
     directModelPrompt: '请求会直接使用此模型。',
     directModelLabel: '直连模型',
     noModel: '无模型',
@@ -2777,9 +2799,9 @@ const ONBOARDING_SCRIPT_MESSAGES: Record<DesktopLocale, Record<string, string>> 
     modeDirectTitle: '直接単一モデル',
     modeDirectDesc: 'すべてのリクエストを、ティアルーティングやアンサンブルなしで 1 つのプロバイダーモデルに送信します。',
     modeEnsembleTitle: 'アンサンブル',
-    modeEnsembleDesc: 'OpenRouter の static B5 アンサンブルを使用し、ティア表をスキップします。',
+    modeEnsembleDesc: '現在のプロバイダーの static B5 アンサンブルを使用し、ティア表をスキップします。',
     modeSmartRouterUnavailable: 'このプロバイダーにはまだデスクトップ用のティアデフォルトがありません。',
-    modeEnsembleUnavailable: 'アンサンブルの設定には現在 OpenRouter が必要です。',
+    modeEnsembleUnavailable: 'アンサンブルの設定には現在 OpenRouter または TokenRhythm が必要です。',
     directModelPrompt: 'リクエストはこのモデルを直接使用します。',
     directModelRequiredDirect: '直接単一モデルモードには直接モデルが必要です。',
     directModelLabel: '直接モデル',
@@ -2815,9 +2837,9 @@ const ONBOARDING_SCRIPT_MESSAGES: Record<DesktopLocale, Record<string, string>> 
     modeDirectTitle: 'Modèle unique direct',
     modeDirectDesc: 'Envoyer chaque requête à un seul modèle du fournisseur, sans routage par niveaux ni ensemble.',
     modeEnsembleTitle: 'Ensemble',
-    modeEnsembleDesc: "Utiliser l'ensemble statique B5 d'OpenRouter et ignorer le tableau des niveaux.",
+    modeEnsembleDesc: "Utiliser l'ensemble statique B5 de ce fournisseur et ignorer le tableau des niveaux.",
     modeSmartRouterUnavailable: "Ce fournisseur n'a pas encore de niveaux par défaut pour le bureau.",
-    modeEnsembleUnavailable: "La configuration de l'ensemble nécessite actuellement OpenRouter.",
+    modeEnsembleUnavailable: "La configuration de l'ensemble nécessite actuellement OpenRouter ou TokenRhythm.",
     directModelPrompt: 'Les requêtes utiliseront directement ce modèle.',
     directModelRequiredDirect: 'Un modèle direct est requis pour le mode Modèle unique direct.',
     directModelLabel: 'Modèle direct',
@@ -2853,9 +2875,9 @@ const ONBOARDING_SCRIPT_MESSAGES: Record<DesktopLocale, Record<string, string>> 
     modeDirectTitle: 'Einzelnes Direktmodell',
     modeDirectDesc: 'Jede Anfrage an ein einzelnes Anbietermodell senden, ohne Stufenrouting oder Ensemble.',
     modeEnsembleTitle: 'Ensemble',
-    modeEnsembleDesc: 'Das statische B5-Ensemble von OpenRouter verwenden und die Stufentabelle überspringen.',
+    modeEnsembleDesc: 'Das statische B5-Ensemble dieses Anbieters verwenden und die Stufentabelle überspringen.',
     modeSmartRouterUnavailable: 'Dieser Anbieter hat noch keine Desktop-Stufenstandards.',
-    modeEnsembleUnavailable: 'Die Ensemble-Einrichtung erfordert derzeit OpenRouter.',
+    modeEnsembleUnavailable: 'Die Ensemble-Einrichtung erfordert derzeit OpenRouter oder TokenRhythm.',
     directModelPrompt: 'Anfragen verwenden dieses Modell direkt.',
     directModelRequiredDirect: 'Für den Modus „Einzelnes Direktmodell“ ist ein direktes Modell erforderlich.',
     directModelLabel: 'Direktes Modell',
@@ -2891,9 +2913,9 @@ const ONBOARDING_SCRIPT_MESSAGES: Record<DesktopLocale, Record<string, string>> 
     modeDirectTitle: 'Modelo único directo',
     modeDirectDesc: 'Enviar cada solicitud a un único modelo del proveedor, sin enrutamiento por niveles ni ensemble.',
     modeEnsembleTitle: 'Ensemble',
-    modeEnsembleDesc: 'Usar el ensemble estático B5 de OpenRouter y omitir la tabla de niveles.',
+    modeEnsembleDesc: 'Usar el ensemble estático B5 de este proveedor y omitir la tabla de niveles.',
     modeSmartRouterUnavailable: 'Este proveedor aún no tiene valores de nivel predeterminados para el escritorio.',
-    modeEnsembleUnavailable: 'La configuración del ensemble requiere actualmente OpenRouter.',
+    modeEnsembleUnavailable: 'La configuración del ensemble requiere actualmente OpenRouter o TokenRhythm.',
     directModelPrompt: 'Las solicitudes usarán este modelo directamente.',
     directModelRequiredDirect: 'Se requiere un modelo directo para el modo Modelo único directo.',
     directModelLabel: 'Modelo directo',
@@ -4075,7 +4097,7 @@ function onboardingHtml(
       return {
         squilla_router: Boolean(selected.routerSupported),
         direct: true,
-        llm_ensemble: selected.id === 'openrouter',
+        llm_ensemble: Boolean(selected.ensembleSelectionMode),
       };
     }
     function defaultModelRoutingModeFor(selected) {
@@ -4085,7 +4107,6 @@ function onboardingHtml(
       routerMode.value = modelRoutingMode.value === 'direct' ? 'disabled' : 'recommended';
     }
 	    function profileKeyForMode() {
-	      if (modelRoutingMode.value === 'llm_ensemble') return 'openrouter';
 	      return provider.value;
 	    }
 	    function setEndpointPanelOpen(open) {

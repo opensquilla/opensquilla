@@ -9,6 +9,7 @@ import { _electron as electron } from 'playwright'
 const scriptDir = dirname(fileURLToPath(import.meta.url))
 const packageRoot = resolve(scriptDir, '..')
 const repoRoot = resolve(packageRoot, '../..')
+const screenshotPath = String(process.env.OPENSQUILLA_DESKTOP_ONBOARDING_SCREENSHOT || '').trim()
 
 async function waitFor(check, label, timeoutMs = 60_000) {
   const startedAt = Date.now()
@@ -79,8 +80,8 @@ try {
   assert.equal(await page.locator('#provider').inputValue(), 'tokenrhythm')
   assert.equal(await page.locator('#baseUrl').inputValue(), 'https://tokenrhythm.studio/v1')
   assert.equal(await page.locator('#model').inputValue(), 'deepseek-v4-pro')
-  assert.equal(await page.locator('#modelRoutingMode').inputValue(), 'direct')
-  assert.equal(await page.locator('#routerMode').inputValue(), 'disabled')
+  assert.equal(await page.locator('#modelRoutingMode').inputValue(), 'squilla_router')
+  assert.equal(await page.locator('#routerMode').inputValue(), 'recommended')
 
   const tokenRhythmFeature = page.locator('[data-provider-feature="tokenrhythm"]')
   assert.equal(await tokenRhythmFeature.count(), 1)
@@ -144,28 +145,44 @@ try {
   assert.equal(await page.locator('#provider').inputValue(), 'openrouter')
   await tokenRhythmFeature.locator('[data-provider="tokenrhythm"]').click()
   assert.equal(await page.locator('#provider').inputValue(), 'tokenrhythm', 'TokenRhythm should remain re-selectable')
-  assert.equal(await page.locator('#modelRoutingMode').inputValue(), 'direct')
+  assert.equal(await page.locator('#modelRoutingMode').inputValue(), 'squilla_router')
   assert.equal(await tokenRhythmFeature.locator('[data-provider="tokenrhythm"]').getAttribute('aria-pressed'), 'true')
-  await openRouterProvider.click()
-  assert.equal(await page.locator('#provider').inputValue(), 'openrouter')
-  const enProviderHint = await page.locator('#providerHint').innerText()
-  assert.doesNotMatch(enProviderHint, /saved locally/)
-  assert.doesNotMatch(enProviderHint, /OPENROUTER_API_KEY/)
-  assert.doesNotMatch(enProviderHint, /supplied to the local runtime/)
-
-  await page.locator('#apiKey').fill('test-openrouter-key')
+  await page.locator('#onboardingLocale').selectOption('zh-Hans')
+  await page.locator('#apiKey').fill('synthetic-tokenrhythm-key')
   await page.locator('[data-screen="1"].active .next-button').click()
   await page.locator('[data-screen="2"].active').waitFor({ state: 'visible', timeout: 10_000 })
-  assert.equal(await page.locator('[data-screen="2"] h2').innerText(), 'Choose routing mode')
+  await page.waitForTimeout(300)
+  assert.equal(await page.locator('[data-screen="2"] h2').innerText(), '选择路由模式')
   assert.equal(await page.locator('[data-model-routing-mode="squilla_router"]').isEnabled(), true)
   assert.equal(await page.locator('[data-model-routing-mode="direct"]').isEnabled(), true)
   assert.equal(await page.locator('[data-model-routing-mode="llm_ensemble"]').isEnabled(), true)
   assert.equal(await page.locator('#modelRoutingMode').inputValue(), 'squilla_router')
+  assert.match(
+    await page.locator('[data-model-routing-mode="squilla_router"] small').innerText(),
+    /此提供商现有的 Squilla Router 层级默认值/,
+  )
+  assert.match(
+    await page.locator('[data-model-routing-mode="llm_ensemble"] small').innerText(),
+    /当前提供商的 static B5 Ensemble/,
+  )
+  if (screenshotPath) {
+    await mkdir(dirname(screenshotPath), { recursive: true })
+    await page.screenshot({ path: screenshotPath })
+  }
   await page.locator('[data-screen="2"].active .next-button').click()
   await page.locator('[data-screen="3"].active').waitFor({ state: 'visible', timeout: 10_000 })
-  assert.equal(await page.locator('[data-screen="3"] h2').innerText(), 'Review tier models')
+  assert.equal(await page.locator('[data-screen="3"] h2').innerText(), '候选模型池')
+  const tokenRhythmTierText = await page.locator('#tierBody').innerText()
+  for (const modelId of ['deepseek-v4-flash', 'deepseek-v4-pro', 'kimi-k2.7-code', 'glm-5.2', 'kimi-k2.6']) {
+    assert.match(tokenRhythmTierText, new RegExp(modelId.replaceAll('.', '\\.')))
+  }
   await page.locator('[data-screen="3"].active .back-button').click()
   await page.locator('[data-screen="2"].active').waitFor({ state: 'visible', timeout: 5_000 })
+  await page.locator('[data-model-routing-mode="direct"]').click()
+  assert.equal(await page.locator('#modelRoutingMode').inputValue(), 'direct')
+  assert.equal(await page.locator('#directModelRoute').inputValue(), 'deepseek-v4-pro')
+  await page.locator('#directModelRoute').fill('glm-5.2')
+  assert.equal(await page.locator('#model').inputValue(), 'glm-5.2')
   await page.locator('[data-model-routing-mode="llm_ensemble"]').click()
   assert.equal(await page.locator('#modelRoutingMode').inputValue(), 'llm_ensemble')
   await page.locator('[data-screen="2"].active .next-button').click()
@@ -174,6 +191,7 @@ try {
   await page.locator('[data-screen="2"].active').waitFor({ state: 'visible', timeout: 5_000 })
   await page.locator('[data-screen="2"].active .back-button').click()
   await page.locator('[data-screen="1"].active').waitFor({ state: 'visible', timeout: 5_000 })
+  await page.locator('#onboardingLocale').selectOption('en')
 
   await page.locator('#providerGrid [data-provider="ollama"]').click()
   assert.equal(await page.locator('#modelRoutingMode').inputValue(), 'direct')
@@ -217,8 +235,8 @@ try {
   await page.locator('[data-screen="2"].active').waitFor({ state: 'visible', timeout: 5_000 })
   await page.locator('[data-screen="2"].active .back-button').click()
   await page.locator('[data-screen="1"].active').waitFor({ state: 'visible', timeout: 5_000 })
-  await page.locator('#providerGrid [data-provider="openrouter"]').click()
-  await page.locator('#apiKey').fill('test-openrouter-key')
+  await tokenRhythmFeature.locator('[data-provider="tokenrhythm"]').click()
+  await page.locator('#apiKey').fill('synthetic-tokenrhythm-key')
   await page.locator('[data-screen="1"].active .next-button').click()
   await page.locator('[data-screen="2"].active').waitFor({ state: 'visible', timeout: 5_000 })
   await page.locator('[data-model-routing-mode="llm_ensemble"]').click()
@@ -232,11 +250,19 @@ try {
     return { credential, config }
   }, 'saved ensemble credential and config')
   const { credential, config } = saved
-  assert.equal(credential.provider, 'openrouter')
+  assert.equal(credential.provider, 'tokenrhythm')
   assert.equal(credential.modelRoutingMode, 'llm_ensemble')
   assert.equal(credential.routerMode, 'recommended')
+  assert.equal(credential.routerTiers.c0.model, 'deepseek-v4-flash')
+  assert.equal(credential.routerTiers.c1.model, 'deepseek-v4-pro')
+  assert.equal(credential.routerTiers.c2.model, 'kimi-k2.7-code')
+  assert.equal(credential.routerTiers.c3.model, 'glm-5.2')
+  assert.equal(credential.routerTiers.image_model.model, 'kimi-k2.6')
   assert.match(config, /\[squilla_router\]\nenabled = true/)
-  assert.match(config, /\[llm_ensemble\]\nenabled = true\nselection_mode = "static_openrouter_b5"/)
+  assert.doesNotMatch(config, /tier_profile = "tokenrhythm"/)
+  assert.match(config, /\[squilla_router\.tiers\.c0\]\nprovider = "tokenrhythm"\nmodel = "deepseek-v4-flash"/)
+  assert.match(config, /\[squilla_router\.tiers\.c3\]\nprovider = "tokenrhythm"\nmodel = "glm-5\.2"/)
+  assert.match(config, /\[llm_ensemble\]\nenabled = true\nselection_mode = "static_tokenrhythm_b5"/)
 
   console.log(JSON.stringify({
     ok: true,
@@ -244,6 +270,7 @@ try {
     modelRoutingMode: credential.modelRoutingMode,
     routerMode: credential.routerMode,
     model: credential.model,
+    screenshotPath: screenshotPath || null,
   }, null, 2))
 } finally {
   await app.close().catch(() => {})

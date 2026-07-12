@@ -204,8 +204,9 @@ def test_probe_redacts_key_material_echoed_by_auth_errors(monkeypatch: Any) -> N
 def _delayed_provider(events: list[Any], delay_s: float = 0.02) -> Any:
     """Fake provider whose stream sleeps once, so latency is provably > 0.
 
-    ``asyncio.sleep`` never returns early, which makes the millisecond floor
-    deterministic even on a loaded CI box.
+    The reported integer can be slightly shorter than the requested sleep on
+    event loops with coarse timer resolution, so callers only rely on it being
+    positive.
     """
 
     class _DelayedProvider:
@@ -233,7 +234,7 @@ def test_probe_reports_latency_on_ok_path(monkeypatch: Any) -> None:
     result = _probe(provider_id="openai", model="gpt-4o", api_key="sk-test")
     assert result.ok is True
     assert isinstance(result.latency_ms, int)
-    assert result.latency_ms >= 20
+    assert result.latency_ms > 0
 
 
 def test_probe_reports_latency_on_classified_error_path(monkeypatch: Any) -> None:
@@ -247,4 +248,4 @@ def test_probe_reports_latency_on_classified_error_path(monkeypatch: Any) -> Non
     assert result.ok is False
     assert result.failure_kind == ProviderFailureKind.AUTH_INVALID.value
     assert isinstance(result.latency_ms, int)
-    assert result.latency_ms >= 20
+    assert result.latency_ms > 0

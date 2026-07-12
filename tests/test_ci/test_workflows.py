@@ -501,12 +501,18 @@ def test_ci_change_classifier_tracks_ci_dependency_and_release_changes(tmp_path:
 
     assert outputs == _expected_classifier_outputs(
         runtime_changed="true",
+        test_changed="true",
         ci_changed="true",
         dependency_changed="true",
         release_changed="true",
         windows_full_required="true",
+        frontend_changed="true",
+        tui_changed="true",
+        desktop_changed="true",
         python_changed="true",
+        platform_sensitive_changed="true",
         build_wheel_required="true",
+        full_required="true",
     )
 
 
@@ -557,6 +563,95 @@ def test_ci_change_classifier_tracks_platform_sensitive_changes(tmp_path: Path) 
         test_changed="true",
         windows_full_required="true",
         python_changed="true",
+        platform_sensitive_changed="true",
+    )
+
+
+def test_ci_change_classifier_runs_windows_full_for_native_source_snapshot(
+    tmp_path: Path,
+) -> None:
+    outputs = _classify_changed_files(
+        tmp_path,
+        ["tests/test_migration/test_source_snapshot_windows.py"],
+    )
+
+    assert outputs == _expected_classifier_outputs(
+        test_changed="true",
+        windows_full_required="true",
+        python_changed="true",
+        platform_sensitive_changed="true",
+    )
+
+
+def test_ci_change_classifier_runs_windows_full_for_native_source_snapshot_implementation(
+    tmp_path: Path,
+) -> None:
+    outputs = _classify_changed_files(
+        tmp_path,
+        ["src/opensquilla/migration/source_snapshot_windows.py"],
+    )
+
+    assert outputs == _expected_classifier_outputs(
+        runtime_changed="true",
+        windows_full_required="true",
+        python_changed="true",
+        platform_sensitive_changed="true",
+        build_wheel_required="true",
+    )
+
+
+def test_ci_change_classifier_runs_full_for_its_own_windows_gate(tmp_path: Path) -> None:
+    outputs = _classify_changed_files(
+        tmp_path,
+        [".github/workflows/ci.yml"],
+    )
+
+    assert outputs == _expected_classifier_outputs(
+        runtime_changed="true",
+        test_changed="true",
+        ci_changed="true",
+        dependency_changed="true",
+        release_changed="true",
+        windows_full_required="true",
+        frontend_changed="true",
+        tui_changed="true",
+        desktop_changed="true",
+        python_changed="true",
+        platform_sensitive_changed="true",
+        build_wheel_required="true",
+        full_required="true",
+    )
+
+
+def test_ci_change_classifier_runs_windows_release_gates_for_profile_verifier(
+    tmp_path: Path,
+) -> None:
+    outputs = _classify_changed_files(
+        tmp_path,
+        [".github/scripts/verify-release-profile-preservation.py"],
+    )
+
+    assert outputs == _expected_classifier_outputs(
+        ci_changed="true",
+        release_changed="true",
+        windows_full_required="true",
+        python_changed="true",
+        platform_sensitive_changed="true",
+    )
+
+
+def test_ci_change_classifier_tracks_packaged_update_policy_probe_as_release_surface(
+    tmp_path: Path,
+) -> None:
+    outputs = _classify_changed_files(
+        tmp_path,
+        ["desktop/electron/scripts/test-packaged-update-policy.mjs"],
+    )
+
+    assert outputs == _expected_classifier_outputs(
+        release_changed="true",
+        windows_full_required="true",
+        desktop_changed="true",
         platform_sensitive_changed="true",
     )
 

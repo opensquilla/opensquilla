@@ -112,12 +112,21 @@ while IFS= read -r path || [[ -n "${path}" ]]; do
     src/opensquilla/cli/tui/opentui/package/*)
       mark_tui_changed
       ;;
+    .github/workflows/ci.yml | .github/scripts/classify-ci-changes.sh)
+      # Changes to the gate itself must exercise every path it can suppress.
+      mark_full_required
+      ;;
     .github/workflows/wheelhouse-release.yml)
       mark_ci_changed
       mark_release_changed
       ;;
     .github/workflows/*)
       mark_ci_changed
+      ;;
+    .github/scripts/verify-release-profile-preservation.py)
+      mark_ci_changed
+      mark_release_changed
+      mark_platform_sensitive_changed
       ;;
     .github/scripts/*)
       mark_ci_changed
@@ -126,7 +135,7 @@ while IFS= read -r path || [[ -n "${path}" ]]; do
       mark_test_changed
       mark_release_changed
       ;;
-    tests/test_tools/test_shell_* | tests/test_tools/test_path_* | tests/test_sandbox/* | tests/test_desktop/* | tests/test_compat/*)
+    tests/test_tools/test_shell_* | tests/test_tools/test_path_* | tests/test_sandbox/* | tests/test_desktop/* | tests/test_compat/* | tests/test_recovery/* | tests/test_migration/test_opensquilla_home_migration.py | tests/test_migration/test_source_snapshot_windows.py)
       mark_test_changed
       mark_platform_sensitive_changed
       ;;
@@ -152,11 +161,16 @@ while IFS= read -r path || [[ -n "${path}" ]]; do
     install.sh | install.ps1 | start.sh | start.ps1 | README.release.md | RELEASES.md)
       mark_release_changed
       ;;
+    desktop/electron/scripts/test-packaged-update-policy.mjs)
+      mark_desktop_changed
+      mark_platform_sensitive_changed
+      mark_release_changed
+      ;;
     desktop/*)
       mark_platform_sensitive_changed
       mark_desktop_changed
       ;;
-    src/opensquilla/persistence/* | src/opensquilla/sandbox/* | src/opensquilla/tools/boundary.py | src/opensquilla/tools/builtin/code_exec.py | src/opensquilla/tools/builtin/filesystem.py | src/opensquilla/tools/builtin/git.py | src/opensquilla/tools/builtin/shell.py | src/opensquilla/tools/builtin/shell_policy.py | src/opensquilla/tools/path_* | src/opensquilla/tools/policy* | src/opensquilla/tools/write_*)
+    src/opensquilla/recovery/* | src/opensquilla/migration/* | src/opensquilla/persistence/* | src/opensquilla/sandbox/* | src/opensquilla/tools/boundary.py | src/opensquilla/tools/builtin/code_exec.py | src/opensquilla/tools/builtin/filesystem.py | src/opensquilla/tools/builtin/git.py | src/opensquilla/tools/builtin/shell.py | src/opensquilla/tools/builtin/shell_policy.py | src/opensquilla/tools/path_* | src/opensquilla/tools/policy* | src/opensquilla/tools/write_*)
       mark_runtime_changed
       mark_platform_sensitive_changed
       ;;

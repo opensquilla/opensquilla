@@ -1,7 +1,15 @@
 # Legacy Home Migration Design
 
 Date: 2026-07-10
-Status: Draft
+Status: Superseded by `desktop-profile-recovery.md`
+
+> This document records the original migration design. Its Electron-owned
+> relocation, automatic candidate choice, source marker, and file-overlay
+> details are historical and must not be used as the RC4 implementation
+> contract. RC4 recovery is Python-owned, keeps the source read-only, requires
+> explicit source selection, and uses no-replace whole-profile transactions.
+> See `desktop-profile-recovery.md` and
+> `../self-migration-report-contract.md` for the current contracts.
 
 ## Problem
 
@@ -14,11 +22,11 @@ desktop app never looks at an existing CLI home either.
 
 Three user populations are affected:
 
-1. **Old CLI users** — home at `~/.opensquilla`. The top-level README states
+1. **Supported CLI users moving to Desktop** — home at `~/.opensquilla`. The top-level README states
    that the desktop app reuses `~/.opensquilla/config.toml` and session data,
    but `desktop/electron/src/main.ts` contains no reference to that path: the
    desktop always creates a fresh profile under Electron `userData`.
-2. **Old Windows portable users** — data at
+2. **Historical Windows Portable users** — data at
    `%LOCALAPPDATA%\OpenSquilla\portable\<ReleaseId>` (or
    `OPENSQUILLA_PORTABLE_HOME`). Because `ReleaseId` hashes the extract path
    and the wheel, every portable upgrade already started a fresh data dir, so
@@ -40,7 +48,7 @@ OpenSquilla-to-OpenSquilla import anywhere in the codebase.
 
 ## Goals
 
-- Import an old OpenSquilla home (CLI or Windows portable) into the current
+- Import a supported CLI/Desktop profile or historical Windows Portable home into the current
   install with a dry-run-first, report-producing flow.
 - Give desktop users a first-run entry point and a settings-level rescue
   entry point; give CLI users automatic detection in the onboarding wizard.

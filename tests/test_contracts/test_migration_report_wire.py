@@ -40,6 +40,7 @@ PREFLIGHT_TYPES: dict[str, type | tuple[type, ...]] = {
     "schema_ahead": bool,
     "disk_required_bytes": int,
     "disk_free_bytes": int,
+    "session_count": (int, type(None)),
 }
 
 
@@ -81,7 +82,7 @@ def test_report_top_level_keys_and_types(tmp_path: Path) -> None:
     for key, expected_type in PREFLIGHT_TYPES.items():
         value = report["preflight"][key]
         assert isinstance(value, expected_type), key
-        if expected_type is int:
+        if expected_type is int or (isinstance(expected_type, tuple) and int in expected_type):
             assert not isinstance(value, bool), key
 
     assert report["output_dir"] == ""

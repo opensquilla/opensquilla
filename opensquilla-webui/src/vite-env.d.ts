@@ -8,6 +8,8 @@ import type {
   DesktopSettingsPayload,
 } from './platform/types'
 
+type MigrationSourceKind = 'cli-home' | 'desktop-home' | 'windows-portable'
+
 declare global {
   interface OpenSquillaDesktopApi {
     getOsLocale: () => Promise<string | undefined>
@@ -32,8 +34,18 @@ declare global {
     getBootState: () => Promise<unknown>
     retryStartup: () => Promise<unknown>
     quitApp: () => Promise<unknown>
+    migrationSummary?: (payload?: { source?: string }) => Promise<unknown>
+    migrationBrowseSource?: (payload: { kind: MigrationSourceKind }) => Promise<unknown>
+    migrationRun?: (payload: { previewId: string; overwrite?: boolean }) => Promise<unknown>
+    migrationTakeLastResult?: () => Promise<unknown>
+    migrationPeekLastResult?: () => Promise<unknown>
+    migrationDismissLastResult?: () => Promise<unknown>
+    revealRecoveryPath?: (payload: {
+      target: 'primary' | 'active' | 'backups'
+    }) => Promise<boolean>
     onBootStatus: (callback: (payload: unknown) => void) => () => void
     onBootError: (callback: (payload: unknown) => void) => () => void
+    onMigrationProgress?: (callback: (payload: unknown) => void) => () => void
   }
 
   interface Window {

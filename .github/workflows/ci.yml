@@ -487,7 +487,14 @@ jobs:
           fi
 
           set +e
-          uv run pytest tests/test_recovery/test_atomic_and_locking.py \
+          uv run pytest \
+            tests/test_recovery/test_atomic_and_locking.py::test_native_move_moves_a_regular_tree_between_real_parents \
+            tests/test_recovery/test_atomic_and_locking.py::test_windows_real_legacy_lock_survives_profile_move_and_rebind \
+            tests/test_recovery/test_atomic_and_locking.py::test_windows_primitive_collision_preserves_both_trees \
+            tests/test_recovery/test_atomic_and_locking.py::test_windows_native_move_refuses_real_cross_volume_move \
+            tests/test_recovery/test_atomic_and_locking.py::test_windows_native_move_handles_real_path_longer_than_260_characters \
+            tests/test_recovery/test_atomic_and_locking.py::test_windows_native_move_rejects_real_junction_in_source_tree \
+            tests/test_recovery/test_atomic_and_locking.py::test_windows_no_replace_pins_both_parents_during_real_mutation_window \
             -q \
             --durations=25 \
             --junitxml="${CI_REPORT_DIR}/native-move-junit.xml" \

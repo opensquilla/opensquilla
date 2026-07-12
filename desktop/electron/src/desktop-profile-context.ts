@@ -11,6 +11,8 @@ import { open, rename, rm } from 'node:fs/promises'
 import { randomUUID } from 'node:crypto'
 import { dirname, join, resolve } from 'node:path'
 
+import { DesktopContextLock } from './desktop-context-lock.js'
+
 export type DesktopProfileKind = 'primary' | 'recovery'
 
 export interface DesktopProfilePaths {
@@ -310,7 +312,7 @@ interface DesktopProfileContextDiskSnapshot {
   bytes: Buffer | null
 }
 
-const desktopProfileContextUpdateQueues = new Map<string, Promise<void>>()
+const desktopProfileContextLock = new DesktopContextLock()
 
 function diskIdentity(info: Stats): string {
   return [
@@ -422,13 +424,20 @@ export async function persistDesktopProfileContextFile(
   userData: string,
   context: DesktopProfileContext,
 ): Promise<void> {
-  await persistDesktopProfileContextFileWithSnapshot(userData, context)
+  const root = resolve(userData)
+  await desktopProfileContextLock.runExclusive(
+    desktopProfileContextPath(root),
+    () => persistDesktopProfileContextFileWithSnapshot(root, context),
+  )
 }
 
 /**
- * Serialize every in-process profile-context decision as a fresh read-modify-
- * write. The in-memory CAS snapshot also refuses to overwrite an external
- * writer that changed the context while the updater was deciding.
+ * Serialize every cooperative profile-context write, including direct
+ * persistence after an explicit choice, as a fresh read-modify-write. Electron
+ * owns the application single-instance lock before these writers are activated,
+ * while this shared context lock closes the final CAS-check-to-rename window
+ * between in-process writers. The CAS snapshot also refuses to overwrite an
+ * uncoordinated writer that changed the context while the updater was deciding.
  */
 export async function updateDesktopProfileContextFile(
   userData: string,
@@ -438,23 +447,13 @@ export async function updateDesktopProfileContextFile(
 ): Promise<DesktopProfileContext> {
   const root = resolve(userData)
   const key = desktopProfileContextPath(root)
-  const previous = desktopProfileContextUpdateQueues.get(key) ?? Promise.resolve()
-  const operation = previous.catch(() => undefined).then(async () => {
+  return desktopProfileContextLock.runExclusive(key, async () => {
     const expectedSnapshot = captureDesktopProfileContextDiskSnapshot(root)
     const current = loadDesktopProfileContext(root)
     const next = await updater(current)
     await persistDesktopProfileContextFileWithSnapshot(root, next, expectedSnapshot)
     return next
   })
-  const tail = operation.then(() => undefined, () => undefined)
-  desktopProfileContextUpdateQueues.set(key, tail)
-  try {
-    return await operation
-  } finally {
-    if (desktopProfileContextUpdateQueues.get(key) === tail) {
-      desktopProfileContextUpdateQueues.delete(key)
-    }
-  }
 }
 
 async function syncDirectoryWhereSupported(path: string): Promise<void> {

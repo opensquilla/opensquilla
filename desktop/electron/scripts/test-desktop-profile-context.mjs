@@ -101,6 +101,49 @@ try {
     'serialized read-modify-write must preserve both concurrent decisions',
   )
 
+  let releaseLockedUpdate = () => {}
+  let markLockedUpdateStarted = () => {}
+  const lockedUpdateMayFinish = new Promise((resolve) => {
+    releaseLockedUpdate = resolve
+  })
+  const lockedUpdateStarted = new Promise((resolve) => {
+    markLockedUpdateStarted = resolve
+  })
+  const lockedUpdate = updateDesktopProfileContextFile(root, async (current) => {
+    markLockedUpdateStarted()
+    await lockedUpdateMayFinish
+    return contextForProfile(
+      root,
+      current.active.kind,
+      current.active.recoveryId,
+      new Date().toISOString(),
+      current.persisted.attention_acknowledgement,
+    )
+  })
+  await lockedUpdateStarted
+  let directPersistSettled = false
+  const directPersist = persistDesktopProfileContextFile(
+    root,
+    contextForProfile(root, 'primary'),
+  ).then(() => {
+    directPersistSettled = true
+  })
+  await new Promise((resolve) => setTimeout(resolve, 50))
+  assert.equal(
+    directPersistSettled,
+    false,
+    'direct persistence must join the updater lock instead of publishing mid-transaction',
+  )
+  assert.equal(
+    loadDesktopProfileContext(root).active.recoveryId,
+    concurrentRecoveryId,
+    'a queued direct persistence must leave the updater snapshot untouched',
+  )
+  releaseLockedUpdate()
+  await lockedUpdate
+  await directPersist
+  assert.equal(loadDesktopProfileContext(root).active.kind, 'primary')
+
   const externalChoice = contextForProfile(root, 'primary')
   await assert.rejects(
     updateDesktopProfileContextFile(root, async (current) => {

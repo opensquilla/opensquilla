@@ -1047,6 +1047,65 @@ async def test_provider_configure_does_not_persist_runtime_api_key(tmp_path, mon
 
 
 @pytest.mark.asyncio
+async def test_provider_configure_persists_explicit_replacement_for_env_key(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("OPENROUTER_API_KEY", "startup-key")
+    from opensquilla.gateway.config import GatewayConfig
+
+    target = tmp_path / "c.toml"
+    ctx = _admin_ctx()
+    ctx.config = GatewayConfig(
+        llm={
+            "provider": "openrouter",
+            "model": "m1",
+            "api_key": "startup-key",
+            "api_key_env": "OPENROUTER_API_KEY",
+        },
+        auth={"mode": "token", "token": "runtime-auth-token"},
+    )
+    ctx.config.config_path = str(target)
+    ctx.config.mark_runtime_secret("llm.api_key")
+    ctx.config.mark_runtime_secret("auth.token")
+
+    res = await get_dispatcher().dispatch(
+        "r1",
+        "onboarding.provider.configure",
+        {"providerId": "openrouter", "model": "m2", "apiKey": "replacement-key"},
+        ctx,
+    )
+
+    assert res.error is None, res.error
+    data = tomllib.loads(target.read_text())
+    assert data["llm"]["api_key"] == "replacement-key"
+    assert "api_key_env" not in data["llm"]
+    assert "token" not in data["auth"]
+    assert ctx.config.llm.api_key == "replacement-key"
+    assert "llm.api_key" not in ctx.config._runtime_secret_paths
+    assert "auth.token" in ctx.config._runtime_secret_paths
+
+    reveal = await get_dispatcher().dispatch(
+        "r2",
+        "onboarding.provider.credential.reveal",
+        {"providerId": "openrouter"},
+        ctx,
+    )
+    assert reveal.error is None, reveal.error
+    assert reveal.payload["source"] == "explicit"
+    assert reveal.payload["apiKey"] == "replacement-key"
+
+    # Desktop still exports its original onboarding key on restart. The
+    # explicit replacement in TOML must remain authoritative over that stale
+    # environment value after a fresh config load/runtime resolution.
+    from opensquilla.gateway.llm_runtime import resolve_llm_runtime_config
+
+    reloaded = GatewayConfig.load(target)
+    runtime = resolve_llm_runtime_config(reloaded)
+    assert runtime.api_key == "replacement-key"
+    assert runtime.api_key_from_env is False
+
+
+@pytest.mark.asyncio
 async def test_provider_configure_calls_provider_selector_sync(tmp_path, monkeypatch):
     monkeypatch.setenv("OPENSQUILLA_GATEWAY_CONFIG_PATH", str(tmp_path / "c.toml"))
     from opensquilla.gateway.config import GatewayConfig

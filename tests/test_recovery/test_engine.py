@@ -393,7 +393,8 @@ def test_primary_reconcile_finalizes_v2_marker_without_touching_config_or_databa
     marker = home / "desktop-layout-v2.json"
     assert report.outcome == "ready"
     assert marker.is_file()
-    assert marker.stat().st_mode & 0o777 == 0o600
+    if os.name != "nt":
+        assert marker.stat().st_mode & 0o777 == 0o600
     payload = json.loads(marker.read_text(encoding="utf-8"))
     assert payload["schema_version"] == 2
     assert payload["moved"] == []

@@ -638,7 +638,11 @@ def _make_owner_only(path: Path, expected: object) -> None:
                     "workspace config backup changed before permission hardening"
                 )
             _chmod_open_file(fd, 0o600)
-            os.fsync(fd)
+            # Windows has no descriptor chmod and rejects fsync on this
+            # read-only descriptor. The no-replace move already preserves the
+            # source DACL and bytes; POSIX still flushes its mode hardening.
+            if os.name != "nt":
+                os.fsync(fd)
         finally:
             os.close(fd)
     except AtomicStateUnknownError:

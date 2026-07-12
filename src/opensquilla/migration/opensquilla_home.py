@@ -2026,7 +2026,8 @@ def _bounded_tree_size_bytes(root: Path) -> int | None:
     except OSError:
         return None
     pending: list[tuple[Path, int]] = [(root, 0)]
-    seen = {_identity_from_stat(root_result)}
+    root_identity = _advisory_identity(root_result)
+    seen = {root_identity} if root_identity is not None else set()
     entries = 0
     total = 0
     while pending:
@@ -2054,10 +2055,11 @@ def _bounded_tree_size_bytes(root: Path) -> int | None:
             if entry_type == "file":
                 total += int(result.st_size)
                 continue
-            identity = _identity_from_stat(result)
-            if identity in seen:
+            identity = _advisory_identity(result)
+            if identity is not None and identity in seen:
                 return None
-            seen.add(identity)
+            if identity is not None:
+                seen.add(identity)
             pending.append((path, depth + 1))
         try:
             after = directory.lstat()

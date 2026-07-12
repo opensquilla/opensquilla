@@ -757,13 +757,18 @@ def test_excluded_source_gateway_authority_change_blocks_publication(
         authority.write_bytes(initial)
     target = tmp_path / "target-home"
     original_write_env = OpenSquillaHomeMigrator._write_staged_env
+    mutation_errors: list[OSError] = []
 
     def mutate_excluded_authority(
         migrator: OpenSquillaHomeMigrator,
         staging: Path,
     ) -> None:
         original_write_env(migrator, staging)
-        authority.write_bytes(changed)
+        try:
+            authority.write_bytes(changed)
+        except OSError as exc:
+            mutation_errors.append(exc)
+            raise
 
     monkeypatch.setattr(
         OpenSquillaHomeMigrator,
@@ -774,12 +779,25 @@ def test_excluded_source_gateway_authority_change_blocks_publication(
     report = _run(source, target, apply=True)
 
     assert _errors(report)
-    assert any(
-        "gateway authority changed" in item["reason"]
-        for item in _errors(report)
-    )
+    if mutation_errors:
+        # Windows can reject a write to the byte-range-locked authority before
+        # the post-copy digest check runs. That is the stronger fail-closed
+        # outcome and is valid only for a lock leaf that already existed.
+        assert sys.platform == "win32"
+        assert authority_name == "gateway.pid.lock"
+        assert initial is not None
+        assert authority.read_bytes() == initial
+        assert any(
+            "import failed before completion" in item["reason"]
+            for item in _errors(report)
+        )
+    else:
+        assert any(
+            "gateway authority changed" in item["reason"]
+            for item in _errors(report)
+        )
+        assert authority.read_bytes() == changed
     assert not target.exists()
-    assert authority.read_bytes() == changed, "source authority is never deleted or restored"
 
 
 @pytest.mark.parametrize("alias", [False, True])
@@ -1050,6 +1068,20 @@ def test_candidate_metadata_is_privacy_narrow_stable_and_read_only(tmp_path: Pat
     assert "private-session-a" not in serialized
     assert "private title a" not in serialized
     assert _file_bytes(source) == before
+
+
+def test_candidate_size_does_not_collapse_when_directory_identity_is_unavailable(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = _build_source_home(tmp_path / "source")
+    monkeypatch.setattr(migration_module, "_advisory_identity", lambda _result: None)
+
+    candidate = inspect_opensquilla_home_candidate(source, kind="cli-home")
+
+    assert candidate is not None
+    assert isinstance(candidate.size_bytes, int)
+    assert candidate.size_bytes > 0
 
 
 def test_candidate_metadata_size_is_bounded_and_never_follows_links(

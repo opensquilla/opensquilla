@@ -429,6 +429,20 @@ def _same_information(left: _HandleInformation, right: _HandleInformation) -> bo
     )
 
 
+def _same_ancestor_information(
+    left: _HandleInformation,
+    right: _HandleInformation,
+) -> bool:
+    """Compare a pinned ancestor without treating sibling activity as a swap."""
+
+    return (
+        left.identity == right.identity
+        and left.mode == right.mode
+        and left.attributes == right.attributes
+        and left.identity.file_type == stat.S_IFDIR
+    )
+
+
 def _validate_information(information: _HandleInformation, *, path: Path) -> None:
     if information.attributes & _FILE_ATTRIBUTE_REPARSE_POINT:
         raise WindowsSourceSnapshotError(f"source reparse point is not allowed: {path}")
@@ -502,9 +516,15 @@ def _open_directory_chain(
                 raise
             opened.append((component, handle, information))
         yield normalized, opened
-        for component, handle, expected in opened:
+        for index, (component, handle, expected) in enumerate(opened):
             current_information = api.information(handle, path=component)
-            if not _same_information(current_information, expected):
+            selected_root = index == len(opened) - 1
+            matches = (
+                _same_information(current_information, expected)
+                if selected_root
+                else _same_ancestor_information(current_information, expected)
+            )
+            if not matches:
                 raise WindowsSourceSnapshotError(
                     f"source path component changed while pinned: {component}"
                 )

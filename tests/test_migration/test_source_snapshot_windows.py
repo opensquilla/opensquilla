@@ -258,6 +258,37 @@ def test_bounded_gateway_authority_uses_same_pinned_parent_chain() -> None:
     assert not api.open_handles
 
 
+def test_pinned_ancestor_ignores_metadata_from_unrelated_sibling_activity() -> None:
+    api = _FakeWindowsApi()
+    ancestor = Path("/fake")
+
+    with windows_snapshot._open_directory_chain(api, api.root):
+        original = api.nodes[ancestor]
+        api.nodes[ancestor] = windows_snapshot._HandleInformation(
+            identity=original.identity,
+            mode=original.mode,
+            size=original.size + 1,
+            mtime_ns=original.mtime_ns + 1,
+            attributes=original.attributes,
+        )
+
+    assert not api.open_handles
+
+
+def test_pinned_ancestor_still_rejects_identity_replacement() -> None:
+    api = _FakeWindowsApi()
+    ancestor = Path("/fake")
+
+    with pytest.raises(
+        windows_snapshot.WindowsSourceSnapshotError,
+        match="source path component changed",
+    ):
+        with windows_snapshot._open_directory_chain(api, api.root):
+            api.nodes[ancestor] = _information(9001, directory=True)
+
+    assert not api.open_handles
+
+
 def test_bounded_gateway_authority_rejects_state_parent_reparse() -> None:
     api = _FakeWindowsApi()
     _add_gateway_authority(api)

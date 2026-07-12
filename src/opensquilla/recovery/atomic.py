@@ -47,6 +47,21 @@ _WINDOWS_FILE_ID_INFO = 18
 _WINDOWS_FILE_RENAME_INFO = 3
 
 
+def _chmod_open_file(fd: int, mode: int) -> None:
+    """Apply a POSIX mode when the host exposes descriptor chmod.
+
+    Windows CPython does not expose ``os.fchmod``. Recovery files still request
+    restrictive creation modes where the host supports them, while
+    Windows-specific config paths preserve their DACL separately. Descriptor
+    mode hardening is an additional POSIX capability, not a portable
+    prerequisite.
+    """
+
+    fchmod = getattr(os, "fchmod", None)
+    if callable(fchmod):
+        fchmod(fd, mode)
+
+
 class _WindowsFileAttributeTagInfo(ctypes.Structure):
     _fields_ = [
         ("file_attributes", ctypes.c_uint32),

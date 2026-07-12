@@ -74,6 +74,18 @@ def test_user_state_override_is_used_with_the_explicit_test_gate(
     assert user_state_dir() == override
 
 
+def test_profile_lock_does_not_require_descriptor_chmod(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setenv("OPENSQUILLA_USER_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setenv("OPENSQUILLA_TEST_PROFILE_LOCK_ROOT", "1")
+    monkeypatch.delattr(os, "fchmod", raising=False)
+
+    with ProfileOperationLock(tmp_path / "profile"):
+        assert profile_lock_path(tmp_path / "profile").is_file()
+
+
 def _contend_for_gateway(state_dir: str, queue: multiprocessing.Queue) -> None:
     from opensquilla.gateway.pidlock import GatewayPidLock
 

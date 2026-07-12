@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 import tomllib
 from pathlib import Path
@@ -273,6 +274,7 @@ def test_migrate_opensquilla_keeps_its_internal_multi_profile_lock(
     target = tmp_path / "desktop-primary"
     monkeypatch.setenv("OPENSQUILLA_STATE_DIR", str(target))
     monkeypatch.setenv("OPENSQUILLA_PROFILE_KIND", "desktop-primary")
+    monkeypatch.delattr(os, "fchmod", raising=False)
 
     def fail_foreign_guard() -> None:
         pytest.fail("OpenSquilla self-import must not take the foreign migration lifecycle")
@@ -397,7 +399,7 @@ def test_foreign_migration_blocks_unsafe_desktop_before_any_write(
     target.mkdir()
     missing_workspace = tmp_path / "missing-workspace"
     config = target / "config.toml"
-    config_bytes = f'workspace_dir = "{missing_workspace}"\n'.encode()
+    config_bytes = f"workspace_dir = {json.dumps(str(missing_workspace))}\n".encode()
     config.write_bytes(config_bytes)
     _set_fake_home(monkeypatch, fake_home)
     monkeypatch.setenv("OPENSQUILLA_STATE_DIR", str(target))

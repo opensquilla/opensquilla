@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from types import TracebackType
 
-from opensquilla.recovery.atomic import _windows_extended_path
+from opensquilla.recovery.atomic import _chmod_open_file, _windows_extended_path
 from opensquilla.recovery.errors import (
     LegacyGatewayRunningError,
     ProfileLockBusyError,
@@ -248,7 +248,7 @@ def _prepare_posix_lock_file(path: Path, root: Path) -> int:
             opened.append((current_path, child_fd, child_identity))
             directory_fd = child_fd
             with contextlib.suppress(OSError):
-                os.fchmod(directory_fd, 0o700)
+                _chmod_open_file(directory_fd, 0o700)
 
         flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_CLOEXEC", 0)
         flags |= getattr(os, "O_NOFOLLOW", 0)
@@ -278,7 +278,7 @@ def _prepare_posix_lock_file(path: Path, root: Path) -> int:
                     f"profile lock is not a regular single-link file: {path}"
                 )
             with contextlib.suppress(OSError):
-                os.fchmod(fd, 0o600)
+                _chmod_open_file(fd, 0o600)
             os.lseek(fd, 0, os.SEEK_SET)
         except BaseException:
             os.close(fd)
@@ -588,7 +588,7 @@ def _windows_open_profile_lock_file(path: Path, root: Path) -> int:
         if not stat.S_ISREG(value.st_mode) or value.st_nlink != 1:
             raise UnsafePathError(f"profile lock is not a regular single-link file: {path}")
         with contextlib.suppress(OSError):
-            os.fchmod(fd, 0o600)
+            _chmod_open_file(fd, 0o600)
         if value.st_size == 0:
             os.write(fd, b"\0")
             os.fsync(fd)
@@ -760,7 +760,7 @@ def _prepare_legacy_lock_file(state_path: Path, *, create_if_missing: bool) -> i
             )
         if create_if_missing:
             with contextlib.suppress(OSError):
-                os.fchmod(fd, 0o600)
+                _chmod_open_file(fd, 0o600)
             if os.name == "nt" and value.st_size == 0:
                 os.write(fd, b"\0")
                 os.fsync(fd)

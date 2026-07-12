@@ -19,6 +19,7 @@ from typing import Any
 
 from opensquilla.recovery.atomic import (
     PathIdentity,
+    _chmod_open_file,
     _windows_extended_path,
     native_move_no_replace,
 )
@@ -543,7 +544,7 @@ def _write_json_no_replace(path: Path, payload: dict[str, Any]) -> ConfigSnapsho
         ) from exc
     try:
         with contextlib.suppress(OSError):
-            os.fchmod(fd, 0o600)
+            _chmod_open_file(fd, 0o600)
         _write_all(fd, data)
         os.fsync(fd)
     except BaseException:
@@ -625,7 +626,7 @@ def _make_owner_only(path: Path, expected: object) -> None:
                 raise AtomicStateUnknownError(
                     "workspace config backup changed before permission hardening"
                 )
-            os.fchmod(fd, 0o600)
+            _chmod_open_file(fd, 0o600)
             os.fsync(fd)
         finally:
             os.close(fd)
@@ -883,7 +884,7 @@ def _patch_workspace_dir_locked(home: str | Path, workspace: str | Path) -> Path
                         stable_code="config_metadata_preservation_failed",
                     ) from exc
                 _copy_macos_config_metadata(snapshot, fd)
-            os.fchmod(fd, snapshot.mode if snapshot.identity is not None else 0o600)
+            _chmod_open_file(fd, snapshot.mode if snapshot.identity is not None else 0o600)
             _write_all(fd, patched)
             os.fsync(fd)
         finally:

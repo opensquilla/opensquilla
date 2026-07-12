@@ -17,7 +17,11 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from opensquilla.recovery.atomic import PathIdentity, native_move_no_replace
+from opensquilla.recovery.atomic import (
+    PathIdentity,
+    _chmod_open_file,
+    native_move_no_replace,
+)
 from opensquilla.recovery.config_patch import (
     ConfigSnapshot,
     patch_workspace_dir,
@@ -1052,7 +1056,7 @@ def _finalize_compatibility_marker(
                 raise OSError("short marker write")
             view = view[written:]
         with contextlib.suppress(OSError):
-            os.fchmod(fd, 0o600)
+            _chmod_open_file(fd, 0o600)
         os.fsync(fd)
     except OSError:
         os.close(fd)

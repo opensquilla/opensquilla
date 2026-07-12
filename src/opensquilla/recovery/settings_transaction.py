@@ -17,7 +17,11 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from opensquilla.recovery.atomic import PathIdentity, native_move_no_replace
+from opensquilla.recovery.atomic import (
+    PathIdentity,
+    _chmod_open_file,
+    native_move_no_replace,
+)
 from opensquilla.recovery.config_patch import ConfigSnapshot
 from opensquilla.recovery.errors import AtomicStateUnknownError, RecoveryError
 from opensquilla.recovery.locking import LegacyGatewayLock, ProfileOperationLock
@@ -90,7 +94,7 @@ def _write_no_replace(path: Path, data: bytes, *, mode: int = 0o600) -> PathIden
     fd = os.open(path, flags, mode)
     try:
         with contextlib.suppress(OSError):
-            os.fchmod(fd, mode)
+            _chmod_open_file(fd, mode)
         _write_all(fd, data)
         os.fsync(fd)
         value = os.fstat(fd)

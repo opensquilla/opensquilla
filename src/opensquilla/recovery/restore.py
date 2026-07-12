@@ -14,6 +14,7 @@ from typing import Any
 
 from opensquilla.recovery.atomic import (
     PathIdentity,
+    _chmod_open_file,
     native_move_no_replace,
     no_follow_manifest,
 )
@@ -270,7 +271,7 @@ def _replace_bytes(path: Path, data: bytes, *, mode: int = 0o600) -> None:
     fd, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
     temporary: Path | None = Path(temporary_name)
     try:
-        os.fchmod(fd, mode)
+        _chmod_open_file(fd, mode)
         _write_all(fd, data)
         os.fsync(fd)
         os.close(fd)

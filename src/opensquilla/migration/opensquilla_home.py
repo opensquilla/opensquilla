@@ -1537,6 +1537,7 @@ def _write_all(descriptor: int, data: bytes) -> None:
 def _cas_publish_bytes(snapshot: Any, data: bytes, *, mode: int) -> Any:
     """Publish bytes only while a no-follow, temporary-digest snapshot matches."""
     from opensquilla.recovery import AtomicStateUnknownError
+    from opensquilla.recovery.atomic import _chmod_open_file
     from opensquilla.recovery.config_patch import ConfigSnapshot
 
     path = snapshot.path
@@ -1550,7 +1551,7 @@ def _cas_publish_bytes(snapshot: Any, data: bytes, *, mode: int) -> Any:
         published_visible = True
         try:
             _write_all(descriptor, data)
-            os.fchmod(descriptor, mode)
+            _chmod_open_file(descriptor, mode)
             os.fsync(descriptor)
         except BaseException as exc:
             os.close(descriptor)
@@ -1570,7 +1571,7 @@ def _cas_publish_bytes(snapshot: Any, data: bytes, *, mode: int) -> Any:
         )
         temporary = Path(temporary_name)
         try:
-            os.fchmod(descriptor, mode)
+            _chmod_open_file(descriptor, mode)
             _write_all(descriptor, data)
             os.fsync(descriptor)
             os.close(descriptor)

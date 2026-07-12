@@ -1105,7 +1105,7 @@ def test_moved_legacy_lock_can_be_rebound_without_dropping_exclusion(
     (staging / "state").mkdir(parents=True)
 
     with LegacyGatewayLock(staging):
-        staging.rename(target)
+        native_move_no_replace(staging, target)
         locking_module.rebind_legacy_gateway_lock(
             staging / "state",
             target / "state",
@@ -1135,14 +1135,12 @@ def test_moved_legacy_lock_rebind_rejects_tampered_destination_state(
     (staging / "state").mkdir(parents=True)
 
     with LegacyGatewayLock(staging):
-        staging.rename(target)
+        native_move_no_replace(staging, target)
         original_state = target / "state"
         parked_state = target / "parked-state"
-        original_state.rename(parked_state)
+        native_move_no_replace(original_state, parked_state)
         original_state.mkdir()
-        (parked_state / "gateway.pid.lock").rename(
-            original_state / "gateway.pid.lock"
-        )
+        (original_state / "gateway.pid.lock").write_bytes(b"tampered-lock\n")
         registry_before = dict(locking_module._PROCESS_LEGACY_LOCKS)
 
         with pytest.raises(UnsafePathError, match="directory identity"):
@@ -1168,8 +1166,8 @@ def test_rebound_target_keeps_displaced_backup_lock_registered_until_release(
     with LegacyGatewayLock(target):
         displaced = locking_module._PROCESS_LEGACY_LOCKS[target_key]
         with LegacyGatewayLock(staging):
-            target.rename(backup)
-            staging.rename(target)
+            native_move_no_replace(target, backup)
+            native_move_no_replace(staging, target)
             locking_module.rebind_legacy_gateway_lock(
                 staging / "state",
                 target / "state",

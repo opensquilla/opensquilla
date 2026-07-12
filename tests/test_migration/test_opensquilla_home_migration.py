@@ -688,7 +688,7 @@ def test_overwrite_takes_timestamped_backups(tmp_path: Path) -> None:
     )
     assert history["schema_version"] == 1
     record = history["backups"][0]
-    assert record["backup"] == str(backups[0].resolve())
+    assert record["backup"] == os.path.normcase(os.path.normpath(str(backups[0].resolve())))
     assert str(uuid.UUID(record["transaction_id"])) == record["transaction_id"]
     for identity_key in ("source_identity", "target_identity", "backup_identity"):
         assert {"device", "inode", "file_type", "mode", "size", "modified_at_ns"} <= set(

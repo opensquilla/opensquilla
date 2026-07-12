@@ -691,6 +691,21 @@ def _identity_from_stat(result: os.stat_result) -> _PathIdentity:
     )
 
 
+def _advisory_identity(result: os.stat_result) -> _PathIdentity | None:
+    """Return a usable read-only dedupe identity, if the platform exposed one.
+
+    ``DirEntry.stat()`` can report a zero inode for directories on Windows.
+    Treating that sentinel as a real identity collapses unrelated Portable
+    profiles into one candidate. Candidate discovery is advisory, so when the
+    identity is unavailable it is safer to show both paths and let the user
+    choose than to silently hide data.
+    """
+    identity = _identity_from_stat(result)
+    if sys.platform == "win32" and identity.inode == 0:
+        return None
+    return identity
+
+
 def _path_identity_payload(path: Path) -> dict[str, int]:
     result = path.lstat()
     identity = _identity_from_stat(result)
@@ -1901,10 +1916,16 @@ def enumerate_portable_homes(
                     continue
             except OSError:
                 continue
-            identity = _identity_from_stat(result)
-            if identity in seen_identities or not is_valid_opensquilla_home(candidate_path):
+            # Re-stat by path. On Windows ``DirEntry.stat()`` may omit the
+            # directory file index even when a direct stat can provide it.
+            identity = _advisory_identity(candidate_path.lstat())
+            if (
+                identity is not None
+                and identity in seen_identities
+            ) or not is_valid_opensquilla_home(candidate_path):
                 continue
-            seen_identities.add(identity)
+            if identity is not None:
+                seen_identities.add(identity)
             candidate = inspect_opensquilla_home_candidate(
                 candidate_path,
                 kind="windows-portable",
@@ -1914,7 +1935,13 @@ def enumerate_portable_homes(
                 candidates.append(candidate)
             if len(candidates) >= _CANDIDATE_ENUMERATION_MAX_CANDIDATES:
                 break
-    candidates.sort(key=lambda candidate: candidate.last_used, reverse=True)
+    candidates.sort(
+        key=lambda candidate: (
+            candidate.last_used,
+            os.path.normcase(os.path.normpath(str(candidate.path))),
+        ),
+        reverse=True,
+    )
     return candidates
 
 
@@ -2145,12 +2172,13 @@ def _candidate_state_roots(home: Path) -> list[Path] | None:
             result = root.lstat()
             if _supported_entry_type(root, result) != "directory":
                 continue
-            identity = _identity_from_stat(result)
+            identity = _advisory_identity(result)
         except OSError:
             continue
-        if identity in identities:
+        if identity is not None and identity in identities:
             continue
-        identities.add(identity)
+        if identity is not None:
+            identities.add(identity)
         unique.append(root)
     return unique
 

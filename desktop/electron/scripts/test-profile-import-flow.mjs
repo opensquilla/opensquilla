@@ -13,6 +13,11 @@ const repoRoot = resolve(packageRoot, '../..')
 const SOURCE_IDENTITY = '# Synthetic imported identity\n'
 const TARGET_IDENTITY = '# Synthetic previous Desktop identity\n'
 const SOURCE_CHAT = 'synthetic imported chat survives whole-profile transfer'
+// A replace import performs two independently bounded receipt-verifier CLI
+// calls (60 seconds each) around the mutating import. Windows CI cold starts
+// can legitimately approach both bounds, so the E2E timeout must cover the
+// product's advertised "few minutes" operation without becoming unbounded.
+const PROFILE_IMPORT_APPLY_TIMEOUT_MS = 180_000
 
 async function waitFor(check, label, timeoutMs = 90_000) {
   const startedAt = Date.now()
@@ -307,7 +312,48 @@ try {
     dialog.showMessageBox = async () => ({ response: 1, checkboxChecked: false })
   })
   await page.locator('#migrationImport').click()
-  await page.locator('#migrationDoneNote').waitFor({ state: 'visible', timeout: 90_000 })
+  try {
+    await page.locator('#migrationDoneNote').waitFor({
+      state: 'visible',
+      timeout: PROFILE_IMPORT_APPLY_TIMEOUT_MS,
+    })
+  } catch (error) {
+    const renderer = await page.evaluate(() => ({
+      errorPresent: Boolean(document.getElementById('error')?.textContent),
+      statusVisible: !document.getElementById('migrationStatus')?.hidden,
+      summaryVisible: !document.getElementById('migrationSummary')?.hidden,
+    })).catch(() => ({ errorPresent: false, statusVisible: false, summaryVisible: false }))
+    const pendingPhase = await readFile(
+      join(userData, 'migration-provider-setup.json'),
+      'utf8',
+    ).then((raw) => JSON.parse(raw)?.phase || '').catch(() => '')
+    const receiptCount = await readdir(join(target, 'migration', 'opensquilla'))
+      .then((entries) => entries.length)
+      .catch(() => 0)
+    const backupCount = await readdir(userData)
+      .then((entries) => entries.filter((name) => name.startsWith('opensquilla.backup.')).length)
+      .catch(() => 0)
+    const diagnostics = {
+      renderer,
+      pendingPhase,
+      receiptCount,
+      backupCount,
+      importedIdentityPresent: await readFile(
+        join(target, 'workspace', 'IDENTITY.md'),
+        'utf8',
+      ).then((value) => value === SOURCE_IDENTITY).catch(() => false),
+    }
+    const reportDir = process.env.CI_REPORT_DIR
+    if (reportDir) {
+      await mkdir(reportDir, { recursive: true })
+      await writeFile(
+        join(reportDir, 'profile-import-timeout.json'),
+        `${JSON.stringify(diagnostics, null, 2)}\n`,
+        'utf8',
+      )
+    }
+    throw new Error(`${error.message}; diagnostics=${JSON.stringify(diagnostics)}`)
+  }
   assert.match(await page.locator('#migrationDoneNote').innerText(), /Import complete/i)
 
   assert.deepEqual(await snapshotTree(source), sourceBefore, 'source bytes and permissions changed')

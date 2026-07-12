@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import sys
 from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
@@ -15,6 +16,11 @@ from opensquilla.recovery import (
     choose_workspace,
     inspect_profile,
     reconcile_profile,
+)
+from opensquilla.recovery.settings_transaction import (
+    MAX_SETTINGS_INPUT_BYTES,
+    apply_desktop_settings,
+    recover_desktop_settings,
 )
 
 recovery_app = typer.Typer(
@@ -84,6 +90,22 @@ def _run(
             typer.echo(str(exc), err=True)
         raise typer.Exit(code=2) from None
     _emit(report, json_output=json_output)
+
+
+def _settings_payload_from_stdin() -> object:
+    raw = sys.stdin.buffer.read(MAX_SETTINGS_INPUT_BYTES + 1)
+    if len(raw) > MAX_SETTINGS_INPUT_BYTES:
+        raise RecoveryError(
+            "Desktop settings input is too large",
+            stable_code="settings_input_too_large",
+        )
+    try:
+        return json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise RecoveryError(
+            "Desktop settings input is invalid",
+            stable_code="settings_input_invalid",
+        ) from exc
 
 
 @recovery_app.command("inspect")
@@ -157,6 +179,105 @@ def recovery_choose_workspace(
         home=home,
         json_output=json_output,
         profile_kind=kind,
+    )
+
+
+@recovery_app.command("apply-settings")
+def recovery_apply_settings(
+    home: Path = typer.Option(..., "--home", help="Desktop profile root H."),
+    transaction_id: str = typer.Option(..., "--transaction-id", help="Inspection transaction id."),
+    expected_revision: int = typer.Option(
+        ...,
+        "--expected-revision",
+        min=0,
+        help="Inspection revision used for compare-and-swap.",
+    ),
+    json_output: bool = typer.Option(False, "--json", help="Emit the fixed JSON protocol."),
+) -> None:
+    """Read secret-bearing candidates from stdin and publish them as one pair."""
+
+    _run(
+        lambda: apply_desktop_settings(
+            home,
+            transaction_id=transaction_id,
+            expected_revision=expected_revision,
+            payload=_settings_payload_from_stdin(),
+        ),
+        home=home,
+        json_output=json_output,
+        profile_kind="desktop-primary",
+    )
+
+
+@recovery_app.command("recover-settings")
+def recovery_recover_settings(
+    home: Path = typer.Option(..., "--home", help="Desktop profile root H."),
+    json_output: bool = typer.Option(False, "--json", help="Emit the fixed JSON protocol."),
+) -> None:
+    """Finish an identity-proven interrupted Desktop settings transaction."""
+
+    _run(
+        lambda: recover_desktop_settings(home),
+        home=home,
+        json_output=json_output,
+        profile_kind="desktop-primary",
+    )
+
+
+@recovery_app.command("restore-profile")
+def recovery_restore_profile(
+    backup: Path = typer.Option(..., "--backup", help="Exact recorded profile backup path."),
+    json_output: bool = typer.Option(False, "--json", help="Emit the fixed JSON protocol."),
+) -> None:
+    """Restore a recorded sibling backup after backing up the current target."""
+    from opensquilla.recovery.restore import (
+        recorded_backup_target,
+        restore_profile,
+    )
+
+    backup_path = backup.expanduser().absolute()
+    try:
+        target = recorded_backup_target(backup_path)
+    except RecoveryError:
+        # Keep failure responses protocol-valid without guessing a successful
+        # target. ``restore_profile`` repeats the exact history validation and
+        # supplies the authoritative stable code through ``_run``.
+        target = backup_path.parent / "opensquilla"
+    _run(
+        lambda: restore_profile(backup_path),
+        home=target,
+        json_output=json_output,
+        profile_kind="desktop-primary",
+    )
+
+
+@recovery_app.command("recover-transaction")
+def recovery_recover_transaction(
+    home: Path = typer.Option(..., "--home", help="Desktop primary profile root H."),
+    transaction_id: str = typer.Option(..., "--transaction-id", help="Inspection transaction id."),
+    expected_revision: int = typer.Option(
+        ...,
+        "--expected-revision",
+        min=0,
+        help="Inspection revision used for compare-and-swap.",
+    ),
+    json_output: bool = typer.Option(False, "--json", help="Emit the fixed JSON protocol."),
+) -> None:
+    """Safely rollback or finalize one typed interrupted profile transaction."""
+
+    from opensquilla.migration.opensquilla_home import recover_interrupted_profile_import
+    from opensquilla.recovery.transaction import recover_profile_transaction
+
+    _run(
+        lambda: recover_profile_transaction(
+            home,
+            transaction_id=transaction_id,
+            expected_revision=expected_revision,
+            import_recoverer=recover_interrupted_profile_import,
+        ),
+        home=home,
+        json_output=json_output,
+        profile_kind="desktop-primary",
     )
 
 

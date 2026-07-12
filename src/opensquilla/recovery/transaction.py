@@ -344,13 +344,11 @@ def recover_profile_transaction(
                         )
                     import_recoverer(home_path, payload)
                 else:
-                    # The core layer recognizes a typed restore journal so an
-                    # interrupted publication fails closed. The mutation
-                    # adapter belongs to the complete profile restore layer.
-                    raise RecoveryError(
-                        "profile restore recovery adapter is unavailable",
-                        stable_code="transaction_recovery_unsafe",
+                    from opensquilla.recovery.restore import (
+                        recover_interrupted_profile_restore,
                     )
+
+                    recover_interrupted_profile_restore(home_path, payload)
             except RecoveryError:
                 raise
             except (OSError, RuntimeError, ValueError) as exc:

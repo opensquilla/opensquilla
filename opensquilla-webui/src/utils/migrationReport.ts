@@ -1,4 +1,4 @@
-// Condenses the pinned self-migration report (docs/self-migration-report-contract.md)
+// Condenses the pinned self-migration report wire shape
 // into the compact numbers the desktop Runtime panel renders before an import.
 // The report crosses the desktop preload bridge as `unknown`, so every field is
 // guarded: a partial, absent, or future-shaped report degrades to zeros and

@@ -9,7 +9,7 @@ path unpinning, inline-secret relocation, scheduler pause) — rather than a
 per-item semantic mapping.
 
 The report dict returned by :meth:`OpenSquillaHomeMigrator.migrate` is a
-pinned wire contract: see ``docs/self-migration-report-contract.md`` and
+pinned wire contract covered by
 ``tests/test_contracts/test_migration_report_wire.py``.
 """
 
@@ -4503,7 +4503,7 @@ class OpenSquillaHomeMigrator:
         section["api_key_env"] = env_key
         section.pop(key, None)
         # Never the value: the report shape is a pinned, redaction-guaranteed
-        # contract (docs/self-migration-report-contract.md).
+        # contract covered by the wire-shape tests.
         self.secret_relocations.append(
             {"config_path": config_path, "env_key": env_key, "moved": True}
         )

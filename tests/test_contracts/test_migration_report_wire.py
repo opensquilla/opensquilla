@@ -1,9 +1,8 @@
 """Wire-shape contract for the OpenSquilla self-migration report.
 
 Pins the top-level key set and value types of the report dict produced by
-``OpenSquillaHomeMigrator.migrate()`` (see
-``docs/self-migration-report-contract.md``): changes must be additive only,
-and secret relocations must never carry the secret value.
+``OpenSquillaHomeMigrator.migrate()``: changes must be additive only, and
+secret relocations must never carry the secret value.
 """
 
 from __future__ import annotations

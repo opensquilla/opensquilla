@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 
 import { formatByteSize, summarizeMigrationReport } from './migrationReport'
 
-// Miniature report following docs/self-migration-report-contract.md (synthetic
+// Miniature report following the self-migration wire contract (synthetic
 // public-dummy data only).
 const dryRunReport = {
   source: '/tmp/legacy-home',

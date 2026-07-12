@@ -182,9 +182,7 @@ opensquilla migrate opensquilla --source PATH --apply
 Same-product imports always require explicit source selection. A populated
 target is never merged: it can only be kept or fully backed up and replaced.
 
-Read: [`../MIGRATION.md`](../MIGRATION.md),
-[`features/desktop-profile-recovery.md`](features/desktop-profile-recovery.md),
-and [`self-migration-report-contract.md`](self-migration-report-contract.md).
+Read: [`../MIGRATION.md`](../MIGRATION.md).
 
 ---
 

@@ -9,6 +9,28 @@ This is a user-facing context-management feature. It does not change what the
 tool returned; it changes how much of that result is shown to the model for the
 next step.
 
+```mermaid
+flowchart LR
+    Tool([Tool call])
+    Raw[Raw result<br/>runtime view]
+    Mode{Compression mode}
+    Trunc[truncate:<br/>head + tail preview]
+    Summ[summarize:<br/>background model call]
+    Proj[Structured projection:<br/>logs / JSON / tables]
+    Preview[Compact preview<br/>provider view]
+    Handle[tool_result_handle<br/>out-of-band reference]
+    Next[Next turn prompt]
+    Export[Session export / diagnostics]
+
+    Tool --> Raw --> Mode
+    Mode -->|truncate| Trunc --> Preview
+    Mode -->|summarize| Summ --> Preview
+    Mode -->|structured| Proj --> Preview
+    Raw --> Handle
+    Preview --> Next
+    Raw --> Export
+```
+
 ## Why It Matters
 
 Tool compression helps when:

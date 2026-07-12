@@ -7,6 +7,29 @@ workspace, or a channel-facing assistant.
 The built-in `main` agent is always available. Additional agents are configured
 with `opensquilla agents`.
 
+```mermaid
+graph LR
+    User[User / CLI / Web UI]
+    CLI[opensquilla agents add]
+    Cfg[(config.toml<br/>agents.*)]
+    GW[Gateway restart]
+    Main[main agent<br/>built-in]
+    Research[research agent]
+    Writing[writing agent]
+    Channel[channel-facing agent]
+    Sessions[Sessions filtered<br/>by --agent]
+    Cron[Scheduled jobs<br/>--agent X]
+    ChRoute[Channel routes<br/>to configured agent]
+
+    User --> CLI --> Cfg --> GW --> Research
+    GW --> Writing
+    GW --> Channel
+    Main -. always available .-> GW
+    Research --> Sessions
+    Research --> Cron
+    Channel --> ChRoute
+```
+
 ## When to Create an Agent
 
 Create a durable agent when you want a stable identity for:

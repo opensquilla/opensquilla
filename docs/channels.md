@@ -5,6 +5,36 @@ agent runtime as the CLI and Web UI. Use channels when you want the same agent
 to answer from Slack, Telegram, Feishu/Lark, Discord, DingTalk, WeCom, Matrix,
 QQ, or another supported adapter.
 
+```mermaid
+graph LR
+    TG[Telegram]
+    SL[Slack]
+    FS[Feishu / Lark]
+    DS[Discord]
+    DT[DingTalk]
+    WC[WeCom]
+    MX[Matrix]
+    QQ[QQ Bot]
+    Worker[Channel worker<br/>websocket / webhook]
+    Bus[Message bus<br/>normalized events]
+    Disp[Dispatcher<br/>routes to agent]
+    Agent[Configured agent<br/>e.g. channel-facing]
+    Session[(Session store)]
+    Out[Reply via channel adapter]
+
+    TG --> Worker
+    SL --> Worker
+    FS --> Worker
+    DS --> Worker
+    DT --> Worker
+    WC --> Worker
+    MX --> Worker
+    QQ --> Worker
+    Worker --> Bus --> Disp --> Agent
+    Agent <--> Session
+    Agent --> Out
+```
+
 ## Supported Channel Types
 
 Inspect your local install:

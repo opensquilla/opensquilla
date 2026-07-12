@@ -23,6 +23,26 @@ The stable default terminal chat is Python-native and does not require Bun,
 npm, or OpenTUI node modules. OpenTUI is a source-checkout preview backend
 selected explicitly with `OPENSQUILLA_TUI_BACKEND=opentui`.
 
+```mermaid
+flowchart LR
+    Backend{OPENSQUILLA_TUI_BACKEND}
+    Native[Native backend<br/>stable default]
+    OpenTUI[OpenTUI preview backend]
+    Stream[Streaming plane<br/>batched token deltas]
+    UI[Structured UI plane<br/>TUI domain events]
+    Plugins[Plugin slots<br/>router_hud, status,<br/>tool_activity, usage, inspector]
+    HUD[Router HUD<br/>display-only]
+    Terminal[Terminal output]
+
+    Backend -->|unset / native| Native
+    Backend -->|opentui| OpenTUI
+    Native --> Stream --> Terminal
+    OpenTUI --> Stream --> Terminal
+    Native --> UI --> Plugins --> Terminal
+    OpenTUI --> UI --> Plugins
+    Plugins --> HUD
+```
+
 ## Plugin Slots
 
 Plugins consume renderer-independent events and publish small snapshots through

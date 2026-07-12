@@ -12,6 +12,20 @@ Use sessions when you want to:
 - abort a long-running turn without deleting the session;
 - delete old sessions after you no longer need them.
 
+```mermaid
+stateDiagram-v2
+    [*] --> created: first message
+    created --> active: turn starts
+    active --> idle: turn finishes
+    idle --> active: new turn
+    active --> aborted: sessions abort
+    aborted --> idle: keep transcript
+    idle --> closed: sessions delete
+    active --> compacted: context pressure
+    compacted --> active: summary injected
+    closed --> [*]
+```
+
 ## Requirements
 
 Session commands use the gateway RPC surface. Start or connect to the gateway

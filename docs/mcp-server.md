@@ -7,6 +7,31 @@ workflows through the Model Context Protocol.
 The MCP bridge is an integration surface. It is separate from OpenSquilla's Web
 UI, CLI, channels, and gateway control console.
 
+```mermaid
+graph TB
+    Host[Host MCP client<br/>e.g. Claude Desktop, IDE]
+    Bridge[opensquilla mcp-server run<br/>stdio MCP server]
+    Gateway[OpenSquilla gateway<br/>ws://localhost:18791/ws]
+    RPC[Gateway RPC surface]
+    Sessions[(Session store)]
+    Tools[Tool registry]
+    Memory[(Memory store)]
+    Channels[Channel adapters]
+    Cron[Cron scheduler]
+
+    Host <-->|stdio JSON-RPC| Bridge
+    Bridge <-->|websocket RPC| Gateway
+    Gateway --> RPC
+    RPC --> Sessions
+    RPC --> Tools
+    RPC --> Memory
+    RPC --> Channels
+    RPC --> Cron
+
+    classDef bridge fill:#fdf6b2,stroke:#946c00;
+    class Bridge bridge;
+```
+
 ## Requirements
 
 Install OpenSquilla with the MCP extra when you need this bridge:

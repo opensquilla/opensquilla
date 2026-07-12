@@ -7,6 +7,24 @@ previous decisions, and notes that should survive across sessions.
 Memory is separate from skills. Skills teach the agent how to do a task; memory
 stores useful facts and context the agent may need later.
 
+```mermaid
+flowchart LR
+    User([User / chat surface])
+    Ask[Ask: Remember X]
+    Save[memory save]
+    Index[Memory index<br/>+ embeddings]
+    Store[(Memory store<br/>+ session-derived)]
+    Search[memory search]
+    Recall[Top-k recall injected<br/>into next prompt]
+    Flush[memory flush-session]
+    Repair[memory repair]
+
+    User --> Ask --> Save --> Index --> Store
+    Store --> Search --> Recall --> User
+    Session[Long session] --> Flush --> Store
+    Store --> Repair
+```
+
 ## What to Store
 
 Good memory entries are stable and reusable:

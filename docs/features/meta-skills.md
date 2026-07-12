@@ -8,6 +8,25 @@ For the full user-facing guide, read
 [`meta-skill-user-guide.md`](meta-skill-user-guide.md). For authoring rules,
 read [`../authoring/meta-skills.md`](../authoring/meta-skills.md).
 
+```mermaid
+flowchart LR
+    User([User])
+    Cmd["/meta meta-name<br/>(chat slash command)"]
+    Loader[MetaSkill loader]
+    Plan[Parse DAG plan<br/>topological order]
+    Steps[Step executor<br/>skills + tools + checks]
+    Draft[Intermediate drafts]
+    Synth[Final synthesis pass]
+    Run[(Run history<br/>skills meta runs)]
+    Proposal[(Proposals<br/>before promotion)]
+
+    User --> Cmd --> Loader --> Plan --> Steps
+    Steps --> Draft --> Steps
+    Steps --> Synth --> User
+    Steps --> Run
+    Steps -. meta-skill-creator .-> Proposal
+```
+
 ## Skills vs Meta-Skills
 
 | Capability | Use it for |

@@ -7,6 +7,24 @@ keep long-running tasks moving.
 Compaction is separate from memory. Memory is durable recall. Compaction is an
 active-session continuity tool.
 
+```mermaid
+flowchart TB
+    Turn([Agent turn starts])
+    History[(Session history)]
+    Budget{Context budget<br/>exceeded?}
+    NoOp[Already within budget<br/>no compact applied]
+    Compact[Summarize older entries<br/>into durable summary]
+    Tail[Keep recent tail active]
+    Next[Next turn sees:<br/>summary + recent tail]
+    Cache[Cache-aware prompt:<br/>stable prefix + volatile tail]
+    LLM[Provider call]
+
+    Turn --> History --> Budget
+    Budget -->|no| NoOp --> Next
+    Budget -->|yes| Compact --> Tail --> Next
+    Next --> Cache --> LLM --> Turn
+```
+
 ## What Compaction Does
 
 When session history approaches the configured context budget, OpenSquilla can

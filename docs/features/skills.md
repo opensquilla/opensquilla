@@ -7,6 +7,24 @@ possible instruction into every prompt.
 Skills are separate from memory. Memory stores facts; skills describe repeatable
 ways to work.
 
+```mermaid
+flowchart LR
+    User([User request])
+    Catalog[(Installed skill catalog<br/>bundled + taps)]
+    Match{Skill description<br/>matches task?}
+    Load[Load skill instructions<br/>+ scripts]
+    Tools[Use skill tools<br/>on next turn]
+    Run[Run skill script]
+    Result[Skill result]
+
+    User --> Match
+    Catalog --> Match
+    Match -->|yes| Load --> Tools
+    Match -->|no| Catalog
+    Tools --> Run --> Result --> User
+    User -.skills install / tap add.-> Catalog
+```
+
 ## What Skills Are For
 
 Use skills for repeatable work patterns such as:

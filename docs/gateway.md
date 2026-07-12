@@ -7,6 +7,30 @@ OpenSquilla surfaces work best when the gateway is running.
 Use this page when you want to start, stop, inspect, expose, or troubleshoot
 the gateway.
 
+```mermaid
+sequenceDiagram
+    autonumber
+    participant Client as Client<br/>(Web UI / CLI / Channel)
+    participant TCP as TCP bind<br/>127.0.0.1:18791
+    participant Auth as Auth / token check
+    participant Router as RPC router
+    participant Runtime as Agent runtime<br/>+ sessions
+    participant Disk as SQLite + artifacts
+
+    Client->>TCP: HTTP / WS connect
+    TCP->>Auth: parse headers & token
+    alt token valid
+        Auth->>Router: forward request
+        Router->>Runtime: invoke handler<br/>(chat / sessions / cron / ...)
+        Runtime->>Disk: load + persist session
+        Runtime-->>Router: result / stream
+        Router-->>Client: 200 OK or streaming events
+    else token missing / invalid
+        Auth-->>Client: 401 Unauthorized
+    end
+    Note over Client,TCP: Ctrl+C / SIGTERM / POST /api/system/shutdown<br/>triggers graceful drain of in-flight turns
+```
+
 ## Foreground Gateway
 
 Run the gateway in the current terminal:

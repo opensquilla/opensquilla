@@ -7,6 +7,25 @@ run on the most expensive model.
 Use this page when you want to enable routing, understand what it changes, or
 decide whether a fixed provider/model is better for a specific run.
 
+```mermaid
+flowchart LR
+    Turn([Incoming turn])
+    Router[SquillaRouter<br/>local classifier]
+    Catalog[(Provider catalog<br/>OpenRouter, OpenAI, ...)]
+    Cheap[Cheap tier<br/>routine turns]
+    Strong[Strong tier<br/>hard reasoning]
+    Baseline[Baseline model<br/>when routing disabled]
+    Meta[Router metadata<br/>tier, confidence, fallback]
+    HUD[TUI Router HUD<br/>display-only]
+
+    Turn --> Router
+    Catalog --> Router
+    Router -->|easy| Cheap --> Meta
+    Router -->|hard| Strong --> Meta
+    Router -. disabled .-> Baseline --> Meta
+    Meta --> HUD
+```
+
 ## Why Use It
 
 SquillaRouter is useful when you want:

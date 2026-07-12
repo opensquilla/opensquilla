@@ -226,3 +226,38 @@ async def test_stream_iteration_timeout_does_not_double_close_provider_stream(
             pass
 
     assert close_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_total_deadline_limited_wait_stays_total_timeout_on_early_wake(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    agent = Agent.__new__(Agent)
+    agent.config = SimpleNamespace(timeout=0.05, iteration_timeout=30.0)
+    observed_timeouts: list[float | None] = []
+
+    async def provider_stream() -> AsyncIterator[dict[str, str]]:
+        await asyncio.sleep(30.0)
+        yield {"type": "chunk", "data": "late"}
+
+    async def return_before_deadline(
+        futures: set[asyncio.Future[Any]],
+        *,
+        timeout: float | None = None,
+    ) -> tuple[set[asyncio.Future[Any]], set[asyncio.Future[Any]]]:
+        observed_timeouts.append(timeout)
+        return set(), futures
+
+    monkeypatch.setattr(asyncio, "wait", return_before_deadline)
+    fake_loop: Any = SimpleNamespace(time=lambda: 10.0)
+
+    with pytest.raises(TimeoutError, match="total timeout") as exc_info:
+        async for _event in agent._stream_provider_events_with_deadline(
+            provider_stream(),
+            loop=fake_loop,
+            total_deadline=10.05,
+        ):
+            pass
+
+    assert type(exc_info.value) is TimeoutError
+    assert observed_timeouts == [pytest.approx(0.05)]

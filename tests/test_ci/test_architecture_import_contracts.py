@@ -32,6 +32,9 @@ APPROVED_PACKAGE_IMPORTS: frozenset[tuple[str, str]] = frozenset({
     ("cli", "observability"),
     ("cli", "onboarding"),
     ("cli", "persistence"),
+    # The offline recovery adapter is deliberately not registered by the root
+    # CLI in this layer; recovery never imports the CLI back.
+    ("cli", "recovery"),
     ("cli", "sandbox"),
     ("cli", "search"),
     ("cli", "session"),

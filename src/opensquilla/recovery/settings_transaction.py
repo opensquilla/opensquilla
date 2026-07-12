@@ -1,0 +1,773 @@
+"""Crash-recoverable Desktop credential/config pair updates.
+
+The Desktop process sends candidate bytes over the child process stdin.  This
+module never accepts credentials on argv and never includes file contents or
+content digests in its journal, protocol, exceptions, or logs.
+"""
+
+from __future__ import annotations
+
+import contextlib
+import ctypes
+import json
+import os
+import stat
+import tempfile
+import tomllib
+import uuid
+from collections.abc import Callable
+from pathlib import Path
+from typing import Any
+
+from opensquilla.recovery.atomic import PathIdentity, native_move_no_replace
+from opensquilla.recovery.config_patch import ConfigSnapshot
+from opensquilla.recovery.errors import AtomicStateUnknownError, RecoveryError
+from opensquilla.recovery.locking import LegacyGatewayLock, ProfileOperationLock
+from opensquilla.recovery.models import RecoveryReport
+
+SETTINGS_TRANSACTION_SCHEMA_VERSION = 1
+MAX_SETTINGS_INPUT_BYTES = 8 * 1024 * 1024
+_DESKTOP_PROFILE_KINDS = frozenset({"desktop-primary", "desktop-recovery"})
+_SETTINGS_TRANSACTION_PHASES = frozenset(
+    {"prepared", "credential_published", "config_published", "committed"}
+)
+
+
+def _normalized(path: str | Path) -> str:
+    candidate = Path(path).expanduser()
+    try:
+        candidate = candidate.resolve(strict=False)
+    except OSError:
+        candidate = candidate.absolute()
+    return os.path.normcase(os.path.normpath(str(candidate)))
+
+
+def settings_transaction_journal(home: str | Path) -> Path:
+    home_path = Path(home).expanduser().absolute()
+    return home_path.parent / f".{home_path.name}.desktop-settings-transaction.json"
+
+
+def settings_transaction_exists(home: str | Path) -> bool:
+    try:
+        return os.path.lexists(settings_transaction_journal(home))
+    except OSError:
+        return True
+
+
+def _require_desktop_profile_kind() -> None:
+    profile_kind = os.environ.get("OPENSQUILLA_PROFILE_KIND", "").strip().lower()
+    if profile_kind not in _DESKTOP_PROFILE_KINDS:
+        raise RecoveryError(
+            "Desktop settings transactions require an explicit Desktop profile kind",
+            stable_code="settings_profile_kind_invalid",
+        )
+
+
+def _fsync_directory(path: Path) -> None:
+    if os.name == "nt":
+        return
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_CLOEXEC", 0)
+    try:
+        fd = os.open(path, flags)
+    except OSError:
+        return
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def _write_all(fd: int, data: bytes) -> None:
+    view = memoryview(data)
+    while view:
+        count = os.write(fd, view)
+        if count <= 0:
+            raise OSError("short settings transaction write")
+        view = view[count:]
+
+
+def _write_no_replace(path: Path, data: bytes, *, mode: int = 0o600) -> PathIdentity:
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_CLOEXEC", 0)
+    flags |= getattr(os, "O_NOFOLLOW", 0)
+    fd = os.open(path, flags, mode)
+    try:
+        with contextlib.suppress(OSError):
+            os.fchmod(fd, mode)
+        _write_all(fd, data)
+        os.fsync(fd)
+        value = os.fstat(fd)
+    except BaseException:
+        os.close(fd)
+        with contextlib.suppress(OSError):
+            path.unlink()
+        raise
+    os.close(fd)
+    _fsync_directory(path.parent)
+    return PathIdentity.from_stat(value)
+
+
+def _atomic_replace(source: Path, destination: Path) -> None:
+    if os.name != "nt":
+        os.replace(source, destination)
+        _fsync_directory(destination.parent)
+        return
+    move_file = ctypes.windll.kernel32.MoveFileExW  # type: ignore[attr-defined]
+    move_file.argtypes = [ctypes.c_wchar_p, ctypes.c_wchar_p, ctypes.c_uint32]
+    move_file.restype = ctypes.c_int
+    # REPLACE_EXISTING | WRITE_THROUGH: do not report success before the move
+    # has reached durable storage on Windows.
+    if not move_file(str(source), str(destination), 0x1 | 0x8):
+        raise OSError("MoveFileExW durable replacement failed")
+
+
+def _durable_move_no_replace(source: Path, destination: Path) -> None:
+    if os.name != "nt":
+        native_move_no_replace(source, destination)
+        _fsync_directory(destination.parent)
+        return
+    move_file = ctypes.windll.kernel32.MoveFileExW  # type: ignore[attr-defined]
+    move_file.argtypes = [ctypes.c_wchar_p, ctypes.c_wchar_p, ctypes.c_uint32]
+    move_file.restype = ctypes.c_int
+    # WRITE_THROUGH without REPLACE_EXISTING preserves the no-overwrite rule.
+    if not move_file(str(source), str(destination), 0x8):
+        raise OSError("MoveFileExW durable no-replace move failed")
+
+
+def _replace_bytes(path: Path, data: bytes, *, mode: int = 0o600) -> None:
+    fd, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
+    temporary: Path | None = Path(temporary_name)
+    try:
+        with contextlib.suppress(OSError):
+            os.fchmod(fd, mode)
+        _write_all(fd, data)
+        os.fsync(fd)
+        os.close(fd)
+        fd = -1
+        assert temporary is not None
+        _atomic_replace(temporary, path)
+        temporary = None
+    finally:
+        if fd >= 0:
+            os.close(fd)
+        if temporary is not None:
+            with contextlib.suppress(OSError):
+                temporary.unlink()
+
+
+def _write_journal(path: Path, payload: dict[str, Any], *, replace: bool) -> None:
+    data = (json.dumps(payload, ensure_ascii=False, sort_keys=True) + "\n").encode()
+    if replace:
+        _replace_bytes(path, data)
+    else:
+        _write_no_replace(path, data)
+
+
+def _identity_payload(identity: PathIdentity) -> dict[str, int]:
+    return {
+        "device": identity.device,
+        "inode": identity.inode,
+        "mode": identity.mode,
+        "size": identity.size,
+        "modified_at_ns": identity.modified_at_ns,
+    }
+
+
+def _identity_matches(path: Path, expected: object) -> bool:
+    if not isinstance(expected, dict):
+        return False
+    try:
+        value = path.lstat()
+    except OSError:
+        return False
+    attributes = int(getattr(value, "st_file_attributes", 0))
+    if stat.S_ISLNK(value.st_mode) or attributes & 0x400 or not stat.S_ISREG(value.st_mode):
+        return False
+    identity = PathIdentity.from_stat(value)
+    current = _identity_payload(identity)
+    return all(current[key] == expected.get(key) for key in current)
+
+
+def _plain_directory(path: Path, *, create: bool = False) -> None:
+    if create:
+        path.mkdir(mode=0o700, parents=False, exist_ok=True)
+    try:
+        value = path.lstat()
+    except OSError as exc:
+        raise RecoveryError(
+            "Desktop settings parent is unavailable",
+            stable_code="settings_parent_unavailable",
+        ) from exc
+    attributes = int(getattr(value, "st_file_attributes", 0))
+    if stat.S_ISLNK(value.st_mode) or attributes & 0x400 or not stat.S_ISDIR(value.st_mode):
+        raise RecoveryError(
+            "Desktop settings parent is unsafe",
+            stable_code="settings_parent_unsafe",
+        )
+    with contextlib.suppress(OSError):
+        path.chmod(0o700)
+
+
+def _parse_input(payload: object) -> tuple[str | None, str, str | None, str]:
+    if not isinstance(payload, dict) or set(payload) != {
+        "expected_config",
+        "config",
+        "expected_credential",
+        "credential",
+    }:
+        raise RecoveryError(
+            "Desktop settings input schema is invalid",
+            stable_code="settings_input_invalid",
+        )
+    expected_config = payload.get("expected_config")
+    config = payload.get("config")
+    expected_credential = payload.get("expected_credential")
+    credential = payload.get("credential")
+    if (
+        expected_config is not None
+        and not isinstance(expected_config, str)
+        or expected_credential is not None
+        and not isinstance(expected_credential, str)
+        or not isinstance(config, str)
+        or not isinstance(credential, str)
+    ):
+        raise RecoveryError(
+            "Desktop settings input types are invalid",
+            stable_code="settings_input_invalid",
+        )
+    if len(config.encode()) > MAX_SETTINGS_INPUT_BYTES or len(credential.encode()) > 1024 * 1024:
+        raise RecoveryError(
+            "Desktop settings input is too large",
+            stable_code="settings_input_too_large",
+        )
+    try:
+        config_payload = tomllib.loads(config)
+        credential_payload = json.loads(credential)
+    except (tomllib.TOMLDecodeError, UnicodeError, json.JSONDecodeError) as exc:
+        raise RecoveryError(
+            "Desktop settings candidate is invalid",
+            stable_code="settings_input_invalid",
+        ) from exc
+    if not isinstance(config_payload, dict) or not isinstance(credential_payload, dict):
+        raise RecoveryError(
+            "Desktop settings candidate is invalid",
+            stable_code="settings_input_invalid",
+        )
+    return expected_config, config, expected_credential, credential
+
+
+def _assert_cas(snapshot: ConfigSnapshot, expected: str | None, *, label: str) -> None:
+    if expected is None:
+        matches = snapshot.identity is None
+    else:
+        try:
+            expected_bytes = expected.encode("utf-8")
+        except UnicodeEncodeError:
+            matches = False
+        else:
+            matches = snapshot.identity is not None and snapshot.data == expected_bytes
+    if not matches:
+        raise RecoveryError(
+            f"Desktop {label} changed after settings preflight",
+            stable_code="settings_source_changed",
+        )
+
+
+def _resolved_config_path(home: Path, value: object) -> Path | None:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    candidate = Path(value).expanduser()
+    if not candidate.is_absolute():
+        candidate = home / candidate
+    return candidate.absolute()
+
+
+def _assert_data_roots_unchanged(
+    home: Path,
+    old_data: bytes,
+    new_text: str,
+    inspection: RecoveryReport,
+) -> None:
+    try:
+        old = tomllib.loads(old_data.decode("utf-8")) if old_data else {}
+        new = tomllib.loads(new_text)
+    except (UnicodeDecodeError, tomllib.TOMLDecodeError) as exc:
+        raise RecoveryError(
+            "Desktop config cannot be compared safely",
+            stable_code="settings_input_invalid",
+        ) from exc
+    for key in ("workspace_dir", "state_dir", "media_dir"):
+        if key in old and new.get(key) != old.get(key):
+            raise RecoveryError(
+                "Desktop settings cannot change profile data roots",
+                stable_code="settings_data_root_changed",
+            )
+    expected_workspace = inspection.effective_workspace
+    expected_state = next(
+        (candidate.path for candidate in inspection.candidates if candidate.kind == "state"),
+        None,
+    )
+    for key, expected in (
+        ("workspace_dir", expected_workspace),
+        ("state_dir", expected_state),
+    ):
+        if key not in old and key in new:
+            candidate = _resolved_config_path(home, new.get(key))
+            if (
+                expected is None
+                or candidate is None
+                or _normalized(candidate) != _normalized(expected)
+            ):
+                raise RecoveryError(
+                    "Desktop settings cannot introduce a different profile data root",
+                    stable_code="settings_data_root_changed",
+                )
+    if "media_dir" not in old and "media_dir" in new:
+        raise RecoveryError(
+            "Desktop settings cannot introduce a media data root",
+            stable_code="settings_data_root_changed",
+        )
+    old_attachments = old.get("attachments")
+    new_attachments = new.get("attachments")
+    old_media_root = (
+        old_attachments.get("media_root") if isinstance(old_attachments, dict) else None
+    )
+    new_media_root = (
+        new_attachments.get("media_root") if isinstance(new_attachments, dict) else None
+    )
+    old_has_media_root = isinstance(old_attachments, dict) and "media_root" in old_attachments
+    new_has_media_root = isinstance(new_attachments, dict) and "media_root" in new_attachments
+    if (
+        old_has_media_root != new_has_media_root
+        or (old_has_media_root and new_media_root != old_media_root)
+    ):
+        raise RecoveryError(
+            "Desktop settings cannot change attachment media data roots",
+            stable_code="settings_data_root_changed",
+        )
+
+
+def _artifact_paths(home: Path, transaction_id: str) -> dict[str, Path]:
+    credential = home.parent / "desktop-credential.json"
+    config = home / "config.toml"
+    return {
+        "credential": credential,
+        "config": config,
+        "credential_new": credential.with_name(f".{credential.name}.{transaction_id}.new"),
+        "config_new": config.with_name(f".{config.name}.{transaction_id}.new"),
+        "credential_backup": credential.with_name(f".{credential.name}.{transaction_id}.old"),
+        "config_backup": config.with_name(f".{config.name}.{transaction_id}.old"),
+    }
+
+
+def _remove_exact(path: Path, expected: object) -> None:
+    if not os.path.lexists(path):
+        return
+    if not _identity_matches(path, expected):
+        raise AtomicStateUnknownError("settings transaction artifact identity is ambiguous")
+    path.unlink()
+    _fsync_directory(path.parent)
+
+
+def _old_destination_matches(path: Path, expected: object) -> bool:
+    if expected is None:
+        return not os.path.lexists(path)
+    return _identity_matches(path, expected)
+
+
+def _publish(
+    source: Path,
+    destination: Path,
+    expected: object,
+    *,
+    expected_destination: object,
+) -> None:
+    if not _identity_matches(source, expected):
+        raise AtomicStateUnknownError("settings transaction candidate identity is ambiguous")
+    if not _old_destination_matches(destination, expected_destination):
+        raise AtomicStateUnknownError("settings transaction destination changed before publication")
+    _atomic_replace(source, destination)
+    if not _identity_matches(destination, expected):
+        raise AtomicStateUnknownError("settings transaction publication state is ambiguous")
+
+
+def _cleanup_committed(journal: Path, payload: dict[str, Any], paths: dict[str, Path]) -> None:
+    identities = payload.get("identities")
+    if not isinstance(identities, dict):
+        raise AtomicStateUnknownError("settings transaction identities are unavailable")
+    for role in ("credential_backup", "config_backup", "credential_new", "config_new"):
+        expected = identities.get(role)
+        if expected is not None:
+            _remove_exact(paths[role], expected)
+        elif os.path.lexists(paths[role]):
+            raise AtomicStateUnknownError("unexpected settings transaction artifact remains")
+    snapshot = ConfigSnapshot.capture(journal)
+    if snapshot.identity is None:
+        return
+    journal.unlink()
+    _fsync_directory(journal.parent)
+
+
+def _rollback_one(
+    *,
+    live: Path,
+    staged: Path,
+    backup: Path,
+    old_identity: object,
+    new_identity: object,
+    backup_identity: object,
+) -> None:
+    if _identity_matches(live, new_identity):
+        if os.path.lexists(staged):
+            raise AtomicStateUnknownError("settings rollback destination is occupied")
+        _durable_move_no_replace(live, staged)
+    elif not _old_destination_matches(live, old_identity):
+        raise AtomicStateUnknownError("settings rollback live identity is ambiguous")
+
+    if old_identity is None:
+        if os.path.lexists(live):
+            raise AtomicStateUnknownError("settings rollback could not restore missing state")
+        return
+    if _identity_matches(live, old_identity):
+        return
+    if not _identity_matches(backup, backup_identity):
+        raise AtomicStateUnknownError("settings rollback backup identity is ambiguous")
+    _durable_move_no_replace(backup, live)
+
+
+def _rollback_settings(journal: Path, payload: dict[str, Any], paths: dict[str, Path]) -> None:
+    identities = payload.get("identities")
+    if not isinstance(identities, dict):
+        raise AtomicStateUnknownError("settings rollback identities are unavailable")
+    # Restore config first so no runtime can observe a new config with an old
+    # credential if an operator ignores the bootstrap guard during recovery.
+    for role in ("config", "credential"):
+        _rollback_one(
+            live=paths[role],
+            staged=paths[f"{role}_new"],
+            backup=paths[f"{role}_backup"],
+            old_identity=identities.get(f"old_{role}"),
+            new_identity=identities.get(f"{role}_new"),
+            backup_identity=identities.get(f"{role}_backup"),
+        )
+    _cleanup_committed(journal, payload, paths)
+
+
+def _load_journal(home: Path) -> tuple[Path, dict[str, Any], dict[str, Path]]:
+    journal = settings_transaction_journal(home)
+    snapshot = ConfigSnapshot.capture(journal)
+    if snapshot.identity is None:
+        raise RecoveryError(
+            "Desktop settings transaction does not exist",
+            stable_code="settings_transaction_missing",
+        )
+    try:
+        payload = json.loads(snapshot.data.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise RecoveryError(
+            "Desktop settings transaction journal is invalid",
+            stable_code="settings_transaction_invalid",
+        ) from exc
+    if not isinstance(payload, dict):
+        raise RecoveryError(
+            "Desktop settings transaction journal is invalid",
+            stable_code="settings_transaction_invalid",
+        )
+    transaction_id = payload.get("transaction_id")
+    try:
+        canonical_id = str(uuid.UUID(str(transaction_id)))
+    except ValueError as exc:
+        raise RecoveryError(
+            "Desktop settings transaction id is invalid",
+            stable_code="settings_transaction_invalid",
+        ) from exc
+    paths = _artifact_paths(home, canonical_id)
+    expected_paths = {key: _normalized(path) for key, path in paths.items()}
+    if (
+        payload.get("schema_version") != SETTINGS_TRANSACTION_SCHEMA_VERSION
+        or payload.get("operation") != "desktop-settings"
+        or transaction_id != canonical_id
+        or payload.get("phase") not in _SETTINGS_TRANSACTION_PHASES
+        or payload.get("home") != _normalized(home)
+        or payload.get("paths") != expected_paths
+        or not isinstance(payload.get("fresh_canonical"), bool)
+        or not isinstance(payload.get("identities"), dict)
+    ):
+        raise RecoveryError(
+            "Desktop settings transaction journal is invalid",
+            stable_code="settings_transaction_invalid",
+        )
+    return journal, payload, paths
+
+
+def _assert_recovery_phase_state(
+    payload: dict[str, Any],
+    paths: dict[str, Path],
+) -> None:
+    identities = payload["identities"]
+
+    def publication_state(role: str) -> tuple[bool, bool]:
+        live = paths[role]
+        staged = paths[f"{role}_new"]
+        old_identity = identities.get(f"old_{role}")
+        new_identity = identities.get(f"{role}_new")
+        unpublished = (
+            _old_destination_matches(live, old_identity)
+            and _identity_matches(staged, new_identity)
+        )
+        published = (
+            _identity_matches(live, new_identity)
+            and not os.path.lexists(staged)
+        )
+        return unpublished, published
+
+    credential_unpublished, credential_published = publication_state("credential")
+    config_unpublished, config_published = publication_state("config")
+    phase = payload["phase"]
+    allowed = {
+        # A process can die after the native publish and before its next journal
+        # fsync, so each phase admits that one adjacent crash window only.
+        "prepared": (
+            (credential_unpublished and config_unpublished)
+            or (credential_published and config_unpublished)
+        ),
+        "credential_published": (
+            credential_published and (config_unpublished or config_published)
+        ),
+        "config_published": credential_published and config_published,
+        "committed": credential_published and config_published,
+    }
+    if allowed.get(phase) is not True:
+        raise AtomicStateUnknownError(
+            "settings transaction phase and file identities are inconsistent"
+        )
+
+
+def recover_desktop_settings(
+    home: str | Path,
+    *,
+    lock_timeout: float = 0.0,
+) -> RecoveryReport:
+    """Finish an identity-proven interrupted pair publication."""
+
+    _require_desktop_profile_kind()
+    home_path = Path(home).expanduser().absolute()
+    with ProfileOperationLock(home_path, timeout=lock_timeout):
+        with LegacyGatewayLock(home_path, timeout=lock_timeout):
+            journal, payload, paths = _load_journal(home_path)
+            identities = payload["identities"]
+            credential_new = identities.get("credential_new")
+            config_new = identities.get("config_new")
+            credential_live_new = _identity_matches(paths["credential"], credential_new)
+            config_live_new = _identity_matches(paths["config"], config_new)
+            credential_staged = _identity_matches(paths["credential_new"], credential_new)
+            config_staged = _identity_matches(paths["config_new"], config_new)
+            _assert_recovery_phase_state(payload, paths)
+
+            if payload.get("fresh_canonical") is True:
+                _plain_directory(home_path)
+                for canonical_root in (home_path / "workspace", home_path / "state"):
+                    _plain_directory(canonical_root, create=True)
+
+            if not credential_live_new:
+                if not credential_staged:
+                    raise AtomicStateUnknownError(
+                        "settings credential publication state is ambiguous"
+                    )
+                _publish(
+                    paths["credential_new"],
+                    paths["credential"],
+                    credential_new,
+                    expected_destination=identities.get("old_credential"),
+                )
+            if not config_live_new:
+                if not config_staged:
+                    raise AtomicStateUnknownError("settings config publication state is ambiguous")
+                _publish(
+                    paths["config_new"],
+                    paths["config"],
+                    config_new,
+                    expected_destination=identities.get("old_config"),
+                )
+            payload["phase"] = "committed"
+            _write_journal(journal, payload, replace=True)
+            _cleanup_committed(journal, payload, paths)
+
+    from opensquilla.recovery.engine import inspect_profile
+
+    return inspect_profile(home_path)
+
+
+def apply_desktop_settings(
+    home: str | Path,
+    *,
+    transaction_id: str,
+    expected_revision: int,
+    payload: object,
+    lock_timeout: float = 0.0,
+    _failpoint: Callable[[str], None] | None = None,
+) -> RecoveryReport:
+    """CAS-check and durably publish one credential/config pair."""
+
+    _require_desktop_profile_kind()
+    expected_config, config_text, expected_credential, credential_text = _parse_input(payload)
+    home_path = Path(home).expanduser().absolute()
+    journal = settings_transaction_journal(home_path)
+    callback = _failpoint or (lambda _phase: None)
+
+    with ProfileOperationLock(home_path, timeout=lock_timeout):
+        with LegacyGatewayLock(home_path, timeout=lock_timeout):
+            if os.path.lexists(journal):
+                raise RecoveryError(
+                    "An interrupted Desktop settings transaction must be recovered first",
+                    stable_code="settings_transaction_incomplete",
+                )
+            from opensquilla.recovery.engine import inspect_profile
+
+            before = inspect_profile(home_path, _ignore_settings_transaction=True)
+            if (
+                before.outcome == "recovery_required"
+                or before.transaction_id != transaction_id
+                or before.revision != expected_revision
+            ):
+                raise RecoveryError(
+                    "Desktop profile changed after settings inspection",
+                    stable_code="stale_recovery_transaction",
+                )
+
+            _plain_directory(home_path.parent)
+            if not home_path.exists():
+                _plain_directory(home_path, create=True)
+            else:
+                _plain_directory(home_path)
+            operation_id = str(uuid.uuid4())
+            paths = _artifact_paths(home_path, operation_id)
+            config_snapshot = ConfigSnapshot.capture(paths["config"])
+            credential_snapshot = ConfigSnapshot.capture(paths["credential"])
+            _assert_cas(config_snapshot, expected_config, label="config")
+            _assert_cas(credential_snapshot, expected_credential, label="credential")
+            if credential_snapshot.identity is not None:
+                try:
+                    existing_credential = json.loads(credential_snapshot.data.decode("utf-8"))
+                except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+                    raise RecoveryError(
+                        "Existing Desktop credential is invalid",
+                        stable_code="settings_credential_invalid",
+                    ) from exc
+                if not isinstance(existing_credential, dict):
+                    raise RecoveryError(
+                        "Existing Desktop credential is invalid",
+                        stable_code="settings_credential_invalid",
+                    )
+            _assert_data_roots_unchanged(
+                home_path,
+                config_snapshot.data,
+                config_text,
+                before,
+            )
+
+            identities: dict[str, object] = {
+                "old_credential": (
+                    _identity_payload(credential_snapshot.identity)
+                    if credential_snapshot.identity is not None
+                    else None
+                ),
+                "old_config": (
+                    _identity_payload(config_snapshot.identity)
+                    if config_snapshot.identity is not None
+                    else None
+                ),
+            }
+            identities["credential_new"] = _identity_payload(
+                _write_no_replace(paths["credential_new"], credential_text.encode())
+            )
+            identities["config_new"] = _identity_payload(
+                _write_no_replace(paths["config_new"], config_text.encode())
+            )
+            identities["credential_backup"] = (
+                _identity_payload(
+                    _write_no_replace(
+                        paths["credential_backup"],
+                        credential_snapshot.data,
+                        mode=credential_snapshot.mode,
+                    )
+                )
+                if credential_snapshot.identity is not None
+                else None
+            )
+            identities["config_backup"] = (
+                _identity_payload(
+                    _write_no_replace(
+                        paths["config_backup"],
+                        config_snapshot.data,
+                        mode=config_snapshot.mode,
+                    )
+                )
+                if config_snapshot.identity is not None
+                else None
+            )
+            journal_payload: dict[str, Any] = {
+                "schema_version": SETTINGS_TRANSACTION_SCHEMA_VERSION,
+                "operation": "desktop-settings",
+                "transaction_id": operation_id,
+                "phase": "prepared",
+                "home": _normalized(home_path),
+                "fresh_canonical": before.stable_code
+                in {"fresh_profile", "fresh_recovery_profile"},
+                "paths": {key: _normalized(path) for key, path in paths.items()},
+                "identities": identities,
+            }
+            _write_journal(journal, journal_payload, replace=False)
+            try:
+                if before.stable_code in {"fresh_profile", "fresh_recovery_profile"}:
+                    for canonical_root in (home_path / "workspace", home_path / "state"):
+                        _plain_directory(canonical_root, create=True)
+                callback("prepared")
+                _publish(
+                    paths["credential_new"],
+                    paths["credential"],
+                    identities["credential_new"],
+                    expected_destination=identities["old_credential"],
+                )
+                journal_payload["phase"] = "credential_published"
+                _write_journal(journal, journal_payload, replace=True)
+                callback("credential_published")
+                _publish(
+                    paths["config_new"],
+                    paths["config"],
+                    identities["config_new"],
+                    expected_destination=identities["old_config"],
+                )
+                journal_payload["phase"] = "config_published"
+                _write_journal(journal, journal_payload, replace=True)
+                callback("config_published")
+                journal_payload["phase"] = "committed"
+                _write_journal(journal, journal_payload, replace=True)
+                _cleanup_committed(journal, journal_payload, paths)
+            except Exception as exc:
+                if before.stable_code in {"fresh_profile", "fresh_recovery_profile"}:
+                    raise AtomicStateUnknownError(
+                        "Fresh Desktop settings publication must be recovered before bootstrap"
+                    ) from exc
+                try:
+                    _rollback_settings(journal, journal_payload, paths)
+                except Exception as rollback_error:
+                    raise AtomicStateUnknownError(
+                        "Desktop settings failed and rollback state is uncertain"
+                    ) from rollback_error
+                if isinstance(exc, RecoveryError):
+                    raise
+                raise RecoveryError(
+                    "Desktop settings transaction was rolled back",
+                    stable_code="settings_apply_failed",
+                ) from exc
+
+    return inspect_profile(home_path)
+
+
+__all__ = [
+    "MAX_SETTINGS_INPUT_BYTES",
+    "apply_desktop_settings",
+    "recover_desktop_settings",
+    "settings_transaction_exists",
+    "settings_transaction_journal",
+]

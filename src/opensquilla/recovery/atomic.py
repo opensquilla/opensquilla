@@ -1,0 +1,645 @@
+"""Fail-closed filesystem primitives used by recovery transactions."""
+
+from __future__ import annotations
+
+import ctypes
+import errno
+import ntpath
+import os
+import stat
+import sys
+from collections.abc import Callable
+from dataclasses import dataclass
+from pathlib import Path
+
+from opensquilla.recovery.errors import (
+    AtomicStateUnknownError,
+    CrossDeviceMoveError,
+    DestinationExistsError,
+    NoReplaceUnavailableError,
+    RecoveryError,
+    UnsafePathError,
+)
+
+_RENAME_NOREPLACE = 1
+_RENAME_EXCL = 0x00000004
+_WINDOWS_ERROR_ALREADY_EXISTS = 183
+_WINDOWS_ERROR_FILE_EXISTS = 80
+_WINDOWS_ERROR_NOT_SAME_DEVICE = 17
+_WINDOWS_ERROR_INVALID_FUNCTION = 1
+_WINDOWS_ERROR_NOT_SUPPORTED = 50
+_WINDOWS_ERROR_INVALID_PARAMETER = 87
+_WINDOWS_ERROR_CALL_NOT_IMPLEMENTED = 120
+_FILE_ATTRIBUTE_REPARSE_POINT = 0x400
+_FILE_ATTRIBUTE_DIRECTORY = 0x10
+_WINDOWS_DELETE_ACCESS = 0x00010000
+_WINDOWS_FILE_LIST_DIRECTORY = 0x00000001
+_WINDOWS_FILE_READ_ATTRIBUTES = 0x00000080
+_WINDOWS_SYNCHRONIZE = 0x00100000
+_WINDOWS_FILE_SHARE_READ = 0x00000001
+_WINDOWS_FILE_SHARE_WRITE = 0x00000002
+_WINDOWS_FILE_SHARE_DELETE = 0x00000004
+_WINDOWS_OPEN_EXISTING = 3
+_WINDOWS_FILE_FLAG_OPEN_REPARSE_POINT = 0x00200000
+_WINDOWS_FILE_FLAG_BACKUP_SEMANTICS = 0x02000000
+_WINDOWS_FILE_ATTRIBUTE_TAG_INFO = 9
+_WINDOWS_FILE_ID_INFO = 18
+_WINDOWS_FILE_RENAME_INFO = 3
+
+
+class _WindowsFileAttributeTagInfo(ctypes.Structure):
+    _fields_ = [
+        ("file_attributes", ctypes.c_uint32),
+        ("reparse_tag", ctypes.c_uint32),
+    ]
+
+
+class _WindowsFileId128(ctypes.Structure):
+    _fields_ = [("identifier", ctypes.c_ubyte * 16)]
+
+
+class _WindowsFileIdInfo(ctypes.Structure):
+    _fields_ = [
+        ("volume_serial_number", ctypes.c_uint64),
+        ("file_id", _WindowsFileId128),
+    ]
+
+
+@dataclass(frozen=True)
+class PathIdentity:
+    """Non-content filesystem identity used for CAS and transaction receipts."""
+
+    device: int
+    inode: int
+    mode: int
+    size: int
+    modified_at_ns: int
+
+    @classmethod
+    def from_stat(cls, value: os.stat_result) -> PathIdentity:
+        return cls(
+            device=int(value.st_dev),
+            inode=int(value.st_ino),
+            mode=int(value.st_mode),
+            size=int(value.st_size),
+            modified_at_ns=int(value.st_mtime_ns),
+        )
+
+    @property
+    def token(self) -> str:
+        return f"{self.device}:{self.inode}"
+
+    def metadata_tuple(self) -> tuple[int, int, int, int, int]:
+        return (self.device, self.inode, self.mode, self.size, self.modified_at_ns)
+
+
+def _is_reparse_point(value: os.stat_result) -> bool:
+    attributes = int(getattr(value, "st_file_attributes", 0))
+    return bool(attributes & _FILE_ATTRIBUTE_REPARSE_POINT)
+
+
+def _is_link_or_reparse(value: os.stat_result) -> bool:
+    return stat.S_ISLNK(value.st_mode) or _is_reparse_point(value)
+
+
+def path_identity(path: str | Path, *, follow_symlinks: bool = False) -> PathIdentity:
+    candidate = Path(path)
+    value = candidate.stat() if follow_symlinks else candidate.lstat()
+    return PathIdentity.from_stat(value)
+
+
+def _assert_plain_directory(path: Path, *, label: str) -> os.stat_result:
+    try:
+        value = path.lstat()
+    except OSError as exc:
+        raise UnsafePathError(f"{label} is not accessible: {path}") from exc
+    if _is_link_or_reparse(value) or not stat.S_ISDIR(value.st_mode):
+        raise UnsafePathError(f"{label} must be a real directory: {path}")
+    return value
+
+
+def _assert_bound_directory(
+    fd: int,
+    expected: PathIdentity,
+    *,
+    label: str,
+) -> None:
+    """Verify a no-follow directory handle still names the preflight object."""
+
+    try:
+        value = os.fstat(fd)
+    except OSError as exc:
+        raise UnsafePathError(f"cannot verify opened {label}") from exc
+    if not stat.S_ISDIR(value.st_mode):
+        raise UnsafePathError(f"opened {label} is not a directory")
+    if (int(value.st_dev), int(value.st_ino)) != (expected.device, expected.inode):
+        raise UnsafePathError(f"{label} identity changed before native move")
+
+
+def no_follow_manifest(root: str | Path) -> dict[str, PathIdentity]:
+    """Enumerate a regular file/directory tree without following links.
+
+    The manifest intentionally contains metadata only. Recovery diagnostics and
+    receipts must never persist hashes of user-authored Markdown or transcripts.
+    """
+
+    root_path = Path(root)
+    root_stat = root_path.lstat()
+    if _is_link_or_reparse(root_stat):
+        raise UnsafePathError(f"automatic operations refuse links or reparse points: {root_path}")
+    if not (stat.S_ISDIR(root_stat.st_mode) or stat.S_ISREG(root_stat.st_mode)):
+        raise UnsafePathError(f"automatic operations refuse special files: {root_path}")
+
+    result = {".": PathIdentity.from_stat(root_stat)}
+    if stat.S_ISREG(root_stat.st_mode):
+        return result
+
+    def visit(directory: Path, relative: Path) -> None:
+        try:
+            entries = sorted(os.scandir(directory), key=lambda entry: entry.name)
+        except OSError as exc:
+            raise UnsafePathError(f"cannot enumerate recovery source: {directory}") from exc
+        for entry in entries:
+            child_relative = relative / entry.name
+            try:
+                value = entry.stat(follow_symlinks=False)
+            except OSError as exc:
+                raise UnsafePathError(f"cannot inspect recovery source: {entry.path}") from exc
+            if _is_link_or_reparse(value):
+                raise UnsafePathError(
+                    f"automatic operations refuse links or reparse points: {entry.path}"
+                )
+            if not (stat.S_ISDIR(value.st_mode) or stat.S_ISREG(value.st_mode)):
+                raise UnsafePathError(f"automatic operations refuse special files: {entry.path}")
+            result[child_relative.as_posix()] = PathIdentity.from_stat(value)
+            if stat.S_ISDIR(value.st_mode):
+                visit(Path(entry.path), child_relative)
+
+    visit(root_path, Path())
+    return result
+
+
+def _linux_rename_no_replace(
+    source: Path,
+    destination: Path,
+    *,
+    source_parent_identity: PathIdentity | None = None,
+    destination_parent_identity: PathIdentity | None = None,
+) -> None:
+    libc = ctypes.CDLL(None, use_errno=True)
+    renameat2 = getattr(libc, "renameat2", None)
+    if renameat2 is None:
+        raise NoReplaceUnavailableError("renameat2(RENAME_NOREPLACE) is unavailable")
+    renameat2.argtypes = [
+        ctypes.c_int,
+        ctypes.c_char_p,
+        ctypes.c_int,
+        ctypes.c_char_p,
+        ctypes.c_uint,
+    ]
+    renameat2.restype = ctypes.c_int
+
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_CLOEXEC", 0)
+    flags |= getattr(os, "O_NOFOLLOW", 0)
+    source_expected = source_parent_identity or PathIdentity.from_stat(
+        _assert_plain_directory(source.parent, label="source parent")
+    )
+    destination_expected = destination_parent_identity or PathIdentity.from_stat(
+        _assert_plain_directory(destination.parent, label="destination parent")
+    )
+    source_fd = os.open(source.parent, flags)
+    try:
+        _assert_bound_directory(source_fd, source_expected, label="source parent")
+        destination_fd = os.open(destination.parent, flags)
+        try:
+            _assert_bound_directory(
+                destination_fd,
+                destination_expected,
+                label="destination parent",
+            )
+            result = renameat2(
+                source_fd,
+                os.fsencode(source.name),
+                destination_fd,
+                os.fsencode(destination.name),
+                _RENAME_NOREPLACE,
+            )
+        finally:
+            os.close(destination_fd)
+    finally:
+        os.close(source_fd)
+    if result == 0:
+        return
+    error_number = ctypes.get_errno()
+    if error_number in (errno.EEXIST, errno.ENOTEMPTY):
+        raise DestinationExistsError(f"destination already exists: {destination}")
+    if error_number == errno.EXDEV:
+        raise CrossDeviceMoveError("cross-filesystem recovery moves are not allowed")
+    if error_number in (errno.ENOSYS, errno.EINVAL, errno.ENOTSUP):
+        raise NoReplaceUnavailableError("renameat2(RENAME_NOREPLACE) is unavailable")
+    raise RecoveryError(
+        f"native no-replace move failed: {os.strerror(error_number)}",
+        stable_code="no_replace_move_failed",
+    )
+
+
+def _macos_rename_no_replace(
+    source: Path,
+    destination: Path,
+    *,
+    source_parent_identity: PathIdentity | None = None,
+    destination_parent_identity: PathIdentity | None = None,
+) -> None:
+    libc = ctypes.CDLL(None, use_errno=True)
+    renameatx_np = getattr(libc, "renameatx_np", None)
+    if renameatx_np is None:
+        raise NoReplaceUnavailableError("renameatx_np(RENAME_EXCL) is unavailable")
+    renameatx_np.argtypes = [
+        ctypes.c_int,
+        ctypes.c_char_p,
+        ctypes.c_int,
+        ctypes.c_char_p,
+        ctypes.c_uint,
+    ]
+    renameatx_np.restype = ctypes.c_int
+
+    # Bind both parents before the mutation.  A path-only renamex_np call can
+    # be redirected if either parent is exchanged after preflight.  dirfd-based
+    # renameatx_np keeps the no-replace destination inside the directories we
+    # actually inspected, matching the Linux renameat2 contract.
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_CLOEXEC", 0)
+    flags |= getattr(os, "O_NOFOLLOW", 0)
+    source_expected = source_parent_identity or PathIdentity.from_stat(
+        _assert_plain_directory(source.parent, label="source parent")
+    )
+    destination_expected = destination_parent_identity or PathIdentity.from_stat(
+        _assert_plain_directory(destination.parent, label="destination parent")
+    )
+    try:
+        source_fd = os.open(source.parent, flags)
+    except OSError as exc:
+        raise UnsafePathError(f"source parent changed before native move: {source.parent}") from exc
+    try:
+        _assert_bound_directory(source_fd, source_expected, label="source parent")
+        try:
+            destination_fd = os.open(destination.parent, flags)
+        except OSError as exc:
+            raise UnsafePathError(
+                f"destination parent changed before native move: {destination.parent}"
+            ) from exc
+        try:
+            _assert_bound_directory(
+                destination_fd,
+                destination_expected,
+                label="destination parent",
+            )
+            result = renameatx_np(
+                source_fd,
+                os.fsencode(source.name),
+                destination_fd,
+                os.fsencode(destination.name),
+                _RENAME_EXCL,
+            )
+        finally:
+            os.close(destination_fd)
+    finally:
+        os.close(source_fd)
+    if result == 0:
+        return
+    error_number = ctypes.get_errno()
+    if error_number in (errno.EEXIST, errno.ENOTEMPTY):
+        raise DestinationExistsError(f"destination already exists: {destination}")
+    if error_number == errno.EXDEV:
+        raise CrossDeviceMoveError("cross-filesystem recovery moves are not allowed")
+    if error_number in (errno.ENOSYS, errno.EINVAL, errno.ENOTSUP):
+        raise NoReplaceUnavailableError("renameatx_np(RENAME_EXCL) is unavailable")
+    raise RecoveryError(
+        f"native no-replace move failed: {os.strerror(error_number)}",
+        stable_code="no_replace_move_failed",
+    )
+
+
+def _windows_rename_info(destination_name: str, destination_parent_handle: int):
+    """Build a handle-relative FILE_RENAME_INFO buffer with replacement disabled."""
+
+    if not destination_name or destination_name in {".", ".."}:
+        raise UnsafePathError("destination leaf name is invalid")
+    name_type = ctypes.c_wchar * len(destination_name)
+
+    class _WindowsFileRenameInfo(ctypes.Structure):
+        _fields_ = [
+            ("flags", ctypes.c_uint32),
+            ("root_directory", ctypes.c_void_p),
+            ("file_name_length", ctypes.c_uint32),
+            ("file_name", name_type),
+        ]
+
+    info = _WindowsFileRenameInfo()
+    info.flags = 0  # FILE_RENAME_FLAG_REPLACE_IF_EXISTS is deliberately absent.
+    info.root_directory = destination_parent_handle
+    info.file_name_length = len(destination_name.encode("utf-16-le"))
+    info.file_name = destination_name
+    return info
+
+
+def _windows_handle_value(handle: object) -> int:
+    value = getattr(handle, "value", handle)
+    if value is None:
+        return 0
+    if not isinstance(value, int):
+        raise UnsafePathError("Windows returned an invalid native handle")
+    return value
+
+
+def _windows_move_no_replace(
+    source: Path,
+    destination: Path,
+    *,
+    source_identity: PathIdentity | None = None,
+    source_parent_identity: PathIdentity | None = None,
+    destination_parent_identity: PathIdentity | None = None,
+    _before_mutation: Callable[[], None] | None = None,
+) -> None:
+    win_dll = getattr(ctypes, "WinDLL")
+    kernel32 = win_dll("kernel32", use_last_error=True)
+    try:
+        create_file = kernel32.CreateFileW
+        get_information = kernel32.GetFileInformationByHandleEx
+        set_information = kernel32.SetFileInformationByHandle
+        close_handle = kernel32.CloseHandle
+    except AttributeError as exc:
+        raise NoReplaceUnavailableError(
+            "handle-relative Windows rename APIs are unavailable"
+        ) from exc
+    create_file.argtypes = [
+        ctypes.c_wchar_p,
+        ctypes.c_uint32,
+        ctypes.c_uint32,
+        ctypes.c_void_p,
+        ctypes.c_uint32,
+        ctypes.c_uint32,
+        ctypes.c_void_p,
+    ]
+    create_file.restype = ctypes.c_void_p
+    get_information.argtypes = [
+        ctypes.c_void_p,
+        ctypes.c_int,
+        ctypes.c_void_p,
+        ctypes.c_uint32,
+    ]
+    get_information.restype = ctypes.c_int
+    set_information.argtypes = [
+        ctypes.c_void_p,
+        ctypes.c_int,
+        ctypes.c_void_p,
+        ctypes.c_uint32,
+    ]
+    set_information.restype = ctypes.c_int
+    close_handle.argtypes = [ctypes.c_void_p]
+    close_handle.restype = ctypes.c_int
+
+    unsupported_errors = {
+        _WINDOWS_ERROR_INVALID_FUNCTION,
+        _WINDOWS_ERROR_NOT_SUPPORTED,
+        _WINDOWS_ERROR_INVALID_PARAMETER,
+        _WINDOWS_ERROR_CALL_NOT_IMPLEMENTED,
+    }
+    # DELETE sharing would let another process rename an inspected parent after
+    # its identity check but before SetFileInformationByHandle. Pin both parents
+    # and the source object for the complete mutation instead.
+    pinned_share_mode = _WINDOWS_FILE_SHARE_READ | _WINDOWS_FILE_SHARE_WRITE
+    open_flags = _WINDOWS_FILE_FLAG_BACKUP_SEMANTICS | _WINDOWS_FILE_FLAG_OPEN_REPARSE_POINT
+    invalid_handle = ctypes.c_void_p(-1).value
+
+    def open_handle(path: Path, access: int, *, label: str) -> int:
+        handle = _windows_handle_value(
+            create_file(
+                _windows_extended_path(path),
+                access,
+                pinned_share_mode,
+                None,
+                _WINDOWS_OPEN_EXISTING,
+                open_flags,
+                None,
+            )
+        )
+        if handle in {0, invalid_handle}:
+            error_number = getattr(ctypes, "get_last_error")()
+            raise UnsafePathError(
+                f"cannot bind {label} for native move (Windows error {error_number})"
+            )
+        return handle
+
+    def assert_handle(
+        handle: int,
+        expected: PathIdentity,
+        *,
+        label: str,
+        require_directory: bool,
+    ) -> None:
+        attributes = _WindowsFileAttributeTagInfo()
+        if not get_information(
+            handle,
+            _WINDOWS_FILE_ATTRIBUTE_TAG_INFO,
+            ctypes.byref(attributes),
+            ctypes.sizeof(attributes),
+        ):
+            error_number = getattr(ctypes, "get_last_error")()
+            if error_number in unsupported_errors:
+                raise NoReplaceUnavailableError(
+                    "Windows handle attribute query is unavailable"
+                )
+            raise UnsafePathError(
+                f"cannot verify {label} handle (Windows error {error_number})"
+            )
+        if attributes.file_attributes & _FILE_ATTRIBUTE_REPARSE_POINT:
+            raise UnsafePathError(f"{label} became a reparse point before native move")
+        if require_directory and not attributes.file_attributes & _FILE_ATTRIBUTE_DIRECTORY:
+            raise UnsafePathError(f"{label} is not a directory")
+
+        file_id = _WindowsFileIdInfo()
+        if not get_information(
+            handle,
+            _WINDOWS_FILE_ID_INFO,
+            ctypes.byref(file_id),
+            ctypes.sizeof(file_id),
+        ):
+            error_number = getattr(ctypes, "get_last_error")()
+            if error_number in unsupported_errors:
+                raise NoReplaceUnavailableError("Windows file identity query is unavailable")
+            raise UnsafePathError(
+                f"cannot verify {label} identity (Windows error {error_number})"
+            )
+        actual_inode = int.from_bytes(bytes(file_id.file_id.identifier), "little")
+        if (
+            int(file_id.volume_serial_number) != expected.device
+            or actual_inode != expected.inode
+        ):
+            raise UnsafePathError(f"{label} identity changed before native move")
+
+    source_expected = source_identity or path_identity(source)
+    source_parent_expected = source_parent_identity or path_identity(source.parent)
+    destination_parent_expected = destination_parent_identity or path_identity(
+        destination.parent
+    )
+    parent_access = (
+        _WINDOWS_FILE_LIST_DIRECTORY
+        | _WINDOWS_FILE_READ_ATTRIBUTES
+        | _WINDOWS_SYNCHRONIZE
+    )
+    source_parent_handle = open_handle(
+        source.parent,
+        parent_access,
+        label="source parent",
+    )
+    error_number = 0
+    try:
+        assert_handle(
+            source_parent_handle,
+            source_parent_expected,
+            label="source parent",
+            require_directory=True,
+        )
+        source_handle = open_handle(
+            source,
+            _WINDOWS_DELETE_ACCESS | _WINDOWS_FILE_READ_ATTRIBUTES | _WINDOWS_SYNCHRONIZE,
+            label="source",
+        )
+        try:
+            assert_handle(
+                source_handle,
+                source_expected,
+                label="source",
+                require_directory=stat.S_ISDIR(source_expected.mode),
+            )
+            destination_parent_handle = open_handle(
+                destination.parent,
+                parent_access,
+                label="destination parent",
+            )
+            try:
+                assert_handle(
+                    destination_parent_handle,
+                    destination_parent_expected,
+                    label="destination parent",
+                    require_directory=True,
+                )
+                if _before_mutation is not None:
+                    _before_mutation()
+                rename_info = _windows_rename_info(destination.name, destination_parent_handle)
+                if set_information(
+                    source_handle,
+                    _WINDOWS_FILE_RENAME_INFO,
+                    ctypes.byref(rename_info),
+                    ctypes.sizeof(rename_info),
+                ):
+                    return
+                error_number = getattr(ctypes, "get_last_error")()
+            finally:
+                close_handle(destination_parent_handle)
+        finally:
+            close_handle(source_handle)
+    finally:
+        close_handle(source_parent_handle)
+    if error_number in (_WINDOWS_ERROR_ALREADY_EXISTS, _WINDOWS_ERROR_FILE_EXISTS):
+        raise DestinationExistsError(f"destination already exists: {destination}")
+    if error_number == _WINDOWS_ERROR_NOT_SAME_DEVICE:
+        raise CrossDeviceMoveError("cross-filesystem recovery moves are not allowed")
+    if error_number in unsupported_errors:
+        raise NoReplaceUnavailableError("handle-relative Windows rename is unavailable")
+    raise RecoveryError(
+        f"native no-replace move failed with Windows error {error_number}",
+        stable_code="no_replace_move_failed",
+    )
+
+
+def _windows_extended_path(path: str | Path) -> str:
+    """Return a MoveFileW-compatible extended-length absolute spelling."""
+    value = ntpath.abspath(str(path))
+    if value.startswith("\\\\?\\"):
+        return value
+    if value.startswith("\\\\"):
+        return f"\\\\?\\UNC\\{value[2:]}"
+    return f"\\\\?\\{value}"
+
+
+def native_move_no_replace(source: str | Path, destination: str | Path) -> None:
+    """Atomically move ``source`` without ever replacing ``destination``.
+
+    There is deliberately no check-then-rename or copy/delete fallback. If the
+    required platform primitive is missing, the operation stops for recovery UI.
+    """
+
+    source_path = Path(source).expanduser().absolute()
+    destination_path = Path(destination).expanduser().absolute()
+    if source_path == destination_path:
+        raise UnsafePathError("source and destination are the same path")
+
+    source_parent_before = PathIdentity.from_stat(
+        _assert_plain_directory(source_path.parent, label="source parent")
+    )
+    destination_parent_before = PathIdentity.from_stat(
+        _assert_plain_directory(destination_path.parent, label="destination parent")
+    )
+    if source_parent_before.device != destination_parent_before.device:
+        raise CrossDeviceMoveError("cross-filesystem recovery moves are not allowed")
+
+    try:
+        destination_path.lstat()
+    except FileNotFoundError:
+        pass
+    else:
+        raise DestinationExistsError(f"destination already exists: {destination_path}")
+
+    manifest_before = no_follow_manifest(source_path)
+    if sys.platform.startswith("linux"):
+        _linux_rename_no_replace(
+            source_path,
+            destination_path,
+            source_parent_identity=source_parent_before,
+            destination_parent_identity=destination_parent_before,
+        )
+    elif sys.platform == "darwin":
+        _macos_rename_no_replace(
+            source_path,
+            destination_path,
+            source_parent_identity=source_parent_before,
+            destination_parent_identity=destination_parent_before,
+        )
+    elif os.name == "nt" or sys.platform == "win32":
+        _windows_move_no_replace(
+            source_path,
+            destination_path,
+            source_identity=manifest_before["."],
+            source_parent_identity=source_parent_before,
+            destination_parent_identity=destination_parent_before,
+        )
+    else:
+        raise NoReplaceUnavailableError(f"no native no-replace move for {sys.platform}")
+
+    try:
+        source_parent_after = path_identity(source_path.parent)
+        destination_parent_after = path_identity(destination_path.parent)
+        manifest_after = no_follow_manifest(destination_path)
+    except RecoveryError:
+        raise
+    except OSError as exc:
+        raise AtomicStateUnknownError(
+            "move completed but post-move filesystem state could not be verified"
+        ) from exc
+    if (
+        source_parent_after.token != source_parent_before.token
+        or destination_parent_after.token != destination_parent_before.token
+        or manifest_after != manifest_before
+    ):
+        raise AtomicStateUnknownError(
+            "move completed but parent or source metadata changed during verification"
+        )
+
+
+__all__ = [
+    "PathIdentity",
+    "native_move_no_replace",
+    "no_follow_manifest",
+    "path_identity",
+]

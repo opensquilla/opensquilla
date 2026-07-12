@@ -33,11 +33,15 @@ def test_every_pytest_file_belongs_to_exactly_one_windows_shard() -> None:
     assert set().union(*by_shard.values()) == discovered
     assert sum(len(paths) for paths in by_shard.values()) == len(discovered)
     assert all(len(matching_specialized_shards(path)) <= 1 for path in discovered)
+    assert "tests/fixtures/meta_skill_inputs/code_review_dirty_repo/tests/test_app.py" not in (
+        discovered
+    )
 
 
 def test_windows_shard_responsibilities_cover_high_risk_surfaces() -> None:
     expected = {
         "tests/test_engine/test_agent_max_iterations.py": "core",
+        "tests/test_ci/test_router_artifact_manifest.py": "core",
         "tests/test_gateway/test_task_runtime_terminal_cleanup.py": "gateway-sqlite",
         "tests/test_persistence/test_migrator.py": "gateway-sqlite",
         "tests/test_session/test_manager.py": "gateway-sqlite",
@@ -55,6 +59,10 @@ def test_windows_shard_responsibilities_cover_high_risk_surfaces() -> None:
 
 
 def test_windows_shard_runner_preserves_failure_exit_and_summary(tmp_path: Path) -> None:
+    (tmp_path / "pyproject.toml").write_text(
+        '[tool.pytest.ini_options]\nnorecursedirs = ["tests/fixtures"]\n',
+        encoding="utf-8",
+    )
     tests_dir = tmp_path / "tests"
     tests_dir.mkdir()
     (tests_dir / "test_failure.py").write_text(

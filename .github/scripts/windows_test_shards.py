@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+import tomllib
 import xml.etree.ElementTree as ET
 from pathlib import Path, PurePosixPath
 from typing import Final
@@ -65,14 +66,41 @@ _DESKTOP_INSTALLER_EXACT: Final[frozenset[str]] = frozenset(
         "tests/test_root_start_scripts.py",
     }
 )
+_CORE_EXACT: Final[frozenset[str]] = frozenset(
+    {
+        "tests/test_ci/test_router_artifact_manifest.py",
+    }
+)
 
 
 def discover_test_files(root: Path) -> tuple[str, ...]:
     """Return every pytest file below ``tests/`` as a repository-relative path."""
 
     tests_root = root / "tests"
+    excluded = _pytest_excluded_prefixes(root)
+    relative_paths = (
+        path.relative_to(root).as_posix() for path in tests_root.rglob("test_*.py")
+    )
     return tuple(
-        sorted(path.relative_to(root).as_posix() for path in tests_root.rglob("test_*.py"))
+        sorted(
+            relative
+            for relative in relative_paths
+            if not any(relative.startswith(prefix) for prefix in excluded)
+        )
+    )
+
+
+def _pytest_excluded_prefixes(root: Path) -> tuple[str, ...]:
+    pyproject = root / "pyproject.toml"
+    try:
+        data = tomllib.loads(pyproject.read_text(encoding="utf-8"))
+    except (OSError, tomllib.TOMLDecodeError) as exc:
+        raise ValueError(f"cannot read pytest collection contract from {pyproject}") from exc
+    configured = data.get("tool", {}).get("pytest", {}).get("ini_options", {})
+    return tuple(
+        f"{PurePosixPath(path).as_posix().rstrip('/')}/"
+        for path in configured.get("norecursedirs", ())
+        if PurePosixPath(path).as_posix().startswith("tests/")
     )
 
 
@@ -80,6 +108,8 @@ def matching_specialized_shards(path: str) -> tuple[str, ...]:
     """Return specialized shards whose responsibility rules match ``path``."""
 
     normalized = PurePosixPath(path).as_posix()
+    if normalized in _CORE_EXACT:
+        return ()
     name = PurePosixPath(normalized).name.casefold()
     prefix_matches: list[str] = []
     if normalized.startswith(_GATEWAY_SQLITE_PREFIXES):

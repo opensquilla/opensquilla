@@ -2623,6 +2623,40 @@ class GatewayConfig(BaseSettings):
         """Return dotted display paths for compatibility with existing callers."""
         return {".".join(path) for path in self._force_persist_paths}
 
+    @staticmethod
+    def _resolve_profile_path(raw: str, config_path: Path) -> str:
+        path = Path(raw).expanduser()
+        if path.is_absolute():
+            return str(path)
+        return str((config_path.expanduser().absolute().parent / path).absolute())
+
+    @classmethod
+    def _apply_profile_path_overrides(cls, cfg: GatewayConfig, config_path: Path) -> None:
+        """Resolve data roots relative to the profile config on every surface."""
+
+        for field_name in ("state_dir", "workspace_dir"):
+            raw = getattr(cfg, field_name, None)
+            if isinstance(raw, str) and raw.strip():
+                setattr(cfg, field_name, cls._resolve_profile_path(raw, config_path))
+
+        # Explicit TOML kwargs outrank BaseSettings env sources. Apply the two
+        # public data-root overrides here so runtime and recovery inspection
+        # select exactly the same paths.
+        path_overrides = {
+            "state_dir": os.environ.get("OPENSQUILLA_GATEWAY_STATE_DIR", "").strip(),
+            "workspace_dir": (
+                os.environ.get("OPENSQUILLA_GATEWAY_WORKSPACE_DIR", "").strip()
+                or os.environ.get("OPENSQUILLA_WORKSPACE_DIR", "").strip()
+            ),
+        }
+        for field_name, override in path_overrides.items():
+            if not override:
+                continue
+            stored = getattr(cfg, field_name, None)
+            applied = cls._resolve_profile_path(override, config_path)
+            setattr(cfg, field_name, applied)
+            cfg.record_runtime_override(field_name, stored, applied)
+
     @classmethod
     def load_from_toml(cls, path: str | Path) -> GatewayConfig:
         """Load config from a TOML file."""
@@ -2633,16 +2667,24 @@ class GatewayConfig(BaseSettings):
             data = tomllib.load(f)
         migration = migrate_config_payload(data)
         cfg = cls(**migration.payload)
+        cls._apply_profile_path_overrides(cfg, target)
         if migration.changed:
             _rewrite_migrated_config_best_effort(target, migration)
         return cfg
 
     @classmethod
-    def load(cls, config_path: str | Path | None = None) -> GatewayConfig:
+    def load(
+        cls,
+        config_path: str | Path | None = None,
+        *,
+        read_only: bool = False,
+    ) -> GatewayConfig:
         """Auto-discover and load config.
 
         Precedence: explicit path > current-directory config > user config > defaults.
         Environment variables always override TOML values (Pydantic Settings behavior).
+        ``read_only`` applies compatibility transforms in memory without
+        rewriting the source profile.
         """
         import tomllib
 
@@ -2660,9 +2702,10 @@ class GatewayConfig(BaseSettings):
             if path.is_file():
                 with open(path, "rb") as f:
                     data = tomllib.load(f)
-                migration = migrate_config_payload(data)
+                migration = migrate_config_payload(data, emit_diagnostics=not read_only)
                 cfg = cls(**migration.payload)
-                if migration.changed:
+                cls._apply_profile_path_overrides(cfg, path)
+                if migration.changed and not read_only:
                     _rewrite_migrated_config_best_effort(path, migration)
                 cfg.config_path = str(path)
                 cfg._mark_env_absorbed_secrets(data)
@@ -2670,6 +2713,12 @@ class GatewayConfig(BaseSettings):
                 return cfg
 
         cfg = cls()
+        default_config_path = (
+            candidates[0]
+            if candidates
+            else default_opensquilla_home().expanduser() / "config.toml"
+        )
+        cls._apply_profile_path_overrides(cfg, default_config_path)
         cfg._mark_env_absorbed_secrets(None)
         if config_path:
             cfg.config_path = str(candidates[0])

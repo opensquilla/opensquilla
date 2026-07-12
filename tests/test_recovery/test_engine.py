@@ -41,6 +41,51 @@ def _desktop_config(home: Path, *, workspace: Path | None = None, extra: str = "
     (home / "config.toml").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
+def test_offline_cli_ignores_cwd_dotenv_but_reads_profile_override(
+    tmp_path: Path,
+) -> None:
+    cwd = tmp_path / "cwd"
+    home = tmp_path / "profile"
+    cwd.mkdir()
+    external = _workspace(tmp_path / "profile-workspace")
+    _workspace(home / "workspace")
+    _desktop_config(home)
+    (cwd / ".env").write_text(
+        f"OPENSQUILLA_GATEWAY_WORKSPACE_DIR={tmp_path / 'wrong-cwd'}\n",
+        encoding="utf-8",
+    )
+    (home / ".env").write_text(
+        f"OPENSQUILLA_GATEWAY_WORKSPACE_DIR={external}\n",
+        encoding="utf-8",
+    )
+    environment = os.environ.copy()
+    environment.pop("OPENSQUILLA_GATEWAY_WORKSPACE_DIR", None)
+    environment["OPENSQUILLA_STATE_DIR"] = str(home)
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "opensquilla.cli.main",
+            "recovery",
+            "inspect",
+            "--home",
+            str(home),
+            "--json",
+        ],
+        cwd=cwd,
+        env=environment,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    payload = json.loads(completed.stdout)
+    assert payload["effective_workspace"] == str(external)
+    assert payload["stable_code"] == "workspace_env_override"
+
+
 @pytest.mark.parametrize(
     ("profile_kind", "outcome"),
     [("desktop-primary", "ready"), ("desktop-recovery", "recovery_profile")],

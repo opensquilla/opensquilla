@@ -7,6 +7,7 @@ import platform
 import signal
 import sys
 import tomllib
+from pathlib import Path
 from types import SimpleNamespace
 from urllib.error import URLError
 
@@ -73,6 +74,46 @@ def _patch_wait_for_health(monkeypatch, value: bool) -> None:
 
 def _patch_pid_running(monkeypatch, value: bool) -> None:
     monkeypatch.setattr(Manager, "_pid_running", lambda self, pid: value)
+
+
+def _profile_tree_snapshot(home: Path) -> dict[str, tuple[str, bytes]]:
+    snapshot: dict[str, tuple[str, bytes]] = {}
+    for path in sorted(home.rglob("*")):
+        relative = path.relative_to(home).as_posix()
+        snapshot[relative] = ("directory", b"") if path.is_dir() else ("file", path.read_bytes())
+    return snapshot
+
+
+def _unsafe_desktop_profile(home: Path, *, port: int = 0) -> None:
+    state = home / "state"
+    lifecycle = state / "gateway"
+    lifecycle.mkdir(parents=True)
+    missing_workspace = home.parent / "missing-workspace"
+    (home / "config.toml").write_text(
+        f"state_dir = {json.dumps(str(state))}\n"
+        f"workspace_dir = {json.dumps(str(missing_workspace))}\n",
+        encoding="utf-8",
+    )
+    (lifecycle / "gateway.json").write_text(
+        json.dumps(_record(pid=999_999, port=port)),
+        encoding="utf-8",
+    )
+    logs = home / "logs"
+    logs.mkdir()
+    (logs / "gateway.log").write_bytes(b"synthetic-existing-log\n")
+
+
+def _safe_desktop_profile(home: Path) -> None:
+    state = home / "state"
+    workspace = home / "workspace"
+    state.mkdir(parents=True)
+    workspace.mkdir()
+    (workspace / "SOUL.md").write_text("synthetic-safe-profile\n", encoding="utf-8")
+    (home / "config.toml").write_text(
+        f"state_dir = {json.dumps(str(state))}\n"
+        f"workspace_dir = {json.dumps(str(workspace))}\n",
+        encoding="utf-8",
+    )
 
 
 class _FakeHealthResponse:
@@ -195,6 +236,122 @@ def test_gateway_lifecycle_paths_use_state_root(tmp_path, monkeypatch) -> None:
         tmp_path / "home" / "state" / "gateway" / "gateway.json"
     )
     assert gateway_lifecycle.gateway_log_path() == tmp_path / "home" / "logs" / "gateway.log"
+
+
+def test_safe_desktop_gateway_start_uses_external_lifecycle_state(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    home = tmp_path / "opensquilla"
+    user_state = tmp_path / "user-state"
+    _safe_desktop_profile(home)
+    monkeypatch.setenv("OPENSQUILLA_STATE_DIR", str(home))
+    monkeypatch.setenv("OPENSQUILLA_PROFILE_KIND", "desktop-primary")
+    monkeypatch.setenv("OPENSQUILLA_TEST", "1")
+    monkeypatch.setenv("OPENSQUILLA_USER_STATE_DIR", str(user_state))
+    calls = []
+
+    def fake_popen(argv, **kwargs):
+        calls.append((argv, kwargs))
+        return SimpleNamespace(pid=4242)
+
+    monkeypatch.setattr(gateway_lifecycle.subprocess, "Popen", fake_popen)
+    _patch_health(monkeypatch, False)
+    _patch_wait_for_health(monkeypatch, True)
+
+    result = runner.invoke(app, ["gateway", "start", "--port", "0", "--json"])
+
+    assert result.exit_code == 0, result.stdout
+    payload = _payload(result)
+    pidfile = Path(payload["pidfile"])
+    log_path = Path(payload["logPath"])
+    assert payload["state"] == "running"
+    assert calls
+    assert home not in pidfile.parents
+    assert home not in log_path.parents
+    assert user_state in pidfile.parents
+    assert user_state in log_path.parents
+
+
+@pytest.mark.parametrize("action", ["start", "restart"])
+def test_unsafe_desktop_gateway_lifecycle_blocks_before_spawn_or_write(
+    action: str,
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    home = tmp_path / "opensquilla"
+    user_state = tmp_path / "user-state"
+    _unsafe_desktop_profile(home)
+    before = _profile_tree_snapshot(home)
+    monkeypatch.setenv("OPENSQUILLA_STATE_DIR", str(home))
+    monkeypatch.setenv("OPENSQUILLA_PROFILE_KIND", "desktop-primary")
+    monkeypatch.setenv("OPENSQUILLA_TEST", "1")
+    monkeypatch.setenv("OPENSQUILLA_USER_STATE_DIR", str(user_state))
+
+    def fail_spawn(self, argv):
+        raise AssertionError("unsafe Desktop profile must not spawn a gateway")
+
+    monkeypatch.setattr(Manager, "_spawn_gateway", fail_spawn)
+
+    result = getattr(Manager(port=0, health_timeout=0), action)()
+
+    assert result.ok is False
+    assert result.state == "recovery_required"
+    assert result.code == "DESKTOP_PROFILE_RECOVERY_REQUIRED"
+    assert result.details["stableCode"] == "effective_workspace_missing"
+    assert _profile_tree_snapshot(home) == before
+    assert not user_state.exists()
+
+
+@pytest.mark.parametrize("action", ["start", "restart"])
+def test_desktop_lifecycle_rejects_config_outside_profile_before_write(
+    action: str,
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    home = tmp_path / "opensquilla"
+    user_state = tmp_path / "user-state"
+    _safe_desktop_profile(home)
+    outside = tmp_path / "outside.toml"
+    outside.write_text("synthetic = true\n", encoding="utf-8")
+    before = _profile_tree_snapshot(home)
+    monkeypatch.setenv("OPENSQUILLA_STATE_DIR", str(home))
+    monkeypatch.setenv("OPENSQUILLA_PROFILE_KIND", "desktop-primary")
+    monkeypatch.setenv("OPENSQUILLA_TEST", "1")
+    monkeypatch.setenv("OPENSQUILLA_USER_STATE_DIR", str(user_state))
+
+    result = getattr(
+        Manager(config_path=str(outside), port=0, health_timeout=0),
+        action,
+    )()
+
+    assert result.ok is False
+    assert result.code == "DESKTOP_PROFILE_RECOVERY_REQUIRED"
+    assert result.details["stableCode"] == "desktop_config_outside_profile"
+    assert _profile_tree_snapshot(home) == before
+    assert not user_state.exists()
+
+
+def test_desktop_gateway_run_rejects_config_outside_profile_before_loading_it(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    home = tmp_path / "opensquilla"
+    _safe_desktop_profile(home)
+    outside = tmp_path / "outside.toml"
+    outside.write_text("synthetic = true\n", encoding="utf-8")
+    monkeypatch.setenv("OPENSQUILLA_STATE_DIR", str(home))
+    monkeypatch.setenv("OPENSQUILLA_PROFILE_KIND", "desktop-primary")
+
+    def fail_load(*_args, **_kwargs):
+        raise AssertionError("out-of-profile config must be rejected before load")
+
+    monkeypatch.setattr(gateway_cmd.GatewayConfig, "load", fail_load)
+
+    result = runner.invoke(app, ["gateway", "run", "--config", str(outside)])
+
+    assert result.exit_code == 1
+    assert "DESKTOP_CONFIG_OUTSIDE_PROFILE" in result.stdout
 
 
 def test_gateway_help_lists_lifecycle_commands() -> None:

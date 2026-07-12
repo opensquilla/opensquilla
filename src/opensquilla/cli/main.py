@@ -18,6 +18,24 @@ _LOADED_ENV_CONTEXTS: set[tuple[Path, Path]] = set()
 _LOADED_LOCAL_ENV_CWDS: set[Path] = set()
 
 
+def _top_level_command(argv: list[str]) -> str | None:
+    """Return the top-level command before ordinary CLI bootstrap runs."""
+
+    index = 1
+    while index < len(argv):
+        value = argv[index]
+        if value == "--":
+            return argv[index + 1] if index + 1 < len(argv) else None
+        if value == "--profile":
+            index += 2
+            continue
+        if value.startswith("--profile=") or value.startswith("-"):
+            index += 1
+            continue
+        return value
+    return None
+
+
 def _profile_from_top_level_argv(argv: list[str]) -> str | None:
     """Return a top-level ``--profile`` value without consuming subcommand flags."""
     index = 1
@@ -74,11 +92,22 @@ def _load_env_for_active_home() -> None:
 
 _preactivate_profile_from_argv(sys.argv)
 
+_RECOVERY_OFFLINE = (
+    os.environ.get("OPENSQUILLA_RECOVERY_OFFLINE", "").strip().lower()
+    in {"1", "true", "yes", "on"}
+    or _top_level_command(sys.argv) == "recovery"
+)
+if _RECOVERY_OFFLINE:
+    # Electron also sets this explicitly. argv detection keeps direct CLI use
+    # on the same path before dotenv or the selected profile can influence it.
+    os.environ["OPENSQUILLA_RECOVERY_OFFLINE"] = "1"
+
 # Populate os.environ from .env files before any submodule import reads keys.
 # Precedence: os.environ > $CWD/.env.test during tests > $CWD/.env
 # > $CWD/.env.test fallback outside tests > selected OpenSquilla home/.env.
-_load_env_for_active_home()
-warn_if_proxy_ignored()
+if not _RECOVERY_OFFLINE:
+    _load_env_for_active_home()
+    warn_if_proxy_ignored()
 
 from opensquilla.cli.agent_cmd import run_agent_command  # noqa: E402
 from opensquilla.cli.agents_cmd import agents_app  # noqa: E402
@@ -99,6 +128,7 @@ from opensquilla.cli.migrate_cmd import migrate_app  # noqa: E402
 from opensquilla.cli.models_cmd import app as models_app  # noqa: E402
 from opensquilla.cli.onboard_cmd import configure_command, onboard_app  # noqa: E402
 from opensquilla.cli.providers_cmd import providers_app  # noqa: E402
+from opensquilla.cli.recovery_cmd import recovery_app  # noqa: E402
 from opensquilla.cli.replay import replay_app  # noqa: E402
 from opensquilla.cli.router_cmd import router_app  # noqa: E402
 from opensquilla.cli.sandbox_cmd import sandbox_app  # noqa: E402
@@ -131,8 +161,9 @@ def _main_callback(
     # their own richer configurations over this default when they run.
     configure_cli_structlog()
     _activate_profile(profile)
-    _load_env_for_active_home()
-    warn_if_proxy_ignored()
+    if not _RECOVERY_OFFLINE:
+        _load_env_for_active_home()
+        warn_if_proxy_ignored()
 
 # ── Sub-apps ─────────────────────────────────────────────────────────────────
 
@@ -145,6 +176,7 @@ app.add_typer(cron_app, name="cron")
 app.add_typer(dist_app, name="dist")
 app.add_typer(mcp_server_app, name="mcp-server")
 app.add_typer(migrate_app, name="migrate")
+app.add_typer(recovery_app, name="recovery")
 app.add_typer(models_app, name="models")
 app.add_typer(ensemble_app, name="ensemble")
 app.add_typer(providers_app, name="providers")
@@ -666,14 +698,18 @@ def gateway_run(
     opt-in only — the gateway's default auth assumes loopback scope.
     """
     from opensquilla.cli.gateway_cmd import run_gateway
+    from opensquilla.recovery import guarded_desktop_profile
 
-    run_gateway(
-        port=port,
-        bind=bind,
-        listen=listen,
-        debug=debug,
-        config_path=config_path,
-    )
+    # The child that owns the gateway retains both the RC4 profile lock and
+    # the legacy gateway lease for its complete write-capable lifetime.
+    with guarded_desktop_profile():
+        run_gateway(
+            port=port,
+            bind=bind,
+            listen=listen,
+            debug=debug,
+            config_path=config_path,
+        )
 
 
 @gateway_app.command("start")
@@ -973,36 +1009,39 @@ def agent(
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
 ) -> None:
     """Run a single agent turn for automation."""
-    run_agent_command(
-        message=message,
-        agent_id=agent_id,
-        session_id=session_id,
-        model=model,
-        workspace=workspace,
-        workspace_strict=workspace_strict,
-        workspace_lockdown=workspace_lockdown,
-        workspace_lockdown_deny_paths=workspace_lockdown_deny_paths,
-        scratch_dir=scratch_dir,
-        thinking=thinking,
-        timeout=timeout,
-        max_iterations=max_iterations,
-        iteration_timeout_seconds=iteration_timeout_seconds,
-        tool_timeout_seconds=tool_timeout_seconds,
-        request_timeout_seconds=request_timeout_seconds,
-        max_provider_retries=max_provider_retries,
-        length_capped_continuations=length_capped_continuations,
-        transcript_path=transcript_path,
-        usage_path=usage_path,
-        session_db_path=session_db_path,
-        no_memory_capture=no_memory_capture,
-        file_paths=file_paths,
-        unattended=unattended,
-        stateless=stateless,
-        clean_room=clean_room,
-        stateless_keep_project_rules=stateless_keep_project_rules,
-        permissions=permissions,
-        json_output=json_output,
-    )
+    from opensquilla.recovery import guarded_desktop_profile
+
+    with guarded_desktop_profile():
+        run_agent_command(
+            message=message,
+            agent_id=agent_id,
+            session_id=session_id,
+            model=model,
+            workspace=workspace,
+            workspace_strict=workspace_strict,
+            workspace_lockdown=workspace_lockdown,
+            workspace_lockdown_deny_paths=workspace_lockdown_deny_paths,
+            scratch_dir=scratch_dir,
+            thinking=thinking,
+            timeout=timeout,
+            max_iterations=max_iterations,
+            iteration_timeout_seconds=iteration_timeout_seconds,
+            tool_timeout_seconds=tool_timeout_seconds,
+            request_timeout_seconds=request_timeout_seconds,
+            max_provider_retries=max_provider_retries,
+            length_capped_continuations=length_capped_continuations,
+            transcript_path=transcript_path,
+            usage_path=usage_path,
+            session_db_path=session_db_path,
+            no_memory_capture=no_memory_capture,
+            file_paths=file_paths,
+            unattended=unattended,
+            stateless=stateless,
+            clean_room=clean_room,
+            stateless_keep_project_rules=stateless_keep_project_rules,
+            permissions=permissions,
+            json_output=json_output,
+        )
 
 
 @app.command("chat")
@@ -1023,10 +1062,26 @@ def chat(
     """Start interactive chat mode."""
     from opensquilla.cli.chat_cmd import run_chat
 
+    if standalone:
+        from opensquilla.recovery import guarded_desktop_profile
+
+        with guarded_desktop_profile():
+            run_chat(
+                model=model,
+                session_id=session_id,
+                standalone=True,
+                workspace=workspace,
+                workspace_strict=workspace_strict,
+                timeout=timeout,
+            )
+        return
+
+    # Gateway-backed chat is a client of the already-locked gateway; taking
+    # the same lock here would reject the ordinary interactive client.
     run_chat(
         model=model,
         session_id=session_id,
-        standalone=standalone,
+        standalone=False,
         workspace=workspace,
         workspace_strict=workspace_strict,
         timeout=timeout,

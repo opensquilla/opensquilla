@@ -3559,7 +3559,9 @@ def test_committed_import_verifier_returns_only_locked_protocol_metadata(
         "base_url": "https://openrouter.ai/api/v1",
         "api_key_env": "OPENROUTER_API_KEY",
     }
-    assert verified["report"]["output_dir"] == report["output_dir"]
+    assert _normalized_path(Path(verified["report"]["output_dir"])) == _normalized_path(
+        Path(report["output_dir"])
+    )
     serialized = json.dumps(verified, ensure_ascii=False)
     assert DUMMY_INLINE_KEY not in serialized
     assert "dummy session content" not in serialized
@@ -3837,5 +3839,5 @@ def test_orchestrator_runs_opensquilla_source(tmp_path: Path, monkeypatch) -> No
     )
 
     assert report["source_kind"] == "cli-home"
-    assert report["target"] == _normalized_path(target)
+    assert _normalized_path(Path(report["target"])) == _normalized_path(target)
     assert not any(item["status"] == "error" for item in report["items"])

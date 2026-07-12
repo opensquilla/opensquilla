@@ -3451,6 +3451,25 @@ class OpenSquillaHomeMigrator:
                     "publication cancelled"
                 )
 
+    def _source_gateway_authority_is_no_longer_stable(self) -> bool:
+        """Recheck excluded authority after an apply error releases its leases.
+
+        Some Windows lock-file mutations can invalidate the compatibility
+        lease before the normal bracketed verifier produces its stable error.
+        The outer apply handler calls this only after context-manager teardown,
+        so a fresh read-only capture can preserve the more useful fail-closed
+        classification without obscuring an unchanged source's real error.
+        """
+
+        for expected in self._source_gateway_authority:
+            try:
+                current = _capture_legacy_gateway_authority(expected.root)
+            except OSError:
+                return True
+            if current != expected:
+                return True
+        return False
+
     def _verify_source_snapshots(self) -> None:
         """Second full scan: any add/remove/change aborts before publication."""
         for expected in self._source_snapshots:
@@ -4864,6 +4883,12 @@ class OpenSquillaHomeMigrator:
                     self._verify_source_still_stable(final_source_lock)
                     self._commit(staging, final_source_lock)
         except (OSError, RuntimeError) as exc:
+            apply_error = exc
+            if self._source_gateway_authority_is_no_longer_stable():
+                apply_error = OSError(
+                    "source legacy gateway authority changed during import; "
+                    "publication cancelled"
+                )
             if (
                 not self._committed
                 and not os.path.lexists(_commit_journal_path(self.target))
@@ -4875,14 +4900,15 @@ class OpenSquillaHomeMigrator:
                 "opensquilla_home_migration.apply_failed",
                 source=str(self.source),
                 target=str(self.target),
-                error=str(exc),
+                error=str(apply_error),
             )
             self._record(
                 "apply",
                 self.source,
                 self.target,
                 "error",
-                f"import failed before completion: {exc}; the transaction was not completed",
+                f"import failed before completion: {apply_error}; "
+                "the transaction was not completed",
             )
             if not self._committed:
                 self._wrote_output_dir = False

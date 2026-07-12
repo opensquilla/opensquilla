@@ -319,10 +319,10 @@ try {
     })
   } catch (error) {
     const renderer = await page.evaluate(() => ({
-      errorPresent: Boolean(document.getElementById('error')?.textContent),
+      error: document.getElementById('error')?.textContent || '',
       statusVisible: !document.getElementById('migrationStatus')?.hidden,
       summaryVisible: !document.getElementById('migrationSummary')?.hidden,
-    })).catch(() => ({ errorPresent: false, statusVisible: false, summaryVisible: false }))
+    })).catch(() => ({ error: '', statusVisible: false, summaryVisible: false }))
     const pendingPhase = await readFile(
       join(userData, 'migration-provider-setup.json'),
       'utf8',
@@ -333,11 +333,25 @@ try {
     const backupCount = await readdir(userData)
       .then((entries) => entries.filter((name) => name.startsWith('opensquilla.backup.')).length)
       .catch(() => 0)
+    const migrationResult = await readFile(
+      join(userData, 'migration-last-result.json'),
+      'utf8',
+    ).then((raw) => {
+      const value = JSON.parse(raw)
+      return {
+        ok: value?.ok === true,
+        migrationApplied: value?.migrationApplied === true,
+        restartOk: value?.restartOk === true,
+        requiresProviderSetup: value?.requiresProviderSetup === true,
+        detail: typeof value?.detail === 'string' ? value.detail : '',
+      }
+    }).catch(() => null)
     const diagnostics = {
       renderer,
       pendingPhase,
       receiptCount,
       backupCount,
+      migrationResult,
       importedIdentityPresent: await readFile(
         join(target, 'workspace', 'IDENTITY.md'),
         'utf8',

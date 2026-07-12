@@ -1098,18 +1098,12 @@ def test_windows_handoff_keeps_external_state_lock_open(
 def test_moved_legacy_lock_can_be_rebound_without_dropping_exclusion(
     tmp_path: Path,
 ) -> None:
-    import opensquilla.recovery.locking as locking_module
-
     staging = tmp_path / "staging"
     target = tmp_path / "target"
     (staging / "state").mkdir(parents=True)
 
     with LegacyGatewayLock(staging):
-        native_move_no_replace(staging, target)
-        locking_module.rebind_legacy_gateway_lock(
-            staging / "state",
-            target / "state",
-        )
+        move_profile_no_replace(staging, target)
         with LegacyGatewayLock(target):
             context = multiprocessing.get_context(
                 "spawn" if sys.platform == "win32" else "fork"
@@ -1125,6 +1119,10 @@ def test_moved_legacy_lock_can_be_rebound_without_dropping_exclusion(
             assert queue.get(timeout=1) == "busy"
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="manual rebind unit; Windows handoff tamper is covered by native move tests",
+)
 def test_moved_legacy_lock_rebind_rejects_tampered_destination_state(
     tmp_path: Path,
 ) -> None:
@@ -1166,12 +1164,8 @@ def test_rebound_target_keeps_displaced_backup_lock_registered_until_release(
     with LegacyGatewayLock(target):
         displaced = locking_module._PROCESS_LEGACY_LOCKS[target_key]
         with LegacyGatewayLock(staging):
-            native_move_no_replace(target, backup)
-            native_move_no_replace(staging, target)
-            locking_module.rebind_legacy_gateway_lock(
-                staging / "state",
-                target / "state",
-            )
+            move_profile_no_replace(target, backup)
+            move_profile_no_replace(staging, target)
 
             assert displaced in locking_module._PROCESS_LEGACY_LOCKS.values()
 

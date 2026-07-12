@@ -190,8 +190,8 @@ def test_default_ci_blocks_pull_requests_and_main_pushes() -> None:
     assert "actionlint@v1.7.12" in text
     assert "Classify changed files" in text
     assert "OpenTUI package tests" in text
-    assert "Ubuntu quality gate" in text
-    assert "Windows compatibility smoke tests" in text
+    assert "Lint, test, and build (ubuntu-latest, 3.12)" in text
+    assert "Windows compatibility smoke (3.12)" in text
     assert "Windows high-risk" in text
     assert "Release packaging contracts" in text
     assert "CI result" in text
@@ -211,7 +211,7 @@ def test_default_ci_blocks_pull_requests_and_main_pushes() -> None:
     assert "platform_sensitive_changed" in text
     assert "build_wheel_required" in text
     assert "full_required" in text
-    assert "allow_success_or_skipped" in text
+    assert ".github/scripts/check_ci_results.py" in text
     assert "code_changed" not in text
     assert "workflow_changed" not in text
 
@@ -681,6 +681,32 @@ def test_ci_change_classifier_runs_full_for_its_own_windows_gate(tmp_path: Path)
     )
 
 
+def test_ci_change_classifier_fails_closed_for_future_ci_surfaces(tmp_path: Path) -> None:
+    outputs = _classify_changed_files(
+        tmp_path,
+        [
+            ".github/workflows/future-profile-safety.yml",
+            ".github/scripts/future_profile_gate.py",
+        ],
+    )
+
+    assert outputs == _expected_classifier_outputs(
+        runtime_changed="true",
+        test_changed="true",
+        ci_changed="true",
+        dependency_changed="true",
+        release_changed="true",
+        windows_full_required="true",
+        frontend_changed="true",
+        tui_changed="true",
+        desktop_changed="true",
+        python_changed="true",
+        platform_sensitive_changed="true",
+        build_wheel_required="true",
+        full_required="true",
+    )
+
+
 def test_ci_change_classifier_runs_windows_release_gates_for_profile_verifier(
     tmp_path: Path,
 ) -> None:
@@ -830,6 +856,47 @@ def test_default_ci_uses_layered_job_conditions() -> None:
     assert "desktop-check" in jobs["ci-result"]["needs"]
 
 
+def test_ci_result_gate_covers_every_conditional_job_and_classifier_flag() -> None:
+    jobs = _workflow("ci.yml")["jobs"]
+    gate = jobs["ci-result"]
+    gate_step = next(
+        step for step in gate["steps"] if step.get("name") == "Check required CI results"
+    )
+
+    assert gate["name"] == "CI result"
+    setup_python = next(step for step in gate["steps"] if step.get("name") == "Set up Python")
+    assert setup_python["with"]["python-version"] == "3.12"
+    assert set(gate["needs"]) == {
+        "classify-changes",
+        "workflow-lint",
+        "readme-locale-check",
+        "frontend-check",
+        "tui-check",
+        "desktop-check",
+        "ubuntu-quality",
+        "windows-compat",
+        "windows-full",
+        "release-packaging",
+    }
+    assert gate_step["run"] == "python .github/scripts/check_ci_results.py"
+    assert set(key for key in gate_step["env"] if key.startswith("FLAG_")) == {
+        "FLAG_DOCS_ONLY",
+        "FLAG_RUNTIME_CHANGED",
+        "FLAG_TEST_CHANGED",
+        "FLAG_CI_CHANGED",
+        "FLAG_DEPENDENCY_CHANGED",
+        "FLAG_RELEASE_CHANGED",
+        "FLAG_WINDOWS_FULL_REQUIRED",
+        "FLAG_FRONTEND_CHANGED",
+        "FLAG_TUI_CHANGED",
+        "FLAG_DESKTOP_CHANGED",
+        "FLAG_PYTHON_CHANGED",
+        "FLAG_PLATFORM_SENSITIVE_CHANGED",
+        "FLAG_BUILD_WHEEL_REQUIRED",
+        "FLAG_FULL_REQUIRED",
+    }
+
+
 def test_windows_smoke_does_not_install_bun_by_default() -> None:
     data = _workflow("ci.yml")
     jobs = data["jobs"]
@@ -868,7 +935,9 @@ def test_windows_high_risk_job_runs_parallel_reported_shards() -> None:
         },
     }
     checkout = next(step for step in steps if step.get("name") == "Check out repository")
-    assert checkout["with"]["lfs"] is True
+    assert checkout["with"]["lfs"] == "${{ matrix.shard == 'core' }}"
+    bun_step = next(step for step in steps if step.get("name") == "Set up Bun")
+    assert bun_step["if"] == "${{ matrix.shard == 'core' }}"
     assert steps[0]["name"] == "Prepare diagnostic report"
     assert "OPENSQUILLA_STATE_DIR" not in steps[0]["run"]
     assert "PATH" not in steps[0]["run"]
@@ -883,6 +952,23 @@ def test_windows_high_risk_job_runs_parallel_reported_shards() -> None:
     assert upload_step["uses"] == "actions/upload-artifact@v4"
     assert upload_step["with"]["if-no-files-found"] == "error"
     assert upload_step["with"]["retention-days"] == 14
+
+
+def test_windows_high_risk_job_cannot_wash_test_failures_green() -> None:
+    windows_full = _workflow("ci.yml")["jobs"]["windows-full"]
+    test_step = next(
+        step for step in windows_full["steps"] if step.get("name") == "Test Windows shard"
+    )
+    serialized = json.dumps(windows_full, sort_keys=True)
+
+    assert windows_full["strategy"]["fail-fast"] is False
+    assert all("continue-on-error" not in step for step in windows_full["steps"])
+    assert "--reruns" not in serialized
+    assert "pytest-rerunfailures" not in serialized
+    assert "continue-on-error" not in serialized
+    assert "|| true" not in test_step["run"]
+    assert "set -euo pipefail" in test_step["run"]
+    assert "github.run_attempt" in serialized
 
 
 def test_ubuntu_quality_only_fetches_lfs_for_full_ci() -> None:

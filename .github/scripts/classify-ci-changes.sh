@@ -112,7 +112,7 @@ while IFS= read -r path || [[ -n "${path}" ]]; do
     src/opensquilla/cli/tui/opentui/package/*)
       mark_tui_changed
       ;;
-    .github/workflows/ci.yml | .github/scripts/classify-ci-changes.sh | .github/scripts/windows_test_shards.py)
+    .github/workflows/ci.yml | .github/scripts/classify-ci-changes.sh | .github/scripts/check_ci_results.py | .github/scripts/windows_test_shards.py)
       # Changes to the gate itself must exercise every path it can suppress.
       mark_full_required
       ;;
@@ -121,7 +121,7 @@ while IFS= read -r path || [[ -n "${path}" ]]; do
       mark_release_changed
       ;;
     .github/workflows/*)
-      mark_ci_changed
+      mark_full_required
       ;;
     .github/scripts/verify-release-profile-preservation.py)
       mark_ci_changed
@@ -129,17 +129,13 @@ while IFS= read -r path || [[ -n "${path}" ]]; do
       mark_platform_sensitive_changed
       ;;
     .github/scripts/*)
-      mark_ci_changed
+      mark_full_required
       ;;
     tests/test_scripts/test_build_wheelhouse_zip.py | tests/test_install_scripts.py | tests/test_root_start_scripts.py | tests/test_release_consistency.py | tests/test_public_release_hygiene.py)
       mark_test_changed
       mark_release_changed
       ;;
     tests/test_tools/test_shell_* | tests/test_tools/test_path_* | tests/test_sandbox/* | tests/test_desktop/* | tests/test_compat/* | tests/test_recovery/* | tests/test_migration/* | tests/test_migrations/* | tests/test_persistence/* | tests/test_session/* | tests/test_scheduler/* | tests/test_uninstall/* | tests/test_packaging/*)
-      mark_test_changed
-      mark_platform_sensitive_changed
-      ;;
-    tests/test_persistence/*)
       mark_test_changed
       mark_platform_sensitive_changed
       ;;

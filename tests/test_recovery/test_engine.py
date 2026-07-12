@@ -826,6 +826,54 @@ def test_replacement_journal_symlink_is_never_followed(tmp_path: Path) -> None:
     assert outside.read_text(encoding="utf-8") == '{"phase":"committed"}\n'
 
 
+def test_legacy_import_journal_blocks_without_automatic_mutation(tmp_path: Path) -> None:
+    home = tmp_path / "opensquilla"
+    workspace = _workspace(home / "workspace", "preserved identity")
+    _desktop_config(home, workspace=workspace)
+    journal = home.parent / f".{home.name}.import-commit.json"
+    journal.write_text(
+        json.dumps(
+            {
+                "phase": "target-backed-up",
+                "target": str(home),
+                "backup": str(tmp_path / "opensquilla.backup.synthetic"),
+                "staging": str(tmp_path / ".opensquilla-import-synthetic"),
+            },
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    config_before = (home / "config.toml").read_bytes()
+    identity_before = (workspace / "SOUL.md").read_bytes()
+    journal_before = journal.read_bytes()
+
+    report = inspect_profile(home, profile_kind="desktop-primary")
+
+    assert report.outcome == "recovery_required"
+    assert report.stable_code == "legacy_import_transaction_incomplete"
+    assert "recover-transaction" not in report.allowed_actions
+    assert (home / "config.toml").read_bytes() == config_before
+    assert (workspace / "SOUL.md").read_bytes() == identity_before
+    assert journal.read_bytes() == journal_before
+
+
+def test_legacy_import_journal_prevents_missing_target_from_looking_fresh(
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "opensquilla"
+    journal = home.parent / f".{home.name}.import-commit.json"
+    journal.write_text('{"phase":"target-backed-up"}\n', encoding="utf-8")
+    before = journal.read_bytes()
+
+    report = inspect_profile(home, profile_kind="desktop-primary")
+
+    assert report.outcome == "recovery_required"
+    assert report.stable_code == "legacy_import_transaction_incomplete"
+    assert not home.exists()
+    assert journal.read_bytes() == before
+
+
 @pytest.mark.parametrize("as_file", [False, True])
 def test_profile_root_link_or_special_path_fails_closed(
     tmp_path: Path,

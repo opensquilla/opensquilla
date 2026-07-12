@@ -1082,6 +1082,22 @@ def _unfinished_replace_transaction(home: Path) -> bool:
     return not _committed_transaction_is_complete(home, payload)
 
 
+def _legacy_import_transaction_present(home: Path) -> bool:
+    """Detect a pre-RC4 import journal without trusting or mutating it.
+
+    The released journal predates identity-bound transaction records. RC4 must
+    preserve its target, backup, and staging paths for explicit recovery rather
+    than repeat the old Electron rename/delete routine automatically.
+    """
+
+    journal = home.parent / f".{home.name}.import-commit.json"
+    try:
+        snapshot = ConfigSnapshot.capture(journal)
+    except RecoveryError:
+        return True
+    return snapshot.identity is not None
+
+
 def _recovery_profile_identity(home: Path) -> tuple[Path, str] | None:
     """Recognize the reserved A/recovery-profiles/<uuid>/opensquilla identity."""
 
@@ -1673,6 +1689,7 @@ def _revision(
     # a content hash or persisted in a receipt/diagnostic.
     transaction_paths = [
         ("profile-transaction", home.parent / f".{home.name}.profile-replace.json"),
+        ("legacy-import-transaction", home.parent / f".{home.name}.import-commit.json"),
         (
             "settings-transaction",
             home.parent / f".{home.name}.desktop-settings-transaction.json",
@@ -1835,6 +1852,16 @@ def inspect_profile(
                 effective_workspace=effective,
                 allowed_actions=("recover-settings", *_RECOVERY_ACTIONS),
             )
+    if _legacy_import_transaction_present(home_path):
+        return _report(
+            home=home_path,
+            config=config,
+            candidates=candidates,
+            outcome="recovery_required",
+            stable_code="legacy_import_transaction_incomplete",
+            effective_workspace=effective,
+            allowed_actions=_RECOVERY_ACTIONS,
+        )
     if config.error_code is not None:
         return _report(
             home=home_path,

@@ -205,6 +205,7 @@ function launchEnvironment(isolatedHome, providerPort, sourceEnvironment = proce
     OPENSQUILLA_WORKSPACE_DIR: '',
     OPENSQUILLA_GATEWAY_STATE_DIR: '',
     OPENSQUILLA_E2E_PROVIDER_PORT: String(providerPort),
+    PYTHONFAULTHANDLER: '1',
     HTTP_PROXY: 'http://127.0.0.1:1',
     HTTPS_PROXY: 'http://127.0.0.1:1',
     ALL_PROXY: 'http://127.0.0.1:1',
@@ -538,12 +539,6 @@ try {
     stream: item.payload?.stream,
   }))
   const recoveryIds = await readdir(join(userData, 'recovery-profiles')).catch(() => [])
-  const gatewayLog = recoveryIds.length === 1
-    ? await readFile(
-      join(userData, 'recovery-profiles', recoveryIds[0], 'logs', 'gateway.log'),
-      'utf8',
-    ).catch(() => '')
-    : ''
   const desktopLog = await readFile(join(userData, 'logs', 'desktop.log'), 'utf8').catch(() => '')
   const gatewayPid = desktopLog
     .trim()
@@ -554,22 +549,90 @@ try {
     })
     .find((entry) => entry?.event === 'gateway_spawned' && Number.isSafeInteger(entry.pid))
     ?.pid
-  let gatewaySample = { attempted: false }
+  let gatewayProcessTree = []
+  const gatewaySamples = []
+  let faulthandlerSignal = { attempted: false }
+  let sessionsDbLsof = { attempted: false }
   if (process.platform === 'darwin' && gatewayPid && process.env.CI_REPORT_DIR) {
-    const samplePath = join(process.env.CI_REPORT_DIR, 'gateway-process.sample.txt')
-    const result = spawnSync('/usr/bin/sample', [String(gatewayPid), '3', '-file', samplePath], {
+    const processResult = spawnSync('/bin/ps', ['-axo', 'pid=,ppid=,command='], {
       encoding: 'utf8',
       timeout: 10_000,
     })
-    gatewaySample = {
-      attempted: true,
-      pid: gatewayPid,
-      status: result.status,
-      signal: result.signal,
-      error: result.error?.message || '',
-      stderr: String(result.stderr || '').slice(-1_000),
+    const processes = String(processResult.stdout || '')
+      .split('\n')
+      .map((line) => line.match(/^\s*(\d+)\s+(\d+)\s+(.*)$/))
+      .filter(Boolean)
+      .map((match) => ({ pid: Number(match[1]), ppid: Number(match[2]), command: match[3] }))
+    const descendantPids = new Set([gatewayPid])
+    let changed = true
+    while (changed) {
+      changed = false
+      for (const candidate of processes) {
+        if (!descendantPids.has(candidate.ppid) || descendantPids.has(candidate.pid)) continue
+        descendantPids.add(candidate.pid)
+        changed = true
+      }
+    }
+    gatewayProcessTree = processes.filter((candidate) => descendantPids.has(candidate.pid))
+    for (const candidate of gatewayProcessTree) {
+      const samplePath = join(
+        process.env.CI_REPORT_DIR,
+        `gateway-process-${candidate.pid}.sample.txt`,
+      )
+      const result = spawnSync(
+        '/usr/bin/sample',
+        [String(candidate.pid), '3', '-file', samplePath],
+        { encoding: 'utf8', timeout: 10_000 },
+      )
+      gatewaySamples.push({
+        pid: candidate.pid,
+        status: result.status,
+        signal: result.signal,
+        error: result.error?.message || '',
+        stderr: String(result.stderr || '').slice(-1_000),
+      })
+    }
+    if (recoveryIds.length === 1) {
+      const sessionsDb = join(
+        userData,
+        'recovery-profiles',
+        recoveryIds[0],
+        'opensquilla',
+        'state',
+        'sessions.db',
+      )
+      const result = spawnSync('/usr/sbin/lsof', ['-n', '-P', '--', sessionsDb], {
+        encoding: 'utf8',
+        timeout: 10_000,
+      })
+      const output = `${result.stdout || ''}${result.stderr || ''}`
+      await writeFile(join(process.env.CI_REPORT_DIR, 'sessions-db-lsof.txt'), output, 'utf8')
+      sessionsDbLsof = { attempted: true, status: result.status, bytes: output.length }
+    }
+    const pythonChild = gatewayProcessTree.find((candidate) => (
+      candidate.pid !== gatewayPid && /(?:^|[/\\])python(?:3(?:\.\d+)?)?(?:\s|$)/i.test(candidate.command)
+    ))
+    if (pythonChild) {
+      try {
+        process.kill(pythonChild.pid, 'SIGABRT')
+        faulthandlerSignal = { attempted: true, pid: pythonChild.pid, sent: true }
+        await delay(1_000)
+      } catch (signalError) {
+        faulthandlerSignal = {
+          attempted: true,
+          pid: pythonChild.pid,
+          sent: false,
+          error: signalError?.message || String(signalError),
+        }
+      }
     }
   }
+  const gatewayLog = recoveryIds.length === 1
+    ? await readFile(
+      join(userData, 'recovery-profiles', recoveryIds[0], 'logs', 'gateway.log'),
+      'utf8',
+    ).catch(() => '')
+    : ''
   const debugLog = recoveryIds.length === 1
     ? await readFile(
       join(userData, 'recovery-profiles', recoveryIds[0], 'opensquilla', 'logs', 'debug.log'),
@@ -588,7 +651,10 @@ try {
   console.error(JSON.stringify({
     requestSummary,
     desktopLogTail: desktopLog.slice(-4000),
-    gatewaySample,
+    gatewayProcessTree,
+    gatewaySamples,
+    faulthandlerSignal,
+    sessionsDbLsof,
     gatewayLogTail: gatewayLog.slice(-4000),
     debugLogTail: debugLog.slice(-8000),
     recoveryStateEntries,

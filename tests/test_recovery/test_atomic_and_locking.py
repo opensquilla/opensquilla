@@ -31,6 +31,7 @@ from opensquilla.recovery.atomic import (
     _macos_rename_no_replace,
     _windows_extended_path,
     _windows_move_no_replace,
+    _windows_rename_info,
 )
 from opensquilla.recovery.config_patch import ConfigSnapshot
 from opensquilla.recovery.locking import (
@@ -1279,6 +1280,18 @@ def test_windows_no_replace_pins_source_parent_source_and_destination_parent_han
     ]
     assert mutation_events == ["failpoint", "rename"]
     assert closed == [303, 202, 101]
+
+
+def test_windows_rename_info_keeps_required_nul_terminator_outside_reported_length() -> None:
+    destination_name = "candidate-profile"
+
+    info = _windows_rename_info(destination_name, 123)
+
+    assert info.file_name == destination_name
+    assert info.file_name_length == len(destination_name.encode("utf-16-le"))
+    assert type(info).file_name.size == (len(destination_name) + 1) * ctypes.sizeof(
+        ctypes.c_wchar
+    )
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="requires Windows sharing semantics")

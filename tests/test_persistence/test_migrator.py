@@ -829,6 +829,33 @@ def test_apply_pending_tolerates_uninspectable_ledger_after_apply(
 # ---------------------------------------------------------------------------
 
 
+def test_apply_pending_audit_never_depends_on_fqdn_resolution(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    migrations_dir = tmp_path / "migrations"
+    _write_demo_migration(migrations_dir, name="V001__local_audit")
+    db_path = tmp_path / "sessions.db"
+
+    monkeypatch.setattr(
+        migrator.socket,
+        "getfqdn",
+        lambda *_args, **_kwargs: pytest.fail("migration audit must not resolve DNS"),
+    )
+    monkeypatch.setattr(migrator.socket, "gethostname", lambda: "synthetic-local-host")
+
+    applied = apply_pending(str(db_path), migrations_dir)
+
+    assert applied == ["V001__local_audit"]
+    with sqlite3.connect(db_path) as connection:
+        audit_rows = connection.execute(
+            "SELECT migration_id, username, hostname, operation FROM _yoyo_log"
+        ).fetchall()
+    assert audit_rows == [
+        ("V001__local_audit", getpass.getuser(), "synthetic-local-host", "apply")
+    ]
+
+
 @pytest.mark.skipif(os.name == "nt", reason="pwd module is POSIX only")
 def test_apply_pending_survives_unresolvable_username(
     tmp_path: Path,

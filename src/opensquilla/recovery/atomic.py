@@ -339,7 +339,11 @@ def _windows_rename_info(destination_name: str, destination_parent_handle: int):
 
     if not destination_name or destination_name in {".", ".."}:
         raise UnsafePathError("destination leaf name is invalid")
-    name_type = ctypes.c_wchar * len(destination_name)
+    # Win32 FILE_RENAME_INFO requires a NUL-terminated FileName buffer even
+    # though FileNameLength deliberately excludes that terminator. Allocating
+    # only the visible characters makes SetFileInformationByHandle reject an
+    # otherwise valid handle-relative rename with ERROR_INVALID_PARAMETER.
+    name_type = ctypes.c_wchar * (len(destination_name) + 1)
 
     class _WindowsFileRenameInfo(ctypes.Structure):
         _fields_ = [
@@ -498,9 +502,8 @@ def _windows_move_no_replace(
         destination.parent
     )
     # RootDirectory is used to resolve the destination leaf relative to the
-    # already-inspected directory handle.  Windows requires traversal access
-    # for that relative lookup; FILE_LIST_DIRECTORY only permits enumeration
-    # and makes FileRenameInfo fail with ERROR_INVALID_PARAMETER.
+    # already-inspected directory handle. Windows requires traversal access
+    # for that relative lookup; FILE_LIST_DIRECTORY only permits enumeration.
     parent_access = _WINDOWS_FILE_TRAVERSE | _WINDOWS_FILE_READ_ATTRIBUTES | _WINDOWS_SYNCHRONIZE
     source_parent_handle = open_handle(
         source.parent,
@@ -561,7 +564,9 @@ def _windows_move_no_replace(
     if error_number == _WINDOWS_ERROR_NOT_SAME_DEVICE:
         raise CrossDeviceMoveError("cross-filesystem recovery moves are not allowed")
     if error_number in unsupported_errors:
-        raise NoReplaceUnavailableError("handle-relative Windows rename is unavailable")
+        raise NoReplaceUnavailableError(
+            f"handle-relative Windows rename is unavailable (Windows error {error_number})"
+        )
     raise RecoveryError(
         f"native no-replace move failed with Windows error {error_number}",
         stable_code="no_replace_move_failed",

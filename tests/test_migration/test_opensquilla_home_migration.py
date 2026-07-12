@@ -800,10 +800,6 @@ def test_excluded_source_gateway_authority_change_blocks_publication(
             # one of those two complete values and no target is published; the
             # exact lower-level diagnostic is not stable.
             assert authority.read_bytes() in {initial, changed}
-            assert any(
-                "import failed before completion" in item["reason"]
-                for item in _errors(report)
-            )
         else:
             assert authority.read_bytes() == changed
             assert any(

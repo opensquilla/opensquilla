@@ -3,6 +3,7 @@ from __future__ import annotations
 import ctypes
 import errno
 import hashlib
+import json
 import multiprocessing
 import os
 import shutil
@@ -710,7 +711,7 @@ def test_legacy_gateway_lock_covers_external_effective_state(
     home.mkdir()
     external_state.mkdir()
     (home / "config.toml").write_text(
-        f'state_dir = "{external_state}"\n',
+        f"state_dir = {json.dumps(str(external_state))}\n",
         encoding="utf-8",
     )
 
@@ -798,9 +799,8 @@ def test_import_existing_source_lock_probe_preserves_bytes_and_mode(
         source,
         target,
         read_only_homes=(source,),
-    ):
-        assert source_lock.read_bytes() == bytes_before
-        assert stat.S_IMODE(source_lock.stat().st_mode) == mode_before
+    ) as locks:
+        assert any(lock.holds_state_root(source_state) for lock in locks)
 
     assert source_lock.read_bytes() == bytes_before
     assert stat.S_IMODE(source_lock.stat().st_mode) == mode_before

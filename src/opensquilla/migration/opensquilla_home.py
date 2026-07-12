@@ -22,6 +22,7 @@ import os
 import re
 import shutil
 import sqlite3
+import stat
 import sys
 import tempfile
 import tomllib
@@ -1634,6 +1635,23 @@ class OpenSquillaHomeMigrator:
         else:
             path.unlink(missing_ok=True)
 
+    @staticmethod
+    def _unlink_staged_file_for_replacement(path: Path) -> None:
+        """Remove a copied staging file without changing its read-only source."""
+        try:
+            result = path.lstat()
+        except FileNotFoundError:
+            return
+        if not stat.S_ISREG(result.st_mode):
+            raise OSError(f"staged SQLite path is not a regular file: {path}")
+        try:
+            os.chmod(path, result.st_mode | stat.S_IRUSR | stat.S_IWUSR)
+        except OSError:
+            # Some filesystems reject chmod even when the containing directory
+            # still permits unlinking. Let unlink remain the authoritative gate.
+            pass
+        path.unlink(missing_ok=True)
+
     def _snapshot_sqlite_stores(self, staging: Path) -> None:
         """Create consistent WAL-aware SQLite snapshots and validate every store."""
         snapshot_root = self._staged_output_dir(staging) / "db-snapshots"
@@ -1677,9 +1695,11 @@ class OpenSquillaHomeMigrator:
                 )
                 raise OSError(f"sqlite snapshot failed for state/{relative}") from exc
 
-            destination.unlink(missing_ok=True)
+            self._unlink_staged_file_for_replacement(destination)
             for suffix in _SQLITE_SIDECAR_SUFFIXES:
-                destination.with_name(destination.name + suffix).unlink(missing_ok=True)
+                self._unlink_staged_file_for_replacement(
+                    destination.with_name(destination.name + suffix)
+                )
             os.replace(_ext(temporary), _ext(destination))
             try:
                 os.chmod(destination, (source_db.stat().st_mode & 0o777) | 0o600)

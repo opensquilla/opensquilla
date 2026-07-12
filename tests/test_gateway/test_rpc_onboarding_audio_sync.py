@@ -6,14 +6,16 @@ import asyncio
 import platform
 import tomllib
 
+import pytest
+
 import opensquilla.gateway.rpc_onboarding  # noqa: F401  ensures registration
 from opensquilla.gateway.auth import Principal
 from opensquilla.gateway.rpc import RpcContext, get_dispatcher
 
 
-def _env_hint(env_key: str) -> str:
+def _env_command(env_key: str) -> str:
     if platform.system().lower().startswith("win"):
-        return f'PowerShell: $env:{env_key} = "<your-key>"'
+        return f'$env:{env_key} = "<your-key>"'
     return f'export {env_key}="<your-key>"'
 
 
@@ -41,7 +43,13 @@ def _read_ctx() -> RpcContext:
     )
 
 
-def test_audio_onboarding_catalog_configure_and_status(tmp_path, monkeypatch) -> None:
+@pytest.mark.parametrize("system_name", ["Linux", "Windows"])
+def test_audio_onboarding_catalog_configure_and_status(
+    tmp_path,
+    monkeypatch,
+    system_name,
+) -> None:
+    monkeypatch.setattr(platform, "system", lambda: system_name)
     target = tmp_path / "c.toml"
     monkeypatch.setenv("OPENSQUILLA_GATEWAY_CONFIG_PATH", str(target))
     monkeypatch.delenv("ELEVENLABS_API_KEY", raising=False)
@@ -92,7 +100,7 @@ def test_audio_onboarding_catalog_configure_and_status(tmp_path, monkeypatch) ->
             {
                 "section": "audio",
                 "label": "Set audio key",
-                "command": _env_hint("ELEVENLABS_API_KEY"),
+                "command": _env_command("ELEVENLABS_API_KEY"),
             }
         ]
 

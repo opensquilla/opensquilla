@@ -346,11 +346,19 @@ jobs:
             -q
 
   windows-full:
-    name: Windows high-risk/full tests (conditional)
+    name: Windows high-risk (${{ matrix.shard }})
     needs: classify-changes
     if: ${{ needs.classify-changes.outputs.windows_full_required == 'true' || needs.classify-changes.outputs.full_required == 'true' }}
     runs-on: windows-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        shard:
+          - core
+          - gateway-sqlite
+          - recovery-migration
+          - desktop-installer-contracts
 
     env:
       UV_PYTHON: "3.12"
@@ -358,10 +366,26 @@ jobs:
       OPENSQUILLA_TURN_CALL_LOG: "0"
 
     steps:
+      - name: Prepare diagnostic report
+        shell: bash
+        run: |
+          set -euo pipefail
+          report_dir="${RUNNER_TEMP}/ci-reports/${{ matrix.shard }}"
+          mkdir -p "${report_dir}"
+          printf 'CI_REPORT_DIR=%s\n' "${report_dir}" >> "${GITHUB_ENV}"
+          {
+            printf 'runner_os=%s\n' "${RUNNER_OS}"
+            printf 'runner_arch=%s\n' "${RUNNER_ARCH}"
+            printf 'commit_sha=%s\n' "${GITHUB_SHA}"
+            printf 'run_attempt=%s\n' "${GITHUB_RUN_ATTEMPT}"
+            printf 'shard=%s\n' "${{ matrix.shard }}"
+          } > "${report_dir}/environment.txt"
+          printf 'pytest_status=not_started\n' > "${report_dir}/first-failure.txt"
+
       - name: Check out repository
         uses: actions/checkout@v4
         with:
-          lfs: ${{ needs.classify-changes.outputs.full_required == 'true' }}
+          lfs: ${{ matrix.shard == 'core' }}
 
       - name: Configure runtime directories
         shell: bash
@@ -380,13 +404,13 @@ jobs:
           enable-cache: true
 
       - name: Set up Bun
-        if: ${{ needs.classify-changes.outputs.tui_changed == 'true' || needs.classify-changes.outputs.full_required == 'true' }}
+        if: ${{ matrix.shard == 'core' }}
         uses: oven-sh/setup-bun@v2
         with:
           bun-version: latest
 
       - name: Install OpenTUI host dependencies
-        if: ${{ needs.classify-changes.outputs.tui_changed == 'true' || needs.classify-changes.outputs.full_required == 'true' }}
+        if: ${{ matrix.shard == 'core' }}
         shell: bash
         run: bun install --frozen-lockfile --cwd=src/opensquilla/cli/tui/opentui/package
 
@@ -394,28 +418,45 @@ jobs:
         shell: bash
         run: uv sync --extra dev --extra recommended --extra mcp --frozen
 
-      - name: Test
+      - name: Record tool versions
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            python --version
+            uv --version
+            uv run pytest --version
+          } >> "${CI_REPORT_DIR}/environment.txt" 2>&1
+
+      - name: Test Windows shard
         shell: bash
         run: |
           set -euo pipefail
           markers="not llm and not live_search and not live_channel and not webui_browser and not tui_real_terminal and not local_golden and not agent_context_boundary and not llm_router_acc"
-
-          if [[ "${{ needs.classify-changes.outputs.full_required }}" == "true" ]]; then
-            uv run pytest tests -q -m "${markers}" --durations=50 --maxfail=1
-          else
-            uv run pytest \
-              tests/test_artifacts.py \
-              tests/test_compat \
-              tests/test_desktop \
-              tests/test_sandbox \
-              tests/test_tools/test_path_aliases.py \
-              tests/test_tools/test_path_policy.py \
-              tests/test_tools/test_shell_approval_policy.py \
-              tests/test_tools/test_shell_background_seatbelt.py \
-              tests/test_tools/test_shell_policy_windows.py \
-              tests/test_tools/test_shell_process_isolation.py \
-              -q -m "${markers}" --durations=50
+          maxfail_args=()
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            maxfail_args+=(--maxfail=3)
           fi
+
+          uv run python .github/scripts/windows_test_shards.py run \
+            "${{ matrix.shard }}" \
+            --junit "${CI_REPORT_DIR}/junit.xml" \
+            --summary "${CI_REPORT_DIR}/first-failure.txt" \
+            -- \
+            -q \
+            -m "${markers}" \
+            --durations=50 \
+            "${maxfail_args[@]}" \
+            2>&1 | tee "${CI_REPORT_DIR}/pytest.log"
+
+      - name: Upload Windows shard report
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-high-risk-${{ matrix.shard }}-attempt-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/ci-reports/${{ matrix.shard }}
+          if-no-files-found: error
+          retention-days: 14
 
   release-packaging:
     name: Release packaging contracts
@@ -494,109 +535,38 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
       - name: Check required CI results
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          classify_result="${{ needs.classify-changes.result }}"
-          workflow_lint_result="${{ needs.workflow-lint.result }}"
-          readme_locale_result="${{ needs.readme-locale-check.result }}"
-          frontend_result="${{ needs.frontend-check.result }}"
-          tui_result="${{ needs.tui-check.result }}"
-          desktop_result="${{ needs.desktop-check.result }}"
-          ubuntu_result="${{ needs.ubuntu-quality.result }}"
-          windows_smoke_result="${{ needs.windows-compat.result }}"
-          windows_full_result="${{ needs.windows-full.result }}"
-          release_result="${{ needs.release-packaging.result }}"
-          docs_only="${{ needs.classify-changes.outputs.docs_only }}"
-          runtime_changed="${{ needs.classify-changes.outputs.runtime_changed }}"
-          test_changed="${{ needs.classify-changes.outputs.test_changed }}"
-          ci_changed="${{ needs.classify-changes.outputs.ci_changed }}"
-          dependency_changed="${{ needs.classify-changes.outputs.dependency_changed }}"
-          release_changed="${{ needs.classify-changes.outputs.release_changed }}"
-          windows_full_required="${{ needs.classify-changes.outputs.windows_full_required }}"
-          frontend_changed="${{ needs.classify-changes.outputs.frontend_changed }}"
-          tui_changed="${{ needs.classify-changes.outputs.tui_changed }}"
-          desktop_changed="${{ needs.classify-changes.outputs.desktop_changed }}"
-          python_changed="${{ needs.classify-changes.outputs.python_changed }}"
-          platform_sensitive_changed="${{ needs.classify-changes.outputs.platform_sensitive_changed }}"
-          build_wheel_required="${{ needs.classify-changes.outputs.build_wheel_required }}"
-          full_required="${{ needs.classify-changes.outputs.full_required }}"
-
-          require_success() {
-            local result="$1"
-            local label="$2"
-            if [[ "${result}" != "success" ]]; then
-              echo "${label} must succeed."
-              exit 1
-            fi
-          }
-
-          allow_success_or_skipped() {
-            local result="$1"
-            local label="$2"
-            if [[ "${result}" != "success" && "${result}" != "skipped" ]]; then
-              echo "${label} must not fail."
-              exit 1
-            fi
-          }
-
-          printf 'classify-changes: %s\n' "${classify_result}"
-          printf 'workflow-lint: %s\n' "${workflow_lint_result}"
-          printf 'readme-locale-check: %s\n' "${readme_locale_result}"
-          printf 'frontend-check: %s\n' "${frontend_result}"
-          printf 'tui-check: %s\n' "${tui_result}"
-          printf 'desktop-check: %s\n' "${desktop_result}"
-          printf 'ubuntu-quality: %s\n' "${ubuntu_result}"
-          printf 'windows-compat-smoke: %s\n' "${windows_smoke_result}"
-          printf 'windows-full: %s\n' "${windows_full_result}"
-          printf 'release-packaging: %s\n' "${release_result}"
-          printf 'docs_only=%s runtime_changed=%s test_changed=%s ci_changed=%s dependency_changed=%s release_changed=%s windows_full_required=%s frontend_changed=%s tui_changed=%s python_changed=%s platform_sensitive_changed=%s build_wheel_required=%s full_required=%s\n' \
-            "${docs_only}" "${runtime_changed}" "${test_changed}" "${ci_changed}" "${dependency_changed}" "${release_changed}" "${windows_full_required}" "${frontend_changed}" "${tui_changed}" "${python_changed}" "${platform_sensitive_changed}" "${build_wheel_required}" "${full_required}"
-
-          require_success "${classify_result}" "Classify changed files"
-          require_success "${workflow_lint_result}" "Workflow lint"
-          require_success "${readme_locale_result}" "README locale parity"
-
-          if [[ "${frontend_changed}" == "true" || "${full_required}" == "true" ]]; then
-            require_success "${frontend_result}" "Frontend build and typecheck"
-          else
-            allow_success_or_skipped "${frontend_result}" "Frontend build and typecheck"
-          fi
-
-          if [[ "${tui_changed}" == "true" || "${full_required}" == "true" ]]; then
-            require_success "${tui_result}" "OpenTUI package tests"
-          else
-            allow_success_or_skipped "${tui_result}" "OpenTUI package tests"
-          fi
-
-          if [[ "${desktop_changed}" == "true" || "${full_required}" == "true" ]]; then
-            require_success "${desktop_result}" "Desktop Electron unit tests"
-          else
-            allow_success_or_skipped "${desktop_result}" "Desktop Electron unit tests"
-          fi
-
-          if [[ "${python_changed}" == "true" || "${full_required}" == "true" ]]; then
-            require_success "${ubuntu_result}" "Ubuntu quality gate"
-          else
-            allow_success_or_skipped "${ubuntu_result}" "Ubuntu quality gate"
-          fi
-
-          if [[ "${python_changed}" == "true" || "${platform_sensitive_changed}" == "true" || "${dependency_changed}" == "true" || "${release_changed}" == "true" || "${full_required}" == "true" ]]; then
-            require_success "${windows_smoke_result}" "Windows compatibility smoke tests"
-          else
-            allow_success_or_skipped "${windows_smoke_result}" "Windows compatibility smoke tests"
-          fi
-
-          if [[ "${windows_full_required}" == "true" || "${full_required}" == "true" ]]; then
-            require_success "${windows_full_result}" "Windows full test suite"
-          else
-            allow_success_or_skipped "${windows_full_result}" "Windows full test suite"
-          fi
-
-          if [[ "${release_changed}" == "true" || "${full_required}" == "true" ]]; then
-            require_success "${release_result}" "Release packaging contracts"
-          else
-            allow_success_or_skipped "${release_result}" "Release packaging contracts"
-          fi
+        env:
+          RESULT_CLASSIFY: ${{ needs.classify-changes.result }}
+          RESULT_WORKFLOW_LINT: ${{ needs.workflow-lint.result }}
+          RESULT_README_LOCALE: ${{ needs.readme-locale-check.result }}
+          RESULT_FRONTEND: ${{ needs.frontend-check.result }}
+          RESULT_TUI: ${{ needs.tui-check.result }}
+          RESULT_DESKTOP: ${{ needs.desktop-check.result }}
+          RESULT_UBUNTU: ${{ needs.ubuntu-quality.result }}
+          RESULT_WINDOWS_SMOKE: ${{ needs.windows-compat.result }}
+          RESULT_WINDOWS_FULL: ${{ needs.windows-full.result }}
+          RESULT_RELEASE: ${{ needs.release-packaging.result }}
+          FLAG_DOCS_ONLY: ${{ needs.classify-changes.outputs.docs_only }}
+          FLAG_RUNTIME_CHANGED: ${{ needs.classify-changes.outputs.runtime_changed }}
+          FLAG_TEST_CHANGED: ${{ needs.classify-changes.outputs.test_changed }}
+          FLAG_CI_CHANGED: ${{ needs.classify-changes.outputs.ci_changed }}
+          FLAG_DEPENDENCY_CHANGED: ${{ needs.classify-changes.outputs.dependency_changed }}
+          FLAG_RELEASE_CHANGED: ${{ needs.classify-changes.outputs.release_changed }}
+          FLAG_WINDOWS_FULL_REQUIRED: ${{ needs.classify-changes.outputs.windows_full_required }}
+          FLAG_FRONTEND_CHANGED: ${{ needs.classify-changes.outputs.frontend_changed }}
+          FLAG_TUI_CHANGED: ${{ needs.classify-changes.outputs.tui_changed }}
+          FLAG_DESKTOP_CHANGED: ${{ needs.classify-changes.outputs.desktop_changed }}
+          FLAG_PYTHON_CHANGED: ${{ needs.classify-changes.outputs.python_changed }}
+          FLAG_PLATFORM_SENSITIVE_CHANGED: ${{ needs.classify-changes.outputs.platform_sensitive_changed }}
+          FLAG_BUILD_WHEEL_REQUIRED: ${{ needs.classify-changes.outputs.build_wheel_required }}
+          FLAG_FULL_REQUIRED: ${{ needs.classify-changes.outputs.full_required }}
+        run: python .github/scripts/check_ci_results.py

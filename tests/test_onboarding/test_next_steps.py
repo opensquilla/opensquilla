@@ -281,6 +281,18 @@ def test_set_env_command_is_bare_on_both_platforms(monkeypatch):
     )
 
 
+def test_human_env_command_labels_only_windows(monkeypatch):
+    from opensquilla.onboarding import next_steps
+
+    command = '$env:DUMMY_KEY = "<your-key>"'
+
+    monkeypatch.setattr(next_steps.platform, "system", lambda: "Linux")
+    assert next_steps.human_env_command(command) == command
+
+    monkeypatch.setattr(next_steps.platform, "system", lambda: "Windows")
+    assert next_steps.human_env_command(command) == f"PowerShell: {command}"
+
+
 def test_env_recovery_commands_carry_only_the_command_on_windows(monkeypatch):
     from opensquilla.gateway.config import GatewayConfig
     from opensquilla.onboarding import next_steps

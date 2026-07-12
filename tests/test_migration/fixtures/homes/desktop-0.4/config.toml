@@ -2,7 +2,7 @@
 # writeDesktopConfig from desktop-credential.json — a short generated file,
 # not a full schema dump. Pre-rc2 desktops emit t0-t3 tier keys; current code
 # canonicalizes them to c0-c3 on read. Synthetic values only.
-state_dir = "/home/dummyuser/Library/Application Support/OpenSquilla/opensquilla/state"
+state_dir = "/Users/dummyuser/Library/Application Support/OpenSquilla/opensquilla/state"
 search_provider = "brave"
 search_api_key_env = "BRAVE_API_KEY"
 

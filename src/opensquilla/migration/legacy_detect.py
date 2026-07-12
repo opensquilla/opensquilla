@@ -10,7 +10,6 @@ layer, which requires a quiesced gateway.
 from __future__ import annotations
 
 import os
-import shlex
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -93,7 +92,6 @@ def _portable_bases_present() -> bool:
 
 
 def _command_path(path: Path) -> str:
-    raw = str(path)
-    if any(ch.isspace() for ch in raw):
-        return shlex.quote(raw)
-    return raw
+    from opensquilla.onboarding.next_steps import quote_cli_arg
+
+    return quote_cli_arg(path)

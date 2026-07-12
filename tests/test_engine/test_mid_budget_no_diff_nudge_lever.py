@@ -194,9 +194,11 @@ async def test_nudge_fires_once_past_half_budget_without_diff() -> None:
     assert _nudge_texts(provider.calls[0]) == []
     nudges = _nudge_texts(provider.calls[1])
     assert len(nudges) == 1
-    # The message reports real elapsed budget, not the checkpoint constant:
-    # the 3.3s sleep guarantees at least 55% of the 6s budget was spent.
-    assert 55 <= _nudge_percent(nudges[0]) < 75
+    # The message reports real elapsed budget, not the checkpoint constant.
+    # Windows timers may wake just before the requested 3.3s boundary, and
+    # the displayed percentage is truncated, so assert the stable contract:
+    # it is beyond the 50% checkpoint but before the 75% checkpoint.
+    assert 50 < _nudge_percent(nudges[0]) < 75
 
 
 @pytest.mark.asyncio
@@ -246,12 +248,13 @@ async def test_nudge_fires_at_both_checkpoints_in_sequence() -> None:
     assert len(provider.calls) == 3
     second_call = _nudge_texts(provider.calls[1])
     assert len(second_call) == 1
-    assert 55 <= _nudge_percent(second_call[0]) < 75
+    assert 50 < _nudge_percent(second_call[0]) < 75
     third_call = _nudge_texts(provider.calls[2])
     assert len(third_call) == 2
-    assert 55 <= _nudge_percent(third_call[0]) < 75
-    # 3.3s + 1.5s of sleeps: at least 80% of the budget is truly spent.
-    assert _nudge_percent(third_call[1]) >= 80
+    assert 50 < _nudge_percent(third_call[0]) < 75
+    # The later message reports progress beyond the second checkpoint rather
+    # than echoing the checkpoint constant.
+    assert _nudge_percent(third_call[1]) > 75
 
 
 @pytest.mark.asyncio
@@ -266,9 +269,10 @@ async def test_crossing_both_checkpoints_at_once_fires_single_nudge() -> None:
     assert any(event.kind == "done" for event in events)
     nudges = _nudge_texts(provider.calls[1])
     assert len(nudges) == 1
-    # 4.8s of the 6s budget slept: real elapsed is at least 80%, and the
-    # message must say so rather than echo the 75% checkpoint constant.
-    assert _nudge_percent(nudges[0]) >= 80
+    # The message must report progress beyond the 75% checkpoint rather than
+    # echoing the checkpoint constant. Timer resolution may truncate 80% to
+    # 79% on platforms that wake just before the requested sleep boundary.
+    assert _nudge_percent(nudges[0]) > 75
 
 
 @pytest.mark.asyncio

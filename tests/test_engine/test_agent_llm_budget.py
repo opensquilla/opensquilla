@@ -3349,8 +3349,17 @@ async def test_large_tool_argument_stream_emits_progress_heartbeat() -> None:
 
 @pytest.mark.asyncio
 async def test_iteration_timeout_caps_tool_execution() -> None:
+    tool_started = asyncio.Event()
+    tool_cancelled = asyncio.Event()
+    never_complete = asyncio.Event()
+
     async def slow_tool(call: object) -> ToolResult:
-        await asyncio.sleep(0.5)
+        tool_started.set()
+        try:
+            await never_complete.wait()
+        except asyncio.CancelledError:
+            tool_cancelled.set()
+            raise
         return ToolResult(
             tool_use_id=getattr(call, "tool_use_id"),
             tool_name=getattr(call, "tool_name"),
@@ -3360,8 +3369,8 @@ async def test_iteration_timeout_caps_tool_execution() -> None:
     agent = Agent(
         provider=_ToolUseProvider(),
         config=AgentConfig(
-            iteration_timeout=0.05,
-            timeout=1.0,
+            iteration_timeout=0.1,
+            timeout=5.0,
             tool_timeout=5.0,
             max_provider_retries=0,
         ),
@@ -3375,8 +3384,10 @@ async def test_iteration_timeout_caps_tool_execution() -> None:
         tool_handler=slow_tool,
     )
 
-    events = await asyncio.wait_for(_collect_events(agent.run_turn("hello")), timeout=0.25)
+    events = await asyncio.wait_for(_collect_events(agent.run_turn("hello")), timeout=2.0)
 
+    assert tool_started.is_set()
+    assert tool_cancelled.is_set()
     assert any(
         isinstance(event, ErrorEvent) and event.code == "iteration_timeout" for event in events
     )

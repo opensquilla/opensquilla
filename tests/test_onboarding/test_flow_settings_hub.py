@@ -17,6 +17,7 @@ runners are monkeypatched.
 
 from __future__ import annotations
 
+import os
 import sys
 import types
 from typing import Any
@@ -558,7 +559,8 @@ def test_onboard_fork_hub_exit_without_changes_does_not_rewrite_config(
     assert target.read_text() == raw, "a no-change exit must not rewrite the file"
     assert after.st_ino == before.st_ino
     assert after.st_mtime_ns == before.st_mtime_ns
-    assert (after.st_mode & 0o777) == 0o644
+    if os.name != "nt":
+        assert (after.st_mode & 0o777) == 0o644
     assert result.path == target
     assert result.backup_path is None
     assert result.restart_required is False
@@ -599,8 +601,9 @@ def test_start_fresh_backup_uses_the_shared_backup_naming_scheme(tmp_path):
     assert backup.read_text() == 'api_key = "sk-dummy-reset"\n'
     # No stray files under the retired hand-rolled scheme.
     assert list(tmp_path.glob("config.toml.bak-*")) == []
-    # 0600: the backup holds the same secrets as the config it replaces.
-    assert (backup.stat().st_mode & 0o777) == 0o600
+    # POSIX mode 0600: the backup holds the same secrets as the config it replaces.
+    if os.name != "nt":
+        assert (backup.stat().st_mode & 0o777) == 0o600
 
 
 def test_rerun_fork_decline_reset_falls_back_to_update(tmp_path, monkeypatch):

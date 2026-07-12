@@ -2,7 +2,7 @@
 # c0-c3 rename landed in rc2), plus the rc1-era [privacy] section. The file
 # carries no config_version stamp — rc1 predates the stamp, so current code
 # treats it as version 0 and walks the gated migrations. Synthetic values.
-state_dir = "/home/dummyuser/Library/Application Support/OpenSquilla/opensquilla/state"
+state_dir = "/Users/dummyuser/Library/Application Support/OpenSquilla/opensquilla/state"
 search_provider = "brave"
 search_api_key_env = "BRAVE_API_KEY"
 

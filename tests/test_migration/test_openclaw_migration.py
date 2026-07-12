@@ -195,8 +195,8 @@ def test_apply_defers_legacy_target_config_upgrade_to_final_persist(
     home = tmp_path / "opensquilla-home"
     config_path = tmp_path / "config.toml"
     original = (
-        f'workspace_dir = "{home / "workspace"}"\n'
-        f'state_dir = "{home / "state"}"\n'
+        f"workspace_dir = {json.dumps(str(home / 'workspace'))}\n"
+        f"state_dir = {json.dumps(str(home / 'state'))}\n"
         "\n[llm_ensemble]\n"
         "proposer_timeout_seconds = 120.0\n"
         "aggregator_timeout_seconds = 120.0\n"

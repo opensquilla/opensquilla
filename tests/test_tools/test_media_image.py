@@ -11,6 +11,7 @@ import pytest
 from reportlab.pdfgen import canvas
 
 from opensquilla.tools.builtin import media
+from opensquilla.tools.ssrf import environment_proxy_url
 from opensquilla.tools.types import SafeToolError, ToolContext, ToolError, current_tool_context
 
 
@@ -245,22 +246,25 @@ async def test_fetch_image_url_uses_opted_in_environment_proxy_with_pinning(
     port = int(proxy.server_address[1])
     try:
         for name in (
+            "HTTP_PROXY",
             "HTTPS_PROXY",
             "ALL_PROXY",
+            "http_proxy",
             "https_proxy",
             "all_proxy",
             "NO_PROXY",
             "no_proxy",
         ):
             monkeypatch.delenv(name, raising=False)
+        monkeypatch.delenv("REQUEST_METHOD", raising=False)
         monkeypatch.setenv("OPENSQUILLA_TRUST_ENV", "1")
-        monkeypatch.setenv("HTTP_PROXY", f"http://127.0.0.1:{port}")
-        monkeypatch.delenv("http_proxy", raising=False)
+        proxy_url = f"http://127.0.0.1:{port}"
+        target_url = f"http://proxy-target.test:{port}/image.png"
+        monkeypatch.setenv("HTTP_PROXY", proxy_url)
+        assert environment_proxy_url(target_url) == proxy_url
         monkeypatch.setattr(media, "validate_http_url_for_fetch", lambda url: ["127.0.0.1"])
 
-        image_bytes, media_type = await media._fetch_image_url(
-            f"http://proxy-target.test:{port}/image.png"
-        )
+        image_bytes, media_type = await media._fetch_image_url(target_url)
     finally:
         proxy.shutdown()
         proxy.server_close()

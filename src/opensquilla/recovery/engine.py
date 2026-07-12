@@ -793,6 +793,37 @@ def _profile_has_evidence(home: Path) -> bool:
         return True
 
 
+def _profile_top_level_entries(home: Path) -> tuple[str, ...] | None:
+    """Return a stable, no-follow snapshot of the names directly inside ``H``.
+
+    A missing or existing-empty home is the only filesystem shape that can be
+    initialized as fresh.  Inspecting names through ``scandir`` does not follow
+    an entry that is a symlink, junction, or other reparse point.  The directory
+    identity/metadata check turns a concurrent entry or parent exchange into an
+    unknown layout instead of accidentally seeding a third workspace.
+    """
+
+    try:
+        before = home.lstat()
+    except FileNotFoundError:
+        return ()
+    except OSError:
+        return None
+    attributes = int(getattr(before, "st_file_attributes", 0))
+    if stat.S_ISLNK(before.st_mode) or attributes & 0x400 or not stat.S_ISDIR(before.st_mode):
+        return None
+    try:
+        entries = tuple(sorted(entry.name for entry in os.scandir(home)))
+        after = home.lstat()
+    except OSError:
+        return None
+    if PathIdentity.from_stat(before).metadata_tuple() != PathIdentity.from_stat(
+        after
+    ).metadata_tuple():
+        return None
+    return entries
+
+
 def _home_is_unsafe(path: Path) -> bool:
     try:
         value = path.lstat()
@@ -1639,11 +1670,16 @@ def _recovery_profile_isolation_code(home: Path, config: _ConfigView) -> str | N
     return None
 
 
-def _is_fresh_canonical_profile(home: Path, config: _ConfigView) -> bool:
+def _is_fresh_canonical_profile(
+    home: Path,
+    config: _ConfigView,
+    *,
+    top_level_entries: tuple[str, ...],
+) -> bool:
     """Only an evidence-free profile using implicit canonical roots is fresh."""
 
     return (
-        not _profile_has_evidence(home)
+        not top_level_entries
         and not config.workspace_explicit
         and not config.state_explicit
         and config.workspace is not None
@@ -1812,6 +1848,17 @@ def inspect_profile(
     candidates = _candidate_set(home_path, config)
     canonical = next(candidate for candidate in candidates if candidate.kind == "canonical")
     effective = config.workspace
+    top_level_entries = _profile_top_level_entries(home_path)
+    if top_level_entries is None:
+        return _report(
+            home=home_path,
+            config=config,
+            candidates=candidates,
+            outcome="recovery_required",
+            stable_code="unknown_layout",
+            effective_workspace=effective,
+            allowed_actions=_RECOVERY_ACTIONS,
+        )
 
     if not _ignore_transaction and _unfinished_cleanup_transaction(
         home_path,
@@ -1905,7 +1952,11 @@ def inspect_profile(
     # Only an empty home that still resolves both implicit canonical roots is
     # safe to initialize. Ambient/explicit missing external paths are never
     # mistaken for a fresh profile.
-    if _is_fresh_canonical_profile(home_path, config):
+    if _is_fresh_canonical_profile(
+        home_path,
+        config,
+        top_level_entries=top_level_entries,
+    ):
         outcome: RecoveryOutcome = "recovery_profile" if kind == "desktop-recovery" else "ready"
         return _report(
             home=home_path,
@@ -1917,6 +1968,25 @@ def inspect_profile(
             ),
             effective_workspace=effective,
             allowed_actions=("retry-primary-profile",) if outcome == "recovery_profile" else (),
+        )
+
+    # An otherwise implicit profile with only unrecognized top-level content is
+    # not a fresh install.  Seeding H/workspace here would create a third,
+    # empty identity beside data whose historical layout we cannot prove.
+    if (
+        top_level_entries
+        and not _profile_has_evidence(home_path)
+        and not config.workspace_explicit
+        and not config.state_explicit
+    ):
+        return _report(
+            home=home_path,
+            config=config,
+            candidates=candidates,
+            outcome="recovery_required",
+            stable_code="unknown_layout",
+            effective_workspace=effective,
+            allowed_actions=_RECOVERY_ACTIONS,
         )
 
     state_candidate = next(

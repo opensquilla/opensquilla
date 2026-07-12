@@ -104,6 +104,91 @@ def test_empty_profile_is_safe_to_initialize(
     assert not home.exists(), "read-only inspection must not create a fresh home"
 
 
+def test_existing_empty_profile_is_safe_to_initialize(tmp_path: Path) -> None:
+    home = tmp_path / "empty-profile"
+    home.mkdir()
+
+    report = inspect_profile(home, profile_kind="desktop-primary")
+
+    assert report.outcome == "ready"
+    assert report.stable_code == "fresh_profile"
+    assert list(home.iterdir()) == []
+
+
+@pytest.mark.parametrize("entry_kind", ["file", "directory"])
+def test_unknown_only_profile_is_never_seeded_as_fresh(
+    tmp_path: Path,
+    entry_kind: str,
+) -> None:
+    home = tmp_path / "unknown-profile"
+    home.mkdir()
+    unknown = home / "unknown-layout"
+    if entry_kind == "file":
+        unknown.write_text("synthetic unknown profile evidence\n", encoding="utf-8")
+    else:
+        unknown.mkdir()
+        (unknown / "USER.md").write_text("synthetic preserved identity\n", encoding="utf-8")
+    before = sorted(path.relative_to(home) for path in home.rglob("*"))
+
+    report = inspect_profile(home, profile_kind="desktop-primary")
+
+    assert report.outcome == "recovery_required"
+    assert report.stable_code == "unknown_layout"
+    assert sorted(path.relative_to(home) for path in home.rglob("*")) == before
+    assert not (home / "workspace").exists()
+    assert not (home / "state").exists()
+
+
+def test_unknown_profile_symlink_is_not_followed_or_seeded(tmp_path: Path) -> None:
+    home = tmp_path / "unknown-profile"
+    outside = tmp_path / "outside"
+    home.mkdir()
+    outside.mkdir()
+    sentinel = outside / "USER.md"
+    sentinel.write_text("synthetic preserved identity\n", encoding="utf-8")
+    linked = home / "unknown-layout"
+    try:
+        linked.symlink_to(outside, target_is_directory=True)
+    except OSError:
+        pytest.skip("symlink creation is unavailable")
+
+    report = inspect_profile(home, profile_kind="desktop-primary")
+
+    assert report.outcome == "recovery_required"
+    assert report.stable_code == "unknown_layout"
+    assert linked.is_symlink()
+    assert sentinel.read_text(encoding="utf-8") == "synthetic preserved identity\n"
+    assert not (home / "workspace").exists()
+    assert not (home / "state").exists()
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="requires a real Windows junction")
+def test_unknown_profile_junction_is_not_followed_or_seeded(tmp_path: Path) -> None:
+    home = tmp_path / "unknown-profile"
+    outside = tmp_path / "outside"
+    home.mkdir()
+    outside.mkdir()
+    sentinel = outside / "USER.md"
+    sentinel.write_text("synthetic preserved identity\n", encoding="utf-8")
+    junction = home / "unknown-layout"
+    completed = subprocess.run(
+        ["cmd", "/c", "mklink", "/J", str(junction), str(outside)],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if completed.returncode != 0:
+        pytest.skip(f"junction creation is unavailable: {completed.stderr}")
+
+    report = inspect_profile(home, profile_kind="desktop-primary")
+
+    assert report.outcome == "recovery_required"
+    assert report.stable_code == "unknown_layout"
+    assert sentinel.read_text(encoding="utf-8") == "synthetic preserved identity\n"
+    assert not (home / "workspace").exists()
+    assert not (home / "state").exists()
+
+
 @pytest.mark.parametrize(
     ("override_name", "stable_code"),
     [

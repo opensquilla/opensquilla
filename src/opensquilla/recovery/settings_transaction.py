@@ -8,7 +8,6 @@ content digests in its journal, protocol, exceptions, or logs.
 from __future__ import annotations
 
 import contextlib
-import ctypes
 import json
 import os
 import stat
@@ -18,7 +17,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from opensquilla.recovery.atomic import PathIdentity, _windows_extended_path, native_move_no_replace
+from opensquilla.recovery.atomic import PathIdentity, native_move_no_replace
 from opensquilla.recovery.config_patch import ConfigSnapshot
 from opensquilla.recovery.errors import AtomicStateUnknownError, RecoveryError
 from opensquilla.recovery.locking import LegacyGatewayLock, ProfileOperationLock
@@ -106,16 +105,14 @@ def _write_no_replace(path: Path, data: bytes, *, mode: int = 0o600) -> PathIden
 
 
 def _durable_move_no_replace(source: Path, destination: Path) -> None:
-    if os.name != "nt":
-        native_move_no_replace(source, destination)
-        _fsync_directory(destination.parent)
-        return
-    move_file = ctypes.windll.kernel32.MoveFileExW  # type: ignore[attr-defined]
-    move_file.argtypes = [ctypes.c_wchar_p, ctypes.c_wchar_p, ctypes.c_uint32]
-    move_file.restype = ctypes.c_int
-    # WRITE_THROUGH without REPLACE_EXISTING preserves the no-overwrite rule.
-    if not move_file(_windows_extended_path(source), _windows_extended_path(destination), 0x8):
-        raise OSError("MoveFileExW durable no-replace move failed")
+    # Keep every settings publication on the shared handle/dirfd-bound
+    # no-replace primitive.  A path-based Windows MoveFileExW call leaves a gap
+    # in which either parent can be exchanged for a junction after preflight.
+    # POSIX can additionally fsync the containing directory; Windows has no
+    # equivalent directory-fsync contract here, so safety must not be weakened
+    # by falling back to a path-only WRITE_THROUGH move.
+    native_move_no_replace(source, destination)
+    _fsync_directory(destination.parent)
 
 
 def _write_journal(path: Path, payload: dict[str, Any]) -> None:

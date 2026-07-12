@@ -6,7 +6,6 @@ import os
 import subprocess
 import sys
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 
@@ -515,36 +514,24 @@ def test_settings_transaction_never_mutates_an_ordinary_cli_profile(
     assert credential_path.read_text(encoding="utf-8") == old_credential
 
 
-def test_windows_settings_moves_are_write_through_without_replace(
+def test_windows_settings_moves_delegate_to_hardened_no_replace_primitive(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     import opensquilla.recovery.settings_transaction as transaction
 
-    calls: list[tuple[str, str, int]] = []
-
-    class FakeMoveFile:
-        argtypes = None
-        restype = None
-
-        def __call__(self, source: str, destination: str, flags: int) -> int:
-            calls.append((source, destination, flags))
-            return 1
-
+    calls: list[tuple[Path, Path]] = []
+    source = Path("C:/synthetic/source")
+    destination = Path("C:/synthetic/destination")
     monkeypatch.setattr(transaction.os, "name", "nt")
     monkeypatch.setattr(
-        transaction.ctypes,
-        "windll",
-        SimpleNamespace(kernel32=SimpleNamespace(MoveFileExW=FakeMoveFile())),
-        raising=False,
+        transaction,
+        "native_move_no_replace",
+        lambda source, destination: calls.append((source, destination)),
     )
 
     transaction._durable_move_no_replace(
-        Path("C:/synthetic/source"),
-        Path("C:/synthetic/destination"),
+        source,
+        destination,
     )
 
-    assert len(calls) == 1
-    source, destination, flags = calls[0]
-    assert source.startswith("\\\\?\\C:\\")
-    assert destination.startswith("\\\\?\\C:\\")
-    assert flags == 0x8
+    assert calls == [(source, destination)]

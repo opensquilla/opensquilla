@@ -250,8 +250,13 @@ async def test_fetch_live_catalog_entries_uses_url_verbatim_without_auth() -> No
         )
 
     assert captured["url"] == "https://tokenrhythm.studio/api/models"
-    # The listing is keyless — no Authorization header may ever be sent.
-    assert "headers" not in captured["kwargs"]
+    # The listing stays keyless while carrying fixed public app attribution.
+    headers = captured["kwargs"]["headers"]
+    assert headers == {
+        "HTTP-Referer": "https://opensquilla.ai",
+        "X-Title": "OpenSquilla",
+    }
+    assert "Authorization" not in headers
     assert entries["deepseek-v4-pro"]["context_window"] == 900_000
 
 

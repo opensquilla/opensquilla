@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest'
 import { sectionFromRouteParam, isKnownSectionParam, parseProviderHash } from './useSettingsSection'
 import { SETTINGS_SECTIONS } from './settingsSections'
 import en from '@/locales/en.json'
+import zhHans from '@/locales/zh-Hans.json'
 
 describe('settings section IA', () => {
   it('has one Model Strategy section instead of split Router and Ensemble sections', () => {
@@ -38,6 +39,12 @@ describe('settings section IA', () => {
     for (const s of SETTINGS_SECTIONS) {
       expect(en.settings.rail).toHaveProperty(s.id)
     }
+  })
+
+  it('labels the provider-backed Settings section as Model Service', () => {
+    expect(en.settings.rail.provider).toBe('Model Service')
+    expect(zhHans.settings.rail.provider).toBe('模型服务')
+    expect(SETTINGS_SECTIONS.find(s => s.id === 'provider')?.label).toBe('Model Service')
   })
 
   it('aliases stale Router and Ensemble deep links to Model Strategy', () => {

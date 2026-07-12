@@ -375,6 +375,50 @@ def test_dashscope_stream_timeout_emits_heartbeat_before_non_stream_fallback(
     )
 
 
+def test_tokenrhythm_chat_adds_app_attribution_headers(monkeypatch: Any) -> None:
+    captured: dict[str, Any] = {}
+    _patch_transport(monkeypatch, captured)
+    provider = OpenAIProvider(
+        api_key="test",
+        model="deepseek-v4-flash",
+        base_url="https://tokenrhythm.studio/v1",
+        provider_kind="tokenrhythm",
+    )
+
+    _collect(provider, ChatConfig())
+
+    assert captured["url"] == "https://tokenrhythm.studio/v1/chat/completions"
+    assert captured["headers"].get("HTTP-Referer") == "https://opensquilla.ai"
+    assert captured["headers"].get("X-Title") == "OpenSquilla"
+
+
+def test_tokenrhythm_list_models_adds_app_attribution_headers(
+    monkeypatch: Any,
+) -> None:
+    captured: dict[str, Any] = {}
+    _patch_get_transport_response(
+        monkeypatch,
+        captured,
+        httpx.Response(
+            200,
+            json={"data": []},
+            request=httpx.Request("GET", "https://tokenrhythm.studio/v1/models"),
+        ),
+    )
+    provider = OpenAIProvider(
+        api_key="test",
+        model="deepseek-v4-flash",
+        base_url="https://tokenrhythm.studio/v1",
+        provider_kind="tokenrhythm",
+    )
+
+    assert asyncio.run(provider.list_models()) == []
+
+    assert captured["url"] == "https://tokenrhythm.studio/v1/models"
+    assert captured["headers"].get("HTTP-Referer") == "https://opensquilla.ai"
+    assert captured["headers"].get("X-Title") == "OpenSquilla"
+
+
 def test_openrouter_list_models_reports_openrouter_provider(monkeypatch: Any) -> None:
     captured: dict[str, Any] = {}
     _patch_get_transport_response(

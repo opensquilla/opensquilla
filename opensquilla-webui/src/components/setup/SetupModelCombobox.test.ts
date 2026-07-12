@@ -2,6 +2,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createApp, nextTick } from 'vue'
 import i18n from '@/i18n'
+import zhHans from '@/locales/zh-Hans.json'
 import SetupModelCombobox from './SetupModelCombobox.vue'
 import type { DiscoveredModel } from '@/composables/setup/useSetupProviderForm'
 
@@ -71,6 +72,10 @@ function listbox(): HTMLElement | null {
   return document.querySelector<HTMLElement>('[role="listbox"]')
 }
 
+function popup(): HTMLElement | null {
+  return document.querySelector<HTMLElement>('.setup-model-combobox__popup')
+}
+
 function optionRows(): HTMLButtonElement[] {
   return Array.from(document.querySelectorAll<HTMLButtonElement>('[role="option"]'))
 }
@@ -103,6 +108,13 @@ describe('SetupModelCombobox', () => {
     expect(listbox()).toBeNull()
   })
 
+  it('advertises model search and custom-id entry when no field placeholder is provided', async () => {
+    const { el } = await mountCombobox()
+    const input = el.querySelector<HTMLInputElement>('input[role="combobox"]')
+
+    expect(input?.placeholder).toBe('Search models or enter a custom ID')
+  })
+
   it('opens on focus and lists models with compact context window and capability hints', async () => {
     const { el } = await mountCombobox()
     await openList(el)
@@ -110,6 +122,7 @@ describe('SetupModelCombobox', () => {
     const rows = optionRows()
     expect(rows).toHaveLength(2)
     expect(rows[0].textContent).toContain('test-vendor/alpha')
+    expect(rows[0].textContent).toContain('Alpha')
     expect(rows[0].textContent).toContain('262k')
     expect(rows[0].textContent).toContain('tools')
     expect(rows[0].textContent).not.toContain('chat') // baseline capability is noise
@@ -117,13 +130,51 @@ describe('SetupModelCombobox', () => {
     expect(rows[1].textContent).toContain('vision')
   })
 
+  it('shows the discovered-model count on the trigger and in the live catalog readout', async () => {
+    const { el } = await mountCombobox()
+    const trigger = el.querySelector<HTMLButtonElement>('[data-testid="setup-model-options-toggle"]')
+
+    expect(trigger?.textContent).toContain('2')
+    expect(trigger?.getAttribute('aria-label')).toBe('Model catalog · 2')
+
+    trigger!.click()
+    await nextTick()
+
+    const readout = document.querySelector('.setup-model-combobox__readout')?.textContent
+    expect(readout).toContain('Available · 2')
+    expect(readout).toContain('Live')
+  })
+
+  it('describes a live catalog as real-time in Simplified Chinese', async () => {
+    i18n.global.setLocaleMessage('zh-Hans', zhHans)
+    i18n.global.locale.value = 'zh-Hans'
+    const { el } = await mountCombobox()
+
+    await openList(el)
+
+    const readout = document.querySelector('.setup-model-combobox__readout')?.textContent
+    expect(readout).toContain('实时')
+    expect(readout).not.toContain('已生效')
+  })
+
   it('teleports the open list to the body so scrolling panels cannot clip it', async () => {
     const { el } = await mountCombobox()
     await openList(el)
 
-    const list = listbox()!
-    expect(list.parentElement).toBe(document.body)
-    expect(el.contains(list)).toBe(false)
+    const layer = popup()!
+    expect(layer.parentElement).toBe(document.body)
+    expect(el.contains(layer)).toBe(false)
+  })
+
+  it('opens a readable wide catalog even when the table model cell is narrow', async () => {
+    const { el } = await mountCombobox()
+    const input = el.querySelector<HTMLInputElement>('input[role="combobox"]')!
+    stubRect(input, { top: 100, bottom: 132, left: 320, right: 580, width: 260, height: 32 })
+
+    input.dispatchEvent(new Event('focus'))
+    await nextTick()
+
+    expect(popup()!.style.width).toBe('480px')
   })
 
   it('flips the list above the input when the space below is too short', async () => {
@@ -134,10 +185,10 @@ describe('SetupModelCombobox', () => {
     input.dispatchEvent(new Event('focus'))
     await nextTick()
 
-    const list = listbox()!
-    expect(list.style.bottom).not.toBe('auto')
-    expect(list.style.bottom).not.toBe('')
-    expect(list.style.top).toBe('auto')
+    const layer = popup()!
+    expect(layer.style.bottom).not.toBe('auto')
+    expect(layer.style.bottom).not.toBe('')
+    expect(layer.style.top).toBe('auto')
   })
 
   it('shows the full list on focus even when the field holds a saved model id', async () => {
@@ -150,6 +201,15 @@ describe('SetupModelCombobox', () => {
     expect(rows).toHaveLength(2) // both models, no escape row for an exact id
     expect(rows[0].getAttribute('aria-selected')).toBe('true')
     expect(rows[1].textContent).toContain('test-vendor/beta-vision')
+  })
+
+  it('marks the selected model with a visible check affordance', async () => {
+    const { el } = await mountCombobox({ value: 'test-vendor/alpha' })
+    await openList(el)
+
+    const selected = document.querySelector<HTMLElement>('[role="option"][aria-selected="true"]')
+    expect(selected?.querySelector('.setup-model-combobox__selected')).toBeTruthy()
+    expect(selected?.textContent).toContain('Selected')
   })
 
   it('pins the saved model to the top when the list exceeds the visible window', async () => {
@@ -273,6 +333,54 @@ describe('SetupModelCombobox', () => {
     await nextTick()
 
     expect(onUpdate).toHaveBeenCalledWith('test-vendor/alpha')
+  })
+
+  it('announces the keyboard-active option through aria-activedescendant', async () => {
+    const { el } = await mountCombobox()
+    const input = await openList(el)
+
+    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown' }))
+    await nextTick()
+
+    const active = optionRows()[0]
+    expect(active.classList.contains('is-active')).toBe(true)
+    expect(active.id).not.toBe('')
+    expect(input.getAttribute('aria-activedescendant')).toBe(active.id)
+  })
+
+  it('keeps the keyboard-active option visible while navigating a long catalog', async () => {
+    const many = Array.from({ length: 12 }, (_, i) => makeModel(`test-vendor/model-${i}`))
+    const { el } = await mountCombobox({ models: many })
+    const input = await openList(el)
+    const rows = optionRows()
+    const scrollIntoView = vi.fn()
+    rows[6].scrollIntoView = scrollIntoView
+
+    for (let i = 0; i < 7; i += 1) {
+      input.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown' }))
+    }
+    await nextTick()
+
+    expect(rows[6].classList.contains('is-active')).toBe(true)
+    expect(scrollIntoView).toHaveBeenCalledWith({ block: 'nearest' })
+  })
+
+  it('keeps static catalog context outside the listbox semantics', async () => {
+    const { el } = await mountCombobox()
+    await openList(el)
+
+    const list = listbox()!
+    expect(list.querySelector('.setup-model-combobox__readout')).toBeNull()
+    expect(list.querySelector('.setup-model-combobox__footer')).toBeNull()
+    expect(list.querySelectorAll('[role="option"]')).toHaveLength(2)
+  })
+
+  it('exposes the full model id when the visible label is truncated', async () => {
+    const longId = 'provider/really-long-model-id-with-a-distinguishing-free-suffix'
+    const { el } = await mountCombobox({ models: [makeModel(longId)] })
+    await openList(el)
+
+    expect(optionRows()[0].querySelector('.setup-model-combobox__id')?.getAttribute('title')).toBe(longId)
   })
 
   it('shows provenance once in a muted footer, not per-row badges', async () => {

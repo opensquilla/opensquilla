@@ -35,7 +35,7 @@
         :tool-secondary-text="toolSecondaryText"
         @toggle-group="$emit('toggleToolGroup', $event)"
         @toggle-item="$emit('toggleToolItem', $event)"
-        @show-result="(content, title) => $emit('showToolResult', content, title)"
+        @show-result="(content, title, context) => $emit('showToolResult', content, title, context)"
       />
       <template v-else>
         <TextPart v-if="standaloneTextPart" :part="standaloneTextPart" :sources="message.sources ?? []" @citation="onCitation" />
@@ -51,7 +51,7 @@
         :tool-secondary-text="toolSecondaryText"
         @toggle-group="$emit('toggleToolGroup', $event)"
         @toggle-item="$emit('toggleToolItem', $event)"
-        @show-result="(content, title) => $emit('showToolResult', content, title)"
+        @show-result="(content, title, context) => $emit('showToolResult', content, title, context)"
       />
 
       <!-- Inline interrupts: approval / clarify requests that blocked the run,
@@ -252,6 +252,7 @@ import type {
   ChatToolCall,
   ChatToolCallGroup,
   ChatToolCallRenderItem,
+  ToolResultContext,
 } from '@/types/chat'
 import type { ChatPart } from '@/types/parts'
 import type { ArtifactPayload } from '@/types/rpc'
@@ -286,7 +287,7 @@ const emit = defineEmits<{
   downloadArtifact: [artifact: ArtifactPayload]
   toggleToolGroup: [groupId: string]
   toggleToolItem: [renderKey: string]
-  showToolResult: [content: string, title: string]
+  showToolResult: [content: string, title: string, context?: ToolResultContext]
   fork: []
   resolveInterrupt: [id: string, decision: 'allow-once' | 'allow-always' | 'deny', note?: string]
   extendInterrupt: [id: string]

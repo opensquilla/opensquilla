@@ -1,4 +1,5 @@
 import json
+import re
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -245,6 +246,93 @@ def test_desktop_onboarding_is_owned_modal_child_of_main_window() -> None:
     assert "parent: parentWindow ?? undefined" in onboarding
     assert "modal: Boolean(parentWindow)" in onboarding
     assert "onboardingWindow?.focus()" in onboarding
+
+
+def test_desktop_onboarding_defaults_to_tokenrhythm_with_trusted_registration_cta() -> None:
+    main_ts = _read("desktop/electron/src/main.ts")
+    html = _section(main_ts, "function onboardingHtml", "async function runOnboarding")
+
+    assert (
+        "const TOKENRHYTHM_REGISTER_URL = 'https://tokenrhythm.studio/register'"
+        in main_ts
+    )
+    assert '<input id="provider" type="hidden" value="tokenrhythm" />' in html
+    assert 'id="tokenrhythmRegister"' in html
+    assert 'href="${TOKENRHYTHM_REGISTER_URL}"' in html
+    assert 'target="_blank"' in html
+    assert 'rel="noopener noreferrer"' in html
+    assert 'data-i18n-aria="onboarding.step2.tokenrhythmCtaExternalLabel"' in html
+    assert ".provider-feature-select:focus-visible" in html
+    assert ".provider-disclosure-toggle:focus-visible" in html
+    assert html.rindex("syncProviderDefaults(true);") < html.rindex(
+        "applyMigrationPrefill(initialProviderPrefill);"
+    )
+    for key in (
+        "onboarding.step2.tokenrhythmTitle",
+        "onboarding.step2.tokenrhythmValue",
+        "onboarding.step2.tokenrhythmRegistration",
+        "onboarding.step2.tokenrhythmCta",
+        "onboarding.step2.tokenrhythmCtaExternalLabel",
+        "onboarding.step2.otherProviders",
+    ):
+        assert main_ts.count(f"'{key}':") == 6, key
+
+    localized_ctas = re.findall(
+        r"'onboarding\.step2\.tokenrhythmCta': '([^']+)',\n"
+        r"\s*'onboarding\.step2\.tokenrhythmCtaExternalLabel': '([^']+)',",
+        main_ts,
+    )
+    assert len(localized_ctas) == 6
+    for visible_cta, accessible_label in localized_ctas:
+        assert visible_cta in accessible_label
+
+
+def test_desktop_tokenrhythm_onboarding_supports_all_model_routing_modes() -> None:
+    main_ts = _read("desktop/electron/src/main.ts")
+    tokenrhythm_catalog = _section(main_ts, "id: 'tokenrhythm'", "id: 'openrouter'")
+    tokenrhythm_profile = _section(main_ts, "  tokenrhythm: {", "  openrouter: {")
+    onboarding_html = _section(main_ts, "function onboardingHtml", "async function runOnboarding")
+
+    assert "routerSupported: true" in tokenrhythm_catalog
+    assert "ensembleSelectionMode: 'static_tokenrhythm_b5'" in tokenrhythm_catalog
+    assert "const INLINE_ROUTER_PROFILE_IDS = new Set(['tokenrhythm'])" in main_ts
+    assert "!INLINE_ROUTER_PROFILE_IDS.has(credential.provider)" in main_ts
+    assert "Boolean(selected.ensembleSelectionMode)" in onboarding_html
+    assert "return provider.value;" in onboarding_html
+    assert "selection_mode = ${tomlString(selectionMode)}" in main_ts
+
+    expected_models = (
+        "deepseek-v4-flash",
+        "deepseek-v4-pro",
+        "kimi-k2.7-code",
+        "glm-5.2",
+        "kimi-k2.6",
+    )
+    for model in expected_models:
+        assert model in tokenrhythm_profile
+
+
+def test_desktop_onboarding_opens_only_trusted_registration_url_outside_renderer() -> None:
+    main_ts = _read("desktop/electron/src/main.ts")
+    preload = _read("desktop/electron/src/preload.cts")
+    onboarding = _section(
+        main_ts,
+        "async function runOnboarding",
+        "async function pathExists",
+    )
+    window_open = _section(
+        onboarding,
+        "onboardingWindow.webContents.setWindowOpenHandler",
+        "const guardOnboardingNavigation",
+    )
+
+    assert "if (url === TOKENRHYTHM_REGISTER_URL)" in window_open
+    assert "void shell.openExternal(TOKENRHYTHM_REGISTER_URL)" in window_open
+    assert "return { action: 'deny' }" in window_open
+    assert "shell.openExternal(url)" not in window_open
+    assert "openExternal" not in preload
+    assert "desktop:external:open" not in main_ts
+    assert "desktop:external:open" not in preload
 
 
 def test_desktop_focus_prefers_open_onboarding_window() -> None:
@@ -1367,7 +1455,18 @@ def test_desktop_migration_detection_respects_matching_completion_marker() -> No
     assert "sourceWasImportedToTarget(candidate, desktopHome())" in detection
     assert "'.opensquilla-imported.json'" in main_ts
     assert "payload.transaction_id" in main_ts
-    assert "join(target, 'migration', 'opensquilla', transactionId, 'report.json')" in main_ts
+    assert "join(receiptDir, 'report.json')" in main_ts
+    assert "function targetHasAppliedImportReceipt" in main_ts
+    assert "transactionIds = readdirSync(receiptRoot)" in main_ts
+    assert "resolvedPathsEqual(record.output_dir, receiptDir)" in main_ts
+    assert "return targetHasAppliedImportReceipt(source, target)" in main_ts
+    marker_check = _section(
+        main_ts,
+        "function sourceWasImportedToTarget",
+        "// The Python importer publishes",
+    )
+    assert "return false" not in marker_check
+    assert marker_check.count("targetHasAppliedImportReceipt(source, target") == 2
 
 
 def test_desktop_boot_recovers_interrupted_import_before_profile_use() -> None:

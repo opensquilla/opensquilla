@@ -4,7 +4,7 @@ const CONTROL_URL = '/control/'
 // Backend-config sections carry a readiness/status dot; Connection is the first
 // entry (live socket state). Appearance, Keyboard, and Advanced are client-only.
 // (Runtime exists too, but it is desktop-only so the web rail hides it.)
-const SECTIONS = ['Connection', 'Chat Model', 'Model Routing', 'Capabilities', 'Channels', 'Behavior', 'Privacy']
+const SECTIONS = ['Connection', 'Model Service', 'Model Routing', 'Capabilities', 'Channels', 'Behavior', 'Privacy']
 const CLIENT_SECTIONS = ['Appearance', 'Keyboard', 'Advanced']
 
 const settingsRow = (page: import('@playwright/test').Page) =>
@@ -289,7 +289,7 @@ test.describe('Settings modal', () => {
     await expect(dialog(page)).toBeVisible()
     // /config now redirects to /settings (default section).
     await expect(page).toHaveURL(/\/settings$/)
-    await expect(railTab(page, 'Chat Model')).toHaveAttribute('aria-selected', 'true')
+    await expect(railTab(page, 'Model Service')).toHaveAttribute('aria-selected', 'true')
   })
 
   test('/setup deep link redirects into the overlay on the first not-ready section', async ({ page }) => {
@@ -301,12 +301,12 @@ test.describe('Settings modal', () => {
     await expect(page).toHaveURL(/\/settings\/auto$/)
 
     // The selected tab matches the readiness state: with everything ready it
-    // is Chat Model, otherwise the first section whose rail dot needs action.
+    // is Model Service, otherwise the first section whose rail dot needs action.
     await expect(dialog(page).getByRole('tab', { selected: true })).toHaveCount(1)
     const banner = dialog(page).locator('.settings-banner')
     const ready = await banner.locator('.settings-banner__row').textContent()
     if (ready && ready.includes('Ready to run')) {
-      await expect(railTab(page, 'Chat Model')).toHaveAttribute('aria-selected', 'true')
+      await expect(railTab(page, 'Model Service')).toHaveAttribute('aria-selected', 'true')
     } else {
       const selected = dialog(page).getByRole('tab', { selected: true })
       await expect(selected).toHaveAttribute('aria-label', /Needs action|Provider first|Missing/)

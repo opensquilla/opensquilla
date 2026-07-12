@@ -303,7 +303,7 @@ async def test_exec_command_reads_stay_unblocked_with_lever_on(
     workspace = tmp_path / "workspace"
     tests_dir = workspace / "tests"
     tests_dir.mkdir(parents=True)
-    (tests_dir / "test_a.py").write_text("assert a\n", encoding="utf-8")
+    (tests_dir / "test_a.py").write_bytes(b"assert a\n")
     _configure_ctx(workspace, ["tests/**"])
 
     result = await shell.exec_command("cat tests/test_a.py", workdir=str(workspace))

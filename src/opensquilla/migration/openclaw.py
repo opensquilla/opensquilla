@@ -12,10 +12,13 @@ import json
 import os
 import re
 import shutil
+import tempfile
+import tomllib
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Literal
+from types import TracebackType
+from typing import Any, Literal, Self
 
 import yaml
 
@@ -25,8 +28,13 @@ from opensquilla.gateway.config import (
     GatewayConfig,
     MCPServerEntry,
 )
+from opensquilla.gateway.config_migration import migrate_config_payload
 from opensquilla.migration.env_file import merge_env_lines, write_secret_env_file
-from opensquilla.onboarding.config_store import load_config, persist_config
+from opensquilla.onboarding.config_store import (
+    load_config,
+    persist_config,
+    resolve_config_path,
+)
 from opensquilla.paths import default_opensquilla_home
 
 SKILL_IMPORT_DIRNAME = "openclaw-imports"
@@ -248,6 +256,140 @@ class ItemResult:
     status: str
     reason: str = ""
     details: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class _BeforeImage:
+    target: Path
+    backup: Path | None
+    kind: Literal["missing", "file", "directory", "symlink"]
+
+
+class _ApplyRollback:
+    """Restore paths changed by one apply run when a Python exception escapes."""
+
+    def __init__(self) -> None:
+        self._backup_root = Path(tempfile.mkdtemp(prefix="opensquilla-openclaw-rollback-"))
+        self._images: dict[Path, _BeforeImage] = {}
+        self._missing_parents: set[Path] = set()
+
+    def __enter__(self) -> Self:
+        return self
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> Literal[False]:
+        del exc_type, traceback
+        rollback_error: OSError | None = None
+        if exc is not None:
+            try:
+                self.rollback()
+            except OSError as caught:
+                rollback_error = caught
+        if rollback_error is not None:
+            raise OSError(
+                f"{exc}; rollback failed: {rollback_error}; "
+                f"before-image backup retained at {self._backup_root}"
+            ) from exc
+        shutil.rmtree(self._backup_root, ignore_errors=True)
+        return False
+
+    @staticmethod
+    def _absolute(path: Path) -> Path:
+        expanded = path.expanduser()
+        if expanded.is_absolute():
+            return expanded
+        return Path.cwd() / expanded
+
+    @staticmethod
+    def _lexists(path: Path) -> bool:
+        return os.path.lexists(path)
+
+    def capture(self, path: Path) -> None:
+        target = self._absolute(path)
+        if target in self._images:
+            return
+        for parent in self._images:
+            if target != parent and target.is_relative_to(parent):
+                return
+
+        if not self._lexists(target):
+            self._images[target] = _BeforeImage(target, None, "missing")
+            parent = target.parent
+            while parent != parent.parent and not self._lexists(parent):
+                self._missing_parents.add(parent)
+                parent = parent.parent
+            return
+
+        backup = self._backup_root / str(len(self._images))
+        if target.is_symlink():
+            backup.symlink_to(os.readlink(target), target_is_directory=target.is_dir())
+            kind: Literal["file", "directory", "symlink"] = "symlink"
+        elif target.is_dir():
+            shutil.copytree(target, backup, symlinks=True)
+            kind = "directory"
+        elif target.is_file():
+            shutil.copy2(target, backup, follow_symlinks=False)
+            kind = "file"
+        else:
+            raise OSError(f"unsupported migration target type: {target}")
+        self._images[target] = _BeforeImage(target, backup, kind)
+
+    def register_created(self, path: Path) -> None:
+        target = self._absolute(path)
+        if target in self._images:
+            return
+        for parent in self._images:
+            if target != parent and target.is_relative_to(parent):
+                return
+        self._images[target] = _BeforeImage(target, None, "missing")
+
+    @classmethod
+    def _remove(cls, path: Path) -> None:
+        if not cls._lexists(path):
+            return
+        if path.is_symlink() or not path.is_dir():
+            path.unlink()
+        else:
+            shutil.rmtree(path)
+
+    @classmethod
+    def _restore(cls, image: _BeforeImage) -> None:
+        cls._remove(image.target)
+        if image.kind == "missing":
+            return
+        assert image.backup is not None
+        image.target.parent.mkdir(parents=True, exist_ok=True)
+        if image.kind == "directory":
+            shutil.copytree(image.backup, image.target, symlinks=True)
+        elif image.kind == "symlink":
+            image.target.symlink_to(
+                os.readlink(image.backup),
+                target_is_directory=image.backup.is_dir(),
+            )
+        else:
+            shutil.copy2(image.backup, image.target, follow_symlinks=False)
+
+    def rollback(self) -> None:
+        errors: list[str] = []
+        for image in reversed(tuple(self._images.values())):
+            try:
+                self._restore(image)
+            except OSError as exc:
+                errors.append(f"restore {image.target}: {exc}")
+        for parent in sorted(self._missing_parents, key=lambda path: len(path.parts), reverse=True):
+            try:
+                parent.rmdir()
+            except FileNotFoundError:
+                pass
+            except OSError:
+                # A parent may contain pre-existing or concurrently-created data.
+                pass
+        if errors:
+            raise OSError("; ".join(errors))
 
 
 def _as_path(value: Path | str | None) -> Path | None:
@@ -476,10 +618,12 @@ class OpenClawMigrator:
         self.output_dir = self.home / "migration" / "openclaw" / self.timestamp
         self.items: list[ItemResult] = []
         self._config: GatewayConfig | None = None
+        self._config_migration_pending = False
         self._config_paths_normalized = False
         self._config_changed = False
         self._env_additions: dict[str, str] = {}
         self._notes: list[str] = []
+        self._apply_rollback: _ApplyRollback | None = None
 
     def migrate(self) -> dict[str, Any]:
         validation_error = self._validation_error()
@@ -500,6 +644,20 @@ class OpenClawMigrator:
         selected = self._selected_options()
         config = self._load_openclaw_config()
 
+        if self.options.apply:
+            with _ApplyRollback() as rollback:
+                self._apply_rollback = rollback
+                try:
+                    self._prepare_apply_rollback()
+                    self._migrate_selected(selected, config)
+                finally:
+                    self._apply_rollback = None
+        else:
+            self._migrate_selected(selected, config)
+
+        return self._report()
+
+    def _migrate_selected(self, selected: set[str], config: dict[str, Any]) -> None:
         if "soul" in selected:
             self._migrate_workspace_file("SOUL.md", "soul")
         if "workspace-agents" in selected:
@@ -535,11 +693,30 @@ class OpenClawMigrator:
             self._archive_openclaw_artifacts()
 
         if self.options.apply:
-            self._flush_config()
             self._flush_env()
             self._write_report_files()
+            # Config persistence is deliberately last. persist_config merges
+            # against the latest on-disk state under its shared write lock;
+            # once it commits, no later fallible migration step may trigger
+            # the path rollback and overwrite a concurrent settings save.
+            self._flush_config()
 
-        return self._report()
+    def _prepare_apply_rollback(self) -> None:
+        assert self._apply_rollback is not None
+        self._capture_apply_target(self.output_dir)
+
+    def _capture_apply_target(self, path: Path) -> None:
+        if self._apply_rollback is None:
+            return
+        target = path.resolve() if path.is_symlink() else path
+        self._apply_rollback.capture(target)
+
+    def _capture_apply_replace_target(self, path: Path) -> None:
+        if self._apply_rollback is None:
+            return
+        if path.is_symlink():
+            self._apply_rollback.capture(path)
+        self._capture_apply_target(path)
 
     def _validation_error(self) -> str:
         if self.options.preset not in MIGRATION_PRESETS:
@@ -573,11 +750,30 @@ class OpenClawMigrator:
 
     def _config_obj(self) -> GatewayConfig:
         if self._config is None:
-            self._config = load_config(self.config_path)
+            self._config_migration_pending = (
+                self.options.apply and self._target_config_needs_migration()
+            )
+            # Loading must not rewrite the target config. Any schema rewrite
+            # is deferred to the final persist so a later migration failure
+            # never needs to restore a stale, pre-concurrency before-image.
+            self._config = load_config(self.config_path, persist_migrations=False)
         if not self._config_paths_normalized:
             self._normalize_default_config_paths(self._config)
             self._config_paths_normalized = True
         return self._config
+
+    def _target_config_needs_migration(self) -> bool:
+        target, _source = resolve_config_path(self.config_path)
+        if not target.is_file():
+            return False
+        try:
+            with target.open("rb") as fh:
+                payload = tomllib.load(fh)
+        except FileNotFoundError:
+            # A concurrent reset may remove the target between is_file() and
+            # open(); load_config handles that as a fresh config as well.
+            return False
+        return migrate_config_payload(payload, emit_diagnostics=False).changed
 
     def _workspace_dir(self) -> Path:
         cfg = self._config_obj()
@@ -724,6 +920,7 @@ class OpenClawMigrator:
         if destination.exists() and not self.options.overwrite and not is_pristine_template:
             self._record(kind, source, destination, "conflict", "target exists")
             return
+        self._capture_apply_target(destination)
         if destination.exists():
             self._backup_file(destination)
         destination.parent.mkdir(parents=True, exist_ok=True)
@@ -776,6 +973,7 @@ class OpenClawMigrator:
             choice = self._resolve_persona_conflict(filename, destination, text)
             details["persona_conflict_resolution"] = choice
             if choice == "use-openclaw":
+                self._capture_apply_target(destination)
                 self._backup_file(destination)
                 destination.parent.mkdir(parents=True, exist_ok=True)
                 destination.write_text(text, encoding="utf-8")
@@ -790,6 +988,7 @@ class OpenClawMigrator:
                     + "\n\n## Imported from OpenClaw\n\n"
                     + text.lstrip()
                 )
+                self._capture_apply_target(destination)
                 self._backup_file(destination)
                 destination.write_text(merged, encoding="utf-8")
                 self._record(kind, source, destination, "migrated", details=details)
@@ -1028,6 +1227,7 @@ class OpenClawMigrator:
                     details=record_details,
                 )
             else:
+                self._capture_apply_target(destination)
                 self._backup_file(destination)
                 destination.parent.mkdir(parents=True, exist_ok=True)
                 destination.write_text(merged, encoding="utf-8")
@@ -1183,8 +1383,11 @@ class OpenClawMigrator:
                     )
                     continue
                 if target.exists() and self.options.skill_conflict == "overwrite":
+                    self._capture_apply_target(target)
                     self._backup_dir(target)
                     shutil.rmtree(target)
+                else:
+                    self._capture_apply_target(target)
                 target.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copytree(skill_dir, target)
                 self._record("skills", skill_dir, target, "migrated", details=details)
@@ -1211,6 +1414,7 @@ class OpenClawMigrator:
                 target = destination / item.relative_to(source)
                 if target.exists():
                     continue
+                self._capture_apply_target(target)
                 target.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(item, target)
                 copied += 1
@@ -1219,8 +1423,11 @@ class OpenClawMigrator:
             self._record("tts-assets", source, destination, status, reason, {"copied": copied})
             return
         if destination.exists():
+            self._capture_apply_target(destination)
             self._backup_dir(destination)
             shutil.rmtree(destination)
+        else:
+            self._capture_apply_target(destination)
         shutil.copytree(source, destination)
         self._record("tts-assets", source, destination, "migrated")
 
@@ -2001,7 +2208,9 @@ class OpenClawMigrator:
         self._record(kind, source, destination, "archived")
 
     def _flush_config(self) -> None:
-        if not self._config_changed or self._config is None:
+        if self._config is None or (
+            not self._config_changed and not self._config_migration_pending
+        ):
             return
         persist_config(self._config, path=self.config_path, backup=True, restart_required=True)
 
@@ -2009,6 +2218,7 @@ class OpenClawMigrator:
         if not self._env_additions:
             return
         env_path = self.home / ".env"
+        self._capture_apply_replace_target(env_path)
         env_path.parent.mkdir(parents=True, exist_ok=True)
         existing_lines = (
             env_path.read_text(encoding="utf-8", errors="replace").splitlines()
@@ -2020,10 +2230,14 @@ class OpenClawMigrator:
 
     def _backup_file(self, path: Path) -> None:
         backup = path.with_name(f"{path.name}.backup.{self.timestamp}")
+        self._capture_apply_target(path)
+        self._capture_apply_target(backup)
         backup.write_bytes(path.read_bytes())
 
     def _backup_dir(self, path: Path) -> None:
         backup = path.with_name(f"{path.name}.backup.{self.timestamp}")
+        self._capture_apply_target(path)
+        self._capture_apply_target(backup)
         if backup.exists():
             shutil.rmtree(backup)
         shutil.copytree(path, backup)

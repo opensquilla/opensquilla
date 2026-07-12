@@ -167,4 +167,69 @@ describe('catalog parity', () => {
     )
     expect(leaked).toEqual([])
   })
+
+  it('ships the approved Model Service labels in every locale', () => {
+    expect({
+      en: en.settings.rail.provider,
+      zhHans: zhHans.settings.rail.provider,
+      ja: ja.settings.rail.provider,
+      fr: fr.settings.rail.provider,
+      de: de.settings.rail.provider,
+      es: es.settings.rail.provider,
+    }).toEqual({
+      en: 'Model Service',
+      zhHans: '模型服务',
+      ja: 'モデルサービス',
+      fr: 'Service de modèles',
+      de: 'Modelldienst',
+      es: 'Servicio de modelos',
+    })
+  })
+
+  it('ships localized TokenRhythm recommendation copy with exact English and zh-Hans wording', () => {
+    expect(en.setup.provider.recommendation).toEqual({
+      title: 'Recommended: TokenRhythm',
+      value: 'TokenRhythm API calls are free for a limited time.',
+      registration: 'During the promotion, register and get an API key to call DeepSeek, GLM, MiniMax, Kimi, and other leading models for free.',
+      cta: 'Register and get an API key',
+      externalLabel: 'Register and get an API key — TokenRhythm (opens in a new tab)',
+      stepsLabel: 'How to connect TokenRhythm',
+      stepRegister: 'Create a TokenRhythm account',
+      stepCopy: 'Copy your API key',
+      stepPaste: 'Paste it into the API key field below',
+      stepSelectAndPaste: 'Select TokenRhythm above, then paste your API key',
+      stepReplaceAndPaste: 'Choose Replace key below, then paste your API key',
+    })
+    expect(zhHans.setup.provider.recommendation).toEqual({
+      title: '推荐使用 TokenRhythm',
+      value: 'TokenRhythm API 调用限时免费。',
+      registration: '活动期间，注册并获取 API Key，即可免费调用 DeepSeek、GLM、MiniMax、Kimi 等主流模型。',
+      cta: '注册并获取 API Key',
+      externalLabel: '注册并获取 API Key — TokenRhythm（在新标签页中打开）',
+      stepsLabel: '如何接入 TokenRhythm',
+      stepRegister: '注册 TokenRhythm 账户',
+      stepCopy: '复制你的 API Key',
+      stepPaste: '粘贴到下方 API key 输入框',
+      stepSelectAndPaste: '先在上方选择 TokenRhythm，再粘贴 API Key',
+      stepReplaceAndPaste: '先点击下方「更换密钥」，再粘贴 API Key',
+    })
+
+    for (const messages of [en, zhHans, ja, fr, de, es]) {
+      const copy = messages.setup.provider.recommendation
+      expect(copy.title).toContain('TokenRhythm')
+      expect(copy.registration).toContain('DeepSeek')
+      expect(copy.registration).toContain('GLM')
+      expect(copy.registration).toContain('MiniMax')
+      expect(copy.registration).toContain('Kimi')
+      expect(copy.cta).toBeTruthy()
+      expect(copy.externalLabel).toBeTruthy()
+      expect(copy.externalLabel).toContain(copy.cta)
+      expect(copy.stepsLabel).toBeTruthy()
+      expect(copy.stepRegister).toBeTruthy()
+      expect(copy.stepCopy).toBeTruthy()
+      expect(copy.stepPaste).toBeTruthy()
+      expect(copy.stepSelectAndPaste).toBeTruthy()
+      expect(copy.stepReplaceAndPaste).toBeTruthy()
+    }
+  })
 })

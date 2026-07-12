@@ -1993,7 +1993,7 @@ wheels = [
 
 [[package]]
 name = "opensquilla"
-version = "0.5.0rc2"
+version = "0.5.0rc3"
 source = { editable = "." }
 dependencies = [
     { name = "aiosqlite" },

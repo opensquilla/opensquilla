@@ -295,7 +295,8 @@ async def test_env_auth_token_rotation_survives_config_save(tmp_path, monkeypatc
     assert rebooted.auth.token == "tok-env-rotated"
 
 
-def test_persist_config_fresh_file_is_not_world_readable(tmp_path, monkeypatch) -> None:
+@pytest.mark.skipif(os.name == "nt", reason="Windows st_mode does not represent DACLs")
+def test_persist_config_fresh_file_has_owner_only_posix_mode(tmp_path, monkeypatch) -> None:
     monkeypatch.setenv("OPENSQUILLA_AUTH_TOKEN", "tok-env-original")
     old_umask = os.umask(0o022)
     try:

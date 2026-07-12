@@ -31,6 +31,12 @@ def _env_hint(env_key: str) -> str:
     return f'export {env_key}="<your-key>"'
 
 
+def _env_command(env_key: str) -> str:
+    if platform.system().lower().startswith("win"):
+        return f'$env:{env_key} = "<your-key>"'
+    return f'export {env_key}="<your-key>"'
+
+
 def _config_arg(path) -> str:
     return shlex.quote(str(path))
 
@@ -486,7 +492,13 @@ def test_onboard_status_uses_explicit_config_path(tmp_path, monkeypatch):
     assert not default_target.exists()
 
 
-def test_onboard_status_json_exposes_provider_section_alias(tmp_path, monkeypatch):
+@pytest.mark.parametrize("system_name", ["Linux", "Windows"])
+def test_onboard_status_json_exposes_provider_section_alias(
+    tmp_path,
+    monkeypatch,
+    system_name,
+):
+    monkeypatch.setattr(platform, "system", lambda: system_name)
     target = tmp_path / "custom.toml"
     target.write_text(
         '[llm]\n'
@@ -509,7 +521,7 @@ def test_onboard_status_json_exposes_provider_section_alias(tmp_path, monkeypatc
         {
             "section": "llm",
             "label": "Set provider key",
-            "command": _env_hint("CUSTOM_LLM_KEY"),
+            "command": _env_command("CUSTOM_LLM_KEY"),
         }
     ]
 
@@ -727,10 +739,13 @@ def test_onboard_status_table_uses_product_labels_and_scope_column(
     assert not default_target.exists()
 
 
+@pytest.mark.parametrize("system_name", ["Linux", "Windows"])
 def test_onboard_status_prioritizes_missing_env_recovery(
     tmp_path,
     monkeypatch,
+    system_name,
 ):
+    monkeypatch.setattr(platform, "system", lambda: system_name)
     target = tmp_path / "custom.toml"
     target.write_text(
         '[llm]\n'

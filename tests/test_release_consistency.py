@@ -5,8 +5,8 @@ import re
 import tomllib
 from pathlib import Path
 
-CURRENT_VERSION = "0.5.0rc2"
-CURRENT_DESKTOP_VERSION = "0.5.0-rc2"
+CURRENT_VERSION = "0.5.0rc3"
+CURRENT_DESKTOP_VERSION = "0.5.0-rc3"
 CURRENT_TAG = f"v{CURRENT_VERSION}"
 HISTORICAL_PREVIEW_VERSION = "0.2.0rc1"
 HISTORICAL_PREVIEW_TAG = f"v{HISTORICAL_PREVIEW_VERSION}"
@@ -272,6 +272,11 @@ def test_releases_md_exists_and_references_current_and_preview_tags() -> None:
     assert f"OpenSquilla-{CURRENT_DESKTOP_VERSION}-win-x64.exe" in text
     assert "do not publish Windows portable zips" in text
     assert "legacy Windows portable downloads" in text
+    assert "separately branded macOS or Linux portable bundles" in text
+    assert "macOS `.zip` is the Electron desktop and updater artifact" in text
+    assert "macOS portable zips" not in text
+    assert "`0.5.0rc4` /\n    `v0.5.0rc4`" in text
+    assert "tracks the most recently pushed release tag" in text
 
 
 def test_changelog_has_current_release_section_and_unreleased() -> None:
@@ -290,7 +295,8 @@ def test_readme_release_install_uses_latest_assets_and_pinned_alternative() -> N
     assert f"OpenSquilla-{CURRENT_DESKTOP_VERSION}-mac-arm64.dmg" in readme
     assert f"OpenSquilla-{CURRENT_DESKTOP_VERSION}-win-x64.exe" in readme
     assert "Simplified release assets" in readme
-    assert "desktop installers and the Python wheel only" in readme
+    assert "Electron installers" in readme
+    assert "versioned Python wheel" in readme
     assert "releases/latest/download/OpenSquilla-windows-x64-portable.zip" not in readme
     assert (
         f"releases/download/{CURRENT_TAG}/opensquilla-{CURRENT_VERSION}-py3-none-any.whl"
@@ -299,6 +305,28 @@ def test_readme_release_install_uses_latest_assets_and_pinned_alternative() -> N
     assert "opensquilla-latest-py3-none-any.whl" not in readme
     assert "Python wheel installs use versioned wheel filenames" in readme
     assert "Release install commands use published GitHub release assets" in readme
+
+
+def test_all_readmes_default_install_paths_to_the_current_preview() -> None:
+    wheel_url = (
+        f"releases/download/{CURRENT_TAG}/opensquilla-{CURRENT_VERSION}-py3-none-any.whl"
+    )
+    readmes = [
+        Path("README.md"),
+        Path("README.zh-Hans.md"),
+        Path("README.ja.md"),
+        Path("README.fr.md"),
+        Path("README.de.md"),
+        Path("README.es.md"),
+    ]
+
+    for path in readmes:
+        text = path.read_text(encoding="utf-8")
+        assert f"OpenSquilla-{CURRENT_DESKTOP_VERSION}-mac-arm64.dmg" in text, path
+        assert f"OpenSquilla-{CURRENT_DESKTOP_VERSION}-win-x64.exe" in text, path
+        assert wheel_url in text, path
+        assert "ghcr.io/opensquilla/opensquilla:latest" in text, path
+        assert "0.5.0-Preview-2-Desktop" not in text, path
 
 
 def test_user_facing_install_docs_use_current_release_wheel() -> None:
@@ -350,6 +378,33 @@ def test_release_workflow_marks_preview_tags_as_prereleases() -> None:
     assert "opensquilla-latest-py3-none-any.whl" not in workflow
 
 
+def test_container_workflow_gates_latest_promotion() -> None:
+    workflow = Path(".github/workflows/docker-image.yml").read_text(encoding="utf-8")
+
+    assert 'tags:\n      - "v*"' in workflow
+    assert 'tag_version="${GITHUB_REF_NAME#v}"' in workflow
+    assert 'project["project"]["version"]' in workflow
+    assert "does not match project version" in workflow
+    assert "packages: write" in workflow
+    assert "platforms: linux/amd64,linux/arm64" in workflow
+    assert "type=ref,event=tag" in workflow
+    assert "type=raw,value=latest" not in workflow
+    assert "provenance: false" in workflow
+    assert "most recently pushed release tag" in workflow
+    assert '["docker", "buildx", "imagetools", "inspect", image_ref, "--raw"]' in workflow
+    assert 'expected = {"linux/amd64", "linux/arm64"}' in workflow
+    assert 'docker run --detach --pull=always "${IMAGE_REF}"' in workflow
+    assert ".State.Health.Status" in workflow
+    assert '[[ "${health}" == "healthy" ]]' in workflow
+    assert "docker buildx imagetools create" in workflow
+
+    build = workflow.index("- name: Build multi-arch image")
+    verify = workflow.index("- name: Verify pushed manifest platforms")
+    smoke = workflow.index("- name: Smoke pushed image HEALTHCHECK")
+    promote = workflow.index("- name: Promote verified release image to latest")
+    assert build < verify < smoke < promote
+
+
 def test_historical_040_release_notes_remain_available() -> None:
     notes = Path("docs/releases/0.4.0.md").read_text(encoding="utf-8")
 
@@ -357,7 +412,7 @@ def test_historical_040_release_notes_remain_available() -> None:
     assert "OpenSquilla-0.4.0-mac-arm64.dmg" in notes
 
 
-def test_current_release_notes_prioritize_model_ensemble_and_sandbox() -> None:
+def test_current_release_notes_cover_migration_upgrade_and_containers() -> None:
     notes = Path(f"docs/releases/{CURRENT_VERSION}.md").read_text(encoding="utf-8")
 
     assert "## Downloads" in notes
@@ -365,17 +420,38 @@ def test_current_release_notes_prioritize_model_ensemble_and_sandbox() -> None:
     assert f"OpenSquilla-{CURRENT_DESKTOP_VERSION}-mac-arm64.zip" in notes
     assert f"OpenSquilla-{CURRENT_DESKTOP_VERSION}-win-x64.exe" in notes
     assert f"opensquilla-{CURRENT_VERSION}-py3-none-any.whl" in notes
-    assert notes.index("### Model Ensemble") < notes.index(
-        "### Managed execution and sandbox alignment"
+    assert notes.index("### Legacy home migration and upgrade safety") < notes.index(
+        "### Providers, models, and routing"
     )
-    assert notes.index("### Managed execution and sandbox alignment") < notes.index(
-        "### Desktop and Control UI polish"
+    assert notes.index("### Providers, models, and routing") < notes.index(
+        "### Desktop, terminal, and Control UI"
+    )
+    assert notes.index("### Runtime, safety, and data reliability") < notes.index(
+        "### Container deployment"
     )
     assert "No Windows portable assets are published for 0.5.0 preview releases" in notes
-    assert "0.5.0rc2 portable zip" in notes
-    assert "## Upgrading from 0.4.1" in notes
+    assert "0.5.0rc3 portable zip" in notes
+    assert "## Upgrading from Preview 2, Preview 1, or 0.4.1" in notes
+    assert "should not wait for an in-app RC3\nnotification" in notes
+    assert "ghcr.io/opensquilla/opensquilla:v0.5.0rc3" in notes
+    assert "Docker `latest` follows the most recently pushed release tag" in notes
+    assert (
+        "Configuration\nformats from every released OpenSquilla version remain supported"
+        in notes
+    )
+    assert "Synthetic fixtures" not in notes
+    assert "release gate" not in notes
     assert "## Acknowledgements" in notes
-    assert "@HuaXiawithMoon" in notes
+    for login in [
+        "@ab2ence",
+        "@JarvisPei",
+        "@labulalala",
+        "@Liu-RK",
+        "@lyteen",
+        "@nice-code-la",
+        "@TUOXI293",
+    ]:
+        assert login in notes
     assert "CONTRIBUTORS.md" in notes
 
 
@@ -386,15 +462,23 @@ def test_docs_index_links_current_release_notes() -> None:
     assert "releases/0.4.0.md" in index
 
 
-def test_current_contributor_ledger_records_050rc2_attribution() -> None:
+def test_current_contributor_ledger_records_050rc3_attribution() -> None:
     ledger = Path("CONTRIBUTORS.md").read_text(encoding="utf-8")
-    section = ledger.split("## OpenSquilla 0.5.0rc2", 1)[1].split(
-        "## OpenSquilla 0.5.0rc1", 1
+    section = ledger.split("## OpenSquilla 0.5.0rc3", 1)[1].split(
+        "## OpenSquilla 0.5.0rc2", 1
     )[0]
 
-    assert "[@HuaXiawithMoon](https://github.com/HuaXiawithMoon)" in section
-    assert "#473" in section
-    assert "@ab2ence" not in section
-    assert "@nice-code-la" not in section
+    expected = {
+        "@ab2ence": "#491",
+        "@JarvisPei": "#550",
+        "@labulalala": "#502",
+        "@Liu-RK": "#486",
+        "@lyteen": "#212",
+        "@nice-code-la": "#560",
+        "@TUOXI293": "#487",
+    }
+    for login, evidence in expected.items():
+        assert login in section
+        assert evidence in section
     assert "Codex" not in section
     assert "Claude Code" not in section

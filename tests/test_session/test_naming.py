@@ -258,7 +258,28 @@ async def test_call_naming_llm_payload_and_sanitization(monkeypatch):
     assert captured["json"]["stream"] is False
     # OpenRouter attribution headers are present (mirrors compaction path).
     assert captured["headers"]["Authorization"] == "Bearer test-key"
-    assert "X-Title" in captured["headers"]
+    assert captured["headers"]["HTTP-Referer"] == "https://opensquilla.ai"
+    assert captured["headers"]["X-Title"] == "OpenSquilla"
+
+
+@pytest.mark.asyncio
+async def test_call_naming_llm_adds_tokenrhythm_app_attribution(monkeypatch):
+    captured: dict = {}
+    monkeypatch.setattr(
+        "opensquilla.session.naming.httpx.AsyncClient",
+        lambda **kwargs: _fake_client(captured),
+    )
+
+    await call_naming_llm(
+        "Help me reset my password please",
+        model="deepseek-v4-flash",
+        api_key="test-key",
+        base_url="https://tokenrhythm.studio/v1",
+    )
+
+    assert captured["url"] == "https://tokenrhythm.studio/v1/chat/completions"
+    assert captured["headers"]["HTTP-Referer"] == "https://opensquilla.ai"
+    assert captured["headers"]["X-Title"] == "OpenSquilla"
 
 
 @pytest.mark.asyncio

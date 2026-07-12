@@ -16,7 +16,7 @@ def test_run_migration_batch_uses_canonical_source_order(monkeypatch, tmp_path):
     ]
     calls: list[tuple[str, Path]] = []
 
-    def fake_run_one_migration(name, source_path, options):
+    def fake_run_one_migration(name, source_path, options, **_kwargs):
         calls.append((name, source_path))
         return {
             "output_dir": str(tmp_path / "reports" / name),
@@ -61,3 +61,72 @@ def test_opensquilla_batch_rejects_custom_config_path(tmp_path: Path) -> None:
             ("opensquilla",),
             orchestrator.MigrationBatchOptions(config=tmp_path / "custom.toml"),
         )
+
+
+def test_detected_portable_kind_reaches_opensquilla_migrator(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake_home = tmp_path / "userhome"
+    fake_home.mkdir()
+    portable_base = tmp_path / "local-app-data"
+    portable = portable_base / "OpenSquilla" / "portable" / "dummy-release"
+    portable.mkdir(parents=True)
+    (portable / "config.toml").write_text("port = 18790\n", encoding="utf-8")
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: fake_home))
+    monkeypatch.setenv("HOME", str(fake_home))
+    monkeypatch.setenv("LOCALAPPDATA", str(portable_base))
+    monkeypatch.delenv("TEMP", raising=False)
+    target = tmp_path / "target-home"
+    monkeypatch.setenv("OPENSQUILLA_STATE_DIR", str(target))
+
+    detected = orchestrator.detect_default_sources()
+
+    assert detected == [
+        orchestrator.DetectedMigrationSource(
+            "opensquilla", portable, source_kind="windows-portable"
+        )
+    ]
+    result = orchestrator.run_migration_batch(
+        detected,
+        ["opensquilla"],
+        orchestrator.MigrationBatchOptions(
+            config=target / "config.toml",
+            apply=False,
+        ),
+    )
+    assert result.reports["opensquilla"]["source_kind"] == "windows-portable"
+
+
+def test_detected_desktop_kind_reaches_opensquilla_migrator(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake_home = tmp_path / "userhome"
+    fake_home.mkdir()
+    desktop = tmp_path / "desktop-home"
+    desktop.mkdir()
+    (desktop / "config.toml").write_text("port = 18790\n", encoding="utf-8")
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: fake_home))
+    monkeypatch.setenv("HOME", str(fake_home))
+    monkeypatch.delenv("LOCALAPPDATA", raising=False)
+    monkeypatch.delenv("TEMP", raising=False)
+    target = tmp_path / "target-home"
+    monkeypatch.setenv("OPENSQUILLA_STATE_DIR", str(target))
+    monkeypatch.setattr(
+        "opensquilla.migration.opensquilla_home.detect_desktop_home",
+        lambda: desktop,
+    )
+
+    detected = orchestrator.detect_default_sources()
+
+    assert detected == [
+        orchestrator.DetectedMigrationSource("opensquilla", desktop, source_kind="desktop-home")
+    ]
+    result = orchestrator.run_migration_batch(
+        detected,
+        ["opensquilla"],
+        orchestrator.MigrationBatchOptions(
+            config=target / "config.toml",
+            apply=False,
+        ),
+    )
+    assert result.reports["opensquilla"]["source_kind"] == "desktop-home"

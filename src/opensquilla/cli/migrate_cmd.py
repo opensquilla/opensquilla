@@ -25,7 +25,6 @@ from opensquilla.migration.hermes import (
 from opensquilla.migration.hermes import (
     HermesMigrationOptions,
     HermesMigrator,
-    _is_valid_hermes_home,
 )
 from opensquilla.migration.openclaw import (
     MIGRATION_OPTIONS,
@@ -34,18 +33,19 @@ from opensquilla.migration.openclaw import (
     SKILL_CONFLICT_MODES,
     MigrationOptions,
     OpenClawMigrator,
-    _is_valid_openclaw_home,
 )
 from opensquilla.migration.opensquilla_home import (
     OPENSQUILLA_SOURCE_KINDS,
     OpenSquillaHomeMigrator,
     OpenSquillaMigrationOptions,
     PortableCandidate,
-    detect_legacy_cli_home,
     enumerate_portable_homes,
     is_valid_opensquilla_home,
 )
-from opensquilla.paths import default_opensquilla_home
+from opensquilla.migration.orchestrator import (
+    DetectedMigrationSource,
+    detect_default_sources,
+)
 
 migrate_app = typer.Typer(
     help="Migration helpers for legacy OpenSquilla homes and external agent runtimes.",
@@ -76,28 +76,16 @@ def _stdin_is_tty() -> bool:
     return sys.stdin.isatty()
 
 
-def _detect_migration_sources() -> list[tuple[str, Path]]:
+def _detect_migration_sources() -> list[DetectedMigrationSource]:
     """Discover importable homes on disk. Order: opensquilla, openclaw, hermes.
 
-    Returns (source_id, source_path) pairs for every runtime whose default
-    home is plausibly populated. The legacy OpenSquilla CLI home is offered
-    only when it is not the active home (a plain CLI user must never see
-    their own live home as a migration source).
+    The shared detector preserves the OpenSquilla source kind so portable
+    homes are dispatched through the matching migration contract.
     """
-    found: list[tuple[str, Path]] = []
-    legacy_home = detect_legacy_cli_home(default_opensquilla_home())
-    if legacy_home is not None:
-        found.append(("opensquilla", legacy_home))
-    openclaw_home = Path.home() / ".openclaw"
-    if _is_valid_openclaw_home(openclaw_home):
-        found.append(("openclaw", openclaw_home))
-    hermes_home = Path.home() / ".hermes"
-    if _is_valid_hermes_home(hermes_home):
-        found.append(("hermes", hermes_home))
-    return found
+    return detect_default_sources()
 
 
-def _prompt_source_selection(detected: list[tuple[str, Path]]) -> list[str]:
+def _prompt_source_selection(detected: list[DetectedMigrationSource]) -> list[str]:
     """Interactive multi-select for which detected sources to migrate.
 
     Returns the list of selected source ids. Empty list means the user
@@ -106,8 +94,12 @@ def _prompt_source_selection(detected: list[tuple[str, Path]]) -> list[str]:
     import questionary
 
     choices = [
-        questionary.Choice(title=f"{name} ({path})", value=name, checked=True)
-        for name, path in detected
+        questionary.Choice(
+            title=f"{source.name} ({source.path})",
+            value=source.name,
+            checked=True,
+        )
+        for source in detected
     ]
     answer = questionary.checkbox(
         "Which migration sources should be imported into OpenSquilla?",
@@ -120,6 +112,7 @@ def _run_one_migration(
     name: str,
     source_path: Path,
     *,
+    source_kind: str | None,
     config: Path | None,
     apply: bool,
     migrate_secrets: bool,
@@ -141,7 +134,7 @@ def _run_one_migration(
         )
         opensquilla_options = OpenSquillaMigrationOptions(
             source=source_path,
-            kind="cli-home",
+            kind=source_kind or "cli-home",
             config_path=config,
             apply=apply,
             overwrite=overwrite,
@@ -273,15 +266,15 @@ def migrate_root(
         return
 
     detected = _detect_migration_sources()
-    detected_names = [name for name, _ in detected]
+    detected_names: list[str] = [item.name for item in detected]
 
     if not detected:
         payload = {
             "detected": [],
             "message": (
-                "No migration source detected. Checked default paths: "
-                f"{Path.home() / '.opensquilla'}, {Path.home() / '.openclaw'}, "
-                f"{Path.home() / '.hermes'}. "
+                "No migration source detected. Checked the default OpenSquilla CLI, "
+                "desktop, and portable locations, plus "
+                f"{Path.home() / '.openclaw'} and {Path.home() / '.hermes'}. "
                 "Use `opensquilla migrate opensquilla --source <path>`, "
                 "`opensquilla migrate openclaw --source <path>`, or "
                 "`opensquilla migrate hermes --source <path>` to point "
@@ -320,7 +313,11 @@ def migrate_root(
         if not stdin_is_tty or json_output:
             selection_payload: dict[str, Any] = {
                 "detected": [
-                    {"name": name, "path": str(path)} for name, path in detected
+                    {
+                        "name": item.name,
+                        "path": str(item.path),
+                    }
+                    for item in detected
                 ],
                 "message": (
                     "Multiple migration sources detected. Re-run with "
@@ -333,8 +330,8 @@ def migrate_root(
             else:
                 console.print(selection_payload["message"])
                 console.print("[dim]Detected sources:[/dim]")
-                for name, path in detected:
-                    console.print(f"  - {name}: {path}")
+                for item in detected:
+                    console.print(f"  - {item.name}: {item.path}")
             raise typer.Exit(0)
         selected = _prompt_source_selection(detected)
         if not selected:
@@ -370,13 +367,17 @@ def migrate_root(
                 skill_conflict=skill_conflict,
             )
 
-    detected_by_name = dict(detected)
+    detected_by_name: dict[str, DetectedMigrationSource] = {
+        item.name: item for item in detected
+    }
     reports: dict[str, dict[str, Any]] = {}
     has_error = False
     for name in selected:
+        detected_source = detected_by_name[name]
         report = _run_one_migration(
             name,
-            detected_by_name[name],
+            detected_source.path,
+            source_kind=detected_source.source_kind,
             config=config,
             apply=apply,
             migrate_secrets=migrate_secrets,

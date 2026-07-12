@@ -13,9 +13,9 @@ from opensquilla.gateway.auth import Principal
 from opensquilla.gateway.rpc import RpcContext, get_dispatcher
 
 
-def _env_hint(env_key: str) -> str:
+def _env_command(env_key: str) -> str:
     if platform.system().lower().startswith("win"):
-        return f'PowerShell: $env:{env_key} = "<your-key>"'
+        return f'$env:{env_key} = "<your-key>"'
     return f'export {env_key}="<your-key>"'
 
 
@@ -711,10 +711,13 @@ async def test_onboarding_status_requires_image_generation_enable_for_llm_fallba
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("system_name", ["Linux", "Windows"])
 async def test_onboarding_status_exposes_missing_env_keys_for_optional_capabilities(
     tmp_path,
     monkeypatch,
+    system_name,
 ):
+    monkeypatch.setattr(platform, "system", lambda: system_name)
     monkeypatch.setenv("OPENSQUILLA_GATEWAY_CONFIG_PATH", str(tmp_path / "c.toml"))
     from opensquilla.gateway.config import GatewayConfig
 
@@ -751,17 +754,17 @@ async def test_onboarding_status_exposes_missing_env_keys_for_optional_capabilit
         {
             "section": "memory_embedding",
             "label": "Set memory key",
-            "command": _env_hint("OPENAI_EMBEDDINGS_API_KEY"),
+            "command": _env_command("OPENAI_EMBEDDINGS_API_KEY"),
         },
         {
             "section": "search",
             "label": "Set search key",
-            "command": _env_hint("BRAVE_SEARCH_API_KEY"),
+            "command": _env_command("BRAVE_SEARCH_API_KEY"),
         },
         {
             "section": "image_generation",
             "label": "Set image key",
-            "command": _env_hint("OPENAI_IMAGE_KEY"),
+            "command": _env_command("OPENAI_IMAGE_KEY"),
         },
     ]
 
@@ -1142,7 +1145,7 @@ async def test_models_discover_requires_admin_scope(tmp_path, monkeypatch):
     res = await get_dispatcher().dispatch(
         "r1",
         "onboarding.models.discover",
-        {"providerId": "openai", "apiKey": "sk-test"},
+        {"providerId": "openrouter", "apiKey": "sk-test"},
         _read_ctx(),
     )
     assert res.error is not None
@@ -1163,10 +1166,38 @@ async def test_models_discover_lists_live_models(tmp_path, monkeypatch):
     res = await get_dispatcher().dispatch(
         "r1",
         "onboarding.models.discover",
-        {"providerId": "openai", "apiKey": "sk-test"},
+        {"providerId": "openrouter", "apiKey": "sk-test"},
         _admin_ctx(),
     )
     assert res.error is None, res.error
     assert res.payload["ok"] is True
     assert res.payload["source"] == "live"
     assert [m["id"] for m in res.payload["models"]] == ["gpt-x"]
+
+
+@pytest.mark.asyncio
+async def test_models_discover_unverified_provider_stays_empty_without_build(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("OPENSQUILLA_GATEWAY_CONFIG_PATH", str(tmp_path / "c.toml"))
+
+    def _unexpected_build(*_args, **_kwargs):
+        raise AssertionError("unverified providers must not be built for selector discovery")
+
+    monkeypatch.setattr("opensquilla.onboarding.probe.build_provider", _unexpected_build)
+
+    res = await get_dispatcher().dispatch(
+        "r1",
+        "onboarding.models.discover",
+        {"providerId": "openai", "apiKey": "synthetic-key"},
+        _admin_ctx(),
+    )
+
+    assert res.error is None, res.error
+    assert res.payload == {
+        "ok": True,
+        "failureKind": "",
+        "detail": "",
+        "source": "none",
+        "models": [],
+    }

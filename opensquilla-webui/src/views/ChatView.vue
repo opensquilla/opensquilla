@@ -487,6 +487,7 @@
       :open="toolResultModal.open"
       :title="toolResultModal.title"
       :content="toolResultModal.content"
+      :context="toolResultModal.context"
       @close="toolResultModal.open = false"
     />
 
@@ -594,6 +595,7 @@ import type {
   ChatRunStatus,
   ChatRunStatusSource,
   ChatRunStatusState,
+  ToolResultContext,
 } from '@/types/chat'
 import type {
   ArtifactPayload,
@@ -644,7 +646,12 @@ const CHAT_RUN_STATUS_VALUES: ChatRunStatusState[] = [
   'cancelled',
 ]
 
-const toolResultModal = ref({ open: false, title: '', content: '' })
+const toolResultModal = ref<{
+  open: boolean
+  title: string
+  content: string
+  context?: ToolResultContext
+}>({ open: false, title: '', content: '' })
 
 /* ── Stores / Router ───────────────────────────────────────────────── */
 
@@ -1984,8 +1991,8 @@ function jumpToLatest() {
 
 /* ── Tool calls ────────────────────────────────────────────────────── */
 
-function showToolResultModal(content: string, title = t('chat.toolResult')) {
-  toolResultModal.value = { open: true, title, content }
+function showToolResultModal(content: string, title = t('chat.toolResult'), context?: ToolResultContext) {
+  toolResultModal.value = { open: true, title, content, context }
 }
 
 /* ── Attachments ───────────────────────────────────────────────────── */

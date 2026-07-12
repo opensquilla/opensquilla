@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+## [0.5.0rc3] - 2026-07-10
+
 ### Added
 
 - Legacy home migration: `opensquilla migrate opensquilla` imports an

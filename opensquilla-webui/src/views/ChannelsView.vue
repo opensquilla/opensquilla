@@ -252,7 +252,7 @@ onDeactivated(teardownLive)
 onUnmounted(teardownLive)
 
 // Deep-link straight to the Channels section — the button promises channel
-// configuration, so it must not land on the default (Chat Model) section.
+// configuration, so it must not land on the default (Model Service) section.
 function openSettingsSurface(): void {
   void router.push('/settings/channels')
 }

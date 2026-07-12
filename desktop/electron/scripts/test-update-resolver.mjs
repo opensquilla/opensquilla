@@ -5,6 +5,10 @@ import {
   selectMacPrereleaseCandidate,
 } from '../dist/update-feed-resolver.js'
 
+// This exercises the resolver shipped after Preview 2. It proves that clients
+// containing this resolver can select later releases; it does not prove that
+// the already-published Preview 1/2 binaries can discover Preview 3.
+
 // --- tag parsing: PEP440 rc, semver rc, stable, and rejects ---
 assert.deepEqual(parseOpenSquillaReleaseTag('v0.5.0rc2'), { base: '0.5.0', rc: 2 })
 assert.deepEqual(parseOpenSquillaReleaseTag('0.5.0-rc2'), { base: '0.5.0', rc: 2 })
@@ -16,7 +20,7 @@ assert.equal(parseOpenSquillaReleaseTag('v0.5'), null)
 const withMacFeed = (tag) => ({ tag_name: tag, assets: [{ name: 'latest-mac.yml' }] })
 const noMacFeed = (tag) => ({ tag_name: tag, assets: [{ name: 'OpenSquilla-mac.zip' }] })
 
-// 1. 0.5.0-rc1 sees v0.5.0rc2 (PEP440 tag).
+// 1. A resolver-enabled client on 0.5.0-rc1 sees v0.5.0rc2 (PEP440 tag).
 {
   const c = selectMacPrereleaseCandidate({ base: '0.5.0', rc: 1 }, [
     withMacFeed('v0.5.0rc2'),
@@ -28,7 +32,18 @@ const noMacFeed = (tag) => ({ tag_name: tag, assets: [{ name: 'OpenSquilla-mac.z
   assert.equal(c.feedUrl, 'https://github.com/opensquilla/opensquilla/releases/download/v0.5.0rc2')
 }
 
-// 2. 0.5.0-rc2 sees the final stable v0.5.0 (stable outranks a later rc).
+// 2. A resolver-enabled client on 0.5.0-rc2 sees v0.5.0rc3.
+{
+  const c = selectMacPrereleaseCandidate(
+    { base: '0.5.0', rc: 2 },
+    [withMacFeed('v0.5.0rc3'), withMacFeed('v0.5.0rc2')],
+  )
+  assert.ok(c)
+  assert.equal(c.tag, 'v0.5.0rc3')
+  assert.equal(c.version, '0.5.0-rc3')
+}
+
+// 3. 0.5.0-rc2 sees the final stable v0.5.0 (stable outranks a later rc).
 {
   const c = selectMacPrereleaseCandidate({ base: '0.5.0', rc: 2 }, [
     withMacFeed('v0.5.0'),
@@ -61,7 +76,7 @@ const noMacFeed = (tag) => ({ tag_name: tag, assets: [{ name: 'OpenSquilla-mac.z
   assert.equal(c, null, 'rc10 must not pick the lower rc9')
 }
 
-// 3. A prerelease does NOT jump to a different base's preview (0.5.0-rc2 ignores v0.6.0rc1).
+// 4. A prerelease does NOT jump to a different base's preview (0.5.0-rc2 ignores v0.6.0rc1).
 {
   const c = selectMacPrereleaseCandidate({ base: '0.5.0', rc: 2 }, [
     withMacFeed('v0.6.0rc1'),

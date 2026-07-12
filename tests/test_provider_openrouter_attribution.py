@@ -26,3 +26,9 @@ def test_openrouter_url_detection_accepts_openrouter_hosts_only() -> None:
 def test_openrouter_app_headers_skip_non_openrouter_urls() -> None:
     assert openrouter_app_headers("https://api.openai.com/v1") == {}
     assert openrouter_app_headers("http://localhost:4000/v1") == {}
+
+
+def test_openrouter_compat_headers_remain_openrouter_only() -> None:
+    url = "https://tokenrhythm.studio/v1"
+    assert not is_openrouter_url(url)
+    assert openrouter_app_headers(url) == {}

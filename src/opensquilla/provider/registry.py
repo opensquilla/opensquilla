@@ -53,6 +53,12 @@ ProviderBackend = Literal[
 # is the default because every other backend sends a Bearer header.
 AuthHeaderStyle = Literal["x-api-key", "bearer"]
 
+# Whether a provider's live listing has been verified as a safe source for
+# user-selectable model ids. ``none`` is deliberately the default: several
+# compatibility adapters expose static or protocol-family model rows that do
+# not describe what the configured service actually serves.
+SelectableModelCatalog = Literal["none", "verified_live"]
+
 
 @dataclass(frozen=True)
 class ProviderSpec:
@@ -90,6 +96,7 @@ class ProviderSpec:
     # OpenRouter live cache keeps its bespoke authenticated fetch.
     live_catalog_url: str = ""
     live_catalog_shape: str = ""
+    selectable_model_catalog: SelectableModelCatalog = "none"
 
     def requires_api_key(self) -> bool:
         """True if onboarding must collect an API key for this provider."""
@@ -130,6 +137,7 @@ def _spec(
     catalog_source: tuple[str, ...] = (),
     live_catalog_url: str = "",
     live_catalog_shape: str = "",
+    selectable_model_catalog: SelectableModelCatalog = "none",
 ) -> ProviderSpec:
     if required_fields is None:
         required_fields = frozenset({"api_key", "model"}) if env_key else frozenset({"model"})
@@ -150,6 +158,7 @@ def _spec(
         catalog_source=catalog_source,
         live_catalog_url=live_catalog_url,
         live_catalog_shape=live_catalog_shape,
+        selectable_model_catalog=selectable_model_catalog,
     )
 
 
@@ -162,6 +171,7 @@ for _provider_spec in [
         "https://openrouter.ai/api/v1",
         context_profile=OPENROUTER_CONTEXT_PROFILE,
         catalog_source=("openrouter",),
+        selectable_model_catalog="verified_live",
     ),
     _spec(
         "openai",
@@ -490,6 +500,7 @@ for _provider_spec in [
         reasoning_shape="deepseek",
         live_catalog_url="https://tokenrhythm.studio/api/models",
         live_catalog_shape="tokenrhythm",
+        selectable_model_catalog="verified_live",
     ),
     # First-class id for any self-hosted or otherwise unlisted
     # OpenAI-compatible endpoint (vLLM, SGLang, TGI, llama.cpp server, a

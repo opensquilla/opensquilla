@@ -175,7 +175,11 @@ def _mark_env_absorbed_runtime_secrets(cfg: GatewayConfig, raw: Any) -> None:
                 cfg.mark_runtime_secret(path)
 
 
-def load_config(path: str | Path | None = None) -> GatewayConfig:
+def load_config(
+    path: str | Path | None = None,
+    *,
+    persist_migrations: bool = True,
+) -> GatewayConfig:
     target = _resolve_path(path)
     if not target.exists():
         cfg = GatewayConfig()
@@ -187,7 +191,7 @@ def load_config(path: str | Path | None = None) -> GatewayConfig:
         data = tomllib.load(fh)
     migration = migrate_config_payload(data)
     cfg = GatewayConfig.model_validate(migration.payload)
-    if migration.changed:
+    if migration.changed and persist_migrations:
         backup_and_write_migrated_config(target, migration.payload, migration)
     _mark_env_absorbed_runtime_secrets(cfg, data)
     cfg.config_path = str(target)

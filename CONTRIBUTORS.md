@@ -26,6 +26,22 @@ trailers.
 | [@ab2ence](https://github.com/ab2ence) | macOS Seatbelt backend execution, denial escalation, and release-candidate type-check cleanup. | [#46](https://github.com/opensquilla/opensquilla/pull/46), [`fb1e6225`](https://github.com/opensquilla/opensquilla/pull/46/commits/fb1e6225e4db9cb0801ea347a89c2066e3e0601b), [`f73ac3eb`](https://github.com/opensquilla/opensquilla/pull/46/commits/f73ac3eb0044c64c79cfd18f9ec03d1bba9128ff), [`cf3b046f`](https://github.com/opensquilla/opensquilla/pull/46/commits/cf3b046f42a42efc951320b0af80e9d066dcf7d2) |
 | [@kimjune01](https://github.com/kimjune01) | Provider stream timeout cleanup fix that prevents double-closing provider streams. | [#46](https://github.com/opensquilla/opensquilla/pull/46), [`06e3126d`](https://github.com/opensquilla/opensquilla/pull/46/commits/06e3126d8ebda4ad4cf349ca7be0d0804e0c008d) |
 
+## OpenSquilla 0.5.0rc3
+
+The 0.5.0 Preview 3 release records new human contributor work after the
+0.5.0 Preview 2 release. It intentionally does not repeat contributors whose
+new work is not present in this release range.
+
+| Contributor | 0.5.0 Preview 3 contribution | Evidence |
+| --- | --- | --- |
+| [@ab2ence](https://github.com/ab2ence) | Fixed desktop gateway boot recovery so the packaged client can recover cleanly from failed startup. | [#491](https://github.com/opensquilla/opensquilla/pull/491) |
+| [@JarvisPei](https://github.com/JarvisPei) | Corrected desktop OS-language resolution and added the opt-in Control UI background-music player. | [#550](https://github.com/opensquilla/opensquilla/pull/550), [#556](https://github.com/opensquilla/opensquilla/pull/556) |
+| [@labulalala](https://github.com/labulalala) | Improved Windows source-installer PATH setup and added actionable shell guidance. | [#502](https://github.com/opensquilla/opensquilla/pull/502) |
+| [@Liu-RK](https://github.com/Liu-RK) | Fixed Control UI token deep links and zero-output chat turns, and aligned sandbox file-access approvals. | [#486](https://github.com/opensquilla/opensquilla/pull/486), [#506](https://github.com/opensquilla/opensquilla/pull/506), [#526](https://github.com/opensquilla/opensquilla/pull/526) |
+| [@lyteen](https://github.com/lyteen) | Contributed the original router self-learning work adopted and hardened for the opt-in feedback and retraining loop. | [#212](https://github.com/opensquilla/opensquilla/pull/212), [#511](https://github.com/opensquilla/opensquilla/pull/511) |
+| [@nice-code-la](https://github.com/nice-code-la) | Added verified Squilla Router presets for coding providers. | [#560](https://github.com/opensquilla/opensquilla/pull/560) |
+| [@TUOXI293](https://github.com/TUOXI293) | Improved chat scroll retention, code and skill-detail copy/inspection, compact tool traces, the Electron dark title bar, and Windows native-theme behavior. | [#487](https://github.com/opensquilla/opensquilla/pull/487), [#488](https://github.com/opensquilla/opensquilla/pull/488), [#509](https://github.com/opensquilla/opensquilla/pull/509), [#516](https://github.com/opensquilla/opensquilla/pull/516), [#524](https://github.com/opensquilla/opensquilla/pull/524), [#545](https://github.com/opensquilla/opensquilla/pull/545) |
+
 ## OpenSquilla 0.5.0rc2
 
 The 0.5.0 Preview 2 release records new human contributor work after the

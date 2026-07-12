@@ -128,7 +128,7 @@
     "rail": {
       "connection": "Connection",
       "runtime": "Runtime",
-      "provider": "Chat Model",
+      "provider": "Model Service",
       "modelStrategy": "Model Routing",
       "behavior": "Behavior",
       "privacy": "Privacy",
@@ -232,6 +232,19 @@
       "routerReady": "SquillaRouter ready",
       "directOnly": "Direct only",
       "chooseToSeeFields": "Choose a provider to see required fields.",
+      "recommendation": {
+        "title": "Recommended: TokenRhythm",
+        "value": "TokenRhythm API calls are free for a limited time.",
+        "registration": "During the promotion, register and get an API key to call DeepSeek, GLM, MiniMax, Kimi, and other leading models for free.",
+        "cta": "Register and get an API key",
+        "externalLabel": "Register and get an API key — TokenRhythm (opens in a new tab)",
+        "stepsLabel": "How to connect TokenRhythm",
+        "stepRegister": "Create a TokenRhythm account",
+        "stepCopy": "Copy your API key",
+        "stepPaste": "Paste it into the API key field below",
+        "stepSelectAndPaste": "Select TokenRhythm above, then paste your API key",
+        "stepReplaceAndPaste": "Choose Replace key below, then paste your API key"
+      },
       "advanced": "Advanced provider options",
       "timeoutLabel": "Request timeout (seconds)",
       "timeoutDesc": "How long to wait for a single model response before timing out — raise this for slow local models (Ollama, vLLM, LM Studio).",
@@ -284,6 +297,11 @@
       "failureBadRequest": "The provider rejected the request.",
       "failureGeneric": "The connection test failed.",
       "modelListLabel": "Discovered models",
+      "modelOptionsToggle": "Model catalog · {count}",
+      "modelListReadout": "Available · {count}",
+      "modelLiveSource": "Live",
+      "modelSearchOrCustom": "Search models or enter a custom ID",
+      "modelSelected": "Selected",
       "modelUseTyped": "Use \"{value}\"",
       "modelNoMatches": "No matching models — you can keep what you typed.",
       "modelListTruncated": "Showing {shown} of {total} models — keep typing to narrow the list.",
@@ -307,8 +325,8 @@
     "modelStrategy": {
       "title": "Model routing",
       "desc": "Choose how Squilla uses the current model for each new request.",
-      "providerFirst": "Choose a Chat Model first, then choose how routing should work.",
-      "providerAction": "Go to Chat Model →",
+      "providerFirst": "Choose a Model Service first, then choose how routing should work.",
+      "providerAction": "Go to Model Service →",
       "routerTitle": "AI single-model routing",
       "visualModeLabel": "Routing panel style",
       "visualModeDesc": "How the routing decision panel renders in chat replies.",
@@ -336,7 +354,7 @@
         }
       },
       "openrouterFixedTitle": "{provider} fixed ensemble",
-      "openrouterFixedDesc": "When Chat Model uses {provider}, ensemble routing uses four proposer models and one aggregator.",
+      "openrouterFixedDesc": "When your Model Service uses {provider}, ensemble routing uses four proposer models and one aggregator.",
       "openrouterFixedProposer": "Proposer model",
       "openrouterFixedAggregator": "Aggregator",
       "credentialReady": "Connected",
@@ -349,7 +367,7 @@
       "addCandidateModelPlaceholder": "model-id",
       "addCandidate": "Add candidate",
       "removeCandidateAria": "Remove {model}",
-      "ensembleEmpty": "No candidate models yet. Save your Chat Model to seed model tiers, or add candidates manually.",
+      "ensembleEmpty": "No candidate models yet. Save your Model Service settings to seed model tiers, or add candidates manually.",
       "ensemblePipeline": "How it works: proposer models draft in parallel, then the aggregator fuses the drafts into the final reply. Only the aggregator can call tools.",
       "legacyDynamicNotice": "This configuration uses the retired automatic ensemble mode. Convert it to a custom lineup to keep editing it here.",
       "legacyDynamicMigrate": "Convert to custom lineup",
@@ -1834,7 +1852,10 @@
     },
     "toolModal": {
       "tree": "Tree",
-      "raw": "Raw"
+      "raw": "Raw",
+      "wrapLines": "Wrap lines",
+      "preserveLines": "Preserve line width",
+      "contentMeta": "{type} · {lines} lines · {chars} chars"
     },
     "approval": {
       "required": "Approval required",

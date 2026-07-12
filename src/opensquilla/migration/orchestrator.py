@@ -22,6 +22,7 @@ from opensquilla.migration.hermes import (
     HermesMigrator,
     _is_valid_hermes_home,
 )
+from opensquilla.migration.legacy_detect import detect_legacy_home
 from opensquilla.migration.openclaw import (
     MIGRATION_OPTIONS as OPENCLAW_MIGRATION_OPTIONS,
 )
@@ -40,7 +41,7 @@ from opensquilla.migration.openclaw import (
 from opensquilla.migration.opensquilla_home import (
     OpenSquillaHomeMigrator,
     OpenSquillaMigrationOptions,
-    detect_legacy_cli_home,
+    _same_path,
 )
 from opensquilla.paths import default_opensquilla_home
 
@@ -58,6 +59,7 @@ class MigrationOptionError(ValueError):
 class DetectedMigrationSource:
     name: SourceName
     path: Path
+    source_kind: str | None = None
 
 
 @dataclass(frozen=True)
@@ -97,9 +99,15 @@ def detect_default_sources() -> list[DetectedMigrationSource]:
     """Discover legacy OpenSquilla, OpenClaw, and Hermes homes in canonical order."""
 
     found: list[DetectedMigrationSource] = []
-    legacy_home = detect_legacy_cli_home(default_opensquilla_home())
+    legacy_home = detect_legacy_home(default_opensquilla_home())
     if legacy_home is not None:
-        found.append(DetectedMigrationSource("opensquilla", legacy_home))
+        found.append(
+            DetectedMigrationSource(
+                "opensquilla",
+                legacy_home.path,
+                source_kind=legacy_home.kind,
+            )
+        )
     openclaw_home = Path.home() / ".openclaw"
     if _is_valid_openclaw_home(openclaw_home):
         found.append(DetectedMigrationSource("openclaw", openclaw_home))
@@ -150,10 +158,16 @@ def run_migration_batch(
 ) -> MigrationBatchResult:
     canonical = canonical_source_selection(tuple(selected), detected)
     validate_batch_options(canonical, options)
-    detected_by_name = {source.name: source.path for source in detected}
+    detected_by_name = {source.name: source for source in detected}
     reports: dict[str, dict[str, Any]] = {}
     for name in canonical:
-        reports[name] = run_one_migration(name, detected_by_name[name], options)
+        source = detected_by_name[name]
+        reports[name] = run_one_migration(
+            name,
+            source.path,
+            options,
+            source_kind=getattr(source, "source_kind", None),
+        )
     return MigrationBatchResult(selected=canonical, reports=reports, apply=options.apply)
 
 
@@ -161,12 +175,19 @@ def run_one_migration(
     name: str,
     source_path: Path,
     options: MigrationBatchOptions,
+    *,
+    source_kind: str | None = None,
 ) -> dict[str, Any]:
     if name == "opensquilla":
+        config_path = options.config
+        if config_path is not None and _same_path(
+            config_path, default_opensquilla_home() / "config.toml"
+        ):
+            config_path = None
         opensquilla_options = OpenSquillaMigrationOptions(
             source=source_path,
-            kind="cli-home",
-            config_path=options.config,
+            kind=source_kind or "cli-home",
+            config_path=config_path,
             apply=options.apply,
             overwrite=options.overwrite,
         )
@@ -228,10 +249,13 @@ def _validate_opensquilla_options(options: MigrationBatchOptions) -> None:
             "opensquilla source does not take preset/include/exclude"
         )
     if options.config is not None:
-        raise MigrationOptionError(
-            "--config is not supported for OpenSquilla self-migration. "
-            "Set OPENSQUILLA_STATE_DIR to the target home and re-run without --config."
-        )
+        active_config = default_opensquilla_home() / "config.toml"
+        if not _same_path(options.config, active_config):
+            raise MigrationOptionError(
+                "--config is not supported for OpenSquilla self-migration unless it is "
+                "the active home's config.toml. Set OPENSQUILLA_STATE_DIR to the target "
+                "home and re-run without a custom --config."
+            )
 
 
 def _validate_openclaw_options(options: MigrationBatchOptions) -> None:

@@ -210,7 +210,7 @@ def test_release_sop_documents_github_only_validation_boundary() -> None:
         "SHA256SUMS",
         "post-publish tag URL checks",
         "curl --fail --head --location",
-        "public wheelhouse zips, macOS portable zips, or Linux portable zips",
+        "public wheelhouse zips, or separately branded macOS or Linux portable bundles",
         "Mark-of-the-Web",
         "SmartScreen",
         "Smart App Control",

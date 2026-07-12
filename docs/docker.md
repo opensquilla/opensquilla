@@ -30,8 +30,11 @@ Python, no Git, no build tools.
 
 Prebuilt multi-arch images are published to
 [`ghcr.io/opensquilla/opensquilla`](https://github.com/opensquilla/opensquilla/pkgs/container/opensquilla)
-for each release tag, and `latest` points at the most recent release. If the
-release you want predates image publishing, use
+for each release tag. The immutable `v0.5.0rc3` tag identifies Preview 3, while
+`latest` follows the most recently pushed release tag, including previews and
+backports. If a backport moves `latest`, the newest release workflow is rerun to
+restore the intended ordering. If the release you want predates image
+publishing, use
 [Build the Image Yourself](#build-the-image-yourself) instead. A pull that
 fails with `denied` or `manifest unknown` means the image for that tag has
 not been published (or the package is not public yet) — check the package
@@ -42,7 +45,7 @@ Create a directory for the deployment and write this `compose.yaml`:
 ```yaml
 services:
   gateway:
-    # Pin a release tag (e.g. v0.6.0) for reproducible deployments.
+    # Pin v0.5.0rc3 for reproducibility; latest follows the most recent tag push.
     image: ghcr.io/opensquilla/opensquilla:latest
     environment:
       # In-container bind. Keep it 0.0.0.0 — what the network can reach is

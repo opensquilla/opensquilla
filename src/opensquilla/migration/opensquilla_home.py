@@ -22,6 +22,7 @@ import os
 import re
 import shutil
 import sqlite3
+import stat
 import sys
 import tempfile
 import tomllib
@@ -151,23 +152,26 @@ def _source_marker_matches_target(source: Path, target: Path) -> bool:
     try:
         payload = json.loads(marker.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
-        return False
-    if not isinstance(payload, dict):
-        return False
-    marked_target = payload.get("target")
-    if not isinstance(marked_target, str) or not _same_path(Path(marked_target), target):
-        return False
-    transaction_id = payload.get("transaction_id")
-    if not isinstance(transaction_id, str) or not re.fullmatch(
-        r"[A-Za-z0-9][A-Za-z0-9._-]*", transaction_id
-    ):
-        return False
-    report_path = target / "migration" / "opensquilla" / transaction_id / "report.json"
-    try:
-        receipt = json.loads(report_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return False
-    return _valid_import_receipt(receipt, source=source, target=target, report_path=report_path)
+        payload = None
+    if isinstance(payload, dict):
+        marked_target = payload.get("target")
+        transaction_id = payload.get("transaction_id")
+        if (
+            isinstance(marked_target, str)
+            and _same_path(Path(marked_target), target)
+            and isinstance(transaction_id, str)
+            and _matching_import_receipt(
+                source,
+                target,
+                transaction_id=transaction_id,
+            )
+            is not None
+        ):
+            return True
+
+    # The target-side receipt is the durable commit authority. A process can
+    # exit after publishing it but before the best-effort source marker lands.
+    return _matching_import_receipt(source, target) is not None
 
 
 def _valid_import_receipt(
@@ -211,6 +215,46 @@ def _valid_import_receipt(
         ):
             return False
     return True
+
+
+def _matching_import_receipt(
+    source: Path,
+    target: Path,
+    *,
+    transaction_id: str | None = None,
+    source_kind: str | None = None,
+) -> tuple[str, dict[str, Any]] | None:
+    """Return a validated applied receipt for ``source`` -> ``target``."""
+    transaction_pattern = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
+    receipt_root = target / "migration" / "opensquilla"
+    if transaction_id is not None:
+        if not transaction_pattern.fullmatch(transaction_id):
+            return None
+        candidates = [receipt_root / transaction_id]
+    else:
+        try:
+            candidates = sorted(receipt_root.iterdir(), reverse=True)
+        except OSError:
+            return None
+    for candidate in candidates:
+        if not candidate.is_dir() or not transaction_pattern.fullmatch(candidate.name):
+            continue
+        report_path = candidate / "report.json"
+        try:
+            receipt = json.loads(report_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if not _valid_import_receipt(
+            receipt,
+            source=source,
+            target=target,
+            report_path=report_path,
+        ):
+            continue
+        if source_kind is not None and receipt.get("source_kind") != source_kind:
+            continue
+        return candidate.name, receipt
+    return None
 
 
 def _commit_journal_path(target: Path) -> Path:
@@ -584,6 +628,8 @@ class OpenSquillaHomeMigrator:
         self._blocked = False
         self._wrote_output_dir = False
         self._committed = False
+        self._recovered_report: dict[str, Any] | None = None
+        self._recovered_transaction_id = ""
 
     # ------------------------------------------------------------------
     # Entry point
@@ -614,8 +660,21 @@ class OpenSquillaHomeMigrator:
         self._resolve_source()
         if self.source is None:
             return self._report()
+        if self.options.apply and not self.options.overwrite:
+            completed = _matching_import_receipt(
+                self.source,
+                self.target,
+                source_kind=self.kind,
+            )
+            if completed is not None and not _commit_journal_path(self.target).is_file():
+                transaction_id, receipt = completed
+                self._write_source_marker(transaction_id)
+                return receipt
         if not self._recover_interrupted_commit():
             return self._report()
+        if self._recovered_report is not None:
+            self._write_source_marker(self._recovered_transaction_id)
+            return self._recovered_report
         if not self._validate_paths():
             return self._report()
         source = self.source
@@ -657,6 +716,8 @@ class OpenSquillaHomeMigrator:
         return self._report()
 
     def _recover_interrupted_commit(self) -> bool:
+        source = self.source
+        assert source is not None
         journal = _commit_journal_path(self.target)
         if not journal.is_file():
             return True
@@ -690,6 +751,23 @@ class OpenSquillaHomeMigrator:
                 raise ValueError("journal backup path is outside the target parent")
             if phase not in {"prepared", "target-backed-up", "published"}:
                 raise ValueError(f"unknown journal phase: {phase}")
+
+            transaction_id = staging.name.removeprefix(".opensquilla-import-")
+            completed = None
+            if self.target.exists() and not (staging.exists() or staging.is_symlink()):
+                completed = _matching_import_receipt(
+                    source,
+                    self.target,
+                    transaction_id=transaction_id,
+                    source_kind=self.kind,
+                )
+            if completed is not None:
+                recovered_transaction_id, receipt = completed
+                journal.unlink(missing_ok=True)
+                _fsync_directory(journal.parent)
+                self._recovered_transaction_id = recovered_transaction_id
+                self._recovered_report = receipt
+                return True
 
             if not self.target.exists() and backup.exists():
                 os.replace(_ext(backup), _ext(self.target))
@@ -1557,6 +1635,23 @@ class OpenSquillaHomeMigrator:
         else:
             path.unlink(missing_ok=True)
 
+    @staticmethod
+    def _unlink_staged_file_for_replacement(path: Path) -> None:
+        """Remove a copied staging file without changing its read-only source."""
+        try:
+            result = path.lstat()
+        except FileNotFoundError:
+            return
+        if not stat.S_ISREG(result.st_mode):
+            raise OSError(f"staged SQLite path is not a regular file: {path}")
+        try:
+            os.chmod(path, result.st_mode | stat.S_IRUSR | stat.S_IWUSR)
+        except OSError:
+            # Some filesystems reject chmod even when the containing directory
+            # still permits unlinking. Let unlink remain the authoritative gate.
+            pass
+        path.unlink(missing_ok=True)
+
     def _snapshot_sqlite_stores(self, staging: Path) -> None:
         """Create consistent WAL-aware SQLite snapshots and validate every store."""
         snapshot_root = self._staged_output_dir(staging) / "db-snapshots"
@@ -1600,9 +1695,11 @@ class OpenSquillaHomeMigrator:
                 )
                 raise OSError(f"sqlite snapshot failed for state/{relative}") from exc
 
-            destination.unlink(missing_ok=True)
+            self._unlink_staged_file_for_replacement(destination)
             for suffix in _SQLITE_SIDECAR_SUFFIXES:
-                destination.with_name(destination.name + suffix).unlink(missing_ok=True)
+                self._unlink_staged_file_for_replacement(
+                    destination.with_name(destination.name + suffix)
+                )
             os.replace(_ext(temporary), _ext(destination))
             try:
                 os.chmod(destination, (source_db.stat().st_mode & 0o777) | 0o600)
@@ -1915,14 +2012,14 @@ class OpenSquillaHomeMigrator:
         lines.append("")
         (output_dir / "summary.md").write_text("\n".join(lines), encoding="utf-8")
 
-    def _write_source_marker(self) -> None:
+    def _write_source_marker(self, transaction_id: str | None = None) -> None:
         source = self.source
         if source is None:
             return
         payload = {
             "imported_at": datetime.now(UTC).isoformat(),
             "target": str(self.target),
-            "transaction_id": self.timestamp,
+            "transaction_id": transaction_id or self.timestamp,
         }
         try:
             _atomic_write_json(source / IMPORT_MARKER_FILENAME, payload)

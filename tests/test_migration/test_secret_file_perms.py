@@ -217,6 +217,113 @@ def test_openclaw_secret_env_write_failure_surfaces(
     assert secret_holders == [], f"secret leaked into: {secret_holders}"
 
 
+def test_openclaw_secret_env_write_failure_rolls_back_other_targets(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = _make_openclaw_source(tmp_path)
+    source_workspace = source / "workspace"
+    source_workspace.mkdir()
+    (source_workspace / "SOUL.md").write_text("openclaw soul\n", encoding="utf-8")
+    source_skill = source_workspace / "skills" / "demo"
+    source_skill.mkdir(parents=True)
+    (source_skill / "SKILL.md").write_text(
+        "---\nname: demo\ndescription: Demo\n---\n",
+        encoding="utf-8",
+    )
+    source_tts = source_workspace / "tts"
+    source_tts.mkdir()
+    (source_tts / "voice.txt").write_text("voice\n", encoding="utf-8")
+    (source / "openclaw.json").write_text(
+        json.dumps({"agents": {"defaults": {"model": "deepseek-chat"}}}),
+        encoding="utf-8",
+    )
+
+    home = tmp_path / "opensquilla-home"
+    home.mkdir()
+    workspace = tmp_path / "external-workspace"
+    workspace.mkdir(parents=True)
+    soul_path = workspace / "SOUL.md"
+    soul_path.write_text("existing soul\n", encoding="utf-8")
+    env_path = home / ".env"
+    env_path.write_text("EXISTING_KEY=keep-me\n", encoding="utf-8")
+    config_path = tmp_path / "config.toml"
+    original_config = (
+        f"workspace_dir = {json.dumps(str(workspace))}\n"
+        '\n[llm]\nprovider = "openai"\nmodel = "gpt-4o-mini"\n'
+    )
+    config_path.write_text(original_config, encoding="utf-8")
+
+    monkeypatch.setenv("OPENSQUILLA_STATE_DIR", str(home))
+    monkeypatch.delenv("OPENSQUILLA_GATEWAY_CONFIG_PATH", raising=False)
+    real_replace = os.replace
+
+    def replace_denied_for_env(src: object, dst: object, *args: object, **kwargs: object) -> None:
+        if str(dst).endswith(".env"):
+            raise OSError(13, "Permission denied")
+        real_replace(src, dst, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(os, "replace", replace_denied_for_env)
+
+    with pytest.raises(OSError):
+        OpenClawMigrator(
+            MigrationOptions(
+                source=source,
+                config_path=config_path,
+                apply=True,
+                migrate_secrets=True,
+                overwrite=True,
+            )
+        ).migrate()
+
+    assert soul_path.read_text(encoding="utf-8") == "existing soul\n"
+    assert env_path.read_text(encoding="utf-8") == "EXISTING_KEY=keep-me\n"
+    assert config_path.read_text(encoding="utf-8") == original_config
+    assert list(workspace.glob("SOUL.md.backup.*")) == []
+    assert list(tmp_path.glob("config.toml.backup.*")) == []
+    assert not (home / "migration").exists()
+    assert not (home / "skills").exists()
+    assert not (home / "tts").exists()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="symlink creation requires elevated Windows access")
+def test_openclaw_late_failure_restores_secret_env_symlink(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = _make_openclaw_source(tmp_path)
+    source_workspace = source / "workspace"
+    source_workspace.mkdir()
+    (source_workspace / "SOUL.md").write_text("openclaw soul\n", encoding="utf-8")
+
+    home = tmp_path / "opensquilla-home"
+    home.mkdir()
+    external_env = tmp_path / "shared.env"
+    external_env.write_text("EXISTING_KEY=keep-me\n", encoding="utf-8")
+    env_path = home / ".env"
+    env_path.symlink_to(external_env)
+    monkeypatch.setenv("OPENSQUILLA_STATE_DIR", str(home))
+    monkeypatch.delenv("OPENSQUILLA_GATEWAY_CONFIG_PATH", raising=False)
+
+    def report_write_failed(_migrator: OpenClawMigrator) -> None:
+        raise OSError(5, "report write failed")
+
+    monkeypatch.setattr(OpenClawMigrator, "_write_report_files", report_write_failed)
+
+    with pytest.raises(OSError, match="report write failed"):
+        OpenClawMigrator(
+            MigrationOptions(
+                source=source,
+                config_path=tmp_path / "config.toml",
+                apply=True,
+                migrate_secrets=True,
+            )
+        ).migrate()
+
+    assert env_path.is_symlink()
+    assert env_path.resolve() == external_env
+    assert external_env.read_text(encoding="utf-8") == "EXISTING_KEY=keep-me\n"
+    assert not (home / "workspace").exists()
+
+
 def test_hermes_secret_env_write_failure_surfaces(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -1294,12 +1294,13 @@ def test_legacy_home_payload_reads_config_home_and_freshness(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     seen_targets: list[Path | None] = []
+    candidate = LegacyHomeCandidate(
+        path=tmp_path / "legacy-home", kind="windows-portable"
+    )
 
     def _detect(target: Path | None = None) -> LegacyHomeCandidate:
         seen_targets.append(target)
-        return LegacyHomeCandidate(
-            path=tmp_path / "legacy-home", kind="windows-portable"
-        )
+        return candidate
 
     monkeypatch.setattr(legacy_detect, "detect_legacy_home", _detect)
     cfg = GatewayConfig(state_dir=str(tmp_path / "home" / "state"))
@@ -1310,12 +1311,9 @@ def test_legacy_home_payload_reads_config_home_and_freshness(
     assert payload == {
         "detected": True,
         "targetFresh": True,
-        "path": str(tmp_path / "legacy-home"),
-        "kind": "windows-portable",
-        "command": (
-            "opensquilla migrate opensquilla --kind windows-portable "
-            f"--source {tmp_path / 'legacy-home'}"
-        ),
+        "path": str(candidate.path),
+        "kind": candidate.kind,
+        "command": legacy_detect.suggested_migrate_command(candidate),
     }
     # Detection targeted the home the gateway actually runs from.
     assert seen_targets == [(tmp_path / "home").resolve()]

@@ -18,11 +18,11 @@ from opensquilla.env import trust_env as _trust_env
 from opensquilla.execution_status import compact_provider_status, derive_is_error
 from opensquilla.secrets import clean_header_secret
 
+from .app_attribution import provider_app_headers
 from .compat_policy import OpenAICompatPolicy, compat_policy_for_kind
 from .context_capabilities import supports_openrouter_explicit_prompt_cache
 from .failures import retry_after_from_headers
 from .minimax_compat import contains_minimax_protocol, parse_minimax_tool_calls
-from .openrouter_attribution import openrouter_app_headers
 from .protocol import ProviderConnectionConfig, ProviderMetadata
 from .reasoning_dialects import (
     ReasoningDisableArgs,
@@ -2265,7 +2265,7 @@ class OpenAIProvider:
             "Content-Type": "application/json",
             "Accept": "text/event-stream",
         }
-        headers.update(openrouter_app_headers(self._base_url))
+        headers.update(provider_app_headers(self._base_url))
         if self._org_id:
             headers["OpenAI-Organization"] = self._org_id
 
@@ -3032,7 +3032,7 @@ class OpenAIProvider:
         (e.g. onboarding discovery) can classify it.
         """
         headers = {"Authorization": f"Bearer {self._api_key}"}
-        headers.update(openrouter_app_headers(self._base_url))
+        headers.update(provider_app_headers(self._base_url))
         try:
             async with httpx.AsyncClient(
                 timeout=10.0,

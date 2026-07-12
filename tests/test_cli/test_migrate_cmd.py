@@ -267,6 +267,13 @@ def _seed_opensquilla(home: Path) -> Path:
     return source
 
 
+def _seed_portable(base: Path) -> Path:
+    source = base / "OpenSquilla" / "portable" / "dummy-release"
+    source.mkdir(parents=True)
+    (source / "config.toml").write_text("port = 18790\n", encoding="utf-8")
+    return source
+
+
 def test_migrate_batch_rejects_config_when_opensquilla_is_selected(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -315,6 +322,7 @@ def test_migrate_auto_detect_no_source_reports_nothing(
     payload = json.loads(result.stdout)
     assert payload["detected"] == []
     assert "No migration source detected" in payload["message"]
+    assert "CLI, desktop, and portable locations" in payload["message"]
 
 
 def test_migrate_auto_detect_single_source_auto_picks(
@@ -333,6 +341,28 @@ def test_migrate_auto_detect_single_source_auto_picks(
     payload = json.loads(result.stdout)
     assert payload["selected"] == ["hermes"]
     assert "hermes" in payload["reports"]
+
+
+def test_migrate_auto_detect_single_portable_preserves_source_kind(
+    tmp_path: Path, monkeypatch
+) -> None:
+    home = tmp_path / "fake_home"
+    home.mkdir()
+    portable_base = tmp_path / "local-app-data"
+    portable = _seed_portable(portable_base)
+    _set_fake_home(monkeypatch, home)
+    monkeypatch.setenv("LOCALAPPDATA", str(portable_base))
+    monkeypatch.delenv("TEMP", raising=False)
+    monkeypatch.setenv("OPENSQUILLA_STATE_DIR", str(tmp_path / "opensquilla"))
+
+    result = runner.invoke(app, ["migrate", "--json"])
+
+    assert result.exit_code == 0, result.stdout
+    payload = json.loads(result.stdout)
+    assert payload["selected"] == ["opensquilla"]
+    report = payload["reports"]["opensquilla"]
+    assert report["source"] == str(portable)
+    assert report["source_kind"] == "windows-portable"
 
 
 def test_migrate_auto_detect_multiple_sources_non_tty_lists_and_exits(
@@ -454,7 +484,7 @@ def test_migrate_auto_detect_tty_prompt_path_is_invoked(
     from opensquilla.cli import migrate_cmd
 
     monkeypatch.setattr("opensquilla.cli.migrate_cmd._stdin_is_tty", lambda: True)
-    captured: list[list[tuple[str, Path]]] = []
+    captured: list[list[object]] = []
 
     def fake_prompt(detected):
         captured.append(list(detected))
@@ -471,7 +501,7 @@ def test_migrate_auto_detect_tty_prompt_path_is_invoked(
     # the openclaw migrator must NOT have run.
     assert "openclaw migration complete" not in result.stdout
     assert len(captured) == 1
-    assert {name for name, _ in captured[0]} == {"openclaw", "hermes"}
+    assert {source.name for source in captured[0]} == {"openclaw", "hermes"}
 
 
 def test_migrate_auto_detect_validates_all_selected_before_running_any(

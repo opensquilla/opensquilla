@@ -5,11 +5,12 @@ name: Container Images
 # instead of building from a source checkout. See docs/docker.md.
 #
 # Publishing model:
-#   * Pushing a release tag (v0.5.0rc2, v0.6.0, ...) publishes
-#     ghcr.io/<owner>/<repo>:<tag> and moves :latest to it. :latest tracks
-#     the most recently pushed release tag — including prereleases and
-#     backports; if a backport repoints it, re-run this workflow from the
-#     newest tag.
+#   * Pushing a release tag (v0.5.0rc3, v0.6.0, ...) first publishes the
+#     immutable ghcr.io/<owner>/<repo>:<tag> image. The workflow verifies its
+#     amd64/arm64 manifest and container HEALTHCHECK before moving :latest.
+#     :latest tracks the most recently pushed release tag — including
+#     prereleases and backports; if a backport repoints it, re-run this
+#     workflow from the newest tag.
 #   * workflow_dispatch validates the full multi-arch build without
 #     publishing; set publish=true to push the result as :edge.
 #
@@ -62,6 +63,23 @@ jobs:
           lfs: true
           persist-credentials: false
 
+      - name: Check tag version
+        if: github.event_name == 'push'
+        run: |
+          version="$(python3 - <<'PY'
+          import tomllib
+          from pathlib import Path
+
+          project = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
+          print(project["project"]["version"])
+          PY
+          )"
+          tag_version="${GITHUB_REF_NAME#v}"
+          if [[ "${tag_version}" != "${version}" ]]; then
+            echo "Tag ${GITHUB_REF_NAME} does not match project version ${version}" >&2
+            exit 1
+          fi
+
       - name: Hydrate router assets
         run: git lfs pull --include="src/opensquilla/squilla_router/models/**"
 
@@ -104,7 +122,7 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # Release tags are PEP 440 (v0.5.0rc2), not strict semver, so the git
+      # Release tags are PEP 440 (v0.5.0rc3), not strict semver, so the git
       # tag is mapped through as-is instead of via type=semver.
       - name: Compute image metadata
         id: meta
@@ -113,7 +131,6 @@ jobs:
           images: ghcr.io/${{ github.repository }}
           tags: |
             type=ref,event=tag,enable=${{ github.event_name == 'push' }}
-            type=raw,value=latest,enable=${{ github.event_name == 'push' }}
             type=raw,value=edge,enable=${{ github.event_name == 'workflow_dispatch' }}
           flavor: |
             latest=false
@@ -130,3 +147,88 @@ jobs:
           # default provenance attestation adds an unknown/unknown entry that
           # confuses registry UIs and `docker pull` inspection.
           provenance: false
+
+      - name: Select pushed image
+        if: ${{ github.event_name == 'push' || inputs.publish == true }}
+        id: pushed_image
+        shell: bash
+        run: |
+          if [[ "${GITHUB_EVENT_NAME}" == "push" ]]; then
+            image_tag="${GITHUB_REF_NAME}"
+          else
+            image_tag="edge"
+          fi
+          echo "ref=ghcr.io/${GITHUB_REPOSITORY}:${image_tag}" >> "${GITHUB_OUTPUT}"
+
+      - name: Verify pushed manifest platforms
+        if: ${{ github.event_name == 'push' || inputs.publish == true }}
+        env:
+          IMAGE_REF: ${{ steps.pushed_image.outputs.ref }}
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import subprocess
+
+          image_ref = os.environ["IMAGE_REF"]
+          manifest = json.loads(
+              subprocess.check_output(
+                  ["docker", "buildx", "imagetools", "inspect", image_ref, "--raw"],
+                  text=True,
+              )
+          )
+          platforms = {
+              f'{item["platform"]["os"]}/{item["platform"]["architecture"]}'
+              for item in manifest.get("manifests", [])
+          }
+          expected = {"linux/amd64", "linux/arm64"}
+          if platforms != expected:
+              raise SystemExit(
+                  f"{image_ref} has platforms {sorted(platforms)}; "
+                  f"expected {sorted(expected)}"
+              )
+          print(f"Verified {image_ref}: {sorted(platforms)}")
+          PY
+
+      - name: Smoke pushed image HEALTHCHECK
+        if: ${{ github.event_name == 'push' || inputs.publish == true }}
+        env:
+          IMAGE_REF: ${{ steps.pushed_image.outputs.ref }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          container_id="$(docker run --detach --pull=always "${IMAGE_REF}")"
+          trap 'docker rm --force "${container_id}" >/dev/null 2>&1 || true' EXIT
+
+          deadline=$((SECONDS + 180))
+          while (( SECONDS < deadline )); do
+            running="$(docker inspect --format '{{.State.Running}}' "${container_id}")"
+            health="$(docker inspect \
+              --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}missing{{end}}' \
+              "${container_id}")"
+            echo "Container health: ${health}"
+            if [[ "${health}" == "healthy" ]]; then
+              exit 0
+            fi
+            if [[ "${running}" != "true" || "${health}" == "unhealthy" || "${health}" == "missing" ]]; then
+              docker logs "${container_id}"
+              exit 1
+            fi
+            sleep 5
+          done
+
+          echo "Container did not become healthy within 180 seconds" >&2
+          docker logs "${container_id}"
+          exit 1
+
+      # Promotion happens only after the immutable release image passes both
+      # remote-manifest verification and its image-defined HEALTHCHECK.
+      - name: Promote verified release image to latest
+        if: github.event_name == 'push'
+        env:
+          IMAGE_REF: ${{ steps.pushed_image.outputs.ref }}
+          LATEST_REF: ghcr.io/${{ github.repository }}:latest
+        run: |
+          docker buildx imagetools create \
+            --tag "${LATEST_REF}" \
+            "${IMAGE_REF}"

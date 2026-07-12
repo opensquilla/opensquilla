@@ -1,12 +1,21 @@
 from __future__ import annotations
 
 import json
+import shutil
 import tomllib
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from threading import Event
+
+import pytest
 
 from opensquilla.engine.context import load_context_files
-from opensquilla.migration.openclaw import MigrationOptions, OpenClawMigrator
-from opensquilla.onboarding.config_store import load_config
+from opensquilla.migration.openclaw import (
+    MigrationOptions,
+    OpenClawMigrator,
+    _ApplyRollback,
+)
+from opensquilla.onboarding.config_store import load_config, persist_config
 from opensquilla.provider.selector import build_provider
 from opensquilla.skills.loader import SkillLoader
 from opensquilla.skills.types import SkillLayer
@@ -66,6 +75,78 @@ def _make_source(root: Path) -> Path:
     return source
 
 
+def test_failed_rollback_retains_before_images_and_reports_recovery_path(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    target = tmp_path / "target.txt"
+    target.write_text("before\n", encoding="utf-8")
+    rollback = _ApplyRollback()
+    backup_root = rollback._backup_root
+
+    def fail_restore(cls, image) -> None:
+        del cls, image
+        raise OSError("forced restore failure")
+
+    monkeypatch.setattr(_ApplyRollback, "_restore", classmethod(fail_restore))
+
+    try:
+        with pytest.raises(OSError, match="before-image backup retained") as caught:
+            with rollback:
+                rollback.capture(target)
+                target.write_text("after\n", encoding="utf-8")
+                raise RuntimeError("forced apply failure")
+
+        assert str(backup_root) in str(caught.value)
+        assert backup_root.is_dir()
+        assert (backup_root / "0").read_text(encoding="utf-8") == "before\n"
+    finally:
+        shutil.rmtree(backup_root, ignore_errors=True)
+
+
+def test_late_failure_preserves_concurrent_settings_save(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    source = _make_source(tmp_path)
+    home = tmp_path / "opensquilla-home"
+    config_path = tmp_path / "config.toml"
+    config_path.write_text("debug = false\n", encoding="utf-8")
+    monkeypatch.setenv("OPENSQUILLA_STATE_DIR", str(home))
+
+    report_started = Event()
+    settings_saved = Event()
+
+    def fail_report_write(self) -> None:
+        del self
+        report_started.set()
+        if not settings_saved.wait(timeout=5):
+            raise AssertionError("settings save did not complete")
+        raise RuntimeError("forced late failure")
+
+    monkeypatch.setattr(OpenClawMigrator, "_write_report_files", fail_report_write)
+    migrator = OpenClawMigrator(
+        MigrationOptions(source=source, config_path=config_path, apply=True)
+    )
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        migration = pool.submit(migrator.migrate)
+        assert report_started.wait(timeout=5)
+        try:
+            settings = load_config(config_path, persist_migrations=False)
+            settings.debug = True
+            persist_config(settings, path=config_path, backup=False)
+        finally:
+            settings_saved.set()
+
+        with pytest.raises(RuntimeError, match="forced late failure"):
+            migration.result(timeout=5)
+
+    persisted = tomllib.loads(config_path.read_text(encoding="utf-8"))
+    assert persisted["debug"] is True
+    assert "llm" not in persisted
+
+
 def test_dry_run_does_not_write_targets(tmp_path: Path, monkeypatch) -> None:
     source = _make_source(tmp_path)
     home = tmp_path / "opensquilla-home"
@@ -81,6 +162,68 @@ def test_dry_run_does_not_write_targets(tmp_path: Path, monkeypatch) -> None:
     assert not config_path.exists()
     assert not (home / "workspace" / "SOUL.md").exists()
     assert not (home / "skills" / "openclaw-imports").exists()
+
+
+def test_dry_run_does_not_upgrade_legacy_target_config(tmp_path: Path, monkeypatch) -> None:
+    source = _make_source(tmp_path)
+    home = tmp_path / "opensquilla-home"
+    config_path = tmp_path / "config.toml"
+    fixture = (
+        Path(__file__).parent
+        / "fixtures"
+        / "homes"
+        / "cli-0.1"
+        / "config.toml"
+    )
+    shutil.copy2(fixture, config_path)
+    original = config_path.read_bytes()
+    monkeypatch.setenv("OPENSQUILLA_STATE_DIR", str(home))
+
+    OpenClawMigrator(
+        MigrationOptions(source=source, config_path=config_path, apply=False)
+    ).migrate()
+
+    assert config_path.read_bytes() == original
+    assert list(tmp_path.glob("config.toml.backup.*")) == []
+
+
+def test_apply_defers_legacy_target_config_upgrade_to_final_persist(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    source = _make_source(tmp_path)
+    home = tmp_path / "opensquilla-home"
+    config_path = tmp_path / "config.toml"
+    original = (
+        f"workspace_dir = {json.dumps(str(home / 'workspace'))}\n"
+        f"state_dir = {json.dumps(str(home / 'state'))}\n"
+        "\n[llm_ensemble]\n"
+        "proposer_timeout_seconds = 120.0\n"
+        "aggregator_timeout_seconds = 120.0\n"
+    )
+    config_path.write_text(original, encoding="utf-8")
+    monkeypatch.setenv("OPENSQUILLA_STATE_DIR", str(home))
+
+    OpenClawMigrator(
+        MigrationOptions(
+            source=source,
+            config_path=config_path,
+            apply=True,
+            preset="user-data",
+            # Skill import is the only selected user-data operation that
+            # intentionally changes config; exclude it so this test isolates
+            # the deferred target-schema persist.
+            exclude=("skills", "shared-skills"),
+        )
+    ).migrate()
+
+    persisted = tomllib.loads(config_path.read_text(encoding="utf-8"))
+    assert persisted["config_version"] == 1
+    assert persisted["llm_ensemble"]["proposer_timeout_seconds"] == 3600.0
+    assert persisted["llm_ensemble"]["aggregator_timeout_seconds"] == 3600.0
+    backups = list(tmp_path.glob("config.toml.backup.*"))
+    assert len(backups) == 1
+    assert backups[0].read_text(encoding="utf-8") == original
 
 
 def test_apply_migrates_workspace_skills_config_and_allowlist(

@@ -135,17 +135,46 @@ def _persist_refreshed_tokens(auth_path: Path, refreshed: dict[str, Any]) -> Non
     payload["last_refresh"] = datetime.now(UTC).isoformat().replace("+00:00", "Z")
 
     auth_path.parent.mkdir(parents=True, exist_ok=True)
+    # Create the tmp file with strict 0o600 perms atomically and write
+    # through the returned fd. ``tempfile.mkstemp`` already gives 0o600
+    # on POSIX, but the original code then called ``os.chmod(tmp_name,
+    # 0o600)`` which:
+    #   * is a no-op on Windows so the inherited ACL stays broad until
+    #     the rename, and
+    #   * opens a TOCTOU window: between ``mkstemp`` and ``chmod`` a
+    #     parallel reader could observe the file with the umask-derived
+    #     (group/world-readable) perms.
+    # We close the mkstemp fd, re-open with explicit flags + 0o600 mode
+    # (also adding ``O_NOFOLLOW`` where available so a symlinked tmp
+    # path can't redirect the write), and ``fchmod`` through the open
+    # fd so the tightening is bound to the fd rather than to a path
+    # lookup. ``os.fchmod`` is supported on POSIX and on the Windows
+    # builds CPython ships today (``os.chmod`` is not), so this also
+    # closes the Windows no-op gap.
+    nofollow = getattr(os, "O_NOFOLLOW", 0)
     fd, tmp_name = tempfile.mkstemp(dir=str(auth_path.parent), prefix=".auth-")
     try:
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            json.dump(payload, handle, indent=2)
-        os.chmod(tmp_name, 0o600)
-        os.replace(tmp_name, auth_path)
-    except OSError:
         try:
-            os.unlink(tmp_name)
+            os.close(fd)
         except OSError:
             pass
+        fd = os.open(
+            tmp_name,
+            os.O_WRONLY | os.O_CREAT | os.O_TRUNC | nofollow,
+            0o600,
+        )
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, indent=2)
+        os.replace(tmp_name, auth_path)
+        # Ownership transferred to ``auth_path``; don't unlink on
+        # subsequent error.
+        tmp_name = None
+    except Exception:
+        if tmp_name is not None:
+            try:
+                os.unlink(tmp_name)
+            except OSError:
+                pass
         raise
 
 

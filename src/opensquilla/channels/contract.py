@@ -513,40 +513,60 @@ def normalize_channel_send_result(
 
 
 def assert_capability_tier(module: ModuleType) -> None:
-    """``CAPABILITY_TIER`` must be one of the allowed values."""
+    """``CAPABILITY_TIER`` must be one of the allowed values.
+
+    Uses an explicit ``raise`` (not ``assert``) so the invariant survives
+    ``python -O``: a crafted plugin must not be able to claim an arbitrary
+    capability tier once assertions are stripped.
+    """
     tier = getattr(module, "CAPABILITY_TIER", None)
-    assert tier in ALLOWED_CAPABILITY_TIERS, (
-        f"{module.__name__}.CAPABILITY_TIER={tier!r} must be one of "
-        f"{sorted(ALLOWED_CAPABILITY_TIERS)}"
-    )
-
-
-def assert_dm_safety_tiers(module: ModuleType) -> None:
-    """DM/group adapters must declare a non-empty safety-tier tuple without admin-only."""
-    tiers = getattr(module, "DM_SAFETY_TIERS", None)
-    assert isinstance(tiers, tuple), f"{module.__name__}.DM_SAFETY_TIERS must be a tuple"
-    assert tiers, f"{module.__name__}.DM_SAFETY_TIERS must be non-empty"
-    assert "admin-only" not in tiers, (
-        f"{module.__name__}.DM_SAFETY_TIERS must not include 'admin-only' "
-        "(DM/group adapters must not declare admin scope)."
-    )
-    for tier in tiers:
-        assert tier in ALLOWED_DM_SAFETY_TIERS, (
-            f"unknown safety tier {tier!r} in {module.__name__}.DM_SAFETY_TIERS"
+    if tier not in ALLOWED_CAPABILITY_TIERS:
+        raise ValueError(
+            f"{module.__name__}.CAPABILITY_TIER={tier!r} must be one of "
+            f"{sorted(ALLOWED_CAPABILITY_TIERS)}"
         )
 
 
+def assert_dm_safety_tiers(module: ModuleType) -> None:
+    """DM/group adapters must declare a non-empty safety-tier tuple without admin-only.
+
+    Uses explicit ``raise`` checks so the invariants survive ``python -O``.
+    """
+    tiers = getattr(module, "DM_SAFETY_TIERS", None)
+    if not isinstance(tiers, tuple):
+        raise ValueError(f"{module.__name__}.DM_SAFETY_TIERS must be a tuple")
+    if not tiers:
+        raise ValueError(f"{module.__name__}.DM_SAFETY_TIERS must be non-empty")
+    if "admin-only" in tiers:
+        raise ValueError(
+            f"{module.__name__}.DM_SAFETY_TIERS must not include 'admin-only' "
+            "(DM/group adapters must not declare admin scope)."
+        )
+    for tier in tiers:
+        if tier not in ALLOWED_DM_SAFETY_TIERS:
+            raise ValueError(
+                f"unknown safety tier {tier!r} in {module.__name__}.DM_SAFETY_TIERS"
+            )
+
+
 def assert_error_class_taxonomy(module: ModuleType) -> None:
-    """Retryable + fatal error class tuples must match the canonical taxonomy."""
+    """Retryable + fatal error class tuples must match the canonical taxonomy.
+
+    Uses explicit ``raise`` checks (not ``assert``) so a misconfigured
+    adapter cannot silently reclassify auth failures as retryable when
+    Python is run with ``-O``.
+    """
     retryable = getattr(module, "RETRYABLE_ERROR_CLASSES", None)
     fatal = getattr(module, "FATAL_ERROR_CLASSES", None)
-    assert retryable == REQUIRED_RETRYABLE_ERROR_CLASSES, (
-        f"{module.__name__}.RETRYABLE_ERROR_CLASSES diverges from canonical "
-        f"taxonomy; got {retryable!r}"
-    )
-    assert fatal == REQUIRED_FATAL_ERROR_CLASSES, (
-        f"{module.__name__}.FATAL_ERROR_CLASSES diverges from canonical taxonomy; got {fatal!r}"
-    )
+    if retryable != REQUIRED_RETRYABLE_ERROR_CLASSES:
+        raise ValueError(
+            f"{module.__name__}.RETRYABLE_ERROR_CLASSES diverges from canonical "
+            f"taxonomy; got {retryable!r}"
+        )
+    if fatal != REQUIRED_FATAL_ERROR_CLASSES:
+        raise ValueError(
+            f"{module.__name__}.FATAL_ERROR_CLASSES diverges from canonical taxonomy; got {fatal!r}"
+        )
 
 
 def run_channel_contract(module: ModuleType) -> None:

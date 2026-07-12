@@ -16,10 +16,41 @@ def test_write_secret_env_file_private_and_removed(monkeypatch):
     try:
         mode = stat.S_IMODE(os.stat(path).st_mode)
         assert mode == 0o600
-        content = open(path).read()
+        # The file must be readable as UTF-8 — both for the linux
+        # docker subprocess and for any local Windows inspection that
+        # happens before unlink.
+        content = open(path, encoding="utf-8").read()
         assert "OPENROUTER_API_KEY=sk-or-test-123" in content
     finally:
         os.unlink(path)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="code-task Windows support is WIP")
+def test_write_secret_env_file_cleans_up_on_write_failure(monkeypatch, tmp_path):
+    """If the fdopen + write path raises, the partial file must not leak."""
+
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test-123")
+
+    real_mkstemp = agent_mod.tempfile.mkstemp
+
+    def patched_mkstemp(*args, **kwargs):  # type: ignore[no-untyped-def]
+        fd, path = real_mkstemp(*args, dir=str(tmp_path), **kwargs)
+        return fd, path
+
+    monkeypatch.setattr(agent_mod.tempfile, "mkstemp", patched_mkstemp)
+
+    def boom(*args, **kwargs):  # type: ignore[no-untyped-def]
+        raise RuntimeError("simulated write failure")
+
+    monkeypatch.setattr(agent_mod.os.fdopen, "write", boom, raising=False)
+
+    with pytest.raises(RuntimeError):
+        agent_mod._write_secret_env_file()
+
+    # The failed tmp file must have been unlinked — no half-written key
+    # lying around for a later reader.
+    leftovers = [p for p in tmp_path.iterdir() if p.name.startswith("opensquilla-swebench-")]
+    assert leftovers == [], f"secret env-file leaked: {leftovers}"
 
 
 def test_send_task_keeps_key_out_of_argv(monkeypatch, tmp_path):
@@ -38,7 +69,7 @@ def test_send_task_keeps_key_out_of_argv(monkeypatch, tmp_path):
             env_path = cmd[cmd.index("--env-file") + 1]
             env_files_seen.append(env_path)
             # The file must exist (and hold the key) while docker runs.
-            assert "sk-or-supersecret" in open(env_path).read()
+            assert "sk-or-supersecret" in open(env_path, encoding="utf-8").read()
         return FakeResult()
 
     monkeypatch.setattr(agent_mod.subprocess, "run", fake_run)

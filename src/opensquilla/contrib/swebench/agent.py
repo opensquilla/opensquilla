@@ -258,10 +258,33 @@ def _write_secret_env_file() -> str:
 
     Returned path is passed to ``docker exec --env-file`` and removed by
     the caller right after the agent subprocess finishes.
+
+    The fd is opened with mode 0o600 in the same call as ``mkstemp`` so
+    the file is never observable with broader permissions, and the
+    payload is written with an explicit UTF-8 encoding so non-UTF-8
+    locales (cp1252 on Windows) do not raise mid-write and leak the
+    half-written key.
     """
     fd, path = tempfile.mkstemp(prefix="opensquilla-swebench-", suffix=".env")
-    with os.fdopen(fd, "w") as fh:
-        fh.write(f"OPENROUTER_API_KEY={os.environ.get('OPENROUTER_API_KEY', '')}\n")
+    try:
+        # Belt-and-braces: mkstemp already uses 0o600 on POSIX, but
+        # tighten explicitly so a permissive umask or a non-POSIX
+        # platform cannot leave the file group/world-readable while the
+        # docker subprocess is launched.
+        try:
+            os.chmod(path, 0o600)
+        except OSError:
+            pass
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(f"OPENROUTER_API_KEY={os.environ.get('OPENROUTER_API_KEY', '')}\n")
+    except Exception:
+        # Make sure we don't leak the fd / partial file if the write
+        # fails for any reason (decode error, disk full, ...).
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+        raise
     return path
 
 

@@ -125,6 +125,7 @@ class _LegacyLockMove:
     source_state: Path
     destination_state: Path
     lock_identity: tuple[int, int]
+    lock_digest: bytes
 
 
 @dataclass(frozen=True)
@@ -929,6 +930,27 @@ def _legacy_lock_file_identity(path: Path) -> tuple[int, int]:
     return int(value.st_dev), int(value.st_ino)
 
 
+def _legacy_lock_digest(fd: int) -> bytes:
+    """Hash the small authority file in memory so mtime tolerance cannot hide writes."""
+
+    limit = 64 * 1024
+    position = os.lseek(fd, 0, os.SEEK_CUR)
+    digest = hashlib.sha256()
+    total = 0
+    try:
+        os.lseek(fd, 0, os.SEEK_SET)
+        while True:
+            chunk = os.read(fd, min(8192, limit + 1 - total))
+            if not chunk:
+                return digest.digest()
+            total += len(chunk)
+            if total > limit:
+                raise UnsafePathError("legacy gateway lock authority is unexpectedly large")
+            digest.update(chunk)
+    finally:
+        os.lseek(fd, position, os.SEEK_SET)
+
+
 def _held_legacy_lock_moves(source: Path, destination: Path) -> tuple[_LegacyLockMove, ...]:
     owner_thread = threading.get_ident()
     moves: list[_LegacyLockMove] = []
@@ -962,6 +984,7 @@ def _held_legacy_lock_moves(source: Path, destination: Path) -> tuple[_LegacyLoc
                 source_state=source_state,
                 destination_state=destination / relative,
                 lock_identity=held_identity,
+                lock_digest=_legacy_lock_digest(held.fd),
             )
         )
     return tuple(sorted(moves, key=lambda item: _normalized_path(item.source_state)))
@@ -1007,6 +1030,8 @@ def _reacquire_suspended_legacy_locks(
             held_value = os.fstat(fd)
             if (int(held_value.st_dev), int(held_value.st_ino)) != item.lock_identity:
                 raise UnsafePathError("legacy gateway lock identity changed during handoff")
+            if _legacy_lock_digest(fd) != item.lock_digest:
+                raise UnsafePathError("legacy gateway lock content changed during handoff")
         except BaseException:
             with contextlib.suppress(OSError):
                 _unlock(fd)
@@ -1106,6 +1131,19 @@ def move_profile_no_replace(
     source_path = Path(source).expanduser().absolute()
     destination_path = Path(destination).expanduser().absolute()
     if _windows_requires_legacy_lock_handoff():
+        with _LOCKS_GUARD:
+            _refresh_after_fork()
+            allowed_mtime_changes = frozenset(
+                relative.as_posix()
+                for item in _held_legacy_lock_moves(source_path, destination_path)
+                if (
+                    relative := _profile_relative_path(
+                        item.held.path,
+                        source_path,
+                    )
+                )
+                is not None
+            )
         move(
             source_path,
             destination_path,
@@ -1113,6 +1151,7 @@ def move_profile_no_replace(
                 source_path,
                 destination_path,
             ),
+            _allowed_manifest_mtime_changes=allowed_mtime_changes,
         )
         return
     with _LOCKS_GUARD:

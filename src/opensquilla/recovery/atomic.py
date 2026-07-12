@@ -202,6 +202,60 @@ def no_follow_manifest(root: str | Path) -> dict[str, PathIdentity]:
     return result
 
 
+def _manifest_matches_after_move(
+    before: dict[str, PathIdentity],
+    after: dict[str, PathIdentity],
+    *,
+    allowed_mtime_changes: frozenset[str],
+) -> bool:
+    """Compare a move manifest with one narrow compatibility-lock exception."""
+
+    if before.keys() != after.keys():
+        return False
+    for relative, expected in before.items():
+        current = after[relative]
+        if current == expected:
+            continue
+        if relative not in allowed_mtime_changes:
+            return False
+        if (
+            current.device,
+            current.inode,
+            current.mode,
+            current.size,
+        ) != (
+            expected.device,
+            expected.inode,
+            expected.mode,
+            expected.size,
+        ):
+            return False
+    return True
+
+
+def _manifest_difference_summary(
+    before: dict[str, PathIdentity],
+    after: dict[str, PathIdentity],
+) -> str:
+    """Describe only changed metadata field counts, never profile paths or contents."""
+
+    counts: dict[str, int] = {}
+    removed = before.keys() - after.keys()
+    added = after.keys() - before.keys()
+    if removed:
+        counts["removed_entries"] = len(removed)
+    if added:
+        counts["added_entries"] = len(added)
+    fields = ("device", "inode", "mode", "size", "modified_at_ns")
+    for relative in before.keys() & after.keys():
+        expected = before[relative]
+        current = after[relative]
+        for field in fields:
+            if getattr(expected, field) != getattr(current, field):
+                counts[field] = counts.get(field, 0) + 1
+    return ",".join(f"{field}={counts[field]}" for field in sorted(counts)) or "none"
+
+
 def _linux_rename_no_replace(
     source: Path,
     destination: Path,
@@ -647,6 +701,7 @@ def native_move_no_replace(
     destination: str | Path,
     *,
     _mutation_guard: Callable[[], contextlib.AbstractContextManager[None]] | None = None,
+    _allowed_manifest_mtime_changes: frozenset[str] = frozenset(),
 ) -> None:
     """Atomically move ``source`` without ever replacing ``destination``.
 
@@ -720,10 +775,19 @@ def native_move_no_replace(
     if (
         source_parent_after.token != source_parent_before.token
         or destination_parent_after.token != destination_parent_before.token
-        or manifest_after != manifest_before
+        or not _manifest_matches_after_move(
+            manifest_before,
+            manifest_after,
+            allowed_mtime_changes=_allowed_manifest_mtime_changes,
+        )
     ):
         raise AtomicStateUnknownError(
-            "move completed but parent or source metadata changed during verification"
+            "move completed but parent or source metadata changed during verification "
+            f"(source_parent_changed="
+            f"{source_parent_after.token != source_parent_before.token}, "
+            f"destination_parent_changed="
+            f"{destination_parent_after.token != destination_parent_before.token}, "
+            f"manifest_fields={_manifest_difference_summary(manifest_before, manifest_after)})"
         )
 
 

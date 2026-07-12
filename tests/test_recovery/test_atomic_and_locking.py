@@ -28,8 +28,10 @@ from opensquilla.recovery import (
     profile_lock_path,
 )
 from opensquilla.recovery.atomic import (
+    PathIdentity,
     _linux_rename_no_replace,
     _macos_rename_no_replace,
+    _manifest_matches_after_move,
     _windows_extended_path,
     _windows_move_no_replace,
     _windows_rename_info,
@@ -316,6 +318,29 @@ def test_native_move_treats_unsafe_post_move_manifest_as_unknown(
     assert calls == 2
     assert not source.exists()
     assert (destination / "value.txt").read_text(encoding="utf-8") == "preserved"
+
+
+def test_move_manifest_allows_only_selected_lock_mtime_change() -> None:
+    original = PathIdentity(1, 2, stat.S_IFREG | 0o600, 1, 100)
+    mtime_changed = PathIdentity(1, 2, stat.S_IFREG | 0o600, 1, 200)
+    size_changed = PathIdentity(1, 2, stat.S_IFREG | 0o600, 2, 200)
+    relative = "state/gateway.pid.lock"
+
+    assert _manifest_matches_after_move(
+        {relative: original},
+        {relative: mtime_changed},
+        allowed_mtime_changes=frozenset({relative}),
+    )
+    assert not _manifest_matches_after_move(
+        {relative: original},
+        {relative: mtime_changed},
+        allowed_mtime_changes=frozenset(),
+    )
+    assert not _manifest_matches_after_move(
+        {relative: original},
+        {relative: size_changed},
+        allowed_mtime_changes=frozenset({relative}),
+    )
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="requires two native Windows volumes")
@@ -848,6 +873,7 @@ def test_windows_handoff_reacquires_source_after_pre_mutation_failure(
         _destination: Path,
         *,
         _mutation_guard,
+        **_move_options: object,
     ) -> None:
         with _mutation_guard():
             raise DestinationExistsError("synthetic collision")
@@ -881,6 +907,7 @@ def test_windows_handoff_fails_closed_when_destination_lock_cannot_be_reacquired
         destination_path: Path,
         *,
         _mutation_guard,
+        **_move_options: object,
     ) -> None:
         nonlocal deny_reacquire
         with _mutation_guard():
@@ -915,6 +942,7 @@ def test_windows_handoff_treats_move_then_raise_as_unknown(
         destination_path: Path,
         *,
         _mutation_guard,
+        **_move_options: object,
     ) -> None:
         with _mutation_guard():
             source_path.rename(destination_path)
@@ -926,6 +954,36 @@ def test_windows_handoff_treats_move_then_raise_as_unknown(
         held = next(iter(locking_module._PROCESS_LEGACY_LOCKS.values()))
         assert held.fd is not None
         assert held.path.parent == destination / "state"
+        assert not source.exists()
+
+
+def test_windows_handoff_rejects_same_size_lock_content_change(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    import opensquilla.recovery.locking as locking_module
+
+    source = tmp_path / "source"
+    destination = tmp_path / "destination"
+    (source / "state").mkdir(parents=True)
+    (source / "state" / "gateway.pid.lock").write_bytes(b"a")
+    monkeypatch.setattr(locking_module, "_windows_requires_legacy_lock_handoff", lambda: True)
+
+    def move_then_change_lock(
+        source_path: Path,
+        destination_path: Path,
+        *,
+        _mutation_guard,
+        **_move_options: object,
+    ) -> None:
+        with _mutation_guard():
+            source_path.rename(destination_path)
+            (destination_path / "state" / "gateway.pid.lock").write_bytes(b"b")
+
+    with LegacyGatewayLock(source):
+        with pytest.raises(AtomicStateUnknownError, match="could not be reacquired"):
+            move_profile_no_replace(source, destination, move=move_then_change_lock)
+        assert destination.is_dir()
         assert not source.exists()
 
 
@@ -956,6 +1014,7 @@ def test_windows_handoff_keeps_external_state_lock_open(
             destination_path: Path,
             *,
             _mutation_guard,
+            **_move_options: object,
         ) -> None:
             with _mutation_guard():
                 assert external_claim.fd == external_fd

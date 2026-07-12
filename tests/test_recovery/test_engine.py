@@ -1070,10 +1070,12 @@ def test_choose_workspace_preserves_comments_unknown_keys_and_nested_key(tmp_pat
     assert "# owner comment" in patched
     assert 'unknown_future = "keep"' in patched
     assert 'workspace_dir = "nested-keep"' in patched
-    assert config_path.stat().st_mode & 0o777 == 0o640
+    if os.name != "nt":
+        assert config_path.stat().st_mode & 0o777 == 0o640
     backups = list(home.glob("config.toml.backup.*"))
     assert len(backups) == 1
-    assert backups[0].stat().st_mode & 0o777 == 0o600
+    if os.name != "nt":
+        assert backups[0].stat().st_mode & 0o777 == 0o600
 
 
 def test_choose_workspace_never_changes_chat_database_bytes_or_identity(tmp_path: Path) -> None:
@@ -1348,7 +1350,8 @@ def test_crashed_workspace_config_park_is_recovered_without_overwrite(
     backups = list(home.glob("config.toml.backup.*"))
     assert len(backups) == 1
     assert backups[0].read_text(encoding="utf-8") == old_text
-    assert backups[0].stat().st_mode & 0o777 == 0o600
+    if os.name != "nt":
+        assert backups[0].stat().st_mode & 0o777 == 0o600
     assert not config_patch.workspace_patch_journal(home).exists()
 
 

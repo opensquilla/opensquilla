@@ -192,7 +192,7 @@ def test_default_ci_blocks_pull_requests_and_main_pushes() -> None:
     assert "OpenTUI package tests" in text
     assert "Ubuntu quality gate" in text
     assert "Windows compatibility smoke tests" in text
-    assert "Windows high-risk/full tests" in text
+    assert "Windows high-risk" in text
     assert "Release packaging contracts" in text
     assert "CI result" in text
     assert 'push)\n              before="${{ github.event.before }}"' in text
@@ -844,24 +844,45 @@ def test_windows_smoke_does_not_install_bun_by_default() -> None:
     assert any("bun run test:bun" in step.get("run", "") for step in tui_steps)
 
 
-def test_windows_high_risk_job_uses_subset_until_full_ci() -> None:
+def test_windows_high_risk_job_runs_parallel_reported_shards() -> None:
     data = _workflow("ci.yml")
     jobs = data["jobs"]
     windows_full = jobs["windows-full"]
-    text = (WORKFLOW_DIR / "ci.yml").read_text(encoding="utf-8")
-
-    assert windows_full["name"] == "Windows high-risk/full tests (conditional)"
-    assert windows_full["timeout-minutes"] == 45
-    assert windows_full["steps"][0]["with"]["lfs"] == (
-        "${{ needs.classify-changes.outputs.full_required == 'true' }}"
+    steps = windows_full["steps"]
+    test_step = next(step for step in steps if step.get("name") == "Test Windows shard")
+    upload_step = next(
+        step for step in steps if step.get("name") == "Upload Windows shard report"
     )
-    assert 'uv run pytest tests -q -m "${markers}" --durations=50' in text
-    assert 'uv run pytest tests -q -m "${markers}" --durations=50 --maxfail=1' in text
-    assert "tests/test_compat" in text
-    assert "tests/test_sandbox" in text
-    assert "tests/test_tools/test_shell_policy_windows.py" in text
-    assert "tests/test_tools/test_shell_background_seatbelt.py" in text
-    assert "needs.classify-changes.outputs.tui_changed == 'true'" in text
+
+    assert windows_full["name"] == "Windows high-risk (${{ matrix.shard }})"
+    assert windows_full["timeout-minutes"] == 45
+    assert windows_full["strategy"] == {
+        "fail-fast": False,
+        "matrix": {
+            "shard": [
+                "core",
+                "gateway-sqlite",
+                "recovery-migration",
+                "desktop-installer-contracts",
+            ]
+        },
+    }
+    checkout = next(step for step in steps if step.get("name") == "Check out repository")
+    assert checkout["with"]["lfs"] is True
+    assert steps[0]["name"] == "Prepare diagnostic report"
+    assert "OPENSQUILLA_STATE_DIR" not in steps[0]["run"]
+    assert "PATH" not in steps[0]["run"]
+    assert "HOME" not in steps[0]["run"]
+    assert ".github/scripts/windows_test_shards.py run" in test_step["run"]
+    assert '"${{ github.event_name }}" == "pull_request"' in test_step["run"]
+    assert "--maxfail=3" in test_step["run"]
+    assert "--maxfail=1" not in test_step["run"]
+    assert "set -euo pipefail" in test_step["run"]
+    assert 'tee "${CI_REPORT_DIR}/pytest.log"' in test_step["run"]
+    assert upload_step["if"] == "${{ always() }}"
+    assert upload_step["uses"] == "actions/upload-artifact@v4"
+    assert upload_step["with"]["if-no-files-found"] == "error"
+    assert upload_step["with"]["retention-days"] == 14
 
 
 def test_ubuntu_quality_only_fetches_lfs_for_full_ci() -> None:

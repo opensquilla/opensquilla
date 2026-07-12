@@ -234,7 +234,7 @@ def test_errors_collected_from_config_state_dir(
     state = tmp_path / "custom-state"
     state.mkdir()
     _hermetic_config.write_text(
-        f"state_dir = {json.dumps(str(state))}\n",
+        f"state_dir = {json.dumps(str(state), ensure_ascii=False)}\n",
         encoding="utf-8",
     )
     db = state / "sessions.db"

@@ -768,6 +768,63 @@ def test_wal_database_without_shm_is_validated_from_private_read_only_source_sna
     assert not source_shm.exists(), "inspection must not create SQLite coordination files"
 
 
+def test_database_snapshot_preserves_binary_sqlite_bytes(tmp_path: Path) -> None:
+    import opensquilla.recovery.engine as recovery_engine
+
+    source = tmp_path / "source.db"
+    destination = tmp_path / "snapshot.db"
+    payload = b"before\r\ncontrol-z:\x1a\nafter"
+    with sqlite3.connect(source) as connection:
+        connection.execute("CREATE TABLE payloads (value BLOB NOT NULL)")
+        connection.execute("INSERT INTO payloads VALUES (?)", (payload,))
+
+    source_bytes = source.read_bytes()
+    assert payload in source_bytes
+
+    snapshot = recovery_engine._copy_source_file_no_follow(source, destination)
+
+    assert destination.read_bytes() == source_bytes
+    assert recovery_engine._source_snapshot_is_current(snapshot) is True
+    with sqlite3.connect(f"file:{destination}?mode=ro", uri=True) as connection:
+        assert connection.execute("PRAGMA quick_check").fetchone() == ("ok",)
+        assert connection.execute("SELECT value FROM payloads").fetchone() == (payload,)
+
+
+def test_database_snapshot_requests_binary_mode_for_every_crt_descriptor(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    import opensquilla.recovery.engine as recovery_engine
+
+    source = tmp_path / "source.db"
+    destination = tmp_path / "snapshot.db"
+    source.write_bytes(b"binary\r\ncontrol-z:\x1a\n")
+    real_open = os.open
+    native_binary = int(getattr(os, "O_BINARY", 0))
+    sentinel_binary = 1 << 30
+    opened: list[tuple[Path, int]] = []
+
+    def tracked_open(
+        path: str | bytes | os.PathLike[str] | os.PathLike[bytes],
+        flags: int,
+        mode: int = 0o777,
+        *,
+        dir_fd: int | None = None,
+    ) -> int:
+        opened.append((Path(path), flags))
+        native_flags = (flags & ~sentinel_binary) | native_binary
+        return real_open(path, native_flags, mode, dir_fd=dir_fd)
+
+    monkeypatch.setattr(recovery_engine.os, "O_BINARY", sentinel_binary, raising=False)
+    monkeypatch.setattr(recovery_engine.os, "open", tracked_open)
+
+    snapshot = recovery_engine._copy_source_file_no_follow(source, destination)
+    assert recovery_engine._source_snapshot_is_current(snapshot) is True
+
+    assert [path for path, _flags in opened] == [source, destination, source]
+    assert all(flags & sentinel_binary for _path, flags in opened)
+
+
 def test_database_snapshot_source_change_fails_closed_without_mutating_source(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

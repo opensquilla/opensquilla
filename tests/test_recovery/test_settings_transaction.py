@@ -5,6 +5,7 @@ import json
 import os
 import subprocess
 import sys
+import uuid
 from pathlib import Path
 
 import pytest
@@ -93,6 +94,21 @@ def _apply(
     )
 
 
+def _imported_credential(transaction_id: str) -> str:
+    return json.dumps(
+        {
+            "provider": "ollama",
+            "model": "old-model",
+            "baseUrl": "http://127.0.0.1:11434/v1",
+            "apiKeyEnv": "",
+            "encryptedApiKey": "synthetic-imported-ciphertext",
+            "configAuthority": "profile",
+            "importTransactionId": transaction_id,
+        },
+        sort_keys=True,
+    )
+
+
 def test_settings_pair_is_committed_without_secret_bearing_journal(tmp_path: Path) -> None:
     home, credential_path, old_config, old_credential = _profile(tmp_path)
     new_config, new_credential = _new_pair(home)
@@ -111,6 +127,190 @@ def test_settings_pair_is_committed_without_secret_bearing_journal(tmp_path: Pat
     assert not settings_transaction_journal(home).exists()
     assert not list(home.glob(".config.toml.*"))
     assert not list(credential_path.parent.glob(".desktop-credential.json.*"))
+
+
+def test_imported_settings_retain_exact_owner_only_credential_backup(tmp_path: Path) -> None:
+    home, credential_path, old_config, old_credential = _profile(tmp_path)
+    import_transaction_id = str(uuid.uuid4())
+    new_credential = _imported_credential(import_transaction_id)
+
+    report = _apply(
+        home,
+        old_config=old_config,
+        old_credential=old_credential,
+        new_config=old_config,
+        new_credential=new_credential,
+    )
+
+    backup = credential_path.with_name(
+        f"desktop-credential.import-backup.{import_transaction_id}.json"
+    )
+    assert report.outcome == "ready"
+    assert credential_path.read_text(encoding="utf-8") == new_credential
+    assert backup.read_text(encoding="utf-8") == old_credential
+    if callable(getattr(os, "fchmod", None)):
+        assert backup.stat().st_mode & 0o777 == 0o600
+    assert not settings_transaction_journal(home).exists()
+
+
+def test_imported_settings_backup_survives_failpoint_recovery(tmp_path: Path) -> None:
+    home, credential_path, old_config, old_credential = _profile(tmp_path)
+    import_transaction_id = str(uuid.uuid4())
+    new_credential = _imported_credential(import_transaction_id)
+
+    def crash_after_parking(phase: str) -> None:
+        if phase == "prepared":
+            raise SimulatedProcessCrash
+
+    with pytest.raises(SimulatedProcessCrash):
+        _apply(
+            home,
+            old_config=old_config,
+            old_credential=old_credential,
+            new_config=old_config,
+            new_credential=new_credential,
+            failpoint=crash_after_parking,
+        )
+
+    backup = credential_path.with_name(
+        f"desktop-credential.import-backup.{import_transaction_id}.json"
+    )
+    assert backup.read_text(encoding="utf-8") == old_credential
+    recovered = recover_desktop_settings(home)
+    assert recovered.outcome == "ready"
+    assert credential_path.read_text(encoding="utf-8") == new_credential
+    assert backup.read_text(encoding="utf-8") == old_credential
+    if callable(getattr(os, "fchmod", None)):
+        assert backup.stat().st_mode & 0o777 == 0o600
+    assert not settings_transaction_journal(home).exists()
+
+
+def test_imported_settings_reject_preexisting_backup_before_journal(tmp_path: Path) -> None:
+    home, credential_path, old_config, old_credential = _profile(tmp_path)
+    import_transaction_id = str(uuid.uuid4())
+    new_credential = _imported_credential(import_transaction_id)
+    backup = credential_path.with_name(
+        f"desktop-credential.import-backup.{import_transaction_id}.json"
+    )
+    backup.write_text("synthetic-existing-backup\n", encoding="utf-8")
+
+    with pytest.raises(RecoveryError) as caught:
+        _apply(
+            home,
+            old_config=old_config,
+            old_credential=old_credential,
+            new_config=old_config,
+            new_credential=new_credential,
+        )
+
+    assert caught.value.stable_code == "settings_credential_backup_exists"
+    assert (home / "config.toml").read_text(encoding="utf-8") == old_config
+    assert credential_path.read_text(encoding="utf-8") == old_credential
+    assert backup.read_text(encoding="utf-8") == "synthetic-existing-backup\n"
+    assert not settings_transaction_journal(home).exists()
+
+
+def test_imported_settings_preserve_windows_acl_when_fchmod_is_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    import opensquilla.recovery.settings_transaction as transaction
+
+    home, credential_path, old_config, old_credential = _profile(tmp_path)
+    credential_path.chmod(0o666)
+    import_transaction_id = str(uuid.uuid4())
+    monkeypatch.setattr(transaction.os, "fchmod", None)
+
+    _apply(
+        home,
+        old_config=old_config,
+        old_credential=old_credential,
+        new_config=old_config,
+        new_credential=_imported_credential(import_transaction_id),
+    )
+
+    backup = credential_path.with_name(
+        f"desktop-credential.import-backup.{import_transaction_id}.json"
+    )
+    assert backup.read_text(encoding="utf-8") == old_credential
+    assert backup.stat().st_mode & 0o777 == 0o666
+
+
+def test_credential_hardening_does_not_fsync_read_only_windows_descriptor(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    import opensquilla.recovery.settings_transaction as transaction
+
+    _, credential_path, _, old_credential = _profile(tmp_path)
+    credential_path.chmod(0o666)
+    monkeypatch.setattr(transaction.os, "fchmod", None)
+    monkeypatch.setattr(
+        transaction.os,
+        "fsync",
+        lambda _fd: pytest.fail("Windows-like credential hardening must not fsync O_RDONLY"),
+    )
+
+    transaction._restrict_existing_credential_to_owner(credential_path)
+
+    assert credential_path.read_text(encoding="utf-8") == old_credential
+    assert credential_path.stat().st_mode & 0o777 == 0o666
+
+
+@pytest.mark.parametrize(
+    "credential_payload",
+    [
+        {"configAuthority": "profile", "importTransactionId": ""},
+        {"configAuthority": "profile", "importTransactionId": "not-a-uuid"},
+        {"configAuthority": "generated", "importTransactionId": str(uuid.uuid4())},
+    ],
+)
+def test_settings_reject_invalid_credential_authority_binding(
+    tmp_path: Path,
+    credential_payload: dict[str, str],
+) -> None:
+    home, credential_path, old_config, old_credential = _profile(tmp_path)
+    credential_payload.update(
+        {
+            "provider": "ollama",
+            "model": "synthetic",
+            "encryptedApiKey": "synthetic-ciphertext",
+        }
+    )
+
+    with pytest.raises(RecoveryError) as caught:
+        _apply(
+            home,
+            old_config=old_config,
+            old_credential=old_credential,
+            new_config=old_config,
+            new_credential=json.dumps(credential_payload, sort_keys=True),
+        )
+
+    assert caught.value.stable_code == "settings_credential_invalid"
+    assert credential_path.read_text(encoding="utf-8") == old_credential
+    assert not settings_transaction_journal(home).exists()
+
+
+def test_imported_credential_must_match_the_exact_candidate_config(tmp_path: Path) -> None:
+    home, credential_path, old_config, old_credential = _profile(tmp_path)
+    import_transaction_id = str(uuid.uuid4())
+    mismatched = json.loads(_imported_credential(import_transaction_id))
+    mismatched["provider"] = "openai"
+
+    with pytest.raises(RecoveryError) as caught:
+        _apply(
+            home,
+            old_config=old_config,
+            old_credential=old_credential,
+            new_config=old_config,
+            new_credential=json.dumps(mismatched, sort_keys=True),
+        )
+
+    assert caught.value.stable_code == "settings_credential_config_mismatch"
+    assert (home / "config.toml").read_text(encoding="utf-8") == old_config
+    assert credential_path.read_text(encoding="utf-8") == old_credential
+    assert not settings_transaction_journal(home).exists()
 
 
 @pytest.mark.parametrize("crash_phase", ["prepared", "credential_published", "config_published"])

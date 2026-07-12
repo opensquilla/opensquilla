@@ -18,22 +18,27 @@ _LOADED_ENV_CONTEXTS: set[tuple[Path, Path]] = set()
 _LOADED_LOCAL_ENV_CWDS: set[Path] = set()
 
 
-def _top_level_command(argv: list[str]) -> str | None:
-    """Return the top-level command before ordinary CLI bootstrap runs."""
-
+def _top_level_command_index(argv: list[str]) -> int | None:
     index = 1
     while index < len(argv):
         value = argv[index]
         if value == "--":
-            return argv[index + 1] if index + 1 < len(argv) else None
+            return index + 1 if index + 1 < len(argv) else None
         if value == "--profile":
             index += 2
             continue
         if value.startswith("--profile=") or value.startswith("-"):
             index += 1
             continue
-        return value
+        return index
     return None
+
+
+def _top_level_command(argv: list[str]) -> str | None:
+    """Return the top-level command before ordinary CLI bootstrap runs."""
+
+    index = _top_level_command_index(argv)
+    return argv[index] if index is not None else None
 
 
 def _profile_from_top_level_argv(argv: list[str]) -> str | None:
@@ -53,6 +58,18 @@ def _profile_from_top_level_argv(argv: list[str]) -> str | None:
             return None
         index += 1
     return None
+
+
+def _is_offline_import_verification(argv: list[str]) -> bool:
+    """Recognize the internal receipt verifier before dotenv bootstrap."""
+
+    index = _top_level_command_index(argv)
+    return (
+        index is not None
+        and argv[index] == "migrate"
+        and index + 1 < len(argv)
+        and argv[index + 1] == "verify-opensquilla-import"
+    )
 
 
 def _activate_profile(profile: str | None) -> None:
@@ -96,6 +113,7 @@ _RECOVERY_OFFLINE = (
     os.environ.get("OPENSQUILLA_RECOVERY_OFFLINE", "").strip().lower()
     in {"1", "true", "yes", "on"}
     or _top_level_command(sys.argv) == "recovery"
+    or _is_offline_import_verification(sys.argv)
 )
 if _RECOVERY_OFFLINE:
     # Electron also sets this explicitly. argv detection keeps direct CLI use

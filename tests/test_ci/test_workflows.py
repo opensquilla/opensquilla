@@ -941,6 +941,7 @@ def test_desktop_recovery_e2e_runs_compiled_flows_on_all_release_platforms() -> 
     assert "xvfb-run -a node" in run["run"]
     assert "test-profile-recovery-flow.mjs" in run["run"]
     assert "test-profile-recovery-accessibility.mjs" in run["run"]
+    assert "test-profile-import-flow.mjs" in run["run"]
     assert "test-unsafe-profile-no-write.mjs" in run["run"]
     assert "exit 1" in run["run"]
     assert upload["if"] == "${{ always() }}"

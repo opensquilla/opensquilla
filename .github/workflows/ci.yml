@@ -702,6 +702,7 @@ jobs:
           for entry in \
             'profile-recovery-flow:scripts/test-profile-recovery-flow.mjs' \
             'profile-recovery-accessibility:scripts/test-profile-recovery-accessibility.mjs' \
+            'profile-import-flow:scripts/test-profile-import-flow.mjs' \
             'unsafe-profile-no-write:scripts/test-unsafe-profile-no-write.mjs'
           do
             name="${entry%%:*}"

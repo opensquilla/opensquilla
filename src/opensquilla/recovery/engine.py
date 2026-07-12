@@ -589,11 +589,17 @@ def _copy_source_file_no_follow(source: Path, destination: Path) -> _DatabaseSou
     path_stat = _regular_source_stat(source)
     if path_stat is None:
         raise _DatabaseSourceChangedError
-    source_flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    source_flags = (
+        os.O_RDONLY
+        | getattr(os, "O_BINARY", 0)
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+    )
     destination_flags = (
         os.O_WRONLY
         | os.O_CREAT
         | os.O_EXCL
+        | getattr(os, "O_BINARY", 0)
         | getattr(os, "O_CLOEXEC", 0)
         | getattr(os, "O_NOFOLLOW", 0)
     )
@@ -661,7 +667,12 @@ def _source_snapshot_is_current(snapshot: _DatabaseSourceSnapshot) -> bool:
         return False
     if PathIdentity.from_stat(current).metadata_tuple() != snapshot.identity.metadata_tuple():
         return False
-    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    flags = (
+        os.O_RDONLY
+        | getattr(os, "O_BINARY", 0)
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+    )
     try:
         fd = os.open(snapshot.path, flags)
     except OSError:
@@ -1028,7 +1039,13 @@ def _finalize_compatibility_marker(
         "protectedBy": "rc4",
     }
     data = (json.dumps(payload, ensure_ascii=False, sort_keys=True) + "\n").encode()
-    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_CLOEXEC", 0)
+    flags = (
+        os.O_WRONLY
+        | os.O_CREAT
+        | os.O_EXCL
+        | getattr(os, "O_BINARY", 0)
+        | getattr(os, "O_CLOEXEC", 0)
+    )
     flags |= getattr(os, "O_NOFOLLOW", 0)
     try:
         fd = os.open(marker, flags, 0o600)

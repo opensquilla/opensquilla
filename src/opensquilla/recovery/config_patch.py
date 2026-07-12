@@ -93,7 +93,12 @@ class ConfigSnapshot:
             or path_stat.st_nlink != 1
         ):
             raise UnsafePathError(f"config must be a regular non-reparse file: {config_path}")
-        flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+        flags = (
+            os.O_RDONLY
+            | getattr(os, "O_BINARY", 0)
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_NOFOLLOW", 0)
+        )
         try:
             fd = os.open(config_path, flags)
         except FileNotFoundError as exc:
@@ -533,7 +538,13 @@ def _parked_config_matches(path: Path, expected: object) -> bool:
 
 def _write_json_no_replace(path: Path, payload: dict[str, Any]) -> ConfigSnapshot:
     data = (json.dumps(payload, ensure_ascii=False, sort_keys=True) + "\n").encode()
-    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_CLOEXEC", 0)
+    flags = (
+        os.O_WRONLY
+        | os.O_CREAT
+        | os.O_EXCL
+        | getattr(os, "O_BINARY", 0)
+        | getattr(os, "O_CLOEXEC", 0)
+    )
     flags |= getattr(os, "O_NOFOLLOW", 0)
     try:
         fd = os.open(path, flags, 0o600)
@@ -870,7 +881,13 @@ def _patch_workspace_dir_locked(home: str | Path, workspace: str | Path) -> Path
     staged_created = False
     journal_created = False
     try:
-        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_CLOEXEC", 0)
+        flags = (
+            os.O_WRONLY
+            | os.O_CREAT
+            | os.O_EXCL
+            | getattr(os, "O_BINARY", 0)
+            | getattr(os, "O_CLOEXEC", 0)
+        )
         flags |= getattr(os, "O_NOFOLLOW", 0)
         fd = os.open(staged_path, flags, 0o600)
         staged_created = True

@@ -89,7 +89,13 @@ def _write_all(fd: int, data: bytes) -> None:
 
 
 def _write_no_replace(path: Path, data: bytes, *, mode: int = 0o600) -> PathIdentity:
-    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_CLOEXEC", 0)
+    flags = (
+        os.O_WRONLY
+        | os.O_CREAT
+        | os.O_EXCL
+        | getattr(os, "O_BINARY", 0)
+        | getattr(os, "O_CLOEXEC", 0)
+    )
     flags |= getattr(os, "O_NOFOLLOW", 0)
     fd = os.open(path, flags, mode)
     try:
@@ -106,6 +112,31 @@ def _write_no_replace(path: Path, data: bytes, *, mode: int = 0o600) -> PathIden
     os.close(fd)
     _fsync_directory(path.parent)
     return PathIdentity.from_stat(value)
+
+
+def _restrict_existing_credential_to_owner(path: Path) -> None:
+    snapshot = ConfigSnapshot.capture(path)
+    if snapshot.identity is None:
+        return
+    can_harden_posix_mode = callable(getattr(os, "fchmod", None))
+    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_CLOEXEC", 0)
+    flags |= getattr(os, "O_NOFOLLOW", 0)
+    fd = os.open(path, flags)
+    try:
+        if PathIdentity.from_stat(os.fstat(fd)) != snapshot.identity:
+            raise AtomicStateUnknownError("Desktop credential changed before backup hardening")
+        if can_harden_posix_mode:
+            _chmod_open_file(fd, 0o600)
+            os.fsync(fd)
+    finally:
+        os.close(fd)
+    after = ConfigSnapshot.capture(path)
+    if (
+        after.identity is None
+        or after.data != snapshot.data
+        or (can_harden_posix_mode and after.identity.mode & 0o777 != 0o600)
+    ):
+        raise AtomicStateUnknownError("Desktop credential backup is not owner-only")
 
 
 def _durable_move_no_replace(source: Path, destination: Path) -> None:
@@ -217,6 +248,51 @@ def _parse_input(payload: object) -> tuple[str | None, str, str | None, str]:
     return expected_config, config, expected_credential, credential
 
 
+def _assert_imported_credential_matches_config(
+    config_text: str,
+    credential: dict[str, Any],
+) -> None:
+    if credential.get("configAuthority") != "profile":
+        return
+    try:
+        config = tomllib.loads(config_text)
+    except tomllib.TOMLDecodeError as exc:
+        raise RecoveryError(
+            "Imported Desktop credential cannot be bound to config",
+            stable_code="settings_credential_config_mismatch",
+        ) from exc
+    llm = config.get("llm")
+    if not isinstance(llm, dict):
+        raise RecoveryError(
+            "Imported Desktop credential requires an LLM config",
+            stable_code="settings_credential_config_mismatch",
+        )
+    fields = (
+        ("provider", "provider", True),
+        ("model", "model", False),
+        ("base_url", "baseUrl", False),
+        ("api_key_env", "apiKeyEnv", False),
+    )
+    for config_key, credential_key, required in fields:
+        config_value = llm.get(config_key, "")
+        credential_value = credential.get(credential_key, "")
+        if not isinstance(config_value, str) or not isinstance(credential_value, str):
+            raise RecoveryError(
+                "Imported Desktop credential connection is invalid",
+                stable_code="settings_credential_config_mismatch",
+            )
+        expected = config_value.strip()
+        actual = credential_value.strip()
+        if config_key == "provider":
+            expected = expected.lower()
+            actual = actual.lower()
+        if (required and not expected) or (expected and expected != actual):
+            raise RecoveryError(
+                "Imported Desktop credential does not match config",
+                stable_code="settings_credential_config_mismatch",
+            )
+
+
 def _assert_cas(snapshot: ConfigSnapshot, expected: str | None, *, label: str) -> None:
     if expected is None:
         matches = snapshot.identity is None
@@ -308,7 +384,11 @@ def _assert_data_roots_unchanged(
         )
 
 
-def _artifact_paths(home: Path, transaction_id: str) -> dict[str, Path]:
+def _artifact_paths(
+    home: Path,
+    transaction_id: str,
+    import_transaction_id: str = "",
+) -> dict[str, Path]:
     credential = home.parent / "desktop-credential.json"
     config = home / "config.toml"
     journal = settings_transaction_journal(home)
@@ -317,7 +397,11 @@ def _artifact_paths(home: Path, transaction_id: str) -> dict[str, Path]:
         "config": config,
         "credential_new": credential.with_name(f".{credential.name}.{transaction_id}.new"),
         "config_new": config.with_name(f".{config.name}.{transaction_id}.new"),
-        "credential_backup": credential.with_name(f".{credential.name}.{transaction_id}.old"),
+        "credential_backup": credential.with_name(
+            f"desktop-credential.import-backup.{import_transaction_id}.json"
+            if import_transaction_id
+            else f".{credential.name}.{transaction_id}.old"
+        ),
         "config_backup": config.with_name(f".{config.name}.{transaction_id}.old"),
         "journal_committed": journal.with_name(
             f".{home.name}.desktop-settings.{transaction_id}.committed.json"
@@ -384,7 +468,10 @@ def _cleanup_committed(journal: Path, payload: dict[str, Any], paths: dict[str, 
     # The immutable committed receipt is the point of no return. Cleanup below
     # is best-effort and identity-gated: a changed artifact is retained for
     # diagnostics rather than overwritten, merged, or removed.
+    retained_credential_backup = bool(payload.get("import_transaction_id"))
     for role in ("credential_backup", "config_backup", "credential_new", "config_new"):
+        if role == "credential_backup" and retained_credential_backup:
+            continue
         expected = identities.get(role)
         if expected is not None and _identity_matches(paths[role], expected):
             with contextlib.suppress(OSError):
@@ -474,7 +561,22 @@ def _load_journal(home: Path) -> tuple[Path, dict[str, Any], dict[str, Path]]:
             "Desktop settings transaction id is invalid",
             stable_code="settings_transaction_invalid",
         ) from exc
-    paths = _artifact_paths(home, canonical_id)
+    import_transaction_id = payload.get("import_transaction_id", "")
+    if not isinstance(import_transaction_id, str):
+        raise RecoveryError(
+            "Desktop settings import transaction id is invalid",
+            stable_code="settings_transaction_invalid",
+        )
+    if import_transaction_id:
+        try:
+            if str(uuid.UUID(import_transaction_id)) != import_transaction_id:
+                raise ValueError
+        except ValueError as exc:
+            raise RecoveryError(
+                "Desktop settings import transaction id is invalid",
+                stable_code="settings_transaction_invalid",
+            ) from exc
+    paths = _artifact_paths(home, canonical_id, import_transaction_id)
     expected_paths = {key: _normalized(path) for key, path in paths.items()}
     if (
         payload.get("schema_version") != SETTINGS_TRANSACTION_SCHEMA_VERSION
@@ -482,6 +584,7 @@ def _load_journal(home: Path) -> tuple[Path, dict[str, Any], dict[str, Path]]:
         or transaction_id != canonical_id
         or payload.get("phase") not in _SETTINGS_TRANSACTION_PHASES
         or payload.get("home") != _normalized(home)
+        or str(payload.get("import_transaction_id") or "") != import_transaction_id
         or payload.get("paths") != expected_paths
         or not isinstance(payload.get("fresh_canonical"), bool)
         or not isinstance(payload.get("identities"), dict)
@@ -626,6 +729,25 @@ def apply_desktop_settings(
 
     _require_desktop_profile_kind()
     expected_config, config_text, expected_credential, credential_text = _parse_input(payload)
+    candidate_credential = json.loads(credential_text)
+    config_authority = candidate_credential.get("configAuthority")
+    import_transaction_id = candidate_credential.get("importTransactionId")
+    if config_authority == "profile":
+        try:
+            import_transaction_id = str(uuid.UUID(str(import_transaction_id)))
+        except ValueError as exc:
+            raise RecoveryError(
+                "Imported Desktop credential transaction id is invalid",
+                stable_code="settings_credential_invalid",
+            ) from exc
+    elif import_transaction_id not in {None, ""}:
+        raise RecoveryError(
+            "Generated Desktop credential cannot retain an import transaction",
+            stable_code="settings_credential_invalid",
+        )
+    else:
+        import_transaction_id = ""
+    _assert_imported_credential_matches_config(config_text, candidate_credential)
     home_path = Path(home).expanduser().absolute()
     journal = settings_transaction_journal(home_path)
     callback = _failpoint or (lambda _phase: None)
@@ -656,7 +778,14 @@ def apply_desktop_settings(
             else:
                 _plain_directory(home_path)
             operation_id = str(uuid.uuid4())
-            paths = _artifact_paths(home_path, operation_id)
+            paths = _artifact_paths(home_path, operation_id, import_transaction_id)
+            if import_transaction_id:
+                if os.path.lexists(paths["credential_backup"]):
+                    raise RecoveryError(
+                        "The imported Desktop credential backup already exists",
+                        stable_code="settings_credential_backup_exists",
+                    )
+                _restrict_existing_credential_to_owner(paths["credential"])
             config_snapshot = ConfigSnapshot.capture(paths["config"])
             credential_snapshot = ConfigSnapshot.capture(paths["credential"])
             _assert_cas(config_snapshot, expected_config, label="config")
@@ -710,6 +839,7 @@ def apply_desktop_settings(
                 "transaction_id": operation_id,
                 "phase": "prepared",
                 "home": _normalized(home_path),
+                "import_transaction_id": import_transaction_id,
                 "fresh_canonical": before.stable_code
                 in {"fresh_profile", "fresh_recovery_profile"},
                 "paths": {key: _normalized(path) for key, path in paths.items()},

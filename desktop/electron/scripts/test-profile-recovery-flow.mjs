@@ -26,6 +26,8 @@ const RECOVERY_SYNTHETIC_KEY = 'synthetic-loopback-only-recovery-key'
 const FIRST_PROMPT = 'RECOVERY_E2E_FIRST_PROMPT'
 const SECOND_PROMPT = 'RECOVERY_E2E_SECOND_PROMPT'
 const REPLY = 'RECOVERY_E2E_REPLY'
+const observedRendererPages = new WeakSet()
+const rendererDiagnostics = []
 
 async function waitFor(check, label, timeoutMs = 90_000) {
   const startedAt = Date.now()
@@ -102,14 +104,43 @@ async function onboardingPage(app) {
 }
 
 async function controlPage(app) {
-  return await waitFor(async () => {
-    for (const page of app.windows()) {
-      if (page.isClosed() || !page.url().includes('/control/chat/new')) continue
-      await page.waitForLoadState('domcontentloaded', { timeout: 5_000 }).catch(() => {})
-      if (await page.locator('.chat-textarea').count().catch(() => 0)) return page
-    }
-    return null
-  }, 'recovery-profile Control UI', 120_000)
+  const observe = (page) => {
+    if (observedRendererPages.has(page)) return
+    observedRendererPages.add(page)
+    page.on('console', (message) => {
+      rendererDiagnostics.push({ type: `console:${message.type()}`, text: message.text().slice(0, 1_000) })
+    })
+    page.on('pageerror', (error) => {
+      rendererDiagnostics.push({ type: 'pageerror', text: String(error?.message || error).slice(0, 1_000) })
+    })
+  }
+  try {
+    const page = await waitFor(async () => {
+      for (const candidate of app.windows()) {
+        if (candidate.isClosed()) continue
+        observe(candidate)
+        await candidate.waitForLoadState('domcontentloaded', { timeout: 5_000 }).catch(() => {})
+        let pathname = ''
+        try { pathname = new URL(candidate.url()).pathname } catch { pathname = '' }
+        if (pathname !== '/control/chat' && pathname !== '/control/chat/new') continue
+        if (await candidate.locator('.chat-textarea').count().catch(() => 0)) return candidate
+      }
+      return null
+    }, 'recovery-profile Control UI', 120_000)
+    await waitFor(() => {
+      try { return new URL(page.url()).pathname === '/control/chat/new' } catch { return false }
+    }, 'new-chat draft route', 30_000)
+    return page
+  } catch (error) {
+    const windows = await Promise.all(app.windows().map(async (page) => ({
+      url: page.url(),
+      title: await page.title().catch(() => ''),
+      body: await page.locator('body').innerText().catch(() => '').then((value) => value.slice(0, 1_500)),
+    })))
+    throw new Error(
+      `${error.message}; windows=${JSON.stringify(windows)}; renderer=${JSON.stringify(rendererDiagnostics.slice(-30))}`,
+    )
+  }
 }
 
 async function sendChat(page, prompt) {
@@ -148,6 +179,7 @@ async function sendChat(page, prompt) {
 function launchEnvironment(isolatedHome, providerPort, sourceEnvironment = process.env) {
   const inherited = { ...sourceEnvironment }
   for (const name of Object.keys(inherited)) {
+    if (name === 'DISPLAY' || name === 'XAUTHORITY') continue
     const upperName = name.toUpperCase()
     if (
       name.startsWith('OPENSQUILLA_')

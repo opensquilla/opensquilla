@@ -247,7 +247,13 @@ def _write_all(fd: int, data: bytes) -> None:
 
 
 def _write_json_no_replace(path: Path, payload: dict[str, Any]) -> None:
-    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_CLOEXEC", 0)
+    flags = (
+        os.O_WRONLY
+        | os.O_CREAT
+        | os.O_EXCL
+        | getattr(os, "O_BINARY", 0)
+        | getattr(os, "O_CLOEXEC", 0)
+    )
     flags |= getattr(os, "O_NOFOLLOW", 0)
     data = (json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n").encode()
     fd = os.open(path, flags, 0o600)

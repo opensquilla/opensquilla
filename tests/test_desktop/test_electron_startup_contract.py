@@ -1462,24 +1462,27 @@ def test_onboarding_migration_ipc_is_guarded_and_prefills_from_imported_config()
     # awaiting onboarding flow, and must take source path/kind from the main
     # process's own detection rather than the renderer payload.
     for handler in (preview, apply_handler):
-        assert "if (!resolveOnboarding) return { ok: false" in handler
+        assert "!resolveOnboarding || !trustedOnboardingIpc(event)" in handler
+        assert "activeDesktopProfile().kind !== 'primary'" in handler
         assert "onboardingMigrationCandidate" in handler
         assert "'--source', candidate.path, '--kind', candidate.kind" in handler
         assert "migrateSummaryJson([" in handler
     assert "'--apply'" not in preview
     assert "'--apply'," in apply_handler
-    assert "readMigratedProviderPrefill()" in apply_handler
+    assert "findAppliedReceiptForIntent(" in apply_handler
+    assert "migrationProviderPrefill(intent)" in apply_handler
+    assert "prepareImportedCredentialBackup(intent)" in apply_handler
     assert "prefill" in apply_handler
 
     # Detection happens on the no-credential path only, before the onboarding
     # window is created, and the result is JSON-injected into the page.
     onboarding = _section(main_ts, "async function runOnboarding", "async function pathExists")
     assert "activeDesktopProfile().kind === 'primary'" in onboarding
-    assert "detectLegacyImportCandidate()" in onboarding
-    assert onboarding.index("detectLegacyImportCandidate()") < onboarding.index(
+    assert "enrichLegacyImportCandidates(detectLegacyImportCandidates())" in onboarding
+    assert onboarding.index("detectLegacyImportCandidates()") < onboarding.index(
         "new BrowserWindow"
     )
-    assert "onboardingHtml(onboardingMigrationCandidate, pendingProviderSetup)" in onboarding
+    assert "onboardingHtml(onboardingMigrationCandidates, pendingProviderSetup)" in onboarding
 
 
 def test_run_migrate_cli_targets_desktop_home_via_bundled_cli() -> None:
@@ -1490,12 +1493,13 @@ def test_run_migrate_cli_targets_desktop_home_via_bundled_cli() -> None:
         "async function migrateSummaryJson",
     )
 
-    assert "'migrate', 'opensquilla'" in migrate
+    assert "[...prefix, 'migrate', subcommand, ...extraArgs]" in migrate
     assert "runtime.args.slice(0, -2)" in migrate
     # OPENSQUILLA_STATE_DIR names the OpenSquilla HOME ROOT (the migrator's
     # import target) and must match the gateway spawn: desktopHome(), never the
     # state subdir.
-    assert "desktopChildEnvironment(activeDesktopProfile()" in migrate
+    assert "const primary = primaryDesktopProfile()" in migrate
+    assert "desktopChildEnvironment(primary" in migrate
     child_environment = _section(
         main_ts,
         "function desktopChildEnvironment",
@@ -1506,6 +1510,8 @@ def test_run_migrate_cli_targets_desktop_home_via_bundled_cli() -> None:
     assert "OPENSQUILLA_INSTALL_METHOD: 'desktop'" in child_environment
     for env in ("PYTHONUNBUFFERED: '1'", "PYTHONUTF8: '1'", "PYTHONIOENCODING: 'utf-8:replace'"):
         assert env in migrate
+    assert "subcommand === 'verify-opensquilla-import'" in migrate
+    assert "OPENSQUILLA_RECOVERY_OFFLINE: '1'" in migrate
 
     summary_json = _section(
         main_ts,
@@ -1513,6 +1519,7 @@ def test_run_migrate_cli_targets_desktop_home_via_bundled_cli() -> None:
         "type DesktopMigrationPhase",
     )
     assert "[...extraArgs, '--json']" in summary_json
+    assert "writerReserved" in summary_json
 
 
 def test_desktop_profile_import_is_rejected_from_recovery_profile() -> None:
@@ -1543,12 +1550,13 @@ def test_desktop_migration_run_quiesces_then_restarts_without_forcing_onboarding
     run = _section(
         main_ts,
         "ipcMain.handle('desktop:migration:run'",
-        "ipcMain.handle('desktop:boot:state'",
+        "ipcMain.handle('desktop:migration:last-result'",
     )
 
     # The dry-run summary is read-only and must not touch the running gateway.
-    assert "detectLegacyImportCandidate()" in summary
-    assert "{ ok: true, candidate: null, report: null }" in summary
+    assert "detectLegacyImportCandidates()" in summary
+    assert "requiresSelection: true" in summary
+    assert "candidates.find" in summary
     assert "stopGateway" not in summary
 
     # The apply path quiesces the owned gateway BEFORE the CLI runs, refuses an
@@ -1567,7 +1575,9 @@ def test_desktop_migration_run_quiesces_then_restarts_without_forcing_onboarding
         "await runMigrateCli("
     )
     assert "'--apply'" in run
-    assert "'--overwrite'" in run
+    assert "'--replace-target'" in run
+    assert "'--confirm-replace-target', primaryDesktopHome()" in run
+    assert "'--overwrite'" not in run
     assert "'--json'" in run
     assert "forceOnboardingOnNextStartup" not in run
     assert "bootError = null" in run
@@ -1577,31 +1587,30 @@ def test_desktop_migration_run_quiesces_then_restarts_without_forcing_onboarding
     assert run.index("await runMigrateCli(") < run.index("loadFile(bootPagePath())")
 
 
-def test_desktop_migration_detection_respects_matching_completion_marker() -> None:
+def test_desktop_migration_receipt_authority_is_bounded_python_verification() -> None:
     main_ts = _read("desktop/electron/src/main.ts")
     detection = _section(
         main_ts,
-        "function detectLegacyImportCandidate",
+        "function detectLegacyImportCandidates",
         "function bootPagePath",
     )
 
-    assert "sourceWasImportedToTarget" in main_ts
-    assert "!sourceWasImportedToTarget(cliHome, desktopHome())" in detection
-    assert "sourceWasImportedToTarget(candidate, desktopHome())" in detection
-    assert "'.opensquilla-imported.json'" in main_ts
-    assert "payload.transaction_id" in main_ts
-    assert "join(receiptDir, 'report.json')" in main_ts
-    assert "function targetHasAppliedImportReceipt" in main_ts
-    assert "transactionIds = readdirSync(receiptRoot)" in main_ts
-    assert "resolvedPathsEqual(record.output_dir, receiptDir)" in main_ts
-    assert "return targetHasAppliedImportReceipt(source, target)" in main_ts
-    marker_check = _section(
-        main_ts,
-        "function sourceWasImportedToTarget",
-        "function detectLegacyImportCandidate",
-    )
-    assert "return false" not in marker_check
-    assert marker_check.count("targetHasAppliedImportReceipt(source, target") == 2
+    assert "sourceWasImportedToTarget" not in main_ts
+    assert "'.opensquilla-imported.json'" not in main_ts
+    assert "join(receiptDir, 'report.json')" not in main_ts
+    assert "layout-receipt.json" not in main_ts
+    assert "trustedMigrationReceiptRoot" not in main_ts
+    assert "MIGRATION_LAYOUT_RECEIPT_MAX_ENTRIES" not in main_ts
+    assert "sourceHasCommittedLayoutReceipt" not in main_ts
+    assert "verifyCommittedProfileImport" in main_ts
+    assert "verify-opensquilla-import" in main_ts
+    assert "matching_transaction_ids.length > 128" in main_ts
+    assert "parseImportReceiptVerification" in main_ts
+    assert "IMPORTED_PROVIDER_API_KEY_ENV_RE" in main_ts
+    assert "!IMPORTED_PROVIDER_API_KEY_ENV_RE.test" in main_ts
+    assert "previously_imported" in main_ts
+    assert "addCandidate(legacyImportCandidate('cli-home', cliHome))" in detection
+    assert "return candidates.sort" in detection
 
 
 def test_desktop_boot_does_not_run_legacy_typescript_import_recovery() -> None:
@@ -1619,24 +1628,26 @@ def test_desktop_boot_does_not_run_legacy_typescript_import_recovery() -> None:
     assert "await runOnboarding()" in start
 
 
-def test_desktop_migration_run_requires_valid_report_and_restarts_in_finally() -> None:
+def test_desktop_migration_run_requires_valid_report_and_reopens_before_restart() -> None:
     main_ts = _read("desktop/electron/src/main.ts")
     run = _section(
         main_ts,
         "ipcMain.handle('desktop:migration:run'",
-        "ipcMain.handle('desktop:boot:state'",
+        "ipcMain.handle('desktop:migration:last-result'",
     )
 
     assert "migrationReportValidationError(report" in run
     assert "migrationReportErrors(report)" in run
-    assert "findAppliedReceiptForIntent(intent)" in run
+    assert "findAppliedReceiptForIntent(" in run
+    assert "migrationTransactionIdFromReport(report)" in run
     receipt_branch = run.split("if (receipt)", 1)[1]
     assert "report = receipt.report" in receipt_branch
     assert "migrationVerified = true" in receipt_branch
-    assert "finally" in run
-    finally_body = run.split("finally", 1)[1]
-    assert "isQuitting = false" in finally_body
-    assert "await openOrResumeDesktopApp()" in finally_body
+    assert "isQuitting = false" in run
+    assert run.rindex("desktopWriters.reopen(exclusive.admissionToken)") < run.index(
+        "await openOrResumeDesktopApp()"
+    )
+    assert "desktopWriters.hasOtherOwner(exclusive.admissionToken)" in run
     assert "restartOk" in run
 
 
@@ -1661,6 +1672,37 @@ def test_desktop_migration_apply_is_bound_to_one_trusted_preview_and_native_over
     assert "trustedDesktopMigrationPreview = null" in run
 
 
+def test_complete_profile_import_holds_exclusive_writer_admission_through_reconciliation() -> None:
+    main_ts = _read("desktop/electron/src/main.ts")
+    settings_run = _section(
+        main_ts,
+        "ipcMain.handle('desktop:migration:run'",
+        "ipcMain.handle('desktop:migration:last-result'",
+    )
+    onboarding_run = _section(
+        main_ts,
+        "ipcMain.handle('desktop:onboarding:migrate:apply'",
+        "// Set once the Windows graceful-drain",
+    )
+
+    for handler in (settings_run, onboarding_run):
+        assert "desktopWriters.tryBeginExclusive" in handler
+        assert "await waitForDesktopWriterOperations(1)" in handler
+        assert "exclusive.finish()" in handler
+        assert "desktopWriters.reopen(exclusive.admissionToken)" in handler
+        assert handler.index("tryBeginExclusive") < handler.index("'--apply'")
+        assert handler.index("'--apply'") < handler.index("exclusive.finish()")
+
+    assert "reconcileImportedDesktopCredential(intent, true)" in settings_run
+    save_credential = _section(
+        main_ts,
+        "async function saveDesktopCredential",
+        "// Sections the desktop config template owns",
+    )
+    assert "writerReserved = false" in save_credential
+    assert "writerReserved\n    ? () => {}" in save_credential
+
+
 def test_desktop_migration_writes_reconciliation_intent_before_apply() -> None:
     main_ts = _read("desktop/electron/src/main.ts")
     run = _section(
@@ -1682,7 +1724,7 @@ def test_desktop_migration_writes_reconciliation_intent_before_apply() -> None:
         assert handler.index("beginMigrationReconciliationIntent(candidate)") < handler.index(
             invocation
         )
-        assert "findAppliedReceiptForIntent(intent)" in handler
+        assert "findAppliedReceiptForIntent(" in handler
 
 
 def test_settings_import_reconciles_or_prompts_for_imported_provider() -> None:
@@ -1703,27 +1745,76 @@ def test_settings_import_reconciles_or_prompts_for_imported_provider() -> None:
     assert "loadPendingMigrationProviderSetup" in onboarding
     assert "pendingProviderSetup" in onboarding
     assert "clearPendingMigrationProviderSetup" in save
-    assert "scrubImportedProviderEnvEntry" in save
-    assert "onboardingHtml(onboardingMigrationCandidate, pendingProviderSetup)" in onboarding
+    assert "scrubImportedProviderEnvEntry" not in main_ts
+    assert "readImportedProviderKey" not in main_ts
+    assert "apiKey: ''" in main_ts
+    assert "onboardingHtml(onboardingMigrationCandidates, pendingProviderSetup)" in onboarding
     assert "desktopSecretStoragePolicyBackend() === 'safeStorage'" in onboarding
 
     reconcile = _section(
         main_ts,
         "async function reconcileImportedDesktopCredential",
-        "// After a successful apply",
+        "async function recoverPendingMigrationReconciliation",
     )
-    assert reconcile.index("await saveDesktopCredential(prefill)") < reconcile.index(
-        "await scrubImportedProviderEnvEntry(prefill.apiKeyEnv)"
-    )
-    assert reconcile.index("await scrubImportedProviderEnvEntry") < reconcile.index(
-        "await clearPendingMigrationProviderSetup()"
-    )
+    save_index = reconcile.index("await saveImportedDesktopCredential(")
+    assert save_index < reconcile.index("await clearPendingMigrationProviderSetup()", save_index)
 
     encryption = _section(main_ts, "function encryptSecret", "function decryptSecret")
     assert "desktopSecretStoragePolicyBackend()" in encryption
     assert "if (availableBackend !== 'safeStorage')" in encryption
     assert "The OS keychain is unavailable" in encryption
     assert "catch {\n      return plainSecret(secret)" not in encryption
+
+
+def test_imported_credentials_are_transaction_bound_and_backed_up_only_by_python() -> None:
+    main_ts = _read("desktop/electron/src/main.ts")
+    normalize = _section(
+        main_ts,
+        "function normalizeDesktopCredential",
+        "async function loadDesktopCredential",
+    )
+    imported_save = _section(
+        main_ts,
+        "function buildImportedDesktopCredential",
+        "function settingsSnapshot",
+    )
+    backup = _section(
+        main_ts,
+        "function importedCredentialBackupPath",
+        "async function writePendingMigrationProviderSetup",
+    )
+    recovery_copy = _section(
+        main_ts,
+        "async function copyPrimaryCredentialToRecovery",
+        "async function createRecoveryProfile",
+    )
+
+    assert "configAuthority === 'profile' && !importTransactionId" in normalize
+    assert "configAuthority === 'generated' && importTransactionId" in normalize
+    assert "configAuthority: 'profile'" in imported_save
+    assert "importTransactionId" in imported_save
+    assert "readback.importTransactionId !== importTransactionId" in imported_save
+    assert "desktop-credential.import-backup.${transactionId}.json" in backup
+    assert "Python's settings transaction parks the existing credential" in backup
+    assert "writeFile" not in backup
+    assert "configAuthority: 'generated'" in recovery_copy
+    assert "importTransactionId: ''" in recovery_copy
+
+
+def test_invalid_desktop_credential_fails_closed_instead_of_reonboarding() -> None:
+    main_ts = _read("desktop/electron/src/main.ts")
+    ready = _section(main_ts, "function isConnectionReady", "function normalizeDesktopCredential")
+    load = _section(
+        main_ts,
+        "async function loadDesktopCredential",
+        "async function saveDesktopCredential",
+    )
+
+    assert "try" not in ready
+    assert "catch" not in ready
+    assert "code === 'ENOENT'" in load
+    assert "Saved Desktop credential is invalid or unreadable." in load
+    assert "catch {\n    return null" not in load
 
 
 def test_migration_locale_keys_exist_in_all_six_locale_blocks() -> None:
@@ -1746,12 +1837,21 @@ def test_migration_locale_keys_exist_in_all_six_locale_blocks() -> None:
         "migration.step.heading",
         "migration.step.subtitle",
         "migration.step.sourceLabel",
+        "migration.step.manualTypeLabel",
+        "migration.step.manualTypePlaceholder",
+        "migration.source.cli",
+        "migration.source.desktop",
+        "migration.source.portable",
+        "migration.step.browse",
         "migration.step.preview",
         "migration.step.import",
         "migration.step.skip",
         "migration.overwriteTitle",
         "migration.overwriteMessage",
         "migration.overwriteDetail",
+        "migration.overwriteNoMerge",
+        "migration.overwriteSourceUntouched",
+        "migration.overwriteNoSync",
         "migration.overwriteCancel",
         "migration.overwriteConfirm",
     ]
@@ -1780,12 +1880,40 @@ def test_onboarding_route_prepends_migration_step_only_when_detected() -> None:
 
     # The detection result is JSON-injected like the message bags; the migration
     # step (screen 5) leads every route only when a legacy home was detected.
-    assert "detection: LegacyImportCandidate | null = null" in html
-    assert "const migrationCandidate = ${JSON.stringify(detection)};" in html
-    assert "return migrationCandidate ? [5, ...base] : base;" in route
+    assert "detections: LegacyImportCandidate[] = []" in html
+    assert "const migrationCandidates = ${inlineScriptJson(detections)};" in html
+    assert "const initialProviderPrefill = ${inlineScriptJson(pendingProviderSetup)};" in html
+    assert "let migrationCandidate = null;" in html
+    assert "return migrationStepEnabled ? [5, ...base] : base;" in route
     assert 'data-screen="5"' in html
     assert 'data-step-label="5"' in html
-    assert "let step = ${detection ? 5 : 0};" in html
+    assert "let step = ${migrationStepEnabled ? 5 : 0};" in html
+
+
+def test_onboarding_inline_json_escapes_script_terminators_and_line_separators() -> None:
+    main_ts = _read("desktop/electron/src/main.ts")
+    helper = _section(main_ts, "function inlineScriptJson", "function routerTierTomlLines")
+    html = _section(main_ts, "function onboardingHtml", "async function runOnboarding")
+
+    assert ".replace(/</g, '\\\\u003c')" in helper
+    assert ".replace(/\\u2028/g, '\\\\u2028')" in helper
+    assert ".replace(/\\u2029/g, '\\\\u2029')" in helper
+    assert "${JSON.stringify" not in html
+    for value in (
+        "DESKTOP_MESSAGES",
+        "ONBOARDING_SCRIPT_MESSAGES",
+        "PROVIDER_NOTE_MESSAGES",
+        "SEARCH_PROVIDER_NOTE_MESSAGES",
+        "desktopLocale",
+        "PROVIDER_CATALOG",
+        "SEARCH_PROVIDER_CATALOG",
+        "ROUTER_PROFILES",
+        "TEXT_ROUTER_TIERS",
+        "detections",
+        "migrationStepEnabled",
+        "pendingProviderSetup",
+    ):
+        assert f"${{inlineScriptJson({value})}}" in html
 
 
 def test_migration_preload_bridge_and_progress_channel() -> None:
@@ -1795,6 +1923,11 @@ def test_migration_preload_bridge_and_progress_channel() -> None:
     assert "'desktop:migration:summary'" in preload
     assert "'desktop:migration:run'" in preload
     assert "'desktop:migration:last-result'" in preload
+    assert "'desktop:migration:peek-last-result'" in preload
+    assert "'desktop:migration:dismiss-last-result'" in preload
+    assert "'desktop:migration:browse-source'" in preload
+    assert "'desktop:onboarding:migrate:select'" in preload
+    assert "'desktop:onboarding:migrate:browse'" in preload
     assert "'desktop:onboarding:migrate:preview'" in preload
     assert "'desktop:onboarding:migrate:apply'" in preload
     assert "onMigrationProgress" in preload
@@ -1803,3 +1936,32 @@ def test_migration_preload_bridge_and_progress_channel() -> None:
     assert "function publishDesktopMigrationProgress" in main_ts
     assert "webContents.send('desktop:migration:progress', payload)" in main_ts
     assert "persistDesktopMigrationResult" in main_ts
+
+
+def test_compiled_electron_flows_preserve_xvfb_display_authority() -> None:
+    package_json = json.loads(_read("desktop/electron/package.json"))
+    assert package_json["scripts"]["test:profile-import-flow"] == (
+        "npm run build && node scripts/test-profile-import-flow.mjs"
+    )
+    for script in (
+        "desktop/electron/scripts/test-profile-recovery-flow.mjs",
+        "desktop/electron/scripts/test-profile-recovery-accessibility.mjs",
+        "desktop/electron/scripts/test-profile-import-flow.mjs",
+    ):
+        source = _read(script)
+        assert "name === 'DISPLAY' || name === 'XAUTHORITY'" in source
+        assert source.index("name === 'DISPLAY' || name === 'XAUTHORITY'") < source.index(
+            "/(?:API[_-]?KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|AUTH)/i"
+        )
+
+
+def test_recovery_e2e_waits_for_ready_chat_route_and_emits_renderer_diagnostics() -> None:
+    source = _read("desktop/electron/scripts/test-profile-recovery-flow.mjs")
+    control = _section(source, "async function controlPage", "async function sendChat")
+
+    assert "pathname !== '/control/chat' && pathname !== '/control/chat/new'" in control
+    assert "candidate.locator('.chat-textarea').count()" in control
+    assert "new URL(page.url()).pathname === '/control/chat/new'" in control
+    assert "page.on('console'" in control
+    assert "page.on('pageerror'" in control
+    assert "windows=${JSON.stringify(windows)}" in control

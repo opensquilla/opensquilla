@@ -650,6 +650,70 @@ def _reject_invalid_hermes_options(
         raise typer.Exit(2)
 
 
+@migrate_app.command("verify-opensquilla-import", hidden=True)
+def verify_opensquilla_import_command(
+    source: Path = typer.Option(..., "--source", help="Exact imported profile source root."),
+    target: Path = typer.Option(..., "--target", help="Exact Desktop target profile root."),
+    source_kind: str = typer.Option(..., "--source-kind", help="Recorded OpenSquilla source kind."),
+    transaction_id: str | None = typer.Option(
+        None,
+        "--transaction-id",
+        help="Optional exact transaction id reported by the import child.",
+    ),
+    exclude_transaction_id: list[str] | None = typer.Option(
+        None,
+        "--exclude-transaction-id",
+        help="Receipt ids that existed before this import attempt.",
+    ),
+    json_output: bool = typer.Option(False, "--json", help="Emit the fixed JSON protocol."),
+) -> None:
+    """Internal, offline verification for a committed whole-profile import."""
+
+    from opensquilla.migration.opensquilla_home import verify_committed_profile_import
+    from opensquilla.recovery import RecoveryError
+
+    normalized_source = source.expanduser().absolute()
+    normalized_target = target.expanduser().absolute()
+    try:
+        payload = verify_committed_profile_import(
+            normalized_source,
+            normalized_target,
+            source_kind=source_kind,
+            transaction_id=transaction_id,
+            excluded_transaction_ids=tuple(exclude_transaction_id or ()),
+        )
+    except RecoveryError as exc:
+        payload = {
+            "schema_version": 1,
+            "outcome": "unsafe",
+            "stable_code": exc.stable_code,
+            "source": str(normalized_source),
+            "source_kind": source_kind,
+            "target": str(normalized_target),
+            "transaction_id": "",
+            "matching_transaction_ids": [],
+            "provider_connection": None,
+            "report": None,
+        }
+    except Exception:
+        payload = {
+            "schema_version": 1,
+            "outcome": "unsafe",
+            "stable_code": "profile_import_receipt_verification_failed",
+            "source": str(normalized_source),
+            "source_kind": source_kind,
+            "target": str(normalized_target),
+            "transaction_id": "",
+            "matching_transaction_ids": [],
+            "provider_connection": None,
+            "report": None,
+        }
+    if json_output:
+        typer.echo(json.dumps(payload, ensure_ascii=False, sort_keys=True))
+        return
+    typer.echo(f"{payload['outcome']}: {payload['stable_code']}")
+
+
 def _describe_portable_candidate(candidate: PortableCandidate) -> str:
     version = candidate.version or "unknown version"
     activity = candidate.estimated_activity_at or "unknown"

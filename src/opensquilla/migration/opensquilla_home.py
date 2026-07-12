@@ -33,6 +33,7 @@ from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
+from urllib.parse import urlsplit
 
 import structlog
 from pydantic import ValidationError
@@ -88,6 +89,7 @@ _LAYOUT_RECEIPT_FILENAME = "layout-receipt.json"
 _LAYOUT_RECEIPT_SCHEMA_VERSION = 1
 _LAYOUT_CONTRACT = "opensquilla-profile-root-v1"
 _LAYOUT_RECEIPT_MAX_BYTES = 64 * 1024
+_LAYOUT_RECEIPT_MAX_ENTRIES = 128
 _CANDIDATE_METADATA_MAX_ENTRIES = 20_000
 _CANDIDATE_METADATA_MAX_DEPTH = 64
 _CANDIDATE_METADATA_MAX_CONFIG_BYTES = 1024 * 1024
@@ -430,6 +432,182 @@ def _matching_import_receipt(
             continue
         return candidate.name, receipt
     return None
+
+
+def verify_committed_profile_import(
+    source: Path,
+    target: Path,
+    *,
+    source_kind: str,
+    transaction_id: str | None = None,
+    excluded_transaction_ids: tuple[str, ...] = (),
+) -> dict[str, Any]:
+    """Verify committed import receipts while holding the profile lock pair.
+
+    This is the only receipt-verification surface intended for Desktop.  It
+    returns metadata already present in the import protocol and never reads or
+    emits credentials, Markdown, chat content, or content hashes.
+    """
+
+    normalized_source = Path(_normalized_path(source))
+    normalized_target = Path(_normalized_path(target))
+    base: dict[str, Any] = {
+        "schema_version": 1,
+        "outcome": "not_found",
+        "stable_code": "profile_import_receipt_not_found",
+        "source": str(normalized_source),
+        "source_kind": source_kind,
+        "target": str(normalized_target),
+        "transaction_id": "",
+        "matching_transaction_ids": [],
+        "provider_connection": None,
+        "report": None,
+    }
+    if source_kind not in OPENSQUILLA_SOURCE_KINDS:
+        return {
+            **base,
+            "outcome": "invalid",
+            "stable_code": "profile_import_source_kind_invalid",
+        }
+
+    transaction_pattern = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
+    requested_ids = (*excluded_transaction_ids, *((transaction_id,) if transaction_id else ()))
+    if any(not transaction_pattern.fullmatch(value) for value in requested_ids):
+        return {
+            **base,
+            "outcome": "invalid",
+            "stable_code": "profile_import_transaction_id_invalid",
+        }
+    excluded = frozenset(excluded_transaction_ids)
+    if transaction_id and transaction_id in excluded:
+        return base
+
+    from opensquilla.recovery import acquire_profile_locks
+
+    with acquire_profile_locks(normalized_source, normalized_target):
+        try:
+            source_before = _path_identity_payload(normalized_source)
+            target_before = _path_identity_payload(normalized_target)
+            source_type = _supported_entry_type(normalized_source, normalized_source.lstat())
+            target_type = _supported_entry_type(normalized_target, normalized_target.lstat())
+            if source_type != "directory" or target_type != "directory":
+                raise OSError("profile import receipt roots must be directories")
+        except OSError:
+            return {
+                **base,
+                "outcome": "unsafe",
+                "stable_code": "profile_import_receipt_path_unsafe",
+            }
+
+        receipt_root = normalized_target / "migration" / "opensquilla"
+        if transaction_id:
+            candidates = [transaction_id]
+        else:
+            candidates = []
+            try:
+                with os.scandir(receipt_root) as entries:
+                    for inspected, entry in enumerate(entries, start=1):
+                        if inspected > _LAYOUT_RECEIPT_MAX_ENTRIES:
+                            return {
+                                **base,
+                                "outcome": "unsafe",
+                                "stable_code": "profile_import_receipt_limit_exceeded",
+                            }
+                        if entry.name in excluded or not transaction_pattern.fullmatch(entry.name):
+                            continue
+                        if entry.is_dir(follow_symlinks=False):
+                            candidates.append(entry.name)
+            except FileNotFoundError:
+                candidates = []
+            except OSError:
+                return {
+                    **base,
+                    "outcome": "unsafe",
+                    "stable_code": "profile_import_receipt_directory_unreadable",
+                }
+
+        matches: list[tuple[str, dict[str, Any]]] = []
+        for candidate_id in sorted(candidates, reverse=True):
+            if candidate_id in excluded:
+                continue
+            match = _matching_import_receipt(
+                normalized_source,
+                normalized_target,
+                transaction_id=candidate_id,
+                source_kind=source_kind,
+            )
+            if match is not None:
+                matches.append(match)
+
+        provider_connection: dict[str, str] | None = None
+        if matches:
+            try:
+                provider_connection = _verified_provider_connection(normalized_target)
+            except ValueError:
+                return {
+                    **base,
+                    "outcome": "unsafe",
+                    "stable_code": "profile_import_provider_connection_unsafe",
+                }
+        if (
+            not _identity_payload_matches(normalized_source, source_before)
+            or not _identity_payload_matches(normalized_target, target_before)
+        ):
+            return {
+                **base,
+                "outcome": "unsafe",
+                "stable_code": "profile_import_receipt_root_changed",
+            }
+        if not matches:
+            return base
+
+        selected_id, receipt = matches[0]
+        return {
+            **base,
+            "outcome": "verified",
+            "stable_code": "profile_import_receipt_verified",
+            "transaction_id": selected_id,
+            "matching_transaction_ids": [item[0] for item in matches],
+            "provider_connection": provider_connection,
+            "report": _report_from_layout_receipt(receipt),
+        }
+
+
+def _verified_provider_connection(target: Path) -> dict[str, str] | None:
+    """Read only the non-secret provider connection from the verified target."""
+
+    config_bytes = _read_small_regular_bytes(
+        target / "config.toml",
+        limit=_CANDIDATE_METADATA_MAX_CONFIG_BYTES,
+    )
+    if config_bytes is None:
+        return None
+    try:
+        payload = tomllib.loads(config_bytes.decode("utf-8"))
+    except (UnicodeDecodeError, tomllib.TOMLDecodeError):
+        return None
+    llm = payload.get("llm")
+    if not isinstance(llm, dict):
+        return None
+    connection: dict[str, str] = {}
+    for field in ("provider", "model", "base_url", "api_key_env"):
+        value = llm.get(field, "")
+        if not isinstance(value, str):
+            raise ValueError("provider connection field has an unsafe type")
+        connection[field] = value.strip()
+    api_key_env = connection["api_key_env"]
+    if api_key_env and not re.fullmatch(
+        r"[A-Za-z_][A-Za-z0-9_]*_(?:KEY|TOKEN)",
+        api_key_env,
+        re.IGNORECASE,
+    ):
+        raise ValueError("provider API key environment name is invalid")
+    base_url = connection["base_url"]
+    if base_url:
+        parsed_url = urlsplit(base_url)
+        if parsed_url.username or parsed_url.password or parsed_url.query or parsed_url.fragment:
+            raise ValueError("provider base URL contains private URL components")
+    return connection if connection["provider"] else None
 
 
 def _commit_journal_path(target: Path) -> Path:
@@ -801,7 +979,12 @@ def _capture_legacy_gateway_authority_file_posix(
         mtime_ns=int(result.st_mtime_ns),
         digest=None,
     )
-    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    flags = (
+        os.O_RDONLY
+        | getattr(os, "O_BINARY", 0)
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+    )
     descriptor = os.open(name, flags, dir_fd=root_descriptor)
     try:
         if not _stat_matches_manifest(os.fstat(descriptor), entry):
@@ -1095,7 +1278,11 @@ def _scan_source_tree_posix(
                 )
                 digest: str | None = None
                 if entry_type == "file":
-                    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+                    flags = (
+                        os.O_RDONLY
+                        | getattr(os, "O_BINARY", 0)
+                        | getattr(os, "O_CLOEXEC", 0)
+                    )
                     flags |= getattr(os, "O_NOFOLLOW", 0)
                     file_descriptor = os.open(
                         name,
@@ -1363,7 +1550,11 @@ def _copy_snapshot_file_posix(
         )
         if not _stat_matches_manifest(before_file, entry):
             raise OSError(f"source file changed before copy: {entry.source}")
-        flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+        flags = (
+            os.O_RDONLY
+            | getattr(os, "O_BINARY", 0)
+            | getattr(os, "O_CLOEXEC", 0)
+        )
         flags |= getattr(os, "O_NOFOLLOW", 0)
         file_descriptor = os.open(
             entry.relative.name,
@@ -1545,7 +1736,13 @@ def _cas_publish_bytes(snapshot: Any, data: bytes, *, mode: int) -> Any:
     snapshot.assert_current()
     published_visible = False
     if snapshot.identity is None:
-        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_CLOEXEC", 0)
+        flags = (
+            os.O_WRONLY
+            | os.O_CREAT
+            | os.O_EXCL
+            | getattr(os, "O_BINARY", 0)
+            | getattr(os, "O_CLOEXEC", 0)
+        )
         flags |= getattr(os, "O_NOFOLLOW", 0)
         descriptor = os.open(_ext(path), flags, mode)
         published_visible = True

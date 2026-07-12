@@ -19,6 +19,8 @@ const scriptDir = dirname(fileURLToPath(import.meta.url))
 const packageRoot = resolve(scriptDir, '..')
 const repoRoot = resolve(packageRoot, '../..')
 const RECOVERY_ID = '21234567-89ab-4cde-8fab-0123456789ab'
+const observedRendererPages = new WeakSet()
+const rendererDiagnostics = []
 
 const LOCALES = {
   en: {
@@ -120,6 +122,7 @@ async function snapshotTree(root) {
 function launchEnvironment(isolatedHome) {
   const inherited = { ...process.env }
   for (const name of Object.keys(inherited)) {
+    if (name === 'DISPLAY' || name === 'XAUTHORITY') continue
     const upperName = name.toUpperCase()
     if (
       upperName.startsWith('OPENSQUILLA_')
@@ -207,7 +210,6 @@ async function createFixture(locale, blockingCase) {
     journalBytes = '{"schema_version":1,"phase":"prepared"}\n'
     await writeFile(journalPath, journalBytes, 'utf8')
   }
-  await writeFile(join(recoveryHome, 'safe-recovery-profile.txt'), 'safe recovery profile\n', 'utf8')
   await writeFile(join(userData, 'desktop-locale'), locale, 'utf8')
   await writeFile(
     join(userData, 'desktop-profile-context.json'),
@@ -251,15 +253,47 @@ async function recoveryPage(app) {
   }, 'localized recovery page')
 }
 
+function observeRenderer(page) {
+  if (observedRendererPages.has(page)) return
+  observedRendererPages.add(page)
+  page.on('console', (message) => {
+    rendererDiagnostics.push({
+      type: `console:${message.type()}`,
+      text: message.text().slice(0, 1_000),
+    })
+  })
+  page.on('pageerror', (error) => {
+    rendererDiagnostics.push({
+      type: 'pageerror',
+      text: String(error?.message || error).slice(0, 1_000),
+    })
+  })
+}
+
 async function onboardingPage(app) {
-  return await waitFor(async () => {
-    for (const page of app.windows()) {
-      if (page.isClosed()) continue
-      await page.waitForLoadState('domcontentloaded', { timeout: 5_000 }).catch(() => {})
-      if (await page.locator('#setup-form').count().catch(() => 0)) return page
-    }
-    return null
-  }, 'selected recovery profile onboarding')
+  try {
+    return await waitFor(async () => {
+      for (const page of app.windows()) {
+        if (page.isClosed()) continue
+        observeRenderer(page)
+        await page.waitForLoadState('domcontentloaded', { timeout: 5_000 }).catch(() => {})
+        if (await page.locator('#setup-form').count().catch(() => 0)) return page
+      }
+      return null
+    }, 'selected recovery profile onboarding')
+  } catch (error) {
+    const windows = await Promise.all(app.windows().map(async (page) => ({
+      url: page.url(),
+      title: await page.title().catch(() => ''),
+      body: await page.locator('body').innerText().catch(() => '').then((value) => (
+        value.slice(0, 1_500)
+      )),
+    })))
+    throw new Error(
+      `${error.message}; windows=${JSON.stringify(windows)}; `
+      + `renderer=${JSON.stringify(rendererDiagnostics.slice(-30))}`,
+    )
+  }
 }
 
 async function tabTo(page, targetId, maximumTabs = 30) {
@@ -342,6 +376,11 @@ for (const [locale, expected] of Object.entries(LOCALES)) {
   try {
     app = await launchFixture(fixture)
     const page = await recoveryPage(app)
+    assert.deepEqual(
+      await readdir(fixture.recoveryHome),
+      [],
+      'read-only recovery inspection must not seed a third blank workspace',
+    )
     assert.equal(await page.locator('#recoveryCode').innerText(), blockingCase.stableCode)
     await assertLocalizedRecovery(page, locale, expected)
 

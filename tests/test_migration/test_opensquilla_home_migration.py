@@ -3417,6 +3417,141 @@ def test_layout_receipt_is_only_completion_authority(tmp_path: Path) -> None:
     assert migration_module._matching_import_receipt(source, target) is None
 
 
+def test_committed_import_verifier_returns_only_locked_protocol_metadata(
+    tmp_path: Path,
+) -> None:
+    source = _build_source_home(tmp_path)
+    target = tmp_path / "target-home"
+    report = _run(source, target, apply=True)
+    transaction_id = Path(report["output_dir"]).name
+
+    verified = migration_module.verify_committed_profile_import(
+        source,
+        target,
+        source_kind="cli-home",
+        transaction_id=transaction_id,
+    )
+
+    assert set(verified) == {
+        "schema_version",
+        "outcome",
+        "stable_code",
+        "source",
+        "source_kind",
+        "target",
+        "transaction_id",
+        "matching_transaction_ids",
+        "provider_connection",
+        "report",
+    }
+    assert verified["outcome"] == "verified"
+    assert verified["transaction_id"] == transaction_id
+    assert verified["matching_transaction_ids"] == [transaction_id]
+    assert verified["provider_connection"] == {
+        "provider": "openrouter",
+        "model": "deepseek/deepseek-v4-flash",
+        "base_url": "https://openrouter.ai/api/v1",
+        "api_key_env": "OPENROUTER_API_KEY",
+    }
+    assert verified["report"]["output_dir"] == report["output_dir"]
+    serialized = json.dumps(verified, ensure_ascii=False)
+    assert DUMMY_INLINE_KEY not in serialized
+    assert "dummy session content" not in serialized
+
+    excluded = migration_module.verify_committed_profile_import(
+        source,
+        target,
+        source_kind="cli-home",
+        excluded_transaction_ids=(transaction_id,),
+    )
+    assert excluded["outcome"] == "not_found"
+    assert excluded["matching_transaction_ids"] == []
+    assert excluded["report"] is None
+
+
+def test_committed_import_verifier_never_emits_private_provider_url(
+    tmp_path: Path,
+) -> None:
+    source = _build_source_home(tmp_path)
+    target = tmp_path / "target-home"
+    report = _run(source, target, apply=True)
+    config_path = target / "config.toml"
+    config = config_path.read_text(encoding="utf-8")
+    config_path.write_text(
+        config.replace(
+            "https://openrouter.ai/api/v1",
+            "https://user:secret@private.invalid/v1?token=hidden",
+        ),
+        encoding="utf-8",
+    )
+
+    verified = migration_module.verify_committed_profile_import(
+        source,
+        target,
+        source_kind="cli-home",
+        transaction_id=Path(report["output_dir"]).name,
+    )
+
+    serialized = json.dumps(verified, ensure_ascii=False)
+    assert verified["outcome"] == "unsafe"
+    assert verified["stable_code"] == "profile_import_provider_connection_unsafe"
+    assert "secret" not in serialized
+    assert "hidden" not in serialized
+
+
+def test_committed_import_verifier_rejects_non_string_or_invalid_provider_fields(
+    tmp_path: Path,
+) -> None:
+    source = _build_source_home(tmp_path)
+    target = tmp_path / "target-home"
+    report = _run(source, target, apply=True)
+    transaction_id = Path(report["output_dir"]).name
+    config_path = target / "config.toml"
+    original = tomllib.loads(config_path.read_text(encoding="utf-8"))
+    invalid_values: tuple[tuple[str, object], ...] = (
+        ("provider", {"secret": "TOPSECRET"}),
+        ("model", ["TOPSECRET"]),
+        ("base_url", {"secret": "TOPSECRET"}),
+        ("api_key_env", ["TOPSECRET"]),
+        ("api_key_env", "INVALID-ENV-NAME"),
+        ("api_key_env", "PATH"),
+        ("api_key_env", "PYTHONPATH"),
+        ("api_key_env", "NODE_OPTIONS"),
+        ("api_key_env", "LD_PRELOAD"),
+    )
+
+    for field, value in invalid_values:
+        candidate = json.loads(json.dumps(original))
+        candidate["llm"][field] = value
+        config_path.write_text(tomli_w.dumps(candidate), encoding="utf-8")
+
+        verified = migration_module.verify_committed_profile_import(
+            source,
+            target,
+            source_kind="cli-home",
+            transaction_id=transaction_id,
+        )
+
+        serialized = json.dumps(verified, ensure_ascii=False)
+        assert verified["outcome"] == "unsafe"
+        assert verified["stable_code"] == "profile_import_provider_connection_unsafe"
+        assert "TOPSECRET" not in serialized
+        assert "INVALID-ENV-NAME" not in serialized
+
+    for accepted_env in ("CUSTOM_LLM_KEY", "HF_TOKEN"):
+        candidate = json.loads(json.dumps(original))
+        candidate["llm"]["api_key_env"] = accepted_env
+        config_path.write_text(tomli_w.dumps(candidate), encoding="utf-8")
+        verified = migration_module.verify_committed_profile_import(
+            source,
+            target,
+            source_kind="cli-home",
+            transaction_id=transaction_id,
+        )
+        assert verified["outcome"] == "verified"
+        assert verified["provider_connection"]["api_key_env"] == accepted_env
+
+
 def test_persisted_migration_reports_do_not_store_scheduler_rows(tmp_path: Path) -> None:
     source = _build_source_home(tmp_path)
     target = tmp_path / "target-home"

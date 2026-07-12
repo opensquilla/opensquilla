@@ -9,13 +9,11 @@ import subprocess
 import sys
 import uuid
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 
 from opensquilla.recovery import (
     AtomicStateUnknownError,
-    ConfigChangedError,
     InvalidWorkspaceError,
     RecoveryRequiredError,
     WorkspaceOverrideError,
@@ -936,43 +934,6 @@ def test_choose_workspace_preserves_macos_config_acl(tmp_path: Path) -> None:
     assert acl_lines() == acl_before
 
 
-def test_windows_config_publication_uses_acl_preserving_extended_replace(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    import opensquilla.recovery.config_patch as config_patch
-
-    calls: list[tuple[object, ...]] = []
-
-    class FakeReplaceFile:
-        argtypes = None
-        restype = None
-
-        def __call__(self, *args: object) -> int:
-            calls.append(args)
-            return 1
-
-    deep = Path("C:/synthetic") / Path("nested/" * 60)
-    temporary = deep / "config.new"
-    destination = deep / "config.toml"
-    monkeypatch.setattr(config_patch.os, "name", "nt")
-    monkeypatch.setattr(
-        config_patch.ctypes,
-        "WinDLL",
-        lambda *_args, **_kwargs: SimpleNamespace(ReplaceFileW=FakeReplaceFile()),
-        raising=False,
-    )
-
-    config_patch._replace_existing_config(temporary, destination)
-
-    assert len(calls) == 1
-    replaced, replacement, backup, flags, exclude, reserved = calls[0]
-    assert str(replaced).startswith("\\\\?\\C:\\")
-    assert str(replacement).startswith("\\\\?\\C:\\")
-    assert backup is None
-    assert flags == 0, "ACL merge errors must never be ignored"
-    assert exclude is None and reserved is None
-
-
 @pytest.mark.skipif(os.name != "nt", reason="Windows DACL regression")
 def test_choose_workspace_preserves_windows_config_dacl(tmp_path: Path) -> None:
     from opensquilla.recovery.atomic import _windows_extended_path
@@ -1055,7 +1016,7 @@ def test_workspace_env_override_blocks_config_patch(
     assert (home / "config.toml").read_bytes() == original
 
 
-def test_config_cas_detects_change_after_backup(
+def test_config_publication_preserves_a_mutation_in_the_final_cas_window(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -1066,19 +1027,18 @@ def test_config_cas_detects_change_after_backup(
     selected = _workspace(tmp_path / "selected")
     _desktop_config(home, workspace=configured)
     before = inspect_profile(home)
-    original_create_backup = config_patch._create_backup
+    config = home / "config.toml"
+    original_move = config_patch.native_move_no_replace
+    concurrent_text = config.read_text(encoding="utf-8") + "external_edit = true\n"
 
-    def mutate_after_backup(snapshot):
-        backup = original_create_backup(snapshot)
-        snapshot.path.write_text(
-            snapshot.path.read_text(encoding="utf-8") + "external_edit = true\n",
-            encoding="utf-8",
-        )
-        return backup
+    def mutate_during_park(source: Path, destination: Path) -> None:
+        if source == config and destination.name.startswith("config.toml.backup."):
+            source.write_text(concurrent_text, encoding="utf-8")
+        original_move(source, destination)
 
-    monkeypatch.setattr(config_patch, "_create_backup", mutate_after_backup)
+    monkeypatch.setattr(config_patch, "native_move_no_replace", mutate_during_park)
 
-    with pytest.raises(ConfigChangedError):
+    with pytest.raises(AtomicStateUnknownError):
         choose_workspace(
             home,
             transaction_id=before.transaction_id,
@@ -1086,7 +1046,72 @@ def test_config_cas_detects_change_after_backup(
             workspace=selected,
         )
 
-    assert "external_edit = true" in (home / "config.toml").read_text(encoding="utf-8")
+    journal = config_patch.workspace_patch_journal(home)
+    payload = json.loads(journal.read_text(encoding="utf-8"))
+    backup = Path(payload["paths"]["backup"])
+    staged = Path(payload["paths"]["staged"])
+    assert not config.exists()
+    assert backup.read_text(encoding="utf-8") == concurrent_text
+    assert staged.is_file()
+    blocked = inspect_profile(home)
+    assert blocked.outcome == "recovery_required"
+    assert blocked.stable_code == "workspace_patch_incomplete"
+    with pytest.raises(AtomicStateUnknownError):
+        reconcile_profile(home)
+    assert backup.read_text(encoding="utf-8") == concurrent_text
+    assert staged.is_file()
+
+
+def test_crashed_workspace_config_park_is_recovered_without_overwrite(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    import opensquilla.recovery.config_patch as config_patch
+
+    class SimulatedCrash(BaseException):
+        pass
+
+    home = tmp_path / "opensquilla"
+    configured = _workspace(tmp_path / "configured")
+    selected = _workspace(tmp_path / "selected")
+    _desktop_config(home, workspace=configured)
+    config = home / "config.toml"
+    old_text = config.read_text(encoding="utf-8")
+    before = inspect_profile(home)
+    original_move = config_patch.native_move_no_replace
+    crashed = False
+
+    def crash_after_config_park(source: Path, destination: Path) -> None:
+        nonlocal crashed
+        original_move(source, destination)
+        if source == config and destination.name.startswith("config.toml.backup."):
+            crashed = True
+            raise SimulatedCrash
+
+    monkeypatch.setattr(config_patch, "native_move_no_replace", crash_after_config_park)
+
+    with pytest.raises(SimulatedCrash):
+        choose_workspace(
+            home,
+            transaction_id=before.transaction_id,
+            expected_revision=before.revision,
+            workspace=selected,
+        )
+
+    assert crashed
+    blocked = inspect_profile(home)
+    assert blocked.outcome == "recovery_required"
+    assert blocked.stable_code == "workspace_patch_incomplete"
+    recovered = reconcile_profile(home)
+
+    assert recovered.outcome == "ready"
+    assert recovered.effective_workspace == selected
+    assert str(selected) in config.read_text(encoding="utf-8")
+    backups = list(home.glob("config.toml.backup.*"))
+    assert len(backups) == 1
+    assert backups[0].read_text(encoding="utf-8") == old_text
+    assert backups[0].stat().st_mode & 0o777 == 0o600
+    assert not config_patch.workspace_patch_journal(home).exists()
 
 
 def test_bootstrap_guard_is_desktop_only(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

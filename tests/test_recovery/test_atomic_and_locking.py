@@ -17,6 +17,7 @@ from types import SimpleNamespace
 import pytest
 
 from opensquilla.recovery import (
+    AtomicStateUnknownError,
     CrossDeviceMoveError,
     DestinationExistsError,
     ProfileLockBusyError,
@@ -209,6 +210,54 @@ def test_native_move_never_replaces_existing_destination(tmp_path: Path) -> None
     assert (destination / "value.txt").read_text(encoding="utf-8") == "destination"
 
 
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="requires renameat2")
+def test_linux_primitive_collision_preserves_both_trees(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    destination = tmp_path / "destination"
+    source.mkdir()
+    destination.mkdir()
+    (source / "value.txt").write_text("source", encoding="utf-8")
+    (destination / "value.txt").write_text("destination", encoding="utf-8")
+
+    with pytest.raises(DestinationExistsError):
+        _linux_rename_no_replace(source, destination)
+
+    assert (source / "value.txt").read_text(encoding="utf-8") == "source"
+    assert (destination / "value.txt").read_text(encoding="utf-8") == "destination"
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="requires renameatx_np")
+def test_macos_primitive_collision_preserves_both_trees(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    destination = tmp_path / "destination"
+    source.mkdir()
+    destination.mkdir()
+    (source / "value.txt").write_text("source", encoding="utf-8")
+    (destination / "value.txt").write_text("destination", encoding="utf-8")
+
+    with pytest.raises(DestinationExistsError):
+        _macos_rename_no_replace(source, destination)
+
+    assert (source / "value.txt").read_text(encoding="utf-8") == "source"
+    assert (destination / "value.txt").read_text(encoding="utf-8") == "destination"
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="requires native Windows rename")
+def test_windows_primitive_collision_preserves_both_trees(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    destination = tmp_path / "destination"
+    source.mkdir()
+    destination.mkdir()
+    (source / "value.txt").write_text("source", encoding="utf-8")
+    (destination / "value.txt").write_text("destination", encoding="utf-8")
+
+    with pytest.raises(DestinationExistsError):
+        _windows_move_no_replace(source, destination)
+
+    assert (source / "value.txt").read_text(encoding="utf-8") == "source"
+    assert (destination / "value.txt").read_text(encoding="utf-8") == "destination"
+
+
 def test_native_move_moves_a_regular_tree_between_real_parents(tmp_path: Path) -> None:
     source_parent = tmp_path / "source-parent"
     destination_parent = tmp_path / "destination-parent"
@@ -221,6 +270,36 @@ def test_native_move_moves_a_regular_tree_between_real_parents(tmp_path: Path) -
 
     native_move_no_replace(source, destination)
 
+    assert not source.exists()
+    assert (destination / "value.txt").read_text(encoding="utf-8") == "preserved"
+
+
+def test_native_move_treats_unsafe_post_move_manifest_as_unknown(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    import opensquilla.recovery.atomic as atomic
+
+    source = tmp_path / "source"
+    destination = tmp_path / "destination"
+    source.mkdir()
+    (source / "value.txt").write_text("preserved", encoding="utf-8")
+    original_manifest = atomic.no_follow_manifest
+    calls = 0
+
+    def fail_post_move_manifest(path: str | Path):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise UnsafePathError("synthetic unsafe post-move tree")
+        return original_manifest(path)
+
+    monkeypatch.setattr(atomic, "no_follow_manifest", fail_post_move_manifest)
+
+    with pytest.raises(AtomicStateUnknownError):
+        atomic.native_move_no_replace(source, destination)
+
+    assert calls == 2
     assert not source.exists()
     assert (destination / "value.txt").read_text(encoding="utf-8") == "preserved"
 

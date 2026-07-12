@@ -621,9 +621,14 @@ def native_move_no_replace(source: str | Path, destination: str | Path) -> None:
         source_parent_after = path_identity(source_path.parent)
         destination_parent_after = path_identity(destination_path.parent)
         manifest_after = no_follow_manifest(destination_path)
-    except RecoveryError:
+    except AtomicStateUnknownError:
         raise
-    except OSError as exc:
+    except (OSError, RecoveryError) as exc:
+        # The native rename has already reported success.  From this point on,
+        # even a normally precise unsafe-path error describes an unverifiable
+        # *post-mutation* tree, not a harmless preflight refusal.  Preserve that
+        # distinction so callers can never reinterpret the destination as ready
+        # or stamp a compatibility marker after verification failed.
         raise AtomicStateUnknownError(
             "move completed but post-move filesystem state could not be verified"
         ) from exc

@@ -211,6 +211,45 @@ def test_stale_electron_preflight_never_overwrites_new_gateway_config(tmp_path: 
     assert credential_path.read_text(encoding="utf-8") == old_credential
 
 
+def test_settings_publication_preserves_a_mutation_during_old_file_parking(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    import opensquilla.recovery.settings_transaction as transaction
+
+    home, credential_path, old_config, old_credential = _profile(tmp_path)
+    config_path = home / "config.toml"
+    new_config, new_credential = _new_pair(home)
+    concurrent_config = old_config + "\nexternal_edit = true\n"
+    original_move = transaction._durable_move_no_replace
+
+    def mutate_during_park(source: Path, destination: Path) -> None:
+        if source == config_path and destination.name.endswith(".old"):
+            source.write_text(concurrent_config, encoding="utf-8")
+        original_move(source, destination)
+
+    monkeypatch.setattr(transaction, "_durable_move_no_replace", mutate_during_park)
+
+    with pytest.raises(AtomicStateUnknownError):
+        _apply(
+            home,
+            old_config=old_config,
+            old_credential=old_credential,
+            new_config=new_config,
+            new_credential=new_credential,
+        )
+
+    journal = settings_transaction_journal(home)
+    payload = json.loads(journal.read_text(encoding="utf-8"))
+    config_backup = Path(payload["paths"]["config_backup"])
+    credential_backup = Path(payload["paths"]["credential_backup"])
+    assert not config_path.exists()
+    assert config_backup.read_text(encoding="utf-8") == concurrent_config
+    assert not credential_path.exists()
+    assert credential_backup.read_text(encoding="utf-8") == old_credential
+    assert inspect_profile(home).stable_code == "settings_transaction_incomplete"
+
+
 def test_settings_save_cannot_redirect_workspace_or_chat_state(tmp_path: Path) -> None:
     home, credential_path, old_config, old_credential = _profile(tmp_path)
     new_config, new_credential = _new_pair(home)
@@ -288,8 +327,13 @@ def test_unknown_settings_journal_phase_is_preserved_for_manual_recovery(
     assert caught.value.stable_code == "settings_transaction_invalid"
     assert journal.exists()
     assert sorted(path.name for path in home.parent.glob(".*-transaction.json")) == artifacts_before
-    assert (home / "config.toml").read_text(encoding="utf-8") == old_config
-    assert credential_path.read_text(encoding="utf-8") == old_credential
+    assert not (home / "config.toml").exists()
+    assert not credential_path.exists()
+    assert Path(payload["paths"]["config_backup"]).read_text(encoding="utf-8") == old_config
+    assert (
+        Path(payload["paths"]["credential_backup"]).read_text(encoding="utf-8")
+        == old_credential
+    )
 
 
 def test_settings_recovery_rejects_a_phase_impossible_publication_order(
@@ -321,7 +365,11 @@ def test_settings_recovery_rejects_a_phase_impossible_publication_order(
         recover_desktop_settings(home)
 
     assert journal.exists()
-    assert credential_path.read_text(encoding="utf-8") == old_credential
+    assert not credential_path.exists()
+    assert (
+        Path(payload["paths"]["credential_backup"]).read_text(encoding="utf-8")
+        == old_credential
+    )
     assert (home / "config.toml").read_text(encoding="utf-8") == new_config
 
 
@@ -467,19 +515,19 @@ def test_settings_transaction_never_mutates_an_ordinary_cli_profile(
     assert credential_path.read_text(encoding="utf-8") == old_credential
 
 
-def test_windows_settings_moves_request_write_through_and_correct_replace_semantics(
+def test_windows_settings_moves_are_write_through_without_replace(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     import opensquilla.recovery.settings_transaction as transaction
 
-    calls: list[int] = []
+    calls: list[tuple[str, str, int]] = []
 
     class FakeMoveFile:
         argtypes = None
         restype = None
 
-        def __call__(self, _source: str, _destination: str, flags: int) -> int:
-            calls.append(flags)
+        def __call__(self, source: str, destination: str, flags: int) -> int:
+            calls.append((source, destination, flags))
             return 1
 
     monkeypatch.setattr(transaction.os, "name", "nt")
@@ -490,7 +538,13 @@ def test_windows_settings_moves_request_write_through_and_correct_replace_semant
         raising=False,
     )
 
-    transaction._atomic_replace(Path("source"), Path("destination"))
-    transaction._durable_move_no_replace(Path("source"), Path("destination"))
+    transaction._durable_move_no_replace(
+        Path("C:/synthetic/source"),
+        Path("C:/synthetic/destination"),
+    )
 
-    assert calls == [0x1 | 0x8, 0x8]
+    assert len(calls) == 1
+    source, destination, flags = calls[0]
+    assert source.startswith("\\\\?\\C:\\")
+    assert destination.startswith("\\\\?\\C:\\")
+    assert flags == 0x8

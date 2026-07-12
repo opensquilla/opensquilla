@@ -12,14 +12,13 @@ import ctypes
 import json
 import os
 import stat
-import tempfile
 import tomllib
 import uuid
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from opensquilla.recovery.atomic import PathIdentity, native_move_no_replace
+from opensquilla.recovery.atomic import PathIdentity, _windows_extended_path, native_move_no_replace
 from opensquilla.recovery.config_patch import ConfigSnapshot
 from opensquilla.recovery.errors import AtomicStateUnknownError, RecoveryError
 from opensquilla.recovery.locking import LegacyGatewayLock, ProfileOperationLock
@@ -106,20 +105,6 @@ def _write_no_replace(path: Path, data: bytes, *, mode: int = 0o600) -> PathIden
     return PathIdentity.from_stat(value)
 
 
-def _atomic_replace(source: Path, destination: Path) -> None:
-    if os.name != "nt":
-        os.replace(source, destination)
-        _fsync_directory(destination.parent)
-        return
-    move_file = ctypes.windll.kernel32.MoveFileExW  # type: ignore[attr-defined]
-    move_file.argtypes = [ctypes.c_wchar_p, ctypes.c_wchar_p, ctypes.c_uint32]
-    move_file.restype = ctypes.c_int
-    # REPLACE_EXISTING | WRITE_THROUGH: do not report success before the move
-    # has reached durable storage on Windows.
-    if not move_file(str(source), str(destination), 0x1 | 0x8):
-        raise OSError("MoveFileExW durable replacement failed")
-
-
 def _durable_move_no_replace(source: Path, destination: Path) -> None:
     if os.name != "nt":
         native_move_no_replace(source, destination)
@@ -129,37 +114,13 @@ def _durable_move_no_replace(source: Path, destination: Path) -> None:
     move_file.argtypes = [ctypes.c_wchar_p, ctypes.c_wchar_p, ctypes.c_uint32]
     move_file.restype = ctypes.c_int
     # WRITE_THROUGH without REPLACE_EXISTING preserves the no-overwrite rule.
-    if not move_file(str(source), str(destination), 0x8):
+    if not move_file(_windows_extended_path(source), _windows_extended_path(destination), 0x8):
         raise OSError("MoveFileExW durable no-replace move failed")
 
 
-def _replace_bytes(path: Path, data: bytes, *, mode: int = 0o600) -> None:
-    fd, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
-    temporary: Path | None = Path(temporary_name)
-    try:
-        with contextlib.suppress(OSError):
-            os.fchmod(fd, mode)
-        _write_all(fd, data)
-        os.fsync(fd)
-        os.close(fd)
-        fd = -1
-        assert temporary is not None
-        _atomic_replace(temporary, path)
-        temporary = None
-    finally:
-        if fd >= 0:
-            os.close(fd)
-        if temporary is not None:
-            with contextlib.suppress(OSError):
-                temporary.unlink()
-
-
-def _write_journal(path: Path, payload: dict[str, Any], *, replace: bool) -> None:
+def _write_journal(path: Path, payload: dict[str, Any]) -> None:
     data = (json.dumps(payload, ensure_ascii=False, sort_keys=True) + "\n").encode()
-    if replace:
-        _replace_bytes(path, data)
-    else:
-        _write_no_replace(path, data)
+    _write_no_replace(path, data)
 
 
 def _identity_payload(identity: PathIdentity) -> dict[str, int]:
@@ -349,6 +310,7 @@ def _assert_data_roots_unchanged(
 def _artifact_paths(home: Path, transaction_id: str) -> dict[str, Path]:
     credential = home.parent / "desktop-credential.json"
     config = home / "config.toml"
+    journal = settings_transaction_journal(home)
     return {
         "credential": credential,
         "config": config,
@@ -356,16 +318,10 @@ def _artifact_paths(home: Path, transaction_id: str) -> dict[str, Path]:
         "config_new": config.with_name(f".{config.name}.{transaction_id}.new"),
         "credential_backup": credential.with_name(f".{credential.name}.{transaction_id}.old"),
         "config_backup": config.with_name(f".{config.name}.{transaction_id}.old"),
+        "journal_committed": journal.with_name(
+            f".{home.name}.desktop-settings.{transaction_id}.committed.json"
+        ),
     }
-
-
-def _remove_exact(path: Path, expected: object) -> None:
-    if not os.path.lexists(path):
-        return
-    if not _identity_matches(path, expected):
-        raise AtomicStateUnknownError("settings transaction artifact identity is ambiguous")
-    path.unlink()
-    _fsync_directory(path.parent)
 
 
 def _old_destination_matches(path: Path, expected: object) -> bool:
@@ -374,18 +330,36 @@ def _old_destination_matches(path: Path, expected: object) -> bool:
     return _identity_matches(path, expected)
 
 
+def _park_old_destination(
+    live: Path,
+    backup: Path,
+    expected_old: object,
+) -> None:
+    if expected_old is None:
+        if os.path.lexists(live) or os.path.lexists(backup):
+            raise AtomicStateUnknownError("settings destination changed before publication")
+        return
+    if _identity_matches(backup, expected_old):
+        if os.path.lexists(live):
+            raise AtomicStateUnknownError("settings destination was recreated after parking")
+        return
+    if os.path.lexists(backup) or not _identity_matches(live, expected_old):
+        raise AtomicStateUnknownError("settings destination changed before it could be parked")
+    _durable_move_no_replace(live, backup)
+    if not _identity_matches(backup, expected_old):
+        raise AtomicStateUnknownError("settings destination changed while it was being parked")
+
+
 def _publish(
     source: Path,
     destination: Path,
     expected: object,
-    *,
-    expected_destination: object,
 ) -> None:
     if not _identity_matches(source, expected):
         raise AtomicStateUnknownError("settings transaction candidate identity is ambiguous")
-    if not _old_destination_matches(destination, expected_destination):
+    if os.path.lexists(destination):
         raise AtomicStateUnknownError("settings transaction destination changed before publication")
-    _atomic_replace(source, destination)
+    _durable_move_no_replace(source, destination)
     if not _identity_matches(destination, expected):
         raise AtomicStateUnknownError("settings transaction publication state is ambiguous")
 
@@ -394,17 +368,28 @@ def _cleanup_committed(journal: Path, payload: dict[str, Any], paths: dict[str, 
     identities = payload.get("identities")
     if not isinstance(identities, dict):
         raise AtomicStateUnknownError("settings transaction identities are unavailable")
-    for role in ("credential_backup", "config_backup", "credential_new", "config_new"):
-        expected = identities.get(role)
-        if expected is not None:
-            _remove_exact(paths[role], expected)
-        elif os.path.lexists(paths[role]):
-            raise AtomicStateUnknownError("unexpected settings transaction artifact remains")
     snapshot = ConfigSnapshot.capture(journal)
     if snapshot.identity is None:
-        return
-    journal.unlink()
-    _fsync_directory(journal.parent)
+        raise AtomicStateUnknownError("settings transaction journal disappeared before commit")
+    _durable_move_no_replace(journal, paths["journal_committed"])
+    committed = ConfigSnapshot.capture(paths["journal_committed"])
+    if (
+        committed.identity is None
+        or committed.identity != snapshot.identity
+        or committed.data != snapshot.data
+    ):
+        raise AtomicStateUnknownError("settings transaction commit receipt is ambiguous")
+
+    # The immutable committed receipt is the point of no return. Cleanup below
+    # is best-effort and identity-gated: a changed artifact is retained for
+    # diagnostics rather than overwritten, merged, or removed.
+    for role in ("credential_backup", "config_backup", "credential_new", "config_new"):
+        expected = identities.get(role)
+        if expected is not None and _identity_matches(paths[role], expected):
+            with contextlib.suppress(OSError):
+                paths[role].unlink()
+                _fsync_directory(paths[role].parent)
+    _fsync_directory(paths["journal_committed"].parent)
 
 
 def _rollback_one(
@@ -420,6 +405,14 @@ def _rollback_one(
         if os.path.lexists(staged):
             raise AtomicStateUnknownError("settings rollback destination is occupied")
         _durable_move_no_replace(live, staged)
+    elif (
+        old_identity is not None
+        and not os.path.lexists(live)
+        and _identity_matches(backup, backup_identity)
+    ):
+        # The old file was parked, but this role's candidate was not published.
+        # This is the normal rollback state for a later-role publication error.
+        pass
     elif not _old_destination_matches(live, old_identity):
         raise AtomicStateUnknownError("settings rollback live identity is ambiguous")
 
@@ -508,15 +501,28 @@ def _assert_recovery_phase_state(
     def publication_state(role: str) -> tuple[bool, bool]:
         live = paths[role]
         staged = paths[f"{role}_new"]
+        backup = paths[f"{role}_backup"]
         old_identity = identities.get(f"old_{role}")
         new_identity = identities.get(f"{role}_new")
+        if old_identity is None:
+            old_is_safe = not os.path.lexists(backup)
+            old_unpublished = old_is_safe and not os.path.lexists(live)
+        else:
+            old_at_live = _identity_matches(live, old_identity) and not os.path.lexists(
+                backup
+            )
+            old_at_backup = _identity_matches(backup, old_identity) and not os.path.lexists(
+                live
+            )
+            old_is_safe = _identity_matches(backup, old_identity)
+            old_unpublished = old_at_live or old_at_backup
         unpublished = (
-            _old_destination_matches(live, old_identity)
-            and _identity_matches(staged, new_identity)
+            old_unpublished and _identity_matches(staged, new_identity)
         )
         published = (
             _identity_matches(live, new_identity)
             and not os.path.lexists(staged)
+            and old_is_safe
         )
         return unpublished, published
 
@@ -525,10 +531,13 @@ def _assert_recovery_phase_state(
     phase = payload["phase"]
     allowed = {
         # A process can die after the native publish and before its next journal
-        # fsync, so each phase admits that one adjacent crash window only.
+        # fsync.  New journals remain immutable in ``prepared`` and infer the
+        # exact prefix from file identities; the legacy phase names stay readable
+        # for pre-activation development fixtures.
         "prepared": (
             (credential_unpublished and config_unpublished)
             or (credential_published and config_unpublished)
+            or (credential_published and config_published)
         ),
         "credential_published": (
             credential_published and (config_unpublished or config_published)
@@ -569,6 +578,11 @@ def recover_desktop_settings(
                     _plain_directory(canonical_root, create=True)
 
             if not credential_live_new:
+                _park_old_destination(
+                    paths["credential"],
+                    paths["credential_backup"],
+                    identities.get("old_credential"),
+                )
                 if not credential_staged:
                     raise AtomicStateUnknownError(
                         "settings credential publication state is ambiguous"
@@ -577,19 +591,20 @@ def recover_desktop_settings(
                     paths["credential_new"],
                     paths["credential"],
                     credential_new,
-                    expected_destination=identities.get("old_credential"),
                 )
             if not config_live_new:
+                _park_old_destination(
+                    paths["config"],
+                    paths["config_backup"],
+                    identities.get("old_config"),
+                )
                 if not config_staged:
                     raise AtomicStateUnknownError("settings config publication state is ambiguous")
                 _publish(
                     paths["config_new"],
                     paths["config"],
                     config_new,
-                    expected_destination=identities.get("old_config"),
                 )
-            payload["phase"] = "committed"
-            _write_journal(journal, payload, replace=True)
             _cleanup_committed(journal, payload, paths)
 
     from opensquilla.recovery.engine import inspect_profile
@@ -683,28 +698,11 @@ def apply_desktop_settings(
             identities["config_new"] = _identity_payload(
                 _write_no_replace(paths["config_new"], config_text.encode())
             )
-            identities["credential_backup"] = (
-                _identity_payload(
-                    _write_no_replace(
-                        paths["credential_backup"],
-                        credential_snapshot.data,
-                        mode=credential_snapshot.mode,
-                    )
-                )
-                if credential_snapshot.identity is not None
-                else None
-            )
-            identities["config_backup"] = (
-                _identity_payload(
-                    _write_no_replace(
-                        paths["config_backup"],
-                        config_snapshot.data,
-                        mode=config_snapshot.mode,
-                    )
-                )
-                if config_snapshot.identity is not None
-                else None
-            )
+            # The live files themselves become the rollback backups.  Copying
+            # bytes and then replacing the live pathname would reintroduce a
+            # check-then-overwrite window and would also lose ACL/xattr identity.
+            identities["credential_backup"] = identities["old_credential"]
+            identities["config_backup"] = identities["old_config"]
             journal_payload: dict[str, Any] = {
                 "schema_version": SETTINGS_TRANSACTION_SCHEMA_VERSION,
                 "operation": "desktop-settings",
@@ -716,34 +714,42 @@ def apply_desktop_settings(
                 "paths": {key: _normalized(path) for key, path in paths.items()},
                 "identities": identities,
             }
-            _write_journal(journal, journal_payload, replace=False)
+            _write_journal(journal, journal_payload)
+            commit_started = False
             try:
                 if before.stable_code in {"fresh_profile", "fresh_recovery_profile"}:
                     for canonical_root in (home_path / "workspace", home_path / "state"):
                         _plain_directory(canonical_root, create=True)
+                _park_old_destination(
+                    paths["credential"],
+                    paths["credential_backup"],
+                    identities["old_credential"],
+                )
+                _park_old_destination(
+                    paths["config"],
+                    paths["config_backup"],
+                    identities["old_config"],
+                )
                 callback("prepared")
                 _publish(
                     paths["credential_new"],
                     paths["credential"],
                     identities["credential_new"],
-                    expected_destination=identities["old_credential"],
                 )
-                journal_payload["phase"] = "credential_published"
-                _write_journal(journal, journal_payload, replace=True)
                 callback("credential_published")
                 _publish(
                     paths["config_new"],
                     paths["config"],
                     identities["config_new"],
-                    expected_destination=identities["old_config"],
                 )
-                journal_payload["phase"] = "config_published"
-                _write_journal(journal, journal_payload, replace=True)
                 callback("config_published")
-                journal_payload["phase"] = "committed"
-                _write_journal(journal, journal_payload, replace=True)
+                commit_started = True
                 _cleanup_committed(journal, journal_payload, paths)
             except Exception as exc:
+                if commit_started:
+                    raise AtomicStateUnknownError(
+                        "Desktop settings commit state is uncertain"
+                    ) from exc
                 if before.stable_code in {"fresh_profile", "fresh_recovery_profile"}:
                     raise AtomicStateUnknownError(
                         "Fresh Desktop settings publication must be recovered before bootstrap"

@@ -9,6 +9,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+from opensquilla.recovery.atomic import native_move_no_replace
 from opensquilla.recovery.config_patch import ConfigSnapshot
 from opensquilla.recovery.errors import RecoveryError, StaleRecoveryTransactionError
 from opensquilla.recovery.locking import (
@@ -269,7 +270,11 @@ def finalize_committed_profile_transaction(home: str | Path) -> bool:
     ):
         raise StaleRecoveryTransactionError("committed replacement journal changed")
     current.assert_current()
-    journal.unlink()
+    transaction_id = str(payload["transaction_id"])
+    finalized = journal.with_name(
+        f".{home_path.name}.profile-replace.{transaction_id}.committed.json"
+    )
+    native_move_no_replace(journal, finalized)
     if os.name != "nt":
         descriptor = os.open(journal.parent, os.O_RDONLY)
         try:

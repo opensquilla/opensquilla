@@ -21,8 +21,10 @@ from opensquilla.recovery.atomic import PathIdentity, native_move_no_replace
 from opensquilla.recovery.config_patch import (
     ConfigSnapshot,
     patch_workspace_dir,
+    recover_workspace_patch,
     state_override,
     workspace_override,
+    workspace_patch_exists,
 )
 from opensquilla.recovery.errors import (
     AtomicStateUnknownError,
@@ -1023,8 +1025,9 @@ def _finalize_compatibility_marker(
         os.fsync(fd)
     except OSError:
         os.close(fd)
-        with contextlib.suppress(OSError):
-            marker.unlink()
+        # A short-write marker is retained as explicit unsafe evidence.  Once a
+        # pathname has been published, deleting it after a separate identity
+        # check would recreate the same TOCTOU window recovery is meant to avoid.
         return replace(
             report,
             outcome="attention",
@@ -1809,6 +1812,16 @@ def inspect_profile(
             allowed_actions=_CLEANUP_RECOVERY_ACTIONS,
             cleanup_journal=cleanup_context[1],
         )
+    if workspace_patch_exists(home_path):
+        return _report(
+            home=home_path,
+            config=config,
+            candidates=candidates,
+            outcome="recovery_required",
+            stable_code="workspace_patch_incomplete",
+            effective_workspace=effective,
+            allowed_actions=("reconcile", *_RECOVERY_ACTIONS),
+        )
     if not _ignore_settings_transaction:
         from opensquilla.recovery.settings_transaction import settings_transaction_exists
 
@@ -2087,6 +2100,8 @@ def reconcile_profile(
 
             with contextlib.suppress(RecoveryError):
                 finalize_committed_profile_transaction(home_path)
+            if workspace_patch_exists(home_path):
+                recover_workspace_patch(home_path, lock_timeout=lock_timeout)
             before = inspect_profile(
                 home_path,
                 profile_kind=profile_kind,

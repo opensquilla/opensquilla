@@ -11,11 +11,11 @@ import re
 import shutil
 import stat
 import sys
-import tempfile
 import tomllib
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from opensquilla.recovery.atomic import (
     PathIdentity,
@@ -23,6 +23,7 @@ from opensquilla.recovery.atomic import (
     native_move_no_replace,
 )
 from opensquilla.recovery.errors import (
+    AtomicStateUnknownError,
     ConfigChangedError,
     RecoveryError,
     UnsafePathError,
@@ -41,6 +42,17 @@ _DOTENV_MAX_BYTES = 1024 * 1024
 _FILE_ATTRIBUTE_REPARSE_POINT = 0x400
 _COPYFILE_ACL = 1 << 0
 _COPYFILE_XATTR = 1 << 2
+_WORKSPACE_PATCH_SCHEMA_VERSION = 1
+_WORKSPACE_PATCH_FIELDS = frozenset(
+    {
+        "schema_version",
+        "operation",
+        "transaction_id",
+        "home",
+        "paths",
+        "identities",
+    }
+)
 
 _TOP_LEVEL_KEY_RE = re.compile(
     r"^(?P<indent>\s*)(?P<key>workspace_dir|\"workspace_dir\"|'workspace_dir')(?P<spacing>\s*=\s*)"
@@ -403,27 +415,6 @@ def _write_all(fd: int, data: bytes) -> None:
         view = view[written:]
 
 
-def _create_backup(snapshot: ConfigSnapshot) -> Path | None:
-    if snapshot.identity is None:
-        return None
-    backup = snapshot.path.with_name(f"{snapshot.path.name}.backup.{uuid.uuid4()}")
-    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_CLOEXEC", 0)
-    flags |= getattr(os, "O_NOFOLLOW", 0)
-    fd = os.open(backup, flags, 0o600)
-    try:
-        _write_all(fd, snapshot.data)
-        with contextlib.suppress(OSError):
-            os.fchmod(fd, 0o600)
-        os.fsync(fd)
-    except BaseException:
-        os.close(fd)
-        with contextlib.suppress(OSError):
-            backup.unlink()
-        raise
-    os.close(fd)
-    return backup
-
-
 def _fsync_directory(path: Path) -> None:
     if os.name == "nt":
         return
@@ -436,6 +427,310 @@ def _fsync_directory(path: Path) -> None:
         os.fsync(fd)
     finally:
         os.close(fd)
+
+
+def _normalized_path(path: str | Path) -> str:
+    value = Path(path).expanduser()
+    try:
+        value = value.resolve(strict=False)
+    except OSError:
+        value = value.absolute()
+    return os.path.normcase(os.path.normpath(str(value)))
+
+
+def workspace_patch_journal(home: str | Path) -> Path:
+    home_path = Path(home).expanduser().absolute()
+    return home_path.parent / f".{home_path.name}.workspace-patch.json"
+
+
+def workspace_patch_exists(home: str | Path) -> bool:
+    try:
+        return os.path.lexists(workspace_patch_journal(home))
+    except OSError:
+        return True
+
+
+def _workspace_patch_paths(home: Path, transaction_id: str) -> dict[str, Path]:
+    config = home / "config.toml"
+    journal = workspace_patch_journal(home)
+    return {
+        "config": config,
+        "staged": home / f".{config.name}.{transaction_id}.new",
+        "backup": home / f"{config.name}.backup.{transaction_id}",
+        "journal": journal,
+        "committed": journal.with_name(
+            f".{home.name}.workspace-patch.{transaction_id}.committed.json"
+        ),
+    }
+
+
+def _identity_payload(identity: PathIdentity | None) -> dict[str, int] | None:
+    if identity is None:
+        return None
+    return {
+        "device": identity.device,
+        "inode": identity.inode,
+        "mode": identity.mode,
+        "size": identity.size,
+        "modified_at_ns": identity.modified_at_ns,
+    }
+
+
+def _valid_identity_payload(value: object) -> bool:
+    return (
+        isinstance(value, dict)
+        and set(value) == {"device", "inode", "mode", "size", "modified_at_ns"}
+        and all(type(item) is int and item >= 0 for item in value.values())
+    )
+
+
+def _identity_matches(path: Path, expected: object) -> bool:
+    if not _valid_identity_payload(expected):
+        return False
+    try:
+        snapshot = ConfigSnapshot.capture(path)
+    except RecoveryError:
+        return False
+    return snapshot.identity is not None and _identity_payload(snapshot.identity) == expected
+
+
+def _object_identity_matches(path: Path, expected: object) -> bool:
+    if not _valid_identity_payload(expected):
+        return False
+    assert isinstance(expected, dict)
+    try:
+        snapshot = ConfigSnapshot.capture(path)
+    except RecoveryError:
+        return False
+    return (
+        snapshot.identity is not None
+        and snapshot.identity.device == expected["device"]
+        and snapshot.identity.inode == expected["inode"]
+    )
+
+
+def _parked_config_matches(path: Path, expected: object) -> bool:
+    if not _valid_identity_payload(expected):
+        return False
+    assert isinstance(expected, dict)
+    try:
+        snapshot = ConfigSnapshot.capture(path)
+    except RecoveryError:
+        return False
+    if snapshot.identity is None:
+        return False
+    identity = snapshot.identity
+    owner_only_mode = stat.S_IFMT(expected["mode"]) | 0o600
+    return (
+        identity.device == expected["device"]
+        and identity.inode == expected["inode"]
+        and identity.size == expected["size"]
+        and identity.modified_at_ns == expected["modified_at_ns"]
+        and identity.mode in {expected["mode"], owner_only_mode}
+    )
+
+
+def _write_json_no_replace(path: Path, payload: dict[str, Any]) -> ConfigSnapshot:
+    data = (json.dumps(payload, ensure_ascii=False, sort_keys=True) + "\n").encode()
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_CLOEXEC", 0)
+    flags |= getattr(os, "O_NOFOLLOW", 0)
+    try:
+        fd = os.open(path, flags, 0o600)
+    except FileExistsError as exc:
+        raise RecoveryError(
+            "an unfinished workspace config transaction already exists",
+            stable_code="workspace_patch_incomplete",
+        ) from exc
+    try:
+        with contextlib.suppress(OSError):
+            os.fchmod(fd, 0o600)
+        _write_all(fd, data)
+        os.fsync(fd)
+    except BaseException:
+        os.close(fd)
+        # The transaction pathname is intentionally retained if publication may
+        # have reached disk.  A later inspection must fail closed instead of
+        # guessing whether it is safe to start the profile.
+        raise
+    os.close(fd)
+    _fsync_directory(path.parent)
+    return ConfigSnapshot.capture(path)
+
+
+def _load_workspace_patch(
+    home: Path,
+) -> tuple[ConfigSnapshot, dict[str, Any], dict[str, Path]]:
+    journal = workspace_patch_journal(home)
+    snapshot = ConfigSnapshot.capture(journal)
+    if snapshot.identity is None:
+        raise RecoveryError(
+            "workspace config transaction does not exist",
+            stable_code="workspace_patch_missing",
+        )
+    try:
+        payload = json.loads(snapshot.data.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise RecoveryError(
+            "workspace config transaction journal is invalid",
+            stable_code="workspace_patch_invalid",
+        ) from exc
+    transaction_id = payload.get("transaction_id") if isinstance(payload, dict) else None
+    try:
+        canonical_id = str(uuid.UUID(str(transaction_id)))
+    except ValueError as exc:
+        raise RecoveryError(
+            "workspace config transaction id is invalid",
+            stable_code="workspace_patch_invalid",
+        ) from exc
+    paths = _workspace_patch_paths(home, canonical_id)
+    expected_paths = {
+        key: _normalized_path(path)
+        for key, path in paths.items()
+        if key not in {"journal", "committed"}
+    }
+    identities = payload.get("identities") if isinstance(payload, dict) else None
+    old_identity = identities.get("old_config") if isinstance(identities, dict) else None
+    staged_identity = identities.get("staged") if isinstance(identities, dict) else None
+    if (
+        not isinstance(payload, dict)
+        or set(payload) != _WORKSPACE_PATCH_FIELDS
+        or payload.get("schema_version") != _WORKSPACE_PATCH_SCHEMA_VERSION
+        or payload.get("operation") != "workspace-config-patch"
+        or transaction_id != canonical_id
+        or payload.get("home") != _normalized_path(home)
+        or payload.get("paths") != expected_paths
+        or not isinstance(identities, dict)
+        or set(identities) != {"old_config", "staged"}
+        or (old_identity is not None and not _valid_identity_payload(old_identity))
+        or not _valid_identity_payload(staged_identity)
+    ):
+        raise RecoveryError(
+            "workspace config transaction journal is invalid",
+            stable_code="workspace_patch_invalid",
+        )
+    snapshot.assert_current()
+    return snapshot, payload, paths
+
+
+def _make_owner_only(path: Path, expected: object) -> None:
+    if not _object_identity_matches(path, expected):
+        raise AtomicStateUnknownError("workspace config backup identity is ambiguous")
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        fd = os.open(path, flags)
+        try:
+            opened = PathIdentity.from_stat(os.fstat(fd))
+            assert isinstance(expected, dict)
+            if opened.device != expected["device"] or opened.inode != expected["inode"]:
+                raise AtomicStateUnknownError(
+                    "workspace config backup changed before permission hardening"
+                )
+            os.fchmod(fd, 0o600)
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+    except AtomicStateUnknownError:
+        raise
+    except OSError as exc:
+        raise AtomicStateUnknownError(
+            "workspace config backup could not be restricted to its owner"
+        ) from exc
+
+
+def _park_workspace_config(
+    config: Path,
+    backup: Path,
+    expected_old: object,
+) -> None:
+    if not _identity_matches(config, expected_old):
+        raise AtomicStateUnknownError(
+            "workspace config changed before it could be parked"
+        )
+    native_move_no_replace(config, backup)
+    if not _identity_matches(backup, expected_old):
+        raise AtomicStateUnknownError(
+            "workspace config changed while it was being parked"
+        )
+    _make_owner_only(backup, expected_old)
+
+
+def _publish_workspace_config(
+    staged: Path,
+    config: Path,
+    expected_staged: object,
+) -> None:
+    if not _identity_matches(staged, expected_staged):
+        raise AtomicStateUnknownError("workspace config candidate identity is ambiguous")
+    if os.path.lexists(config):
+        raise AtomicStateUnknownError(
+            "workspace config destination changed before publication"
+        )
+    native_move_no_replace(staged, config)
+    if not _identity_matches(config, expected_staged):
+        raise AtomicStateUnknownError("workspace config publication state is ambiguous")
+
+
+def _commit_workspace_patch(home: Path) -> None:
+    snapshot, payload, paths = _load_workspace_patch(home)
+    identities = payload["identities"]
+    if not _identity_matches(paths["config"], identities["staged"]):
+        raise AtomicStateUnknownError("workspace config is not safely published")
+    if os.path.lexists(paths["staged"]):
+        raise AtomicStateUnknownError("workspace config candidate remains after publication")
+    old_identity = identities["old_config"]
+    if old_identity is None:
+        if os.path.lexists(paths["backup"]):
+            raise AtomicStateUnknownError("unexpected workspace config backup exists")
+    elif not _parked_config_matches(paths["backup"], old_identity):
+        raise AtomicStateUnknownError("workspace config backup identity is ambiguous")
+    snapshot.assert_current()
+    native_move_no_replace(paths["journal"], paths["committed"])
+    _fsync_directory(paths["journal"].parent)
+
+
+def _finish_workspace_patch(home: Path) -> Path | None:
+    _snapshot, payload, paths = _load_workspace_patch(home)
+    identities = payload["identities"]
+    old_identity = identities["old_config"]
+    staged_identity = identities["staged"]
+
+    if _identity_matches(paths["config"], staged_identity):
+        if os.path.lexists(paths["staged"]):
+            raise AtomicStateUnknownError("workspace config publication is duplicated")
+    else:
+        if old_identity is None:
+            if os.path.lexists(paths["backup"]) or os.path.lexists(paths["config"]):
+                raise AtomicStateUnknownError(
+                    "workspace config destination changed during publication"
+                )
+        elif _parked_config_matches(paths["backup"], old_identity):
+            if os.path.lexists(paths["config"]):
+                raise AtomicStateUnknownError(
+                    "workspace config destination changed after parking"
+                )
+            _make_owner_only(paths["backup"], old_identity)
+        elif _identity_matches(paths["config"], old_identity) and not os.path.lexists(
+            paths["backup"]
+        ):
+            _park_workspace_config(paths["config"], paths["backup"], old_identity)
+        else:
+            raise AtomicStateUnknownError("workspace config transaction state is ambiguous")
+
+        _publish_workspace_config(paths["staged"], paths["config"], staged_identity)
+
+    _commit_workspace_patch(home)
+    return paths["backup"] if old_identity is not None else None
+
+
+def recover_workspace_patch(home: str | Path, *, lock_timeout: float = 0.0) -> Path | None:
+    """Finish an identity-proven workspace config publication after a crash."""
+
+    from opensquilla.recovery.locking import LegacyGatewayLock, ProfileOperationLock
+
+    home_path = Path(home).expanduser().absolute()
+    with ProfileOperationLock(home_path, timeout=lock_timeout):
+        with LegacyGatewayLock(home_path, timeout=lock_timeout):
+            return _finish_workspace_patch(home_path)
 
 
 def _copy_macos_config_metadata(snapshot: ConfigSnapshot, destination_fd: int) -> None:
@@ -480,38 +775,61 @@ def _copy_macos_config_metadata(snapshot: ConfigSnapshot, destination_fd: int) -
         os.close(source_fd)
 
 
-def _replace_existing_config(temporary_path: Path, config_path: Path) -> None:
-    if os.name == "nt":
-        win_dll = getattr(ctypes, "WinDLL")
-        kernel32 = win_dll("kernel32", use_last_error=True)
-        replace_file = kernel32.ReplaceFileW
-        replace_file.argtypes = [
-            ctypes.c_wchar_p,
-            ctypes.c_wchar_p,
-            ctypes.c_wchar_p,
-            ctypes.c_uint,
-            ctypes.c_void_p,
-            ctypes.c_void_p,
-        ]
-        replace_file.restype = ctypes.c_int
-        if not replace_file(
-            _windows_extended_path(config_path),
-            _windows_extended_path(temporary_path),
-            None,
-            0,
-            None,
-            None,
-        ):
-            error_number = getattr(ctypes, "get_last_error")()
-            raise RecoveryError(
-                f"Windows ReplaceFileW failed with error {error_number}",
-                stable_code="config_publish_failed",
-            )
+def _copy_windows_config_dacl(snapshot: ConfigSnapshot, destination: Path) -> None:
+    """Copy the existing DACL before the old config is parked."""
+
+    if os.name != "nt" or snapshot.identity is None:
         return
-    os.replace(temporary_path, config_path)
+    snapshot.assert_current()
+    win_dll = getattr(ctypes, "WinDLL")
+    advapi32 = win_dll("advapi32", use_last_error=True)
+    get_file_security = advapi32.GetFileSecurityW
+    set_file_security = advapi32.SetFileSecurityW
+    get_file_security.argtypes = [
+        ctypes.c_wchar_p,
+        ctypes.c_uint32,
+        ctypes.c_void_p,
+        ctypes.c_uint32,
+        ctypes.POINTER(ctypes.c_uint32),
+    ]
+    get_file_security.restype = ctypes.c_int
+    set_file_security.argtypes = [ctypes.c_wchar_p, ctypes.c_uint32, ctypes.c_void_p]
+    set_file_security.restype = ctypes.c_int
+    dacl_information = 0x00000004
+    required = ctypes.c_uint32()
+    get_file_security(
+        _windows_extended_path(snapshot.path),
+        dacl_information,
+        None,
+        0,
+        ctypes.byref(required),
+    )
+    if required.value == 0:
+        error_number = getattr(ctypes, "get_last_error")()
+        raise RecoveryError(
+            f"Windows config DACL could not be read ({error_number})",
+            stable_code="config_metadata_preservation_failed",
+        )
+    buffer = ctypes.create_string_buffer(required.value)
+    if not get_file_security(
+        _windows_extended_path(snapshot.path),
+        dacl_information,
+        buffer,
+        required.value,
+        ctypes.byref(required),
+    ) or not set_file_security(
+        _windows_extended_path(destination),
+        dacl_information,
+        buffer,
+    ):
+        error_number = getattr(ctypes, "get_last_error")()
+        raise RecoveryError(
+            f"Windows config DACL could not be preserved ({error_number})",
+            stable_code="config_metadata_preservation_failed",
+        )
 
 
-def patch_workspace_dir(home: str | Path, workspace: str | Path) -> Path | None:
+def _patch_workspace_dir_locked(home: str | Path, workspace: str | Path) -> Path | None:
     """Patch only top-level ``workspace_dir`` and return the backup path.
 
     The content digest lives only in this process and is never included in a
@@ -540,20 +858,25 @@ def patch_workspace_dir(home: str | Path, workspace: str | Path) -> Path | None:
         snapshot.assert_current()
         return None
 
-    backup = _create_backup(snapshot)
-    snapshot.assert_current()
-    temporary_path: Path | None = None
-    try:
-        fd, temporary_name = tempfile.mkstemp(
-            prefix=f".{config_path.name}.recovery-",
-            suffix=".tmp",
-            dir=config_path.parent,
+    if workspace_patch_exists(home_path):
+        raise RecoveryError(
+            "an unfinished workspace config transaction must be recovered first",
+            stable_code="workspace_patch_incomplete",
         )
-        temporary_path = Path(temporary_name)
+    operation_id = str(uuid.uuid4())
+    paths = _workspace_patch_paths(home_path, operation_id)
+    staged_path = paths["staged"]
+    staged_created = False
+    journal_created = False
+    try:
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_CLOEXEC", 0)
+        flags |= getattr(os, "O_NOFOLLOW", 0)
+        fd = os.open(staged_path, flags, 0o600)
+        staged_created = True
         try:
             if snapshot.identity is not None:
                 try:
-                    shutil.copystat(config_path, temporary_path, follow_symlinks=False)
+                    shutil.copystat(config_path, staged_path, follow_symlinks=False)
                 except OSError as exc:
                     raise RecoveryError(
                         "config permissions, ACLs, or extended metadata could not be preserved",
@@ -565,22 +888,57 @@ def patch_workspace_dir(home: str | Path, workspace: str | Path) -> Path | None:
             os.fsync(fd)
         finally:
             os.close(fd)
+        _copy_windows_config_dacl(snapshot, staged_path)
         snapshot.assert_current()
-        if snapshot.identity is None:
-            native_move_no_replace(temporary_path, config_path)
-            temporary_path = None
-        else:
-            # This is an atomic file-content publication, not a profile/data
-            # relocation. The destination identity and temporary digest were
-            # checked immediately before publication under the profile lock.
-            _replace_existing_config(temporary_path, config_path)
-            temporary_path = None
-        _fsync_directory(config_path.parent)
+        staged_snapshot = ConfigSnapshot.capture(staged_path)
+        if staged_snapshot.identity is None or staged_snapshot.data != patched:
+            raise AtomicStateUnknownError("workspace config candidate could not be verified")
+        payload: dict[str, Any] = {
+            "schema_version": _WORKSPACE_PATCH_SCHEMA_VERSION,
+            "operation": "workspace-config-patch",
+            "transaction_id": operation_id,
+            "home": _normalized_path(home_path),
+            "paths": {
+                key: _normalized_path(path)
+                for key, path in paths.items()
+                if key not in {"journal", "committed"}
+            },
+            "identities": {
+                "old_config": _identity_payload(snapshot.identity),
+                "staged": _identity_payload(staged_snapshot.identity),
+            },
+        }
+        try:
+            _write_json_no_replace(paths["journal"], payload)
+        finally:
+            journal_created = os.path.lexists(paths["journal"])
+        backup = _finish_workspace_patch(home_path)
+        journal_created = False
+        staged_created = False
+        return backup
     finally:
-        if temporary_path is not None:
+        # Before the durable journal exists the staged file is disposable
+        # process output.  Once the journal is visible, every artifact is left in
+        # place for deterministic recovery; no failure path guesses or deletes.
+        if staged_created and not journal_created:
             with contextlib.suppress(OSError):
-                temporary_path.unlink()
-    return backup
+                staged_path.unlink()
+
+
+def patch_workspace_dir(
+    home: str | Path,
+    workspace: str | Path,
+    *,
+    lock_timeout: float = 0.0,
+) -> Path | None:
+    """Patch ``workspace_dir`` under both RC4 and legacy writer exclusions."""
+
+    from opensquilla.recovery.locking import LegacyGatewayLock, ProfileOperationLock
+
+    home_path = Path(home).expanduser().absolute()
+    with ProfileOperationLock(home_path, timeout=lock_timeout):
+        with LegacyGatewayLock(home_path, timeout=lock_timeout):
+            return _patch_workspace_dir_locked(home_path, workspace)
 
 
 __all__ = [
@@ -588,6 +946,9 @@ __all__ = [
     "STATE_OVERRIDE_ENV_VARS",
     "WORKSPACE_OVERRIDE_ENV_VARS",
     "patch_workspace_dir",
+    "recover_workspace_patch",
     "state_override",
     "workspace_override",
+    "workspace_patch_exists",
+    "workspace_patch_journal",
 ]

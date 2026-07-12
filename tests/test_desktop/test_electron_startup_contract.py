@@ -114,7 +114,7 @@ def test_boot_error_panel_exposes_reset_setup_recovery() -> None:
     assert "msg.resetPhase" in boot_html
     assert "msg.resetProgress" in boot_html
     assert "msg.resetFailed" in boot_html
-    assert "saved desktop credential and generated gateway config" in boot_html
+    assert "workspace path, identity, memory, and chat history are kept" in boot_html
     assert "await api.resetDesktopSettings()" in reset_flow
     assert "await api.retryStartup()" in reset_flow
     assert reset_flow.index("await api.resetDesktopSettings()") < reset_flow.index(
@@ -123,7 +123,7 @@ def test_boot_error_panel_exposes_reset_setup_recovery() -> None:
     assert "errorPanel.classList.add('visible')" in reset_flow
 
 
-def test_recovery_ui_scaffold_is_accessible_but_not_runtime_reachable() -> None:
+def test_recovery_ui_is_accessible_and_runtime_reachable() -> None:
     boot_html = _read("desktop/electron/src/boot.html")
 
     assert '<section class="recovery" id="recoveryPanel" role="region"' in boot_html
@@ -143,7 +143,6 @@ def test_recovery_ui_scaffold_is_accessible_but_not_runtime_reachable() -> None:
         "retryPrimary",
         "returnPrimary",
         "recoverTransaction",
-        "abandonCleanup",
         "revealProfile",
         "revealBackups",
         "copyDiagnostics",
@@ -151,25 +150,23 @@ def test_recovery_ui_scaffold_is_accessible_but_not_runtime_reachable() -> None:
     ):
         assert f'id="{button_id}"' in boot_html
         assert 'type="button"' in _section(boot_html, f'id="{button_id}"', ">")
-        assert f"getElementById('{button_id}').addEventListener" not in boot_html
+        assert f"getElementById('{button_id}').addEventListener" in boot_html
 
     assert "function renderRecoveryState(state, moveFocus = true)" in boot_html
-    # PR3 ships display-only markup and rendering code. The main/preload bridge
-    # is intentionally absent until PR4 can activate the complete safe flow.
-    assert boot_html.count("renderRecoveryState(") == 1
-    assert "function runRecoveryAction" not in boot_html
+    assert "function runRecoveryAction" in boot_html
     for bridge_name in (
         "onRecoveryState",
         "chooseRecoveryWorkspace",
         "launchSafeProfile",
         "retryPrimaryProfile",
         "recoverProfileTransaction",
-        "abandonPartialCleanup",
         "returnPrimaryProfile",
         "revealRecoveryPath",
         "copyRecoveryDiagnostics",
     ):
-        assert bridge_name not in boot_html
+        assert bridge_name in boot_html
+    assert "abandonPartialCleanup" not in boot_html
+    assert "abandonCleanup" not in boot_html
 
 
 def test_recovery_ui_scaffold_has_all_six_locales() -> None:
@@ -193,7 +190,6 @@ def test_recovery_ui_scaffold_has_all_six_locales() -> None:
         "retryPrimary",
         "returnPrimary",
         "recoverTransaction",
-        "abandonCleanup",
         "revealProfile",
         "revealBackups",
         "copyDiagnostics",
@@ -205,25 +201,19 @@ def test_recovery_ui_scaffold_has_all_six_locales() -> None:
         assert boot_html.count(f"{key}:") == 6, key
 
 
-def test_desktop_profile_context_scaffold_is_not_activated() -> None:
+def test_desktop_profile_context_and_recovery_ipc_are_activated() -> None:
     main_ts = _read("desktop/electron/src/main.ts")
     preload = _read("desktop/electron/src/preload.cts")
     context = _read("desktop/electron/src/desktop-profile-context.ts")
-    runtime_sources = [
-        path.read_text(encoding="utf-8")
-        for path in (ROOT / "desktop/electron/src").iterdir()
-        if path.suffix in {".ts", ".cts"} and path.name != "desktop-profile-context.ts"
-    ]
-
     assert "persistDesktopProfileContextFile" in context
     assert "updateDesktopProfileContextFile" in context
-    assert "./desktop-profile-context.js" not in main_ts
-    assert "desktop-profile-context" not in main_ts
-    assert "desktop:recovery" not in main_ts
-    assert "desktop:recovery" not in preload
-    assert "onRecoveryState" not in preload
-    assert all("persistDesktopProfileContextFile" not in source for source in runtime_sources)
-    assert all("updateDesktopProfileContextFile" not in source for source in runtime_sources)
+    assert "./desktop-profile-context.js" in main_ts
+    assert "updateDesktopProfileContextFile" in main_ts
+    assert "desktop:recovery" in main_ts
+    assert "desktop:recovery" in preload
+    assert "onRecoveryState" in preload
+    assert "desktop:recovery:abandon-cleanup" not in main_ts
+    assert "abandonPartialCleanup" not in preload
 
 
 def test_reset_desktop_settings_forces_onboarding_before_gateway_reuse() -> None:
@@ -252,11 +242,24 @@ def test_reset_desktop_settings_forces_onboarding_before_gateway_reuse() -> None
     )
     assert reuse_guard in start
     assert "forceOnboardingOnNextStartup = false" in start
-    assert reuse_guard in resume
+    assert "forceOnboardingOnNextStartup" in resume
+    assert "await reuseHealthyGatewayState()" in resume
     assert "forceOnboardingOnNextStartup = true" in reset
     assert "const child = gatewayProcess && gatewayState.owned ? gatewayProcess : null" in reset
     assert "await waitForGatewayProcessExit(child)" in reset
     assert "clearReusableGatewayState()" in reset
+    assert reset.index("await waitForGatewayProcessExit(child)") < reset.index(
+        "await resetDesktopSettings()"
+    )
+    reset_operation = _section(
+        main_ts,
+        "async function resetDesktopSettings",
+        "function clearReusableGatewayState",
+    )
+    assert "await rm(credentialPath(), { force: true })" in reset_operation
+    assert "rm(desktopConfigPath()" not in reset_operation
+    assert "workspace" in reset_operation
+    assert "state databases" in reset_operation
 
 
 def test_desktop_gateway_port_selection_is_bind_aware_and_bounded() -> None:
@@ -488,7 +491,9 @@ def test_start_gateway_does_not_attach_to_unrequested_default_dev_gateway() -> N
         "async function loadControlUi",
     )
 
-    assert "const overrideUrl = process.env.OPENSQUILLA_DESKTOP_GATEWAY_URL" in start
+    assert "const activeProfile = activeDesktopProfile()" in start
+    assert "activeProfile.kind === 'primary'" in start
+    assert "process.env.OPENSQUILLA_DESKTOP_GATEWAY_URL" in start
     assert "await healthCheck('http://127.0.0.1:18791')" not in start
     assert "gatewayState.url = 'http://127.0.0.1:18791'" not in start
 
@@ -932,7 +937,10 @@ def test_apply_downloaded_update_timeout_restores_retry_state_before_returning()
         "if (!exited)",
         "autoUpdater.quitAndInstall(false, true)",
     )
-    assert "restoreDownloadedUpdateRetryState(pendingVersion)" in timeout_branch
+    assert (
+        "restoreDownloadedUpdateRetryState(pendingVersion, updateWriterAdmission)"
+        in timeout_branch
+    )
     assert "return" in timeout_branch
     assert timeout_branch.index("return") < apply_update.index(
         "autoUpdater.quitAndInstall(false, true)"
@@ -955,6 +963,7 @@ def test_apply_downloaded_update_handoff_error_restores_retry_state() -> None:
     assert "downloadedUpdateVersion = pendingVersion" in restore
     assert "updateApplying = false" in restore
     assert "isQuitting = false" in restore
+    assert "desktopWriters.reopen(writerAdmissionToken)" in restore
     assert "createApplicationMenu()" in restore
     assert "try {\n    autoUpdater.quitAndInstall(false, true)\n  } catch (err)" in apply_update
     handoff_error = _section(
@@ -962,7 +971,10 @@ def test_apply_downloaded_update_handoff_error_restores_retry_state() -> None:
         "} catch (err)",
         "}\n}",
     )
-    assert "restoreDownloadedUpdateRetryState(pendingVersion)" in handoff_error
+    assert (
+        "restoreDownloadedUpdateRetryState(pendingVersion, updateWriterAdmission)"
+        in handoff_error
+    )
     assert "showUpdateDialog" in handoff_error
 
 
@@ -996,6 +1008,11 @@ def test_desktop_persists_network_observability_privacy_setting() -> None:
         "async function writeDesktopConfig",
         "function settingsSnapshot",
     )
+    config_renderer = _section(
+        main_ts,
+        "function renderDesktopConfigAfterPreflight",
+        "async function applyDesktopSettingsPair",
+    )
     web_settings = _section(
         types_ts,
         "export interface DesktopSettings",
@@ -1024,7 +1041,8 @@ def test_desktop_persists_network_observability_privacy_setting() -> None:
     assert "payload.disableNetworkObservability" in save
     assert "existing?.disableNetworkObservability" in save
     assert "disableNetworkObservability," in save
-    assert "privacyConfigTomlLines(credential)" in config_writer
+    assert "applyDesktopSettingsPair" in config_writer
+    assert "privacyConfigTomlLines(credential)" in config_renderer
     assert "function privacyConfigTomlLines" in main_ts
     assert "function desktopConfigShouldWritePrivacySection" in main_ts
     assert (
@@ -1253,8 +1271,14 @@ def test_desktop_cleanup_does_not_claim_os_app_uninstall() -> None:
         "ipcMain.handle('desktop:boot:state'",
     )
 
-    assert "OPENSQUILLA_INSTALL_METHOD: 'desktop'" in cleanup
-    assert "OPENSQUILLA_STATE_DIR: desktopHome()" in cleanup
+    child_environment = _section(
+        main_ts,
+        "function desktopChildEnvironment",
+        "// ── Legacy home import detection",
+    )
+    assert "desktopChildEnvironment(activeDesktopProfile()" in cleanup
+    assert "OPENSQUILLA_INSTALL_METHOD: 'desktop'" in child_environment
+    assert "OPENSQUILLA_STATE_DIR: profile.home" in child_environment
     assert "remove the installed .app / NSIS application" in cleanup
     # The purge confirmation is localized via desktopT; the "app remains"
     # guarantee now lives in the (localized) message catalog rather than inline.
@@ -1359,18 +1383,25 @@ def test_gateway_spawn_state_dir_is_the_desktop_home_root() -> None:
         "async function startGateway",
         "async function loadControlUi",
     )
+    child_environment = _section(
+        main_ts,
+        "function desktopChildEnvironment",
+        "// ── Legacy home import detection",
+    )
 
     # OPENSQUILLA_STATE_DIR names the OpenSquilla HOME ROOT on the Python side
     # (paths.default_opensquilla_home); runtime state lives in its state/
     # subdir. The gateway child must receive desktopHome(), not the state
     # subdir, or home-derived data (managed skills, workspace/MEMORY.md,
     # session-archive, .env) nests one level too deep — the pre-0.5.x layout
-    # bug that relocateLegacyDesktopStateLayout() heals.
-    assert "OPENSQUILLA_STATE_DIR: desktopHome()," in start
+    # bug now handled by the Python recovery engine before gateway startup.
+    assert "desktopChildEnvironment(activeProfile" in start
+    assert "OPENSQUILLA_STATE_DIR: profile.home" in child_environment
+    assert "OPENSQUILLA_PROFILE_KIND: profileKindEnvironment(profile.kind)" in child_environment
     assert "OPENSQUILLA_STATE_DIR: desktopStateDir()" not in main_ts
     # The generated TOML keeps pinning the runtime state dir to <home>/state so
     # database paths (sessions.db, scheduler.db, agents/) never move.
-    assert "state_dir = ${tomlString(desktopStateDir())}" in main_ts
+    assert "state_dir = ${tomlString(join(profile.home, 'state'))}" in main_ts
 
 
 def test_copyable_desktop_cli_targets_the_desktop_home_root() -> None:
@@ -1388,50 +1419,29 @@ def test_copyable_desktop_cli_targets_the_desktop_home_root() -> None:
     assert "stateDir: desktopStateDir()," not in cli_invocation
 
 
-def test_legacy_desktop_layout_relocation_runs_before_gateway_spawn() -> None:
+def test_python_recovery_engine_replaces_typescript_layout_relocation() -> None:
     main_ts = _read("desktop/electron/src/main.ts")
     start = _section(
         main_ts,
         "async function startGateway",
         "async function loadControlUi",
     )
-    relocation = _section(
+    inspect = _section(
         main_ts,
-        "function relocateLegacyDesktopStateLayout",
-        "function bootPagePath",
+        "async function inspectActiveProfileBeforeStartup",
+        "async function openOrResumeDesktopApp",
     )
+    resume = _section(main_ts, "async function openOrResumeDesktopApp", "function stopGateway")
 
-    # The one-time relocation must run inside startGateway before onboarding
-    # and before the child spawn, while no owned gateway is running.
-    relocate_index = start.index("relocateLegacyDesktopStateLayout()")
-    assert relocate_index < start.index("await runOnboarding()")
-    assert relocate_index < start.index("const child = spawn(")
-
-    # It moves exactly the home-derived legacy entries and flattens the nested
-    # state/state tree; the config-pinned databases are never in its move list.
-    for entry in (
-        "'skills'",
-        "'skills-taps.json'",
-        "'skills-lock.json'",
-        "'workspace'",
-        "'session-archive'",
-        "'router'",
-        "'.env'",
-    ):
-        assert entry in main_ts
-    assert "const nested = join(state, 'state')" in relocation
-    for forbidden in ("'sessions.db'", "'scheduler.db'", "'agents'"):
-        assert forbidden not in relocation
-
-    # Idempotency and failure semantics: marker short-circuits reruns, and a
-    # failed move defers (no marker) instead of stranding half the layout.
-    # rindex: the first marker write is the fresh-profile early stamp; the
-    # failure gate must precede the final (post-move) marker write.
-    assert "const DESKTOP_LAYOUT_MARKER = 'desktop-layout-v2.json'" in main_ts
-    assert "if (existsSync(markerPath)) return" in relocation
-    assert relocation.index("if (failed)") < relocation.rindex("writeFileSync(markerPath")
-    # Collisions are parked, never merged or overwritten.
-    assert ".pre-relocation" in relocation
+    assert "relocateLegacyDesktopStateLayout" not in main_ts
+    assert "recoverInterruptedDesktopImport()" not in start
+    assert "recoverPendingMigrationReconciliation()" not in start
+    assert resume.index("inspectActiveProfileBeforeStartup()") < resume.index(
+        "ensureGatewayStarted()"
+    )
+    assert "inspection.allowed_actions.includes('reconcile')" in inspect
+    assert "'reconcile', '--home', active.home, '--json'" in inspect
+    assert "inspection.outcome !== 'recovery_required'" in inspect
 
 
 def test_onboarding_migration_ipc_is_guarded_and_prefills_from_imported_config() -> None:
@@ -1464,10 +1474,8 @@ def test_onboarding_migration_ipc_is_guarded_and_prefills_from_imported_config()
     # Detection happens on the no-credential path only, before the onboarding
     # window is created, and the result is JSON-injected into the page.
     onboarding = _section(main_ts, "async function runOnboarding", "async function pathExists")
-    assert (
-        "onboardingMigrationCandidate = pendingProviderSetup ? null : "
-        "detectLegacyImportCandidate()"
-    ) in onboarding
+    assert "activeDesktopProfile().kind === 'primary'" in onboarding
+    assert "detectLegacyImportCandidate()" in onboarding
     assert onboarding.index("detectLegacyImportCandidate()") < onboarding.index(
         "new BrowserWindow"
     )
@@ -1487,9 +1495,15 @@ def test_run_migrate_cli_targets_desktop_home_via_bundled_cli() -> None:
     # OPENSQUILLA_STATE_DIR names the OpenSquilla HOME ROOT (the migrator's
     # import target) and must match the gateway spawn: desktopHome(), never the
     # state subdir.
-    assert "OPENSQUILLA_STATE_DIR: desktopHome()," in migrate
-    assert "OPENSQUILLA_GATEWAY_CONFIG_PATH: desktopConfigPath()," in migrate
-    assert "OPENSQUILLA_INSTALL_METHOD: 'desktop'," in migrate
+    assert "desktopChildEnvironment(activeDesktopProfile()" in migrate
+    child_environment = _section(
+        main_ts,
+        "function desktopChildEnvironment",
+        "// ── Legacy home import detection",
+    )
+    assert "OPENSQUILLA_STATE_DIR: profile.home" in child_environment
+    assert "OPENSQUILLA_GATEWAY_CONFIG_PATH: join(profile.home, 'config.toml')" in child_environment
+    assert "OPENSQUILLA_INSTALL_METHOD: 'desktop'" in child_environment
     for env in ("PYTHONUNBUFFERED: '1'", "PYTHONUTF8: '1'", "PYTHONIOENCODING: 'utf-8:replace'"):
         assert env in migrate
 
@@ -1499,6 +1513,24 @@ def test_run_migrate_cli_targets_desktop_home_via_bundled_cli() -> None:
         "type DesktopMigrationPhase",
     )
     assert "[...extraArgs, '--json']" in summary_json
+
+
+def test_desktop_profile_import_is_rejected_from_recovery_profile() -> None:
+    main_ts = _read("desktop/electron/src/main.ts")
+    summary = _section(
+        main_ts,
+        "ipcMain.handle('desktop:migration:summary'",
+        "ipcMain.handle('desktop:migration:run'",
+    )
+    run = _section(
+        main_ts,
+        "ipcMain.handle('desktop:migration:run'",
+        "ipcMain.handle('desktop:migration:last-result'",
+    )
+
+    for handler in (summary, run):
+        assert "activeDesktopProfile().kind !== 'primary'" in handler
+        assert "Return to the primary profile before importing data." in handler
 
 
 def test_desktop_migration_run_quiesces_then_restarts_without_forcing_onboarding() -> None:
@@ -1566,13 +1598,13 @@ def test_desktop_migration_detection_respects_matching_completion_marker() -> No
     marker_check = _section(
         main_ts,
         "function sourceWasImportedToTarget",
-        "// The Python importer publishes",
+        "function detectLegacyImportCandidate",
     )
     assert "return false" not in marker_check
     assert marker_check.count("targetHasAppliedImportReceipt(source, target") == 2
 
 
-def test_desktop_boot_recovers_interrupted_import_before_profile_use() -> None:
+def test_desktop_boot_does_not_run_legacy_typescript_import_recovery() -> None:
     main_ts = _read("desktop/electron/src/main.ts")
     start = _section(
         main_ts,
@@ -1580,13 +1612,11 @@ def test_desktop_boot_recovers_interrupted_import_before_profile_use() -> None:
         "async function startGatewayWithPortRecovery",
     )
 
-    assert "function recoverInterruptedDesktopImport" in main_ts
-    assert "recoverInterruptedDesktopImport()" in start
-    assert "await recoverPendingMigrationReconciliation()" in start
-    assert start.index("recoverInterruptedDesktopImport()") < start.index(
-        "relocateLegacyDesktopStateLayout()"
-    )
-    assert start.index("recoverInterruptedDesktopImport()") < start.index("runOnboarding()")
+    assert "function recoverInterruptedDesktopImport" not in main_ts
+    assert "recoverInterruptedDesktopImport()" not in start
+    assert "recoverPendingMigrationReconciliation()" not in start
+    assert "relocateLegacyDesktopStateLayout" not in main_ts
+    assert "await runOnboarding()" in start
 
 
 def test_desktop_migration_run_requires_valid_report_and_restarts_in_finally() -> None:
@@ -1680,7 +1710,7 @@ def test_settings_import_reconciles_or_prompts_for_imported_provider() -> None:
     reconcile = _section(
         main_ts,
         "async function reconcileImportedDesktopCredential",
-        "async function recoverPendingMigrationReconciliation",
+        "// After a successful apply",
     )
     assert reconcile.index("await saveDesktopCredential(prefill)") < reconcile.index(
         "await scrubImportedProviderEnvEntry(prefill.apiKeyEnv)"

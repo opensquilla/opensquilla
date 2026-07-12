@@ -436,12 +436,6 @@
           </div>
         </div>
 
-        <div class="recovery-group" id="cleanupRecoveryGroup" hidden>
-          <div class="recovery-row">
-            <button id="abandonCleanup" class="primary" type="button" data-i18n="abandonCleanup">Stop cleanup and preserve remaining data</button>
-          </div>
-        </div>
-
         <p class="recovery-status" id="recoveryStatus" role="status" aria-live="polite"></p>
         <div class="actions">
           <button id="revealProfile" type="button" data-i18n="revealProfile">Show profile location</button>
@@ -468,7 +462,7 @@
         errorDefault: 'The gateway did not finish starting.',
         revealLog: 'Reveal log', resetSetup: 'Reset setup', quit: 'Quit', retry: 'Retry',
         startupPaused: 'Startup paused',
-        resetConfirm: 'Reset desktop setup? This clears the saved desktop credential and generated gateway config, then reopens onboarding.',
+        resetConfirm: 'Reset desktop setup? This clears the saved provider credential and reopens onboarding. Your workspace path, identity, memory, and chat history are kept.',
         resetPhase: 'Resetting desktop setup',
         resetProgress: 'Clearing saved setup and restarting onboarding.',
         resetFailed: 'Reset failed',
@@ -481,7 +475,7 @@
         workspaceLabel: 'Choose a verified workspace', chooseWorkspace: 'Use selected workspace', browseWorkspace: 'Browse…',
         existingRecoveryLabel: 'Existing recovery profile', continueRecovery: 'Continue recovery profile', noRecoveryProfiles: 'No recovery profiles yet',
         newRecoveryLabel: 'New recovery profile', copyCredential: 'Copy the decryptable provider credential from the primary profile', createRecovery: 'Create recovery profile',
-        retryPrimary: 'Retry primary profile', returnPrimary: 'Return to primary profile', recoverTransaction: 'Safely recover interrupted operation', abandonCleanup: 'Stop cleanup and preserve remaining data', revealProfile: 'Show profile location', revealBackups: 'Show backup location',
+        retryPrimary: 'Retry primary profile', returnPrimary: 'Return to primary profile', recoverTransaction: 'Safely recover interrupted operation', revealProfile: 'Show profile location', revealBackups: 'Show backup location',
         copyDiagnostics: 'Copy diagnostics', diagnosticsCopied: 'Sanitized diagnostics copied.', recoveryWorking: 'Working…', noWorkspaceCandidates: 'No verified candidates; browse for a workspace.',
       },
       'zh-Hans': {
@@ -493,7 +487,7 @@
         errorDefault: '网关未能完成启动。',
         revealLog: '显示日志', resetSetup: '重新配置', quit: '退出', retry: '重试',
         startupPaused: '启动已暂停',
-        resetConfirm: '要重置桌面设置吗？这会清除已保存的桌面凭据和生成的网关配置，然后重新进入引导。',
+        resetConfirm: '要重置桌面设置吗？这会清除已保存的提供商凭据并重新进入引导。工作区路径、身份、记忆和聊天记录都会保留。',
         resetPhase: '正在重置桌面设置',
         resetProgress: '正在清除已保存的设置并重新启动引导。',
         resetFailed: '重置失败',
@@ -506,7 +500,7 @@
         workspaceLabel: '选择已验证的工作区', chooseWorkspace: '使用所选工作区', browseWorkspace: '浏览…',
         existingRecoveryLabel: '现有恢复配置', continueRecovery: '继续恢复配置', noRecoveryProfiles: '尚无恢复配置',
         newRecoveryLabel: '新建恢复配置', copyCredential: '从主配置复制可解密的提供商凭据', createRecovery: '创建恢复配置',
-        retryPrimary: '重试主配置', returnPrimary: '返回主配置', recoverTransaction: '安全恢复中断的操作', abandonCleanup: '停止清理并保留剩余数据', revealProfile: '显示配置位置', revealBackups: '显示备份位置',
+        retryPrimary: '重试主配置', returnPrimary: '返回主配置', recoverTransaction: '安全恢复中断的操作', revealProfile: '显示配置位置', revealBackups: '显示备份位置',
         copyDiagnostics: '复制诊断信息', diagnosticsCopied: '已复制脱敏诊断信息。', recoveryWorking: '正在处理…', noWorkspaceCandidates: '没有已验证候选；请浏览选择工作区。',
       },
       ja: {
@@ -518,7 +512,7 @@
         errorDefault: 'ゲートウェイの起動が完了しませんでした。',
         revealLog: 'ログを表示', resetSetup: '設定をリセット', quit: '終了', retry: '再試行',
         startupPaused: '起動を一時停止しました',
-        resetConfirm: 'デスクトップ設定をリセットしますか？保存済みのデスクトップ認証情報と生成済みのゲートウェイ設定を消去し、オンボーディングを再開します。',
+        resetConfirm: 'デスクトップ設定をリセットしますか？保存済みのプロバイダー認証情報を消去してオンボーディングを再開します。ワークスペースのパス、ID、メモリ、チャット履歴は保持されます。',
         resetPhase: 'デスクトップ設定をリセットしています',
         resetProgress: '保存済み設定を消去し、オンボーディングを再開しています。',
         resetFailed: 'リセットに失敗しました',
@@ -531,7 +525,7 @@
         workspaceLabel: '検証済みワークスペースを選択', chooseWorkspace: '選択したワークスペースを使用', browseWorkspace: '参照…',
         existingRecoveryLabel: '既存の復旧プロファイル', continueRecovery: '復旧プロファイルを続行', noRecoveryProfiles: '復旧プロファイルはまだありません',
         newRecoveryLabel: '新しい復旧プロファイル', copyCredential: 'プライマリから復号可能なプロバイダー認証情報をコピー', createRecovery: '復旧プロファイルを作成',
-        retryPrimary: 'プライマリを再試行', returnPrimary: 'プライマリに戻る', recoverTransaction: '中断した操作を安全に復旧', abandonCleanup: 'クリーンアップを停止して残りのデータを保持', revealProfile: 'プロファイルの場所を表示', revealBackups: 'バックアップの場所を表示',
+        retryPrimary: 'プライマリを再試行', returnPrimary: 'プライマリに戻る', recoverTransaction: '中断した操作を安全に復旧', revealProfile: 'プロファイルの場所を表示', revealBackups: 'バックアップの場所を表示',
         copyDiagnostics: '診断情報をコピー', diagnosticsCopied: 'サニタイズ済み診断情報をコピーしました。', recoveryWorking: '処理中…', noWorkspaceCandidates: '検証済み候補がありません。ワークスペースを参照してください。',
       },
       fr: {
@@ -543,7 +537,7 @@
         errorDefault: 'La passerelle n\'a pas terminé son démarrage.',
         revealLog: 'Afficher le journal', resetSetup: 'Réinitialiser', quit: 'Quitter', retry: 'Réessayer',
         startupPaused: 'Démarrage en pause',
-        resetConfirm: 'Réinitialiser la configuration du bureau ? Cela efface les identifiants de bureau enregistrés et la configuration de passerelle générée, puis relance l’onboarding.',
+        resetConfirm: 'Réinitialiser la configuration du bureau ? Cela efface les identifiants du fournisseur et relance l’onboarding. Le chemin de l’espace de travail, l’identité, la mémoire et l’historique des discussions sont conservés.',
         resetPhase: 'Réinitialisation de la configuration du bureau',
         resetProgress: 'Suppression de la configuration enregistrée et relance de l’onboarding.',
         resetFailed: 'Échec de la réinitialisation',
@@ -556,7 +550,7 @@
         workspaceLabel: 'Choisir un espace de travail vérifié', chooseWorkspace: 'Utiliser l’espace sélectionné', browseWorkspace: 'Parcourir…',
         existingRecoveryLabel: 'Profil de récupération existant', continueRecovery: 'Continuer ce profil', noRecoveryProfiles: 'Aucun profil de récupération',
         newRecoveryLabel: 'Nouveau profil de récupération', copyCredential: 'Copier l’identifiant fournisseur déchiffrable du profil principal', createRecovery: 'Créer un profil de récupération',
-        retryPrimary: 'Réessayer le profil principal', returnPrimary: 'Revenir au profil principal', recoverTransaction: 'Récupérer l’opération interrompue en toute sécurité', abandonCleanup: 'Arrêter le nettoyage et conserver les données restantes', revealProfile: 'Afficher l’emplacement du profil', revealBackups: 'Afficher les sauvegardes',
+        retryPrimary: 'Réessayer le profil principal', returnPrimary: 'Revenir au profil principal', recoverTransaction: 'Récupérer l’opération interrompue en toute sécurité', revealProfile: 'Afficher l’emplacement du profil', revealBackups: 'Afficher les sauvegardes',
         copyDiagnostics: 'Copier le diagnostic', diagnosticsCopied: 'Diagnostic expurgé copié.', recoveryWorking: 'Traitement…', noWorkspaceCandidates: 'Aucun candidat vérifié ; parcourez les dossiers.',
       },
       de: {
@@ -568,7 +562,7 @@
         errorDefault: 'Das Gateway hat den Start nicht abgeschlossen.',
         revealLog: 'Protokoll anzeigen', resetSetup: 'Zurücksetzen', quit: 'Beenden', retry: 'Wiederholen',
         startupPaused: 'Start angehalten',
-        resetConfirm: 'Desktop-Einrichtung zurücksetzen? Dadurch werden gespeicherte Desktop-Anmeldedaten und die generierte Gateway-Konfiguration gelöscht; danach startet das Onboarding erneut.',
+        resetConfirm: 'Desktop-Einrichtung zurücksetzen? Die gespeicherten Anbieter-Zugangsdaten werden gelöscht und das Onboarding wird neu geöffnet. Arbeitsbereichspfad, Identität, Speicher und Chatverlauf bleiben erhalten.',
         resetPhase: 'Desktop-Einrichtung wird zurückgesetzt',
         resetProgress: 'Gespeicherte Einrichtung wird gelöscht und Onboarding neu gestartet.',
         resetFailed: 'Zurücksetzen fehlgeschlagen',
@@ -581,7 +575,7 @@
         workspaceLabel: 'Geprüften Arbeitsbereich wählen', chooseWorkspace: 'Auswahl verwenden', browseWorkspace: 'Durchsuchen…',
         existingRecoveryLabel: 'Vorhandenes Wiederherstellungsprofil', continueRecovery: 'Profil fortsetzen', noRecoveryProfiles: 'Noch keine Wiederherstellungsprofile',
         newRecoveryLabel: 'Neues Wiederherstellungsprofil', copyCredential: 'Entschlüsselbare Anbieter-Anmeldedaten aus dem Hauptprofil kopieren', createRecovery: 'Wiederherstellungsprofil erstellen',
-        retryPrimary: 'Hauptprofil erneut prüfen', returnPrimary: 'Zum Hauptprofil zurückkehren', recoverTransaction: 'Unterbrochenen Vorgang sicher wiederherstellen', abandonCleanup: 'Bereinigung stoppen und verbleibende Daten behalten', revealProfile: 'Profilordner anzeigen', revealBackups: 'Sicherungsordner anzeigen',
+        retryPrimary: 'Hauptprofil erneut prüfen', returnPrimary: 'Zum Hauptprofil zurückkehren', recoverTransaction: 'Unterbrochenen Vorgang sicher wiederherstellen', revealProfile: 'Profilordner anzeigen', revealBackups: 'Sicherungsordner anzeigen',
         copyDiagnostics: 'Diagnose kopieren', diagnosticsCopied: 'Bereinigte Diagnose kopiert.', recoveryWorking: 'Wird ausgeführt…', noWorkspaceCandidates: 'Keine geprüften Kandidaten; bitte Arbeitsbereich auswählen.',
       },
       es: {
@@ -593,7 +587,7 @@
         errorDefault: 'La pasarela no terminó de iniciarse.',
         revealLog: 'Mostrar registro', resetSetup: 'Restablecer', quit: 'Salir', retry: 'Reintentar',
         startupPaused: 'Inicio en pausa',
-        resetConfirm: '¿Restablecer la configuración de escritorio? Esto borra la credencial de escritorio guardada y la configuración de pasarela generada, y vuelve a abrir la incorporación.',
+        resetConfirm: '¿Restablecer la configuración de escritorio? Esto borra la credencial del proveedor y vuelve a abrir la configuración inicial. Se conservan la ruta del espacio de trabajo, la identidad, la memoria y el historial de chat.',
         resetPhase: 'Restableciendo configuración de escritorio',
         resetProgress: 'Borrando la configuración guardada y reiniciando la incorporación.',
         resetFailed: 'Error al restablecer',
@@ -606,7 +600,7 @@
         workspaceLabel: 'Elegir un espacio verificado', chooseWorkspace: 'Usar el espacio seleccionado', browseWorkspace: 'Examinar…',
         existingRecoveryLabel: 'Perfil de recuperación existente', continueRecovery: 'Continuar perfil de recuperación', noRecoveryProfiles: 'Aún no hay perfiles de recuperación',
         newRecoveryLabel: 'Nuevo perfil de recuperación', copyCredential: 'Copiar la credencial descifrable del proveedor desde el perfil principal', createRecovery: 'Crear perfil de recuperación',
-        retryPrimary: 'Reintentar perfil principal', returnPrimary: 'Volver al perfil principal', recoverTransaction: 'Recuperar de forma segura la operación interrumpida', abandonCleanup: 'Detener la limpieza y conservar los datos restantes', revealProfile: 'Mostrar ubicación del perfil', revealBackups: 'Mostrar copias de seguridad',
+        retryPrimary: 'Reintentar perfil principal', returnPrimary: 'Volver al perfil principal', recoverTransaction: 'Recuperar de forma segura la operación interrumpida', revealProfile: 'Mostrar ubicación del perfil', revealBackups: 'Mostrar copias de seguridad',
         copyDiagnostics: 'Copiar diagnóstico', diagnosticsCopied: 'Diagnóstico depurado copiado.', recoveryWorking: 'Procesando…', noWorkspaceCandidates: 'No hay candidatos verificados; busca un espacio de trabajo.',
       },
     };
@@ -624,6 +618,7 @@
     const recoveryStatus = document.getElementById('recoveryStatus');
     const workspaceCandidates = document.getElementById('workspaceCandidates');
     const recoveryProfiles = document.getElementById('recoveryProfiles');
+    let currentRecoveryState = null;
     const steps = {
       profile: document.querySelector('[data-step="profile"]'),
       gateway: document.querySelector('[data-step="gateway"]'),
@@ -651,6 +646,7 @@
         const key = el.getAttribute('data-i18n-aria');
         if (msg[key]) el.setAttribute('aria-label', msg[key]);
       });
+      if (currentRecoveryState) renderRecoveryState(currentRecoveryState, false);
     }
 
     function setStepState(activeKey, ready) {
@@ -672,6 +668,8 @@
       // local default phase string only when no label was provided.
       phase.textContent = payload && payload.label ? String(payload.label) : msg.phaseDefault;
       errorPanel.classList.remove('visible');
+      recoveryPanel.classList.remove('visible');
+      document.body.classList.remove('recovering');
       // Leaving the error state: resume the sweep and the elapsed timer.
       document.body.classList.remove('errored');
       if (!timerInterval) timerInterval = setInterval(updateTimer, 100);
@@ -683,6 +681,8 @@
       phase.textContent = msg.startupPaused;
       errorMessage.textContent = message;
       errorPanel.classList.add('visible');
+      recoveryPanel.classList.remove('visible');
+      document.body.classList.remove('recovering');
       // Stop signalling progress: freeze the elapsed timer, pause the sweep (via
       // the .errored class), and drop the active step highlight so a failed phase
       // is not shown as still running.
@@ -693,9 +693,8 @@
       }
     }
 
-    // PR3 scaffold only: this renderer has no caller, IPC bridge, or event
-    // listener until the complete recovery lifecycle is activated in PR4.
     function renderRecoveryState(state, moveFocus = true) {
+      currentRecoveryState = state || null;
       const inspection = state && state.inspection;
       const blocked = Boolean(state && state.blocked && inspection);
       if (!blocked) {
@@ -774,7 +773,6 @@
       document.getElementById('createRecovery').hidden = !allowedActions.has('create-recovery-profile');
       document.getElementById('retryPrimary').hidden = !allowedActions.has('retry-primary-profile');
       document.getElementById('transactionRecoveryGroup').hidden = !allowedActions.has('recover-transaction');
-      document.getElementById('cleanupRecoveryGroup').hidden = !allowedActions.has('abandon-cleanup');
       document.getElementById('revealBackups').hidden = !allowedActions.has('show-backups');
       document.getElementById('copyDiagnostics').hidden = !allowedActions.has('copy-diagnostics');
       recoveryStatus.textContent = state.error ? String(state.error) : (state.busy ? msg.recoveryWorking : '');
@@ -791,10 +789,22 @@
       document.getElementById('recoverTransaction').disabled = (
         Boolean(state.busy) || !allowedActions.has('recover-transaction')
       );
-      document.getElementById('abandonCleanup').disabled = (
-        Boolean(state.busy) || !allowedActions.has('abandon-cleanup')
-      );
       if (moveFocus && !wasVisible) recoveryTitle.focus();
+    }
+
+    async function runRecoveryAction(action) {
+      recoveryStatus.textContent = msg.recoveryWorking;
+      try {
+        const result = await action();
+        if (result && result.state) renderRecoveryState(result.state, false);
+        if (result && result.ok === false) {
+          recoveryStatus.textContent = String(result.error || msg.errorDefault);
+        }
+        return result;
+      } catch (error) {
+        recoveryStatus.textContent = error && error.message ? error.message : String(error);
+        return null;
+      }
     }
 
     async function resetSetup() {
@@ -826,8 +836,12 @@
       }
       api.onBootStatus(applyStatus);
       api.onBootError(applyError);
+      if (typeof api.onRecoveryState === 'function') {
+        api.onRecoveryState((state) => renderRecoveryState(state));
+      }
       api.getBootState().then((state) => {
-        if (state && state.error) applyError(state.error);
+        if (state && state.recovery && state.recovery.blocked) renderRecoveryState(state.recovery);
+        else if (state && state.error) applyError(state.error);
         else applyStatus(state && state.status ? state.status : null);
       }).catch(() => applyStatus(null));
       document.getElementById('retry').addEventListener('click', () => api.retryStartup());
@@ -839,6 +853,40 @@
       } else {
         resetButton.style.display = 'none';
       }
+      document.getElementById('chooseWorkspace').addEventListener('click', () => runRecoveryAction(() => (
+        api.chooseRecoveryWorkspace({ workspace: workspaceCandidates.value })
+      )));
+      document.getElementById('browseWorkspace').addEventListener('click', () => runRecoveryAction(() => (
+        api.chooseRecoveryWorkspace({})
+      )));
+      document.getElementById('continueRecovery').addEventListener('click', () => runRecoveryAction(() => (
+        api.launchSafeProfile({ mode: 'continue', recoveryId: recoveryProfiles.value })
+      )));
+      document.getElementById('createRecovery').addEventListener('click', () => runRecoveryAction(() => (
+        api.launchSafeProfile({
+          mode: 'create',
+          copyPrimaryCredential: document.getElementById('copyCredential').checked,
+        })
+      )));
+      document.getElementById('retryPrimary').addEventListener('click', () => runRecoveryAction(() => (
+        api.retryPrimaryProfile()
+      )));
+      document.getElementById('recoverTransaction').addEventListener('click', () => runRecoveryAction(() => (
+        api.recoverProfileTransaction()
+      )));
+      document.getElementById('returnPrimary').addEventListener('click', () => runRecoveryAction(() => (
+        api.returnPrimaryProfile()
+      )));
+      document.getElementById('revealProfile').addEventListener('click', () => (
+        api.revealRecoveryPath({ target: 'primary' })
+      ));
+      document.getElementById('revealBackups').addEventListener('click', () => (
+        api.revealRecoveryPath({ target: 'backups' })
+      ));
+      document.getElementById('copyDiagnostics').addEventListener('click', async () => {
+        if (await api.copyRecoveryDiagnostics()) recoveryStatus.textContent = msg.diagnosticsCopied;
+      });
+      document.getElementById('recoveryQuit').addEventListener('click', () => api.quitApp());
     }
   </script>
 </body>

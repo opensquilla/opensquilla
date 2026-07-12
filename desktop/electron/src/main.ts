@@ -1,14 +1,27 @@
-import { app, BrowserWindow, dialog, Menu, ipcMain, nativeTheme, safeStorage, shell } from 'electron'
+import { app, BrowserWindow, clipboard, dialog, Menu, ipcMain, nativeTheme, safeStorage, shell } from 'electron'
 import electronUpdater from 'electron-updater'
 import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
-import { appendFileSync, createWriteStream, existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, rmdirSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
+import { appendFileSync, createWriteStream, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, statSync, writeFileSync } from 'node:fs'
 import { access, constants, readFile, readdir, rename, rm, stat, unlink, writeFile } from 'node:fs/promises'
 import net from 'node:net'
 import { homedir, tmpdir } from 'node:os'
 import { basename, dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { DESKTOP_LOCALES, resolveLocaleFromTags, type DesktopLocale } from './desktop-locale.js'
+import {
+  allProfileContexts as enumerateDesktopProfileContexts,
+  contextForProfile,
+  desktopProfileContextPath,
+  isRecoveryProfileId,
+  loadDesktopProfileContext,
+  profileKindEnvironment,
+  updateDesktopProfileContextFile,
+  type DesktopAttentionAcknowledgement,
+  type DesktopProfileContext,
+  type DesktopProfilePaths,
+} from './desktop-profile-context.js'
+import { DesktopWriterAdmission } from './desktop-writer-admission.js'
 import { buildCliInvocation } from './cli-invocation.js'
 import { secretStorageBackendForPolicy, shouldUseChromiumMockKeychainForPolicy } from './secret-storage-policy.js'
 import {
@@ -126,6 +139,43 @@ interface RuntimeLaunch {
   mode: 'bundled' | 'dev'
 }
 
+type RecoveryOutcome = 'ready' | 'attention' | 'recovery_required' | 'recovery_profile'
+
+interface RecoveryCandidate {
+  kind: string
+  path: string
+  exists: boolean
+  valid: boolean
+  configured: boolean
+  identity?: string
+  modified_at_ns?: number
+}
+
+interface RecoveryProtocolResult {
+  schema_version: number
+  outcome: RecoveryOutcome
+  stable_code: string
+  primary_home: string
+  effective_workspace: string | null
+  candidates: RecoveryCandidate[]
+  allowed_actions: string[]
+  transaction_id: string | null
+  revision: number
+}
+
+interface DesktopRecoveryViewState {
+  inspection: RecoveryProtocolResult | null
+  activeProfile: {
+    kind: 'primary' | 'recovery'
+    recoveryId: string | null
+    home: string
+  }
+  recoveryProfiles: { id: string; home: string }[]
+  blocked: boolean
+  busy: boolean
+  error: string | null
+}
+
 type BootPhaseId = 'profile' | 'gateway-start' | 'gateway-health' | 'control' | 'ready'
 
 interface BootStatus {
@@ -177,6 +227,7 @@ function applyDesktopNativeTheme(source: DesktopNativeThemeSource): { source: De
   return { source, shouldUseDarkColors: nativeTheme.shouldUseDarkColors }
 }
 let gatewayProcess: ChildProcessWithoutNullStreams | null = null
+let gatewayProfileKey: string | null = null
 let isQuitting = false
 // Opt stopGateway into the Windows HTTP graceful-drain path even while isQuitting
 // is set, for the update/uninstall flows that keep the main process alive and
@@ -216,7 +267,29 @@ let bootStatus: BootStatus = {
 }
 let bootError: BootError | null = null
 let forceOnboardingOnNextStartup = false
+let recoveryInspection: RecoveryProtocolResult | null = null
+let primaryRecoveryInspection: RecoveryProtocolResult | null = null
+let recoveryOperationBusy = false
+let recoveryOperationError: string | null = null
+let attentionPromptInFlight: Promise<void> | null = null
+let attentionPromptedThisSession = ''
 const gatewayProcessTreeChildren = new WeakSet<ChildProcessWithoutNullStreams>()
+const desktopWriters = new DesktopWriterAdmission()
+let desktopOpenFlowRevision = 0
+let desktopOpenFlowPromise: Promise<void> | null = null
+
+function invalidateDesktopOpenFlow(): number {
+  desktopOpenFlowRevision += 1
+  return desktopOpenFlowRevision
+}
+
+function beginDesktopWriterOperation(label: string): () => void {
+  return desktopWriters.begin(label)
+}
+
+function waitForDesktopWriterOperations(maximumActive = 0): Promise<void> {
+  return desktopWriters.waitForAtMost(maximumActive)
+}
 
 const gatewayState: GatewayState = {
   url: '',
@@ -226,8 +299,67 @@ const gatewayState: GatewayState = {
   logPath: '',
 }
 
+let desktopProfileContextCache: DesktopProfileContext | null = null
+// A persisted recovery choice is offered after restart, but a fresh Electron
+// process must not start that writer until the user explicitly confirms it.
+let activeRecoveryProfileConfirmedThisProcess = false
+
+function desktopProfileContext(): DesktopProfileContext {
+  if (!desktopProfileContextCache) {
+    desktopProfileContextCache = loadDesktopProfileContext(app.getPath('userData'))
+  }
+  return desktopProfileContextCache
+}
+
+function activeDesktopProfile(): DesktopProfilePaths {
+  return desktopProfileContext().active
+}
+
+function primaryDesktopProfile(): DesktopProfilePaths {
+  return desktopProfileContext().primary
+}
+
+function allProfileContexts(): DesktopProfilePaths[] {
+  return enumerateDesktopProfileContexts(app.getPath('userData'))
+}
+
+async function updateDesktopProfileContext(
+  updater: (current: DesktopProfileContext) => DesktopProfileContext,
+): Promise<DesktopProfileContext> {
+  const finishWriter = recoveryOperationBusy
+    ? () => {}
+    : beginDesktopWriterOperation('update Desktop profile context')
+  try {
+    const context = await updateDesktopProfileContextFile(app.getPath('userData'), updater)
+    desktopProfileContextCache = context
+    return context
+  } finally {
+    finishWriter()
+  }
+}
+
+async function selectDesktopProfile(
+  kind: 'primary' | 'recovery',
+  recoveryId: string | null = null,
+): Promise<void> {
+  invalidateDesktopOpenFlow()
+  await updateDesktopProfileContext((current) => contextForProfile(
+    app.getPath('userData'),
+    kind,
+    recoveryId,
+    new Date().toISOString(),
+    current.persisted.attention_acknowledgement,
+  ))
+  activeRecoveryProfileConfirmedThisProcess = kind === 'recovery'
+  createApplicationMenu()
+}
+
 function desktopHome(): string {
-  return join(app.getPath('userData'), 'opensquilla')
+  return activeDesktopProfile().home
+}
+
+function primaryDesktopHome(): string {
+  return primaryDesktopProfile().home
 }
 
 function desktopConfigPath(): string {
@@ -239,83 +371,57 @@ function desktopStateDir(): string {
 }
 
 function credentialPath(): string {
-  return join(app.getPath('userData'), 'desktop-credential.json')
+  return activeDesktopProfile().credentialPath
 }
 
-// ── Legacy desktop layout relocation (one-time) ────────────────────────────
-// Until 0.5.x the gateway child ran with OPENSQUILLA_STATE_DIR=desktopStateDir()
-// (<home>/state). The Python side treats that env var as the OpenSquilla HOME
-// ROOT, so home-derived data — managed skills, the default workspace with
-// MEMORY.md, session-archive, router self-learning, a user .env, and the
-// paths.state_dir() consumers that nested a second state/ level — landed one
-// level too deep. The gateway spawn now passes desktopHome(); this moves the
-// legacy nested layout up one level, once, before the first spawn with the new
-// env. Databases under state/ (sessions.db, scheduler.db, agents/) are pinned
-// by the TOML state_dir and were always correct — they are never touched.
-// Design: docs/features/legacy-home-migration-design.md (Phase 1).
-const DESKTOP_LAYOUT_MARKER = 'desktop-layout-v2.json'
-const LEGACY_HOME_ENTRIES = [
-  'skills',
-  'skills-taps.json',
-  'skills-lock.json',
-  'workspace',
-  'session-archive',
-  'router',
-  '.env',
-]
-
-function relocateLegacyDesktopStateLayout(): void {
-  const home = desktopHome()
-  const state = desktopStateDir()
-  const markerPath = join(home, DESKTOP_LAYOUT_MARKER)
-  if (existsSync(markerPath)) return
-  if (!existsSync(state)) {
-    // Fresh profile: nothing nested to move; stamp so we never rescan.
-    mkdirSync(home, { recursive: true })
-    writeFileSync(markerPath, JSON.stringify({ migratedAt: new Date().toISOString(), moved: [] }) + '\n', 'utf-8')
-    return
-  }
-  const moved: string[] = []
-  let failed = false
-  const moveUp = (sourceDir: string, name: string, label: string) => {
-    const src = join(sourceDir, name)
-    if (!existsSync(src)) return
-    const dst = join(sourceDir === state ? home : state, name)
-    try {
-      if (existsSync(dst)) {
-        // Never merge or overwrite: park the legacy copy beside the new one.
-        const parked = join(sourceDir, `${name}.pre-relocation`)
-        if (!existsSync(parked)) renameSync(src, parked)
-      } else {
-        renameSync(src, dst)
-        moved.push(label)
-      }
-    } catch (error) {
-      failed = true
-      desktopLog('desktop_layout_relocation_entry_failed', { name: label, error: String(error) })
-    }
-  }
-  for (const name of LEGACY_HOME_ENTRIES) moveUp(state, name, name)
-  // Flatten the nested state/state tree written by direct paths.state_dir()
-  // consumers (router calibration, sandbox grants, approval queue, safety log).
-  const nested = join(state, 'state')
-  if (existsSync(nested)) {
-    for (const name of readdirSync(nested)) moveUp(nested, name, `state/${name}`)
-    try {
-      if (readdirSync(nested).length === 0) rmdirSync(nested)
-    } catch {
-      // A non-empty or locked nested dir stays in place; harmless.
-    }
-  }
-  if (failed) {
-    // No marker on failure: a locked entry (e.g. a lingering gateway) defers
-    // the whole relocation to the next boot instead of stranding half of it.
-    desktopLog('desktop_layout_relocation_deferred', { moved })
-    return
-  }
-  writeFileSync(markerPath, JSON.stringify({ migratedAt: new Date().toISOString(), moved }) + '\n', 'utf-8')
-  if (moved.length > 0) desktopLog('desktop_layout_relocated', { moved })
+function desktopLogsDir(): string {
+  return activeDesktopProfile().logsDir
 }
+
+function desktopProfileKey(profile = activeDesktopProfile()): string {
+  return profile.kind === 'primary' ? 'primary' : `recovery:${profile.recoveryId}`
+}
+
+const PROFILE_SCOPED_DATA_ENV = [
+  'OPENSQUILLA_HOME',
+  'OPENSQUILLA_GATEWAY_STATE_DIR',
+  'OPENSQUILLA_GATEWAY_WORKSPACE_DIR',
+  'OPENSQUILLA_WORKSPACE_DIR',
+  'OPENSQUILLA_MEMORY_DIR',
+  'OPENSQUILLA_SESSION_ARCHIVE_DIR',
+  'OPENSQUILLA_LOG_DIR',
+  'OPENSQUILLA_TURN_CALL_LOG_DIR',
+  'OPENSQUILLA_LLM_TRACE_PATH',
+  'OPENSQUILLA_RUNTIME_EVENTS_PATH',
+  'OPENSQUILLA_PATCH_EVIDENCE_LEDGER_PATH',
+] as const
+
+function desktopChildEnvironment(
+  profile: DesktopProfilePaths,
+  additions: NodeJS.ProcessEnv = {},
+): NodeJS.ProcessEnv {
+  const environment: NodeJS.ProcessEnv = { ...process.env }
+  if (profile.kind === 'recovery') {
+    // Recovery profiles are isolated homes and must not inherit primary or
+    // external live data roots from the Desktop process environment.
+    for (const name of PROFILE_SCOPED_DATA_ENV) delete environment[name]
+  }
+  return {
+    ...environment,
+    ...additions,
+    OPENSQUILLA_DESKTOP: '1',
+    OPENSQUILLA_INSTALL_METHOD: 'desktop',
+    OPENSQUILLA_PROFILE_KIND: profileKindEnvironment(profile.kind),
+    OPENSQUILLA_GATEWAY_CONFIG_PATH: join(profile.home, 'config.toml'),
+    // Historical name retained for compatibility: this is H, never H/state.
+    OPENSQUILLA_STATE_DIR: profile.home,
+  }
+}
+
+// ── RC4 Desktop layout recovery boundary ───────────────────────────────
+// RC3's direct TypeScript relocation is intentionally retired. RC4 evaluates
+// historical layouts through the Python recovery engine before any profile
+// writer starts; ambiguous or conflicting trees are never moved here.
 
 // ── Legacy home import detection ────────────────────────────────────────────
 // Quick read-only scan for a legacy OpenSquilla home this desktop profile could
@@ -512,39 +618,6 @@ function sourceWasImportedToTarget(source: string, target: string): boolean {
     // best-effort source marker is written. Fall through to the receipt scan.
   }
   return targetHasAppliedImportReceipt(source, target)
-}
-
-// The Python importer publishes a complete sibling staging tree by renaming the
-// old target aside and then renaming staging into place. A crash between those
-// two operations leaves this durable journal. Recover it before onboarding or
-// layout relocation can create a fresh empty target over the missing profile.
-function recoverInterruptedDesktopImport(): void {
-  const target = desktopHome()
-  const parent = dirname(target)
-  const journal = join(parent, `.${basename(target)}.import-commit.json`)
-  if (!existsSync(journal)) return
-  const payload = JSON.parse(readFileSync(journal, 'utf8')) as Record<string, unknown>
-  const recordedTarget = String(payload.target || '')
-  const staging = String(payload.staging || '')
-  const backup = String(payload.backup || '')
-  const phase = String(payload.phase || '')
-  const validPhase = ['prepared', 'target-backed-up', 'published'].includes(phase)
-  const validStaging = dirname(resolve(staging)) === resolve(parent)
-    && basename(staging).startsWith('.opensquilla-import-')
-  const validBackup = dirname(resolve(backup)) === resolve(parent)
-    && basename(backup).startsWith(`${basename(target)}.backup.`)
-  if (!resolvedPathsEqual(recordedTarget, target) || !validPhase || !validStaging || !validBackup) {
-    throw new Error(`Unsafe or malformed desktop import recovery journal: ${journal}`)
-  }
-
-  if (!existsSync(target) && existsSync(backup)) {
-    renameSync(backup, target)
-  } else if (!existsSync(target) && phase !== 'prepared') {
-    throw new Error('Interrupted desktop import has no target or rollback backup.')
-  }
-  rmSync(staging, { recursive: true, force: true })
-  unlinkSync(journal)
-  desktopLog('migration_recovered', { phase, target })
 }
 
 function detectLegacyImportCandidate(): LegacyImportCandidate | null {
@@ -1508,6 +1581,8 @@ async function loadDesktopCredential(): Promise<DesktopConnection | null> {
 }
 
 async function saveDesktopCredential(payload: OnboardingPayload): Promise<DesktopConnection> {
+  const targetProfile = activeDesktopProfile()
+  const expectedCredential = await readOptionalDesktopText(targetProfile.credentialPath)
   const existing = await loadDesktopCredential()
   const provider = normalizeProvider(payload.provider ?? existing?.provider)
   const defaults = providerDefaults(provider)
@@ -1581,10 +1656,18 @@ async function saveDesktopCredential(payload: OnboardingPayload): Promise<Deskto
     updatedAt: now,
   }
 
-  mkdirSync(app.getPath('userData'), { recursive: true })
-  await atomicWriteFile(credentialPath(), JSON.stringify(credential, null, 2), 0o600)
-  await writeDesktopConfig(credential)
-  return credential
+  const finishWriter = beginDesktopWriterOperation('save desktop settings')
+  try {
+    await applyDesktopSettingsPair(
+      targetProfile,
+      credential,
+      JSON.stringify(credential, null, 2),
+      expectedCredential,
+    )
+    return credential
+  } finally {
+    finishWriter()
+  }
 }
 
 // Sections the desktop config template owns and regenerates from the credential
@@ -1595,7 +1678,7 @@ const DESKTOP_OWNED_CONFIG_SECTIONS = ['llm', 'squilla_router', 'llm_ensemble', 
 // top-level key present in config.toml was written by the Control UI / RPC (which
 // serializes the whole GatewayConfig, so scalar fields like
 // llm_request_timeout_seconds land in the TOML preamble) and must be preserved.
-const DESKTOP_OWNED_CONFIG_PREAMBLE_KEYS = ['state_dir', 'search_provider', 'search_api_key_env']
+const DESKTOP_OWNED_CONFIG_PREAMBLE_KEYS = ['search_provider', 'search_api_key_env']
 
 function isDesktopOwnedConfigSection(header: string): boolean {
   const name = header.trim()
@@ -1625,38 +1708,62 @@ function foreignConfigPreambleLines(raw: string): string[] {
   const out: string[] = []
   for (const rawLine of raw.split(/\r?\n/)) {
     if (/^\s*\[/.test(rawLine)) break // reached the first section header
-    const key = rawLine.match(/^\s*([A-Za-z0-9_-]+)\s*=/)
+    const key = rawLine.match(/^\s*(?:([A-Za-z0-9_-]+)|"([A-Za-z0-9_-]+)"|'([A-Za-z0-9_-]+)')\s*=/)
     if (!key) continue // blank line or comment
-    if (DESKTOP_OWNED_CONFIG_PREAMBLE_KEYS.includes(key[1] ?? '')) continue
+    const keyName = key[1] || key[2] || key[3] || ''
+    if (DESKTOP_OWNED_CONFIG_PREAMBLE_KEYS.includes(keyName)) continue
     out.push(rawLine)
   }
   return out
 }
 
-async function writeDesktopConfig(credential: DesktopConnection): Promise<void> {
-  mkdirSync(desktopHome(), { recursive: true })
-  mkdirSync(desktopStateDir(), { recursive: true })
-  // Only the desktop-owned sections/keys are regenerated from the credential; any
-  // other sections (channels, memory, sandbox, mcp, scheduler, …) AND top-level
-  // scalar keys (llm_request_timeout_seconds, log_level, …) the Control UI wrote
-  // via RPC are read back and preserved, so a settings save no longer wipes live
-  // configuration.
+async function readOptionalDesktopText(path: string): Promise<string | null> {
+  try {
+    return await readFile(path, 'utf8')
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null
+    throw error
+  }
+}
+
+async function preflightDesktopConfigWrite(
+  profile = activeDesktopProfile(),
+): Promise<RecoveryProtocolResult> {
+  const inspection = await inspectDesktopProfile(profile)
+  if (inspection.outcome === 'recovery_required') {
+    if (desktopProfileKey() === desktopProfileKey(profile)) {
+      recoveryInspection = inspection
+      publishRecoveryState()
+    }
+    throw new Error(
+      `Desktop profile requires recovery before settings can be written (${inspection.stable_code}).`,
+    )
+  }
+  return inspection
+}
+
+function renderDesktopConfigAfterPreflight(
+  profile: DesktopProfilePaths,
+  credential: DesktopConnection,
+  inspection: RecoveryProtocolResult,
+  existingRaw: string | null,
+): string {
   let preservedForeignSections: string[] = []
   let preservedForeignPreamble: string[] = []
-  try {
-    const existingRaw = readFileSync(desktopConfigPath(), 'utf8')
+  if (existingRaw !== null) {
     preservedForeignSections = foreignConfigSectionLines(existingRaw)
     preservedForeignPreamble = foreignConfigPreambleLines(existingRaw)
-  } catch {
-    // No existing config to preserve (fresh install) or unreadable.
   }
-  const config = [
-    `state_dir = ${tomlString(desktopStateDir())}`,
+  const hasPersistedState = preservedForeignPreamble.some((line) => (
+    /^\s*(?:state_dir|"state_dir"|'state_dir')\s*=/.test(line)
+  ))
+  const authoritativeState = inspection.candidates.find((candidate) => candidate.kind === 'state')?.path
+  return [
+    ...(!hasPersistedState && authoritativeState && resolvedPathsEqual(authoritativeState, join(profile.home, 'state'))
+      ? [`state_dir = ${tomlString(join(profile.home, 'state'))}`]
+      : []),
     `search_provider = ${tomlString(credential.searchProvider)}`,
     ...(credential.searchApiKeyEnv ? [`search_api_key_env = ${tomlString(credential.searchApiKeyEnv)}`] : []),
-    // search_max_results is intentionally omitted so the gateway's own default
-    // governs instead of pinning it to a hardcoded value.
-    // Preserved RPC-written top-level keys stay in the preamble (before any table).
     ...preservedForeignPreamble,
     '',
     '[llm]',
@@ -1675,7 +1782,96 @@ async function writeDesktopConfig(credential: DesktopConnection): Promise<void> 
     '',
     ...(preservedForeignSections.length ? [...preservedForeignSections, ''] : []),
   ].join('\n')
-  await atomicWriteFile(desktopConfigPath(), config, 0o600)
+}
+
+async function applyDesktopSettingsPair(
+  profile: DesktopProfilePaths,
+  credential: DesktopConnection,
+  candidateCredential: string,
+  expectedCredential: string | null,
+): Promise<RecoveryProtocolResult> {
+  const targetProfileKey = desktopProfileKey(profile)
+  if (desktopProfileKey() !== targetProfileKey) {
+    throw new Error('The active Desktop profile changed before settings could be saved; retry.')
+  }
+  const ownedGatewayWasRunning = Boolean(gatewayProcess && gatewayState.owned)
+  if (!ownedGatewayWasRunning && gatewayState.url && await healthCheck(gatewayState.url)) {
+    throw new Error('A gateway is still serving this profile; stop it and retry the settings save.')
+  }
+  if (ownedGatewayWasRunning) await stopOwnedGatewayAndWait()
+  let restartSafe = false
+  try {
+    if (desktopProfileKey() !== targetProfileKey) {
+      throw new Error('The active Desktop profile changed while its gateway was stopping; retry.')
+    }
+    const inspection = await preflightDesktopConfigWrite(profile)
+    const expectedConfig = await readOptionalDesktopText(join(profile.home, 'config.toml'))
+    const currentCredential = await readOptionalDesktopText(profile.credentialPath)
+    if (currentCredential !== expectedCredential) {
+      throw new Error('Desktop credential changed while settings were being prepared; retry.')
+    }
+    const candidateConfig = renderDesktopConfigAfterPreflight(
+      profile,
+      credential,
+      inspection,
+      expectedConfig,
+    )
+    const result = await runRecoveryCli(
+      profile,
+      [
+        'apply-settings',
+        '--home', profile.home,
+        '--transaction-id', inspection.transaction_id ?? '',
+        '--expected-revision', String(inspection.revision),
+        '--json',
+      ],
+      JSON.stringify({
+        expected_config: expectedConfig,
+        config: candidateConfig,
+        expected_credential: expectedCredential,
+        credential: candidateCredential,
+      }),
+    )
+    recoveryInspection = result
+    if (profile.kind === 'primary') primaryRecoveryInspection = result
+    restartSafe = result.outcome !== 'recovery_required'
+    publishRecoveryState()
+    if (!restartSafe) {
+      throw new Error(`Desktop settings were not applied (${result.stable_code}).`)
+    }
+    return result
+  } finally {
+    if (ownedGatewayWasRunning && desktopProfileKey() === targetProfileKey) {
+      if (!restartSafe) {
+        const after = await inspectDesktopProfile(profile)
+        recoveryInspection = after
+        if (profile.kind === 'primary') primaryRecoveryInspection = after
+        restartSafe = after.outcome !== 'recovery_required'
+      }
+      if (restartSafe) {
+        clearReusableGatewayState()
+        bootError = null
+        void openOrResumeDesktopApp()
+      } else {
+        await restoreMainWindowToBootPage()
+        publishRecoveryState()
+      }
+    }
+  }
+}
+
+async function writeDesktopConfig(credential: DesktopConnection): Promise<void> {
+  const profile = activeDesktopProfile()
+  const expectedCredential = await readOptionalDesktopText(profile.credentialPath)
+  if (expectedCredential === null) {
+    throw new Error('Desktop credential disappeared before config initialization.')
+  }
+  const finishWriter = beginDesktopWriterOperation('write desktop config')
+  try {
+    await applyDesktopSettingsPair(profile, credential, expectedCredential, expectedCredential)
+  } finally {
+    finishWriter()
+  }
 }
 
 function settingsSnapshot(connection: DesktopConnection | null): DesktopSettingsSnapshot {
@@ -1722,14 +1918,15 @@ async function saveDesktopSettings(payload: DesktopSettingsPayload): Promise<Des
 }
 
 async function resetDesktopSettings(): Promise<void> {
-  // Drop the credential AND the generated config so the next launch re-runs
-  // onboarding and reseeds a clean config (the config is now the RPC-owned
-  // source of truth, so it is no longer regenerated on every boot).
+  // Reset setup is intentionally non-destructive: preserve config.toml,
+  // workspace identity/memory, and state databases. Only the active profile's
+  // provider credential and primary onboarding bookkeeping are cleared.
   await rm(credentialPath(), { force: true })
-  await rm(desktopConfigPath(), { force: true })
-  transientPendingMigrationProviderSetup = null
-  await rm(pendingMigrationProviderSetupPath(), { force: true })
-  await rm(desktopMigrationResultPath(), { force: true })
+  if (activeDesktopProfile().kind === 'primary') {
+    transientPendingMigrationProviderSetup = null
+    await rm(pendingMigrationProviderSetupPath(), { force: true })
+    await rm(desktopMigrationResultPath(), { force: true })
+  }
 }
 
 function clearReusableGatewayState(): void {
@@ -1738,6 +1935,7 @@ function clearReusableGatewayState(): void {
   gatewayState.owned = false
   gatewayState.status = 'stopped'
   gatewayState.error = undefined
+  gatewayProfileKey = null
 }
 
 interface ArtifactOpenRequest {
@@ -2051,6 +2249,16 @@ const DESKTOP_MESSAGES: Record<DesktopLocale, Record<string, string>> = {
     'menu.checkForUpdates': 'Check for Updates…',
     'menu.relaunchToUpdate': 'Relaunch to Update',
     'menu.downloadDiagnostics': 'Download Diagnostics…',
+    'menu.profile': 'Profile',
+    'menu.showProfile': 'Show Active Profile',
+    'menu.reviewProfile': 'Review Profile Paths…',
+    'menu.switchRecovery': 'Switch to Recovery Profile',
+    'menu.returnPrimary': 'Return to Primary Profile',
+    'attention.title': 'Profile paths need attention',
+    'attention.message': 'OpenSquilla can keep using the current workspace. Review the detected paths now or keep the current path.',
+    'attention.later': 'Later',
+    'attention.keepCurrent': 'Keep Current Path',
+    'attention.chooseWorkspace': 'Choose Workspace…',
     'update.newVersionTitle': 'A new version is available',
     'update.newVersionDetail': 'OpenSquilla {version} is available. Download it now?',
     'update.download': 'Download',
@@ -2163,6 +2371,16 @@ const DESKTOP_MESSAGES: Record<DesktopLocale, Record<string, string>> = {
     'menu.checkForUpdates': '检查更新…',
     'menu.relaunchToUpdate': '重启以更新',
     'menu.downloadDiagnostics': '下载诊断信息…',
+    'menu.profile': '配置',
+    'menu.showProfile': '显示当前配置',
+    'menu.reviewProfile': '检查配置路径…',
+    'menu.switchRecovery': '切换到恢复配置',
+    'menu.returnPrimary': '返回主配置',
+    'attention.title': '配置路径需要处理',
+    'attention.message': 'OpenSquilla 可以继续使用当前工作区。你可以现在检查检测到的路径，或保留当前路径。',
+    'attention.later': '稍后',
+    'attention.keepCurrent': '保留当前路径',
+    'attention.chooseWorkspace': '选择工作区…',
     'update.newVersionTitle': '有新版本可用',
     'update.newVersionDetail': 'OpenSquilla {version} 已发布，现在下载吗？',
     'update.download': '下载',
@@ -2275,6 +2493,16 @@ const DESKTOP_MESSAGES: Record<DesktopLocale, Record<string, string>> = {
     'menu.checkForUpdates': 'アップデートを確認…',
     'menu.relaunchToUpdate': '再起動してアップデート',
     'menu.downloadDiagnostics': '診断情報をダウンロード…',
+    'menu.profile': 'プロファイル',
+    'menu.showProfile': '使用中のプロファイルを表示',
+    'menu.reviewProfile': 'プロファイルパスを確認…',
+    'menu.switchRecovery': '復旧プロファイルに切り替え',
+    'menu.returnPrimary': 'プライマリプロファイルに戻る',
+    'attention.title': 'プロファイルパスの確認が必要です',
+    'attention.message': '現在のワークスペースをそのまま使用できます。検出されたパスを確認するか、現在のパスを保持してください。',
+    'attention.later': '後で',
+    'attention.keepCurrent': '現在のパスを保持',
+    'attention.chooseWorkspace': 'ワークスペースを選択…',
     'update.newVersionTitle': '新しいバージョンが利用可能です',
     'update.newVersionDetail': 'OpenSquilla {version} が利用可能です。今すぐダウンロードしますか？',
     'update.download': 'ダウンロード',
@@ -2385,6 +2613,16 @@ const DESKTOP_MESSAGES: Record<DesktopLocale, Record<string, string>> = {
     'menu.checkForUpdates': 'Rechercher les mises à jour…',
     'menu.relaunchToUpdate': 'Relancer pour mettre à jour',
     'menu.downloadDiagnostics': 'Télécharger le diagnostic…',
+    'menu.profile': 'Profil',
+    'menu.showProfile': 'Afficher le profil actif',
+    'menu.reviewProfile': 'Vérifier les chemins du profil…',
+    'menu.switchRecovery': 'Basculer vers un profil de récupération',
+    'menu.returnPrimary': 'Revenir au profil principal',
+    'attention.title': 'Les chemins du profil nécessitent votre attention',
+    'attention.message': 'OpenSquilla peut continuer avec l’espace actuel. Vérifiez les chemins détectés ou conservez le chemin actuel.',
+    'attention.later': 'Plus tard',
+    'attention.keepCurrent': 'Conserver le chemin actuel',
+    'attention.chooseWorkspace': 'Choisir un espace…',
     'update.newVersionTitle': 'Une nouvelle version est disponible',
     'update.newVersionDetail': 'OpenSquilla {version} est disponible. Télécharger maintenant ?',
     'update.download': 'Télécharger',
@@ -2495,6 +2733,16 @@ const DESKTOP_MESSAGES: Record<DesktopLocale, Record<string, string>> = {
     'menu.checkForUpdates': 'Nach Updates suchen…',
     'menu.relaunchToUpdate': 'Zum Aktualisieren neu starten',
     'menu.downloadDiagnostics': 'Diagnose herunterladen…',
+    'menu.profile': 'Profil',
+    'menu.showProfile': 'Aktives Profil anzeigen',
+    'menu.reviewProfile': 'Profilpfade prüfen…',
+    'menu.switchRecovery': 'Zum Wiederherstellungsprofil wechseln',
+    'menu.returnPrimary': 'Zum Hauptprofil zurückkehren',
+    'attention.title': 'Profilpfade benötigen Aufmerksamkeit',
+    'attention.message': 'OpenSquilla kann den aktuellen Arbeitsbereich weiterverwenden. Prüfen Sie die erkannten Pfade oder behalten Sie den aktuellen Pfad.',
+    'attention.later': 'Später',
+    'attention.keepCurrent': 'Aktuellen Pfad behalten',
+    'attention.chooseWorkspace': 'Arbeitsbereich wählen…',
     'update.newVersionTitle': 'Eine neue Version ist verfügbar',
     'update.newVersionDetail': 'OpenSquilla {version} ist verfügbar. Jetzt herunterladen?',
     'update.download': 'Herunterladen',
@@ -2605,6 +2853,16 @@ const DESKTOP_MESSAGES: Record<DesktopLocale, Record<string, string>> = {
     'menu.checkForUpdates': 'Buscar actualizaciones…',
     'menu.relaunchToUpdate': 'Reiniciar para actualizar',
     'menu.downloadDiagnostics': 'Descargar diagnóstico…',
+    'menu.profile': 'Perfil',
+    'menu.showProfile': 'Mostrar perfil activo',
+    'menu.reviewProfile': 'Revisar rutas del perfil…',
+    'menu.switchRecovery': 'Cambiar al perfil de recuperación',
+    'menu.returnPrimary': 'Volver al perfil principal',
+    'attention.title': 'Las rutas del perfil necesitan atención',
+    'attention.message': 'OpenSquilla puede seguir usando el espacio actual. Revisa las rutas detectadas o conserva la ruta actual.',
+    'attention.later': 'Más tarde',
+    'attention.keepCurrent': 'Conservar ruta actual',
+    'attention.chooseWorkspace': 'Elegir espacio…',
     'update.newVersionTitle': 'Hay una nueva versión disponible',
     'update.newVersionDetail': 'OpenSquilla {version} está disponible. ¿Descargar ahora?',
     'update.download': 'Descargar',
@@ -2951,7 +3209,15 @@ function desktopT(key: string): string {
 }
 
 function createApplicationMenu(): void {
-  if (!shouldUseNativeApplicationMenu) {
+  const recoveryProfileActive = activeDesktopProfile().kind === 'recovery'
+  const attentionActive = recoveryInspection?.outcome === 'attention'
+  const availableRecoveryProfiles = allProfileContexts().filter((profile) => (
+    profile.kind === 'recovery' && profile.recoveryId
+  ))
+  const profileMenuActive = recoveryProfileActive
+    || attentionActive
+    || availableRecoveryProfiles.length > 0
+  if (!shouldUseNativeApplicationMenu && !profileMenuActive) {
     Menu.setApplicationMenu(null)
     return
   }
@@ -2987,11 +3253,81 @@ function createApplicationMenu(): void {
   )
   appSubmenu.push({ type: 'separator' }, { role: 'quit' })
 
+  const profileSubmenu: Electron.MenuItemConstructorOptions[] = [
+    {
+      label: desktopT('menu.showProfile'),
+      click: () => {
+        const home = activeDesktopProfile().home
+        if (existsSync(home)) void shell.showItemInFolder(home)
+        else void shell.openPath(dirname(home)).catch(() => null)
+      },
+    },
+  ]
+  if (attentionActive && recoveryInspection) {
+    profileSubmenu.push({
+      label: desktopT('menu.reviewProfile'),
+      click: () => {
+        if (recoveryInspection) void showAttentionPrompt(recoveryInspection, true)
+      },
+    })
+  }
+  if (availableRecoveryProfiles.length > 0) {
+    profileSubmenu.push(
+      { type: 'separator' },
+      {
+        label: desktopT('menu.switchRecovery'),
+        submenu: availableRecoveryProfiles.map((profile) => ({
+          label: `Recovery ${profile.recoveryId?.slice(0, 8)}`,
+          enabled: profile.recoveryId !== activeDesktopProfile().recoveryId,
+          click: () => {
+            void withRecoveryOperation(() => launchRecoveryProfile({
+              mode: 'continue',
+              recoveryId: profile.recoveryId,
+              copyPrimaryCredential: false,
+            })).then((result) => {
+              if (result.ok) return
+              void dialog.showMessageBox({
+                type: 'warning',
+                buttons: ['OK'],
+                message: desktopT('menu.switchRecovery'),
+                detail: result.error,
+              })
+            })
+          },
+        })),
+      },
+    )
+  }
+  if (recoveryProfileActive) {
+    profileSubmenu.push(
+      { type: 'separator' },
+      {
+        label: desktopT('menu.returnPrimary'),
+        click: () => {
+          void withRecoveryOperation(retryOrReturnPrimaryProfile).then((result) => {
+            if (!result.ok || result.value.outcome !== 'recovery_required') return
+            void dialog.showMessageBox({
+              type: 'warning',
+              buttons: ['OK'],
+              message: desktopT('menu.returnPrimary'),
+              detail: result.value.stable_code,
+            })
+          })
+        },
+      },
+    )
+  }
+
   const template: Electron.MenuItemConstructorOptions[] = [
     {
       label: app.name,
       submenu: appSubmenu,
     },
+    ...(profileMenuActive ? [{
+      label: desktopT('menu.profile'),
+      submenu: profileSubmenu,
+      enabled: currentOnboardingWindow() === null,
+    }] : []),
     {
       label: desktopT('menu.edit'),
       submenu: [
@@ -4646,7 +4982,9 @@ function onboardingHtml(
 }
 
 async function runOnboarding(): Promise<DesktopConnection> {
-  const pendingProviderSetup = await loadPendingMigrationProviderSetup()
+  const pendingProviderSetup = activeDesktopProfile().kind === 'primary'
+    ? await loadPendingMigrationProviderSetup()
+    : null
   const existing = await loadDesktopCredential()
   // A saved credential encrypted with the OS keychain that this session cannot
   // read (keychain locked or unavailable) must not be treated as "no credential":
@@ -4680,7 +5018,11 @@ async function runOnboarding(): Promise<DesktopConnection> {
   // No usable credential: this is the first-run (or reset) path, the only
   // interaction point before the gateway first boots — so offer the legacy home
   // import here, before provider setup (the import must precede first boot).
-  onboardingMigrationCandidate = pendingProviderSetup ? null : detectLegacyImportCandidate()
+  onboardingMigrationCandidate = (
+    activeDesktopProfile().kind === 'primary' && !pendingProviderSetup
+      ? detectLegacyImportCandidate()
+      : null
+  )
   onboardingMigrationPreviewApprovedAt = 0
 
   return new Promise((resolveCredential, rejectCredential) => {
@@ -4857,6 +5199,348 @@ async function resolveGatewayRuntime(): Promise<RuntimeLaunch> {
   }
 }
 
+const RECOVERY_PROTOCOL_SCHEMA_VERSION = 1
+const RECOVERY_STDOUT_LIMIT = 2 * 1024 * 1024
+const RECOVERY_COMMAND_TIMEOUT_MS = 60_000
+const RECOVERY_OUTCOMES = new Set<RecoveryOutcome>([
+  'ready',
+  'attention',
+  'recovery_required',
+  'recovery_profile',
+])
+
+function recoveryRecord(value: unknown): Record<string, unknown> | null {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null
+}
+
+function parseRecoveryProtocol(value: unknown): RecoveryProtocolResult {
+  const record = recoveryRecord(value)
+  if (!record) throw new Error('Recovery command returned an invalid protocol object.')
+  const outcome = String(record.outcome || '') as RecoveryOutcome
+  if (record.schema_version !== RECOVERY_PROTOCOL_SCHEMA_VERSION) {
+    throw new Error('Recovery command returned an unsupported protocol schema.')
+  }
+  if (!RECOVERY_OUTCOMES.has(outcome)) {
+    throw new Error('Recovery command returned an invalid outcome.')
+  }
+  if (typeof record.stable_code !== 'string' || !record.stable_code) {
+    throw new Error('Recovery command omitted its stable code.')
+  }
+  if (typeof record.primary_home !== 'string' || !record.primary_home) {
+    throw new Error('Recovery command omitted its primary home.')
+  }
+  if (record.effective_workspace !== null && typeof record.effective_workspace !== 'string') {
+    throw new Error('Recovery command returned an invalid workspace.')
+  }
+  if (!Array.isArray(record.candidates) || !Array.isArray(record.allowed_actions)) {
+    throw new Error('Recovery command returned invalid recovery actions.')
+  }
+  const candidates = record.candidates.map((value) => {
+    const candidate = recoveryRecord(value)
+    if (
+      !candidate
+      || typeof candidate.kind !== 'string'
+      || typeof candidate.path !== 'string'
+      || typeof candidate.exists !== 'boolean'
+      || typeof candidate.valid !== 'boolean'
+      || typeof candidate.configured !== 'boolean'
+    ) {
+      throw new Error('Recovery command returned an invalid workspace candidate.')
+    }
+    return {
+      kind: candidate.kind,
+      path: candidate.path,
+      exists: candidate.exists,
+      valid: candidate.valid,
+      configured: candidate.configured,
+      ...(typeof candidate.identity === 'string' ? { identity: candidate.identity } : {}),
+      ...(typeof candidate.modified_at_ns === 'number'
+        ? { modified_at_ns: candidate.modified_at_ns }
+        : {}),
+    }
+  })
+  const allowedActions = record.allowed_actions.map((action) => {
+    if (typeof action !== 'string') throw new Error('Recovery command returned an invalid action.')
+    return action
+  })
+  if (record.transaction_id !== null && typeof record.transaction_id !== 'string') {
+    throw new Error('Recovery command returned an invalid transaction id.')
+  }
+  if (!Number.isSafeInteger(record.revision) || Number(record.revision) < 0) {
+    throw new Error('Recovery command returned an invalid revision.')
+  }
+  return {
+    schema_version: RECOVERY_PROTOCOL_SCHEMA_VERSION,
+    outcome,
+    stable_code: record.stable_code,
+    primary_home: record.primary_home,
+    effective_workspace: record.effective_workspace as string | null,
+    candidates,
+    allowed_actions: allowedActions,
+    transaction_id: record.transaction_id as string | null,
+    revision: Number(record.revision),
+  }
+}
+
+function recoveryFailureResult(home: string, stableCode: string): RecoveryProtocolResult {
+  return {
+    schema_version: RECOVERY_PROTOCOL_SCHEMA_VERSION,
+    outcome: 'recovery_required',
+    stable_code: stableCode,
+    primary_home: home,
+    effective_workspace: null,
+    candidates: [],
+    allowed_actions: [
+      'continue-recovery-profile',
+      'create-recovery-profile',
+      'retry-primary-profile',
+      'show-backups',
+      'copy-diagnostics',
+    ],
+    transaction_id: null,
+    revision: 0,
+  }
+}
+
+async function runRecoveryCli(
+  profile: DesktopProfilePaths,
+  commandArgs: string[],
+  stdinPayload?: string,
+): Promise<RecoveryProtocolResult> {
+  const mutating = commandArgs[0] !== 'inspect'
+  const kindAwareCommands = new Set(['inspect', 'reconcile', 'choose-workspace'])
+  const effectiveArgs = kindAwareCommands.has(commandArgs[0] || '')
+    && !commandArgs.includes('--profile-kind')
+    ? [...commandArgs, '--profile-kind', profileKindEnvironment(profile.kind)]
+    : commandArgs
+  const finishWriter = mutating && !recoveryOperationBusy
+    ? beginDesktopWriterOperation(`recovery ${commandArgs[0] || 'operation'}`)
+    : () => {}
+  try {
+    const runtime = await resolveGatewayRuntime()
+    const prefix = runtime.args.slice(0, -2)
+    return await new Promise((resolveResult, rejectResult) => {
+      const child = spawn(runtime.command, [...prefix, 'recovery', ...effectiveArgs], {
+        cwd: runtime.cwd,
+        windowsHide: true,
+        stdio: ['pipe', 'pipe', 'pipe'],
+        env: desktopChildEnvironment(profile, {
+          OPENSQUILLA_RECOVERY_OFFLINE: '1',
+          PYTHONUNBUFFERED: '1',
+          PYTHONUTF8: '1',
+          PYTHONIOENCODING: 'utf-8:replace',
+        }),
+      })
+      let stdout = ''
+      let oversized = false
+      let settled = false
+      let timeout: NodeJS.Timeout | null = null
+      const finish = (error?: Error, result?: RecoveryProtocolResult) => {
+        if (settled) return
+        settled = true
+        if (timeout) clearTimeout(timeout)
+        if (error) rejectResult(error)
+        else resolveResult(result as RecoveryProtocolResult)
+      }
+      if (!mutating) {
+        timeout = setTimeout(() => {
+          child.kill()
+          finish(new Error('Recovery command timed out.'))
+        }, RECOVERY_COMMAND_TIMEOUT_MS)
+        timeout.unref()
+      }
+      child.stdin.once('error', () => {})
+      child.stdin.end(stdinPayload ?? '')
+      child.stdout.on('data', (chunk) => {
+        if (oversized) return
+        stdout += String(chunk)
+        if (stdout.length > RECOVERY_STDOUT_LIMIT) {
+          oversized = true
+          if (!mutating) child.kill()
+        }
+      })
+      // The renderer receives only parsed protocol JSON. stderr is drained but
+      // never copied into diagnostics because it may contain local details.
+      child.stderr.resume()
+      child.once('error', (error) => finish(
+        error instanceof Error ? error : new Error(String(error)),
+      ))
+      child.once('close', (code) => {
+        if (oversized) return finish(new Error('Recovery command output exceeded its limit.'))
+        try {
+          return finish(undefined, parseRecoveryProtocol(JSON.parse(stdout)))
+        } catch (error) {
+          if (code !== 0) {
+            return finish(new Error(`Recovery command failed with exit code ${code ?? 'unknown'}.`))
+          }
+          return finish(error instanceof Error ? error : new Error(String(error)))
+        }
+      })
+    })
+  } finally {
+    finishWriter()
+  }
+}
+
+async function inspectDesktopProfile(profile: DesktopProfilePaths): Promise<RecoveryProtocolResult> {
+  try {
+    return await runRecoveryCli(profile, ['inspect', '--home', profile.home, '--json'])
+  } catch (error) {
+    desktopLog('recovery_inspect_failed', {
+      profileKind: profile.kind,
+      error: error instanceof Error ? error.message : 'unknown error',
+    })
+    return recoveryFailureResult(
+      profile.kind === 'primary' ? profile.home : primaryDesktopProfile().home,
+      'desktop_recovery_inspect_failed',
+    )
+  }
+}
+
+function recoveryStateSnapshot(): DesktopRecoveryViewState {
+  const active = activeDesktopProfile()
+  return {
+    inspection: recoveryInspection,
+    activeProfile: {
+      kind: active.kind,
+      recoveryId: active.recoveryId,
+      home: active.home,
+    },
+    recoveryProfiles: allProfileContexts()
+      .filter((profile) => profile.kind === 'recovery' && profile.recoveryId)
+      .map((profile) => ({ id: profile.recoveryId as string, home: profile.home })),
+    blocked: recoveryInspection?.outcome === 'recovery_required',
+    busy: recoveryOperationBusy,
+    error: recoveryOperationError,
+  }
+}
+
+function publishRecoveryState(): void {
+  mainWindow?.webContents.send('desktop:recovery:state-changed', recoveryStateSnapshot())
+}
+
+function sanitizedRecoveryDiagnostics(): string {
+  const report = recoveryInspection
+  const redactPath = (value: string | null): string | null => {
+    if (!value) return value
+    const userData = app.getPath('userData')
+    const home = homedir()
+    if (value === userData || value.startsWith(`${userData}/`) || value.startsWith(`${userData}\\`)) {
+      return `<USER_DATA>${value.slice(userData.length)}`
+    }
+    if (value === home || value.startsWith(`${home}/`) || value.startsWith(`${home}\\`)) {
+      return `<HOME>${value.slice(home.length)}`
+    }
+    return '<EXTERNAL_PATH>'
+  }
+  return JSON.stringify({
+    schema_version: RECOVERY_PROTOCOL_SCHEMA_VERSION,
+    app_version: app.getVersion(),
+    platform: process.platform,
+    profile_kind: activeDesktopProfile().kind,
+    outcome: report?.outcome ?? 'recovery_required',
+    stable_code: report?.stable_code ?? 'desktop_recovery_state_unavailable',
+    primary_home: redactPath(report?.primary_home ?? primaryDesktopProfile().home),
+    effective_workspace: redactPath(report?.effective_workspace ?? null),
+    candidates: (report?.candidates ?? []).map((candidate) => ({
+      kind: candidate.kind,
+      path: redactPath(candidate.path),
+      exists: candidate.exists,
+      valid: candidate.valid,
+      configured: candidate.configured,
+    })),
+    allowed_actions: report?.allowed_actions ?? [],
+    transaction_id: report?.transaction_id ?? null,
+    revision: report?.revision ?? 0,
+  }, null, 2)
+}
+
+function attentionAcknowledgementFor(
+  report: RecoveryProtocolResult,
+): DesktopAttentionAcknowledgement {
+  return {
+    stable_code: report.stable_code,
+    candidates: report.candidates
+      .filter((candidate) => ['canonical', 'legacy', 'external'].includes(candidate.kind))
+      .map((candidate) => ({
+        path: candidate.path,
+        identity: candidate.identity ?? null,
+        modified_at_ns: candidate.modified_at_ns ?? null,
+      }))
+      .sort((left, right) => left.path.localeCompare(right.path)),
+  }
+}
+
+async function persistAttentionAcknowledgement(
+  acknowledgement: DesktopAttentionAcknowledgement,
+): Promise<void> {
+  await updateDesktopProfileContext((current) => contextForProfile(
+    app.getPath('userData'),
+    current.active.kind,
+    current.active.recoveryId,
+    new Date().toISOString(),
+    acknowledgement,
+  ))
+}
+
+async function showAttentionPrompt(
+  report: RecoveryProtocolResult,
+  force = false,
+): Promise<void> {
+  if (report.outcome !== 'attention' || activeDesktopProfile().kind !== 'primary') return
+  const acknowledgement = attentionAcknowledgementFor(report)
+  const identity = JSON.stringify(acknowledgement)
+  const persisted = desktopProfileContext().persisted.attention_acknowledgement
+  if (!force && (JSON.stringify(persisted) === identity || attentionPromptedThisSession === identity)) {
+    return
+  }
+  if (attentionPromptInFlight) return attentionPromptInFlight
+  attentionPromptedThisSession = identity
+  attentionPromptInFlight = (async () => {
+    const candidatePaths = report.candidates
+      .filter((candidate) => (
+        ['canonical', 'legacy', 'external'].includes(candidate.kind) && candidate.exists
+      ))
+      .map((candidate) => candidate.path)
+      .join('\n')
+    const options: Electron.MessageBoxOptions = {
+      type: 'info',
+      buttons: [
+        desktopT('attention.later'),
+        desktopT('attention.keepCurrent'),
+        desktopT('attention.chooseWorkspace'),
+      ],
+      defaultId: 1,
+      cancelId: 0,
+      title: desktopT('attention.title'),
+      message: desktopT('attention.message'),
+      detail: `${report.stable_code}${candidatePaths ? `\n\n${candidatePaths}` : ''}`,
+    }
+    const window = currentMainWindow()
+    const result = window
+      ? await dialog.showMessageBox(window, options)
+      : await dialog.showMessageBox(options)
+    if (result.response === 1) {
+      await persistAttentionAcknowledgement(acknowledgement)
+    } else if (result.response === 2) {
+      const choice = await withRecoveryOperation(() => choosePrimaryWorkspace(null))
+      if (!choice.ok && choice.error !== 'Workspace selection was cancelled.') {
+        await dialog.showMessageBox({
+          type: 'error',
+          buttons: ['OK'],
+          message: desktopT('attention.title'),
+          detail: choice.error,
+        })
+      }
+    }
+  })().finally(() => {
+    attentionPromptInFlight = null
+  })
+  return attentionPromptInFlight
+}
+
 const GATEWAY_PORT_FIRST = 18791
 const GATEWAY_PORT_LAST = 18830
 let gatewayPortCursor = GATEWAY_PORT_FIRST
@@ -4997,6 +5681,7 @@ function hasGatewayProcessExited(process: ChildProcessWithoutNullStreams | null)
 }
 
 async function reuseHealthyGatewayState(): Promise<GatewayState | null> {
+  if (gatewayProfileKey !== desktopProfileKey()) return null
   if (!gatewayState.url) return null
   if (gatewayState.status !== 'ready' && !gatewayProcess) return null
 
@@ -5037,12 +5722,18 @@ async function startGateway(): Promise<GatewayState> {
     gatewayState.error = undefined
   }
 
-  const overrideUrl = process.env.OPENSQUILLA_DESKTOP_GATEWAY_URL
+  const activeProfile = activeDesktopProfile()
+  // A recovery profile must always launch its own isolated Desktop gateway; a
+  // developer override may point at a primary/CLI runtime with different data.
+  const overrideUrl = activeProfile.kind === 'primary'
+    ? process.env.OPENSQUILLA_DESKTOP_GATEWAY_URL
+    : undefined
   if (overrideUrl) {
     sendBootStatus('gateway-health')
     gatewayState.url = overrideUrl.replace(/\/$/, '')
     gatewayState.port = Number(new URL(gatewayState.url).port || 0)
     gatewayState.owned = false
+    gatewayProfileKey = desktopProfileKey(activeProfile)
     gatewayState.status = (await healthCheck(gatewayState.url)) ? 'ready' : 'error'
     if (gatewayState.status !== 'ready') {
       throw new Error(`Configured gateway is not healthy: ${gatewayState.url}`)
@@ -5051,9 +5742,6 @@ async function startGateway(): Promise<GatewayState> {
   }
 
   sendBootStatus('profile')
-  recoverInterruptedDesktopImport()
-  await recoverPendingMigrationReconciliation()
-  relocateLegacyDesktopStateLayout()
   const connection = await runOnboarding()
   forceOnboardingOnNextStartup = false
   const apiKey = decryptApiKey(connection)
@@ -5073,7 +5761,7 @@ async function startGateway(): Promise<GatewayState> {
 
   const port = await findGatewayPort()
   const url = `http://127.0.0.1:${port}`
-  const logDir = join(app.getPath('userData'), 'logs')
+  const logDir = desktopLogsDir()
   mkdirSync(logDir, { recursive: true })
   const logPath = join(logDir, 'gateway.log')
   const logStream = createWriteStream(logPath, { flags: 'a' })
@@ -5099,27 +5787,20 @@ async function startGateway(): Promise<GatewayState> {
 
   const nodeBinCandidates = desktopNodeBinCandidates()
   const childPath = desktopChildPath(nodeBinCandidates)
-  const childEnv = {
-    ...process.env,
+  const childEnv = desktopChildEnvironment(activeProfile, {
     PATH: childPath,
     ...(process.platform === 'win32' ? { Path: childPath } : {}),
     ...(connection.apiKeyEnv && apiKey ? { [connection.apiKeyEnv]: apiKey } : {}),
     ...(connection.searchApiKeyEnv && searchApiKey ? { [connection.searchApiKeyEnv]: searchApiKey } : {}),
-    OPENSQUILLA_DESKTOP: '1',
-    OPENSQUILLA_INSTALL_METHOD: 'desktop',
-    OPENSQUILLA_GATEWAY_CONFIG_PATH: desktopConfigPath(),
     OPENSQUILLA_NODE_BIN_DIR: nodeBinCandidates.join(pathDelimiter()),
-    // OPENSQUILLA_STATE_DIR names the OpenSquilla HOME ROOT on the Python side
-    // (runtime state goes into its state/ subdir, matching the TOML-pinned
-    // state_dir below). Passing the state subdir here would re-root skills,
-    // workspace, session-archive, and .env one level too deep — see
-    // relocateLegacyDesktopStateLayout().
-    OPENSQUILLA_STATE_DIR: desktopHome(),
+    // desktopChildEnvironment pins OPENSQUILLA_STATE_DIR to H. RC4's Python
+    // recovery engine has already validated/reconciled the historical nested
+    // layout before this writer is admitted.
     ...(connection.disableNetworkObservability ? { OPENSQUILLA_PRIVACY_DISABLE_NETWORK_OBSERVABILITY: '1' } : {}),
     PYTHONUNBUFFERED: '1',
     PYTHONUTF8: '1',
     PYTHONIOENCODING: 'utf-8:replace',
-  }
+  })
 
   const child = spawn(
     runtime.command,
@@ -5134,6 +5815,7 @@ async function startGateway(): Promise<GatewayState> {
     }
   )
   gatewayProcess = child
+  gatewayProfileKey = desktopProfileKey(activeProfile)
   if (runtime.mode === 'dev') gatewayProcessTreeChildren.add(child)
 
   let gatewayOutputTail = ''
@@ -5398,22 +6080,160 @@ async function restoreMainWindowToBootPage(): Promise<void> {
   }
 }
 
-async function openOrResumeDesktopApp(): Promise<void> {
-  if (isQuitting) return
-  await createMainWindow()
-  focusMainWindow()
-
-  try {
-    const reusableGateway = forceOnboardingOnNextStartup ? null : await reuseHealthyGatewayState()
-    const gateway = reusableGateway ?? await ensureGatewayStarted()
-    await loadControlUiIntoCurrentWindow(gateway.url)
-  } catch (error) {
-    if (gatewayState.status !== 'ready') {
-      gatewayState.status = 'error'
-      gatewayState.error = error instanceof Error ? error.message : String(error)
-    }
-    if (currentMainWindow()) sendBootError(error)
+async function stopOwnedGatewayAndWait(): Promise<void> {
+  const child = gatewayProcess && gatewayState.owned
+    ? gatewayProcess
+    : updateGatewayShutdownProcess
+  if (!child) {
+    clearReusableGatewayState()
+    return
   }
+  if (gatewayProcess === child && gatewayState.owned) stopGateway()
+  const exited = await waitForGatewayProcessExit(child)
+  if (!exited) throw new Error('The Desktop gateway did not stop before the recovery operation.')
+  if (updateGatewayShutdownProcess === child) updateGatewayShutdownProcess = null
+  clearReusableGatewayState()
+}
+
+async function inspectActiveProfileBeforeStartup(): Promise<boolean> {
+  const context = desktopProfileContext()
+  if (context.issue) {
+    recoveryOperationError = null
+    recoveryInspection = recoveryFailureResult(context.primary.home, context.issue)
+    if (gatewayProcess && gatewayState.owned) await stopOwnedGatewayAndWait()
+    bootError = null
+    await restoreMainWindowToBootPage()
+    publishRecoveryState()
+    createApplicationMenu()
+    return false
+  }
+
+  if (context.active.kind === 'recovery' && !activeRecoveryProfileConfirmedThisProcess) {
+    recoveryOperationError = null
+    recoveryInspection = recoveryFailureResult(
+      context.primary.home,
+      'desktop_recovery_profile_confirmation_required',
+    )
+    if (gatewayProcess && gatewayState.owned) await stopOwnedGatewayAndWait()
+    bootError = null
+    await restoreMainWindowToBootPage()
+    publishRecoveryState()
+    createApplicationMenu()
+    return false
+  }
+
+  const active = activeDesktopProfile()
+  recoveryOperationError = null
+  let inspection = await inspectDesktopProfile(active)
+  if (
+    inspection.outcome === 'recovery_required'
+    && inspection.allowed_actions.includes('recover-settings')
+  ) {
+    if (gatewayProcess && gatewayState.owned) await stopOwnedGatewayAndWait()
+    try {
+      inspection = await runRecoveryCli(active, [
+        'recover-settings', '--home', active.home, '--json',
+      ])
+    } catch (error) {
+      desktopLog('settings_transaction_recovery_failed', {
+        error: error instanceof Error ? error.message : 'unknown error',
+      })
+      inspection = recoveryFailureResult(active.home, 'settings_transaction_recovery_failed')
+    }
+  }
+
+  const provenLegacyAttention = inspection.outcome === 'attention'
+    && ['legacy_workspace_pinned', 'legacy_workspace_deferred'].includes(inspection.stable_code)
+    && inspection.allowed_actions.some((action) => (
+      action === 'reconcile' || action === 'finalize-layout'
+    ))
+  const provenReconcile = inspection.outcome === 'recovery_required'
+    && inspection.allowed_actions.includes('reconcile')
+  const safeLayoutFinalize = inspection.outcome === 'ready'
+    && inspection.allowed_actions.includes('finalize-layout')
+  if (
+    active.kind === 'primary'
+    && (provenReconcile || provenLegacyAttention || safeLayoutFinalize)
+  ) {
+    if (gatewayProcess && gatewayState.owned) await stopOwnedGatewayAndWait()
+    try {
+      inspection = await runRecoveryCli(active, [
+        'reconcile', '--home', active.home, '--json',
+      ])
+    } catch (error) {
+      desktopLog('recovery_reconcile_failed', {
+        error: error instanceof Error ? error.message : 'unknown error',
+      })
+      inspection = recoveryFailureResult(active.home, 'desktop_recovery_reconcile_failed')
+    }
+  }
+
+  if (!existsSync(desktopProfileContextPath(app.getPath('userData')))) {
+    await updateDesktopProfileContext((current) => contextForProfile(
+      app.getPath('userData'),
+      current.active.kind,
+      current.active.recoveryId,
+      new Date().toISOString(),
+      current.persisted.attention_acknowledgement,
+    ))
+  }
+
+  recoveryInspection = inspection
+  if (active.kind === 'primary') primaryRecoveryInspection = inspection
+  publishRecoveryState()
+  createApplicationMenu()
+  if (inspection.outcome !== 'recovery_required') return true
+
+  if (gatewayProcess && gatewayState.owned) await stopOwnedGatewayAndWait()
+  bootError = null
+  await restoreMainWindowToBootPage()
+  publishRecoveryState()
+  return false
+}
+
+async function openOrResumeDesktopApp(): Promise<void> {
+  invalidateDesktopOpenFlow()
+  if (desktopOpenFlowPromise) return await desktopOpenFlowPromise
+
+  desktopOpenFlowPromise = (async () => {
+    while (!isQuitting) {
+      const revision = desktopOpenFlowRevision
+      const requestedProfileKey = desktopProfileKey()
+      await createMainWindow()
+      focusMainWindow()
+
+      try {
+        if (await inspectActiveProfileBeforeStartup()) {
+          if (revision === desktopOpenFlowRevision && requestedProfileKey === desktopProfileKey()) {
+            const reusableGateway = forceOnboardingOnNextStartup
+              ? null
+              : await reuseHealthyGatewayState()
+            const gateway = reusableGateway ?? await ensureGatewayStarted()
+            if (revision === desktopOpenFlowRevision && requestedProfileKey === desktopProfileKey()) {
+              await loadControlUiIntoCurrentWindow(gateway.url)
+              if (recoveryInspection?.outcome === 'attention') {
+                void showAttentionPrompt(recoveryInspection)
+              }
+            }
+          }
+        }
+      } catch (error) {
+        if (gatewayState.status !== 'ready') {
+          gatewayState.status = 'error'
+          gatewayState.error = error instanceof Error ? error.message : String(error)
+        }
+        if (currentMainWindow()) sendBootError(error)
+      }
+      if (revision === desktopOpenFlowRevision) return
+      if (gatewayProfileKey && gatewayProfileKey !== desktopProfileKey()) {
+        if (gatewayProcess && gatewayState.owned) await stopOwnedGatewayAndWait()
+        else clearReusableGatewayState()
+      }
+    }
+  })().finally(() => {
+    desktopOpenFlowPromise = null
+  })
+  await desktopOpenFlowPromise
 }
 
 // SIGKILL deadline for the owned gateway child. The Python gateway drains
@@ -5742,7 +6562,9 @@ function nativeAutoUpdateEnabled(): boolean {
 }
 
 function desktopUpdateStatePath(): string {
-  return join(desktopStateDir(), 'desktop-update.json')
+  // Update availability is application-global and may be read before profile
+  // inspection, so it must never resolve through an untrusted selected H.
+  return join(app.getPath('userData'), 'desktop-update.json')
 }
 
 function loadDesktopUpdatePersistence(): void {
@@ -5766,7 +6588,7 @@ function loadDesktopUpdatePersistence(): void {
 
 async function persistDesktopUpdateSnooze(): Promise<void> {
   try {
-    mkdirSync(desktopStateDir(), { recursive: true })
+    mkdirSync(app.getPath('userData'), { recursive: true })
     await writeFile(
       desktopUpdateStatePath(),
       JSON.stringify(
@@ -6218,7 +7040,11 @@ async function waitForGatewayProcessExit(
   })
 }
 
-function restoreDownloadedUpdateRetryState(pendingVersion: string | null): void {
+function restoreDownloadedUpdateRetryState(
+  pendingVersion: string | null,
+  writerAdmissionToken: symbol | null = null,
+): void {
+  if (writerAdmissionToken) desktopWriters.reopen(writerAdmissionToken)
   downloadedUpdateVersion = pendingVersion
   updateApplying = false
   isQuitting = false
@@ -6270,6 +7096,11 @@ async function applyDownloadedUpdate(): Promise<void> {
   }
   const pendingVersion = downloadedUpdateVersion
   updateApplying = true
+  // Never interrupt a reconcile/workspace/settings transaction after it has
+  // been admitted. Close new writers and wait for existing operations to
+  // finish naturally before the installer handoff.
+  const updateWriterAdmission = desktopWriters.close('apply downloaded update')
+  await waitForDesktopWriterOperations()
   downloadedUpdateVersion = null
   createApplicationMenu()
   setDesktopUpdateState({
@@ -6294,7 +7125,7 @@ async function applyDownloadedUpdate(): Promise<void> {
     }
     const exited = await waitForGatewayProcessExit(child)
     if (!exited) {
-      restoreDownloadedUpdateRetryState(pendingVersion)
+      restoreDownloadedUpdateRetryState(pendingVersion, updateWriterAdmission)
       void showUpdateDialog({
         type: 'error',
         buttons: ['OK'],
@@ -6311,7 +7142,7 @@ async function applyDownloadedUpdate(): Promise<void> {
   try {
     autoUpdater.quitAndInstall(false, true)
   } catch (err) {
-    restoreDownloadedUpdateRetryState(pendingVersion)
+    restoreDownloadedUpdateRetryState(pendingVersion, updateWriterAdmission)
     void showUpdateDialog({
       type: 'error',
       buttons: ['OK'],
@@ -6379,23 +7210,28 @@ ipcMain.handle('gateway:reveal-log', async () => {
 ipcMain.handle('desktop:settings:get', async () => loadDesktopSettings())
 ipcMain.handle('desktop:settings:save', async (_event, payload: DesktopSettingsPayload) => saveDesktopSettings(payload))
 ipcMain.handle('desktop:settings:reset', async () => {
-  await resetDesktopSettings()
-  forceOnboardingOnNextStartup = true
-  const child = gatewayProcess && gatewayState.owned ? gatewayProcess : null
-  if (child) {
-    stopGateway()
-    await waitForGatewayProcessExit(child)
+  const finishWriter = beginDesktopWriterOperation('reset Desktop settings')
+  try {
+    const child = gatewayProcess && gatewayState.owned ? gatewayProcess : null
+    if (child) {
+      stopGateway()
+      await waitForGatewayProcessExit(child)
+    }
+    await resetDesktopSettings()
+    forceOnboardingOnNextStartup = true
+    clearReusableGatewayState()
+    // This IPC is also reachable from the live Control UI (Settings → Runtime),
+    // which stays on the now-dead gateway after the reset. Return the window to the
+    // boot splash and re-run startup so onboarding re-runs, instead of stranding
+    // the user on a dead page. (The boot.html caller also calls retryStartup; the
+    // in-flight start is joined, not double-started.)
+    bootError = null
+    await currentMainWindow()?.loadFile(bootPagePath()).catch(() => null)
+    void openOrResumeDesktopApp()
+    return { ok: true }
+  } finally {
+    finishWriter()
   }
-  clearReusableGatewayState()
-  // This IPC is also reachable from the live Control UI (Settings → Runtime),
-  // which stays on the now-dead gateway after the reset. Return the window to the
-  // boot splash and re-run startup so onboarding re-runs, instead of stranding
-  // the user on a dead page. (The boot.html caller also calls retryStartup; the
-  // in-flight start is joined, not double-started.)
-  bootError = null
-  await currentMainWindow()?.loadFile(bootPagePath()).catch(() => null)
-  void openOrResumeDesktopApp()
-  return { ok: true }
 })
 ipcMain.handle('desktop:artifact:open', async (_event, payload: ArtifactOpenRequest) => openArtifactWithDefaultApp(payload))
 
@@ -6418,16 +7254,11 @@ async function runUninstallCli(
   const child = spawn(runtime.command, [...prefix, 'uninstall', ...extraArgs], {
     cwd: runtime.cwd,
     windowsHide: true,
-    env: {
-      ...process.env,
-      OPENSQUILLA_DESKTOP: '1',
-      OPENSQUILLA_INSTALL_METHOD: 'desktop',
-      OPENSQUILLA_GATEWAY_CONFIG_PATH: desktopConfigPath(),
-      OPENSQUILLA_STATE_DIR: desktopHome(),
+    env: desktopChildEnvironment(activeDesktopProfile(), {
       PYTHONUNBUFFERED: '1',
       PYTHONUTF8: '1',
       PYTHONIOENCODING: 'utf-8:replace',
-    },
+    }),
   })
   let stdout = ''
   let stderr = ''
@@ -6544,19 +7375,14 @@ async function runMigrateCli(
   const child = spawn(runtime.command, [...prefix, 'migrate', 'opensquilla', ...extraArgs], {
     cwd: runtime.cwd,
     windowsHide: true,
-    env: {
-      ...process.env,
-      OPENSQUILLA_DESKTOP: '1',
-      OPENSQUILLA_INSTALL_METHOD: 'desktop',
-      OPENSQUILLA_GATEWAY_CONFIG_PATH: desktopConfigPath(),
+    env: desktopChildEnvironment(activeDesktopProfile(), {
       // OPENSQUILLA_STATE_DIR names the OpenSquilla HOME ROOT: the migrator's
       // import TARGET. It must match the gateway spawn (desktopHome()), or the
       // import would land in a home the gateway never reads.
-      OPENSQUILLA_STATE_DIR: desktopHome(),
       PYTHONUNBUFFERED: '1',
       PYTHONUTF8: '1',
       PYTHONIOENCODING: 'utf-8:replace',
-    },
+    }),
   })
   let stdout = ''
   let stderr = ''
@@ -6852,19 +7678,6 @@ async function reconcileImportedDesktopCredential(
   return { requiresSetup: true }
 }
 
-async function recoverPendingMigrationReconciliation(): Promise<void> {
-  const pending = await readPendingMigrationProviderSetup()
-  if (!pending || pending.phase !== 'applying') return
-  const receipt = await findAppliedReceiptForIntent(pending)
-  if (!receipt) {
-    // The commit journal has already been recovered before this runs. With no
-    // new target-side applied receipt, the attempted import never published.
-    await clearPendingMigrationProviderSetup()
-    return
-  }
-  await reconcileImportedDesktopCredential(pending)
-}
-
 // After a successful apply the migrator has rewritten the target config.toml
 // and .env. Read the [llm] section back (line-based, like the privacy-config
 // reader — the file is generated, simple TOML) so the onboarding provider step
@@ -6997,6 +7810,14 @@ async function takeDesktopMigrationResult(): Promise<DesktopMigrationResult | nu
 }
 
 ipcMain.handle('desktop:migration:summary', async () => {
+  if (activeDesktopProfile().kind !== 'primary') {
+    return {
+      ok: false,
+      candidate: null,
+      report: null,
+      raw: 'Return to the primary profile before importing data.',
+    }
+  }
   trustedDesktopMigrationPreview = null
   const candidate = detectLegacyImportCandidate()
   if (!candidate) return { ok: true, candidate: null, report: null }
@@ -7031,6 +7852,13 @@ ipcMain.handle('desktop:migration:run', async (
   _event,
   payload?: { overwrite?: boolean; previewId?: string },
 ) => {
+  if (activeDesktopProfile().kind !== 'primary') {
+    return {
+      ok: false,
+      report: null,
+      detail: 'Return to the primary profile before importing data.',
+    }
+  }
   const preview = trustedDesktopMigrationPreview
   if (
     !preview
@@ -7242,10 +8070,305 @@ ipcMain.handle('desktop:migration:run', async (
 
 ipcMain.handle('desktop:migration:last-result', takeDesktopMigrationResult)
 
+function trustedRecoveryIpc(event: Electron.IpcMainInvokeEvent): boolean {
+  const window = currentMainWindow()
+  if (!window || event.sender !== window.webContents) return false
+  const url = event.senderFrame?.url || event.sender.getURL()
+  try {
+    const sender = new URL(url)
+    if (sender.protocol === 'file:') {
+      return resolve(fileURLToPath(sender)) === resolve(bootPagePath())
+    }
+    if (!gatewayState.owned || !gatewayState.url) return false
+    const gateway = new URL(gatewayState.url)
+    return (
+      sender.origin === gateway.origin
+      && (sender.pathname === '/control' || sender.pathname.startsWith('/control/'))
+    )
+  } catch {
+    return false
+  }
+}
+
+async function withRecoveryOperation<T>(
+  operation: () => Promise<T>,
+): Promise<{ ok: true; value: T; state: DesktopRecoveryViewState } | {
+  ok: false
+  error: string
+  state: DesktopRecoveryViewState
+}> {
+  if (recoveryOperationBusy) {
+    return {
+      ok: false,
+      error: 'Another recovery operation is already running.',
+      state: recoveryStateSnapshot(),
+    }
+  }
+  const exclusive = desktopWriters.tryBeginExclusive('Desktop profile recovery')
+  if (!exclusive) {
+    return {
+      ok: false,
+      error: 'OpenSquilla is finishing another profile or lifecycle operation. Try again shortly.',
+      state: recoveryStateSnapshot(),
+    }
+  }
+  recoveryOperationBusy = true
+  recoveryOperationError = null
+  publishRecoveryState()
+  try {
+    await waitForDesktopWriterOperations(1)
+    const value = await operation()
+    return { ok: true, value, state: recoveryStateSnapshot() }
+  } catch (error) {
+    recoveryOperationError = error instanceof Error ? error.message : String(error)
+    desktopLog('recovery_operation_failed', { error: recoveryOperationError })
+    return { ok: false, error: recoveryOperationError, state: recoveryStateSnapshot() }
+  } finally {
+    exclusive.finish()
+    desktopWriters.reopen(exclusive.admissionToken)
+    recoveryOperationBusy = false
+    publishRecoveryState()
+  }
+}
+
+async function copyPrimaryCredentialToRecovery(profile: DesktopProfilePaths): Promise<void> {
+  const raw = await readFile(primaryDesktopProfile().credentialPath, 'utf8')
+  const credential = normalizeDesktopCredential(JSON.parse(raw) as Partial<DesktopConnection>)
+  if (credential.encryptedApiKey && !decryptApiKey(credential)) {
+    throw new Error('The primary provider credential cannot be decrypted on this device.')
+  }
+  if (credential.encryptedSearchApiKey && !decryptSearchApiKey(credential)) {
+    throw new Error('The primary search credential cannot be decrypted on this device.')
+  }
+  await atomicWriteFile(profile.credentialPath, JSON.stringify(credential, null, 2), 0o600)
+}
+
+async function createRecoveryProfile(copyPrimaryCredential: boolean): Promise<DesktopProfilePaths> {
+  const recoveryId = randomUUID()
+  const context = contextForProfile(app.getPath('userData'), 'recovery', recoveryId)
+  const profile = context.active
+  const recoveryRoot = join(app.getPath('userData'), 'recovery-profiles')
+  mkdirSync(recoveryRoot, { recursive: true, mode: 0o700 })
+  const rootInfo = lstatSync(recoveryRoot)
+  if (!rootInfo.isDirectory() || rootInfo.isSymbolicLink()) {
+    throw new Error('The recovery profile directory is not a safe local directory.')
+  }
+  const profileRoot = dirname(profile.home)
+  mkdirSync(profileRoot, { recursive: false, mode: 0o700 })
+  mkdirSync(profile.home, { recursive: false, mode: 0o700 })
+  mkdirSync(profile.logsDir, { recursive: false, mode: 0o700 })
+  if (copyPrimaryCredential) await copyPrimaryCredentialToRecovery(profile)
+  return profile
+}
+
+async function launchRecoveryProfile(
+  payload: { mode?: unknown; recoveryId?: unknown; copyPrimaryCredential?: unknown } | null,
+): Promise<DesktopProfilePaths> {
+  const mode = payload?.mode === 'continue'
+    ? 'continue'
+    : payload?.mode === 'create'
+      ? 'create'
+      : null
+  if (!mode) throw new Error('Choose whether to create or continue a recovery profile.')
+  let profile: DesktopProfilePaths
+  if (mode === 'create') {
+    profile = await createRecoveryProfile(payload?.copyPrimaryCredential === true)
+  } else {
+    const recoveryId = payload?.recoveryId
+    if (!isRecoveryProfileId(recoveryId)) throw new Error('Choose an existing recovery profile.')
+    const existing = allProfileContexts().find((item) => (
+      item.kind === 'recovery' && item.recoveryId === recoveryId
+    ))
+    if (!existing) throw new Error('The selected recovery profile is no longer available.')
+    profile = existing
+  }
+
+  await stopOwnedGatewayAndWait()
+  await selectDesktopProfile('recovery', profile.recoveryId)
+  clearReusableGatewayState()
+  recoveryInspection = null
+  bootError = null
+  await currentMainWindow()?.loadFile(bootPagePath()).catch(() => null)
+  void openOrResumeDesktopApp()
+  return profile
+}
+
+async function inspectPrimaryForReturn(): Promise<RecoveryProtocolResult> {
+  const inspection = await inspectDesktopProfile(primaryDesktopProfile())
+  primaryRecoveryInspection = inspection
+  return inspection
+}
+
+async function retryOrReturnPrimaryProfile(): Promise<RecoveryProtocolResult> {
+  const inspection = await inspectPrimaryForReturn()
+  if (inspection.outcome === 'recovery_required') {
+    recoveryInspection = inspection
+    publishRecoveryState()
+    return inspection
+  }
+
+  await stopOwnedGatewayAndWait()
+  await selectDesktopProfile('primary')
+  clearReusableGatewayState()
+  recoveryInspection = inspection
+  bootError = null
+  await currentMainWindow()?.loadFile(bootPagePath()).catch(() => null)
+  void openOrResumeDesktopApp()
+  return inspection
+}
+
+async function recoverPrimaryProfileTransaction(): Promise<RecoveryProtocolResult> {
+  const primary = primaryDesktopProfile()
+  let inspection = primaryRecoveryInspection
+  if (!inspection) inspection = await inspectPrimaryForReturn()
+  if (
+    !inspection.allowed_actions.includes('recover-transaction')
+    || !inspection.transaction_id
+  ) {
+    throw new Error('The interrupted profile operation cannot be recovered automatically.')
+  }
+
+  await stopOwnedGatewayAndWait()
+  const result = await runRecoveryCli(primary, [
+    'recover-transaction',
+    '--home', primary.home,
+    '--transaction-id', inspection.transaction_id,
+    '--expected-revision', String(inspection.revision),
+    '--json',
+  ])
+  primaryRecoveryInspection = result
+  recoveryInspection = result
+  if (result.outcome !== 'recovery_required') {
+    await selectDesktopProfile('primary')
+    clearReusableGatewayState()
+    bootError = null
+    await currentMainWindow()?.loadFile(bootPagePath()).catch(() => null)
+    void openOrResumeDesktopApp()
+  }
+  publishRecoveryState()
+  return result
+}
+
+async function choosePrimaryWorkspace(
+  requestedWorkspace: unknown,
+): Promise<RecoveryProtocolResult> {
+  const primary = primaryDesktopProfile()
+  let inspection = primaryRecoveryInspection
+  if (!inspection) inspection = await inspectPrimaryForReturn()
+
+  let workspace = ''
+  if (typeof requestedWorkspace === 'string' && requestedWorkspace) {
+    const candidate = inspection.candidates.find((item) => (
+      ['canonical', 'legacy', 'external'].includes(item.kind)
+      && item.path === requestedWorkspace
+      && item.exists
+      && item.valid
+    ))
+    if (!candidate) throw new Error('The selected workspace is not an inspected valid candidate.')
+    workspace = candidate.path
+  } else {
+    const window = currentMainWindow()
+    const options: Electron.OpenDialogOptions = {
+      title: 'Choose an OpenSquilla workspace',
+      properties: ['openDirectory'],
+    }
+    const choice = window
+      ? await dialog.showOpenDialog(window, options)
+      : await dialog.showOpenDialog(options)
+    if (choice.canceled || choice.filePaths.length !== 1) {
+      throw new Error('Workspace selection was cancelled.')
+    }
+    workspace = choice.filePaths[0] || ''
+  }
+  if (!workspace) throw new Error('Choose a workspace directory.')
+  if (!inspection.transaction_id) {
+    throw new Error('Recovery inspection did not provide a transaction id.')
+  }
+
+  await stopOwnedGatewayAndWait()
+  const result = await runRecoveryCli(primary, [
+    'choose-workspace',
+    '--home', primary.home,
+    '--transaction-id', inspection.transaction_id,
+    '--expected-revision', String(inspection.revision),
+    '--workspace', workspace,
+    '--json',
+  ])
+  primaryRecoveryInspection = result
+  recoveryInspection = result
+  if (result.outcome !== 'recovery_required') {
+    await selectDesktopProfile('primary')
+    clearReusableGatewayState()
+    bootError = null
+    await currentMainWindow()?.loadFile(bootPagePath()).catch(() => null)
+    void openOrResumeDesktopApp()
+  }
+  publishRecoveryState()
+  return result
+}
+
+ipcMain.handle('desktop:recovery:state', () => recoveryStateSnapshot())
+ipcMain.handle('desktop:recovery:choose-workspace', async (
+  event,
+  payload?: { workspace?: unknown },
+) => {
+  if (!trustedRecoveryIpc(event)) {
+    return { ok: false, error: 'Recovery actions are available only from the recovery page.' }
+  }
+  return withRecoveryOperation(() => choosePrimaryWorkspace(payload?.workspace))
+})
+ipcMain.handle('desktop:recovery:recover-transaction', async (event) => {
+  if (!trustedRecoveryIpc(event)) {
+    return { ok: false, error: 'Recovery actions are available only from the recovery page.' }
+  }
+  return withRecoveryOperation(recoverPrimaryProfileTransaction)
+})
+ipcMain.handle('desktop:recovery:launch-safe', async (
+  event,
+  payload?: { mode?: unknown; recoveryId?: unknown; copyPrimaryCredential?: unknown },
+) => {
+  if (!trustedRecoveryIpc(event)) {
+    return { ok: false, error: 'Recovery actions are available only from the recovery page.' }
+  }
+  return withRecoveryOperation(() => launchRecoveryProfile(payload || null))
+})
+ipcMain.handle('desktop:recovery:retry-primary', async (event) => {
+  if (!trustedRecoveryIpc(event)) {
+    return { ok: false, error: 'Recovery actions are available only from the recovery page.' }
+  }
+  return withRecoveryOperation(retryOrReturnPrimaryProfile)
+})
+ipcMain.handle('desktop:recovery:return-primary', async (event) => {
+  if (!trustedRecoveryIpc(event)) {
+    return { ok: false, error: 'Recovery actions are available only from the recovery page.' }
+  }
+  return withRecoveryOperation(retryOrReturnPrimaryProfile)
+})
+ipcMain.handle('desktop:recovery:reveal-path', async (
+  event,
+  payload?: { target?: unknown },
+) => {
+  if (!trustedRecoveryIpc(event)) return false
+  const target = payload?.target === 'active'
+    ? activeDesktopProfile().home
+    : payload?.target === 'backups'
+      ? app.getPath('userData')
+      : primaryDesktopProfile().home
+  if (existsSync(target)) await shell.showItemInFolder(target)
+  else await shell.openPath(dirname(target)).catch(() => null)
+  return true
+})
+ipcMain.handle('desktop:recovery:copy-diagnostics', async (event) => {
+  if (!trustedRecoveryIpc(event)) return false
+  clipboard.writeText(sanitizedRecoveryDiagnostics())
+  return true
+})
+
 ipcMain.handle('desktop:boot:state', () => ({
   status: bootStatus,
   error: bootError,
   gateway: { ...gatewayState },
+  recovery: recoveryStateSnapshot(),
 }))
 ipcMain.handle('desktop:boot:retry', async () => {
   // Backs both the boot-error "Retry" button and the Control UI "Restart
@@ -7421,8 +8544,27 @@ ipcMain.handle('desktop:onboarding:migrate:apply', async () => {
 // Set once the Windows graceful-drain-on-quit sequence has run so the re-issued
 // quit (after app.exit is deferred) is not intercepted a second time.
 let windowsQuitDrainDone = false
+let quitDeferredForDesktopWriters = false
+let quitWriterAdmission: symbol | null = null
 
 app.on('before-quit', (event) => {
+  if (desktopWriters.activeCount > 0 || quitDeferredForDesktopWriters) {
+    event.preventDefault()
+    if (!quitDeferredForDesktopWriters) {
+      quitDeferredForDesktopWriters = true
+      quitWriterAdmission ??= desktopWriters.close('quit')
+      isQuitting = false
+      desktopLog('quit_deferred_for_profile_writer', {
+        activeWriters: desktopWriters.activeCount,
+      })
+      void waitForDesktopWriterOperations().then(() => {
+        quitDeferredForDesktopWriters = false
+        app.quit()
+      })
+    }
+    return
+  }
+  quitWriterAdmission ??= desktopWriters.close('quit')
   desktopLog('before_quit', { platform: process.platform, drained: windowsQuitDrainDone })
   isQuitting = true
   // On Windows there is no real SIGTERM, so the normal close path would

@@ -233,7 +233,10 @@ def test_errors_collected_from_config_state_dir(
     # distinguishes the two databases.
     state = tmp_path / "custom-state"
     state.mkdir()
-    _hermetic_config.write_text(f'state_dir = "{state}"\n', encoding="utf-8")
+    _hermetic_config.write_text(
+        f"state_dir = {json.dumps(str(state))}\n",
+        encoding="utf-8",
+    )
     db = state / "sessions.db"
     apply_pending(str(db), MIGRATIONS_DIR)
     conn = sqlite3.connect(str(db))

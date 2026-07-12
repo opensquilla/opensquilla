@@ -1139,13 +1139,6 @@ def move_profile_no_replace(
                 if relative is None:
                     continue
                 allowed_mtime_paths.add(relative.as_posix())
-                # Windows can finalize the containing directory's last-write
-                # timestamp when the lock file's original write handle is
-                # closed. Every child name and identity remains covered by the
-                # complete recursive manifest; only this direct parent mtime
-                # is redundant with the verified lock handoff.
-                if relative.parent != Path():
-                    allowed_mtime_paths.add(relative.parent.as_posix())
             allowed_mtime_changes = frozenset(allowed_mtime_paths)
         move(
             source_path,

@@ -207,8 +207,9 @@ def _manifest_matches_after_move(
     after: dict[str, PathIdentity],
     *,
     allowed_mtime_changes: frozenset[str],
+    allow_directory_mtime_changes: bool = False,
 ) -> bool:
-    """Compare a move manifest with one narrow compatibility-lock exception."""
+    """Compare a move manifest with explicit, metadata-only exceptions."""
 
     if before.keys() != after.keys():
         return False
@@ -216,7 +217,9 @@ def _manifest_matches_after_move(
         current = after[relative]
         if current == expected:
             continue
-        if relative not in allowed_mtime_changes:
+        if relative not in allowed_mtime_changes and not (
+            allow_directory_mtime_changes and stat.S_ISDIR(expected.mode)
+        ):
             return False
         if (
             current.device,
@@ -786,6 +789,7 @@ def native_move_no_replace(
         manifest_before,
         manifest_after,
         allowed_mtime_changes=_allowed_manifest_mtime_changes,
+        allow_directory_mtime_changes=os.name == "nt" or sys.platform == "win32",
     )
     if (
         source_parent_after.token != source_parent_before.token

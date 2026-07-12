@@ -342,6 +342,26 @@ def test_move_manifest_allows_only_selected_lock_mtime_change() -> None:
         allowed_mtime_changes=frozenset({relative}),
     )
 
+    directory = PathIdentity(1, 3, stat.S_IFDIR | 0o700, 0, 100)
+    directory_mtime_changed = PathIdentity(1, 3, stat.S_IFDIR | 0o700, 0, 200)
+    assert _manifest_matches_after_move(
+        {"workspace": directory},
+        {"workspace": directory_mtime_changed},
+        allowed_mtime_changes=frozenset(),
+        allow_directory_mtime_changes=True,
+    )
+    assert not _manifest_matches_after_move(
+        {"workspace": directory},
+        {"workspace": directory_mtime_changed},
+        allowed_mtime_changes=frozenset(),
+    )
+    assert not _manifest_matches_after_move(
+        {relative: original},
+        {relative: mtime_changed},
+        allowed_mtime_changes=frozenset(),
+        allow_directory_mtime_changes=True,
+    )
+
 
 @pytest.mark.skipif(sys.platform != "win32", reason="requires two native Windows volumes")
 def test_windows_native_move_refuses_real_cross_volume_move() -> None:
@@ -1043,7 +1063,7 @@ def test_windows_handoff_keeps_external_state_lock_open(
             **_move_options: object,
         ) -> None:
             assert _move_options["_allowed_manifest_mtime_changes"] == frozenset(
-                {"state", "state/gateway.pid.lock"}
+                {"state/gateway.pid.lock"}
             )
             with _mutation_guard():
                 assert external_claim.fd == external_fd

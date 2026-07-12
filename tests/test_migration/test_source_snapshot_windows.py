@@ -149,6 +149,7 @@ def test_public_scan_and_copy_use_pinned_api_for_sqlite_bundle(
     assert (Path("/"), True) in scan_api.open_modes
     assert (Path("/fake"), True) in scan_api.open_modes
     assert (scan_api.root, False) in scan_api.open_modes
+    assert (scan_api.root / "state", True) in scan_api.open_modes
     assert (scan_api.root / "state", False) in scan_api.open_modes
     files = [entry for entry in snapshot.entries if entry.entry_type == "file"]
     assert {entry.relative.as_posix() for entry in files} == {
@@ -158,7 +159,7 @@ def test_public_scan_and_copy_use_pinned_api_for_sqlite_bundle(
     }
     for entry in files:
         assert entry.digest == hashlib.sha256(scan_api.data[entry.source]).hexdigest()
-        assert (entry.source, False) in scan_api.open_modes
+        assert (entry.source, True) in scan_api.open_modes
 
     for entry in files:
         copy_api = _FakeWindowsApi()
@@ -167,6 +168,7 @@ def test_public_scan_and_copy_use_pinned_api_for_sqlite_bundle(
         digest = windows_snapshot.copy_windows_snapshot_file(snapshot, entry, destination)
         assert digest == entry.digest
         assert destination.read_bytes() == copy_api.data[entry.source]
+        assert (entry.source, True) in copy_api.open_modes
         assert not copy_api.open_handles
 
 
@@ -206,6 +208,46 @@ def test_parent_reparse_swap_is_rejected_before_sqlite_leaf_read(
     assert not destination.exists()
     assert swapped_api.root / "state" / "sessions.db" not in swapped_api.read_paths
     assert not swapped_api.open_handles
+
+
+def test_file_writer_sharing_still_rejects_metadata_change_during_read(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    api = _FakeWindowsApi()
+    database = api.root / "state" / "sessions.db"
+    original_read = api.read
+    mutated = False
+
+    def mutate_after_first_read(handle: int, size: int) -> bytes:
+        nonlocal mutated
+        chunk = original_read(handle, size)
+        if api._handles[handle] == database and not mutated:
+            current = api.nodes[database]
+            api.nodes[database] = windows_snapshot._HandleInformation(
+                identity=current.identity,
+                mode=current.mode,
+                size=current.size,
+                mtime_ns=current.mtime_ns + 100,
+                attributes=current.attributes,
+            )
+            mutated = True
+        return chunk
+
+    api.read = mutate_after_first_read  # type: ignore[method-assign]
+    monkeypatch.setattr(windows_snapshot, "_new_api", lambda: api)
+
+    with pytest.raises(
+        windows_snapshot.WindowsSourceSnapshotError,
+        match="source changed while pinned",
+    ):
+        windows_snapshot.scan_windows_source_tree(
+            api.root,
+            destination_prefix=Path(),
+            role="primary",
+        )
+
+    assert (database, True) in api.open_modes
+    assert not api.open_handles
 
 
 def test_plain_parent_directory_swap_is_rejected_before_leaf_read(
@@ -255,6 +297,8 @@ def test_bounded_gateway_authority_uses_same_pinned_parent_chain() -> None:
     assert captured.file("gateway.pid").data == b"12345\n"
     assert captured.file("gateway.pid.lock") is not None
     assert captured.file("gateway.pid.lock").data == b"locked\n"
+    assert (api.root / "state" / "gateway.pid", False) in api.open_modes
+    assert (api.root / "state" / "gateway.pid.lock", False) in api.open_modes
     assert not api.open_handles
 
 

@@ -2,7 +2,9 @@
 
 This module deliberately has no path-based fallback.  Every source path
 component is opened with ``CreateFileW`` while its parent handle is still held,
-without ``FILE_SHARE_DELETE`` and with ``FILE_FLAG_OPEN_REPARSE_POINT``.  A
+without ``FILE_SHARE_DELETE`` and with ``FILE_FLAG_OPEN_REPARSE_POINT``. Source
+files permit an existing writer so committed SQLite WAL bundles can be read;
+their identity, metadata, and digest are checked again before publication. A
 reparse point, non-disk object, unsupported file type, sharing conflict, or
 identity change fails the import closed.
 
@@ -543,11 +545,32 @@ def _open_directory_chain(
 def _open_child(
     api: _Win32SourceApi,
     path: Path,
+    *,
+    allow_file_writers: bool = False,
 ) -> Iterator[tuple[int, _HandleInformation]]:
-    handle = api.open_path(path, allow_writers=False)
+    handle = api.open_path(path, allow_writers=allow_file_writers)
     try:
         information = api.information(handle, path=path)
         _validate_information(information, path=path)
+        if allow_file_writers and information.identity.file_type == stat.S_IFDIR:
+            # We do not know the child type until it is opened. Keep the first
+            # no-delete handle pinned while replacing a permissive directory
+            # handle with the restrictive handle used for recursive traversal.
+            restrictive_handle = api.open_path(path, allow_writers=False)
+            try:
+                restrictive_information = api.information(restrictive_handle, path=path)
+                _validate_information(restrictive_information, path=path)
+                if not _same_information(restrictive_information, information):
+                    raise WindowsSourceSnapshotError(
+                        f"source changed while its directory handle was tightened: {path}"
+                    )
+            except BaseException:
+                api.close(restrictive_handle)
+                raise
+            permissive_handle = handle
+            handle = restrictive_handle
+            information = restrictive_information
+            api.close(permissive_handle)
         yield handle, information
         current = api.information(handle, path=path)
         if not _same_information(current, information):
@@ -625,7 +648,11 @@ def _scan_with_api(
                 ):
                     continue
                 child_path = directory_path / name
-                with _open_child(api, child_path) as (child_handle, information):
+                with _open_child(
+                    api,
+                    child_path,
+                    allow_file_writers=True,
+                ) as (child_handle, information):
                     entry_type = _entry_type(information.attributes)
                     digest: str | None = None
                     if entry_type == "file":
@@ -862,7 +889,11 @@ def _copy_with_api(
                 opened_children.append((parent_path, handle, information))
 
             file_path = parent_path / entry.relative.name
-            with _open_child(api, file_path) as (file_handle, information):
+            with _open_child(
+                api,
+                file_path,
+                allow_file_writers=True,
+            ) as (file_handle, information):
                 if not _matches_entry(information, entry):
                     raise WindowsSourceSnapshotError(
                         f"source file changed before copy: {entry.source}"

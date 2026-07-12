@@ -3433,12 +3433,18 @@ class OpenSquillaHomeMigrator:
         """Detect PID/lock appearance, disappearance, replacement, or mutation."""
 
         for expected in self._source_gateway_authority:
-            held_before = final_source_lock.snapshot_state_root(expected.root)
-            current = _capture_legacy_gateway_authority(
-                expected.root,
-                held_lock=held_before,
-            )
-            held_after = final_source_lock.snapshot_state_root(expected.root)
+            try:
+                held_before = final_source_lock.snapshot_state_root(expected.root)
+                current = _capture_legacy_gateway_authority(
+                    expected.root,
+                    held_lock=held_before,
+                )
+                held_after = final_source_lock.snapshot_state_root(expected.root)
+            except OSError as exc:
+                raise OSError(
+                    "source legacy gateway authority changed during import; "
+                    "publication cancelled"
+                ) from exc
             if current != expected or held_after != held_before:
                 raise OSError(
                     "source legacy gateway authority changed during import; "

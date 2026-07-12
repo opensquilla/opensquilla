@@ -33,7 +33,7 @@ _WINDOWS_ERROR_CALL_NOT_IMPLEMENTED = 120
 _FILE_ATTRIBUTE_REPARSE_POINT = 0x400
 _FILE_ATTRIBUTE_DIRECTORY = 0x10
 _WINDOWS_DELETE_ACCESS = 0x00010000
-_WINDOWS_FILE_LIST_DIRECTORY = 0x00000001
+_WINDOWS_FILE_TRAVERSE = 0x00000020
 _WINDOWS_FILE_READ_ATTRIBUTES = 0x00000080
 _WINDOWS_SYNCHRONIZE = 0x00100000
 _WINDOWS_FILE_SHARE_READ = 0x00000001
@@ -497,11 +497,11 @@ def _windows_move_no_replace(
     destination_parent_expected = destination_parent_identity or path_identity(
         destination.parent
     )
-    parent_access = (
-        _WINDOWS_FILE_LIST_DIRECTORY
-        | _WINDOWS_FILE_READ_ATTRIBUTES
-        | _WINDOWS_SYNCHRONIZE
-    )
+    # RootDirectory is used to resolve the destination leaf relative to the
+    # already-inspected directory handle.  Windows requires traversal access
+    # for that relative lookup; FILE_LIST_DIRECTORY only permits enumeration
+    # and makes FileRenameInfo fail with ERROR_INVALID_PARAMETER.
+    parent_access = _WINDOWS_FILE_TRAVERSE | _WINDOWS_FILE_READ_ATTRIBUTES | _WINDOWS_SYNCHRONIZE
     source_parent_handle = open_handle(
         source.parent,
         parent_access,

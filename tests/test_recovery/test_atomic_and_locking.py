@@ -1179,7 +1179,7 @@ def test_windows_no_replace_pins_source_parent_source_and_destination_parent_han
     source_parent_stat = source.parent.lstat()
     source_stat = source.lstat()
     destination_parent_stat = destination_parent.lstat()
-    created: list[tuple[str, int]] = []
+    created: list[tuple[str, int, int]] = []
     closed: list[int] = []
     rename_calls: list[tuple[int, int, int, int, int]] = []
     mutation_events: list[str] = []
@@ -1194,8 +1194,8 @@ def test_windows_no_replace_pins_source_parent_source_and_destination_parent_han
         def __call__(self, *args):
             return self.callback(*args)
 
-    def create_file(path, _access, share_mode, *_args):
-        created.append((path, int(share_mode)))
+    def create_file(path, access, share_mode, *_args):
+        created.append((path, int(access), int(share_mode)))
         return (101, 202, 303)[len(created) - 1]
 
     def get_information(handle, info_class, buffer, _size):
@@ -1258,9 +1258,21 @@ def test_windows_no_replace_pins_source_parent_source_and_destination_parent_han
     )
 
     assert created == [
-        (_windows_extended_path(source.parent), 0x00000001 | 0x00000002),
-        (_windows_extended_path(source), 0x00000001 | 0x00000002),
-        (_windows_extended_path(destination_parent), 0x00000001 | 0x00000002),
+        (
+            _windows_extended_path(source.parent),
+            0x00000020 | 0x00000080 | 0x00100000,
+            0x00000001 | 0x00000002,
+        ),
+        (
+            _windows_extended_path(source),
+            0x00010000 | 0x00000080 | 0x00100000,
+            0x00000001 | 0x00000002,
+        ),
+        (
+            _windows_extended_path(destination_parent),
+            0x00000020 | 0x00000080 | 0x00100000,
+            0x00000001 | 0x00000002,
+        ),
     ]
     assert rename_calls == [
         (202, 3, 0, 303, len(destination.name.encode("utf-16-le")))

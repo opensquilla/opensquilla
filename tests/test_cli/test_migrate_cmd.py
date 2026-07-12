@@ -7,6 +7,7 @@ import tomllib
 from pathlib import Path
 
 import pytest
+import tomli_w
 from typer.testing import CliRunner
 
 from opensquilla.cli.main import app
@@ -440,7 +441,7 @@ def test_foreign_migration_guard_is_noop_for_ordinary_cli_profile(
     target.mkdir()
     workspace = tmp_path / "explicit-cli-workspace"
     (target / "config.toml").write_text(
-        f'workspace_dir = "{workspace}"\n',
+        tomli_w.dumps({"workspace_dir": str(workspace)}),
         encoding="utf-8",
     )
     monkeypatch.setenv("OPENSQUILLA_STATE_DIR", str(target))

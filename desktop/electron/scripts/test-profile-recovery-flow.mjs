@@ -544,9 +544,54 @@ try {
       'utf8',
     ).catch(() => '')
     : ''
+  const desktopLog = await readFile(join(userData, 'logs', 'desktop.log'), 'utf8').catch(() => '')
+  const gatewayPid = desktopLog
+    .trim()
+    .split('\n')
+    .reverse()
+    .map((line) => {
+      try { return JSON.parse(line) } catch { return null }
+    })
+    .find((entry) => entry?.event === 'gateway_spawned' && Number.isSafeInteger(entry.pid))
+    ?.pid
+  let gatewaySample = { attempted: false }
+  if (process.platform === 'darwin' && gatewayPid && process.env.CI_REPORT_DIR) {
+    const samplePath = join(process.env.CI_REPORT_DIR, 'gateway-process.sample.txt')
+    const result = spawnSync('/usr/bin/sample', [String(gatewayPid), '3', '-file', samplePath], {
+      encoding: 'utf8',
+      timeout: 10_000,
+    })
+    gatewaySample = {
+      attempted: true,
+      pid: gatewayPid,
+      status: result.status,
+      signal: result.signal,
+      error: result.error?.message || '',
+      stderr: String(result.stderr || '').slice(-1_000),
+    }
+  }
+  const debugLog = recoveryIds.length === 1
+    ? await readFile(
+      join(userData, 'recovery-profiles', recoveryIds[0], 'opensquilla', 'logs', 'debug.log'),
+      'utf8',
+    ).catch(() => '')
+    : ''
+  const recoveryStateEntries = recoveryIds.length === 1
+    ? await readdir(
+      join(userData, 'recovery-profiles', recoveryIds[0], 'opensquilla', 'state'),
+      { withFileTypes: true },
+    ).then((entries) => entries.map((entry) => ({
+      name: entry.name,
+      kind: entry.isFile() ? 'file' : entry.isDirectory() ? 'directory' : 'other',
+    }))).catch(() => [])
+    : []
   console.error(JSON.stringify({
     requestSummary,
+    desktopLogTail: desktopLog.slice(-4000),
+    gatewaySample,
     gatewayLogTail: gatewayLog.slice(-4000),
+    debugLogTail: debugLog.slice(-8000),
+    recoveryStateEntries,
   }, null, 2))
   throw error
 } finally {

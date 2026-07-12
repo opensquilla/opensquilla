@@ -6138,6 +6138,11 @@ async function startGateway(): Promise<GatewayState> {
   )
   gatewayProcess = child
   gatewayProfileKey = desktopProfileKey(activeProfile)
+  desktopLog('gateway_spawned', {
+    profileKind: activeProfile.kind,
+    pid: child.pid,
+    port,
+  })
   if (runtime.mode === 'dev') gatewayProcessTreeChildren.add(child)
 
   let gatewayOutputTail = ''
@@ -6559,6 +6564,12 @@ async function openOrResumeDesktopApp(): Promise<void> {
           gatewayState.status = 'error'
           gatewayState.error = error instanceof Error ? error.message : String(error)
         }
+        desktopLog('desktop_open_failed', {
+          profileKind: activeDesktopProfile().kind,
+          gatewayPid: gatewayProcess?.pid,
+          gatewayStatus: gatewayState.status,
+          error: error instanceof Error ? error.message : String(error),
+        })
         if (currentMainWindow()) sendBootError(error)
       }
       if (revision === desktopOpenFlowRevision) return

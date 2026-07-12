@@ -44,7 +44,7 @@ _WINDOWS_FILE_FLAG_OPEN_REPARSE_POINT = 0x00200000
 _WINDOWS_FILE_FLAG_BACKUP_SEMANTICS = 0x02000000
 _WINDOWS_FILE_ATTRIBUTE_TAG_INFO = 9
 _WINDOWS_FILE_ID_INFO = 18
-_WINDOWS_FILE_RENAME_INFO = 3
+_WINDOWS_FILE_RENAME_INFORMATION = 10
 
 
 def _chmod_open_file(fd: int, mode: int) -> None:
@@ -77,6 +77,13 @@ class _WindowsFileIdInfo(ctypes.Structure):
     _fields_ = [
         ("volume_serial_number", ctypes.c_uint64),
         ("file_id", _WindowsFileId128),
+    ]
+
+
+class _WindowsIoStatusBlock(ctypes.Structure):
+    _fields_ = [
+        ("status_or_pointer", ctypes.c_void_p),
+        ("information", ctypes.c_size_t),
     ]
 
 
@@ -335,29 +342,35 @@ def _macos_rename_no_replace(
 
 
 def _windows_rename_info(destination_name: str, destination_parent_handle: int):
-    """Build a handle-relative FILE_RENAME_INFO buffer with replacement disabled."""
+    """Build handle-relative FILE_RENAME_INFORMATION with replacement disabled."""
 
-    if not destination_name or destination_name in {".", ".."}:
+    if not destination_name or destination_name in {".", ".."} or "\x00" in destination_name:
         raise UnsafePathError("destination leaf name is invalid")
-    # Win32 FILE_RENAME_INFO requires a NUL-terminated FileName buffer even
-    # though FileNameLength deliberately excludes that terminator. Allocating
-    # only the visible characters makes SetFileInformationByHandle reject an
-    # otherwise valid handle-relative rename with ERROR_INVALID_PARAMETER.
-    name_type = ctypes.c_wchar * (len(destination_name) + 1)
+    encoded_name = destination_name.encode("utf-16-le")
+    # Use explicit UTF-16 code units so the layout remains the Windows ABI even
+    # when contract tests construct the buffer on a non-Windows host. The native
+    # structure carries a trailing WCHAR placeholder; FileNameLength excludes
+    # the required NUL terminator.
+    # The native length contract is sizeof(FILE_RENAME_INFORMATION) plus the
+    # visible FileName bytes. Reserve both its WCHAR placeholder and the NUL.
+    name_type = ctypes.c_uint16 * (len(encoded_name) // 2 + 2)
 
-    class _WindowsFileRenameInfo(ctypes.Structure):
+    class _WindowsFileRenameInformation(ctypes.Structure):
         _fields_ = [
-            ("flags", ctypes.c_uint32),
+            ("replace_or_flags", ctypes.c_uint32),
             ("root_directory", ctypes.c_void_p),
             ("file_name_length", ctypes.c_uint32),
             ("file_name", name_type),
         ]
 
-    info = _WindowsFileRenameInfo()
-    info.flags = 0  # FILE_RENAME_FLAG_REPLACE_IF_EXISTS is deliberately absent.
+    info = _WindowsFileRenameInformation()
+    # FileRenameInformation reads the first byte as ReplaceIfExists. Clearing
+    # the complete union storage keeps replacement disabled on every ABI.
+    info.replace_or_flags = 0
     info.root_directory = destination_parent_handle
-    info.file_name_length = len(destination_name.encode("utf-16-le"))
-    info.file_name = destination_name
+    info.file_name_length = len(encoded_name)
+    for index in range(0, len(encoded_name), 2):
+        info.file_name[index // 2] = int.from_bytes(encoded_name[index : index + 2], "little")
     return info
 
 
@@ -381,11 +394,13 @@ def _windows_move_no_replace(
 ) -> None:
     win_dll = getattr(ctypes, "WinDLL")
     kernel32 = win_dll("kernel32", use_last_error=True)
+    ntdll = win_dll("ntdll")
     try:
         create_file = kernel32.CreateFileW
         get_information = kernel32.GetFileInformationByHandleEx
-        set_information = kernel32.SetFileInformationByHandle
         close_handle = kernel32.CloseHandle
+        nt_set_information = ntdll.NtSetInformationFile
+        status_to_dos_error = ntdll.RtlNtStatusToDosError
     except AttributeError as exc:
         raise NoReplaceUnavailableError(
             "handle-relative Windows rename APIs are unavailable"
@@ -407,13 +422,16 @@ def _windows_move_no_replace(
         ctypes.c_uint32,
     ]
     get_information.restype = ctypes.c_int
-    set_information.argtypes = [
+    nt_set_information.argtypes = [
         ctypes.c_void_p,
-        ctypes.c_int,
+        ctypes.POINTER(_WindowsIoStatusBlock),
         ctypes.c_void_p,
         ctypes.c_uint32,
+        ctypes.c_int,
     ]
-    set_information.restype = ctypes.c_int
+    nt_set_information.restype = ctypes.c_int32
+    status_to_dos_error.argtypes = [ctypes.c_int32]
+    status_to_dos_error.restype = ctypes.c_uint32
     close_handle.argtypes = [ctypes.c_void_p]
     close_handle.restype = ctypes.c_int
 
@@ -424,7 +442,7 @@ def _windows_move_no_replace(
         _WINDOWS_ERROR_CALL_NOT_IMPLEMENTED,
     }
     # DELETE sharing would let another process rename an inspected parent after
-    # its identity check but before SetFileInformationByHandle. Pin both parents
+    # its identity check but before NtSetInformationFile. Pin both parents
     # and the source object for the complete mutation instead.
     pinned_share_mode = _WINDOWS_FILE_SHARE_READ | _WINDOWS_FILE_SHARE_WRITE
     open_flags = _WINDOWS_FILE_FLAG_BACKUP_SEMANTICS | _WINDOWS_FILE_FLAG_OPEN_REPARSE_POINT
@@ -545,14 +563,26 @@ def _windows_move_no_replace(
                 if _before_mutation is not None:
                     _before_mutation()
                 rename_info = _windows_rename_info(destination.name, destination_parent_handle)
-                if set_information(
-                    source_handle,
-                    _WINDOWS_FILE_RENAME_INFO,
-                    ctypes.byref(rename_info),
-                    ctypes.sizeof(rename_info),
-                ):
+                io_status = _WindowsIoStatusBlock()
+                # The Win32 FILE_RENAME_INFO contract requires RootDirectory to
+                # be NULL. FileRenameInformation is the native contract that
+                # supports resolving a leaf against our bound directory handle.
+                status = int(
+                    nt_set_information(
+                        source_handle,
+                        ctypes.byref(io_status),
+                        ctypes.byref(rename_info),
+                        ctypes.sizeof(rename_info),
+                        _WINDOWS_FILE_RENAME_INFORMATION,
+                    )
+                )
+                if status == 0:
                     return
-                error_number = getattr(ctypes, "get_last_error")()
+                if status > 0:
+                    raise AtomicStateUnknownError(
+                        "handle-relative Windows rename returned an ambiguous status"
+                    )
+                error_number = int(status_to_dos_error(status))
             finally:
                 close_handle(destination_parent_handle)
         finally:

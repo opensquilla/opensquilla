@@ -1168,9 +1168,22 @@ def test_windows_native_move_uses_extended_length_paths() -> None:
     )
 
 
+@pytest.mark.parametrize(
+    ("native_status", "mapped_error", "expected_error"),
+    [
+        (0, 0, None),
+        (ctypes.c_int32(0xC0000035).value, 183, DestinationExistsError),
+        (ctypes.c_int32(0xC00000D4).value, 17, CrossDeviceMoveError),
+        (0x00000103, 997, AtomicStateUnknownError),
+    ],
+    ids=["success", "collision", "cross-volume", "pending"],
+)
 def test_windows_no_replace_pins_source_parent_source_and_destination_parent_handles(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
+    native_status: int,
+    mapped_error: int,
+    expected_error: type[Exception] | None,
 ) -> None:
     source = tmp_path / "source"
     destination_parent = tmp_path / "destination-parent"
@@ -1184,6 +1197,7 @@ def test_windows_no_replace_pins_source_parent_source_and_destination_parent_han
     closed: list[int] = []
     rename_calls: list[tuple[int, int, int, int, int]] = []
     mutation_events: list[str] = []
+    mapped_statuses: list[int] = []
 
     class FakeCall:
         argtypes = None
@@ -1218,45 +1232,60 @@ def test_windows_no_replace_pins_source_parent_source_and_destination_parent_han
 
     class RenameHeader(ctypes.Structure):
         _fields_ = [
-            ("flags", ctypes.c_uint32),
+            ("replace_or_flags", ctypes.c_uint32),
             ("root_directory", ctypes.c_void_p),
             ("file_name_length", ctypes.c_uint32),
         ]
 
-    def set_information(handle, info_class, buffer, size):
+    def set_information(handle, _io_status, buffer, size, info_class):
         mutation_events.append("rename")
         header = ctypes.cast(buffer, ctypes.POINTER(RenameHeader)).contents
         rename_calls.append(
             (
                 handle,
                 info_class,
-                int(header.flags),
+                int(header.replace_or_flags),
                 int(header.root_directory),
                 int(header.file_name_length),
             )
         )
         assert size >= ctypes.sizeof(RenameHeader)
-        return 1
+        return native_status
+
+    def status_to_error(status):
+        mapped_statuses.append(status)
+        return mapped_error
 
     kernel32 = SimpleNamespace(
         CreateFileW=FakeCall(create_file),
         GetFileInformationByHandleEx=FakeCall(get_information),
-        SetFileInformationByHandle=FakeCall(set_information),
         CloseHandle=FakeCall(lambda handle: closed.append(handle) or 1),
+    )
+    ntdll = SimpleNamespace(
+        NtSetInformationFile=FakeCall(set_information),
+        RtlNtStatusToDosError=FakeCall(status_to_error),
     )
     monkeypatch.setattr(
         ctypes,
         "WinDLL",
-        lambda *_args, **_kwargs: kernel32,
+        lambda name, **_kwargs: kernel32 if name == "kernel32" else ntdll,
         raising=False,
     )
     monkeypatch.setattr(ctypes, "get_last_error", lambda: 0, raising=False)
 
-    _windows_move_no_replace(
-        source,
-        destination,
-        _before_mutation=lambda: mutation_events.append("failpoint"),
-    )
+    if expected_error is None:
+        _windows_move_no_replace(
+            source,
+            destination,
+            _before_mutation=lambda: mutation_events.append("failpoint"),
+        )
+    else:
+        with pytest.raises(expected_error):
+            _windows_move_no_replace(
+                source,
+                destination,
+                _before_mutation=lambda: mutation_events.append("failpoint"),
+            )
 
     assert created == [
         (
@@ -1276,22 +1305,48 @@ def test_windows_no_replace_pins_source_parent_source_and_destination_parent_han
         ),
     ]
     assert rename_calls == [
-        (202, 3, 0, 303, len(destination.name.encode("utf-16-le")))
+        (202, 10, 0, 303, len(destination.name.encode("utf-16-le")))
     ]
+    assert mapped_statuses == ([native_status] if native_status < 0 else [])
     assert mutation_events == ["failpoint", "rename"]
     assert closed == [303, 202, 101]
 
 
 def test_windows_rename_info_keeps_required_nul_terminator_outside_reported_length() -> None:
-    destination_name = "candidate-profile"
+    destination_name = "candidate-\U0001f980-profile"
 
     info = _windows_rename_info(destination_name, 123)
 
-    assert info.file_name == destination_name
-    assert info.file_name_length == len(destination_name.encode("utf-16-le"))
-    assert type(info).file_name.size == (len(destination_name) + 1) * ctypes.sizeof(
-        ctypes.c_wchar
+    encoded_name = destination_name.encode("utf-16-le")
+    encoded_buffer = b"".join(int(unit).to_bytes(2, "little") for unit in info.file_name)
+    assert encoded_buffer.startswith(encoded_name + b"\x00\x00")
+    assert not encoded_buffer[len(encoded_name) :].strip(b"\x00")
+    expected_root_offset = 8 if ctypes.sizeof(ctypes.c_void_p) == 8 else 4
+    assert type(info).root_directory.offset == expected_root_offset
+    assert type(info).file_name_length.offset == expected_root_offset + ctypes.sizeof(
+        ctypes.c_void_p
     )
+    assert type(info).file_name.offset == type(info).file_name_length.offset + 4
+    assert info.replace_or_flags == 0
+    assert info.root_directory == 123
+    assert info.file_name_length == len(encoded_name)
+    assert type(info).file_name.size == len(encoded_name) + 4
+
+    class MinimumRenameInformation(ctypes.Structure):
+        _fields_ = [
+            ("replace_or_flags", ctypes.c_uint32),
+            ("root_directory", ctypes.c_void_p),
+            ("file_name_length", ctypes.c_uint32),
+            ("file_name", ctypes.c_uint16 * 1),
+        ]
+
+    assert ctypes.sizeof(info) >= ctypes.sizeof(MinimumRenameInformation) + len(encoded_name)
+
+
+@pytest.mark.parametrize("destination_name", ["", ".", "..", "unsafe\x00suffix"])
+def test_windows_rename_info_rejects_invalid_leaf_names(destination_name: str) -> None:
+    with pytest.raises(UnsafePathError):
+        _windows_rename_info(destination_name, 123)
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="requires Windows sharing semantics")

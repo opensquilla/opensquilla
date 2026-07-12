@@ -793,17 +793,19 @@ def test_excluded_source_gateway_authority_change_blocks_publication(
             for item in _errors(report)
         )
     else:
-        assert authority.read_bytes() == changed
         if sys.platform == "win32" and authority_name == "gateway.pid.lock":
             # A same-process Windows rewrite of the byte-range-locked leaf can
-            # invalidate the lease through a different fail-closed OS path.
-            # The safety contract is the observed mutation plus no target
-            # publication; the exact lower-level diagnostic is not stable.
+            # either persist or be refused without surfacing an OSError to the
+            # Python write call. The safety contract is that the source remains
+            # one of those two complete values and no target is published; the
+            # exact lower-level diagnostic is not stable.
+            assert authority.read_bytes() in {initial, changed}
             assert any(
                 "import failed before completion" in item["reason"]
                 for item in _errors(report)
             )
         else:
+            assert authority.read_bytes() == changed
             assert any(
                 "gateway authority changed" in item["reason"]
                 for item in _errors(report)
@@ -1023,6 +1025,8 @@ def test_enumerate_portable_homes_orders_and_era_hints(tmp_path: Path) -> None:
     now = time.time()
     os.utime(older / "config.toml", (now - 1000, now - 1000))
     os.utime(newer / "config.toml", (now, now))
+    os.utime(older, (now - 1000, now - 1000))
+    os.utime(newer, (now, now))
 
     candidates = enumerate_portable_homes([base])
 

@@ -511,6 +511,7 @@ def test_windows_native_move_rejects_real_junction_in_source_tree(tmp_path: Path
     assert not destination.exists()
 
 
+@pytest.mark.skipif(sys.platform != "darwin", reason="requires renameatx_np")
 def test_macos_no_replace_binds_source_and_destination_parent_handles(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -550,6 +551,7 @@ def test_macos_no_replace_binds_source_and_destination_parent_handles(
     assert flags == 0x00000004
 
 
+@pytest.mark.skipif(sys.platform != "darwin", reason="requires renameatx_np")
 def test_macos_no_replace_stops_if_open_parent_identity_changed(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

@@ -741,7 +741,7 @@ def test_multi_root_legacy_acquisition_is_sorted_and_releases_partial_claims(
     canonical_state.mkdir(parents=True)
     external_state.mkdir()
     (home / "config.toml").write_text(
-        f'state_dir = "{external_state}"\n',
+        f"state_dir = {json.dumps(str(external_state))}\n",
         encoding="utf-8",
     )
     probe = LegacyGatewayLock(home)

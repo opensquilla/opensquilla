@@ -38,8 +38,8 @@ def _profile(tmp_path: Path) -> tuple[Path, Path, str, str]:
     state.mkdir()
     (workspace / "SOUL.md").write_text("synthetic identity\n", encoding="utf-8")
     config = (
-        f'state_dir = "{state}"\n'
-        f'workspace_dir = "{workspace}"\n'
+        f"state_dir = {json.dumps(str(state))}\n"
+        f"workspace_dir = {json.dumps(str(workspace))}\n"
         'search_provider = "duckduckgo"\n\n'
         '[llm]\nprovider = "ollama"\nmodel = "old-model"\n'
     )
@@ -474,7 +474,7 @@ def test_settings_save_cannot_redirect_attachment_media_root(tmp_path: Path) -> 
     protected_config = (
         old_config
         + "\n[attachments]\n"
-        + f'media_root = "{media_root}"\n'
+        + f"media_root = {json.dumps(str(media_root))}\n"
     )
     (home / "config.toml").write_text(protected_config, encoding="utf-8")
     new_config, new_credential = _new_pair(home)
@@ -577,7 +577,7 @@ def test_fresh_onboarding_initializes_only_canonical_roots(tmp_path: Path) -> No
     user_data.mkdir()
     home = user_data / "opensquilla"
     config = (
-        f'state_dir = "{home / "state"}"\n'
+        f"state_dir = {json.dumps(str(home / 'state'))}\n"
         'search_provider = "duckduckgo"\n\n'
         '[llm]\nprovider = "ollama"\nmodel = "synthetic"\n'
     )
@@ -603,7 +603,7 @@ def test_crashed_fresh_onboarding_recovers_canonical_roots_and_pair(tmp_path: Pa
     user_data.mkdir()
     home = user_data / "opensquilla"
     config = (
-        f'state_dir = "{home / "state"}"\n'
+        f"state_dir = {json.dumps(str(home / 'state'))}\n"
         'search_provider = "duckduckgo"\n\n'
         '[llm]\nprovider = "ollama"\nmodel = "synthetic"\n'
     )

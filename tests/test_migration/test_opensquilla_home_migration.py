@@ -819,7 +819,9 @@ def test_existing_empty_target_is_parked_and_published_transactionally(
     history = json.loads(
         (tmp_path / "profile-replacement-history.json").read_text(encoding="utf-8")
     )
-    assert history["backups"][0]["backup"] == str(backups[0].resolve())
+    assert history["backups"][0]["backup"] == os.path.normcase(
+        os.path.normpath(str(backups[0].resolve()))
+    )
 
 
 def test_committed_replacement_history_can_restore_complete_previous_profile(

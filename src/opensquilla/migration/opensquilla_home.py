@@ -1038,12 +1038,19 @@ def _capture_legacy_gateway_authority_file_posix(
 
 def _capture_legacy_gateway_authority(
     root: Path,
+    *,
+    allow_held_lock: bool = False,
 ) -> _LegacyGatewayAuthoritySnapshot:
     if os.name == "nt":  # pragma: no cover - exercised by Windows platform CI
         windows_authority = capture_windows_bounded_files(
             root,
             names=("gateway.pid", "gateway.pid.lock"),
             max_bytes=_GATEWAY_AUTHORITY_MAX_BYTES,
+            writer_shared_names=(
+                frozenset({"gateway.pid.lock"})
+                if allow_held_lock
+                else frozenset()
+            ),
         )
         if windows_authority is None:
             return _LegacyGatewayAuthoritySnapshot(
@@ -3396,7 +3403,14 @@ class OpenSquillaHomeMigrator:
         """Detect PID/lock appearance, disappearance, replacement, or mutation."""
 
         for expected in self._source_gateway_authority:
-            current = _capture_legacy_gateway_authority(expected.root)
+            # The importer already owns any existing legacy byte lock here.
+            # Windows therefore permits write sharing only for that one held
+            # lock leaf while the pinned-handle snapshot re-verifies its exact
+            # identity, metadata, and bounded content.
+            current = _capture_legacy_gateway_authority(
+                expected.root,
+                allow_held_lock=True,
+            )
             if current != expected:
                 raise OSError(
                     "source legacy gateway authority changed during import; "

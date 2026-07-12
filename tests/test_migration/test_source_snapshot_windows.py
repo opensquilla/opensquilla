@@ -248,6 +248,7 @@ def test_bounded_gateway_authority_uses_same_pinned_parent_chain() -> None:
         api.root / "state",
         names=("gateway.pid", "gateway.pid.lock"),
         max_bytes=1024,
+        writer_shared_names=frozenset({"gateway.pid.lock"}),
     )
 
     assert captured is not None
@@ -255,6 +256,26 @@ def test_bounded_gateway_authority_uses_same_pinned_parent_chain() -> None:
     assert captured.file("gateway.pid").data == b"12345\n"
     assert captured.file("gateway.pid.lock") is not None
     assert captured.file("gateway.pid.lock").data == b"locked\n"
+    assert (api.root / "state" / "gateway.pid", False) in api.open_modes
+    assert (api.root / "state" / "gateway.pid.lock", True) in api.open_modes
+    assert not api.open_handles
+
+
+def test_bounded_gateway_authority_rejects_unknown_writer_shared_leaf() -> None:
+    api = _FakeWindowsApi()
+
+    with pytest.raises(
+        windows_snapshot.WindowsSourceSnapshotError,
+        match="writer-shared names",
+    ):
+        windows_snapshot._capture_bounded_with_api(
+            api,
+            api.root / "state",
+            names=("gateway.pid",),
+            max_bytes=1024,
+            writer_shared_names=frozenset({"gateway.pid.lock"}),
+        )
+
     assert not api.open_handles
 
 

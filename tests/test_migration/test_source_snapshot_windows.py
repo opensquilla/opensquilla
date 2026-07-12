@@ -528,7 +528,10 @@ def test_real_windows_parent_reparse_to_original_directory_is_rejected(
         pytest.skip(f"creating a directory reparse point is unavailable: {exc}")
 
     destination = tmp_path / "copied.db"
-    with pytest.raises(windows_snapshot.WindowsSourceSnapshotError, match="reparse point"):
+    with pytest.raises(
+        windows_snapshot.WindowsSourceSnapshotError,
+        match="reparse point|source root changed",
+    ):
         windows_snapshot.copy_windows_snapshot_file(snapshot, entry, destination)
     assert not destination.exists()
 

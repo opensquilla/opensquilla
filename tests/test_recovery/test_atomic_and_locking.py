@@ -407,6 +407,7 @@ def test_windows_native_move_refuses_real_cross_volume_move() -> None:
                 shutil.rmtree(owned_root)
 
 
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="requires renameat2")
 def test_linux_cross_filesystem_no_replace_fails_without_copy_delete_fallback(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

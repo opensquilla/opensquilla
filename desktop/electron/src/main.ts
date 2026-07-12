@@ -517,11 +517,17 @@ function legacyImportCandidate(
 // to itself as an import source.
 function resolvedPathsEqual(a: string, b: string): boolean {
   const canonical = (path: string): string => {
+    let value: string
     try {
-      return realpathSync(path)
+      value = realpathSync(path)
     } catch {
-      return resolve(path)
+      value = resolve(path)
     }
+    // Python persists comparison paths through os.path.normcase(), which
+    // lowercases Windows paths. Keep the trusted Electron boundary on the
+    // same contract so equivalent drive/path casing is not rejected after a
+    // successful verifier round trip.
+    return process.platform === 'win32' ? value.toLowerCase() : value
   }
   return canonical(a) === canonical(b)
 }

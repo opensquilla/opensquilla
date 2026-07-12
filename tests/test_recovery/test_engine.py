@@ -31,9 +31,9 @@ def _workspace(path: Path, marker: str = "synthetic") -> Path:
 
 
 def _desktop_config(home: Path, *, workspace: Path | None = None, extra: str = "") -> None:
-    lines = [f'state_dir = "{home / "state"}"']
+    lines = [f"state_dir = {json.dumps(str(home / 'state'))}"]
     if workspace is not None:
-        lines.append(f'workspace_dir = "{workspace}"')
+        lines.append(f"workspace_dir = {json.dumps(str(workspace))}")
     if extra:
         lines.append(extra.rstrip("\n"))
     home.mkdir(parents=True, exist_ok=True)
@@ -237,7 +237,8 @@ def test_recovery_profile_rejects_external_primary_data_roots(
     workspace = primary_workspace if external_role == "workspace" else recovery_workspace
     state = primary_state if external_role == "state" else recovery_state
     (recovery_home / "config.toml").write_text(
-        f'state_dir = "{state}"\nworkspace_dir = "{workspace}"\n',
+        f"state_dir = {json.dumps(str(state))}\n"
+        f"workspace_dir = {json.dumps(str(workspace))}\n",
         encoding="utf-8",
     )
 
@@ -308,8 +309,8 @@ def test_recovery_profile_canonical_symlink_cannot_escape_to_primary(
         pytest.skip("symlink creation is unavailable")
     (recovery_home / "state").mkdir()
     (recovery_home / "config.toml").write_text(
-        f'state_dir = "{recovery_home / "state"}"\n'
-        f'workspace_dir = "{recovery_home / "workspace"}"\n',
+        f"state_dir = {json.dumps(str(recovery_home / 'state'))}\n"
+        f"workspace_dir = {json.dumps(str(recovery_home / 'workspace'))}\n",
         encoding="utf-8",
     )
 
@@ -652,7 +653,8 @@ def test_missing_external_state_blocks_before_a_new_chat_database_can_be_created
     missing_state = tmp_path / "detached-state"
     _desktop_config(home, workspace=workspace)
     (home / "config.toml").write_text(
-        f'state_dir = "{missing_state}"\nworkspace_dir = "{workspace}"\n',
+        f"state_dir = {json.dumps(str(missing_state))}\n"
+        f"workspace_dir = {json.dumps(str(workspace))}\n",
         encoding="utf-8",
     )
 

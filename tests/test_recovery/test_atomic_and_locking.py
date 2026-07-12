@@ -1296,7 +1296,7 @@ def test_windows_no_replace_pins_source_parent_source_and_destination_parent_han
         (
             _windows_extended_path(source),
             0x00010000 | 0x00000080 | 0x00100000,
-            0x00000001 | 0x00000002,
+            0x00000001 | 0x00000002 | 0x00000004,
         ),
         (
             _windows_extended_path(destination_parent),

@@ -441,19 +441,22 @@ def _windows_move_no_replace(
         _WINDOWS_ERROR_INVALID_PARAMETER,
         _WINDOWS_ERROR_CALL_NOT_IMPLEMENTED,
     }
-    # DELETE sharing would let another process rename an inspected parent after
-    # its identity check but before NtSetInformationFile. Pin both parents
-    # and the source object for the complete mutation instead.
-    pinned_share_mode = _WINDOWS_FILE_SHARE_READ | _WINDOWS_FILE_SHARE_WRITE
+    # Parent handles exclude DELETE sharing so their path identities cannot be
+    # exchanged before the handle-relative mutation. The source handle itself
+    # must share DELETE: Windows otherwise rejects the rename requested through
+    # that same open file object. Its handle still binds the exact source inode,
+    # while profile locks and the post-move manifest detect outside mutation.
+    pinned_parent_share_mode = _WINDOWS_FILE_SHARE_READ | _WINDOWS_FILE_SHARE_WRITE
+    source_share_mode = pinned_parent_share_mode | _WINDOWS_FILE_SHARE_DELETE
     open_flags = _WINDOWS_FILE_FLAG_BACKUP_SEMANTICS | _WINDOWS_FILE_FLAG_OPEN_REPARSE_POINT
     invalid_handle = ctypes.c_void_p(-1).value
 
-    def open_handle(path: Path, access: int, *, label: str) -> int:
+    def open_handle(path: Path, access: int, share_mode: int, *, label: str) -> int:
         handle = _windows_handle_value(
             create_file(
                 _windows_extended_path(path),
                 access,
-                pinned_share_mode,
+                share_mode,
                 None,
                 _WINDOWS_OPEN_EXISTING,
                 open_flags,
@@ -526,6 +529,7 @@ def _windows_move_no_replace(
     source_parent_handle = open_handle(
         source.parent,
         parent_access,
+        pinned_parent_share_mode,
         label="source parent",
     )
     error_number = 0
@@ -539,6 +543,7 @@ def _windows_move_no_replace(
         source_handle = open_handle(
             source,
             _WINDOWS_DELETE_ACCESS | _WINDOWS_FILE_READ_ATTRIBUTES | _WINDOWS_SYNCHRONIZE,
+            source_share_mode,
             label="source",
         )
         try:
@@ -551,6 +556,7 @@ def _windows_move_no_replace(
             destination_parent_handle = open_handle(
                 destination.parent,
                 parent_access,
+                pinned_parent_share_mode,
                 label="destination parent",
             )
             try:

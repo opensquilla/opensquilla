@@ -465,12 +465,14 @@ def test_ci_change_classifier_treats_runtime_markdown_as_runtime(tmp_path: Path)
 
     assert outputs == _expected_classifier_outputs(
         runtime_changed="true",
+        windows_full_required="true",
         python_changed="true",
+        platform_sensitive_changed="true",
         build_wheel_required="true",
     )
 
 
-def test_ci_change_classifier_tracks_test_changes_separately(tmp_path: Path) -> None:
+def test_ci_change_classifier_fails_closed_for_unclassified_tests(tmp_path: Path) -> None:
     outputs = _classify_changed_files(
         tmp_path,
         ["tests/test_ci/test_workflows.py"],
@@ -478,7 +480,9 @@ def test_ci_change_classifier_tracks_test_changes_separately(tmp_path: Path) -> 
 
     assert outputs == _expected_classifier_outputs(
         test_changed="true",
+        windows_full_required="true",
         python_changed="true",
+        platform_sensitive_changed="true",
     )
 
 
@@ -552,6 +556,60 @@ def test_ci_change_classifier_tracks_tui_changes_without_windows_full(tmp_path: 
         build_wheel_required="true",
     )
 
+
+def test_ci_change_classifier_fails_closed_for_unclassified_runtime_paths(
+    tmp_path: Path,
+) -> None:
+    outputs = _classify_changed_files(
+        tmp_path,
+        ["src/opensquilla/future_profile_store/transaction.py"],
+    )
+
+    assert outputs == _expected_classifier_outputs(
+        runtime_changed="true",
+        windows_full_required="true",
+        python_changed="true",
+        platform_sensitive_changed="true",
+        build_wheel_required="true",
+    )
+
+
+def test_ci_change_classifier_fails_closed_for_unknown_root_paths(tmp_path: Path) -> None:
+    outputs = _classify_changed_files(tmp_path, ["future-runtime-policy.json"])
+
+    assert outputs == _expected_classifier_outputs(
+        runtime_changed="true",
+        windows_full_required="true",
+        python_changed="true",
+        platform_sensitive_changed="true",
+        build_wheel_required="true",
+    )
+
+
+def test_ci_change_classifier_covers_state_and_installation_boundaries(
+    tmp_path: Path,
+) -> None:
+    outputs = _classify_changed_files(
+        tmp_path,
+        [
+            "src/opensquilla/session/manager.py",
+            "src/opensquilla/scheduler/persistence.py",
+            "src/opensquilla/memory/store.py",
+            "src/opensquilla/uninstall/actions.py",
+            "tests/test_recovery/test_new_contract.py",
+            "tests/test_uninstall/test_actions.py",
+        ],
+    )
+
+    assert outputs == _expected_classifier_outputs(
+        runtime_changed="true",
+        test_changed="true",
+        release_changed="true",
+        windows_full_required="true",
+        python_changed="true",
+        platform_sensitive_changed="true",
+        build_wheel_required="true",
+    )
 
 def test_ci_change_classifier_tracks_platform_sensitive_changes(tmp_path: Path) -> None:
     outputs = _classify_changed_files(

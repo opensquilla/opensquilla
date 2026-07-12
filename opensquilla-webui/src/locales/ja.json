@@ -49,6 +49,7 @@
   },
   "nav": {
     "chat": "チャット",
+    "chat-new": "新規チャット",
     "sessions": "セッション",
     "agents": "エージェント",
     "channels": "チャンネル",

@@ -49,6 +49,7 @@
   },
   "nav": {
     "chat": "对话",
+    "chat-new": "新建对话",
     "sessions": "会话",
     "agents": "智能体",
     "channels": "频道",

@@ -49,6 +49,7 @@
   },
   "nav": {
     "chat": "Chat",
+    "chat-new": "Neuer Chat",
     "sessions": "Sitzungen",
     "agents": "Agenten",
     "channels": "Kanäle",

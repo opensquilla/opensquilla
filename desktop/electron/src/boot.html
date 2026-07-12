@@ -190,6 +190,108 @@
 
     .error.visible { display: grid; }
 
+    .recovery {
+      display: none;
+      gap: 18px;
+      padding: 20px;
+      border: 1px solid rgba(242, 106, 27, 0.28);
+      background: var(--surface);
+    }
+
+    .recovery.visible { display: grid; }
+
+    body.recovering .status,
+    body.recovering .error { display: none; }
+
+    .recovery h2 {
+      margin: 0;
+      font-size: 18px;
+      line-height: 1.2;
+    }
+
+    .recovery p {
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.5;
+      margin: 0;
+    }
+
+    .recovery-code {
+      color: var(--dim);
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 11px;
+      overflow-wrap: anywhere;
+    }
+
+    .recovery-group {
+      display: grid;
+      gap: 8px;
+      padding-top: 14px;
+      border-top: 1px solid var(--line);
+    }
+
+    .recovery-group label,
+    .recovery-group legend {
+      color: var(--ink);
+      font-size: 12px;
+      font-weight: 720;
+    }
+
+    .recovery-group fieldset {
+      border: 0;
+      display: grid;
+      gap: 8px;
+      margin: 0;
+      padding: 0;
+    }
+
+    .recovery-row {
+      align-items: center;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+
+    .recovery-row select {
+      min-height: 34px;
+      min-width: min(300px, 100%);
+      flex: 1;
+      border: 1px solid var(--line);
+      background: var(--surface);
+      color: var(--ink);
+      font: inherit;
+      font-size: 12px;
+      padding: 0 9px;
+    }
+
+    .check-row {
+      align-items: flex-start;
+      color: var(--muted);
+      display: flex;
+      font-size: 12px;
+      font-weight: 500;
+      gap: 8px;
+      line-height: 1.4;
+    }
+
+    .check-row input { margin-top: 2px; }
+
+    .recovery-status {
+      min-height: 1.5em;
+      color: var(--danger);
+      font-size: 12px;
+    }
+
+    .recovery button:focus-visible,
+    .recovery select:focus-visible,
+    .recovery input:focus-visible,
+    .recovery [tabindex="-1"]:focus-visible {
+      outline: 3px solid color-mix(in srgb, var(--accent) 35%, transparent);
+      outline-offset: 2px;
+    }
+
+    .recovery button:disabled { cursor: wait; opacity: 0.55; }
+
     .error strong {
       font-size: 13px;
     }
@@ -288,6 +390,66 @@
           <button id="retry" class="primary" type="button" data-i18n="retry">Retry</button>
         </div>
       </section>
+
+      <section class="recovery" id="recoveryPanel" role="region" aria-labelledby="recoveryTitle">
+        <div>
+          <h2 id="recoveryTitle" tabindex="-1" data-i18n="recoveryTitle">Your primary profile needs recovery</h2>
+          <p id="recoveryIntro" data-i18n="recoveryIntro">OpenSquilla paused the primary gateway because it could not prove that writing is safe. Your data has not been merged or deleted.</p>
+        </div>
+        <div class="recovery-code" id="recoveryCode"></div>
+
+        <div class="recovery-group" id="workspaceGroup">
+          <label for="workspaceCandidates" data-i18n="workspaceLabel">Choose a verified workspace</label>
+          <div class="recovery-row">
+            <select id="workspaceCandidates"></select>
+            <button id="chooseWorkspace" type="button" data-i18n="chooseWorkspace">Use selected workspace</button>
+            <button id="browseWorkspace" type="button" data-i18n="browseWorkspace">Browse…</button>
+          </div>
+        </div>
+
+        <div class="recovery-group" id="existingRecoveryGroup">
+          <label for="recoveryProfiles" data-i18n="existingRecoveryLabel">Existing recovery profile</label>
+          <div class="recovery-row">
+            <select id="recoveryProfiles"></select>
+            <button id="continueRecovery" type="button" data-i18n="continueRecovery">Continue recovery profile</button>
+          </div>
+        </div>
+
+        <div class="recovery-group">
+          <fieldset>
+            <legend data-i18n="newRecoveryLabel">New recovery profile</legend>
+            <label class="check-row" for="copyCredential">
+              <input id="copyCredential" type="checkbox">
+              <span data-i18n="copyCredential">Copy the decryptable provider credential from the primary profile</span>
+            </label>
+          </fieldset>
+          <div class="recovery-row">
+            <button id="createRecovery" class="primary" type="button" data-i18n="createRecovery">Create recovery profile</button>
+            <button id="retryPrimary" type="button" data-i18n="retryPrimary">Retry primary profile</button>
+            <button id="returnPrimary" type="button" data-i18n="returnPrimary">Return to primary profile</button>
+          </div>
+        </div>
+
+        <div class="recovery-group" id="transactionRecoveryGroup" hidden>
+          <div class="recovery-row">
+            <button id="recoverTransaction" class="primary" type="button" data-i18n="recoverTransaction">Safely recover interrupted operation</button>
+          </div>
+        </div>
+
+        <div class="recovery-group" id="cleanupRecoveryGroup" hidden>
+          <div class="recovery-row">
+            <button id="abandonCleanup" class="primary" type="button" data-i18n="abandonCleanup">Stop cleanup and preserve remaining data</button>
+          </div>
+        </div>
+
+        <p class="recovery-status" id="recoveryStatus" role="status" aria-live="polite"></p>
+        <div class="actions">
+          <button id="revealProfile" type="button" data-i18n="revealProfile">Show profile location</button>
+          <button id="revealBackups" type="button" data-i18n="revealBackups">Show backup location</button>
+          <button id="copyDiagnostics" type="button" data-i18n="copyDiagnostics">Copy diagnostics</button>
+          <button id="recoveryQuit" type="button" data-i18n="quit">Quit</button>
+        </div>
+      </section>
     </main>
   </div>
   <script>
@@ -310,6 +472,17 @@
         resetPhase: 'Resetting desktop setup',
         resetProgress: 'Clearing saved setup and restarting onboarding.',
         resetFailed: 'Reset failed',
+        recoveryTitle: 'Your primary profile needs recovery',
+        recoveryIntro: 'OpenSquilla paused the primary gateway because it could not prove that writing is safe. Your data has not been merged or deleted.',
+        recoveryConfirmationTitle: 'Confirm recovery profile',
+        recoveryConfirmationIntro: 'OpenSquilla is waiting for you to confirm the selected isolated recovery profile before it starts. This does not mean your primary profile is unsafe.',
+        recoveryProfileUnsafeTitle: 'Recovery profile needs attention',
+        recoveryProfileUnsafeIntro: 'OpenSquilla could not prove that the selected recovery profile is safe to write. The primary profile has not been selected or changed.',
+        workspaceLabel: 'Choose a verified workspace', chooseWorkspace: 'Use selected workspace', browseWorkspace: 'Browse…',
+        existingRecoveryLabel: 'Existing recovery profile', continueRecovery: 'Continue recovery profile', noRecoveryProfiles: 'No recovery profiles yet',
+        newRecoveryLabel: 'New recovery profile', copyCredential: 'Copy the decryptable provider credential from the primary profile', createRecovery: 'Create recovery profile',
+        retryPrimary: 'Retry primary profile', returnPrimary: 'Return to primary profile', recoverTransaction: 'Safely recover interrupted operation', abandonCleanup: 'Stop cleanup and preserve remaining data', revealProfile: 'Show profile location', revealBackups: 'Show backup location',
+        copyDiagnostics: 'Copy diagnostics', diagnosticsCopied: 'Sanitized diagnostics copied.', recoveryWorking: 'Working…', noWorkspaceCandidates: 'No verified candidates; browse for a workspace.',
       },
       'zh-Hans': {
         title: '正在启动 OpenSquilla', bootAria: 'OpenSquilla 启动',
@@ -324,6 +497,17 @@
         resetPhase: '正在重置桌面设置',
         resetProgress: '正在清除已保存的设置并重新启动引导。',
         resetFailed: '重置失败',
+        recoveryTitle: '主配置需要恢复',
+        recoveryIntro: 'OpenSquilla 无法证明写入安全，因此已暂停主网关。你的数据没有被合并或删除。',
+        recoveryConfirmationTitle: '确认继续恢复配置',
+        recoveryConfirmationIntro: 'OpenSquilla 正在等待你确认启动已选中的独立恢复配置。这不表示主配置不安全。',
+        recoveryProfileUnsafeTitle: '恢复配置需要处理',
+        recoveryProfileUnsafeIntro: 'OpenSquilla 无法证明已选恢复配置可以安全写入。主配置未被选中或修改。',
+        workspaceLabel: '选择已验证的工作区', chooseWorkspace: '使用所选工作区', browseWorkspace: '浏览…',
+        existingRecoveryLabel: '现有恢复配置', continueRecovery: '继续恢复配置', noRecoveryProfiles: '尚无恢复配置',
+        newRecoveryLabel: '新建恢复配置', copyCredential: '从主配置复制可解密的提供商凭据', createRecovery: '创建恢复配置',
+        retryPrimary: '重试主配置', returnPrimary: '返回主配置', recoverTransaction: '安全恢复中断的操作', abandonCleanup: '停止清理并保留剩余数据', revealProfile: '显示配置位置', revealBackups: '显示备份位置',
+        copyDiagnostics: '复制诊断信息', diagnosticsCopied: '已复制脱敏诊断信息。', recoveryWorking: '正在处理…', noWorkspaceCandidates: '没有已验证候选；请浏览选择工作区。',
       },
       ja: {
         title: 'OpenSquilla を起動しています', bootAria: 'OpenSquilla の起動',
@@ -338,6 +522,17 @@
         resetPhase: 'デスクトップ設定をリセットしています',
         resetProgress: '保存済み設定を消去し、オンボーディングを再開しています。',
         resetFailed: 'リセットに失敗しました',
+        recoveryTitle: 'プライマリプロファイルの復旧が必要です',
+        recoveryIntro: '安全な書き込みを確認できないため、プライマリゲートウェイを一時停止しました。データの結合や削除は行っていません。',
+        recoveryConfirmationTitle: '復旧プロファイルを確認',
+        recoveryConfirmationIntro: '選択済みの独立した復旧プロファイルを起動する前に確認が必要です。プライマリプロファイルが危険という意味ではありません。',
+        recoveryProfileUnsafeTitle: '復旧プロファイルの確認が必要です',
+        recoveryProfileUnsafeIntro: '選択済みの復旧プロファイルに安全に書き込めることを確認できません。プライマリプロファイルは選択も変更もされていません。',
+        workspaceLabel: '検証済みワークスペースを選択', chooseWorkspace: '選択したワークスペースを使用', browseWorkspace: '参照…',
+        existingRecoveryLabel: '既存の復旧プロファイル', continueRecovery: '復旧プロファイルを続行', noRecoveryProfiles: '復旧プロファイルはまだありません',
+        newRecoveryLabel: '新しい復旧プロファイル', copyCredential: 'プライマリから復号可能なプロバイダー認証情報をコピー', createRecovery: '復旧プロファイルを作成',
+        retryPrimary: 'プライマリを再試行', returnPrimary: 'プライマリに戻る', recoverTransaction: '中断した操作を安全に復旧', abandonCleanup: 'クリーンアップを停止して残りのデータを保持', revealProfile: 'プロファイルの場所を表示', revealBackups: 'バックアップの場所を表示',
+        copyDiagnostics: '診断情報をコピー', diagnosticsCopied: 'サニタイズ済み診断情報をコピーしました。', recoveryWorking: '処理中…', noWorkspaceCandidates: '検証済み候補がありません。ワークスペースを参照してください。',
       },
       fr: {
         title: 'Démarrage d\'OpenSquilla', bootAria: 'Démarrage d\'OpenSquilla',
@@ -352,6 +547,17 @@
         resetPhase: 'Réinitialisation de la configuration du bureau',
         resetProgress: 'Suppression de la configuration enregistrée et relance de l’onboarding.',
         resetFailed: 'Échec de la réinitialisation',
+        recoveryTitle: 'Le profil principal doit être récupéré',
+        recoveryIntro: 'OpenSquilla a suspendu la passerelle principale car une écriture sûre ne pouvait pas être garantie. Vos données n’ont été ni fusionnées ni supprimées.',
+        recoveryConfirmationTitle: 'Confirmer le profil de récupération',
+        recoveryConfirmationIntro: 'OpenSquilla attend votre confirmation avant de démarrer le profil de récupération isolé sélectionné. Cela ne signifie pas que le profil principal est dangereux.',
+        recoveryProfileUnsafeTitle: 'Le profil de récupération nécessite votre attention',
+        recoveryProfileUnsafeIntro: 'OpenSquilla ne peut pas garantir une écriture sûre dans le profil de récupération sélectionné. Le profil principal n’a été ni sélectionné ni modifié.',
+        workspaceLabel: 'Choisir un espace de travail vérifié', chooseWorkspace: 'Utiliser l’espace sélectionné', browseWorkspace: 'Parcourir…',
+        existingRecoveryLabel: 'Profil de récupération existant', continueRecovery: 'Continuer ce profil', noRecoveryProfiles: 'Aucun profil de récupération',
+        newRecoveryLabel: 'Nouveau profil de récupération', copyCredential: 'Copier l’identifiant fournisseur déchiffrable du profil principal', createRecovery: 'Créer un profil de récupération',
+        retryPrimary: 'Réessayer le profil principal', returnPrimary: 'Revenir au profil principal', recoverTransaction: 'Récupérer l’opération interrompue en toute sécurité', abandonCleanup: 'Arrêter le nettoyage et conserver les données restantes', revealProfile: 'Afficher l’emplacement du profil', revealBackups: 'Afficher les sauvegardes',
+        copyDiagnostics: 'Copier le diagnostic', diagnosticsCopied: 'Diagnostic expurgé copié.', recoveryWorking: 'Traitement…', noWorkspaceCandidates: 'Aucun candidat vérifié ; parcourez les dossiers.',
       },
       de: {
         title: 'OpenSquilla wird gestartet', bootAria: 'OpenSquilla-Start',
@@ -366,6 +572,17 @@
         resetPhase: 'Desktop-Einrichtung wird zurückgesetzt',
         resetProgress: 'Gespeicherte Einrichtung wird gelöscht und Onboarding neu gestartet.',
         resetFailed: 'Zurücksetzen fehlgeschlagen',
+        recoveryTitle: 'Das Hauptprofil muss wiederhergestellt werden',
+        recoveryIntro: 'OpenSquilla hat das Haupt-Gateway angehalten, weil sicheres Schreiben nicht bestätigt werden konnte. Daten wurden weder zusammengeführt noch gelöscht.',
+        recoveryConfirmationTitle: 'Wiederherstellungsprofil bestätigen',
+        recoveryConfirmationIntro: 'OpenSquilla wartet auf Ihre Bestätigung, bevor das ausgewählte isolierte Wiederherstellungsprofil gestartet wird. Dies bedeutet nicht, dass das Hauptprofil unsicher ist.',
+        recoveryProfileUnsafeTitle: 'Wiederherstellungsprofil erfordert Aufmerksamkeit',
+        recoveryProfileUnsafeIntro: 'OpenSquilla konnte sicheres Schreiben im ausgewählten Wiederherstellungsprofil nicht bestätigen. Das Hauptprofil wurde weder ausgewählt noch geändert.',
+        workspaceLabel: 'Geprüften Arbeitsbereich wählen', chooseWorkspace: 'Auswahl verwenden', browseWorkspace: 'Durchsuchen…',
+        existingRecoveryLabel: 'Vorhandenes Wiederherstellungsprofil', continueRecovery: 'Profil fortsetzen', noRecoveryProfiles: 'Noch keine Wiederherstellungsprofile',
+        newRecoveryLabel: 'Neues Wiederherstellungsprofil', copyCredential: 'Entschlüsselbare Anbieter-Anmeldedaten aus dem Hauptprofil kopieren', createRecovery: 'Wiederherstellungsprofil erstellen',
+        retryPrimary: 'Hauptprofil erneut prüfen', returnPrimary: 'Zum Hauptprofil zurückkehren', recoverTransaction: 'Unterbrochenen Vorgang sicher wiederherstellen', abandonCleanup: 'Bereinigung stoppen und verbleibende Daten behalten', revealProfile: 'Profilordner anzeigen', revealBackups: 'Sicherungsordner anzeigen',
+        copyDiagnostics: 'Diagnose kopieren', diagnosticsCopied: 'Bereinigte Diagnose kopiert.', recoveryWorking: 'Wird ausgeführt…', noWorkspaceCandidates: 'Keine geprüften Kandidaten; bitte Arbeitsbereich auswählen.',
       },
       es: {
         title: 'Iniciando OpenSquilla', bootAria: 'Inicio de OpenSquilla',
@@ -380,6 +597,17 @@
         resetPhase: 'Restableciendo configuración de escritorio',
         resetProgress: 'Borrando la configuración guardada y reiniciando la incorporación.',
         resetFailed: 'Error al restablecer',
+        recoveryTitle: 'El perfil principal necesita recuperación',
+        recoveryIntro: 'OpenSquilla pausó la pasarela principal porque no pudo demostrar que fuera seguro escribir. No se combinaron ni eliminaron datos.',
+        recoveryConfirmationTitle: 'Confirmar perfil de recuperación',
+        recoveryConfirmationIntro: 'OpenSquilla espera tu confirmación antes de iniciar el perfil de recuperación aislado seleccionado. Esto no significa que el perfil principal sea inseguro.',
+        recoveryProfileUnsafeTitle: 'El perfil de recuperación necesita atención',
+        recoveryProfileUnsafeIntro: 'OpenSquilla no pudo demostrar que fuera seguro escribir en el perfil de recuperación seleccionado. El perfil principal no se seleccionó ni modificó.',
+        workspaceLabel: 'Elegir un espacio verificado', chooseWorkspace: 'Usar el espacio seleccionado', browseWorkspace: 'Examinar…',
+        existingRecoveryLabel: 'Perfil de recuperación existente', continueRecovery: 'Continuar perfil de recuperación', noRecoveryProfiles: 'Aún no hay perfiles de recuperación',
+        newRecoveryLabel: 'Nuevo perfil de recuperación', copyCredential: 'Copiar la credencial descifrable del proveedor desde el perfil principal', createRecovery: 'Crear perfil de recuperación',
+        retryPrimary: 'Reintentar perfil principal', returnPrimary: 'Volver al perfil principal', recoverTransaction: 'Recuperar de forma segura la operación interrumpida', abandonCleanup: 'Detener la limpieza y conservar los datos restantes', revealProfile: 'Mostrar ubicación del perfil', revealBackups: 'Mostrar copias de seguridad',
+        copyDiagnostics: 'Copiar diagnóstico', diagnosticsCopied: 'Diagnóstico depurado copiado.', recoveryWorking: 'Procesando…', noWorkspaceCandidates: 'No hay candidatos verificados; busca un espacio de trabajo.',
       },
     };
     let msg = MESSAGES.en;
@@ -389,6 +617,13 @@
     const timer = document.getElementById('timer');
     const errorPanel = document.getElementById('errorPanel');
     const errorMessage = document.getElementById('errorMessage');
+    const recoveryPanel = document.getElementById('recoveryPanel');
+    const recoveryTitle = document.getElementById('recoveryTitle');
+    const recoveryIntro = document.getElementById('recoveryIntro');
+    const recoveryCode = document.getElementById('recoveryCode');
+    const recoveryStatus = document.getElementById('recoveryStatus');
+    const workspaceCandidates = document.getElementById('workspaceCandidates');
+    const recoveryProfiles = document.getElementById('recoveryProfiles');
     const steps = {
       profile: document.querySelector('[data-step="profile"]'),
       gateway: document.querySelector('[data-step="gateway"]'),
@@ -456,6 +691,110 @@
       for (const step of Object.values(steps)) {
         if (step) step.classList.remove('active');
       }
+    }
+
+    // PR3 scaffold only: this renderer has no caller, IPC bridge, or event
+    // listener until the complete recovery lifecycle is activated in PR4.
+    function renderRecoveryState(state, moveFocus = true) {
+      const inspection = state && state.inspection;
+      const blocked = Boolean(state && state.blocked && inspection);
+      if (!blocked) {
+        recoveryPanel.classList.remove('visible');
+        document.body.classList.remove('recovering');
+        return;
+      }
+
+      const wasVisible = recoveryPanel.classList.contains('visible');
+      document.body.classList.add('recovering', 'errored');
+      errorPanel.classList.remove('visible');
+      recoveryPanel.classList.add('visible');
+      if (timerInterval) { clearInterval(timerInterval); timerInterval = null; }
+      recoveryCode.textContent = String(inspection.stable_code || 'recovery_required');
+      const confirmationRequired = (
+        inspection.stable_code === 'desktop_recovery_profile_confirmation_required'
+      );
+      const recoveryProfileUnsafe = (
+        !confirmationRequired && state.activeProfile?.kind === 'recovery'
+      );
+      recoveryTitle.textContent = confirmationRequired
+        ? msg.recoveryConfirmationTitle
+        : (recoveryProfileUnsafe ? msg.recoveryProfileUnsafeTitle : msg.recoveryTitle);
+      recoveryIntro.textContent = confirmationRequired
+        ? msg.recoveryConfirmationIntro
+        : (recoveryProfileUnsafe ? msg.recoveryProfileUnsafeIntro : msg.recoveryIntro);
+
+      const candidates = Array.isArray(inspection.candidates)
+        ? inspection.candidates.filter((item) => (
+          item
+          && ['canonical', 'legacy', 'external'].includes(String(item.kind || ''))
+          && item.exists
+          && item.valid
+        ))
+        : [];
+      const allowedActions = new Set(Array.isArray(inspection.allowed_actions)
+        ? inspection.allowed_actions.map((item) => String(item))
+        : []);
+      const mayChooseWorkspace = allowedActions.has('choose-workspace');
+      workspaceCandidates.replaceChildren();
+      if (candidates.length) {
+        for (const candidate of candidates) {
+          const option = document.createElement('option');
+          option.value = String(candidate.path || '');
+          option.textContent = `${String(candidate.kind || 'workspace')} — ${String(candidate.path || '')}`;
+          workspaceCandidates.appendChild(option);
+        }
+      } else {
+        const option = document.createElement('option');
+        option.value = '';
+        option.textContent = msg.noWorkspaceCandidates;
+        workspaceCandidates.appendChild(option);
+      }
+
+      const profiles = Array.isArray(state.recoveryProfiles) ? state.recoveryProfiles : [];
+      recoveryProfiles.replaceChildren();
+      if (profiles.length) {
+        for (const profile of profiles) {
+          const option = document.createElement('option');
+          option.value = String(profile.id || '');
+          option.textContent = String(profile.home || profile.id || '');
+          recoveryProfiles.appendChild(option);
+        }
+      } else {
+        const option = document.createElement('option');
+        option.value = '';
+        option.textContent = msg.noRecoveryProfiles;
+        recoveryProfiles.appendChild(option);
+      }
+
+      document.getElementById('workspaceGroup').hidden = !mayChooseWorkspace;
+      document.getElementById('existingRecoveryGroup').hidden = (
+        profiles.length === 0 || !allowedActions.has('continue-recovery-profile')
+      );
+      document.getElementById('returnPrimary').hidden = state.activeProfile?.kind !== 'recovery';
+      document.getElementById('createRecovery').hidden = !allowedActions.has('create-recovery-profile');
+      document.getElementById('retryPrimary').hidden = !allowedActions.has('retry-primary-profile');
+      document.getElementById('transactionRecoveryGroup').hidden = !allowedActions.has('recover-transaction');
+      document.getElementById('cleanupRecoveryGroup').hidden = !allowedActions.has('abandon-cleanup');
+      document.getElementById('revealBackups').hidden = !allowedActions.has('show-backups');
+      document.getElementById('copyDiagnostics').hidden = !allowedActions.has('copy-diagnostics');
+      recoveryStatus.textContent = state.error ? String(state.error) : (state.busy ? msg.recoveryWorking : '');
+      for (const button of recoveryPanel.querySelectorAll('button')) button.disabled = Boolean(state.busy);
+      document.getElementById('chooseWorkspace').disabled = (
+        Boolean(state.busy) || !mayChooseWorkspace || candidates.length === 0
+      );
+      document.getElementById('browseWorkspace').disabled = Boolean(state.busy) || !mayChooseWorkspace;
+      document.getElementById('continueRecovery').disabled = (
+        Boolean(state.busy)
+        || !allowedActions.has('continue-recovery-profile')
+        || profiles.length === 0
+      );
+      document.getElementById('recoverTransaction').disabled = (
+        Boolean(state.busy) || !allowedActions.has('recover-transaction')
+      );
+      document.getElementById('abandonCleanup').disabled = (
+        Boolean(state.busy) || !allowedActions.has('abandon-cleanup')
+      );
+      if (moveFocus && !wasVisible) recoveryTitle.focus();
     }
 
     async function resetSetup() {

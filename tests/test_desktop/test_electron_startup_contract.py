@@ -123,6 +123,109 @@ def test_boot_error_panel_exposes_reset_setup_recovery() -> None:
     assert "errorPanel.classList.add('visible')" in reset_flow
 
 
+def test_recovery_ui_scaffold_is_accessible_but_not_runtime_reachable() -> None:
+    boot_html = _read("desktop/electron/src/boot.html")
+
+    assert '<section class="recovery" id="recoveryPanel" role="region"' in boot_html
+    assert 'aria-labelledby="recoveryTitle"' in boot_html
+    assert 'id="recoveryTitle" tabindex="-1"' in boot_html
+    assert 'id="recoveryStatus" role="status" aria-live="polite"' in boot_html
+    assert '<label for="workspaceCandidates"' in boot_html
+    assert '<label for="recoveryProfiles"' in boot_html
+    assert '<legend data-i18n="newRecoveryLabel">' in boot_html
+    assert '<label class="check-row" for="copyCredential">' in boot_html
+    assert 'id="copyCredential" type="checkbox"' in boot_html
+    for button_id in (
+        "chooseWorkspace",
+        "browseWorkspace",
+        "continueRecovery",
+        "createRecovery",
+        "retryPrimary",
+        "returnPrimary",
+        "recoverTransaction",
+        "abandonCleanup",
+        "revealProfile",
+        "revealBackups",
+        "copyDiagnostics",
+        "recoveryQuit",
+    ):
+        assert f'id="{button_id}"' in boot_html
+        assert 'type="button"' in _section(boot_html, f'id="{button_id}"', ">")
+        assert f"getElementById('{button_id}').addEventListener" not in boot_html
+
+    assert "function renderRecoveryState(state, moveFocus = true)" in boot_html
+    # PR3 ships display-only markup and rendering code. The main/preload bridge
+    # is intentionally absent until PR4 can activate the complete safe flow.
+    assert boot_html.count("renderRecoveryState(") == 1
+    assert "function runRecoveryAction" not in boot_html
+    for bridge_name in (
+        "onRecoveryState",
+        "chooseRecoveryWorkspace",
+        "launchSafeProfile",
+        "retryPrimaryProfile",
+        "recoverProfileTransaction",
+        "abandonPartialCleanup",
+        "returnPrimaryProfile",
+        "revealRecoveryPath",
+        "copyRecoveryDiagnostics",
+    ):
+        assert bridge_name not in boot_html
+
+
+def test_recovery_ui_scaffold_has_all_six_locales() -> None:
+    boot_html = _read("desktop/electron/src/boot.html")
+    locale_keys = (
+        "recoveryTitle",
+        "recoveryIntro",
+        "recoveryConfirmationTitle",
+        "recoveryConfirmationIntro",
+        "recoveryProfileUnsafeTitle",
+        "recoveryProfileUnsafeIntro",
+        "workspaceLabel",
+        "chooseWorkspace",
+        "browseWorkspace",
+        "existingRecoveryLabel",
+        "continueRecovery",
+        "noRecoveryProfiles",
+        "newRecoveryLabel",
+        "copyCredential",
+        "createRecovery",
+        "retryPrimary",
+        "returnPrimary",
+        "recoverTransaction",
+        "abandonCleanup",
+        "revealProfile",
+        "revealBackups",
+        "copyDiagnostics",
+        "diagnosticsCopied",
+        "recoveryWorking",
+        "noWorkspaceCandidates",
+    )
+    for key in locale_keys:
+        assert boot_html.count(f"{key}:") == 6, key
+
+
+def test_desktop_profile_context_scaffold_is_not_activated() -> None:
+    main_ts = _read("desktop/electron/src/main.ts")
+    preload = _read("desktop/electron/src/preload.cts")
+    context = _read("desktop/electron/src/desktop-profile-context.ts")
+    runtime_sources = [
+        path.read_text(encoding="utf-8")
+        for path in (ROOT / "desktop/electron/src").iterdir()
+        if path.suffix in {".ts", ".cts"} and path.name != "desktop-profile-context.ts"
+    ]
+
+    assert "persistDesktopProfileContextFile" in context
+    assert "updateDesktopProfileContextFile" in context
+    assert "./desktop-profile-context.js" not in main_ts
+    assert "desktop-profile-context" not in main_ts
+    assert "desktop:recovery" not in main_ts
+    assert "desktop:recovery" not in preload
+    assert "onRecoveryState" not in preload
+    assert all("persistDesktopProfileContextFile" not in source for source in runtime_sources)
+    assert all("updateDesktopProfileContextFile" not in source for source in runtime_sources)
+
+
 def test_reset_desktop_settings_forces_onboarding_before_gateway_reuse() -> None:
     main_ts = _read("desktop/electron/src/main.ts")
     start = _section(

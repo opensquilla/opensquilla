@@ -244,6 +244,14 @@ def test_ci_verifies_committed_frontend_dist_is_fresh() -> None:
     assert "committed Web UI dist is stale" in text
 
 
+def test_desktop_ci_runs_profile_context_scaffold_unit_test() -> None:
+    data = _workflow("ci.yml")
+    desktop_steps = data["jobs"]["desktop-check"]["steps"]
+    unit_step = next(step for step in desktop_steps if step.get("name") == "Run desktop unit tests")
+
+    assert "node scripts/test-desktop-profile-context.mjs" in unit_step["run"]
+
+
 def test_pr_target_validator_allows_main_pull_requests(tmp_path: Path) -> None:
     result = _validate_pr_target(
         tmp_path,

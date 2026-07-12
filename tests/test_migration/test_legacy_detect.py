@@ -237,19 +237,46 @@ def test_detection_swallows_os_errors(
 
 
 def test_suggested_migrate_command_renders_kind_and_source() -> None:
-    candidate = LegacyHomeCandidate(path=Path("/legacy/home"), kind="cli-home")
+    source = Path(os.sep) / "legacy" / "home"
+    candidate = LegacyHomeCandidate(path=source, kind="cli-home")
+    rendered_source = f"'{source}'" if os.name == "nt" else str(source)
 
     assert suggested_migrate_command(candidate) == (
-        "opensquilla migrate opensquilla --kind cli-home --source /legacy/home"
+        f"opensquilla migrate opensquilla --kind cli-home --source {rendered_source}"
     )
 
 
 def test_suggested_migrate_command_quotes_paths_with_spaces() -> None:
-    candidate = LegacyHomeCandidate(
-        path=Path("/legacy homes/data dir"), kind="windows-portable"
-    )
+    source = Path(os.sep) / "legacy homes" / "data dir"
+    candidate = LegacyHomeCandidate(path=source, kind="windows-portable")
 
     assert suggested_migrate_command(candidate) == (
         "opensquilla migrate opensquilla --kind windows-portable "
-        "--source '/legacy homes/data dir'"
+        f"--source '{source}'"
     )
+
+
+def test_suggested_migrate_command_quotes_posix_shell_metacharacters(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from opensquilla.onboarding import next_steps
+
+    monkeypatch.setattr(next_steps.platform, "system", lambda: "Linux")
+    source = Path(os.sep) / "legacy$HOME"
+    candidate = LegacyHomeCandidate(path=source, kind="cli-home")
+
+    assert suggested_migrate_command(candidate).endswith(f"--source '{source}'")
+
+
+def test_suggested_migrate_command_uses_powershell_quoting(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from opensquilla.onboarding import next_steps
+
+    monkeypatch.setattr(next_steps.platform, "system", lambda: "Windows")
+    source = Path("C:\\O'Brien Data\\profile")
+    candidate = LegacyHomeCandidate(path=source, kind="windows-portable")
+
+    command = suggested_migrate_command(candidate)
+    assert command.endswith("--source 'C:\\O''Brien Data\\profile'")
+    assert "'\"'\"'" not in command

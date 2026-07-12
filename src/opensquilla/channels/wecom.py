@@ -59,7 +59,6 @@ _DEDUPE_SIZE = 4096
 _DEFAULT_WEBSOCKET_URL = "wss://openws.work.weixin.qq.com"
 _WEBSOCKET_HANDSHAKE_TIMEOUT_S = 10.0
 _WEBSOCKET_REQUEST_TIMEOUT_S = 10.0
-_WEBSOCKET_PING_INTERVAL_S = 30.0
 _WEBSOCKET_APP_PING_INTERVAL_S = 30.0
 _WEBSOCKET_REPLY_REQ_ID_TTL_S = 300.0
 _WEBSOCKET_RECONNECT_INITIAL_S = 1.0
@@ -395,8 +394,9 @@ class WeComChannel:
 
         return await websockets.connect(
             self.config.websocket_url,
-            ping_interval=_WEBSOCKET_PING_INTERVAL_S,
-            ping_timeout=_WEBSOCKET_PING_INTERVAL_S,
+            # WeCom uses application-level JSON ping/pong. Protocol-level
+            # Ping frames can trigger 1002 "incorrect masking" responses.
+            ping_interval=None,
         )
 
     async def _ws_send_json(self, payload: dict[str, Any]) -> None:

@@ -491,6 +491,7 @@ jobs:
             tests/test_recovery/test_atomic_and_locking.py::test_native_move_moves_a_regular_tree_between_real_parents \
             tests/test_recovery/test_atomic_and_locking.py::test_windows_real_legacy_lock_survives_profile_move_and_rebind \
             tests/test_recovery/test_atomic_and_locking.py::test_windows_real_replacement_locks_survive_two_profile_moves \
+            tests/test_recovery/test_atomic_and_locking.py::test_windows_real_recent_locked_profile_tree_moves_without_metadata_false_positive \
             tests/test_recovery/test_atomic_and_locking.py::test_windows_primitive_collision_preserves_both_trees \
             tests/test_recovery/test_atomic_and_locking.py::test_windows_native_move_refuses_real_cross_volume_move \
             tests/test_recovery/test_atomic_and_locking.py::test_windows_native_move_handles_real_path_longer_than_260_characters \

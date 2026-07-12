@@ -1133,17 +1133,20 @@ def move_profile_no_replace(
     if _windows_requires_legacy_lock_handoff():
         with _LOCKS_GUARD:
             _refresh_after_fork()
-            allowed_mtime_changes = frozenset(
-                relative.as_posix()
-                for item in _held_legacy_lock_moves(source_path, destination_path)
-                if (
-                    relative := _profile_relative_path(
-                        item.held.path,
-                        source_path,
-                    )
-                )
-                is not None
-            )
+            allowed_mtime_paths: set[str] = set()
+            for item in _held_legacy_lock_moves(source_path, destination_path):
+                relative = _profile_relative_path(item.held.path, source_path)
+                if relative is None:
+                    continue
+                allowed_mtime_paths.add(relative.as_posix())
+                # Windows can finalize the containing directory's last-write
+                # timestamp when the lock file's original write handle is
+                # closed. Every child name and identity remains covered by the
+                # complete recursive manifest; only this direct parent mtime
+                # is redundant with the verified lock handoff.
+                if relative.parent != Path():
+                    allowed_mtime_paths.add(relative.parent.as_posix())
+            allowed_mtime_changes = frozenset(allowed_mtime_paths)
         move(
             source_path,
             destination_path,

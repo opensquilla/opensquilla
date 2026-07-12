@@ -857,6 +857,32 @@ def test_windows_real_replacement_locks_survive_two_profile_moves(tmp_path: Path
             assert queue.get(timeout=2) == "busy"
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="requires Windows lock handoff")
+def test_windows_real_recent_locked_profile_tree_moves_without_metadata_false_positive(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "profile-staging"
+    destination = tmp_path / "profile-target"
+    (source / "state").mkdir(parents=True)
+    (source / "workspace").mkdir()
+
+    with LegacyGatewayLock(source):
+        (source / "config.toml").write_text("port = 18791\n", encoding="utf-8")
+        (source / "workspace" / "SOUL.md").write_text("synthetic soul\n", encoding="utf-8")
+        (source / "profile-migration-report.json").write_text("{}\n", encoding="utf-8")
+        (source / ".opensquilla-layout-v2.json").write_text("{}\n", encoding="utf-8")
+
+        move_profile_no_replace(source, destination)
+
+        assert not source.exists()
+        assert (destination / "config.toml").read_text(encoding="utf-8") == (
+            "port = 18791\n"
+        )
+        assert (destination / "workspace" / "SOUL.md").read_text(
+            encoding="utf-8"
+        ) == "synthetic soul\n"
+
+
 def test_windows_handoff_reacquires_source_after_pre_mutation_failure(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -1016,6 +1042,9 @@ def test_windows_handoff_keeps_external_state_lock_open(
             _mutation_guard,
             **_move_options: object,
         ) -> None:
+            assert _move_options["_allowed_manifest_mtime_changes"] == frozenset(
+                {"state", "state/gateway.pid.lock"}
+            )
             with _mutation_guard():
                 assert external_claim.fd == external_fd
                 source_path.rename(destination_path)

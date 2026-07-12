@@ -236,6 +236,8 @@ def _manifest_matches_after_move(
 def _manifest_difference_summary(
     before: dict[str, PathIdentity],
     after: dict[str, PathIdentity],
+    *,
+    allowed_mtime_changes: frozenset[str],
 ) -> str:
     """Describe only changed metadata field counts, never profile paths or contents."""
 
@@ -253,6 +255,14 @@ def _manifest_difference_summary(
         for field in fields:
             if getattr(expected, field) != getattr(current, field):
                 counts[field] = counts.get(field, 0) + 1
+                if field == "modified_at_ns" and relative not in allowed_mtime_changes:
+                    if relative == ".":
+                        category = "unallowed_root_mtime"
+                    elif stat.S_ISDIR(expected.mode):
+                        category = "unallowed_directory_mtime"
+                    else:
+                        category = "unallowed_file_mtime"
+                    counts[category] = counts.get(category, 0) + 1
     return ",".join(f"{field}={counts[field]}" for field in sorted(counts)) or "none"
 
 
@@ -772,22 +782,28 @@ def native_move_no_replace(
         raise AtomicStateUnknownError(
             "move completed but post-move filesystem state could not be verified"
         ) from exc
+    manifest_matches = _manifest_matches_after_move(
+        manifest_before,
+        manifest_after,
+        allowed_mtime_changes=_allowed_manifest_mtime_changes,
+    )
     if (
         source_parent_after.token != source_parent_before.token
         or destination_parent_after.token != destination_parent_before.token
-        or not _manifest_matches_after_move(
+        or not manifest_matches
+    ):
+        manifest_difference = _manifest_difference_summary(
             manifest_before,
             manifest_after,
             allowed_mtime_changes=_allowed_manifest_mtime_changes,
         )
-    ):
         raise AtomicStateUnknownError(
             "move completed but parent or source metadata changed during verification "
             f"(source_parent_changed="
             f"{source_parent_after.token != source_parent_before.token}, "
             f"destination_parent_changed="
             f"{destination_parent_after.token != destination_parent_before.token}, "
-            f"manifest_fields={_manifest_difference_summary(manifest_before, manifest_after)})"
+            f"manifest_fields={manifest_difference})"
         )
 
 

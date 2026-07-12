@@ -154,10 +154,14 @@ def set_env_command(env_key: str) -> str:
     return f'export {env_key}="<your-key>"'
 
 
+def human_env_command(command: str) -> str:
+    """Label a bare environment command for human-facing output."""
+    return f"PowerShell: {command}" if _is_windows() else command
+
+
 def set_env_hint(env_key: str) -> str:
     """Human-facing variant of :func:`set_env_command` (labels the shell)."""
-    command = set_env_command(env_key)
-    return f"PowerShell: {command}" if _is_windows() else command
+    return human_env_command(set_env_command(env_key))
 
 
 def _set_env_hint(env_key: str) -> str:
@@ -204,7 +208,7 @@ def env_recovery_commands(status: Any) -> list[dict[str, str]]:
                 "section": section,
                 "label": label,
                 # Machine-readable field: the bare command only. Human
-                # renderers wanting a shell label wrap it via set_env_hint.
+                # renderers wanting a shell label wrap it via human_env_command.
                 "command": set_env_command(env_key),
             }
         )

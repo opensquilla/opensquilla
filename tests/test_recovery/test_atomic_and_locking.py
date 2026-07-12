@@ -23,6 +23,7 @@ from opensquilla.recovery import (
     ProfileLockBusyError,
     ProfileOperationLock,
     UnsafePathError,
+    move_profile_no_replace,
     native_move_no_replace,
     profile_lock_path,
 )
@@ -788,18 +789,12 @@ def test_windows_legacy_lock_handle_allows_share_delete_for_profile_swap(
 
 @pytest.mark.skipif(sys.platform != "win32", reason="requires Windows share-delete semantics")
 def test_windows_real_legacy_lock_survives_profile_move_and_rebind(tmp_path: Path) -> None:
-    import opensquilla.recovery.locking as locking_module
-
     source = tmp_path / "source"
     destination = tmp_path / "destination"
     (source / "state").mkdir(parents=True)
 
     with LegacyGatewayLock(source):
-        native_move_no_replace(source, destination)
-        locking_module.rebind_legacy_gateway_lock(
-            source / "state",
-            destination / "state",
-        )
+        move_profile_no_replace(source, destination)
         with LegacyGatewayLock(destination):
             context = multiprocessing.get_context("spawn")
             queue = context.Queue()
@@ -811,6 +806,163 @@ def test_windows_real_legacy_lock_survives_profile_move_and_rebind(tmp_path: Pat
             process.join(timeout=15)
             assert process.exitcode == 0
             assert queue.get(timeout=2) == "busy"
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="requires Windows lock handoff")
+def test_windows_real_replacement_locks_survive_two_profile_moves(tmp_path: Path) -> None:
+    target = tmp_path / "target"
+    staging = tmp_path / "staging"
+    backup = tmp_path / "backup"
+    (target / "state").mkdir(parents=True)
+    (staging / "state").mkdir(parents=True)
+
+    with LegacyGatewayLock(target), LegacyGatewayLock(staging):
+        move_profile_no_replace(target, backup)
+        move_profile_no_replace(staging, target)
+        context = multiprocessing.get_context("spawn")
+        for state_root in (backup / "state", target / "state"):
+            queue = context.Queue()
+            process = context.Process(
+                target=_contend_for_gateway,
+                args=(str(state_root), queue),
+            )
+            process.start()
+            process.join(timeout=15)
+            assert process.exitcode == 0
+            assert queue.get(timeout=2) == "busy"
+
+
+def test_windows_handoff_reacquires_source_after_pre_mutation_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    import opensquilla.recovery.locking as locking_module
+
+    source = tmp_path / "source"
+    destination = tmp_path / "destination"
+    (source / "state").mkdir(parents=True)
+    monkeypatch.setattr(locking_module, "_windows_requires_legacy_lock_handoff", lambda: True)
+
+    def fail_move(
+        _source: Path,
+        _destination: Path,
+        *,
+        _mutation_guard,
+    ) -> None:
+        with _mutation_guard():
+            raise DestinationExistsError("synthetic collision")
+
+    with LegacyGatewayLock(source):
+        with pytest.raises(DestinationExistsError, match="synthetic collision"):
+            move_profile_no_replace(source, destination, move=fail_move)
+        held = next(iter(locking_module._PROCESS_LEGACY_LOCKS.values()))
+        assert held.fd is not None
+        assert held.path.parent == source / "state"
+
+
+def test_windows_handoff_fails_closed_when_destination_lock_cannot_be_reacquired(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    import opensquilla.recovery.locking as locking_module
+
+    source = tmp_path / "source"
+    destination = tmp_path / "destination"
+    (source / "state").mkdir(parents=True)
+    original_try_lock = locking_module._try_lock
+    deny_reacquire = False
+    monkeypatch.setattr(locking_module, "_windows_requires_legacy_lock_handoff", lambda: True)
+
+    def try_lock(fd: int) -> bool:
+        return False if deny_reacquire else original_try_lock(fd)
+
+    def move_then_block_reacquire(
+        source_path: Path,
+        destination_path: Path,
+        *,
+        _mutation_guard,
+    ) -> None:
+        nonlocal deny_reacquire
+        with _mutation_guard():
+            source_path.rename(destination_path)
+            deny_reacquire = True
+
+    monkeypatch.setattr(locking_module, "_try_lock", try_lock)
+    with LegacyGatewayLock(source):
+        with pytest.raises(AtomicStateUnknownError, match="could not be reacquired"):
+            move_profile_no_replace(
+                source,
+                destination,
+                move=move_then_block_reacquire,
+            )
+        assert not source.exists()
+        assert destination.is_dir()
+
+
+def test_windows_handoff_treats_move_then_raise_as_unknown(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    import opensquilla.recovery.locking as locking_module
+
+    source = tmp_path / "source"
+    destination = tmp_path / "destination"
+    (source / "state").mkdir(parents=True)
+    monkeypatch.setattr(locking_module, "_windows_requires_legacy_lock_handoff", lambda: True)
+
+    def move_then_raise(
+        source_path: Path,
+        destination_path: Path,
+        *,
+        _mutation_guard,
+    ) -> None:
+        with _mutation_guard():
+            source_path.rename(destination_path)
+            raise OSError("synthetic post-move failure")
+
+    with LegacyGatewayLock(source):
+        with pytest.raises(AtomicStateUnknownError, match="before reporting failure"):
+            move_profile_no_replace(source, destination, move=move_then_raise)
+        held = next(iter(locking_module._PROCESS_LEGACY_LOCKS.values()))
+        assert held.fd is not None
+        assert held.path.parent == destination / "state"
+        assert not source.exists()
+
+
+def test_windows_handoff_keeps_external_state_lock_open(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    import opensquilla.recovery.locking as locking_module
+
+    source = tmp_path / "source"
+    destination = tmp_path / "destination"
+    external_state = tmp_path / "external-state"
+    (source / "state").mkdir(parents=True)
+    external_state.mkdir()
+    monkeypatch.setattr(locking_module, "_windows_requires_legacy_lock_handoff", lambda: True)
+
+    with LegacyGatewayLock(
+        source,
+        state_roots=(source / "state", external_state),
+    ) as lock:
+        external_claim = next(
+            claim for claim in lock._claims if claim.path.parent == external_state
+        )
+        external_fd = external_claim.fd
+
+        def guarded_move(
+            source_path: Path,
+            destination_path: Path,
+            *,
+            _mutation_guard,
+        ) -> None:
+            with _mutation_guard():
+                assert external_claim.fd == external_fd
+                source_path.rename(destination_path)
+
+        move_profile_no_replace(source, destination, move=guarded_move)
+        assert external_claim.fd == external_fd
 
 
 def test_moved_legacy_lock_can_be_rebound_without_dropping_exclusion(
@@ -1273,11 +1425,19 @@ def test_windows_no_replace_pins_source_parent_source_and_destination_parent_han
     )
     monkeypatch.setattr(ctypes, "get_last_error", lambda: 0, raising=False)
 
+    class MutationGuard:
+        def __enter__(self) -> None:
+            mutation_events.append("guard-enter")
+
+        def __exit__(self, *_args: object) -> None:
+            mutation_events.append("guard-exit")
+
     if expected_error is None:
         _windows_move_no_replace(
             source,
             destination,
             _before_mutation=lambda: mutation_events.append("failpoint"),
+            _mutation_guard=MutationGuard,
         )
     else:
         with pytest.raises(expected_error):
@@ -1285,6 +1445,7 @@ def test_windows_no_replace_pins_source_parent_source_and_destination_parent_han
                 source,
                 destination,
                 _before_mutation=lambda: mutation_events.append("failpoint"),
+                _mutation_guard=MutationGuard,
             )
 
     assert created == [
@@ -1308,7 +1469,7 @@ def test_windows_no_replace_pins_source_parent_source_and_destination_parent_han
         (202, 10, 0, 303, len(destination.name.encode("utf-16-le")))
     ]
     assert mapped_statuses == ([native_status] if native_status < 0 else [])
-    assert mutation_events == ["failpoint", "rename"]
+    assert mutation_events == ["guard-enter", "failpoint", "rename", "guard-exit"]
     assert closed == [303, 202, 101]
 
 

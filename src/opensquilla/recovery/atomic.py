@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import ctypes
 import errno
 import ntpath
@@ -391,6 +392,7 @@ def _windows_move_no_replace(
     source_parent_identity: PathIdentity | None = None,
     destination_parent_identity: PathIdentity | None = None,
     _before_mutation: Callable[[], None] | None = None,
+    _mutation_guard: Callable[[], contextlib.AbstractContextManager[None]] | None = None,
 ) -> None:
     win_dll = getattr(ctypes, "WinDLL")
     kernel32 = win_dll("kernel32", use_last_error=True)
@@ -567,22 +569,28 @@ def _windows_move_no_replace(
                     label="destination parent",
                     require_directory=True,
                 )
-                if _before_mutation is not None:
-                    _before_mutation()
-                rename_info = _windows_rename_info(destination.name, destination_parent_handle)
-                io_status = _WindowsIoStatusBlock()
-                # The Win32 FILE_RENAME_INFO contract requires RootDirectory to
-                # be NULL. FileRenameInformation is the native contract that
-                # supports resolving a leaf against our bound directory handle.
-                status = int(
-                    nt_set_information(
-                        source_handle,
-                        ctypes.byref(io_status),
-                        ctypes.byref(rename_info),
-                        ctypes.sizeof(rename_info),
-                        _WINDOWS_FILE_RENAME_INFORMATION,
-                    )
+                guard = (
+                    _mutation_guard()
+                    if _mutation_guard is not None
+                    else contextlib.nullcontext()
                 )
+                with guard:
+                    if _before_mutation is not None:
+                        _before_mutation()
+                    rename_info = _windows_rename_info(destination.name, destination_parent_handle)
+                    io_status = _WindowsIoStatusBlock()
+                    # The Win32 FILE_RENAME_INFO contract requires RootDirectory to
+                    # be NULL. FileRenameInformation is the native contract that
+                    # supports resolving a leaf against our bound directory handle.
+                    status = int(
+                        nt_set_information(
+                            source_handle,
+                            ctypes.byref(io_status),
+                            ctypes.byref(rename_info),
+                            ctypes.sizeof(rename_info),
+                            _WINDOWS_FILE_RENAME_INFORMATION,
+                        )
+                    )
                 if status == 0:
                     return
                 if status > 0:
@@ -598,6 +606,16 @@ def _windows_move_no_replace(
             close_handle(source_handle)
     finally:
         close_handle(source_parent_handle)
+    try:
+        source_after_failure = path_identity(source)
+    except (OSError, RecoveryError) as exc:
+        raise AtomicStateUnknownError(
+            "Windows rename reported failure but the source identity is no longer provable"
+        ) from exc
+    if source_after_failure.token != source_expected.token:
+        raise AtomicStateUnknownError(
+            "Windows rename reported failure after the source identity changed"
+        )
     if error_number in (_WINDOWS_ERROR_ALREADY_EXISTS, _WINDOWS_ERROR_FILE_EXISTS):
         raise DestinationExistsError(f"destination already exists: {destination}")
     if error_number == _WINDOWS_ERROR_NOT_SAME_DEVICE:
@@ -624,7 +642,12 @@ def _windows_extended_path(path: str | Path) -> str:
     return f"\\\\?\\{value}"
 
 
-def native_move_no_replace(source: str | Path, destination: str | Path) -> None:
+def native_move_no_replace(
+    source: str | Path,
+    destination: str | Path,
+    *,
+    _mutation_guard: Callable[[], contextlib.AbstractContextManager[None]] | None = None,
+) -> None:
     """Atomically move ``source`` without ever replacing ``destination``.
 
     There is deliberately no check-then-rename or copy/delete fallback. If the
@@ -674,6 +697,7 @@ def native_move_no_replace(source: str | Path, destination: str | Path) -> None:
             source_identity=manifest_before["."],
             source_parent_identity=source_parent_before,
             destination_parent_identity=destination_parent_before,
+            _mutation_guard=_mutation_guard,
         )
     else:
         raise NoReplaceUnavailableError(f"no native no-replace move for {sys.platform}")

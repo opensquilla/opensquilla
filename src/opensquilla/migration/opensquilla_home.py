@@ -2739,7 +2739,7 @@ class OpenSquillaHomeMigrator:
     ) -> None:
         """Finish a pre-commit rollback from any identity-proven crash window."""
 
-        from opensquilla.recovery import native_move_no_replace
+        from opensquilla.recovery import move_profile_no_replace, native_move_no_replace
 
         candidate = candidate_identity or staging_identity
         original = backup_identity or original_identity
@@ -2778,7 +2778,11 @@ class OpenSquillaHomeMigrator:
         if target_is_candidate:
             if staging_present:
                 raise ValueError("candidate exists at both target and staging paths")
-            native_move_no_replace(self.target, staging)
+            move_profile_no_replace(
+                self.target,
+                staging,
+                move=native_move_no_replace,
+            )
             staging_present = True
             staging_is_candidate = True
             target_present = False
@@ -2789,7 +2793,11 @@ class OpenSquillaHomeMigrator:
                 if backup_present:
                     raise ValueError("original target exists at both target and backup paths")
             elif not target_present and backup_is_original:
-                native_move_no_replace(backup, self.target)
+                move_profile_no_replace(
+                    backup,
+                    self.target,
+                    move=native_move_no_replace,
+                )
                 target_present = True
                 target_is_original = True
                 backup_present = False
@@ -5139,22 +5147,27 @@ class OpenSquillaHomeMigrator:
             identities["staging"] = candidate_identity
             journal_snapshot = _cas_publish_json(journal_snapshot, journal_payload)
             if target_existed:
-                from opensquilla.recovery import native_move_no_replace
+                from opensquilla.recovery import move_profile_no_replace, native_move_no_replace
 
-                native_move_no_replace(self.target, backup)
+                move_profile_no_replace(
+                    self.target,
+                    backup,
+                    move=native_move_no_replace,
+                )
                 target_parked = True
                 _fsync_directory(self.target.parent)
                 identities["backup"] = _path_identity_payload(backup)
                 journal_payload["phase"] = "target_parked"
                 journal_snapshot = _cas_publish_json(journal_snapshot, journal_payload)
-            from opensquilla.recovery import native_move_no_replace
+            from opensquilla.recovery import move_profile_no_replace, native_move_no_replace
 
-            native_move_no_replace(staging, self.target)
+            move_profile_no_replace(
+                staging,
+                self.target,
+                move=native_move_no_replace,
+            )
             published = True
             identities["candidate"] = _path_identity_payload(self.target)
-            from opensquilla.recovery.locking import rebind_legacy_gateway_lock
-
-            rebind_legacy_gateway_lock(staging / "state", self.target / "state")
             _fsync_directory(self.target.parent)
             journal_payload["phase"] = "candidate_published_unvalidated"
             journal_snapshot = _cas_publish_json(journal_snapshot, journal_payload)
@@ -5190,7 +5203,7 @@ class OpenSquillaHomeMigrator:
         except (OSError, RuntimeError, ValueError) as exc:
             rollback_error: Exception | None = None
             try:
-                from opensquilla.recovery import native_move_no_replace
+                from opensquilla.recovery import move_profile_no_replace, native_move_no_replace
 
                 identities = journal_payload["identities"]
                 assert isinstance(identities, dict)
@@ -5203,13 +5216,21 @@ class OpenSquillaHomeMigrator:
                         raise OSError(
                             "published candidate identity changed; automatic rollback stopped"
                         )
-                    native_move_no_replace(self.target, staging)
+                    move_profile_no_replace(
+                        self.target,
+                        staging,
+                        move=native_move_no_replace,
+                    )
                 if target_parked:
                     if not _identity_payload_matches(backup, identities.get("backup")):
                         raise OSError(
                             "complete target backup identity changed during rollback"
                         )
-                    native_move_no_replace(backup, self.target)
+                    move_profile_no_replace(
+                        backup,
+                        self.target,
+                        move=native_move_no_replace,
+                    )
                 staging_expected = identities.get("candidate") or identities.get("staging")
                 if staging_expected is not None and _object_identity_matches(
                     staging, staging_expected

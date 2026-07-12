@@ -2310,12 +2310,16 @@ def test_overwrite_publish_failure_restores_complete_original_target(
     (target / "workspace" / "original.txt").write_text("original", encoding="utf-8")
     original_move = recovery_module.native_move_no_replace
 
-    def fail_staging_publish(src: str | Path, dst: str | Path) -> None:
+    def fail_staging_publish(
+        src: str | Path,
+        dst: str | Path,
+        **move_options: object,
+    ) -> None:
         source_path = Path(src)
         destination_path = Path(dst)
         if ".profile-staging." in source_path.name and destination_path == target:
             raise OSError("synthetic publish failure")
-        original_move(src, dst)
+        original_move(src, dst, **move_options)
 
     monkeypatch.setattr(recovery_module, "native_move_no_replace", fail_staging_publish)
 
@@ -2353,7 +2357,11 @@ def test_post_move_unknown_state_preserves_journal_and_all_observed_paths(
         )
     original_move = recovery_module.native_move_no_replace
 
-    def move_then_lose_post_state(src: str | Path, dst: str | Path) -> None:
+    def move_then_lose_post_state(
+        src: str | Path,
+        dst: str | Path,
+        **move_options: object,
+    ) -> None:
         source_path = Path(src)
         destination_path = Path(dst)
         is_parking = source_path == target and ".backup." in destination_path.name
@@ -2370,7 +2378,7 @@ def test_post_move_unknown_state_preserves_journal_and_all_observed_paths(
             and replacing
             and is_publication
         )
-        original_move(src, dst)
+        original_move(src, dst, **move_options)
         if should_fail:
             raise recovery_module.AtomicStateUnknownError(
                 "synthetic post-move state is unknown"
@@ -2421,6 +2429,10 @@ def test_post_move_unknown_state_preserves_journal_and_all_observed_paths(
     assert inspected.stable_code == "transaction_incomplete"
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="Windows reacquire failures are intentionally state-unknown",
+)
 def test_lock_handoff_failure_after_publish_rolls_back_complete_original_target(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -2428,14 +2440,16 @@ def test_lock_handoff_failure_after_publish_rolls_back_complete_original_target(
     import opensquilla.recovery.locking as locking_module
 
     source = _build_source_home(tmp_path)
+    source_before = _file_bytes(source)
     target = tmp_path / "target-home"
     (target / "state").mkdir(parents=True)
     (target / "state" / "sessions.db").write_bytes(b"original-session-store")
     (target / "workspace").mkdir()
     (target / "workspace" / "original.txt").write_text("original", encoding="utf-8")
 
-    def fail_handoff(_source_state: Path, _destination_state: Path) -> None:
-        raise recovery_module.UnsafePathError("synthetic lock handoff failure")
+    def fail_handoff(source_state: Path, _destination_state: Path) -> None:
+        if ".profile-staging." in source_state.parent.name:
+            raise recovery_module.UnsafePathError("synthetic lock handoff failure")
 
     monkeypatch.setattr(
         locking_module,
@@ -2457,6 +2471,62 @@ def test_lock_handoff_failure_after_publish_rolls_back_complete_original_target(
     assert not list(tmp_path.glob(".target-home.profile-staging.*"))
     assert not (tmp_path / ".target-home.profile-replace.json").exists()
     assert not (source / IMPORT_MARKER_FILENAME).exists()
+    assert _file_bytes(source) == source_before
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="requires Windows lock handoff")
+def test_windows_lock_reacquire_failure_preserves_profile_transaction(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import opensquilla.recovery.locking as locking_module
+
+    source = _build_source_home(tmp_path)
+    source_before = _file_bytes(source)
+    target = tmp_path / "target-home"
+    (target / "state").mkdir(parents=True)
+    (target / "state" / "sessions.db").write_bytes(b"original-session-store")
+    (target / "workspace").mkdir()
+    (target / "workspace" / "original.txt").write_text("original", encoding="utf-8")
+    original_reacquire = locking_module._reacquire_suspended_legacy_locks
+
+    def fail_candidate_reacquire(moves, *, destination: bool) -> None:
+        if destination and any(
+            ".profile-staging." in item.source_state.parent.name for item in moves
+        ):
+            raise recovery_module.LegacyGatewayRunningError(
+                "synthetic old gateway won the lock handoff"
+            )
+        original_reacquire(moves, destination=destination)
+
+    monkeypatch.setattr(
+        locking_module,
+        "_reacquire_suspended_legacy_locks",
+        fail_candidate_reacquire,
+    )
+
+    report = _run(
+        source,
+        target,
+        apply=True,
+        overwrite=True,
+        confirm_replace_target=target,
+    )
+
+    assert _errors(report)
+    journal = tmp_path / ".target-home.profile-replace.json"
+    payload = json.loads(journal.read_text(encoding="utf-8"))
+    backup = Path(payload["backup"])
+    assert payload["phase"] == "target_parked"
+    assert (backup / "state" / "sessions.db").read_bytes() == b"original-session-store"
+    assert (target / "workspace" / "SOUL.md").is_file()
+    assert _file_bytes(source) == source_before
+    inspected = recovery_module.inspect_profile(
+        target,
+        profile_kind="desktop-primary",
+    )
+    assert inspected.outcome == "recovery_required"
+    assert inspected.stable_code == "transaction_incomplete"
 
 
 def test_published_candidate_holds_legacy_gateway_lock_during_validation(

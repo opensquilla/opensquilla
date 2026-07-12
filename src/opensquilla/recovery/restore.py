@@ -30,6 +30,7 @@ from opensquilla.recovery.locking import (
     acquire_legacy_gateway_locks,
     acquire_profile_locks,
     effective_state_roots,
+    move_profile_no_replace,
     replacement_history_lock_scope,
 )
 from opensquilla.recovery.models import RecoveryReport
@@ -372,9 +373,9 @@ def _rollback_restore(
     try:
         selected_was_published = not os.path.lexists(selected_backup)
         if selected_was_published and os.path.lexists(target):
-            native_move_no_replace(target, selected_backup)
+            move_profile_no_replace(target, selected_backup, move=native_move_no_replace)
         if target_existed and os.path.lexists(current_backup):
-            native_move_no_replace(current_backup, target)
+            move_profile_no_replace(current_backup, target, move=native_move_no_replace)
         _fsync_directory(target.parent)
     except Exception as exc:
         raise AtomicStateUnknownError(
@@ -468,20 +469,22 @@ def restore_profile(backup: str | Path, *, lock_timeout: float = 0.0) -> Recover
                 )
             _write_json_no_replace(journal, payload)
             try:
-                candidate_legacy_lock = backup_path / "state" / "gateway.pid.lock"
-                candidate_legacy_lock_present = os.path.lexists(candidate_legacy_lock)
                 if target_existed:
-                    native_move_no_replace(target, current_backup)
+                    move_profile_no_replace(
+                        target,
+                        current_backup,
+                        move=native_move_no_replace,
+                    )
                     _fsync_directory(target.parent)
                     payload["identities"]["backup"] = _identity_payload(current_backup)
                 payload["phase"] = "target_parked"
                 _replace_journal_json(journal, payload)
 
-                native_move_no_replace(backup_path, target)
-                if candidate_legacy_lock_present:
-                    from opensquilla.recovery.locking import rebind_legacy_gateway_lock
-
-                    rebind_legacy_gateway_lock(backup_path / "state", target / "state")
+                move_profile_no_replace(
+                    backup_path,
+                    target,
+                    move=native_move_no_replace,
+                )
                 _fsync_directory(target.parent)
                 payload["identities"]["candidate"] = _identity_payload(target)
                 payload["phase"] = "candidate_published_unvalidated"
@@ -830,7 +833,7 @@ def recover_interrupted_profile_restore(target: Path, payload: dict[str, Any]) -
                 target_existed=target_existed,
             )
         if target_candidate:
-            native_move_no_replace(target, selected_backup)
+            move_profile_no_replace(target, selected_backup, move=native_move_no_replace)
             _fsync_directory(target.parent)
             selected_present = True
             selected_candidate = True
@@ -843,7 +846,11 @@ def recover_interrupted_profile_restore(target: Path, payload: dict[str, Any]) -
                 if current_backup_present:
                     raise RestoreValidationError("original restore target is duplicated")
             elif not target_present and current_original:
-                native_move_no_replace(current_backup, target)
+                move_profile_no_replace(
+                    current_backup,
+                    target,
+                    move=native_move_no_replace,
+                )
                 _fsync_directory(target.parent)
                 target_present = True
                 target_original = True

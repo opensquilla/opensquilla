@@ -18,6 +18,7 @@ from types import TracebackType
 
 from opensquilla.recovery.atomic import _chmod_open_file, _windows_extended_path
 from opensquilla.recovery.errors import (
+    AtomicStateUnknownError,
     LegacyGatewayRunningError,
     ProfileLockBusyError,
     UnsafePathError,
@@ -110,12 +111,20 @@ class _HeldLock:
 
 @dataclass
 class _HeldLegacyLock:
-    fd: int
+    fd: int | None
     compat_count: int
     compat_owner_thread: int | None
     gateway_owner_thread: int | None
     path: Path
     state_identity: tuple[int, int, int]
+
+
+@dataclass(frozen=True)
+class _LegacyLockMove:
+    held: _HeldLegacyLock
+    source_state: Path
+    destination_state: Path
+    lock_identity: tuple[int, int]
 
 
 @dataclass(frozen=True)
@@ -182,8 +191,9 @@ def _refresh_after_fork() -> None:
         if id(legacy_held) in closed_legacy:
             continue
         closed_legacy.add(id(legacy_held))
-        with contextlib.suppress(OSError):
-            os.close(legacy_held.fd)
+        if legacy_held.fd is not None:
+            with contextlib.suppress(OSError):
+                os.close(legacy_held.fd)
     _PROCESS_LEGACY_LOCKS.clear()
     _PROCESS_LOCKS_PID = current_pid
 
@@ -662,7 +672,7 @@ def _windows_open_legacy_lock_file(
     *,
     create_if_missing: bool,
 ) -> int | None:
-    """Open the byte-range lock while allowing its profile directory to move."""
+    """Open the byte lock with delete sharing for verified Windows handoff."""
 
     import msvcrt
 
@@ -819,6 +829,7 @@ def rebind_legacy_gateway_lock(
         held = _PROCESS_LEGACY_LOCKS.get(source_key)
         if (
             held is None
+            or held.fd is None
             or held.compat_count <= 0
             or held.compat_owner_thread != owner_thread
             or held.gateway_owner_thread is not None
@@ -843,7 +854,8 @@ def rebind_legacy_gateway_lock(
         displaced = _PROCESS_LEGACY_LOCKS.get(destination_key)
         if displaced is not None and displaced is not held:
             if (
-                displaced.compat_owner_thread != owner_thread
+                displaced.fd is None
+                or displaced.compat_owner_thread != owner_thread
                 or displaced.gateway_owner_thread is not None
             ):
                 raise UnsafePathError("destination legacy gateway lock is owned elsewhere")
@@ -875,8 +887,256 @@ def rebind_legacy_gateway_lock(
                 if _PROCESS_LEGACY_LOCKS.get(detached_key) is displaced:
                     _PROCESS_LEGACY_LOCKS.pop(detached_key, None)
                 raise
+            held.path = destination_path
+            held.state_identity = destination_state_identity
             return
         _PROCESS_LEGACY_LOCKS[destination_key] = held
+        held.path = destination_path
+        held.state_identity = destination_state_identity
+
+
+def _profile_relative_path(path: Path, root: Path) -> Path | None:
+    path_absolute = os.path.normpath(str(path.absolute()))
+    root_absolute = os.path.normpath(str(root.absolute()))
+    path_value = os.path.normcase(path_absolute)
+    root_value = os.path.normcase(root_absolute)
+    try:
+        if os.path.commonpath((path_value, root_value)) != root_value:
+            return None
+    except ValueError:
+        return None
+    relative = os.path.relpath(path_absolute, root_absolute)
+    if relative in {"", os.curdir} or relative == os.pardir:
+        return None
+    if relative.startswith(os.pardir + os.sep):
+        return None
+    return Path(relative)
+
+
+def _legacy_lock_file_identity(path: Path) -> tuple[int, int]:
+    try:
+        value = path.lstat()
+    except OSError as exc:
+        raise UnsafePathError(f"legacy gateway lock is unavailable: {path}") from exc
+    attributes = int(getattr(value, "st_file_attributes", 0))
+    if (
+        stat.S_ISLNK(value.st_mode)
+        or attributes & 0x400
+        or not stat.S_ISREG(value.st_mode)
+        or value.st_nlink != 1
+    ):
+        raise UnsafePathError(f"legacy gateway lock is not a regular file: {path}")
+    return int(value.st_dev), int(value.st_ino)
+
+
+def _held_legacy_lock_moves(source: Path, destination: Path) -> tuple[_LegacyLockMove, ...]:
+    owner_thread = threading.get_ident()
+    moves: list[_LegacyLockMove] = []
+    seen: set[int] = set()
+    for held in _PROCESS_LEGACY_LOCKS.values():
+        if id(held) in seen:
+            continue
+        seen.add(id(held))
+        relative = _profile_relative_path(held.path.parent, source)
+        if relative is None:
+            continue
+        if (
+            held.fd is None
+            or held.compat_count <= 0
+            or held.compat_owner_thread != owner_thread
+            or held.gateway_owner_thread is not None
+        ):
+            raise LegacyGatewayRunningError(
+                f"profile contains a legacy gateway lock not owned by this operation: {source}"
+            )
+        source_state = held.path.parent
+        if _state_directory_identity(source_state) != held.state_identity:
+            raise UnsafePathError("legacy state directory changed before profile move")
+        held_value = os.fstat(held.fd)
+        held_identity = (int(held_value.st_dev), int(held_value.st_ino))
+        if _legacy_lock_file_identity(held.path) != held_identity:
+            raise UnsafePathError("legacy gateway lock changed before profile move")
+        moves.append(
+            _LegacyLockMove(
+                held=held,
+                source_state=source_state,
+                destination_state=destination / relative,
+                lock_identity=held_identity,
+            )
+        )
+    return tuple(sorted(moves, key=lambda item: _normalized_path(item.source_state)))
+
+
+def _legacy_lock_move_location_matches(
+    moves: tuple[_LegacyLockMove, ...],
+    *,
+    destination: bool,
+) -> bool:
+    for item in moves:
+        state = item.destination_state if destination else item.source_state
+        try:
+            if _state_directory_identity(state) != item.held.state_identity:
+                return False
+            if _legacy_lock_file_identity(state / "gateway.pid.lock") != item.lock_identity:
+                return False
+        except (OSError, UnsafePathError):
+            return False
+    return True
+
+
+def _reacquire_suspended_legacy_locks(
+    moves: tuple[_LegacyLockMove, ...],
+    *,
+    destination: bool,
+) -> None:
+    for item in moves:
+        held = item.held
+        if held.fd is not None:
+            continue
+        state = item.destination_state if destination else item.source_state
+        if _state_directory_identity(state) != held.state_identity:
+            raise UnsafePathError("legacy state directory identity changed during lock handoff")
+        fd = _prepare_legacy_lock_file(state, create_if_missing=False)
+        if fd is None:
+            raise UnsafePathError("legacy gateway lock disappeared during profile move")
+        try:
+            if not _try_lock(fd):
+                raise LegacyGatewayRunningError(
+                    "legacy gateway acquired its state lock during profile move"
+                )
+            held_value = os.fstat(fd)
+            if (int(held_value.st_dev), int(held_value.st_ino)) != item.lock_identity:
+                raise UnsafePathError("legacy gateway lock identity changed during handoff")
+        except BaseException:
+            with contextlib.suppress(OSError):
+                _unlock(fd)
+            os.close(fd)
+            raise
+        _remove_legacy_lock_aliases(held)
+        held.fd = fd
+        held.path = state / "gateway.pid.lock"
+        held.state_identity = _state_directory_identity(state)
+        _PROCESS_LEGACY_LOCKS[_normalized_path(held.path)] = held
+
+
+def _windows_requires_legacy_lock_handoff() -> bool:
+    return os.name == "nt" or sys.platform == "win32"
+
+
+@contextlib.contextmanager
+def _windows_legacy_lock_mutation_guard(
+    source: Path,
+    destination: Path,
+) -> Iterator[None]:
+    """Release descendant compatibility handles for one native rename call."""
+
+    with _LOCKS_GUARD:
+        _refresh_after_fork()
+        moves = _held_legacy_lock_moves(source, destination)
+        if not moves:
+            yield
+            return
+        try:
+            for item in moves:
+                held = item.held
+                assert held.fd is not None
+                fd = held.fd
+                _unlock(fd)
+                held.fd = None
+                os.close(fd)
+        except BaseException as exc:
+            try:
+                _reacquire_suspended_legacy_locks(moves, destination=False)
+            except BaseException as reacquire_exc:
+                raise AtomicStateUnknownError(
+                    "legacy gateway exclusion was lost before the profile move"
+                ) from reacquire_exc
+            raise AtomicStateUnknownError(
+                "legacy gateway lock could not be prepared for the profile move"
+            ) from exc
+
+        mutation_error: BaseException | None = None
+        try:
+            yield
+        except BaseException as exc:
+            mutation_error = exc
+
+        source_matches = _legacy_lock_move_location_matches(moves, destination=False)
+        destination_matches = _legacy_lock_move_location_matches(moves, destination=True)
+        if source_matches == destination_matches:
+            raise AtomicStateUnknownError(
+                "profile move completed with ambiguous legacy lock locations"
+            ) from mutation_error
+        try:
+            _reacquire_suspended_legacy_locks(
+                moves,
+                destination=destination_matches,
+            )
+        except BaseException as exc:
+            raise AtomicStateUnknownError(
+                "profile path changed but legacy gateway exclusion could not be reacquired"
+            ) from exc
+        if mutation_error is not None:
+            if destination_matches:
+                raise AtomicStateUnknownError(
+                    "profile move changed the directory before reporting failure"
+                ) from mutation_error
+            raise mutation_error
+
+
+def move_profile_no_replace(
+    source: str | Path,
+    destination: str | Path,
+    *,
+    move: Callable[..., None] | None = None,
+) -> None:
+    """Move a locked profile without dropping old-gateway exclusion silently.
+
+    Windows refuses to rename a directory while any descendant handle remains
+    open. The external profile-operation lock stays held by the caller; only
+    compatibility lock handles inside the profile are briefly released and
+    reacquired by verified file identity. No copy/delete or replacement
+    fallback is permitted.
+    """
+
+    if move is None:
+        from opensquilla.recovery.atomic import native_move_no_replace
+
+        move = native_move_no_replace
+    source_path = Path(source).expanduser().absolute()
+    destination_path = Path(destination).expanduser().absolute()
+    if _windows_requires_legacy_lock_handoff():
+        move(
+            source_path,
+            destination_path,
+            _mutation_guard=lambda: _windows_legacy_lock_mutation_guard(
+                source_path,
+                destination_path,
+            ),
+        )
+        return
+    with _LOCKS_GUARD:
+        _refresh_after_fork()
+        moves = _held_legacy_lock_moves(source_path, destination_path)
+        move(source_path, destination_path)
+        rebound: list[_LegacyLockMove] = []
+        try:
+            for item in moves:
+                rebind_legacy_gateway_lock(item.source_state, item.destination_state)
+                rebound.append(item)
+        except BaseException:
+            try:
+                move(destination_path, source_path)
+                for item in reversed(rebound):
+                    rebind_legacy_gateway_lock(
+                        item.destination_state,
+                        item.source_state,
+                    )
+            except BaseException as rollback_exc:
+                raise AtomicStateUnknownError(
+                    "profile moved but legacy lock binding could not be restored"
+                ) from rollback_exc
+            raise
 
 
 def _try_lock(fd: int) -> bool:
@@ -1094,7 +1354,8 @@ class LegacyGatewayLock:
         with _LOCKS_GUARD:
             _refresh_after_fork()
             return any(
-                claim.compat_count > 0
+                claim.fd is not None
+                and claim.compat_count > 0
                 and claim.compat_owner_thread == owner_thread
                 and _normalized_path(claim.path) == expected
                 for claim in self._claims
@@ -1123,6 +1384,7 @@ class LegacyGatewayLock:
                 held = _PROCESS_LEGACY_LOCKS.get(key)
                 if (
                     held is not None
+                    and held.fd is not None
                     and held.gateway_owner_thread is None
                     and held.compat_owner_thread == owner_thread
                 ):
@@ -1203,10 +1465,12 @@ class LegacyGatewayLock:
                     held.compat_owner_thread = None
                 if held.compat_count == 0 and held.gateway_owner_thread is None:
                     _remove_legacy_lock_aliases(held)
-                    try:
-                        _unlock(held.fd)
-                    finally:
-                        os.close(held.fd)
+                    if held.fd is not None:
+                        try:
+                            _unlock(held.fd)
+                        finally:
+                            os.close(held.fd)
+                        held.fd = None
             self._claims.clear()
             self._owner_thread = None
 
@@ -1311,7 +1575,7 @@ def acquire_gateway_legacy_lease(state_root: str | Path) -> GatewayLegacyLease |
         _refresh_after_fork()
         held = _PROCESS_LEGACY_LOCKS.get(key)
         if held is not None:
-            if held.gateway_owner_thread is not None:
+            if held.fd is None or held.gateway_owner_thread is not None:
                 return None
             if held.compat_owner_thread != owner_thread:
                 return None
@@ -1330,7 +1594,8 @@ def acquire_gateway_legacy_lease(state_root: str | Path) -> GatewayLegacyLease |
                 os.close(fd)
                 fd = -1
                 if (
-                    held.gateway_owner_thread is not None
+                    held.fd is None
+                    or held.gateway_owner_thread is not None
                     or held.compat_owner_thread != owner_thread
                 ):
                     return None
@@ -1365,10 +1630,12 @@ def release_gateway_legacy_lease(lease: GatewayLegacyLease | None) -> None:
         held.gateway_owner_thread = None
         if held.compat_count == 0:
             _remove_legacy_lock_aliases(held)
-            try:
-                _unlock(held.fd)
-            finally:
-                os.close(held.fd)
+            if held.fd is not None:
+                try:
+                    _unlock(held.fd)
+                finally:
+                    os.close(held.fd)
+                held.fd = None
 
 
 @contextlib.contextmanager
@@ -1457,6 +1724,7 @@ __all__ = [
     "acquire_legacy_gateway_locks",
     "acquire_profile_locks",
     "effective_state_roots",
+    "move_profile_no_replace",
     "profile_lock_key",
     "profile_lock_path",
     "replacement_history_lock_scope",

@@ -334,10 +334,14 @@ def test_restore_post_move_unknown_state_preserves_journal_and_observed_paths(
     history_before = history_path.read_bytes()
     original_move = restore_module.native_move_no_replace
 
-    def move_then_lose_post_state(source: Path, destination: Path) -> None:
+    def move_then_lose_post_state(
+        source: Path,
+        destination: Path,
+        **move_options: object,
+    ) -> None:
         is_parking = source == target and ".backup." in destination.name
         is_publication = source == selected_backup and destination == target
-        original_move(source, destination)
+        original_move(source, destination, **move_options)
         if (
             failure_phase == "target_parking"
             and is_parking

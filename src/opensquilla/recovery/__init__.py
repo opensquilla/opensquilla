@@ -39,6 +39,7 @@ from opensquilla.recovery.locking import (
     acquire_legacy_gateway_locks,
     acquire_profile_locks,
     effective_state_roots,
+    move_profile_no_replace,
     profile_lock_key,
     profile_lock_path,
 )
@@ -79,6 +80,7 @@ __all__ = [
     "inspect_profile",
     "effective_state_roots",
     "native_move_no_replace",
+    "move_profile_no_replace",
     "no_follow_manifest",
     "path_identity",
     "profile_lock_key",

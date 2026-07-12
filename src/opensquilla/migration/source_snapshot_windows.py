@@ -523,10 +523,8 @@ def _open_directory_chain(
 def _open_child(
     api: _Win32SourceApi,
     path: Path,
-    *,
-    allow_writers: bool = False,
 ) -> Iterator[tuple[int, _HandleInformation]]:
-    handle = api.open_path(path, allow_writers=allow_writers)
+    handle = api.open_path(path, allow_writers=False)
     try:
         information = api.information(handle, path=path)
         _validate_information(information, path=path)
@@ -702,7 +700,6 @@ def _capture_bounded_with_api(
     *,
     names: tuple[str, ...],
     max_bytes: int,
-    writer_shared_names: frozenset[str] = frozenset(),
 ) -> WindowsDirectoryAuthoritySnapshot | None:
     if max_bytes < 0:
         raise ValueError("max_bytes must not be negative")
@@ -711,8 +708,6 @@ def _capture_bounded_with_api(
         for name in names
     ):
         raise WindowsSourceSnapshotError("bounded source names must be unique leaf names")
-    if not writer_shared_names.issubset(names):
-        raise WindowsSourceSnapshotError("writer-shared names must be selected bounded leaves")
     try:
         chain_context = _open_directory_chain(api, root)
         with chain_context as (normalized_root, chain):
@@ -724,11 +719,7 @@ def _capture_bounded_with_api(
                     captured.append((name, None))
                     continue
                 path = root_path / name
-                with _open_child(
-                    api,
-                    path,
-                    allow_writers=name in writer_shared_names,
-                ) as (handle, information):
+                with _open_child(api, path) as (handle, information):
                     if information.identity.file_type != stat.S_IFREG:
                         raise WindowsSourceSnapshotError(
                             f"bounded source authority is not a regular file: {path}"
@@ -786,22 +777,14 @@ def capture_windows_bounded_files(
     *,
     names: tuple[str, ...],
     max_bytes: int,
-    writer_shared_names: frozenset[str] = frozenset(),
 ) -> WindowsDirectoryAuthoritySnapshot | None:
-    """Read selected small leaf files while their full parent chain is pinned.
-
-    ``writer_shared_names`` is reserved for a leaf whose byte-range lock is
-    already held by this process. All metadata and bytes are still verified
-    before and after the bounded read; unlisted leaves retain the stricter
-    no-writer-sharing behavior.
-    """
+    """Read selected small leaf files while their full parent chain is pinned."""
 
     return _capture_bounded_with_api(
         _new_api(),
         root,
         names=names,
         max_bytes=max_bytes,
-        writer_shared_names=writer_shared_names,
     )
 
 

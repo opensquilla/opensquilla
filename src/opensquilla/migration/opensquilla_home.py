@@ -30,6 +30,7 @@ import tomllib
 import uuid
 from contextlib import ExitStack
 from dataclasses import asdict, dataclass
+from dataclasses import field as dataclass_field
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
@@ -54,6 +55,10 @@ from opensquilla.migration.source_snapshot_windows import (
     scan_windows_source_tree,
 )
 from opensquilla.paths import default_opensquilla_home
+from opensquilla.recovery.locking import (
+    LegacyGatewayLock,
+    LegacyGatewayLockFileSnapshot,
+)
 
 log = structlog.get_logger(__name__)
 
@@ -673,7 +678,10 @@ class _LegacyGatewayAuthoritySnapshot:
     pid: _ManifestEntry | None
     pid_value: int | None
     lock: _ManifestEntry | None
-    windows_authority: WindowsDirectoryAuthoritySnapshot | None = None
+    windows_authority: WindowsDirectoryAuthoritySnapshot | None = dataclass_field(
+        default=None,
+        compare=False,
+    )
 
 
 @dataclass(frozen=True)
@@ -1039,18 +1047,16 @@ def _capture_legacy_gateway_authority_file_posix(
 def _capture_legacy_gateway_authority(
     root: Path,
     *,
-    allow_held_lock: bool = False,
+    held_lock: LegacyGatewayLockFileSnapshot | None = None,
 ) -> _LegacyGatewayAuthoritySnapshot:
     if os.name == "nt":  # pragma: no cover - exercised by Windows platform CI
         windows_authority = capture_windows_bounded_files(
             root,
-            names=("gateway.pid", "gateway.pid.lock"),
-            max_bytes=_GATEWAY_AUTHORITY_MAX_BYTES,
-            writer_shared_names=(
-                frozenset({"gateway.pid.lock"})
-                if allow_held_lock
-                else frozenset()
+            names=("gateway.pid",) if held_lock is not None else (
+                "gateway.pid",
+                "gateway.pid.lock",
             ),
+            max_bytes=_GATEWAY_AUTHORITY_MAX_BYTES,
         )
         if windows_authority is None:
             return _LegacyGatewayAuthoritySnapshot(
@@ -1087,7 +1093,26 @@ def _capture_legacy_gateway_authority(
             )
 
         pid, pid_raw = convert("gateway.pid")
-        lock, _lock_raw = convert("gateway.pid.lock")
+        if held_lock is None:
+            lock, _lock_raw = convert("gateway.pid.lock")
+        else:
+            expected_lock_path = root / "gateway.pid.lock"
+            if _normalized_path(held_lock.path) != _normalized_path(expected_lock_path):
+                raise OSError("held legacy gateway lock path changed")
+            lock = _ManifestEntry(
+                source=expected_lock_path,
+                relative=Path("gateway.pid.lock"),
+                entry_type="file",
+                identity=_PathIdentity(
+                    device=held_lock.device,
+                    inode=held_lock.inode,
+                    file_type=stat.S_IFREG,
+                ),
+                mode=held_lock.mode,
+                size=held_lock.size,
+                mtime_ns=held_lock.mtime_ns,
+                digest=held_lock.digest,
+            )
         return _LegacyGatewayAuthoritySnapshot(
             root=windows_authority.root,
             root_identity=_PathIdentity(
@@ -3399,19 +3424,20 @@ class OpenSquillaHomeMigrator:
             )
             self._blocked = True
 
-    def _verify_source_gateway_authority(self) -> None:
+    def _verify_source_gateway_authority(
+        self,
+        final_source_lock: LegacyGatewayLock,
+    ) -> None:
         """Detect PID/lock appearance, disappearance, replacement, or mutation."""
 
         for expected in self._source_gateway_authority:
-            # The importer already owns any existing legacy byte lock here.
-            # Windows therefore permits write sharing only for that one held
-            # lock leaf while the pinned-handle snapshot re-verifies its exact
-            # identity, metadata, and bounded content.
+            held_before = final_source_lock.snapshot_state_root(expected.root)
             current = _capture_legacy_gateway_authority(
                 expected.root,
-                allow_held_lock=True,
+                held_lock=held_before,
             )
-            if current != expected:
+            held_after = final_source_lock.snapshot_state_root(expected.root)
+            if current != expected or held_after != held_before:
                 raise OSError(
                     "source legacy gateway authority changed during import; "
                     "publication cancelled"
@@ -3431,12 +3457,15 @@ class OpenSquillaHomeMigrator:
                     f"source changed during import ({expected.role}); publication cancelled"
                 )
 
-    def _verify_source_still_stable(self) -> None:
+    def _verify_source_still_stable(
+        self,
+        final_source_lock: LegacyGatewayLock,
+    ) -> None:
         """Bracket a complete source rescan with old-gateway authority checks."""
 
-        self._verify_source_gateway_authority()
+        self._verify_source_gateway_authority(final_source_lock)
         self._verify_source_snapshots()
-        self._verify_source_gateway_authority()
+        self._verify_source_gateway_authority(final_source_lock)
 
     def _copy_source_snapshots(self, staging: Path) -> None:
         """Materialize the frozen manifest into a source-only staging tree."""
@@ -4797,8 +4826,6 @@ class OpenSquillaHomeMigrator:
                 self._pause_scheduler_jobs(staged_scheduler)
             if self._has_error():
                 raise OSError("one or more staged migration transforms failed")
-            from opensquilla.recovery import LegacyGatewayLock
-
             # Seed and lock the candidate's canonical state before publication.
             # The open lock inode travels with staging -> target, so an RC3 or
             # older gateway cannot enter the newly-published profile during the
@@ -4826,8 +4853,8 @@ class OpenSquillaHomeMigrator:
             )
             with candidate_lock:
                 with final_source_lock:
-                    self._verify_source_still_stable()
-                    self._commit(staging)
+                    self._verify_source_still_stable(final_source_lock)
+                    self._commit(staging, final_source_lock)
         except (OSError, RuntimeError) as exc:
             if (
                 not self._committed
@@ -5118,7 +5145,11 @@ class OpenSquillaHomeMigrator:
             return None
         return [{"id": row[0], "name": row[1], "cron_expr": row[2]} for row in rows]
 
-    def _commit(self, staging: Path) -> None:
+    def _commit(
+        self,
+        staging: Path,
+        final_source_lock: LegacyGatewayLock,
+    ) -> None:
         from opensquilla.recovery import AtomicStateUnknownError, RecoveryError
         from opensquilla.recovery.config_patch import ConfigSnapshot
 
@@ -5213,12 +5244,12 @@ class OpenSquillaHomeMigrator:
             _fsync_directory(self.target.parent)
             journal_payload["phase"] = "candidate_published_unvalidated"
             journal_snapshot = _cas_publish_json(journal_snapshot, journal_payload)
-            self._verify_source_still_stable()
+            self._verify_source_still_stable(final_source_lock)
             final_candidate_identity = self._validate_published_target(
                 journal_snapshot,
                 journal_payload,
             )
-            self._verify_source_still_stable()
+            self._verify_source_still_stable(final_source_lock)
             identities["candidate"] = final_candidate_identity
             journal_payload["phase"] = "validated"
             journal_snapshot = _cas_publish_json(journal_snapshot, journal_payload)
@@ -5231,7 +5262,7 @@ class OpenSquillaHomeMigrator:
             # This is the final source-stability linearization point. A source
             # change after history publication still rolls back before the
             # durable journal can claim committed.
-            self._verify_source_still_stable()
+            self._verify_source_still_stable(final_source_lock)
             journal_payload["phase"] = "committed"
             journal_snapshot = _cas_publish_json(journal_snapshot, journal_payload)
             self._committed = True

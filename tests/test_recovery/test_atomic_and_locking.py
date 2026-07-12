@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ctypes
 import errno
+import hashlib
 import multiprocessing
 import os
 import shutil
@@ -644,6 +645,24 @@ def test_legacy_gateway_lock_creates_and_keeps_absent_lock_in_existing_state(
     # Persistent identity prevents a successor from locking an unlinked inode
     # while a third process creates a new lock path.
     assert lock_path.is_file()
+
+
+def test_legacy_gateway_lock_snapshots_through_its_own_descriptor(tmp_path: Path) -> None:
+    home = tmp_path / "profile"
+    state = home / "state"
+    state.mkdir(parents=True)
+    lock_path = state / "gateway.pid.lock"
+    lock_path.write_bytes(b"synthetic-lock-authority\n")
+
+    with LegacyGatewayLock(home) as lease:
+        snapshot = lease.snapshot_state_root(state)
+        assert snapshot is not None
+        assert snapshot.path == lock_path
+        assert snapshot.size == len(b"synthetic-lock-authority\n")
+        assert snapshot.digest == hashlib.sha256(b"synthetic-lock-authority\n").hexdigest()
+        assert lease.snapshot_state_root(state) == snapshot
+
+    assert lease.snapshot_state_root(state) is None
 
 
 def test_legacy_gateway_lock_does_not_treat_another_thread_as_reentrant(

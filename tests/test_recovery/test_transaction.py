@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import multiprocessing
+import os
 import sys
 import uuid
 from pathlib import Path
@@ -12,6 +13,10 @@ from opensquilla.recovery import inspect_profile
 from opensquilla.recovery.errors import RecoveryError, StaleRecoveryTransactionError
 from opensquilla.recovery.restore import _identity_payload
 from opensquilla.recovery.transaction import recover_profile_transaction
+
+
+def _normalized_path(path: Path) -> str:
+    return os.path.normcase(os.path.normpath(str(path.resolve())))
 
 
 def _contend_for_transaction_gateway(
@@ -67,10 +72,10 @@ def test_typed_import_target_parked_can_be_rolled_back_without_reimport(
         "operation": "profile-import",
         "source_kind": "cli-home",
         "transaction_id": transaction_id,
-        "source": str(source),
-        "target": str(home),
-        "backup": str(backup),
-        "staging": str(staging),
+        "source": _normalized_path(source),
+        "target": _normalized_path(home),
+        "backup": _normalized_path(backup),
+        "staging": _normalized_path(staging),
         "phase": "target_parked",
         "target_existed": True,
         "target_had_real_data": True,
@@ -133,10 +138,10 @@ def test_import_recovery_handles_candidate_move_before_phase_update(
         "operation": "profile-import",
         "source_kind": "cli-home",
         "transaction_id": transaction_id,
-        "source": str(source),
-        "target": str(home),
-        "backup": str(backup),
-        "staging": str(staging),
+        "source": _normalized_path(source),
+        "target": _normalized_path(home),
+        "backup": _normalized_path(backup),
+        "staging": _normalized_path(staging),
         "phase": "target_parked",
         "target_existed": True,
         "target_had_real_data": True,
@@ -182,10 +187,10 @@ def test_import_recovery_is_idempotent_after_paths_were_already_rolled_back(
         "operation": "profile-import",
         "source_kind": "cli-home",
         "transaction_id": transaction_id,
-        "source": str(source),
-        "target": str(home),
-        "backup": str(backup),
-        "staging": str(staging),
+        "source": _normalized_path(source),
+        "target": _normalized_path(home),
+        "backup": _normalized_path(backup),
+        "staging": _normalized_path(staging),
         "phase": "candidate_published_unvalidated",
         "target_existed": True,
         "target_had_real_data": True,
@@ -236,10 +241,10 @@ def test_transaction_recovery_locks_parked_backup_before_restoring_target(
         "operation": "profile-import",
         "source_kind": "cli-home",
         "transaction_id": transaction_id,
-        "source": str(source),
-        "target": str(home),
-        "backup": str(backup),
-        "staging": str(staging),
+        "source": _normalized_path(source),
+        "target": _normalized_path(home),
+        "backup": _normalized_path(backup),
+        "staging": _normalized_path(staging),
         "phase": "target_parked",
         "target_existed": True,
         "target_had_real_data": True,
@@ -301,9 +306,9 @@ def test_typed_restore_target_parked_restores_current_target_and_keeps_selection
         "schema_version": 1,
         "operation": "restore-profile",
         "transaction_id": transaction_id,
-        "source": str(selected),
-        "target": str(home),
-        "backup": str(current_backup),
+        "source": _normalized_path(selected),
+        "target": _normalized_path(home),
+        "backup": _normalized_path(current_backup),
         "staging": "",
         "phase": "target_parked",
         "target_existed": True,
@@ -344,9 +349,9 @@ def test_restore_recovery_is_idempotent_after_both_moves_completed(
         "schema_version": 1,
         "operation": "restore-profile",
         "transaction_id": transaction_id,
-        "source": str(selected),
-        "target": str(home),
-        "backup": str(current_backup),
+        "source": _normalized_path(selected),
+        "target": _normalized_path(home),
+        "backup": _normalized_path(current_backup),
         "staging": "",
         "phase": "candidate_published_unvalidated",
         "target_existed": True,
@@ -413,10 +418,10 @@ def test_almost_typed_import_journal_is_read_only_and_not_recoverable(
         "operation": "profile-import",
         "source_kind": "cli-home",
         "transaction_id": transaction_id,
-        "source": str(source),
-        "target": str(home),
-        "backup": str(backup),
-        "staging": str(staging),
+        "source": _normalized_path(source),
+        "target": _normalized_path(home),
+        "backup": _normalized_path(backup),
+        "staging": _normalized_path(staging),
         "phase": "prepared",
         "target_existed": True,
         "target_had_real_data": True,
@@ -490,10 +495,10 @@ def test_recovery_revision_rejects_a_typed_journal_replaced_after_inspection(
             "operation": "profile-import",
             "source_kind": "cli-home",
             "transaction_id": transaction_id,
-            "source": str(source),
-            "target": str(home),
-            "backup": str(backup),
-            "staging": str(staging),
+            "source": _normalized_path(source),
+            "target": _normalized_path(home),
+            "backup": _normalized_path(backup),
+            "staging": _normalized_path(staging),
             "phase": "target_parked",
             "target_existed": True,
             "target_had_real_data": True,

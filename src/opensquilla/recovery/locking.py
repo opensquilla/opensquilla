@@ -120,6 +120,19 @@ class _HeldLegacyLock:
 
 
 @dataclass(frozen=True)
+class LegacyGatewayLockFileSnapshot:
+    """Metadata-only identity plus an ephemeral digest for one held lock leaf."""
+
+    path: Path
+    device: int
+    inode: int
+    mode: int
+    size: int
+    mtime_ns: int
+    digest: str
+
+
+@dataclass(frozen=True)
 class _LegacyLockMove:
     held: _HeldLegacyLock
     source_state: Path
@@ -1394,6 +1407,71 @@ class LegacyGatewayLock:
                 and claim.compat_owner_thread == owner_thread
                 and _normalized_path(claim.path) == expected
                 for claim in self._claims
+            )
+
+    def snapshot_state_root(
+        self,
+        state_root: str | Path,
+    ) -> LegacyGatewayLockFileSnapshot | None:
+        """Snapshot a lock through the descriptor that owns its byte-range lock.
+
+        Windows rejects reading the locked byte through a second handle. The
+        owning descriptor remains readable, so callers can verify the exact
+        leaf without releasing the compatibility lock or opening a race for an
+        older gateway.
+        """
+
+        expected = _normalized_path(
+            Path(state_root).expanduser().absolute() / "gateway.pid.lock"
+        )
+        owner_thread = threading.get_ident()
+        with _LOCKS_GUARD:
+            _refresh_after_fork()
+            claim = next(
+                (
+                    item
+                    for item in self._claims
+                    if item.fd is not None
+                    and item.compat_count > 0
+                    and item.compat_owner_thread == owner_thread
+                    and _normalized_path(item.path) == expected
+                ),
+                None,
+            )
+            if claim is None or claim.fd is None:
+                return None
+            value = os.fstat(claim.fd)
+            identity = (int(value.st_dev), int(value.st_ino))
+            if (
+                not stat.S_ISREG(value.st_mode)
+                or int(value.st_nlink) != 1
+                or _legacy_lock_file_identity(claim.path) != identity
+            ):
+                raise UnsafePathError("held legacy gateway lock identity changed")
+            digest = _legacy_lock_digest(claim.fd).hex()
+            current = os.fstat(claim.fd)
+            if (
+                int(current.st_dev),
+                int(current.st_ino),
+                int(current.st_mode),
+                int(current.st_size),
+                int(current.st_mtime_ns),
+            ) != (
+                identity[0],
+                identity[1],
+                int(value.st_mode),
+                int(value.st_size),
+                int(value.st_mtime_ns),
+            ):
+                raise UnsafePathError("held legacy gateway lock changed while read")
+            return LegacyGatewayLockFileSnapshot(
+                path=claim.path,
+                device=identity[0],
+                inode=identity[1],
+                mode=int(value.st_mode),
+                size=int(value.st_size),
+                mtime_ns=int(value.st_mtime_ns),
+                digest=digest,
             )
 
     def _acquire_one(self, state_path: Path) -> None:

@@ -3,6 +3,7 @@ from __future__ import annotations
 import errno
 import json
 import multiprocessing
+import os
 import sys
 import threading
 import uuid
@@ -28,6 +29,10 @@ from opensquilla.recovery.transaction import (
 )
 
 runner = CliRunner()
+
+
+def _normalized_path(path: Path) -> str:
+    return os.path.normcase(os.path.normpath(str(path.resolve())))
 
 
 def _contend_for_restored_gateway(state_dir: str, queue: multiprocessing.Queue) -> None:
@@ -67,9 +72,9 @@ def _record_backup(target: Path, backup: Path, transaction_id: str) -> Path:
                     {
                         "transaction_id": transaction_id,
                         "committed_at": "2026-07-11T00:00:00+00:00",
-                        "source": str(target.parent / "synthetic-source"),
-                        "target": str(target),
-                        "backup": str(backup),
+                        "source": _normalized_path(target.parent / "synthetic-source"),
+                        "target": _normalized_path(target),
+                        "backup": _normalized_path(backup),
                         "source_identity": _identity_payload(backup),
                         "target_identity": _identity_payload(target),
                         "backup_identity": _identity_payload(backup),
@@ -106,10 +111,10 @@ def test_restore_profile_swaps_recorded_backup_and_indexes_previous_target(
     assert (parked[0] / "workspace" / "SOUL.md").read_text(encoding="utf-8") == "current\n"
     history = json.loads(history_path.read_text(encoding="utf-8"))
     assert [entry["backup"] for entry in history["backups"]] == [
-        str(backup),
-        str(parked[0]),
+        _normalized_path(backup),
+        _normalized_path(parked[0]),
     ]
-    assert history["backups"][0]["restored_to"] == str(target)
+    assert history["backups"][0]["restored_to"] == _normalized_path(target)
     assert history["backups"][0]["consumed_by_transaction_id"]
     assert not (tmp_path / ".opensquilla.profile-replace.json").exists()
 
@@ -134,7 +139,7 @@ def test_restore_cli_uses_history_target_and_primary_profile_kind(
 
     assert result.exit_code == 0, result.stdout
     payload = json.loads(result.stdout)
-    assert payload["primary_home"] == str(target.absolute())
+    assert payload["primary_home"] == _normalized_path(target)
     assert payload["outcome"] == "ready"
     assert (target / "workspace" / "SOUL.md").read_text(encoding="utf-8") == (
         "recorded backup\n"

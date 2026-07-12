@@ -83,6 +83,10 @@ REPORT_KEYS = {
 }
 
 
+def _normalized_path(path: Path) -> str:
+    return os.path.normcase(os.path.normpath(str(path.resolve())))
+
+
 @pytest.fixture(autouse=True)
 def _isolate_profile_operation_locks(
     tmp_path: Path,
@@ -688,7 +692,7 @@ def test_overwrite_takes_timestamped_backups(tmp_path: Path) -> None:
     )
     assert history["schema_version"] == 1
     record = history["backups"][0]
-    assert record["backup"] == os.path.normcase(os.path.normpath(str(backups[0].resolve())))
+    assert record["backup"] == _normalized_path(backups[0])
     assert str(uuid.UUID(record["transaction_id"])) == record["transaction_id"]
     for identity_key in ("source_identity", "target_identity", "backup_identity"):
         assert {"device", "inode", "file_type", "mode", "size", "modified_at_ns"} <= set(
@@ -819,9 +823,7 @@ def test_existing_empty_target_is_parked_and_published_transactionally(
     history = json.loads(
         (tmp_path / "profile-replacement-history.json").read_text(encoding="utf-8")
     )
-    assert history["backups"][0]["backup"] == os.path.normcase(
-        os.path.normpath(str(backups[0].resolve()))
-    )
+    assert history["backups"][0]["backup"] == _normalized_path(backups[0])
 
 
 def test_committed_replacement_history_can_restore_complete_previous_profile(
@@ -854,7 +856,7 @@ def test_committed_replacement_history_can_restore_complete_previous_profile(
     history = json.loads(
         (tmp_path / "profile-replacement-history.json").read_text(encoding="utf-8")
     )
-    assert history["backups"][0]["restored_to"] == str(target.resolve())
+    assert history["backups"][0]["restored_to"] == _normalized_path(target)
 
 
 # ---------------------------------------------------------------------------
@@ -1299,8 +1301,8 @@ def test_every_published_portable_release_completes_full_profile_apply(
     }
     assert receipt["source_kind"] == "windows-portable"
     assert receipt["source_version"] == release["release_tag"]
-    assert receipt["source"] == str(source.resolve())
-    assert receipt["target"] == str(target.resolve())
+    assert receipt["source"] == _normalized_path(source)
+    assert receipt["target"] == _normalized_path(target)
 
 
 # ---------------------------------------------------------------------------
@@ -3262,11 +3264,11 @@ def test_interrupted_overwrite_is_restored_before_retry(tmp_path: Path) -> None:
                 "schema_version": 1,
                 "operation": "profile-import",
                 "transaction_id": transaction_id,
-                "source": str(source.resolve()),
+                "source": _normalized_path(source),
                 "source_kind": "cli-home",
-                "target": str(target.resolve()),
-                "staging": str(interrupted_staging.resolve()),
-                "backup": str(interrupted_backup.resolve()),
+                "target": _normalized_path(target),
+                "staging": _normalized_path(interrupted_staging),
+                "backup": _normalized_path(interrupted_backup),
                 "phase": "target_parked",
                 "target_existed": True,
                 "target_had_real_data": True,
@@ -3399,10 +3401,10 @@ def test_cli_retry_never_mutates_an_inexact_replacement_journal(
         "operation": "profile-import",
         "source_kind": "cli-home",
         "transaction_id": transaction_id,
-        "source": str(source.resolve()),
-        "target": str(target.resolve()),
-        "staging": str(staging.resolve()),
-        "backup": str(backup.resolve()),
+        "source": _normalized_path(source),
+        "target": _normalized_path(target),
+        "staging": _normalized_path(staging),
+        "backup": _normalized_path(backup),
         "phase": "target_parked",
         "target_existed": True,
         "target_had_real_data": True,
@@ -3659,10 +3661,10 @@ def test_dry_run_reports_interrupted_commit_without_mutating_it(tmp_path: Path) 
     payload = {
         "schema_version": 1,
         "transaction_id": transaction_id,
-        "source": str(source.resolve()),
-        "target": str(target.resolve()),
-        "staging": str(staging.resolve()),
-        "backup": str(backup.resolve()),
+        "source": _normalized_path(source),
+        "target": _normalized_path(target),
+        "staging": _normalized_path(staging),
+        "backup": _normalized_path(backup),
         "phase": "target_parked",
         "target_existed": True,
         "target_was_empty": False,
@@ -3803,5 +3805,5 @@ def test_orchestrator_runs_opensquilla_source(tmp_path: Path, monkeypatch) -> No
     )
 
     assert report["source_kind"] == "cli-home"
-    assert report["target"] == str(target)
+    assert report["target"] == _normalized_path(target)
     assert not any(item["status"] == "error" for item in report["items"])

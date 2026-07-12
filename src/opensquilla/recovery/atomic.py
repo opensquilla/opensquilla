@@ -533,6 +533,7 @@ def _windows_move_no_replace(
         label="source parent",
     )
     error_number = 0
+    native_status = 0
     try:
         assert_handle(
             source_parent_handle,
@@ -586,8 +587,10 @@ def _windows_move_no_replace(
                     return
                 if status > 0:
                     raise AtomicStateUnknownError(
-                        "handle-relative Windows rename returned an ambiguous status"
+                        "handle-relative Windows rename returned ambiguous "
+                        f"NTSTATUS 0x{status & 0xFFFFFFFF:08X}"
                     )
+                native_status = status & 0xFFFFFFFF
                 error_number = int(status_to_dos_error(status))
             finally:
                 close_handle(destination_parent_handle)
@@ -601,10 +604,12 @@ def _windows_move_no_replace(
         raise CrossDeviceMoveError("cross-filesystem recovery moves are not allowed")
     if error_number in unsupported_errors:
         raise NoReplaceUnavailableError(
-            f"handle-relative Windows rename is unavailable (Windows error {error_number})"
+            "handle-relative Windows rename is unavailable "
+            f"(NTSTATUS 0x{native_status:08X}; Windows error {error_number})"
         )
     raise RecoveryError(
-        f"native no-replace move failed with Windows error {error_number}",
+        "native no-replace move failed "
+        f"(NTSTATUS 0x{native_status:08X}; Windows error {error_number})",
         stable_code="no_replace_move_failed",
     )
 

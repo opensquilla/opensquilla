@@ -476,6 +476,31 @@ jobs:
             throw
           }
 
+      - name: Test Windows native recovery move primitives first
+        if: ${{ matrix.shard == 'recovery-migration' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          maxfail_args=()
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            maxfail_args+=(--maxfail=3)
+          fi
+
+          set +e
+          uv run pytest tests/test_recovery/test_atomic_and_locking.py \
+            -q \
+            --durations=25 \
+            --junitxml="${CI_REPORT_DIR}/native-move-junit.xml" \
+            "${maxfail_args[@]}" \
+            2>&1 | tee "${CI_REPORT_DIR}/native-move.log"
+          status=${PIPESTATUS[0]}
+          set -e
+          if [[ "${status}" -ne 0 ]]; then
+            printf 'native_move_exit_code=%s\n' "${status}" \
+              > "${CI_REPORT_DIR}/first-failure.txt"
+            exit "${status}"
+          fi
+
       - name: Test Windows shard
         shell: bash
         run: |

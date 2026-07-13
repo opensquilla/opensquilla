@@ -1908,6 +1908,7 @@
       "ensembleRouterPoolHidden": "pool del router oculto",
       "ensembleTokens": "{count} tok",
       "ensembleUsed": "usado",
+      "ensembleFailed": "fallido",
       "ensembleTracePending": "traza pendiente",
       "ensembleTraceUnavailable": "traza disponible cuando finalice la ejecución",
       "ensembleDetailUnavailable": "{count} candidatos · detalle no disponible"
@@ -2090,12 +2091,14 @@
       "readingContext": "Leyendo el contexto",
       "waitingForModel": "Esperando al modelo",
       "preparingOutput": "Preparando la salida",
+      "generatingCandidates": "Generando candidatos",
+      "synthesizingCandidates": "Sintetizando candidatos",
       "stillWaiting": "Aún esperando al modelo",
       "stillWorking": "Aún trabajando — última señal hace {seconds} s"
     },
     "stall": {
-      "title": "La respuesta puede haberse estancado",
-      "detail": "Sin salida nueva desde hace {seconds} s — puede que el modelo se haya atascado.",
+      "title": "La respuesta tarda más de lo esperado",
+      "detail": "Sin salida nueva desde hace {seconds} s — la ejecución sigue activa.",
       "keepWaiting": "Seguir esperando",
       "interrupt": "Interrumpir el turno"
     },

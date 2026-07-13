@@ -432,7 +432,14 @@ export function useChatRpcEventHandlers(options: UseChatRpcEventHandlersOptions)
     if (!stream.isStreaming.value) stream.startStreaming()
     stream.resetStreamIdleTimer()
     if (stream.streamBubble.value && !stream.streamHasVisibleOutput.value) {
-      stream.setStreamActivity('Planning next step')
+      const phase = String(payload.phase || '')
+      if (phase.startsWith('ensemble_proposers')) {
+        stream.setStreamActivity('Generating candidates')
+      } else if (phase.startsWith('ensemble_aggregator')) {
+        stream.setStreamActivity('Synthesizing candidates')
+      } else {
+        stream.setStreamActivity('Planning next step')
+      }
     } else if (!stream.streamBubble.value) {
       stream.showThinkingIndicator()
     }
@@ -524,6 +531,10 @@ export function useChatRpcEventHandlers(options: UseChatRpcEventHandlersOptions)
   function handleRpcEnsembleProgress(payload: EnsembleProgressPayload) {
     if (isStaleEpoch(payload)) return
     if (!acceptStreamSeq(payload)) return
+    if (!stream.isStreaming.value) stream.startStreaming()
+    // A lifecycle frame is a real gateway event. Keep the hard no-event timer
+    // aligned with the wire even when heartbeat cadence is slower than progress.
+    stream.resetStreamIdleTimer()
     options.appendEnsembleProgress(payload)
   }
 
@@ -688,6 +699,7 @@ export function useChatRpcEventHandlers(options: UseChatRpcEventHandlersOptions)
       options.subscribeSession()
       options.loadCurrentSessionUsage()
       options.loadHistory()
+      if (stream.isStreaming.value) stream.resetStreamIdleTimer()
     }
     if (state === 'disconnected' && stream.isStreaming.value) {
       // Surface the drop instead of silently freezing the work-card, and keep the

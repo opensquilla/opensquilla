@@ -1908,6 +1908,7 @@
       "ensembleRouterPoolHidden": "普通 router 池已隐藏",
       "ensembleTokens": "{count} 令牌",
       "ensembleUsed": "已使用",
+      "ensembleFailed": "失败",
       "ensembleTracePending": "trace 待更新",
       "ensembleTraceUnavailable": "运行完成后可查看 trace",
       "ensembleDetailUnavailable": "{count} 个候选 · 明细不可用"
@@ -2090,12 +2091,14 @@
       "readingContext": "读取上下文",
       "waitingForModel": "等待模型",
       "preparingOutput": "准备输出",
+      "generatingCandidates": "正在生成候选",
+      "synthesizingCandidates": "正在聚合候选",
       "stillWaiting": "仍在等待模型",
       "stillWorking": "仍在处理 — 上次信号 {seconds} 秒前"
     },
     "stall": {
-      "title": "回复可能已停滞",
-      "detail": "已有 {seconds} 秒没有新输出，模型可能卡住了。",
+      "title": "回复耗时超出预期",
+      "detail": "已有 {seconds} 秒没有新输出，回合仍在运行。",
       "keepWaiting": "继续等待",
       "interrupt": "中断回合"
     },

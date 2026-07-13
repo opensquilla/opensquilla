@@ -160,6 +160,9 @@ class _CandidateResult:
             "cache_write_tokens": self.cache_write_tokens,
             "billed_cost": self.billed_cost,
             "cost_source": self.cost_source,
+            # Preserve the already-measured lifecycle duration when the final
+            # done payload replaces the live progress rows in WebUI.
+            "elapsed_ms": self.elapsed_ms,
         }
 
     def trace_row(self, *, include_text: bool, content_max_chars: int) -> dict[str, Any]:
@@ -207,6 +210,7 @@ class _AggregatorAccumulator:
         member: EnsembleMemberConfig,
         role: str = "aggregator",
         label: str = "",
+        elapsed_ms: int = 0,
     ) -> dict[str, Any]:
         cfg = member.provider_config
         return {
@@ -223,6 +227,7 @@ class _AggregatorAccumulator:
             "cache_write_tokens": self.cache_write_tokens,
             "billed_cost": self.billed_cost,
             "cost_source": self.cost_source,
+            "elapsed_ms": max(0, int(elapsed_ms)),
         }
 
 
@@ -1107,8 +1112,35 @@ class EnsembleProvider:
         trace: dict[str, Any],
     ) -> AsyncIterator[StreamEvent]:
         final_text_parts: list[str] = []
+        aggregator_started = time.monotonic()
 
-        def ensemble_done(event: DoneEvent) -> DoneEvent:
+        def aggregator_progress(
+            event_type: str,
+            *,
+            usage: Mapping[str, Any] | None = None,
+            error: str = "",
+        ) -> EnsembleProgressEvent:
+            row = usage or {}
+            cfg = self.aggregator.provider_config
+            return EnsembleProgressEvent(
+                event_type=event_type,
+                proposer_index=-1,
+                proposer_label="aggregator",
+                proposer_model=str(row.get("model") or cfg.model),
+                proposer_provider=str(row.get("provider") or cfg.provider),
+                sample_index=0,
+                elapsed_ms=(
+                    0
+                    if event_type == "aggregator_start"
+                    else int((time.monotonic() - aggregator_started) * 1000)
+                ),
+                input_tokens=int(row.get("input_tokens") or 0),
+                output_tokens=int(row.get("output_tokens") or 0),
+                cost_usd=float(row.get("billed_cost") or 0.0),
+                error=error,
+            )
+
+        def ensemble_done(event: DoneEvent, *, aggregator_elapsed_ms: int) -> DoneEvent:
             output_text = "".join(final_text_parts)
             _attach_final_request_output(trace, event=event, output_text=output_text)
             acc = _AggregatorAccumulator(
@@ -1128,6 +1160,7 @@ class EnsembleProvider:
                     member=self.aggregator,
                     role="aggregator",
                     label="aggregator",
+                    elapsed_ms=aggregator_elapsed_ms,
                 ),
             ]
             return replace(
@@ -1144,7 +1177,7 @@ class EnsembleProvider:
                 ensemble_trace=trace,
             )
 
-        yielded_done = False
+        yield aggregator_progress("aggregator_start")
         try:
             stream = provider.chat(messages, tools=tools, config=config)
             timeout_seconds = (
@@ -1159,9 +1192,33 @@ class EnsembleProvider:
                 timeout_seconds=timeout_seconds,
             ):
                 if isinstance(event, DoneEvent):
-                    yielded_done = True
-                    yield ensemble_done(event)
+                    aggregator_elapsed_ms = int(
+                        (time.monotonic() - aggregator_started) * 1000
+                    )
+                    done_event = ensemble_done(
+                        event,
+                        aggregator_elapsed_ms=aggregator_elapsed_ms,
+                    )
+                    usage_rows = done_event.model_usage_breakdown or []
+                    aggregator_usage = next(
+                        (
+                            row
+                            for row in reversed(usage_rows)
+                            if isinstance(row, Mapping) and row.get("role") == "aggregator"
+                        ),
+                        {},
+                    )
+                    yield aggregator_progress(
+                        "aggregator_finish",
+                        usage=aggregator_usage,
+                    )
+                    yield done_event
+                    return
                 elif isinstance(event, ErrorEvent):
+                    yield aggregator_progress(
+                        "aggregator_finish",
+                        error=event.message,
+                    )
                     yield event
                     return
                 elif isinstance(event, TextDeltaEvent):
@@ -1170,25 +1227,30 @@ class EnsembleProvider:
                 else:
                     yield event
         except TimeoutError:
-            yield ErrorEvent(
+            error = ErrorEvent(
                 message=(
                     "ensemble aggregator timed out after "
                     f"{self.aggregator_timeout_seconds:g}s"
                 ),
                 code="ensemble_aggregator_timeout",
             )
+            yield aggregator_progress("aggregator_finish", error=error.message)
+            yield error
             return
         except Exception as exc:  # noqa: BLE001 - provider boundary returns ErrorEvent
-            yield ErrorEvent(
+            error = ErrorEvent(
                 message=f"ensemble aggregator failed: {exc}",
                 code="ensemble_aggregator_error",
             )
+            yield aggregator_progress("aggregator_finish", error=error.message)
+            yield error
             return
-        if not yielded_done:
-            yield ErrorEvent(
-                message="ensemble aggregator stream ended before DoneEvent",
-                code="ensemble_aggregator_incomplete",
-            )
+        error = ErrorEvent(
+            message="ensemble aggregator stream ended before DoneEvent",
+            code="ensemble_aggregator_incomplete",
+        )
+        yield aggregator_progress("aggregator_finish", error=error.message)
+        yield error
 
     async def _fallback_or_error(
         self,

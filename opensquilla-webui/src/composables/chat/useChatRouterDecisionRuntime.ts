@@ -116,18 +116,21 @@ export function useChatRouterDecisionRuntime(options: UseChatRouterDecisionRunti
     const model = String(payload.proposer_model || '').trim()
     const isAggregator = payload.event_type === 'aggregator_start' || payload.event_type === 'aggregator_finish'
     if (!model && !isAggregator) return null
-    const role = String(payload.proposer_label || '').trim() || (isAggregator ? 'aggregator' : 'proposer')
+    const label = String(payload.proposer_label || '').trim() || (isAggregator ? 'aggregator' : 'proposer')
     const finished = payload.event_type === 'proposer_finish' || payload.event_type === 'aggregator_finish'
+    const error = String(payload.error || '').trim()
     return {
-      role,
-      label: role,
+      role: isAggregator ? 'aggregator' : label,
+      label,
       provider: String(payload.proposer_provider || '').trim(),
       model,
       modelShort: shortModelName(model),
       input: Number(payload.input_tokens || 0),
       output: Number(payload.output_tokens || 0),
       costUsd: Number(payload.cost_usd || 0),
-      status: finished ? 'done' : 'running',
+      status: finished ? (error ? 'failed' : 'done') : 'running',
+      elapsedMs: Math.max(0, Number(payload.elapsed_ms || 0)),
+      error: error || undefined,
     }
   }
 
@@ -140,9 +143,9 @@ export function useChatRouterDecisionRuntime(options: UseChatRouterDecisionRunti
     } else {
       ensemble.models.push(member)
     }
-    ensemble.modelCount = ensemble.models.length
+    ensemble.modelCount = ensemble.models.filter(model => model.role !== 'aggregator').length
     ensemble.requestCount = ensemble.models.length
-    ensemble.totalCandidates = Math.max(ensemble.totalCandidates, ensemble.models.length)
+    ensemble.totalCandidates = Math.max(ensemble.totalCandidates, ensemble.modelCount)
   }
 
   function isEnsembleRouterMessage(message: ChatMessage): boolean {

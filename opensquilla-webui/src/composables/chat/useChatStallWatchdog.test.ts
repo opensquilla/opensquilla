@@ -3,17 +3,17 @@ import { ref, nextTick, effectScope, type EffectScope } from 'vue'
 import {
   useChatStallWatchdog,
   SOFT_STALL_THRESHOLD_MS as THRESHOLD,
-  STALL_REARM_DELAY_MS as REARM,
 } from './useChatStallWatchdog'
 
-function harness() {
+function harness(streamIdleGraceMs = 0) {
   const isStreaming = ref(false)
+  const negotiatedGrace = ref(streamIdleGraceMs)
   const scope: EffectScope = effectScope()
   let api!: ReturnType<typeof useChatStallWatchdog>
   scope.run(() => {
-    api = useChatStallWatchdog({ isStreaming })
+    api = useChatStallWatchdog({ isStreaming, streamIdleGraceMs: negotiatedGrace })
   })
-  return { isStreaming, api, scope }
+  return { isStreaming, streamIdleGraceMs: negotiatedGrace, api, scope }
 }
 
 async function startStreaming(h: ReturnType<typeof harness>) {
@@ -39,6 +39,22 @@ describe('useChatStallWatchdog', () => {
     // Live seconds keep advancing while the stall persists.
     vi.advanceTimersByTime(5000)
     expect(h.api.stallSeconds.value).toBe(THRESHOLD / 1000 + 5)
+    h.scope.stop()
+  })
+
+  it('uses the larger negotiated WebUI grace as its soft threshold', async () => {
+    const negotiated = THRESHOLD + 15 * 60_000
+    const h = harness(negotiated)
+    await startStreaming(h)
+
+    expect(h.api.effectiveThresholdMs.value).toBe(negotiated)
+    vi.advanceTimersByTime(THRESHOLD)
+    expect(h.api.stallActive.value).toBe(false)
+    vi.advanceTimersByTime(negotiated - THRESHOLD)
+    expect(h.api.stallActive.value).toBe(true)
+
+    h.streamIdleGraceMs.value = THRESHOLD + 30 * 60_000
+    expect(h.api.effectiveThresholdMs.value).toBe(THRESHOLD + 30 * 60_000)
     h.scope.stop()
   })
 
@@ -86,6 +102,60 @@ describe('useChatStallWatchdog', () => {
 
     vi.advanceTimersByTime(THRESHOLD / 2)
     expect(h.api.stallActive.value).toBe(true)
+    h.scope.stop()
+  })
+
+  it('suppresses the soft warning while proposer and aggregator phases are active', async () => {
+    const h = harness()
+    await startStreaming(h)
+
+    h.api.noteEvent('session.event.ensemble_progress', {
+      event_type: 'proposer_start', proposer_index: 0, proposer_label: 'anchor', proposer_model: 'model-a',
+    })
+    h.api.noteEvent('session.event.ensemble_progress', {
+      event_type: 'proposer_start', proposer_index: 1, proposer_label: 'critic', proposer_model: 'model-b',
+    })
+    expect(h.api.suspendReason.value).toBe('ensemble-running')
+    vi.advanceTimersByTime(THRESHOLD * 2)
+    expect(h.api.stallActive.value).toBe(false)
+
+    h.api.noteEvent('session.event.ensemble_progress', {
+      event_type: 'proposer_finish', proposer_index: 0, proposer_label: 'anchor', proposer_model: 'model-a',
+    })
+    expect(h.api.suspendReason.value).toBe('ensemble-running')
+    h.api.noteEvent('session.event.ensemble_progress', {
+      event_type: 'proposer_finish', proposer_index: 1, proposer_label: 'critic', proposer_model: 'model-b',
+    })
+    expect(h.api.suspendReason.value).toBe(null)
+
+    h.api.noteEvent('session.event.ensemble_progress', {
+      event_type: 'aggregator_start', proposer_index: -1, proposer_label: 'aggregator', proposer_model: 'model-z',
+    })
+    expect(h.api.suspendReason.value).toBe('ensemble-running')
+    vi.advanceTimersByTime(THRESHOLD * 2)
+    expect(h.api.stallActive.value).toBe(false)
+
+    h.api.noteEvent('session.event.ensemble_progress', {
+      event_type: 'aggregator_finish', proposer_index: -1, proposer_label: 'aggregator', proposer_model: 'model-z',
+    })
+    expect(h.api.suspendReason.value).toBe(null)
+    vi.advanceTimersByTime(THRESHOLD)
+    expect(h.api.stallActive.value).toBe(true)
+    h.scope.stop()
+  })
+
+  it('treats ensemble phase heartbeats as backend-deadline-owned activity', async () => {
+    const h = harness()
+    await startStreaming(h)
+
+    h.api.noteEvent('session.event.run_heartbeat', { phase: 'ensemble_proposers_wait' })
+    expect(h.api.suspendReason.value).toBe('ensemble-running')
+    vi.advanceTimersByTime(THRESHOLD * 2)
+    expect(h.api.stallActive.value).toBe(false)
+
+    h.api.noteEvent('session.event.done', {})
+    expect(h.api.suspendReason.value).toBe(null)
+    expect(h.api.stallActive.value).toBe(false)
     h.scope.stop()
   })
 
@@ -192,7 +262,7 @@ describe('useChatStallWatchdog', () => {
     h.scope.stop()
   })
 
-  it('dismiss hides the banner and re-arms after the delay', async () => {
+  it('dismiss hides the banner for the whole current silence episode', async () => {
     const h = harness()
     await startStreaming(h)
 
@@ -202,12 +272,8 @@ describe('useChatStallWatchdog', () => {
     h.api.dismiss()
     expect(h.api.stallActive.value).toBe(false)
 
-    vi.advanceTimersByTime(REARM - 1000)
+    vi.advanceTimersByTime(THRESHOLD * 3)
     expect(h.api.stallActive.value).toBe(false)
-
-    // Still silent once the re-arm window lapses: the banner returns.
-    vi.advanceTimersByTime(1000)
-    expect(h.api.stallActive.value).toBe(true)
     h.scope.stop()
   })
 
@@ -219,7 +285,7 @@ describe('useChatStallWatchdog', () => {
     h.api.dismiss()
     h.api.noteEvent('session.event.text_delta', {})
 
-    // A fresh stall needs the full threshold again, not the re-arm remainder.
+    // Genuine progress opens a new silence episode with a full threshold.
     vi.advanceTimersByTime(THRESHOLD - 1000)
     expect(h.api.stallActive.value).toBe(false)
     vi.advanceTimersByTime(1000)

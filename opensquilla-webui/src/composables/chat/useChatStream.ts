@@ -34,7 +34,7 @@ import {
 import { segmentsToTimelineItems } from '@/utils/chat/segmentsToTimelineItems'
 import { useChatTurnLog } from '@/composables/chat/useChatTurnLog'
 
-const DEFAULT_STREAM_IDLE_TIMEOUT_MS = 210000
+export const DEFAULT_STREAM_IDLE_TIMEOUT_MS = 630_000
 const THINKING_DELAY_MS = 400
 const THINKING_TTL_MS = 60000
 // Bounds for trusting a server-stamped tool start time against the local clock
@@ -54,6 +54,8 @@ const STREAM_LABEL_KEYS: Record<string, string> = {
   'Reading context': 'chat.stream.readingContext',
   'Waiting for model': 'chat.stream.waitingForModel',
   'Preparing output': 'chat.stream.preparingOutput',
+  'Generating candidates': 'chat.stream.generatingCandidates',
+  'Synthesizing candidates': 'chat.stream.synthesizingCandidates',
 }
 
 function localizeStreamLabel(label: string): string {
@@ -91,6 +93,15 @@ export interface UseChatStreamOptions {
    *  interrupt part is stamped with its resolution/busy/error. The approvals
    *  composable owns the map; the stream only forwards it to the turn log. */
   interruptState?: Ref<ReadonlyMap<string, InterruptViewState>>
+  /** Current hello policy. Read lazily so reconnects can replace the timeout. */
+  rpcPolicy?: () => Record<string, unknown> | null | undefined
+}
+
+export function streamIdleTimeoutFromPolicy(policy: Record<string, unknown> | null | undefined): number {
+  const raw = policy?.webui_stream_idle_grace_ms
+  return typeof raw === 'number' && Number.isFinite(raw) && raw > 0
+    ? raw
+    : DEFAULT_STREAM_IDLE_TIMEOUT_MS
 }
 
 export function useChatStream(options: UseChatStreamOptions) {
@@ -498,6 +509,7 @@ export function useChatStream(options: UseChatStreamOptions) {
     // it doubles as the liveness signal for the staleness note.
     noteStreamSignal()
     clearStreamIdleTimer()
+    streamIdleTimeoutMs.value = streamIdleTimeoutFromPolicy(options.rpcPolicy?.())
     if (!isStreaming.value || streamIdlePausedForApproval.value) return
     streamIdleTimer.value = setTimeout(() => {
       if (isStreaming.value && !streamIdlePausedForApproval.value) {
@@ -826,6 +838,7 @@ export function useChatStream(options: UseChatStreamOptions) {
     streamPhaseElapsed,
     streamStepLabel,
     streamToolElapsedText,
+    streamIdleTimeoutMs,
     thinkingVisible,
     thinkingText,
     startStreaming,

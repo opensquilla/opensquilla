@@ -7,15 +7,19 @@ import pytest
 
 from opensquilla.engine import Agent, AgentConfig, ToolResult
 from opensquilla.engine.types import EnsembleProgressEvent as EngineEnsembleProgressEvent
-from opensquilla.engine.types import ToolCall
+from opensquilla.engine.types import RunHeartbeatEvent, ToolCall
 from opensquilla.provider import (
     ChatConfig,
     Message,
+    ProviderHeartbeatEvent,
     ToolDefinition,
     ToolInputSchema,
 )
 from opensquilla.provider import (
     DoneEvent as ProviderDone,
+)
+from opensquilla.provider import (
+    ErrorEvent as ProviderErrorEvent,
 )
 from opensquilla.provider import (
     TextDeltaEvent as ProviderText,
@@ -46,6 +50,10 @@ class _EnsembleLikeProvider:
             proposer_provider="openrouter",
             proposer_model="qwen/qwen3.7-plus",
         )
+        yield ProviderHeartbeatEvent(
+            phase="ensemble_proposers_wait",
+            message="still generating candidates",
+        )
         yield ProviderEnsembleProgressEvent(
             event_type="proposer_finish",
             proposer_label="anchor",
@@ -65,13 +73,9 @@ async def _tool_handler(call: ToolCall) -> ToolResult:
     return ToolResult(tool_use_id=call.tool_use_id, tool_name=call.tool_name, content="ok")
 
 
-@pytest.mark.asyncio
-async def test_agent_forwards_provider_ensemble_progress_as_engine_event() -> None:
-    # This is the previously-unverified link: the ensemble provider yields
-    # provider-level EnsembleProgressEvents; the agent loop must re-emit them as
-    # engine-level EnsembleProgressEvents so channel_dispatch can broadcast them.
-    agent = Agent(
-        provider=_EnsembleLikeProvider(),
+def _agent(provider: Any) -> Agent:
+    return Agent(
+        provider=provider,
         config=AgentConfig(max_iterations=2),
         tool_definitions=[
             ToolDefinition(
@@ -83,6 +87,14 @@ async def test_agent_forwards_provider_ensemble_progress_as_engine_event() -> No
         tool_handler=_tool_handler,
     )
 
+
+@pytest.mark.asyncio
+async def test_agent_forwards_provider_ensemble_progress_as_engine_event() -> None:
+    # This is the previously-unverified link: the ensemble provider yields
+    # provider-level EnsembleProgressEvents; the agent loop must re-emit them as
+    # engine-level EnsembleProgressEvents so channel_dispatch can broadcast them.
+    agent = _agent(_EnsembleLikeProvider())
+
     events = [event async for event in agent.run_turn("hi")]
     progress = [e for e in events if isinstance(e, EngineEnsembleProgressEvent)]
 
@@ -92,3 +104,84 @@ async def test_agent_forwards_provider_ensemble_progress_as_engine_event() -> No
     finish = next(p for p in progress if p.event_type == "proposer_finish")
     assert finish.input_tokens == 10
     assert finish.output_tokens == 5
+    assert any(isinstance(event, RunHeartbeatEvent) for event in events)
+
+
+@pytest.mark.asyncio
+async def test_selector_wrapper_and_agent_preserve_live_control_event_order() -> None:
+    from opensquilla.engine.runtime import _SelectorFallbackProvider
+
+    class _Selector:
+        pass
+
+    agent = _agent(_SelectorFallbackProvider(_EnsembleLikeProvider(), _Selector()))
+
+    events = [event async for event in agent.run_turn("hi")]
+    start_index = next(
+        index
+        for index, event in enumerate(events)
+        if isinstance(event, EngineEnsembleProgressEvent)
+        and event.event_type == "proposer_start"
+    )
+    heartbeat_index = next(
+        index for index, event in enumerate(events) if isinstance(event, RunHeartbeatEvent)
+    )
+    finish_index = next(
+        index
+        for index, event in enumerate(events)
+        if isinstance(event, EngineEnsembleProgressEvent)
+        and event.event_type == "proposer_finish"
+    )
+    text_index = next(index for index, event in enumerate(events) if event.kind == "text_delta")
+
+    assert start_index < heartbeat_index < finish_index < text_index
+    progress = [event for event in events if isinstance(event, EngineEnsembleProgressEvent)]
+    assert [event.event_type for event in progress] == ["proposer_start", "proposer_finish"]
+    assert progress[1].input_tokens == 10
+    assert progress[1].output_tokens == 5
+
+
+@pytest.mark.asyncio
+async def test_selector_fallback_control_events_remain_live_and_do_not_block_fallback() -> None:
+    from opensquilla.engine.runtime import _SelectorFallbackProvider
+
+    class _Primary:
+        provider_name = "openrouter"
+
+        async def chat(self, messages: Any, tools: Any = None, config: Any = None) -> Any:
+            yield ProviderEnsembleProgressEvent(
+                event_type="proposer_start",
+                proposer_label="primary",
+                proposer_provider="openrouter",
+                proposer_model="primary/model",
+            )
+            yield ProviderHeartbeatEvent(phase="ensemble_proposers_wait")
+            yield ProviderErrorEvent(message="rate limited", code="429")
+
+    class _Fallback(_EnsembleLikeProvider):
+        provider_name = "anthropic"
+
+    class _Selector:
+        current_config = type("Config", (), {"model": "primary/model"})()
+
+        def next_fallback_after_failure(self, exc: Exception) -> Any:
+            del exc
+            self.current_config = type("Config", (), {"model": "fallback/model"})()
+            return _Fallback()
+
+    agent = _agent(_SelectorFallbackProvider(_Primary(), _Selector()))
+    events = [event async for event in agent.run_turn("hi")]
+
+    progress = [event for event in events if isinstance(event, EngineEnsembleProgressEvent)]
+    heartbeats = [event for event in events if isinstance(event, RunHeartbeatEvent)]
+    assert [(event.event_type, event.proposer_label) for event in progress] == [
+        ("proposer_start", "primary"),
+        ("proposer_start", "anchor"),
+        ("proposer_finish", "anchor"),
+    ]
+    assert len(heartbeats) == 2
+    assert not any(event.kind == "error" for event in events)
+    assert any(
+        event.kind == "text_delta" and event.text == "synthesized answer"
+        for event in events
+    )

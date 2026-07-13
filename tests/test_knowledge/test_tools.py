@@ -9,7 +9,9 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+import structlog.testing
 
+from opensquilla.engine.types import ToolCall
 from opensquilla.knowledge.backend import KnowledgeBackendError
 from opensquilla.knowledge.manager import KnowledgeManager
 from opensquilla.knowledge.runtime import (
@@ -19,6 +21,7 @@ from opensquilla.knowledge.runtime import (
     RetrievalProfileCapability,
 )
 from opensquilla.tools.builtin.knowledge_tools import create_knowledge_tools
+from opensquilla.tools.dispatch import build_tool_handler
 from opensquilla.tools.registry import ToolRegistry
 from opensquilla.tools.types import ToolContext, ToolError, current_tool_context
 
@@ -431,7 +434,7 @@ async def test_knowledge_search_sanitizes_final_backend_error() -> None:
         async def call_with_capability_retry(self, operation: Any) -> dict[str, Any]:
             raise KnowledgeBackendError(
                 status_code=502,
-                code="backend_failed",
+                code="knowledge_backend_unavailable",
                 message="SECRET upstream response body token=abc123",
             )
 
@@ -451,10 +454,102 @@ async def test_knowledge_search_sanitizes_final_backend_error() -> None:
         )
 
     assert str(raised.value) == (
-        "knowledge_search_failed (backend_code=backend_failed)"
+        "knowledge_search_failed (backend_code=knowledge_backend_unavailable)"
     )
     assert "SECRET" not in str(raised.value)
     assert "abc123" not in str(raised.value)
+
+
+@pytest.mark.asyncio
+async def test_knowledge_search_rejects_malicious_backend_error_details() -> None:
+    class FailingRuntime(_RecordingRuntime):
+        async def call_with_capability_retry(self, operation: Any) -> dict[str, Any]:
+            raise KnowledgeBackendError(
+                status_code=502,
+                code="SECRET_code_token=abc123",
+                message="SECRET response body bearer=def456",
+            )
+
+    registry = ToolRegistry()
+    create_knowledge_tools(
+        runtime=FailingRuntime(_RecordingSearchBackend()),
+        registry=registry,
+    )
+    search_tool = registry.get("knowledge_search")
+    assert search_tool is not None
+
+    with pytest.raises(ToolError) as raised:
+        await _call_with_snapshot(
+            search_tool.handler,
+            _snapshot(KnowledgeConnectionState.READY),
+            query="revenue",
+        )
+
+    error = raised.value
+    assert str(error) == "knowledge_search_failed (backend_code=knowledge_error)"
+    assert error.__cause__ is None
+    assert error.__context__ is None
+    rendered = " ".join(
+        (
+            str(error),
+            repr(error),
+            repr(error.__cause__),
+            repr(error.__context__),
+        )
+    )
+    assert "SECRET" not in rendered
+    assert "abc123" not in rendered
+    assert "def456" not in rendered
+
+
+@pytest.mark.asyncio
+async def test_knowledge_search_dispatch_sanitizes_backend_error_and_logs() -> None:
+    class FailingRuntime(_RecordingRuntime):
+        async def call_with_capability_retry(self, operation: Any) -> dict[str, Any]:
+            raise KnowledgeBackendError(
+                status_code=502,
+                code="SECRET_code_token=abc123",
+                message="SECRET response body bearer=def456",
+            )
+
+    registry = ToolRegistry()
+    create_knowledge_tools(
+        runtime=FailingRuntime(_RecordingSearchBackend()),
+        registry=registry,
+    )
+    handler = build_tool_handler(
+        registry,
+        ToolContext(
+            is_owner=True,
+            knowledge_capability_snapshot=_snapshot(KnowledgeConnectionState.READY),
+        ),
+    )
+
+    with structlog.testing.capture_logs() as captured:
+        result = await handler(
+            ToolCall(
+                tool_use_id="knowledge-malicious-error",
+                tool_name="knowledge_search",
+                arguments={"query": "revenue"},
+            )
+        )
+
+    envelope = json.loads(result.content)
+    assert result.is_error is True
+    assert envelope["status"] == "error"
+    assert envelope["tool"] == "knowledge_search"
+    assert envelope["error_class"] == "ToolError"
+    assert envelope["retry_allowed"] is False
+    failed_log = next(
+        event for event in captured if event["event"] == "dispatch.tool_failed"
+    )
+    rendered = " ".join((result.content, repr(failed_log), repr(captured)))
+    assert "knowledge_error" in rendered
+    assert "SECRET_code_token=abc123" not in rendered
+    assert "SECRET response body bearer=def456" not in rendered
+    assert "SECRET" not in rendered
+    assert "abc123" not in rendered
+    assert "def456" not in rendered
 
 
 @pytest.mark.asyncio
@@ -524,3 +619,99 @@ async def test_knowledge_search_runtime_retries_one_stale_capability_failure() -
     assert payload["count"] == 0
     assert backend.search_calls == 2
     assert backend.status_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_blank_top_level_profile_does_not_hide_invalid_filter_profile() -> None:
+    backend = _RecordingSearchBackend()
+    runtime = _RecordingRuntime(backend)
+    registry = ToolRegistry()
+    create_knowledge_tools(runtime=runtime, registry=registry)
+    search_tool = registry.get("knowledge_search")
+    assert search_tool is not None
+
+    with pytest.raises(ToolError, match="retrieval_profile_unavailable"):
+        await _call_with_snapshot(
+            search_tool.handler,
+            _snapshot(KnowledgeConnectionState.READY, "new-profile"),
+            query="revenue",
+            retrieval_profile="   ",
+            filters={"retrievalProfile": "old-profile"},
+        )
+
+    assert runtime.search_calls == 0
+    assert backend.search_calls == []
+
+
+@pytest.mark.asyncio
+async def test_valid_top_level_profile_overrides_filter_with_normalized_value() -> None:
+    backend = _RecordingSearchBackend()
+    runtime = _RecordingRuntime(backend)
+    registry = ToolRegistry()
+    create_knowledge_tools(runtime=runtime, registry=registry)
+    search_tool = registry.get("knowledge_search")
+    assert search_tool is not None
+
+    await _call_with_snapshot(
+        search_tool.handler,
+        _snapshot(KnowledgeConnectionState.READY, "lexical"),
+        query="revenue",
+        retrieval_profile="  lexical  ",
+        filters={"retrievalProfile": "old-profile", "source": "report"},
+    )
+
+    assert backend.search_calls == [
+        {
+            "query": "revenue",
+            "top_k": 8,
+            "filters": {
+                "retrievalProfile": "lexical",
+                "source": "report",
+            },
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_blank_filter_profile_is_not_sent_to_backend() -> None:
+    backend = _RecordingSearchBackend()
+    runtime = _RecordingRuntime(backend)
+    registry = ToolRegistry()
+    create_knowledge_tools(runtime=runtime, registry=registry)
+    search_tool = registry.get("knowledge_search")
+    assert search_tool is not None
+
+    await _call_with_snapshot(
+        search_tool.handler,
+        _snapshot(KnowledgeConnectionState.READY, "lexical"),
+        query="revenue",
+        filters={"retrievalProfile": "   ", "source": "report"},
+    )
+
+    assert backend.search_calls == [
+        {
+            "query": "revenue",
+            "top_k": 8,
+            "filters": {"source": "report"},
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_knowledge_search_without_tool_context_fails_closed() -> None:
+    backend = _RecordingSearchBackend()
+    runtime = _RecordingRuntime(backend)
+    registry = ToolRegistry()
+    create_knowledge_tools(runtime=runtime, registry=registry)
+    search_tool = registry.get("knowledge_search")
+    assert search_tool is not None
+    token = current_tool_context.set(None)
+
+    try:
+        with pytest.raises(ToolError, match="knowledge_search_unavailable"):
+            await search_tool.handler(query="revenue")
+    finally:
+        current_tool_context.reset(token)
+
+    assert runtime.search_calls == 0
+    assert backend.search_calls == []

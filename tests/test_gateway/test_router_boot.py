@@ -33,6 +33,7 @@ from opensquilla.gateway.config import (
 )
 from opensquilla.gateway.diagnostics import DiagnosticsState
 from opensquilla.gateway.routing import build_cli_route_envelope, build_cron_route_envelope
+from opensquilla.knowledge.runtime import parse_capability_snapshot
 from opensquilla.onboarding.mutations import upsert_channel
 from opensquilla.provider import Message
 from opensquilla.scheduler.types import CronJob, JobStatus
@@ -41,7 +42,12 @@ from opensquilla.session.manager import SessionManager
 from opensquilla.session.models import SessionIntent
 from opensquilla.session.storage import SessionStorage
 from opensquilla.tools.registry import ToolRegistry
-from opensquilla.tools.types import CallerKind, ToolContext, ToolSpec
+from opensquilla.tools.types import (
+    CallerKind,
+    ToolContext,
+    ToolSpec,
+    current_tool_context,
+)
 
 
 def test_gateway_boot_bridges_compaction_notifications_to_session_stream() -> None:
@@ -2148,9 +2154,16 @@ async def test_build_services_knowledge_tools_resolve_current_backend(
     try:
         registered = registry.get("knowledge_search")
         assert registered is not None
-        first = json.loads(await registered.handler(query="revenue"))
-        instances[0].backend = Backend("second")
-        second = json.loads(await registered.handler(query="revenue"))
+        legacy_snapshot = parse_capability_snapshot({"ok": True}, fetched_at_ms=1)
+        token = current_tool_context.set(
+            ToolContext(knowledge_capability_snapshot=legacy_snapshot)
+        )
+        try:
+            first = json.loads(await registered.handler(query="revenue"))
+            instances[0].backend = Backend("second")
+            second = json.loads(await registered.handler(query="revenue"))
+        finally:
+            current_tool_context.reset(token)
     finally:
         await services.close()
 

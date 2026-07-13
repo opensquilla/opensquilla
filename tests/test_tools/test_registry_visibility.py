@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import json
+from dataclasses import MISSING, fields, replace
 
 import pytest
 import structlog.testing
@@ -756,3 +757,164 @@ def test_non_knowledge_definitions_are_identical_for_every_knowledge_snapshot() 
         KnowledgeConnectionState.UNAVAILABLE,
     ):
         assert serialized(_knowledge_snapshot(state)) == baseline
+
+
+def test_tool_context_snapshot_field_preserves_legacy_positional_tail() -> None:
+    legacy_fields = [
+        item
+        for item in fields(ToolContext)
+        if item.name != "knowledge_capability_snapshot"
+    ]
+    router_config = {"sentinel": "router-config"}
+    router_store = object()
+    overrides: dict[str, object] = {
+        "router_control_config": router_config,
+        "router_control_hold_store": router_store,
+        "router_control_replay_depth": 17,
+        "router_control_turn_hold_applied": True,
+        "endgame_git_freeze_active": True,
+    }
+    positional_values: list[object] = []
+    for item in legacy_fields:
+        if item.name in overrides:
+            positional_values.append(overrides[item.name])
+        elif item.default is not MISSING:
+            positional_values.append(copy.deepcopy(item.default))
+        else:
+            assert item.default_factory is not MISSING
+            positional_values.append(item.default_factory())
+
+    context = ToolContext(*positional_values)  # type: ignore[arg-type]
+
+    assert fields(ToolContext)[-1].name == "knowledge_capability_snapshot"
+    assert context.router_control_config is router_config
+    assert context.router_control_hold_store is router_store
+    assert context.router_control_replay_depth == 17
+    assert context.router_control_turn_hold_applied is True
+    assert context.endgame_git_freeze_active is True
+    assert context.knowledge_capability_snapshot is None
+
+
+def test_ready_without_available_profiles_hides_profile_override() -> None:
+    registry = ToolRegistry()
+    create_knowledge_tools(manager=object(), registry=registry)  # type: ignore[arg-type]
+    snapshot = replace(
+        _knowledge_snapshot(KnowledgeConnectionState.READY),
+        profiles=(),
+        effective_default=None,
+    )
+
+    definitions = {
+        definition.name: definition
+        for definition in registry.to_tool_definitions(
+            ToolContext(knowledge_capability_snapshot=snapshot)
+        )
+    }
+
+    assert "knowledge_search" in definitions
+    properties = definitions["knowledge_search"].input_schema.properties
+    assert "retrieval_profile" not in properties
+
+
+@pytest.mark.asyncio
+async def test_internal_registry_contexts_follow_live_runtime_snapshot_without_io() -> None:
+    class SnapshotRuntime:
+        def __init__(self) -> None:
+            self.current: KnowledgeCapabilitySnapshot | None = None
+            self.snapshot_calls = 0
+
+        def snapshot(self) -> KnowledgeCapabilitySnapshot | None:
+            self.snapshot_calls += 1
+            return self.current
+
+        def current_backend(self) -> object:
+            raise AssertionError("registry definition generation touched backend")
+
+        def status_payload(self) -> dict[str, object]:
+            raise AssertionError("registry definition generation touched status")
+
+        def request_refresh(self) -> None:
+            raise AssertionError("registry definition generation requested refresh")
+
+        async def call_with_capability_retry(self, operation: object) -> object:
+            raise AssertionError("registry definition generation invoked search")
+
+    runtime = SnapshotRuntime()
+    registry = ToolRegistry()
+    create_knowledge_tools(runtime=runtime, registry=registry)  # type: ignore[arg-type]
+
+    runtime.current = _knowledge_snapshot(KnowledgeConnectionState.READY)
+    ready_catalog = {
+        item["name"]: item
+        for item in await registry.list_tools()
+    }
+    assert "knowledge_search" in ready_catalog
+    assert ready_catalog["knowledge_search"]["schema"]["properties"][
+        "retrieval_profile"
+    ]["enum"] == ["lexical", "hybrid"]
+
+    runtime.current = _knowledge_snapshot(KnowledgeConnectionState.DEGRADED)
+    degraded_effective = {
+        item["name"]: item
+        for item in await registry.effective_tools()
+    }
+    assert "knowledge_search" in degraded_effective
+    assert "retrieval_profile" not in degraded_effective["knowledge_search"][
+        "schema"
+    ]["properties"]
+
+    runtime.current = _knowledge_snapshot(KnowledgeConnectionState.UNAVAILABLE)
+    unavailable_names = {item["name"] for item in await registry.list_tools()}
+    assert "knowledge_search" not in unavailable_names
+
+    runtime.current = _knowledge_snapshot(KnowledgeConnectionState.READY)
+    default_definition_names = {
+        item.name for item in registry.to_tool_definitions()
+    }
+    assert "knowledge_search" in default_definition_names
+
+    runtime.current = _knowledge_snapshot(KnowledgeConnectionState.UNAVAILABLE)
+    explicit_definition_names = {
+        item.name
+        for item in registry.to_tool_definitions(
+            ToolContext(
+                knowledge_capability_snapshot=_knowledge_snapshot(
+                    KnowledgeConnectionState.READY
+                )
+            )
+        )
+    }
+    assert "knowledge_search" in explicit_definition_names
+    assert runtime.snapshot_calls == 4
+
+
+@pytest.mark.asyncio
+async def test_runtime_snapshot_provider_failure_is_silent_and_fail_closed() -> None:
+    class FailingSnapshotRuntime:
+        def snapshot(self) -> KnowledgeCapabilitySnapshot | None:
+            raise RuntimeError("SECRET snapshot token=abc123")
+
+        def current_backend(self) -> object:
+            raise AssertionError("registry definition generation touched backend")
+
+        def status_payload(self) -> dict[str, object]:
+            raise AssertionError("registry definition generation touched status")
+
+        def request_refresh(self) -> None:
+            raise AssertionError("registry definition generation requested refresh")
+
+        async def call_with_capability_retry(self, operation: object) -> object:
+            raise AssertionError("registry definition generation invoked search")
+
+    registry = ToolRegistry()
+    create_knowledge_tools(
+        runtime=FailingSnapshotRuntime(),  # type: ignore[arg-type]
+        registry=registry,
+    )
+
+    with structlog.testing.capture_logs() as captured:
+        names = {item["name"] for item in await registry.list_tools()}
+
+    assert "knowledge_search" not in names
+    assert all("SECRET" not in repr(event) for event in captured)
+    assert all("abc123" not in repr(event) for event in captured)

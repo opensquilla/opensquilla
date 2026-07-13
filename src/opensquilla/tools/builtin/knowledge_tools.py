@@ -6,12 +6,26 @@ from typing import TYPE_CHECKING, Any
 
 from opensquilla.knowledge.backend import KnowledgeBackend, KnowledgeBackendError
 from opensquilla.knowledge.manager import manager_from_config
-from opensquilla.tools.registry import tool
+from opensquilla.tools.registry import get_default_registry, tool
 from opensquilla.tools.types import ToolError, current_tool_context
 
 if TYPE_CHECKING:
     from opensquilla.knowledge.runtime import KnowledgeRuntime
     from opensquilla.tools.registry import ToolRegistry
+
+_SAFE_KNOWLEDGE_ERROR_CODES = frozenset(
+    {
+        "artifact_access_error",
+        "invalid_retrieval_profile",
+        "knowledge_backend_unavailable",
+        "knowledge_error",
+        "no_retrieval_profile_available",
+        "not_found",
+        "retrieval_profile_unavailable",
+        "settings_persist_failed",
+        "source_file_access_error",
+    }
+)
 
 
 def _merged_search_filters(
@@ -30,6 +44,8 @@ def _merged_search_filters(
     resolved_profile = str(retrieval_profile or "").strip()
     if resolved_profile:
         merged["retrievalProfile"] = resolved_profile
+    else:
+        merged.pop("retrievalProfile", None)
     resolved_model = str(embedding_model or "").strip()
     if resolved_model:
         merged["embeddingModel"] = resolved_model
@@ -50,6 +66,12 @@ def create_knowledge_tools(
     These tools are intentionally independent from OpenSquilla memory. They
     expose operator-indexed local documents as a retrieval source.
     """
+
+    target_registry = registry if registry is not None else get_default_registry()
+    snapshot_provider = getattr(runtime, "snapshot", None)
+    target_registry.set_knowledge_capability_snapshot_provider(
+        snapshot_provider if callable(snapshot_provider) else None
+    )
 
     def current_manager() -> KnowledgeBackend:
         if runtime is not None:
@@ -149,17 +171,15 @@ def create_knowledge_tools(
             raise ToolError("query is required")
         context = current_tool_context.get()
         snapshot = getattr(context, "knowledge_capability_snapshot", None)
-        state = (
-            "LEGACY"
-            if context is None
-            else getattr(getattr(snapshot, "state", None), "value", None)
-        )
+        state = getattr(getattr(snapshot, "state", None), "value", None)
         if state not in {"READY", "DEGRADED", "LEGACY"}:
             raise ToolError("knowledge_search_unavailable")
-        filter_profile = (
+        raw_filter_profile = (
             filters.get("retrievalProfile") if isinstance(filters, dict) else None
         )
-        resolved_profile = str(retrieval_profile or filter_profile or "").strip()
+        top_level_profile = str(retrieval_profile or "").strip()
+        filter_profile = str(raw_filter_profile or "").strip()
+        resolved_profile = top_level_profile or filter_profile
         if resolved_profile and (
             state != "READY"
             or resolved_profile
@@ -170,7 +190,7 @@ def create_knowledge_tools(
             filters=filters,
             collection=collection,
             collection_id=collection_id,
-            retrieval_profile=retrieval_profile,
+            retrieval_profile=resolved_profile,
             embedding_model=embedding_model,
             embedding_dimensions=embedding_dimensions,
         )
@@ -182,6 +202,7 @@ def create_knowledge_tools(
                 filters=merged_filters,
             )
 
+        sanitized_error: ToolError | None = None
         try:
             capability_retry = getattr(runtime, "call_with_capability_retry", None)
             if callable(capability_retry):
@@ -189,10 +210,16 @@ def create_knowledge_tools(
             else:
                 payload = await asyncio.to_thread(search, current_manager())
         except KnowledgeBackendError as error:
-            backend_code = error.code or "unknown"
-            raise ToolError(
+            backend_code = (
+                error.code
+                if error.code in _SAFE_KNOWLEDGE_ERROR_CODES
+                else "knowledge_error"
+            )
+            sanitized_error = ToolError(
                 f"knowledge_search_failed (backend_code={backend_code})"
-            ) from None
+            )
+        if sanitized_error is not None:
+            raise sanitized_error
         if collection:
             payload["collection"] = collection
         return json.dumps(payload, ensure_ascii=False)

@@ -60,7 +60,8 @@
     "logs": "ログ",
     "settings": "設定",
     "groupBuild": "構築",
-    "groupMonitor": "モニター"
+    "groupMonitor": "モニター",
+    "channelSetup": "チャンネル設定"
   },
   "chrome": {
     "settings": "設定",
@@ -124,7 +125,10 @@
       "unsavedIn": "{sections} に未保存の変更があります",
       "moreOptionsIn": "その他のオプションは次の場所にあります",
       "copyConfigPath": "設定パスをコピー",
-      "applyLiveNote": "ほとんどの変更は即時に反映されます。一部はゲートウェイの再起動が必要です"
+      "applyLiveNote": "ほとんどの変更は即時に反映されます。一部はゲートウェイの再起動が必要です",
+      "discardTitle": "未保存の変更を破棄しますか？",
+      "discardBody": "未保存の編集があります。今閉じると失われます。",
+      "discardPrimary": "破棄"
     },
     "rail": {
       "connection": "接続",
@@ -135,7 +139,7 @@
       "privacy": "プライバシー",
       "router": "ルーター",
       "ensemble": "アンサンブル",
-      "channels": "チャンネル",
+      "channels": "チャンネル設定",
       "capabilities": "機能",
       "appearance": "外観",
       "keyboard": "キーボード",
@@ -500,7 +504,17 @@
       "secretReplace": "差し替え",
       "secretReplacePlaceholder": "新しい値を貼り付け",
       "secretKeepStored": "保存済みの値を保持",
-      "edit": "編集"
+      "edit": "編集",
+      "openRuntime": "実行状況を開く →",
+      "details": "詳細 →",
+      "galleryPick": "接続するプラットフォームを選択",
+      "changeType": "タイプを変更",
+      "openDocs": "プロバイダーコンソールを開く ↗",
+      "needsPublicUrl": "公開 URL が必要",
+      "advancedGroup": "詳細設定：アクセスと動作",
+      "fieldRequired": "この項目は必須です",
+      "fixRequired": "ハイライトされた必須項目を先に入力してください",
+      "pairingExplainer": "ペアリングでは、最初にボットへメッセージを送った人に 8 桁のコードが発行されます。チャンネル › ペアリング で承認してください。承認は相手に通知されないため、もう一度メッセージを送ってもらう必要があります。"
     },
     "search": {
       "title": "ウェブ検索",
@@ -863,6 +877,10 @@
         "insufficient_class_diversity": "未訓練——修正サンプルのルーティング階層が偏っています"
       },
       "detachedNote": "ルーティングの基本重みがアップグレードされました。旧重みに基づく学習成果はアーカイブされました。修正サンプルは影響を受けず、新しい重みで自動的に再学習されます。操作は不要です。"
+    },
+    "field": {
+      "keepCurrentPlaceholder": "空欄のままにすると現在の値を保持します",
+      "secretComposePlaceholder": "トークンまたはシークレットを貼り付け"
     }
   },
   "sessions": {
@@ -1208,7 +1226,7 @@
       "unknown": "不明",
       "adapterConfig": "アダプターの設定",
       "emptyTitle": "設定済みのチャンネルはありません。",
-      "emptyMsg": "チャンネルのプロビジョニングは、認証情報、依存関係の追加、Webhook URL、再起動要件を明確に保つため、設定と CLI で行います。",
+      "emptyMsg": "チャンネルはまだありません。Slack、Telegram、Discord などを接続して、チームが会話する場所でエージェントを使いましょう。",
       "openSettingsBtn": "設定を開く",
       "loadFailed": "チャンネルの読み込みに失敗しました",
       "noInactive": "非アクティブなチャンネルはありません",
@@ -1332,7 +1350,17 @@
       "probeFailed": "接続テストに失敗しました",
       "editCredentials": "認証情報を編集",
       "toastProbeFailedResult": "{name} は接続テストに失敗しました: {detail}",
-      "restartNotLoaded": "このチャンネルはまだ読み込まれていません — ゲートウェイを再起動してください"
+      "restartNotLoaded": "このチャンネルはまだ読み込まれていません — ゲートウェイを再起動してください",
+      "contextStrip": "設定済みチャンネルの実行状況 — 追加や編集は {link} で行えます",
+      "contextStripLink": "チャンネル設定",
+      "removeChannel": "削除",
+      "queryNotFound": "チャンネル {name} が見つかりません — 削除された可能性があります。",
+      "queryNotFoundDismiss": "閉じる"
+    },
+    "overview": {
+      "channelsChip": "チャンネル",
+      "channelsChipConnected": "{connected} 接続済み",
+      "channelsChipFailed": "{failed} 失敗"
     }
   },
   "cronSkills": {

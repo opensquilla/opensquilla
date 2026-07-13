@@ -214,6 +214,18 @@ const allCommands = computed<Command[]>(() => {
     })
   }
 
+  // Configuration counterpart of the Channels monitor entry: searching
+  // "channel" surfaces both roles with distinguishing labels.
+  const channelSetupTitle = t('nav.channelSetup')
+  out.push({
+    id: 'nav:/settings/channels',
+    title: channelSetupTitle,
+    icon: 'channels',
+    keywords: `${channelSetupTitle} channels setup config /settings/channels`.toLowerCase(),
+    group: 'Actions',
+    run: navTo('/settings/channels'),
+  })
+
   // Actions: app-level commands that are not routes.
   out.push(
     {

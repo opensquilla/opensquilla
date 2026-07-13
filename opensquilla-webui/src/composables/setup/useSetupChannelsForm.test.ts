@@ -49,6 +49,8 @@ describe('useSetupChannelsForm — show_when field visibility', () => {
 
   it('payload drops a hidden field’s stale value', () => {
     const f = useSetupChannelsForm()
+    // The gallery leaves nothing preselected; pick the type explicitly.
+    f.selectChannelType('slack')
     f.initFromCatalog([slack])
     // user was in webhook, typed a signing secret, then switched to socket
     f.updateField('signing_secret', 'shh-secret')

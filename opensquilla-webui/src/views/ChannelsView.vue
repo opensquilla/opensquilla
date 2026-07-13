@@ -17,6 +17,14 @@
       </div>
     </header>
 
+    <p class="ch-context">
+      <i18n-t keypath="console.channels.contextStrip" tag="span">
+        <template #link>
+          <router-link to="/settings/channels">{{ t('console.channels.contextStripLink') }}</router-link>
+        </template>
+      </i18n-t>
+    </p>
+
     <section v-if="total > 0" class="ch-summary" :aria-label="t('console.channels.summaryLabel')">
       <button type="button" :class="['ch-summary__item', { 'is-active': statusFilter === 'all' }]" @click="statusFilter = 'all'">
         <strong>{{ total }}</strong><span>{{ t('console.channels.totalChannels') }}</span>
@@ -70,6 +78,10 @@
     </section>
 
     <section v-else class="ch-workspace" :class="{ 'has-detail': selectedChannel }">
+      <p v-if="queryMissing" class="ch-query-missing" role="status">
+        <span>{{ t('console.channels.queryNotFound', { name: selectedName }) }}</span>
+        <button type="button" class="btn btn--ghost" @click="closeDetail">{{ t('console.channels.queryNotFoundDismiss') }}</button>
+      </p>
       <div class="ch-table-wrap">
         <table class="ch-table">
           <thead>
@@ -144,6 +156,9 @@
           </button>
           <button class="btn btn--ghost" type="button" :disabled="actionPending(selectedChannel, 'toggle')" @click="toggleChannel(selectedChannel)">
             <span>{{ selectedChannel.enabled === false ? t('console.channels.enable') : t('console.channels.disable') }}</span>
+          </button>
+          <button class="btn btn--ghost ch-detail__remove" type="button" :disabled="actionPending(selectedChannel, 'remove')" @click="removeChannel(selectedChannel)">
+            <span>{{ t('console.channels.removeChannel') }}</span>
           </button>
         </div>
 
@@ -330,7 +345,7 @@
 <script setup lang="ts">
 import { computed, onActivated, onDeactivated, onUnmounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { useRpcStore } from '@/stores/rpc'
 import Icon from '@/components/Icon.vue'
 import ChannelStatusPill from '@/components/ChannelStatusPill.vue'
@@ -413,6 +428,7 @@ const SECRET_MARKER = '***'
 const { t } = useI18n()
 const rpc = useRpcStore()
 const router = useRouter()
+const route = useRoute()
 const { pushToast } = useToasts()
 const { confirm } = useConfirm()
 const pendingRestart = usePendingRestart()
@@ -487,6 +503,7 @@ function teardownLive() {
 }
 
 onActivated(() => {
+  applyDetailQuery()
   if (!activatedOnce) { activatedOnce = true; void execute() } else { void refresh() }
   unsubs = [rpc.on('channel.status', () => { void refresh() })]
   pollTimer = setInterval(() => { void refresh() }, 30000)
@@ -528,6 +545,12 @@ watch(channelsData, data => {
 })
 
 function selectChannel(ch: Channel): void {
+  // Re-clicking the selected row toggles the aside closed instead of silently
+  // resetting the tab and discarding loaded pairings/config.
+  if (selectedName.value === channelKey(ch)) {
+    closeDetail()
+    return
+  }
   pairingsRequestId += 1
   selectedName.value = channelKey(ch)
   detailTab.value = 'overview'
@@ -541,6 +564,56 @@ function selectChannel(ch: Channel): void {
 }
 
 function closeDetail(): void { selectedName.value = '' }
+
+// ?channel=<name>&tab=<tab> keeps the aside URL-addressable: F5/relaunch
+// restores the selection, and links can target a specific channel and tab.
+const queryMissing = computed(() =>
+  Boolean(selectedName.value) && !loading.value && channels.value.length > 0 && !selectedChannel.value)
+
+function applyDetailQuery(): void {
+  const name = typeof route.query.channel === 'string' ? route.query.channel : ''
+  const tab = typeof route.query.tab === 'string' ? route.query.tab : ''
+  if (name && name !== selectedName.value) {
+    selectedName.value = name
+    detailTab.value = DETAIL_TABS.includes(tab as DetailTab) ? (tab as DetailTab) : 'overview'
+  } else if (name && DETAIL_TABS.includes(tab as DetailTab)) {
+    detailTab.value = tab as DetailTab
+  }
+}
+
+watch([selectedName, detailTab], () => {
+  if (route.path !== '/channels') return
+  const query = { ...route.query }
+  if (selectedName.value) {
+    query.channel = selectedName.value
+    query.tab = detailTab.value
+  } else {
+    delete query.channel
+    delete query.tab
+  }
+  void router.replace({ query })
+})
+
+async function removeChannel(ch: Channel): Promise<void> {
+  const name = channelKey(ch)
+  const ok = await confirm({
+    title: t('setup.channels.removeConfirmTitle'),
+    body: t('setup.channels.removeConfirmBody', { name }),
+    primaryLabel: t('setup.channels.removeConfirmPrimary'),
+  })
+  if (!ok) return
+  await withAction(ch, 'remove', async () => {
+    try {
+      const res = await rpc.call<{ changed?: boolean }>('onboarding.channel.remove', { name })
+      if (res?.changed !== false) pendingRestart.record(name, 'remove')
+      pushToast(t('setup.toast.channelRemoved'), { tone: 'ok' })
+      closeDetail()
+      await refresh()
+    } catch (err) {
+      pushToast(errorMessage(err), { tone: 'danger' })
+    }
+  })
+}
 
 function setDetailTab(tab: DetailTab): void {
   detailTab.value = tab
@@ -805,6 +878,10 @@ function configRows(config: Record<string, unknown>): Array<{ key: string; value
 .ch-summary__item.tone-info .dot { background: var(--info); }
 .ch-summary__item.tone-danger .dot { background: var(--danger); }
 .ch-summary__item.tone-muted .dot { background: var(--text-dim); }
+.ch-context { color: var(--text-dim); font-size: var(--fs-sm); margin: 0; }
+.ch-context a { color: var(--accent); }
+.ch-query-missing { align-items: center; background: var(--bg-surface); border: 1px solid var(--border); border-radius: var(--radius-md); color: var(--text-muted); display: flex; font-size: var(--fs-sm); gap: var(--sp-2); grid-column: 1 / -1; justify-content: space-between; margin: 0; padding: 8px 12px; }
+.ch-detail__remove { color: var(--danger); }
 .ch-toolbar { align-items: center; display: flex; flex-wrap: wrap; gap: var(--sp-3); }
 .ch-search { align-items: center; background: var(--bg-surface); border: 1px solid var(--border); border-radius: var(--radius-control); color: var(--text-dim); display: flex; gap: 8px; min-width: min(320px, 100%); padding: 0 11px; }
 .ch-search:focus-within, .ch-select:focus-within { border-color: var(--accent); box-shadow: var(--focus-ring); }

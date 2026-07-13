@@ -106,9 +106,8 @@ export function useSetupChannelsForm() {
   // The channels form is an entry composer: every (re)load resets the draft
   // to the selected type's defaults, so Discard and post-save reloads clear it.
   function initFromCatalog(channels: ChannelSpec[]) {
-    if (channels.length > 0 && !channelType.value) {
-      channelType.value = channels[0].type
-    }
+    // Nothing is preselected: the compose form starts at the type gallery.
+    // A reload keeps the current selection (if any) but resets the draft.
     resetForSpec(channels.find(c => c.type === channelType.value))
   }
 
@@ -205,6 +204,29 @@ export function useSetupChannelsForm() {
     channelType.value = value
   }
 
+  /**
+   * Visible required fields whose effective value is blank. Edit mode: a
+   * stored secret satisfies its requirement; a replacing-but-empty box does
+   * too (keep-current), so only never-stored empty secrets are missing.
+   */
+  function missingRequiredFields(): string[] {
+    const missing: string[] = []
+    for (const row of channelFieldRows(activeFields.value)) {
+      const field = row.field
+      if (field.required !== true) continue
+      if (field.secret === true && mode.value === 'edit') {
+        const state = secretStates.value[field.name]
+        if (state && !state.hasStored && !state.value.trim()) missing.push(field.name)
+        continue
+      }
+      const value = field.secret === true && mode.value === 'edit'
+        ? ''
+        : String(channelFieldValues.value[field.name] ?? '')
+      if (!value.trim()) missing.push(field.name)
+    }
+    return missing
+  }
+
   function payload(): Record<string, unknown> {
     // Only submit values for fields that are currently visible. A hidden
     // field's stale value (e.g. a Socket-mode app_token left over after the
@@ -299,6 +321,7 @@ export function useSetupChannelsForm() {
     selectChannelType,
     updateField,
     payload,
+    missingRequiredFields,
     createPanel,
   }
 }

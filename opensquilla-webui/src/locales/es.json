@@ -60,7 +60,8 @@
     "logs": "Registros",
     "settings": "Ajustes",
     "groupBuild": "Construir",
-    "groupMonitor": "Monitorizar"
+    "groupMonitor": "Monitorizar",
+    "channelSetup": "Config. de canales"
   },
   "chrome": {
     "settings": "Ajustes",
@@ -124,7 +125,10 @@
       "unsavedIn": "Cambios sin guardar en {sections}",
       "moreOptionsIn": "Hay más opciones en",
       "copyConfigPath": "Copiar ruta de configuración",
-      "applyLiveNote": "La mayoría de los cambios se aplican en vivo; algunos requieren reiniciar la puerta de enlace"
+      "applyLiveNote": "La mayoría de los cambios se aplican en vivo; algunos requieren reiniciar la puerta de enlace",
+      "discardTitle": "¿Descartar los cambios sin guardar?",
+      "discardBody": "Tienes ediciones sin guardar. Si cierras ahora se perderán.",
+      "discardPrimary": "Descartar"
     },
     "rail": {
       "connection": "Conexión",
@@ -135,7 +139,7 @@
       "privacy": "Privacidad",
       "router": "Enrutador",
       "ensemble": "Conjunto",
-      "channels": "Canales",
+      "channels": "Config. de canales",
       "capabilities": "Capacidades",
       "appearance": "Apariencia",
       "keyboard": "Teclado",
@@ -500,7 +504,17 @@
       "secretReplace": "Reemplazar",
       "secretReplacePlaceholder": "Pega el nuevo valor",
       "secretKeepStored": "Mantener el valor guardado",
-      "edit": "Editar"
+      "edit": "Editar",
+      "openRuntime": "Abrir estado de ejecución →",
+      "details": "Detalles →",
+      "galleryPick": "Elige una plataforma para conectar",
+      "changeType": "Cambiar tipo",
+      "openDocs": "Abrir la consola del proveedor ↗",
+      "needsPublicUrl": "Requiere URL pública",
+      "advancedGroup": "Avanzado: acceso y comportamiento",
+      "fieldRequired": "Este campo es obligatorio",
+      "fixRequired": "Completa primero los campos obligatorios resaltados",
+      "pairingExplainer": "Con el emparejamiento, la primera persona que escriba a tu bot recibe un código de 8 caracteres: apruébalo en Canales → Emparejamientos. No se le notifica la aprobación y debe escribir de nuevo al bot."
     },
     "search": {
       "title": "Búsqueda web",
@@ -863,6 +877,10 @@
         "insufficient_class_diversity": "Sin entrenar: las correcciones cubren muy pocos niveles de enrutamiento"
       },
       "detachedNote": "Los pesos base del enrutamiento se han actualizado. El aprendizaje construido sobre los pesos antiguos se archivó; tus correcciones no se ven afectadas y se reentrenarán automáticamente con los nuevos pesos. No se requiere ninguna acción."
+    },
+    "field": {
+      "keepCurrentPlaceholder": "déjalo en blanco para conservar el valor actual",
+      "secretComposePlaceholder": "Pega el token o el secreto"
     }
   },
   "sessions": {
@@ -1208,7 +1226,7 @@
       "unknown": "Desconocido",
       "adapterConfig": "Configuración del adaptador",
       "emptyTitle": "No hay canales configurados.",
-      "emptyMsg": "El aprovisionamiento de canales está en Ajustes y en la CLI para que las credenciales, los extras de dependencias, las URL de webhook y los requisitos de reinicio sigan siendo explícitos.",
+      "emptyMsg": "Aún no hay canales. Conecta Slack, Telegram, Discord y más para que tu agente converse donde trabaja tu equipo.",
       "openSettingsBtn": "Abrir ajustes",
       "loadFailed": "No se pudieron cargar los canales",
       "noInactive": "no hay canales inactivos",
@@ -1332,7 +1350,17 @@
       "probeFailed": "La prueba de conexión falló",
       "editCredentials": "Editar credenciales",
       "toastProbeFailedResult": "{name} falló la prueba de conexión: {detail}",
-      "restartNotLoaded": "Este canal aún no está cargado: reinicia el gateway para arrancarlo"
+      "restartNotLoaded": "Este canal aún no está cargado: reinicia el gateway para arrancarlo",
+      "contextStrip": "Estado de ejecución de los canales configurados: añade o edita la configuración en {link}",
+      "contextStripLink": "Config. de canales",
+      "removeChannel": "Eliminar",
+      "queryNotFound": "No se encontró el canal {name}: puede haber sido eliminado.",
+      "queryNotFoundDismiss": "Cerrar"
+    },
+    "overview": {
+      "channelsChip": "Canales",
+      "channelsChipConnected": "{connected} conectado(s)",
+      "channelsChipFailed": "{failed} con error"
     }
   },
   "cronSkills": {

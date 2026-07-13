@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, nextTick, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import ChannelStatusPill from '@/components/ChannelStatusPill.vue'
 import LoadingSpinner from '@/components/LoadingSpinner.vue'
@@ -18,6 +18,11 @@ const pendingRestart = usePendingRestart()
 interface ChannelSpec {
   type: string
   label: string
+  description?: string
+  transport?: string
+  requiresPublicUrl?: boolean
+  docsHint?: string
+  help?: string
   fields?: FieldSpec[]
   whatYouNeed?: string[]
 }
@@ -26,6 +31,9 @@ interface FieldSpec {
   name: string
   label: string
   default?: string | boolean | number
+  group?: string
+  advanced?: boolean
+  required?: boolean
   [key: string]: unknown
 }
 
@@ -59,6 +67,7 @@ const props = defineProps<{
   test?: ChannelTestState
   edit?: ChannelEditState
   duplicate?: RuntimeRow | null
+  errors?: Record<string, string>
 }>()
 
 const emit = defineEmits<{
@@ -68,6 +77,8 @@ const emit = defineEmits<{
   save: []
   test: []
   editChannel: [name: string]
+  openRuntime: []
+  openDetails: [name: string]
   addNew: []
   duplicateAsNew: []
   retryEdit: []
@@ -78,11 +89,6 @@ const emit = defineEmits<{
   removeChannel: [name: string]
 }>()
 
-function onChannelTypeSelect(event: Event) {
-  emit('updateChannelType', (event.target as HTMLSelectElement).value)
-  emit('channelTypeChange')
-}
-
 const isEdit = computed(() => props.panel.mode === 'edit')
 const editLoading = computed(() => props.edit?.phase === 'loading')
 const editError = computed(() => (props.edit?.phase === 'error' ? props.edit : null))
@@ -90,10 +96,54 @@ const editRetryable = computed(() => {
   const code = editError.value?.code
   return code !== 'UNAUTHORIZED' && code !== 'NOT_FOUND'
 })
-const typeLabel = computed(() => {
-  const spec = props.panel.catalogChannels.find(c => c.type === props.panel.channelType)
-  return spec?.label || props.panel.channelType
+const spec = computed(() => props.panel.channelSpec)
+const typeLabel = computed(() => spec.value?.label || props.panel.channelType)
+// Compose starts at the platform gallery; the form appears once a type is picked.
+const showGallery = computed(() => !isEdit.value && !editLoading.value && !editError.value && !props.panel.channelType)
+
+function pickType(type: string) {
+  emit('updateChannelType', type)
+  emit('channelTypeChange')
+}
+
+function backToGallery() {
+  emit('updateChannelType', '')
+  emit('channelTypeChange')
+}
+
+function humanize(value: string): string {
+  return value.replace(/[_-]+/g, ' ').replace(/\b\w/g, char => char.toUpperCase())
+}
+
+// Non-advanced fields in titled groups (spec order preserved); advanced ones
+// fold into a disclosure so the essential path stays short.
+const fieldGroups = computed(() => {
+  const rows = props.panel.channelFields.filter(row => row.field.advanced !== true)
+  const order: string[] = []
+  const byGroup = new Map<string, ChannelFieldRow[]>()
+  for (const row of rows) {
+    const group = String(row.field.group || '')
+    if (!byGroup.has(group)) { byGroup.set(group, []); order.push(group) }
+    byGroup.get(group)!.push(row)
+  }
+  return order.map(name => ({ name, rows: byGroup.get(name)! }))
 })
+const advancedRows = computed(() => props.panel.channelFields.filter(row => row.field.advanced === true))
+const showPairingExplainer = computed(() =>
+  props.panel.channelFields.some(row => row.field.name === 'dm_access' && row.value === 'pairing'))
+
+// Focus and scroll to the first invalid field when validation errors land.
+watch(() => props.errors, errors => {
+  const first = Object.keys(errors || {})[0]
+  if (!first) return
+  void nextTick(() => {
+    const el = document.querySelector<HTMLElement>(`[name="setup_channel_${first}"]`)
+    el?.scrollIntoView({ block: 'center' })
+    el?.focus()
+  })
+})
+
+const advancedOpen = ref(false)
 
 const testing = computed(() => props.test?.phase === 'testing')
 
@@ -139,7 +189,7 @@ const testTone = computed(() => {
         </template>
         <template v-else>
           <h3 class="control-section__title">{{ t('setup.channels.title') }}</h3>
-          <p class="control-section__desc">{{ t('setup.channels.configuredCount', { count: panel.channelRuntimeRows.length }) }}</p>
+          <p class="control-section__desc">{{ showGallery ? t('setup.channels.galleryPick') : t('setup.channels.configuredCount', { count: panel.channelRuntimeRows.length }) }}</p>
         </template>
       </div>
 
@@ -162,34 +212,64 @@ const testTone = computed(() => {
         </div>
       </div>
 
+      <!-- Type gallery: what you need, transport, and docs before any field. -->
+      <div v-else-if="showGallery" class="setup-channels__gallery">
+        <button
+          v-for="c in panel.catalogChannels"
+          :key="c.type"
+          type="button"
+          class="setup-channels__card"
+          :data-channel-type="c.type"
+          @click="pickType(c.type)"
+        >
+          <span class="setup-channels__cardhead">
+            <strong>{{ c.label }}</strong>
+            <span class="setup-channels__badges">
+              <span v-if="c.transport && c.transport !== 'unknown'" class="setup-channels__typechip">{{ humanize(c.transport) }}</span>
+              <span v-if="c.requiresPublicUrl" class="setup-channels__typechip is-warn">{{ t('setup.channels.needsPublicUrl') }}</span>
+            </span>
+          </span>
+          <span v-if="c.description" class="setup-channels__carddesc">{{ c.description }}</span>
+          <span v-if="c.whatYouNeed?.length" class="setup-channels__cardneeds">{{ c.whatYouNeed.slice(0, 2).join(' · ') }}</span>
+        </button>
+      </div>
+
       <template v-else>
-        <label v-if="!isEdit" class="control-row">
-          <div class="control-row__label-block"><span class="control-row__label">{{ t('setup.channels.channelType') }}</span></div>
-          <div class="control-row__control">
-            <select class="control-input" :value="panel.channelType" name="setup_channel_type" @change="onChannelTypeSelect">
-              <option v-for="c in panel.catalogChannels" :key="c.type" :value="c.type">{{ c.label }}</option>
-            </select>
+        <div v-if="!isEdit" class="setup-channels__selected">
+          <div class="setup-channels__selectedinfo">
+            <strong>{{ typeLabel }}</strong>
+            <span v-if="spec?.description">{{ spec.description }}</span>
           </div>
-        </label>
+          <span class="setup-channels__selectedactions">
+            <a v-if="spec?.docsHint" class="setup-channels__link" :href="spec.docsHint" target="_blank" rel="noreferrer noopener">{{ t('setup.channels.openDocs') }}</a>
+            <button type="button" class="setup-channels__link" @click="backToGallery">{{ t('setup.channels.changeType') }}</button>
+          </span>
+        </div>
         <SetupNeedList v-if="!isEdit" :items="panel.channelSpec?.whatYouNeed" :label="t('setup.channels.needs')" />
-        <template v-for="row in panel.channelFields" :key="row.field.name">
-          <div v-if="isEdit && row.field.name === 'name'" class="control-row">
-            <div class="control-row__label-block">
-              <span class="control-row__label">{{ row.field.label }}</span>
-              <span class="control-row__desc">{{ t('setup.channels.nameLocked') }}</span>
+
+        <template v-for="group in fieldGroups" :key="group.name || 'main'">
+          <h4 v-if="group.name" class="setup-channels__group">{{ humanize(group.name) }}</h4>
+          <template v-for="row in group.rows" :key="row.field.name">
+            <div v-if="isEdit && row.field.name === 'name'" class="control-row">
+              <div class="control-row__label-block">
+                <span class="control-row__label">{{ row.field.label }}</span>
+                <span class="control-row__desc">{{ t('setup.channels.nameLocked') }}</span>
+              </div>
+              <div class="control-row__control">
+                <input class="control-input" type="text" readonly :value="panel.editName" name="setup_channel_name" />
+              </div>
             </div>
-            <div class="control-row__control">
-              <input class="control-input" type="text" readonly :value="panel.editName" name="setup_channel_name" />
-            </div>
-          </div>
-          <SetupField
-            v-else
-            :field="row.field"
-            :value="row.value"
-            scope="channel"
-            @update="(name, val) => emit('updateChannelField', name, val)"
-          />
+            <SetupField
+              v-else
+              :field="row.field"
+              :value="row.value"
+              scope="channel"
+              @update="(name, val) => emit('updateChannelField', name, val)"
+            />
+            <p v-if="errors?.[row.field.name]" class="setup-channels__fielderror" role="alert">{{ errors[row.field.name] }}</p>
+          </template>
         </template>
+
         <SetupChannelSecretField
           v-for="row in panel.secretRows"
           :key="row.field.name"
@@ -201,6 +281,21 @@ const testTone = computed(() => {
           @cancel-replace="name => emit('cancelSecretReplace', name)"
           @update="(name, val) => emit('updateChannelField', name, val)"
         />
+
+        <details v-if="advancedRows.length" class="setup-channels__advanced" :open="advancedOpen">
+          <summary @click.prevent="advancedOpen = !advancedOpen">{{ t('setup.channels.advancedGroup') }}</summary>
+          <template v-for="row in advancedRows" :key="row.field.name">
+            <SetupField
+              :field="row.field"
+              :value="row.value"
+              scope="channel"
+              @update="(name, val) => emit('updateChannelField', name, val)"
+            />
+            <p v-if="errors?.[row.field.name]" class="setup-channels__fielderror" role="alert">{{ errors[row.field.name] }}</p>
+          </template>
+        </details>
+        <p v-if="showPairingExplainer" class="setup-channels__pairing">{{ t('setup.channels.pairingExplainer') }}</p>
+
         <div v-if="!isEdit && duplicate" class="setup-channels__dupwarn" role="alert">
           <span>{{ t('setup.channels.duplicateWarn', { name: duplicate.name, type: duplicate.type || '?' }) }}</span>
           <button type="button" class="btn btn--ghost setup-channels__action" @click="emit('editChannel', duplicate.name)">
@@ -222,7 +317,10 @@ const testTone = computed(() => {
       </template>
     </section>
     <section class="control-section setup-runtime">
-      <h3 class="control-section__title">{{ t('setup.channels.runtimeStatus') }}</h3>
+      <div class="setup-channels__runtimehead">
+        <h3 class="control-section__title">{{ t('setup.channels.runtimeStatus') }}</h3>
+        <button type="button" class="setup-channels__link" @click="emit('openRuntime')">{{ t('setup.channels.openRuntime') }}</button>
+      </div>
       <PendingRestartBanner />
       <template v-if="panel.channelRuntimeRows.length > 0">
         <div v-for="row in panel.channelRuntimeRows" :key="row.name" class="setup-runtime__row">
@@ -240,6 +338,7 @@ const testTone = computed(() => {
             <button v-if="row.enabled === false" type="button" class="btn btn--ghost setup-channels__action" @click="emit('enableChannel', row.name)">{{ t('setup.channels.enable') }}</button>
             <button v-else type="button" class="btn btn--ghost setup-channels__action" @click="emit('disableChannel', row.name)">{{ t('setup.channels.disable') }}</button>
             <button type="button" class="btn btn--ghost setup-channels__action setup-channels__remove" @click="emit('removeChannel', row.name)">{{ t('setup.channels.remove') }}</button>
+            <button type="button" class="btn btn--ghost setup-channels__action" @click="emit('openDetails', row.name)">{{ t('setup.channels.details') }}</button>
           </span>
         </div>
       </template>
@@ -281,6 +380,7 @@ const testTone = computed(() => {
   padding: 1px 10px;
   white-space: nowrap;
 }
+.setup-channels__typechip.is-warn { border-color: color-mix(in srgb, var(--warn) 45%, var(--border)); color: var(--warn); }
 .setup-channels__link {
   background: transparent;
   border: 0;
@@ -289,6 +389,7 @@ const testTone = computed(() => {
   font: inherit;
   font-size: var(--fs-sm);
   padding: 0;
+  text-decoration: none;
 }
 .setup-channels__link:hover { text-decoration: underline; }
 
@@ -306,6 +407,70 @@ const testTone = computed(() => {
 .setup-channels__errorcard p { color: var(--text-muted); font-size: var(--fs-sm); margin: 0; }
 .setup-channels__erroractions { display: flex; gap: var(--sp-2); }
 
+.setup-channels__gallery {
+  display: grid;
+  gap: var(--sp-2);
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+}
+.setup-channels__card {
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  display: grid;
+  font: inherit;
+  gap: 6px;
+  padding: 12px 14px;
+  text-align: left;
+}
+.setup-channels__card:hover, .setup-channels__card:focus-visible { border-color: var(--accent); }
+.setup-channels__cardhead { align-items: center; display: flex; flex-wrap: wrap; gap: 6px; justify-content: space-between; }
+.setup-channels__badges { display: flex; flex-wrap: wrap; gap: 4px; }
+.setup-channels__carddesc { color: var(--text-muted); font-size: var(--fs-sm); line-height: 1.5; }
+.setup-channels__cardneeds { color: var(--text-dim); font-size: 11px; }
+
+.setup-channels__selected {
+  align-items: baseline;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2) var(--sp-3);
+  justify-content: space-between;
+  padding: 10px 14px;
+}
+.setup-channels__selectedinfo { display: grid; gap: 2px; min-width: 0; }
+.setup-channels__selectedinfo span { color: var(--text-muted); font-size: var(--fs-sm); }
+.setup-channels__selectedactions { display: flex; gap: var(--sp-3); white-space: nowrap; }
+
+.setup-channels__group {
+  border-bottom: 1px solid var(--border);
+  color: var(--text-dim);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  margin: var(--sp-3) 0 0;
+  padding-bottom: 4px;
+  text-transform: uppercase;
+}
+
+.setup-channels__advanced { border-top: 1px solid var(--border); margin-top: var(--sp-3); padding-top: var(--sp-2); }
+.setup-channels__advanced summary { color: var(--text-muted); cursor: pointer; font-size: var(--fs-sm); }
+
+.setup-channels__pairing {
+  background: color-mix(in srgb, var(--info) 8%, var(--bg-surface));
+  border: 1px solid color-mix(in srgb, var(--info) 32%, var(--border));
+  border-radius: var(--radius-md);
+  color: var(--text-muted);
+  font-size: var(--fs-sm);
+  line-height: 1.6;
+  margin: var(--sp-2) 0 0;
+  padding: 9px 12px;
+}
+
+.setup-channels__fielderror { color: var(--danger); font-size: var(--fs-sm); margin: 2px 0 0; }
+
 .setup-channels__dupwarn {
   align-items: center;
   background: color-mix(in srgb, var(--warn) 8%, var(--bg-surface));
@@ -320,4 +485,6 @@ const testTone = computed(() => {
   margin-top: var(--sp-2);
   padding: 8px 12px;
 }
+
+.setup-channels__runtimehead { align-items: baseline; display: flex; gap: var(--sp-3); justify-content: space-between; }
 </style>

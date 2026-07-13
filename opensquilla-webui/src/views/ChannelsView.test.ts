@@ -163,7 +163,11 @@ async function mountChannelsView(options: {
     },
   })
 
-  vi.doMock('vue-router', () => ({ useRouter: () => ({ push }) }))
+  const replace = vi.fn(async () => {})
+  vi.doMock('vue-router', () => ({
+    useRouter: () => ({ push, replace }),
+    useRoute: () => ({ path: '/channels', query: {}, hash: '' }),
+  }))
   vi.doMock('@/stores/rpc', () => ({
     useRpcStore: () => ({
       call: rpcCall,

@@ -640,15 +640,17 @@ const settingsOverlayOpen = computed(() =>
 
 const contractDebugEnabled = computed(() => appStore.features.contractDebug === true)
 
-function isNavActive(path: string): boolean {
-  if (path === '/chat') return isChatRoute.value
-  return $route.path === path
-}
-
-// The Monitor hub hosts Overview/Channels/Usage/Logs as one destination, so the
-// mobile "Overview" tab stays lit on any of the hub's four sub-routes.
+// The Monitor hub hosts Overview/Channels/Usage/Logs as one destination, so
+// both the mobile "Overview" tab and the desktop rail row stay lit on any of
+// the hub's four sub-routes.
 const MONITOR_HUB_PATHS = new Set(['/overview', '/channels', '/usage', '/logs'])
 const isMonitorHubActive = computed(() => MONITOR_HUB_PATHS.has($route.path))
+
+function isNavActive(path: string): boolean {
+  if (path === '/chat') return isChatRoute.value
+  if (path === '/overview') return isMonitorHubActive.value
+  return $route.path === path
+}
 
 // ── Collapsible console bands ────────────────────────────────────────────
 // Collapsed state per NavGroup, persisted so the rail keeps the user's chosen

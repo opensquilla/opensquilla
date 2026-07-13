@@ -15,8 +15,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   portable data directory (enumerated with a chooser across
   `%LOCALAPPDATA%\OpenSquilla\portable\*`), or an explicit `--source` path
   (Docker volumes, relocated or restored homes) — into the current install.
-  Dry-run by default with a pinned machine-readable report
-  (`docs/self-migration-report-contract.md`); apply stages a whole-home
+  Dry-run by default with a pinned machine-readable report; apply stages a whole-home
   copy with WAL-safe database handling and commits transactionally, so an
   interrupted import never leaves a partial target. Imported configs drop
   stale absolute path pins, inline provider keys relocate to `.env`, and

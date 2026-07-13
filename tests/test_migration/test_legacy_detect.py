@@ -115,7 +115,7 @@ def test_desktop_home_precedes_portable_and_preserves_kind(
     assert candidate == LegacyHomeCandidate(path=desktop, kind="desktop-home")
 
 
-def test_desktop_home_matching_target_or_completed_import_is_not_offered(
+def test_desktop_home_matching_target_is_not_offered_but_old_marker_does_not_hide_it(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     _no_portable_bases: None,
@@ -141,8 +141,11 @@ def test_desktop_home_matching_target_or_completed_import_is_not_offered(
         lambda source, target: marker_probes.append((source, target)) or source == desktop,
     )
     target = tmp_path / "target-home"
-    assert detect_legacy_home(target) is None
-    assert marker_probes == [(desktop, target)]
+    assert detect_legacy_home(target) == LegacyHomeCandidate(
+        path=desktop,
+        kind="desktop-home",
+    )
+    assert marker_probes == []
 
 
 def test_portable_fallback_offers_newest_candidate(
@@ -166,6 +169,28 @@ def test_portable_fallback_offers_newest_candidate(
     assert candidate == LegacyHomeCandidate(path=newer, kind="windows-portable")
 
 
+def test_portable_fallback_keeps_distinct_paths_when_identity_is_unavailable(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_home = tmp_path / "userhome"
+    fake_home.mkdir()
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: fake_home))
+    base = tmp_path / "appdata-local"
+    older = _make_home(base / "OpenSquilla" / "portable" / "dummy-release-a")
+    newer = _make_home(base / "OpenSquilla" / "portable" / "dummy-release-b")
+    now = time.time()
+    os.utime(older / "config.toml", (now - 1000, now - 1000))
+    os.utime(newer / "config.toml", (now, now))
+    monkeypatch.setenv("LOCALAPPDATA", str(base))
+    monkeypatch.delenv("TEMP", raising=False)
+    monkeypatch.setattr(opensquilla_home, "_advisory_identity", lambda _result: None)
+
+    candidate = detect_legacy_home(tmp_path / "target-home")
+
+    assert candidate == LegacyHomeCandidate(path=newer, kind="windows-portable")
+
+
 def test_portable_candidate_that_is_the_target_is_skipped(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -181,7 +206,7 @@ def test_portable_candidate_that_is_the_target_is_skipped(
     assert detect_legacy_home(live) is None
 
 
-def test_completed_portable_receipt_is_not_offered_again(
+def test_old_portable_marker_does_not_hide_candidates(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -190,7 +215,6 @@ def test_completed_portable_receipt_is_not_offered_again(
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: fake_home))
     base = tmp_path / "appdata-local"
     imported = _make_home(base / "OpenSquilla" / "portable" / "dummy-release-a")
-    remaining = _make_home(base / "OpenSquilla" / "portable" / "dummy-release-b")
     monkeypatch.setenv("LOCALAPPDATA", str(base))
     monkeypatch.delenv("TEMP", raising=False)
     monkeypatch.setattr(
@@ -201,7 +225,9 @@ def test_completed_portable_receipt_is_not_offered_again(
 
     candidate = detect_legacy_home(tmp_path / "target-home")
 
-    assert candidate == LegacyHomeCandidate(path=remaining, kind="windows-portable")
+    # Receipt/marker state is a display hint only. Candidate discovery must not
+    # silently hide data that the user may explicitly choose to import again.
+    assert candidate == LegacyHomeCandidate(path=imported, kind="windows-portable")
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only guard")

@@ -12,9 +12,11 @@ import getpass
 import glob
 import logging
 import os
+import socket
 import sqlite3
+import uuid
 from collections.abc import Iterator
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote, unquote, urlparse
@@ -35,6 +37,8 @@ _STILL_ACTIVE = 259
 _BACKUP_KEEP = 2
 #: Username recorded in yoyo's audit log when the environment has none.
 _FALLBACK_AUDIT_USER = "opensquilla"
+#: Local-only hostname used when the operating system cannot report one.
+_FALLBACK_AUDIT_HOST = "localhost"
 
 
 class SchemaAheadError(RuntimeError):
@@ -436,6 +440,39 @@ def _ensure_yoyo_audit_user() -> None:
         )
 
 
+def _bind_local_yoyo_audit_identity(backend: Any) -> None:
+    """Keep yoyo's migration audit complete without doing DNS during boot.
+
+    Yoyo resolves ``socket.getfqdn()`` synchronously for every applied
+    migration. A resolver or mDNS stall can therefore wedge an otherwise
+    entirely local SQLite upgrade after its schema step has committed but
+    before the ledger is marked. Bind the current backend instance to a
+    process-local identity once, preserving every audit column and transaction
+    while avoiding network name resolution. No global socket behavior changes.
+    """
+
+    username = getpass.getuser()
+    try:
+        hostname = socket.gethostname().strip() or _FALLBACK_AUDIT_HOST
+    except OSError:
+        hostname = _FALLBACK_AUDIT_HOST
+
+    def local_log_data(migration: Any = None, operation: str = "apply") -> dict[str, Any]:
+        if operation not in {"apply", "rollback", "mark", "unmark"}:
+            raise ValueError(f"unsupported migration audit operation: {operation}")
+        return {
+            "id": str(uuid.uuid1()),
+            "migration_id": migration.id if migration else None,
+            "migration_hash": migration.hash if migration else None,
+            "username": username,
+            "hostname": hostname,
+            "created_at_utc": datetime.now(UTC).replace(tzinfo=None),
+            "operation": operation,
+        }
+
+    backend.get_log_data = local_log_data
+
+
 def _restrict_db_file_permissions(db_path: Path | None) -> None:
     """Restrict the database file (and WAL siblings) to the owning user.
 
@@ -611,26 +648,39 @@ def _apply_pending_once(
     backup_db_path: Path | None = None,
     tighten_new_db: bool = False,
 ) -> list[str]:
+    log.debug("migrator.backend_open_started")
     backend = get_backend(_to_yoyo_url(db_url))
+    _bind_local_yoyo_audit_identity(backend)
+    log.debug("migrator.backend_open_ready")
     try:
         if tighten_new_db:
             _restrict_db_file_permissions(_sqlite_path_from_db_url(db_url))
         with _yoyo_utf8_open():
+            log.debug("migrator.discovery_started")
             migrations = _discover_migrations(migrations_dir)
+            log.debug("migrator.discovery_ready", extra={"count": len(migrations)})
             # The pending plan MUST be computed inside yoyo's lock: yoyo's
             # apply path never re-checks appliedness, so a plan computed
             # before the lock can re-apply migrations a concurrent process
             # just finished — a ledger IntegrityError at best, silently
             # re-running recreate-and-copy migrations (dropping later-added
             # columns) at worst.
+            log.debug("migrator.lock_wait_started")
             with backend.lock():
+                log.debug("migrator.lock_acquired")
                 pending = backend.to_apply(migrations)
                 ids = [m.id for m in pending]
                 if not ids:
+                    log.debug("migrator.plan_ready", extra={"count": 0})
                     return []
+                log.debug("migrator.plan_ready", extra={"count": len(ids)})
                 if backup_db_path is not None:
+                    log.debug("migrator.snapshot_started")
                     _snapshot_before_apply(backup_db_path, ids[0])
+                    log.debug("migrator.snapshot_ready")
+                log.debug("migrator.apply_started", extra={"count": len(ids)})
                 backend.apply_migrations(pending)
+                log.debug("migrator.apply_ready", extra={"count": len(ids)})
         return ids
     finally:
         # yoyo backends expose no close(); the connection object is the only

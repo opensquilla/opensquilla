@@ -8,11 +8,12 @@
           role="dialog"
           aria-modal="true"
           aria-labelledby="confirm-modal-title"
+          aria-describedby="confirm-modal-description"
           @click.stop
         >
           <h3 id="confirm-modal-title" class="modal__title">{{ confirmState.title }}</h3>
           <div class="modal__body">
-            <p>{{ confirmState.body }}</p>
+            <p id="confirm-modal-description">{{ confirmState.body }}</p>
           </div>
           <div class="modal__footer">
             <button :class="['btn', confirmState.primaryClass]" @click="onConfirm">

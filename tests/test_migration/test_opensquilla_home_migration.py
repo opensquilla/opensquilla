@@ -8,11 +8,16 @@ real released-era config shape.
 from __future__ import annotations
 
 import json
+import multiprocessing
 import os
 import shutil
 import sqlite3
+import subprocess
+import sys
+import threading
 import time
 import tomllib
+import uuid
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -22,6 +27,7 @@ import tomli_w
 
 import opensquilla.gateway.config_migration as config_migration_module
 import opensquilla.migration.opensquilla_home as migration_module
+import opensquilla.recovery as recovery_module
 from opensquilla.artifacts import ArtifactStore
 from opensquilla.attachment_refs import (
     make_attachment_ref,
@@ -35,15 +41,29 @@ from opensquilla.migration.opensquilla_home import (
     OpenSquillaMigrationOptions,
     detect_legacy_cli_home,
     enumerate_portable_homes,
+    inspect_opensquilla_home_candidate,
     is_valid_opensquilla_home,
 )
 from opensquilla.persistence.migrator import apply_pending
+from opensquilla.recovery.locking import ProfileOperationLock
+from opensquilla.recovery.restore import restore_profile
+from opensquilla.recovery.transaction import recover_profile_transaction
 from opensquilla.session.manager import SessionManager
 from opensquilla.session.models import TranscriptEntry
 from opensquilla.session.storage import SessionStorage
 
 FIXTURE_CONFIG = Path(__file__).parent / "fixtures" / "homes" / "cli-0.1" / "config.toml"
 MIGRATIONS_DIR = Path(__file__).resolve().parents[2] / "migrations"
+PORTABLE_RELEASE_MANIFEST = (
+    Path(__file__).resolve().parents[1]
+    / "test_recovery"
+    / "fixtures"
+    / "portable"
+    / "released-profiles.json"
+)
+PORTABLE_RELEASES = json.loads(
+    PORTABLE_RELEASE_MANIFEST.read_text(encoding="utf-8")
+)["published_releases"]
 
 DUMMY_INLINE_KEY = "dummy-inline-key-123"
 
@@ -61,6 +81,34 @@ REPORT_KEYS = {
     "preflight",
     "notes",
 }
+
+
+def _normalized_path(path: Path) -> str:
+    return os.path.normcase(os.path.normpath(str(path.resolve())))
+
+
+@pytest.fixture(autouse=True)
+def _isolate_profile_operation_locks(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Never leave migration test locks in the runner's real user-state tree."""
+
+    monkeypatch.setenv("OPENSQUILLA_TEST", "1")
+    monkeypatch.setenv("OPENSQUILLA_USER_STATE_DIR", str(tmp_path / "user-state"))
+
+
+def _probe_gateway_lock(state_dir: str, queue: multiprocessing.Queue) -> None:
+    from opensquilla.gateway.pidlock import GatewayPidLock
+
+    lock = GatewayPidLock(state_dir)
+    try:
+        lock.acquire()
+    except SystemExit:
+        queue.put("busy")
+    else:
+        queue.put("acquired")
+        lock.release()
 
 # Base scheduler_jobs DDL as scheduler/persistence.py creates it (the
 # ``enabled`` column arrived later via a conditional column add).
@@ -107,6 +155,13 @@ def _write_sessions_db(home: Path, applied_ids: tuple[str, ...]) -> None:
                 "INSERT INTO _yoyo_migration VALUES (?, ?, ?)",
                 (f"dummy-hash-{index}", migration_id, "2026-01-01 00:00:00"),
             )
+        connection.execute(
+            "CREATE TABLE synthetic_sessions (session_id TEXT PRIMARY KEY, transcript TEXT)"
+        )
+        connection.execute(
+            "INSERT INTO synthetic_sessions VALUES (?, ?)",
+            ("synthetic-session", "synthetic portable conversation"),
+        )
         connection.commit()
     finally:
         connection.close()
@@ -150,9 +205,14 @@ def _build_source_home(
 ) -> Path:
     home = root / "legacy-home"
     (home / "workspace" / "memory").mkdir(parents=True)
-    (home / "workspace" / "MEMORY.md").write_text(
-        "# Memory index\n\n- dummy entry\n", encoding="utf-8"
-    )
+    identity_documents = {
+        "USER.md": "# Synthetic user\n\nCall me Portable Tester.\n",
+        "SOUL.md": "# Synthetic soul\n\nBe precise and reversible.\n",
+        "IDENTITY.md": "# Synthetic identity\n\nName: Import Squilla.\n",
+        "MEMORY.md": "# Memory index\n\n- dummy entry\n",
+    }
+    for name, content in identity_documents.items():
+        (home / "workspace" / name).write_text(content, encoding="utf-8")
     (home / "workspace" / "memory" / "2026-01-01.md").write_text(
         "- dated dummy note\n", encoding="utf-8"
     )
@@ -173,10 +233,21 @@ def _build_source_home(
 
 
 def _run(
-    source: Path, target: Path, *, apply: bool = False, overwrite: bool = False
+    source: Path,
+    target: Path,
+    *,
+    apply: bool = False,
+    overwrite: bool = False,
+    replace_target: bool = False,
+    confirm_replace_target: Path | None = None,
 ) -> dict[str, Any]:
     options = OpenSquillaMigrationOptions(
-        source=source, target=target, apply=apply, overwrite=overwrite
+        source=source,
+        target=target,
+        apply=apply,
+        overwrite=overwrite,
+        replace_target=replace_target,
+        confirm_replace_target=confirm_replace_target,
     )
     return OpenSquillaHomeMigrator(options).migrate()
 
@@ -199,6 +270,36 @@ def _file_bytes(root: Path) -> dict[str, bytes]:
         for path in sorted(root.rglob("*"))
         if path.is_file()
     }
+
+
+def _assert_imported_identity_chat_and_config(target: Path) -> None:
+    expected_documents = {
+        "USER.md": "# Synthetic user\n\nCall me Portable Tester.\n",
+        "SOUL.md": "# Synthetic soul\n\nBe precise and reversible.\n",
+        "IDENTITY.md": "# Synthetic identity\n\nName: Import Squilla.\n",
+        "MEMORY.md": "# Memory index\n\n- dummy entry\n",
+    }
+    for name, content in expected_documents.items():
+        assert (target / "workspace" / name).read_text(encoding="utf-8") == content
+
+    with sqlite3.connect(
+        f"file:{target / 'state' / 'sessions.db'}?mode=ro",
+        uri=True,
+    ) as connection:
+        assert connection.execute("PRAGMA quick_check").fetchone() == ("ok",)
+        assert connection.execute(
+            "SELECT session_id, transcript FROM synthetic_sessions"
+        ).fetchone() == ("synthetic-session", "synthetic portable conversation")
+
+    config = tomllib.loads((target / "config.toml").read_text(encoding="utf-8"))
+    assert "state_dir" not in config
+    assert "workspace_dir" not in config
+    assert config["port"] == 18791
+    assert config["llm"]["provider"] == "openrouter"
+    assert config["llm"]["api_key_env"] == "OPENROUTER_API_KEY"
+    assert "api_key" not in config["llm"]
+    env_text = (target / ".env").read_text(encoding="utf-8")
+    assert f"OPENROUTER_API_KEY={DUMMY_INLINE_KEY}" in env_text
 
 
 # ---------------------------------------------------------------------------
@@ -253,6 +354,29 @@ def test_dry_run_produces_full_report_and_writes_nothing(tmp_path: Path) -> None
     assert source_config["llm"]["api_key"] == DUMMY_INLINE_KEY
 
 
+def test_dry_run_reports_only_the_session_count_for_candidate_metadata(
+    tmp_path: Path,
+) -> None:
+    source = _build_source_home(tmp_path)
+    connection = sqlite3.connect(source / "state" / "sessions.db")
+    try:
+        connection.execute("CREATE TABLE sessions (id TEXT PRIMARY KEY)")
+        connection.executemany(
+            "INSERT INTO sessions (id) VALUES (?)",
+            [("synthetic-session-a",), ("synthetic-session-b",)],
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+    report = _run(source, tmp_path / "target-home", apply=False)
+
+    assert report["preflight"]["session_count"] == 2
+    serialized = json.dumps(report)
+    assert "synthetic-session-a" not in serialized
+    assert "synthetic-session-b" not in serialized
+
+
 def test_direct_migrator_rejects_config_path_without_writing(tmp_path: Path) -> None:
     source = _build_source_home(tmp_path)
     target = tmp_path / "target-home"
@@ -287,6 +411,7 @@ def test_apply_imports_home_with_transforms(tmp_path: Path) -> None:
 
     assert not _errors(report)
     assert report["apply"] is True
+    _assert_imported_identity_chat_and_config(target)
 
     # Entries landed; profiles/ excluded; runtime pid locks excluded.
     assert (target / "workspace" / "MEMORY.md").is_file()
@@ -295,6 +420,7 @@ def test_apply_imports_home_with_transforms(tmp_path: Path) -> None:
     assert (target / "state" / "sessions.db").is_file()
     assert not (target / "profiles").exists()
     assert not (target / "state" / "gateway.pid").exists()
+    assert not (target / "desktop-layout-v2.json").exists()
 
     # Config transforms: absolute path pins dropped, port coerced, secret
     # relocated to .env with the env pointer left behind.
@@ -315,18 +441,20 @@ def test_apply_imports_home_with_transforms(tmp_path: Path) -> None:
         {"id": "job-1", "name": "dummy daily job", "cron_expr": "0 9 * * *"}
     ]
 
-    # Pristine db snapshot exists under the report output dir.
+    # The report directory contains only narrow protocol/summary artifacts,
+    # never a duplicate database or identity/memory document.
     output_dir = Path(report["output_dir"])
-    assert (output_dir / "db-snapshots" / "scheduler.db").is_file()
-    assert (output_dir / "report.json").is_file()
-    assert (output_dir / "summary.md").is_file()
+    assert {
+        path.relative_to(output_dir).as_posix()
+        for path in output_dir.rglob("*")
+        if path.is_file()
+    } == {"layout-receipt.json", "report.json", "summary.md"}
 
     # No staging dir left behind.
     assert not list(tmp_path.glob(".opensquilla-import-*"))
 
-    # Source home unchanged except the completion marker.
-    marker = json.loads((source / IMPORT_MARKER_FILENAME).read_text(encoding="utf-8"))
-    assert marker["target"] == str(target)
+    # RC4 keeps the source strictly read-only; target receipts are authoritative.
+    assert not (source / IMPORT_MARKER_FILENAME).exists()
     source_config = tomllib.loads((source / "config.toml").read_text(encoding="utf-8"))
     assert source_config["port"] == 18790
     assert source_config["llm"]["api_key"] == DUMMY_INLINE_KEY
@@ -336,7 +464,112 @@ def test_apply_imports_home_with_transforms(tmp_path: Path) -> None:
     assert DUMMY_INLINE_KEY not in json.dumps(report)
 
 
-def test_imported_config_and_env_use_owner_only_posix_modes_when_supported(
+def test_profile_import_preserves_unmodified_toml_bytes_and_comments(
+    tmp_path: Path,
+) -> None:
+    source = _build_source_home(tmp_path)
+    source_config = (
+        b"# operator header\n"
+        b"port = 18791  # keep exact spacing\n"
+        b"config_version = 1\n"
+    )
+    (source / "config.toml").write_bytes(source_config)
+    target = tmp_path / "target-home"
+
+    report = _run(source, target, apply=True)
+
+    assert not _errors(report)
+    assert (target / "config.toml").read_bytes() == source_config
+
+
+def test_profile_import_losslessly_patches_legacy_paths_and_secret_comments(
+    tmp_path: Path,
+) -> None:
+    source = _build_source_home(tmp_path)
+    config_path = source / "config.toml"
+    text = config_path.read_text(encoding="utf-8")
+    original = tomllib.loads(text)
+    text = text.replace(
+        f"state_dir = {json.dumps(original['state_dir'])}",
+        f"state_dir = {json.dumps(original['state_dir'])} # state pin note",
+    ).replace(
+        f"workspace_dir = {json.dumps(original['workspace_dir'])}",
+        f"workspace_dir = {json.dumps(original['workspace_dir'])} # identity pin note",
+    ).replace(
+        "port = 18790",
+        "port = 18790 # legacy port note",
+    ).replace(
+        f'api_key = "{DUMMY_INLINE_KEY}"',
+        f'api_key = "{DUMMY_INLINE_KEY}" # credential relocation note',
+    )
+    config_path.write_text("# profile comments survive\n" + text, encoding="utf-8")
+    target = tmp_path / "target-home"
+
+    report = _run(source, target, apply=True)
+
+    assert not _errors(report)
+    imported_text = (target / "config.toml").read_text(encoding="utf-8")
+    imported = tomllib.loads(imported_text)
+    assert "state_dir" not in imported
+    assert "workspace_dir" not in imported
+    assert imported["port"] == 18791
+    assert imported["llm"]["api_key_env"] == "OPENROUTER_API_KEY"
+    assert "profile comments survive" in imported_text
+    assert "state pin note" in imported_text
+    assert "identity pin note" in imported_text
+    assert "legacy port note" in imported_text
+    assert "credential relocation note" in imported_text
+
+
+def test_external_profile_pin_is_rebased_without_reformatting_other_toml(
+    tmp_path: Path,
+) -> None:
+    source = _build_source_home(tmp_path)
+    shutil.rmtree(source / "workspace")
+    external = tmp_path / "external-workspace"
+    external.mkdir()
+    (external / "IDENTITY.md").write_text("external\n", encoding="utf-8")
+    config_path = source / "config.toml"
+    payload = tomllib.loads(config_path.read_text(encoding="utf-8"))
+    payload["workspace_dir"] = str(external)
+    rendered = "# external workspace must be snapshotted\n" + tomli_w.dumps(payload)
+    rendered = rendered.replace(
+        f'workspace_dir = {json.dumps(str(external))}',
+        f'workspace_dir = {json.dumps(str(external))} # external pin note',
+    )
+    config_path.write_text(rendered, encoding="utf-8")
+    target = tmp_path / "target-home"
+
+    report = _run(source, target, apply=True)
+
+    assert not _errors(report)
+    imported_text = (target / "config.toml").read_text(encoding="utf-8")
+    imported = tomllib.loads(imported_text)
+    assert "workspace_dir" not in imported
+    assert "external workspace must be snapshotted" in imported_text
+    assert "external pin note" in imported_text
+    assert (target / "workspace" / "IDENTITY.md").read_text(encoding="utf-8") == (
+        "external\n"
+    )
+
+
+def test_desktop_import_finalizes_rc3_layout_marker_only_after_commit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = _build_source_home(tmp_path)
+    target = tmp_path / "desktop-home"
+    monkeypatch.setenv("OPENSQUILLA_PROFILE_KIND", "desktop-primary")
+
+    report = _run(source, target, apply=True)
+
+    assert not _errors(report)
+    marker = json.loads((target / "desktop-layout-v2.json").read_text(encoding="utf-8"))
+    assert marker["schema_version"] == 2
+    assert marker["protectedBy"] == "rc4"
+    assert not (tmp_path / ".desktop-home.profile-replace.json").exists()
+
+
+def test_imported_config_and_env_are_owner_only_even_without_secret_rewrite(
     tmp_path: Path,
 ) -> None:
     source = _build_source_home(tmp_path)
@@ -414,7 +647,7 @@ def test_non_empty_target_refused_without_overwrite(tmp_path: Path) -> None:
 
     errors = _errors(report)
     assert errors
-    assert any("--overwrite" in item["reason"] for item in errors)
+    assert any("--replace-target" in item["reason"] for item in errors)
     # Nothing was imported.
     assert not (target / "workspace").exists()
     assert (target / "state" / "sessions.db").read_bytes() == b"dummy existing db"
@@ -426,22 +659,230 @@ def test_overwrite_takes_timestamped_backups(tmp_path: Path) -> None:
     target = tmp_path / "target-home"
     (target / "state").mkdir(parents=True)
     (target / "state" / "sessions.db").write_bytes(b"dummy existing db")
+    (target / "old-only.txt").write_text("must not be merged", encoding="utf-8")
 
-    report = _run(source, target, apply=True, overwrite=True)
+    report = _run(
+        source,
+        target,
+        apply=True,
+        overwrite=True,
+        confirm_replace_target=target.resolve(),
+    )
 
     assert not _errors(report)
+    _assert_imported_identity_chat_and_config(target)
     backups = list(tmp_path.glob("target-home.backup.*"))
     assert len(backups) == 1
     assert (backups[0] / "state" / "sessions.db").read_bytes() == b"dummy existing db"
+    assert (backups[0] / "old-only.txt").read_text(encoding="utf-8") == "must not be merged"
     # The imported store replaced the old one.
     assert (target / "state" / "sessions.db").read_bytes() != b"dummy existing db"
+    assert not (target / "old-only.txt").exists()
     persisted = json.loads(
         (Path(report["output_dir"]) / "report.json").read_text(encoding="utf-8")
     )
     returned_backups = [item for item in report["items"] if item["kind"] == "backup"]
-    persisted_backups = [item for item in persisted["items"] if item["kind"] == "backup"]
     assert returned_backups
-    assert persisted_backups == returned_backups
+    # The interactive report can explain the retained backup, but the durable
+    # diagnostic is intentionally counts-only and never stores item rows.
+    assert "items" not in persisted
+    assert persisted["item_counts"]["migrated"] >= len(returned_backups)
+    history = json.loads(
+        (tmp_path / "profile-replacement-history.json").read_text(encoding="utf-8")
+    )
+    assert history["schema_version"] == 1
+    record = history["backups"][0]
+    assert record["backup"] == _normalized_path(backups[0])
+    assert str(uuid.UUID(record["transaction_id"])) == record["transaction_id"]
+    for identity_key in ("source_identity", "target_identity", "backup_identity"):
+        assert {"device", "inode", "file_type", "mode", "size", "modified_at_ns"} <= set(
+            record[identity_key]
+        )
+
+
+def test_published_target_validation_never_ignores_a_replaced_journal(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = _build_source_home(tmp_path)
+    source_before = _file_bytes(source)
+    target = tmp_path / "target-home"
+    journal = tmp_path / ".target-home.profile-replace.json"
+    original_inspect = recovery_module.inspect_profile
+
+    def replace_journal_before_inspection(*args: Any, **kwargs: Any) -> Any:
+        unrelated = json.loads(journal.read_text(encoding="utf-8"))
+        unrelated["transaction_id"] = str(uuid.uuid4())
+        unrelated["source"] = str((tmp_path / "unrelated-source").resolve())
+        journal.write_text(json.dumps(unrelated), encoding="utf-8")
+        return original_inspect(*args, **kwargs)
+
+    monkeypatch.setattr(
+        recovery_module,
+        "inspect_profile",
+        replace_journal_before_inspection,
+    )
+
+    report = _run(source, target, apply=True)
+
+    assert _errors(report)
+    assert any(
+        "journal" in item["reason"] and "transaction was not completed" in item["reason"]
+        for item in _errors(report)
+    )
+    assert not target.exists()
+    assert journal.is_file(), "an unrelated journal must never be removed"
+    assert _file_bytes(source) == source_before
+
+
+@pytest.mark.parametrize(
+    ("authority_name", "initial", "changed"),
+    [
+        ("gateway.pid", None, b"not-a-pid\n"),
+        ("gateway.pid.lock", None, b"appeared\n"),
+        ("gateway.pid", b"stale-pid\n", b"changed-pid\n"),
+        ("gateway.pid.lock", b"existing\n", b"changed-lock\n"),
+    ],
+)
+def test_excluded_source_gateway_authority_change_blocks_publication(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    authority_name: str,
+    initial: bytes | None,
+    changed: bytes,
+) -> None:
+    source = _build_source_home(tmp_path)
+    authority = source / "state" / authority_name
+    if initial is not None:
+        authority.write_bytes(initial)
+    target = tmp_path / "target-home"
+    original_write_env = OpenSquillaHomeMigrator._write_staged_env
+    mutation_errors: list[OSError] = []
+
+    def mutate_excluded_authority(
+        migrator: OpenSquillaHomeMigrator,
+        staging: Path,
+    ) -> None:
+        original_write_env(migrator, staging)
+        try:
+            authority.write_bytes(changed)
+        except OSError as exc:
+            mutation_errors.append(exc)
+            raise
+
+    monkeypatch.setattr(
+        OpenSquillaHomeMigrator,
+        "_write_staged_env",
+        mutate_excluded_authority,
+    )
+
+    report = _run(source, target, apply=True)
+
+    assert _errors(report)
+    assert not target.exists(), _errors(report)
+    if mutation_errors:
+        # Windows can reject a write to the byte-range-locked authority before
+        # the post-copy digest check runs. That is the stronger fail-closed
+        # outcome and is valid only for a lock leaf that already existed.
+        assert sys.platform == "win32"
+        assert authority_name == "gateway.pid.lock"
+        assert initial is not None
+        assert authority.read_bytes() == initial
+        assert any(
+            "import failed before completion" in item["reason"]
+            for item in _errors(report)
+        )
+    else:
+        if sys.platform == "win32" and authority_name == "gateway.pid.lock":
+            # A same-process Windows rewrite of the byte-range-locked leaf can
+            # either persist or be refused without surfacing an OSError to the
+            # Python write call. The safety contract is that the source remains
+            # one of those two complete values and no target is published; the
+            # exact lower-level diagnostic is not stable.
+            assert authority.read_bytes() in {initial, changed}
+        else:
+            assert authority.read_bytes() == changed
+            assert any(
+                "gateway authority changed" in item["reason"]
+                for item in _errors(report)
+            )
+
+
+@pytest.mark.parametrize("alias", [False, True])
+def test_replacement_requires_exact_target_confirmation(
+    tmp_path: Path, alias: bool
+) -> None:
+    source = _build_source_home(tmp_path)
+    target = tmp_path / "target-home"
+    target.mkdir()
+    existing = target / "existing.txt"
+    existing.write_text("preserve", encoding="utf-8")
+
+    report = _run(
+        source,
+        target,
+        apply=True,
+        overwrite=alias,
+        replace_target=not alias,
+        confirm_replace_target=tmp_path / "wrong-target",
+    )
+
+    assert any("exact confirmation" in item["reason"] for item in _errors(report))
+    assert existing.read_text(encoding="utf-8") == "preserve"
+    assert not list(tmp_path.glob("target-home.backup.*"))
+
+
+def test_existing_empty_target_is_parked_and_published_transactionally(
+    tmp_path: Path,
+) -> None:
+    source = _build_source_home(tmp_path)
+    target = tmp_path / "target-home"
+    target.mkdir()
+
+    report = _run(source, target, apply=True)
+
+    assert not _errors(report)
+    assert (target / "workspace" / "MEMORY.md").is_file()
+    backups = list(tmp_path.glob("target-home.backup.*"))
+    assert len(backups) == 1
+    assert not any(backups[0].iterdir())
+    history = json.loads(
+        (tmp_path / "profile-replacement-history.json").read_text(encoding="utf-8")
+    )
+    assert history["backups"][0]["backup"] == _normalized_path(backups[0])
+
+
+def test_committed_replacement_history_can_restore_complete_previous_profile(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("OPENSQUILLA_USER_STATE_DIR", str(tmp_path / "user-state"))
+    source = _build_source_home(tmp_path / "source-root")
+    target = tmp_path / "target-home"
+    (target / "workspace").mkdir(parents=True)
+    (target / "workspace" / "SOUL.md").write_text("previous profile\n", encoding="utf-8")
+    (target / "state").mkdir()
+    (target / "config.toml").write_text("port = 18791\n", encoding="utf-8")
+
+    imported = _run(
+        source,
+        target,
+        apply=True,
+        replace_target=True,
+        confirm_replace_target=target,
+    )
+    assert not _errors(imported)
+    backup = next(tmp_path.glob("target-home.backup.*"))
+
+    restored = restore_profile(backup)
+
+    assert restored.outcome == "ready"
+    assert (target / "workspace" / "SOUL.md").read_text(encoding="utf-8") == (
+        "previous profile\n"
+    )
+    history = json.loads(
+        (tmp_path / "profile-replacement-history.json").read_text(encoding="utf-8")
+    )
+    assert history["backups"][0]["restored_to"] == _normalized_path(target)
 
 
 # ---------------------------------------------------------------------------
@@ -507,6 +948,8 @@ def test_detect_legacy_cli_home_guard(tmp_path: Path, monkeypatch) -> None:
     legacy = fake_home / ".opensquilla"
     legacy.mkdir(parents=True)
     (legacy / "config.toml").write_text("port = 18790\n", encoding="utf-8")
+    (legacy / "workspace").mkdir()
+    (legacy / "state").mkdir()
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: fake_home))
 
     # The active home IS ~/.opensquilla: never offered as a source.
@@ -517,24 +960,27 @@ def test_detect_legacy_cli_home_guard(tmp_path: Path, monkeypatch) -> None:
     assert detect_legacy_cli_home(tmp_path / "electron-home") == legacy
 
 
-def test_detect_legacy_cli_home_skips_source_already_imported_to_target(
+def test_detect_legacy_cli_home_keeps_previously_imported_source_visible(
     tmp_path: Path, monkeypatch
 ) -> None:
     fake_home = tmp_path / "userhome"
     legacy = fake_home / ".opensquilla"
     legacy.mkdir(parents=True)
     (legacy / "config.toml").write_text("port = 18790\n", encoding="utf-8")
+    (legacy / "workspace").mkdir()
+    (legacy / "state").mkdir()
     target = tmp_path / "desktop-home"
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: fake_home))
 
     report = _run(legacy, target, apply=True)
     assert not _errors(report)
-    assert detect_legacy_cli_home(target) is None
+    # A committed target receipt is a display hint, never authority to hide a
+    # still-valid source. The user must remain able to choose it again.
+    assert detect_legacy_cli_home(target) == legacy
+    assert migration_module._matching_import_receipt(legacy, target) is not None
     assert detect_legacy_cli_home(tmp_path / "different-target") == legacy
 
-    # A stale source marker must not hide import after the target was removed
-    # by an uninstall/reinstall. Suppression requires the matching target-side
-    # receipt produced by the completed transaction.
+    # A stale source marker also remains non-authoritative after uninstall.
     shutil.rmtree(target)
     assert detect_legacy_cli_home(target) == legacy
 
@@ -575,6 +1021,8 @@ def test_enumerate_portable_homes_orders_and_era_hints(tmp_path: Path) -> None:
     now = time.time()
     os.utime(older / "config.toml", (now - 1000, now - 1000))
     os.utime(newer / "config.toml", (now, now))
+    os.utime(older, (now - 1000, now - 1000))
+    os.utime(newer, (now, now))
 
     candidates = enumerate_portable_homes([base])
 
@@ -583,6 +1031,320 @@ def test_enumerate_portable_homes_orders_and_era_hints(tmp_path: Path) -> None:
     assert candidates[1].era_hint == "0.4.1"
     assert candidates[0].last_used > candidates[1].last_used
     assert all(candidate.size_bytes > 0 for candidate in candidates)
+    assert all(candidate.previously_imported is False for candidate in candidates)
+
+
+def test_candidate_metadata_is_privacy_narrow_stable_and_read_only(tmp_path: Path) -> None:
+    source = _build_source_home(tmp_path / "source")
+    config = tomllib.loads((source / "config.toml").read_text(encoding="utf-8"))
+    config["state_dir"] = str(source / "state")
+    (source / "config.toml").write_text(tomli_w.dumps(config), encoding="utf-8")
+    (source / "install-receipt.json").write_text(
+        json.dumps({"version": "0.5.0rc3"}),
+        encoding="utf-8",
+    )
+    connection = sqlite3.connect(source / "state" / "sessions.db")
+    try:
+        connection.execute("CREATE TABLE sessions (session_key TEXT PRIMARY KEY, title TEXT)")
+        connection.executemany(
+            "INSERT INTO sessions VALUES (?, ?)",
+            [("private-session-a", "private title a"), ("private-session-b", "private title b")],
+        )
+        connection.commit()
+    finally:
+        connection.close()
+    before = _file_bytes(source)
+
+    candidate = inspect_opensquilla_home_candidate(
+        source,
+        kind="cli-home",
+        target=tmp_path / "target",
+    )
+
+    assert candidate is not None
+    payload = candidate.as_payload()
+    assert payload == {
+        "kind": "cli-home",
+        "path": str(source),
+        "version": "0.5.0rc3",
+        "estimated_activity_at": payload["estimated_activity_at"],
+        "session_count": 2,
+        "size_bytes": payload["size_bytes"],
+        "previously_imported": False,
+    }
+    assert payload["estimated_activity_at"] is not None
+    assert isinstance(payload["size_bytes"], int) and payload["size_bytes"] > 0
+    serialized = json.dumps(payload)
+    assert "private-session-a" not in serialized
+    assert "private title a" not in serialized
+    assert _file_bytes(source) == before
+
+
+def test_candidate_size_does_not_collapse_when_directory_identity_is_unavailable(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = _build_source_home(tmp_path / "source")
+    monkeypatch.setattr(migration_module, "_advisory_identity", lambda _result: None)
+
+    candidate = inspect_opensquilla_home_candidate(source, kind="cli-home")
+
+    assert candidate is not None
+    assert isinstance(candidate.size_bytes, int)
+    assert candidate.size_bytes > 0
+
+
+def test_candidate_metadata_size_is_bounded_and_never_follows_links(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "config.toml").write_text("version = \"0.5.0rc3\"\n", encoding="utf-8")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "private.txt").write_text("must-not-be-read", encoding="utf-8")
+    (source / "linked").symlink_to(outside, target_is_directory=True)
+    monkeypatch.setattr(migration_module, "_CANDIDATE_METADATA_MAX_ENTRIES", 1)
+
+    candidate = inspect_opensquilla_home_candidate(source, kind="cli-home")
+
+    assert candidate is not None
+    assert candidate.size_bytes is None
+    assert candidate.version == "0.5.0rc3"
+
+
+def test_portable_candidate_enumeration_has_a_hard_display_bound(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    portable = tmp_path / "base" / "OpenSquilla" / "portable"
+    for name in ("one", "two", "three"):
+        home = portable / name
+        home.mkdir(parents=True)
+        (home / "config.toml").write_text("port = 18791\n", encoding="utf-8")
+    monkeypatch.setattr(migration_module, "_CANDIDATE_ENUMERATION_MAX_CANDIDATES", 1)
+
+    candidates = enumerate_portable_homes([tmp_path / "base"])
+
+    assert len(candidates) == 1
+
+
+def test_candidate_session_count_rejects_a_source_changed_during_snapshot(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = _build_source_home(tmp_path / "source")
+    config = tomllib.loads((source / "config.toml").read_text(encoding="utf-8"))
+    config["state_dir"] = str(source / "state")
+    (source / "config.toml").write_text(tomli_w.dumps(config), encoding="utf-8")
+    connection = sqlite3.connect(source / "state" / "sessions.db")
+    try:
+        connection.execute("CREATE TABLE sessions (session_key TEXT PRIMARY KEY)")
+        connection.execute("INSERT INTO sessions VALUES ('synthetic-session')")
+        connection.commit()
+    finally:
+        connection.close()
+    original_digest = migration_module._digest_regular_file
+    changed = False
+
+    def mutate_after_copy(*args: Any, **kwargs: Any) -> str:
+        nonlocal changed
+        digest = original_digest(*args, **kwargs)
+        path = Path(args[0])
+        if not changed and kwargs.get("destination") is not None and path.name == "sessions.db":
+            changed = True
+            with path.open("ab") as handle:
+                handle.write(b"changed-after-copy")
+        return digest
+
+    monkeypatch.setattr(migration_module, "_digest_regular_file", mutate_after_copy)
+
+    candidate = inspect_opensquilla_home_candidate(source, kind="cli-home")
+
+    assert changed is True
+    assert candidate is not None
+    assert candidate.session_count is None
+
+
+def test_candidate_metadata_does_not_open_unapproved_external_state(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    external_state = tmp_path / "external-state"
+    external_state.mkdir()
+    (source / "config.toml").write_text(
+        f"state_dir = {json.dumps(str(external_state))}\n",
+        encoding="utf-8",
+    )
+    calls: list[Path] = []
+
+    def unexpected_count(path: Path) -> int:
+        calls.append(path)
+        return 99
+
+    monkeypatch.setattr(migration_module, "_read_session_count", unexpected_count)
+
+    candidate = inspect_opensquilla_home_candidate(source, kind="cli-home")
+
+    assert candidate is not None
+    assert candidate.session_count is None
+    assert calls == []
+
+
+def test_portable_candidate_reports_previous_import_without_hiding_source(
+    tmp_path: Path,
+) -> None:
+    base = tmp_path / "appdata"
+    seed = _build_source_home(tmp_path / "seed")
+    portable = base / "OpenSquilla" / "portable" / "dummy-release"
+    portable.parent.mkdir(parents=True)
+    seed.rename(portable)
+    target = tmp_path / "target-home"
+
+    first = OpenSquillaHomeMigrator(
+        OpenSquillaMigrationOptions(
+            source=portable,
+            kind="windows-portable",
+            target=target,
+            apply=True,
+        )
+    ).migrate()
+    assert not _errors(first)
+
+    candidates = enumerate_portable_homes([base], target=target)
+    assert [candidate.path for candidate in candidates] == [portable]
+    assert candidates[0].previously_imported is True
+
+
+def test_previous_import_hint_is_bound_to_the_selected_source_kind(tmp_path: Path) -> None:
+    source = _build_source_home(tmp_path / "source")
+    target = tmp_path / "target-home"
+    first = OpenSquillaHomeMigrator(
+        OpenSquillaMigrationOptions(
+            source=source,
+            kind="windows-portable",
+            target=target,
+            apply=True,
+        )
+    ).migrate()
+    assert not _errors(first)
+
+    portable = inspect_opensquilla_home_candidate(
+        source,
+        kind="windows-portable",
+        target=target,
+    )
+    cli = inspect_opensquilla_home_candidate(source, kind="cli-home", target=target)
+
+    assert portable is not None and portable.previously_imported is True
+    assert cli is not None and cli.previously_imported is False
+
+
+def test_single_portable_candidate_is_reported_but_never_auto_selected(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    base = tmp_path / "appdata"
+    portable = base / "OpenSquilla" / "portable" / "dummy-release"
+    portable.mkdir(parents=True)
+    (portable / "config.toml").write_text("port = 18791\n", encoding="utf-8")
+    monkeypatch.setenv("LOCALAPPDATA", str(base))
+    monkeypatch.delenv("TEMP", raising=False)
+
+    report = OpenSquillaHomeMigrator(
+        OpenSquillaMigrationOptions(
+            kind="windows-portable",
+            target=tmp_path / "target-home",
+        )
+    ).migrate()
+
+    assert report["source"] == ""
+    assert [candidate["path"] for candidate in report["candidates"]] == [str(portable)]
+    assert report["candidates"][0]["previously_imported"] is False
+    assert {
+        "kind",
+        "path",
+        "version",
+        "estimated_activity_at",
+        "session_count",
+        "size_bytes",
+        "previously_imported",
+    } <= set(report["candidates"][0])
+    assert any("explicitly confirm" in item["reason"] for item in _errors(report))
+
+
+@pytest.mark.parametrize(
+    "release",
+    PORTABLE_RELEASES,
+    ids=lambda release: release["release_tag"],
+)
+def test_every_published_portable_release_completes_full_profile_apply(
+    tmp_path: Path,
+    release: dict[str, Any],
+) -> None:
+    """Historical Portable coverage must prove apply, not just enumeration."""
+
+    seed = _build_source_home(
+        tmp_path / f"seed-{release['release_id']}",
+        applied_ids=(release["source"]["latest_migration_id"],),
+    )
+    source = (
+        tmp_path
+        / "LocalApplicationData"
+        / "OpenSquilla"
+        / "portable"
+        / release["release_id"]
+    )
+    source.parent.mkdir(parents=True)
+    seed.rename(source)
+    config = tomllib.loads((source / "config.toml").read_text(encoding="utf-8"))
+    config["version"] = release["release_tag"].removeprefix("v")
+    config["state_dir"] = str(source / "state")
+    config["workspace_dir"] = str(source / "workspace")
+    (source / "config.toml").write_text(tomli_w.dumps(config), encoding="utf-8")
+    (source / "install-receipt.json").write_text(
+        json.dumps({"version": release["release_tag"]}),
+        encoding="utf-8",
+    )
+    source_before = _file_bytes(source)
+    target = tmp_path / f"imported-{release['release_id']}"
+
+    report = OpenSquillaHomeMigrator(
+        OpenSquillaMigrationOptions(
+            source=source,
+            kind="windows-portable",
+            target=target,
+            apply=True,
+        )
+    ).migrate()
+
+    assert not _errors(report)
+    _assert_imported_identity_chat_and_config(target)
+    assert _file_bytes(source) == source_before
+    assert not (source / IMPORT_MARKER_FILENAME).exists()
+    receipt = json.loads(
+        (Path(report["output_dir"]) / "layout-receipt.json").read_text(encoding="utf-8")
+    )
+    assert set(receipt) == {
+        "schema_version",
+        "transaction_id",
+        "imported_at",
+        "source",
+        "source_identity",
+        "source_kind",
+        "source_version",
+        "target",
+        "candidate_identity",
+        "recovery_outcome",
+        "recovery_stable_code",
+        "layout",
+    }
+    assert receipt["source_kind"] == "windows-portable"
+    assert receipt["source_version"] == release["release_tag"]
+    assert receipt["source"] == _normalized_path(source)
+    assert receipt["target"] == _normalized_path(target)
 
 
 # ---------------------------------------------------------------------------
@@ -724,15 +1486,281 @@ def test_external_configured_roots_are_copied_to_canonical_target_paths(
     assert "media_root" not in config.get("attachments", {})
 
 
+def test_existing_external_dot_opensquilla_path_is_never_mistaken_for_internal(
+    tmp_path: Path,
+) -> None:
+    source = _build_source_home(tmp_path)
+    shutil.rmtree(source / "workspace")
+    external = tmp_path / "mounted-backup" / ".opensquilla" / "workspace"
+    external.mkdir(parents=True)
+    (external / "IDENTITY.md").write_text("external identity", encoding="utf-8")
+    payload = tomllib.loads((source / "config.toml").read_text(encoding="utf-8"))
+    payload["workspace_dir"] = str(external)
+    (source / "config.toml").write_text(tomli_w.dumps(payload), encoding="utf-8")
+    target = tmp_path / "target-home"
+
+    report = _run(source, target, apply=True)
+
+    assert not _errors(report)
+    assert (target / "workspace" / "IDENTITY.md").read_text(
+        encoding="utf-8"
+    ) == "external identity"
+
+
+def test_missing_external_pin_blocks_even_when_canonical_root_exists(
+    tmp_path: Path,
+) -> None:
+    source = _build_source_home(tmp_path)
+    missing = tmp_path / "missing-external-workspace"
+    payload = tomllib.loads((source / "config.toml").read_text(encoding="utf-8"))
+    payload["workspace_dir"] = str(missing)
+    (source / "config.toml").write_text(tomli_w.dumps(payload), encoding="utf-8")
+    target = tmp_path / "target-home"
+
+    report = _run(source, target, apply=True)
+
+    assert any(
+        item["kind"] == "preflight/data-root"
+        and item["source"] == str(missing)
+        for item in _errors(report)
+    )
+    assert not target.exists()
+
+
+def test_external_agent_workspace_is_snapshotted_and_rebased(tmp_path: Path) -> None:
+    source = _build_source_home(tmp_path)
+    external = tmp_path / "external-agent-workspace"
+    external.mkdir()
+    (external / "IDENTITY.md").write_text("synthetic agent", encoding="utf-8")
+    payload = tomllib.loads((source / "config.toml").read_text(encoding="utf-8"))
+    payload["agents"] = [{"id": "research", "workspace": str(external)}]
+    (source / "config.toml").write_text(tomli_w.dumps(payload), encoding="utf-8")
+    target = tmp_path / "target-home"
+
+    report = _run(source, target, apply=True)
+
+    assert not _errors(report)
+    imported = target / "workspace" / "agents" / "research" / "IDENTITY.md"
+    assert imported.read_text(encoding="utf-8") == "synthetic agent"
+    config = tomllib.loads((target / "config.toml").read_text(encoding="utf-8"))
+    assert config["agents"][0]["workspace"] == str(
+        target / "workspace" / "agents" / "research"
+    )
+
+
+def test_dotenv_external_data_roots_are_snapshotted_rebased_and_never_shared(
+    tmp_path: Path,
+) -> None:
+    source = _build_source_home(tmp_path / "source-root")
+    external_state = tmp_path / "external-state"
+    external_workspace = tmp_path / "external-workspace"
+    external_media = tmp_path / "external-media"
+    shutil.move(source / "state", external_state)
+    shutil.move(source / "workspace", external_workspace)
+    external_media.mkdir()
+    (external_media / "artifact.bin").write_bytes(b"synthetic-media")
+    payload = tomllib.loads((source / "config.toml").read_text(encoding="utf-8"))
+    payload.pop("state_dir", None)
+    payload.pop("workspace_dir", None)
+    (source / "config.toml").write_text(tomli_w.dumps(payload), encoding="utf-8")
+    env_path = source / ".env"
+    env_path.write_text(
+        env_path.read_text(encoding="utf-8")
+        + f"OPENSQUILLA_GATEWAY_STATE_DIR={external_state}\n"
+        + f"OPENSQUILLA_GATEWAY_WORKSPACE_DIR={external_workspace}\n"
+        + f"OPENSQUILLA_GATEWAY_ATTACHMENTS__MEDIA_ROOT={external_media}\n",
+        encoding="utf-8",
+    )
+    source_env_before = env_path.read_bytes()
+    state_before = _file_bytes(external_state)
+    workspace_before = _file_bytes(external_workspace)
+    media_before = _file_bytes(external_media)
+    target = tmp_path / "target-home"
+
+    report = _run(source, target, apply=True)
+
+    assert not _errors(report)
+    assert _file_bytes(external_state) == state_before
+    assert _file_bytes(external_workspace) == workspace_before
+    assert _file_bytes(external_media) == media_before
+    assert env_path.read_bytes() == source_env_before
+    assert (target / "state" / "sessions.db").is_file()
+    assert (target / "workspace" / "IDENTITY.md").is_file()
+    assert (target / "media" / "artifact.bin").read_bytes() == b"synthetic-media"
+    imported_env = (target / ".env").read_text(encoding="utf-8")
+    assert "OPENROUTER_API_KEY=dummy" in imported_env
+    for key in (
+        "OPENSQUILLA_GATEWAY_STATE_DIR",
+        "OPENSQUILLA_GATEWAY_WORKSPACE_DIR",
+        "OPENSQUILLA_GATEWAY_ATTACHMENTS__MEDIA_ROOT",
+    ):
+        assert key not in imported_env
+    imported_config = tomllib.loads(
+        (target / "config.toml").read_text(encoding="utf-8")
+    )
+    assert "state_dir" not in imported_config
+    assert "workspace_dir" not in imported_config
+
+
+@pytest.mark.parametrize(
+    "key",
+    [
+        "OPENSQUILLA_GATEWAY_STATE_DIR",
+        "OPENSQUILLA_GATEWAY_WORKSPACE_DIR",
+        "OPENSQUILLA_GATEWAY_ATTACHMENTS__MEDIA_ROOT",
+    ],
+)
+def test_missing_dotenv_external_data_root_blocks_without_publication(
+    tmp_path: Path,
+    key: str,
+) -> None:
+    source = _build_source_home(tmp_path)
+    missing = tmp_path / f"missing-{key.lower()}"
+    env_path = source / ".env"
+    env_path.write_text(
+        env_path.read_text(encoding="utf-8") + f"{key}={missing}\n",
+        encoding="utf-8",
+    )
+    source_before = _file_bytes(source)
+    target = tmp_path / "target-home"
+
+    report = _run(source, target, apply=True)
+
+    assert any(item["kind"] == "preflight/data-root" for item in _errors(report))
+    assert _file_bytes(source) == source_before
+    assert not target.exists()
+    assert not list(tmp_path.glob(".target-home.profile-staging.*"))
+
+
+def test_internal_dotenv_home_selectors_are_removed_before_cli_target_boot(
+    tmp_path: Path,
+) -> None:
+    fake_home = tmp_path / "user-home"
+    fake_home.mkdir()
+    source = _build_source_home(tmp_path / "source-root")
+    env_path = source / ".env"
+    env_path.write_text(
+        env_path.read_text(encoding="utf-8")
+        + f"OPENSQUILLA_STATE_DIR={source}\n"
+        + f"OPENSQUILLA_GATEWAY_CONFIG_PATH={source / 'config.toml'}\n",
+        encoding="utf-8",
+    )
+    target = fake_home / ".opensquilla"
+
+    report = _run(source, target, apply=True)
+
+    assert not _errors(report)
+    imported_env = (target / ".env").read_text(encoding="utf-8")
+    assert "OPENSQUILLA_STATE_DIR" not in imported_env
+    assert "OPENSQUILLA_GATEWAY_CONFIG_PATH" not in imported_env
+    environment = os.environ.copy()
+    environment["HOME"] = str(fake_home)
+    for key in (
+        "OPENSQUILLA_STATE_DIR",
+        "OPENSQUILLA_HOME",
+        "OPENSQUILLA_PROFILE",
+        "OPENSQUILLA_GATEWAY_CONFIG_PATH",
+    ):
+        environment.pop(key, None)
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            (
+                "from opensquilla.env import load_env; "
+                "from opensquilla.paths import default_opensquilla_home; "
+                "home=default_opensquilla_home(); "
+                "load_env(cwd=home.parent, home=home); "
+                "print(default_opensquilla_home())"
+            ),
+        ],
+        cwd=tmp_path,
+        env=environment,
+        capture_output=True,
+        text=True,
+        timeout=20,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stderr
+    assert Path(completed.stdout.strip()) == target
+
+
+def test_external_dotenv_home_selector_blocks_instead_of_reusing_live_profile(
+    tmp_path: Path,
+) -> None:
+    source = _build_source_home(tmp_path)
+    other_home = tmp_path / "other-live-home"
+    other_home.mkdir()
+    env_path = source / ".env"
+    env_path.write_text(
+        env_path.read_text(encoding="utf-8")
+        + f"OPENSQUILLA_STATE_DIR={other_home}\n",
+        encoding="utf-8",
+    )
+    source_before = _file_bytes(source)
+    target = tmp_path / "target-home"
+
+    report = _run(source, target, apply=True)
+
+    assert any(
+        item["kind"] == "preflight/env"
+        and "another live profile" in item["reason"]
+        for item in _errors(report)
+    )
+    assert _file_bytes(source) == source_before
+    assert not target.exists()
+
+
+@pytest.mark.parametrize(
+    "agent_ids",
+    [
+        ["{absolute}"],
+        ["../../../../escape"],
+        ["Agent_A", "agent_a"],
+        ["Research"],
+    ],
+)
+def test_unsafe_or_noncanonical_agent_ids_block_before_staging(
+    tmp_path: Path,
+    agent_ids: list[str],
+) -> None:
+    source = _build_source_home(tmp_path)
+    outside = tmp_path / "agent-id-escape"
+    outside.write_text("preserve", encoding="utf-8")
+    outside.chmod(0o640)
+    before = outside.stat()
+    payload = tomllib.loads((source / "config.toml").read_text(encoding="utf-8"))
+    payload["agents"] = [
+        {
+            "id": str(outside) if agent_id == "{absolute}" else agent_id,
+            "workspace": str(source / "workspace"),
+        }
+        for agent_id in agent_ids
+    ]
+    (source / "config.toml").write_text(tomli_w.dumps(payload), encoding="utf-8")
+    target = tmp_path / "target-home"
+
+    preview = _run(source, target)
+    applied = _run(source, target, apply=True)
+
+    assert any(item["kind"] == "preflight/config" for item in _errors(preview))
+    assert any(item["kind"] == "preflight/config" for item in _errors(applied))
+    assert not target.exists()
+    assert not list(tmp_path.glob(".target-home.profile-staging.*"))
+    assert outside.read_text(encoding="utf-8") == "preserve"
+    after = outside.stat()
+    assert (after.st_mode, after.st_mtime_ns) == (before.st_mode, before.st_mtime_ns)
+
+
 def test_windows_absolute_path_pins_are_dropped_on_posix_import(tmp_path: Path) -> None:
     source = _build_source_home(tmp_path)
     (source / "media").mkdir()
     (source / "media" / "sentinel.bin").write_bytes(b"media")
     payload = tomllib.loads((source / "config.toml").read_text(encoding="utf-8"))
-    payload["state_dir"] = r"C:\SyntheticOpenSquilla\state"
-    payload["workspace_dir"] = r"\\synthetic.invalid\share\workspace"
+    payload["state_dir"] = r"E:\Users\synthetic\.opensquilla\state"
+    payload["workspace_dir"] = r"E:\Users\synthetic\.opensquilla\workspace"
     payload.setdefault("attachments", {})["media_root"] = (
-        r"C:\SyntheticOpenSquilla\media"
+        r"E:\Users\synthetic\.opensquilla\media"
     )
     (source / "config.toml").write_text(tomli_w.dumps(payload), encoding="utf-8")
     target = tmp_path / "target-home"
@@ -747,6 +1775,25 @@ def test_windows_absolute_path_pins_are_dropped_on_posix_import(tmp_path: Path) 
     assert (target / "state" / "sessions.db").is_file()
     assert (target / "workspace" / "MEMORY.md").is_file()
     assert (target / "media" / "sentinel.bin").read_bytes() == b"media"
+
+
+def test_missing_unc_workspace_is_treated_as_external_and_blocks_import(
+    tmp_path: Path,
+) -> None:
+    source = _build_source_home(tmp_path)
+    payload = tomllib.loads((source / "config.toml").read_text(encoding="utf-8"))
+    payload["workspace_dir"] = r"\\synthetic.invalid\share\.opensquilla\workspace"
+    (source / "config.toml").write_text(tomli_w.dumps(payload), encoding="utf-8")
+    target = tmp_path / "target-home"
+
+    report = _run(source, target, apply=True)
+
+    assert any(
+        item["kind"] == "preflight/data-root"
+        and "does not exist" in item["reason"]
+        for item in _errors(report)
+    )
+    assert not target.exists()
 
 
 def test_configured_data_root_overlapping_target_is_rejected(tmp_path: Path) -> None:
@@ -851,6 +1898,35 @@ def test_schema_invalid_config_blocks_apply_without_target_or_marker(tmp_path: P
     assert not (source / IMPORT_MARKER_FILENAME).exists()
 
 
+@pytest.mark.parametrize("nested", [False, True])
+def test_unknown_config_field_blocks_without_silently_deleting_it(
+    tmp_path: Path,
+    nested: bool,
+) -> None:
+    source = _build_source_home(tmp_path)
+    payload = tomllib.loads((source / "config.toml").read_text(encoding="utf-8"))
+    if nested:
+        payload["llm"]["future_provider_option"] = "preserve-me"
+    else:
+        payload["future_profile_option"] = {"value": "preserve-me"}
+    config_bytes = tomli_w.dumps(payload).encode()
+    (source / "config.toml").write_bytes(config_bytes)
+    target = tmp_path / "target-home"
+
+    preview = _run(source, target)
+    applied = _run(source, target, apply=True)
+
+    for report in (preview, applied):
+        assert any(
+            item["kind"] == "preflight/config"
+            and "cannot be preserved losslessly" in item["reason"]
+            for item in _errors(report)
+        )
+    assert (source / "config.toml").read_bytes() == config_bytes
+    assert not target.exists()
+    assert not list(tmp_path.glob(".target-home.profile-staging.*"))
+
+
 def test_unreadable_sessions_database_blocks_apply(tmp_path: Path) -> None:
     source = _build_source_home(tmp_path)
     (source / "state" / "sessions.db").write_bytes(b"not a sqlite database")
@@ -898,6 +1974,257 @@ def test_scheduler_pause_failure_aborts_without_target_or_marker(tmp_path: Path)
     assert not (source / IMPORT_MARKER_FILENAME).exists()
 
 
+def test_symlink_in_source_tree_is_rejected_without_publication(tmp_path: Path) -> None:
+    source = _build_source_home(tmp_path)
+    outside = tmp_path / "outside.txt"
+    outside.write_text("must not be followed", encoding="utf-8")
+    (source / "workspace" / "linked.txt").symlink_to(outside)
+    target = tmp_path / "target-home"
+
+    report = _run(source, target, apply=True)
+
+    assert any(item["kind"] == "preflight/manifest" for item in _errors(report))
+    assert not target.exists()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="mkfifo is unavailable on Windows")
+def test_special_file_in_source_tree_is_rejected_without_publication(
+    tmp_path: Path,
+) -> None:
+    source = _build_source_home(tmp_path)
+    os.mkfifo(source / "workspace" / "synthetic.fifo")
+    target = tmp_path / "target-home"
+
+    report = _run(source, target, apply=True)
+
+    assert any(item["kind"] == "preflight/manifest" for item in _errors(report))
+    assert not target.exists()
+
+
+def test_source_change_after_copy_aborts_before_target_publication(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = _build_source_home(tmp_path)
+    target = tmp_path / "target-home"
+    target.mkdir()
+    existing = target / "existing.txt"
+    existing.write_text("preserve", encoding="utf-8")
+    migrator = OpenSquillaHomeMigrator(
+        OpenSquillaMigrationOptions(
+            source=source,
+            target=target,
+            apply=True,
+            replace_target=True,
+            confirm_replace_target=target,
+        )
+    )
+    original_copy = migrator._copy_source_snapshots
+
+    def copy_then_change(staging: Path) -> None:
+        original_copy(staging)
+        (source / "workspace" / "MEMORY.md").write_text(
+            "source changed during copy", encoding="utf-8"
+        )
+
+    monkeypatch.setattr(migrator, "_copy_source_snapshots", copy_then_change)
+
+    report = migrator.migrate()
+
+    assert any("source changed during import" in item["reason"] for item in _errors(report))
+    assert existing.read_text(encoding="utf-8") == "preserve"
+    assert not list(tmp_path.glob("target-home.backup.*"))
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX parent-component symlink race")
+@pytest.mark.parametrize("replacement", ["relocated", "external"])
+def test_workspace_parent_swap_after_preflight_fails_closed_without_artifacts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    replacement: str,
+) -> None:
+    source = _build_source_home(tmp_path / "source-root")
+    config = tomllib.loads((source / "config.toml").read_text(encoding="utf-8"))
+    config.pop("state_dir", None)
+    config.pop("workspace_dir", None)
+    (source / "config.toml").write_text(tomli_w.dumps(config), encoding="utf-8")
+    target = tmp_path / "target-home"
+    migrator = OpenSquillaHomeMigrator(
+        OpenSquillaMigrationOptions(source=source, target=target, apply=True)
+    )
+    original_copy = migrator._copy_source_snapshots
+    original_parent = source / "workspace" / "memory"
+    relocated_parent = source / "workspace" / "memory-relocated"
+    swap_performed = False
+
+    def swap_parent_then_copy(staging: Path) -> None:
+        nonlocal swap_performed
+        original_parent.rename(relocated_parent)
+        if replacement == "relocated":
+            link_target = Path(relocated_parent.name)
+        else:
+            link_target = tmp_path / "outside-memory"
+            shutil.copytree(relocated_parent, link_target)
+        original_parent.symlink_to(link_target, target_is_directory=True)
+        swap_performed = True
+        original_copy(staging)
+
+    monkeypatch.setattr(migrator, "_copy_source_snapshots", swap_parent_then_copy)
+
+    report = migrator.migrate()
+
+    assert swap_performed, _errors(report)
+    assert any(item["kind"] == "apply" for item in _errors(report))
+    assert not target.exists()
+    assert not list(tmp_path.glob(".target-home.profile-staging.*"))
+    assert not list(tmp_path.glob("target-home.backup.*"))
+    assert not (tmp_path / ".target-home.profile-replace.json").exists()
+    assert not (tmp_path / "profile-replacement-history.json").exists()
+    assert not (source / IMPORT_MARKER_FILENAME).exists()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX parent-component symlink race")
+def test_sqlite_state_parent_swap_never_reopens_source_bundle_or_publishes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = _build_source_home(tmp_path / "source-root")
+    config = tomllib.loads((source / "config.toml").read_text(encoding="utf-8"))
+    config.pop("state_dir", None)
+    config.pop("workspace_dir", None)
+    (source / "config.toml").write_text(tomli_w.dumps(config), encoding="utf-8")
+    source_db = source / "state" / "sessions.db"
+    writer = sqlite3.connect(source_db)
+    try:
+        assert writer.execute("PRAGMA journal_mode=WAL").fetchone() == ("wal",)
+        writer.execute("PRAGMA wal_autocheckpoint=0")
+        writer.execute("CREATE TABLE parent_swap_payload (value TEXT NOT NULL)")
+        writer.commit()
+        writer.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        writer.execute("INSERT INTO parent_swap_payload VALUES ('committed-in-wal')")
+        writer.commit()
+        assert source_db.with_name("sessions.db-wal").stat().st_size > 32
+
+        target = tmp_path / "target-home"
+        migrator = OpenSquillaHomeMigrator(
+            OpenSquillaMigrationOptions(source=source, target=target, apply=True)
+        )
+        original_snapshot_sqlite = migrator._snapshot_sqlite_stores
+        original_copy_sqlite_bundle = migration_module._copy_sqlite_bundle
+        original_state = source / "state"
+        relocated_state = source / "state-relocated"
+        state_swapped = False
+        reopened_source_bundle = False
+
+        def track_sqlite_bundle_reopen(
+            database: Path,
+            destination_dir: Path,
+            *,
+            verify_stable_bundle: bool = False,
+        ) -> Path:
+            nonlocal reopened_source_bundle
+            if state_swapped and database.is_relative_to(original_state):
+                reopened_source_bundle = True
+            return original_copy_sqlite_bundle(
+                database,
+                destination_dir,
+                verify_stable_bundle=verify_stable_bundle,
+            )
+
+        def swap_state_then_snapshot(staging: Path) -> None:
+            nonlocal state_swapped
+            original_state.rename(relocated_state)
+            original_state.symlink_to(relocated_state, target_is_directory=True)
+            state_swapped = True
+            original_snapshot_sqlite(staging)
+
+        monkeypatch.setattr(
+            migration_module,
+            "_copy_sqlite_bundle",
+            track_sqlite_bundle_reopen,
+        )
+        monkeypatch.setattr(migrator, "_snapshot_sqlite_stores", swap_state_then_snapshot)
+
+        report = migrator.migrate()
+    finally:
+        writer.close()
+
+    assert state_swapped, _errors(report)
+    assert not reopened_source_bundle
+    assert any(item["kind"] == "apply" for item in _errors(report))
+    assert not target.exists()
+    assert not list(tmp_path.glob(".target-home.profile-staging.*"))
+    assert not list(tmp_path.glob("target-home.backup.*"))
+    assert not (tmp_path / ".target-home.profile-replace.json").exists()
+    assert not (tmp_path / "profile-replacement-history.json").exists()
+    assert not (source / IMPORT_MARKER_FILENAME).exists()
+
+
+def test_source_gateway_appearing_during_published_validation_rolls_back(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = _build_source_home(tmp_path / "source-root")
+    target = tmp_path / "target-home"
+    (target / "workspace").mkdir(parents=True)
+    original = target / "workspace" / "SOUL.md"
+    original.write_text("original target\n", encoding="utf-8")
+    original_validate = OpenSquillaHomeMigrator._validate_published_target
+
+    def validate_then_start_old_gateway(
+        migrator: OpenSquillaHomeMigrator,
+        journal_snapshot: Any,
+        journal_payload: dict[str, Any],
+    ) -> dict[str, int]:
+        identity = original_validate(migrator, journal_snapshot, journal_payload)
+        (source / "state" / "gateway.pid.lock").write_bytes(
+            b"synthetic old gateway authority\n"
+        )
+        return identity
+
+    monkeypatch.setattr(
+        OpenSquillaHomeMigrator,
+        "_validate_published_target",
+        validate_then_start_old_gateway,
+    )
+
+    report = _run(
+        source,
+        target,
+        apply=True,
+        replace_target=True,
+        confirm_replace_target=target,
+    )
+
+    assert any(
+        "source legacy gateway authority changed" in item["reason"]
+        for item in _errors(report)
+    )
+    assert original.read_text(encoding="utf-8") == "original target\n"
+    assert not list(tmp_path.glob("target-home.backup.*"))
+    assert not list(tmp_path.glob(".target-home.profile-staging.*"))
+    assert not (tmp_path / ".target-home.profile-replace.json").exists()
+
+
+def test_source_authority_files_are_never_copied_or_modified(tmp_path: Path) -> None:
+    source = _build_source_home(tmp_path)
+    legacy_marker = source / IMPORT_MARKER_FILENAME
+    legacy_marker.write_text('{"legacy": true}\n', encoding="utf-8")
+    (source / "desktop-layout-v2.json").write_text("{}\n", encoding="utf-8")
+    old_authority = source / "migration" / "opensquilla" / "old" / "report.json"
+    old_authority.parent.mkdir(parents=True)
+    old_authority.write_text("{}\n", encoding="utf-8")
+    before = _file_bytes(source)
+    target = tmp_path / "target-home"
+
+    report = _run(source, target, apply=True)
+
+    assert not _errors(report)
+    assert _file_bytes(source) == before
+    assert not (target / IMPORT_MARKER_FILENAME).exists()
+    assert not (target / "desktop-layout-v2.json").exists()
+    assert not (target / "migration" / "opensquilla" / "old").exists()
+
+
 def test_non_session_target_collision_requires_overwrite(tmp_path: Path) -> None:
     source = _build_source_home(tmp_path)
     target = tmp_path / "target-home"
@@ -912,6 +2239,112 @@ def test_non_session_target_collision_requires_overwrite(tmp_path: Path) -> None
     assert not (source / IMPORT_MARKER_FILENAME).exists()
 
 
+@pytest.mark.parametrize("external_role", ["state", "workspace", "media", "agent"])
+def test_replacement_blocks_target_external_roots_until_complete_backup_exists(
+    tmp_path: Path,
+    external_role: str,
+) -> None:
+    source = _build_source_home(tmp_path / "source-root")
+    target = tmp_path / "target-home"
+    (target / "state").mkdir(parents=True)
+    (target / "workspace").mkdir()
+    (target / "workspace" / "SOUL.md").write_text("current\n", encoding="utf-8")
+    external = tmp_path / f"external-target-{external_role}"
+    external.mkdir()
+    (external / "sentinel.txt").write_text("do-not-touch\n", encoding="utf-8")
+    payload: dict[str, Any] = {
+        "state_dir": str(external if external_role == "state" else target / "state"),
+        "workspace_dir": str(
+            external if external_role == "workspace" else target / "workspace"
+        ),
+        "port": 18791,
+    }
+    if external_role == "media":
+        payload["attachments"] = {"media_root": str(external)}
+    if external_role == "agent":
+        payload["agents"] = [{"id": "research", "workspace": str(external)}]
+    (target / "config.toml").write_text(tomli_w.dumps(payload), encoding="utf-8")
+    target_before = _file_bytes(target)
+    external_before = _file_bytes(external)
+
+    report = _run(
+        source,
+        target,
+        apply=True,
+        replace_target=True,
+        confirm_replace_target=target,
+    )
+
+    assert any(
+        item["kind"] == "preflight/target"
+        and "would not contain all current profile data" in item["reason"]
+        for item in _errors(report)
+    )
+    assert _file_bytes(target) == target_before
+    assert _file_bytes(external) == external_before
+    assert not list(tmp_path.glob(".target-home.profile-staging.*"))
+    assert not list(tmp_path.glob("target-home.backup.*"))
+    assert not (tmp_path / ".target-home.profile-replace.json").exists()
+
+
+def test_replacement_guard_reads_legacy_target_state_dotenv(
+    tmp_path: Path,
+) -> None:
+    source = _build_source_home(tmp_path / "source-root")
+    target = tmp_path / "target-home"
+    (target / "state").mkdir(parents=True)
+    (target / "workspace").mkdir()
+    (target / "workspace" / "SOUL.md").write_text("current\n", encoding="utf-8")
+    external = tmp_path / "external-legacy-state"
+    external.mkdir()
+    (external / "sentinel.txt").write_text("preserve\n", encoding="utf-8")
+    (target / "state" / ".env").write_text(
+        f"OPENSQUILLA_GATEWAY_STATE_DIR={external}\n",
+        encoding="utf-8",
+    )
+    target_before = _file_bytes(target)
+
+    report = _run(
+        source,
+        target,
+        apply=True,
+        replace_target=True,
+        confirm_replace_target=target,
+    )
+
+    assert any(
+        "would not contain all current profile data" in item["reason"]
+        for item in _errors(report)
+    )
+    assert _file_bytes(target) == target_before
+    assert (external / "sentinel.txt").read_text(encoding="utf-8") == "preserve\n"
+
+
+def test_empty_target_import_rejects_ambient_external_workspace_override(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = _build_source_home(tmp_path)
+    external = tmp_path / "ambient-live-workspace"
+    external.mkdir()
+    (external / "SOUL.md").write_text("unrelated live identity\n", encoding="utf-8")
+    target = tmp_path / "target-home"
+    monkeypatch.setenv("OPENSQUILLA_GATEWAY_WORKSPACE_DIR", str(external))
+
+    report = _run(source, target, apply=True)
+
+    assert any(
+        item["kind"] == "preflight/target"
+        and "cannot share another live data root" in item["reason"]
+        for item in _errors(report)
+    )
+    assert not target.exists()
+    assert not list(tmp_path.glob(".target-home.profile-staging.*"))
+    assert (external / "SOUL.md").read_text(encoding="utf-8") == (
+        "unrelated live identity\n"
+    )
+
+
 def test_overwrite_publish_failure_restores_complete_original_target(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -921,20 +2354,28 @@ def test_overwrite_publish_failure_restores_complete_original_target(
     (target / "state" / "sessions.db").write_bytes(b"original-session-store")
     (target / "workspace").mkdir()
     (target / "workspace" / "original.txt").write_text("original", encoding="utf-8")
-    original_replace = migration_module.os.replace
+    original_move = recovery_module.native_move_no_replace
 
-    def fail_staging_publish(src: str, dst: str) -> None:
+    def fail_staging_publish(
+        src: str | Path,
+        dst: str | Path,
+        **move_options: object,
+    ) -> None:
         source_path = Path(src)
         destination_path = Path(dst)
-        if source_path.name.startswith(".opensquilla-import-") and destination_path == Path(
-            migration_module._ext(target)
-        ):
+        if ".profile-staging." in source_path.name and destination_path == target:
             raise OSError("synthetic publish failure")
-        original_replace(src, dst)
+        original_move(src, dst, **move_options)
 
-    monkeypatch.setattr(migration_module.os, "replace", fail_staging_publish)
+    monkeypatch.setattr(recovery_module, "native_move_no_replace", fail_staging_publish)
 
-    report = _run(source, target, apply=True, overwrite=True)
+    report = _run(
+        source,
+        target,
+        apply=True,
+        overwrite=True,
+        confirm_replace_target=target,
+    )
 
     assert _errors(report)
     assert (target / "state" / "sessions.db").read_bytes() == b"original-session-store"
@@ -942,7 +2383,271 @@ def test_overwrite_publish_failure_restores_complete_original_target(
     assert not (source / IMPORT_MARKER_FILENAME).exists()
 
 
-@pytest.mark.parametrize("failed_phase", ["target-backed-up", "published"])
+@pytest.mark.parametrize(
+    "failure_phase",
+    ["target_parking", "first_publication", "replacement_publication"],
+)
+def test_post_move_unknown_state_preserves_journal_and_all_observed_paths(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    failure_phase: str,
+) -> None:
+    source = _build_source_home(tmp_path)
+    source_before = _file_bytes(source)
+    target = tmp_path / "target-home"
+    replacing = failure_phase in {"target_parking", "replacement_publication"}
+    if replacing:
+        (target / "workspace").mkdir(parents=True)
+        (target / "workspace" / "original.txt").write_text(
+            "original", encoding="utf-8"
+        )
+    original_move = recovery_module.native_move_no_replace
+
+    def move_then_lose_post_state(
+        src: str | Path,
+        dst: str | Path,
+        **move_options: object,
+    ) -> None:
+        source_path = Path(src)
+        destination_path = Path(dst)
+        is_parking = source_path == target and ".backup." in destination_path.name
+        is_publication = (
+            ".profile-staging." in source_path.name and destination_path == target
+        )
+        should_fail = (
+            failure_phase == "target_parking"
+            and is_parking
+            or failure_phase == "first_publication"
+            and not replacing
+            and is_publication
+            or failure_phase == "replacement_publication"
+            and replacing
+            and is_publication
+        )
+        original_move(src, dst, **move_options)
+        if should_fail:
+            raise recovery_module.AtomicStateUnknownError(
+                "synthetic post-move state is unknown"
+            )
+
+    monkeypatch.setattr(
+        recovery_module,
+        "native_move_no_replace",
+        move_then_lose_post_state,
+    )
+
+    report = _run(
+        source,
+        target,
+        apply=True,
+        replace_target=replacing,
+        confirm_replace_target=target if replacing else None,
+    )
+
+    assert _errors(report)
+    journal = tmp_path / ".target-home.profile-replace.json"
+    assert journal.is_file()
+    payload = json.loads(journal.read_text(encoding="utf-8"))
+    staging = Path(payload["staging"])
+    backup = Path(payload["backup"])
+    if failure_phase == "target_parking":
+        assert not target.exists()
+        assert staging.is_dir()
+        assert (backup / "workspace" / "original.txt").read_text(
+            encoding="utf-8"
+        ) == "original"
+    elif failure_phase == "first_publication":
+        assert target.is_dir()
+        assert not staging.exists()
+        assert not backup.exists()
+    else:
+        assert target.is_dir()
+        assert not staging.exists()
+        assert (backup / "workspace" / "original.txt").read_text(
+            encoding="utf-8"
+        ) == "original"
+    assert _file_bytes(source) == source_before
+    inspected = recovery_module.inspect_profile(
+        target,
+        profile_kind="desktop-primary",
+    )
+    assert inspected.outcome == "recovery_required"
+    assert inspected.stable_code == "transaction_incomplete"
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="Windows reacquire failures are intentionally state-unknown",
+)
+def test_lock_handoff_failure_after_publish_rolls_back_complete_original_target(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import opensquilla.recovery.locking as locking_module
+
+    source = _build_source_home(tmp_path)
+    source_before = _file_bytes(source)
+    target = tmp_path / "target-home"
+    (target / "state").mkdir(parents=True)
+    (target / "state" / "sessions.db").write_bytes(b"original-session-store")
+    (target / "workspace").mkdir()
+    (target / "workspace" / "original.txt").write_text("original", encoding="utf-8")
+
+    def fail_handoff(source_state: Path, _destination_state: Path) -> None:
+        if ".profile-staging." in source_state.parent.name:
+            raise recovery_module.UnsafePathError("synthetic lock handoff failure")
+
+    monkeypatch.setattr(
+        locking_module,
+        "rebind_legacy_gateway_lock",
+        fail_handoff,
+    )
+
+    report = _run(
+        source,
+        target,
+        apply=True,
+        overwrite=True,
+        confirm_replace_target=target,
+    )
+
+    assert _errors(report)
+    assert (target / "state" / "sessions.db").read_bytes() == b"original-session-store"
+    assert (target / "workspace" / "original.txt").read_text(encoding="utf-8") == "original"
+    assert not list(tmp_path.glob(".target-home.profile-staging.*"))
+    assert not (tmp_path / ".target-home.profile-replace.json").exists()
+    assert not (source / IMPORT_MARKER_FILENAME).exists()
+    assert _file_bytes(source) == source_before
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="requires Windows lock handoff")
+def test_windows_lock_reacquire_failure_preserves_profile_transaction(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import opensquilla.recovery.locking as locking_module
+
+    source = _build_source_home(tmp_path)
+    source_before = _file_bytes(source)
+    target = tmp_path / "target-home"
+    (target / "state").mkdir(parents=True)
+    (target / "state" / "sessions.db").write_bytes(b"original-session-store")
+    (target / "workspace").mkdir()
+    (target / "workspace" / "original.txt").write_text("original", encoding="utf-8")
+    original_reacquire = locking_module._reacquire_suspended_legacy_locks
+
+    def fail_candidate_reacquire(moves, *, destination: bool) -> None:
+        if destination and any(
+            ".profile-staging." in item.source_state.parent.name for item in moves
+        ):
+            raise recovery_module.LegacyGatewayRunningError(
+                "synthetic old gateway won the lock handoff"
+            )
+        original_reacquire(moves, destination=destination)
+
+    monkeypatch.setattr(
+        locking_module,
+        "_reacquire_suspended_legacy_locks",
+        fail_candidate_reacquire,
+    )
+
+    report = _run(
+        source,
+        target,
+        apply=True,
+        overwrite=True,
+        confirm_replace_target=target,
+    )
+
+    assert _errors(report)
+    journal = tmp_path / ".target-home.profile-replace.json"
+    payload = json.loads(journal.read_text(encoding="utf-8"))
+    backup = Path(payload["backup"])
+    assert payload["phase"] == "target_parked"
+    assert (backup / "state" / "sessions.db").read_bytes() == b"original-session-store"
+    assert (target / "workspace" / "SOUL.md").is_file()
+    assert _file_bytes(source) == source_before
+    inspected = recovery_module.inspect_profile(
+        target,
+        profile_kind="desktop-primary",
+    )
+    assert inspected.outcome == "recovery_required"
+    assert inspected.stable_code == "transaction_incomplete"
+
+
+def test_published_candidate_holds_legacy_gateway_lock_during_validation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = _build_source_home(tmp_path)
+    target = tmp_path / "target-home"
+    observed: list[str] = []
+    original_validate = OpenSquillaHomeMigrator._validate_published_target
+
+    def validate_while_old_gateway_contends(
+        migrator: OpenSquillaHomeMigrator,
+        journal_snapshot: Any,
+        journal_payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        context = multiprocessing.get_context("spawn" if sys.platform == "win32" else "fork")
+        queue = context.Queue()
+        process = context.Process(
+            target=_probe_gateway_lock,
+            args=(str(target / "state"), queue),
+        )
+        process.start()
+        process.join(timeout=10)
+        assert process.exitcode == 0
+        observed.append(queue.get(timeout=1))
+        return original_validate(migrator, journal_snapshot, journal_payload)
+
+    monkeypatch.setattr(
+        OpenSquillaHomeMigrator,
+        "_validate_published_target",
+        validate_while_old_gateway_contends,
+    )
+
+    report = _run(source, target, apply=True)
+
+    assert not _errors(report)
+    assert observed == ["busy"]
+
+
+def test_profile_import_contends_with_desktop_global_cleanup_lock(
+    tmp_path: Path,
+) -> None:
+    source = _build_source_home(tmp_path)
+    target = tmp_path / "target-home"
+    source_before = _file_bytes(source)
+    acquired = threading.Event()
+    release = threading.Event()
+
+    def hold_cleanup_authority() -> None:
+        with ProfileOperationLock(target.parent):
+            acquired.set()
+            release.wait(timeout=10)
+
+    holder = threading.Thread(target=hold_cleanup_authority)
+    holder.start()
+    assert acquired.wait(timeout=5)
+    try:
+        report = _run(source, target, apply=True)
+    finally:
+        release.set()
+        holder.join(timeout=5)
+
+    assert any(item["kind"] == "preflight/lock" for item in _errors(report))
+    assert _file_bytes(source) == source_before
+    assert not target.exists()
+    assert not list(tmp_path.glob(".target-home.profile-staging.*"))
+    assert not (tmp_path / ".target-home.profile-replace.json").exists()
+    assert not (tmp_path / "profile-replacement-history.json").exists()
+
+
+@pytest.mark.parametrize(
+    "failed_phase",
+    ["target_parked", "candidate_published_unvalidated", "committed"],
+)
 def test_journal_phase_write_failure_rolls_back_complete_original_target(
     tmp_path: Path,
     monkeypatch,
@@ -954,24 +2659,427 @@ def test_journal_phase_write_failure_rolls_back_complete_original_target(
     (target / "state" / "sessions.db").write_bytes(b"original-session-store")
     (target / "workspace").mkdir()
     (target / "workspace" / "original.txt").write_text("original", encoding="utf-8")
-    original_atomic_write = migration_module._atomic_write_json
+    original_journal_write = migration_module._cas_publish_json
 
-    def fail_phase_write(path: Path, payload: dict[str, Any]) -> None:
+    def fail_phase_write(snapshot: Any, payload: dict[str, Any]) -> Any:
         if payload.get("phase") == failed_phase:
             raise OSError(f"synthetic {failed_phase} journal failure")
-        original_atomic_write(path, payload)
+        return original_journal_write(snapshot, payload)
 
-    monkeypatch.setattr(migration_module, "_atomic_write_json", fail_phase_write)
+    monkeypatch.setattr(migration_module, "_cas_publish_json", fail_phase_write)
 
-    report = _run(source, target, apply=True, overwrite=True)
+    report = _run(
+        source,
+        target,
+        apply=True,
+        overwrite=True,
+        confirm_replace_target=target,
+    )
 
     assert _errors(report)
     assert (target / "state" / "sessions.db").read_bytes() == b"original-session-store"
     assert (target / "workspace" / "original.txt").read_text(encoding="utf-8") == "original"
     assert not list(tmp_path.glob("target-home.backup.*"))
-    assert not (tmp_path / ".target-home.import-commit.json").exists()
-    assert list(tmp_path.glob(".opensquilla-import-*"))
+    assert not (tmp_path / ".target-home.profile-replace.json").exists()
+    assert not list(tmp_path.glob(".target-home.profile-staging.*"))
+    assert not (tmp_path / "profile-replacement-history.json").exists()
     assert not (source / IMPORT_MARKER_FILENAME).exists()
+
+
+@pytest.mark.parametrize("existing", [False, True])
+def test_import_journal_post_publish_sync_failure_is_atomic_unknown(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    existing: bool,
+) -> None:
+    from opensquilla.recovery.config_patch import ConfigSnapshot
+
+    journal = tmp_path / ".target.profile-replace.json"
+    if existing:
+        journal.write_text('{"phase":"prepared"}\n', encoding="utf-8")
+    snapshot = ConfigSnapshot.capture(journal)
+    payload = {"phase": "validated", "transaction_id": str(uuid.uuid4())}
+
+    def fail_directory_sync(_path: Path) -> None:
+        raise OSError("synthetic post-publication directory fsync failure")
+
+    monkeypatch.setattr(migration_module, "_fsync_directory", fail_directory_sync)
+
+    with pytest.raises(recovery_module.AtomicStateUnknownError):
+        migration_module._cas_publish_json(snapshot, payload)
+
+    assert json.loads(journal.read_text(encoding="utf-8")) == payload
+
+
+def test_crash_after_prepared_journal_is_cleaned_before_retry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = _build_source_home(tmp_path)
+    target = tmp_path / "target-home"
+    original_journal_write = migration_module._cas_publish_json
+
+    with monkeypatch.context() as scoped:
+        def crash_after_prepared(snapshot: Any, payload: dict[str, Any]) -> Any:
+            published = original_journal_write(snapshot, payload)
+            if payload.get("phase") == "prepared":
+                raise KeyboardInterrupt("synthetic crash after prepared")
+            return published
+
+        scoped.setattr(migration_module, "_cas_publish_json", crash_after_prepared)
+        with pytest.raises(KeyboardInterrupt, match="synthetic crash"):
+            _run(source, target, apply=True)
+
+    journal = tmp_path / ".target-home.profile-replace.json"
+    old_staging = next(tmp_path.glob(".target-home.profile-staging.*"))
+    assert journal.is_file()
+    assert not target.exists()
+
+    report = _run(source, target, apply=True)
+
+    assert not _errors(report)
+    assert any(item["kind"] == "recovery" for item in report["items"])
+    assert not journal.exists()
+    assert not old_staging.exists()
+    assert (target / "workspace" / "MEMORY.md").is_file()
+
+
+def test_crash_after_empty_target_park_restores_before_retry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = _build_source_home(tmp_path)
+    target = tmp_path / "target-home"
+    target.mkdir()
+    original_journal_write = migration_module._cas_publish_json
+
+    with monkeypatch.context() as scoped:
+        def crash_before_parked_phase(snapshot: Any, payload: dict[str, Any]) -> Any:
+            if payload.get("phase") == "target_parked":
+                raise KeyboardInterrupt("synthetic crash after empty target park")
+            return original_journal_write(snapshot, payload)
+
+        scoped.setattr(
+            migration_module,
+            "_cas_publish_json",
+            crash_before_parked_phase,
+        )
+        with pytest.raises(KeyboardInterrupt, match="empty target park"):
+            _run(source, target, apply=True)
+
+    journal = tmp_path / ".target-home.profile-replace.json"
+    assert json.loads(journal.read_text(encoding="utf-8"))["phase"] == "prepared"
+    assert not target.exists()
+    assert len(list(tmp_path.glob("target-home.backup.*"))) == 1
+
+    report = _run(source, target, apply=True)
+
+    assert not _errors(report)
+    assert any(item["kind"] == "recovery" for item in report["items"])
+    assert not journal.exists()
+    assert (target / "workspace" / "MEMORY.md").is_file()
+
+
+def test_published_recovery_required_candidate_is_rolled_back(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = _build_source_home(tmp_path)
+    target = tmp_path / "target-home"
+    target.mkdir()
+    original = target / "original.txt"
+    original.write_text("preserve", encoding="utf-8")
+
+    monkeypatch.setattr(
+        recovery_module,
+        "inspect_profile",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            outcome="recovery_required",
+            stable_code="synthetic_layout_failure",
+            allowed_actions=(),
+        ),
+    )
+
+    report = _run(
+        source,
+        target,
+        apply=True,
+        replace_target=True,
+        confirm_replace_target=target,
+    )
+
+    assert any("synthetic_layout_failure" in item["reason"] for item in _errors(report))
+    assert original.read_text(encoding="utf-8") == "preserve"
+    assert not list(tmp_path.glob("target-home.backup.*"))
+    assert not list(tmp_path.glob(".target-home.profile-staging.*"))
+    assert not (tmp_path / ".target-home.profile-replace.json").exists()
+    assert not (tmp_path / "profile-replacement-history.json").exists()
+
+
+def test_history_publication_failure_rolls_back_target_and_backup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = _build_source_home(tmp_path)
+    target = tmp_path / "target-home"
+    target.mkdir()
+    original = target / "original.txt"
+    original.write_text("preserve", encoding="utf-8")
+    original_publish = migration_module._cas_publish_bytes
+
+    def fail_history(snapshot: Any, data: bytes, *, mode: int) -> Any:
+        if snapshot.path.name == "profile-replacement-history.json":
+            raise OSError("synthetic history publication failure")
+        return original_publish(snapshot, data, mode=mode)
+
+    monkeypatch.setattr(migration_module, "_cas_publish_bytes", fail_history)
+
+    report = _run(
+        source,
+        target,
+        apply=True,
+        replace_target=True,
+        confirm_replace_target=target,
+    )
+
+    assert any("history publication failure" in item["reason"] for item in _errors(report))
+    assert original.read_text(encoding="utf-8") == "preserve"
+    assert not list(tmp_path.glob("target-home.backup.*"))
+    assert not list(tmp_path.glob(".target-home.profile-staging.*"))
+    assert not (tmp_path / ".target-home.profile-replace.json").exists()
+    assert not (tmp_path / "profile-replacement-history.json").exists()
+
+
+def test_source_change_after_history_publication_rolls_back_before_commit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = _build_source_home(tmp_path / "source-root")
+    target = tmp_path / "target-home"
+    target.mkdir()
+    original = target / "original.txt"
+    original.write_text("preserve", encoding="utf-8")
+    original_history = OpenSquillaHomeMigrator._write_replacement_history
+
+    def publish_history_then_change_source(
+        migrator: OpenSquillaHomeMigrator,
+        backup: Path,
+        journal_payload: dict[str, Any],
+        *,
+        allow_existing: bool,
+    ) -> Any:
+        publication = original_history(
+            migrator,
+            backup,
+            journal_payload,
+            allow_existing=allow_existing,
+        )
+        (source / "workspace" / "MEMORY.md").write_text(
+            "changed after history publication\n",
+            encoding="utf-8",
+        )
+        return publication
+
+    monkeypatch.setattr(
+        OpenSquillaHomeMigrator,
+        "_write_replacement_history",
+        publish_history_then_change_source,
+    )
+
+    report = _run(
+        source,
+        target,
+        apply=True,
+        replace_target=True,
+        confirm_replace_target=target,
+    )
+
+    assert any("source changed during import" in item["reason"] for item in _errors(report))
+    assert original.read_text(encoding="utf-8") == "preserve"
+    assert not (tmp_path / ".target-home.profile-replace.json").exists()
+
+
+@pytest.mark.parametrize("target_existed", [False, True])
+def test_validated_import_crash_recovers_by_rolling_back_not_committing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    target_existed: bool,
+) -> None:
+    source = _build_source_home(tmp_path / "source-root")
+    target = tmp_path / "target-home"
+    if target_existed:
+        (target / "workspace").mkdir(parents=True)
+        (target / "state").mkdir()
+        (target / "config.toml").write_text(
+            'state_dir = "state"\nworkspace_dir = "workspace"\n',
+            encoding="utf-8",
+        )
+        (target / "workspace" / "original.txt").write_text(
+            "preserve\n",
+            encoding="utf-8",
+        )
+    original_publish = migration_module._cas_publish_json
+
+    def crash_before_committed_publish(snapshot: Any, payload: dict[str, Any]) -> Any:
+        if payload.get("phase") == "committed":
+            raise recovery_module.AtomicStateUnknownError(
+                "synthetic process loss after validated phase"
+            )
+        return original_publish(snapshot, payload)
+
+    with monkeypatch.context() as scoped:
+        scoped.setattr(
+            migration_module,
+            "_cas_publish_json",
+            crash_before_committed_publish,
+        )
+        report = _run(
+            source,
+            target,
+            apply=True,
+            replace_target=target_existed,
+            confirm_replace_target=target if target_existed else None,
+        )
+
+    assert _errors(report)
+    journal = tmp_path / ".target-home.profile-replace.json"
+    journal_payload = json.loads(journal.read_text(encoding="utf-8"))
+    assert journal_payload["phase"] == "validated"
+    before = recovery_module.inspect_profile(target, profile_kind="desktop-primary")
+    recovered = recover_profile_transaction(
+        target,
+        transaction_id=before.transaction_id,
+        expected_revision=before.revision,
+        import_recoverer=migration_module.recover_interrupted_profile_import,
+    )
+
+    assert recovered.outcome == "ready"
+    assert not journal.exists()
+    if target_existed:
+        assert (target / "workspace" / "original.txt").read_text(encoding="utf-8") == (
+            "preserve\n"
+        )
+        history = json.loads(
+            (tmp_path / "profile-replacement-history.json").read_text(encoding="utf-8")
+        )
+        assert all(
+            item.get("transaction_id") != journal_payload["transaction_id"]
+            for item in history["backups"]
+        )
+    else:
+        assert not target.exists()
+        assert not (tmp_path / "profile-replacement-history.json").exists()
+
+
+def test_committed_journal_cannot_bypass_missing_history(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = _build_source_home(tmp_path)
+    target = tmp_path / "target-home"
+    (target / "workspace").mkdir(parents=True)
+    (target / "workspace" / "SOUL.md").write_text("previous\n", encoding="utf-8")
+    (target / "config.toml").write_text("port = 18791\n", encoding="utf-8")
+    transaction_id = "00000000-0000-0000-0000-000000000101"
+    monkeypatch.setattr(
+        migration_module.uuid,
+        "uuid4",
+        lambda: uuid.UUID(transaction_id),
+    )
+    finalized = tmp_path / (
+        f".target-home.profile-replace.{transaction_id}.committed.json"
+    )
+    collision = b"existing recovery authority\n"
+    finalized.write_bytes(collision)
+    report = _run(
+        source,
+        target,
+        apply=True,
+        replace_target=True,
+        confirm_replace_target=target,
+    )
+    assert not _errors(report)
+    journal = tmp_path / ".target-home.profile-replace.json"
+    assert json.loads(journal.read_text(encoding="utf-8"))["phase"] == "committed"
+    assert finalized.read_bytes() == collision
+    (tmp_path / "profile-replacement-history.json").unlink()
+
+    inspected = recovery_module.inspect_profile(target, profile_kind="desktop-primary")
+
+    assert inspected.outcome == "recovery_required"
+    assert inspected.stable_code == "transaction_incomplete"
+
+
+def test_desktop_marker_after_hardened_journal_finalize_keeps_transaction_complete(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = _build_source_home(tmp_path)
+    target = tmp_path / "target-home"
+
+    monkeypatch.setenv("OPENSQUILLA_PROFILE_KIND", "desktop-primary")
+
+    report = _run(source, target, apply=True)
+
+    assert not _errors(report)
+    assert (target / "desktop-layout-v2.json").is_file()
+    journal = tmp_path / ".target-home.profile-replace.json"
+    assert not journal.exists()
+    assert len(list(tmp_path.glob(".target-home.profile-replace.*.committed.json"))) == 1
+    restarted = recovery_module.inspect_profile(
+        target,
+        profile_kind="desktop-primary",
+    )
+    assert restarted.outcome == "ready"
+    assert restarted.stable_code == "canonical_workspace"
+
+
+def test_reconcile_finalizes_retained_commit_after_target_metadata_changes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = _build_source_home(tmp_path / "first-source")
+    target = tmp_path / "target-home"
+    transaction_id = "00000000-0000-0000-0000-000000000102"
+    finalized = tmp_path / (
+        f".target-home.profile-replace.{transaction_id}.committed.json"
+    )
+    finalized.write_bytes(b"existing recovery authority\n")
+    with monkeypatch.context() as scoped:
+        scoped.setattr(
+            migration_module.uuid,
+            "uuid4",
+            lambda: uuid.UUID(transaction_id),
+        )
+        first = _run(source, target, apply=True)
+
+    assert not _errors(first)
+    journal = tmp_path / ".target-home.profile-replace.json"
+    assert journal.is_file()
+    (target / "operator-note.txt").write_text("post-commit change\n", encoding="utf-8")
+    finalized.unlink()
+
+    reconciled = recovery_module.reconcile_profile(
+        target,
+        profile_kind="desktop-primary",
+    )
+
+    assert reconciled.outcome in {"ready", "attention"}
+    assert not journal.exists()
+    assert json.loads(finalized.read_text(encoding="utf-8"))["phase"] == "committed"
+
+    second_source = _build_source_home(tmp_path / "second-source")
+    (second_source / "workspace" / "MEMORY.md").write_text(
+        "# second source\n",
+        encoding="utf-8",
+    )
+    second = _run(
+        second_source,
+        target,
+        apply=True,
+        replace_target=True,
+        confirm_replace_target=target,
+    )
+
+    assert not _errors(second)
+    assert (target / "workspace" / "MEMORY.md").read_text(encoding="utf-8") == (
+        "# second source\n"
+    )
 
 
 def test_dry_run_config_compatibility_pass_has_no_global_side_effects(
@@ -1011,7 +3119,7 @@ def _write_simple_sqlite(path: Path, value: str) -> None:
         connection.close()
 
 
-def test_all_imported_sqlite_stores_have_consistent_pristine_snapshots(
+def test_all_imported_sqlite_stores_are_consistent_without_report_copies(
     tmp_path: Path,
 ) -> None:
     source = _build_source_home(tmp_path)
@@ -1023,7 +3131,6 @@ def test_all_imported_sqlite_stores_have_consistent_pristine_snapshots(
     report = _run(source, target, apply=True)
 
     assert not _errors(report)
-    snapshots = Path(report["output_dir"]) / "db-snapshots"
     expected = [
         Path("sessions.db"),
         Path("scheduler.db"),
@@ -1032,13 +3139,19 @@ def test_all_imported_sqlite_stores_have_consistent_pristine_snapshots(
         Path("agents/main/memory.db"),
     ]
     for relative in expected:
-        snapshot = snapshots / relative
-        assert snapshot.is_file(), relative
-        connection = sqlite3.connect(snapshot)
+        imported = target / "state" / relative
+        assert imported.is_file(), relative
+        connection = sqlite3.connect(imported)
         try:
             assert connection.execute("PRAGMA quick_check").fetchone() == ("ok",)
         finally:
             connection.close()
+    output_dir = Path(report["output_dir"])
+    assert not any(
+        path.suffix in {".db", ".sqlite", ".sqlite3"}
+        for path in output_dir.rglob("*")
+        if path.is_file()
+    )
 
 
 def test_wal_only_committed_row_survives_as_normalized_sqlite_snapshot(
@@ -1061,7 +3174,6 @@ def test_wal_only_committed_row_survives_as_normalized_sqlite_snapshot(
         target = tmp_path / "target-home"
         report = _run(source, target, apply=True)
         source_after = _file_bytes(source)
-        source_after.pop(IMPORT_MARKER_FILENAME)
     finally:
         writer.close()
 
@@ -1178,29 +3290,56 @@ def test_conflicting_split_state_roots_fail_without_publishing(tmp_path: Path) -
 def test_interrupted_overwrite_is_restored_before_retry(tmp_path: Path) -> None:
     source = _build_source_home(tmp_path)
     target = tmp_path / "target-home"
-    interrupted_backup = tmp_path / "target-home.backup.interrupted"
+    transaction_id = "123e4567-e89b-42d3-a456-426614174000"
+    interrupted_backup = tmp_path / f"target-home.backup.{transaction_id}"
     (interrupted_backup / "workspace").mkdir(parents=True)
     (interrupted_backup / "workspace" / "original.txt").write_text(
         "original", encoding="utf-8"
     )
-    interrupted_staging = tmp_path / ".opensquilla-import-interrupted"
+    interrupted_staging = tmp_path / f".target-home.profile-staging.{transaction_id}"
     interrupted_staging.mkdir()
     (interrupted_staging / "partial.txt").write_text("partial", encoding="utf-8")
-    journal = tmp_path / ".target-home.import-commit.json"
+    journal = tmp_path / ".target-home.profile-replace.json"
     journal.write_text(
         json.dumps(
             {
-                "target": str(target),
-                "staging": str(interrupted_staging),
-                "backup": str(interrupted_backup),
-                "phase": "target-backed-up",
+                "schema_version": 1,
+                "operation": "profile-import",
+                "transaction_id": transaction_id,
+                "source": _normalized_path(source),
+                "source_kind": "cli-home",
+                "target": _normalized_path(target),
+                "staging": _normalized_path(interrupted_staging),
+                "backup": _normalized_path(interrupted_backup),
+                "phase": "target_parked",
                 "target_existed": True,
+                "target_had_real_data": True,
+                "target_was_empty": False,
+                "identities": {
+                    "source": migration_module._path_identity_payload(source),
+                    "original_target": migration_module._path_identity_payload(
+                        interrupted_backup
+                    ),
+                    "staging": migration_module._path_identity_payload(
+                        interrupted_staging
+                    ),
+                    "backup": migration_module._path_identity_payload(
+                        interrupted_backup
+                    ),
+                    "candidate": None,
+                },
             }
         ),
         encoding="utf-8",
     )
 
-    report = _run(source, target, apply=True, overwrite=True)
+    report = _run(
+        source,
+        target,
+        apply=True,
+        overwrite=True,
+        confirm_replace_target=target,
+    )
 
     assert not _errors(report)
     assert any(item["kind"] == "recovery" for item in report["items"])
@@ -1215,11 +3354,9 @@ def test_interrupted_overwrite_is_restored_before_retry(tmp_path: Path) -> None:
     assert (target / "workspace" / "MEMORY.md").is_file()
 
 
-@pytest.mark.parametrize("journal_phase", [None, "prepared", "published"])
-def test_completed_receipt_makes_retry_idempotent_across_marker_window(
+def test_explicit_retry_never_reuses_old_receipt_and_imports_new_source_state(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    journal_phase: str | None,
 ) -> None:
     fake_home = tmp_path / "userhome"
     fake_home.mkdir()
@@ -1228,55 +3365,360 @@ def test_completed_receipt_makes_retry_idempotent_across_marker_window(
     source = fake_home / ".opensquilla"
     target = tmp_path / "target-home"
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: fake_home))
+    legacy_marker = source / IMPORT_MARKER_FILENAME
+    legacy_marker.write_text(
+        json.dumps({"target": str(tmp_path / "stale-target"), "transaction_id": "stale"}),
+        encoding="utf-8",
+    )
+    first = _run(source, target, apply=True)
+    assert not _errors(first)
+    first_transaction_id = Path(first["output_dir"]).name
+
+    assert detect_legacy_cli_home(target) == source
+    (source / "workspace" / "MEMORY.md").write_text(
+        "# Memory index\n\n- updated after first import\n",
+        encoding="utf-8",
+    )
+    connection = sqlite3.connect(source / "state" / "sessions.db")
+    try:
+        connection.execute(
+            "INSERT INTO synthetic_sessions VALUES (?, ?)",
+            ("new-session", "new synthetic conversation"),
+        )
+        connection.commit()
+    finally:
+        connection.close()
+    source_before_retry = _file_bytes(source)
+
+    refused = _run(source, target, apply=True)
+
+    assert any(item["kind"] == "preflight/target" for item in _errors(refused))
+    assert Path(first["output_dir"]).is_dir()
+
+    retried = _run(
+        source,
+        target,
+        apply=True,
+        replace_target=True,
+        confirm_replace_target=target,
+    )
+
+    assert not _errors(retried)
+    assert Path(retried["output_dir"]).name != first_transaction_id
+    assert (target / "workspace" / "MEMORY.md").read_text(encoding="utf-8") == (
+        "# Memory index\n\n- updated after first import\n"
+    )
+    target_connection = sqlite3.connect(target / "state" / "sessions.db")
+    try:
+        imported_ids = {
+            row[0]
+            for row in target_connection.execute(
+                "SELECT session_id FROM synthetic_sessions"
+            )
+        }
+    finally:
+        target_connection.close()
+    assert imported_ids == {"synthetic-session", "new-session"}
+    assert not (tmp_path / ".target-home.profile-replace.json").exists()
+    assert _file_bytes(source) == source_before_retry
+    assert detect_legacy_cli_home(target) == source
+
+
+@pytest.mark.parametrize("tamper", ["schema-forward", "extra", "wrong-operation"])
+def test_cli_retry_never_mutates_an_inexact_replacement_journal(
+    tmp_path: Path,
+    tamper: str,
+) -> None:
+    source = _build_source_home(tmp_path)
+    target = tmp_path / "target-home"
+    transaction_id = str(uuid.uuid4())
+    backup = tmp_path / f"target-home.backup.{transaction_id}"
+    (backup / "workspace").mkdir(parents=True)
+    (backup / "workspace" / "original.txt").write_text("original\n", encoding="utf-8")
+    staging = tmp_path / f".target-home.profile-staging.{transaction_id}"
+    staging.mkdir()
+    (staging / "candidate.txt").write_text("candidate\n", encoding="utf-8")
+    payload: dict[str, Any] = {
+        "schema_version": 1,
+        "operation": "profile-import",
+        "source_kind": "cli-home",
+        "transaction_id": transaction_id,
+        "source": _normalized_path(source),
+        "target": _normalized_path(target),
+        "staging": _normalized_path(staging),
+        "backup": _normalized_path(backup),
+        "phase": "target_parked",
+        "target_existed": True,
+        "target_had_real_data": True,
+        "target_was_empty": False,
+        "identities": {
+            "source": migration_module._path_identity_payload(source),
+            "original_target": migration_module._path_identity_payload(backup),
+            "staging": migration_module._path_identity_payload(staging),
+            "backup": migration_module._path_identity_payload(backup),
+            "candidate": None,
+        },
+    }
+    if tamper == "schema-forward":
+        payload["schema_version"] = 2
+    elif tamper == "extra":
+        payload["future_field"] = True
+    else:
+        payload["operation"] = "restore-profile"
+    journal = tmp_path / ".target-home.profile-replace.json"
+    journal.write_text(json.dumps(payload) + "\n", encoding="utf-8")
+    journal_before = journal.read_bytes()
+    source_before = _file_bytes(source)
+    backup_before = _file_bytes(backup)
+    staging_before = _file_bytes(staging)
+
+    report = _run(
+        source,
+        target,
+        apply=True,
+        replace_target=True,
+        confirm_replace_target=target,
+    )
+
+    assert any(item["kind"] == "preflight/recovery" for item in _errors(report))
+    assert journal.read_bytes() == journal_before
+    assert _file_bytes(source) == source_before
+    assert _file_bytes(backup) == backup_before
+    assert _file_bytes(staging) == staging_before
+    assert not target.exists()
+
+
+def test_layout_receipt_is_only_completion_authority(tmp_path: Path) -> None:
+    source = _build_source_home(tmp_path)
+    target = tmp_path / "target-home"
 
     first = _run(source, target, apply=True)
     assert not _errors(first)
-    transaction_id = Path(first["output_dir"]).name
-    (source / IMPORT_MARKER_FILENAME).unlink()
+    output_dir = Path(first["output_dir"])
+    layout_receipt = output_dir / "layout-receipt.json"
+    report_path = output_dir / "report.json"
 
-    journal = tmp_path / ".target-home.import-commit.json"
-    if journal_phase is not None:
-        journal.write_text(
-            json.dumps(
-                {
-                    "target": str(target),
-                    "staging": str(tmp_path / f".opensquilla-import-{transaction_id}"),
-                    "backup": str(tmp_path / f"target-home.backup.{transaction_id}"),
-                    "phase": journal_phase,
-                    "target_existed": False,
-                }
-            ),
-            encoding="utf-8",
+    # Arbitrary report content cannot revoke or forge the committed import.
+    report_path.write_text(
+        json.dumps(
+            {
+                "paused_jobs": [
+                    {"id": "private-id", "name": "private name", "cron_expr": "* * * * *"}
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    assert migration_module._matching_import_receipt(source, target) is not None
+    retried = _run(source, target, apply=True)
+    assert any(item["kind"] == "preflight/target" for item in _errors(retried))
+    assert Path(first["output_dir"]) == output_dir
+
+    # The authority schema is exact: detailed scheduler rows are not accepted
+    # even if injected into the otherwise-valid layout receipt.
+    receipt = json.loads(layout_receipt.read_text(encoding="utf-8"))
+    receipt["paused_jobs"] = [
+        {"id": "private-id", "name": "private name", "cron_expr": "* * * * *"}
+    ]
+    layout_receipt.write_text(json.dumps(receipt), encoding="utf-8")
+    assert migration_module._matching_import_receipt(source, target) is None
+
+    receipt.pop("paused_jobs")
+    receipt["source_identity"]["private_scheduler_name"] = "must not persist"
+    layout_receipt.write_text(json.dumps(receipt), encoding="utf-8")
+    assert migration_module._matching_import_receipt(source, target) is None
+
+    # Conversely, a detailed report cannot replace a missing layout receipt.
+    layout_receipt.unlink()
+    assert migration_module._matching_import_receipt(source, target) is None
+
+
+def test_committed_import_verifier_returns_only_locked_protocol_metadata(
+    tmp_path: Path,
+) -> None:
+    source = _build_source_home(tmp_path)
+    target = tmp_path / "target-home"
+    report = _run(source, target, apply=True)
+    transaction_id = Path(report["output_dir"]).name
+
+    verified = migration_module.verify_committed_profile_import(
+        source,
+        target,
+        source_kind="cli-home",
+        transaction_id=transaction_id,
+    )
+
+    assert set(verified) == {
+        "schema_version",
+        "outcome",
+        "stable_code",
+        "source",
+        "source_kind",
+        "target",
+        "transaction_id",
+        "matching_transaction_ids",
+        "provider_connection",
+        "report",
+    }
+    assert verified["outcome"] == "verified"
+    assert verified["transaction_id"] == transaction_id
+    assert verified["matching_transaction_ids"] == [transaction_id]
+    assert verified["provider_connection"] == {
+        "provider": "openrouter",
+        "model": "deepseek/deepseek-v4-flash",
+        "base_url": "https://openrouter.ai/api/v1",
+        "api_key_env": "OPENROUTER_API_KEY",
+    }
+    assert _normalized_path(Path(verified["report"]["output_dir"])) == _normalized_path(
+        Path(report["output_dir"])
+    )
+    serialized = json.dumps(verified, ensure_ascii=False)
+    assert DUMMY_INLINE_KEY not in serialized
+    assert "dummy session content" not in serialized
+
+    excluded = migration_module.verify_committed_profile_import(
+        source,
+        target,
+        source_kind="cli-home",
+        excluded_transaction_ids=(transaction_id,),
+    )
+    assert excluded["outcome"] == "not_found"
+    assert excluded["matching_transaction_ids"] == []
+    assert excluded["report"] is None
+
+
+def test_committed_import_verifier_never_emits_private_provider_url(
+    tmp_path: Path,
+) -> None:
+    source = _build_source_home(tmp_path)
+    target = tmp_path / "target-home"
+    report = _run(source, target, apply=True)
+    config_path = target / "config.toml"
+    config = config_path.read_text(encoding="utf-8")
+    config_path.write_text(
+        config.replace(
+            "https://openrouter.ai/api/v1",
+            "https://user:secret@private.invalid/v1?token=hidden",
+        ),
+        encoding="utf-8",
+    )
+
+    verified = migration_module.verify_committed_profile_import(
+        source,
+        target,
+        source_kind="cli-home",
+        transaction_id=Path(report["output_dir"]).name,
+    )
+
+    serialized = json.dumps(verified, ensure_ascii=False)
+    assert verified["outcome"] == "unsafe"
+    assert verified["stable_code"] == "profile_import_provider_connection_unsafe"
+    assert "secret" not in serialized
+    assert "hidden" not in serialized
+
+
+def test_committed_import_verifier_rejects_non_string_or_invalid_provider_fields(
+    tmp_path: Path,
+) -> None:
+    source = _build_source_home(tmp_path)
+    target = tmp_path / "target-home"
+    report = _run(source, target, apply=True)
+    transaction_id = Path(report["output_dir"]).name
+    config_path = target / "config.toml"
+    original = tomllib.loads(config_path.read_text(encoding="utf-8"))
+    invalid_values: tuple[tuple[str, object], ...] = (
+        ("provider", {"secret": "TOPSECRET"}),
+        ("model", ["TOPSECRET"]),
+        ("base_url", {"secret": "TOPSECRET"}),
+        ("api_key_env", ["TOPSECRET"]),
+        ("api_key_env", "INVALID-ENV-NAME"),
+        ("api_key_env", "PATH"),
+        ("api_key_env", "PYTHONPATH"),
+        ("api_key_env", "NODE_OPTIONS"),
+        ("api_key_env", "LD_PRELOAD"),
+    )
+
+    for field, value in invalid_values:
+        candidate = json.loads(json.dumps(original))
+        candidate["llm"][field] = value
+        config_path.write_text(tomli_w.dumps(candidate), encoding="utf-8")
+
+        verified = migration_module.verify_committed_profile_import(
+            source,
+            target,
+            source_kind="cli-home",
+            transaction_id=transaction_id,
         )
 
-    assert detect_legacy_cli_home(target) is None
-    retried = _run(source, target, apply=True)
+        serialized = json.dumps(verified, ensure_ascii=False)
+        assert verified["outcome"] == "unsafe"
+        assert verified["stable_code"] == "profile_import_provider_connection_unsafe"
+        assert "TOPSECRET" not in serialized
+        assert "INVALID-ENV-NAME" not in serialized
 
-    assert not _errors(retried)
-    assert retried["output_dir"] == first["output_dir"]
-    assert not journal.exists()
-    assert [path.name for path in (target / "migration" / "opensquilla").iterdir()] == [
-        transaction_id
+    for accepted_env in ("CUSTOM_LLM_KEY", "HF_TOKEN"):
+        candidate = json.loads(json.dumps(original))
+        candidate["llm"]["api_key_env"] = accepted_env
+        config_path.write_text(tomli_w.dumps(candidate), encoding="utf-8")
+        verified = migration_module.verify_committed_profile_import(
+            source,
+            target,
+            source_kind="cli-home",
+            transaction_id=transaction_id,
+        )
+        assert verified["outcome"] == "verified"
+        assert verified["provider_connection"]["api_key_env"] == accepted_env
+
+
+def test_persisted_migration_reports_do_not_store_scheduler_rows(tmp_path: Path) -> None:
+    source = _build_source_home(tmp_path)
+    target = tmp_path / "target-home"
+
+    report = _run(source, target, apply=True)
+
+    assert not _errors(report)
+    # The stdout report remains detailed for the active user interaction.
+    assert report["paused_jobs"] == [
+        {"id": "job-1", "name": "dummy daily job", "cron_expr": "0 9 * * *"}
     ]
-    marker = json.loads((source / IMPORT_MARKER_FILENAME).read_text(encoding="utf-8"))
-    assert marker["transaction_id"] == transaction_id
-    assert detect_legacy_cli_home(target) is None
+    output_dir = Path(report["output_dir"])
+    persisted_report = json.loads((output_dir / "report.json").read_text(encoding="utf-8"))
+    persisted_bytes = json.dumps(persisted_report, ensure_ascii=False)
+    summary = (output_dir / "summary.md").read_text(encoding="utf-8")
+
+    assert persisted_report["paused_job_count"] == 1
+    assert "paused_jobs" not in persisted_report
+    for private_value in ("job-1", "dummy daily job", "0 9 * * *"):
+        assert private_value not in persisted_bytes
+        assert private_value not in summary
 
 
 def test_dry_run_reports_interrupted_commit_without_mutating_it(tmp_path: Path) -> None:
     source = _build_source_home(tmp_path)
     target = tmp_path / "target-home"
-    backup = tmp_path / "target-home.backup.interrupted"
+    transaction_id = "123e4567-e89b-42d3-a456-426614174000"
+    backup = tmp_path / f"target-home.backup.{transaction_id}"
     backup.mkdir()
-    staging = tmp_path / ".opensquilla-import-interrupted"
+    staging = tmp_path / f".target-home.profile-staging.{transaction_id}"
     staging.mkdir()
-    journal = tmp_path / ".target-home.import-commit.json"
+    journal = tmp_path / ".target-home.profile-replace.json"
     payload = {
-        "target": str(target),
-        "staging": str(staging),
-        "backup": str(backup),
-        "phase": "target-backed-up",
+        "schema_version": 1,
+        "transaction_id": transaction_id,
+        "source": _normalized_path(source),
+        "target": _normalized_path(target),
+        "staging": _normalized_path(staging),
+        "backup": _normalized_path(backup),
+        "phase": "target_parked",
         "target_existed": True,
+        "target_was_empty": False,
+        "identities": {
+            "source": migration_module._path_identity_payload(source),
+            "original_target": migration_module._path_identity_payload(backup),
+            "staging": migration_module._path_identity_payload(staging),
+            "backup": migration_module._path_identity_payload(backup),
+            "candidate": None,
+        },
     }
     journal.write_text(json.dumps(payload), encoding="utf-8")
 
@@ -1407,5 +3849,5 @@ def test_orchestrator_runs_opensquilla_source(tmp_path: Path, monkeypatch) -> No
     )
 
     assert report["source_kind"] == "cli-home"
-    assert report["target"] == str(target)
+    assert _normalized_path(Path(report["target"])) == _normalized_path(target)
     assert not any(item["status"] == "error" for item in report["items"])

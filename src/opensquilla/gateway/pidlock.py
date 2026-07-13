@@ -30,6 +30,12 @@ import sys
 from pathlib import Path
 from typing import IO, Any, cast
 
+from opensquilla.recovery.locking import (
+    GatewayLegacyLease,
+    acquire_gateway_legacy_lease,
+    release_gateway_legacy_lease,
+)
+
 log = logging.getLogger(__name__)
 
 _PID_FILENAME = "gateway.pid"
@@ -43,7 +49,7 @@ class GatewayPidLock:
         self._state_dir = Path(state_dir)
         self._pid_path = self._state_dir / _PID_FILENAME
         self._lock_path = self._state_dir / _LOCK_FILENAME
-        self._lock_fh: IO[bytes] | None = None
+        self._lock_lease: GatewayLegacyLease | None = None
         # Cached payload written by this instance (readable without reopening the file).
         self._written: dict | None = None
 
@@ -67,11 +73,9 @@ class GatewayPidLock:
         self._state_dir.mkdir(parents=True, exist_ok=True)
 
         # ── Step 1: exclusive OS lock on the lock file ────────────────
-        lock_fh = open(str(self._lock_path), "w+b")  # noqa: WPS515
-
-        if not _try_lock(lock_fh):
+        lock_lease = acquire_gateway_legacy_lease(self._state_dir)
+        if lock_lease is None:
             existing_pid = _read_pid_from_path(self._pid_path)
-            lock_fh.close()
             pid_str = str(existing_pid) if existing_pid is not None else "unknown"
             log.error(
                 "gateway.pidlock.already_running",
@@ -86,7 +90,7 @@ class GatewayPidLock:
             sys.exit(1)
 
         # ── Step 2: clear stale pid file now that this process owns the lock ─
-        self._lock_fh = lock_fh
+        self._lock_lease = lock_lease
         existing_pid = _read_pid_from_path(self._pid_path) if self._pid_path.exists() else None
         if existing_pid is not None:
             log.warning(
@@ -111,18 +115,11 @@ class GatewayPidLock:
         all contenders lock; unlinking it after unlock can let a successor lock a
         removed inode while a third process creates and locks a new path.
         """
-        if self._lock_fh is None:
+        if self._lock_lease is None:
             return
-        fh = self._lock_fh
-        self._lock_fh = None
-        try:
-            _unlock(fh)
-        except OSError:
-            pass
-        try:
-            fh.close()
-        except OSError:
-            pass
+        lease = self._lock_lease
+        self._lock_lease = None
+        release_gateway_legacy_lease(lease)
         try:
             self._pid_path.unlink(missing_ok=True)
         except OSError:

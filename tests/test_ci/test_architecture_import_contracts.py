@@ -32,6 +32,9 @@ APPROVED_PACKAGE_IMPORTS: frozenset[tuple[str, str]] = frozenset({
     ("cli", "observability"),
     ("cli", "onboarding"),
     ("cli", "persistence"),
+    # The root CLI exposes the offline recovery adapter and writer entrypoints
+    # acquire recovery locks; recovery never imports the CLI back.
+    ("cli", "recovery"),
     ("cli", "sandbox"),
     ("cli", "search"),
     ("cli", "session"),
@@ -85,6 +88,8 @@ APPROVED_PACKAGE_IMPORTS: frozenset[tuple[str, str]] = frozenset({
     ("gateway", "identity"),
     ("gateway", "mcp"),
     ("gateway", "memory"),
+    # Gateway PID compatibility delegates to the shared recovery lock protocol.
+    ("gateway", "recovery"),
     ("gateway", "observability"),
     ("gateway", "onboarding"),
     ("gateway", "persistence"),
@@ -111,6 +116,9 @@ APPROVED_PACKAGE_IMPORTS: frozenset[tuple[str, str]] = frozenset({
     ("memory", "session"),
     ("memory", "tools"),
     ("migration", "gateway"),
+    # Full-profile import publishes through the shared no-replace recovery
+    # transaction layer; recovery does not import migration back.
+    ("migration", "recovery"),
     ("migration", "onboarding"),
     ("onboarding", "channels"),
     ("onboarding", "gateway"),

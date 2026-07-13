@@ -207,6 +207,8 @@ jobs:
           node scripts/test-secret-storage-policy.mjs
           node scripts/test-update-resolver.mjs
           node scripts/test-desktop-locale.mjs
+          node scripts/test-desktop-profile-substrate.mjs
+          node scripts/test-desktop-profile-context.mjs
 
   ubuntu-quality:
     name: Lint, test, and build (ubuntu-latest, 3.12)
@@ -268,6 +270,8 @@ jobs:
               tests/test_ci \
               --ignore=tests/test_ci/test_router_artifact_manifest.py \
               tests/test_desktop/test_electron_startup_contract.py \
+              tests/test_recovery \
+              tests/test_migration/test_opensquilla_home_migration.py \
               tests/test_engine/test_coding_mode.py \
               tests/test_engine/test_stream_wrappers.py \
               tests/test_tools/test_shell_process_isolation.py \
@@ -428,6 +432,84 @@ jobs:
             uv run pytest --version
           } >> "${CI_REPORT_DIR}/environment.txt" 2>&1
 
+      - name: Provision distinct Windows test volumes
+        if: ${{ matrix.shard == 'recovery-migration' }}
+        shell: pwsh
+        run: |
+          $token = [guid]::NewGuid().ToString("N")
+          $volumeA = Join-Path -Path $env:RUNNER_TEMP -ChildPath "opensquilla-windows-volume-a-$token"
+          $volumeB = Join-Path -Path $env:LOCALAPPDATA -ChildPath "opensquilla-windows-volume-b-$token"
+
+          if (Test-Path -LiteralPath $volumeA) {
+            throw "Windows test volume root already exists: $volumeA"
+          }
+          if (Test-Path -LiteralPath $volumeB) {
+            throw "Windows test volume root already exists: $volumeB"
+          }
+
+          $driveA = [System.IO.Path]::GetPathRoot($volumeA)
+          $driveB = [System.IO.Path]::GetPathRoot($volumeB)
+          $systemDriveRoot = [System.IO.Path]::GetPathRoot("$($env:SystemDrive)\")
+          if (-not [string]::Equals($driveB, $systemDriveRoot, [StringComparison]::OrdinalIgnoreCase)) {
+            throw "Windows test volume B must use SystemDrive"
+          }
+          if ([string]::Equals($driveA, $driveB, [StringComparison]::OrdinalIgnoreCase)) {
+            throw "Windows test volume roots must use different drives"
+          }
+
+          $createdRoots = [System.Collections.Generic.List[string]]::new()
+          try {
+            New-Item -ItemType Directory -Path $volumeA -ErrorAction Stop | Out-Null
+            $createdRoots.Add($volumeA)
+            New-Item -ItemType Directory -Path $volumeB -ErrorAction Stop | Out-Null
+            $createdRoots.Add($volumeB)
+            "OPENSQUILLA_WINDOWS_TEST_VOLUME_A=$volumeA" |
+              Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+            "OPENSQUILLA_WINDOWS_TEST_VOLUME_B=$volumeB" |
+              Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          } catch {
+            foreach ($testRoot in $createdRoots) {
+              if (Test-Path -LiteralPath $testRoot) {
+                Remove-Item -LiteralPath $testRoot -Recurse -Force
+              }
+            }
+            throw
+          }
+
+      - name: Test Windows native recovery move primitives first
+        if: ${{ matrix.shard == 'recovery-migration' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          maxfail_args=()
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            maxfail_args+=(--maxfail=3)
+          fi
+
+          set +e
+          uv run pytest \
+            tests/test_recovery/test_atomic_and_locking.py::test_native_move_moves_a_regular_tree_between_real_parents \
+            tests/test_recovery/test_atomic_and_locking.py::test_windows_real_legacy_lock_survives_profile_move_and_rebind \
+            tests/test_recovery/test_atomic_and_locking.py::test_windows_real_replacement_locks_survive_two_profile_moves \
+            tests/test_recovery/test_atomic_and_locking.py::test_windows_real_recent_locked_profile_tree_moves_without_metadata_false_positive \
+            tests/test_recovery/test_atomic_and_locking.py::test_windows_primitive_collision_preserves_both_trees \
+            tests/test_recovery/test_atomic_and_locking.py::test_windows_native_move_refuses_real_cross_volume_move \
+            tests/test_recovery/test_atomic_and_locking.py::test_windows_native_move_handles_real_path_longer_than_260_characters \
+            tests/test_recovery/test_atomic_and_locking.py::test_windows_native_move_rejects_real_junction_in_source_tree \
+            tests/test_recovery/test_atomic_and_locking.py::test_windows_no_replace_pins_both_parents_during_real_mutation_window \
+            -q \
+            --durations=25 \
+            --junitxml="${CI_REPORT_DIR}/native-move-junit.xml" \
+            "${maxfail_args[@]}" \
+            2>&1 | tee "${CI_REPORT_DIR}/native-move.log"
+          status=${PIPESTATUS[0]}
+          set -e
+          if [[ "${status}" -ne 0 ]]; then
+            printf 'native_move_exit_code=%s\n' "${status}" \
+              > "${CI_REPORT_DIR}/first-failure.txt"
+            exit "${status}"
+          fi
+
       - name: Test Windows shard
         shell: bash
         run: |
@@ -449,12 +531,229 @@ jobs:
             "${maxfail_args[@]}" \
             2>&1 | tee "${CI_REPORT_DIR}/pytest.log"
 
+      - name: Clean up Windows test volumes
+        if: ${{ always() && matrix.shard == 'recovery-migration' }}
+        shell: pwsh
+        run: |
+          $testRoots = @(
+            $env:OPENSQUILLA_WINDOWS_TEST_VOLUME_A,
+            $env:OPENSQUILLA_WINDOWS_TEST_VOLUME_B
+          )
+          foreach ($testRoot in $testRoots) {
+            if ($testRoot -and (Test-Path -LiteralPath $testRoot)) {
+              Remove-Item -LiteralPath $testRoot -Recurse -Force
+            }
+          }
+
       - name: Upload Windows shard report
         if: ${{ always() }}
         uses: actions/upload-artifact@v4
         with:
           name: windows-high-risk-${{ matrix.shard }}-attempt-${{ github.run_attempt }}
           path: ${{ runner.temp }}/ci-reports/${{ matrix.shard }}
+          if-no-files-found: error
+          retention-days: 14
+
+  macos-recovery:
+    name: macOS profile recovery and native no-replace (3.12)
+    needs: classify-changes
+    if: ${{ needs.classify-changes.outputs.platform_sensitive_changed == 'true' || needs.classify-changes.outputs.desktop_changed == 'true' || needs.classify-changes.outputs.full_required == 'true' }}
+    runs-on: macos-latest
+    timeout-minutes: 30
+
+    env:
+      UV_PYTHON: "3.12"
+      PYTHONPATH: ${{ github.workspace }}
+      OPENSQUILLA_TURN_CALL_LOG: "0"
+
+    steps:
+      - name: Prepare macOS recovery report
+        shell: bash
+        run: |
+          set -euo pipefail
+          report_dir="${RUNNER_TEMP}/macos-recovery"
+          mkdir -p "${report_dir}"
+          printf 'CI_REPORT_DIR=%s\n' "${report_dir}" >> "${GITHUB_ENV}"
+          {
+            printf 'runner_os=%s\n' "${RUNNER_OS}"
+            printf 'runner_arch=%s\n' "${RUNNER_ARCH}"
+            printf 'commit_sha=%s\n' "${GITHUB_SHA}"
+            printf 'run_attempt=%s\n' "${GITHUB_RUN_ATTEMPT}"
+          } > "${report_dir}/environment.txt"
+          printf 'pytest_status=not_started\n' > "${report_dir}/first-failure.txt"
+
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Configure runtime directories
+        shell: bash
+        run: |
+          printf 'OPENSQUILLA_STATE_DIR=%s/opensquilla-state\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
+          printf 'OPENSQUILLA_LOG_DIR=%s/opensquilla-logs\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Install dependencies
+        shell: bash
+        run: uv sync --extra dev --extra recommended --extra mcp --frozen
+
+      - name: Test native profile recovery contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          maxfail_args=()
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            maxfail_args+=(--maxfail=3)
+          fi
+
+          set +e
+          uv run pytest \
+            tests/test_recovery \
+            tests/test_migration/test_opensquilla_home_migration.py \
+            tests/test_desktop/test_electron_startup_contract.py \
+            -q \
+            --durations=50 \
+            --junitxml="${CI_REPORT_DIR}/junit.xml" \
+            "${maxfail_args[@]}" \
+            2>&1 | tee "${CI_REPORT_DIR}/pytest.log"
+          status=${PIPESTATUS[0]}
+          set -e
+          printf 'pytest_exit_code=%s\n' "${status}" > "${CI_REPORT_DIR}/first-failure.txt"
+          exit "${status}"
+
+      - name: Upload macOS recovery report
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-recovery-attempt-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/macos-recovery
+          if-no-files-found: error
+          retention-days: 14
+
+  desktop-recovery-e2e:
+    name: Desktop recovery E2E (${{ matrix.os }})
+    needs: classify-changes
+    if: ${{ needs.classify-changes.outputs.platform_sensitive_changed == 'true' || needs.classify-changes.outputs.desktop_changed == 'true' || needs.classify-changes.outputs.full_required == 'true' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+
+    env:
+      UV_PYTHON: "3.12"
+      PYTHONPATH: ${{ github.workspace }}
+      OPENSQUILLA_TURN_CALL_LOG: "0"
+
+    steps:
+      - name: Prepare Desktop recovery report
+        shell: bash
+        run: |
+          set -euo pipefail
+          report_dir="${RUNNER_TEMP}/desktop-recovery-e2e"
+          mkdir -p "${report_dir}"
+          printf 'CI_REPORT_DIR=%s\n' "${report_dir}" >> "${GITHUB_ENV}"
+          {
+            printf 'runner_os=%s\n' "${RUNNER_OS}"
+            printf 'runner_arch=%s\n' "${RUNNER_ARCH}"
+            printf 'commit_sha=%s\n' "${GITHUB_SHA}"
+            printf 'run_attempt=%s\n' "${GITHUB_RUN_ATTEMPT}"
+          } > "${report_dir}/environment.txt"
+          printf 'e2e_status=not_started\n' > "${report_dir}/first-failure.txt"
+
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20.19.0'
+          cache: 'npm'
+          cache-dependency-path: desktop/electron/package-lock.json
+
+      - name: Install Python dependencies
+        shell: bash
+        run: uv sync --extra dev --extra recommended --extra mcp --frozen
+
+      - name: Install Desktop dependencies
+        working-directory: desktop/electron
+        shell: bash
+        run: npm ci
+
+      - name: Record Desktop recovery tool versions
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            python --version
+            uv --version
+            node --version
+            npm --version
+          } >> "${CI_REPORT_DIR}/environment.txt" 2>&1
+
+      - name: Build Desktop TypeScript
+        working-directory: desktop/electron
+        shell: bash
+        run: npm run build
+
+      - name: Run compiled Desktop recovery flows
+        working-directory: desktop/electron
+        shell: bash
+        env:
+          OPENSQUILLA_DESKTOP_RECOVERY_SCREENSHOT: ${{ runner.temp }}/desktop-recovery-e2e/recovery-page.png
+        run: |
+          set -euo pipefail
+
+          run_case() {
+            local name="$1"
+            local script="$2"
+            if [[ "${RUNNER_OS}" == "Linux" ]]; then
+              xvfb-run -a node "${script}" 2>&1 | tee "${CI_REPORT_DIR}/${name}.log"
+            else
+              node "${script}" 2>&1 | tee "${CI_REPORT_DIR}/${name}.log"
+            fi
+          }
+
+          for entry in \
+            'profile-recovery-flow:scripts/test-profile-recovery-flow.mjs' \
+            'profile-recovery-accessibility:scripts/test-profile-recovery-accessibility.mjs' \
+            'profile-import-flow:scripts/test-profile-import-flow.mjs' \
+            'unsafe-profile-no-write:scripts/test-unsafe-profile-no-write.mjs'
+          do
+            name="${entry%%:*}"
+            script="${entry#*:}"
+            if ! run_case "${name}" "${script}"; then
+              printf 'failed_case=%s\n' "${name}" > "${CI_REPORT_DIR}/first-failure.txt"
+              exit 1
+            fi
+          done
+          printf 'e2e_status=passed\n' > "${CI_REPORT_DIR}/first-failure.txt"
+
+      - name: Upload Desktop recovery report
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-recovery-e2e-${{ matrix.os }}-attempt-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/desktop-recovery-e2e
           if-no-files-found: error
           retention-days: 14
 
@@ -530,6 +829,8 @@ jobs:
       - ubuntu-quality
       - windows-compat
       - windows-full
+      - macos-recovery
+      - desktop-recovery-e2e
       - release-packaging
     if: always()
     runs-on: ubuntu-latest
@@ -554,6 +855,8 @@ jobs:
           RESULT_UBUNTU: ${{ needs.ubuntu-quality.result }}
           RESULT_WINDOWS_SMOKE: ${{ needs.windows-compat.result }}
           RESULT_WINDOWS_FULL: ${{ needs.windows-full.result }}
+          RESULT_MACOS_RECOVERY: ${{ needs.macos-recovery.result }}
+          RESULT_DESKTOP_RECOVERY_E2E: ${{ needs.desktop-recovery-e2e.result }}
           RESULT_RELEASE: ${{ needs.release-packaging.result }}
           FLAG_DOCS_ONLY: ${{ needs.classify-changes.outputs.docs_only }}
           FLAG_RUNTIME_CHANGED: ${{ needs.classify-changes.outputs.runtime_changed }}

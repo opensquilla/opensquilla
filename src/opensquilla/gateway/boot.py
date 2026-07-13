@@ -2080,6 +2080,7 @@ async def build_services(
     if session_db_path != ":memory:":
         from opensquilla.persistence.migrator import apply_pending
 
+        log.info("build_services.migrations_started")
         if "://" not in session_db_path:
             # 0o700: session transcripts are sensitive — keep a freshly created
             # state directory owner-only (umask-masked; no-op on Windows and on
@@ -2091,6 +2092,7 @@ async def build_services(
         applied = apply_pending(session_db_path, migrations_dir)
         if applied:
             log.info("build_services.migrations_applied", count=len(applied), ids=applied)
+        log.info("build_services.migrations_ready", count=len(applied))
 
     # ── Agent registry (built early so SessionManager can resolve agent configs) ─
     from opensquilla.agents.registry import AgentRegistry
@@ -2103,9 +2105,11 @@ async def build_services(
         from opensquilla.session.manager import SessionManager
         from opensquilla.session.storage import SessionStorage
 
+        log.info("build_services.session_storage_started")
         Path(session_db_path).parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         storage = SessionStorage(session_db_path)
         await storage.connect()
+        log.info("build_services.session_storage_ready")
         session_manager = SessionManager(
             storage,
             agent_registry=agent_registry,

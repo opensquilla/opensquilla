@@ -1364,3 +1364,61 @@ def test_image_generation_explicit_enabled_decision_is_force_persisted(tmp_path)
 
     data = _tomllib.loads(target.read_text())
     assert data["image_generation"]["enabled"] is False
+
+
+def test_upsert_channel_blank_secret_keeps_stored_value():
+    cfg = GatewayConfig()
+    res1 = upsert_channel(
+        cfg,
+        entry_payload={"type": "telegram", "name": "tg", "token": "tok-stored"},
+    )
+    for blank in ("", "   ", None):
+        payload: dict[str, object] = {"type": "telegram", "name": "tg", "default_chat_id": "42"}
+        if blank is not None:
+            payload["token"] = blank
+        res = upsert_channel(res1.config, entry_payload=payload)
+        raw = res.config.channels.channels[0]
+        assert raw.token == "tok-stored"
+        assert raw.default_chat_id == "42"
+
+
+def test_upsert_channel_persists_literal_redaction_placeholder():
+    # Tripwire, not desired behavior: '***' is NOT a keep-current sentinel
+    # server-side — it is persisted verbatim as the credential. The Web UI
+    # therefore structurally strips the placeholder before upsert. If this
+    # assertion ever fails, the backend semantics changed and the client
+    # scrub plus this test must be revisited together.
+    cfg = GatewayConfig()
+    res1 = upsert_channel(
+        cfg,
+        entry_payload={"type": "telegram", "name": "tg", "token": "tok-real"},
+    )
+    res2 = upsert_channel(
+        res1.config,
+        entry_payload={"type": "telegram", "name": "tg", "token": REDACTED_PLACEHOLDER},
+    )
+    # Raw config access: the redacted *listing* would mask a real value too.
+    assert res2.config.channels.channels[0].token == REDACTED_PLACEHOLDER
+
+
+def test_upsert_channel_same_name_different_type_replaces_without_secret_merge():
+    # The replace loop matches on name only, while the keep-current secret
+    # merge matches on name AND type: re-saving an existing name under a new
+    # type replaces the entry and preserves no secrets. The Web UI duplicate
+    # guard words its warning ("Save will replace it") on this behavior.
+    cfg = GatewayConfig()
+    res1 = upsert_channel(
+        cfg,
+        entry_payload={"type": "telegram", "name": "bridge", "token": "tg-secret"},
+    )
+    with pytest.raises(ValueError):
+        # Blank secret cannot borrow the other type's stored value.
+        upsert_channel(res1.config, entry_payload={"type": "discord", "name": "bridge"})
+    res2 = upsert_channel(
+        res1.config,
+        entry_payload={"type": "discord", "name": "bridge", "token": "dc-secret"},
+    )
+    raw_entries = res2.config.channels.channels
+    assert len(raw_entries) == 1
+    assert raw_entries[0].type == "discord"
+    assert raw_entries[0].token == "dc-secret"

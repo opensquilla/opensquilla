@@ -25,8 +25,10 @@ import { useSettingsPromotedForm, DEFAULT_LLM_TIMEOUT_SECONDS } from '@/composab
 import { useSettingsSection } from '@/composables/setup/useSettingsSection'
 import { SETTINGS_SECTIONS, type SettingsSectionId } from '@/composables/setup/settingsSections'
 import { useRpcStore } from '@/stores/rpc'
+import { usePendingRestart } from '@/composables/usePendingRestart'
 import { useToasts } from '@/composables/useToasts'
 import { useConfirm } from '@/composables/useConfirm'
+import { adapterLoaded } from '@/lib/channelStatus'
 import { saveFailedMessage } from '@/lib/rpcErrors'
 import { copyTextWithFallback } from '@/utils/browser'
 import { TEXT_TIERS, IMAGE_TIER, normalizeRouterTier, routerTierLabelKey } from '@/utils/chat/routerTiers'
@@ -106,6 +108,15 @@ interface ChannelStatusRow {
   status?: string
   configured?: boolean
   enabled?: boolean
+  capability_profile?: unknown
+  diagnostics?: Record<string, unknown>
+}
+
+export interface ChannelTestState {
+  phase: 'idle' | 'testing' | 'done'
+  status?: 'verified' | 'failed' | 'unsupported' | 'error'
+  detail?: string
+  latencyMs?: number | null
 }
 
 interface TierConfig {
@@ -255,12 +266,14 @@ export function useSetupCatalog() {
 const rpc = useRpcStore()
 const { pushToast } = useToasts()
 const { confirm } = useConfirm()
+const pendingRestart = usePendingRestart()
 const t = i18n.global.t
 
 const catalog = ref<OnboardingCatalog>({})
 const status = ref<OnboardingStatus>({})
 const config = ref<ConfigData>({})
 const channelStatus = ref<{ channels: ChannelStatusRow[] }>({ channels: [] })
+const channelTest = ref<ChannelTestState>({ phase: 'idle' })
 const loaded = ref(false)
 const { section, setSection } = useSettingsSection('provider')
 const disableNetworkObservability = ref(false)
@@ -392,6 +405,7 @@ async function loadData() {
     status.value = st || {}
     config.value = cfg || {}
     channelStatus.value = chStatus || { channels: [] }
+    pendingRestart.reconcile(channelStatus.value.channels || [])
     resetTierModelDiscovery()
 
     // Initialize form values from config
@@ -422,6 +436,7 @@ async function loadData() {
 async function loadChannelStatus() {
   try {
     channelStatus.value = await rpc.call<{ channels: ChannelStatusRow[] }>('channels.status')
+    pendingRestart.reconcile(channelStatus.value.channels || [])
   } catch {
     channelStatus.value = { channels: [] }
   }
@@ -1209,6 +1224,7 @@ function envRecoveryCommand(section: string): string {
 
 function onChannelTypeChange() {
   channelsForm.resetForSpec(channelSpec.value)
+  channelTest.value = { phase: 'idle' }
 }
 
 function selectChannelType(value: string) {
@@ -1217,6 +1233,37 @@ function selectChannelType(value: string) {
 
 function updateChannelField(name: string, value: unknown) {
   channelsForm.updateField(name, value)
+  // A test verdict describes the draft it ran against; any edit voids it.
+  if (channelTest.value.phase !== 'idle') channelTest.value = { phase: 'idle' }
+}
+
+// Non-mutating live probe of the current draft. Blank secrets merge against
+// the stored entry server-side, so stored credentials can be verified without
+// retyping them. Save is never gated on this.
+async function testChannel() {
+  if (channelTest.value.phase === 'testing') return
+  channelTest.value = { phase: 'testing' }
+  try {
+    const result = await rpc.call<{
+      status?: string
+      connected?: boolean
+      latencyMs?: number | null
+      detail?: string
+    }>('channels.probe', { entry: channelsForm.payload() })
+    const status = result.status === 'verified' || result.status === 'failed' ? result.status : 'unsupported'
+    channelTest.value = {
+      phase: 'done',
+      status,
+      detail: result.detail || '',
+      latencyMs: result.latencyMs ?? null,
+    }
+  } catch (err) {
+    channelTest.value = {
+      phase: 'done',
+      status: 'error',
+      detail: err instanceof Error ? err.message : String(err),
+    }
+  }
 }
 
 function setRouterMode(value: string) {
@@ -1625,7 +1672,14 @@ async function saveChannel() {
   const entry = channelsForm.payload()
   try {
     await rpc.call('onboarding.channel.probe', { entry })
-    await rpc.call('onboarding.channel.upsert', { entry })
+    const res = await rpc.call<{ changed?: boolean; entry?: { name?: string } }>('onboarding.channel.upsert', { entry })
+    const name = String(entry.name || res?.entry?.name || '')
+    if (name && res?.changed !== false) {
+      // An upsert over a live adapter has no observable post-restart signal;
+      // flag it so the pending entry clears only manually.
+      const row = (channelStatus.value.channels || []).find(r => r.name === name)
+      pendingRestart.record(name, 'upsert', { wasLoaded: row ? adapterLoaded(row) : false })
+    }
     pushToast(t('setup.toast.channelSaved'))
     await loadData()
   } catch (err) {
@@ -1638,7 +1692,8 @@ async function saveChannel() {
 // list (loadChannelStatus) so the in-progress entry draft is preserved.
 async function setChannelEnabled(name: string, enabled: boolean) {
   try {
-    await rpc.call(enabled ? 'onboarding.channel.enable' : 'onboarding.channel.disable', { name })
+    const res = await rpc.call<{ changed?: boolean }>(enabled ? 'onboarding.channel.enable' : 'onboarding.channel.disable', { name })
+    if (res?.changed !== false) pendingRestart.record(name, enabled ? 'enable' : 'disable')
     pushToast(enabled ? t('setup.toast.channelEnabled') : t('setup.toast.channelDisabled'))
     await loadChannelStatus()
   } catch (err) {
@@ -1662,7 +1717,8 @@ async function removeChannel(name: string) {
   })
   if (!ok) return
   try {
-    await rpc.call('onboarding.channel.remove', { name })
+    const res = await rpc.call<{ changed?: boolean }>('onboarding.channel.remove', { name })
+    if (res?.changed !== false) pendingRestart.record(name, 'remove')
     pushToast(t('setup.toast.channelRemoved'))
     await loadChannelStatus()
   } catch (err) {
@@ -1861,6 +1917,8 @@ async function copyConfigPath() {
     enableChannel,
     disableChannel,
     removeChannel,
+    channelTest,
+    testChannel,
     saveSearch,
     saveMemory,
     saveImage,

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import stat
 from types import SimpleNamespace
 
@@ -35,7 +36,8 @@ def test_matrix_session_state_is_account_scoped_and_private(tmp_path) -> None:
     )
 
     path = first._session_path()
-    assert stat.S_IMODE(path.stat().st_mode) == 0o600
+    if os.name != "nt":  # POSIX permission bits are meaningless on Windows
+        assert stat.S_IMODE(path.stat().st_mode) == 0o600
     assert first._load_session() is not None
 
 

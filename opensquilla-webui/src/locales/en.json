@@ -468,17 +468,20 @@
       "needs": "Channel needs",
       "save": "Save Channel",
       "runtimeStatus": "Runtime status",
-      "connected": "Connected",
-      "actionNeeded": "Action needed",
-      "connecting": "connecting",
       "none": "No channels configured.",
-      "disabled": "Disabled",
       "enable": "Enable",
       "disable": "Disable",
       "remove": "Remove",
       "removeConfirmTitle": "Remove this channel?",
       "removeConfirmBody": "{name} will be removed from the configuration. Restart required to take effect.",
-      "removeConfirmPrimary": "Remove"
+      "removeConfirmPrimary": "Remove",
+      "testConnection": "Test connection",
+      "testing": "Testing…",
+      "testVerified": "Verified — provider reachable in {ms} ms",
+      "testFailed": "Connection test failed: {detail}",
+      "testUnsupported": "This channel type has no safe live probe — save, then watch its runtime status",
+      "testError": "Test could not run: {error}",
+      "testNoDetail": "no further detail"
     },
     "search": {
       "title": "Web search",
@@ -780,7 +783,7 @@
       "ensembleSaved": "Ensemble saved.",
       "presetApplied": "Routing preset applied.",
       "presetAppliedRestart": "Routing preset applied. Restart required.",
-      "channelSaved": "Channel saved. Restart required.",
+      "channelSaved": "Channel saved — configuration validated locally; use Test connection to verify credentials",
       "searchSaved": "Search saved.",
       "memorySurface": "Memory embedding",
       "memorySaved": "Memory saved.",
@@ -1176,11 +1179,9 @@
       "openSettings": "Open settings",
       "totalChannels": "Total channels",
       "typeCount": "{n} types",
-      "connected": "Connected",
       "live": "live",
       "unhealthy": "{n} unhealthy",
       "allIdle": "all idle",
-      "inactive": "Inactive",
       "needAttention": "{n} need attention",
       "restartAttempts": "Restart attempts",
       "sinceGatewayStart": "since gateway start",
@@ -1194,16 +1195,9 @@
       "noInactive": "no inactive channels",
       "disabledCount": "{n} disabled",
       "configuredButIdle": "configured but idle",
-      "hintDisabled": "Disabled in config — gateway restart required after re-enabling. Run `opensquilla onboard configure channels` to change.",
-      "hintDead": "Adapter is dead. Inspect gateway logs, then `{cmd}`.",
-      "hintRunning": "Adapter is live in the current gateway process.",
-      "hintRestarting": "Adapter is restarting after dispatch errors.",
-      "hintExhausted": "Adapter exhausted its retry budget. Try `{cmd}`.",
-      "hintConfiguredInactive": "Configured on disk but not active in this gateway process — restart the gateway to load it.",
       "addChannel": "Add channel",
       "addFirstChannel": "Add your first channel",
       "summaryLabel": "Channel health summary",
-      "attention": "Needs attention",
       "filtersLabel": "Channel filters",
       "searchLabel": "Search channels",
       "searchPlaceholder": "Search channels…",
@@ -1226,9 +1220,6 @@
       "edit": "Edit",
       "enable": "Enable",
       "disable": "Disable",
-      "disabled": "Disabled",
-      "restarting": "Restarting",
-      "needsAttentionStatus": "Needs attention",
       "notReported": "Not reported",
       "tabs": {
         "overview": "Overview",
@@ -1318,7 +1309,11 @@
         "revokeSuccess": "Revoked pairing access for {sender}",
         "approveFailed": "Could not approve {sender}: {error}",
         "revokeFailed": "Could not revoke {sender}: {error}"
-      }
+      },
+      "probeFailed": "Connection test failed",
+      "editCredentials": "Edit credentials",
+      "toastProbeFailedResult": "{name} failed the connection test: {detail}",
+      "restartNotLoaded": "This channel isn't loaded yet — restart the gateway to start it"
     }
   },
   "cronSkills": {
@@ -2362,6 +2357,40 @@
       "sectionResult": "result",
       "sectionError": "error",
       "viewFull": "view full"
+    }
+  },
+  "channelStatus": {
+    "connected": "Connected",
+    "pendingRestart": "Pending restart",
+    "notRunning": "Not running",
+    "disabled": "Disabled",
+    "restarting": "Restarting",
+    "failed": "Failed",
+    "exhausted": "Retries exhausted",
+    "unknown": "Unknown ({raw})",
+    "hint": {
+      "pendingRestart": "Takes effect after a gateway restart",
+      "notRunning": "Starts after a gateway restart",
+      "restarting": "Reconnecting automatically",
+      "failed": "Automatic restarts exhausted — restart or edit this channel",
+      "exhausted": "Delivery retries used up — check the last error, then restart"
+    },
+    "cause": {
+      "auth_invalid": "credentials rejected",
+      "payload_rejected": "message rejected by the provider",
+      "target_missing": "target chat or channel not found",
+      "contract_violation": "adapter contract violation",
+      "transport_transient": "network issue — retrying",
+      "rate_limited": "rate limited by the provider",
+      "channel_degraded": "channel degraded"
+    },
+    "banner": {
+      "label": "Pending gateway restart",
+      "message": "{count} saved channel change(s) will take effect after a gateway restart",
+      "dismiss": "Dismiss pending marker for {name}",
+      "copied": "Command copied",
+      "copyFailed": "Could not copy the command",
+      "copyLabel": "Copy the gateway restart command"
     }
   }
 }

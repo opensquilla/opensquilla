@@ -1,9 +1,16 @@
 <script setup lang="ts">
+import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
+import ChannelStatusPill from '@/components/ChannelStatusPill.vue'
+import PendingRestartBanner from '@/components/PendingRestartBanner.vue'
 import SetupField from '@/components/SetupField.vue'
 import SetupNeedList from '@/components/SetupNeedList.vue'
+import { usePendingRestart } from '@/composables/usePendingRestart'
+import { lastErrorClass } from '@/lib/channelStatus'
+import type { ChannelTestState } from '@/composables/setup/useSetupCatalog'
 
 const { t } = useI18n()
+const pendingRestart = usePendingRestart()
 
 interface ChannelSpec {
   type: string
@@ -30,6 +37,7 @@ interface RuntimeRow {
   connected?: boolean
   status?: string
   enabled?: boolean
+  diagnostics?: Record<string, unknown>
 }
 
 interface ChannelsPanelContract {
@@ -40,8 +48,9 @@ interface ChannelsPanelContract {
   channelFields: readonly ChannelFieldRow[]
 }
 
-defineProps<{
+const props = defineProps<{
   panel: ChannelsPanelContract
+  test?: ChannelTestState
 }>()
 
 const emit = defineEmits<{
@@ -49,6 +58,7 @@ const emit = defineEmits<{
   channelTypeChange: []
   updateChannelField: [name: string, value: unknown]
   save: []
+  test: []
   enableChannel: [name: string]
   disableChannel: [name: string]
   removeChannel: [name: string]
@@ -58,6 +68,34 @@ function onChannelTypeSelect(event: Event) {
   emit('updateChannelType', (event.target as HTMLSelectElement).value)
   emit('channelTypeChange')
 }
+
+const testing = computed(() => props.test?.phase === 'testing')
+
+// Persistent inline verdict (not a toast) — it describes the current draft
+// and is cleared by the composable the moment the draft changes.
+const testLine = computed(() => {
+  const test = props.test
+  if (!test || test.phase !== 'done') return ''
+  switch (test.status) {
+    case 'verified':
+      return t('setup.channels.testVerified', { ms: test.latencyMs ?? 0 })
+    case 'failed':
+      return t('setup.channels.testFailed', { detail: test.detail || t('setup.channels.testNoDetail') })
+    case 'unsupported':
+      return test.detail || t('setup.channels.testUnsupported')
+    default:
+      return t('setup.channels.testError', { error: test.detail || '' })
+  }
+})
+
+const testTone = computed(() => {
+  switch (props.test?.status) {
+    case 'verified': return 'is-ok'
+    case 'failed':
+    case 'error': return 'is-danger'
+    default: return 'is-muted'
+  }
+})
 </script>
 
 <template>
@@ -85,16 +123,27 @@ function onChannelTypeSelect(event: Event) {
         @update="(name, val) => emit('updateChannelField', name, val)"
       />
       <div class="control-section__actions">
+        <button class="btn btn--ghost" type="button" :disabled="testing" @click="emit('test')">
+          {{ testing ? t('setup.channels.testing') : t('setup.channels.testConnection') }}
+        </button>
         <button class="btn btn--primary" @click="emit('save')">{{ t('setup.channels.save') }}</button>
       </div>
+      <p v-if="testLine" :class="['setup-channels__test', testTone]" role="status">{{ testLine }}</p>
     </section>
     <section class="control-section setup-runtime">
       <h3 class="control-section__title">{{ t('setup.channels.runtimeStatus') }}</h3>
+      <PendingRestartBanner />
       <template v-if="panel.channelRuntimeRows.length > 0">
-        <div v-for="row in panel.channelRuntimeRows" :key="row.name" class="setup-runtime__row" :class="row.connected === true ? 'is-ok' : 'is-warn'">
+        <div v-for="row in panel.channelRuntimeRows" :key="row.name" class="setup-runtime__row">
           <span>{{ row.name }}</span>
           <span>{{ row.type || '' }}</span>
-          <strong>{{ row.enabled === false ? t('setup.channels.disabled') : (row.connected === true ? t('setup.channels.connected') : (row.status === 'stopped' ? t('setup.channels.actionNeeded') : row.status || t('setup.channels.connecting'))) }}</strong>
+          <ChannelStatusPill
+            :status="row.status"
+            :enabled="row.enabled"
+            :pending-restart="pendingRestart.isPending(row.name)"
+            :error-class="lastErrorClass(row.diagnostics)"
+            show-cause
+          />
           <span class="setup-channels__actions">
             <button v-if="row.enabled === false" type="button" class="btn btn--ghost setup-channels__action" @click="emit('enableChannel', row.name)">{{ t('setup.channels.enable') }}</button>
             <button v-else type="button" class="btn btn--ghost setup-channels__action" @click="emit('disableChannel', row.name)">{{ t('setup.channels.disable') }}</button>
@@ -121,4 +170,13 @@ function onChannelTypeSelect(event: Event) {
 .setup-channels__remove {
   color: var(--danger);
 }
+
+.setup-channels__test {
+  font-size: var(--fs-sm);
+  margin: var(--sp-2) 0 0;
+}
+
+.setup-channels__test.is-ok { color: var(--ok); }
+.setup-channels__test.is-danger { color: var(--danger); }
+.setup-channels__test.is-muted { color: var(--text-muted); }
 </style>

@@ -200,10 +200,12 @@
             <SetupChannelsPanel
               v-else-if="section === 'channels'"
               :panel="channelsPanel"
+              :test="channelTest"
               @update-channel-type="selectChannelType"
               @channel-type-change="onChannelTypeChange"
               @update-channel-field="updateChannelField"
               @save="saveChannel"
+              @test="testChannel"
               @enable-channel="enableChannel"
               @disable-channel="disableChannel"
               @remove-channel="removeChannel"
@@ -350,6 +352,8 @@ const {
   enableChannel,
   disableChannel,
   removeChannel,
+  channelTest,
+  testChannel,
   saveSearch,
   saveMemory,
   saveImage,

@@ -183,9 +183,18 @@
             </div>
             <section class="ch-panel">
               <h3>{{ t('console.channels.healthChecks') }}</h3>
-              <div class="ch-check-row"><Icon name="shield" :size="18" /><div><strong>{{ t('console.channels.authentication') }}</strong><span>{{ t('console.channels.authDescription') }}</span></div><b :class="selectedChannel.connected ? 'is-ok' : 'is-muted'">{{ selectedChannel.connected ? t('console.channels.passed') : t('console.channels.notVerified') }}</b></div>
+              <div class="ch-check-row">
+                <Icon name="shield" :size="18" />
+                <div><strong>{{ t('console.channels.connection') }}</strong><span>{{ t('console.channels.connectionDescription') }}</span></div>
+                <b v-if="selectedChannel.connected" class="is-ok">{{ t('console.channels.connectedShort') }}</b>
+                <button v-else class="ch-inline-link" type="button" @click="probeChannel(selectedChannel)">{{ t('console.channels.verifyCredentials') }}</button>
+              </div>
               <div class="ch-check-row"><Icon name="cloud" :size="18" /><div><strong>{{ t('console.channels.transport') }}</strong><span>{{ transportDescription(selectedChannel) }}</span></div><b :class="selectedChannel.connected ? 'is-ok' : 'is-muted'">{{ selectedChannel.connected ? t('console.channels.healthy') : statusText(selectedChannel) }}</b></div>
-              <div class="ch-check-row"><Icon name="channels" :size="18" /><div><strong>{{ t('console.channels.durableDelivery') }}</strong><span>{{ t('console.channels.durableDescription') }}</span></div><b class="is-ok">{{ t('console.channels.active') }}</b></div>
+              <div class="ch-check-row" :class="{ 'is-warn-row': deliveryReview(selectedChannel).tone === 'warn' }">
+                <Icon name="channels" :size="18" />
+                <div><strong>{{ t('console.channels.durableDelivery') }}</strong><span>{{ deliveryReview(selectedChannel).detail }}</span></div>
+                <b :class="deliveryReview(selectedChannel).tone === 'warn' ? 'is-warn' : 'is-ok'">{{ deliveryReview(selectedChannel).label }}</b>
+              </div>
             </section>
             <section class="ch-panel ch-facts">
               <h3>{{ t('console.channels.runtime') }}</h3>
@@ -200,17 +209,30 @@
 
           <template v-else-if="detailTab === 'capabilities'">
             <section class="ch-panel">
-              <div class="ch-panel__heading"><h3>{{ t('console.channels.capabilityEvidence') }}</h3><span class="ch-maturity">{{ maturityLabel(selectedChannel) }}</span></div>
-              <p class="ch-panel__intro">{{ t('console.channels.capabilityEvidenceHint') }}</p>
-              <div v-if="capabilityRows(selectedChannel).length" class="ch-capabilities">
+              <div class="ch-panel__heading">
+                <h3>{{ t('console.channels.worksTitle') }}</h3>
+                <span class="ch-maturity" :title="t('console.channels.maturityHint')">{{ maturityLabel(selectedChannel) }}</span>
+              </div>
+              <p class="ch-panel__intro">{{ t('console.channels.worksHint') }}</p>
+              <div v-if="platformRows(selectedChannel).length" class="ch-capabilities">
+                <div v-for="row in platformRows(selectedChannel)" :key="row.category" class="ch-capability">
+                  <Icon :name="row.tone === 'ok' ? 'check' : row.tone === 'warn' ? 'info' : 'x'" :size="15" :class="`is-${row.tone}`" />
+                  <div><strong>{{ t(`console.channels.category.${row.category}`) }}</strong><span v-if="row.notes">{{ row.notes }}</span></div>
+                  <span :class="['ch-proof', row.tone === 'ok' ? 'is-effective' : row.tone === 'warn' ? 'is-config' : 'is-declared']">{{ row.label }}</span>
+                </div>
+              </div>
+              <p v-else class="ch-muted">{{ t('console.channels.noCapabilityEvidence') }}</p>
+            </section>
+            <details v-if="capabilityRows(selectedChannel).length" class="ch-tech">
+              <summary>{{ t('console.channels.technicalDetails') }}</summary>
+              <div class="ch-capabilities">
                 <div v-for="capability in capabilityRows(selectedChannel)" :key="capability.name" class="ch-capability">
                   <Icon :name="capability.effective ? 'check' : 'info'" :size="15" />
                   <div><strong>{{ humanize(capability.name) }}</strong><span>{{ evidenceLabel(capability) }}</span></div>
                   <span :class="['ch-proof', capability.effective ? 'is-effective' : 'is-declared']">{{ capability.effective ? t('console.channels.implemented') : t('console.channels.declaredOnly') }}</span>
                 </div>
               </div>
-              <p v-else class="ch-muted">{{ t('console.channels.noCapabilityEvidence') }}</p>
-            </section>
+            </details>
           </template>
 
           <template v-else-if="detailTab === 'pairings'">
@@ -307,19 +329,19 @@
               <Icon name="info" :size="18" /><div><strong>{{ t('console.channels.lastError') }}</strong><p>{{ lastError(selectedChannel) }}</p></div>
             </section>
             <section class="ch-panel">
-              <h3>{{ t('console.channels.deliveryJournal') }}</h3>
+              <h3>{{ t('console.channels.messageDelivery') }}</h3>
               <div class="ch-metrics">
                 <div><strong>{{ deliveryCount(selectedChannel, 'ingress', 'accepted') }}</strong><span>{{ t('console.channels.acceptedIngress') }}</span></div>
                 <div><strong>{{ deliveryCount(selectedChannel, 'ingress', 'processing') }}</strong><span>{{ t('console.channels.processingIngress') }}</span></div>
                 <div><strong>{{ deliveryCount(selectedChannel, 'outbox', 'sent') }}</strong><span>{{ t('console.channels.confirmedOutbound') }}</span></div>
-                <div :class="{ 'is-warn': deliveryCount(selectedChannel, 'outbox', 'unknown') > 0 }"><strong>{{ deliveryCount(selectedChannel, 'outbox', 'unknown') }}</strong><span>{{ t('console.channels.unknownOutbound') }}</span></div>
+                <div :class="{ 'is-warn': deliveryCount(selectedChannel, 'outbox', 'unknown') > 0 }"><strong>{{ deliveryCount(selectedChannel, 'outbox', 'unknown') }}</strong><span>{{ t('console.channels.needsReview') }}</span></div>
               </div>
             </section>
             <section class="ch-panel ch-facts">
-              <h3>{{ t('console.channels.transportLease') }}</h3>
+              <h3>{{ t('console.channels.connectionOwner') }}</h3>
               <dl>
-                <div><dt>{{ t('console.channels.leaseState') }}</dt><dd>{{ leaseSummary(selectedChannel) }}</dd></div>
-                <div><dt>{{ t('console.channels.networkProbe') }}</dt><dd>{{ probeResults[channelKey(selectedChannel)]?.status || diagnosticProbe(selectedChannel) }}</dd></div>
+                <div><dt>{{ t('console.channels.owner') }}</dt><dd>{{ ownerSummary(selectedChannel) }}</dd></div>
+                <div v-if="probeResults[channelKey(selectedChannel)]"><dt>{{ t('console.channels.lastTest') }}</dt><dd>{{ probeResults[channelKey(selectedChannel)]?.status }}</dd></div>
               </dl>
             </section>
           </template>
@@ -792,10 +814,65 @@ async function loadConfiguration(ch: Channel): Promise<void> {
 function errorMessage(err: unknown): string { return err instanceof Error ? err.message : String(err) }
 function providerInitial(type?: string): string { return String(type || '?').slice(0, 1).toUpperCase() }
 function pairingInitial(pairing: ChannelPairing): string { return String(pairing.senderName || pairing.senderId || '?').slice(0, 1).toUpperCase() }
-function providerLabel(type?: string): string { return humanize(type || t('console.channels.unknown')) }
+// Curated per-type labels and a static transport, so a not-yet-loaded channel
+// (no runtime capability_profile) still reads with the platform's real name
+// and transport instead of a title-cased type slug.
+const CURATED_LABELS: Record<string, string> = {
+  slack: 'Slack', telegram: 'Telegram', discord: 'Discord', feishu: 'Feishu / Lark',
+  dingtalk: 'DingTalk', wecom: 'WeCom', qq: 'QQ Bot', matrix: 'Matrix', msteams: 'Microsoft Teams',
+}
+const STATIC_TRANSPORT: Record<string, string> = {
+  slack: 'Mixed', telegram: 'Polling', discord: 'WebSocket', feishu: 'Mixed',
+  dingtalk: 'WebSocket', wecom: 'Mixed', qq: 'WebSocket', matrix: 'HTTP sync', msteams: 'Webhook',
+}
+function providerLabel(type?: string): string {
+  const key = String(type || '').toLowerCase()
+  return CURATED_LABELS[key] || humanize(type || t('console.channels.unknown'))
+}
 function humanize(value: string): string { return value.replace(/[_-]+/g, ' ').replace(/\b\w/g, char => char.toUpperCase()) }
-function transportLabel(ch: Channel): string { return (ch.capability_profile?.transports || []).map(humanize).join(' / ') || t('console.channels.notReported') }
+function transportLabel(ch: Channel): string {
+  const live = (ch.capability_profile?.transports || []).map(humanize).join(' / ')
+  if (live) return live
+  return STATIC_TRANSPORT[String(ch.type || '').toLowerCase()] || t('console.channels.notReported')
+}
 function transportDescription(ch: Channel): string { return t('console.channels.transportDescription', { transport: transportLabel(ch) }) }
+
+// Durable-delivery health derived from the journal, not hardcoded: an outbox
+// with unknown-state entries needs operator review before a safe retry.
+function deliveryReview(ch: Channel): { tone: string; label: string; detail: string } {
+  const unknown = deliveryCount(ch, 'outbox', 'unknown')
+  if (unknown > 0) {
+    return {
+      tone: 'warn',
+      label: t('console.channels.needsReviewCount', { count: unknown }),
+      detail: t('console.channels.durableReviewHint'),
+    }
+  }
+  return { tone: 'ok', label: t('console.channels.active'), detail: t('console.channels.durableDescription') }
+}
+
+interface PlatformCapabilityRow { category: string; status?: string; notes?: string[] }
+function platformRows(ch: Channel): Array<{ category: string; tone: string; label: string; notes: string }> {
+  const caps = (ch.platform_manifest as { capabilities?: Record<string, PlatformCapabilityRow> } | null)?.capabilities
+  if (!caps || typeof caps !== 'object') return []
+  return Object.entries(caps).map(([category, row]) => {
+    const status = String(row?.status || 'unsupported')
+    const tone = status === 'supported' ? 'ok' : status === 'config_required' ? 'warn' : 'muted'
+    const label = status === 'supported'
+      ? t('console.channels.supported')
+      : status === 'config_required'
+        ? t('console.channels.needsConfig')
+        : t('console.channels.notSupported')
+    return { category, tone, label, notes: (row?.notes || []).join(' ') }
+  })
+}
+
+function ownerSummary(ch: Channel): string {
+  if (record(diagnostics(ch).transport_lease).fencing_token) return t('console.channels.ownerHere')
+  const leases = delivery(ch).leases
+  if (Array.isArray(leases) && leases.some(lease => !record(lease).expired)) return t('console.channels.ownerHere')
+  return t('console.channels.ownerNone')
+}
 
 function maturityLabel(ch: Channel): string {
   const raw = String(ch.capability_profile?.maturity || 'unrated').replace(/^[A-Z]+-/, '')
@@ -839,14 +916,6 @@ function lastError(ch: Channel): string {
   return String(record(value).message || record(value).error_class || '')
 }
 
-function diagnosticProbe(ch: Channel): string { return humanize(String(diagnostics(ch).network_probe || 'not_run')) }
-
-function leaseSummary(ch: Channel): string {
-  if (record(diagnostics(ch).transport_lease).fencing_token) return t('console.channels.leaseHeld')
-  const leases = delivery(ch).leases
-  if (!Array.isArray(leases) || leases.length === 0) return t('console.channels.noActiveLease')
-  return leases.some(lease => !record(lease).expired) ? t('console.channels.leaseHeld') : t('console.channels.leaseExpired')
-}
 
 function probeResultDetail(ch: Channel): string {
   const result = probeResults.value[channelKey(ch)]
@@ -907,6 +976,15 @@ function configRows(config: Record<string, unknown>): Array<{ key: string; value
 .ch-maturity, .ch-proof { border: 1px solid var(--border); border-radius: var(--radius-full); color: var(--text-muted); display: inline-flex; font-size: 10px; font-weight: 700; letter-spacing: .03em; padding: 3px 8px; text-transform: uppercase; white-space: nowrap; }
 .ch-maturity.is-stable, .ch-proof.is-effective { border-color: color-mix(in srgb, var(--ok) 45%, var(--border)); color: var(--ok); }
 .ch-maturity.is-experimental { border-color: color-mix(in srgb, var(--warn) 45%, var(--border)); color: var(--warn); }
+.ch-proof.is-config { border-color: color-mix(in srgb, var(--warn) 45%, var(--border)); color: var(--warn); }
+.ch-inline-link { background: transparent; border: 0; color: var(--accent); cursor: pointer; font: inherit; font-size: 11px; padding: 0; }
+.ch-inline-link:hover { text-decoration: underline; }
+.ch-check-row.is-warn-row > svg { color: var(--warn); }
+.ch-capability > svg.is-ok { color: var(--ok); }
+.ch-capability > svg.is-warn { color: var(--warn); }
+.ch-capability > svg.is-muted { color: var(--text-dim); }
+.ch-tech { border: 1px solid var(--border); border-radius: var(--radius-md); margin-top: var(--sp-3); padding: 0 var(--sp-2); }
+.ch-tech > summary { color: var(--text-muted); cursor: pointer; font-size: var(--fs-sm); padding: 10px 6px; }
 .ch-detail { background: var(--bg-surface); border: 1px solid var(--border); border-radius: var(--radius-lg); display: flex; flex-direction: column; min-height: 620px; min-width: 0; overflow: hidden; }
 .ch-detail__header { align-items: flex-start; display: flex; gap: var(--sp-3); justify-content: space-between; padding: var(--sp-4); }
 .ch-detail__identity { align-items: center; display: flex; gap: var(--sp-3); min-width: 0; }

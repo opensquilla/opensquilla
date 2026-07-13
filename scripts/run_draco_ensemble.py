@@ -156,7 +156,7 @@ DEFAULT_MODEL_MAX_GENERATION_THINKING: dict[str, str] = {
     "google/gemini-3.1-pro-preview": "high",
     "moonshotai/kimi-k2.7-code": "max",
     "openai/gpt-5.5-pro": "xhigh",
-    "openai/gpt-5.6-sol": "ultra",
+    "openai/gpt-5.6-sol": "max",
     "qwen/qwen3.7-max": "xhigh",
     "sakana/fugu-ultra": "max",
     "z-ai/glm-5.2": "xhigh",

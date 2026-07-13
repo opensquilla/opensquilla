@@ -1816,7 +1816,7 @@ def test_draco_runner_generation_chat_config_uses_model_specific_max() -> None:
     assert opus_config.thinking_budget_tokens == 50_000
     assert str(gemini_config.thinking_level) == "high"
     assert gemini_config.thinking_budget_tokens == 20_000
-    assert str(gpt56_sol_config.thinking_level) == "ultra"
+    assert str(gpt56_sol_config.thinking_level) == "max"
     assert gpt56_sol_config.thinking_budget_tokens == 50_000
 
 

@@ -1161,6 +1161,7 @@ def move_profile_no_replace(
                 destination_path,
             ),
             _allowed_manifest_mtime_changes=allowed_mtime_changes,
+            _opaque_manifest_directories=frozenset({"sandbox"}),
         )
         return
     with _LOCKS_GUARD:

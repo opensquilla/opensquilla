@@ -3667,13 +3667,18 @@ class OpenSquillaHomeMigrator:
         classification without obscuring an unchanged source's real error.
         """
 
-        for expected in self._source_gateway_authority:
-            try:
-                current = _capture_legacy_gateway_authority(expected.root)
-            except OSError:
-                return True
-            if current != expected:
-                return True
+        source = self.source
+        assert source is not None
+        final_source_lock = LegacyGatewayLock(
+            source,
+            state_roots=(item.root for item in self._source_gateway_authority),
+            create_if_missing=False,
+        )
+        try:
+            with final_source_lock:
+                self._verify_source_gateway_authority(final_source_lock)
+        except OSError:
+            return True
         return False
 
     def _verify_source_snapshots(self) -> None:

@@ -2257,6 +2257,29 @@ def test_source_gateway_appearing_during_published_validation_rolls_back(
     assert not (tmp_path / ".target-home.profile-replace.json").exists()
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows lock snapshot regression")
+def test_apply_error_is_not_misclassified_as_source_authority_change_on_windows(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = _build_source_home(tmp_path / "source-root")
+    target = tmp_path / "target-home"
+    lock_path = source / "state" / "gateway.pid.lock"
+    lock_path.write_bytes(b"stable legacy gateway lock\n")
+
+    def fail_commit(*_args: Any, **_kwargs: Any) -> None:
+        raise OSError("synthetic apply failure")
+
+    monkeypatch.setattr(OpenSquillaHomeMigrator, "_commit", fail_commit)
+
+    report = _run(source, target, apply=True)
+
+    reasons = [item["reason"] for item in _errors(report)]
+    assert any("synthetic apply failure" in reason for reason in reasons)
+    assert not any("source legacy gateway authority changed" in reason for reason in reasons)
+    assert not target.exists()
+
+
 def test_source_authority_files_are_never_copied_or_modified(tmp_path: Path) -> None:
     source = _build_source_home(tmp_path)
     legacy_marker = source / IMPORT_MARKER_FILENAME

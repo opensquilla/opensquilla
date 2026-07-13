@@ -21,5 +21,8 @@ def test_aliyun_oss_release_mirror_workflow_contract() -> None:
     assert "OSS_REGION" in workflow
     assert "OSS_ENDPOINT" in workflow
     assert "ALIYUN_OSS_PREFIX_NORMALIZED" in workflow
-    assert "dest_prefix=\"oss://${ALIYUN_OSS_BUCKET}/${ALIYUN_OSS_PREFIX_NORMALIZED}/${TAG}\"" in workflow
+    assert (
+        'dest_prefix="oss://${ALIYUN_OSS_BUCKET}/'
+        '${ALIYUN_OSS_PREFIX_NORMALIZED}/${TAG}"'
+    ) in workflow
     assert "ossutil cp \"${path}\" \"${dest_prefix}/${name}\"" in workflow

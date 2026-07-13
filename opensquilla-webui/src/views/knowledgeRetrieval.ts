@@ -24,7 +24,7 @@ export interface KnowledgeStatusLike {
   effectiveDefaultRetrievalProfile?: string | null
   defaultFallbackReason?: string | null
   retrievalProfiles?: RetrievalProfileStatus[]
-  defaultRetrievalProfile?: string
+  defaultRetrievalProfile?: string | null
 }
 
 export interface KnowledgeResultScoreLike {
@@ -100,19 +100,14 @@ export function fallbackActive(
   const reason = status?.defaultFallbackReason
   if (typeof reason === 'string' && reason.trim().length > 0) return true
 
-  const configuredDefault = status?.configuredDefaultRetrievalProfile
-  if (
-    typeof configuredDefault !== 'string'
-    || configuredDefault.length === 0
-    || configuredDefault.trim() !== configuredDefault
-  ) return false
-
-  const effectiveDefault = status?.effectiveDefaultRetrievalProfile
-  if (effectiveDefault === null) return true
-  return typeof effectiveDefault === 'string'
-    && effectiveDefault.length > 0
-    && effectiveDefault.trim() === effectiveDefault
-    && effectiveDefault !== configuredDefault
+  const configuredDefault = safeDefaultProfileValue(
+    status?.configuredDefaultRetrievalProfile,
+  )
+  const effectiveDefault = safeDefaultProfileValue(
+    status?.effectiveDefaultRetrievalProfile,
+  )
+  if (configuredDefault === undefined || effectiveDefault === undefined) return false
+  return configuredDefault !== effectiveDefault
 }
 
 function availableRetrievalProfile(
@@ -270,6 +265,15 @@ function connectionStateFromStatus(
   }
 }
 
+function safeDefaultProfileValue(value: unknown): string | null | undefined {
+  if (value === null) return null
+  return typeof value === 'string'
+    && value.length > 0
+    && value.trim() === value
+    ? value
+    : undefined
+}
+
 function isRetrievalProfileStatus(value: unknown): value is RetrievalProfileStatus {
   if (!value || typeof value !== 'object') return false
   const profile = value as Partial<RetrievalProfileStatus>
@@ -279,13 +283,14 @@ function isRetrievalProfileStatus(value: unknown): value is RetrievalProfileStat
     && profile.id.trim() === profile.id
     && typeof profile.label === 'string'
     && profile.label.length > 0
+    && profile.label.trim() === profile.label
     && (profile.kind === 'lexical' || profile.kind === 'vector' || profile.kind === 'hybrid')
     && typeof profile.available === 'boolean'
     && (profile.reason === null || typeof profile.reason === 'string')
     && (profile.model === undefined || typeof profile.model === 'string')
     && (
       profile.dimensions === undefined
-      || (typeof profile.dimensions === 'number' && Number.isFinite(profile.dimensions))
+      || Number.isInteger(profile.dimensions)
     )
   )
 }

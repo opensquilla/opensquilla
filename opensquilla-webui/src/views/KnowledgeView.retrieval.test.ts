@@ -135,6 +135,12 @@ describe('knowledge retrieval capability state helpers', () => {
       ...READY_STATUS,
       defaultFallbackReason: ['SECRET must not be coerced'],
     } as unknown as Parameters<typeof fallbackActive>[0]
+    const malformedDefaults = {
+      ...READY_STATUS,
+      configuredDefaultRetrievalProfile: [],
+      effectiveDefaultRetrievalProfile: {},
+      defaultFallbackReason: null,
+    } as unknown as Parameters<typeof fallbackActive>[0]
 
     expect(fallbackActive(readyFallbackStatus)).toBe(true)
     expect(fallbackActive({
@@ -147,7 +153,39 @@ describe('knowledge retrieval capability state helpers', () => {
       effectiveDefaultRetrievalProfile: null,
       defaultFallbackReason: null,
     })).toBe(true)
+    expect(fallbackActive({
+      ...READY_STATUS,
+      configuredDefaultRetrievalProfile: null,
+      effectiveDefaultRetrievalProfile: 'sqlite_fts5_default',
+      defaultFallbackReason: null,
+    })).toBe(true)
+    expect(fallbackActive({
+      ...READY_STATUS,
+      configuredDefaultRetrievalProfile: null,
+      effectiveDefaultRetrievalProfile: null,
+      defaultFallbackReason: null,
+    })).toBe(false)
     expect(fallbackActive(READY_STATUS)).toBe(false)
+    expect(fallbackActive({
+      ...READY_STATUS,
+      configuredDefaultRetrievalProfile: undefined,
+      defaultFallbackReason: null,
+    })).toBe(false)
+    expect(fallbackActive({
+      ...READY_STATUS,
+      configuredDefaultRetrievalProfile: ' ',
+      defaultFallbackReason: null,
+    })).toBe(false)
+    expect(fallbackActive({
+      ...READY_STATUS,
+      effectiveDefaultRetrievalProfile: undefined,
+      defaultFallbackReason: null,
+    })).toBe(false)
+    expect(fallbackActive({
+      ...READY_STATUS,
+      effectiveDefaultRetrievalProfile: ' ',
+      defaultFallbackReason: null,
+    })).toBe(false)
     expect(fallbackActive({
       ...readyFallbackStatus,
       connectionState: 'DEGRADED',
@@ -157,6 +195,11 @@ describe('knowledge retrieval capability state helpers', () => {
       connectionState: 'LEGACY',
     })).toBe(false)
     expect(fallbackActive(malformedReason)).toBe(false)
+    expect(fallbackActive(malformedDefaults)).toBe(false)
+    expect(fallbackActive({
+      ...malformedDefaults,
+      defaultFallbackReason: 'service_fallback',
+    })).toBe(true)
     expect(fallbackActive(null)).toBe(false)
   })
 
@@ -248,6 +291,45 @@ describe('knowledge retrieval capability state helpers', () => {
     expect(buildSearchProfilePayload(noAvailableProfiles, '')).toBeNull()
     expect(retrievalProfilesFromStatus(malformedStatus)).toEqual([])
     expect(buildSearchProfilePayload(malformedStatus, '')).toBeNull()
+  })
+
+  it('rejects malformed and duplicate service profiles across connection states', () => {
+    const validProfile = {
+      id: 'sqlite_fts5_default',
+      label: 'SQLite FTS5',
+      kind: 'lexical' as const,
+      available: true,
+      reason: null,
+    }
+    const readyStatus = (profile: unknown) => ({
+      connectionState: 'READY',
+      retrievalProfiles: [profile],
+    }) as unknown as Parameters<typeof retrievalProfilesFromStatus>[0]
+    const duplicateIds = {
+      connectionState: 'READY' as const,
+      retrievalProfiles: [validProfile, { ...validProfile, label: 'Duplicate' }],
+    }
+    const disconnected = {
+      connectionState: 'DISCONNECTED' as const,
+      defaultRetrievalProfile: null,
+      retrievalProfiles: [validProfile],
+    }
+    const integerDimensions = readyStatus({ ...validProfile, dimensions: -1 })
+
+    for (const status of [
+      readyStatus({ ...validProfile, label: '   ' }),
+      readyStatus({ ...validProfile, label: ' SQLite FTS5 ' }),
+      readyStatus({ ...validProfile, dimensions: 1024.5 }),
+      duplicateIds,
+    ]) {
+      expect(retrievalProfilesFromStatus(status)).toEqual([])
+      expect(buildSearchProfilePayload(status, '')).toBeNull()
+    }
+    expect(retrievalProfilesFromStatus(disconnected)).toEqual([])
+    expect(buildSearchProfilePayload(disconnected, '')).toBeNull()
+    expect(retrievalProfilesFromStatus(integerDimensions)).toEqual([
+      { ...validProfile, dimensions: -1 },
+    ])
   })
 })
 

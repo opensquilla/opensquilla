@@ -24,8 +24,14 @@ from opensquilla.onboarding.channel_specs import (
 # msteams is intentionally absent: the adapter is text-only and hidden
 # from runtime catalog surfaces until first-class support lands.
 ALL_TYPES = {
-    "slack", "feishu", "discord", "dingtalk", "wecom", "qq",
-    "matrix", "telegram",
+    "slack",
+    "feishu",
+    "discord",
+    "dingtalk",
+    "wecom",
+    "qq",
+    "matrix",
+    "telegram",
 }
 
 ENTRY_MODELS = {
@@ -52,7 +58,36 @@ def test_catalog_includes_all_channels():
 def test_each_channel_has_common_fields(type_name: str):
     spec = get_channel_setup_spec(type_name)
     names = {f.name for f in spec.fields}
-    assert {"name", "enabled", "agent_id"} <= names
+    assert {
+        "name",
+        "enabled",
+        "agent_id",
+        "group_session_scope",
+        "busy_input_mode",
+    } <= names
+
+
+@pytest.mark.parametrize("type_name", sorted(ALL_TYPES))
+def test_each_channel_exposes_safe_session_and_busy_policy(type_name: str):
+    fields = {field.name: field for field in get_channel_setup_spec(type_name).fields}
+
+    group_scope = fields["group_session_scope"]
+    assert group_scope.default == "per_sender"
+    assert group_scope.choices == ("per_sender", "shared_room")
+    assert group_scope.advanced is True
+    assert group_scope.help
+
+    busy_mode = fields["busy_input_mode"]
+    assert busy_mode.default == "followup"
+    assert busy_mode.choices == ("followup", "queue", "steer", "interrupt")
+    assert busy_mode.advanced is True
+    assert busy_mode.help
+
+    dm_access = fields["dm_access"]
+    assert dm_access.default == "pairing"
+    assert dm_access.choices == ("pairing", "open", "allowlist")
+    assert dm_access.advanced is True
+    assert fields["allowed_senders"].show_when == {"dm_access": "allowlist"}
 
 
 @pytest.mark.parametrize("type_name", sorted(ALL_TYPES))
@@ -125,6 +160,10 @@ def test_feishu_connection_mode_choices():
     assert field.field_type == "select"
     assert field.default == "websocket"
     assert field.choices == ("webhook", "websocket")
+
+
+def test_matrix_transport_matches_client_sync_runtime():
+    assert get_channel_setup_spec("matrix").transport == "http_sync"
 
 
 def test_slack_connection_mode_choices():
@@ -218,6 +257,14 @@ def test_channel_catalog_payload_exposes_ui_metadata():
     assert fields["app_secret"]["placeholder"]
     assert fields["webhook_path"]["showWhen"] == {"connection_mode": "webhook"}
     assert fields["encrypt_key"]["advanced"] is True
+    assert fields["group_session_scope"]["default"] == "per_sender"
+    assert fields["group_session_scope"]["help"]
+    assert fields["busy_input_mode"]["choices"] == [
+        "followup",
+        "queue",
+        "steer",
+        "interrupt",
+    ]
     assert feishu["blocking"] is False
     assert feishu["whatYouNeed"]
     slack = next(c for c in payload if c["type"] == "slack")
@@ -349,8 +396,7 @@ def test_advertised_minimal_setup_passes_model_validation(type_name: str):
         if not field.required or field.name == "name":
             continue
         if field.show_when and any(
-            str(defaults.get(key, "")) != expected
-            for key, expected in field.show_when.items()
+            str(defaults.get(key, "")) != expected for key, expected in field.show_when.items()
         ):
             continue
         if field.field_type == "select":

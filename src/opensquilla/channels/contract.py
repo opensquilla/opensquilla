@@ -478,6 +478,52 @@ def channel_platform_manifest(channel: Any) -> ChannelPlatformManifest | None:
     )
 
 
+_CAPABILITY_METHOD_EVIDENCE: dict[str, tuple[str, ...]] = {
+    ChannelCapabilities.TYPING_INDICATOR: ("send_typing",),
+    ChannelCapabilities.NATIVE_FILE_UPLOAD: ("send_file",),
+    ChannelCapabilities.REPLY: ("build_reply_message",),
+    ChannelCapabilities.THREAD_REPLY: ("build_reply_message",),
+    ChannelCapabilities.EDIT: ("edit",),
+    ChannelCapabilities.DELETE: ("delete",),
+    ChannelCapabilities.REACTIONS: (
+        "set_reaction",
+        "add_reaction",
+        "remove_reaction",
+    ),
+    ChannelCapabilities.CARDS: ("send_card", "send_streaming"),
+    ChannelCapabilities.INTERACTIVE_CARDS: ("send_card", "send"),
+}
+
+
+def channel_capability_evidence(channel: Any) -> dict[str, dict[str, Any]]:
+    """Describe declared, method-backed, and effective adapter capabilities.
+
+    Semantic capabilities such as group topology and mention parsing cannot be
+    proved by method presence. They remain explicitly marked ``declaration``;
+    CI/live-smoke proof timestamps can replace that evidence kind later.
+    """
+    profile = channel_capability_profile(channel)
+    if profile is None:
+        return {}
+    evidence: dict[str, dict[str, Any]] = {}
+    for capability in sorted(profile.capability_tags()):
+        methods = _CAPABILITY_METHOD_EVIDENCE.get(capability, ())
+        implemented_methods = [
+            method for method in methods if callable(getattr(channel, method, None))
+        ]
+        method_backed = bool(methods)
+        implemented = bool(implemented_methods) if method_backed else True
+        evidence[capability] = {
+            "declared": True,
+            "implemented": implemented,
+            "effective": implemented,
+            "evidence_kind": "method" if method_backed else "declaration",
+            "methods": implemented_methods,
+            "proof_status": "unverified",
+        }
+    return evidence
+
+
 def normalize_channel_send_result(
     result: Any,
     *,
@@ -578,6 +624,7 @@ __all__ = [
     "assert_dm_safety_tiers",
     "assert_error_class_taxonomy",
     "channel_capability_profile",
+    "channel_capability_evidence",
     "channel_platform_manifest",
     "normalize_channel_send_result",
     "run_channel_contract",

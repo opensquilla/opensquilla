@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from typing import Any, Literal
 
 FieldType = Literal["text", "password", "select", "bool", "int", "float"]
-Transport = Literal["polling", "webhook", "websocket", "mixed", "unknown"]
+Transport = Literal["polling", "webhook", "websocket", "http_sync", "mixed", "unknown"]
 
 
 @dataclass(frozen=True)
@@ -54,6 +54,66 @@ def _common_fields() -> tuple[ChannelSetupField, ...]:
         ),
         ChannelSetupField(
             "enabled", "Enabled", "bool", required=False, default=True,
+        ),
+        ChannelSetupField(
+            "group_session_scope",
+            "Group session scope",
+            "select",
+            required=False,
+            default="per_sender",
+            choices=("per_sender", "shared_room"),
+            description="Choose whether group history is isolated per participant.",
+            help=(
+                "per_sender keeps each participant's context separate inside a room. "
+                "shared_room intentionally gives the whole room one transcript."
+            ),
+            group="behavior",
+            advanced=True,
+        ),
+        ChannelSetupField(
+            "busy_input_mode",
+            "Input while busy",
+            "select",
+            required=False,
+            default="followup",
+            choices=("followup", "queue", "steer", "interrupt"),
+            description="Control how new messages enter a session that is already running.",
+            help=(
+                "followup preserves the default FIFO behavior; queue records an explicit "
+                "FIFO request. steer and interrupt cancel existing session work before the "
+                "new message is enqueued. Unsupported runtime modes fall back to followup."
+            ),
+            group="behavior",
+            advanced=True,
+        ),
+        ChannelSetupField(
+            "dm_access",
+            "Direct-message access",
+            "select",
+            required=False,
+            default="pairing",
+            choices=("pairing", "open", "allowlist"),
+            description=(
+                "Pairing safely holds unknown authenticated senders for operator approval. "
+                "Open admits every authenticated sender; allowlist admits only listed ids."
+            ),
+            help="Use pairing unless this bot is intentionally public.",
+            group="access",
+            advanced=True,
+        ),
+        ChannelSetupField(
+            "allowed_senders",
+            "Allowed sender ids",
+            "text",
+            required=False,
+            default="",
+            description=(
+                "Comma-separated provider sender ids. In allowlist mode these admit "
+                "direct messages; when populated they also constrain group senders."
+            ),
+            placeholder="user-id-1, user-id-2",
+            show_when={"dm_access": "allowlist"},
+            group="access",
         ),
     )
 
@@ -179,7 +239,7 @@ def _discord_spec() -> ChannelSetupSpec:
                               required=False,
                               default="wss://gateway.discord.gg/?v=10&encoding=json"),
             ChannelSetupField("intents", "Intents bitmask", "int",
-                              required=False, default=33281),
+                              required=False, default=46593),
         ),
     )
 
@@ -309,7 +369,7 @@ def _matrix_spec() -> ChannelSetupSpec:
         type="matrix",
         label="Matrix",
         description="Matrix homeserver client (sync long-poll).",
-        transport="websocket",
+        transport="http_sync",
         requires_public_url=False,
         dependency_extra="matrix",
         restart_required=True,

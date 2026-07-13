@@ -21,6 +21,7 @@ from opensquilla.channels.contract import (
     ChannelPlatformManifest,
     ChannelSendResult,
     ChannelSendStatus,
+    channel_capability_evidence,
     channel_capability_profile,
     channel_platform_manifest,
     normalize_channel_send_result,
@@ -436,8 +437,16 @@ def test_telegram_profile_matches_current_bot_api_adapter_surface() -> None:
     assert profile.supports(ChannelCapabilities.THREAD_REPLY)
     assert profile.supports(ChannelCapabilities.EDIT)
     assert profile.supports(ChannelCapabilities.DELETE)
-    assert not profile.supports(ChannelCapabilities.TYPING_INDICATOR)
+    assert profile.supports(ChannelCapabilities.TYPING_INDICATOR)
+    assert profile.supports(ChannelCapabilities.REACTIONS)
     assert profile.supports(ChannelCapabilities.NATIVE_FILE_UPLOAD)
+
+    evidence = channel_capability_evidence(channel)
+    assert evidence[ChannelCapabilities.TYPING_INDICATOR]["methods"] == [
+        "send_typing"
+    ]
+    assert evidence[ChannelCapabilities.REACTIONS]["methods"] == ["set_reaction"]
+    assert evidence[ChannelCapabilities.GROUP_CHAT]["evidence_kind"] == "declaration"
 
 
 def test_matrix_profile_matches_current_sync_adapter_surface() -> None:
@@ -445,7 +454,8 @@ def test_matrix_profile_matches_current_sync_adapter_surface() -> None:
 
     profile = channel.capability_profile
 
-    assert profile.supports(ChannelCapabilities.WEBSOCKET)
+    assert not profile.supports(ChannelCapabilities.WEBSOCKET)
+    assert profile.transports == ("http_sync",)
     assert profile.supports(ChannelCapabilities.GROUP_CHAT)
     assert profile.supports(ChannelCapabilities.MENTIONS)
     assert profile.supports(ChannelCapabilities.MEDIA)
@@ -531,7 +541,7 @@ def test_group_thread_metadata_builds_thread_session_key() -> None:
 
     key = ChannelManager._build_session_key("discord", msg)
 
-    assert key == "agent:main:discord:group:chat-1:thread:thread-9"
+    assert key == "agent:main:discord:group:chat-1:sender:user-1:thread:thread-9"
 
 
 def test_dm_message_uses_sender_session_even_with_native_message_metadata() -> None:
@@ -817,7 +827,7 @@ def test_feishu_topic_group_thread_remains_group_thread_session() -> None:
     assert msg.metadata["native_thread_id"] == "omt_topic"
     assert "thread_id" not in msg.metadata
     assert ChannelManager._build_session_key("feishu", msg) == (
-        "agent:main:feishu:group:oc_topic:thread:omt_topic"
+        "agent:main:feishu:group:oc_topic:sender:ou_user:thread:omt_topic"
     )
 
 

@@ -35,12 +35,20 @@ from opensquilla.channels.contract import (
     ChannelPlatformManifest,
     ChannelSendResult,
 )
-from opensquilla.channels.types import Attachment, ChannelHealth, IncomingMessage, OutgoingMessage
+from opensquilla.channels.types import (
+    Attachment,
+    AuthenticatedPrincipal,
+    ChannelHealth,
+    IncomingMessage,
+    IngressProvenance,
+    IngressVerification,
+    OutgoingMessage,
+)
 from opensquilla.env import trust_env as _trust_env
 
 log = structlog.get_logger(__name__)
 
-CAPABILITY_TIER = "GREEN-shipping"
+CAPABILITY_TIER = "YELLOW-experimental"
 
 DM_SAFETY_TIERS: tuple[str, ...] = ("safe", "confirm")
 
@@ -58,13 +66,24 @@ FATAL_ERROR_CLASSES: tuple[str, ...] = (
 
 _DEFAULT_TIMEOUT_S = 30.0
 _DEDUPE_SIZE = 4096
-_ALLOWED_UPDATES = ("message", "edited_message", "channel_post", "edited_channel_post")
+_ALLOWED_UPDATES = ("message", "channel_post")
 # Telegram Bot API hard limit on sendMessage text length.
 _TELEGRAM_MAX_MESSAGE_CHARS = 4096
 
 
 class TelegramApiError(RuntimeError):
     """Raised when the Telegram Bot API returns ``ok: false``."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        error_code: int | None = None,
+        retry_after: int | None = None,
+    ) -> None:
+        self.error_code = error_code
+        self.retry_after = retry_after
+        super().__init__(message)
 
 
 class TelegramChannelConfig(BaseModel):
@@ -139,6 +158,8 @@ class TelegramChannel:
             mentions=True,
             native_file_upload=True,
             media=True,
+            reactions=True,
+            typing_indicator=True,
             reply=True,
             thread_reply=True,
             edit=True,
@@ -192,10 +213,28 @@ class TelegramChannel:
             raise ValueError("telegram API call requires token")
         client = self._get_client()
         response = await client.post(f"/bot{self.config.token}/{method}", json=payload or {})
-        response.raise_for_status()
-        data = response.json()
+        try:
+            data = response.json()
+        except ValueError:
+            response.raise_for_status()
+            raise TelegramApiError(f"Telegram {method} returned invalid JSON") from None
         if data.get("ok") is not True:
-            raise TelegramApiError(data.get("description", f"Telegram {method} failed"))
+            parameters = data.get("parameters")
+            retry_after = (
+                parameters.get("retry_after")
+                if isinstance(parameters, dict) and isinstance(parameters.get("retry_after"), int)
+                else None
+            )
+            raise TelegramApiError(
+                data.get("description", f"Telegram {method} failed"),
+                error_code=(
+                    data.get("error_code")
+                    if isinstance(data.get("error_code"), int)
+                    else response.status_code
+                ),
+                retry_after=retry_after,
+            )
+        response.raise_for_status()
         return data.get("result")
 
     async def start(self) -> None:
@@ -239,6 +278,17 @@ class TelegramChannel:
             bot_user_id=self.bot_user_id,
         )
 
+    async def probe_connection(self) -> dict[str, Any]:
+        """Validate the token with getMe without changing webhook state."""
+        me = await self._api("getMe")
+        if not isinstance(me, dict):
+            raise TelegramApiError("Telegram getMe returned invalid result")
+        return {
+            "authenticated": True,
+            "bot_user_id": str(me.get("id") or ""),
+            "bot_username": str(me.get("username") or ""),
+        }
+
     async def stop(self) -> None:
         task = self._poll_task
         self._poll_task = None
@@ -256,8 +306,11 @@ class TelegramChannel:
         log.info("telegram.stopped", name=self.config.name)
 
     async def health_check(self) -> ChannelHealth:
+        transport_alive = self.config.transport_name != "polling" or (
+            self._poll_task is not None and not self._poll_task.done()
+        )
         return ChannelHealth(
-            connected=self._connected,
+            connected=self._connected and transport_alive,
             bot_user_id=self.bot_user_id,
             last_message_at=self._last_message_at,
             extra={"transport": self.config.transport_name},
@@ -286,14 +339,22 @@ class TelegramChannel:
                 if not isinstance(update, dict):
                     continue
                 update_id = update.get("update_id")
-                if isinstance(update_id, int):
-                    self._update_offset = update_id + 1
                 try:
-                    msg = self.parse_incoming(update)
+                    msg = self.parse_incoming(
+                        update,
+                        verification=IngressVerification.SDK_SESSION,
+                    )
                 except ValueError:
                     log.debug("telegram.unsupported_update_ignored", update_id=update_id)
+                    if isinstance(update_id, int):
+                        self._update_offset = update_id + 1
                     continue
                 self.enqueue(msg)
+                # Confirm an update only after its normalized message has been
+                # accepted by the local queue. The durable ingress journal can
+                # replace this checkpoint without changing adapter semantics.
+                if isinstance(update_id, int):
+                    self._update_offset = update_id + 1
             if not updates:
                 await asyncio.sleep(self.config.poll_idle_sleep_s)
 
@@ -307,15 +368,19 @@ class TelegramChannel:
             payload["offset"] = self._update_offset
         return payload
 
-    def enqueue(self, message: IncomingMessage) -> None:
+    def enqueue(self, message: IncomingMessage) -> bool:
         msg_id = str(message.metadata.get("message_id", ""))
         update_id = message.metadata.get("update_id")
         dedupe_key = f"{update_id}:{msg_id}" if update_id is not None else msg_id
         if dedupe_key and not self._dedupe.check_and_add(dedupe_key):
             log.debug("telegram.duplicate_dropped", key=dedupe_key)
-            return
-        self._queue.put_nowait(message)
+            return False
+        from opensquilla.channels.delivery_store import durable_enqueue
+
+        if not durable_enqueue(self, message, self._queue):
+            return False
         self._last_message_at = datetime.now(UTC)
+        return True
 
     async def receive(self) -> IncomingMessage:
         msg = await self._queue.get()
@@ -341,7 +406,10 @@ class TelegramChannel:
         if not isinstance(update, dict):
             return Response(status_code=400)
         try:
-            msg = self.parse_incoming(update)
+            msg = self.parse_incoming(
+                update,
+                verification=IngressVerification.WEBHOOK_TOKEN,
+            )
         except ValueError:
             log.debug("telegram.unsupported_update_ignored", update_id=update.get("update_id"))
             return Response(status_code=200)
@@ -466,13 +534,15 @@ class TelegramChannel:
             metadata={**attachment.metadata, "telegram_file_path": file_path},
         )
 
-    def parse_incoming(self, update: dict[str, Any]) -> IncomingMessage:
-        msg = (
-            update.get("message")
-            or update.get("edited_message")
-            or update.get("channel_post")
-            or update.get("edited_channel_post")
-        )
+    def parse_incoming(
+        self,
+        update: dict[str, Any],
+        *,
+        verification: IngressVerification = IngressVerification.LEGACY_UNVERIFIED,
+    ) -> IncomingMessage:
+        if "edited_message" in update or "edited_channel_post" in update:
+            raise ValueError("Telegram edited updates are not new agent turns")
+        msg = update.get("message") or update.get("channel_post")
         if not isinstance(msg, dict):
             raise ValueError("Telegram update did not contain a supported message payload")
         chat = msg.get("chat", {}) or {}
@@ -503,12 +573,29 @@ class TelegramChannel:
                     content = f"[{media_key}]"
                     break
 
+        sender_id = str(sender.get("id", ""))
         return IncomingMessage(
-            sender_id=str(sender.get("id", "")),
+            sender_id=sender_id,
             channel_id=str(chat.get("id", self.config.default_chat_id)),
             content=str(content),
             attachments=attachments,
             metadata=metadata,
+            provenance=IngressProvenance(
+                provider="telegram",
+                account_id=self.config.name,
+                transport=self.config.transport_name,
+                verification=verification,
+                event_id=(
+                    str(update.get("update_id"))
+                    if update.get("update_id") is not None
+                    else str(message_id or "") or None
+                ),
+                principal=(
+                    AuthenticatedPrincipal(subject_id=sender_id)
+                    if verification != IngressVerification.LEGACY_UNVERIFIED
+                    else None
+                ),
+            ),
         )
 
     def is_group_mentioned(self, msg: IncomingMessage) -> bool:
@@ -538,6 +625,8 @@ class TelegramChannel:
 
     def build_reply_message(self, content: str, inbound: IncomingMessage) -> OutgoingMessage:
         metadata: dict[str, Any] = {"chat_id": inbound.channel_id}
+        if (message_id := inbound.metadata.get("message_id")) is not None:
+            metadata["reply_to_message_id"] = message_id
         if (thread_id := inbound.metadata.get("thread_id")) is not None:
             metadata["thread_id"] = thread_id
         return OutgoingMessage(content=content, reply_to=inbound.channel_id, metadata=metadata)
@@ -553,6 +642,39 @@ class TelegramChannel:
             payload["text"] = chunk
             result = await self._api("sendMessage", payload)
         return result if isinstance(result, dict) else {"result": result}
+
+    async def send_typing(self, channel_id: str | None = None) -> ChannelSendResult:
+        target = str(channel_id or self.config.default_chat_id or "")
+        if not target:
+            return ChannelSendResult.unsupported(
+                capability=ChannelCapabilities.TYPING_INDICATOR,
+                reason="no chat target",
+            )
+        await self._api("sendChatAction", {"chat_id": target, "action": "typing"})
+        return ChannelSendResult.sent(
+            capability=ChannelCapabilities.TYPING_INDICATOR,
+            target_id=target,
+        )
+
+    async def set_reaction(
+        self,
+        chat_id: str,
+        message_id: str | int,
+        emoji: str,
+    ) -> ChannelSendResult:
+        await self._api(
+            "setMessageReaction",
+            {
+                "chat_id": _coerce_telegram_int(chat_id),
+                "message_id": _coerce_telegram_int(message_id),
+                "reaction": [{"type": "emoji", "emoji": emoji}],
+            },
+        )
+        return ChannelSendResult.sent(
+            capability=ChannelCapabilities.REACTIONS,
+            target_id=str(chat_id),
+            provider_message_id=str(message_id),
+        )
 
     async def send_file(
         self,

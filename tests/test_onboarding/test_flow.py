@@ -1494,6 +1494,8 @@ def test_interactive_feishu_websocket_prompts_only_core_fields(tmp_path, monkeyp
     assert 'type = "feishu"' in data
     assert 'app_id = "cli_test"' in data
     assert 'connection_mode = "websocket"' in data
+    saved = flow.load_config(target)
+    assert saved.channels.channels[0].dm_access == "pairing"
 
 
 def test_interactive_channel_add_uses_explicit_config_path(tmp_path, monkeypatch):

@@ -1262,10 +1262,13 @@ def test_desktop_gateway_build_and_verifier_cover_runtime_capabilities() -> None
     assert "code-task', 'smoke-imports'" in verifier
     assert "code-task', 'smoke-router'" in verifier
     assert "timeout: 120000" in verifier
-    assert "OPENSQUILLA_GATEWAY_SMOKE_TIMEOUT_MS" in _read(
-        "desktop/electron/scripts/smoke-gateway.mjs"
-    )
-    assert "'90000'" in _read("desktop/electron/scripts/smoke-gateway.mjs")
+    gateway_smoke = _read("desktop/electron/scripts/smoke-gateway.mjs")
+    assert "OPENSQUILLA_GATEWAY_SMOKE_TIMEOUT_MS" in gateway_smoke
+    assert "'90000'" in gateway_smoke
+    assert "function smokeEnv(tempHome, config)" in gateway_smoke
+    assert "OPENSQUILLA_STATE_DIR: tempHome" in gateway_smoke
+    assert "OPENSQUILLA_STATE_DIR: stateDir" not in gateway_smoke
+    assert "env: smokeEnv(tempHome, config)" in gateway_smoke
 
 
 def test_windows_release_workflow_fails_fast_after_gateway_build_failure() -> None:

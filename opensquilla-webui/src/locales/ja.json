@@ -1467,7 +1467,11 @@
         "stable": "安定",
         "shipping": "提供中",
         "unrated": "未評価"
-      }
+      },
+      "opsActionsLabel": "ランタイム操作",
+      "configActionsLabel": "設定操作",
+      "configActionHint": "設定に書き込みます — ゲートウェイ再起動後に反映されます",
+      "editActionHint": "チャンネル設定でエディタを開きます"
     },
     "overview": {
       "channelsChip": "チャンネル",

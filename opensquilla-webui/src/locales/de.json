@@ -1467,7 +1467,11 @@
         "stable": "Stabil",
         "shipping": "Ausgeliefert",
         "unrated": "Unbewertet"
-      }
+      },
+      "opsActionsLabel": "Laufzeit-Aktionen",
+      "configActionsLabel": "Konfigurations-Aktionen",
+      "configActionHint": "Schreibt die Konfiguration — wirksam nach einem Gateway-Neustart",
+      "editActionHint": "Öffnet den Editor in der Kanal-Einrichtung"
     },
     "overview": {
       "channelsChip": "Kanäle",

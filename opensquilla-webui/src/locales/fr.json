@@ -1467,7 +1467,11 @@
         "stable": "Stable",
         "shipping": "Livré",
         "unrated": "Non évalué"
-      }
+      },
+      "opsActionsLabel": "Actions d'exécution",
+      "configActionsLabel": "Actions de configuration",
+      "configActionHint": "Écrit la configuration — prend effet après un redémarrage de la passerelle",
+      "editActionHint": "Ouvre l'éditeur dans Config. des canaux"
     },
     "overview": {
       "channelsChip": "Canaux",

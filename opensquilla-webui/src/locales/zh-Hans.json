@@ -1467,7 +1467,11 @@
         "stable": "稳定",
         "shipping": "已发布",
         "unrated": "未评级"
-      }
+      },
+      "opsActionsLabel": "运维动作",
+      "configActionsLabel": "配置动作",
+      "configActionHint": "写入配置——网关重启后生效",
+      "editActionHint": "在频道设置中打开编辑器"
     },
     "overview": {
       "channelsChip": "频道",

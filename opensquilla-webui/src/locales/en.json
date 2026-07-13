@@ -1467,7 +1467,11 @@
         "stable": "Stable",
         "shipping": "Shipping",
         "unrated": "Unrated"
-      }
+      },
+      "opsActionsLabel": "Runtime actions",
+      "configActionsLabel": "Configuration actions",
+      "configActionHint": "Writes configuration — takes effect after a gateway restart",
+      "editActionHint": "Opens the editor in Channel setup"
     },
     "overview": {
       "channelsChip": "Channels",

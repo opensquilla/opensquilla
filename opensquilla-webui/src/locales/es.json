@@ -1467,7 +1467,11 @@
         "stable": "Estable",
         "shipping": "Publicado",
         "unrated": "Sin calificar"
-      }
+      },
+      "opsActionsLabel": "Acciones de ejecución",
+      "configActionsLabel": "Acciones de configuración",
+      "configActionHint": "Escribe la configuración: se aplica tras reiniciar el gateway",
+      "editActionHint": "Abre el editor en Config. de canales"
     },
     "overview": {
       "channelsChip": "Canales",

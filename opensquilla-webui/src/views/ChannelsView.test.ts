@@ -111,6 +111,13 @@ async function mountChannelsView(options: {
       status: 'approved',
       approvedAt: '2026-07-13T09:00:00Z',
     },
+    {
+      pairingId: 'pair-revoked',
+      channelName: 'ops-slack',
+      senderId: 'U-REVOKED',
+      senderName: 'Revoked User',
+      status: 'revoked',
+    },
   ]
   const execute = vi.fn(async () => ({ channels: channelRows }))
   const refresh = vi.fn(async () => ({ channels: channelRows }))
@@ -331,6 +338,15 @@ describe('ChannelsView channel operations', () => {
       expect(rpcCall.mock.calls.filter(([method]) => method === 'channels.pairings')).toHaveLength(3)
       expect(pushToast).toHaveBeenCalledWith('Revoked pairing access for Approved User', { tone: 'ok' })
       expect(detail.querySelector('[aria-label="Revoke access for Approved User"]')).toBeNull()
+
+      // A revoked request can be re-approved via the same approve RPC.
+      expect(detail.textContent).toContain('Revoked access')
+      detail.querySelector<HTMLButtonElement>('[aria-label="Re-approve access for Revoked User"]')!.click()
+      await flush()
+      expect(rpcCall).toHaveBeenCalledWith('channels.pairing.approve', {
+        channelName: 'ops-slack',
+        pairingId: 'pair-revoked',
+      })
     } finally {
       app.unmount()
     }

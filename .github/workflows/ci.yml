@@ -138,6 +138,15 @@ jobs:
           fi
           echo "Frontend dist verified fresh"
 
+      - name: Upload rebuilt frontend dist for recovery
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-dist-${{ github.run_id }}
+          path: src/opensquilla/gateway/static/dist
+          if-no-files-found: error
+          retention-days: 1
+
   tui-check:
     name: OpenTUI package tests
     needs: classify-changes

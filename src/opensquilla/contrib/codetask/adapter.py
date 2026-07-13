@@ -49,6 +49,35 @@ POLL_INTERVAL_SECONDS = 0.5
 _JSON_OBJECT_RE = re.compile(r"\{(?:[^{}]|(?:\{[^{}]*\}))*\}")
 StatusCallback = Callable[[dict[str, Any]], None]
 
+# code-task inherits the operator's runtime environment for credentials,
+# proxies, PATH, and packaged-runtime discovery. Persistent/profile-scoped
+# locations are different: a child agent is a separate writer and must never
+# attach itself to the live Desktop/gateway profile that launched the run.
+_PROFILE_SCOPED_CHILD_ENV = frozenset(
+    {
+        "OPENSQUILLA_DESKTOP",
+        "OPENSQUILLA_DESKTOP_PROFILE_KIND",
+        "OPENSQUILLA_PROFILE_KIND",
+        "OPENSQUILLA_HOME",
+        "OPENSQUILLA_PROFILE",
+        "OPENSQUILLA_STATE_DIR",
+        "OPENSQUILLA_GATEWAY_STATE_DIR",
+        "OPENSQUILLA_GATEWAY_WORKSPACE_DIR",
+        "OPENSQUILLA_WORKSPACE_DIR",
+        "OPENSQUILLA_MEMORY_DIR",
+        "OPENSQUILLA_MEMORY_DB",
+        "OPENSQUILLA_SESSION_ARCHIVE_DIR",
+        "OPENSQUILLA_LOG_DIR",
+        "OPENSQUILLA_TURN_CALL_LOG_DIR",
+        "OPENSQUILLA_LLM_TRACE_PATH",
+        "OPENSQUILLA_RUNTIME_EVENTS_PATH",
+        "OPENSQUILLA_PATCH_EVIDENCE_LEDGER_PATH",
+        "OPENSQUILLA_SCHEDULER_DB",
+        "OPENSQUILLA_META_RUNS_DB",
+        "OPENSQUILLA_ROUTER_DECISIONS_DB",
+    }
+)
+
 
 class LocalAdapter:
     """Drives the host ``opensquilla agent`` CLI and returns a structured result."""
@@ -176,11 +205,11 @@ class LocalAdapter:
         # POSIX mode is honored; a no-op on Windows (best effort). Attempt
         # snapshots preserve the mode (copy2).
         _write_owner_only(per_run_config, tomli_w.dumps(_cfg))
-        agent_env = {
-            **os.environ,
-            **bundle.child_env,
-            "OPENSQUILLA_GATEWAY_CONFIG_PATH": str(per_run_config),
-        }
+        agent_env = _agent_environment(
+            bundle=bundle,
+            per_run_config=per_run_config,
+            scratch_dir=scratch_dir,
+        )
         popen_kwargs: dict[str, Any] = dict(
             cwd=str(repo),
             stdout=subprocess.PIPE,
@@ -276,6 +305,35 @@ class LocalAdapter:
             error=stall_error or None,
             errors=envelope_errors,
         )
+
+
+def _agent_environment(
+    *,
+    bundle: AgentConfigBundle,
+    per_run_config: Path,
+    scratch_dir: Path,
+) -> dict[str, str]:
+    """Build the isolated environment for one code-task child agent.
+
+    The child still acquires the universal writer lock, but for a disposable
+    per-attempt profile under scratch rather than the caller's live profile.
+    Runtime/provider variables remain inherited; only persistent data-root
+    overrides are removed.
+    """
+
+    environment = dict(os.environ)
+    for name in _PROFILE_SCOPED_CHILD_ENV:
+        environment.pop(name, None)
+    environment.update(bundle.child_env)
+    environment.update(
+        {
+            "OPENSQUILLA_STATE_DIR": str(
+                scratch_dir.expanduser().resolve() / "profile"
+            ),
+            "OPENSQUILLA_GATEWAY_CONFIG_PATH": str(per_run_config),
+        }
+    )
+    return environment
 
 
 def _monitor_process(

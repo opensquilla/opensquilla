@@ -48,19 +48,34 @@ Read: [`approvals-and-permissions.md`](approvals-and-permissions.md)
 
 ## Approval Flow
 
-Sensitive actions may pause for human approval depending on permission mode,
-tool policy, channel surface, and runtime configuration.
+With the default `approvals_reviewer = "auto_review"`, an explicit
+`require_escalated` tool call is reviewed by an independent Guardian model.
+The review record is internal and does not appear as an actionable Web UI
+approval. Configure `approvals_reviewer = "user"` only when a human approval
+surface is intentionally required.
 
-Approvals are most important for:
+Elevation review covers:
 
-- filesystem writes;
-- shell commands;
+- out-of-root filesystem writes and patches;
+- exact shell commands and background processes;
+- exact Python code execution;
+- unknown managed-network targets;
 - external channel or webhook delivery;
 - generated artifacts that will be published;
 - actions that affect another service.
 
-Use the Web UI approvals page when you want durable review outside the chat
-scrollback.
+The normal tool call uses `sandbox_permissions = "use_default"`. If it needs a
+capability outside the active sandbox, the tool returns `elevation_required`
+without queueing a review. The agent may then submit the exact same operation
+with `sandbox_permissions = "require_escalated"` and a precise
+`justification`. Approval is fingerprint-bound and one-shot; changed arguments
+or content cannot reuse it.
+
+Guardian allows low/medium risk only when trusted user intent supports the
+action. High risk requires at least medium authorization and narrow scope;
+critical risk is always denied. Review errors and timeouts fail closed. A
+denial goes back to the agent for explanation or a safer proposal, never to an
+automatic human-popup fallback.
 
 ## Workspace Controls
 
@@ -83,6 +98,12 @@ opensquilla agent \
 `--workspace-lockdown` is intended for automation where writes must stay inside
 the workspace or scratch directory.
 
+On Linux Bubblewrap, host `/` is mounted read-only by default and the workspace
+and configured writable roots are overlaid read-write. This makes normal host
+files broadly readable without making them writable. OS permissions and
+explicit sensitive/deny rules remain authoritative. Out-of-root mutation never
+creates a silent broad mount; it requires an exact elevation action.
+
 ## Sandbox Commands
 
 ```sh
@@ -95,6 +116,22 @@ opensquilla sandbox reset
 
 Sandbox behavior is platform-dependent. Treat `sandbox status` and `doctor` as
 the source of truth for the current machine.
+
+Example Codex-parity settings:
+
+```toml
+[sandbox]
+sandbox = true
+security_grading = true
+host_root_readonly = true
+approvals_reviewer = "auto_review"
+approval_review_timeout_seconds = 20
+approval_review_max_attempts = 3
+```
+
+`require_escalated` is not a persistent permission mode, and automatic review
+never persists a proposed prefix rule. Disabling the sandbox or selecting full
+host access retains the existing full-host behavior.
 
 ## Recommended Patterns
 

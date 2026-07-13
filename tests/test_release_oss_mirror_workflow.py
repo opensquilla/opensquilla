@@ -39,5 +39,6 @@ def test_aliyun_oss_release_mirror_workflow_contract() -> None:
     assert 'upload_asset "release-assets/SHA256SUMS" "SHA256SUMS"' in workflow
     assert "Build latest download page" in workflow
     assert 'release-assets/latest.html' in workflow
-    assert 'Content-Type:text/html; charset=utf-8#Cache-Control:no-cache' in workflow
+    assert '--content-type "text/html; charset=utf-8"' in workflow
+    assert '--cache-control "no-cache"' in workflow
     assert '"${mirror_root}/latest.html"' in workflow

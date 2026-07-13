@@ -25,6 +25,7 @@ class ThinkingLevel(StrEnum):
     MEDIUM = "medium"  # 10000 tokens
     HIGH = "high"  # 20000 tokens
     XHIGH = "xhigh"  # 50000 tokens
+    ULTRA = "ultra"  # provider-native ultra effort
     MAX = "max"  # provider-native maximum effort
     ADAPTIVE = "adaptive"  # auto-scale based on prompt
 
@@ -36,6 +37,7 @@ THINKING_BUDGETS: dict[ThinkingLevel, int] = {
     ThinkingLevel.MEDIUM: 10000,
     ThinkingLevel.HIGH: 20000,
     ThinkingLevel.XHIGH: 50000,
+    ThinkingLevel.ULTRA: 50000,
     ThinkingLevel.MAX: 50000,
 }
 

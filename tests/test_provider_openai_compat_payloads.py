@@ -297,6 +297,30 @@ def test_openrouter_reasoning_preserves_provider_max_effort(monkeypatch: Any) ->
     assert captured["payload"]["reasoning"] == {"effort": "max"}
 
 
+def test_openrouter_reasoning_preserves_provider_ultra_effort(monkeypatch: Any) -> None:
+    captured: dict[str, Any] = {}
+    _patch_transport(monkeypatch, captured)
+    provider = OpenAIProvider(
+        api_key="test",
+        model="openai/gpt-5.6-sol",
+        base_url="https://openrouter.ai/api/v1",
+        provider_kind="openrouter",
+    )
+    cfg = ChatConfig(
+        thinking=True,
+        thinking_level=ThinkingLevel.ULTRA,
+        model_capabilities=ModelCapabilities(
+            supports_reasoning=True,
+            supports_tools=True,
+            reasoning_format="openrouter",
+        ),
+    )
+
+    _collect(provider, cfg)
+
+    assert captured["payload"]["reasoning"] == {"effort": "ultra"}
+
+
 def test_openrouter_list_models_reports_openrouter_provider(monkeypatch: Any) -> None:
     captured: dict[str, Any] = {}
     _patch_get_transport_response(

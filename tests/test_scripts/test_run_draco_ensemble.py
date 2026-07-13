@@ -1810,11 +1810,14 @@ def test_draco_runner_generation_chat_config_uses_model_specific_max() -> None:
 
     opus_config = generation_chat_config(policy, model="anthropic/claude-opus-4.8")
     gemini_config = generation_chat_config(policy, model="google/gemini-3.1-pro-preview")
+    gpt56_sol_config = generation_chat_config(policy, model="openai/gpt-5.6-sol")
 
     assert str(opus_config.thinking_level) == "max"
     assert opus_config.thinking_budget_tokens == 50_000
     assert str(gemini_config.thinking_level) == "high"
     assert gemini_config.thinking_budget_tokens == 20_000
+    assert str(gpt56_sol_config.thinking_level) == "ultra"
+    assert gpt56_sol_config.thinking_budget_tokens == 50_000
 
 
 def test_draco_runner_compact_generation_config_marks_xhigh_thinking() -> None:

@@ -131,6 +131,7 @@ def _resolve_reasoning_effort(level: ThinkingLevel | None, budget: int) -> str:
         ThinkingLevel.MEDIUM: "medium",
         ThinkingLevel.HIGH: "high",
         ThinkingLevel.XHIGH: "xhigh",
+        ThinkingLevel.ULTRA: "ultra",
         ThinkingLevel.MAX: "max",
     }
     if level:
@@ -158,7 +159,11 @@ def _resolve_deepseek_reasoning_effort(level: ThinkingLevel | None) -> str:
         normalized_level = ThinkingLevel(str(level)) if level is not None else None
     except ValueError:
         normalized_level = None
-    if normalized_level in {ThinkingLevel.XHIGH, ThinkingLevel.MAX}:
+    if normalized_level in {
+        ThinkingLevel.XHIGH,
+        ThinkingLevel.ULTRA,
+        ThinkingLevel.MAX,
+    }:
         return "max"
     return "high"
 

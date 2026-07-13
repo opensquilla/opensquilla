@@ -26,11 +26,10 @@ This design replaces that approximation with the current Codex semantics:
 - the default workspace profile reads the host root and writes only declared
   roots;
 - no default credential, home, or system path is denied for reads;
-- one command may keep the sandbox and add narrow permissions, or explicitly
-  request execution outside it;
+- a normal command uses the active sandbox and an explicitly elevated command
+  requests execution outside it;
 - the approval coordinator reviews the exact suspended action and resumes that
   same action after approval;
-- Unix shell child execution is gated at the authoritative `execve` boundary;
 - Guardian is a dedicated, reusable, read-only agent session with bounded
   transcript context, read-only investigation tools, managed-network
   alignment, retries, timeouts, and denial circuit breaking;
@@ -49,12 +48,10 @@ Included:
 
 - managed workspace permission profiles;
 - Linux bubblewrap filesystem and network enforcement;
-- `use_default`, `with_additional_permissions`, and `require_escalated`;
-- turn/session permission grants;
+- the default Codex command modes, `use_default` and `require_escalated`;
 - the shared tool orchestrator and exact-action continuation;
 - Guardian review for local shell, exec, patch, filesystem, code, media, and
   network requests;
-- authoritative Unix child-exec escalation;
 - current WebSocket/HTTP approval and audit surfaces;
 - removal of default sensitive-path enforcement from sandboxed local tools.
 
@@ -64,6 +61,9 @@ Excluded from this phase:
 - Windows and macOS sandbox implementations;
 - Codex-specific remote execution environments and MCP connector approvals
   that have no corresponding OpenSquilla local operation;
+- Codex features currently marked `UnderDevelopment` and disabled by default:
+  `exec_permission_approvals`, `request_permissions_tool`, `shell_zsh_fork`,
+  and `unified_exec_zsh_fork`;
 - gaining operating-system privileges that the gateway process does not have.
 
 The data model must remain backend-neutral so later platform work does not
@@ -77,8 +77,9 @@ require another approval model.
    every file readable by the gateway's operating-system user.
 3. Read visibility does not imply write, execution, network, device, or host
    privilege.
-4. The narrowest sufficient permission is preferred: an additional writable
-   directory stays sandboxed; full unsandboxed execution is a distinct mode.
+4. The default Codex command contract has two modes: use the active sandbox or
+   explicitly request unsandboxed execution. Experimental additive permission
+   modes are not presented as default behavior.
 5. An approval applies to the exact suspended action. Approval must not cause
    the main model to synthesize a replacement action.
 6. Guardian assesses semantic risk and user authorization. A path being
@@ -213,35 +214,19 @@ Network isolation uses the existing Codex-shaped posture:
 
 ## Per-Command Permission Modes
 
-Every shell-like or executable action declares exactly one mode:
+With Codex's default feature set, every shell-like or executable action
+declares exactly one of two modes:
 
 ### `use_default`
 
 Run with the turn's active permission profile unchanged. Normal reads and
 workspace writes use this mode.
 
-### `with_additional_permissions`
-
-Keep the command sandboxed and merge a one-command permission overlay into the
-active profile. The overlay can request:
-
-- specific filesystem read/write entries;
-- network enabled for this command.
-
-The request must be non-empty, normalized, canonicalized, and approved unless
-it is already covered by a previously granted turn/session permission. Read or
-write glob grants are rejected; glob entries are supported only for denied
-reads. The effective runtime profile is derived by merging the base and
-additional profiles, then materializing project-root-dependent entries.
-
-This is the normal route for a narrow write outside the workspace. It does not
-grant a general host shell and it preserves all other sandbox restrictions.
-
 ### `require_escalated`
 
 Request that this exact action run without the outer filesystem sandbox after
-approval. It is appropriate only when a narrow additive profile cannot express
-the required operation.
+approval. This is the default Codex route for writes or capabilities that the
+active workspace profile cannot express.
 
 If the active filesystem policy contains any effective denied-read rule,
 unsandboxed execution is forbidden because it would bypass that rule. The
@@ -249,33 +234,10 @@ request remains sandboxed or is rejected rather than silently discarding the
 denied-read policy. Managed network is also not implicitly retained for a true
 unsandboxed run; the exact requested network effect must be part of review.
 
-## Durable Permission Requests
-
-Expose a `request_permissions` tool with:
-
-- an optional reason;
-- a requested filesystem/network permission profile;
-- an optional environment identifier for future multi-environment support.
-
-The response contains:
-
-- the granted subset of the requested profile;
-- scope: current turn or current session;
-- `strict_auto_review` for a turn-scoped grant.
-
-Rules:
-
-1. empty requests are invalid;
-2. `never` approval policy returns no grant;
-3. a granular policy can disable permission requests;
-4. a client or Guardian may grant only a subset of what was requested;
-5. the runtime intersects requested and returned profiles before storing them;
-6. turn grants expire with the turn; session grants persist only in the
-   current session state;
-7. session scope cannot be combined with `strict_auto_review`;
-8. later shell-like commands automatically merge applicable stored grants;
-9. `strict_auto_review` routes later actions through Guardian even when normal
-   command policy would skip approval.
+Codex also contains `with_additional_permissions` and `request_permissions`,
+but both are guarded by `UnderDevelopment` features that are disabled by
+default at the source baseline. Phase 1 keeps its internal permission types
+forward-compatible but does not expose or claim these experimental modes.
 
 ## Shared Tool Orchestrator
 
@@ -283,7 +245,6 @@ All covered local tools implement a common runtime contract:
 
 - canonical approval keys;
 - per-request sandbox permission mode;
-- optional additional permissions;
 - an approval requirement;
 - an exact Guardian action;
 - sandbox preference and cwd;
@@ -314,8 +275,6 @@ on-request or enabled granular approval with `approvals_reviewer =
 ### First attempt
 
 - `use_default` runs under the active sandbox.
-- `with_additional_permissions` is approved, merged, and runs under a widened
-  sandbox for this command only.
 - approved `require_escalated` bypasses the sandbox on the first attempt only
   when denied-read preservation permits it.
 - a trusted policy rule may explicitly bypass the first sandbox attempt.
@@ -330,8 +289,7 @@ denial and the tool supports escalation:
 3. build a retry reason from the exact denial;
 4. review the same request again for the broader execution context when
    required;
-5. run a second attempt with the approved effective profile or without the
-   sandbox when that is allowed;
+5. run a second attempt without the sandbox when that is allowed;
 6. return the second result without asking the main model to recreate the
    action.
 
@@ -351,31 +309,18 @@ the main model to issue a second equivalent call is removed. A material change
 to argv, cwd, patch, code, targets, TTY state, requested permissions, or network
 destination is a new request and needs a new review.
 
-## Authoritative Unix Child-Exec Escalation
+## Unix Child-Exec Feature Boundary
 
-Preflight parsing cannot reliably see the final executable after shell
-expansion, functions, scripts, or nested process launches. Phase 1 therefore
-ports Codex's authoritative Unix child-exec gate.
+Codex has an authoritative `execve` interception implementation based on a
+patched zsh, `codex-execve-wrapper`, and a socket protocol. At source baseline
+`ea15456284`, both `shell_zsh_fork` and `unified_exec_zsh_fork` are
+`UnderDevelopment` with `default_enabled = false`. They are therefore not part
+of the default Codex behavior being implemented in Phase 1.
 
-For shell executions that support the gate:
-
-1. the sandboxed shell announces each child `execve` with source, executable,
-   argv, cwd, and requested additional permissions;
-2. the parent runtime pauses that child before execution;
-3. execution policy and permission hooks evaluate the exact child action;
-4. Guardian or the user reviewer is invoked when required;
-5. denial terminates that child action without substituting another command;
-6. approval resumes it under the default, additional, or escalated profile;
-7. the result remains attributed to the originating shell tool call.
-
-When denied reads are active, a child `require_escalated` request cannot become
-unsandboxed. Additional permissions stay sandboxed.
-
-Shell-string parsing remains an advisory preflight and user-facing explanation
-aid. It is not authoritative for path-sensitive approval and must not silently
-widen mounts. If authoritative interception is unavailable for a shell form,
-the runtime fails closed for an otherwise required child escalation rather
-than guessing.
+Phase 1 keeps shell parsing advisory and reviews the exact top-level shell or
+exec request. It must not claim child-level interception. A later experimental
+phase may package the patched zsh and port the wrapper/server protocol behind
+an explicit disabled-by-default feature flag.
 
 ## OpenSquilla Tool Mapping
 
@@ -408,8 +353,8 @@ insufficient for semantic review.
 
 Python and other code execution are lowered into the shared executable action:
 exact interpreter, argv, cwd, source/input, TTY state, requested permissions,
-and expected network posture. Static code scanning is advisory only. Nested
-processes use the child-exec gate.
+and expected network posture. Static code scanning is advisory only. Phase 1
+does not claim child-level interception inside the top-level code process.
 
 ### Network
 
@@ -423,17 +368,14 @@ network operation and is reported to the originating call.
 
 Guardian accepts exact typed actions. The Phase 1 set is:
 
-- shell: argv/command, cwd, sandbox permission mode, additional permissions,
-  justification;
+- shell: argv/command, cwd, sandbox permission mode, justification;
 - exec command: the same plus TTY state;
-- Unix `execve`: source, program, argv, cwd, additional permissions;
 - apply patch: cwd, affected files, full patch;
 - direct filesystem mutation: operation, canonical sources/targets, full
   mutation payload when needed to judge risk;
 - code execution: interpreter, argv, cwd, source/input, permissions, TTY;
 - media mutation/export: operation, canonical input/output, destination;
 - network access: target, host, protocol, port, triggering action;
-- permission request: reason and requested permission profile.
 
 Action strings sent to Guardian are individually capped at 16,000 tokens with
 explicit truncation markers. The executor always retains the complete original
@@ -658,8 +600,7 @@ policy system.
 Existing approval records created by the approximation may be displayed for
 audit, but they cannot authorize new exact-permission actions. Existing
 fingerprint-bound one-shot grants expire during migration. No database
-migration may convert a historical broad grant into a turn/session permission
-profile.
+migration may convert a historical broad grant into new reusable authority.
 
 ## Testing Strategy
 
@@ -682,18 +623,17 @@ and integration tests.
 - read user-owned files under home outside the workspace;
 - observe OS-level failure for a file the process user cannot read;
 - reject an external write under `use_default`;
-- allow the same exact write with approved additional permission;
+- allow the same exact write with approved `require_escalated` execution;
 - retain a minimal `/dev`, fresh `/proc`, PID/user isolation, and configured
   network restrictions;
 - preserve read-only protected metadata under writable roots.
 
 ### Permission-mode tests
 
-- validate all three modes and reject malformed combinations;
-- keep additional permissions sandboxed and one-command scoped;
+- validate both default modes and reject experimental modes when their feature
+  flag is absent;
 - forbid true escalation when denied reads exist;
-- normalize, merge, intersect, and materialize grants correctly;
-- enforce turn/session scope and strict auto-review.
+- preserve canonical request identity across approval and retry.
 
 ### Orchestrator tests
 
@@ -701,18 +641,18 @@ and integration tests.
 - first-attempt selection matches the permission mode;
 - attributable denial reviews and retries the same request;
 - generic failures do not escalate;
-- strict auto-review separately reviews a broader retry;
+- auto-review separately reviews a broader retry when the first approval
+  covered only sandboxed execution;
 - cancellation or crash cannot duplicate a side effect;
 - every OpenSquilla direct tool uses the shared path.
 
-### Child-exec tests
+### Child-exec feature-boundary tests
 
-- pause and review the exact final executable and argv;
-- apply additional permission without leaving the sandbox;
-- apply true escalation only when allowed;
-- deny nested or transformed commands without running them;
-- preserve result attribution to the original shell call;
-- fail closed when the child gate is unavailable.
+- verify the default feature set does not advertise child `execve`
+  interception;
+- preserve exact top-level shell argv, cwd, TTY, and escalation intent;
+- reserve action/protocol version space for a future zsh-fork implementation
+  without enabling it.
 
 ### Guardian tests
 
@@ -745,26 +685,23 @@ and integration tests.
    without an approval.
 2. It edits normal checkout files directly, while `.git`, `.agents`, and
    `.codex` remain protected unless specifically authorized.
-3. A user requests one fixed Desktop file. The action requests a Desktop write
-   overlay, Guardian verifies the narrow low-risk action, and the same
-   suspended call completes inside a widened sandbox without a prompt.
+3. A user requests one fixed Desktop file. The action requests
+   `require_escalated`, Guardian verifies the narrow low-risk action, and the
+   same suspended call completes outside the sandbox without a prompt.
 4. A command truly requiring host execution uses `require_escalated`; Guardian
    reviews it, and the exact call runs outside the sandbox only when no denied
    read policy would be lost.
-5. A shell expands into a child executable requiring broader permission. The
-   child pauses at `execve`, is reviewed with its final argv/cwd, and resumes or
-   terminates according to that decision.
-6. A known single-file delete is assessed from its actual target and user
+5. A known single-file delete is assessed from its actual target and user
    request, not rejected merely for using delete syntax.
-7. An uncertain recursive mutation or credential export is denied; no
+6. An uncertain recursive mutation or credential export is denied; no
    alternate action is synthesized and repeated probing trips the circuit
    breaker.
-8. Guardian can perform read-only inspection of a deletion target, but cannot
+7. Guardian can perform read-only inspection of a deletion target, but cannot
    mutate it, request elevation, use plugins/skills, or escape the parent's
    managed-network boundary.
-9. A Guardian timeout leaves the action unexecuted and distinct from a policy
+8. A Guardian timeout leaves the action unexecuted and distinct from a policy
    denial.
-10. A deployment adds an explicit denied-read glob for secrets. It is enforced
+9. A deployment adds an explicit denied-read glob for secrets. It is enforced
     across all tools and also disables true unsandboxed escalation that would
     bypass it.
 
@@ -775,8 +712,8 @@ Phase 1 is complete only when:
 - all source-aligned invariants are implemented;
 - the default sensitive-path hard block is absent from sandbox-on execution;
 - every included local tool routes through the shared permission engine;
-- additional permissions, durable permission requests, exact continuation,
-  Unix child-exec gating, and the complete Guardian session are operational;
+- both default command modes, exact continuation, and the complete Guardian
+  session are operational;
 - old approximation-only paths are removed rather than left as competing
   authorization systems;
 - the full focused suite and repository regression suite pass;

@@ -407,3 +407,13 @@ def test_advertised_minimal_setup_passes_model_validation(type_name: str):
     model = ENTRY_MODELS[type_name]
     validated = model(**entry)
     assert validated.name == "test-entry"
+
+
+def test_can_probe_reflects_adapter_probe_support():
+    catalog = {c["type"]: c for c in channel_catalog_payload()}
+    # Adapters without a non-mutating probe_connection are honestly flagged.
+    assert catalog["matrix"]["canProbe"] is False
+    assert catalog["qq"]["canProbe"] is False
+    # Adapters that implement probe_connection stay probeable.
+    assert catalog["slack"]["canProbe"] is True
+    assert catalog["telegram"]["canProbe"] is True

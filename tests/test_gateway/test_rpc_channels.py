@@ -402,3 +402,28 @@ async def test_channels_probe_redacts_provider_error_and_result_credentials(
     assert token not in repr(rpc_res.payload)
     assert "***" in rpc_res.payload["detail"]
     assert adapter.stopped is True
+
+
+@pytest.mark.asyncio
+async def test_channels_status_echoes_boot_id():
+    ctx = _read_ctx()
+    ctx.config = GatewayConfig()
+    rpc_res = await get_dispatcher().dispatch("boot", "channels.status", {}, ctx)
+    assert rpc_res.error is None, rpc_res.error
+    # bootId is present (a hex string once booted, empty string in a bare test
+    # process) so clients can distinguish a config change from a restart.
+    assert "bootId" in rpc_res.payload
+    assert isinstance(rpc_res.payload["bootId"], str)
+
+
+@pytest.mark.asyncio
+async def test_channels_restart_unloaded_channel_returns_typed_error():
+    ctx = _admin_ctx()
+    ctx.config = GatewayConfig()
+    ctx.channel_manager = None
+    rpc_res = await get_dispatcher().dispatch(
+        "rs", "channels.restart", {"name": "ghost"}, ctx
+    )
+    assert rpc_res.error is not None
+    assert rpc_res.error.code == "channels.adapter_not_loaded"
+    assert "restart the gateway" in rpc_res.error.message

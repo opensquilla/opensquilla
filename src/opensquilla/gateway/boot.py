@@ -785,6 +785,9 @@ class ServiceContainer:
 
 # Server boot timestamp (set once at first start)
 _boot_time_ms: int = 0
+# Per-boot identity token: lets clients tell "same process, config changed"
+# (a pending restart is still pending) from "process restarted" (apply it).
+_boot_id: str = ""
 
 
 def _configured_agent_ids(
@@ -2919,8 +2922,9 @@ async def start_gateway_server(
         raise
 
     # Record boot time for uptime calculation (gateway-specific)
-    global _boot_time_ms
+    global _boot_time_ms, _boot_id
     _boot_time_ms = int(time.time() * 1000)
+    _boot_id = secrets.token_hex(16)
 
     log.info(
         "gateway.starting",

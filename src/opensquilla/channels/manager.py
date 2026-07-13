@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import hashlib
+import time
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
@@ -82,6 +83,13 @@ class ChannelManager:
     _dispatch_states: dict[str, str] = field(default_factory=dict)
     _restart_counts: dict[str, int] = field(default_factory=dict)
     _start_errors: dict[str, dict[str, Any]] = field(default_factory=dict)
+    # Wall-clock epoch (ms) at which the dispatch loop last entered "running".
+    # Surfaced as ``connected_since`` so operators see uptime, cleared on stop.
+    _running_since: dict[str, int] = field(default_factory=dict)
+    # Leading-edge throttle for channel.status pushes: reconnect thrash can
+    # flip dispatch states back-to-back, so coalesce per channel.
+    _last_status_emit: dict[str, float] = field(default_factory=dict)
+    _status_emit_min_interval: float = 1.0
     # Inner-loop retry policy (overridable for tests).
     _max_retries: int = 5
     _retry_backoff_initial: float = 1.0
@@ -423,6 +431,44 @@ class ChannelManager:
                 else:
                     log.error("channel.dispatch_exhausted", channel=name)
 
+    def _set_dispatch_state(self, name: str, state: str) -> None:
+        """Update the dispatch state and push a ``channel.status`` event on change.
+
+        Every configured runtime surface (both channel UIs) subscribes to
+        ``channel.status``; emitting on real transitions turns the 30s poll
+        into a live view. Emission is best-effort and never blocks dispatch.
+        """
+        prev = self._dispatch_states.get(name)
+        self._dispatch_states[name] = state
+        if state == "running":
+            # First time running (or resumed after a restart): stamp uptime.
+            if prev != "running":
+                self._running_since[name] = int(time.time() * 1000)
+        elif state in {"dead", "exhausted"}:
+            self._running_since.pop(name, None)
+        if prev != state:
+            self._emit_status_event(name, state)
+
+    def _emit_status_event(self, name: str, state: str) -> None:
+        bridge = self._event_bridge
+        if bridge is None:
+            return
+        now = time.monotonic()
+        # Terminal states always emit; churny intermediates coalesce.
+        if state not in {"dead", "running"}:
+            if now - self._last_status_emit.get(name, 0.0) < self._status_emit_min_interval:
+                return
+        self._last_status_emit[name] = now
+        coro = bridge.broadcast_scoped(
+            "channel.status",
+            {"name": name, "status": state},
+            required_scope="operator.read",
+        )
+        try:
+            asyncio.get_running_loop().create_task(coro)
+        except RuntimeError:
+            coro.close()
+
     async def _dispatch_with_retry(
         self,
         name: str,
@@ -438,12 +484,12 @@ class ChannelManager:
         the loop exits. ``dead`` is operator-recoverable through
         ``restart_channel``.
         """
-        self._dispatch_states[name] = "running"
+        self._set_dispatch_state(name, "running")
         self._restart_counts.setdefault(name, 0)
         while True:
             await self._run_one_dispatch_cycle(name, key_builder, in_flight=in_flight)
 
-            self._dispatch_states[name] = "exhausted"
+            self._set_dispatch_state(name, "exhausted")
             log.warning(
                 "dispatch.running_to_exhausted",
                 channel=name,
@@ -451,7 +497,7 @@ class ChannelManager:
             )
 
             if self._restart_counts[name] >= self._max_restart_cycles:
-                self._dispatch_states[name] = "dead"
+                self._set_dispatch_state(name, "dead")
                 log.error(
                     "dispatch.restarting_to_dead",
                     channel=name,
@@ -460,7 +506,7 @@ class ChannelManager:
                 return
 
             self._restart_counts[name] += 1
-            self._dispatch_states[name] = "restarting"
+            self._set_dispatch_state(name, "restarting")
             log.warning(
                 "dispatch.exhausted_to_restarting",
                 channel=name,
@@ -468,7 +514,7 @@ class ChannelManager:
                 max_cycles=self._max_restart_cycles,
             )
             await asyncio.sleep(self._restart_delay_s)
-            self._dispatch_states[name] = "running"
+            self._set_dispatch_state(name, "running")
 
     async def stop_all(self) -> None:
         """Stop every managed channel (dispatch task + adapter)."""
@@ -512,6 +558,7 @@ class ChannelManager:
             if lease is not None and self._delivery_store is not None:
                 self._delivery_store.release_transport_lease(lease)
             self._unregister_tool_channel(name, adapter)
+            self._running_since.pop(name, None)
 
     async def restart_channel(self, name: str) -> None:
         """Stop then re-start a single channel.
@@ -540,6 +587,12 @@ class ChannelManager:
         for name, a in self._channels.items():
             health = await a.health_check()
             health.extra["dispatch_state"] = self._dispatch_states.get(name, "unknown")
+            # Mirror runtime telemetry the adapter itself does not report, so
+            # the status RPC can surface honest uptime and restart counts.
+            health.extra["restart_attempts"] = self._restart_counts.get(name, 0)
+            running_since = self._running_since.get(name)
+            if running_since is not None:
+                health.extra.setdefault("connected_since", running_since)
             lease = self._transport_leases.get(name)
             if lease is not None:
                 health.extra["transport_lease"] = {

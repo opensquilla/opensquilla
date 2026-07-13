@@ -53,7 +53,14 @@ def _channel_error() -> Iterator[None]:
     except KeyError as exc:
         raise RpcHandlerError("onboarding.channel.not_found", str(exc)) from exc
     except ValueError as exc:
-        raise RpcHandlerError("onboarding.channel.invalid", str(exc)) from exc
+        # A ChannelValidationError additionally carries per-field detail so the
+        # Web UI can anchor errors to fields instead of parsing the message.
+        details = getattr(exc, "field_errors", None)
+        raise RpcHandlerError(
+            "onboarding.channel.invalid",
+            str(exc),
+            details={"fields": details} if details else None,
+        ) from exc
 
 _d = get_dispatcher()
 

@@ -1325,6 +1325,29 @@ def list_channel_entries(config: GatewayConfig) -> list[dict[str, Any]]:
     return [redact_channel_entry(d.get("type", ""), d) for d in _channel_entries_as_dicts(config)]
 
 
+class ChannelValidationError(ValueError):
+    """A channel-entry validation failure carrying per-field detail.
+
+    Behaves like the plain ``ValueError`` callers already expect (the string
+    message is unchanged) while additionally exposing ``field_errors`` so the
+    RPC layer can return a structured envelope instead of only a joined string.
+    """
+
+    def __init__(self, message: str, field_errors: list[dict[str, str]]) -> None:
+        super().__init__(message)
+        self.field_errors = field_errors
+
+
+def _channel_validation_field_errors(exc: ValidationError) -> list[dict[str, str]]:
+    """Per-field ``{field, message}`` list; never echoes input values."""
+    out: list[dict[str, str]] = []
+    for error in exc.errors(include_url=False, include_context=False, include_input=False):
+        loc = ".".join(str(item) for item in error.get("loc", ()) or ())
+        msg = str(error.get("msg") or "invalid value")
+        out.append({"field": loc, "message": redact_error_text(msg, max_len=200)})
+    return out
+
+
 def _format_channel_validation_error(exc: ValidationError) -> str:
     """Render a channel-entry ValidationError as a field-naming summary.
 
@@ -1383,7 +1406,10 @@ def validate_channel_entry(payload: dict[str, Any]) -> dict[str, Any]:
     try:
         entry = parse_channel_entry(full)
     except ValidationError as exc:
-        raise ValueError(_format_channel_validation_error(exc)) from exc
+        raise ChannelValidationError(
+            _format_channel_validation_error(exc),
+            _channel_validation_field_errors(exc),
+        ) from exc
     normalized = entry.model_dump(mode="python")
     _require_non_blank_secret_fields(type_name, normalized)
     if (

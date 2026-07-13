@@ -712,6 +712,7 @@ def test_channels_evaluator_does_not_report_unknown_enabled_status_as_ready() ->
     assert "not recognized" in findings[0].detail
     assert findings[0].evidence == {
         "name": "slack-main",
+        "channelName": "slack-main",
         "status": "warming_up",
         "type": "slack",
     }

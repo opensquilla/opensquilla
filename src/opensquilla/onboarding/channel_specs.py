@@ -333,6 +333,8 @@ def _qq_spec() -> ChannelSetupSpec:
         dependency_extra=None,
         restart_required=True,
         docs_hint="https://bot.q.qq.com/wiki/",
+        # No non-mutating probe_connection on the QQ adapter yet.
+        can_probe=False,
         fields=(
             *_common_fields(),
             ChannelSetupField("app_id", "App id", "text", required=True),
@@ -374,6 +376,8 @@ def _matrix_spec() -> ChannelSetupSpec:
         dependency_extra="matrix",
         restart_required=True,
         docs_hint="https://matrix.org/docs/",
+        # No non-mutating probe_connection on the Matrix adapter yet.
+        can_probe=False,
         fields=(
             *_common_fields(),
             ChannelSetupField("homeserver_url", "Homeserver URL", "text",

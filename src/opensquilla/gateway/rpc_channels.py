@@ -13,7 +13,7 @@ from opensquilla.channels.contract import (
     channel_capability_profile,
     channel_platform_manifest,
 )
-from opensquilla.gateway.rpc import RpcContext, get_dispatcher
+from opensquilla.gateway.rpc import RpcContext, RpcHandlerError, get_dispatcher
 from opensquilla.redaction import redact_error_text
 
 if TYPE_CHECKING:
@@ -303,7 +303,9 @@ async def _handle_channels_status(params: dict | None, ctx: RpcContext) -> dict[
             }
         )
 
-    return {"channels": channels}
+    from opensquilla.gateway.boot import _boot_id
+
+    return {"channels": channels, "bootId": _boot_id}
 
 
 @_d.method("channels.get", scope="operator.admin")
@@ -422,10 +424,15 @@ async def _handle_channels_restart(params: dict | None, ctx: RpcContext) -> dict
         channel_name = params.get("channel") or params.get("name")
     if not channel_name:
         raise ValueError("channel name required")
-    if ctx.channel_manager is None:
-        raise KeyError(f"Channel not found: {channel_name}")
-    if ctx.channel_manager.get(channel_name) is None:
-        raise KeyError(f"Channel not found: {channel_name}")
+    # A configured-but-not-loaded channel (e.g. added since the last gateway
+    # start) cannot be restarted in place; a stable code lets the UI say
+    # "restart the gateway" instead of surfacing a coarse NOT_FOUND.
+    if ctx.channel_manager is None or ctx.channel_manager.get(channel_name) is None:
+        raise RpcHandlerError(
+            "channels.adapter_not_loaded",
+            f"Channel {channel_name!r} is not loaded in this gateway process; "
+            "restart the gateway to start it.",
+        )
     await ctx.channel_manager.restart_channel(channel_name)
     return {"status": "restarted", "channel": channel_name}
 

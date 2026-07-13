@@ -1322,6 +1322,7 @@ def evaluate_channels(payload: dict[str, Any]) -> list[HealthFinding]:
                     ),
                     evidence={
                         "name": name,
+                        "channelName": name,
                         "status": status,
                         "type": row.get("type"),
                         "errorClass": "auth_invalid",
@@ -1352,7 +1353,12 @@ def evaluate_channels(payload: dict[str, Any]) -> list[HealthFinding]:
                     surface="channels",
                     title=f"Channel {name} is disabled",
                     detail="The channel is configured but disabled on disk.",
-                    evidence={"name": name, "status": status, "type": row.get("type")},
+                    evidence={
+                        "name": name,
+                        "channelName": name,
+                        "status": status,
+                        "type": row.get("type"),
+                    },
                     fix_steps=[
                         FixStep(
                             label="Enable channel",
@@ -1372,7 +1378,12 @@ def evaluate_channels(payload: dict[str, Any]) -> list[HealthFinding]:
                     surface="channels",
                     title=f"Channel {name} is {status}",
                     detail="The configured channel is not able to receive or send messages.",
-                    evidence={"name": name, "status": status, "type": row.get("type")},
+                    evidence={
+                        "name": name,
+                        "channelName": name,
+                        "status": status,
+                        "type": row.get("type"),
+                    },
                     fix_steps=[
                         FixStep(
                             label="Restart channel",
@@ -1393,7 +1404,12 @@ def evaluate_channels(payload: dict[str, Any]) -> list[HealthFinding]:
                     surface="channels",
                     title=f"Channel {name} is stopped",
                     detail="The channel is configured and enabled but is not connected.",
-                    evidence={"name": name, "status": status, "type": row.get("type")},
+                    evidence={
+                        "name": name,
+                        "channelName": name,
+                        "status": status,
+                        "type": row.get("type"),
+                    },
                     fix_steps=[
                         FixStep(
                             label="Inspect channels",
@@ -1414,7 +1430,12 @@ def evaluate_channels(payload: dict[str, Any]) -> list[HealthFinding]:
                     surface="channels",
                     title=f"Channel {name} is restarting",
                     detail="The channel is recovering after dispatch errors.",
-                    evidence={"name": name, "status": status, "type": row.get("type")},
+                    evidence={
+                        "name": name,
+                        "channelName": name,
+                        "status": status,
+                        "type": row.get("type"),
+                    },
                     fix_steps=[
                         FixStep(
                             label="Inspect channels",
@@ -1434,7 +1455,12 @@ def evaluate_channels(payload: dict[str, Any]) -> list[HealthFinding]:
                         f"The channel reported status {status}, which is not recognized "
                         "as a ready state."
                     ),
-                    evidence={"name": name, "status": status, "type": row.get("type")},
+                    evidence={
+                        "name": name,
+                        "channelName": name,
+                        "status": status,
+                        "type": row.get("type"),
+                    },
                     fix_steps=[
                         FixStep(
                             label="Inspect channels",

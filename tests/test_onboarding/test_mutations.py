@@ -1422,3 +1422,14 @@ def test_upsert_channel_same_name_different_type_replaces_without_secret_merge()
     assert len(raw_entries) == 1
     assert raw_entries[0].type == "discord"
     assert raw_entries[0].token == "dc-secret"
+
+
+def test_validate_channel_entry_raises_structured_field_errors():
+    from opensquilla.onboarding.mutations import ChannelValidationError, validate_channel_entry
+
+    with pytest.raises(ChannelValidationError) as ei:
+        validate_channel_entry({"type": "slack"})  # missing required name/token
+    assert ei.value.field_errors, "expected per-field detail"
+    assert all("field" in fe and "message" in fe for fe in ei.value.field_errors)
+    # The joined string message is preserved for callers that only read str(exc).
+    assert "invalid channel entry" in str(ei.value)

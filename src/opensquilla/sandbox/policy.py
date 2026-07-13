@@ -19,6 +19,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from opensquilla.sandbox.config import SandboxSettings
+from opensquilla.sandbox.permissions import FileSystemPermissionProfile
 from opensquilla.sandbox.types import (
     SANDBOX_WORKSPACE_PATH,
     MountSpec,
@@ -271,6 +272,35 @@ def build_policy(
         level == SecurityLevel.LOCKED or not trusted
     )
 
+    if level == SecurityLevel.DISABLED:
+        file_system = FileSystemPermissionProfile.full_access()
+    elif workspace_rw:
+        readable_roots = tuple(
+            mount.host_path for mount in mounts if mount.mode == "ro"
+        )
+        writable_roots = tuple(
+            mount.host_path
+            for mount in mounts
+            if mount.mode == "rw" and mount.host_path != workspace
+        )
+        file_system = FileSystemPermissionProfile.workspace(
+            workspace=workspace,
+            readable_roots=readable_roots,
+            writable_roots=writable_roots,
+            denied_read_globs=(),
+            host_root_readonly=(
+                sys.platform.startswith("linux") and settings.host_root_readonly
+            ),
+            tmp_writable=tmp_writable,
+        )
+    else:
+        readable_roots = [mount.host_path for mount in mounts]
+        if sys.platform.startswith("linux") and settings.host_root_readonly:
+            readable_roots.insert(0, Path("/"))
+        file_system = FileSystemPermissionProfile.read_only(
+            readable_roots=readable_roots,
+        )
+
     return SandboxPolicy(
         level=level,
         network=network,
@@ -281,6 +311,7 @@ def build_policy(
         env_allowlist=_DEFAULT_ENV_ALLOWLIST,
         require_approval=require_approval,
         description=_describe(level, action_kind),
+        file_system=file_system,
     )
 
 

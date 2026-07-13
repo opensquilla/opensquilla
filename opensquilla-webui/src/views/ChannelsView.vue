@@ -30,6 +30,15 @@
         <strong>{{ total }}</strong><span>{{ t('console.channels.totalChannels') }}</span>
       </button>
       <button
+        v-if="totalPendingPairings > 0"
+        type="button"
+        class="ch-summary__item tone-warn"
+        :title="t('console.channels.pairings.pendingBadge', { count: totalPendingPairings })"
+        @click="openFirstPendingPairings"
+      >
+        <span class="dot" aria-hidden="true"></span><strong>{{ totalPendingPairings }}</strong><span>{{ t('console.channels.pendingApproval') }}</span>
+      </button>
+      <button
         v-for="chip in summaryChips"
         :key="chip.key"
         type="button"
@@ -113,7 +122,17 @@
               @keydown.space.prevent="selectChannel(ch)"
             >
               <td><span class="ch-provider-mark" aria-hidden="true">{{ providerInitial(ch.type) }}</span><span class="ch-provider-name">{{ providerLabel(ch.type) }}</span></td>
-              <td><strong>{{ ch.name || ch.id || t('console.channels.unknown') }}</strong></td>
+              <td>
+                <strong>{{ ch.name || ch.id || t('console.channels.unknown') }}</strong>
+                <button
+                  v-if="(ch.pendingPairings || 0) > 0"
+                  type="button"
+                  class="ch-tab-badge ch-row-badge"
+                  :aria-label="t('console.channels.pairings.pendingBadge', { count: ch.pendingPairings })"
+                  :title="t('console.channels.pairings.pendingBadge', { count: ch.pendingPairings })"
+                  @click.stop="openPairings(ch)"
+                >{{ ch.pendingPairings }}</button>
+              </td>
               <td class="ch-hide-mobile"><span class="ch-muted">{{ transportLabel(ch) }}</span></td>
               <td><ChannelStatusPill :status="ch.status" :enabled="ch.enabled" :pending-restart="pendingRestart.isPending(channelKey(ch))" :error-class="lastErrorClass(ch.diagnostics)" show-cause /></td>
               <td v-if="!selectedChannel" class="ch-hide-mobile"><span class="ch-mono ch-muted">{{ formatSince(ch.connected_since) }}</span></td>
@@ -463,6 +482,7 @@ interface Channel {
   connected?: boolean
   connected_since?: string | number | null
   restart_attempts?: number
+  pendingPairings?: number
   bot_user_id?: string | null
   enabled?: boolean
   configured?: boolean
@@ -598,6 +618,19 @@ const revokedPairings = computed(() =>
   pairings.value.filter(pairing => pairing.status === 'revoked' && matchesPairingSearch(pairing)))
 // Unfiltered pending count drives the tab badge (a filtered-out request still
 // awaits the operator).
+const totalPendingPairings = computed(() =>
+  channels.value.reduce((sum, ch) => sum + (ch.pendingPairings || 0), 0))
+
+function openPairings(ch: Channel): void {
+  if (selectedName.value !== channelKey(ch)) selectChannel(ch)
+  setDetailTab('pairings')
+}
+
+function openFirstPendingPairings(): void {
+  const target = channels.value.find(ch => (ch.pendingPairings || 0) > 0)
+  if (target) openPairings(target)
+}
+
 const pendingPairingCount = computed(() =>
   pairings.value.filter(pairing => pairing.status === 'pending').length)
 
@@ -1130,6 +1163,8 @@ function configRows(config: Record<string, unknown>): Array<{ key: string; value
 .ch-detail__tabs button { background: transparent; border: 0; color: var(--text-muted); cursor: pointer; font: inherit; font-size: var(--fs-sm); font-weight: 600; padding: 12px 13px; position: relative; white-space: nowrap; }
 .ch-detail__tabs button:hover, .ch-detail__tabs button.is-active { color: var(--text); }
 .ch-detail__tabs button.is-active::after { background: var(--accent); bottom: 0; content: ''; height: 2px; left: 10px; position: absolute; right: 10px; }
+.ch-row-badge { cursor: pointer; margin-left: 8px; }
+.ch-summary__item.tone-warn .dot { background: var(--warn); }
 .ch-tab-badge { background: color-mix(in srgb, var(--warn) 20%, transparent); border: 1px solid color-mix(in srgb, var(--warn) 45%, var(--border)); border-radius: var(--radius-full); color: var(--warn); font-size: 10px; font-weight: 700; margin-left: 6px; padding: 0 6px; }
 .ch-detail__body { display: grid; gap: var(--sp-3); overflow-y: auto; padding: var(--sp-4); }
 .ch-panel, .ch-alert { background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius-md); overflow: hidden; }

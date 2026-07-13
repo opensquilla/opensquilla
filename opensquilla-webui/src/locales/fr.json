@@ -1471,12 +1471,14 @@
       "opsActionsLabel": "Actions d'exécution",
       "configActionsLabel": "Actions de configuration",
       "configActionHint": "Écrit la configuration — prend effet après un redémarrage de la passerelle",
-      "editActionHint": "Ouvre l'éditeur dans Config. des canaux"
+      "editActionHint": "Ouvre l'éditeur dans Config. des canaux",
+      "pendingApproval": "En attente d'approbation"
     },
     "overview": {
       "channelsChip": "Canaux",
       "channelsChipConnected": "{connected} connecté(s)",
-      "channelsChipFailed": "{failed} en échec"
+      "channelsChipFailed": "{failed} en échec",
+      "channelsChipPending": "{pending} en attente d'approbation"
     }
   },
   "cronSkills": {

@@ -1471,12 +1471,14 @@
       "opsActionsLabel": "Laufzeit-Aktionen",
       "configActionsLabel": "Konfigurations-Aktionen",
       "configActionHint": "Schreibt die Konfiguration — wirksam nach einem Gateway-Neustart",
-      "editActionHint": "Öffnet den Editor in der Kanal-Einrichtung"
+      "editActionHint": "Öffnet den Editor in der Kanal-Einrichtung",
+      "pendingApproval": "Wartet auf Freigabe"
     },
     "overview": {
       "channelsChip": "Kanäle",
       "channelsChipConnected": "{connected} verbunden",
-      "channelsChipFailed": "{failed} fehlgeschlagen"
+      "channelsChipFailed": "{failed} fehlgeschlagen",
+      "channelsChipPending": "{pending} warten auf Freigabe"
     }
   },
   "cronSkills": {

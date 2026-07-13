@@ -1471,12 +1471,14 @@
       "opsActionsLabel": "ランタイム操作",
       "configActionsLabel": "設定操作",
       "configActionHint": "設定に書き込みます — ゲートウェイ再起動後に反映されます",
-      "editActionHint": "チャンネル設定でエディタを開きます"
+      "editActionHint": "チャンネル設定でエディタを開きます",
+      "pendingApproval": "承認待ち"
     },
     "overview": {
       "channelsChip": "チャンネル",
       "channelsChipConnected": "{connected} 接続済み",
-      "channelsChipFailed": "{failed} 失敗"
+      "channelsChipFailed": "{failed} 失敗",
+      "channelsChipPending": "承認待ち {pending} 件"
     }
   },
   "cronSkills": {

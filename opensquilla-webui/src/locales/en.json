@@ -1471,12 +1471,14 @@
       "opsActionsLabel": "Runtime actions",
       "configActionsLabel": "Configuration actions",
       "configActionHint": "Writes configuration — takes effect after a gateway restart",
-      "editActionHint": "Opens the editor in Channel setup"
+      "editActionHint": "Opens the editor in Channel setup",
+      "pendingApproval": "Pending approval"
     },
     "overview": {
       "channelsChip": "Channels",
       "channelsChipConnected": "{connected} connected",
-      "channelsChipFailed": "{failed} failed"
+      "channelsChipFailed": "{failed} failed",
+      "channelsChipPending": "{pending} awaiting approval"
     }
   },
   "cronSkills": {

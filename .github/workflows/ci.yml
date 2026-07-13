@@ -204,6 +204,7 @@ jobs:
       - name: Run desktop unit tests
         working-directory: desktop/electron
         run: |
+          node scripts/test-onboarding-data-flow.mjs
           node scripts/test-secret-storage-policy.mjs
           node scripts/test-update-resolver.mjs
           node scripts/test-desktop-locale.mjs
@@ -798,6 +799,7 @@ jobs:
         shell: bash
         env:
           OPENSQUILLA_DESKTOP_RECOVERY_SCREENSHOT: ${{ runner.temp }}/desktop-recovery-e2e/recovery-page.png
+          OPENSQUILLA_DESKTOP_IMPORT_SCREENSHOT_DIR: ${{ runner.temp }}/desktop-recovery-e2e/profile-import-screenshots
         run: |
           set -euo pipefail
 

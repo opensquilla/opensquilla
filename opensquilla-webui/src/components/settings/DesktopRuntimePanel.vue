@@ -97,7 +97,7 @@ interface CleanupBridge {
   revealDesktopUserData?: () => Promise<boolean>
 }
 
-// Legacy-home import rides the same preload bridge (also desktop-only and
+// Cross-installation transfer rides the same preload bridge (also desktop-only and
 // self-contained: the Electron main process quiesces the gateway, shells out to
 // the bundled `opensquilla migrate`, then restarts behind the boot splash).
 // All methods are optional so a panel served by a newer gateway to an older
@@ -124,6 +124,7 @@ interface MigrationCandidate {
 }
 
 interface MigrationBridge {
+  getDesktopProfileKind?: () => Promise<unknown>
   migrationSummary?: (payload?: { source?: string }) => Promise<{
     ok: boolean
     candidates?: MigrationCandidate[]
@@ -166,7 +167,7 @@ const canCleanup = computed(() => Boolean(
   && desktopBridge?.discardDesktopCleanup
   && desktopBridge?.applyDesktopCleanup,
 ))
-const canMigrate = computed(
+const hasMigrationBridge = computed(
   () => Boolean(desktopBridge?.migrationSummary && desktopBridge?.migrationRun),
 )
 
@@ -390,7 +391,45 @@ const migrationPreviewId = ref('')
 const migrationOverwrite = ref(false)
 const migrationPhase = ref('')
 const migrationLastResult = shallowRef<MigrationTerminalResult | null>(null)
+const migrationProfileKind = ref<'primary' | 'recovery' | 'unknown'>('unknown')
+const migrationTitleEl = ref<HTMLElement | null>(null)
+const migrationTriggerEl = ref<HTMLButtonElement | null>(null)
 let migrationProgressUnsub: (() => void) | null = null
+
+const canMigrate = computed(() => (
+  migrationProfileKind.value === 'primary' && hasMigrationBridge.value
+))
+const migrationUnavailableInRecovery = computed(() => (
+  migrationProfileKind.value === 'recovery' && hasMigrationBridge.value
+))
+
+const RECOVERY_MIGRATION_DETAILS = new Set([
+  'Import source selection is available only in the primary profile.',
+  'Recovery profiles cannot import another profile.',
+  'Return to the primary profile before importing data.',
+])
+
+function localizedMigrationDetail(value: unknown): string {
+  const detail = typeof value === 'string' ? value.trim() : ''
+  return RECOVERY_MIGRATION_DETAILS.has(detail)
+    ? t('setup.runtime.migrationRecoveryProfile')
+    : detail || t('setup.runtime.uninstallCheckLog')
+}
+
+async function loadMigrationProfileContext(): Promise<void> {
+  try {
+    const kind = await desktopBridge?.getDesktopProfileKind?.()
+    migrationProfileKind.value = kind === 'primary' || kind === 'recovery' ? kind : 'unknown'
+  } catch {
+    // Fail closed: without a verified primary profile, do not expose a profile writer.
+    migrationProfileKind.value = 'unknown'
+  }
+}
+
+async function focusMigrationTitle(): Promise<void> {
+  await nextTick()
+  migrationTitleEl.value?.focus()
+}
 
 const migrationCandidateGroups = computed(() => ([
   {
@@ -444,17 +483,22 @@ const migrationHasBlockingErrors = computed(() => {
   if (!summary) return true
   return summary.errorNotes.length > 0
 })
+const migrationRunLabel = computed(() => t(
+  migrationSummary.value?.needsOverwrite
+    ? 'setup.runtime.migrationBackupAndReplace'
+    : 'setup.runtime.migrationCopyAndUse',
+))
 
 function migrationSourceLabel(kind: string): string {
   return t(profileSourceLabelKey(kind))
 }
 
 function migrationActivityLabel(value?: string | null): string {
-  if (!value) return t('setup.runtime.migrationCandidateActivityUnavailable')
+  if (!value) return ''
   const relative = formatEstimatedActivity(value, locale.value)
   return relative
     ? t('setup.runtime.migrationCandidateActivityEstimate', { value: relative })
-    : t('setup.runtime.migrationCandidateActivityUnavailable')
+    : ''
 }
 
 async function copyMigrationPath(path: string) {
@@ -499,7 +543,7 @@ function unsubscribeMigrationProgress() {
   migrationProgressUnsub = null
 }
 
-// Row click: dry-run summary over the bridge, then the inline confirm block.
+// Row click: dry-run summary over the bridge, then the inline transfer confirmation.
 async function openMigration() {
   if (!desktopBridge?.migrationSummary) return
   migrationBusy.value = true
@@ -520,18 +564,21 @@ async function openMigration() {
       migrationPhase.value = ''
       migrationOpen.value = true
       subscribeMigrationProgress()
+      await focusMigrationTitle()
       return
     }
 
     if (!result?.ok) {
       pushToast(t('setup.runtime.migrationSummaryFailed', {
-        detail: result?.raw || t('setup.runtime.uninstallCheckLog'),
+        detail: localizedMigrationDetail(result?.raw),
       }), { tone: 'danger' })
     } else {
       pushToast(t('setup.runtime.migrationNone'))
     }
   } catch (err) {
-    pushToast(t('setup.runtime.migrationSummaryFailed', { detail: err instanceof Error ? err.message : String(err) }), { tone: 'danger' })
+    pushToast(t('setup.runtime.migrationSummaryFailed', {
+      detail: localizedMigrationDetail(err instanceof Error ? err.message : String(err)),
+    }), { tone: 'danger' })
   } finally {
     migrationBusy.value = false
   }
@@ -554,16 +601,17 @@ async function previewMigrationCandidate(candidate: MigrationCandidate) {
       || result.candidate.path !== candidate.path
     ) {
       pushToast(t('setup.runtime.migrationSummaryFailed', {
-        detail: result.raw || t('setup.runtime.uninstallCheckLog'),
+        detail: localizedMigrationDetail(result.raw),
       }), { tone: 'danger' })
       return
     }
     migrationCandidate.value = result.candidate
     migrationSummary.value = summarizeMigrationReport(result.report)
     migrationPreviewId.value = result.previewId
+    await focusMigrationTitle()
   } catch (err) {
     pushToast(t('setup.runtime.migrationSummaryFailed', {
-      detail: err instanceof Error ? err.message : String(err),
+      detail: localizedMigrationDetail(err instanceof Error ? err.message : String(err)),
     }), { tone: 'danger' })
   } finally {
     migrationBusy.value = false
@@ -578,7 +626,7 @@ async function browseMigrationSource(kind: ProfileSourceKind) {
     if (result.aborted) return
     if (!result.ok || !isMigrationCandidate(result.candidate)) {
       pushToast(t('setup.runtime.migrationSummaryFailed', {
-        detail: result.detail || result.error || t('setup.runtime.uninstallCheckLog'),
+        detail: localizedMigrationDetail(result.detail || result.error),
       }), { tone: 'danger' })
       return
     }
@@ -589,14 +637,14 @@ async function browseMigrationSource(kind: ProfileSourceKind) {
     await previewMigrationCandidate(result.candidate)
   } catch (err) {
     pushToast(t('setup.runtime.migrationSummaryFailed', {
-      detail: err instanceof Error ? err.message : String(err),
+      detail: localizedMigrationDetail(err instanceof Error ? err.message : String(err)),
     }), { tone: 'danger' })
   } finally {
     migrationBusy.value = false
   }
 }
 
-function cancelMigration() {
+async function cancelMigration(restoreFocus = true) {
   migrationOpen.value = false
   migrationCandidates.value = []
   migrationCandidate.value = null
@@ -604,20 +652,25 @@ function cancelMigration() {
   migrationPreviewId.value = ''
   migrationPhase.value = ''
   unsubscribeMigrationProgress()
+  if (restoreFocus) {
+    await nextTick()
+    migrationTriggerEl.value?.focus()
+  }
 }
 
-function backToMigrationSources() {
+async function backToMigrationSources() {
   migrationCandidate.value = null
   migrationSummary.value = null
   migrationPreviewId.value = ''
   migrationOverwrite.value = false
   migrationPhase.value = ''
+  await focusMigrationTitle()
 }
 
 async function runMigration() {
   if (!desktopBridge?.migrationRun || !migrationOpen.value || !migrationPreviewId.value) return
   // Replacement has one trusted native confirmation in Electron after the
-  // preview is revalidated. Empty-target imports use the shared Web UI dialog.
+  // preview is revalidated. Empty-target copies use the shared Web UI dialog.
   if (!migrationOverwrite.value) {
     const ok = await confirm({
       title: t('setup.runtime.migrationConfirmTitle'),
@@ -639,20 +692,25 @@ async function runMigration() {
     })
     if (result?.aborted) return
     if (!result?.ok) {
-      pushToast(t('setup.runtime.migrationFailed', { detail: result?.detail || t('setup.runtime.uninstallCheckLog') }), { tone: 'danger' })
+      pushToast(t('setup.runtime.migrationFailed', {
+        detail: localizedMigrationDetail(result?.detail),
+      }), { tone: 'danger' })
       return
     }
     migrationLastResult.value = result
     pushToast(t('setup.runtime.migrationDone'))
-    cancelMigration()
+    await cancelMigration(false)
   } catch (err) {
-    pushToast(t('setup.runtime.migrationFailed', { detail: err instanceof Error ? err.message : String(err) }), { tone: 'danger' })
+    pushToast(t('setup.runtime.migrationFailed', {
+      detail: localizedMigrationDetail(err instanceof Error ? err.message : String(err)),
+    }), { tone: 'danger' })
   } finally {
     migrationBusy.value = false
   }
 }
 
 async function showLastMigrationResult() {
+  if (migrationProfileKind.value !== 'primary') return
   const readResult = desktopBridge?.migrationPeekLastResult
     ?? desktopBridge?.migrationTakeLastResult
   if (!readResult) return
@@ -664,14 +722,14 @@ async function showLastMigrationResult() {
       pushToast(t('setup.runtime.migrationDone'))
     } else {
       pushToast(t('setup.runtime.migrationFailed', {
-        detail: result.detail || t('setup.runtime.uninstallCheckLog'),
+        detail: localizedMigrationDetail(result.detail),
       }), { tone: 'danger' })
       await desktopBridge?.migrationDismissLastResult?.().catch(() => null)
       migrationLastResult.value = null
     }
   } catch (err) {
     pushToast(t('setup.runtime.migrationFailed', {
-      detail: err instanceof Error ? err.message : String(err),
+      detail: localizedMigrationDetail(err instanceof Error ? err.message : String(err)),
     }), { tone: 'danger' })
   }
 }
@@ -696,7 +754,9 @@ async function revealMigrationBackups() {
 
 onMounted(() => {
   void loadStatus()
-  void showLastMigrationResult()
+  void loadMigrationProfileContext().then(() => {
+    if (migrationProfileKind.value === 'primary') void showLastMigrationResult()
+  })
 })
 onUnmounted(unsubscribeMigrationProgress)
 </script>
@@ -732,7 +792,7 @@ onUnmounted(unsubscribeMigrationProgress)
     <SettingsUpdatePanel />
 
     <div
-      v-if="migrationLastResult?.ok"
+      v-if="migrationProfileKind === 'primary' && migrationLastResult?.ok"
       class="migration-complete"
       role="status"
       data-testid="runtime-migration-complete"
@@ -767,6 +827,7 @@ onUnmounted(unsubscribeMigrationProgress)
       </div>
       <div class="control-row__control">
         <button
+          ref="migrationTriggerEl"
           type="button"
           class="btn btn--ghost"
           :disabled="busy || migrationBusy || migrationOpen"
@@ -779,14 +840,34 @@ onUnmounted(unsubscribeMigrationProgress)
     </div>
 
     <div
+      v-else-if="migrationUnavailableInRecovery"
+      class="control-row"
+      data-testid="runtime-migration-recovery-message"
+    >
+      <div class="control-row__label-block">
+        <span class="control-row__label">{{ t('setup.runtime.migrationLabel') }}</span>
+        <span class="control-row__desc">{{ t('setup.runtime.migrationRecoveryProfile') }}</span>
+      </div>
+    </div>
+
+    <div
       v-if="migrationOpen"
       class="migration-summary"
       data-testid="runtime-migration-summary"
       :aria-busy="migrationBusy"
+      aria-labelledby="runtime-migration-title"
     >
       <template v-if="!migrationCandidate || !migrationSummary">
         <div class="migration-summary__head">
-          <span class="migration-summary__title">{{ t('setup.runtime.migrationChooseSource') }}</span>
+          <h4
+            id="runtime-migration-title"
+            ref="migrationTitleEl"
+            class="migration-summary__title"
+            tabindex="-1"
+            data-testid="runtime-migration-title"
+          >
+            {{ t('setup.runtime.migrationChooseSource') }}
+          </h4>
         </div>
         <p class="migration-summary__source-help">
           {{ t('setup.runtime.migrationChooseSourceDesc') }}
@@ -804,27 +885,27 @@ onUnmounted(unsubscribeMigrationProgress)
                 type="button"
                 class="migration-candidate"
                 :disabled="migrationBusy"
-                :aria-label="t('setup.runtime.migrationPreviewSource', { path: candidate.path })"
+                :aria-label="t('setup.runtime.migrationPreviewSource', {
+                  source: migrationSourceLabel(candidate.kind),
+                  path: candidate.path,
+                })"
                 @click="previewMigrationCandidate(candidate)"
               >
                 <span class="migration-candidate__head">
                   <strong>{{ migrationSourceLabel(candidate.kind) }}</strong>
-                  <span>
-                    {{ candidate.version || t('setup.runtime.migrationCandidateVersionUnavailable') }}
-                  </span>
+                  <span v-if="candidate.version">{{ candidate.version }}</span>
                 </span>
                 <code>{{ candidate.path }}</code>
                 <span class="migration-candidate__meta">
                   <span v-if="candidate.session_count != null">
                     {{ t('setup.runtime.migrationCandidateSessions', { n: candidate.session_count }) }}
                   </span>
-                  <span v-else>{{ t('setup.runtime.migrationCandidateSessionsUnavailable') }}</span>
-                  <span>
-                    {{ candidate.size_bytes != null
-                      ? formatByteSize(candidate.size_bytes)
-                      : t('setup.runtime.migrationCandidateSizeUnavailable') }}
+                  <span v-if="candidate.size_bytes != null">
+                    {{ formatByteSize(candidate.size_bytes) }}
                   </span>
-                  <span>{{ migrationActivityLabel(candidate.estimated_activity_at) }}</span>
+                  <span v-if="candidate.estimated_activity_at">
+                    {{ migrationActivityLabel(candidate.estimated_activity_at) }}
+                  </span>
                   <span v-if="candidate.previously_imported">
                     {{ t('setup.runtime.migrationCandidatePreviouslyImported') }}
                   </span>
@@ -854,7 +935,7 @@ onUnmounted(unsubscribeMigrationProgress)
             class="btn btn--ghost"
             :disabled="migrationBusy"
             data-testid="runtime-migration-cancel"
-            @click="cancelMigration"
+            @click="cancelMigration()"
           >
             {{ t('setup.runtime.migrationCancel') }}
           </button>
@@ -862,7 +943,15 @@ onUnmounted(unsubscribeMigrationProgress)
       </template>
       <template v-else>
         <div class="migration-summary__head">
-          <span class="migration-summary__title">{{ t('setup.runtime.migrationSummaryTitle') }}</span>
+          <h4
+            id="runtime-migration-title"
+            ref="migrationTitleEl"
+            class="migration-summary__title"
+            tabindex="-1"
+            data-testid="runtime-migration-title"
+          >
+            {{ t('setup.runtime.migrationSummaryTitle') }}
+          </h4>
           <span class="migration-summary__kind">
             {{ migrationSourceLabel(migrationCandidate.kind) }}
           </span>
@@ -880,11 +969,12 @@ onUnmounted(unsubscribeMigrationProgress)
         </div>
         <ul class="migration-summary__content" data-testid="runtime-migration-content">
           <li>{{ t('setup.runtime.migrationContentIdentity') }}</li>
-          <li>
+          <li v-if="migrationCandidate.session_count != null">
             {{ t('setup.runtime.migrationContentChats', {
-              n: migrationCandidate.session_count ?? 0,
+              n: migrationCandidate.session_count,
             }) }}
           </li>
+          <li v-else>{{ t('setup.runtime.migrationContentChatsUnknown') }}</li>
           <li>{{ t('setup.runtime.migrationContentSettings') }}</li>
           <li>{{ t('setup.runtime.migrationContentAssets') }}</li>
           <li>{{ t('setup.runtime.migrationContentJobs', { n: migrationSummary.pausedJobs }) }}</li>
@@ -934,7 +1024,7 @@ onUnmounted(unsubscribeMigrationProgress)
             class="btn btn--ghost"
             :disabled="migrationBusy"
             data-testid="runtime-migration-cancel"
-            @click="cancelMigration"
+            @click="cancelMigration()"
           >
             {{ t('setup.runtime.migrationCancel') }}
           </button>
@@ -945,7 +1035,7 @@ onUnmounted(unsubscribeMigrationProgress)
             data-testid="runtime-migration-run"
             @click="runMigration"
           >
-            {{ t('setup.runtime.migrationImport') }}
+            {{ migrationRunLabel }}
           </button>
         </div>
       </template>
@@ -1314,6 +1404,7 @@ onUnmounted(unsubscribeMigrationProgress)
 }
 
 .migration-summary__title {
+  margin: 0;
   font-weight: 700;
 }
 

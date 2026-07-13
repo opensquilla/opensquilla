@@ -1457,6 +1457,11 @@ def test_python_recovery_engine_replaces_typescript_layout_relocation() -> None:
 
 def test_onboarding_migration_ipc_is_guarded_and_prefills_from_imported_config() -> None:
     main_ts = _read("desktop/electron/src/main.ts")
+    browse = _section(
+        main_ts,
+        "ipcMain.handle('desktop:onboarding:migrate:browse'",
+        "ipcMain.handle('desktop:onboarding:migrate:select'",
+    )
     preview = _section(
         main_ts,
         "ipcMain.handle('desktop:onboarding:migrate:preview'",
@@ -1474,26 +1479,56 @@ def test_onboarding_migration_ipc_is_guarded_and_prefills_from_imported_config()
     # process's own detection rather than the renderer payload.
     for handler in (preview, apply_handler):
         assert "!resolveOnboarding || !trustedOnboardingIpc(event)" in handler
-        assert "activeDesktopProfile().kind !== 'primary'" in handler
+        assert "onboardingPortableTransferError()" in handler
         assert "onboardingMigrationCandidate" in handler
+        assert "candidate.kind !== 'windows-portable'" in handler
         assert "'--source', candidate.path, '--kind', candidate.kind" in handler
         assert "migrateSummaryJson([" in handler
     assert "'--apply'" not in preview
     assert "'--apply'," in apply_handler
+    assert "'--replace-target'" not in apply_handler
+    assert "'--confirm-replace-target'" not in apply_handler
     assert "findAppliedReceiptForIntent(" in apply_handler
     assert "migrationProviderPrefill(intent)" in apply_handler
     assert "prepareImportedCredentialBackup(intent)" in apply_handler
     assert "prefill" in apply_handler
 
-    # Detection happens on the no-credential path only, before the onboarding
-    # window is created, and the result is JSON-injected into the page.
+    # First-run detection is a Windows Portable-only upgrade path. CLI and other
+    # Desktop homes remain explicit Settings actions.
     onboarding = _section(main_ts, "async function runOnboarding", "async function pathExists")
-    assert "activeDesktopProfile().kind === 'primary'" in onboarding
-    assert "enrichLegacyImportCandidates(detectLegacyImportCandidates())" in onboarding
-    assert onboarding.index("detectLegacyImportCandidates()") < onboarding.index(
+    portable_detection = _section(
+        main_ts,
+        "function detectWindowsPortableImportCandidates",
+        "function detectLegacyImportCandidates",
+    )
+    candidate_identity = _section(
+        main_ts,
+        "function legacyCandidateIdentity",
+        "// Compare via realpath",
+    )
+    assert "Number.isSafeInteger(device)" in candidate_identity
+    assert "Number.isSafeInteger(inode)" in candidate_identity
+    assert "device !== 0 || inode !== 0" in candidate_identity
+    assert "realpathSync(path)" in candidate_identity
+    assert "canonical.toLowerCase()" in candidate_identity
+    assert main_ts.count("legacyCandidateIdentity(") == 3
+    assert "process.platform !== 'win32'" in portable_detection
+    assert "windowsPortableHomeRoots()" in portable_detection
+    assert "'windows-portable'" in portable_detection
+    assert "homedir()" not in portable_detection
+    assert "manuallyApprovedMigrationCandidates" not in portable_detection
+    assert "legacyImportCandidate('windows-portable', path)" in browse
+    assert "parseMigrationSourceKind" not in browse
+    assert "manuallyApprovedMigrationCandidates" not in browse
+    assert "isProvenFreshPrimaryDesktopProfile(onboardingDataInput)" in onboarding
+    assert "classifyDesktopOnboardingDataFlow" in onboarding
+    assert "onboardingDataFlow === 'portable-transfer'" in onboarding
+    assert "enrichLegacyImportCandidates(detectWindowsPortableImportCandidates())" in onboarding
+    assert "candidateKinds: detectedCandidates.map((candidate) => candidate.kind)" in onboarding
+    assert onboarding.index("detectWindowsPortableImportCandidates()") < onboarding.index(
         "new BrowserWindow"
     )
-    assert "onboardingHtml(onboardingMigrationCandidates, pendingProviderSetup)" in onboarding
+    assert "onboardingDataFlow === 'portable-transfer'," in onboarding
 
 
 def test_run_migrate_cli_targets_desktop_home_via_bundled_cli() -> None:
@@ -1548,7 +1583,7 @@ def test_desktop_profile_import_is_rejected_from_recovery_profile() -> None:
 
     for handler in (summary, run):
         assert "activeDesktopProfile().kind !== 'primary'" in handler
-        assert "Return to the primary profile before importing data." in handler
+        assert "Return to the primary profile before transferring data." in handler
 
 
 def test_desktop_migration_run_quiesces_then_restarts_without_forcing_onboarding() -> None:
@@ -1759,7 +1794,9 @@ def test_settings_import_reconciles_or_prompts_for_imported_provider() -> None:
     assert "scrubImportedProviderEnvEntry" not in main_ts
     assert "readImportedProviderKey" not in main_ts
     assert "apiKey: ''" in main_ts
-    assert "onboardingHtml(onboardingMigrationCandidates, pendingProviderSetup)" in onboarding
+    assert "onboardingHtml(" in onboarding
+    assert "onboardingMigrationCandidates," in onboarding
+    assert "pendingProviderSetup," in onboarding
     assert "desktopSecretStoragePolicyBackend() === 'safeStorage'" in onboarding
 
     reconcile = _section(
@@ -1842,12 +1879,25 @@ def test_migration_locale_keys_exist_in_all_six_locale_blocks() -> None:
     )
 
     desktop_keys = [
+        "attention.title",
+        "attention.message",
+        "attention.detail",
+        "attention.currentWorkspace",
+        "attention.otherWorkspace",
+        "attention.later",
+        "attention.keepCurrent",
+        "attention.chooseWorkspace",
         "migration.nav.title",
         "migration.nav.sub",
         "migration.step.badge",
         "migration.step.heading",
         "migration.step.subtitle",
+        "migration.step.assurance",
         "migration.step.sourceLabel",
+        "migration.step.selectionHint",
+        "migration.step.candidateVersion",
+        "migration.step.candidateSessions",
+        "migration.step.candidateActivity",
         "migration.step.manualTypeLabel",
         "migration.step.manualTypePlaceholder",
         "migration.source.cli",
@@ -1872,7 +1922,9 @@ def test_migration_locale_keys_exist_in_all_six_locale_blocks() -> None:
     script_keys = [
         "migrationPreviewRunning",
         "migrationApplyRunning",
-        "migrationItems",
+        "migrationReady",
+        "migrationSkippedDetails",
+        "migrationTechnicalDetails",
         "migrationPausedJobs",
         "migrationDisk",
         "migrationNotesLabel",
@@ -1884,17 +1936,33 @@ def test_migration_locale_keys_exist_in_all_six_locale_blocks() -> None:
         assert script_catalog.count(f"{key}:") == 6, key
 
 
-def test_onboarding_route_prepends_migration_step_only_when_detected() -> None:
+def test_onboarding_route_prepends_portable_copy_only_when_policy_allows() -> None:
     main_ts = _read("desktop/electron/src/main.ts")
     html = _section(main_ts, "function onboardingHtml", "async function runOnboarding")
     route = _section(html, "function routeSteps()", "function routePosition")
 
-    # The detection result is JSON-injected like the message bags; the migration
-    # step (screen 5) leads every route only when a legacy home was detected.
+    # Only policy-approved Portable candidates are JSON-injected; the optional
+    # copy step (screen 5) leads the route only then.
     assert "detections: LegacyImportCandidate[] = []" in html
+    assert "portableTransferEnabled = false" in html
+    assert "detections.every((candidate) => candidate.kind === 'windows-portable')" in html
     assert "const migrationCandidates = ${inlineScriptJson(detections)};" in html
     assert "const initialProviderPrefill = ${inlineScriptJson(pendingProviderSetup)};" in html
     assert "let migrationCandidate = null;" in html
+    assert 'id="migrationCandidateList"' in html
+    assert 'id="migrationSelectionHint"' in html
+    assert 'id="migrationSource" type="hidden"' in html
+    assert 'id="migrationSourceKind"' not in html
+    assert "browseOnboardingMigration();" in html
+    assert "candidate.session_count !== null" in html
+    assert "candidate.session_count !== undefined" in html
+    assert "const hasDiskEstimate = Number.isFinite(diskRequired) && diskRequired >= 0" in html
+    assert "...(hasDiskEstimate ? [fmt('migrationDisk'" in html
+    assert "migration.source.cli" not in _section(
+        html,
+        '${migrationStepEnabled ? `<section class="setup-card active" data-screen="5">',
+        '<section class="setup-card${migrationStepEnabled ? \'\' : \' active\'}" data-screen="0">',
+    )
     assert "return migrationStepEnabled ? [5, ...base] : base;" in route
     assert 'data-screen="5"' in html
     assert 'data-step-label="5"' in html
@@ -1931,6 +1999,9 @@ def test_migration_preload_bridge_and_progress_channel() -> None:
     main_ts = _read("desktop/electron/src/main.ts")
     preload = _read("desktop/electron/src/preload.cts")
 
+    assert "getDesktopProfileKind" in preload
+    assert "ipcRenderer.invoke('desktop:recovery:state')" in preload
+    assert "kind === 'primary' || kind === 'recovery'" in preload
     assert "'desktop:migration:summary'" in preload
     assert "'desktop:migration:run'" in preload
     assert "'desktop:migration:last-result'" in preload

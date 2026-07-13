@@ -18,6 +18,7 @@ function desktopApi(overrides: Record<string, unknown> = {}) {
       status: 'ready',
       logPath: '',
     }),
+    getDesktopProfileKind: async () => 'primary',
     ...overrides,
   }
 }
@@ -81,10 +82,23 @@ beforeEach(() => {
   setDesktopApi(undefined)
 })
 
-describe('DesktopRuntimePanel profile import', () => {
+describe('DesktopRuntimePanel data transfer', () => {
   it('hides the row when the desktop shell predates the migration bridge', async () => {
     const { app, el } = await mountPanel(desktopApi())
     expect(el.querySelector('[data-testid="runtime-migration-open"]')).toBeNull()
+    app.unmount()
+  })
+
+  it('fails closed when the shell cannot identify the active profile', async () => {
+    const migrationSummary = vi.fn(async () => ({ ok: true }))
+    const { app, el } = await mountPanel(desktopApi({
+      getDesktopProfileKind: undefined,
+      migrationSummary,
+      migrationRun: vi.fn(async () => ({ ok: true })),
+    }))
+
+    expect(el.querySelector('[data-testid="runtime-migration-open"]')).toBeNull()
+    expect(migrationSummary).not.toHaveBeenCalled()
     app.unmount()
   })
 
@@ -114,6 +128,9 @@ describe('DesktopRuntimePanel profile import', () => {
 
     const chooser = el.querySelector('[data-testid="runtime-migration-summary"]')
     expect(chooser?.textContent).toContain('Nothing is selected automatically')
+    expect(chooser?.textContent).toContain('never merged or synced')
+    expect(chooser?.textContent).toContain('source stays unchanged')
+    expect(chooser?.textContent?.toLowerCase()).not.toContain('import')
     expect(chooser?.textContent).toContain('/tmp/cli-home')
     expect(el.querySelector('[data-testid="runtime-migration-run"]')).toBeNull()
     expect(migrationSummary).toHaveBeenCalledTimes(1)
@@ -127,7 +144,54 @@ describe('DesktopRuntimePanel profile import', () => {
     app.unmount()
   })
 
-  it('groups CLI and Desktop as supported and Portable as a historical source', async () => {
+  it('focuses the inline title, gives candidates a descriptive name, and restores focus', async () => {
+    const migrationSummary = vi.fn(async (payload?: { source?: string }) => (
+      payload?.source
+        ? {
+            ok: true,
+            candidates: [cliCandidate],
+            candidate: cliCandidate,
+            report: emptyTargetReport,
+            previewId: 'accessible-preview',
+          }
+        : {
+            ok: true,
+            candidates: [cliCandidate],
+            candidate: null,
+            report: null,
+            requiresSelection: true,
+          }
+    ))
+    const { app, el } = await mountPanel(desktopApi({
+      migrationSummary,
+      migrationRun: vi.fn(async () => ({ ok: true })),
+    }))
+
+    const trigger = el.querySelector<HTMLButtonElement>('[data-testid="runtime-migration-open"]')!
+    trigger.focus()
+    trigger.click()
+    await settle()
+
+    const chooserTitle = el.querySelector<HTMLElement>('[data-testid="runtime-migration-title"]')!
+    expect(document.activeElement).toBe(chooserTitle)
+    const candidate = el.querySelector<HTMLButtonElement>('.migration-candidate')!
+    expect(candidate.getAttribute('aria-label')).toContain('OpenSquilla terminal installation')
+    expect(candidate.getAttribute('aria-label')).toContain('/tmp/cli-home')
+    expect(candidate.getAttribute('aria-label')).not.toBe('/tmp/cli-home')
+
+    candidate.click()
+    await settle()
+    expect(document.activeElement).toBe(
+      el.querySelector<HTMLElement>('[data-testid="runtime-migration-title"]'),
+    )
+
+    el.querySelector<HTMLButtonElement>('[data-testid="runtime-migration-cancel"]')!.click()
+    await settle()
+    expect(document.activeElement).toBe(trigger)
+    app.unmount()
+  })
+
+  it('groups active installation types separately from older Windows data', async () => {
     const portableCandidate = {
       ...cliCandidate,
       kind: 'windows-portable',
@@ -156,14 +220,14 @@ describe('DesktopRuntimePanel profile import', () => {
 
     const supported = el.querySelector('[data-testid="runtime-migration-supported"]')
     const historical = el.querySelector('[data-testid="runtime-migration-historical"]')
-    expect(supported?.textContent).toContain('Supported OpenSquilla installations')
-    expect(supported?.textContent).toContain('OpenSquilla CLI (supported)')
-    expect(supported?.textContent).toContain('OpenSquilla Desktop (supported)')
-    expect(historical?.textContent).toContain('Historical data sources')
-    expect(historical?.textContent).toContain('Windows Portable (historical, discontinued)')
+    expect(supported?.textContent).toContain('Other OpenSquilla installations')
+    expect(supported?.textContent).toContain('OpenSquilla terminal installation')
+    expect(supported?.textContent).toContain('OpenSquilla Desktop installation')
+    expect(historical?.textContent).toContain('Older Windows data')
+    expect(historical?.textContent).toContain('Legacy Windows Portable')
     expect(el.textContent).toContain('3 sessions')
     expect(el.textContent).toContain('Estimated recent activity')
-    expect(el.textContent).toContain('Previously imported (still selectable)')
+    expect(el.textContent).toContain('Previously transferred (still selectable)')
     expect(
       Array.from(el.querySelectorAll('.migration-candidate__head strong'))
         .some((label) => label.textContent === 'cli-home'),
@@ -171,7 +235,104 @@ describe('DesktopRuntimePanel profile import', () => {
     app.unmount()
   })
 
-  it('can be skipped without running an import or hiding the usable runtime', async () => {
+  it('omits unavailable metadata instead of filling a candidate card with warnings', async () => {
+    const sparseCandidate = {
+      ...cliCandidate,
+      version: null,
+      session_count: null,
+      size_bytes: null,
+      estimated_activity_at: null,
+      previously_imported: false,
+    }
+    const { app, el } = await mountPanel(desktopApi({
+      migrationSummary: vi.fn(async (payload?: { source?: string }) => (
+        payload?.source
+          ? {
+              ok: true,
+              candidates: [sparseCandidate],
+              candidate: sparseCandidate,
+              report: emptyTargetReport,
+              previewId: 'sparse-preview',
+            }
+          : {
+              ok: true,
+              candidates: [sparseCandidate],
+              candidate: null,
+              report: null,
+              requiresSelection: true,
+            }
+      )),
+      migrationRun: vi.fn(async () => ({ ok: true })),
+    }))
+
+    ;(el.querySelector('[data-testid="runtime-migration-open"]') as HTMLButtonElement).click()
+    await settle()
+
+    const chooser = el.querySelector('[data-testid="runtime-migration-summary"]')
+    expect(chooser?.textContent).toContain('OpenSquilla terminal installation')
+    expect(chooser?.textContent).not.toContain('unavailable')
+
+    ;(chooser?.querySelector('.migration-candidate') as HTMLButtonElement).click()
+    await settle()
+    const content = el.querySelector('[data-testid="runtime-migration-content"]')
+    expect(content?.textContent).toContain('Chats')
+    expect(content?.textContent).not.toContain('0 detected sessions')
+    app.unmount()
+  })
+
+  it('isolates recovery profiles from transfer actions and primary-profile results', async () => {
+    const migrationPeekLastResult = vi.fn(async () => ({
+      ok: true,
+      source: '/tmp/primary-source',
+      targetReplaced: true,
+    }))
+    const migrationTakeLastResult = vi.fn(async () => ({ ok: true }))
+    const migrationDismissLastResult = vi.fn(async () => ({ ok: true }))
+    const { app, el } = await mountPanel(desktopApi({
+      getDesktopProfileKind: vi.fn(async () => 'recovery'),
+      migrationSummary: vi.fn(async () => ({ ok: true })),
+      migrationRun: vi.fn(async () => ({ ok: true })),
+      migrationPeekLastResult,
+      migrationTakeLastResult,
+      migrationDismissLastResult,
+    }))
+
+    expect(el.querySelector('[data-testid="runtime-migration-open"]')).toBeNull()
+    expect(el.querySelector('[data-testid="runtime-migration-complete"]')).toBeNull()
+    expect(el.querySelector('[data-testid="runtime-migration-recovery-message"]')?.textContent)
+      .toContain('Return to the main profile')
+    expect(migrationPeekLastResult).not.toHaveBeenCalled()
+    expect(migrationTakeLastResult).not.toHaveBeenCalled()
+    expect(migrationDismissLastResult).not.toHaveBeenCalled()
+    app.unmount()
+  })
+
+  it('maps a recovery-profile backend guard to stable localized copy', async () => {
+    const migrationSummary = vi.fn(async () => ({
+      ok: false,
+      candidate: null,
+      report: null,
+      raw: 'Return to the primary profile before importing data.',
+    }))
+    const { app, el } = await mountPanel(desktopApi({
+      migrationSummary,
+      migrationRun: vi.fn(async () => ({ ok: true })),
+    }))
+    const { useToasts } = await import('@/composables/useToasts')
+    const { toasts } = useToasts()
+    toasts.value = []
+
+    el.querySelector<HTMLButtonElement>('[data-testid="runtime-migration-open"]')!.click()
+    await settle()
+
+    const message = toasts.value[toasts.value.length - 1]?.message || ''
+    expect(message).toContain('Return to the main profile')
+    expect(message).not.toContain('importing data')
+    toasts.value = []
+    app.unmount()
+  })
+
+  it('can be skipped without running a transfer or hiding the usable runtime', async () => {
     const migrationRun = vi.fn(async () => ({ ok: true }))
     const { app, el } = await mountPanel(desktopApi({
       migrationSummary: vi.fn(async () => ({
@@ -253,7 +414,7 @@ describe('DesktopRuntimePanel profile import', () => {
 
     const summary = el.querySelector('[data-testid="runtime-migration-summary"]')
     expect(summary?.querySelector('.migration-summary__kind')?.textContent).toContain(
-      'Windows Portable (historical, discontinued)',
+      'Legacy Windows Portable',
     )
     expect(summary?.textContent).toContain('Identity, personality, and memory')
     expect(summary?.textContent).toContain('Chats')
@@ -261,7 +422,7 @@ describe('DesktopRuntimePanel profile import', () => {
     expect(summary?.textContent).toContain('Skills and media')
     expect(summary?.textContent).toContain('target home already contains session data')
     expect(summary?.textContent).toContain('replace it as a whole')
-    expect(summary?.textContent).toContain('files are never merged')
+    expect(summary?.textContent?.toLowerCase()).toContain('files and chats are never merged')
     expect(summary?.querySelector('.migration-summary__errors')).toBeNull()
 
     ;(summary?.querySelector('[data-testid="runtime-migration-copy-path"]') as HTMLButtonElement)
@@ -274,6 +435,7 @@ describe('DesktopRuntimePanel profile import', () => {
       '[data-testid="runtime-migration-overwrite"] input[type="checkbox"]',
     )
     expect(run?.disabled).toBe(true)
+    expect(run?.textContent).toContain('Back up and replace')
     checkbox!.checked = true
     checkbox!.dispatchEvent(new Event('change', { bubbles: true }))
     await settle()
@@ -293,7 +455,7 @@ describe('DesktopRuntimePanel profile import', () => {
     app.unmount()
   })
 
-  it('explains the independent copy before importing into an empty target', async () => {
+  it('labels and confirms an independent copy into an empty target', async () => {
     const migrationRun = vi.fn(async () => ({
       ok: true,
       migrationApplied: true,
@@ -325,16 +487,19 @@ describe('DesktopRuntimePanel profile import', () => {
     await settle()
     ;(el.querySelector('.migration-candidate') as HTMLButtonElement).click()
     await settle()
-    ;(el.querySelector('[data-testid="runtime-migration-run"]') as HTMLButtonElement).click()
+    const run = el.querySelector<HTMLButtonElement>('[data-testid="runtime-migration-run"]')
+    expect(run?.textContent).toContain('Copy and use')
+    run?.click()
     await settle()
 
     const { useConfirm } = await import('@/composables/useConfirm')
     const confirmation = useConfirm()
     const body = confirmation.confirmState.value?.body || ''
-    expect(body).toContain('stops the local gateway')
-    expect(body).toContain('one-time independent copy')
-    expect(body).toContain('source profile stays unchanged')
-    expect(body).toContain('will not sync')
+    expect(confirmation.confirmState.value?.title).toContain('Copy and use this data')
+    expect(body).toContain('stops the local runtime')
+    expect(body).toContain('copies the selected data')
+    expect(body).toContain('source stays unchanged')
+    expect(body).toContain('will not merge or sync')
     confirmation.resolveConfirm(true)
     await settle()
     expect(migrationRun).toHaveBeenCalledWith({
@@ -429,9 +594,9 @@ describe('DesktopRuntimePanel profile import', () => {
     }))
 
     const card = el.querySelector('[data-testid="runtime-migration-complete"]')
-    expect(card?.textContent).toContain('Import complete')
+    expect(card?.textContent).toContain('Data transfer complete')
     expect(card?.textContent).toContain('/tmp/cli-profile')
-    expect(card?.textContent).toContain('source profile stays unchanged')
+    expect(card?.textContent).toContain('source data stays unchanged')
     expect(card?.textContent).toContain('complete backup')
     expect(card?.textContent).toContain('never merged')
     expect(card?.textContent).toContain('will not sync')

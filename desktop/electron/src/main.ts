@@ -2,13 +2,17 @@ import { app, BrowserWindow, clipboard, dialog, Menu, ipcMain, nativeTheme, safe
 import electronUpdater from 'electron-updater'
 import { spawn, spawnSync, type ChildProcess, type ChildProcessWithoutNullStreams } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
-import { appendFileSync, createWriteStream, existsSync, lstatSync, mkdirSync, opendirSync, readFileSync, readdirSync, realpathSync, statSync, writeFileSync } from 'node:fs'
+import { appendFileSync, createWriteStream, existsSync, lstatSync, mkdirSync, opendirSync, readFileSync, readdirSync, realpathSync, statSync, writeFileSync, type Stats } from 'node:fs'
 import { access, constants, readFile, readdir, rename, rm, stat, unlink, writeFile } from 'node:fs/promises'
 import net from 'node:net'
 import { homedir, tmpdir } from 'node:os'
 import { basename, dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { DESKTOP_LOCALES, resolveLocaleFromTags, type DesktopLocale } from './desktop-locale.js'
+import {
+  classifyDesktopOnboardingDataFlow,
+  isProvenFreshPrimaryDesktopProfile,
+} from './desktop-data-flow.js'
 import {
   allProfileContexts as enumerateDesktopProfileContexts,
   contextForProfile,
@@ -275,7 +279,6 @@ let rejectOnboarding: ((error: Error) => void) | null = null
 let onboardingMigrationCandidates: LegacyImportCandidate[] = []
 let onboardingMigrationCandidate: LegacyImportCandidate | null = null
 let onboardingMigrationPreviewApprovedAt = 0
-let onboardingMigrationReplaceTarget = false
 let secretStorageBackendCache: SecretEncryption | null = null
 let macCodeSignatureDiagnosticCache: string | null = null
 let bootStatus: BootStatus = {
@@ -532,6 +535,24 @@ function legacyImportCandidate(
   }
 }
 
+function legacyCandidateIdentity(path: string, info: Stats): string {
+  const device = Number(info.dev)
+  const inode = Number(info.ino)
+  if (
+    Number.isSafeInteger(device)
+    && Number.isSafeInteger(inode)
+    && (device !== 0 || inode !== 0)
+  ) return `stat:${device}:${inode}`
+
+  let canonical: string
+  try {
+    canonical = realpathSync(path)
+  } catch {
+    canonical = resolve(path)
+  }
+  return `path:${process.platform === 'win32' ? canonical.toLowerCase() : canonical}`
+}
+
 // Compare via realpath so a symlinked/relocated desktop home is never offered
 // to itself as an import source.
 function resolvedPathsEqual(a: string, b: string): boolean {
@@ -656,6 +677,48 @@ function windowsPortableHomeRoots(): string[] {
   return roots
 }
 
+function detectWindowsPortableImportCandidates(): LegacyImportCandidate[] {
+  if (process.platform !== 'win32') return []
+
+  const candidates: LegacyImportCandidate[] = []
+  const identities = new Set<string>()
+  for (const root of windowsPortableHomeRoots()) {
+    let directory: ReturnType<typeof opendirSync> | null = null
+    try {
+      const rootInfo = lstatSync(root)
+      if (!rootInfo.isDirectory() || rootInfo.isSymbolicLink()) continue
+      directory = opendirSync(root)
+    } catch {
+      continue
+    }
+    try {
+      for (let inspected = 0; inspected < LEGACY_METADATA_MAX_DIRECTORY_ENTRIES; inspected += 1) {
+        const entry = directory.readSync()
+        if (!entry) break
+        const path = join(root, entry.name)
+        if (!looksLikeOpenSquillaHome(path) || resolvedPathsEqual(path, primaryDesktopHome())) {
+          continue
+        }
+        try {
+          const info = lstatSync(path)
+          if (!info.isDirectory() || info.isSymbolicLink()) continue
+          const identity = legacyCandidateIdentity(path, info)
+          if (identities.has(identity)) continue
+          identities.add(identity)
+          candidates.push(legacyImportCandidate('windows-portable', path))
+        } catch {
+          // A candidate can disappear between enumeration and display.
+        }
+        if (candidates.length >= LEGACY_METADATA_MAX_CANDIDATES) break
+      }
+    } finally {
+      directory.closeSync()
+    }
+    if (candidates.length >= LEGACY_METADATA_MAX_CANDIDATES) break
+  }
+  return candidates.sort((left, right) => left.path.localeCompare(right.path))
+}
+
 function detectLegacyImportCandidates(): LegacyImportCandidate[] {
   const candidates: LegacyImportCandidate[] = []
   const identities = new Set<string>()
@@ -663,7 +726,7 @@ function detectLegacyImportCandidates(): LegacyImportCandidate[] {
     try {
       const info = lstatSync(candidate.path)
       if (!info.isDirectory() || info.isSymbolicLink()) return
-      const identity = `${info.dev}:${info.ino}`
+      const identity = legacyCandidateIdentity(candidate.path, info)
       if (identities.has(identity)) return
       identities.add(identity)
       candidates.push(candidate)
@@ -687,32 +750,7 @@ function detectLegacyImportCandidates(): LegacyImportCandidate[] {
   ) {
     addCandidate(legacyImportCandidate('cli-home', cliHome))
   }
-  if (process.platform === 'win32') {
-    for (const root of windowsPortableHomeRoots()) {
-      let directory: ReturnType<typeof opendirSync> | null = null
-      try {
-        const rootInfo = lstatSync(root)
-        if (!rootInfo.isDirectory() || rootInfo.isSymbolicLink()) continue
-        directory = opendirSync(root)
-      } catch {
-        continue
-      }
-      try {
-        for (let inspected = 0; inspected < LEGACY_METADATA_MAX_DIRECTORY_ENTRIES; inspected += 1) {
-          const entry = directory.readSync()
-          if (!entry) break
-          const path = join(root, entry.name)
-          if (!looksLikeOpenSquillaHome(path)) continue
-          if (resolvedPathsEqual(path, primaryDesktopHome())) continue
-          addCandidate(legacyImportCandidate('windows-portable', path))
-          if (candidates.length >= LEGACY_METADATA_MAX_CANDIDATES) break
-        }
-      } finally {
-        directory.closeSync()
-      }
-      if (candidates.length >= LEGACY_METADATA_MAX_CANDIDATES) break
-    }
-  }
+  for (const candidate of detectWindowsPortableImportCandidates()) addCandidate(candidate)
   return candidates.sort((left, right) => (
     Number(manuallyApprovedMigrationCandidates.has(resolve(right.path)))
     - Number(manuallyApprovedMigrationCandidates.has(resolve(left.path)))
@@ -2437,11 +2475,14 @@ const DESKTOP_MESSAGES: Record<DesktopLocale, Record<string, string>> = {
     'menu.reviewProfile': 'Review Profile Paths…',
     'menu.switchRecovery': 'Switch to Recovery Profile',
     'menu.returnPrimary': 'Return to Primary Profile',
-    'attention.title': 'Profile paths need attention',
-    'attention.message': 'OpenSquilla can keep using the current workspace. Review the detected paths now or keep the current path.',
-    'attention.later': 'Later',
-    'attention.keepCurrent': 'Keep Current Path',
-    'attention.chooseWorkspace': 'Choose Workspace…',
+    'attention.title': 'An upgrade workspace was found',
+    'attention.message': 'OpenSquilla is safely using your current workspace. Chats are not affected by this choice.',
+    'attention.detail': 'If the agent identity or memory looks unfamiliar, review the other workspace. OpenSquilla will not delete, merge, or move either workspace.',
+    'attention.currentWorkspace': 'Current workspace',
+    'attention.otherWorkspace': 'Other detected workspace',
+    'attention.later': 'Review Later',
+    'attention.keepCurrent': 'Continue with Current Workspace',
+    'attention.chooseWorkspace': 'Review Other Workspace…',
     'update.newVersionTitle': 'A new version is available',
     'update.newVersionDetail': 'OpenSquilla {version} is available. Download it now?',
     'update.download': 'Download',
@@ -2473,29 +2514,34 @@ const DESKTOP_MESSAGES: Record<DesktopLocale, Record<string, string>> = {
     'cleanup.abandonTitle': 'Leave the interrupted cleanup?',
     'cleanup.abandonMessage': 'OpenSquilla will preserve every surviving file and archive only the cleanup transaction record.',
     'cleanup.abandonDetail': 'Nothing else will be deleted. Review the remaining profile before continuing to use it.',
-    'migration.nav.title': 'Import',
-    'migration.nav.sub': 'Existing data',
-    'migration.step.badge': 'Import',
-    'migration.step.heading': 'Import existing OpenSquilla data',
-    'migration.step.subtitle': 'OpenSquilla found data from a previous installation on this machine. Preview what would be imported and bring it into the desktop app, or skip and start fresh.',
-    'migration.step.sourceLabel': 'Detected data location',
-    'migration.step.manualTypeLabel': 'Profile type',
-    'migration.step.manualTypePlaceholder': 'Choose a profile type',
-    'migration.source.cli': 'OpenSquilla CLI (supported)',
-    'migration.source.desktop': 'OpenSquilla Desktop (supported)',
-    'migration.source.portable': 'Windows Portable (historical, discontinued)',
-    'migration.step.browse': 'Choose profile folder…',
-    'migration.step.preview': 'Preview import',
-    'migration.step.import': 'Import',
-    'migration.step.skip': 'Skip',
+    'migration.nav.title': 'Portable data',
+    'migration.nav.sub': 'Optional copy',
+    'migration.step.badge': 'Optional',
+    'migration.step.heading': 'Legacy Windows Portable data found',
+    'migration.step.subtitle': 'Copy your chats, Agents, and settings into this Desktop app.',
+    'migration.step.assurance': 'Your original Portable data will not be modified or deleted.',
+    'migration.step.sourceLabel': 'Choose Portable data',
+    'migration.step.selectionHint': 'Select a source, then review what will be copied.',
+    'migration.step.candidateVersion': 'Version {version}',
+    'migration.step.candidateSessions': '{n} chats',
+    'migration.step.candidateActivity': 'Last activity {value}',
+    'migration.step.manualTypeLabel': 'Portable data not listed?',
+    'migration.step.manualTypePlaceholder': 'Choose Portable data',
+    'migration.source.cli': 'OpenSquilla CLI',
+    'migration.source.desktop': 'OpenSquilla Desktop',
+    'migration.source.portable': 'Legacy Windows Portable',
+    'migration.step.browse': 'Choose Portable data folder…',
+    'migration.step.preview': 'Review this data',
+    'migration.step.import': 'Copy and continue',
+    'migration.step.skip': 'Not now',
     'migration.overwriteTitle': 'Replace conflicting desktop data?',
-    'migration.overwriteMessage': 'This import will replace data in the current desktop profile.',
+    'migration.overwriteMessage': 'The selected installation will replace the current Desktop data.',
     'migration.overwriteDetail': 'A complete timestamped backup will be retained. Confirm the source below before continuing.',
     'migration.overwriteNoMerge': 'Profile files and chat databases are never merged.',
     'migration.overwriteSourceUntouched': 'The selected source profile remains unchanged.',
-    'migration.overwriteNoSync': 'The Desktop profile and source will not sync after import.',
+    'migration.overwriteNoSync': 'The Desktop profile and source will not sync after transfer.',
     'migration.overwriteCancel': 'Cancel',
-    'migration.overwriteConfirm': 'Import and replace',
+    'migration.overwriteConfirm': 'Back up and replace',
     'launch.alreadyRunningTitle': 'OpenSquilla is already running',
     'launch.alreadyRunningMessage': 'Another OpenSquilla window is already open on this machine. Bringing it to the front.',
     'window.onboarding': 'Set up OpenSquilla',
@@ -2506,7 +2552,7 @@ const DESKTOP_MESSAGES: Record<DesktopLocale, Record<string, string>> = {
     'boot.ready': 'Ready',
     'onboarding.title': 'Set up OpenSquilla',
     'onboarding.rail.title': 'Desktop setup',
-    'onboarding.rail.subtitle': 'Configure the local runtime in the same order as the guided CLI.',
+    'onboarding.rail.subtitle': 'Set up OpenSquilla on this device.',
     'onboarding.rail.foot': 'OpenSquilla keeps this profile local to this device.',
     'onboarding.language.label': 'Language',
     'onboarding.aria.setupSteps': 'Setup steps',
@@ -2580,11 +2626,14 @@ const DESKTOP_MESSAGES: Record<DesktopLocale, Record<string, string>> = {
     'menu.reviewProfile': '检查配置路径…',
     'menu.switchRecovery': '切换到恢复配置',
     'menu.returnPrimary': '返回主配置',
-    'attention.title': '配置路径需要处理',
-    'attention.message': 'OpenSquilla 可以继续使用当前工作区。你可以现在检查检测到的路径，或保留当前路径。',
-    'attention.later': '稍后',
-    'attention.keepCurrent': '保留当前路径',
-    'attention.chooseWorkspace': '选择工作区…',
+    'attention.title': '发现升级前的工作区',
+    'attention.message': 'OpenSquilla 正在安全地使用当前工作区，聊天记录不受此选择影响。',
+    'attention.detail': '如果 Agent 的身份或记忆看起来陌生，可以核对另一个工作区。OpenSquilla 不会删除、合并或移动任何一边。',
+    'attention.currentWorkspace': '当前工作区',
+    'attention.otherWorkspace': '检测到的其他工作区',
+    'attention.later': '稍后核对',
+    'attention.keepCurrent': '继续使用当前工作区',
+    'attention.chooseWorkspace': '核对其他工作区…',
     'update.newVersionTitle': '有新版本可用',
     'update.newVersionDetail': 'OpenSquilla {version} 已发布，现在下载吗？',
     'update.download': '下载',
@@ -2616,29 +2665,34 @@ const DESKTOP_MESSAGES: Record<DesktopLocale, Record<string, string>> = {
     'cleanup.abandonTitle': '结束未完成的清理？',
     'cleanup.abandonMessage': 'OpenSquilla 会保留所有仍存在的文件，仅归档清理事务记录。',
     'cleanup.abandonDetail': '不会继续删除任何内容。继续使用前请检查剩余的配置文件。',
-    'migration.nav.title': '导入',
-    'migration.nav.sub': '现有数据',
-    'migration.step.badge': '导入',
-    'migration.step.heading': '导入现有的 OpenSquilla 数据',
-    'migration.step.subtitle': 'OpenSquilla 在本机上发现了先前安装留下的数据。可以先预览将导入的内容并将其导入桌面应用，也可以跳过并全新开始。',
-    'migration.step.sourceLabel': '检测到的数据位置',
-    'migration.step.manualTypeLabel': '配置类型',
-    'migration.step.manualTypePlaceholder': '选择配置类型',
-    'migration.source.cli': 'OpenSquilla CLI（持续支持）',
-    'migration.source.desktop': 'OpenSquilla 桌面端（持续支持）',
-    'migration.source.portable': 'Windows Portable（历史安装方式，已停止支持）',
-    'migration.step.browse': '选择配置目录…',
-    'migration.step.preview': '预览导入',
-    'migration.step.import': '导入',
-    'migration.step.skip': '跳过',
+    'migration.nav.title': 'Portable 数据',
+    'migration.nav.sub': '可选复制',
+    'migration.step.badge': '可选',
+    'migration.step.heading': '发现旧版 Windows Portable 数据',
+    'migration.step.subtitle': '可以将原来的聊天、Agent 和设置复制到当前桌面安装版。',
+    'migration.step.assurance': '原 Portable 数据不会被修改或删除。',
+    'migration.step.sourceLabel': '选择 Portable 数据',
+    'migration.step.selectionHint': '选择一个来源后，先核对将复制的内容。',
+    'migration.step.candidateVersion': '版本 {version}',
+    'migration.step.candidateSessions': '{n} 个聊天',
+    'migration.step.candidateActivity': '最近活动 {value}',
+    'migration.step.manualTypeLabel': '没有找到 Portable 数据？',
+    'migration.step.manualTypePlaceholder': '选择 Portable 数据',
+    'migration.source.cli': 'OpenSquilla 终端安装版',
+    'migration.source.desktop': 'OpenSquilla 桌面安装版',
+    'migration.source.portable': '旧版 Windows Portable',
+    'migration.step.browse': '选择 Portable 数据目录…',
+    'migration.step.preview': '核对这套数据',
+    'migration.step.import': '复制并继续',
+    'migration.step.skip': '暂不转移',
     'migration.overwriteTitle': '替换冲突的桌面数据？',
-    'migration.overwriteMessage': '此次导入将替换当前桌面配置中的数据。',
+    'migration.overwriteMessage': '所选安装的数据将替换当前桌面数据。',
     'migration.overwriteDetail': '系统会保留完整的时间戳备份。继续前请确认下方的数据来源。',
     'migration.overwriteNoMerge': '配置文件和聊天数据库绝不会合并。',
     'migration.overwriteSourceUntouched': '所选来源配置保持原样。',
-    'migration.overwriteNoSync': '导入后，桌面端配置与来源不会自动同步。',
+    'migration.overwriteNoSync': '转移后，桌面端数据与来源不会自动同步。',
     'migration.overwriteCancel': '取消',
-    'migration.overwriteConfirm': '导入并替换',
+    'migration.overwriteConfirm': '备份并替换',
     'launch.alreadyRunningTitle': 'OpenSquilla 已在运行',
     'launch.alreadyRunningMessage': '本机已打开另一个 OpenSquilla 窗口。正在将其置于前台。',
     'window.onboarding': '设置 OpenSquilla',
@@ -2649,8 +2703,8 @@ const DESKTOP_MESSAGES: Record<DesktopLocale, Record<string, string>> = {
     'boot.ready': '就绪',
     'onboarding.title': '设置 OpenSquilla',
     'onboarding.rail.title': '桌面设置',
-    'onboarding.rail.subtitle': '按照引导式 CLI 的相同顺序配置本地运行时。',
-    'onboarding.rail.foot': 'OpenSquilla 将此配置保留在本设备本地。',
+    'onboarding.rail.subtitle': '在本机完成 OpenSquilla 的基本设置。',
+    'onboarding.rail.foot': '桌面端设置会保存在本机。',
     'onboarding.language.label': '语言',
     'onboarding.aria.setupSteps': '设置步骤',
     'onboarding.aria.setupDepth': '设置深度',
@@ -2723,11 +2777,14 @@ const DESKTOP_MESSAGES: Record<DesktopLocale, Record<string, string>> = {
     'menu.reviewProfile': 'プロファイルパスを確認…',
     'menu.switchRecovery': '復旧プロファイルに切り替え',
     'menu.returnPrimary': 'プライマリプロファイルに戻る',
-    'attention.title': 'プロファイルパスの確認が必要です',
-    'attention.message': '現在のワークスペースをそのまま使用できます。検出されたパスを確認するか、現在のパスを保持してください。',
-    'attention.later': '後で',
-    'attention.keepCurrent': '現在のパスを保持',
-    'attention.chooseWorkspace': 'ワークスペースを選択…',
+    'attention.title': 'アップグレード前のワークスペースが見つかりました',
+    'attention.message': 'OpenSquilla は現在のワークスペースを安全に使用しています。チャット履歴はこの選択の影響を受けません。',
+    'attention.detail': 'エージェントの本人情報や記憶に違和感がある場合は、もう一方のワークスペースを確認してください。どちらも削除、結合、移動されません。',
+    'attention.currentWorkspace': '現在のワークスペース',
+    'attention.otherWorkspace': '検出された別のワークスペース',
+    'attention.later': '後で確認',
+    'attention.keepCurrent': '現在のワークスペースを使う',
+    'attention.chooseWorkspace': '別のワークスペースを確認…',
     'update.newVersionTitle': '新しいバージョンが利用可能です',
     'update.newVersionDetail': 'OpenSquilla {version} が利用可能です。今すぐダウンロードしますか？',
     'update.download': 'ダウンロード',
@@ -2757,29 +2814,34 @@ const DESKTOP_MESSAGES: Record<DesktopLocale, Record<string, string>> = {
     'cleanup.abandonTitle': '中断したクリーンアップを終了しますか？',
     'cleanup.abandonMessage': '残っているすべてのファイルを保持し、クリーンアップのトランザクション記録だけをアーカイブします。',
     'cleanup.abandonDetail': 'これ以上は削除しません。使用を続ける前に残りのプロファイルを確認してください。',
-    'migration.nav.title': 'インポート',
-    'migration.nav.sub': '既存データ',
-    'migration.step.badge': 'インポート',
-    'migration.step.heading': '既存の OpenSquilla データをインポート',
-    'migration.step.subtitle': 'このマシンで以前のインストールのデータが見つかりました。インポートされる内容をプレビューしてデスクトップアプリに取り込むか、スキップして新規に始められます。',
-    'migration.step.sourceLabel': '検出されたデータの場所',
-    'migration.step.manualTypeLabel': 'プロファイルの種類',
-    'migration.step.manualTypePlaceholder': 'プロファイルの種類を選択',
-    'migration.source.cli': 'OpenSquilla CLI（サポート対象）',
-    'migration.source.desktop': 'OpenSquilla Desktop（サポート対象）',
-    'migration.source.portable': 'Windows Portable（過去の方式・サポート終了）',
-    'migration.step.browse': 'プロファイルフォルダーを選択…',
-    'migration.step.preview': 'インポートをプレビュー',
-    'migration.step.import': 'インポート',
-    'migration.step.skip': 'スキップ',
+    'migration.nav.title': 'Portable データ',
+    'migration.nav.sub': '任意のコピー',
+    'migration.step.badge': '任意',
+    'migration.step.heading': '旧 Windows Portable データが見つかりました',
+    'migration.step.subtitle': 'チャット、Agent、設定をこの Desktop アプリにコピーできます。',
+    'migration.step.assurance': '元の Portable データは変更も削除もされません。',
+    'migration.step.sourceLabel': 'Portable データを選択',
+    'migration.step.selectionHint': 'コピー元を選択してから、コピー内容を確認してください。',
+    'migration.step.candidateVersion': 'バージョン {version}',
+    'migration.step.candidateSessions': '{n} 件のチャット',
+    'migration.step.candidateActivity': '最終利用 {value}',
+    'migration.step.manualTypeLabel': 'Portable データが表示されない場合',
+    'migration.step.manualTypePlaceholder': 'Portable データを選択',
+    'migration.source.cli': 'OpenSquilla CLI',
+    'migration.source.desktop': 'OpenSquilla Desktop',
+    'migration.source.portable': '旧 Windows Portable',
+    'migration.step.browse': 'Portable データフォルダーを選択…',
+    'migration.step.preview': 'このデータを確認',
+    'migration.step.import': 'コピーして続行',
+    'migration.step.skip': '今は転送しない',
     'migration.overwriteTitle': '競合するデスクトップデータを置き換えますか？',
-    'migration.overwriteMessage': 'このインポートは現在のデスクトッププロファイルのデータを置き換えます。',
+    'migration.overwriteMessage': '選択したインストールのデータで現在の Desktop データを置き換えます。',
     'migration.overwriteDetail': 'タイムスタンプ付きの完全なバックアップが保持されます。続行する前に以下の移行元を確認してください。',
     'migration.overwriteNoMerge': 'プロファイルファイルとチャット DB は結合されません。',
     'migration.overwriteSourceUntouched': '選択した移行元プロファイルは変更されません。',
-    'migration.overwriteNoSync': 'インポート後、Desktop と移行元は同期されません。',
+    'migration.overwriteNoSync': '転送後、Desktop と移行元は同期されません。',
     'migration.overwriteCancel': 'キャンセル',
-    'migration.overwriteConfirm': 'インポートして置換',
+    'migration.overwriteConfirm': 'バックアップして置換',
     'launch.alreadyRunningTitle': 'OpenSquilla はすでに実行中です',
     'launch.alreadyRunningMessage': 'このマシンでは別の OpenSquilla ウィンドウがすでに開いています。前面に表示します。',
     'window.onboarding': 'OpenSquilla をセットアップ',
@@ -2790,7 +2852,7 @@ const DESKTOP_MESSAGES: Record<DesktopLocale, Record<string, string>> = {
     'boot.ready': '準備完了',
     'onboarding.title': 'OpenSquilla をセットアップ',
     'onboarding.rail.title': 'デスクトップ設定',
-    'onboarding.rail.subtitle': 'ガイド付き CLI と同じ順序でローカルランタイムを設定します。',
+    'onboarding.rail.subtitle': 'このデバイスで OpenSquilla を設定します。',
     'onboarding.rail.foot': 'OpenSquilla はこのプロファイルをこのデバイス内に保持します。',
     'onboarding.language.label': '言語',
     'onboarding.aria.setupSteps': 'セットアップ手順',
@@ -2864,11 +2926,14 @@ const DESKTOP_MESSAGES: Record<DesktopLocale, Record<string, string>> = {
     'menu.reviewProfile': 'Vérifier les chemins du profil…',
     'menu.switchRecovery': 'Basculer vers un profil de récupération',
     'menu.returnPrimary': 'Revenir au profil principal',
-    'attention.title': 'Les chemins du profil nécessitent votre attention',
-    'attention.message': 'OpenSquilla peut continuer avec l’espace actuel. Vérifiez les chemins détectés ou conservez le chemin actuel.',
-    'attention.later': 'Plus tard',
-    'attention.keepCurrent': 'Conserver le chemin actuel',
-    'attention.chooseWorkspace': 'Choisir un espace…',
+    'attention.title': 'Un espace de travail antérieur a été trouvé',
+    'attention.message': 'OpenSquilla utilise en toute sécurité votre espace de travail actuel. Les discussions ne sont pas affectées par ce choix.',
+    'attention.detail': 'Si l’identité ou la mémoire de l’agent semble inhabituelle, vérifiez l’autre espace de travail. Aucun espace ne sera supprimé, fusionné ou déplacé.',
+    'attention.currentWorkspace': 'Espace de travail actuel',
+    'attention.otherWorkspace': 'Autre espace détecté',
+    'attention.later': 'Vérifier plus tard',
+    'attention.keepCurrent': 'Continuer avec l’espace actuel',
+    'attention.chooseWorkspace': 'Vérifier l’autre espace…',
     'update.newVersionTitle': 'Une nouvelle version est disponible',
     'update.newVersionDetail': 'OpenSquilla {version} est disponible. Télécharger maintenant ?',
     'update.download': 'Télécharger',
@@ -2898,29 +2963,34 @@ const DESKTOP_MESSAGES: Record<DesktopLocale, Record<string, string>> = {
     'cleanup.abandonTitle': 'Quitter le nettoyage interrompu ?',
     'cleanup.abandonMessage': 'OpenSquilla conserve tous les fichiers restants et archive uniquement l’enregistrement de transaction du nettoyage.',
     'cleanup.abandonDetail': 'Aucun autre élément ne sera supprimé. Vérifiez le profil restant avant de continuer à l’utiliser.',
-    'migration.nav.title': 'Importation',
-    'migration.nav.sub': 'Données existantes',
-    'migration.step.badge': 'Importation',
-    'migration.step.heading': 'Importer les données OpenSquilla existantes',
-    'migration.step.subtitle': 'OpenSquilla a trouvé sur cette machine des données d\'une installation précédente. Prévisualisez ce qui serait importé et récupérez-les dans l\'application de bureau, ou ignorez cette étape pour repartir de zéro.',
-    'migration.step.sourceLabel': 'Emplacement des données détecté',
-    'migration.step.manualTypeLabel': 'Type de profil',
-    'migration.step.manualTypePlaceholder': 'Choisir un type de profil',
-    'migration.source.cli': 'OpenSquilla CLI (pris en charge)',
-    'migration.source.desktop': 'OpenSquilla Desktop (pris en charge)',
-    'migration.source.portable': 'Windows Portable (historique, abandonné)',
-    'migration.step.browse': 'Choisir un dossier de profil…',
-    'migration.step.preview': 'Aperçu de l\'importation',
-    'migration.step.import': 'Importer',
-    'migration.step.skip': 'Ignorer',
+    'migration.nav.title': 'Données Portable',
+    'migration.nav.sub': 'Copie facultative',
+    'migration.step.badge': 'Facultatif',
+    'migration.step.heading': 'Données Windows Portable anciennes détectées',
+    'migration.step.subtitle': 'Copiez vos discussions, Agents et réglages dans cette application Desktop.',
+    'migration.step.assurance': 'Les données Portable d’origine ne seront ni modifiées ni supprimées.',
+    'migration.step.sourceLabel': 'Choisir les données Portable',
+    'migration.step.selectionHint': 'Sélectionnez une source, puis vérifiez ce qui sera copié.',
+    'migration.step.candidateVersion': 'Version {version}',
+    'migration.step.candidateSessions': '{n} discussions',
+    'migration.step.candidateActivity': 'Dernière activité {value}',
+    'migration.step.manualTypeLabel': 'Données Portable absentes ?',
+    'migration.step.manualTypePlaceholder': 'Choisir des données Portable',
+    'migration.source.cli': 'OpenSquilla CLI',
+    'migration.source.desktop': 'OpenSquilla Desktop',
+    'migration.source.portable': 'Ancien Windows Portable',
+    'migration.step.browse': 'Choisir le dossier de données Portable…',
+    'migration.step.preview': 'Vérifier ces données',
+    'migration.step.import': 'Copier et continuer',
+    'migration.step.skip': 'Pas maintenant',
     'migration.overwriteTitle': 'Remplacer les données de bureau en conflit ?',
-    'migration.overwriteMessage': 'Cette importation remplacera des données du profil de bureau actuel.',
+    'migration.overwriteMessage': 'L’installation sélectionnée remplacera les données Desktop actuelles.',
     'migration.overwriteDetail': 'Une sauvegarde complète horodatée sera conservée. Vérifiez la source ci-dessous avant de continuer.',
     'migration.overwriteNoMerge': 'Les fichiers de profil et bases de conversations ne sont jamais fusionnés.',
     'migration.overwriteSourceUntouched': 'Le profil source sélectionné reste inchangé.',
-    'migration.overwriteNoSync': 'Après l’importation, le profil Desktop et la source ne seront pas synchronisés.',
+    'migration.overwriteNoSync': 'Après le transfert, le profil Desktop et la source ne seront pas synchronisés.',
     'migration.overwriteCancel': 'Annuler',
-    'migration.overwriteConfirm': 'Importer et remplacer',
+    'migration.overwriteConfirm': 'Sauvegarder et remplacer',
     'launch.alreadyRunningTitle': 'OpenSquilla est déjà en cours d’exécution',
     'launch.alreadyRunningMessage': 'Une autre fenêtre OpenSquilla est déjà ouverte sur cette machine. Elle va être mise au premier plan.',
     'window.onboarding': 'Configurer OpenSquilla',
@@ -2931,7 +3001,7 @@ const DESKTOP_MESSAGES: Record<DesktopLocale, Record<string, string>> = {
     'boot.ready': 'Prêt',
     'onboarding.title': 'Configurer OpenSquilla',
     'onboarding.rail.title': 'Configuration du bureau',
-    'onboarding.rail.subtitle': 'Configurez le runtime local dans le même ordre que la CLI guidée.',
+    'onboarding.rail.subtitle': 'Configurez OpenSquilla sur cet appareil.',
     'onboarding.rail.foot': 'OpenSquilla conserve ce profil en local sur cet appareil.',
     'onboarding.language.label': 'Langue',
     'onboarding.aria.setupSteps': 'Étapes de configuration',
@@ -3005,11 +3075,14 @@ const DESKTOP_MESSAGES: Record<DesktopLocale, Record<string, string>> = {
     'menu.reviewProfile': 'Profilpfade prüfen…',
     'menu.switchRecovery': 'Zum Wiederherstellungsprofil wechseln',
     'menu.returnPrimary': 'Zum Hauptprofil zurückkehren',
-    'attention.title': 'Profilpfade benötigen Aufmerksamkeit',
-    'attention.message': 'OpenSquilla kann den aktuellen Arbeitsbereich weiterverwenden. Prüfen Sie die erkannten Pfade oder behalten Sie den aktuellen Pfad.',
-    'attention.later': 'Später',
-    'attention.keepCurrent': 'Aktuellen Pfad behalten',
-    'attention.chooseWorkspace': 'Arbeitsbereich wählen…',
+    'attention.title': 'Ein früherer Arbeitsbereich wurde gefunden',
+    'attention.message': 'OpenSquilla verwendet den aktuellen Arbeitsbereich sicher weiter. Chats werden von dieser Auswahl nicht beeinflusst.',
+    'attention.detail': 'Wenn Identität oder Erinnerung des Agenten ungewohnt wirken, prüfen Sie den anderen Arbeitsbereich. Keiner wird gelöscht, zusammengeführt oder verschoben.',
+    'attention.currentWorkspace': 'Aktueller Arbeitsbereich',
+    'attention.otherWorkspace': 'Anderer erkannter Arbeitsbereich',
+    'attention.later': 'Später prüfen',
+    'attention.keepCurrent': 'Aktuellen Arbeitsbereich verwenden',
+    'attention.chooseWorkspace': 'Anderen Arbeitsbereich prüfen…',
     'update.newVersionTitle': 'Eine neue Version ist verfügbar',
     'update.newVersionDetail': 'OpenSquilla {version} ist verfügbar. Jetzt herunterladen?',
     'update.download': 'Herunterladen',
@@ -3039,29 +3112,34 @@ const DESKTOP_MESSAGES: Record<DesktopLocale, Record<string, string>> = {
     'cleanup.abandonTitle': 'Unterbrochene Bereinigung verlassen?',
     'cleanup.abandonMessage': 'OpenSquilla behält alle verbliebenen Dateien und archiviert nur den Transaktionsdatensatz der Bereinigung.',
     'cleanup.abandonDetail': 'Es wird nichts weiter gelöscht. Prüfen Sie das verbleibende Profil, bevor Sie es weiter verwenden.',
-    'migration.nav.title': 'Import',
-    'migration.nav.sub': 'Vorhandene Daten',
-    'migration.step.badge': 'Import',
-    'migration.step.heading': 'Vorhandene OpenSquilla-Daten importieren',
-    'migration.step.subtitle': 'OpenSquilla hat auf diesem Gerät Daten einer früheren Installation gefunden. Sehen Sie sich in der Vorschau an, was importiert würde, und übernehmen Sie die Daten in die Desktop-App — oder überspringen Sie den Schritt und beginnen Sie neu.',
-    'migration.step.sourceLabel': 'Erkannter Datenspeicherort',
-    'migration.step.manualTypeLabel': 'Profiltyp',
-    'migration.step.manualTypePlaceholder': 'Profiltyp auswählen',
-    'migration.source.cli': 'OpenSquilla CLI (unterstützt)',
-    'migration.source.desktop': 'OpenSquilla Desktop (unterstützt)',
-    'migration.source.portable': 'Windows Portable (historisch, eingestellt)',
-    'migration.step.browse': 'Profilordner auswählen…',
-    'migration.step.preview': 'Import-Vorschau',
-    'migration.step.import': 'Importieren',
-    'migration.step.skip': 'Überspringen',
+    'migration.nav.title': 'Portable-Daten',
+    'migration.nav.sub': 'Optionale Kopie',
+    'migration.step.badge': 'Optional',
+    'migration.step.heading': 'Ältere Windows-Portable-Daten gefunden',
+    'migration.step.subtitle': 'Kopieren Sie Chats, Agents und Einstellungen in diese Desktop-App.',
+    'migration.step.assurance': 'Die ursprünglichen Portable-Daten werden weder geändert noch gelöscht.',
+    'migration.step.sourceLabel': 'Portable-Daten auswählen',
+    'migration.step.selectionHint': 'Wählen Sie eine Quelle und prüfen Sie dann, was kopiert wird.',
+    'migration.step.candidateVersion': 'Version {version}',
+    'migration.step.candidateSessions': '{n} Chats',
+    'migration.step.candidateActivity': 'Letzte Aktivität {value}',
+    'migration.step.manualTypeLabel': 'Portable-Daten fehlen?',
+    'migration.step.manualTypePlaceholder': 'Portable-Daten auswählen',
+    'migration.source.cli': 'OpenSquilla CLI',
+    'migration.source.desktop': 'OpenSquilla Desktop',
+    'migration.source.portable': 'Älteres Windows Portable',
+    'migration.step.browse': 'Portable-Datenordner auswählen…',
+    'migration.step.preview': 'Diese Daten prüfen',
+    'migration.step.import': 'Kopieren und fortfahren',
+    'migration.step.skip': 'Jetzt nicht',
     'migration.overwriteTitle': 'Konfliktierende Desktop-Daten ersetzen?',
-    'migration.overwriteMessage': 'Dieser Import ersetzt Daten im aktuellen Desktop-Profil.',
+    'migration.overwriteMessage': 'Die ausgewählte Installation ersetzt die aktuellen Desktop-Daten.',
     'migration.overwriteDetail': 'Eine vollständige Sicherung mit Zeitstempel bleibt erhalten. Prüfen Sie vor dem Fortfahren die Quelle unten.',
     'migration.overwriteNoMerge': 'Profildateien und Chat-Datenbanken werden nie zusammengeführt.',
     'migration.overwriteSourceUntouched': 'Das ausgewählte Quellprofil bleibt unverändert.',
-    'migration.overwriteNoSync': 'Nach dem Import werden Desktop-Profil und Quelle nicht synchronisiert.',
+    'migration.overwriteNoSync': 'Nach dem Transfer werden Desktop-Profil und Quelle nicht synchronisiert.',
     'migration.overwriteCancel': 'Abbrechen',
-    'migration.overwriteConfirm': 'Importieren und ersetzen',
+    'migration.overwriteConfirm': 'Sichern und ersetzen',
     'launch.alreadyRunningTitle': 'OpenSquilla läuft bereits',
     'launch.alreadyRunningMessage': 'Auf diesem Gerät ist bereits ein anderes OpenSquilla-Fenster geöffnet. Es wird in den Vordergrund geholt.',
     'window.onboarding': 'OpenSquilla einrichten',
@@ -3072,7 +3150,7 @@ const DESKTOP_MESSAGES: Record<DesktopLocale, Record<string, string>> = {
     'boot.ready': 'Bereit',
     'onboarding.title': 'OpenSquilla einrichten',
     'onboarding.rail.title': 'Desktop-Einrichtung',
-    'onboarding.rail.subtitle': 'Richten Sie die lokale Laufzeitumgebung in derselben Reihenfolge wie die geführte CLI ein.',
+    'onboarding.rail.subtitle': 'Richten Sie OpenSquilla auf diesem Gerät ein.',
     'onboarding.rail.foot': 'OpenSquilla behält dieses Profil lokal auf diesem Gerät.',
     'onboarding.language.label': 'Sprache',
     'onboarding.aria.setupSteps': 'Einrichtungsschritte',
@@ -3146,11 +3224,14 @@ const DESKTOP_MESSAGES: Record<DesktopLocale, Record<string, string>> = {
     'menu.reviewProfile': 'Revisar rutas del perfil…',
     'menu.switchRecovery': 'Cambiar al perfil de recuperación',
     'menu.returnPrimary': 'Volver al perfil principal',
-    'attention.title': 'Las rutas del perfil necesitan atención',
-    'attention.message': 'OpenSquilla puede seguir usando el espacio actual. Revisa las rutas detectadas o conserva la ruta actual.',
-    'attention.later': 'Más tarde',
-    'attention.keepCurrent': 'Conservar ruta actual',
-    'attention.chooseWorkspace': 'Elegir espacio…',
+    'attention.title': 'Se encontró un espacio de trabajo anterior',
+    'attention.message': 'OpenSquilla está usando de forma segura el espacio de trabajo actual. Los chats no se ven afectados por esta elección.',
+    'attention.detail': 'Si la identidad o la memoria del agente parecen extrañas, revisa el otro espacio de trabajo. Ninguno se eliminará, combinará ni moverá.',
+    'attention.currentWorkspace': 'Espacio de trabajo actual',
+    'attention.otherWorkspace': 'Otro espacio detectado',
+    'attention.later': 'Revisar más tarde',
+    'attention.keepCurrent': 'Continuar con el espacio actual',
+    'attention.chooseWorkspace': 'Revisar el otro espacio…',
     'update.newVersionTitle': 'Hay una nueva versión disponible',
     'update.newVersionDetail': 'OpenSquilla {version} está disponible. ¿Descargar ahora?',
     'update.download': 'Descargar',
@@ -3180,29 +3261,34 @@ const DESKTOP_MESSAGES: Record<DesktopLocale, Record<string, string>> = {
     'cleanup.abandonTitle': '¿Salir de la limpieza interrumpida?',
     'cleanup.abandonMessage': 'OpenSquilla conserva todos los archivos restantes y archiva únicamente el registro de transacción de limpieza.',
     'cleanup.abandonDetail': 'No se eliminará nada más. Revisa el perfil restante antes de seguir usándolo.',
-    'migration.nav.title': 'Importación',
-    'migration.nav.sub': 'Datos existentes',
-    'migration.step.badge': 'Importación',
-    'migration.step.heading': 'Importar los datos existentes de OpenSquilla',
-    'migration.step.subtitle': 'OpenSquilla encontró datos de una instalación anterior en esta máquina. Previsualiza lo que se importaría y tráelo a la aplicación de escritorio, u omite este paso y empieza de cero.',
-    'migration.step.sourceLabel': 'Ubicación de datos detectada',
-    'migration.step.manualTypeLabel': 'Tipo de perfil',
-    'migration.step.manualTypePlaceholder': 'Elegir un tipo de perfil',
-    'migration.source.cli': 'OpenSquilla CLI (compatible)',
-    'migration.source.desktop': 'OpenSquilla Desktop (compatible)',
-    'migration.source.portable': 'Windows Portable (histórico, descontinuado)',
-    'migration.step.browse': 'Elegir una carpeta de perfil…',
-    'migration.step.preview': 'Vista previa de la importación',
-    'migration.step.import': 'Importar',
-    'migration.step.skip': 'Omitir',
+    'migration.nav.title': 'Datos Portable',
+    'migration.nav.sub': 'Copia opcional',
+    'migration.step.badge': 'Opcional',
+    'migration.step.heading': 'Se encontraron datos de Windows Portable anterior',
+    'migration.step.subtitle': 'Copia tus chats, Agents y ajustes en esta aplicación de escritorio.',
+    'migration.step.assurance': 'Los datos Portable originales no se modificarán ni eliminarán.',
+    'migration.step.sourceLabel': 'Elegir datos Portable',
+    'migration.step.selectionHint': 'Selecciona una fuente y revisa qué se copiará.',
+    'migration.step.candidateVersion': 'Versión {version}',
+    'migration.step.candidateSessions': '{n} chats',
+    'migration.step.candidateActivity': 'Última actividad {value}',
+    'migration.step.manualTypeLabel': '¿No aparecen los datos Portable?',
+    'migration.step.manualTypePlaceholder': 'Elegir datos Portable',
+    'migration.source.cli': 'OpenSquilla CLI',
+    'migration.source.desktop': 'OpenSquilla Desktop',
+    'migration.source.portable': 'Windows Portable anterior',
+    'migration.step.browse': 'Elegir carpeta de datos Portable…',
+    'migration.step.preview': 'Revisar estos datos',
+    'migration.step.import': 'Copiar y continuar',
+    'migration.step.skip': 'Ahora no',
     'migration.overwriteTitle': '¿Reemplazar los datos de escritorio en conflicto?',
-    'migration.overwriteMessage': 'Esta importación reemplazará datos del perfil de escritorio actual.',
+    'migration.overwriteMessage': 'La instalación seleccionada reemplazará los datos actuales de Desktop.',
     'migration.overwriteDetail': 'Se conservará una copia de seguridad completa con marca de tiempo. Confirma la fuente indicada abajo antes de continuar.',
     'migration.overwriteNoMerge': 'Los archivos de perfil y las bases de chats nunca se combinan.',
     'migration.overwriteSourceUntouched': 'El perfil de origen seleccionado permanece sin cambios.',
-    'migration.overwriteNoSync': 'Después de importar, el perfil Desktop y el origen no se sincronizarán.',
+    'migration.overwriteNoSync': 'Después de transferir, el perfil Desktop y el origen no se sincronizarán.',
     'migration.overwriteCancel': 'Cancelar',
-    'migration.overwriteConfirm': 'Importar y reemplazar',
+    'migration.overwriteConfirm': 'Respaldar y reemplazar',
     'launch.alreadyRunningTitle': 'OpenSquilla ya se está ejecutando',
     'launch.alreadyRunningMessage': 'Ya hay otra ventana de OpenSquilla abierta en esta máquina. Se traerá al frente.',
     'window.onboarding': 'Configurar OpenSquilla',
@@ -3213,7 +3299,7 @@ const DESKTOP_MESSAGES: Record<DesktopLocale, Record<string, string>> = {
     'boot.ready': 'Listo',
     'onboarding.title': 'Configurar OpenSquilla',
     'onboarding.rail.title': 'Configuración de escritorio',
-    'onboarding.rail.subtitle': 'Configura el runtime local en el mismo orden que la CLI guiada.',
+    'onboarding.rail.subtitle': 'Configura OpenSquilla en este dispositivo.',
     'onboarding.rail.foot': 'OpenSquilla mantiene este perfil local en este dispositivo.',
     'onboarding.language.label': 'Idioma',
     'onboarding.aria.setupSteps': 'Pasos de configuración',
@@ -3311,14 +3397,16 @@ const ONBOARDING_SCRIPT_MESSAGES: Record<DesktopLocale, Record<string, string>> 
     defaultTierRequiresModel: 'Default router tier requires a model.',
     searchApiKeyRequired: '{label} search API key is required.',
     migrationPreviewRunning: 'Checking the existing data…',
-    migrationApplyRunning: 'Importing data… this can take a few minutes.',
-    migrationItems: 'Items — {counts}',
-    migrationPausedJobs: 'Scheduler jobs to import (arrive paused): {n}',
+    migrationApplyRunning: 'Copying Portable data… this can take a few minutes.',
+    migrationReady: '{n} data groups are ready to copy.',
+    migrationSkippedDetails: '{n} inapplicable items will stay excluded.',
+    migrationTechnicalDetails: 'Technical details',
+    migrationPausedJobs: 'Scheduler jobs to copy (arrive paused): {n}',
     migrationDisk: 'Disk: {required} required, {free} free',
     migrationNotesLabel: 'Notes',
     migrationPreviewFailed: 'Preview failed: {detail}',
-    migrationApplyFailed: 'Import failed: {detail}',
-    migrationDone: 'Import complete. {n} scheduler job(s) arrived paused — re-enable them in the Cron view. Your original data remains untouched at {path}.',
+    migrationApplyFailed: 'Copy failed: {detail}',
+    migrationDone: 'Copy complete. {n} scheduler job(s) arrived paused — re-enable them in the Cron view. Your original Portable data remains unchanged at {path}.',
     stepLabel: 'Step {n}',
   },
   'zh-Hans': {
@@ -3349,14 +3437,16 @@ const ONBOARDING_SCRIPT_MESSAGES: Record<DesktopLocale, Record<string, string>> 
     defaultTierRequiresModel: '默认路由层级需要一个模型。',
     searchApiKeyRequired: '需要 {label} 搜索 API 密钥。',
     migrationPreviewRunning: '正在检查现有数据……',
-    migrationApplyRunning: '正在导入数据……可能需要几分钟。',
-    migrationItems: '条目 — {counts}',
-    migrationPausedJobs: '将导入的计划任务（导入后为暂停状态）：{n}',
+    migrationApplyRunning: '正在复制 Portable 数据……可能需要几分钟。',
+    migrationReady: '已核对：{n} 类数据可以复制。',
+    migrationSkippedDetails: '{n} 项不适用内容将保持排除。',
+    migrationTechnicalDetails: '技术详情',
+    migrationPausedJobs: '将复制的计划任务（复制后为暂停状态）：{n}',
     migrationDisk: '磁盘：需要 {required}，可用 {free}',
     migrationNotesLabel: '备注',
     migrationPreviewFailed: '预览失败：{detail}',
-    migrationApplyFailed: '导入失败：{detail}',
-    migrationDone: '导入完成。{n} 个计划任务已以暂停状态导入——请在 Cron 视图中重新启用。原始数据仍原样保留在 {path}。',
+    migrationApplyFailed: '复制失败：{detail}',
+    migrationDone: '复制完成。{n} 个计划任务已以暂停状态复制——请在 Cron 视图中重新启用。原 Portable 数据仍原样保留在 {path}。',
     stepLabel: '步骤 {n}',
   },
   ja: {
@@ -3387,14 +3477,16 @@ const ONBOARDING_SCRIPT_MESSAGES: Record<DesktopLocale, Record<string, string>> 
     defaultTierRequiresModel: 'デフォルトのルーターティアにはモデルが必要です。',
     searchApiKeyRequired: '{label} の検索 API キーが必要です。',
     migrationPreviewRunning: '既存データを確認しています…',
-    migrationApplyRunning: 'データをインポートしています… 数分かかることがあります。',
-    migrationItems: '項目 — {counts}',
-    migrationPausedJobs: 'インポートされるスケジュールジョブ（一時停止状態で取り込み）: {n}',
+    migrationApplyRunning: 'Portable データをコピーしています… 数分かかることがあります。',
+    migrationReady: '{n} 種類のデータをコピーできます。',
+    migrationSkippedDetails: '対象外の {n} 件は除外されます。',
+    migrationTechnicalDetails: '技術詳細',
+    migrationPausedJobs: 'コピーされるスケジュールジョブ（一時停止状態）: {n}',
     migrationDisk: 'ディスク: 必要 {required} / 空き {free}',
     migrationNotesLabel: '補足',
     migrationPreviewFailed: 'プレビューに失敗しました: {detail}',
-    migrationApplyFailed: 'インポートに失敗しました: {detail}',
-    migrationDone: 'インポートが完了しました。{n} 件のスケジュールジョブは一時停止状態で取り込まれました — Cron ビューで再度有効にしてください。元のデータは {path} にそのまま残っています。',
+    migrationApplyFailed: 'コピーに失敗しました: {detail}',
+    migrationDone: 'コピーが完了しました。{n} 件のスケジュールジョブは一時停止状態です — Cron ビューで再度有効にしてください。元の Portable データは {path} にそのまま残っています。',
     stepLabel: 'ステップ {n}',
   },
   fr: {
@@ -3425,14 +3517,16 @@ const ONBOARDING_SCRIPT_MESSAGES: Record<DesktopLocale, Record<string, string>> 
     defaultTierRequiresModel: 'Le niveau de routeur par défaut nécessite un modèle.',
     searchApiKeyRequired: 'La clé API de recherche {label} est requise.',
     migrationPreviewRunning: 'Vérification des données existantes…',
-    migrationApplyRunning: 'Importation des données… cela peut prendre quelques minutes.',
-    migrationItems: 'Éléments — {counts}',
-    migrationPausedJobs: 'Tâches planifiées à importer (arrivent en pause) : {n}',
+    migrationApplyRunning: 'Copie des données Portable… cela peut prendre quelques minutes.',
+    migrationReady: '{n} groupes de données sont prêts à être copiés.',
+    migrationSkippedDetails: '{n} éléments non applicables resteront exclus.',
+    migrationTechnicalDetails: 'Détails techniques',
+    migrationPausedJobs: 'Tâches planifiées à copier (arrivent en pause) : {n}',
     migrationDisk: 'Disque : {required} requis, {free} libres',
     migrationNotesLabel: 'Remarques',
     migrationPreviewFailed: "Échec de l'aperçu : {detail}",
-    migrationApplyFailed: "Échec de l'importation : {detail}",
-    migrationDone: "Importation terminée. {n} tâche(s) planifiée(s) sont arrivées en pause — réactivez-les dans la vue Cron. Vos données d'origine restent intactes dans {path}.",
+    migrationApplyFailed: 'Échec de la copie : {detail}',
+    migrationDone: "Copie terminée. {n} tâche(s) planifiée(s) sont arrivées en pause — réactivez-les dans la vue Cron. Vos données Portable d'origine restent intactes dans {path}.",
     stepLabel: 'Étape {n}',
   },
   de: {
@@ -3463,14 +3557,16 @@ const ONBOARDING_SCRIPT_MESSAGES: Record<DesktopLocale, Record<string, string>> 
     defaultTierRequiresModel: 'Die Standard-Routerstufe erfordert ein Modell.',
     searchApiKeyRequired: 'Der Such-API-Schlüssel für {label} ist erforderlich.',
     migrationPreviewRunning: 'Vorhandene Daten werden geprüft…',
-    migrationApplyRunning: 'Daten werden importiert… das kann einige Minuten dauern.',
-    migrationItems: 'Elemente — {counts}',
-    migrationPausedJobs: 'Zu importierende Scheduler-Jobs (kommen pausiert an): {n}',
+    migrationApplyRunning: 'Portable-Daten werden kopiert… das kann einige Minuten dauern.',
+    migrationReady: '{n} Datengruppen können kopiert werden.',
+    migrationSkippedDetails: '{n} nicht zutreffende Elemente bleiben ausgeschlossen.',
+    migrationTechnicalDetails: 'Technische Details',
+    migrationPausedJobs: 'Zu kopierende Scheduler-Jobs (kommen pausiert an): {n}',
     migrationDisk: 'Speicher: {required} benötigt, {free} frei',
     migrationNotesLabel: 'Hinweise',
     migrationPreviewFailed: 'Vorschau fehlgeschlagen: {detail}',
-    migrationApplyFailed: 'Import fehlgeschlagen: {detail}',
-    migrationDone: 'Import abgeschlossen. {n} Scheduler-Job(s) sind pausiert angekommen — aktivieren Sie sie in der Cron-Ansicht wieder. Ihre ursprünglichen Daten bleiben unverändert unter {path}.',
+    migrationApplyFailed: 'Kopieren fehlgeschlagen: {detail}',
+    migrationDone: 'Kopieren abgeschlossen. {n} Scheduler-Job(s) sind pausiert angekommen — aktivieren Sie sie in der Cron-Ansicht wieder. Ihre ursprünglichen Portable-Daten bleiben unverändert unter {path}.',
     stepLabel: 'Schritt {n}',
   },
   es: {
@@ -3501,14 +3597,16 @@ const ONBOARDING_SCRIPT_MESSAGES: Record<DesktopLocale, Record<string, string>> 
     defaultTierRequiresModel: 'El nivel de enrutador predeterminado requiere un modelo.',
     searchApiKeyRequired: 'Se requiere la clave API de búsqueda de {label}.',
     migrationPreviewRunning: 'Comprobando los datos existentes…',
-    migrationApplyRunning: 'Importando datos… esto puede tardar unos minutos.',
-    migrationItems: 'Elementos — {counts}',
-    migrationPausedJobs: 'Tareas programadas a importar (llegan en pausa): {n}',
+    migrationApplyRunning: 'Copiando datos Portable… esto puede tardar unos minutos.',
+    migrationReady: '{n} grupos de datos están listos para copiarse.',
+    migrationSkippedDetails: '{n} elementos no aplicables seguirán excluidos.',
+    migrationTechnicalDetails: 'Detalles técnicos',
+    migrationPausedJobs: 'Tareas programadas a copiar (llegan en pausa): {n}',
     migrationDisk: 'Disco: {required} necesarios, {free} libres',
     migrationNotesLabel: 'Notas',
     migrationPreviewFailed: 'Error en la vista previa: {detail}',
-    migrationApplyFailed: 'Error en la importación: {detail}',
-    migrationDone: 'Importación completada. {n} tarea(s) programada(s) llegaron en pausa: vuelve a activarlas en la vista Cron. Tus datos originales permanecen intactos en {path}.',
+    migrationApplyFailed: 'Error al copiar: {detail}',
+    migrationDone: 'Copia completada. {n} tarea(s) programada(s) llegaron en pausa: vuelve a activarlas en la vista Cron. Tus datos Portable originales permanecen intactos en {path}.',
     stepLabel: 'Paso {n}',
   },
 }
@@ -3734,21 +3832,14 @@ function localeOptionsHtml(): string {
   )).join('')
 }
 
-function migrationSourceDesktopKey(kind: MigrationSourceKind): string {
-  if (kind === 'cli-home') return 'migration.source.cli'
-  if (kind === 'desktop-home') return 'migration.source.desktop'
-  return 'migration.source.portable'
-}
-
 function onboardingHtml(
   detections: LegacyImportCandidate[] = [],
   pendingProviderSetup: MigrationProviderPrefill | null = null,
+  portableTransferEnabled = false,
 ): string {
-  const migrationStepEnabled = (
-    detections.length > 0
-    && pendingProviderSetup === null
-    && activeDesktopProfile().kind === 'primary'
-  )
+  const migrationStepEnabled = portableTransferEnabled
+    && detections.length > 0
+    && detections.every((candidate) => candidate.kind === 'windows-portable')
   return `<!doctype html>
 <html lang="${desktopLocale}">
 <head>
@@ -4420,6 +4511,93 @@ function onboardingHtml(
       align-items: center;
       gap: 10px;
     }
+    .migration-assurance {
+      border-color: rgba(37,99,58,0.18);
+      background: rgba(37,99,58,0.06);
+      color: #36533d;
+    }
+    .migration-section-label {
+      margin: 0;
+      color: #454b44;
+      font-size: 12px;
+      font-weight: 700;
+    }
+    .migration-candidate-list {
+      display: grid;
+      gap: 9px;
+    }
+    .migration-candidate-row {
+      display: grid;
+      gap: 5px;
+    }
+    .migration-candidate-row > details {
+      margin: 0 8px;
+      padding: 7px 10px;
+    }
+    .migration-candidate {
+      appearance: none;
+      width: 100%;
+      min-height: 62px;
+      display: grid;
+      gap: 6px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: rgba(255,255,255,0.62);
+      color: var(--ink);
+      padding: 12px 13px;
+      text-align: left;
+      transition: border-color 160ms ease, box-shadow 160ms ease, background 160ms ease;
+    }
+    .migration-candidate:hover {
+      border-color: rgba(242,106,27,0.34);
+      background: rgba(255,255,255,0.88);
+    }
+    .migration-candidate[aria-pressed="true"] {
+      border-color: var(--accent);
+      background: #fffaf4;
+      box-shadow: 0 10px 22px rgba(54,42,28,0.06);
+    }
+    .migration-candidate:focus-visible {
+      outline: 3px solid rgba(242,106,27,0.3);
+      outline-offset: 2px;
+    }
+    .migration-candidate:disabled {
+      cursor: wait;
+      opacity: 0.62;
+    }
+    .migration-candidate-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+    }
+    .migration-candidate-head strong {
+      font-size: 13px;
+      font-weight: 700;
+    }
+    .migration-candidate-meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 5px 12px;
+      color: var(--muted);
+      font-size: 11px;
+      line-height: 1.35;
+    }
+    .migration-selection-hint {
+      margin: 0;
+      color: var(--muted);
+      font-size: 11px;
+      line-height: 1.4;
+    }
+    .migration-manual-controls {
+      display: grid;
+      gap: 9px;
+      margin-top: 11px;
+    }
+    .migration-manual-controls button {
+      border-radius: 8px;
+      white-space: nowrap;
+    }
     .migration-status {
       display: flex;
       align-items: center;
@@ -4459,6 +4637,16 @@ function onboardingHtml(
       .provider-grid, .setup-mode-grid, .choice-row, .tier-defaults, .field-pair { grid-template-columns: 1fr; }
       .provider-feature { grid-template-columns: 1fr; }
       .provider-feature-cta { width: 100%; }
+      .migration-manual-controls { grid-template-columns: 1fr; }
+      .migration-buttons { width: 100%; flex-wrap: wrap; justify-content: flex-end; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after {
+        scroll-behavior: auto !important;
+        transition-duration: 0.01ms !important;
+        animation-duration: 0.01ms !important;
+        animation-iteration-count: 1 !important;
+      }
     }
   </style>
 </head>
@@ -4516,30 +4704,26 @@ function onboardingHtml(
           <span class="card-badge" data-i18n="migration.step.badge">${ot('migration.step.badge')}</span>
         </header>
         <div class="card-body">
-          <label class="note" for="migrationSource"><span data-i18n="migration.step.sourceLabel">${ot('migration.step.sourceLabel')}</span>
-            <select id="migrationSource">
-              <option value="">—</option>
-              ${detections.map((candidate) => `<option value="${escapeHtmlServer(candidate.path)}">${ot(migrationSourceDesktopKey(candidate.kind))} — ${escapeHtmlServer(candidate.path)}</option>`).join('')}
-            </select>
-          </label>
-          <label class="note" for="migrationSourceKind"><span data-i18n="migration.step.manualTypeLabel">${ot('migration.step.manualTypeLabel')}</span>
-            <select id="migrationSourceKind">
-              <option value="" data-i18n="migration.step.manualTypePlaceholder">${ot('migration.step.manualTypePlaceholder')}</option>
-              <option value="cli-home" data-i18n="migration.source.cli">${ot('migration.source.cli')}</option>
-              <option value="desktop-home" data-i18n="migration.source.desktop">${ot('migration.source.desktop')}</option>
-              <option value="windows-portable" data-i18n="migration.source.portable">${ot('migration.source.portable')}</option>
-            </select>
-          </label>
-          <div class="note migration-status" id="migrationStatus" hidden><span class="migration-spinner"></span><span id="migrationStatusLabel"></span></div>
+          <div class="note migration-assurance" data-i18n="migration.step.assurance">${ot('migration.step.assurance')}</div>
+          <p class="migration-section-label" id="migrationSourceLabel" data-i18n="migration.step.sourceLabel">${ot('migration.step.sourceLabel')}</p>
+          <div class="migration-candidate-list" id="migrationCandidateList" role="group" aria-labelledby="migrationSourceLabel" aria-describedby="migrationSelectionHint"></div>
+          <input id="migrationSource" type="hidden" value="" />
+          <p class="migration-selection-hint" id="migrationSelectionHint" data-i18n="migration.step.selectionHint">${ot('migration.step.selectionHint')}</p>
+          <details>
+            <summary data-i18n="migration.step.manualTypeLabel">${ot('migration.step.manualTypeLabel')}</summary>
+            <div class="migration-manual-controls">
+              <button class="secondary" type="button" id="migrationBrowse" data-i18n="migration.step.browse">${ot('migration.step.browse')}</button>
+            </div>
+          </details>
+          <div class="note migration-status" id="migrationStatus" role="status" aria-live="polite" hidden><span class="migration-spinner"></span><span id="migrationStatusLabel"></span></div>
           <div class="note" id="migrationSummary" hidden></div>
           <div class="note" id="migrationDoneNote" hidden></div>
         </div>
         <footer class="actions">
           <button class="secondary" type="button" id="migrationSkip" data-i18n="migration.step.skip">${ot('migration.step.skip')}</button>
           <div class="migration-buttons">
-            <button class="secondary" type="button" id="migrationBrowse" data-i18n="migration.step.browse" disabled>${ot('migration.step.browse')}</button>
-            <button class="secondary" type="button" id="migrationPreview" data-i18n="migration.step.preview">${ot('migration.step.preview')}</button>
-            <button class="primary" type="button" id="migrationImport" data-i18n="migration.step.import" disabled>${ot('migration.step.import')}</button>
+            <button class="primary" type="button" id="migrationPreview" data-i18n="migration.step.preview">${ot('migration.step.preview')}</button>
+            <button class="primary" type="button" id="migrationImport" data-i18n="migration.step.import" hidden>${ot('migration.step.import')}</button>
           </div>
         </footer>
       </section>` : ''}
@@ -4696,7 +4880,7 @@ function onboardingHtml(
           <button class="primary" type="button" id="finish" data-i18n="onboarding.step5.finish">${ot('onboarding.step5.finish')}</button>
         </footer>
       </section>
-      <div class="error" id="error"></div>
+      <div class="error" id="error" role="alert" aria-live="assertive"></div>
     </form>
   </main>
   <script>
@@ -4717,6 +4901,11 @@ function onboardingHtml(
       if (vars) for (const name of Object.keys(vars)) out = out.split('{' + name + '}').join(String(vars[name]));
       return out;
     }
+    function desktopFmt(key, vars) {
+      let out = desktopMessage(activeLocale, key);
+      if (vars) for (const name of Object.keys(vars)) out = out.split('{' + name + '}').join(String(vars[name]));
+      return out;
+    }
     const providers = ${inlineScriptJson(PROVIDER_CATALOG)};
     const searchProviders = ${inlineScriptJson(SEARCH_PROVIDER_CATALOG)};
     const routerProfiles = ${inlineScriptJson(ROUTER_PROFILES)};
@@ -4724,6 +4913,8 @@ function onboardingHtml(
     const migrationCandidates = ${inlineScriptJson(detections)};
     const migrationStepEnabled = ${inlineScriptJson(migrationStepEnabled)};
     let migrationCandidate = null;
+    let renderMigrationCandidates = () => {};
+    let renderMigrationPreviewSummary = () => {};
     const initialProviderPrefill = ${inlineScriptJson(pendingProviderSetup)};
     let step = ${migrationStepEnabled ? 5 : 0};
     let routerTiers = clone(routerProfiles.openrouter);
@@ -4938,6 +5129,8 @@ function onboardingHtml(
       });
       renderProviderGrid();
       renderSearchProviderGrid();
+      renderMigrationCandidates();
+      renderMigrationPreviewSummary();
       syncProviderDefaults(false);
       render();
     }
@@ -5001,6 +5194,15 @@ function onboardingHtml(
       const index = Math.max(0, route.indexOf(currentStep));
       return route[Math.max(0, index - 1)];
     }
+    function focusStepHeading(screen) {
+      if (!screen) return;
+      window.requestAnimationFrame(() => {
+        const heading = screen.querySelector('h2');
+        if (!heading) return;
+        heading.setAttribute('tabindex', '-1');
+        heading.focus({ preventScroll: true });
+      });
+    }
     function setStep(nextStep) {
       const current = document.querySelector('.setup-card.active');
       const route = routeSteps();
@@ -5009,8 +5211,10 @@ function onboardingHtml(
         screen.classList.remove('active', 'leaving');
       });
       if (current) current.classList.add('leaving');
-      document.querySelector('[data-screen="' + step + '"]').classList.add('active');
+      const nextScreen = document.querySelector('[data-screen="' + step + '"]');
+      nextScreen.classList.add('active');
       render();
+      focusStepHeading(nextScreen);
     }
     function render() {
       const route = routeSteps();
@@ -5161,7 +5365,8 @@ function onboardingHtml(
     }
     if (migrationStepEnabled) {
       const migrationSource = document.getElementById('migrationSource');
-      const migrationSourceKind = document.getElementById('migrationSourceKind');
+      const migrationCandidateList = document.getElementById('migrationCandidateList');
+      const migrationSelectionHint = document.getElementById('migrationSelectionHint');
       const migrationBrowseButton = document.getElementById('migrationBrowse');
       const migrationPreviewButton = document.getElementById('migrationPreview');
       const migrationImportButton = document.getElementById('migrationImport');
@@ -5172,16 +5377,76 @@ function onboardingHtml(
       const migrationDoneNote = document.getElementById('migrationDoneNote');
       let migrationBusy = false;
       let migrationPreviewOk = false;
+      let migrationLastReport = null;
       migrationPreviewButton.disabled = true;
+      function migrationSourceLabel() {
+        return desktopMessage(activeLocale, 'migration.source.portable');
+      }
+      function migrationCandidateName(candidate, index) {
+        const name = String(candidate.path || '').replace(/\\\\/g, '/').split('/').filter(Boolean).pop();
+        return name
+          ? migrationSourceLabel() + ' · ' + name
+          : migrationSourceLabel() + ' ' + String(index + 1);
+      }
+      function migrationCandidateMeta(candidate) {
+        const parts = [];
+        if (candidate.version) {
+          parts.push(desktopFmt('migration.step.candidateVersion', { version: candidate.version }));
+        }
+        if (
+          candidate.session_count !== null
+          && candidate.session_count !== undefined
+          && Number.isFinite(Number(candidate.session_count))
+        ) {
+          parts.push(desktopFmt('migration.step.candidateSessions', { n: candidate.session_count }));
+        }
+        if (candidate.estimated_activity_at) {
+          const date = new Date(candidate.estimated_activity_at);
+          if (!Number.isNaN(date.getTime())) {
+            parts.push(desktopFmt('migration.step.candidateActivity', {
+              value: new Intl.DateTimeFormat(activeLocale, { dateStyle: 'medium' }).format(date),
+            }));
+          }
+        }
+        return parts;
+      }
+      renderMigrationCandidates = () => {
+        const selectedPath = migrationSource.value;
+        migrationCandidateList.innerHTML = migrationCandidates.map((candidate, index) => {
+          const selected = candidate.path === selectedPath;
+          const meta = migrationCandidateMeta(candidate);
+          return '<div class="migration-candidate-row">'
+            + '<button class="migration-candidate" type="button" data-migration-candidate="' + index
+            + '" aria-pressed="' + String(selected) + '"' + (migrationBusy ? ' disabled' : '') + '>'
+            + '<span class="migration-candidate-head"><strong>' + escapeHtml(migrationCandidateName(candidate, index)) + '</strong></span>'
+            + (meta.length ? '<span class="migration-candidate-meta">' + meta.map((item) => '<span>' + escapeHtml(item) + '</span>').join('') + '</span>' : '')
+            + '</button>'
+            + '<details><summary>' + escapeHtml(t.migrationTechnicalDetails) + '</summary>'
+            + '<span class="migration-path">' + escapeHtml(candidate.path) + '</span></details>'
+            + '</div>';
+        }).join('');
+        migrationCandidateList.querySelectorAll('[data-migration-candidate]').forEach((button) => {
+          button.addEventListener('click', () => {
+            const index = Number(button.dataset.migrationCandidate);
+            const candidate = migrationCandidates[index];
+            if (!candidate || migrationBusy) return;
+            migrationSource.value = candidate.path;
+            renderMigrationCandidates();
+            migrationSource.dispatchEvent(new Event('change'));
+          });
+        });
+        migrationSelectionHint.hidden = migrationPreviewOk;
+      };
       function resetMigrationPreview() {
         migrationPreviewOk = false;
         migrationImportButton.disabled = true;
+        migrationImportButton.hidden = true;
+        migrationPreviewButton.hidden = false;
+        migrationLastReport = null;
         migrationSummary.hidden = true;
         migrationDoneNote.hidden = true;
+        migrationSelectionHint.hidden = false;
       }
-      migrationSourceKind.addEventListener('change', () => {
-        migrationBrowseButton.disabled = migrationBusy || !migrationSourceKind.value;
-      });
       migrationSource.addEventListener('change', async () => {
         resetMigrationPreview();
         errorBox.textContent = '';
@@ -5189,6 +5454,7 @@ function onboardingHtml(
         migrationCandidate = null;
         migrationPreviewButton.disabled = true;
         if (!selected) {
+          renderMigrationCandidates();
           await window.opensquillaDesktop.selectOnboardingMigration({ source: '' });
           return;
         }
@@ -5196,16 +5462,19 @@ function onboardingHtml(
         const result = await window.opensquillaDesktop.selectOnboardingMigration({ source: selected.path });
         if (migrationSource.value !== requestedSource) return;
         if (!result || !result.ok) {
-          errorBox.textContent = result && result.error ? String(result.error) : 'Could not select that import source.';
+          migrationSource.value = '';
+          renderMigrationCandidates();
+          errorBox.textContent = result && result.error ? String(result.error) : 'Could not select that Portable data.';
           return;
         }
         migrationCandidate = selected;
         migrationPreviewButton.disabled = false;
+        renderMigrationCandidates();
       });
       migrationBrowseButton.addEventListener('click', async () => {
-        if (migrationBusy || !migrationSourceKind.value) return;
+        if (migrationBusy) return;
         errorBox.textContent = '';
-        const result = await window.opensquillaDesktop.browseOnboardingMigration({ kind: migrationSourceKind.value });
+        const result = await window.opensquillaDesktop.browseOnboardingMigration();
         if (!result || result.aborted) return;
         if (!result.ok || !result.candidate) {
           errorBox.textContent = result && result.error ? String(result.error) : 'Could not inspect that profile folder.';
@@ -5215,14 +5484,8 @@ function onboardingHtml(
         const existing = migrationCandidates.findIndex((item) => item.path === candidate.path);
         if (existing >= 0) migrationCandidates[existing] = candidate;
         else migrationCandidates.push(candidate);
-        let option = Array.from(migrationSource.options).find((item) => item.value === candidate.path);
-        if (!option) {
-          option = document.createElement('option');
-          option.value = candidate.path;
-          migrationSource.appendChild(option);
-        }
-        option.textContent = (migrationSourceKind.selectedOptions[0]?.textContent || candidate.kind) + ' — ' + candidate.path;
         migrationSource.value = candidate.path;
+        renderMigrationCandidates();
         migrationSource.dispatchEvent(new Event('change'));
       });
       function setMigrationStatus(label) {
@@ -5242,43 +5505,58 @@ function onboardingHtml(
         return String(Math.round(bytes)) + ' B';
       }
       function migrationErrorDetail(result, errors) {
+        if (result && result.error) return String(result.error);
         if (errors && errors.length) {
           return errors.map((item) => String((item && (item.reason || item.kind)) || '')).filter(Boolean).join('; ');
         }
-        if (result && result.error) return String(result.error);
         if (result && result.raw) return String(result.raw).slice(-400);
         return '';
       }
       function renderMigrationReport(report) {
         if (!report || typeof report !== 'object') {
+          migrationLastReport = null;
           migrationSummary.hidden = true;
           return [];
         }
+        migrationLastReport = report;
         const items = Array.isArray(report.items) ? report.items : [];
-        const counts = {};
-        for (const item of items) {
-          const status = String((item && item.status) || 'unknown');
-          counts[status] = (counts[status] || 0) + 1;
-        }
-        const countsText = Object.keys(counts).sort().map((status) => status + ': ' + counts[status]).join(', ') || '0';
+        const readyCount = items.filter((item) => (
+          item && (item.status === 'planned' || item.status === 'migrated')
+        )).length;
+        const skippedCount = items.filter((item) => item && item.status === 'skipped').length;
         const pausedCount = Array.isArray(report.paused_jobs) ? report.paused_jobs.length : 0;
         const preflight = (report.preflight && typeof report.preflight === 'object') ? report.preflight : {};
+        const diskRequired = Number(preflight.disk_required_bytes);
+        const diskFree = Number(preflight.disk_free_bytes);
+        const hasDiskEstimate = Number.isFinite(diskRequired) && diskRequired >= 0
+          && Number.isFinite(diskFree) && diskFree >= 0;
         const lines = [
-          fmt('migrationItems', { counts: countsText }),
-          fmt('migrationPausedJobs', { n: pausedCount }),
-          fmt('migrationDisk', {
-            required: formatMigrationBytes(preflight.disk_required_bytes),
-            free: formatMigrationBytes(preflight.disk_free_bytes),
-          }),
+          fmt('migrationReady', { n: readyCount }),
+          ...(pausedCount > 0 ? [fmt('migrationPausedJobs', { n: pausedCount })] : []),
+          ...(hasDiskEstimate ? [fmt('migrationDisk', {
+            required: formatMigrationBytes(diskRequired),
+            free: formatMigrationBytes(diskFree),
+          })] : []),
         ];
         const notes = Array.isArray(report.notes) ? report.notes : [];
+        const technicalLines = [
+          ...(skippedCount > 0 ? [fmt('migrationSkippedDetails', { n: skippedCount })] : []),
+          ...(notes.length
+            ? [t.migrationNotesLabel + ': ' + notes.map((note) => String(note)).join(' | ')]
+            : []),
+        ];
         migrationSummary.innerHTML = lines.map((line) => '<div>' + escapeHtml(line) + '</div>').join('')
-          + (notes.length
-            ? '<div>' + escapeHtml(t.migrationNotesLabel) + ': ' + escapeHtml(notes.map((note) => String(note)).join(' | ')) + '</div>'
+          + (technicalLines.length
+            ? '<details><summary>' + escapeHtml(t.migrationTechnicalDetails) + '</summary>'
+              + technicalLines.map((line) => '<div>' + escapeHtml(line) + '</div>').join('')
+              + '</details>'
             : '');
         migrationSummary.hidden = false;
         return items.filter((item) => item && item.status === 'error');
       }
+      renderMigrationPreviewSummary = () => {
+        if (migrationLastReport) renderMigrationReport(migrationLastReport);
+      };
       if (typeof window.opensquillaDesktop.onMigrationProgress === 'function') {
         window.opensquillaDesktop.onMigrationProgress((payload) => {
           const phase = payload && payload.phase;
@@ -5296,8 +5574,8 @@ function onboardingHtml(
         migrationPreviewButton.disabled = true;
         migrationImportButton.disabled = true;
         migrationSource.disabled = true;
-        migrationSourceKind.disabled = true;
         migrationBrowseButton.disabled = true;
+        renderMigrationCandidates();
         setMigrationStatus(t.migrationPreviewRunning);
         try {
           const result = await window.opensquillaDesktop.previewOnboardingMigration();
@@ -5314,9 +5592,11 @@ function onboardingHtml(
           setMigrationStatus('');
           migrationPreviewButton.disabled = false;
           migrationImportButton.disabled = !migrationPreviewOk;
+          migrationPreviewButton.hidden = migrationPreviewOk;
+          migrationImportButton.hidden = !migrationPreviewOk;
           migrationSource.disabled = false;
-          migrationSourceKind.disabled = false;
-          migrationBrowseButton.disabled = !migrationSourceKind.value;
+          migrationBrowseButton.disabled = false;
+          renderMigrationCandidates();
         }
       });
       migrationImportButton.addEventListener('click', async () => {
@@ -5327,8 +5607,8 @@ function onboardingHtml(
         migrationImportButton.disabled = true;
         migrationSkipButton.disabled = true;
         migrationSource.disabled = true;
-        migrationSourceKind.disabled = true;
         migrationBrowseButton.disabled = true;
+        renderMigrationCandidates();
         setMigrationStatus(t.migrationApplyRunning);
         let imported = false;
         try {
@@ -5352,8 +5632,8 @@ function onboardingHtml(
           setMigrationStatus('');
           migrationSkipButton.disabled = false;
           migrationSource.disabled = false;
-          migrationSourceKind.disabled = false;
-          migrationBrowseButton.disabled = !migrationSourceKind.value;
+          migrationBrowseButton.disabled = false;
+          renderMigrationCandidates();
           if (imported) {
             // Leave the completion note readable for a beat, then continue to
             // the provider step with the imported connection prefilled. The
@@ -5365,7 +5645,9 @@ function onboardingHtml(
           } else {
             migrationPreviewOk = false;
             migrationPreviewButton.disabled = false;
+            migrationPreviewButton.hidden = false;
             migrationImportButton.disabled = true;
+            migrationImportButton.hidden = true;
           }
         }
       });
@@ -5374,12 +5656,14 @@ function onboardingHtml(
         errorBox.textContent = '';
         setStep(nextRouteStep(step));
       });
+      renderMigrationCandidates();
     }
     renderProviderGrid();
     renderSearchProviderGrid();
     syncProviderDefaults(true);
     applyMigrationPrefill(initialProviderPrefill);
     render();
+    focusStepHeading(document.querySelector('.setup-card.active'));
   </script>
 </body>
 </html>`
@@ -5419,17 +5703,30 @@ async function runOnboarding(): Promise<DesktopConnection> {
     return existing
   }
 
-  // No usable credential: this is the first-run (or reset) path, the only
-  // interaction point before the gateway first boots — so offer the legacy home
-  // import here, before provider setup (the import must precede first boot).
-  onboardingMigrationCandidates = (
-    activeDesktopProfile().kind === 'primary' && !pendingProviderSetup
-      ? await enrichLegacyImportCandidates(detectLegacyImportCandidates())
-      : []
+  // First-run transfer is a narrow Windows Portable upgrade path. CLI homes and
+  // other Desktop profiles are always explicit Settings actions, even when the
+  // recovery engine has proved the current Desktop H empty.
+  const onboardingDataInput = {
+    platform: process.platform,
+    profileKind: activeDesktopProfile().kind,
+    pendingProviderSetup: pendingProviderSetup !== null,
+    inspection: recoveryInspection,
+  } as const
+  const detectedCandidates = (
+    process.platform === 'win32'
+    && isProvenFreshPrimaryDesktopProfile(onboardingDataInput)
   )
+    ? await enrichLegacyImportCandidates(detectWindowsPortableImportCandidates())
+    : []
+  const onboardingDataFlow = classifyDesktopOnboardingDataFlow({
+    ...onboardingDataInput,
+    candidateKinds: detectedCandidates.map((candidate) => candidate.kind),
+  })
+  onboardingMigrationCandidates = onboardingDataFlow === 'portable-transfer'
+    ? detectedCandidates
+    : []
   onboardingMigrationCandidate = null
   onboardingMigrationPreviewApprovedAt = 0
-  onboardingMigrationReplaceTarget = false
 
   return new Promise((resolveCredential, rejectCredential) => {
     resolveOnboarding = resolveCredential
@@ -5495,7 +5792,11 @@ async function runOnboarding(): Promise<DesktopConnection> {
       }
     })
 
-    onboardingWindow.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(onboardingHtml(onboardingMigrationCandidates, pendingProviderSetup))}`).catch((error) => {
+    onboardingWindow.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(onboardingHtml(
+      onboardingMigrationCandidates,
+      pendingProviderSetup,
+      onboardingDataFlow === 'portable-transfer',
+    ))}`).catch((error) => {
       rejectCredential(error instanceof Error ? error : new Error(String(error)))
     })
   })
@@ -5906,12 +6207,20 @@ async function showAttentionPrompt(
   if (attentionPromptInFlight) return attentionPromptInFlight
   attentionPromptedThisSession = identity
   attentionPromptInFlight = (async () => {
-    const candidatePaths = report.candidates
+    const currentWorkspace = report.effective_workspace
+    const otherWorkspacePaths = report.candidates
       .filter((candidate) => (
-        ['canonical', 'legacy', 'external'].includes(candidate.kind) && candidate.exists
+        ['canonical', 'legacy', 'external'].includes(candidate.kind)
+        && candidate.exists
+        && (!currentWorkspace || !resolvedPathsEqual(candidate.path, currentWorkspace))
       ))
       .map((candidate) => candidate.path)
-      .join('\n')
+    const workspaceLines = [
+      ...(currentWorkspace
+        ? [`${desktopT('attention.currentWorkspace')}: ${currentWorkspace}`]
+        : []),
+      ...otherWorkspacePaths.map((path) => `${desktopT('attention.otherWorkspace')}: ${path}`),
+    ]
     const options: Electron.MessageBoxOptions = {
       type: 'info',
       buttons: [
@@ -5923,7 +6232,7 @@ async function showAttentionPrompt(
       cancelId: 0,
       title: desktopT('attention.title'),
       message: desktopT('attention.message'),
-      detail: `${report.stable_code}${candidatePaths ? `\n\n${candidatePaths}` : ''}`,
+      detail: [desktopT('attention.detail'), ...workspaceLines].join('\n\n'),
     }
     const window = currentMainWindow()
     const result = window
@@ -8864,30 +9173,6 @@ function migrationPreviewAllowsApply(
     && errors[0]?.kind === 'preflight/target'
 }
 
-function onboardingReplacementPreview(
-  report: Record<string, unknown>,
-): { report: Record<string, unknown>; replaceTarget: boolean } {
-  if (!migrationPreviewAllowsApply(report, true) || !Array.isArray(report.items)) {
-    return { report, replaceTarget: false }
-  }
-  return {
-    replaceTarget: true,
-    report: {
-      ...report,
-      items: report.items.map((value) => {
-        const item = migrationRecord(value)
-        return item?.kind === 'preflight/target' && item.status === 'error'
-          ? {
-              ...item,
-              status: 'skipped',
-              reason: 'the existing Desktop profile requires complete backup and whole replacement',
-            }
-          : value
-      }),
-    },
-  }
-}
-
 function desktopMigrationResultPath(): string {
   return join(app.getPath('userData'), 'migration-last-result.json')
 }
@@ -8967,7 +9252,7 @@ function migrationCandidateWithPreview(
 
 ipcMain.handle('desktop:migration:browse-source', async (event, payload?: unknown) => {
   if (!trustedRecoveryIpc(event) || activeDesktopProfile().kind !== 'primary') {
-    return { ok: false, error: 'Import source selection is available only in the primary profile.' }
+    return { ok: false, error: 'Data transfer is available only in the primary profile.' }
   }
   const sourceKind = parseMigrationSourceKind(payload)
   if (!sourceKind) {
@@ -8993,14 +9278,14 @@ ipcMain.handle('desktop:migration:browse-source', async (event, payload?: unknow
 
 ipcMain.handle('desktop:migration:summary', async (event, payload?: { source?: unknown }) => {
   if (!trustedRecoveryIpc(event)) {
-    return { ok: false, candidate: null, report: null, raw: 'Untrusted import request.' }
+    return { ok: false, candidate: null, report: null, raw: 'Untrusted data transfer request.' }
   }
   if (activeDesktopProfile().kind !== 'primary') {
     return {
       ok: false,
       candidate: null,
       report: null,
-      raw: 'Return to the primary profile before importing data.',
+      raw: 'Return to the primary profile before transferring data.',
     }
   }
   trustedDesktopMigrationPreview = null
@@ -9052,13 +9337,13 @@ ipcMain.handle('desktop:migration:run', async (
   payload?: { overwrite?: boolean; previewId?: string },
 ) => {
   if (!trustedRecoveryIpc(event)) {
-    return { ok: false, report: null, detail: 'Untrusted import request.' }
+    return { ok: false, report: null, detail: 'Untrusted data transfer request.' }
   }
   if (activeDesktopProfile().kind !== 'primary') {
     return {
       ok: false,
       report: null,
-      detail: 'Return to the primary profile before importing data.',
+      detail: 'Return to the primary profile before transferring data.',
     }
   }
   const preview = trustedDesktopMigrationPreview
@@ -9071,7 +9356,7 @@ ipcMain.handle('desktop:migration:run', async (
     return {
       ok: false,
       report: null,
-      detail: 'The migration preview is missing or expired. Preview the import again.',
+      detail: 'The transfer preview is missing or expired. Review the data again.',
     }
   }
   const candidate = preview.candidate
@@ -9081,7 +9366,7 @@ ipcMain.handle('desktop:migration:run', async (
     return {
       ok: false,
       report: preview.report,
-      detail: 'The approved preview does not permit this import mode. Preview again.',
+      detail: 'The approved preview does not permit this transfer mode. Review the data again.',
     }
   }
   if (!looksLikeOpenSquillaHome(candidate.path)) {
@@ -9179,7 +9464,7 @@ ipcMain.handle('desktop:migration:run', async (
         gatewayProcess = child
         gatewayState.owned = true
         gatewayState.status = 'error'
-        gatewayState.error = 'The desktop gateway did not exit before the import deadline.'
+        gatewayState.error = 'The desktop gateway did not exit before the transfer deadline.'
         restartAllowed = false
         throw new Error(gatewayState.error)
       }
@@ -9278,7 +9563,7 @@ ipcMain.handle('desktop:migration:run', async (
   if (lifecycleOwnsAdmission || desktopWriters.closed) {
     restartAllowed = false
     shouldRestart = false
-    if (migrationApplied && !detail) detail = 'Import applied; restart deferred to the active lifecycle operation.'
+    if (migrationApplied && !detail) detail = 'Transfer applied; restart deferred to the active lifecycle operation.'
   } else if (restartAllowed && shouldRestart) {
     clearReusableGatewayState()
     bootError = null
@@ -9291,7 +9576,7 @@ ipcMain.handle('desktop:migration:run', async (
     restartOk = Boolean(gatewayState.url) && await healthCheck(gatewayState.url)
   }
   if (migrationApplied && !restartOk && !detail) {
-    detail = 'Import applied, but the desktop gateway did not become healthy.'
+    detail = 'Transfer applied, but the desktop gateway did not become healthy.'
   }
   const finalResult: DesktopMigrationResult = {
     id: randomUUID(),
@@ -9820,29 +10105,52 @@ ipcMain.handle('desktop:onboarding:cancel', () => {
   app.quit()
   return { ok: true }
 })
-ipcMain.handle('desktop:onboarding:migrate:browse', async (event, payload?: unknown) => {
-  if (!resolveOnboarding || !trustedOnboardingIpc(event)) {
-    return { ok: false, error: 'No trusted onboarding import is in progress.' }
+function onboardingPortableTransferError(): string | null {
+  if (process.platform !== 'win32') {
+    return 'Windows Portable transfer is available only in the Windows Desktop app.'
   }
   if (activeDesktopProfile().kind !== 'primary') {
-    return { ok: false, error: 'Recovery profiles cannot import another profile.' }
+    return 'Recovery profiles cannot copy another profile.'
   }
-  const kind = parseMigrationSourceKind(payload)
-  if (!kind) return { ok: false, error: 'Choose the OpenSquilla profile type first.' }
+  if (
+    recoveryInspection?.outcome !== 'ready'
+    || recoveryInspection.stable_code !== 'fresh_profile'
+  ) {
+    return 'This Desktop profile is no longer empty. Finish setup, then use Settings to transfer data.'
+  }
+  if (onboardingMigrationCandidates.some((candidate) => candidate.kind !== 'windows-portable')) {
+    return 'Only legacy Windows Portable data can be copied during first setup.'
+  }
+  return null
+}
+
+function onboardingTargetNotEmptyError(report: Record<string, unknown> | null): string | null {
+  return report && migrationReportErrors(report).some((item) => item.kind === 'preflight/target')
+    ? 'This Desktop profile is no longer empty. Finish setup, then use Settings to transfer data safely.'
+    : null
+}
+
+ipcMain.handle('desktop:onboarding:migrate:browse', async (event) => {
+  if (!resolveOnboarding || !trustedOnboardingIpc(event)) {
+    return { ok: false, error: 'No trusted Portable copy is in progress.' }
+  }
+  const guardError = onboardingPortableTransferError()
+  if (guardError) return { ok: false, error: guardError }
   const window = currentOnboardingWindow()
   const choice = window
     ? await dialog.showOpenDialog(window, {
-        title: 'Choose an OpenSquilla profile',
+        title: 'Choose legacy Windows Portable data',
         properties: ['openDirectory'],
       })
     : { canceled: true, filePaths: [] }
   if (choice.canceled || choice.filePaths.length !== 1) return { ok: false, aborted: true }
   const path = choice.filePaths[0] || ''
   if (!path || !looksLikeOpenSquillaHome(path) || resolvedPathsEqual(path, primaryDesktopHome())) {
-    return { ok: false, error: 'Choose a plain OpenSquilla profile directory.' }
+    return { ok: false, error: 'Choose a plain legacy Windows Portable data directory.' }
   }
-  const candidate = await inspectLegacyImportCandidate(legacyImportCandidate(kind, path))
-  manuallyApprovedMigrationCandidates.set(resolve(path), candidate)
+  const candidate = await inspectLegacyImportCandidate(
+    legacyImportCandidate('windows-portable', path),
+  )
   const existing = onboardingMigrationCandidates.findIndex((value) => (
     resolvedPathsEqual(value.path, candidate.path)
   ))
@@ -9850,22 +10158,21 @@ ipcMain.handle('desktop:onboarding:migrate:browse', async (event, payload?: unkn
   else onboardingMigrationCandidates.push(candidate)
   onboardingMigrationCandidate = candidate
   onboardingMigrationPreviewApprovedAt = 0
-  onboardingMigrationReplaceTarget = false
   return { ok: true, candidate }
 })
 
 ipcMain.handle('desktop:onboarding:migrate:select', (event, payload?: { source?: unknown }) => {
   if (!resolveOnboarding || !trustedOnboardingIpc(event)) {
-    return { ok: false, error: 'No trusted onboarding import is in progress.' }
+    return { ok: false, error: 'No trusted Portable copy is in progress.' }
   }
-  if (activeDesktopProfile().kind !== 'primary') {
-    return { ok: false, error: 'Recovery profiles cannot import another profile.' }
-  }
+  const guardError = onboardingPortableTransferError()
+  if (guardError) return { ok: false, error: guardError }
   const source = typeof payload?.source === 'string' ? payload.source : ''
-  const candidate = onboardingMigrationCandidates.find((value) => value.path === source) || null
+  const candidate = onboardingMigrationCandidates.find((value) => (
+    value.kind === 'windows-portable' && value.path === source
+  )) || null
   onboardingMigrationCandidate = candidate
   onboardingMigrationPreviewApprovedAt = 0
-  onboardingMigrationReplaceTarget = false
   return candidate
     ? { ok: true, candidate }
     : { ok: false, error: 'Choose one of the inspected OpenSquilla profiles.' }
@@ -9877,15 +10184,15 @@ ipcMain.handle('desktop:onboarding:migrate:preview', async (event) => {
   // The source path/kind come from the main process's own detection, never
   // from the renderer.
   if (!resolveOnboarding || !trustedOnboardingIpc(event)) {
-    return { ok: false, error: 'No trusted onboarding import is in progress.' }
+    return { ok: false, error: 'No trusted Portable copy is in progress.' }
   }
-  if (activeDesktopProfile().kind !== 'primary') {
-    return { ok: false, error: 'Recovery profiles cannot import another profile.' }
-  }
+  const guardError = onboardingPortableTransferError()
+  if (guardError) return { ok: false, error: guardError }
   const candidate = onboardingMigrationCandidate
-  if (!candidate) return { ok: false, error: 'No legacy OpenSquilla home was detected.' }
+  if (!candidate || candidate.kind !== 'windows-portable') {
+    return { ok: false, error: 'No legacy Windows Portable data was selected.' }
+  }
   onboardingMigrationPreviewApprovedAt = 0
-  onboardingMigrationReplaceTarget = false
   publishDesktopMigrationProgress('preview')
   const { report, raw } = await migrateSummaryJson([
     '--source', candidate.path, '--kind', candidate.kind,
@@ -9896,60 +10203,42 @@ ipcMain.handle('desktop:onboarding:migrate:preview', async (event) => {
     target: primaryDesktopHome(),
     apply: false,
   })
-  const replacement = report ? onboardingReplacementPreview(report) : null
-  const approved = replacement !== null
+  const targetNotEmptyError = onboardingTargetNotEmptyError(report)
+  const approved = report !== null
     && validationError === null
-    && migrationReportErrors(replacement.report).length === 0
+    && migrationReportErrors(report).length === 0
   if (approved) {
     onboardingMigrationPreviewApprovedAt = Date.now()
-    onboardingMigrationReplaceTarget = replacement?.replaceTarget === true
   }
-  publishDesktopMigrationProgress(approved ? 'done' : 'error', validationError || undefined)
+  const detail = validationError || targetNotEmptyError || undefined
+  publishDesktopMigrationProgress(approved ? 'done' : 'error', detail)
   return validationError
     ? { ok: false, report: null, raw: validationError }
-    : { ok: approved, report: replacement?.report ?? report, raw, replaceTarget: onboardingMigrationReplaceTarget }
+    : {
+        ok: approved,
+        report,
+        raw,
+        ...(targetNotEmptyError ? { error: targetNotEmptyError } : {}),
+      }
 })
 ipcMain.handle('desktop:onboarding:migrate:apply', async (event) => {
   if (!resolveOnboarding || !trustedOnboardingIpc(event)) {
-    return { ok: false, error: 'No trusted onboarding import is in progress.' }
+    return { ok: false, error: 'No trusted Portable copy is in progress.' }
   }
-  if (activeDesktopProfile().kind !== 'primary') {
-    return { ok: false, error: 'Recovery profiles cannot import another profile.' }
-  }
+  const guardError = onboardingPortableTransferError()
+  if (guardError) return { ok: false, error: guardError }
   const candidate = onboardingMigrationCandidate
-  if (!candidate) return { ok: false, error: 'No legacy OpenSquilla home was detected.' }
+  if (!candidate || candidate.kind !== 'windows-portable') {
+    return { ok: false, error: 'No legacy Windows Portable data was selected.' }
+  }
   if (
     !onboardingMigrationPreviewApprovedAt
     || Date.now() - onboardingMigrationPreviewApprovedAt > DESKTOP_MIGRATION_PREVIEW_TTL_MS
   ) {
     onboardingMigrationPreviewApprovedAt = 0
-    return { ok: false, error: 'Preview the import again before applying it.' }
+    return { ok: false, error: 'Review the Portable data again before copying it.' }
   }
-  const replaceTarget = onboardingMigrationReplaceTarget
   onboardingMigrationPreviewApprovedAt = 0
-  onboardingMigrationReplaceTarget = false
-  if (replaceTarget) {
-      const window = currentOnboardingWindow()
-      const options: Electron.MessageBoxOptions = {
-        type: 'warning',
-        buttons: [desktopT('migration.overwriteCancel'), desktopT('migration.overwriteConfirm')],
-        defaultId: 0,
-        cancelId: 0,
-        title: desktopT('migration.overwriteTitle'),
-        message: desktopT('migration.overwriteMessage'),
-        detail: [
-          desktopT('migration.overwriteDetail'),
-          desktopT('migration.overwriteNoMerge'),
-          desktopT('migration.overwriteSourceUntouched'),
-          desktopT('migration.overwriteNoSync'),
-          candidate.path,
-        ].join('\n\n'),
-      }
-      const confirmation = window
-        ? await dialog.showMessageBox(window, options)
-        : await dialog.showMessageBox(options)
-      if (confirmation.response !== 1) return { ok: false, aborted: true, error: 'cancelled' }
-  }
   const exclusive = desktopWriters.tryBeginExclusive('onboarding complete profile import')
   if (!exclusive) {
     return { ok: false, error: 'Another profile operation, update, or quit is already in progress.' }
@@ -9965,10 +10254,6 @@ ipcMain.handle('desktop:onboarding:migrate:apply', async (event) => {
     intent = await beginMigrationReconciliationIntent(candidate)
     const result = await migrateSummaryJson([
       '--source', candidate.path, '--kind', candidate.kind, '--apply',
-      ...(replaceTarget ? [
-        '--replace-target',
-        '--confirm-replace-target', primaryDesktopHome(),
-      ] : []),
     ], true)
     const validationError = migrationReportValidationError(result.report, {
       source: candidate.path,
@@ -9982,7 +10267,10 @@ ipcMain.handle('desktop:onboarding:migrate:apply', async (event) => {
     )
     if (!receipt) {
       await clearPendingMigrationProviderSetup()
-      const detail = validationError || result.raw || 'Import did not publish a valid receipt.'
+      const detail = onboardingTargetNotEmptyError(result.report)
+        || validationError
+        || result.raw
+        || 'Copy did not publish a valid receipt.'
       const recoveryRequired = await refreshPrimaryRecoveryAfterImportAttempt()
       publishDesktopMigrationProgress('error', detail)
       return { ok: false, report: result.report, raw: detail, prefill: null, recoveryRequired }

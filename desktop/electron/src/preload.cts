@@ -23,6 +23,14 @@ contextBridge.exposeInMainWorld('opensquillaDesktop', {
   retryStartup: () => ipcRenderer.invoke('desktop:boot:retry'),
   quitApp: () => ipcRenderer.invoke('desktop:boot:quit'),
   getRecoveryState: () => ipcRenderer.invoke('desktop:recovery:state'),
+  getDesktopProfileKind: async () => {
+    const value = await ipcRenderer.invoke('desktop:recovery:state')
+    if (!value || typeof value !== 'object') return null
+    const active = (value as Record<string, unknown>).activeProfile
+    if (!active || typeof active !== 'object') return null
+    const kind = (active as Record<string, unknown>).kind
+    return kind === 'primary' || kind === 'recovery' ? kind : null
+  },
   chooseRecoveryWorkspace: (payload: unknown) => ipcRenderer.invoke('desktop:recovery:choose-workspace', payload),
   recoverProfileTransaction: () => ipcRenderer.invoke('desktop:recovery:recover-transaction'),
   launchSafeProfile: (payload: unknown) => ipcRenderer.invoke('desktop:recovery:launch-safe', payload),

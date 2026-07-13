@@ -96,9 +96,9 @@
             <tr>
               <th scope="col">{{ t('console.channels.provider') }}</th>
               <th scope="col">{{ t('console.channels.channel') }}</th>
-              <th scope="col">{{ t('console.channels.transport') }}</th>
+              <th scope="col" class="ch-hide-mobile">{{ t('console.channels.transport') }}</th>
               <th scope="col">{{ t('console.channels.status') }}</th>
-              <th v-if="!selectedChannel" scope="col">{{ t('console.channels.connectedSince') }}</th>
+              <th v-if="!selectedChannel" scope="col" class="ch-hide-mobile">{{ t('console.channels.connectedSince') }}</th>
               <th scope="col"><span class="ch-sr-only">{{ t('console.channels.actions') }}</span></th>
             </tr>
           </thead>
@@ -114,9 +114,9 @@
             >
               <td><span class="ch-provider-mark" aria-hidden="true">{{ providerInitial(ch.type) }}</span><span class="ch-provider-name">{{ providerLabel(ch.type) }}</span></td>
               <td><strong>{{ ch.name || ch.id || t('console.channels.unknown') }}</strong></td>
-              <td><span class="ch-muted">{{ transportLabel(ch) }}</span></td>
+              <td class="ch-hide-mobile"><span class="ch-muted">{{ transportLabel(ch) }}</span></td>
               <td><ChannelStatusPill :status="ch.status" :enabled="ch.enabled" :pending-restart="pendingRestart.isPending(channelKey(ch))" :error-class="lastErrorClass(ch.diagnostics)" show-cause /></td>
-              <td v-if="!selectedChannel"><span class="ch-mono ch-muted">{{ formatSince(ch.connected_since) }}</span></td>
+              <td v-if="!selectedChannel" class="ch-hide-mobile"><span class="ch-mono ch-muted">{{ formatSince(ch.connected_since) }}</span></td>
               <td><Icon name="chevronRight" :size="15" aria-hidden="true" /></td>
             </tr>
             <tr v-if="filteredChannels.length === 0">
@@ -1074,7 +1074,8 @@ function configRows(config: Record<string, unknown>): Array<{ key: string; value
 .ch-summary__item.tone-muted .dot { background: var(--text-dim); }
 .ch-context { color: var(--text-dim); font-size: var(--fs-sm); margin: 0; }
 .ch-context a { color: var(--accent); }
-.ch-query-missing { align-items: center; background: var(--bg-surface); border: 1px solid var(--border); border-radius: var(--radius-md); color: var(--text-muted); display: flex; font-size: var(--fs-sm); gap: var(--sp-2); grid-column: 1 / -1; justify-content: space-between; margin: 0; padding: 8px 12px; }
+.ch-query-missing { align-items: center; background: var(--bg-surface); border: 1px solid var(--border); border-radius: var(--radius-md); color: var(--text-muted); display: flex; flex-wrap: wrap; font-size: var(--fs-sm); gap: var(--sp-2); grid-column: 1 / -1; justify-content: space-between; margin: 0; padding: 8px 12px; }
+.ch-query-missing > span { min-width: 0; overflow-wrap: anywhere; }
 .ch-detail__remove { color: var(--danger); }
 .ch-toolbar { align-items: center; display: flex; flex-wrap: wrap; gap: var(--sp-3); }
 .ch-search { align-items: center; background: var(--bg-surface); border: 1px solid var(--border); border-radius: var(--radius-control); color: var(--text-dim); display: flex; gap: 8px; min-width: min(320px, 100%); padding: 0 11px; }
@@ -1085,7 +1086,8 @@ function configRows(config: Record<string, unknown>): Array<{ key: string; value
 .ch-workspace { display: grid; gap: var(--sp-4); grid-template-columns: minmax(0, 1fr); min-height: 480px; }
 .ch-workspace.has-detail { grid-template-columns: minmax(460px, 1fr) minmax(420px, 46%); }
 .ch-table-wrap { background: var(--bg-surface); border: 1px solid var(--border); border-radius: var(--radius-lg); min-width: 0; overflow: auto; }
-.ch-table { border-collapse: collapse; font-size: var(--fs-sm); min-width: 760px; width: 100%; }
+.ch-table { border-collapse: collapse; font-size: var(--fs-sm); min-width: 700px; width: 100%; }
+.ch-workspace.has-detail .ch-table { min-width: 560px; }
 .ch-table th { color: var(--text-dim); font-size: 11px; font-weight: 600; letter-spacing: .04em; padding: 12px 14px; text-align: left; text-transform: uppercase; }
 .ch-table td { border-top: 1px solid var(--border); color: var(--text); padding: 14px; vertical-align: middle; }
 .ch-table tbody tr { cursor: pointer; outline: 0; }
@@ -1113,6 +1115,7 @@ function configRows(config: Record<string, unknown>): Array<{ key: string; value
 .ch-detail { background: var(--bg-surface); border: 1px solid var(--border); border-radius: var(--radius-lg); display: flex; flex-direction: column; min-height: 620px; min-width: 0; overflow: hidden; }
 .ch-detail__header { align-items: flex-start; display: flex; gap: var(--sp-3); justify-content: space-between; padding: var(--sp-4); }
 .ch-detail__identity { align-items: center; display: flex; gap: var(--sp-3); min-width: 0; }
+.ch-detail__identity > div { min-width: 0; }
 .ch-detail__title-row { align-items: center; display: flex; flex-wrap: wrap; gap: 10px; }
 .ch-detail__title-row h2 { font-size: var(--fs-lg); margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ch-detail__identity p { color: var(--text-dim); font-size: var(--fs-sm); margin: 4px 0 0; }
@@ -1155,6 +1158,7 @@ function configRows(config: Record<string, unknown>): Array<{ key: string; value
 .ch-probe-result.is-muted { background: var(--bg); border-color: var(--border); color: var(--text-muted); }
 .ch-probe-result__edit { margin-top: 8px; min-height: 28px; padding: 3px 9px; }
 .ch-probe-result p, .ch-alert p { color: var(--text-muted); font-size: var(--fs-sm); margin: 3px 0 0; }
+.ch-probe-result > div, .ch-alert > div { min-width: 0; overflow-wrap: anywhere; }
 .ch-alert.is-danger { background: color-mix(in srgb, var(--danger) 8%, var(--bg)); border-color: color-mix(in srgb, var(--danger) 38%, var(--border)); color: var(--danger); }
 .ch-alert-text { color: var(--danger); font-size: var(--fs-sm); padding: 12px 14px; }
 .ch-capabilities { padding: 8px 0; }
@@ -1167,7 +1171,7 @@ function configRows(config: Record<string, unknown>): Array<{ key: string; value
 .ch-pairings .ch-panel__heading { align-items: flex-start; gap: var(--sp-3); }
 .ch-pairings .ch-panel__heading > div { min-width: 0; }
 .ch-pairings .ch-panel__heading p { color: var(--text-dim); font-size: 11px; line-height: 1.45; margin: 4px 0 0; }
-.ch-pairing-summary { align-items: center; border-bottom: 1px solid var(--border); color: var(--text-muted); display: flex; font-size: 11px; gap: var(--sp-4); padding: 9px 14px; }
+.ch-pairing-summary { align-items: center; border-bottom: 1px solid var(--border); color: var(--text-muted); display: flex; flex-wrap: wrap; font-size: 11px; gap: 6px var(--sp-4); padding: 9px 14px; }
 .ch-pairing-summary strong { color: var(--text); font-family: var(--font-mono); }
 .ch-pairing-state { align-items: center; color: var(--text-dim); display: flex; flex-direction: column; gap: 8px; justify-content: center; min-height: 180px; padding: var(--sp-4); text-align: center; }
 .ch-pairing-state.is-error { color: var(--danger); }
@@ -1211,21 +1215,49 @@ function configRows(config: Record<string, unknown>): Array<{ key: string; value
 
 @media (max-width: 1180px) {
   .ch-workspace.has-detail { grid-template-columns: minmax(0, 1fr); }
-  .ch-detail { bottom: 12px; box-shadow: var(--elev-3); max-width: 560px; position: fixed; right: 12px; top: 64px; width: calc(100vw - 24px); z-index: 40; }
-  .ch-scrim { background: color-mix(in srgb, var(--bg) 60%, transparent); display: block; inset: 0; position: fixed; z-index: 39; }
+  /* min-height:0 resets the desktop split-pane floor so the fixed overlay
+     never extends past the viewport on short/landscape screens. */
+  .ch-detail { bottom: 12px; box-shadow: var(--elev-3); max-width: 560px; min-height: 0; position: fixed; right: 12px; top: 64px; width: calc(100vw - 24px); z-index: 40; }
+  .ch-detail__body { overscroll-behavior: contain; }
+  .ch-scrim { background: color-mix(in srgb, var(--bg) 60%, transparent); display: block; inset: 0; overscroll-behavior: contain; position: fixed; z-index: 39; }
 }
-@media (max-width: 760px) {
+/* 768px matches the app's mobile breakpoint (the bottom tab bar appears
+   there); using 760px left an 8px window where the overlay sat under it. */
+@media (max-width: 768px) {
   .ch-stage__header { align-items: stretch; flex-direction: column; }
   .ch-stage__actions { justify-content: stretch; }
   .ch-stage__actions .btn { flex: 1; }
-  .ch-summary { display: grid; grid-template-columns: repeat(2, 1fr); width: 100%; }
-  .ch-summary__item { border-bottom: 1px solid var(--border); }
+  .ch-summary { display: flex; width: 100%; }
+  .ch-summary__item { border-bottom: 1px solid var(--border); flex: 1 1 auto; justify-content: center; }
   .ch-search, .ch-select { min-width: 100%; }
   .ch-provider-name { display: none; }
-  .ch-detail { border-radius: var(--radius-md); bottom: 0; right: 0; top: 48px; width: 100vw; }
+  /* Status must stay visible on a phone; transport and connected-since are
+     the sacrificial columns. */
+  .ch-table { min-width: 0; }
+  .ch-hide-mobile { display: none; }
+  /* The fixed overlay ends above the mobile tab bar (z-60, 56px + safe area)
+     so the last rows are never permanently covered. max-width/right reset
+     the stale 1180px-block geometry. */
+  .ch-detail {
+    border-radius: var(--radius-md);
+    bottom: calc(var(--mobile-tabbar-h, 56px) + env(safe-area-inset-bottom, 0px));
+    left: 0;
+    max-width: none;
+    right: 0;
+    top: 48px;
+    width: auto;
+  }
   .ch-detail__body { padding: var(--sp-3); }
+  /* Wrapped action rows: the divider loses meaning and the auto-margin
+     strands Remove on its own line edge. */
+  .ch-detail__actionsep { display: none; }
+  .ch-detail__actions .ch-detail__remove { margin-left: 0; }
+  /* Touch-target floor for the compact text controls this view introduces. */
+  .ch-inline-link { align-items: center; display: inline-flex; min-height: 44px; }
+  .ch-icon-btn { min-height: 40px; min-width: 40px; }
+  .ch-summary__item { min-height: 44px; }
   .ch-check-row { grid-template-columns: 20px minmax(0, 1fr); }
-  .ch-check-row > b { grid-column: 2; }
+  .ch-check-row > b, .ch-check-row > .ch-inline-link { grid-column: 2; justify-self: start; white-space: nowrap; }
   .ch-capability { grid-template-columns: 18px minmax(0, 1fr); }
   .ch-proof { grid-column: 2; width: fit-content; }
   .ch-pairing-row { grid-template-columns: 32px minmax(0, 1fr) auto; }

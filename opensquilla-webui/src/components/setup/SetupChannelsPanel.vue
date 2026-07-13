@@ -397,6 +397,10 @@ const testTone = computed(() => {
   text-decoration: none;
 }
 .setup-channels__link:hover { text-decoration: underline; }
+@media (pointer: coarse) {
+  .setup-channels__link { align-items: center; display: inline-flex; min-height: 44px; }
+  .setup-channels__advanced > summary { min-height: 44px; }
+}
 
 .setup-channels__loading { display: flex; justify-content: center; padding: var(--sp-5) 0; }
 
@@ -410,7 +414,7 @@ const testTone = computed(() => {
 }
 .setup-channels__errorcard strong { color: var(--danger); font-size: var(--fs-sm); }
 .setup-channels__errorcard p { color: var(--text-muted); font-size: var(--fs-sm); margin: 0; }
-.setup-channels__erroractions { display: flex; gap: var(--sp-2); }
+.setup-channels__erroractions { display: flex; flex-wrap: wrap; gap: var(--sp-2); }
 
 .setup-channels__gallery {
   display: grid;
@@ -431,7 +435,7 @@ const testTone = computed(() => {
 .setup-channels__card:hover, .setup-channels__card:focus-visible { border-color: var(--accent); }
 .setup-channels__cardhead { align-items: center; display: flex; flex-wrap: wrap; gap: 6px; justify-content: space-between; }
 .setup-channels__badges { display: flex; flex-wrap: wrap; gap: 4px; }
-.setup-channels__carddesc { color: var(--text-muted); font-size: var(--fs-sm); line-height: 1.5; }
+.setup-channels__carddesc { color: var(--text-muted); font-size: var(--fs-sm); line-height: 1.5; min-width: 0; overflow-wrap: anywhere; }
 .setup-channels__cardneeds { color: var(--text-dim); font-size: 11px; }
 
 .setup-channels__selected {

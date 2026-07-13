@@ -29,7 +29,7 @@ import { usePendingRestart } from '@/composables/usePendingRestart'
 import { useToasts } from '@/composables/useToasts'
 import { useConfirm } from '@/composables/useConfirm'
 import { adapterLoaded } from '@/lib/channelStatus'
-import { saveFailedMessage } from '@/lib/rpcErrors'
+import { localizeRpcError, saveFailedMessage, type RpcClientError } from '@/lib/rpcErrors'
 import { copyTextWithFallback } from '@/utils/browser'
 import { TEXT_TIERS, IMAGE_TIER, normalizeRouterTier, routerTierLabelKey } from '@/utils/chat/routerTiers'
 
@@ -117,6 +117,16 @@ export interface ChannelTestState {
   status?: 'verified' | 'failed' | 'unsupported' | 'error'
   detail?: string
   latencyMs?: number | null
+}
+
+// Channel edit lifecycle: idle = compose form; the hash funnel in
+// SettingsDialog is the only thing that transitions idle → loading.
+export interface ChannelEditState {
+  phase: 'idle' | 'loading' | 'active' | 'error'
+  name?: string
+  type?: string
+  code?: string
+  message?: string
 }
 
 interface TierConfig {
@@ -274,6 +284,8 @@ const status = ref<OnboardingStatus>({})
 const config = ref<ConfigData>({})
 const channelStatus = ref<{ channels: ChannelStatusRow[] }>({ channels: [] })
 const channelTest = ref<ChannelTestState>({ phase: 'idle' })
+const channelEdit = ref<ChannelEditState>({ phase: 'idle' })
+const channelEditActive = computed(() => channelEdit.value.phase !== 'idle')
 const loaded = ref(false)
 const { section, setSection } = useSettingsSection('provider')
 const disableNetworkObservability = ref(false)
@@ -417,7 +429,10 @@ async function loadData() {
     capabilitiesForm.initSearchFromConfig(config.value, searchProviders.value)
     capabilitiesForm.initMemoryFromConfig(config.value)
     capabilitiesForm.initImageFromConfig(config.value, status.value, imageProviders.value)
-    channelsForm.initFromCatalog(catalog.value.channels || [])
+    // An active channel edit owns the channels form — reloading every other
+    // section must not wipe the edit draft (re-seeding is explicit at the
+    // call sites that need it: save success, discard, hash application).
+    if (!channelEditActive.value) channelsForm.initFromCatalog(catalog.value.channels || [])
     promotedForm.initFromConfig(config.value)
     disableNetworkObservability.value = currentDisableNetworkObservability.value
     // Model listing is an optional UI accelerator and may involve an external
@@ -1119,7 +1134,11 @@ async function saveDirtySections() {
   if (providerDirty.value) await saveProvider()
   if (behaviorDirty.value) await saveBehavior()
   if (modelStrategyDirty.value) await saveModelStrategy()
-  if (channelsDirty.value) await saveChannel()
+  // Never save an in-progress channel EDIT as a side effect of the global
+  // Save: an edit payload always passes probe (keep-current merge), so an
+  // auto-save would silently persist half-edits. The panel's own Save is the
+  // only path for edits. A half-composed new draft still fails probe loudly.
+  if (channelsDirty.value && !channelEditActive.value) await saveChannel()
   if (capabilitiesForm.searchDirty.value) await saveSearch()
   if (capabilitiesForm.memoryDirty.value || promotedForm.captureDirty.value) await saveMemory()
   if (capabilitiesForm.imageDirty.value) await saveImage()
@@ -1128,6 +1147,10 @@ async function saveDirtySections() {
 
 async function discardChanges() {
   await loadData()
+  // Discard during an edit restores the stored values (and a clean baseline).
+  if (channelEditActive.value && channelEdit.value.name) {
+    await openChannelEditor(channelEdit.value.name)
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -1236,6 +1259,72 @@ function updateChannelField(name: string, value: unknown) {
   // A test verdict describes the draft it ran against; any edit voids it.
   if (channelTest.value.phase !== 'idle') channelTest.value = { phase: 'idle' }
 }
+
+// Open the channel editor for an existing entry: fetch the redacted config,
+// seed the form in edit mode. Errors render as a fallback card instead of an
+// empty form that merely looks like an editor.
+async function openChannelEditor(name: string) {
+  channelEdit.value = { phase: 'loading', name }
+  channelTest.value = { phase: 'idle' }
+  try {
+    const res = await rpc.call<{ entry?: Record<string, unknown>; secretFields?: string[] }>(
+      'channels.get', { name },
+    )
+    const entry = res?.entry
+    const type = String(entry?.type || '')
+    const spec = catalogChannels.value.find(c => c.type === type)
+    if (!entry || !spec) {
+      channelEdit.value = {
+        phase: 'error', name, code: 'NOT_FOUND',
+        message: t('setup.channels.editUnknownType', { type: type || '?' }),
+      }
+      return
+    }
+    channelsForm.selectChannelType(spec.type)
+    channelsForm.initFromEntry(spec, entry, res.secretFields || [])
+    channelEdit.value = { phase: 'active', name, type: spec.type }
+  } catch (err) {
+    channelEdit.value = {
+      phase: 'error', name,
+      code: (err as RpcClientError | undefined)?.code,
+      message: localizeRpcError(err),
+    }
+  }
+}
+
+function exitChannelEditor() {
+  channelEdit.value = { phase: 'idle' }
+  channelTest.value = { phase: 'idle' }
+  channelsForm.resetForSpec(channelSpec.value)
+}
+
+// "Duplicate as new…" — fork the current edit into a compose draft with
+// secrets blanked (they are not client-readable) and a free name suggested.
+function duplicateChannelAsNew() {
+  const spec = channelSpec.value
+  if (!spec) return
+  channelsForm.duplicateAsNew(spec, channelRuntimeRows.value.map(row => row.name))
+  channelEdit.value = { phase: 'idle' }
+  channelTest.value = { phase: 'idle' }
+}
+
+function replaceChannelSecret(name: string) {
+  channelsForm.replaceSecret(name)
+  if (channelTest.value.phase !== 'idle') channelTest.value = { phase: 'idle' }
+}
+
+function cancelChannelSecretReplace(name: string) {
+  channelsForm.cancelSecretReplace(name)
+  if (channelTest.value.phase !== 'idle') channelTest.value = { phase: 'idle' }
+}
+
+// Compose-mode duplicate-name guard, fed by the already-polled runtime rows.
+const composeDuplicate = computed(() => {
+  if (channelEditActive.value) return null
+  const name = channelsForm.nameValue.value
+  if (!name) return null
+  return channelRuntimeRows.value.find(row => row.name === name) || null
+})
 
 // Non-mutating live probe of the current draft. Blank secrets merge against
 // the stored entry server-side, so stored credentials can be verified without
@@ -1670,6 +1759,7 @@ async function applyProviderPreset() {
 
 async function saveChannel() {
   const entry = channelsForm.payload()
+  const wasEditing = channelEditActive.value
   try {
     await rpc.call('onboarding.channel.probe', { entry })
     const res = await rpc.call<{ changed?: boolean; entry?: { name?: string } }>('onboarding.channel.upsert', { entry })
@@ -1682,6 +1772,10 @@ async function saveChannel() {
     }
     pushToast(t('setup.toast.channelSaved'))
     await loadData()
+    // Stay in edit mode after an edit save: re-seed from the server so a
+    // just-replaced secret flips back to its masked row and the plaintext
+    // leaves memory.
+    if (wasEditing && name) await openChannelEditor(name)
   } catch (err) {
     pushToast(saveFailedMessage(err), { tone: 'danger' })
   }
@@ -1919,6 +2013,15 @@ async function copyConfigPath() {
     removeChannel,
     channelTest,
     testChannel,
+    channelEdit,
+    channelEditActive,
+    channelsFormDirty: channelsForm.isDirty,
+    openChannelEditor,
+    exitChannelEditor,
+    duplicateChannelAsNew,
+    composeDuplicate,
+    replaceChannelSecret,
+    cancelChannelSecretReplace,
     saveSearch,
     saveMemory,
     saveImage,

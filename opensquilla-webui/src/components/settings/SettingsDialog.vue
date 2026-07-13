@@ -201,11 +201,19 @@
               v-else-if="section === 'channels'"
               :panel="channelsPanel"
               :test="channelTest"
+              :edit="channelEdit"
+              :duplicate="composeDuplicate"
               @update-channel-type="selectChannelType"
               @channel-type-change="onChannelTypeChange"
               @update-channel-field="updateChannelField"
               @save="saveChannel"
               @test="testChannel"
+              @edit-channel="onEditChannel"
+              @add-new="onAddNewChannel"
+              @duplicate-as-new="onDuplicateChannelAsNew"
+              @retry-edit="onRetryChannelEdit"
+              @replace-secret="replaceChannelSecret"
+              @cancel-secret-replace="cancelChannelSecretReplace"
               @enable-channel="enableChannel"
               @disable-channel="disableChannel"
               @remove-channel="removeChannel"
@@ -277,7 +285,7 @@ import SettingsKeyboardPanel from '@/components/settings/SettingsKeyboardPanel.v
 import SettingsAdvancedPanel from '@/components/settings/SettingsAdvancedPanel.vue'
 import DesktopRuntimePanel from '@/components/settings/DesktopRuntimePanel.vue'
 import { useSetupCatalog, SETTINGS_SECTIONS } from '@/composables/setup/useSetupCatalog'
-import { parseProviderHash, sectionFromRouteParam } from '@/composables/setup/useSettingsSection'
+import { parseChannelHash, parseProviderHash, sectionFromRouteParam } from '@/composables/setup/useSettingsSection'
 import { useConfirm } from '@/composables/useConfirm'
 import { usePlatform } from '@/platform'
 import '@/styles/settings-forms.css'
@@ -354,6 +362,15 @@ const {
   removeChannel,
   channelTest,
   testChannel,
+  channelEdit,
+  channelEditActive,
+  channelsFormDirty,
+  openChannelEditor,
+  exitChannelEditor,
+  duplicateChannelAsNew,
+  composeDuplicate,
+  replaceChannelSecret,
+  cancelChannelSecretReplace,
   saveSearch,
   saveMemory,
   saveImage,
@@ -464,6 +481,52 @@ function applyProviderHash() {
     onProviderChange()
   }
   void nextTick(() => focusFirstEmptyProviderInput())
+}
+
+// `#channel-<name>` deep links open the channels section with that entry in
+// edit mode; `#channel-new` is the compose form. Per-instance dedup mirrors
+// the provider hash: remount resets it, so reopening the same link works.
+let appliedChannelHash = ''
+
+function applyChannelHash() {
+  const target = parseChannelHash(route.hash)
+  if (!target || !loaded.value || section.value !== 'channels') return
+  if (appliedChannelHash === route.hash) return
+  appliedChannelHash = route.hash
+  if (target.kind === 'new') {
+    // duplicateChannelAsNew already left edit mode with a seeded compose
+    // draft — only an actual edit session needs the reset here.
+    if (channelEditActive.value) exitChannelEditor()
+    return
+  }
+  void openChannelEditor(target.name)
+}
+
+// In-dialog channel transitions (edit another entry, add-new) go through the
+// hash so the URL stays honest; a dirty draft is confirmed away first.
+async function requestChannelHash(hash: string) {
+  if (channelsFormDirty.value && !(await confirmDiscard())) return
+  void router.replace({ path: '/settings/channels', hash })
+}
+
+function onEditChannel(name: string) {
+  void requestChannelHash(`#channel-${encodeURIComponent(name)}`)
+}
+
+function onAddNewChannel() {
+  void requestChannelHash('#channel-new')
+}
+
+function onDuplicateChannelAsNew() {
+  duplicateChannelAsNew()
+  // The compose draft is already seeded; the funnel sees edit inactive and
+  // leaves it untouched — the hash just reflects the new state.
+  void router.replace({ path: '/settings/channels', hash: '#channel-new' })
+}
+
+function onRetryChannelEdit() {
+  const name = channelEdit.value.name
+  if (name) void openChannelEditor(name)
 }
 
 // Focus the first empty required input in the freshly-preselected panel;
@@ -606,8 +669,8 @@ function onViewportChange(event: MediaQueryListEvent) {
 // loads; the loaded watcher below completes that case.
 watch(routeParam, () => applyRouteSection())
 
-// A provider deep-link hash can arrive (or change) after mount.
-watch(() => route.hash, () => applyProviderHash())
+// A provider/channel deep-link hash can arrive (or change) after mount.
+watch(() => route.hash, () => { applyProviderHash(); applyChannelHash() })
 
 // Whenever the active section changes (rail click, deep link, Back), bring its
 // tab into view on the horizontally-scrolling mobile rail.
@@ -615,14 +678,15 @@ watch(section, () => {
   scrollActiveTabIntoView()
   resetActivePanelScroll()
   applyProviderHash()
+  applyChannelHash()
 })
 
 // The auto deep link lands on its readiness-derived section once config is
 // known, unless the user already navigated during the load.
 watch(loaded, (isLoaded) => {
   if (isLoaded && wantsAutoSection.value && !userNavigated) selectInitialSection('auto')
-  // Catalog data is required to validate a provider hash, so (re)try now.
-  if (isLoaded) applyProviderHash()
+  // Catalog data is required to validate a provider/channel hash, so (re)try now.
+  if (isLoaded) { applyProviderHash(); applyChannelHash() }
 })
 
 onMounted(() => {
@@ -634,6 +698,7 @@ onMounted(() => {
   invokerEl = document.activeElement instanceof HTMLElement ? document.activeElement : null
   applyRouteSection()
   applyProviderHash()
+  applyChannelHash()
   scrollActiveTabIntoView()
   document.addEventListener('keydown', onDocumentKeydown)
   mq = window.matchMedia('(max-width: 768px)')

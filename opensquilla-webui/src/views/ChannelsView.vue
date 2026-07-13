@@ -6,7 +6,7 @@
         <p class="ch-stage__subtitle control-stage__subtitle">{{ t('console.channels.subtitle') }}</p>
       </div>
       <div class="ch-stage__actions control-stage__actions">
-        <button class="btn btn--primary" type="button" @click="openSettingsSurface">
+        <button class="btn btn--primary" type="button" @click="openChannelCompose">
           <Icon name="plus" :size="16" aria-hidden="true" />
           <span>{{ t('console.channels.addChannel') }}</span>
         </button>
@@ -63,7 +63,7 @@
       <div class="ch-empty__icon" aria-hidden="true"><Icon name="channels" :size="34" /></div>
       <div class="control-empty__title">{{ t('console.channels.emptyTitle') }}</div>
       <p class="control-empty__hint">{{ t('console.channels.emptyMsg') }}</p>
-      <button class="btn btn--primary" type="button" @click="openSettingsSurface">
+      <button class="btn btn--primary" type="button" @click="openChannelCompose">
         <Icon name="plus" :size="16" aria-hidden="true" />
         <span>{{ t('console.channels.addFirstChannel') }}</span>
       </button>
@@ -138,7 +138,7 @@
             <Icon name="refresh" :size="15" aria-hidden="true" />
             <span>{{ t('console.channels.restart') }}</span>
           </button>
-          <button class="btn btn--ghost" type="button" @click="openSettingsSurface">
+          <button class="btn btn--ghost" type="button" @click="openChannelEdit(selectedChannel)">
             <Icon name="edit" :size="15" aria-hidden="true" />
             <span>{{ t('console.channels.edit') }}</span>
           </button>
@@ -160,7 +160,7 @@
               <div>
                 <strong>{{ probeTitle(selectedProbe) }}</strong>
                 <p>{{ probeResultDetail(selectedChannel) }}</p>
-                <button v-if="selectedProbe.status === 'failed'" class="btn btn--ghost ch-probe-result__edit" type="button" @click="openSettingsSurface">
+                <button v-if="selectedProbe.status === 'failed'" class="btn btn--ghost ch-probe-result__edit" type="button" @click="openChannelEdit(selectedChannel)">
                   <Icon name="edit" :size="13" aria-hidden="true" />
                   <span>{{ t('console.channels.editCredentials') }}</span>
                 </button>
@@ -311,7 +311,7 @@
 
           <template v-else>
             <section class="ch-panel">
-              <div class="ch-panel__heading"><h3>{{ t('console.channels.savedConfiguration') }}</h3><button class="btn btn--ghost" type="button" @click="openSettingsSurface"><Icon name="edit" :size="14" />{{ t('console.channels.editInSettings') }}</button></div>
+              <div class="ch-panel__heading"><h3>{{ t('console.channels.savedConfiguration') }}</h3><button class="btn btn--ghost" type="button" @click="openChannelEdit(selectedChannel)"><Icon name="edit" :size="14" />{{ t('console.channels.editInSettings') }}</button></div>
               <p class="ch-panel__intro">{{ t('console.channels.secretRedactionHint') }}</p>
               <LoadingSpinner v-if="configLoading" />
               <p v-else-if="configError" class="ch-alert-text">{{ configError }}</p>
@@ -494,7 +494,16 @@ onActivated(() => {
 onDeactivated(teardownLive)
 onUnmounted(teardownLive)
 
-function openSettingsSurface(): void { void router.push('/settings/channels') }
+function openChannelCompose(): void {
+  void router.push({ path: '/settings/channels', hash: '#channel-new' })
+}
+
+function openChannelEdit(ch: Channel): void {
+  const name = channelKey(ch)
+  // A channel literally named "new" collides with the reserved compose hash.
+  if (name === 'new') { void router.push('/settings/channels'); return }
+  void router.push({ path: '/settings/channels', hash: `#channel-${encodeURIComponent(name)}` })
+}
 function channelKey(ch: Channel): string { return String(ch.name || ch.id || ch.type || 'unknown') }
 
 function presentationFor(ch: Channel) {

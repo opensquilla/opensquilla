@@ -53,6 +53,14 @@ _EXPECTED_CAPS: dict[tuple[str, str, str], tuple[bool, bool, bool, str]] = {
     ("aihubmix", "gemini-3-pro-preview", ""): (False, True, True, "none"),
     ("aihubmix", "o3-mini", ""): (False, True, False, "none"),
     ("aihubmix", "gpt-5.5", ""): (False, True, True, "none"),
+    # Agnes AI (Free / Default tier) — catch-all and specific model override.
+    ("agnes", "totally-unknown-model-x1", ""): (False, True, True, "none"),
+    ("agnes", "agnes-2.0-flash", ""): (False, True, True, "none"),
+    ("agnes", "agnes-2.5-flash", ""): (False, True, True, "none"),
+    # Agnes AI Token Plan — same wire behavior, separate API-key env var.
+    ("agnes_token_plan", "totally-unknown-model-x1", ""): (False, True, True, "none"),
+    ("agnes_token_plan", "agnes-2.0-flash", ""): (False, True, True, "none"),
+    ("agnes_token_plan", "agnes-2.5-flash", ""): (False, True, True, "none"),
     ("anthropic", "totally-unknown-model-x1", ""): (False, True, False, "none"),
     ("anthropic", "gpt-4o", ""): (False, True, False, "none"),
     ("anthropic", "deepseek-r1", ""): (False, True, False, "none"),
@@ -595,6 +603,8 @@ _EXPECTED_CAPS: dict[tuple[str, str, str], tuple[bool, bool, bool, str]] = {
 
 # ProviderSpec.requires_api_key() per provider id — frozen pre-migration.
 _EXPECTED_REQUIRES_API_KEY: dict[str, bool] = {
+    "agnes": True,
+    "agnes_token_plan": True,
     "aihubmix": True,
     "anthropic": True,
     "azure": True,
@@ -633,6 +643,8 @@ _EXPECTED_REQUIRES_API_KEY: dict[str, bool] = {
 # pre-migration. Providers in LOCAL_RUNTIME_PROVIDERS report the local
 # runtime window; everything else reports the cloud default.
 _EXPECTED_UNKNOWN_CONTEXT_WINDOW: dict[str, int] = {
+    "agnes": 200000,
+    "agnes_token_plan": 200000,
     "aihubmix": 200000,
     "anthropic": 200000,
     "azure": 200000,

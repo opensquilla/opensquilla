@@ -72,6 +72,8 @@ _PROVIDER_LABELS: dict[str, str] = {
     "qianfan": "Baidu Qianfan",
     "siliconflow": "SiliconFlow",
     "aihubmix": "AIHubMix",
+    "agnes": "Agnes AI (Free)",
+    "agnes_token_plan": "Agnes AI (Token Plan)",
     "volcengine": "Volcengine Ark",
     "byteplus": "BytePlus Ark",
     "vllm": "vLLM (self-hosted)",

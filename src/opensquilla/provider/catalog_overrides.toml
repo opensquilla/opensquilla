@@ -369,3 +369,57 @@ supports_reasoning = false
 supports_tools = true
 supports_vision = false
 reasoning_format = "none"
+
+# Agnes AI (Free / Default tier): OpenAI-compatible endpoint. The text model
+# agnes-2.0-flash supports tool calling and image understanding.
+
+[agnes."agnes-2.0-flash"]
+display_name = "Agnes 2.0 Flash"
+context_window = 524288
+max_output_tokens = 65536
+supports_reasoning = false
+supports_tools = true
+supports_vision = true
+reasoning_format = "none"
+
+[agnes."agnes-2.5-flash"]
+display_name = "Agnes 2.5 Flash"
+context_window = 524288
+max_output_tokens = 65536
+supports_reasoning = false
+supports_tools = true
+supports_vision = true
+reasoning_format = "none"
+
+[agnes."*"]
+supports_reasoning = false
+supports_tools = true
+supports_vision = true
+reasoning_format = "none"
+
+# Agnes AI Token Plan: same models and wire behavior as the free tier, but with
+# a dedicated API-key env var and higher RPM / quota limits.
+
+[agnes_token_plan."agnes-2.0-flash"]
+display_name = "Agnes 2.0 Flash"
+context_window = 524288
+max_output_tokens = 65536
+supports_reasoning = false
+supports_tools = true
+supports_vision = true
+reasoning_format = "none"
+
+[agnes_token_plan."agnes-2.5-flash"]
+display_name = "Agnes 2.5 Flash"
+context_window = 524288
+max_output_tokens = 65536
+supports_reasoning = false
+supports_tools = true
+supports_vision = true
+reasoning_format = "none"
+
+[agnes_token_plan."*"]
+supports_reasoning = false
+supports_tools = true
+supports_vision = true
+reasoning_format = "none"

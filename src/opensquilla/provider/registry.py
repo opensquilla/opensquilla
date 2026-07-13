@@ -321,6 +321,20 @@ for _provider_spec in [
         catalog_source=("siliconflow",),
     ),
     _spec(
+        "agnes",
+        "openai_compat",
+        "openai",
+        "AGNES_API_KEY",
+        "https://apihub.agnes-ai.com/v1",
+    ),
+    _spec(
+        "agnes_token_plan",
+        "openai_compat",
+        "openai",
+        "AGNES_TOKEN_PLAN_API_KEY",
+        "https://apihub.agnes-ai.com/v1",
+    ),
+    _spec(
         "aihubmix",
         "openai_compat",
         "aihubmix",

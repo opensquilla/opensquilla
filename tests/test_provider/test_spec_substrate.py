@@ -29,6 +29,10 @@ _CATALOG_SOURCE_WAIVERS: frozenset[str] = frozenset(
         # Hosted aggregator with no models.dev source mapped; the vendored
         # snapshot has never carried aihubmix rows.
         "aihubmix",
+        # Agnes AI (Free and Token Plan): OpenAI-compatible provider with no
+        # models.dev catalog source; model metadata is supplied by corrections.
+        "agnes",
+        "agnes_token_plan",
         # OAuth-only ChatGPT-backend provider: models are fixed by the
         # Codex subscription, not a public catalog.
         "openai_codex",

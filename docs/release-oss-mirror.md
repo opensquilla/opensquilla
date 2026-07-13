@@ -20,6 +20,9 @@ Configure these GitHub repository variables:
 - `ALIYUN_OSS_BUCKET`: OSS bucket name, for example `opensquilla-downloads`.
 - `ALIYUN_OSS_REGION`: OSS region ID, for example `cn-hangzhou`.
 - `ALIYUN_OSS_PREFIX`: optional object prefix. Defaults to `releases`.
+- `ALIYUN_OSS_PUBLIC_BASE_URL`: optional public HTTPS URL root for download
+  links. Defaults to `https://<bucket>.oss-<region>.aliyuncs.com`; set this
+  to a bound custom domain or CDN URL when one is available.
 - `ALIYUN_OSS_ENDPOINT`: optional custom endpoint or CNAME endpoint. Use this
   when the bucket or account requires a custom OSS data API endpoint.
 - `ALIYUN_OSS_ADDRESSING_STYLE`: optional ossutil addressing style. Supported
@@ -41,13 +44,24 @@ oss://<bucket>/releases/v0.5.0rc3/OpenSquilla-0.5.0-rc3-win-x64.exe
 oss://<bucket>/releases/v0.5.0rc3/OpenSquilla-0.5.0-rc3-mac-arm64.dmg
 oss://<bucket>/releases/v0.5.0rc3/opensquilla-0.5.0rc3-py3-none-any.whl
 oss://<bucket>/releases/v0.5.0rc3/SHA256SUMS
+oss://<bucket>/releases/latest.html
 ```
+
+`latest.html` is a small landing page that is replaced after each successful
+mirror. It lists links to the newest release's versioned assets and is uploaded
+with `Cache-Control: no-cache`. The assets themselves remain versioned and
+must not be replaced.
 
 Use versioned paths and do not overwrite a shared `latest.exe`. A versioned OSS
 path is safe to cache later if a CDN is added.
 
-The public download URL depends on the bucket endpoint or custom domain. With a
-custom download domain it should look like:
+The public download URL depends on the bucket endpoint or custom domain. With the default public endpoint, the stable landing page is:
+
+```text
+https://<bucket>.oss-<region>.aliyuncs.com/releases/latest.html
+```
+
+With a custom download domain it should look like:
 
 ```text
 https://download.example.com/releases/v0.5.0rc3/OpenSquilla-0.5.0-rc3-win-x64.exe

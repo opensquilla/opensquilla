@@ -29,6 +29,7 @@ jobs:
     env:
       ALIYUN_OSS_BUCKET: ${{ vars.ALIYUN_OSS_BUCKET }}
       ALIYUN_OSS_PREFIX: ${{ vars.ALIYUN_OSS_PREFIX }}
+      ALIYUN_OSS_PUBLIC_BASE_URL: ${{ vars.ALIYUN_OSS_PUBLIC_BASE_URL }}
       OSS_ACCESS_KEY_ID: ${{ secrets.ALIYUN_OSS_ACCESS_KEY_ID }}
       OSS_ACCESS_KEY_SECRET: ${{ secrets.ALIYUN_OSS_ACCESS_KEY_SECRET }}
       OSS_REGION: ${{ vars.ALIYUN_OSS_REGION }}
@@ -77,6 +78,14 @@ jobs:
             prefix="releases"
           fi
           echo "ALIYUN_OSS_PREFIX_NORMALIZED=${prefix}" >> "${GITHUB_ENV}"
+
+          public_base_url="${ALIYUN_OSS_PUBLIC_BASE_URL:-https://${ALIYUN_OSS_BUCKET}.oss-${OSS_REGION}.aliyuncs.com}"
+          public_base_url="${public_base_url%/}"
+          if [[ ! "${public_base_url}" =~ ^https://[^[:space:]]+$ ]]; then
+            echo "ALIYUN_OSS_PUBLIC_BASE_URL must be an HTTPS URL: ${public_base_url}" >&2
+            exit 1
+          fi
+          echo "OSS_PUBLIC_BASE_URL_NORMALIZED=${public_base_url}" >> "${GITHUB_ENV}"
 
           endpoint_host="${OSS_ENDPOINT#http://}"
           endpoint_host="${endpoint_host#https://}"
@@ -167,6 +176,62 @@ jobs:
           (root / "CHECKSUMMED_ASSETS").write_text("\n".join(expected) + "\n", encoding="utf-8")
           PY
 
+      - name: Build latest download page
+        env:
+          TAG: ${{ steps.release.outputs.tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from html import escape
+          import os
+          from pathlib import Path
+          from urllib.parse import quote
+
+          root = Path("release-assets")
+          assets = [
+              line.strip()
+              for line in (root / "CHECKSUMMED_ASSETS").read_text(
+                  encoding="utf-8"
+              ).splitlines()
+              if line.strip()
+          ]
+          tag = os.environ["TAG"]
+          base_url = os.environ["OSS_PUBLIC_BASE_URL_NORMALIZED"]
+          prefix = os.environ["ALIYUN_OSS_PREFIX_NORMALIZED"]
+          release_url = "https://github.com/{}/releases/tag/{}".format(
+              os.environ["GITHUB_REPOSITORY"], tag
+          )
+          links = "\n".join(
+              '      <li><a href="{}">{}</a></li>'.format(
+                  escape("{}/{}/{}/{}".format(
+                      base_url, prefix, tag, quote(name, safe="")
+                  ), quote=True),
+                  escape(name),
+              )
+              for name in assets
+          )
+          page = """<!doctype html>
+          <html lang="en">
+            <head>
+              <meta charset="utf-8">
+              <meta name="viewport" content="width=device-width, initial-scale=1">
+              <title>OpenSquilla {tag} downloads</title>
+            </head>
+            <body>
+              <h1>OpenSquilla {tag} downloads</h1>
+              <ul>
+          {links}
+              </ul>
+              <p><a href="{release_url}">GitHub Release</a></p>
+            </body>
+          </html>
+          """.format(
+              tag=escape(tag), links=links, release_url=escape(release_url, quote=True)
+          )
+          (root / "latest.html").write_text(page, encoding="utf-8")
+          PY
+
       - name: Install ossutil 2.0
         shell: bash
         run: |
@@ -183,7 +248,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          dest_prefix="oss://${ALIYUN_OSS_BUCKET}/${ALIYUN_OSS_PREFIX_NORMALIZED}/${TAG}"
+          mirror_root="oss://${ALIYUN_OSS_BUCKET}/${ALIYUN_OSS_PREFIX_NORMALIZED}"
+          dest_prefix="${mirror_root}/${TAG}"
           upload_asset() {
             local path="$1"
             local name="$2"
@@ -195,4 +261,8 @@ jobs:
             upload_asset "release-assets/${name}" "${name}"
           done < release-assets/CHECKSUMMED_ASSETS
           upload_asset "release-assets/SHA256SUMS" "SHA256SUMS"
+          ossutil cp --force --addressing-style "${OSS_ADDRESSING_STYLE_NORMALIZED}" \
+            --meta "Content-Type:text/html; charset=utf-8#Cache-Control:no-cache" \
+            "release-assets/latest.html" "${mirror_root}/latest.html"
           ossutil ls --addressing-style "${OSS_ADDRESSING_STYLE_NORMALIZED}" "${dest_prefix}/"
+          ossutil ls --addressing-style "${OSS_ADDRESSING_STYLE_NORMALIZED}" "${mirror_root}/latest.html"

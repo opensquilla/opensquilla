@@ -38,13 +38,6 @@ GuardianStatus = Literal["completed", "timed_out", "failed_closed", "aborted"]
 _RISK_LEVELS = {"low", "medium", "high", "critical"}
 _AUTHORIZATION_LEVELS = {"unknown", "low", "medium", "high"}
 _OUTCOMES = {"allow", "deny"}
-_REQUIRED_FIELDS = {
-    "risk_level",
-    "user_authorization",
-    "outcome",
-    "rationale",
-}
-
 GUARDIAN_POLICY = guardian_policy_prompt()
 
 _TRANSIENT_PROVIDER_CODES = frozenset(
@@ -116,7 +109,7 @@ class GuardianCircuitBreaker:
 
 
 def parse_guardian_assessment(text: str) -> GuardianAssessment:
-    """Parse exactly one schema-valid assessment object and no surrounding prose."""
+    """Parse a Guardian assessment with Codex's thin JSON recovery path."""
 
     stripped = text.strip()
     if not stripped:
@@ -125,23 +118,43 @@ def parse_guardian_assessment(text: str) -> GuardianAssessment:
     try:
         payload = json.loads(stripped)
     except json.JSONDecodeError:
-        raise ValueError("guardian_response_not_json") from None
+        start = stripped.find("{")
+        end = stripped.rfind("}")
+        if start < 0 or end <= start:
+            raise ValueError("guardian_response_not_json") from None
+        try:
+            payload = json.loads(stripped[start : end + 1])
+        except json.JSONDecodeError:
+            raise ValueError("guardian_response_not_json") from None
 
-    if not isinstance(payload, dict) or set(payload) != _REQUIRED_FIELDS:
+    if not isinstance(payload, dict):
         raise ValueError("invalid_guardian_schema")
 
-    risk = payload["risk_level"]
-    authorization = payload["user_authorization"]
-    outcome = payload["outcome"]
-    rationale = payload["rationale"]
-    if not isinstance(risk, str) or risk not in _RISK_LEVELS:
-        raise ValueError("invalid_guardian_risk")
-    if not isinstance(authorization, str) or authorization not in _AUTHORIZATION_LEVELS:
-        raise ValueError("invalid_guardian_authorization")
+    outcome = payload.get("outcome")
     if not isinstance(outcome, str) or outcome not in _OUTCOMES:
         raise ValueError("invalid_guardian_outcome")
-    if not isinstance(rationale, str) or not rationale.strip():
+
+    risk = payload.get("risk_level")
+    if risk is None:
+        risk = "low" if outcome == "allow" else "high"
+    if not isinstance(risk, str) or risk not in _RISK_LEVELS:
+        raise ValueError("invalid_guardian_risk")
+
+    authorization = payload.get("user_authorization")
+    if authorization is None:
+        authorization = "unknown"
+    if not isinstance(authorization, str) or authorization not in _AUTHORIZATION_LEVELS:
+        raise ValueError("invalid_guardian_authorization")
+
+    rationale = payload.get("rationale")
+    if rationale is not None and not isinstance(rationale, str):
         raise ValueError("invalid_guardian_rationale")
+    if not rationale or not rationale.strip():
+        rationale = (
+            "Auto-review returned a low-risk allow decision."
+            if outcome == "allow"
+            else "Auto-review returned a deny decision without a rationale."
+        )
 
     return GuardianAssessment(
         risk_level=cast("RiskLevel", risk),

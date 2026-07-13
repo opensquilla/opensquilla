@@ -249,8 +249,6 @@ def test_guardian_transcript_keeps_latest_messages_within_budget() -> None:
     [
         "not json",
         "{}",
-        "Assessment:\n" + _assessment_json(),
-        '{"risk_level":"low","user_authorization":"high","outcome":"allow"}',
         _assessment_json() + "\n" + _assessment_json(),
         _assessment_json(risk="unknown"),
     ],
@@ -258,6 +256,44 @@ def test_guardian_transcript_keeps_latest_messages_within_budget() -> None:
 def test_parse_guardian_assessment_rejects_invalid_contract(text: str) -> None:
     with pytest.raises(ValueError):
         parse_guardian_assessment(text)
+
+
+def test_parse_guardian_assessment_extracts_json_from_markdown_fence() -> None:
+    assessment = parse_guardian_assessment(
+        "```json\n"
+        + _assessment_json(
+            risk="low",
+            authorization="high",
+            outcome="allow",
+            rationale="The exact user-requested temporary write is narrow.",
+        )
+        + "\n```"
+    )
+
+    assert assessment.risk_level == "low"
+    assert assessment.user_authorization == "high"
+    assert assessment.outcome == "allow"
+    assert assessment.rationale == "The exact user-requested temporary write is narrow."
+
+
+def test_parse_guardian_assessment_treats_bare_allow_as_low_risk() -> None:
+    assessment = parse_guardian_assessment('{"outcome":"allow"}')
+
+    assert assessment.risk_level == "low"
+    assert assessment.user_authorization == "unknown"
+    assert assessment.outcome == "allow"
+    assert assessment.rationale == "Auto-review returned a low-risk allow decision."
+
+
+def test_parse_guardian_assessment_treats_bare_deny_as_high_risk() -> None:
+    assessment = parse_guardian_assessment('{"outcome":"deny"}')
+
+    assert assessment.risk_level == "high"
+    assert assessment.user_authorization == "unknown"
+    assert assessment.outcome == "deny"
+    assert assessment.rationale == (
+        "Auto-review returned a deny decision without a rationale."
+    )
 
 
 @pytest.mark.asyncio

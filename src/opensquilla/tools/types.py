@@ -51,6 +51,9 @@ class ToolContext:
     run_mode: str | None = None
     sandbox_mounts: list[dict[str, Any]] = field(default_factory=list)
     sandbox_run_context: Any | None = None
+    # Runtime-only filesystem profile override. Guardian installs Codex's
+    # read-only profile here so even its seven inspection tools cannot write.
+    sandbox_file_system_profile: Any | None = None
     source_diff_preservation_mode: str = "log"
     source_diff_candidate_mode: str = "log"
     source_diff_candidates: list[dict[str, Any]] = field(default_factory=list)
@@ -186,6 +189,9 @@ class ToolSpec:
     sandbox: SandboxToolDescriptor = field(
         default_factory=lambda: SandboxToolDescriptor.custom(kind="")
     )
+    # Parameters injected only by the runtime after approval. They remain in
+    # the Python handler signature/spec but are omitted from provider schemas.
+    runtime_only_arguments: frozenset[str] = field(default_factory=frozenset)
 
 
 # Registered tool implementation: async fn that accepts keyword args and returns str.

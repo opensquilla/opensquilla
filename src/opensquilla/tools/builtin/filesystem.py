@@ -25,7 +25,7 @@ from opensquilla.sandbox.escalation import (
     current_tool_run_context,
     request_sandbox_approval,
 )
-from opensquilla.sandbox.integration import get_runtime
+from opensquilla.sandbox.integration import active_file_system_profile, get_runtime
 from opensquilla.sandbox.operation_runtime import (
     FilesystemOperationRequest,
     SandboxOperation,
@@ -651,6 +651,7 @@ def _sandbox_path_access_envelope(
         workspace=_workspace_root(),
         mounts=_active_sandbox_mounts(),
         write=write,
+        profile=active_file_system_profile(_workspace_root()),
     )
     if decision.status == "allowed":
         return None
@@ -691,6 +692,7 @@ def _active_sandbox_mount_allows(resolved: Path, *, write: bool) -> bool:
         workspace=_workspace_root(),
         mounts=_active_sandbox_mounts(),
         write=write,
+        profile=active_file_system_profile(_workspace_root()),
     )
     return decision.status == "allowed"
 
@@ -1070,6 +1072,7 @@ async def _gate_out_of_workspace_write(
             workspace=_workspace_root(),
             mounts=_active_sandbox_mounts(),
             write=True,
+            profile=active_file_system_profile(_workspace_root()),
         )
         if decision.status == "blocked":
             return _path_access_blocked_envelope(decision), False
@@ -1572,6 +1575,7 @@ def _format_spreadsheet(
         },
     },
     required=["path", "content"],
+    runtime_only_arguments=("approval_id",),
     sandbox=SandboxToolDescriptor.filesystem(
         kind="fs.write",
         argv_factory=lambda a: ("fs.write", str(a.get("path", ""))),
@@ -1765,6 +1769,7 @@ async def write_scratch(path: str, content: str) -> str:
         },
     },
     required=["path", "content"],
+    runtime_only_arguments=("approval_id",),
     exposed_by_default=False,
     sandbox=SandboxToolDescriptor.filesystem(
         kind="fs.write",
@@ -1989,6 +1994,7 @@ def _edit_file_retry_guidance(*, duplicate_match: bool = False) -> str:
         },
     },
     required=["path"],
+    runtime_only_arguments=("approval_id",),
     sandbox=SandboxToolDescriptor.filesystem(
         kind="fs.edit",
         argv_factory=lambda a: ("fs.edit", str(a.get("path", ""))),
@@ -2178,6 +2184,7 @@ async def edit_file(
         },
     },
     required=["path", "expected_revision", "edits"],
+    runtime_only_arguments=("approval_id",),
     exposed_by_default=False,
     sandbox=SandboxToolDescriptor.filesystem(
         kind="fs.edit",
@@ -2685,6 +2692,7 @@ def _record_edit_recovery_event(
         },
     },
     required=["path"],
+    runtime_only_arguments=("approval_id",),
     sandbox=SandboxToolDescriptor.filesystem(
         kind="list_dir",
         argv_factory=lambda a: ("list_dir", str(a.get("path", ""))),

@@ -21,7 +21,7 @@ def test_sandbox_defaults_to_root_readonly_and_auto_review() -> None:
 
     assert settings.host_root_readonly is True
     assert settings.approvals_reviewer == "auto_review"
-    assert settings.approval_review_timeout_seconds == 20.0
+    assert settings.approval_review_timeout_seconds == 90.0
     assert settings.approval_review_max_attempts == 3
 
 

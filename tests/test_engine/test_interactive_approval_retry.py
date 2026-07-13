@@ -8,8 +8,11 @@ from typing import Any
 import pytest
 
 from opensquilla.engine import Agent, AgentConfig, ToolResult
-from opensquilla.engine.agent import _AutoReviewCircuitBreaker
-from opensquilla.engine.guardian_review import GUARDIAN_POLICY, GuardianAssessment
+from opensquilla.engine.guardian_review import (
+    GUARDIAN_POLICY,
+    GuardianAssessment,
+    GuardianCircuitBreaker,
+)
 from opensquilla.engine.types import ToolCall, ToolResultEvent
 from opensquilla.gateway.approval_queue import get_approval_queue, reset_approval_queue
 from opensquilla.provider import ChatConfig, Message, ToolDefinition, ToolInputSchema
@@ -174,6 +177,13 @@ def _exec_definition() -> ToolDefinition:
     )
 
 
+def _continuation_approval_id(call: ToolCall) -> str | None:
+    if call.continuation is not None:
+        return call.continuation.approval_id
+    value = call.arguments.get("approval_id")
+    return str(value) if isinstance(value, str) else None
+
+
 class _AutoReviewProvider:
     provider_name = "fake"
 
@@ -209,7 +219,7 @@ class _AutoReviewProvider:
             tool_use_id="tool-auto",
             tool_name="exec_command",
             arguments={
-                "command": "touch /home/lrk/Desktop/probe",
+                "command": "touch /mnt/desktop/probe",
                 "sandbox_permissions": "require_escalated",
             },
         )
@@ -223,11 +233,11 @@ def _auto_review_action() -> ElevationAction:
     return ElevationAction(
         tool_name="exec_command",
         action_kind="shell.exec",
-        argv=("sh", "-lc", "touch /home/lrk/Desktop/probe"),
-        cwd="/home/lrk/opensquilla",
+        argv=("sh", "-lc", "touch /mnt/desktop/probe"),
+        cwd="/workspace/opensquilla",
         sandbox_permissions="require_escalated",
         justification="Create the fixed probe file requested by the user.",
-        target_paths=(("/home/lrk/Desktop/probe", "write"),),
+        target_paths=(("/mnt/desktop/probe", "write"),),
     )
 
 
@@ -245,17 +255,26 @@ async def test_auto_review_allows_and_retries_the_exact_tool_call() -> None:
         )
     )
     tool_calls: list[dict[str, Any]] = []
+    tool_call_objects: list[ToolCall] = []
+    approval_ids: list[str] = []
     executed = False
 
     async def _handler(call: ToolCall) -> ToolResult:
         nonlocal executed
+        tool_call_objects.append(call)
         tool_calls.append(dict(call.arguments))
         gate = gate_elevated_action(
             _auto_review_action(),
-            approval_id=call.arguments.get("approval_id"),
+            approval_id=(
+                call.continuation.approval_id
+                if call.continuation is not None
+                else None
+            ),
             session_key="session-auto",
             queue=get_approval_queue(),
         )
+        if gate.approval_id is not None:
+            approval_ids.append(gate.approval_id)
         if gate.allowed:
             executed = True
             content = json.dumps({"status": "executed"})
@@ -273,26 +292,25 @@ async def test_auto_review_allows_and_retries_the_exact_tool_call() -> None:
     try:
         events = [event async for event in agent.run_turn("Create one Desktop probe file")]
 
-        approval_event = next(
-            event
+        assert not any(
+            isinstance(event, ToolResultEvent) and "approval_required" in event.result
             for event in events
-            if isinstance(event, ToolResultEvent) and "approval_required" in event.result
         )
-        approval_id = json.loads(approval_event.result)["approval_id"]
         assert tool_calls == [
             {
-                "command": "touch /home/lrk/Desktop/probe",
+                "command": "touch /mnt/desktop/probe",
                 "sandbox_permissions": "require_escalated",
             },
             {
-                "command": "touch /home/lrk/Desktop/probe",
+                "command": "touch /mnt/desktop/probe",
                 "sandbox_permissions": "require_escalated",
-                "approval_id": approval_id,
             },
         ]
+        assert tool_call_objects[0] is tool_call_objects[1]
         assert executed is True
         assert provider.guardian_calls == 1
-        assert get_approval_queue().get(approval_id).consumed is True
+        assert len(set(approval_ids)) == 1
+        assert get_approval_queue().get(approval_ids[0]).consumed is True
     finally:
         reset_approval_queue()
 
@@ -305,7 +323,7 @@ async def test_auto_review_denial_returns_rationale_without_side_effect() -> Non
             {
                 "risk_level": "high",
                 "user_authorization": "low",
-                "outcome": "allow",
+                "outcome": "deny",
                 "rationale": "The authorization does not cover this high-risk action.",
             }
         )
@@ -318,7 +336,7 @@ async def test_auto_review_denial_returns_rationale_without_side_effect() -> Non
         tool_calls.append(dict(call.arguments))
         gate = gate_elevated_action(
             _auto_review_action(),
-            approval_id=call.arguments.get("approval_id"),
+            approval_id=_continuation_approval_id(call),
             session_key="session-deny",
             queue=get_approval_queue(),
         )
@@ -341,7 +359,7 @@ async def test_auto_review_denial_returns_rationale_without_side_effect() -> Non
         _ = [event async for event in agent.run_turn("Create one Desktop probe file")]
 
         assert executed is False
-        assert len(tool_calls) == 2
+        assert len(tool_calls) == 1
         result_blocks = [
             block
             for message in provider.main_calls[-1]
@@ -506,7 +524,7 @@ async def test_agent_network_review_denial_returns_rationale_without_replay(tmp_
 
 
 def test_auto_review_circuit_breaker_counts_only_completed_denials() -> None:
-    circuit = _AutoReviewCircuitBreaker(limit=3)
+    circuit = GuardianCircuitBreaker()
     denied = GuardianAssessment("high", "low", "deny", "denied")
     failed = GuardianAssessment(
         "high", "unknown", "deny", "failed", status="failed_closed"
@@ -519,6 +537,8 @@ def test_auto_review_circuit_breaker_counts_only_completed_denials() -> None:
     circuit.observe(denied)
     assert circuit.is_open is False
 
+    circuit.observe(denied)
+    assert circuit.is_open is False
     circuit.observe(denied)
     assert circuit.is_open is True
 
@@ -549,27 +569,38 @@ async def test_agent_run_turn_clears_sandbox_approval_denials_for_session(
 
 @pytest.mark.asyncio
 async def test_interactive_approval_result_is_waited_and_retried_before_model_continues() -> None:
+    reset_approval_queue()
     approval_prompt_seen = asyncio.Event()
     allow_retry = asyncio.Event()
     tool_calls: list[dict[str, Any]] = []
+    tool_call_objects: list[ToolCall] = []
 
     async def _handler(call: ToolCall) -> ToolResult:
+        tool_call_objects.append(call)
         tool_calls.append(dict(call.arguments))
-        approval_id = call.arguments.get("approval_id")
+        approval_id = _continuation_approval_id(call)
         if approval_id is None:
+            approval_id = get_approval_queue().request(
+                "exec",
+                {
+                    "toolName": call.tool_name,
+                    "command": call.arguments["command"],
+                    "args": dict(call.arguments),
+                },
+            )
             return ToolResult(
                 tool_use_id=call.tool_use_id,
                 tool_name=call.tool_name,
                 content=json.dumps(
                     {
                         "status": "approval_required",
-                        "approval_id": "approve-1",
+                        "approval_id": approval_id,
                         "command": call.arguments["command"],
                         "warning": "command requires approval",
                     }
                 ),
             )
-        assert approval_id == "approve-1"
+        assert get_approval_queue().get(approval_id).approved is True
         return ToolResult(
             tool_use_id=call.tool_use_id,
             tool_name=call.tool_name,
@@ -598,13 +629,21 @@ async def test_interactive_approval_result_is_waited_and_retried_before_model_co
     assert len(provider.calls) == 1
     assert tool_calls == [{"command": "pip install demo"}]
 
+    approval_event = next(
+        event
+        for event in events
+        if isinstance(event, ToolResultEvent) and "approval_required" in event.result
+    )
+    approval_id = json.loads(approval_event.result)["approval_id"]
+    get_approval_queue().resolve(approval_id, True)
     allow_retry.set()
     await asyncio.wait_for(task, timeout=2.0)
 
     assert tool_calls == [
         {"command": "pip install demo"},
-        {"command": "pip install demo", "approval_id": "approve-1"},
+        {"command": "pip install demo"},
     ]
+    assert tool_call_objects[0] is tool_call_objects[1]
     assert len(provider.calls) == 2
     assert any(
         isinstance(event, ToolResultEvent) and event.result.startswith("exit_code=0")
@@ -624,6 +663,7 @@ async def test_interactive_approval_result_is_waited_and_retried_before_model_co
     )
     assert block.content == "exit_code=0\ninstalled\n"
     assert "approval_required" not in block.content
+    reset_approval_queue()
 
 
 @pytest.mark.asyncio
@@ -634,7 +674,7 @@ async def test_agent_waits_for_approval_resolution_before_retry_result_reaches_m
 
     async def _handler(call: ToolCall) -> ToolResult:
         tool_calls.append(dict(call.arguments))
-        approval_id = call.arguments.get("approval_id")
+        approval_id = _continuation_approval_id(call)
         if approval_id is None:
             approval_id = get_approval_queue().request(
                 "exec",
@@ -748,7 +788,7 @@ async def test_unresolved_approval_pauses_turn_without_model_fallback(
     reset_approval_queue()
 
     async def _handler(call: ToolCall) -> ToolResult:
-        approval_id = call.arguments.get("approval_id")
+        approval_id = _continuation_approval_id(call)
         if approval_id is None:
             approval_id = get_approval_queue().request(
                 "exec",
@@ -794,9 +834,10 @@ async def test_unresolved_approval_pauses_turn_without_model_fallback(
         for event in events
     )
     assert any(
-        isinstance(event, ToolResultEvent) and "approval_pending" in event.result
+        isinstance(event, ToolResultEvent) and "approval_required" in event.result
         for event in events
     )
+    assert len(get_approval_queue().list_pending("exec")) == 1
 
 
 @pytest.mark.asyncio
@@ -815,7 +856,7 @@ async def test_denied_approval_result_reaches_model_for_final_answer(
     denied_approval_ids: list[str] = []
 
     async def _handler(call: ToolCall) -> ToolResult:
-        approval_id = call.arguments.get("approval_id")
+        approval_id = _continuation_approval_id(call)
         if approval_id is None:
             approval_id = get_approval_queue().request(
                 "exec",

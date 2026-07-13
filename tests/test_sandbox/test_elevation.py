@@ -14,7 +14,7 @@ from opensquilla.sandbox.elevation import (
 )
 
 
-def _shell_action(command: str, *, cwd: str = "/home/lrk/opensquilla") -> ElevationAction:
+def _shell_action(command: str, *, cwd: str = "/workspace/opensquilla") -> ElevationAction:
     return ElevationAction(
         tool_name="exec_command",
         action_kind="shell.exec",
@@ -22,28 +22,28 @@ def _shell_action(command: str, *, cwd: str = "/home/lrk/opensquilla") -> Elevat
         cwd=cwd,
         sandbox_permissions="require_escalated",
         justification="Perform the exact operation requested by the user.",
-        target_paths=(("/home/lrk/Desktop/probe", "write"),),
+        target_paths=(("/mnt/desktop/probe", "write"),),
     )
 
 
 def test_elevation_action_fingerprint_binds_side_effect_fields() -> None:
-    action = _shell_action("touch /home/lrk/Desktop/probe")
+    action = _shell_action("touch /mnt/desktop/probe")
 
     assert action.fingerprint() == action.fingerprint()
     assert replace(action, cwd="/tmp").fingerprint() != action.fingerprint()
     assert (
-        replace(action, argv=("sh", "-lc", "rm /home/lrk/Desktop/probe")).fingerprint()
+        replace(action, argv=("sh", "-lc", "rm /mnt/desktop/probe")).fingerprint()
         != action.fingerprint()
     )
     assert (
-        replace(action, target_paths=(("/home/lrk/Desktop/other", "write"),)).fingerprint()
+        replace(action, target_paths=(("/mnt/desktop/other", "write"),)).fingerprint()
         != action.fingerprint()
     )
 
 
 def test_elevation_action_round_trips_canonical_payload() -> None:
     action = replace(
-        _shell_action("touch /home/lrk/Desktop/probe"),
+        _shell_action("touch /mnt/desktop/probe"),
         network_targets=("example.com",),
         content_digest="sha256:abc",
         tty=True,
@@ -58,7 +58,7 @@ def test_elevation_action_round_trips_canonical_payload() -> None:
 
 def test_request_elevation_is_non_human_actionable_for_auto_review(tmp_path: Path) -> None:
     queue = ApprovalQueue(db_path=str(tmp_path / "approvals.sqlite"))
-    action = _shell_action("touch /home/lrk/Desktop/probe")
+    action = _shell_action("touch /mnt/desktop/probe")
     try:
         pending = request_elevation(
             queue,
@@ -73,14 +73,14 @@ def test_request_elevation_is_non_human_actionable_for_auto_review(tmp_path: Pat
         assert entry.params["reviewer"] == "auto_review"
         assert entry.params["humanActionable"] is False
         assert entry.params["fingerprint"] == action.fingerprint()
-        assert "touch /home/lrk/Desktop/probe" in entry.params["action"]["argv"]
+        assert "touch /mnt/desktop/probe" in entry.params["action"]["argv"]
     finally:
         queue.close()
 
 
 def test_duplicate_pending_elevation_reuses_approval(tmp_path: Path) -> None:
     queue = ApprovalQueue(db_path=str(tmp_path / "approvals.sqlite"))
-    action = _shell_action("touch /home/lrk/Desktop/probe")
+    action = _shell_action("touch /mnt/desktop/probe")
     try:
         first = request_elevation(queue, action, session_key="session-1")
         second = request_elevation(queue, action, session_key="session-1")
@@ -92,9 +92,30 @@ def test_duplicate_pending_elevation_reuses_approval(tmp_path: Path) -> None:
         queue.close()
 
 
+def test_elevation_request_persists_internal_retry_metadata(tmp_path: Path) -> None:
+    queue = ApprovalQueue(db_path=str(tmp_path / "approvals.sqlite"))
+    action = _shell_action("touch /mnt/desktop/probe")
+    try:
+        pending = request_elevation(
+            queue,
+            action,
+            session_key="session-1",
+            metadata={
+                "backendRetry": True,
+                "sandboxRequestFingerprint": "request-fp",
+            },
+        )
+
+        params = queue.get(pending.approval_id or "").params
+        assert params["backendRetry"] is True
+        assert params["sandboxRequestFingerprint"] == "request-fp"
+    finally:
+        queue.close()
+
+
 def test_approved_elevation_is_consumed_once(tmp_path: Path) -> None:
     queue = ApprovalQueue(db_path=str(tmp_path / "approvals.sqlite"))
-    action = _shell_action("touch /home/lrk/Desktop/probe")
+    action = _shell_action("touch /mnt/desktop/probe")
     try:
         pending = request_elevation(queue, action, session_key="session-1")
         queue.resolve(pending.approval_id or "", True)
@@ -110,10 +131,33 @@ def test_approved_elevation_is_consumed_once(tmp_path: Path) -> None:
         queue.close()
 
 
+def test_approved_elevation_cannot_be_consumed_from_another_session(
+    tmp_path: Path,
+) -> None:
+    queue = ApprovalQueue(db_path=str(tmp_path / "approvals.sqlite"))
+    action = _shell_action("touch /mnt/desktop/probe")
+    try:
+        pending = request_elevation(queue, action, session_key="session-a")
+        queue.resolve(pending.approval_id or "", True)
+
+        decision = consume_approved_elevation(
+            queue,
+            pending.approval_id or "",
+            action,
+            expected_session_key="session-b",
+        )
+
+        assert decision.allowed is False
+        assert decision.reason == "approval_session_mismatch"
+        assert queue.get(pending.approval_id or "").consumed is False
+    finally:
+        queue.close()
+
+
 def test_approved_elevation_rejects_changed_action_without_consuming(tmp_path: Path) -> None:
     queue = ApprovalQueue(db_path=str(tmp_path / "approvals.sqlite"))
-    original = _shell_action("touch /home/lrk/Desktop/probe")
-    changed = _shell_action("rm -rf /home/lrk/Desktop")
+    original = _shell_action("touch /mnt/desktop/probe")
+    changed = _shell_action("rm -rf /mnt/desktop")
     try:
         pending = request_elevation(queue, original, session_key="session-1")
         queue.resolve(pending.approval_id or "", True)
@@ -129,7 +173,7 @@ def test_approved_elevation_rejects_changed_action_without_consuming(tmp_path: P
 
 def test_denied_elevation_returns_reviewer_rationale(tmp_path: Path) -> None:
     queue = ApprovalQueue(db_path=str(tmp_path / "approvals.sqlite"))
-    action = _shell_action("rm -rf /home/lrk/Desktop")
+    action = _shell_action("rm -rf /mnt/desktop")
     try:
         pending = request_elevation(queue, action, session_key="session-1")
         entry = queue.get(pending.approval_id or "")
@@ -179,7 +223,7 @@ def test_gate_elevated_action_ignores_default_sandbox_intent(tmp_path: Path) -> 
 
 def test_gate_elevated_action_requests_then_consumes_exact_approval(tmp_path: Path) -> None:
     queue = ApprovalQueue(db_path=str(tmp_path / "approvals.sqlite"))
-    action = _shell_action("touch /home/lrk/Desktop/probe")
+    action = _shell_action("touch /mnt/desktop/probe")
     try:
         pending = gate_elevated_action(
             action,

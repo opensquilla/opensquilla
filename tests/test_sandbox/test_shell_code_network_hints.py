@@ -59,6 +59,35 @@ def test_code_exec_publishes_structured_elevation_fields() -> None:
     assert "prefix_rule" in params
 
 
+def test_default_tool_contract_does_not_advertise_experimental_codex_permissions() -> None:
+    from opensquilla.tools.builtin import code_exec, filesystem, patch, shell  # noqa: F401
+    from opensquilla.tools.registry import get_default_registry
+
+    experimental = {
+        "additional_permissions",
+        "with_additional_permissions",
+        "request_permissions",
+        "shell_zsh_fork",
+        "unified_exec_zsh_fork",
+    }
+    for tool_name in (
+        "exec_command",
+        "background_process",
+        "execute_code",
+        "write_file",
+        "edit_file",
+        "apply_patch",
+    ):
+        registered = get_default_registry().get(tool_name)
+        assert registered is not None
+        params = registered.spec.parameters
+        assert params["sandbox_permissions"]["enum"] == [
+            "use_default",
+            "require_escalated",
+        ]
+        assert experimental.isdisjoint(params)
+
+
 @pytest.mark.asyncio
 async def test_code_exec_exact_elevation_runs_host_once(
     managed_runtime: Path,
@@ -446,6 +475,8 @@ def managed_runtime(tmp_path: Path) -> Iterator[Path]:
             backend="noop",
             allow_legacy_mode=True,
             network_default="proxy_allowlist",
+            exclude_slash_tmp=True,
+            exclude_tmpdir_env_var=True,
         ),
         workspace=tmp_path,
     )
@@ -2836,7 +2867,7 @@ async def test_trusted_network_failure_does_not_retry_after_managed_proxy_execut
 
 
 @pytest.mark.asyncio
-async def test_trusted_normal_user_path_denial_escalates_without_retry(
+async def test_trusted_normal_user_path_denial_requests_broader_retry_review(
     managed_runtime: Path,
     tmp_path_factory: pytest.TempPathFactory,
     monkeypatch: pytest.MonkeyPatch,
@@ -2885,12 +2916,12 @@ async def test_trusted_normal_user_path_denial_escalates_without_retry(
     finally:
         current_tool_context.reset(token)
 
-    assert json.loads(result)["status"] == "denied"
+    assert json.loads(result)["status"] == "approval_required"
     assert len(backend_calls) == 1
 
 
 @pytest.mark.asyncio
-async def test_trusted_read_path_denial_escalates_without_retry(
+async def test_trusted_read_path_denial_requests_broader_retry_review(
     managed_runtime: Path,
     tmp_path_factory: pytest.TempPathFactory,
     monkeypatch: pytest.MonkeyPatch,
@@ -2940,12 +2971,12 @@ async def test_trusted_read_path_denial_escalates_without_retry(
     finally:
         current_tool_context.reset(token)
 
-    assert json.loads(result)["status"] == "denied"
+    assert json.loads(result)["status"] == "approval_required"
     assert len(backend_calls) == 1
 
 
 @pytest.mark.asyncio
-async def test_trusted_execve_path_denial_escalates_without_retry(
+async def test_trusted_execve_path_denial_requests_broader_retry_review(
     managed_runtime: Path,
     tmp_path_factory: pytest.TempPathFactory,
     monkeypatch: pytest.MonkeyPatch,
@@ -2995,12 +3026,12 @@ async def test_trusted_execve_path_denial_escalates_without_retry(
     finally:
         current_tool_context.reset(token)
 
-    assert json.loads(result)["status"] == "denied"
+    assert json.loads(result)["status"] == "approval_required"
     assert len(backend_calls) == 1
 
 
 @pytest.mark.asyncio
-async def test_trusted_managed_network_denial_escalates_without_retry(
+async def test_trusted_managed_network_denial_requests_broader_retry_review(
     managed_runtime: Path,
     tmp_path_factory: pytest.TempPathFactory,
     monkeypatch: pytest.MonkeyPatch,
@@ -3075,7 +3106,7 @@ async def test_trusted_managed_network_denial_escalates_without_retry(
     finally:
         current_tool_context.reset(token)
 
-    assert json.loads(result)["status"] == "denied"
+    assert json.loads(result)["status"] == "approval_required"
     assert len(backend_calls) == 1
     assert cleanup_calls == 1
     assert backend_calls[0].env["HTTP_PROXY"] == "http://127.0.0.1:48123"

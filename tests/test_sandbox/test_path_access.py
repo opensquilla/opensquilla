@@ -134,7 +134,15 @@ def sandbox_runtime(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator
     workspace = tmp_path / "workspace"
     workspace.mkdir(exist_ok=True)
     runtime = configure_runtime(
-        SandboxSettings(run_mode="standard", backend="noop", allow_legacy_mode=True),
+        SandboxSettings(
+            run_mode="standard",
+            backend="noop",
+            allow_legacy_mode=True,
+            # Most tests in this module exercise the workspace boundary.  Keep
+            # Codex's writable /tmp behavior covered explicitly below.
+            exclude_slash_tmp=True,
+            exclude_tmpdir_env_var=True,
+        ),
         workspace=workspace,
     )
     runtime.backend = _FilesystemBackend()
@@ -633,6 +641,70 @@ async def test_filesystem_write_outside_workspace_requires_explicit_elevation(
     assert payload["path"] == str(outside.resolve(strict=False))
     assert get_approval_queue().list_pending("exec") == []
     assert not outside.exists()
+
+
+@pytest.mark.asyncio
+async def test_default_profile_allows_direct_filesystem_write_under_slash_tmp(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(exist_ok=True)
+    target = tmp_path / "codex-default-tmp" / "notes.txt"
+    runtime = get_runtime()
+    assert runtime is not None
+    runtime.settings.exclude_slash_tmp = False
+
+    with tool_context(workspace):
+        result = await fs.write_file(str(target), "tmp body\n")
+
+    assert "Written 9 bytes" in result
+    assert target.read_text(encoding="utf-8") == "tmp body\n"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("metadata_dir", [".git", ".agents", ".codex"])
+async def test_direct_workspace_metadata_write_requires_elevation(
+    tmp_path: Path,
+    metadata_dir: str,
+) -> None:
+    workspace = tmp_path / "workspace"
+    (workspace / metadata_dir).mkdir(parents=True)
+    target = workspace / metadata_dir / "config-probe"
+
+    with tool_context(workspace):
+        payload = json.loads(await fs.write_file(str(target), "blocked\n"))
+
+    assert payload["status"] == "elevation_required"
+    assert payload["reason"] == "protected_metadata"
+    assert not target.exists()
+
+
+@pytest.mark.asyncio
+async def test_approved_direct_workspace_metadata_write_executes_once(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    (workspace / ".codex").mkdir(parents=True)
+    target = workspace / ".codex" / "config-probe"
+    kwargs = {
+        "sandbox_permissions": "require_escalated",
+        "justification": "Write the exact protected metadata file requested by the user.",
+    }
+
+    with tool_context(workspace):
+        requested = json.loads(await fs.write_file(str(target), "approved\n", **kwargs))
+        approval_id = requested["approval_id"]
+        get_approval_queue().resolve(approval_id, True)
+        result = await fs.write_file(
+            str(target),
+            "approved\n",
+            approval_id=approval_id,
+            **kwargs,
+        )
+
+    assert "Written 9 bytes" in result
+    assert target.read_text(encoding="utf-8") == "approved\n"
+    assert get_approval_queue().get(approval_id).consumed is True
 
 
 @pytest.mark.asyncio
@@ -1351,13 +1423,13 @@ async def test_trusted_shell_delete_existing_file_requires_elevation(
 
 
 @pytest.mark.asyncio
-async def test_shell_write_to_protected_metadata_is_blocked_before_backend(
+async def test_shell_write_to_protected_metadata_requires_elevation_before_backend(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     workspace = tmp_path / "workspace"
     workspace.mkdir(exist_ok=True)
-    repo = tmp_path / "repo"
+    repo = workspace
     (repo / ".git").mkdir(parents=True)
     (repo / ".codex").mkdir()
     backend_calls: list[SandboxRequest] = []
@@ -1383,10 +1455,10 @@ async def test_shell_write_to_protected_metadata_is_blocked_before_backend(
 
     git_payload = json.loads(git_result)
     codex_payload = json.loads(codex_result)
+    assert git_payload["status"] == "elevation_required"
     assert git_payload["reason"] == "protected_metadata"
-    assert git_payload["protected_name"] == ".git"
+    assert codex_payload["status"] == "elevation_required"
     assert codex_payload["reason"] == "protected_metadata"
-    assert codex_payload["protected_name"] == ".codex"
     assert backend_calls == []
     assert not (repo / ".git/_sandbox_should_not_write.txt").exists()
     assert not (repo / ".codex/_sandbox_should_not_write.txt").exists()

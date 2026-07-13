@@ -89,8 +89,10 @@ class SandboxSettings(BaseSettings):
     run_mode: RunModeName | None = None
     auto_setup: bool = True
     host_root_readonly: bool = True
+    exclude_slash_tmp: bool = False
+    exclude_tmpdir_env_var: bool = False
     approvals_reviewer: ApprovalsReviewerName = "auto_review"
-    approval_review_timeout_seconds: float = Field(default=20.0, gt=0.0, le=120.0)
+    approval_review_timeout_seconds: float = Field(default=90.0, gt=0.0, le=120.0)
     approval_review_max_attempts: int = Field(default=3, ge=1, le=3)
 
     network_default: NetworkDefault = "proxy_allowlist"
@@ -98,6 +100,8 @@ class SandboxSettings(BaseSettings):
 
     extra_ro_mounts: list[str] = Field(default_factory=list)
     extra_rw_mounts: list[str] = Field(default_factory=list)
+    denied_read_roots: list[str] = Field(default_factory=list)
+    denied_read_globs: list[str] = Field(default_factory=list)
 
     cpu_seconds: int = 30
     memory_mb: int = 1024

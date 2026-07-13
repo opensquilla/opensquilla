@@ -13,6 +13,7 @@ from typing import Any
 
 from opensquilla.identity.workspace import BOOTSTRAP_FILENAMES
 from opensquilla.sandbox.elevation import ElevationAction, gate_elevated_action
+from opensquilla.sandbox.integration import active_file_system_profile
 from opensquilla.sandbox.operation_runtime import (
     FilesystemOperationRequest,
     SandboxOperation,
@@ -449,6 +450,7 @@ def _gate_patch_ops(
                 workspace=workspace,
                 mounts=filesystem._active_sandbox_mounts(),
                 write=True,
+                profile=active_file_system_profile(workspace),
             )
             if decision.status == "blocked":
                 return filesystem._path_access_blocked_envelope(decision), False
@@ -872,6 +874,7 @@ def _apply_ops(
         },
     },
     required=[],
+    runtime_only_arguments=("approval_id",),
     sandbox=SandboxToolDescriptor.filesystem(
         kind="patch.apply",
         argv_factory=lambda a: (

@@ -91,7 +91,13 @@ async def test_apply_patch_workspace_escape_requires_explicit_elevation(
     outside = tmp_path / "outside.txt"
     outside.write_text("old\n", encoding="utf-8")
     configure_runtime(
-        SandboxSettings(run_mode="standard", backend="noop", allow_legacy_mode=True),
+        SandboxSettings(
+            run_mode="standard",
+            backend="noop",
+            allow_legacy_mode=True,
+            exclude_slash_tmp=True,
+            exclude_tmpdir_env_var=True,
+        ),
         workspace=workspace,
     )
     monkeypatch.setattr(patch_tool, "_default_patch_root", lambda: tmp_path.resolve())

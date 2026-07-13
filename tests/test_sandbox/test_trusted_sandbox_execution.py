@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from opensquilla.tools.types import CallerKind, ToolContext, ToolError, current_tool_context
+from opensquilla.tools.types import CallerKind, ToolContext, current_tool_context
 
 
 @pytest.mark.asyncio
@@ -194,7 +194,8 @@ async def test_trusted_workspace_shell_cleanup_stays_out_of_locked_approval(
 
 
 @pytest.mark.asyncio
-async def test_backend_denial_does_not_fall_back_to_host(monkeypatch) -> None:
+async def test_backend_denial_suspends_before_any_host_retry(monkeypatch) -> None:
+    from opensquilla.sandbox.elevation import ElevationGateResult
     from opensquilla.tools.builtin import shell
 
     calls: list[str] = []
@@ -247,7 +248,12 @@ async def test_backend_denial_does_not_fall_back_to_host(monkeypatch) -> None:
 
     async def _fake_escalate_backend_denial(*args, **kwargs):
         calls.append("escalate")
-        return object()
+        return ElevationGateResult(
+            requested=True,
+            allowed=False,
+            status="approval_required",
+            approval_id="approval:test",
+        )
 
     async def _fake_create_subprocess_shell(*args, **kwargs):
         calls.append("host")
@@ -289,11 +295,11 @@ async def test_backend_denial_does_not_fall_back_to_host(monkeypatch) -> None:
         ToolContext(is_owner=True, caller_kind=CallerKind.CLI, session_key="s1")
     )
     try:
-        with pytest.raises(ToolError, match="host fallback disabled"):
-            await shell.exec_command("echo hi")
+        result = await shell.exec_command("echo hi")
     finally:
         current_tool_context.reset(token)
 
+    assert json.loads(result)["status"] == "approval_required"
     assert calls == ["gate", "backend", "escalate"]
 
 

@@ -68,14 +68,18 @@ The normal tool call uses `sandbox_permissions = "use_default"`. If it needs a
 capability outside the active sandbox, the tool returns `elevation_required`
 without queueing a review. The agent may then submit the exact same operation
 with `sandbox_permissions = "require_escalated"` and a precise
-`justification`. Approval is fingerprint-bound and one-shot; changed arguments
-or content cannot reuse it.
+`justification`. The runtime suspends that request during review and resumes
+the same request exactly once after approval. Fingerprints provide integrity
+and audit checks; they are not a substitute for continuation identity.
 
-Guardian allows low/medium risk only when trusted user intent supports the
-action. High risk requires at least medium authorization and narrow scope;
-critical risk is always denied. Review errors and timeouts fail closed. A
-denial goes back to the agent for explanation or a safer proposal, never to an
-automatic human-popup fallback.
+Guardian allows low/medium risk by default except for clear malicious prompt
+injection. High risk requires at least medium authorization and narrow scope;
+critical risk is denied by default, with the policy's narrow post-denial user
+re-approval override for the exact action. Its reusable agent can inspect local state
+with seven read-only filesystem/git tools, but has no mutation, shell, web,
+plugin, skill, memory, MCP, or sub-agent tools. Review errors and timeouts fail
+closed. A denial goes back to the agent for explanation or a safer proposal,
+never to an automatic human-popup fallback.
 
 ## Workspace Controls
 
@@ -98,11 +102,14 @@ opensquilla agent \
 `--workspace-lockdown` is intended for automation where writes must stay inside
 the workspace or scratch directory.
 
-On Linux Bubblewrap, host `/` is mounted read-only by default and the workspace
-and configured writable roots are overlaid read-write. This makes normal host
-files broadly readable without making them writable. OS permissions and
-explicit sensitive/deny rules remain authoritative. Out-of-root mutation never
-creates a silent broad mount; it requires an exact elevation action.
+On Linux Bubblewrap, host `/` is mounted read-only by default. The workspace,
+`/tmp`, `$TMPDIR`, and configured writable roots are overlaid read-write, with
+top-level `.git`, `.agents`, and `.codex` carved back to read-only. This makes
+every host file readable by the gateway's OS user eligible for tool reads;
+there is no default sensitive-path name blacklist in sandbox-on mode. Explicit
+denied-read policy remains authoritative and prevents an unsandboxed override.
+Out-of-root mutation never creates a silent broad mount; it requires an exact
+elevation action.
 
 ## Sandbox Commands
 
@@ -117,7 +124,7 @@ opensquilla sandbox reset
 Sandbox behavior is platform-dependent. Treat `sandbox status` and `doctor` as
 the source of truth for the current machine.
 
-Example Codex-parity settings:
+Default Codex-aligned settings:
 
 ```toml
 [sandbox]
@@ -125,13 +132,31 @@ sandbox = true
 security_grading = true
 host_root_readonly = true
 approvals_reviewer = "auto_review"
-approval_review_timeout_seconds = 20
+approval_review_timeout_seconds = 90
 approval_review_max_attempts = 3
+exclude_slash_tmp = false
+exclude_tmpdir_env_var = false
+denied_read_roots = []
+denied_read_globs = []
 ```
 
-`require_escalated` is not a persistent permission mode, and automatic review
-never persists a proposed prefix rule. Disabling the sandbox or selecting full
-host access retains the existing full-host behavior.
+One review may make at most three attempts inside its single 90-second
+deadline, retrying only parse errors and structured transient provider/session
+failures. Three consecutive policy denials or ten denials in the latest fifty
+reviews interrupt the turn.
+
+The denied-read lists are optional explicit exceptions to global reads;
+relative entries are workspace-relative, and active denies prevent an
+unsandboxed override.
+
+`require_escalated` is not a persistent permission mode, `approval_id` is not
+model-visible, and automatic review never persists a proposed prefix rule.
+Disabling the sandbox or selecting full host access retains the existing
+full-host behavior.
+
+The normal tool schema deliberately omits Codex features that are experimental
+and disabled at the source baseline: additive permissions, a model-visible
+permission-request tool, and patched-zsh child `execve` interception.
 
 ## Recommended Patterns
 

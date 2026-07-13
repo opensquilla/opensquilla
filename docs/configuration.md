@@ -317,6 +317,32 @@ opensquilla agent --permissions restricted -m "Read the repo and summarize it"
 opensquilla agent --permissions full -m "Make a local patch and run tests"
 ```
 
+Linux sandbox defaults can be stated explicitly as:
+
+```toml
+[sandbox]
+sandbox = true
+security_grading = true
+host_root_readonly = true
+exclude_slash_tmp = false
+exclude_tmpdir_env_var = false
+approvals_reviewer = "auto_review"
+approval_review_timeout_seconds = 90
+approval_review_max_attempts = 3
+denied_read_roots = []
+denied_read_globs = []
+```
+
+With these defaults, `/` is readable subject to the gateway user's OS
+permissions; the workspace, `/tmp`, and `$TMPDIR` are writable. Writes outside
+those roots use exact one-shot elevation review. The model-visible permission
+modes are only `use_default` and `require_escalated`.
+
+`denied_read_roots` and `denied_read_globs` are optional explicit exceptions
+to global read visibility. Relative entries are resolved from the active
+workspace. When either list produces an active deny, OpenSquilla will not grant
+an unsandboxed retry that would discard it.
+
 For unattended automation that must stay inside a workspace:
 
 ```sh

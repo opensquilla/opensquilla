@@ -53,6 +53,7 @@ from opensquilla.sandbox.backend.seatbelt import (
     render_seatbelt_profile,
     seatbelt_env_for_policy,
 )
+from opensquilla.sandbox.denial_attribution import is_likely_sandbox_denied
 from opensquilla.sandbox.elevation import ElevationAction, gate_elevated_action
 from opensquilla.sandbox.escalation import (
     build_path_approval_params,
@@ -62,6 +63,8 @@ from opensquilla.sandbox.escalation import (
 )
 from opensquilla.sandbox.integration import (
     SandboxRuntime,
+    active_file_system_profile,
+    consume_backend_denial_retry,
     escalate_backend_denial,
     gate_action,
     get_runtime,
@@ -2485,6 +2488,7 @@ def _sandbox_workdir_access_envelope(
         workspace=workspace,
         mounts=_active_sandbox_mounts(),
         write=write,
+        profile=active_file_system_profile(workspace),
     )
     if decision.status == "allowed":
         return None
@@ -2519,6 +2523,7 @@ def _sandbox_read_path_access_envelope(
             workspace=workspace,
             mounts=_active_sandbox_mounts(),
             write=False,
+            profile=active_file_system_profile(workspace),
         )
         if decision.status == "allowed":
             continue
@@ -2572,6 +2577,7 @@ def _sandbox_write_path_access_envelope(
             workspace=workspace,
             mounts=_active_sandbox_mounts(),
             write=True,
+            profile=active_file_system_profile(workspace),
         )
         if decision.status == "allowed":
             if allow_trusted_auto_mount:
@@ -3869,6 +3875,7 @@ def _shell_elevation_required_envelope(
                 workspace=workspace,
                 mounts=_active_sandbox_mounts(),
                 write=True,
+                profile=active_file_system_profile(workspace),
             )
             if decision.status == "blocked":
                 return _path_access_blocked_envelope(decision)
@@ -3900,15 +3907,19 @@ def _shell_elevation_hard_block(
     *,
     stdin: str | None = None,
 ) -> dict[str, object] | None:
-    protected = _protected_metadata_write_block(
-        tool_name,
-        command,
-        cwd,
-        profile,
-        stdin=stdin,
-    )
-    if protected is not None:
-        return protected
+    # Codex-compatible protected-metadata writes are an elevation boundary on
+    # Linux.  Keep the existing terminal block on the other platform paths,
+    # including tests that exercise the Windows backend from a Linux host.
+    if not sys.platform.startswith("linux") or _windows_sandbox_backend_active():
+        protected = _protected_metadata_write_block(
+            tool_name,
+            command,
+            cwd,
+            profile,
+            stdin=stdin,
+        )
+        if protected is not None:
+            return protected
     lockdown = _workspace_lockdown_shell_block(tool_name, command, cwd, stdin=stdin)
     if lockdown is not None:
         return lockdown
@@ -4435,6 +4446,7 @@ async def _run_host_shell_command(
         },
     },
     required=["command"],
+    runtime_only_arguments=("approval_id",),
     execution_timeout_seconds=_DEFAULT_EXEC_TIMEOUT + _EXEC_TOOL_TIMEOUT_PADDING,
     execution_timeout_argument="timeout",
     execution_timeout_padding=_EXEC_TOOL_TIMEOUT_PADDING,
@@ -4476,6 +4488,7 @@ async def exec_command(
         )
     original_profile = _profile_shell_command(command, workdir=workdir)
     host_execution = _host_execution_allowed()
+    backend_retry_granted = False
     if (
         windows_process_sandbox
         and not host_execution
@@ -4650,60 +4663,74 @@ async def exec_command(
         )
         if isinstance(decision, DenialResult):
             return finish(json.dumps(decision.to_dict()))
-        backend_cwd = _sandbox_shell_backend_cwd(cwd, request)
-        backend_policy = request.policy
-        backend_policy = _policy_with_active_tool_mounts(backend_policy)
-        backend_policy = _policy_with_windows_shell_runtime_mounts(backend_policy, runtime)
-        backend_policy = _policy_with_wall_timeout(backend_policy, effective_timeout)
-        backend_policy = _trusted_managed_network_policy(backend_policy, runtime)
-        backend_request = SandboxRequest(
-            argv=_sandbox_shell_backend_argv(command, runtime, cwd=backend_cwd),
-            cwd=backend_cwd,
-            action_kind=request.action_kind,
-            policy=backend_policy,
-            stdin=stdin_bytes,
-            env=dict(merged_env),
-            reason=getattr(request, "reason", ""),
-            session_id=getattr(request, "session_id", ""),
-            run_mode=getattr(request, "run_mode", ""),
+        retry_gate = consume_backend_denial_retry(
+            approval_id,
+            request,
+            policy,
+            runtime=runtime,
         )
-        preflight = await preflight_subprocess_managed_network(backend_request, runtime)
-        if isinstance(preflight, DenialResult):
-            return finish(json.dumps(preflight.to_dict()))
-        if isinstance(preflight, dict):
-            return finish(json.dumps(preflight))
-        try:
-            sandbox_result = await _run_backend_with_managed_network(
-                backend_request,
-                runtime=runtime,
+        if retry_gate is not None:
+            if not retry_gate.allowed:
+                return finish(json.dumps(retry_gate.to_envelope(), ensure_ascii=False))
+            host_execution = True
+            backend_retry_granted = True
+        else:
+            backend_cwd = _sandbox_shell_backend_cwd(cwd, request)
+            backend_policy = request.policy
+            backend_policy = _policy_with_active_tool_mounts(backend_policy)
+            backend_policy = _policy_with_windows_shell_runtime_mounts(backend_policy, runtime)
+            backend_policy = _policy_with_wall_timeout(backend_policy, effective_timeout)
+            backend_policy = _trusted_managed_network_policy(backend_policy, runtime)
+            backend_request = SandboxRequest(
+                argv=_sandbox_shell_backend_argv(command, runtime, cwd=backend_cwd),
+                cwd=backend_cwd,
+                action_kind=request.action_kind,
+                policy=backend_policy,
+                stdin=stdin_bytes,
+                env=dict(merged_env),
+                reason=getattr(request, "reason", ""),
+                session_id=getattr(request, "session_id", ""),
+                run_mode=getattr(request, "run_mode", ""),
             )
-        except Exception as exc:
-            raise ToolError(f"Sandboxed shell execution failed: {exc}") from exc
-        if sandbox_result.backend_notes:
-            escalation = await escalate_backend_denial(
-                sandbox_result, request, policy, runtime=runtime
+            preflight = await preflight_subprocess_managed_network(backend_request, runtime)
+            if isinstance(preflight, DenialResult):
+                return finish(json.dumps(preflight.to_dict()))
+            if isinstance(preflight, dict):
+                return finish(json.dumps(preflight))
+            try:
+                sandbox_result = await _run_backend_with_managed_network(
+                    backend_request,
+                    runtime=runtime,
+                )
+            except Exception as exc:
+                raise ToolError(f"Sandboxed shell execution failed: {exc}") from exc
+            if is_likely_sandbox_denied(sandbox_result):
+                escalation = await escalate_backend_denial(
+                    sandbox_result, request, policy, runtime=runtime
+                )
+                if isinstance(escalation, DenialResult):
+                    return finish(json.dumps(escalation.to_dict()))
+                return finish(json.dumps(escalation.to_envelope(), ensure_ascii=False))
+            output = sandbox_result.stdout
+            if sandbox_result.stderr:
+                output += sandbox_result.stderr
+            output = _append_sandbox_network_hint(output)
+            output = _append_patch_hygiene_warning(command, cwd, output)
+            output = _append_masked_pipeline_failure_warning(
+                command,
+                sandbox_result.returncode,
+                output,
             )
-            if isinstance(escalation, DenialResult):
-                return finish(json.dumps(escalation.to_dict()))
-            raise ToolError("Sandboxed shell execution denied; host fallback disabled")
-        output = sandbox_result.stdout
-        if sandbox_result.stderr:
-            output += sandbox_result.stderr
-        output = _append_sandbox_network_hint(output)
-        output = _append_patch_hygiene_warning(command, cwd, output)
-        output = _append_masked_pipeline_failure_warning(
-            command,
-            sandbox_result.returncode,
-            output,
-        )
-        return finish(f"exit_code={sandbox_result.returncode}\n{output}")
+            return finish(f"exit_code={sandbox_result.returncode}\n{output}")
 
     if host_execution:
         log.info(
             "shell_exec_host",
             command=_audit_command(command),
             run_mode=_context_run_mode(),
-            elevation_grant=sandbox_permissions == "require_escalated",
+            elevation_grant=(
+                sandbox_permissions == "require_escalated" or backend_retry_granted
+            ),
             host_effect=profile.host_effect,
         )
         merged_env = _host_shell_env(merged_env)
@@ -4771,6 +4798,7 @@ async def exec_command(
         },
     },
     required=["command"],
+    runtime_only_arguments=("approval_id",),
     sandbox=SandboxToolDescriptor.process(
         kind="shell.background",
         argv_factory=lambda a: ("background_process", str(a.get("command", ""))),

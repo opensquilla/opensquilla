@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import fnmatch
 import os
+import sys
 from collections.abc import Iterable
 from dataclasses import dataclass
 from enum import StrEnum
@@ -57,16 +58,21 @@ class FileSystemPermissionProfile:
         denied_read_globs: Iterable[str] = (),
         host_root_readonly: bool = True,
         tmp_writable: bool = True,
+        tmpdir_env_writable: bool = True,
         protect_metadata: bool = True,
     ) -> FileSystemPermissionProfile:
         """Build the default workspace-write profile used by Codex on Linux."""
 
         workspace = _canonical(workspace)
         declared_writable = [workspace, *(_canonical(path) for path in writable_roots)]
-        if tmp_writable:
+        if sys.platform.startswith("linux") and tmp_writable:
             declared_writable.append(_canonical(Path("/tmp")))
-            if raw_tmpdir := os.environ.get("TMPDIR"):
-                declared_writable.append(_canonical(Path(raw_tmpdir)))
+        if (
+            sys.platform.startswith("linux")
+            and tmpdir_env_writable
+            and (raw_tmpdir := os.environ.get("TMPDIR"))
+        ):
+            declared_writable.append(_canonical(Path(raw_tmpdir)))
         declared_writable = list(dict.fromkeys(declared_writable))
 
         entries: list[FileSystemPermissionEntry] = []
@@ -119,6 +125,24 @@ class FileSystemPermissionProfile:
 
         return cls((FileSystemPermissionEntry(Path("/"), FileSystemAccess.WRITE),))
 
+    def as_read_only(self) -> FileSystemPermissionProfile:
+        """Remove every write grant while preserving explicit denied reads."""
+
+        return FileSystemPermissionProfile(
+            entries=tuple(
+                FileSystemPermissionEntry(
+                    entry.path,
+                    (
+                        FileSystemAccess.DENY
+                        if entry.access is FileSystemAccess.DENY
+                        else FileSystemAccess.READ
+                    ),
+                )
+                for entry in self.entries
+            ),
+            denied_read_globs=self.denied_read_globs,
+        )
+
     def resolve(self, path: Path) -> FileSystemAccess:
         """Return effective access for ``path`` using canonical longest match."""
 
@@ -140,6 +164,38 @@ class FileSystemPermissionProfile:
             key=lambda match: (match[0], match[1]),
             default=(0, -1, FileSystemAccess.DENY),
         )[2]
+
+    def is_explicitly_denied(self, path: Path) -> bool:
+        """Distinguish an explicit deny from a path with no matching grant."""
+
+        candidate = _canonical(path)
+        candidate_text = candidate.as_posix()
+        if any(
+            fnmatch.fnmatchcase(candidate_text, _canonical_glob(pattern))
+            for pattern in self.denied_read_globs
+        ):
+            return True
+        matches = [
+            (len(root.parts), index, entry.access)
+            for index, entry in enumerate(self.entries)
+            if candidate.is_relative_to(root := _canonical(entry.path))
+        ]
+        if not matches:
+            return False
+        return max(matches, key=lambda match: (match[0], match[1]))[2] is FileSystemAccess.DENY
+
+    def protected_metadata_root(self, path: Path) -> Path | None:
+        """Return the matching default metadata carveout, when one applies."""
+
+        candidate = _canonical(path)
+        matches = [
+            root
+            for entry in self.entries
+            if entry.access is FileSystemAccess.READ
+            and (root := _canonical(entry.path)).name in PROTECTED_METADATA_NAMES
+            and candidate.is_relative_to(root)
+        ]
+        return max(matches, key=lambda item: len(item.parts), default=None)
 
     @property
     def has_denied_reads(self) -> bool:

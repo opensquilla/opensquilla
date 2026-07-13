@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from typing import Any, Literal, cast
 
 from opensquilla.application.approval_queue import ApprovalQueue
+from opensquilla.sandbox.permissions import FileSystemPermissionProfile
 
 SandboxPermissionIntent = Literal["use_default", "require_escalated"]
 ApprovalReviewerName = Literal["user", "auto_review"]
@@ -176,6 +177,7 @@ def request_elevation(
     *,
     session_key: str | None,
     reviewer: ApprovalReviewerName = "auto_review",
+    metadata: dict[str, object] | None = None,
 ) -> ElevationGateResult:
     """Persist or reuse a pending review for one exact elevated action."""
 
@@ -197,16 +199,20 @@ def request_elevation(
             approval_id=pending_id,
         )
 
+    params: dict[str, object] = {
+        "approvalKind": "sandbox_elevation",
+        "reviewer": reviewer,
+        "humanActionable": reviewer == "user",
+        "fingerprint": fingerprint,
+        "action": action.canonical_payload(),
+        "sessionKey": str(session_key or ""),
+    }
+    for key, value in (metadata or {}).items():
+        if key not in params:
+            params[str(key)] = value
     approval_id = queue.request(
         namespace="exec",
-        params={
-            "approvalKind": "sandbox_elevation",
-            "reviewer": reviewer,
-            "humanActionable": reviewer == "user",
-            "fingerprint": fingerprint,
-            "action": action.canonical_payload(),
-            "sessionKey": str(session_key or ""),
-        },
+        params=params,
     )
     return ElevationGateResult(
         requested=True,
@@ -220,6 +226,8 @@ def consume_approved_elevation(
     queue: ApprovalQueue,
     approval_id: str,
     action: ElevationAction,
+    *,
+    expected_session_key: str | None = None,
 ) -> ElevationGateResult:
     """Validate and consume an approved grant before its side effect starts."""
 
@@ -239,6 +247,16 @@ def consume_approved_elevation(
             status="approval_action_mismatch",
             approval_id=approval_id,
             reason="approval_action_mismatch",
+        )
+    if expected_session_key is not None and str(
+        entry.params.get("sessionKey") or ""
+    ) != str(expected_session_key or ""):
+        return ElevationGateResult(
+            requested=True,
+            allowed=False,
+            status="approval_session_mismatch",
+            approval_id=approval_id,
+            reason="approval_session_mismatch",
         )
     if not entry.resolved:
         return ElevationGateResult(
@@ -273,6 +291,8 @@ def gate_elevated_action(
     session_key: str | None,
     queue: ApprovalQueue | None = None,
     reviewer: ApprovalReviewerName | None = None,
+    file_system_profile: FileSystemPermissionProfile | None = None,
+    metadata: dict[str, object] | None = None,
 ) -> ElevationGateResult:
     """Request or consume elevation according to one tool call's intent."""
 
@@ -281,6 +301,23 @@ def gate_elevated_action(
             requested=False,
             allowed=False,
             status="use_default",
+        )
+    if file_system_profile is None:
+        from opensquilla.sandbox.integration import active_file_system_profile
+
+        file_system_profile = active_file_system_profile()
+    if (
+        file_system_profile is not None
+        and not file_system_profile.unsandboxed_execution_allowed
+    ):
+        return ElevationGateResult(
+            requested=False,
+            allowed=False,
+            status="elevation_forbidden_denied_reads",
+            reason=(
+                "Unsandboxed execution cannot be granted while the active "
+                "filesystem profile contains denied reads."
+            ),
         )
     if queue is None:
         from opensquilla.gateway.approval_queue import get_approval_queue
@@ -297,7 +334,12 @@ def gate_elevated_action(
         )
     if approval_id:
         try:
-            return consume_approved_elevation(queue, approval_id, action)
+            return consume_approved_elevation(
+                queue,
+                approval_id,
+                action,
+                expected_session_key=session_key,
+            )
         except KeyError:
             reason = "approval not found"
         except ValueError as exc:
@@ -314,6 +356,7 @@ def gate_elevated_action(
         action,
         session_key=session_key,
         reviewer=reviewer,
+        metadata=metadata,
     )
 
 

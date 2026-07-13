@@ -84,6 +84,13 @@ def decide_path_access(
     if profile is not None and isinstance(normalized, Path):
         effective_access = profile.resolve(normalized)
         if effective_access is FileSystemAccess.DENY:
+            if not profile.is_explicitly_denied(normalized):
+                return MountDecision(
+                    status="request",
+                    normalized_path=normalized_text,
+                    access=access,
+                    reason="outside_sandbox_mounts",
+                )
             return MountDecision(
                 status="blocked",
                 normalized_path=normalized_text,
@@ -100,7 +107,11 @@ def decide_path_access(
             status="request",
             normalized_path=normalized_text,
             access="rw",
-            reason="mount_requires_write_access",
+            reason=(
+                "protected_metadata"
+                if profile.protected_metadata_root(normalized) is not None
+                else "mount_requires_write_access"
+            ),
         )
 
     if workspace_path is not None and is_relative_to_path(normalized, workspace_path):

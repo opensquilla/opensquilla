@@ -16,9 +16,11 @@ import time
 from pathlib import Path
 from urllib.parse import urlparse
 
+from opensquilla.sandbox.denial_attribution import is_likely_sandbox_denied
 from opensquilla.sandbox.elevation import ElevationAction, gate_elevated_action
 from opensquilla.sandbox.integration import (
     SandboxRuntime,
+    consume_backend_denial_retry,
     escalate_backend_denial,
     gate_action,
     get_runtime,
@@ -417,6 +419,7 @@ def _resolve_python_bin(*, sandbox_enabled: bool) -> str:
         },
     },
     required=["code"],
+    runtime_only_arguments=("approval_id",),
     sandbox=SandboxToolDescriptor.process(
         kind="code.exec",
         argv_factory=lambda a: ("execute_code", str(a.get("code", ""))),
@@ -567,65 +570,70 @@ async def execute_code(
         )
         if isinstance(decision, DenialResult):
             return finish(json.dumps(decision.to_dict()))
-        backend_request = SandboxRequest(
-            argv=(python_bin, "-c", code),
-            cwd=request.cwd,
-            action_kind=request.action_kind,
-            policy=_trusted_managed_network_policy(request.policy, runtime),
-            env=safe_env,
-            reason=getattr(request, "reason", ""),
-            session_id=getattr(request, "session_id", ""),
-            run_mode=getattr(request, "run_mode", ""),
+        retry_gate = consume_backend_denial_retry(
+            approval_id,
+            request,
+            _policy,
+            runtime=runtime,
         )
-        if runtime is not None:
-            preflight = await preflight_subprocess_managed_network(backend_request, runtime)
-            if isinstance(preflight, DenialResult):
-                return finish(json.dumps(preflight.to_dict()))
-            if isinstance(preflight, dict):
-                return finish(json.dumps(preflight))
-        try:
-            sandbox_result = await _run_backend_with_managed_network_if_needed(
-                backend_request,
-                runtime=runtime,
+        if retry_gate is not None:
+            if not retry_gate.allowed:
+                return finish(json.dumps(retry_gate.to_envelope(), ensure_ascii=False))
+            host_execution = True
+            sandbox_enabled = False
+            elevated_code_execution = True
+        else:
+            backend_request = SandboxRequest(
+                argv=(python_bin, "-c", code),
+                cwd=request.cwd,
+                action_kind=request.action_kind,
+                policy=_trusted_managed_network_policy(request.policy, runtime),
+                env=safe_env,
+                reason=getattr(request, "reason", ""),
+                session_id=getattr(request, "session_id", ""),
+                run_mode=getattr(request, "run_mode", ""),
             )
-        except Exception as exc:
+            if runtime is not None:
+                preflight = await preflight_subprocess_managed_network(backend_request, runtime)
+                if isinstance(preflight, DenialResult):
+                    return finish(json.dumps(preflight.to_dict()))
+                if isinstance(preflight, dict):
+                    return finish(json.dumps(preflight))
+            try:
+                sandbox_result = await _run_backend_with_managed_network_if_needed(
+                    backend_request,
+                    runtime=runtime,
+                )
+            except Exception as exc:
+                return finish(
+                    _execution_result_json(
+                        returncode=-1,
+                        stdout="",
+                        stderr=f"Execution error: {exc}",
+                        timed_out=False,
+                        elapsed_ms=0,
+                    )
+                )
+            if is_likely_sandbox_denied(sandbox_result):
+                escalation = await escalate_backend_denial(
+                    sandbox_result, request, _policy, runtime=runtime
+                )
+                if isinstance(escalation, DenialResult):
+                    return finish(json.dumps(escalation.to_dict()))
+                return finish(json.dumps(escalation.to_envelope(), ensure_ascii=False))
+            elapsed_ms = (time.monotonic_ns() - start_ns) // 1_000_000
+            stdout = sandbox_result.stdout
+            stderr = sandbox_result.stderr
+            stderr = _append_code_exec_sandbox_network_hint(stdout=stdout, stderr=stderr)
             return finish(
                 _execution_result_json(
-                    returncode=-1,
-                    stdout="",
-                    stderr=f"Execution error: {exc}",
-                    timed_out=False,
-                    elapsed_ms=0,
+                    returncode=sandbox_result.returncode,
+                    stdout=stdout,
+                    stderr=stderr,
+                    timed_out=sandbox_result.timed_out,
+                    elapsed_ms=elapsed_ms,
                 )
             )
-        if sandbox_result.backend_notes:
-            escalation = await escalate_backend_denial(
-                sandbox_result, request, _policy, runtime=runtime
-            )
-            if isinstance(escalation, DenialResult):
-                return finish(json.dumps(escalation.to_dict()))
-            return finish(
-                _execution_result_json(
-                    returncode=-1,
-                    stdout="",
-                    stderr="Sandboxed code execution denied; host fallback disabled",
-                    timed_out=False,
-                    elapsed_ms=0,
-                )
-            )
-        elapsed_ms = (time.monotonic_ns() - start_ns) // 1_000_000
-        stdout = sandbox_result.stdout
-        stderr = sandbox_result.stderr
-        stderr = _append_code_exec_sandbox_network_hint(stdout=stdout, stderr=stderr)
-        return finish(
-            _execution_result_json(
-                returncode=sandbox_result.returncode,
-                stdout=stdout,
-                stderr=stderr,
-                timed_out=sandbox_result.timed_out,
-                elapsed_ms=elapsed_ms,
-            )
-        )
 
     try:
         proc = await asyncio.create_subprocess_exec(

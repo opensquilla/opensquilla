@@ -10,6 +10,7 @@ import pytest
 
 from opensquilla.engine.guardian_review import (
     GuardianAssessment,
+    GuardianCircuitBreaker,
     GuardianReviewer,
     enforce_guardian_thresholds,
     parse_guardian_assessment,
@@ -24,6 +25,7 @@ from opensquilla.provider.types import (
     TextDeltaEvent,
     ToolDefinition,
 )
+from opensquilla.sandbox.approval_runtime import ApprovalAction
 from opensquilla.sandbox.elevation import ElevationAction
 
 
@@ -38,6 +40,9 @@ class StreamingTextProvider:
 
     def __init__(self, responses: list[str | ErrorEvent | Exception | _DelayedResponse]) -> None:
         self._responses = list(responses)
+        self.calls: list[list[Message]] = []
+        self.tool_calls: list[list[ToolDefinition] | None] = []
+        self.configs: list[ChatConfig | None] = []
 
     def chat(
         self,
@@ -45,7 +50,9 @@ class StreamingTextProvider:
         tools: list[ToolDefinition] | None = None,
         config: ChatConfig | None = None,
     ) -> AsyncIterator[StreamEvent]:
-        del messages, tools, config
+        self.calls.append(messages)
+        self.tool_calls.append(tools)
+        self.configs.append(config)
         response = self._responses.pop(0)
 
         async def _stream() -> AsyncIterator[StreamEvent]:
@@ -70,15 +77,21 @@ class StreamingTextProvider:
         return []
 
 
-def _action(command: str = "touch /home/lrk/Desktop/probe") -> ElevationAction:
+class _TimingOutGuardianSession:
+    async def review_action(self, *args: object, **kwargs: object) -> str:
+        del args, kwargs
+        raise TimeoutError("inner guardian deadline")
+
+
+def _action(command: str = "touch /mnt/desktop/probe") -> ElevationAction:
     return ElevationAction(
         tool_name="exec_command",
         action_kind="shell.exec",
         argv=("sh", "-lc", command),
-        cwd="/home/lrk/opensquilla",
+        cwd="/workspace/opensquilla",
         sandbox_permissions="require_escalated",
         justification="Create the fixed probe file requested by the user.",
-        target_paths=(("/home/lrk/Desktop/probe", "write"),),
+        target_paths=(("/mnt/desktop/probe", "write"),),
     )
 
 
@@ -97,6 +110,67 @@ def _assessment_json(
             "rationale": rationale,
         }
     )
+
+
+def _assessment(*, outcome: str, status: str = "completed") -> GuardianAssessment:
+    return GuardianAssessment(
+        risk_level="high" if outcome == "deny" else "low",
+        user_authorization="unknown" if outcome == "deny" else "high",
+        outcome=outcome,
+        rationale="test",
+        status=status,
+    )
+
+
+def test_circuit_breaker_trips_at_three_consecutive_denials_once() -> None:
+    breaker = GuardianCircuitBreaker()
+
+    assert breaker.observe(_assessment(outcome="deny")) is False
+    assert breaker.observe(_assessment(outcome="deny")) is False
+    assert breaker.observe(_assessment(outcome="deny")) is True
+    assert breaker.observe(_assessment(outcome="deny")) is False
+    assert breaker.is_open is True
+
+
+def test_circuit_breaker_trips_at_ten_denials_in_last_fifty() -> None:
+    breaker = GuardianCircuitBreaker()
+
+    for _ in range(9):
+        assert breaker.observe(_assessment(outcome="deny")) is False
+        breaker.observe(_assessment(outcome="allow"))
+    assert breaker.observe(_assessment(outcome="deny")) is True
+    assert breaker.recent_denial_count == 10
+
+
+def test_non_denial_resets_consecutive_and_failed_closed_is_not_policy_denial() -> None:
+    breaker = GuardianCircuitBreaker()
+    breaker.observe(_assessment(outcome="deny"))
+    breaker.observe(_assessment(outcome="allow"))
+    breaker.observe(_assessment(outcome="deny", status="failed_closed"))
+
+    assert breaker.consecutive_denials == 0
+    assert list(breaker.recent_denials) == [True, False, False]
+
+
+@pytest.mark.asyncio
+async def test_guardian_receives_full_suspended_action_payload(tmp_path) -> None:
+    provider = StreamingTextProvider([_assessment_json()])
+    action = ApprovalAction.filesystem(
+        call_id="call-1",
+        tool_name="write_file",
+        cwd=tmp_path,
+        paths=((tmp_path / "outside.txt", "write"),),
+        payload={"content": "full exact body"},
+        justification="Write the exact file requested by the user.",
+    )
+
+    assessment = await GuardianReviewer(provider).review(
+        action,
+        [Message(role="user", content="Write that exact file")],
+    )
+
+    assert assessment.outcome == "allow"
+    assert "full exact body" in str(provider.calls[0][0].content)
 
 
 @pytest.mark.parametrize(
@@ -170,21 +244,12 @@ def test_guardian_transcript_keeps_latest_messages_within_budget() -> None:
     assert sum(len(item["content"]) for item in transcript) <= 80
 
 
-def test_parse_guardian_assessment_accepts_one_wrapped_json_object() -> None:
-    assessment = parse_guardian_assessment(
-        "Assessment:\n" + _assessment_json(risk="medium", authorization="medium")
-    )
-
-    assert assessment.risk_level == "medium"
-    assert assessment.user_authorization == "medium"
-    assert assessment.outcome == "allow"
-
-
 @pytest.mark.parametrize(
     "text",
     [
         "not json",
         "{}",
+        "Assessment:\n" + _assessment_json(),
         '{"risk_level":"low","user_authorization":"high","outcome":"allow"}',
         _assessment_json() + "\n" + _assessment_json(),
         _assessment_json(risk="unknown"),
@@ -207,6 +272,9 @@ async def test_guardian_reviews_with_no_tools_and_returns_assessment() -> None:
     assert assessment.status == "completed"
     assert assessment.outcome == "allow"
     assert assessment.risk_level == "low"
+    assert provider.tool_calls == [None]
+    assert provider.configs[0] is not None
+    assert provider.configs[0].timeout == 90.0
 
 
 @pytest.mark.asyncio
@@ -241,17 +309,30 @@ async def test_guardian_fails_closed_after_invalid_provider_output() -> None:
 @pytest.mark.asyncio
 async def test_guardian_fails_closed_after_provider_errors() -> None:
     provider = StreamingTextProvider(
-        [ErrorEvent(message="provider unavailable"), RuntimeError("transport failed")]
+        [ErrorEvent(message="bad request", code="bad_request"), _assessment_json()]
     )
 
     assessment = await GuardianReviewer(provider, max_attempts=2).review(
-        _action(),
-        [Message(role="user", content="Do it")],
+        _action(), [Message(role="user", content="Do it")]
     )
 
     assert assessment.outcome == "deny"
     assert assessment.status == "failed_closed"
-    assert "transport failed" in assessment.rationale
+    assert len(provider.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_guardian_retries_only_structured_transient_provider_error() -> None:
+    provider = StreamingTextProvider(
+        [ErrorEvent(message="overloaded", code="server_overloaded"), _assessment_json()]
+    )
+
+    assessment = await GuardianReviewer(provider, max_attempts=2).review(
+        _action(), [Message(role="user", content="Do it")]
+    )
+
+    assert assessment.outcome == "allow"
+    assert len(provider.calls) == 2
 
 
 @pytest.mark.asyncio
@@ -272,7 +353,18 @@ async def test_guardian_timeout_fails_closed_without_retrying_action() -> None:
 
 
 @pytest.mark.asyncio
-async def test_guardian_overrides_critical_allow_to_deny() -> None:
+async def test_guardian_session_timeout_preserves_timed_out_status() -> None:
+    assessment = await GuardianReviewer(
+        StreamingTextProvider([]),
+        session=_TimingOutGuardianSession(),  # type: ignore[arg-type]
+    ).review(_action(), [Message(role="user", content="Do it")])
+
+    assert assessment.outcome == "deny"
+    assert assessment.status == "timed_out"
+
+
+@pytest.mark.asyncio
+async def test_guardian_preserves_schema_valid_policy_decision() -> None:
     provider = StreamingTextProvider(
         [_assessment_json(risk="critical", authorization="high", outcome="allow")]
     )
@@ -283,4 +375,4 @@ async def test_guardian_overrides_critical_allow_to_deny() -> None:
     )
 
     assert assessment.risk_level == "critical"
-    assert assessment.outcome == "deny"
+    assert assessment.outcome == "allow"

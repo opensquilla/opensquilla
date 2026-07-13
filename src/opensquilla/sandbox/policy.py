@@ -238,6 +238,32 @@ def _describe(level: SecurityLevel, action_kind: str) -> str:
     return f"{level.label} policy for action {action_kind!r}"
 
 
+def _configured_denied_read_roots(
+    workspace: Path,
+    settings: SandboxSettings,
+) -> tuple[Path, ...]:
+    roots: list[Path] = []
+    for raw in settings.denied_read_roots:
+        path = Path(raw).expanduser()
+        if not path.is_absolute():
+            path = workspace / path
+        roots.append(path.resolve(strict=False))
+    return tuple(roots)
+
+
+def _configured_denied_read_globs(
+    workspace: Path,
+    settings: SandboxSettings,
+) -> tuple[str, ...]:
+    patterns: list[str] = []
+    for raw in settings.denied_read_globs:
+        pattern = Path(raw).expanduser()
+        if not pattern.is_absolute():
+            pattern = workspace / pattern
+        patterns.append(pattern.as_posix())
+    return tuple(patterns)
+
+
 def build_policy(
     level: SecurityLevel,
     action_kind: str,
@@ -267,6 +293,8 @@ def build_policy(
     limits = _resolve_limits(level, settings)
     network = _resolve_network(level, action_kind, settings, hints)
     tmp_writable = level != SecurityLevel.LOCKED
+    denied_read_roots = _configured_denied_read_roots(workspace, settings)
+    denied_read_globs = _configured_denied_read_globs(workspace, settings)
 
     require_approval = level >= SecurityLevel.STRICT and (
         level == SecurityLevel.LOCKED or not trusted
@@ -287,11 +315,15 @@ def build_policy(
             workspace=workspace,
             readable_roots=readable_roots,
             writable_roots=writable_roots,
-            denied_read_globs=(),
+            denied_read_roots=denied_read_roots,
+            denied_read_globs=denied_read_globs,
             host_root_readonly=(
                 sys.platform.startswith("linux") and settings.host_root_readonly
             ),
-            tmp_writable=tmp_writable,
+            tmp_writable=tmp_writable and not settings.exclude_slash_tmp,
+            tmpdir_env_writable=(
+                tmp_writable and not settings.exclude_tmpdir_env_var
+            ),
         )
     else:
         readable_roots = [mount.host_path for mount in mounts]
@@ -299,6 +331,8 @@ def build_policy(
             readable_roots.insert(0, Path("/"))
         file_system = FileSystemPermissionProfile.read_only(
             readable_roots=readable_roots,
+            denied_read_roots=denied_read_roots,
+            denied_read_globs=denied_read_globs,
         )
 
     return SandboxPolicy(

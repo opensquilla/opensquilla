@@ -72,8 +72,11 @@ async function copyCommand(command: string): Promise<void> {
   font-family: var(--font-mono);
   font-size: 11px;
   gap: 4px;
+  max-width: 100%;
+  min-width: 0;
   padding: 1px 4px 1px 9px;
 }
+.prb__chip > span { max-width: 22ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .prb__dismiss {
   background: transparent;
   border: 0;
@@ -83,6 +86,9 @@ async function copyCommand(command: string): Promise<void> {
   font: inherit;
   line-height: 1;
   padding: 2px 5px;
+}
+@media (pointer: coarse) {
+  .prb__dismiss { min-height: 32px; min-width: 32px; }
 }
 .prb__dismiss:hover { background: var(--bg-surface-2); color: var(--text); }
 .prb__command { margin-left: auto; }

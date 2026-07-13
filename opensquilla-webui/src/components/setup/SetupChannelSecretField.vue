@@ -45,7 +45,7 @@ function onInput(event: Event) {
       </template>
       <template v-else>
         <input
-          class="control-input"
+          class="control-input scs__input"
           type="password"
           autocomplete="new-password"
           :value="value"
@@ -68,7 +68,8 @@ function onInput(event: Event) {
 </template>
 
 <style scoped>
-.scs { align-items: center; display: flex; gap: var(--sp-2); }
-.scs__masked { color: var(--text-dim); flex: 1; letter-spacing: 0.08em; }
+.scs { align-items: center; display: flex; flex-wrap: wrap; gap: var(--sp-2); }
+.scs__masked { color: var(--text-dim); flex: 1 1 140px; letter-spacing: 0.08em; min-width: 0; }
 .scs__btn { flex: 0 0 auto; font-size: var(--fs-sm); padding: 3px 10px; white-space: nowrap; }
+.scs__input { flex: 1 1 140px; min-width: 0; }
 </style>

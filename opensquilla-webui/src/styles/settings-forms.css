@@ -198,10 +198,20 @@
   align-items: center;
   border-bottom: 1px solid var(--border);
   display: flex;
+  flex-wrap: wrap;
   font-size: var(--fs-sm);
   gap: var(--sp-2);
   justify-content: space-between;
   padding: 6px 0;
+}
+
+/* The channel name is the shrinkable element; the pill and action buttons
+   keep their size and drop to a second line when the row is too narrow. */
+.setup-runtime__row > span:first-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .setup-runtime__row.is-ok strong {

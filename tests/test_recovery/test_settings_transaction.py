@@ -221,7 +221,7 @@ def test_imported_settings_preserve_windows_acl_when_fchmod_is_unavailable(
     home, credential_path, old_config, old_credential = _profile(tmp_path)
     credential_path.chmod(0o666)
     import_transaction_id = str(uuid.uuid4())
-    monkeypatch.setattr(transaction.os, "fchmod", None)
+    monkeypatch.setattr(transaction.os, "fchmod", None, raising=False)
 
     _apply(
         home,
@@ -246,7 +246,7 @@ def test_credential_hardening_does_not_fsync_read_only_windows_descriptor(
 
     _, credential_path, _, old_credential = _profile(tmp_path)
     credential_path.chmod(0o666)
-    monkeypatch.setattr(transaction.os, "fchmod", None)
+    monkeypatch.setattr(transaction.os, "fchmod", None, raising=False)
     monkeypatch.setattr(
         transaction.os,
         "fsync",
@@ -454,7 +454,11 @@ def test_settings_publication_preserves_a_mutation_during_old_file_parking(
 def test_settings_save_cannot_redirect_workspace_or_chat_state(tmp_path: Path) -> None:
     home, credential_path, old_config, old_credential = _profile(tmp_path)
     new_config, new_credential = _new_pair(home)
-    redirected = new_config.replace(str(home / "state"), str(tmp_path / "other-state"))
+    redirected = new_config.replace(
+        json.dumps(str(home / "state")),
+        json.dumps(str(tmp_path / "other-state")),
+    )
+    assert redirected != new_config
 
     with pytest.raises(RecoveryError) as caught:
         _apply(
@@ -478,9 +482,13 @@ def test_settings_save_cannot_redirect_attachment_media_root(tmp_path: Path) -> 
         + "\n[attachments]\n"
         + f"media_root = {json.dumps(str(media_root))}\n"
     )
-    (home / "config.toml").write_text(protected_config, encoding="utf-8")
+    (home / "config.toml").write_bytes(protected_config.encode())
     new_config, new_credential = _new_pair(home)
-    redirected = new_config.replace(str(media_root), str(tmp_path / "other-media"))
+    redirected = new_config.replace(
+        json.dumps(str(media_root)),
+        json.dumps(str(tmp_path / "other-media")),
+    )
+    assert redirected != new_config
 
     with pytest.raises(RecoveryError) as caught:
         _apply(

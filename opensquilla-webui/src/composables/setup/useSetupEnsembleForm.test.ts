@@ -386,6 +386,8 @@ describe('useSetupEnsembleForm — panel contract', () => {
     f.initFromConfig({ enabled: true, selection_mode: 'static_openrouter_b5' })
     const panel = makePanel(f, 'openrouter')
     expect(panel.value.scheme).toBe('preset')
+    expect(panel.value.activeProvider).toBe('openrouter')
+    expect(panel.value.activeModel).toBe('current-model')
     expect(panel.value.schemeCardsAvailable).toBe(true)
     expect(panel.value.fixedProfile).not.toBeNull()
     expect(panel.value.fixedProfile!.proposers.map(c => c.model))

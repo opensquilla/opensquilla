@@ -346,9 +346,9 @@
           "desc": "Envoie chaque tour au modèle actuellement sélectionné."
         }
       },
-      "routerDependency": "Utilise les identifiants {provider} ; le modèle par défaut est {model}.",
+      "routerDependency": "Utilise les identifiants {provider} ; le modèle par défaut du fournisseur est {model}.",
       "ensembleTitle": "Routage IA agrégé",
-      "ensembleDependency": "Utilise les identifiants {provider} ; le modèle par défaut est {model}.",
+      "ensembleDependency": "Utilise les identifiants {provider} ; le modèle par défaut du fournisseur est {model}.",
       "ensembleMinimum": "Ajoutez au moins un autre candidat pour bénéficier du routage agrégé.",
       "ensembleFailure": "Si la fusion est impossible, revenir au modèle actuel : {provider} · {model}.",
       "singleTitle": "Désactivé",

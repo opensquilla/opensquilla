@@ -62,6 +62,8 @@ function panel(overrides: Record<string, unknown> = {}) {
     },
     ensemble: {
       enabled: false,
+      activeProvider: 'openrouter',
+      activeModel: 'deepseek/deepseek-v4-pro',
       selectionMode: 'custom_b5',
       scheme: 'custom',
       schemeCardsAvailable: true,
@@ -173,7 +175,7 @@ describe('SetupModelStrategyPanel', () => {
     const { app, el } = await mountPanel({ activeStrategy: 'router' })
 
     expect(el.textContent).toContain('Default model tier')
-    expect(el.textContent).toContain('Uses OpenRouter credentials; default model is deepseek/deepseek-v4-pro.')
+    expect(el.textContent).toContain('Uses OpenRouter credentials; provider default model is deepseek/deepseek-v4-pro.')
     expect(el.textContent).not.toContain('Preset and credentials from OpenRouter')
     expect(el.querySelector('[role="table"]')).toBeTruthy()
     // The chat-panel visualization picker rides with the router details; losing
@@ -259,6 +261,10 @@ describe('SetupModelStrategyPanel', () => {
   it('uses the active provider and model without OpenRouter-specific copy', async () => {
     const { app, el } = await mountPanel({
       providerLabel: 'Groq',
+      ensemble: {
+        activeProvider: 'groq',
+        activeModel: 'llama-3.3-70b-versatile',
+      },
       router: {
         ...panel().router,
         routerDefaultTier: 'c1',
@@ -269,7 +275,7 @@ describe('SetupModelStrategyPanel', () => {
       },
     })
 
-    expect(el.textContent).toContain('Uses Groq credentials; default model is llama-3.3-70b-versatile.')
+    expect(el.textContent).toContain('Uses Groq credentials; provider default model is llama-3.3-70b-versatile.')
     expect(el.textContent).not.toContain('OpenRouter credentials')
 
     app.unmount()
@@ -329,6 +335,24 @@ describe('SetupModelStrategyPanel', () => {
 
     app.unmount()
   })
+
+  it.each(['router', 'ensemble', 'single'] as const)(
+    'shows the provider model instead of the router default tier in %s mode',
+    async (activeStrategy) => {
+      const { app, el } = await mountPanel({
+        activeStrategy,
+        ensemble: {
+          activeModel: 'deepseek/deepseek-v4-flash',
+        },
+      })
+
+      const heading = el.querySelector('.setup-model-strategy__detail .control-section__head')?.textContent || ''
+      expect(heading).toContain('deepseek/deepseek-v4-flash')
+      expect(heading).not.toContain('deepseek/deepseek-v4-pro')
+
+      app.unmount()
+    },
+  )
 
   it('edits custom lineup candidates, roles, and the failure policy', async () => {
     const onAddEnsembleCandidate = vi.fn()

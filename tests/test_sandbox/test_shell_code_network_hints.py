@@ -27,6 +27,236 @@ from opensquilla.sandbox.run_mode import RunMode
 from opensquilla.tools.types import CallerKind, ToolContext, current_tool_context
 
 
+def test_shell_tools_publish_structured_elevation_fields() -> None:
+    from opensquilla.tools.builtin import shell  # noqa: F401
+    from opensquilla.tools.registry import get_default_registry
+
+    for tool_name in ("exec_command", "background_process"):
+        registered = get_default_registry().get(tool_name)
+        assert registered is not None
+        params = registered.spec.parameters
+        assert params["sandbox_permissions"]["enum"] == [
+            "use_default",
+            "require_escalated",
+        ]
+        assert "justification" in params
+        assert "prefix_rule" in params
+
+
+@pytest.mark.asyncio
+async def test_trusted_shell_outside_write_requires_explicit_elevation(
+    managed_runtime: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from opensquilla.tools.builtin import shell
+
+    target = managed_runtime.parent / "outside-default" / "probe.txt"
+
+    async def _host_must_not_run(*args, **kwargs):
+        raise AssertionError("default sandbox intent must not auto-run on the host")
+
+    monkeypatch.setattr(shell, "_run_host_shell_command", _host_must_not_run)
+    monkeypatch.setattr(
+        shell,
+        "check_safe_bin",
+        lambda command: SimpleNamespace(allowed=True, needs_approval=False, reason=""),
+    )
+    token = current_tool_context.set(
+        ToolContext(
+            is_owner=True,
+            caller_kind=CallerKind.CLI,
+            workspace_dir=str(managed_runtime),
+            session_key="shell-default",
+            run_mode="trusted",
+        )
+    )
+    try:
+        result = await shell.exec_command(
+            f"touch {target}",
+            workdir=str(managed_runtime),
+        )
+    finally:
+        current_tool_context.reset(token)
+
+    payload = json.loads(result)
+    assert payload["status"] == "elevation_required"
+    assert get_approval_queue().list_pending("exec") == []
+
+
+@pytest.mark.asyncio
+async def test_shell_exact_elevation_grant_runs_host_once(
+    managed_runtime: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from opensquilla.tools.builtin import shell
+
+    target = managed_runtime.parent / "outside-approved" / "probe.txt"
+    command = f"touch {target}"
+    host_calls: list[tuple[str, str | None]] = []
+
+    async def _fake_host(command, *, cwd, **kwargs):
+        host_calls.append((command, cwd))
+        return "exit_code=0\ncreated\n"
+
+    monkeypatch.setattr(shell, "_run_host_shell_command", _fake_host)
+    monkeypatch.setattr(
+        shell,
+        "check_safe_bin",
+        lambda command: SimpleNamespace(allowed=True, needs_approval=False, reason=""),
+    )
+    token = current_tool_context.set(
+        ToolContext(
+            is_owner=True,
+            caller_kind=CallerKind.CLI,
+            workspace_dir=str(managed_runtime),
+            session_key="shell-approved",
+            run_mode="trusted",
+        )
+    )
+    try:
+        requested = json.loads(
+            await shell.exec_command(
+                command,
+                workdir=str(managed_runtime),
+                sandbox_permissions="require_escalated",
+                justification="Create the one fixed file requested by the user.",
+            )
+        )
+        assert requested["status"] == "approval_required"
+        approval_id = requested["approval_id"]
+        pending = get_approval_queue().get(approval_id)
+        assert pending.params["humanActionable"] is False
+        assert host_calls == []
+
+        get_approval_queue().resolve(approval_id, True)
+        result = await shell.exec_command(
+            command,
+            workdir=str(managed_runtime),
+            sandbox_permissions="require_escalated",
+            justification="Create the one fixed file requested by the user.",
+            approval_id=approval_id,
+        )
+    finally:
+        current_tool_context.reset(token)
+
+    assert result == "exit_code=0\ncreated\n"
+    assert host_calls == [(command, str(managed_runtime.resolve()))]
+    assert get_approval_queue().get(approval_id).consumed is True
+
+
+@pytest.mark.asyncio
+async def test_shell_changed_command_cannot_consume_elevation_grant(
+    managed_runtime: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from opensquilla.tools.builtin import shell
+
+    target = managed_runtime.parent / "outside-changed" / "probe.txt"
+    original = f"touch {target}"
+    changed = f"rm -rf {target.parent}"
+    host_calls: list[str] = []
+
+    async def _fake_host(command, **kwargs):
+        host_calls.append(command)
+        return "exit_code=0\n"
+
+    monkeypatch.setattr(shell, "_run_host_shell_command", _fake_host)
+    monkeypatch.setattr(
+        shell,
+        "check_safe_bin",
+        lambda command: SimpleNamespace(allowed=True, needs_approval=False, reason=""),
+    )
+    token = current_tool_context.set(
+        ToolContext(
+            is_owner=True,
+            caller_kind=CallerKind.CLI,
+            workspace_dir=str(managed_runtime),
+            session_key="shell-changed",
+            run_mode="trusted",
+        )
+    )
+    try:
+        requested = json.loads(
+            await shell.exec_command(
+                original,
+                workdir=str(managed_runtime),
+                sandbox_permissions="require_escalated",
+                justification="Create the requested fixed file.",
+            )
+        )
+        approval_id = requested["approval_id"]
+        get_approval_queue().resolve(approval_id, True)
+
+        result = json.loads(
+            await shell.exec_command(
+                changed,
+                workdir=str(managed_runtime),
+                sandbox_permissions="require_escalated",
+                justification="Create the requested fixed file.",
+                approval_id=approval_id,
+            )
+        )
+    finally:
+        current_tool_context.reset(token)
+
+    assert result["status"] == "approval_action_mismatch"
+    assert host_calls == []
+
+
+@pytest.mark.asyncio
+async def test_background_process_uses_the_same_exact_elevation_contract(
+    managed_runtime: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from opensquilla.tools.builtin import shell
+
+    original = f"touch {managed_runtime.parent / 'background-one.txt'}"
+    changed = f"touch {managed_runtime.parent / 'background-two.txt'}"
+
+    async def _host_spawn_must_not_run(*args, **kwargs):
+        raise AssertionError("a changed background action must not spawn")
+
+    monkeypatch.setattr(shell.asyncio, "create_subprocess_shell", _host_spawn_must_not_run)
+    monkeypatch.setattr(
+        shell,
+        "check_safe_bin",
+        lambda command: SimpleNamespace(allowed=True, needs_approval=False, reason=""),
+    )
+    token = current_tool_context.set(
+        ToolContext(
+            is_owner=True,
+            caller_kind=CallerKind.CLI,
+            workspace_dir=str(managed_runtime),
+            session_key="background-changed",
+            run_mode="trusted",
+        )
+    )
+    try:
+        requested = json.loads(
+            await shell.background_process(
+                original,
+                workdir=str(managed_runtime),
+                sandbox_permissions="require_escalated",
+                justification="Create the requested background probe.",
+            )
+        )
+        approval_id = requested["approval_id"]
+        get_approval_queue().resolve(approval_id, True)
+        result = json.loads(
+            await shell.background_process(
+                changed,
+                workdir=str(managed_runtime),
+                sandbox_permissions="require_escalated",
+                justification="Create the requested background probe.",
+                approval_id=approval_id,
+            )
+        )
+    finally:
+        current_tool_context.reset(token)
+
+    assert result["status"] == "approval_action_mismatch"
+
+
 @pytest.fixture
 def managed_runtime(tmp_path: Path) -> Iterator[Path]:
     reset_approval_queue()

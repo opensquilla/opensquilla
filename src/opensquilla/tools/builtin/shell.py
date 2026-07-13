@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import dataclasses
+import hashlib
 import json
 import ntpath
 import os
@@ -52,6 +53,7 @@ from opensquilla.sandbox.backend.seatbelt import (
     render_seatbelt_profile,
     seatbelt_env_for_policy,
 )
+from opensquilla.sandbox.elevation import ElevationAction, gate_elevated_action
 from opensquilla.sandbox.escalation import (
     build_path_approval_params,
     current_tool_mounts,
@@ -138,7 +140,6 @@ _EXEC_STDIN_WRITE_CHUNK_BYTES = 64 * 1024
 _EXEC_STDIN_GUARD_CHUNK_CHARS = 64 * 1024
 _EXEC_STDIN_GUARD_OVERLAP_CHARS = 1024
 _COMMAND_AUDIT_MAX_CHARS = 4096
-_POWERSHELL_SCRIPT_PROFILE_MAX_CHARS = 128 * 1024
 _WINDOWS_ENV_CANONICAL_KEYS = {
     "COMSPEC": "ComSpec",
     "PATH": "PATH",
@@ -531,82 +532,6 @@ def _host_execution_allowed() -> bool:
     runtime = get_runtime()
     effective = getattr(runtime, "effective", None) if runtime is not None else None
     return runtime is not None and not bool(getattr(effective, "sandbox_enabled", False))
-
-
-def _auto_host_escalation_allowed(
-    profile: OperationProfile,
-    command: str,
-    *,
-    workdir: str | None = None,
-) -> bool:
-    host_effect = profile.host_effect
-    if full_host_access_active():
-        return False
-    runtime = get_runtime()
-    effective = getattr(runtime, "effective", None) if runtime is not None else None
-    if runtime is None or not bool(getattr(effective, "sandbox_enabled", False)):
-        return False
-    ctx = current_tool_context.get()
-    if ctx is None or not bool(ctx.is_owner):
-        return False
-    if not trusted_sandbox_active():
-        return False
-    settings = get_approval_queue().get_settings()
-    if not host_effect:
-        script_profile = _profile_referenced_powershell_file(command, workdir=workdir)
-        host_effect = script_profile.host_effect if script_profile is not None else None
-    if not host_effect:
-        return False
-    pattern_class = _approval_command_pattern_class(command, settings)
-    return pattern_class != "deny"
-
-
-def _profile_referenced_powershell_file(
-    command: str,
-    *,
-    workdir: str | None = None,
-) -> OperationProfile | None:
-    script_path = _referenced_powershell_file(command, workdir=workdir)
-    if script_path is None:
-        return None
-    with contextlib.suppress(OSError, UnicodeError):
-        if script_path.suffix.lower() not in {".ps1", ".psm1"}:
-            return None
-        with script_path.open("r", encoding="utf-8", errors="replace") as handle:
-            script = handle.read(_POWERSHELL_SCRIPT_PROFILE_MAX_CHARS)
-        if not script.strip():
-            return None
-        normalized_script = re.sub(r"[\r\n]+", ";", script)
-        return classify_command(("powershell", "-NoProfile", "-Command", normalized_script))
-    return None
-
-
-def _referenced_powershell_file(command: str, *, workdir: str | None = None) -> Path | None:
-    tokens = _windows_shell_tokens(command)
-    for index, token in enumerate(tokens):
-        if _shell_command_basename(token) not in {"powershell", "pwsh"}:
-            continue
-        cursor = index + 1
-        while cursor < len(tokens):
-            option = tokens[cursor].lower()
-            if option in {"-command", "-c", "-encodedcommand", "-ec"}:
-                break
-            if option in {"-file", "-f"}:
-                if cursor + 1 >= len(tokens):
-                    return None
-                return _resolve_shell_script_path(tokens[cursor + 1], workdir=workdir)
-            cursor += 1
-    return None
-
-
-def _resolve_shell_script_path(raw_path: str, *, workdir: str | None = None) -> Path:
-    cleaned = raw_path.strip().strip("'\"")
-    expanded = os.path.expandvars(os.path.expanduser(cleaned))
-    path = Path(expanded)
-    if not path.is_absolute():
-        base = Path(workdir).expanduser() if workdir else Path.cwd()
-        path = base / path
-    return path.resolve(strict=False)
 
 
 def _shell_command_basename(value: str) -> str:
@@ -2325,7 +2250,16 @@ def _windows_shell_write_targets(command: str) -> list[str]:
 
 
 def _active_sandbox_mounts() -> list[dict[str, object]]:
-    return current_tool_mounts()
+    mounts = current_tool_mounts()
+    runtime = get_runtime()
+    settings = getattr(runtime, "settings", None) if runtime is not None else None
+    if (
+        sys.platform.startswith("linux")
+        and bool(getattr(settings, "host_root_readonly", False))
+        and not any(str(item.get("path") or "") == "/" for item in mounts)
+    ):
+        mounts.insert(0, {"path": "/", "access": "ro"})
+    return mounts
 
 
 def _policy_with_active_tool_mounts(policy: SandboxPolicy) -> SandboxPolicy:
@@ -2450,13 +2384,16 @@ def _sandbox_workdir_access_envelope(
     *,
     write: bool = False,
     approval_id: str | None = None,
-    allow_trusted_auto_mount: bool = True,
+    allow_trusted_auto_mount: bool = False,
 ) -> dict[str, object] | None:
     if not workdir or not _sandbox_path_access_enabled():
         return None
+    workspace = _workspace_root_for_path_access()
+    if workspace is None:
+        return None
     decision = decide_path_access(
         workdir,
-        workspace=_workspace_root_for_path_access(),
+        workspace=workspace,
         mounts=_active_sandbox_mounts(),
         write=write,
     )
@@ -2479,15 +2416,18 @@ def _sandbox_read_path_access_envelope(
     *,
     command: str = "",
     approval_id: str | None = None,
-    allow_trusted_auto_mount: bool = True,
+    allow_trusted_auto_mount: bool = False,
 ) -> dict[str, object] | None:
     read_paths = _shell_read_access_targets(command, profile)
     if not read_paths or not _sandbox_path_access_enabled():
         return None
+    workspace = _workspace_root_for_path_access()
+    if workspace is None:
+        return None
     for raw_path in read_paths:
         decision = decide_path_access(
             _resolve_shell_write_target(raw_path, workdir),
-            workspace=_workspace_root_for_path_access(),
+            workspace=workspace,
             mounts=_active_sandbox_mounts(),
             write=False,
         )
@@ -2528,16 +2468,19 @@ def _sandbox_write_path_access_envelope(
     *,
     stdin: str | None = None,
     approval_id: str | None = None,
-    allow_trusted_auto_mount: bool = True,
+    allow_trusted_auto_mount: bool = False,
 ) -> dict[str, object] | None:
     write_paths = _shell_write_access_targets(command, profile, stdin=stdin)
     if not write_paths or not _sandbox_path_access_enabled():
+        return None
+    workspace = _workspace_root_for_path_access()
+    if workspace is None:
         return None
     shell_file_targets = frozenset(_shell_write_targets_from_inputs(command, stdin))
     for raw_path in write_paths:
         decision = decide_path_access(
             _resolve_shell_write_target(raw_path, workdir),
-            workspace=_workspace_root_for_path_access(),
+            workspace=workspace,
             mounts=_active_sandbox_mounts(),
             write=True,
         )
@@ -2562,57 +2505,6 @@ def _sandbox_write_path_access_envelope(
             continue
         return _path_access_required_envelope(decision, approval_id=approval_id)
     return None
-
-
-def _auto_host_shell_policy_envelope(
-    tool_name: str,
-    command: str,
-    workdir: str | None,
-    profile: OperationProfile,
-    *,
-    stdin: str | None = None,
-    approval_id: str | None = None,
-) -> dict[str, object] | None:
-    path_access = _sandbox_workdir_access_envelope(
-        workdir,
-        write=_shell_workdir_requires_write(command, profile, stdin=stdin),
-        approval_id=approval_id,
-        allow_trusted_auto_mount=False,
-    )
-    if path_access is not None:
-        return path_access
-    path_access = _sandbox_read_path_access_envelope(
-        profile,
-        workdir,
-        command=command,
-        approval_id=approval_id,
-        allow_trusted_auto_mount=False,
-    )
-    if path_access is not None:
-        return path_access
-    protected_block = _protected_metadata_write_block(
-        tool_name,
-        command,
-        workdir,
-        profile,
-        stdin=stdin,
-    )
-    if protected_block is not None:
-        return protected_block
-    path_access = _sandbox_write_path_access_envelope(
-        profile,
-        workdir,
-        command,
-        stdin=stdin,
-        approval_id=approval_id,
-        allow_trusted_auto_mount=False,
-    )
-    if path_access is not None:
-        return path_access
-    lockdown_block = _workspace_lockdown_shell_block(tool_name, command, workdir, stdin=stdin)
-    if lockdown_block is not None:
-        return lockdown_block
-    return _workspace_write_deny_shell_block(tool_name, command, workdir, stdin=stdin)
 
 
 def _protected_metadata_write_block(
@@ -2692,6 +2584,7 @@ def _shell_write_access_targets(
     targets: list[str] = []
     for target in (
         *_shell_write_targets_from_inputs(command, stdin),
+        *_mutating_command_write_targets_from_inputs(command, stdin),
         *getattr(profile, "requested_write_paths", ()),
     ):
         if _is_special_shell_write_target(target):
@@ -3091,6 +2984,9 @@ _MUTATOR_WRITE_TARGET_EXTRACTORS: dict[str, Callable[[list[str]], list[str]]] = 
     "cp": _cp_write_targets,
     "dd": _dd_write_targets,
     "truncate": _truncate_write_targets,
+    "touch": _rm_write_targets,
+    "mkdir": _rm_write_targets,
+    "rmdir": _rm_write_targets,
     "git": _git_write_targets,
 }
 
@@ -3144,6 +3040,9 @@ def _shell_workdir_requires_write(
     stdin: str | None = None,
 ) -> bool:
     for target in _shell_write_targets_from_inputs(command, stdin):
+        if _shell_target_is_relative(target):
+            return True
+    for target in _mutating_command_write_targets_from_inputs(command, stdin):
         if _shell_target_is_relative(target):
             return True
     for target in getattr(profile, "requested_write_paths", ()):
@@ -3815,6 +3714,160 @@ def _effective_workdir(workdir: str | None) -> str | None:
     return None
 
 
+def _shell_elevation_required_envelope(
+    command: str,
+    cwd: str | None,
+    profile: OperationProfile,
+    *,
+    stdin: str | None = None,
+) -> dict[str, object] | None:
+    """Identify sandbox-incompatible writes without granting any authority."""
+
+    if not _sandbox_path_access_enabled():
+        return None
+    workspace = _workspace_root_for_path_access()
+    if workspace is None:
+        return None
+    target = ""
+    reason = ""
+    if profile.host_effect:
+        reason = profile.host_effect
+    else:
+        candidates = list(_shell_write_access_targets(command, profile, stdin=stdin))
+        if cwd and _shell_workdir_requires_write(command, profile, stdin=stdin):
+            candidates.insert(0, cwd)
+        for raw_path in candidates:
+            decision = decide_path_access(
+                _resolve_shell_write_target(raw_path, cwd),
+                workspace=workspace,
+                mounts=_active_sandbox_mounts(),
+                write=True,
+            )
+            if decision.status == "blocked":
+                return _path_access_blocked_envelope(decision)
+            if decision.status == "request":
+                target = decision.normalized_path
+                reason = decision.reason
+                break
+    if not reason:
+        return None
+    payload: dict[str, object] = {
+        "status": "elevation_required",
+        "reason": reason,
+        "message": (
+            "This exact command needs capabilities outside the sandbox's writable "
+            "roots. Retry only if the user's request warrants it, using "
+            "sandbox_permissions=require_escalated and a precise justification."
+        ),
+    }
+    if target:
+        payload["target"] = target
+    return payload
+
+
+def _shell_elevation_hard_block(
+    tool_name: str,
+    command: str,
+    cwd: str | None,
+    profile: OperationProfile,
+    *,
+    stdin: str | None = None,
+) -> dict[str, object] | None:
+    protected = _protected_metadata_write_block(
+        tool_name,
+        command,
+        cwd,
+        profile,
+        stdin=stdin,
+    )
+    if protected is not None:
+        return protected
+    lockdown = _workspace_lockdown_shell_block(tool_name, command, cwd, stdin=stdin)
+    if lockdown is not None:
+        return lockdown
+    return _workspace_write_deny_shell_block(tool_name, command, cwd, stdin=stdin)
+
+
+def _shell_elevation_action(
+    *,
+    tool_name: str,
+    action_kind: str,
+    command: str,
+    cwd: str | None,
+    profile: OperationProfile,
+    justification: str,
+    env: dict[str, str] | None = None,
+    stdin: str | None = None,
+    prefix_rule: list[str] | None = None,
+) -> ElevationAction:
+    target_paths: list[tuple[str, str]] = []
+
+    def _add_target(raw_path: str, access: str) -> None:
+        resolved = str(_resolve_shell_write_target(raw_path, cwd))
+        candidate = (resolved, access)
+        if candidate not in target_paths:
+            target_paths.append(candidate)
+
+    if cwd:
+        _add_target(cwd, "execute")
+    for raw_path in _shell_read_access_targets(command, profile):
+        _add_target(raw_path, "read")
+    for raw_path in _shell_write_access_targets(command, profile, stdin=stdin):
+        _add_target(raw_path, "write")
+
+    content_payload = {
+        "env": dict(sorted((env or {}).items())),
+        "stdin_sha256": (
+            hashlib.sha256(stdin.encode("utf-8")).hexdigest() if stdin is not None else None
+        ),
+    }
+    content_digest = hashlib.sha256(
+        json.dumps(
+            content_payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+    argv = (
+        ("cmd.exe", "/d", "/s", "/c", command)
+        if os.name == "nt"
+        else ("/bin/sh", "-c", command)
+    )
+    return ElevationAction(
+        tool_name=tool_name,
+        action_kind=action_kind,
+        argv=argv,
+        cwd=cwd or str(Path.cwd()),
+        sandbox_permissions="require_escalated",
+        justification=justification,
+        target_paths=tuple(target_paths),
+        network_targets=tuple(profile.requested_domains),
+        content_digest=content_digest,
+        prefix_rule=tuple(prefix_rule) if prefix_rule is not None else None,
+    )
+
+
+def _gate_shell_elevation(
+    action: ElevationAction,
+    *,
+    approval_id: str | None,
+) -> dict[str, object] | None:
+    if not action.justification.strip():
+        return {
+            "status": "elevation_required",
+            "reason": "justification_required",
+            "message": "A precise justification is required for elevated execution.",
+        }
+    ctx = current_tool_context.get()
+    gate = gate_elevated_action(
+        action,
+        approval_id=approval_id,
+        session_key=ctx.session_key if ctx is not None else None,
+    )
+    return None if gate.allowed else gate.to_envelope()
+
+
 def _bg_status(session: _BgSession) -> str:
     if session.killed:
         return "killed"
@@ -4207,7 +4260,11 @@ async def _run_host_shell_command(
         "Execute a shell command and return stdout/stderr with exit code. Use for "
         "repository inspection, builds, tests, and command-line tools. For workspace "
         "source changes, prefer read_source followed by edit_source so edits stay "
-        "revision-gated, structured, and reviewable. "
+        "revision-gated, structured, and reviewable. If a structured sandbox result "
+        "says elevation_required, retry the exact command with "
+        "sandbox_permissions=require_escalated and a precise justification only when "
+        "the user's request warrants it; ordinary command failures are not grounds "
+        "for elevation. "
         "On Windows, commands run in PowerShell; use PowerShell syntax such as "
         "Set-Location -LiteralPath, or wrap cmd.exe syntax such as cd /d with cmd /c."
     ),
@@ -4223,6 +4280,26 @@ async def _run_host_shell_command(
         "stdin": {
             "type": "string",
             "description": "Data to write to the command's standard input.",
+        },
+        "sandbox_permissions": {
+            "type": "string",
+            "enum": ["use_default", "require_escalated"],
+            "description": (
+                "Use require_escalated only when this exact command needs host "
+                "capabilities outside the sandbox."
+            ),
+        },
+        "justification": {
+            "type": "string",
+            "description": "Short user-facing reason for the exact elevated action.",
+        },
+        "prefix_rule": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": (
+                "Optional narrow command-prefix suggestion. Automatic review never "
+                "turns it into persistent authorization."
+            ),
         },
         "approval_id": {
             "type": "string",
@@ -4248,6 +4325,9 @@ async def exec_command(
     timeout: float = _DEFAULT_EXEC_TIMEOUT,
     env: dict[str, str] | None = None,
     stdin: str | None = None,
+    sandbox_permissions: str = "use_default",
+    justification: str = "",
+    prefix_rule: list[str] | None = None,
     approval_id: str | None = None,
 ) -> str:
     import os
@@ -4259,36 +4339,19 @@ async def exec_command(
     )
     if runtime_readonly_block is not None:
         return json.dumps(runtime_readonly_block, ensure_ascii=False)
-    original_profile = _profile_shell_command(command)
-    auto_host_execution = _auto_host_escalation_allowed(
-        original_profile,
-        command,
-        workdir=workdir,
-    )
-    if windows_process_sandbox:
-        if auto_host_execution:
-            auto_host_block = _auto_host_shell_policy_envelope(
-                "exec_command",
-                command,
-                _effective_workdir(workdir),
-                original_profile,
-                stdin=stdin,
-                approval_id=approval_id,
-            )
-            if auto_host_block is not None:
-                return json.dumps(auto_host_block, ensure_ascii=False)
-        else:
-            path_access = _sandbox_write_path_access_envelope(
-                original_profile,
-                workdir,
-                command,
-                stdin=stdin,
-                approval_id=approval_id,
-            )
-            if path_access is not None:
-                return json.dumps(path_access, ensure_ascii=False)
-    host_execution = _host_execution_allowed() or auto_host_execution
-    if windows_process_sandbox and not host_execution:
+    if sandbox_permissions not in {"use_default", "require_escalated"}:
+        return json.dumps(
+            {
+                "status": "invalid_request",
+                "reason": "invalid_sandbox_permissions",
+            }
+        )
+    host_execution = _host_execution_allowed()
+    if (
+        windows_process_sandbox
+        and not host_execution
+        and sandbox_permissions == "use_default"
+    ):
         command = _windows_translate_posix_tmp_references(command)
         if workdir:
             workdir = _windows_translate_posix_tmp_path(workdir)
@@ -4325,6 +4388,42 @@ async def exec_command(
     source_diff_block = _source_diff_preservation_shell_block(command, cwd, stdin=stdin)
     if source_diff_block is not None:
         return source_diff_block
+    if not host_execution and sandbox_permissions == "require_escalated":
+        hard_block = _shell_elevation_hard_block(
+            "exec_command",
+            command,
+            cwd,
+            profile,
+            stdin=stdin,
+        )
+        if hard_block is not None:
+            return json.dumps(hard_block, ensure_ascii=False)
+        elevation = _gate_shell_elevation(
+            _shell_elevation_action(
+                tool_name="exec_command",
+                action_kind="shell.exec",
+                command=command,
+                cwd=cwd,
+                profile=profile,
+                justification=justification,
+                env=env,
+                stdin=stdin,
+                prefix_rule=prefix_rule,
+            ),
+            approval_id=approval_id,
+        )
+        if elevation is not None:
+            return json.dumps(elevation, ensure_ascii=False)
+        host_execution = True
+    elif not host_execution:
+        elevation_required = _shell_elevation_required_envelope(
+            command,
+            cwd,
+            profile,
+            stdin=stdin,
+        )
+        if elevation_required is not None:
+            return json.dumps(elevation_required, ensure_ascii=False)
     if not host_execution:
         path_access = _sandbox_workdir_access_envelope(
             cwd,
@@ -4474,7 +4573,7 @@ async def exec_command(
             "shell_exec_host",
             command=_audit_command(command),
             run_mode=_context_run_mode(),
-            auto_host_escalation=auto_host_execution,
+            elevation_grant=sandbox_permissions == "require_escalated",
             host_effect=profile.host_effect,
         )
         merged_env = _host_shell_env(merged_env)
@@ -4504,6 +4603,8 @@ async def exec_command(
     name="background_process",
     description=(
         "Run a shell command in the background. Returns a session_id for polling. "
+        "If the sandbox reports elevation_required, use require_escalated with a "
+        "precise justification only for the exact user-authorized command. "
         "On Windows, commands run in PowerShell; use PowerShell syntax such as "
         "Set-Location -LiteralPath, or wrap cmd.exe syntax such as cd /d with cmd /c."
     ),
@@ -4513,6 +4614,26 @@ async def exec_command(
         "timeout": {
             "type": "number",
             "description": "Timeout in seconds (default 1800, max 3600).",
+        },
+        "sandbox_permissions": {
+            "type": "string",
+            "enum": ["use_default", "require_escalated"],
+            "description": (
+                "Use require_escalated only when this exact background command needs "
+                "host capabilities outside the sandbox."
+            ),
+        },
+        "justification": {
+            "type": "string",
+            "description": "Short user-facing reason for the exact elevated action.",
+        },
+        "prefix_rule": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": (
+                "Optional narrow command-prefix suggestion. Automatic review never "
+                "turns it into persistent authorization."
+            ),
         },
         "approval_id": {
             "type": "string",
@@ -4532,6 +4653,9 @@ async def background_process(
     command: str,
     workdir: str | None = None,
     timeout: float = _DEFAULT_BACKGROUND_TIMEOUT,
+    sandbox_permissions: str = "use_default",
+    justification: str = "",
+    prefix_rule: list[str] | None = None,
     approval_id: str | None = None,
 ) -> str:
     runtime = get_runtime()
@@ -4541,34 +4665,19 @@ async def background_process(
     )
     if runtime_readonly_block is not None:
         return json.dumps(runtime_readonly_block, ensure_ascii=False)
-    original_profile = _profile_shell_command(command)
-    auto_host_execution = _auto_host_escalation_allowed(
-        original_profile,
-        command,
-        workdir=workdir,
-    )
-    if windows_process_sandbox:
-        if auto_host_execution:
-            auto_host_block = _auto_host_shell_policy_envelope(
-                "background_process",
-                command,
-                _effective_workdir(workdir),
-                original_profile,
-                approval_id=approval_id,
-            )
-            if auto_host_block is not None:
-                return json.dumps(auto_host_block, ensure_ascii=False)
-        else:
-            path_access = _sandbox_write_path_access_envelope(
-                original_profile,
-                workdir,
-                command,
-                approval_id=approval_id,
-            )
-            if path_access is not None:
-                return json.dumps(path_access, ensure_ascii=False)
-    host_execution = _host_execution_allowed() or auto_host_execution
-    if windows_process_sandbox and not host_execution:
+    if sandbox_permissions not in {"use_default", "require_escalated"}:
+        return json.dumps(
+            {
+                "status": "invalid_request",
+                "reason": "invalid_sandbox_permissions",
+            }
+        )
+    host_execution = _host_execution_allowed()
+    if (
+        windows_process_sandbox
+        and not host_execution
+        and sandbox_permissions == "use_default"
+    ):
         command = _windows_translate_posix_tmp_references(command)
         if workdir:
             workdir = _windows_translate_posix_tmp_path(workdir)
@@ -4603,6 +4712,34 @@ async def background_process(
     source_diff_block = _source_diff_preservation_shell_block(command, cwd)
     if source_diff_block is not None:
         return source_diff_block
+    if not host_execution and sandbox_permissions == "require_escalated":
+        hard_block = _shell_elevation_hard_block(
+            "background_process",
+            command,
+            cwd,
+            profile,
+        )
+        if hard_block is not None:
+            return json.dumps(hard_block, ensure_ascii=False)
+        elevation = _gate_shell_elevation(
+            _shell_elevation_action(
+                tool_name="background_process",
+                action_kind="shell.background",
+                command=command,
+                cwd=cwd,
+                profile=profile,
+                justification=justification,
+                prefix_rule=prefix_rule,
+            ),
+            approval_id=approval_id,
+        )
+        if elevation is not None:
+            return json.dumps(elevation, ensure_ascii=False)
+        host_execution = True
+    elif not host_execution:
+        elevation_required = _shell_elevation_required_envelope(command, cwd, profile)
+        if elevation_required is not None:
+            return json.dumps(elevation_required, ensure_ascii=False)
     if not host_execution:
         path_access = _sandbox_workdir_access_envelope(
             cwd,
@@ -4734,7 +4871,7 @@ async def background_process(
             "background_process_host",
             command=_audit_command(command),
             run_mode=_context_run_mode(),
-            auto_host_escalation=auto_host_execution,
+            elevation_grant=sandbox_permissions == "require_escalated",
             host_effect=profile.host_effect,
         )
 

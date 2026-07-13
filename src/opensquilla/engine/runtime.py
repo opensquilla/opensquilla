@@ -4575,8 +4575,24 @@ class TurnRunner:
                         [
                             "Default execution target: sandbox",
                             (
+                                "Host filesystem: broadly readable; writes stay within "
+                                "declared writable roots by default."
+                            ),
+                            (
                                 "Host escalation: explicit host-affecting actions can run "
                                 "on the host when policy allows."
+                            ),
+                            (
+                                "Elevation: when a tool returns elevation_required, retry "
+                                "that exact action with sandbox_permissions="
+                                "require_escalated and a precise justification only when "
+                                "the user request warrants it. Never elevate a generic "
+                                "runtime or command failure."
+                            ),
+                            (
+                                "Review: elevation is independently authorized once for "
+                                "the exact arguments; explain denials before seeking a new "
+                                "explicit user instruction."
                             ),
                             (
                                 "Sandbox: enabled by default; do not treat it as a "

@@ -302,6 +302,12 @@ def test_release_workflow_gates_built_and_downloaded_installers_on_profile_reten
     assert "requestCount, 1" in update_banner_smoke
     assert "OPENSQUILLA_PRIVACY_DISABLE_NETWORK_OBSERVABILITY" in update_banner_smoke
     assert "writeSyntheticUpdateCache(privacyUserDataDir, baseVersion, 0)" in update_banner_smoke
+    assert "writeSyntheticCanonicalWorkspace(privacyUserDataDir)" in update_banner_smoke
+    assert update_banner_smoke.index(
+        "writeSyntheticCanonicalWorkspace(privacyUserDataDir)"
+    ) < update_banner_smoke.index(
+        "privacyApp = await launchCandidate("
+    )
     assert "GITHUB_ACTIONS: '0'" in update_banner_smoke
 
     mac_audit = workflow[

@@ -272,6 +272,146 @@ async function mockStreamingEnsembleWithProgress(page: Page) {
   })
 }
 
+const SCROLL_SESSION_KEY = 'agent:main:webchat:e2e-ensemble-scroll-retention'
+const SCROLL_TASK_ID = 'ensemble-scroll-retention-task'
+const LATE_TEXT = 'Issue 549 late text delta'
+const LATE_MODEL = 'openai/gpt-5.4-mini'
+
+async function mockEnsembleScrollRetention(page: Page) {
+  let sendFrame: ((frame: string) => void) | null = null
+  let streamSeq = 4
+
+  await page.addInitScript(() => {
+    window.localStorage.setItem('opensquilla-locale', 'en')
+    window.localStorage.setItem('opensquilla.routerVisualEffects', '1')
+  })
+  await page.route('**/api/approvals', route => route.fulfill({
+    status: 200,
+    contentType: 'application/json',
+    body: JSON.stringify({ pending: [] }),
+  }))
+  await page.routeWebSocket(/\/ws$/, ws => {
+    sendFrame = frame => ws.send(frame)
+    ws.send(JSON.stringify({ type: 'event', event: 'connect.challenge', payload: {} }))
+    ws.onMessage(message => {
+      try {
+        const frame = JSON.parse(String(message))
+        if (frame?.type !== 'req') return
+        const method = String(frame.method || '')
+        if (method === 'connect') {
+          ws.send(JSON.stringify({ protocol: 3, policy: { tick_interval_ms: 30000 } }))
+          return
+        }
+        if (method === 'chat.send') {
+          ws.send(wsResponse(String(frame.id), {
+            accepted: true,
+            session: SCROLL_SESSION_KEY,
+            task_id: SCROLL_TASK_ID,
+            stream_seq: 1,
+          }))
+          ws.send(wsEvent('task.running', { key: SCROLL_SESSION_KEY, task_id: SCROLL_TASK_ID, stream_seq: 1 }))
+          ws.send(wsEvent('session.event.state_change', {
+            key: SCROLL_SESSION_KEY,
+            task_id: SCROLL_TASK_ID,
+            stream_seq: 2,
+            to_state: 'streaming',
+          }))
+          ws.send(wsEvent('session.event.text_delta', {
+            key: SCROLL_SESSION_KEY,
+            task_id: SCROLL_TASK_ID,
+            stream_seq: 3,
+            text: Array.from(
+              { length: 80 },
+              (_, index) => `Initial streaming paragraph ${index + 1}: this fills the conversation so the reader can leave the live edge.`,
+            ).join('\n\n'),
+          }))
+          return
+        }
+        const payloads: Record<string, unknown> = {
+          'agents.list': { agents: [] },
+          'chat.history': { messages: [], has_more: false },
+          'commands.list_for_surface': { commands: [] },
+          'config.get': {
+            squilla_router: { enabled: true, rollout_phase: 'full', tiers: {} },
+            llm_ensemble: { enabled: true },
+            permissions: {},
+            skills: {},
+          },
+          'sessions.list': { sessions: [], has_more: false },
+          'sessions.messages.subscribe': { subscribed: true, replay_complete: true, current_stream_seq: 0, run_status: 'idle' },
+          'usage.status': { sessions: [] },
+        }
+        ws.send(wsResponse(String(frame.id), payloads[method] ?? {}))
+      } catch {}
+    })
+  })
+
+  function emit(event: string, payload: Record<string, unknown>) {
+    if (!sendFrame) throw new Error('WebSocket fixture is not connected')
+    sendFrame(wsEvent(event, {
+      key: SCROLL_SESSION_KEY,
+      task_id: SCROLL_TASK_ID,
+      stream_seq: streamSeq++,
+      ...payload,
+    }))
+  }
+
+  return {
+    emitLateText: () => emit('session.event.text_delta', { text: LATE_TEXT }),
+    emitLateProgress: () => emit('session.event.ensemble_progress', {
+      event_type: 'proposer_start',
+      proposer_label: 'late',
+      proposer_provider: 'openai',
+      proposer_model: LATE_MODEL,
+    }),
+  }
+}
+
+function threadMetrics(page: Page) {
+  return page.locator('.chat-thread').evaluate(el => {
+    const thread = el as HTMLElement
+    return {
+      scrollTop: Math.round(thread.scrollTop),
+      gap: Math.round(thread.scrollHeight - thread.scrollTop - thread.clientHeight),
+      scrollHeight: Math.round(thread.scrollHeight),
+    }
+  })
+}
+
+test('ensemble events do not re-pin a reader who left the live edge', async ({ page }) => {
+  const stream = await mockEnsembleScrollRetention(page)
+  await page.goto(CONTROL_URL + 'chat?session=' + encodeURIComponent(SCROLL_SESSION_KEY))
+  await page.waitForSelector('.conn-pill', { timeout: 10000 })
+  await page.locator('.chat-textarea').fill('Keep streaming while I read earlier content.')
+  await page.locator('.chat-send-btn[aria-label="Send"]').click()
+
+  await expect.poll(() => threadMetrics(page).then(metrics => metrics.scrollHeight > 1600)).toBe(true)
+  const beforeLateEvents = await page.locator('.chat-thread').evaluate(el => {
+    const thread = el as HTMLElement
+    thread.scrollTop = Math.max(0, thread.scrollHeight - thread.clientHeight - 300)
+    thread.dispatchEvent(new Event('scroll'))
+    return {
+      scrollTop: Math.round(thread.scrollTop),
+      gap: Math.round(thread.scrollHeight - thread.scrollTop - thread.clientHeight),
+    }
+  })
+  expect(beforeLateEvents.gap).toBeGreaterThan(60)
+  await expect(page.locator('.chat-jump-latest')).toBeVisible()
+
+  stream.emitLateText()
+  await expect(page.locator('.chat-thread')).toContainText(LATE_TEXT)
+  const afterLateText = await threadMetrics(page)
+  expect(afterLateText.gap).toBeGreaterThan(60)
+
+  stream.emitLateProgress()
+  const ensembleStrip = page.locator('.router-fx[data-panel="llm-ensemble"]')
+  await ensembleStrip.locator('[data-testid="router-ensemble-toggle"]').click()
+  await expect(ensembleStrip.locator('[data-testid="router-ensemble-inspector"]')).toContainText('gpt-5.4-mini')
+  const afterLateProgress = await threadMetrics(page)
+  expect(afterLateProgress.gap).toBeGreaterThan(60)
+  await expect(page.locator('.chat-jump-latest')).toBeVisible()
+})
+
 test('ensemble routing reveals members incrementally from ensemble_progress events', async ({ page }) => {
   await mockStreamingEnsembleWithProgress(page)
   await page.goto(CONTROL_URL + 'chat?session=' + encodeURIComponent(PROGRESS_SESSION_KEY))

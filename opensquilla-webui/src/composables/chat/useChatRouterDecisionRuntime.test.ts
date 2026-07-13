@@ -4,12 +4,19 @@ import type { ChatMessage } from '@/types/chat'
 import { useChatRouterDecisionRuntime } from '@/composables/chat/useChatRouterDecisionRuntime'
 import type { ModelRoutingMode } from '@/types/modelRouting'
 
-function makeRuntime(messages: ChatMessage[] = [], isStreaming = true, modelRoutingMode: ModelRoutingMode = 'llm_ensemble') {
+function makeRuntime(
+  messages: ChatMessage[] = [],
+  isStreaming = true,
+  modelRoutingMode: ModelRoutingMode = 'llm_ensemble',
+  autoScroll = true,
+) {
   const messagesRef = ref<ChatMessage[]>(messages)
+  const scrollToBottom = vi.fn()
   const runtime = useChatRouterDecisionRuntime({
     messages: messagesRef,
     sessionKey: ref('sess'),
     isStreaming: ref(isStreaming),
+    autoScroll: ref(autoScroll),
     modelRoutingMode: ref(modelRoutingMode),
     streamBubble: ref(true),
     streamHasVisibleOutput: ref(false),
@@ -17,9 +24,9 @@ function makeRuntime(messages: ChatMessage[] = [], isStreaming = true, modelRout
     resetStreamForRouterReplay: vi.fn(),
     resetStreamIdleTimer: vi.fn(),
     setStreamActivity: vi.fn(),
-    scrollToBottom: vi.fn(),
+    scrollToBottom,
   })
-  return { runtime, messagesRef }
+  return { runtime, messagesRef, scrollToBottom }
 }
 
 describe('appendEnsembleProgress', () => {
@@ -94,6 +101,38 @@ describe('appendEnsembleProgress', () => {
     const { runtime, messagesRef } = makeRuntime([{ role: 'user', text: 'q', ts: 0 }])
     runtime.appendEnsembleProgress({ event_type: 'proposer_start', proposer_model: '' })
     expect(messagesRef.value.some(m => m.role === 'router')).toBe(false)
+  })
+
+  it('updates ensemble state without re-pinning a reader who scrolled up', () => {
+    const { runtime, messagesRef, scrollToBottom } = makeRuntime(
+      [{ role: 'user', text: 'q', ts: 0 }],
+      true,
+      'llm_ensemble',
+      false,
+    )
+
+    runtime.appendEnsembleProgress({
+      event_type: 'proposer_start',
+      proposer_label: 'anchor',
+      proposer_provider: 'openrouter',
+      proposer_model: 'qwen/qwen3.7-plus',
+    })
+
+    expect(messagesRef.value.find(message => message.role === 'router')?.ensemble?.models).toHaveLength(1)
+    expect(scrollToBottom).not.toHaveBeenCalled()
+  })
+
+  it('keeps following ensemble progress while the reader remains at the live edge', () => {
+    const { runtime, scrollToBottom } = makeRuntime([{ role: 'user', text: 'q', ts: 0 }])
+
+    runtime.appendEnsembleProgress({
+      event_type: 'proposer_start',
+      proposer_label: 'anchor',
+      proposer_provider: 'openrouter',
+      proposer_model: 'qwen/qwen3.7-plus',
+    })
+
+    expect(scrollToBottom).toHaveBeenCalledTimes(1)
   })
 })
 
@@ -190,5 +229,19 @@ describe('markEnsembleHandoff', () => {
     runtime.markEnsembleHandoff()
 
     expect(router.routerState).toBeUndefined()
+  })
+
+  it('marks the ensemble handoff without re-pinning a reader who scrolled up', () => {
+    const { runtime, messagesRef, scrollToBottom } = makeRuntime(
+      [{ role: 'user', text: 'q', ts: 0 }],
+      true,
+      'llm_ensemble',
+      false,
+    )
+
+    runtime.markEnsembleHandoff()
+
+    expect(messagesRef.value.find(message => message.role === 'router')?.routerState).toBe('handoff')
+    expect(scrollToBottom).not.toHaveBeenCalled()
   })
 })

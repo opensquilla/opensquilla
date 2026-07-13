@@ -912,6 +912,7 @@ const chatRouterDecisionRuntime = useChatRouterDecisionRuntime({
   messages,
   sessionKey,
   isStreaming,
+  autoScroll,
   modelRoutingMode,
   streamBubble,
   streamHasVisibleOutput,
@@ -1968,7 +1969,10 @@ function shareTitle(): string {
 
 function scrollToBottom() {
   nextTick(() => {
-    if (threadRef.value) {
+    // A stream/event may request a follow while the reader is at the live edge,
+    // then the reader can scroll up before Vue applies this next-tick callback.
+    // Re-check here so that queued automatic scrolls never override that choice.
+    if (threadRef.value && autoScroll.value) {
       threadRef.value.scrollTop = threadRef.value.scrollHeight
     }
   })

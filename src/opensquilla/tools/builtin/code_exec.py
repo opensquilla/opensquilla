@@ -121,6 +121,9 @@ def _iter_code_string_literals(code: str) -> list[str]:
 
 def _check_code_sensitive_access(code: str) -> tuple[str, str] | None:
     """Return (reason, marker) if Python code is trying to touch sensitive data."""
+    runtime = get_runtime()
+    if runtime is not None and runtime.effective.sandbox_enabled:
+        return None
     lowered = code.lower()
     has_read_or_shell = any(token in lowered for token in _CODE_SENSITIVE_READ_TOKENS)
 

@@ -1335,7 +1335,7 @@ async def test_rpc_sandbox_invalid_params_do_not_create_missing_session(
 
 
 @pytest.mark.asyncio
-async def test_rpc_sandbox_path_pick_validates_workspace_selection(
+async def test_rpc_sandbox_path_pick_uses_permission_based_workspace_selection(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     import opensquilla.gateway.rpc_sandbox as rpc_sandbox
@@ -1347,14 +1347,15 @@ async def test_rpc_sandbox_path_pick_validates_workspace_selection(
         lambda initial_dir=None: "/etc/shadow",
     )
 
-    with pytest.raises(ValueError, match="sensitive_path"):
-        await rpc_sandbox._handle_sandbox_path_pick(
-            {
-                "sessionKey": manager.node.session_key,
-                "kind": "workspace",
-            },
-            _ctx(manager),
-        )
+    result = await rpc_sandbox._handle_sandbox_path_pick(
+        {
+            "sessionKey": manager.node.session_key,
+            "kind": "workspace",
+        },
+        _ctx(manager),
+    )
+
+    assert result == {"path": "/etc/shadow", "kind": "workspace"}
 
 
 @pytest.mark.asyncio
@@ -1499,7 +1500,7 @@ async def test_rpc_sandbox_path_list_supports_parent_row_and_child_drilldown(
 
 
 @pytest.mark.asyncio
-async def test_rpc_sandbox_path_browser_selection_is_validated_on_workspace_save(
+async def test_rpc_workspace_save_does_not_use_sensitive_path_names(
     tmp_path,
 ) -> None:
     from opensquilla.gateway.rpc_sandbox import _handle_sandbox_workspace_set
@@ -1509,16 +1510,18 @@ async def test_rpc_sandbox_path_browser_selection_is_validated_on_workspace_save
     selected.parent.mkdir()
     selected.write_text("secret", encoding="utf-8")
 
-    with pytest.raises(ValueError, match="sensitive_path"):
-        await _handle_sandbox_workspace_set(
-            {
-                "sessionKey": manager.node.session_key,
-                "workspace": str(selected),
-            },
-            _ctx(manager),
-        )
+    result = await _handle_sandbox_workspace_set(
+        {
+            "sessionKey": manager.node.session_key,
+            "workspace": str(selected),
+        },
+        _ctx(manager),
+    )
 
-    assert manager.node.origin is None
+    assert result["workspace"] == str(selected.resolve(strict=False))
+    assert manager.node.origin["sandbox_run_context"]["workspace"] == str(
+        selected.resolve(strict=False)
+    )
 
 
 @pytest.mark.asyncio
@@ -1527,14 +1530,6 @@ async def test_rpc_sandbox_path_browser_selection_is_validated_on_workspace_save
     [
         ("_handle_sandbox_domain_add", {"domain": "127.0.0.1"}, "ip_literal"),
         ("_handle_sandbox_domain_remove", {"domain": "*.com"}, "broad_wildcard"),
-        ("_handle_sandbox_workspace_set", {"workspace": "/"}, "sensitive_path"),
-        (
-            "_handle_sandbox_workspace_set",
-            {"workspacePath": "/tmp/ws/.aws/credentials"},
-            "sensitive_path",
-        ),
-        ("_handle_sandbox_mount_add", {"path": "/etc/shadow"}, "sensitive_path"),
-        ("_handle_sandbox_mount_remove", {"path": "/"}, "sensitive_path"),
     ],
 )
 async def test_rpc_sandbox_semantic_validation_does_not_create_missing_session(

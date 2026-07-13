@@ -728,7 +728,7 @@ def _sensitive_shell_block(
     workdir: str | None = None,
     stdin: str | None = None,
 ) -> str | None:
-    if _context_elevated_mode() == "full":
+    if _context_elevated_mode() == "full" or _sandbox_path_access_enabled():
         return None
 
     from opensquilla.sandbox.sensitive_paths import build_block_envelope, sensitive_path_in_text

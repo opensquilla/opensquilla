@@ -417,7 +417,7 @@ def _gate_patch_ops(
 
     for op in ops:
         resolved = _validate_path(op.path, root)
-        if not elevated_full:
+        if not elevated_full and not filesystem._sandbox_path_access_enabled():
             sensitive = sensitive_path_marker(str(resolved), workspace=workspace)
             if sensitive is not None:
                 return (

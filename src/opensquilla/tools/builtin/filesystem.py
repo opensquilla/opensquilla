@@ -944,7 +944,7 @@ def _sensitive_access_block(tool_name: str, resolved: Path, original_path: str) 
     """Return a hard-block envelope for sensitive host paths, unless fully elevated."""
     from opensquilla.sandbox.sensitive_paths import build_block_envelope, sensitive_path_marker
 
-    if full_host_access_active():
+    if full_host_access_active() or _sandbox_path_access_enabled():
         return None
     sensitive = sensitive_path_marker(str(resolved), workspace=_workspace_root())
     if sensitive is None:
@@ -955,6 +955,8 @@ def _sensitive_access_block(tool_name: str, resolved: Path, original_path: str) 
 def _is_sensitive_access_path(resolved: Path, workspace: Path | None = None) -> bool:
     from opensquilla.sandbox.sensitive_paths import sensitive_path_marker
 
+    if _sandbox_path_access_enabled():
+        return False
     root = workspace if workspace is not None else _workspace_root()
     return (
         not full_host_access_active()
@@ -1024,7 +1026,7 @@ async def _gate_out_of_workspace_write(
     from opensquilla.sandbox.sensitive_paths import build_block_envelope, sensitive_path_marker
 
     elevated_full = full_host_access_active()
-    if not elevated_full:
+    if not elevated_full and not _sandbox_path_access_enabled():
         sensitive = sensitive_path_marker(str(resolved), workspace=_workspace_root())
         if sensitive is not None:
             return (

@@ -8,6 +8,10 @@ from dataclasses import dataclass
 from pathlib import Path, PurePath, PurePosixPath
 from typing import Any, Literal
 
+from opensquilla.sandbox.permissions import (
+    FileSystemAccess,
+    FileSystemPermissionProfile,
+)
 from opensquilla.sandbox.sensitive_paths import sensitive_path_marker
 
 MountAccess = Literal["ro", "rw"]
@@ -68,6 +72,7 @@ def decide_path_access(
     workspace: str | os.PathLike[str] | None,
     mounts: Iterable[Any] = (),
     write: bool = False,
+    profile: FileSystemPermissionProfile | None = None,
 ) -> MountDecision:
     """Return whether *path* is visible in the active sandbox mount view."""
 
@@ -76,41 +81,33 @@ def decide_path_access(
     normalized_text = str(normalized)
     workspace_path = _normalize_decision_path(workspace) if workspace is not None else None
 
-    if workspace_path is not None and is_relative_to_path(normalized, workspace_path):
-        marker = sensitive_path_marker(normalized_text, workspace=str(workspace_path))
-        if marker is not None:
+    if profile is not None and isinstance(normalized, Path):
+        effective_access = profile.resolve(normalized)
+        if effective_access is FileSystemAccess.DENY:
             return MountDecision(
                 status="blocked",
                 normalized_path=normalized_text,
                 access=access,
-                reason="sensitive_path",
+                reason="denied_read",
+            )
+        if not write or effective_access is FileSystemAccess.WRITE:
+            return MountDecision(
+                status="allowed",
+                normalized_path=normalized_text,
+                access=access,
             )
         return MountDecision(
-            status="allowed",
+            status="request",
             normalized_path=normalized_text,
-            access=access,
+            access="rw",
+            reason="mount_requires_write_access",
         )
 
-    if (
-        not write
-        and _is_filesystem_root(normalized)
-        and any(
-            mount_root == normalized and mount_access == "ro"
-            for mount_root, mount_access in _iter_mount_roots(mounts)
-        )
-    ):
+    if workspace_path is not None and is_relative_to_path(normalized, workspace_path):
         return MountDecision(
             status="allowed",
             normalized_path=normalized_text,
-            access="ro",
-        )
-
-    if _is_blocked_path(normalized, workspace_path):
-        return MountDecision(
-            status="blocked",
-            normalized_path=normalized_text,
             access=access,
-            reason="sensitive_path",
         )
 
     matching_mounts = [

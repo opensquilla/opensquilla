@@ -13,6 +13,7 @@ from opensquilla.sandbox.config import SandboxSettings
 from opensquilla.sandbox.integration import configure_runtime, get_runtime, reset_runtime
 from opensquilla.sandbox.operation_runtime import SandboxOperation, SandboxOperationResult
 from opensquilla.sandbox.path_validation import decide_path_access
+from opensquilla.sandbox.permissions import FileSystemPermissionProfile
 from opensquilla.sandbox.run_context import RunContext
 from opensquilla.sandbox.run_mode import RunMode
 from opensquilla.sandbox.types import SandboxRequest
@@ -161,14 +162,17 @@ def test_normal_sibling_path_requests_ro_mount(tmp_path: Path) -> None:
     assert decision.normalized_path == str(sibling.resolve(strict=False))
 
 
-def test_sensitive_ssh_path_is_blocked(tmp_path: Path) -> None:
+def test_readonly_root_allows_ssh_path_read(tmp_path: Path) -> None:
     workspace = tmp_path / "workspace"
     target = Path.home() / ".ssh" / "id_rsa"
 
-    decision = decide_path_access(target, workspace=workspace)
+    decision = decide_path_access(
+        target,
+        workspace=workspace,
+        mounts=({"path": "/", "access": "ro"},),
+    )
 
-    assert decision.status == "blocked"
-    assert decision.reason == "sensitive_path"
+    assert decision.status == "allowed"
 
 
 def test_readonly_root_allows_ordinary_etc_reads_but_not_writes(tmp_path: Path) -> None:
@@ -185,7 +189,7 @@ def test_readonly_root_allows_ordinary_etc_reads_but_not_writes(tmp_path: Path) 
         mounts=mounts,
         write=True,
     )
-    sensitive = decide_path_access(
+    shadow = decide_path_access(
         "/etc/shadow",
         workspace=tmp_path / "workspace",
         mounts=mounts,
@@ -195,7 +199,7 @@ def test_readonly_root_allows_ordinary_etc_reads_but_not_writes(tmp_path: Path) 
     assert read.access == "ro"
     assert write.status == "request"
     assert write.access == "rw"
-    assert sensitive.status == "blocked"
+    assert shadow.status == "allowed"
 
 
 def test_readonly_root_mount_allows_root_directory_read_but_blocks_write(
@@ -217,8 +221,8 @@ def test_readonly_root_mount_allows_root_directory_read_but_blocks_write(
 
     assert read.status == "allowed"
     assert read.access == "ro"
-    assert write.status == "blocked"
-    assert write.reason == "sensitive_path"
+    assert write.status == "request"
+    assert write.reason == "mount_requires_write_access"
 
 
 def test_workspace_child_is_allowed(tmp_path: Path) -> None:
@@ -241,14 +245,31 @@ def test_default_container_workspace_child_is_allowed_before_root_block() -> Non
     assert decision.access == "ro"
 
 
-def test_sensitive_file_inside_default_container_workspace_stays_blocked() -> None:
+def test_dotenv_inside_default_container_workspace_is_profile_readable() -> None:
     workspace = "/root/.opensquilla/workspace"
     target = "/root/.opensquilla/workspace/project/.env.local"
 
     decision = decide_path_access(target, workspace=workspace)
 
+    assert decision.status == "allowed"
+
+
+def test_explicit_denied_read_profile_still_blocks(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    target = tmp_path / "secret" / "token"
+    profile = FileSystemPermissionProfile.workspace(
+        workspace=workspace,
+        denied_read_roots=(tmp_path / "secret",),
+    )
+
+    decision = decide_path_access(
+        target,
+        workspace=workspace,
+        profile=profile,
+    )
+
     assert decision.status == "blocked"
-    assert decision.reason == "sensitive_path"
+    assert decision.reason == "denied_read"
 
 
 def test_write_request_asks_for_rw_mount(tmp_path: Path) -> None:
@@ -291,18 +312,18 @@ def test_request_path_builds_structured_mount_escalation_choices(tmp_path: Path)
     assert proposal["choices"][0]["style"] == "primary"
 
 
-def test_blocked_path_has_no_mount_escalation_choices(tmp_path: Path) -> None:
+def test_unmounted_root_read_can_request_a_mount_grant(tmp_path: Path) -> None:
     from opensquilla.sandbox.escalation import build_path_approval_params
 
     workspace = tmp_path / "workspace"
     decision = decide_path_access("/", workspace=workspace, write=False)
 
-    assert decision.status == "blocked"
+    assert decision.status == "request"
     assert build_path_approval_params(
         decision,
         session_key="agent:main:webchat:abc",
         workspace=str(workspace),
-    ) is None
+    ) is not None
 
 
 def test_most_specific_rw_mount_allows_write_under_ro_parent(tmp_path: Path) -> None:
@@ -424,6 +445,61 @@ async def test_filesystem_list_root_uses_global_readonly_root(
 
     assert '"status": "blocked"' not in result
     assert "[dir]" in result
+
+
+@pytest.mark.asyncio
+async def test_filesystem_reads_dot_credential_names_through_readonly_root(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(exist_ok=True)
+    credential = tmp_path / "outside" / ".ssh" / "id_rsa"
+    credential.parent.mkdir(parents=True)
+    credential.write_text("test fixture body\n", encoding="utf-8")
+
+    _install_filesystem_read_backend()
+    monkeypatch.setattr(fs.asyncio, "get_event_loop", lambda: _InlineExecutorLoop())
+
+    with tool_context(workspace, workspace_strict=True):
+        result = await fs.read_file(str(credential))
+
+    assert "test fixture body" in result
+
+
+@pytest.mark.asyncio
+async def test_shell_reads_dot_credential_names_inside_sandbox(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(exist_ok=True)
+    credential = tmp_path / "outside" / ".ssh" / "id_rsa"
+    credential.parent.mkdir(parents=True)
+    credential.write_text("test fixture body\n", encoding="utf-8")
+    backend_calls: list[SandboxRequest] = []
+
+    async def fake_backend(request: SandboxRequest, *, runtime: object = None) -> object:
+        backend_calls.append(request)
+        return SimpleNamespace(
+            stdout="test fixture body\n",
+            stderr="",
+            returncode=0,
+            backend_notes=[],
+        )
+
+    monkeypatch.setattr(shell, "run_under_backend", fake_backend)
+    monkeypatch.setattr(
+        shell,
+        "check_safe_bin",
+        lambda command: SimpleNamespace(allowed=True, needs_approval=False, reason=""),
+    )
+
+    with tool_context(workspace, workspace_strict=True):
+        result = await shell.exec_command(f"cat {credential}")
+
+    assert "test fixture body" in result
+    assert len(backend_calls) == 1
 
 
 @pytest.mark.asyncio

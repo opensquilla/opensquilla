@@ -179,7 +179,7 @@ async def test_code_exec_changed_code_cannot_reuse_elevation(
 
 
 @pytest.mark.asyncio
-async def test_code_exec_sensitive_path_blocks_before_elevation_request(
+async def test_code_exec_credential_path_reaches_elevation_review(
     managed_runtime: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -206,9 +206,10 @@ async def test_code_exec_sensitive_path_blocks_before_elevation_request(
     finally:
         current_tool_context.reset(token)
 
-    assert result["status"] == "blocked"
-    assert result["reason"] == "sensitive_path"
-    assert get_approval_queue().list_pending("exec") == []
+    assert result["status"] == "approval_required"
+    entry = get_approval_queue().get(result["approval_id"])
+    assert entry.params["action"]["sandbox_permissions"] == "require_escalated"
+    assert len(get_approval_queue().list_pending("exec")) == 1
 
 
 @pytest.mark.asyncio

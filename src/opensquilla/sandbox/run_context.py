@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 from collections.abc import Iterable
 from dataclasses import dataclass, replace
-from pathlib import Path, PurePath, PurePosixPath
+from pathlib import PurePosixPath
 from typing import Any
 
 from opensquilla.sandbox.domain_validation import validate_domain_pattern
@@ -16,18 +16,10 @@ from opensquilla.sandbox.path_validation import (
     normalize_path,
 )
 from opensquilla.sandbox.run_mode import RunMode, config_run_mode, normalize_run_mode
-from opensquilla.sandbox.sensitive_paths import sensitive_path_marker
 from opensquilla.sandbox.user_grants import load_user_grants_payload
 
 RUN_CONTEXT_ORIGIN_KEY = "sandbox_run_context"
 DEFAULT_ROOT_WORKSPACE = "/root/.opensquilla/workspace"
-_DEFAULT_WORKSPACE_CREDENTIAL_PARTS: tuple[tuple[str, ...], ...] = (
-    (".aws", "credentials"),
-    (".kube", "config"),
-    (".docker", "config"),
-    (".docker", "config.json"),
-    (".gnupg",),
-)
 
 
 @dataclass(frozen=True)
@@ -147,78 +139,14 @@ def normalize_scope(scope: Any, default: str = "chat") -> str:
     return value if value in {"chat", "workspace", "once"} else default
 
 
-def _is_filesystem_root(path: str) -> bool:
-    try:
-        normalized = _workspace_path_view(path)
-        if not normalized.anchor:
-            return False
-        return normalized == type(normalized)(normalized.anchor)
-    except (OSError, RuntimeError, ValueError):
-        return False
-
-
-def _is_relative_to_path(candidate: str, root: str) -> bool:
-    try:
-        _workspace_path_view(candidate).relative_to(_workspace_path_view(root))
-        return True
-    except (OSError, RuntimeError, ValueError):
-        return False
-
-
 def _looks_like_posix_rooted_text(path: str) -> bool:
     return os.name == "nt" and path.startswith("/") and not path.startswith("//")
-
-
-def _workspace_path_view(path: str) -> PurePath:
-    if _looks_like_posix_rooted_text(path):
-        return PurePosixPath(path)
-    return Path(path)
 
 
 def _normalize_workspace_candidate(workspace: str) -> str:
     if _looks_like_posix_rooted_text(workspace):
         return PurePosixPath(workspace).as_posix()
     return str(normalize_path(workspace))
-
-
-def _has_sensitive_workspace_parts(parts: tuple[str, ...]) -> bool:
-    if any(part.startswith(".env") for part in parts):
-        return True
-    for blocked in _DEFAULT_WORKSPACE_CREDENTIAL_PARTS:
-        limit = len(parts) - len(blocked) + 1
-        for start in range(max(limit, 0)):
-            if parts[start : start + len(blocked)] == blocked:
-                return True
-    return False
-
-
-def _has_sensitive_workspace_components(path: str) -> bool:
-    try:
-        path_value = _workspace_path_view(path)
-        parts = tuple(
-            part.casefold()
-            for part in path_value.parts
-            if part and part != path_value.anchor
-        )
-    except (OSError, RuntimeError, ValueError):
-        return True
-    return _has_sensitive_workspace_parts(parts)
-
-
-def _is_sensitive_default_workspace_target(path: str, workspace: str) -> bool:
-    marker = sensitive_path_marker(path, workspace=workspace)
-    if marker is not None:
-        return True
-    try:
-        relative_parts = tuple(
-            part.casefold()
-            for part in _workspace_path_view(path)
-            .relative_to(_workspace_path_view(workspace))
-            .parts
-        )
-    except (OSError, RuntimeError, ValueError):
-        return True
-    return _has_sensitive_workspace_parts(relative_parts)
 
 
 def normalize_workspace_path(value: Any) -> str:
@@ -229,26 +157,6 @@ def normalize_workspace_path(value: Any) -> str:
         normalized_workspace = _normalize_workspace_candidate(workspace)
     except (OSError, RuntimeError, ValueError):
         raise ValueError("invalid_workspace_path")
-    if _is_filesystem_root(normalized_workspace):
-        raise ValueError("sensitive_path")
-    if _has_sensitive_workspace_components(normalized_workspace):
-        raise ValueError("sensitive_path")
-    default_root_workspace = _normalize_workspace_candidate(DEFAULT_ROOT_WORKSPACE)
-    if _is_relative_to_path(normalized_workspace, default_root_workspace):
-        if _is_sensitive_default_workspace_target(
-            normalized_workspace,
-            default_root_workspace,
-        ):
-            raise ValueError("sensitive_path")
-        return normalized_workspace
-    decision = decide_path_access(
-        normalized_workspace,
-        workspace=None,
-        mounts=(),
-        write=True,
-    )
-    if decision.status == "blocked":
-        raise ValueError("sensitive_path")
     return normalized_workspace
 
 

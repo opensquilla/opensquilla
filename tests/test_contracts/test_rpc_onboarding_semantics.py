@@ -299,6 +299,9 @@ async def test_channel_probe_blank_secret_merges_stored_entry(config_file):
     )
 
     assert res.error is None, res.error
-    assert res.payload["status"] == "ready"
+    assert res.payload["status"] == "validated"
+    assert res.payload["probeKind"] == "local_validation"
+    assert res.payload["connected"] is False
+    assert "no provider connection" in res.payload["warnings"][0].lower()
     # Secrets never round-trip in the probe response.
     assert res.payload["entry"]["token"] != "tg-stored"

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import httpx
 import pytest
 
 import opensquilla.gateway.rpc_channels  # noqa: F401  ensures registration
@@ -24,6 +25,18 @@ def _read_ctx() -> RpcContext:
             role="operator",
             scopes=frozenset({"operator.read"}),
             is_owner=False,
+            authenticated=True,
+        ),
+    )
+
+
+def _admin_ctx() -> RpcContext:
+    return RpcContext(
+        conn_id="t-admin",
+        principal=Principal(
+            role="operator",
+            scopes=frozenset({"operator.admin"}),
+            is_owner=True,
             authenticated=True,
         ),
     )
@@ -111,10 +124,15 @@ async def test_channels_status_reports_adapter_capabilities_without_network_prob
         ChannelCapabilities.THREAD_MESSAGES,
         ChannelCapabilities.WEBSOCKET,
     }
-    assert row["capability_profile"] == {
-        "channel_type": "discord",
-        "transports": ["websocket"],
-    }
+    assert row["capability_profile"]["channel_type"] == "discord"
+    assert row["capability_profile"]["transports"] == ["websocket"]
+    assert row["capability_profile"]["maturity"] == "unrated"
+    assert (
+        row["capability_profile"]["evidence"][ChannelCapabilities.NATIVE_FILE_UPLOAD][
+            "implemented"
+        ]
+        is False
+    )
     assert row["platform_manifest"]["channel_type"] == "discord"
     assert row["platform_manifest"]["capabilities"][ChannelPlatformCategories.CHAT][
         "status"
@@ -182,3 +200,205 @@ async def test_channels_status_merges_start_error_diagnostics_for_configured_cha
         "retryable": False,
         "source": "start_error",
     }
+
+
+@pytest.mark.asyncio
+async def test_channels_get_redacts_configured_secrets() -> None:
+    token = "xoxb-get-secret"
+    signing_secret = "signing-get-secret"
+    ctx = _admin_ctx()
+    result = upsert_channel(
+        GatewayConfig(),
+        entry_payload={
+            "type": "slack",
+            "name": "work",
+            "token": token,
+            "signing_secret": signing_secret,
+        },
+    )
+    ctx.config = result.config
+
+    rpc_res = await get_dispatcher().dispatch(
+        "r-get",
+        "channels.get",
+        {"name": "work"},
+        ctx,
+    )
+
+    assert rpc_res.error is None, rpc_res.error
+    assert rpc_res.payload["entry"]["name"] == "work"
+    assert rpc_res.payload["entry"]["token"] == "***"
+    assert rpc_res.payload["entry"]["signing_secret"] == "***"
+    assert set(rpc_res.payload["secretFields"]) == {"token", "signing_secret"}
+    assert token not in repr(rpc_res.payload)
+    assert signing_secret not in repr(rpc_res.payload)
+
+
+@pytest.mark.asyncio
+async def test_channels_probe_merges_secrets_and_runs_real_slack_probe(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from opensquilla.channels import registry as channel_registry
+
+    token = "xoxb-stored-probe-secret"
+    signing_secret = "stored-signing-secret"
+    ctx = _admin_ctx()
+    result = upsert_channel(
+        GatewayConfig(),
+        entry_payload={
+            "type": "slack",
+            "name": "work",
+            "token": token,
+            "signing_secret": signing_secret,
+        },
+    )
+    ctx.config = result.config
+
+    def handle_auth_test(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/api/auth.test"
+        assert request.headers["Authorization"] == f"Bearer {token}"
+        return httpx.Response(
+            200,
+            json={"ok": True, "user_id": "U1", "team_id": "T1"},
+        )
+
+    client = httpx.AsyncClient(
+        base_url="https://slack.test/api",
+        headers={"Authorization": f"Bearer {token}"},
+        transport=httpx.MockTransport(handle_auth_test),
+    )
+    real_build = channel_registry.build_managed_channel
+    built_adapters: list[object] = []
+
+    def build_with_mock_transport(entry):
+        assert entry.token == token
+        assert entry.signing_secret == signing_secret
+        adapter = real_build(entry)
+        assert adapter is not None
+        adapter._client = client
+        built_adapters.append(adapter)
+        return adapter
+
+    monkeypatch.setattr(channel_registry, "build_managed_channel", build_with_mock_transport)
+
+    rpc_res = await get_dispatcher().dispatch(
+        "r-probe",
+        "channels.probe",
+        {
+            "entry": {
+                "type": "slack",
+                "name": "work",
+                "token": "",
+                "signing_secret": "",
+            }
+        },
+        ctx,
+    )
+
+    assert rpc_res.error is None, rpc_res.error
+    assert rpc_res.payload["status"] == "verified"
+    assert rpc_res.payload["connected"] is True
+    assert isinstance(rpc_res.payload["latencyMs"], int)
+    assert rpc_res.payload["result"] == {
+        "authenticated": True,
+        "bot_user_id": "U1",
+        "team_id": "T1",
+    }
+    assert token not in repr(rpc_res.payload)
+    assert signing_secret not in repr(rpc_res.payload)
+    assert len(built_adapters) == 1
+    assert client.is_closed is True
+    assert built_adapters[0]._client is None
+
+
+@pytest.mark.asyncio
+async def test_channels_probe_reports_unsupported_and_stops_adapter(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from opensquilla.channels import registry as channel_registry
+
+    class UnsupportedAdapter:
+        def __init__(self) -> None:
+            self.stopped = False
+
+        async def stop(self) -> None:
+            self.stopped = True
+
+    adapter = UnsupportedAdapter()
+    monkeypatch.setattr(
+        channel_registry,
+        "build_managed_channel",
+        lambda _entry: adapter,
+    )
+    ctx = _admin_ctx()
+    ctx.config = GatewayConfig()
+
+    rpc_res = await get_dispatcher().dispatch(
+        "r-unsupported",
+        "channels.probe",
+        {
+            "entry": {
+                "type": "dingtalk",
+                "name": "dingtalk",
+                "client_id": "dummy-client-id",
+                "client_secret": "dummy-client-secret",
+            }
+        },
+        ctx,
+    )
+
+    assert rpc_res.error is None, rpc_res.error
+    assert rpc_res.payload == {
+        "status": "unsupported",
+        "connected": False,
+        "latencyMs": None,
+        "detail": "This adapter does not yet expose a safe non-mutating live probe.",
+    }
+    assert adapter.stopped is True
+
+
+@pytest.mark.asyncio
+async def test_channels_probe_redacts_provider_error_and_result_credentials(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from opensquilla.channels import registry as channel_registry
+
+    token = "123:short-secret"
+
+    class FailingAdapter:
+        def __init__(self) -> None:
+            self.stopped = False
+
+        async def probe_connection(self) -> dict[str, object]:
+            raise RuntimeError(f"GET https://api.example/bot{token}/getMe failed")
+
+        async def stop(self) -> None:
+            self.stopped = True
+
+    adapter = FailingAdapter()
+    monkeypatch.setattr(
+        channel_registry,
+        "build_managed_channel",
+        lambda _entry: adapter,
+    )
+    ctx = _admin_ctx()
+    ctx.config = GatewayConfig()
+
+    rpc_res = await get_dispatcher().dispatch(
+        "r-secret-probe",
+        "channels.probe",
+        {
+            "entry": {
+                "type": "telegram",
+                "name": "telegram",
+                "token": token,
+            }
+        },
+        ctx,
+    )
+
+    assert rpc_res.error is None, rpc_res.error
+    assert rpc_res.payload["status"] == "failed"
+    assert token not in repr(rpc_res.payload)
+    assert "***" in rpc_res.payload["detail"]
+    assert adapter.stopped is True

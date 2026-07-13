@@ -2,13 +2,22 @@
 
 from __future__ import annotations
 
-from typing import Any
+import contextlib
+import importlib
+import time
+from datetime import UTC, datetime
+from typing import TYPE_CHECKING, Any, cast
 
 from opensquilla.channels.contract import (
+    channel_capability_evidence,
     channel_capability_profile,
     channel_platform_manifest,
 )
 from opensquilla.gateway.rpc import RpcContext, get_dispatcher
+from opensquilla.redaction import redact_error_text
+
+if TYPE_CHECKING:
+    from opensquilla.gateway.config import GatewayConfig
 
 _d = get_dispatcher()
 
@@ -47,9 +56,20 @@ def _capability_payload(adapter: Any | None) -> tuple[list[str], dict[str, Any] 
     profile = channel_capability_profile(adapter)
     if profile is None:
         return [], None
+    maturity = "unrated"
+    module_name = getattr(type(adapter), "__module__", "")
+    if module_name:
+        try:
+            maturity = str(
+                getattr(importlib.import_module(module_name), "CAPABILITY_TIER", maturity)
+            )
+        except ImportError:
+            pass
     return sorted(profile.capability_tags()), {
         "channel_type": profile.channel_type,
         "transports": list(profile.transports),
+        "maturity": maturity,
+        "evidence": channel_capability_evidence(adapter),
     }
 
 
@@ -101,6 +121,7 @@ def _diagnostics_payload(
     *,
     extra: dict[str, Any] | None = None,
     start_error: Any = None,
+    delivery: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     payload: dict[str, Any] = {"network_probe": "not_run"}
     last_error = _diagnostic_from_start_error(start_error)
@@ -108,7 +129,96 @@ def _diagnostics_payload(
         last_error = _diagnostic_from_health_extra(extra)
     if last_error is not None:
         payload["last_error"] = last_error
+    if extra is not None and isinstance(extra.get("transport_lease"), dict):
+        payload["transport_lease"] = dict(extra["transport_lease"])
+    if delivery is not None:
+        payload["delivery"] = delivery
     return payload
+
+
+def _delivery_diagnostics(manager: Any | None, name: str) -> dict[str, Any] | None:
+    store = getattr(manager, "_delivery_store", None)
+    diagnostics = getattr(store, "diagnostics", None)
+    if not callable(diagnostics):
+        return None
+    try:
+        result = diagnostics(name)
+    except Exception:
+        return None
+    return result if isinstance(result, dict) else None
+
+
+def _pairing_store(ctx: RpcContext) -> Any:
+    manager = getattr(ctx, "channel_manager", None)
+    store = getattr(manager, "_delivery_store", None)
+    if store is None or not callable(getattr(store, "list_pairings", None)):
+        raise RuntimeError("channel pairing store is unavailable")
+    return store
+
+
+def _iso_timestamp(value: Any) -> str | None:
+    if not isinstance(value, int | float):
+        return None
+    return datetime.fromtimestamp(float(value), tz=UTC).isoformat()
+
+
+def _pairing_payload(pairing: Any) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "pairingId": str(pairing.pairing_id),
+        "pairingCode": str(pairing.pairing_id)[:8],
+        "channelName": str(pairing.channel_name),
+        "senderId": str(pairing.sender_id),
+        "status": str(pairing.status),
+        "createdAt": _iso_timestamp(pairing.created_at),
+        "approvedAt": _iso_timestamp(pairing.approved_at),
+    }
+    if pairing.sender_name:
+        payload["senderName"] = str(pairing.sender_name)
+    return payload
+
+
+def _probe_secret_values(payload: dict[str, Any]) -> tuple[str, ...]:
+    """Extract configured credential values for exact-match error redaction."""
+
+    secret_names = (
+        "authorization",
+        "credential",
+        "password",
+        "private_key",
+        "secret",
+        "ticket",
+        "token",
+    )
+    return tuple(
+        str(value)
+        for key, value in payload.items()
+        if value
+        and isinstance(value, str)
+        and any(marker in key.lower() for marker in secret_names)
+    )
+
+
+def _redact_probe_result(value: Any, secrets: tuple[str, ...]) -> Any:
+    """Remove credential-shaped probe evidence without altering public IDs."""
+
+    if isinstance(value, dict):
+        redacted: dict[str, Any] = {}
+        for key, item in value.items():
+            key_text = str(key)
+            if _probe_secret_values({key_text: item}):
+                redacted[key_text] = "***"
+            else:
+                redacted[key_text] = _redact_probe_result(item, secrets)
+        return redacted
+    if isinstance(value, list | tuple):
+        return [_redact_probe_result(item, secrets) for item in value]
+    if isinstance(value, str):
+        redacted_text = value
+        for secret in sorted(set(secrets), key=len, reverse=True):
+            if len(secret) >= 4:
+                redacted_text = redacted_text.replace(secret, "***")
+        return redacted_text
+    return value
 
 
 @_d.method("channels.status", scope="operator.read")
@@ -153,6 +263,7 @@ async def _handle_channels_status(params: dict | None, ctx: RpcContext) -> dict[
                 "diagnostics": _diagnostics_payload(
                     extra=extra,
                     start_error=start_errors.get(name),
+                    delivery=_delivery_diagnostics(ctx.channel_manager, name),
                 ),
             }
         )
@@ -187,11 +298,106 @@ async def _handle_channels_status(params: dict | None, ctx: RpcContext) -> dict[
                 "diagnostics": _diagnostics_payload(
                     extra=extra,
                     start_error=start_errors.get(name),
+                    delivery=_delivery_diagnostics(ctx.channel_manager, name),
                 ),
             }
         )
 
     return {"channels": channels}
+
+
+@_d.method("channels.get", scope="operator.admin")
+async def _handle_channels_get(params: dict | None, ctx: RpcContext) -> dict[str, Any]:
+    name = str((params or {}).get("name") or (params or {}).get("channel") or "")
+    if not name:
+        raise ValueError("channel name required")
+    from opensquilla.onboarding.redaction import redact_channel_entry
+
+    for entry in _configured_channel_entries(ctx):
+        if str(entry.get("name") or "") != name:
+            continue
+        channel_type = str(entry.get("type") or "")
+        redacted = redact_channel_entry(channel_type, entry)
+        return {
+            "entry": redacted,
+            "secretFields": [key for key, value in redacted.items() if value == "***"],
+        }
+    raise KeyError(f"Channel not found: {name}")
+
+
+@_d.method("channels.probe", scope="operator.admin")
+async def _handle_channels_probe(params: dict | None, ctx: RpcContext) -> dict[str, Any]:
+    """Run a non-mutating provider credential/network probe when implemented."""
+    from opensquilla.channels.registry import build_managed_channel, parse_channel_entry
+    from opensquilla.onboarding.mutations import (
+        merge_channel_entry_secrets,
+        validate_channel_entry,
+    )
+
+    raw_entry = (params or {}).get("entry")
+    if raw_entry is None:
+        name = str((params or {}).get("name") or "")
+        raw_entry = next(
+            (
+                entry
+                for entry in _configured_channel_entries(ctx)
+                if str(entry.get("name") or "") == name
+            ),
+            None,
+        )
+    if not isinstance(raw_entry, dict):
+        raise ValueError("channel entry or name required")
+
+    config = cast("GatewayConfig", getattr(ctx, "config", None))
+    normalized = validate_channel_entry(merge_channel_entry_secrets(config, raw_entry))
+    secret_values = _probe_secret_values(normalized)
+    entry = parse_channel_entry(normalized)
+    adapter = build_managed_channel(entry)
+    if adapter is None:
+        raise ValueError(f"unsupported channel type: {normalized.get('type')}")
+    probe = getattr(adapter, "probe_connection", None)
+    started = time.perf_counter()
+    try:
+        if not callable(probe):
+            return {
+                "status": "unsupported",
+                "connected": False,
+                "latencyMs": None,
+                "detail": "This adapter does not yet expose a safe non-mutating live probe.",
+            }
+        try:
+            result = await probe()
+        except Exception as exc:  # noqa: BLE001 - provider boundary is rendered as evidence
+            return {
+                "status": "failed",
+                "connected": False,
+                "latencyMs": round((time.perf_counter() - started) * 1000),
+                "detail": redact_error_text(
+                    str(exc),
+                    max_len=500,
+                    known_secrets=secret_values,
+                ),
+            }
+    finally:
+        stop = getattr(adapter, "stop", None)
+        close = getattr(adapter, "close", None)
+        if callable(stop):
+            with contextlib.suppress(Exception):
+                await stop()
+        elif callable(close):
+            with contextlib.suppress(Exception):
+                await close()
+    latency_ms = round((time.perf_counter() - started) * 1000)
+    payload = _redact_probe_result(result, secret_values) if isinstance(result, dict) else {}
+    supported = bool(payload.get("supported", True))
+    authenticated = bool(payload.get("authenticated", False))
+    return {
+        "status": ("verified" if supported and authenticated else "unsupported"),
+        "connected": authenticated,
+        "latencyMs": latency_ms,
+        "detail": str(payload.get("reason") or ""),
+        "result": payload,
+    }
 
 
 @_d.method("channels.logout", scope="operator.admin")
@@ -222,3 +428,53 @@ async def _handle_channels_restart(params: dict | None, ctx: RpcContext) -> dict
         raise KeyError(f"Channel not found: {channel_name}")
     await ctx.channel_manager.restart_channel(channel_name)
     return {"status": "restarted", "channel": channel_name}
+
+
+@_d.method("channels.pairings", scope="operator.pairing")
+async def _handle_channels_pairings(
+    params: dict | None,
+    ctx: RpcContext,
+) -> dict[str, Any]:
+    channel_name = str((params or {}).get("channelName") or "").strip()
+    if not channel_name:
+        raise ValueError("channelName required")
+    records = _pairing_store(ctx).list_pairings(channel_name=channel_name)
+    return {"pairings": [_pairing_payload(record) for record in records]}
+
+
+def _pairing_mutation_params(params: dict | None) -> tuple[str, str]:
+    channel_name = str((params or {}).get("channelName") or "").strip()
+    pairing_id = str((params or {}).get("pairingId") or "").strip()
+    if not channel_name:
+        raise ValueError("channelName required")
+    if not pairing_id:
+        raise ValueError("pairingId required")
+    return channel_name, pairing_id
+
+
+@_d.method("channels.pairing.approve", scope="operator.pairing")
+async def _handle_channels_pairing_approve(
+    params: dict | None,
+    ctx: RpcContext,
+) -> dict[str, Any]:
+    channel_name, pairing_id = _pairing_mutation_params(params)
+    record = _pairing_store(ctx).set_pairing_status(
+        channel_name=channel_name,
+        pairing_id=pairing_id,
+        status="approved",
+    )
+    return {"pairing": _pairing_payload(record)}
+
+
+@_d.method("channels.pairing.revoke", scope="operator.pairing")
+async def _handle_channels_pairing_revoke(
+    params: dict | None,
+    ctx: RpcContext,
+) -> dict[str, Any]:
+    channel_name, pairing_id = _pairing_mutation_params(params)
+    record = _pairing_store(ctx).set_pairing_status(
+        channel_name=channel_name,
+        pairing_id=pairing_id,
+        status="revoked",
+    )
+    return {"pairing": _pairing_payload(record)}

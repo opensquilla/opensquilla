@@ -10,6 +10,7 @@ hosting this helper inside ``onboarding`` would create an import cycle.
 from __future__ import annotations
 
 import re
+from collections.abc import Iterable
 
 _MASK = "***"
 
@@ -41,7 +42,12 @@ _LONG_RUN_RE = re.compile(r"[A-Za-z0-9+/=_-]{21,}")
 _MIN_SCAN_WINDOW = 2048
 
 
-def redact_error_text(text: str, *, max_len: int = 200) -> str:
+def redact_error_text(
+    text: str,
+    *,
+    max_len: int = 200,
+    known_secrets: Iterable[str] = (),
+) -> str:
     """Truncate ``text`` and mask credential-shaped material for safe logging.
 
     Masks bearer tokens, ``sk-``-style keys, ``key=``/``api_key=``/``token=``
@@ -52,6 +58,12 @@ def redact_error_text(text: str, *, max_len: int = 200) -> str:
     if not text:
         return ""
     out = text[: max(_MIN_SCAN_WINDOW, max_len * 4)]
+    for secret in sorted(
+        {str(value) for value in known_secrets if len(str(value)) >= 4},
+        key=len,
+        reverse=True,
+    ):
+        out = out.replace(secret, _MASK)
     out = _URL_USERINFO_RE.sub(f"{_MASK}@", out)
     out = _BEARER_RE.sub(f"Bearer {_MASK}", out)
     out = _KEY_VALUE_RE.sub(rf"\g<1>{_MASK}", out)

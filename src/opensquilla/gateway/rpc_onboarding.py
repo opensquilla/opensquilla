@@ -579,11 +579,14 @@ async def _channel_probe(params: Any, ctx: RpcContext) -> dict[str, Any]:
         normalized = validate_channel_entry(merge_channel_entry_secrets(cfg, entry))
     type_name = str(normalized.get("type") or "")
     return {
-        "status": "ready",
+        "status": "validated",
         "connected": False,
+        "probeKind": "local_validation",
         "restartRequired": True,
         "entry": redact_channel_entry(type_name, normalized),
-        "warnings": [],
+        "warnings": [
+            "Configuration is locally valid; no provider connection was attempted."
+        ],
     }
 
 

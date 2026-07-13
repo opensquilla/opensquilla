@@ -531,7 +531,8 @@ async def test_channel_probe_validates_and_redacts_without_persisting(tmp_path, 
         _admin_ctx(),
     )
     assert res.error is None, res.error
-    assert res.payload["status"] in {"ready", "action_needed"}
+    assert res.payload["status"] == "validated"
+    assert res.payload["probeKind"] == "local_validation"
     assert res.payload["entry"]["token"] == "***"
     assert "123:secret" not in str(res.payload)
     assert not target.exists()

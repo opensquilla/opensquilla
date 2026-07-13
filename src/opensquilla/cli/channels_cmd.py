@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import os
 from pathlib import Path
 from typing import Any
 
@@ -472,3 +474,100 @@ def channels_describe(
             ",".join(f.choices) if f.choices else "—",
         )
     console.print(table)
+
+
+@channels_app.command("certify")
+def channels_certify(
+    providers: list[str] = typer.Option(
+        [],
+        "--provider",
+        "-p",
+        help="Channel type to certify; repeat to select multiple (default: all).",
+    ),
+    timeout: float = typer.Option(
+        15.0,
+        "--timeout",
+        min=0.1,
+        help="Per-provider operation timeout in seconds.",
+    ),
+    json_output: bool = typer.Option(
+        False,
+        "--json",
+        help="Emit redacted machine-readable evidence.",
+    ),
+    send_test_message: bool = typer.Option(
+        False,
+        "--send-test-message",
+        help="Send one fixed test message after a successful safe auth probe.",
+    ),
+    allow_side_effects: bool = typer.Option(
+        False,
+        "--allow-side-effects",
+        help="Required acknowledgement for side-effecting certification.",
+    ),
+    targets: list[str] = typer.Option(
+        [],
+        "--target",
+        help="Explicit provider=destination; required for every delivery test.",
+    ),
+) -> None:
+    """Run ephemeral, environment-driven live channel certification.
+
+    Credentials are accepted only through ``OPENSQUILLA_CHANNEL_CERT_*``
+    environment variables. The default mode calls adapter-specific safe auth
+    probes and never starts ingress or sends messages. No credential values
+    are written to config or included in the evidence output.
+    """
+    from opensquilla.onboarding.channel_certification import (
+        CertificationUsageError,
+        certify_channels,
+        evidence_passed,
+        parse_targets,
+    )
+
+    try:
+        target_map = parse_targets(targets)
+        evidence = asyncio.run(
+            certify_channels(
+                providers,
+                environ=os.environ,
+                timeout=timeout,
+                send_test_message=send_test_message,
+                allow_side_effects=allow_side_effects,
+                targets=target_map,
+            )
+        )
+    except CertificationUsageError as exc:
+        if json_output:
+            print_json({"error": {"code": "invalid_certification_request", "message": str(exc)}})
+        else:
+            typer.secho(f"Error: {exc}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=2) from exc
+
+    if json_output:
+        print_json(evidence)
+    else:
+        table = Table(title="Channel certification", show_header=True)
+        table.add_column("Provider")
+        table.add_column("Operation")
+        table.add_column("Status")
+        table.add_column("Authenticated")
+        table.add_column("Latency", justify="right")
+        table.add_column("Detail")
+        for row in evidence["providers"]:
+            detail = str(row.get("detail") or "")
+            missing = row.get("missingEnvironment")
+            if isinstance(missing, list) and missing:
+                detail = "missing: " + ", ".join(str(value) for value in missing)
+            table.add_row(
+                str(row.get("provider") or ""),
+                str(row.get("operation") or ""),
+                str(row.get("status") or ""),
+                str(bool(row.get("authenticated"))),
+                f"{row.get('latencyMs', 0)} ms",
+                detail,
+            )
+        Console(width=180, force_terminal=False).print(table)
+
+    if not evidence_passed(evidence):
+        raise typer.Exit(code=1)

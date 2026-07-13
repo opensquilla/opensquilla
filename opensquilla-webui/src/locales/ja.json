@@ -346,9 +346,9 @@
           "desc": "各ターンを現在選択中のモデルに送信します。"
         }
       },
-      "routerDependency": "{provider} の認証情報を使用します。既定モデルは {model} です。",
+      "routerDependency": "{provider} の認証情報を使用します。プロバイダーの既定モデルは {model} です。",
       "ensembleTitle": "AI 集約ルーティング",
-      "ensembleDependency": "{provider} の認証情報を使用します。既定モデルは {model} です。",
+      "ensembleDependency": "{provider} の認証情報を使用します。プロバイダーの既定モデルは {model} です。",
       "ensembleMinimum": "集約ルーティングの効果を得るには、候補モデルを少なくとももう 1 つ追加してください。",
       "ensembleFailure": "融合できない場合は現在のモデルにフォールバック:{provider} · {model}。",
       "singleTitle": "オフ",

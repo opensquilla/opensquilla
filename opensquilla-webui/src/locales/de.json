@@ -346,9 +346,9 @@
           "desc": "Sendet jede Runde an das aktuell ausgewählte Modell."
         }
       },
-      "routerDependency": "Nutzt {provider}-Zugangsdaten; Standardmodell ist {model}.",
+      "routerDependency": "Nutzt {provider}-Zugangsdaten; das Standardmodell des Anbieters ist {model}.",
       "ensembleTitle": "AI-Ensemble-Routing",
-      "ensembleDependency": "Nutzt {provider}-Zugangsdaten; Standardmodell ist {model}.",
+      "ensembleDependency": "Nutzt {provider}-Zugangsdaten; das Standardmodell des Anbieters ist {model}.",
       "ensembleMinimum": "Füge mindestens einen weiteren Kandidaten hinzu, um Ensemble-Routing zu nutzen.",
       "ensembleFailure": "Wenn die Fusion nicht möglich ist, auf das aktuelle Modell zurückfallen: {provider} · {model}.",
       "singleTitle": "Aus",

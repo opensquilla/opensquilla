@@ -346,9 +346,9 @@
           "desc": "每轮都发送到当前选定模型。"
         }
       },
-      "routerDependency": "使用 {provider} 凭据；默认模型为 {model}。",
+      "routerDependency": "使用 {provider} 凭据；服务商默认模型为 {model}。",
       "ensembleTitle": "AI 智能聚合路由",
-      "ensembleDependency": "使用 {provider} 凭据；默认模型为 {model}。",
+      "ensembleDependency": "使用 {provider} 凭据；服务商默认模型为 {model}。",
       "ensembleMinimum": "再添加至少一个候选模型，才能获得聚合路由收益。",
       "ensembleFailure": "无法完成融合时,回退到当前模型:{provider} · {model}。",
       "singleTitle": "关",

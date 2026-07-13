@@ -346,9 +346,9 @@
           "desc": "Envía cada turno al modelo seleccionado actualmente."
         }
       },
-      "routerDependency": "Usa credenciales de {provider}; el modelo predeterminado es {model}.",
+      "routerDependency": "Usa credenciales de {provider}; el modelo predeterminado del proveedor es {model}.",
       "ensembleTitle": "Enrutamiento IA agregado",
-      "ensembleDependency": "Usa credenciales de {provider}; el modelo predeterminado es {model}.",
+      "ensembleDependency": "Usa credenciales de {provider}; el modelo predeterminado del proveedor es {model}.",
       "ensembleMinimum": "Agrega al menos otro candidato para aprovechar el enrutamiento agregado.",
       "ensembleFailure": "Si la fusión no puede continuar, recurrir al modelo actual: {provider} · {model}.",
       "singleTitle": "Desactivado",

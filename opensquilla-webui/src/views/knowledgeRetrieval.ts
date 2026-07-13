@@ -1,4 +1,11 @@
 export type RetrievalKind = 'lexical' | 'vector' | 'hybrid'
+export type KnowledgeConnectionState =
+  | 'DISCONNECTED'
+  | 'DISCOVERING'
+  | 'READY'
+  | 'DEGRADED'
+  | 'UNAVAILABLE'
+  | 'LEGACY'
 
 export interface RetrievalProfileStatus {
   id: string
@@ -11,6 +18,11 @@ export interface RetrievalProfileStatus {
 }
 
 export interface KnowledgeStatusLike {
+  connectionState?: KnowledgeConnectionState
+  capabilitiesStale?: boolean
+  configuredDefaultRetrievalProfile?: string | null
+  effectiveDefaultRetrievalProfile?: string | null
+  defaultFallbackReason?: string | null
   retrievalProfiles?: RetrievalProfileStatus[]
   defaultRetrievalProfile?: string
 }
@@ -25,9 +37,7 @@ export interface KnowledgeResultScoreLike {
 }
 
 export interface SearchProfilePayload {
-  retrievalProfile: string
-  embeddingModel?: string
-  embeddingDimensions?: number
+  retrievalProfile?: string
 }
 
 export interface ResultScoreMeta {
@@ -37,33 +47,79 @@ export interface ResultScoreMeta {
 
 type RetrievalProfileScoreHint = RetrievalProfileStatus | string | null | undefined
 
-export const FALLBACK_RETRIEVAL_PROFILE: RetrievalProfileStatus = {
-  id: 'sqlite_fts5_default',
-  label: 'SQLite FTS5',
-  kind: 'lexical',
-  available: true,
-  reason: null,
-}
-
 function serviceRetrievalProfiles(
   status: KnowledgeStatusLike | null | undefined,
 ): RetrievalProfileStatus[] {
-  return status?.retrievalProfiles?.filter((profile) => profile?.id) || []
+  const profiles = status?.retrievalProfiles
+  if (!Array.isArray(profiles) || !profiles.every(isRetrievalProfileStatus)) return []
+  if (new Set(profiles.map((profile) => profile.id)).size !== profiles.length) return []
+  return profiles.slice()
 }
 
 export function retrievalProfilesFromStatus(
   status: KnowledgeStatusLike | null | undefined,
 ): RetrievalProfileStatus[] {
-  const profiles = serviceRetrievalProfiles(status)
-  return profiles.length ? profiles : [FALLBACK_RETRIEVAL_PROFILE]
+  const state = connectionStateFromStatus(status)
+  return state === 'READY' || state === 'DEGRADED' ? serviceRetrievalProfiles(status) : []
+}
+
+export function defaultProfileDraftFromStatus(
+  status: KnowledgeStatusLike | null | undefined,
+): string {
+  if (connectionStateFromStatus(status) !== 'READY') return ''
+  const configuredDefault = status?.configuredDefaultRetrievalProfile
+  return typeof configuredDefault === 'string'
+    && configuredDefault.length > 0
+    && configuredDefault.trim() === configuredDefault
+    ? configuredDefault
+    : ''
+}
+
+export function queryOverrideOptions(
+  status: KnowledgeStatusLike | null | undefined,
+): RetrievalProfileStatus[] {
+  return connectionStateFromStatus(status) === 'READY'
+    ? retrievalProfilesFromStatus(status).filter((profile) => profile.available)
+    : []
+}
+
+export function canSaveDefault(
+  status: KnowledgeStatusLike | null | undefined,
+): boolean {
+  return connectionStateFromStatus(status) === 'READY'
+    && status?.capabilitiesStale === false
+    && defaultProfileDraftFromStatus(status).length > 0
+    && queryOverrideOptions(status).length > 0
+}
+
+export function fallbackActive(
+  status: KnowledgeStatusLike | null | undefined,
+): boolean {
+  const state = connectionStateFromStatus(status)
+  if (state !== 'READY' && state !== 'DEGRADED') return false
+  const reason = status?.defaultFallbackReason
+  if (typeof reason === 'string' && reason.trim().length > 0) return true
+
+  const configuredDefault = status?.configuredDefaultRetrievalProfile
+  if (
+    typeof configuredDefault !== 'string'
+    || configuredDefault.length === 0
+    || configuredDefault.trim() !== configuredDefault
+  ) return false
+
+  const effectiveDefault = status?.effectiveDefaultRetrievalProfile
+  if (effectiveDefault === null) return true
+  return typeof effectiveDefault === 'string'
+    && effectiveDefault.length > 0
+    && effectiveDefault.trim() === effectiveDefault
+    && effectiveDefault !== configuredDefault
 }
 
 function availableRetrievalProfile(
   status: KnowledgeStatusLike | null | undefined,
   currentProfileId = '',
 ): RetrievalProfileStatus | undefined {
-  const serviceProfiles = serviceRetrievalProfiles(status)
-  const profiles = serviceProfiles.length ? serviceProfiles : [FALLBACK_RETRIEVAL_PROFILE]
+  const profiles = retrievalProfilesFromStatus(status)
   if (currentProfileId) {
     const currentProfile = profiles.find(
       (profile) => profile.id === currentProfileId && profile.available,
@@ -72,7 +128,8 @@ function availableRetrievalProfile(
       return currentProfile
     }
   }
-  const serviceDefault = status?.defaultRetrievalProfile
+  const serviceDefault = status?.effectiveDefaultRetrievalProfile
+    || status?.configuredDefaultRetrievalProfile
   if (serviceDefault) {
     const defaultProfile = profiles.find(
       (profile) => profile.id === serviceDefault && profile.available,
@@ -88,9 +145,6 @@ export function selectedRetrievalProfile(
   status: KnowledgeStatusLike | null | undefined,
   profileId: string,
 ): RetrievalProfileStatus | null {
-  if (!serviceRetrievalProfiles(status).length) {
-    return FALLBACK_RETRIEVAL_PROFILE
-  }
   return availableRetrievalProfile(status, profileId) || null
 }
 
@@ -103,31 +157,36 @@ export function defaultRetrievalProfileId(
     return availableProfile.id
   }
 
-  const serviceProfiles = serviceRetrievalProfiles(status)
+  const serviceProfiles = retrievalProfilesFromStatus(status)
   if (serviceProfiles.length) {
     const currentProfile = serviceProfiles.find((profile) => profile.id === currentProfileId)
     if (currentProfile) {
       return currentProfile.id
     }
-    const serviceDefault = status?.defaultRetrievalProfile
+    const serviceDefault = status?.configuredDefaultRetrievalProfile
     const defaultProfile = serviceProfiles.find((profile) => profile.id === serviceDefault)
-    return defaultProfile?.id || serviceProfiles[0].id
+    return defaultProfile?.id || serviceProfiles[0]?.id || ''
   }
 
-  return FALLBACK_RETRIEVAL_PROFILE.id
+  return ''
 }
 
 export function buildSearchProfilePayload(
   status: KnowledgeStatusLike | null | undefined,
   profileId: string,
 ): SearchProfilePayload | null {
-  const profile = selectedRetrievalProfile(status, profileId)
-  if (!profile) return null
-  return {
-    retrievalProfile: profile.id,
-    ...(profile.model ? { embeddingModel: profile.model } : {}),
-    ...(profile.dimensions ? { embeddingDimensions: profile.dimensions } : {}),
-  }
+  const state = connectionStateFromStatus(status)
+  if (state === 'DEGRADED' || state === 'LEGACY') return {}
+  if (state !== 'READY') return null
+
+  const availableProfiles = serviceRetrievalProfiles(status).filter(
+    (profile) => profile.available,
+  )
+  if (!availableProfiles.length) return null
+  if (!profileId) return {}
+  return availableProfiles.some((profile) => profile.id === profileId)
+    ? { retrievalProfile: profileId }
+    : null
 }
 
 export function searchProgressLabel(
@@ -191,8 +250,44 @@ function resultScoreKind(
 }
 
 function profileHintId(profile: RetrievalProfileScoreHint): string {
-  if (!profile) return FALLBACK_RETRIEVAL_PROFILE.id
+  if (!profile) return ''
   return typeof profile === 'string' ? profile : profile.id
+}
+
+function connectionStateFromStatus(
+  status: KnowledgeStatusLike | null | undefined,
+): KnowledgeConnectionState | null {
+  switch (status?.connectionState) {
+    case 'DISCONNECTED':
+    case 'DISCOVERING':
+    case 'READY':
+    case 'DEGRADED':
+    case 'UNAVAILABLE':
+    case 'LEGACY':
+      return status.connectionState
+    default:
+      return null
+  }
+}
+
+function isRetrievalProfileStatus(value: unknown): value is RetrievalProfileStatus {
+  if (!value || typeof value !== 'object') return false
+  const profile = value as Partial<RetrievalProfileStatus>
+  return (
+    typeof profile.id === 'string'
+    && profile.id.length > 0
+    && profile.id.trim() === profile.id
+    && typeof profile.label === 'string'
+    && profile.label.length > 0
+    && (profile.kind === 'lexical' || profile.kind === 'vector' || profile.kind === 'hybrid')
+    && typeof profile.available === 'boolean'
+    && (profile.reason === null || typeof profile.reason === 'string')
+    && (profile.model === undefined || typeof profile.model === 'string')
+    && (
+      profile.dimensions === undefined
+      || (typeof profile.dimensions === 'number' && Number.isFinite(profile.dimensions))
+    )
+  )
 }
 
 function retrievalKindFromId(profileId: string): RetrievalKind {

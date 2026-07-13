@@ -15,16 +15,246 @@ vi.mock('@/stores/rpc', () => ({
 import KnowledgeView from './KnowledgeView.vue'
 import {
   buildSearchProfilePayload,
+  canSaveDefault,
+  defaultProfileDraftFromStatus,
   defaultRetrievalProfileId,
+  fallbackActive,
   formatResultScoreMeta,
   formatResultScorePrimary,
+  queryOverrideOptions,
   retrievalProfilesFromStatus,
   searchProgressLabel,
+  selectedRetrievalProfile,
 } from './knowledgeRetrieval'
+
+const READY_STATUS = {
+  connectionState: 'READY' as const,
+  capabilitiesStale: false,
+  configuredDefaultRetrievalProfile: 'hybrid_rrf_bge_m3_fts5',
+  effectiveDefaultRetrievalProfile: 'hybrid_rrf_bge_m3_fts5',
+  defaultFallbackReason: null,
+  retrievalProfiles: [
+    {
+      id: 'sqlite_fts5_default',
+      label: 'SQLite FTS5',
+      kind: 'lexical' as const,
+      available: true,
+      reason: null,
+    },
+    {
+      id: 'hybrid_rrf_bge_m3_fts5',
+      label: 'Hybrid RRF',
+      kind: 'hybrid' as const,
+      available: true,
+      reason: null,
+      model: 'baai/bge-m3',
+      dimensions: 1024,
+    },
+    {
+      id: 'vector_bge_m3_1024',
+      label: 'Vector bge-m3',
+      kind: 'vector' as const,
+      available: false,
+      reason: 'vector_index_empty',
+      model: 'baai/bge-m3',
+      dimensions: 1024,
+    },
+  ],
+}
+
+describe('knowledge retrieval capability state helpers', () => {
+  it('derives the editable default draft only from READY configured state', () => {
+    expect(defaultProfileDraftFromStatus(READY_STATUS)).toBe('hybrid_rrf_bge_m3_fts5')
+    expect(defaultProfileDraftFromStatus({
+      ...READY_STATUS,
+      configuredDefaultRetrievalProfile: 'configured_but_unavailable',
+    })).toBe('configured_but_unavailable')
+    expect(defaultProfileDraftFromStatus({
+      ...READY_STATUS,
+      configuredDefaultRetrievalProfile: null,
+      defaultRetrievalProfile: 'legacy_must_not_become_editable',
+    })).toBe('')
+    expect(defaultProfileDraftFromStatus({
+      ...READY_STATUS,
+      connectionState: 'DEGRADED',
+    })).toBe('')
+    expect(defaultProfileDraftFromStatus({
+      connectionState: 'LEGACY',
+      defaultRetrievalProfile: 'sqlite_fts5_default',
+    })).toBe('')
+  })
+
+  it('offers query overrides only for available READY service profiles', () => {
+    expect(queryOverrideOptions(READY_STATUS).map((profile) => profile.id)).toEqual([
+      'sqlite_fts5_default',
+      'hybrid_rrf_bge_m3_fts5',
+    ])
+    expect(queryOverrideOptions({
+      ...READY_STATUS,
+      connectionState: 'DEGRADED',
+    })).toEqual([])
+    expect(queryOverrideOptions({ connectionState: 'LEGACY' })).toEqual([])
+    expect(queryOverrideOptions(null)).toEqual([])
+  })
+
+  it('allows default saves only while READY has an available service profile', () => {
+    const noAvailableProfiles = {
+      ...READY_STATUS,
+      retrievalProfiles: READY_STATUS.retrievalProfiles.map((profile) => ({
+        ...profile,
+        available: false,
+      })),
+    }
+
+    expect(canSaveDefault(READY_STATUS)).toBe(true)
+    expect(canSaveDefault({ ...READY_STATUS, capabilitiesStale: false })).toBe(true)
+    expect(canSaveDefault({ ...READY_STATUS, capabilitiesStale: true })).toBe(false)
+    expect(canSaveDefault({ ...READY_STATUS, capabilitiesStale: undefined })).toBe(false)
+    expect(canSaveDefault({
+      ...READY_STATUS,
+      capabilitiesStale: 'false',
+    } as unknown as Parameters<typeof canSaveDefault>[0])).toBe(false)
+    expect(canSaveDefault({
+      ...READY_STATUS,
+      configuredDefaultRetrievalProfile: undefined,
+      defaultRetrievalProfile: 'hybrid_rrf_bge_m3_fts5',
+    })).toBe(false)
+    expect(canSaveDefault(noAvailableProfiles)).toBe(false)
+    expect(canSaveDefault({ ...READY_STATUS, connectionState: 'DEGRADED' })).toBe(false)
+    expect(canSaveDefault({ connectionState: 'LEGACY' })).toBe(false)
+    expect(canSaveDefault(null)).toBe(false)
+  })
+
+  it('reports service fallback only for connected states with a safe reason', () => {
+    const readyFallbackStatus = {
+      ...READY_STATUS,
+      effectiveDefaultRetrievalProfile: 'sqlite_fts5_default',
+      defaultFallbackReason: 'configured_default_unavailable',
+    }
+    const malformedReason = {
+      ...READY_STATUS,
+      defaultFallbackReason: ['SECRET must not be coerced'],
+    } as unknown as Parameters<typeof fallbackActive>[0]
+
+    expect(fallbackActive(readyFallbackStatus)).toBe(true)
+    expect(fallbackActive({
+      ...READY_STATUS,
+      effectiveDefaultRetrievalProfile: 'sqlite_fts5_default',
+      defaultFallbackReason: null,
+    })).toBe(true)
+    expect(fallbackActive({
+      ...READY_STATUS,
+      effectiveDefaultRetrievalProfile: null,
+      defaultFallbackReason: null,
+    })).toBe(true)
+    expect(fallbackActive(READY_STATUS)).toBe(false)
+    expect(fallbackActive({
+      ...readyFallbackStatus,
+      connectionState: 'DEGRADED',
+    })).toBe(true)
+    expect(fallbackActive({
+      ...readyFallbackStatus,
+      connectionState: 'LEGACY',
+    })).toBe(false)
+    expect(fallbackActive(malformedReason)).toBe(false)
+    expect(fallbackActive(null)).toBe(false)
+  })
+
+  it('fails closed for missing, transitional, unavailable, legacy, and unknown states', () => {
+    const legacyStatus = {
+      connectionState: 'LEGACY' as const,
+      defaultRetrievalProfile: 'sqlite_fts5_default',
+      retrievalProfiles: READY_STATUS.retrievalProfiles,
+    }
+    const unknownStatus = {
+      connectionState: 'SURPRISE',
+      retrievalProfiles: READY_STATUS.retrievalProfiles,
+    } as unknown as Parameters<typeof retrievalProfilesFromStatus>[0]
+
+    expect(retrievalProfilesFromStatus(null)).toEqual([])
+    expect(retrievalProfilesFromStatus({ connectionState: 'DISCOVERING' })).toEqual([])
+    expect(retrievalProfilesFromStatus({ connectionState: 'UNAVAILABLE' })).toEqual([])
+    expect(retrievalProfilesFromStatus(legacyStatus)).toEqual([])
+    expect(retrievalProfilesFromStatus(unknownStatus)).toEqual([])
+
+    expect(buildSearchProfilePayload(null, '')).toBeNull()
+    expect(buildSearchProfilePayload({ connectionState: 'DISCOVERING' }, '')).toBeNull()
+    expect(buildSearchProfilePayload({ connectionState: 'UNAVAILABLE' }, '')).toBeNull()
+    expect(buildSearchProfilePayload(unknownStatus, '')).toBeNull()
+  })
+
+  it('does not synthesize a selectable profile from legacy fields', () => {
+    const legacyStatus = {
+      connectionState: 'LEGACY' as const,
+      defaultRetrievalProfile: 'sqlite_fts5_default',
+      retrievalProfiles: READY_STATUS.retrievalProfiles,
+    }
+
+    expect(selectedRetrievalProfile(legacyStatus, 'sqlite_fts5_default')).toBeNull()
+    expect(defaultRetrievalProfileId(legacyStatus)).toBe('')
+  })
+
+  it('keeps degraded profiles read-only and only allows service-default searches', () => {
+    const degradedStatus = {
+      ...READY_STATUS,
+      connectionState: 'DEGRADED' as const,
+      capabilitiesStale: true,
+    }
+    const legacyStatus = {
+      connectionState: 'LEGACY' as const,
+      defaultRetrievalProfile: 'sqlite_fts5_default',
+      retrievalProfiles: READY_STATUS.retrievalProfiles,
+    }
+
+    expect(retrievalProfilesFromStatus(degradedStatus)).toEqual(READY_STATUS.retrievalProfiles)
+    expect(buildSearchProfilePayload(degradedStatus, '')).toEqual({})
+    expect(buildSearchProfilePayload(degradedStatus, 'sqlite_fts5_default')).toEqual({})
+    expect(buildSearchProfilePayload(legacyStatus, '')).toEqual({})
+    expect(buildSearchProfilePayload(legacyStatus, 'sqlite_fts5_default')).toEqual({})
+  })
+
+  it('builds READY search overrides only for available service profiles', () => {
+    const before = structuredClone(READY_STATUS)
+
+    expect(buildSearchProfilePayload(READY_STATUS, '')).toEqual({})
+    expect(buildSearchProfilePayload(READY_STATUS, 'sqlite_fts5_default')).toEqual({
+      retrievalProfile: 'sqlite_fts5_default',
+    })
+    expect(buildSearchProfilePayload(READY_STATUS, 'hybrid_rrf_bge_m3_fts5')).toEqual({
+      retrievalProfile: 'hybrid_rrf_bge_m3_fts5',
+    })
+    expect(buildSearchProfilePayload(READY_STATUS, 'vector_bge_m3_1024')).toBeNull()
+    expect(buildSearchProfilePayload(READY_STATUS, 'missing_profile')).toBeNull()
+    expect(READY_STATUS).toEqual(before)
+  })
+
+  it('fails closed for READY statuses without valid available profiles', () => {
+    const noAvailableProfiles = {
+      ...READY_STATUS,
+      retrievalProfiles: READY_STATUS.retrievalProfiles.map((profile) => ({
+        ...profile,
+        available: false,
+      })),
+    }
+    const malformedStatus = {
+      connectionState: 'READY',
+      retrievalProfiles: [
+        null,
+        { id: '', label: 'empty', kind: 'lexical', available: true, reason: null },
+        { id: 'bad-kind', label: 'bad', kind: 'sql', available: true, reason: null },
+      ],
+    } as unknown as Parameters<typeof retrievalProfilesFromStatus>[0]
+
+    expect(buildSearchProfilePayload(noAvailableProfiles, '')).toBeNull()
+    expect(retrievalProfilesFromStatus(malformedStatus)).toEqual([])
+    expect(buildSearchProfilePayload(malformedStatus, '')).toBeNull()
+  })
+})
 
 describe('knowledge retrieval helpers', () => {
   it('uses service retrievalProfiles when status exposes them', () => {
     const profiles = retrievalProfilesFromStatus({
+      connectionState: 'READY',
       retrievalProfiles: [
         {
           id: 'sqlite_fts5_default',
@@ -51,16 +281,15 @@ describe('knowledge retrieval helpers', () => {
     ])
   })
 
-  it('falls back to FTS when status has no retrievalProfiles', () => {
-    expect(retrievalProfilesFromStatus({}).map((profile) => profile.id)).toEqual([
-      'sqlite_fts5_default',
-    ])
+  it('does not synthesize FTS when status has no retrievalProfiles', () => {
+    expect(retrievalProfilesFromStatus({ connectionState: 'READY' })).toEqual([])
   })
 
   it('selects service default when it is available', () => {
     expect(
       defaultRetrievalProfileId({
-        defaultRetrievalProfile: 'hybrid_rrf_bge_m3_fts5',
+        connectionState: 'READY',
+        configuredDefaultRetrievalProfile: 'hybrid_rrf_bge_m3_fts5',
         retrievalProfiles: [
           {
             id: 'sqlite_fts5_default',
@@ -86,7 +315,8 @@ describe('knowledge retrieval helpers', () => {
   it('skips disabled service default and selects first available profile', () => {
     expect(
       defaultRetrievalProfileId({
-        defaultRetrievalProfile: 'hybrid_rrf_bge_m3_fts5',
+        connectionState: 'READY',
+        configuredDefaultRetrievalProfile: 'hybrid_rrf_bge_m3_fts5',
         retrievalProfiles: [
           {
             id: 'sqlite_fts5_default',
@@ -113,7 +343,8 @@ describe('knowledge retrieval helpers', () => {
     expect(
       defaultRetrievalProfileId(
         {
-          defaultRetrievalProfile: 'hybrid_rrf_bge_m3_fts5',
+          connectionState: 'READY',
+          configuredDefaultRetrievalProfile: 'hybrid_rrf_bge_m3_fts5',
           retrievalProfiles: [
             {
               id: 'sqlite_fts5_default',
@@ -138,10 +369,11 @@ describe('knowledge retrieval helpers', () => {
     ).toBe('hybrid_rrf_bge_m3_fts5')
   })
 
-  it('builds search payload with selected embedding metadata', () => {
+  it('builds search payload without embedding metadata', () => {
     expect(
       buildSearchProfilePayload(
         {
+          connectionState: 'READY',
           retrievalProfiles: [
             {
               id: 'hybrid_rrf_bge_m3_fts5',
@@ -158,16 +390,15 @@ describe('knowledge retrieval helpers', () => {
       ),
     ).toEqual({
       retrievalProfile: 'hybrid_rrf_bge_m3_fts5',
-      embeddingModel: 'baai/bge-m3',
-      embeddingDimensions: 1024,
     })
   })
 
-  it('uses service default metadata when selected profile is unknown', () => {
+  it('rejects an unknown explicit search profile without changing progress fallback', () => {
     expect(
       buildSearchProfilePayload(
         {
-          defaultRetrievalProfile: 'hybrid_rrf_bge_m3_fts5',
+          connectionState: 'READY',
+          configuredDefaultRetrievalProfile: 'hybrid_rrf_bge_m3_fts5',
           retrievalProfiles: [
             {
               id: 'sqlite_fts5_default',
@@ -189,15 +420,12 @@ describe('knowledge retrieval helpers', () => {
         },
         'missing_profile',
       ),
-    ).toEqual({
-      retrievalProfile: 'hybrid_rrf_bge_m3_fts5',
-      embeddingModel: 'baai/bge-m3',
-      embeddingDimensions: 1024,
-    })
+    ).toBeNull()
     expect(
       searchProgressLabel(
         {
-          defaultRetrievalProfile: 'hybrid_rrf_bge_m3_fts5',
+          connectionState: 'READY',
+          configuredDefaultRetrievalProfile: 'hybrid_rrf_bge_m3_fts5',
           retrievalProfiles: [
             {
               id: 'sqlite_fts5_default',
@@ -222,11 +450,12 @@ describe('knowledge retrieval helpers', () => {
     ).toBe('Embedding retrieval')
   })
 
-  it('uses service default metadata when selected profile is disabled', () => {
+  it('rejects a disabled explicit search profile', () => {
     expect(
       buildSearchProfilePayload(
         {
-          defaultRetrievalProfile: 'hybrid_rrf_bge_m3_fts5',
+          connectionState: 'READY',
+          configuredDefaultRetrievalProfile: 'hybrid_rrf_bge_m3_fts5',
           retrievalProfiles: [
             {
               id: 'hybrid_rrf_bge_m3_fts5',
@@ -250,18 +479,15 @@ describe('knowledge retrieval helpers', () => {
         },
         'vector_bge_m3_1024',
       ),
-    ).toEqual({
-      retrievalProfile: 'hybrid_rrf_bge_m3_fts5',
-      embeddingModel: 'baai/bge-m3',
-      embeddingDimensions: 1024,
-    })
+    ).toBeNull()
   })
 
   it('uses lexical progress label when selected vector profile is disabled', () => {
     expect(
       searchProgressLabel(
         {
-          defaultRetrievalProfile: 'sqlite_fts5_default',
+          connectionState: 'READY',
+          configuredDefaultRetrievalProfile: 'sqlite_fts5_default',
           retrievalProfiles: [
             {
               id: 'sqlite_fts5_default',
@@ -288,7 +514,8 @@ describe('knowledge retrieval helpers', () => {
 
   it('does not build a search payload when all service profiles are unavailable', () => {
     const allUnavailableStatus = {
-      defaultRetrievalProfile: 'vector_bge_m3_1024',
+      connectionState: 'READY' as const,
+      configuredDefaultRetrievalProfile: 'vector_bge_m3_1024',
       retrievalProfiles: [
         {
           id: 'vector_bge_m3_1024',
@@ -428,6 +655,7 @@ describe('knowledge retrieval helpers', () => {
     expect(
       searchProgressLabel(
         {
+          connectionState: 'READY',
           retrievalProfiles: [
             {
               id: 'vector_bge_m3_1024',
@@ -447,6 +675,7 @@ describe('knowledge retrieval helpers', () => {
     expect(
       searchProgressLabel(
         {
+          connectionState: 'READY',
           retrievalProfiles: [
             {
               id: 'hybrid_rrf_bge_m3_fts5',
@@ -468,6 +697,7 @@ describe('knowledge retrieval helpers', () => {
     expect(
       searchProgressLabel(
         {
+          connectionState: 'READY',
           retrievalProfiles: [
             {
               id: 'sqlite_fts5_default',
@@ -518,6 +748,11 @@ const SERVICE_PROFILES = [
 
 function statusPayload(overrides: Record<string, unknown> = {}) {
   return {
+    connectionState: 'READY',
+    capabilitiesStale: false,
+    configuredDefaultRetrievalProfile: 'hybrid_rrf_bge_m3_fts5',
+    effectiveDefaultRetrievalProfile: 'hybrid_rrf_bge_m3_fts5',
+    defaultFallbackReason: null,
     rootDir: '/mnt/data/datasets',
     documentsIndexed: 3,
     chunksIndexed: 12,
@@ -633,7 +868,7 @@ describe('KnowledgeView retrieval UI wiring', () => {
     ])
   })
 
-  it('sends selected retrieval metadata and renders scores using the active profile fallback', async () => {
+  it('sends only the selected retrieval profile and renders scores using its kind', async () => {
     const { el } = await mountKnowledgeView({ results: [searchResult({ retrievalProfile: null })] })
     setInputValue(retrievalSelect(el), 'hybrid_rrf_bge_m3_fts5')
     await flushUi()
@@ -648,11 +883,12 @@ describe('KnowledgeView retrieval UI wiring', () => {
     form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
     await flushUi()
 
-    expect(rpcCall('knowledge.search')?.[1]).toMatchObject({
+    const searchPayload = rpcCall('knowledge.search')?.[1]
+    expect(searchPayload).toMatchObject({
       retrievalProfile: 'hybrid_rrf_bge_m3_fts5',
-      embeddingModel: 'baai/bge-m3',
-      embeddingDimensions: 1024,
     })
+    expect(searchPayload).not.toHaveProperty('embeddingModel')
+    expect(searchPayload).not.toHaveProperty('embeddingDimensions')
     expect(el.textContent).toContain('fusion 0.023')
     expect(el.textContent).toContain('Vector #2')
     expect(el.textContent).not.toContain('Vector#2')

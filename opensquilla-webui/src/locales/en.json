@@ -1201,7 +1201,9 @@
       "refresh": "Refresh",
       "edit": "Edit",
       "delete": "Delete",
-      "confirm": "Confirm"
+      "confirm": "Confirm",
+      "refreshing": "Refreshing…",
+      "retry": "Retry"
     },
     "agents": {
       "title": "Agents",
@@ -1455,7 +1457,11 @@
         "wiki": "Wiki",
         "permissions": "Permissions",
         "scopes": "Scopes"
-      }
+      },
+      "staleData": "Status may be stale — last updated {time}.",
+      "clearFilters": "Clear filters",
+      "unconfiguredTitle": "Running but not in config",
+      "unconfiguredHint": "These channels are running in this gateway process but are not in the saved configuration."
     },
     "overview": {
       "channelsChip": "Channels",

@@ -1201,7 +1201,9 @@
       "refresh": "刷新",
       "edit": "编辑",
       "delete": "删除",
-      "confirm": "确认"
+      "confirm": "确认",
+      "refreshing": "刷新中…",
+      "retry": "重试"
     },
     "agents": {
       "title": "智能体",
@@ -1455,7 +1457,11 @@
         "wiki": "知识库",
         "permissions": "权限",
         "scopes": "授权范围"
-      }
+      },
+      "staleData": "状态可能已过期——最后更新于 {time}。",
+      "clearFilters": "清除过滤",
+      "unconfiguredTitle": "运行中但不在配置里",
+      "unconfiguredHint": "这些频道正在本网关进程中运行，但不在已保存的配置里。"
     },
     "overview": {
       "channelsChip": "频道",

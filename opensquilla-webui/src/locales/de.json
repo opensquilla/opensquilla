@@ -1201,7 +1201,9 @@
       "refresh": "Aktualisieren",
       "edit": "Bearbeiten",
       "delete": "Löschen",
-      "confirm": "Bestätigen"
+      "confirm": "Bestätigen",
+      "refreshing": "Wird aktualisiert…",
+      "retry": "Erneut versuchen"
     },
     "agents": {
       "title": "Agenten",
@@ -1455,7 +1457,11 @@
         "wiki": "Wiki",
         "permissions": "Berechtigungen",
         "scopes": "Scopes"
-      }
+      },
+      "staleData": "Status ist möglicherweise veraltet — zuletzt aktualisiert {time}.",
+      "clearFilters": "Filter löschen",
+      "unconfiguredTitle": "Aktiv, aber nicht in der Konfiguration",
+      "unconfiguredHint": "Diese Kanäle laufen in diesem Gateway-Prozess, stehen aber nicht in der gespeicherten Konfiguration."
     },
     "overview": {
       "channelsChip": "Kanäle",

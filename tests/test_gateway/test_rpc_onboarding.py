@@ -13,9 +13,9 @@ from opensquilla.gateway.auth import Principal
 from opensquilla.gateway.rpc import RpcContext, get_dispatcher
 
 
-def _env_hint(env_key: str) -> str:
+def _env_command(env_key: str) -> str:
     if platform.system().lower().startswith("win"):
-        return f'PowerShell: $env:{env_key} = "<your-key>"'
+        return f'$env:{env_key} = "<your-key>"'
     return f'export {env_key}="<your-key>"'
 
 
@@ -711,10 +711,13 @@ async def test_onboarding_status_requires_image_generation_enable_for_llm_fallba
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("system_name", ["Linux", "Windows"])
 async def test_onboarding_status_exposes_missing_env_keys_for_optional_capabilities(
     tmp_path,
     monkeypatch,
+    system_name,
 ):
+    monkeypatch.setattr(platform, "system", lambda: system_name)
     monkeypatch.setenv("OPENSQUILLA_GATEWAY_CONFIG_PATH", str(tmp_path / "c.toml"))
     from opensquilla.gateway.config import GatewayConfig
 
@@ -751,17 +754,17 @@ async def test_onboarding_status_exposes_missing_env_keys_for_optional_capabilit
         {
             "section": "memory_embedding",
             "label": "Set memory key",
-            "command": _env_hint("OPENAI_EMBEDDINGS_API_KEY"),
+            "command": _env_command("OPENAI_EMBEDDINGS_API_KEY"),
         },
         {
             "section": "search",
             "label": "Set search key",
-            "command": _env_hint("BRAVE_SEARCH_API_KEY"),
+            "command": _env_command("BRAVE_SEARCH_API_KEY"),
         },
         {
             "section": "image_generation",
             "label": "Set image key",
-            "command": _env_hint("OPENAI_IMAGE_KEY"),
+            "command": _env_command("OPENAI_IMAGE_KEY"),
         },
     ]
 
@@ -1044,6 +1047,65 @@ async def test_provider_configure_does_not_persist_runtime_api_key(tmp_path, mon
 
 
 @pytest.mark.asyncio
+async def test_provider_configure_persists_explicit_replacement_for_env_key(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("OPENROUTER_API_KEY", "startup-key")
+    from opensquilla.gateway.config import GatewayConfig
+
+    target = tmp_path / "c.toml"
+    ctx = _admin_ctx()
+    ctx.config = GatewayConfig(
+        llm={
+            "provider": "openrouter",
+            "model": "m1",
+            "api_key": "startup-key",
+            "api_key_env": "OPENROUTER_API_KEY",
+        },
+        auth={"mode": "token", "token": "runtime-auth-token"},
+    )
+    ctx.config.config_path = str(target)
+    ctx.config.mark_runtime_secret("llm.api_key")
+    ctx.config.mark_runtime_secret("auth.token")
+
+    res = await get_dispatcher().dispatch(
+        "r1",
+        "onboarding.provider.configure",
+        {"providerId": "openrouter", "model": "m2", "apiKey": "replacement-key"},
+        ctx,
+    )
+
+    assert res.error is None, res.error
+    data = tomllib.loads(target.read_text())
+    assert data["llm"]["api_key"] == "replacement-key"
+    assert "api_key_env" not in data["llm"]
+    assert "token" not in data["auth"]
+    assert ctx.config.llm.api_key == "replacement-key"
+    assert "llm.api_key" not in ctx.config._runtime_secret_paths
+    assert "auth.token" in ctx.config._runtime_secret_paths
+
+    reveal = await get_dispatcher().dispatch(
+        "r2",
+        "onboarding.provider.credential.reveal",
+        {"providerId": "openrouter"},
+        ctx,
+    )
+    assert reveal.error is None, reveal.error
+    assert reveal.payload["source"] == "explicit"
+    assert reveal.payload["apiKey"] == "replacement-key"
+
+    # Desktop still exports its original onboarding key on restart. The
+    # explicit replacement in TOML must remain authoritative over that stale
+    # environment value after a fresh config load/runtime resolution.
+    from opensquilla.gateway.llm_runtime import resolve_llm_runtime_config
+
+    reloaded = GatewayConfig.load(target)
+    runtime = resolve_llm_runtime_config(reloaded)
+    assert runtime.api_key == "replacement-key"
+    assert runtime.api_key_from_env is False
+
+
+@pytest.mark.asyncio
 async def test_provider_configure_calls_provider_selector_sync(tmp_path, monkeypatch):
     monkeypatch.setenv("OPENSQUILLA_GATEWAY_CONFIG_PATH", str(tmp_path / "c.toml"))
     from opensquilla.gateway.config import GatewayConfig
@@ -1142,7 +1204,7 @@ async def test_models_discover_requires_admin_scope(tmp_path, monkeypatch):
     res = await get_dispatcher().dispatch(
         "r1",
         "onboarding.models.discover",
-        {"providerId": "openai", "apiKey": "sk-test"},
+        {"providerId": "openrouter", "apiKey": "sk-test"},
         _read_ctx(),
     )
     assert res.error is not None
@@ -1163,10 +1225,38 @@ async def test_models_discover_lists_live_models(tmp_path, monkeypatch):
     res = await get_dispatcher().dispatch(
         "r1",
         "onboarding.models.discover",
-        {"providerId": "openai", "apiKey": "sk-test"},
+        {"providerId": "openrouter", "apiKey": "sk-test"},
         _admin_ctx(),
     )
     assert res.error is None, res.error
     assert res.payload["ok"] is True
     assert res.payload["source"] == "live"
     assert [m["id"] for m in res.payload["models"]] == ["gpt-x"]
+
+
+@pytest.mark.asyncio
+async def test_models_discover_unverified_provider_stays_empty_without_build(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("OPENSQUILLA_GATEWAY_CONFIG_PATH", str(tmp_path / "c.toml"))
+
+    def _unexpected_build(*_args, **_kwargs):
+        raise AssertionError("unverified providers must not be built for selector discovery")
+
+    monkeypatch.setattr("opensquilla.onboarding.probe.build_provider", _unexpected_build)
+
+    res = await get_dispatcher().dispatch(
+        "r1",
+        "onboarding.models.discover",
+        {"providerId": "openai", "apiKey": "synthetic-key"},
+        _admin_ctx(),
+    )
+
+    assert res.error is None, res.error
+    assert res.payload == {
+        "ok": True,
+        "failureKind": "",
+        "detail": "",
+        "source": "none",
+        "models": [],
+    }

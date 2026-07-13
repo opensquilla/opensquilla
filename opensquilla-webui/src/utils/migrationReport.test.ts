@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 
 import { formatByteSize, summarizeMigrationReport } from './migrationReport'
 
-// Miniature report following docs/self-migration-report-contract.md (synthetic
+// Miniature report following the self-migration wire contract (synthetic
 // public-dummy data only).
 const dryRunReport = {
   source: '/tmp/legacy-home',
@@ -49,8 +49,8 @@ describe('summarizeMigrationReport', () => {
     expect(summary.diskRequiredBytes).toBe(5 * 1024 * 1024)
     expect(summary.diskFreeBytes).toBe(40 * 1024 * 1024 * 1024)
     expect(summary.needsOverwrite).toBe(true)
-    expect(summary.errorNotes).toHaveLength(1)
-    expect(summary.errorNotes[0]).toContain('preflight/target')
+    expect(summary.replacementReason).toContain('target home already contains session data')
+    expect(summary.errorNotes).toEqual([])
     expect(summary.notes).toEqual(['source home is left untouched at its original path'])
   })
 
@@ -61,6 +61,7 @@ describe('summarizeMigrationReport', () => {
       ],
     })
     expect(summary.needsOverwrite).toBe(false)
+    expect(summary.replacementReason).toBeNull()
     expect(summary.itemCounts.error).toBe(1)
     expect(summary.errorNotes).toEqual(['preflight/disk: not enough free disk space'])
   })
@@ -73,6 +74,7 @@ describe('summarizeMigrationReport', () => {
       expect(summary.diskRequiredBytes).toBeNull()
       expect(summary.diskFreeBytes).toBeNull()
       expect(summary.needsOverwrite).toBe(false)
+      expect(summary.replacementReason).toBeNull()
       expect(summary.errorNotes).toEqual([])
       expect(summary.notes).toEqual([])
     }

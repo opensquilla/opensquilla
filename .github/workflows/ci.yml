@@ -207,6 +207,9 @@ jobs:
           node scripts/test-secret-storage-policy.mjs
           node scripts/test-update-resolver.mjs
           node scripts/test-desktop-locale.mjs
+          node scripts/test-desktop-profile-substrate.mjs
+          node scripts/test-desktop-profile-context.mjs
+          node scripts/test-desktop-cleanup-contract.mjs
 
   ubuntu-quality:
     name: Lint, test, and build (ubuntu-latest, 3.12)
@@ -254,25 +257,24 @@ jobs:
         shell: bash
         run: uv run mypy src/opensquilla --show-error-codes
 
-      - name: Test
+      - name: Test targeted PR suite
+        if: ${{ needs.classify-changes.outputs.full_required != 'true' }}
         shell: bash
         run: |
           set -euo pipefail
           markers="not llm and not live_search and not live_channel and not webui_browser and not tui_real_terminal and not local_golden and not agent_context_boundary and not llm_router_acc"
 
-          if [[ "${{ needs.classify-changes.outputs.full_required }}" == "true" ]]; then
-            uv run pytest tests -q -m "${markers}" --durations=50
-          else
-            uv run pytest \
-              tests/unit \
-              tests/test_ci \
-              --ignore=tests/test_ci/test_router_artifact_manifest.py \
-              tests/test_desktop/test_electron_startup_contract.py \
-              tests/test_engine/test_coding_mode.py \
-              tests/test_engine/test_stream_wrappers.py \
-              tests/test_tools/test_shell_process_isolation.py \
-              -q -m "${markers}" --durations=50
-          fi
+          uv run pytest \
+            tests/unit \
+            tests/test_ci \
+            --ignore=tests/test_ci/test_router_artifact_manifest.py \
+            tests/test_desktop/test_electron_startup_contract.py \
+            tests/test_recovery \
+            tests/test_migration/test_opensquilla_home_migration.py \
+            tests/test_engine/test_coding_mode.py \
+            tests/test_engine/test_stream_wrappers.py \
+            tests/test_tools/test_shell_process_isolation.py \
+            -q -m "${markers}" --durations=50
 
       - name: Verify metric counter names unchanged
         shell: bash
@@ -296,6 +298,86 @@ jobs:
         if: ${{ needs.classify-changes.outputs.build_wheel_required == 'true' || needs.classify-changes.outputs.full_required == 'true' }}
         shell: bash
         run: uv build --wheel
+
+  ubuntu-full:
+    name: Full offline tests (ubuntu-latest, ${{ matrix.shard }})
+    needs: classify-changes
+    if: ${{ needs.classify-changes.outputs.full_required == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        shard:
+          - core
+          - gateway-sqlite
+          - recovery-migration
+          - desktop-installer-contracts
+
+    env:
+      UV_PYTHON: "3.12"
+      PYTHONPATH: ${{ github.workspace }}
+      OPENSQUILLA_TURN_CALL_LOG: "0"
+
+    steps:
+      - name: Prepare Ubuntu full report
+        shell: bash
+        run: |
+          set -euo pipefail
+          report_dir="${RUNNER_TEMP}/ci-reports/ubuntu-${{ matrix.shard }}"
+          mkdir -p "${report_dir}"
+          printf 'CI_REPORT_DIR=%s\n' "${report_dir}" >> "${GITHUB_ENV}"
+          printf 'pytest_status=not_started\n' > "${report_dir}/first-failure.txt"
+
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          lfs: true
+
+      - name: Configure runtime directories
+        shell: bash
+        run: |
+          printf 'OPENSQUILLA_STATE_DIR=%s/opensquilla-state\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
+          printf 'OPENSQUILLA_LOG_DIR=%s/opensquilla-logs\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Install dependencies
+        shell: bash
+        run: uv sync --extra dev --extra recommended --extra mcp --frozen
+
+      - name: Test Ubuntu full shard
+        shell: bash
+        run: |
+          set -euo pipefail
+          markers="not llm and not live_search and not live_channel and not webui_browser and not tui_real_terminal and not local_golden and not agent_context_boundary and not llm_router_acc"
+
+          uv run python .github/scripts/windows_test_shards.py run \
+            "${{ matrix.shard }}" \
+            --junit "${CI_REPORT_DIR}/junit.xml" \
+            --summary "${CI_REPORT_DIR}/first-failure.txt" \
+            -- \
+            -q \
+            -m "${markers}" \
+            --durations=50 \
+            2>&1 | tee "${CI_REPORT_DIR}/pytest.log"
+
+      - name: Upload Ubuntu full shard report
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: ubuntu-full-${{ matrix.shard }}-attempt-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/ci-reports/ubuntu-${{ matrix.shard }}
+          if-no-files-found: error
+          retention-days: 14
 
   windows-compat:
     name: Windows compatibility smoke (3.12)
@@ -346,11 +428,19 @@ jobs:
             -q
 
   windows-full:
-    name: Windows high-risk/full tests (conditional)
+    name: Windows high-risk (${{ matrix.shard }})
     needs: classify-changes
     if: ${{ needs.classify-changes.outputs.windows_full_required == 'true' || needs.classify-changes.outputs.full_required == 'true' }}
     runs-on: windows-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        shard:
+          - core
+          - gateway-sqlite
+          - recovery-migration
+          - desktop-installer-contracts
 
     env:
       UV_PYTHON: "3.12"
@@ -358,10 +448,26 @@ jobs:
       OPENSQUILLA_TURN_CALL_LOG: "0"
 
     steps:
+      - name: Prepare diagnostic report
+        shell: bash
+        run: |
+          set -euo pipefail
+          report_dir="${RUNNER_TEMP}/ci-reports/${{ matrix.shard }}"
+          mkdir -p "${report_dir}"
+          printf 'CI_REPORT_DIR=%s\n' "${report_dir}" >> "${GITHUB_ENV}"
+          {
+            printf 'runner_os=%s\n' "${RUNNER_OS}"
+            printf 'runner_arch=%s\n' "${RUNNER_ARCH}"
+            printf 'commit_sha=%s\n' "${GITHUB_SHA}"
+            printf 'run_attempt=%s\n' "${GITHUB_RUN_ATTEMPT}"
+            printf 'shard=%s\n' "${{ matrix.shard }}"
+          } > "${report_dir}/environment.txt"
+          printf 'pytest_status=not_started\n' > "${report_dir}/first-failure.txt"
+
       - name: Check out repository
         uses: actions/checkout@v4
         with:
-          lfs: ${{ needs.classify-changes.outputs.full_required == 'true' }}
+          lfs: true
 
       - name: Configure runtime directories
         shell: bash
@@ -380,13 +486,13 @@ jobs:
           enable-cache: true
 
       - name: Set up Bun
-        if: ${{ needs.classify-changes.outputs.tui_changed == 'true' || needs.classify-changes.outputs.full_required == 'true' }}
+        if: ${{ matrix.shard == 'core' }}
         uses: oven-sh/setup-bun@v2
         with:
           bun-version: latest
 
       - name: Install OpenTUI host dependencies
-        if: ${{ needs.classify-changes.outputs.tui_changed == 'true' || needs.classify-changes.outputs.full_required == 'true' }}
+        if: ${{ matrix.shard == 'core' }}
         shell: bash
         run: bun install --frozen-lockfile --cwd=src/opensquilla/cli/tui/opentui/package
 
@@ -394,28 +500,340 @@ jobs:
         shell: bash
         run: uv sync --extra dev --extra recommended --extra mcp --frozen
 
-      - name: Test
+      - name: Record tool versions
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            python --version
+            uv --version
+            uv run pytest --version
+          } >> "${CI_REPORT_DIR}/environment.txt" 2>&1
+
+      - name: Provision distinct Windows test volumes
+        if: ${{ matrix.shard == 'recovery-migration' }}
+        shell: pwsh
+        run: |
+          $token = [guid]::NewGuid().ToString("N")
+          $volumeA = Join-Path -Path $env:RUNNER_TEMP -ChildPath "opensquilla-windows-volume-a-$token"
+          $volumeB = Join-Path -Path $env:LOCALAPPDATA -ChildPath "opensquilla-windows-volume-b-$token"
+
+          if (Test-Path -LiteralPath $volumeA) {
+            throw "Windows test volume root already exists: $volumeA"
+          }
+          if (Test-Path -LiteralPath $volumeB) {
+            throw "Windows test volume root already exists: $volumeB"
+          }
+
+          $driveA = [System.IO.Path]::GetPathRoot($volumeA)
+          $driveB = [System.IO.Path]::GetPathRoot($volumeB)
+          $systemDriveRoot = [System.IO.Path]::GetPathRoot("$($env:SystemDrive)\")
+          if (-not [string]::Equals($driveB, $systemDriveRoot, [StringComparison]::OrdinalIgnoreCase)) {
+            throw "Windows test volume B must use SystemDrive"
+          }
+          if ([string]::Equals($driveA, $driveB, [StringComparison]::OrdinalIgnoreCase)) {
+            throw "Windows test volume roots must use different drives"
+          }
+
+          $createdRoots = [System.Collections.Generic.List[string]]::new()
+          try {
+            New-Item -ItemType Directory -Path $volumeA -ErrorAction Stop | Out-Null
+            $createdRoots.Add($volumeA)
+            New-Item -ItemType Directory -Path $volumeB -ErrorAction Stop | Out-Null
+            $createdRoots.Add($volumeB)
+            "OPENSQUILLA_WINDOWS_TEST_VOLUME_A=$volumeA" |
+              Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+            "OPENSQUILLA_WINDOWS_TEST_VOLUME_B=$volumeB" |
+              Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          } catch {
+            foreach ($testRoot in $createdRoots) {
+              if (Test-Path -LiteralPath $testRoot) {
+                Remove-Item -LiteralPath $testRoot -Recurse -Force
+              }
+            }
+            throw
+          }
+
+      - name: Test Windows native recovery move primitives first
+        if: ${{ matrix.shard == 'recovery-migration' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          maxfail_args=()
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            maxfail_args+=(--maxfail=3)
+          fi
+
+          set +e
+          uv run pytest \
+            tests/test_recovery/test_atomic_and_locking.py::test_native_move_moves_a_regular_tree_between_real_parents \
+            tests/test_recovery/test_atomic_and_locking.py::test_windows_real_legacy_lock_survives_profile_move_and_rebind \
+            tests/test_recovery/test_atomic_and_locking.py::test_windows_real_replacement_locks_survive_two_profile_moves \
+            tests/test_recovery/test_atomic_and_locking.py::test_windows_real_recent_locked_profile_tree_moves_without_metadata_false_positive \
+            tests/test_recovery/test_atomic_and_locking.py::test_windows_primitive_collision_preserves_both_trees \
+            tests/test_recovery/test_atomic_and_locking.py::test_windows_native_move_refuses_real_cross_volume_move \
+            tests/test_recovery/test_atomic_and_locking.py::test_windows_native_move_handles_real_path_longer_than_260_characters \
+            tests/test_recovery/test_atomic_and_locking.py::test_windows_native_move_rejects_real_junction_in_source_tree \
+            tests/test_recovery/test_atomic_and_locking.py::test_windows_no_replace_pins_both_parents_during_real_mutation_window \
+            -q \
+            --durations=25 \
+            --junitxml="${CI_REPORT_DIR}/native-move-junit.xml" \
+            "${maxfail_args[@]}" \
+            2>&1 | tee "${CI_REPORT_DIR}/native-move.log"
+          status=${PIPESTATUS[0]}
+          set -e
+          if [[ "${status}" -ne 0 ]]; then
+            printf 'native_move_exit_code=%s\n' "${status}" \
+              > "${CI_REPORT_DIR}/first-failure.txt"
+            exit "${status}"
+          fi
+
+      - name: Test Windows shard
         shell: bash
         run: |
           set -euo pipefail
           markers="not llm and not live_search and not live_channel and not webui_browser and not tui_real_terminal and not local_golden and not agent_context_boundary and not llm_router_acc"
-
-          if [[ "${{ needs.classify-changes.outputs.full_required }}" == "true" ]]; then
-            uv run pytest tests -q -m "${markers}" --durations=50 --maxfail=1
-          else
-            uv run pytest \
-              tests/test_artifacts.py \
-              tests/test_compat \
-              tests/test_desktop \
-              tests/test_sandbox \
-              tests/test_tools/test_path_aliases.py \
-              tests/test_tools/test_path_policy.py \
-              tests/test_tools/test_shell_approval_policy.py \
-              tests/test_tools/test_shell_background_seatbelt.py \
-              tests/test_tools/test_shell_policy_windows.py \
-              tests/test_tools/test_shell_process_isolation.py \
-              -q -m "${markers}" --durations=50
+          maxfail_args=()
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            maxfail_args+=(--maxfail=3)
           fi
+
+          uv run python .github/scripts/windows_test_shards.py run \
+            "${{ matrix.shard }}" \
+            --junit "${CI_REPORT_DIR}/junit.xml" \
+            --summary "${CI_REPORT_DIR}/first-failure.txt" \
+            -- \
+            -q \
+            -m "${markers}" \
+            --durations=50 \
+            "${maxfail_args[@]}" \
+            2>&1 | tee "${CI_REPORT_DIR}/pytest.log"
+
+      - name: Clean up Windows test volumes
+        if: ${{ always() && matrix.shard == 'recovery-migration' }}
+        shell: pwsh
+        run: |
+          $testRoots = @(
+            $env:OPENSQUILLA_WINDOWS_TEST_VOLUME_A,
+            $env:OPENSQUILLA_WINDOWS_TEST_VOLUME_B
+          )
+          foreach ($testRoot in $testRoots) {
+            if ($testRoot -and (Test-Path -LiteralPath $testRoot)) {
+              Remove-Item -LiteralPath $testRoot -Recurse -Force
+            }
+          }
+
+      - name: Upload Windows shard report
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-high-risk-${{ matrix.shard }}-attempt-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/ci-reports/${{ matrix.shard }}
+          if-no-files-found: error
+          retention-days: 14
+
+  macos-recovery:
+    name: macOS profile recovery and native no-replace (3.12)
+    needs: classify-changes
+    if: ${{ needs.classify-changes.outputs.platform_sensitive_changed == 'true' || needs.classify-changes.outputs.desktop_changed == 'true' || needs.classify-changes.outputs.full_required == 'true' }}
+    runs-on: macos-latest
+    timeout-minutes: 30
+
+    env:
+      UV_PYTHON: "3.12"
+      PYTHONPATH: ${{ github.workspace }}
+      OPENSQUILLA_TURN_CALL_LOG: "0"
+
+    steps:
+      - name: Prepare macOS recovery report
+        shell: bash
+        run: |
+          set -euo pipefail
+          report_dir="${RUNNER_TEMP}/macos-recovery"
+          mkdir -p "${report_dir}"
+          printf 'CI_REPORT_DIR=%s\n' "${report_dir}" >> "${GITHUB_ENV}"
+          {
+            printf 'runner_os=%s\n' "${RUNNER_OS}"
+            printf 'runner_arch=%s\n' "${RUNNER_ARCH}"
+            printf 'commit_sha=%s\n' "${GITHUB_SHA}"
+            printf 'run_attempt=%s\n' "${GITHUB_RUN_ATTEMPT}"
+          } > "${report_dir}/environment.txt"
+          printf 'pytest_status=not_started\n' > "${report_dir}/first-failure.txt"
+
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Configure runtime directories
+        shell: bash
+        run: |
+          printf 'OPENSQUILLA_STATE_DIR=%s/opensquilla-state\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
+          printf 'OPENSQUILLA_LOG_DIR=%s/opensquilla-logs\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Install dependencies
+        shell: bash
+        run: uv sync --extra dev --extra recommended --extra mcp --frozen
+
+      - name: Test native profile recovery contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          pytest_args=(
+            tests/test_recovery
+            tests/test_migration/test_opensquilla_home_migration.py
+            tests/test_desktop/test_electron_startup_contract.py
+            -q
+            --durations=50
+            --junitxml="${CI_REPORT_DIR}/junit.xml"
+          )
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            pytest_args+=(--maxfail=3)
+          fi
+
+          set +e
+          uv run pytest "${pytest_args[@]}" \
+            2>&1 | tee "${CI_REPORT_DIR}/pytest.log"
+          status=${PIPESTATUS[0]}
+          set -e
+          printf 'pytest_exit_code=%s\n' "${status}" > "${CI_REPORT_DIR}/first-failure.txt"
+          exit "${status}"
+
+      - name: Upload macOS recovery report
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-recovery-attempt-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/macos-recovery
+          if-no-files-found: error
+          retention-days: 14
+
+  desktop-recovery-e2e:
+    name: Desktop recovery E2E (${{ matrix.os }})
+    needs: classify-changes
+    if: ${{ needs.classify-changes.outputs.frontend_changed == 'true' || needs.classify-changes.outputs.platform_sensitive_changed == 'true' || needs.classify-changes.outputs.desktop_changed == 'true' || needs.classify-changes.outputs.full_required == 'true' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+
+    env:
+      UV_PYTHON: "3.12"
+      PYTHONPATH: ${{ github.workspace }}
+      OPENSQUILLA_TURN_CALL_LOG: "0"
+
+    steps:
+      - name: Prepare Desktop recovery report
+        shell: bash
+        run: |
+          set -euo pipefail
+          report_dir="${RUNNER_TEMP}/desktop-recovery-e2e"
+          mkdir -p "${report_dir}"
+          printf 'CI_REPORT_DIR=%s\n' "${report_dir}" >> "${GITHUB_ENV}"
+          {
+            printf 'runner_os=%s\n' "${RUNNER_OS}"
+            printf 'runner_arch=%s\n' "${RUNNER_ARCH}"
+            printf 'commit_sha=%s\n' "${GITHUB_SHA}"
+            printf 'run_attempt=%s\n' "${GITHUB_RUN_ATTEMPT}"
+          } > "${report_dir}/environment.txt"
+          printf 'e2e_status=not_started\n' > "${report_dir}/first-failure.txt"
+
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20.19.0'
+          cache: 'npm'
+          cache-dependency-path: desktop/electron/package-lock.json
+
+      - name: Install Python dependencies
+        shell: bash
+        run: uv sync --extra dev --extra recommended --extra mcp --frozen
+
+      - name: Install Desktop dependencies
+        working-directory: desktop/electron
+        shell: bash
+        run: npm ci
+
+      - name: Record Desktop recovery tool versions
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            python --version
+            uv --version
+            node --version
+            npm --version
+          } >> "${CI_REPORT_DIR}/environment.txt" 2>&1
+
+      - name: Build Desktop TypeScript
+        working-directory: desktop/electron
+        shell: bash
+        run: npm run build
+
+      - name: Run compiled Desktop recovery flows
+        working-directory: desktop/electron
+        shell: bash
+        env:
+          OPENSQUILLA_DESKTOP_RECOVERY_SCREENSHOT: ${{ runner.temp }}/desktop-recovery-e2e/recovery-page.png
+        run: |
+          set -euo pipefail
+
+          run_case() {
+            local name="$1"
+            local script="$2"
+            if [[ "${RUNNER_OS}" == "Linux" ]]; then
+              xvfb-run -a node "${script}" 2>&1 | tee "${CI_REPORT_DIR}/${name}.log"
+            else
+              node "${script}" 2>&1 | tee "${CI_REPORT_DIR}/${name}.log"
+            fi
+          }
+
+          for entry in \
+            'profile-recovery-flow:scripts/test-profile-recovery-flow.mjs' \
+            'profile-recovery-accessibility:scripts/test-profile-recovery-accessibility.mjs' \
+            'profile-import-flow:scripts/test-profile-import-flow.mjs' \
+            'unsafe-profile-no-write:scripts/test-unsafe-profile-no-write.mjs'
+          do
+            name="${entry%%:*}"
+            script="${entry#*:}"
+            if ! run_case "${name}" "${script}"; then
+              printf 'failed_case=%s\n' "${name}" > "${CI_REPORT_DIR}/first-failure.txt"
+              exit 1
+            fi
+          done
+          printf 'e2e_status=passed\n' > "${CI_REPORT_DIR}/first-failure.txt"
+
+      - name: Upload Desktop recovery report
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-recovery-e2e-${{ matrix.os }}-attempt-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/desktop-recovery-e2e
+          if-no-files-found: error
+          retention-days: 14
 
   release-packaging:
     name: Release packaging contracts
@@ -487,116 +905,51 @@ jobs:
       - tui-check
       - desktop-check
       - ubuntu-quality
+      - ubuntu-full
       - windows-compat
       - windows-full
+      - macos-recovery
+      - desktop-recovery-e2e
       - release-packaging
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
       - name: Check required CI results
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          classify_result="${{ needs.classify-changes.result }}"
-          workflow_lint_result="${{ needs.workflow-lint.result }}"
-          readme_locale_result="${{ needs.readme-locale-check.result }}"
-          frontend_result="${{ needs.frontend-check.result }}"
-          tui_result="${{ needs.tui-check.result }}"
-          desktop_result="${{ needs.desktop-check.result }}"
-          ubuntu_result="${{ needs.ubuntu-quality.result }}"
-          windows_smoke_result="${{ needs.windows-compat.result }}"
-          windows_full_result="${{ needs.windows-full.result }}"
-          release_result="${{ needs.release-packaging.result }}"
-          docs_only="${{ needs.classify-changes.outputs.docs_only }}"
-          runtime_changed="${{ needs.classify-changes.outputs.runtime_changed }}"
-          test_changed="${{ needs.classify-changes.outputs.test_changed }}"
-          ci_changed="${{ needs.classify-changes.outputs.ci_changed }}"
-          dependency_changed="${{ needs.classify-changes.outputs.dependency_changed }}"
-          release_changed="${{ needs.classify-changes.outputs.release_changed }}"
-          windows_full_required="${{ needs.classify-changes.outputs.windows_full_required }}"
-          frontend_changed="${{ needs.classify-changes.outputs.frontend_changed }}"
-          tui_changed="${{ needs.classify-changes.outputs.tui_changed }}"
-          desktop_changed="${{ needs.classify-changes.outputs.desktop_changed }}"
-          python_changed="${{ needs.classify-changes.outputs.python_changed }}"
-          platform_sensitive_changed="${{ needs.classify-changes.outputs.platform_sensitive_changed }}"
-          build_wheel_required="${{ needs.classify-changes.outputs.build_wheel_required }}"
-          full_required="${{ needs.classify-changes.outputs.full_required }}"
-
-          require_success() {
-            local result="$1"
-            local label="$2"
-            if [[ "${result}" != "success" ]]; then
-              echo "${label} must succeed."
-              exit 1
-            fi
-          }
-
-          allow_success_or_skipped() {
-            local result="$1"
-            local label="$2"
-            if [[ "${result}" != "success" && "${result}" != "skipped" ]]; then
-              echo "${label} must not fail."
-              exit 1
-            fi
-          }
-
-          printf 'classify-changes: %s\n' "${classify_result}"
-          printf 'workflow-lint: %s\n' "${workflow_lint_result}"
-          printf 'readme-locale-check: %s\n' "${readme_locale_result}"
-          printf 'frontend-check: %s\n' "${frontend_result}"
-          printf 'tui-check: %s\n' "${tui_result}"
-          printf 'desktop-check: %s\n' "${desktop_result}"
-          printf 'ubuntu-quality: %s\n' "${ubuntu_result}"
-          printf 'windows-compat-smoke: %s\n' "${windows_smoke_result}"
-          printf 'windows-full: %s\n' "${windows_full_result}"
-          printf 'release-packaging: %s\n' "${release_result}"
-          printf 'docs_only=%s runtime_changed=%s test_changed=%s ci_changed=%s dependency_changed=%s release_changed=%s windows_full_required=%s frontend_changed=%s tui_changed=%s python_changed=%s platform_sensitive_changed=%s build_wheel_required=%s full_required=%s\n' \
-            "${docs_only}" "${runtime_changed}" "${test_changed}" "${ci_changed}" "${dependency_changed}" "${release_changed}" "${windows_full_required}" "${frontend_changed}" "${tui_changed}" "${python_changed}" "${platform_sensitive_changed}" "${build_wheel_required}" "${full_required}"
-
-          require_success "${classify_result}" "Classify changed files"
-          require_success "${workflow_lint_result}" "Workflow lint"
-          require_success "${readme_locale_result}" "README locale parity"
-
-          if [[ "${frontend_changed}" == "true" || "${full_required}" == "true" ]]; then
-            require_success "${frontend_result}" "Frontend build and typecheck"
-          else
-            allow_success_or_skipped "${frontend_result}" "Frontend build and typecheck"
-          fi
-
-          if [[ "${tui_changed}" == "true" || "${full_required}" == "true" ]]; then
-            require_success "${tui_result}" "OpenTUI package tests"
-          else
-            allow_success_or_skipped "${tui_result}" "OpenTUI package tests"
-          fi
-
-          if [[ "${desktop_changed}" == "true" || "${full_required}" == "true" ]]; then
-            require_success "${desktop_result}" "Desktop Electron unit tests"
-          else
-            allow_success_or_skipped "${desktop_result}" "Desktop Electron unit tests"
-          fi
-
-          if [[ "${python_changed}" == "true" || "${full_required}" == "true" ]]; then
-            require_success "${ubuntu_result}" "Ubuntu quality gate"
-          else
-            allow_success_or_skipped "${ubuntu_result}" "Ubuntu quality gate"
-          fi
-
-          if [[ "${python_changed}" == "true" || "${platform_sensitive_changed}" == "true" || "${dependency_changed}" == "true" || "${release_changed}" == "true" || "${full_required}" == "true" ]]; then
-            require_success "${windows_smoke_result}" "Windows compatibility smoke tests"
-          else
-            allow_success_or_skipped "${windows_smoke_result}" "Windows compatibility smoke tests"
-          fi
-
-          if [[ "${windows_full_required}" == "true" || "${full_required}" == "true" ]]; then
-            require_success "${windows_full_result}" "Windows full test suite"
-          else
-            allow_success_or_skipped "${windows_full_result}" "Windows full test suite"
-          fi
-
-          if [[ "${release_changed}" == "true" || "${full_required}" == "true" ]]; then
-            require_success "${release_result}" "Release packaging contracts"
-          else
-            allow_success_or_skipped "${release_result}" "Release packaging contracts"
-          fi
+        env:
+          RESULT_CLASSIFY: ${{ needs.classify-changes.result }}
+          RESULT_WORKFLOW_LINT: ${{ needs.workflow-lint.result }}
+          RESULT_README_LOCALE: ${{ needs.readme-locale-check.result }}
+          RESULT_FRONTEND: ${{ needs.frontend-check.result }}
+          RESULT_TUI: ${{ needs.tui-check.result }}
+          RESULT_DESKTOP: ${{ needs.desktop-check.result }}
+          RESULT_UBUNTU: ${{ needs.ubuntu-quality.result }}
+          RESULT_UBUNTU_FULL: ${{ needs.ubuntu-full.result }}
+          RESULT_WINDOWS_SMOKE: ${{ needs.windows-compat.result }}
+          RESULT_WINDOWS_FULL: ${{ needs.windows-full.result }}
+          RESULT_MACOS_RECOVERY: ${{ needs.macos-recovery.result }}
+          RESULT_DESKTOP_RECOVERY_E2E: ${{ needs.desktop-recovery-e2e.result }}
+          RESULT_RELEASE: ${{ needs.release-packaging.result }}
+          FLAG_DOCS_ONLY: ${{ needs.classify-changes.outputs.docs_only }}
+          FLAG_RUNTIME_CHANGED: ${{ needs.classify-changes.outputs.runtime_changed }}
+          FLAG_TEST_CHANGED: ${{ needs.classify-changes.outputs.test_changed }}
+          FLAG_CI_CHANGED: ${{ needs.classify-changes.outputs.ci_changed }}
+          FLAG_DEPENDENCY_CHANGED: ${{ needs.classify-changes.outputs.dependency_changed }}
+          FLAG_RELEASE_CHANGED: ${{ needs.classify-changes.outputs.release_changed }}
+          FLAG_WINDOWS_FULL_REQUIRED: ${{ needs.classify-changes.outputs.windows_full_required }}
+          FLAG_FRONTEND_CHANGED: ${{ needs.classify-changes.outputs.frontend_changed }}
+          FLAG_TUI_CHANGED: ${{ needs.classify-changes.outputs.tui_changed }}
+          FLAG_DESKTOP_CHANGED: ${{ needs.classify-changes.outputs.desktop_changed }}
+          FLAG_PYTHON_CHANGED: ${{ needs.classify-changes.outputs.python_changed }}
+          FLAG_PLATFORM_SENSITIVE_CHANGED: ${{ needs.classify-changes.outputs.platform_sensitive_changed }}
+          FLAG_BUILD_WHEEL_REQUIRED: ${{ needs.classify-changes.outputs.build_wheel_required }}
+          FLAG_FULL_REQUIRED: ${{ needs.classify-changes.outputs.full_required }}
+        run: python .github/scripts/check_ci_results.py

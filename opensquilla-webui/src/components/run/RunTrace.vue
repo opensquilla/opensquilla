@@ -151,7 +151,7 @@
 <script lang="ts">
 import { defineComponent, h, type PropType } from 'vue'
 import { useI18n } from 'vue-i18n'
-import type { ChatToolCallRenderItem } from '@/types/chat'
+import type { ChatToolCallRenderItem, ToolResultContext } from '@/types/chat'
 
 const SECTION_PREVIEW_LIMIT = 200
 const COMPACT_SECTION_CHAR_LIMIT = 360
@@ -300,6 +300,17 @@ function compactMeta(value: string): string {
   return parts.join(' | ')
 }
 
+function toolResultContext(
+  call: ChatToolCallRenderItem,
+  section: NonNullable<ToolResultContext['section']>,
+): ToolResultContext {
+  return {
+    toolName: call.name,
+    inputRaw: call.inputRaw || call.inputPreview,
+    section,
+  }
+}
+
 function webDiagnosticsSummary(raw: string): string {
   const payload = parseToolResultRecord(raw)
   if (!payload) return ''
@@ -368,7 +379,12 @@ const ToolRowSections = defineComponent({
                 class: 'step-view-btn',
                 onClick: (event: Event) => {
                   event.stopPropagation()
-                  emit('showResult', fullInput, `${props.label} · ${t('shared.runTrace.sectionInput')}`)
+                  emit(
+                    'showResult',
+                    fullInput,
+                    `${props.label} · ${t('shared.runTrace.sectionInput')}`,
+                    toolResultContext(call, 'input'),
+                  )
                 },
               }, t('shared.runTrace.viewFull'))
             : null,
@@ -403,7 +419,12 @@ const ToolRowSections = defineComponent({
                 class: 'step-view-btn',
                 onClick: (event: Event) => {
                   event.stopPropagation()
-                  emit('showResult', call.result, `${props.label} · ${kindLabel}`)
+                  emit(
+                    'showResult',
+                    call.result,
+                    `${props.label} · ${kindLabel}`,
+                    toolResultContext(call, call.isError ? 'error' : 'result'),
+                  )
                 },
               }, t('shared.runTrace.viewFull'))
             : null,
@@ -476,7 +497,7 @@ const props = defineProps<{
 const emit = defineEmits<{
   toggleGroup: [groupId: string]
   toggleItem: [renderKey: string]
-  showResult: [content: string, title: string]
+  showResult: [content: string, title: string, context?: ToolResultContext]
 }>()
 
 const traceRoot = ref<HTMLElement | null>(null)
@@ -739,8 +760,8 @@ function resolvedSecondaryText(call: ChatToolCallRenderItem): string {
   return (props.toolSecondaryText ?? defaultToolSecondaryText)(call)
 }
 
-function forwardShowResult(content: string, title: string) {
-  emit('showResult', content, title)
+function forwardShowResult(content: string, title: string, context?: ToolResultContext) {
+  emit('showResult', content, title, context)
 }
 
 // summary strip. The whole-run status rolls up to a dot tone + label; unknown

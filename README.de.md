@@ -135,6 +135,12 @@ Beende vor dem Upgrade jede laufende OpenSquilla-Desktop-App.
 Vorhandene `~/.opensquilla/config.toml` und Sitzungsdaten werden
 weiterverwendet.
 
+Führe beim Upgrade der Windows-Desktop-App von RC3 auf RC4 oder neuer das neue
+Installationsprogramm direkt über der vorhandenen Installation aus. Deinstalliere
+RC3 nicht zuerst: Das RC3-Deinstallationsprogramm kann Desktop-Benutzerdaten löschen.
+Sichere vor dem Upgrade `%APPDATA%\OpenSquilla`. Installationsprogramme ab RC4
+behalten Profildaten bei einer normalen Deinstallation bei.
+
 <a id="quick-terminal-install"></a>
 
 ### Schnelle Terminal-Installation

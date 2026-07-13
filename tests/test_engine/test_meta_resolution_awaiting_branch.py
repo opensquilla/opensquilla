@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 import sqlite3
 import time
 from pathlib import Path
@@ -38,7 +39,17 @@ def _inline_to_thread_for_meta_resolution_tests(monkeypatch):
 
 def _writer(tmp_path: Path) -> MetaRunWriter:
     db = tmp_path / "x.sqlite"
-    get_backend(f"sqlite:///{db}").apply_migrations(read_migrations("migrations"))
+    # Migrations are invariant for this module. Build one template per pytest
+    # worker, then copy it so every test still gets a private database without
+    # paying the full migration cost for each of the many awaiting branches.
+    template = tmp_path.parent / "meta-resolution-migrated-template.sqlite"
+    if not template.exists():
+        backend = get_backend(f"sqlite:///{template}")
+        try:
+            backend.apply_migrations(read_migrations("migrations"))
+        finally:
+            backend.connection.close()
+    shutil.copyfile(template, db)
     conn = sqlite3.connect(db, check_same_thread=False)
     conn.row_factory = sqlite3.Row
     return MetaRunWriter(conn)

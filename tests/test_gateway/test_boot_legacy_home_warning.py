@@ -42,11 +42,12 @@ def test_fresh_home_with_candidate_warns_once(
 ) -> None:
     warnings = _capture_warnings(monkeypatch)
     legacy = tmp_path / "legacy-home"
+    candidate = LegacyHomeCandidate(path=legacy, kind="cli-home")
     seen_targets: list[Path | None] = []
 
     def _detect(target: Path | None = None) -> LegacyHomeCandidate:
         seen_targets.append(target)
-        return LegacyHomeCandidate(path=legacy, kind="cli-home")
+        return candidate
 
     monkeypatch.setattr(legacy_detect, "detect_legacy_home", _detect)
 
@@ -57,9 +58,7 @@ def test_fresh_home_with_candidate_warns_once(
         "event": "build_services.legacy_home_detected",
         "legacy_home": str(legacy),
         "kind": "cli-home",
-        "migrate_command": (
-            f"opensquilla migrate opensquilla --kind cli-home --source {legacy}"
-        ),
+        "migrate_command": legacy_detect.suggested_migrate_command(candidate),
     }
     # Detection ran once, against the home the gateway actually booted from.
     assert seen_targets == [(tmp_path / "home").resolve()]

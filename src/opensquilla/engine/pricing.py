@@ -12,7 +12,7 @@ import httpx
 import structlog
 
 from opensquilla.env import trust_env as _trust_env
-from opensquilla.provider.openrouter_attribution import openrouter_app_headers
+from opensquilla.provider.app_attribution import provider_app_headers
 from opensquilla.secrets import clean_header_secret
 
 log = structlog.get_logger(__name__)
@@ -73,7 +73,7 @@ class PricingCache:
             "Authorization": f"Bearer {self._api_key}",
             "Content-Type": "application/json",
         }
-        headers.update(openrouter_app_headers(self._base_url))
+        headers.update(provider_app_headers(self._base_url))
         try:
             async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT, trust_env=_trust_env()) as client:
                 resp = await client.get(url, headers=headers)
@@ -309,7 +309,7 @@ def _select_official_endpoint_price(data: dict, model_id: str) -> PriceEntry | N
 
 def _fetch_openrouter_json_sync(url: str) -> dict:
     with httpx.Client(timeout=_HTTP_TIMEOUT, trust_env=_trust_env()) as client:
-        resp = client.get(url, headers=openrouter_app_headers(url))
+        resp = client.get(url, headers=provider_app_headers(url))
         resp.raise_for_status()
         return cast(dict[Any, Any], resp.json())
 

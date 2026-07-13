@@ -59,14 +59,16 @@ def _writer(tmp_path: Path, *, count: int = 30) -> RouterDecisionWriter:
 
 
 def test_collect_decision_records_pages_and_dedups(tmp_path: Path) -> None:
-    writer = _writer(tmp_path, count=2500)
+    # Five records at two records per page still exercises three keyset pages;
+    # the production-sized 2500-row fixture only made this unit contract slow.
+    writer = _writer(tmp_path, count=5)
     try:
-        records = collect_decision_records(writer, max_records=2500, page_size=1000)
+        records = collect_decision_records(writer, max_records=5, page_size=2)
     finally:
         writer.close()
     ids = [r["decision_id"] for r in records]
     assert len(ids) == len(set(ids))  # no duplicates across pages
-    assert len(records) == 2500
+    assert len(records) == 5
 
 
 def test_collect_decision_records_respects_max(tmp_path: Path) -> None:

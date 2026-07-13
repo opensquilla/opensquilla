@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref, shallowRef } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref, shallowRef } from 'vue'
 import { useI18n } from 'vue-i18n'
 import Icon from '@/components/Icon.vue'
 import GatewayStatusBlock from '@/components/settings/GatewayStatusBlock.vue'
@@ -12,13 +12,19 @@ import {
   summarizeMigrationReport,
   type MigrationReportSummary,
 } from '@/utils/migrationReport'
+import {
+  formatEstimatedActivity,
+  profileSourceLabelKey,
+  profileSourceGroup,
+  type ProfileSourceKind,
+} from '@/utils/profileSourceKind'
 
-const { t } = useI18n()
+const { t, locale } = useI18n()
 
 // Desktop-only Runtime section of the shared SettingsDialog. The desktop app
-// owns its local gateway process, so this surfaces its status/log/restart and
-// the "reset saved setup" escape hatch — the controls the old standalone
-// DesktopSettingsView carried. Web never renders this (desktopOnly section).
+// owns its local gateway process, so this surfaces status/log/restart plus the
+// inventory-driven profile cleanup flow. Web never renders this (desktopOnly
+// section).
 const platform = usePlatform()
 const { confirm } = useConfirm()
 const { pushToast } = useToasts()
@@ -48,14 +54,47 @@ const logHint = computed(() => gateway.value?.logPath || t('setup.runtime.noLogP
 // the optional methods actually being wired instead.
 const canRevealLog = computed(() => Boolean(platform.gateway.revealLog))
 const canRestart = computed(() => Boolean(platform.gateway.retryStartup))
-const canReset = computed(() => Boolean(platform.settings.resetDesktopSettings))
 
-// Desktop data cleanup is wired directly on the desktop preload bridge
-// (desktop-only, self-contained — it shells out to `opensquilla uninstall` in
-// the Python core). It does not remove the installed app bundle itself.
-interface UninstallBridge {
-  uninstallRun?: (payload: { purgeData: boolean }) => Promise<{ ok: boolean; aborted?: boolean; detail?: string }>
-  quitApp?: () => Promise<unknown>
+type CleanupMode = 'reset-current-settings' | 'delete-current-profile' | 'delete-all-user-data'
+interface CleanupItem {
+  kind: string
+  path: string
+  exists: boolean
+  identity: string | null
+}
+interface CleanupReport {
+  schema_version: 1
+  outcome: 'ready' | 'blocked' | 'complete' | 'partial'
+  stable_code: string
+  mode: CleanupMode
+  items: CleanupItem[]
+  transaction_id: string
+  revision: number
+  scope_fingerprint: string
+}
+interface CleanupBridge {
+  inspectDesktopCleanup?: (payload: { mode: CleanupMode }) => Promise<{
+    ok: boolean
+    previewId: string | null
+    report: CleanupReport
+    profile: { kind: 'primary' | 'recovery'; recoveryId: string | null }
+  }>
+  discardDesktopCleanup?: (payload: { previewId: string }) => Promise<boolean>
+  applyDesktopCleanup?: (payload: {
+    previewId: string
+    acknowledged: boolean
+    confirmation: string
+  }) => Promise<{
+    ok: boolean
+    aborted?: boolean
+    scheduled?: boolean
+    partial?: boolean
+    previewId?: string | null
+    report?: CleanupReport
+    profile?: { kind: 'primary' | 'recovery'; recoveryId: string | null }
+    detail?: string
+  }>
+  revealDesktopUserData?: () => Promise<boolean>
 }
 
 // Legacy-home import rides the same preload bridge (also desktop-only and
@@ -63,37 +102,70 @@ interface UninstallBridge {
 // the bundled `opensquilla migrate`, then restarts behind the boot splash).
 // All methods are optional so a panel served by a newer gateway to an older
 // desktop shell simply hides the row instead of crashing.
+interface MigrationTerminalResult {
+  ok: boolean
+  migrationApplied?: boolean
+  restartOk?: boolean
+  requiresProviderSetup?: boolean
+  source?: string
+  sourceKind?: ProfileSourceKind
+  targetReplaced?: boolean
+  detail?: string
+}
+
+interface MigrationCandidate {
+  kind: string
+  path: string
+  version?: string | null
+  estimated_activity_at?: string | null
+  session_count?: number | null
+  size_bytes?: number | null
+  previously_imported?: boolean
+}
+
 interface MigrationBridge {
-  migrationSummary?: () => Promise<{
+  migrationSummary?: (payload?: { source?: string }) => Promise<{
     ok: boolean
-    candidate: { kind: string; path: string } | null
+    candidates?: MigrationCandidate[]
+    candidate: MigrationCandidate | null
     report: unknown | null
     previewId?: string
     raw?: string
+    requiresSelection?: boolean
   }>
-  migrationRun?: (opts: { overwrite?: boolean; previewId: string }) => Promise<{
+  migrationRun?: (opts: { overwrite?: boolean; previewId: string }) => Promise<
+    MigrationTerminalResult & {
+    aborted?: boolean
+    report?: unknown
+  }>
+  migrationBrowseSource?: (payload: { kind: ProfileSourceKind }) => Promise<{
     ok: boolean
     aborted?: boolean
-    migrationApplied?: boolean
-    restartOk?: boolean
-    requiresProviderSetup?: boolean
-    report?: unknown
+    candidate?: MigrationCandidate | null
     detail?: string
+    error?: string
   }>
-  migrationTakeLastResult?: () => Promise<{
-    ok: boolean
-    migrationApplied: boolean
-    restartOk: boolean
-    requiresProviderSetup: boolean
-    detail?: string
-  } | null>
+  migrationTakeLastResult?: () => Promise<MigrationTerminalResult | null>
+  migrationPeekLastResult?: () => Promise<MigrationTerminalResult | null>
+  migrationDismissLastResult?: () => Promise<{ ok: boolean }>
+  revealRecoveryPath?: (payload: { target: 'backups' }) => Promise<boolean>
   onMigrationProgress?: (cb: (state: { phase: string; detail?: string }) => void) => () => void
 }
 
+const MANUAL_MIGRATION_SOURCE_KINDS: ProfileSourceKind[] = [
+  'cli-home',
+  'desktop-home',
+  'windows-portable',
+]
+
 const desktopBridge = (
-  globalThis as unknown as { opensquillaDesktop?: UninstallBridge & MigrationBridge }
+  globalThis as unknown as { opensquillaDesktop?: CleanupBridge & MigrationBridge }
 ).opensquillaDesktop
-const canUninstall = computed(() => Boolean(desktopBridge?.uninstallRun))
+const canCleanup = computed(() => Boolean(
+  desktopBridge?.inspectDesktopCleanup
+  && desktopBridge?.discardDesktopCleanup
+  && desktopBridge?.applyDesktopCleanup,
+))
 const canMigrate = computed(
   () => Boolean(desktopBridge?.migrationSummary && desktopBridge?.migrationRun),
 )
@@ -133,74 +205,216 @@ async function restartGateway() {
   }
 }
 
-async function resetSetup() {
-  if (!platform.settings.resetDesktopSettings) return
-  const ok = await confirm({
-    title: t('setup.runtime.resetConfirmTitle'),
-    body: t('setup.runtime.resetConfirmBody'),
-    primaryLabel: t('setup.runtime.resetConfirmPrimary'),
-  })
-  if (!ok) return
-  busy.value = true
+const cleanupOpen = ref(false)
+const cleanupBusy = ref(false)
+const cleanupPreviewId = ref('')
+const cleanupReport = shallowRef<CleanupReport | null>(null)
+const cleanupProfile = ref<{ kind: 'primary' | 'recovery'; recoveryId: string | null } | null>(null)
+const cleanupAcknowledged = ref(false)
+const cleanupConfirmation = ref('')
+const cleanupTitleEl = ref<HTMLElement | null>(null)
+const cleanupReturnFocusEl = ref<HTMLElement | null>(null)
+const DELETE_ALL_CONFIRMATION = 'DELETE ALL OPENSQUILLA DATA'
+
+const cleanupExistingCount = computed(() => (
+  cleanupReport.value?.items.filter((item) => item.exists).length ?? 0
+))
+const cleanupNeedsAcknowledgement = computed(() => (
+  cleanupReport.value?.outcome === 'ready'
+  && Boolean(cleanupPreviewId.value)
+  && cleanupReport.value?.mode !== 'reset-current-settings'
+))
+const cleanupCanApply = computed(() => {
+  const report = cleanupReport.value
+  if (!report || report.outcome !== 'ready' || !cleanupPreviewId.value) return false
+  if (cleanupNeedsAcknowledgement.value && !cleanupAcknowledged.value) return false
+  return report.mode !== 'delete-all-user-data'
+    || cleanupConfirmation.value === DELETE_ALL_CONFIRMATION
+})
+const cleanupModeTitle = computed(() => {
+  const mode = cleanupReport.value?.mode
+  return mode ? t(`setup.runtime.cleanup.${mode}.title`) : ''
+})
+const cleanupModeWarning = computed(() => {
+  const mode = cleanupReport.value?.mode
+  return mode ? t(`setup.runtime.cleanup.${mode}.warning`) : ''
+})
+const cleanupApplyLabel = computed(() => {
+  const mode = cleanupReport.value?.mode
+  return mode ? t(`setup.runtime.cleanup.${mode}.apply`) : ''
+})
+
+async function openCleanup(mode: CleanupMode, trigger?: EventTarget | null) {
+  if (!desktopBridge?.inspectDesktopCleanup) return
+  if (trigger instanceof HTMLElement) cleanupReturnFocusEl.value = trigger
+  cleanupBusy.value = true
+  cleanupOpen.value = false
+  cleanupPreviewId.value = ''
+  cleanupReport.value = null
+  cleanupAcknowledged.value = false
+  cleanupConfirmation.value = ''
   try {
-    await platform.settings.resetDesktopSettings()
-    pushToast(t('setup.runtime.resetDone'))
+    const result = await desktopBridge.inspectDesktopCleanup({ mode })
+    cleanupReport.value = result.report
+    cleanupProfile.value = result.profile
+    cleanupPreviewId.value = result.previewId || ''
+    cleanupOpen.value = true
+    await nextTick()
+    cleanupTitleEl.value?.focus()
   } catch (err) {
-    pushToast(t('setup.runtime.resetFailed', { error: err instanceof Error ? err.message : String(err) }), { tone: 'danger' })
+    pushToast(t('setup.runtime.cleanup.inspectFailed', {
+      detail: err instanceof Error ? err.message : String(err),
+    }), { tone: 'danger' })
   } finally {
-    busy.value = false
+    cleanupBusy.value = false
   }
 }
 
-async function uninstall(purgeData: boolean) {
-  if (!desktopBridge?.uninstallRun) return
-  const ok = await confirm(
-    purgeData
-      ? {
-          title: t('setup.runtime.uninstallPurgeTitle'),
-          body: t('setup.runtime.uninstallPurgeBody'),
-          primaryLabel: t('setup.runtime.uninstallPurgePrimary'),
-        }
-      : {
-          title: t('setup.runtime.uninstallConfirmTitle'),
-          body: t('setup.runtime.uninstallConfirmBody'),
-          primaryLabel: t('setup.runtime.uninstallConfirmPrimary'),
-        },
-  )
-  if (!ok) return
-  busy.value = true
+function clearCleanupState() {
+  cleanupOpen.value = false
+  cleanupPreviewId.value = ''
+  cleanupReport.value = null
+  cleanupProfile.value = null
+  cleanupAcknowledged.value = false
+  cleanupConfirmation.value = ''
+}
+
+async function closeCleanupAndRestoreFocus() {
+  const returnFocus = cleanupReturnFocusEl.value
+  clearCleanupState()
+  cleanupReturnFocusEl.value = null
+  await nextTick()
+  returnFocus?.focus()
+}
+
+async function cancelCleanup() {
+  const previewId = cleanupPreviewId.value
+  if (previewId && desktopBridge?.discardDesktopCleanup) {
+    cleanupBusy.value = true
+    try {
+      await desktopBridge.discardDesktopCleanup({ previewId })
+    } catch (err) {
+      pushToast(t('setup.runtime.cleanup.applyFailed', {
+        detail: err instanceof Error ? err.message : String(err),
+      }), { tone: 'danger' })
+      cleanupBusy.value = false
+      return
+    }
+    cleanupBusy.value = false
+  }
+  await closeCleanupAndRestoreFocus()
+}
+
+async function presentCleanupResult(result: {
+  previewId?: string | null
+  report?: CleanupReport
+  profile?: { kind: 'primary' | 'recovery'; recoveryId: string | null }
+}) {
+  if (result.report) cleanupReport.value = result.report
+  cleanupPreviewId.value = result.previewId || ''
+  if (result.profile) cleanupProfile.value = result.profile
+  cleanupAcknowledged.value = false
+  cleanupConfirmation.value = ''
+  cleanupOpen.value = Boolean(cleanupReport.value)
+  await nextTick()
+  cleanupTitleEl.value?.focus()
+}
+
+async function revealCleanupLocation() {
+  if (!desktopBridge?.revealDesktopUserData) return
   try {
-    const result = await desktopBridge.uninstallRun({ purgeData })
-    if (result?.aborted) {
-      // Cancelled at the native dialog, or refused (e.g. a gateway still running).
-      // Not an error — surface the reason only when it is informative.
-      if (result.detail && result.detail !== 'cancelled') {
-        pushToast(result.detail, { tone: 'danger' })
-      }
-      return
-    }
-    if (!result?.ok) {
-      pushToast(t('setup.runtime.uninstallFailed', { detail: result?.detail || t('setup.runtime.uninstallCheckLog') }), { tone: 'danger' })
-      return
-    }
-    pushToast(t('setup.runtime.uninstallDone'))
-    await desktopBridge.quitApp?.()
+    await desktopBridge.revealDesktopUserData()
   } catch (err) {
-    pushToast(t('setup.runtime.uninstallFailed', { detail: err instanceof Error ? err.message : String(err) }), { tone: 'danger' })
+    pushToast(t('setup.runtime.cleanup.revealFailed', {
+      detail: err instanceof Error ? err.message : String(err),
+    }), { tone: 'danger' })
+  }
+}
+
+async function applyCleanup() {
+  const report = cleanupReport.value
+  if (!desktopBridge?.applyDesktopCleanup || !report || !cleanupCanApply.value) return
+  if (report.mode === 'reset-current-settings') {
+    const approved = await confirm({
+      title: t('setup.runtime.cleanup.resetConfirmTitle'),
+      body: t('setup.runtime.cleanup.resetConfirmBody'),
+      primaryLabel: cleanupApplyLabel.value,
+    })
+    if (!approved) return
+  }
+  cleanupBusy.value = true
+  try {
+    const result = await desktopBridge.applyDesktopCleanup({
+      previewId: cleanupPreviewId.value,
+      acknowledged: cleanupAcknowledged.value,
+      confirmation: cleanupConfirmation.value,
+    })
+    if (result.aborted) {
+      await presentCleanupResult(result)
+      return
+    }
+    if (!result.ok) {
+      await presentCleanupResult(result)
+      pushToast(t(
+        result.partial
+          ? 'setup.runtime.cleanup.partial'
+          : 'setup.runtime.cleanup.applyFailed',
+        { detail: result.detail || result.report?.stable_code || '' },
+      ), { tone: 'danger' })
+      return
+    }
+    pushToast(t(
+      result.scheduled
+        ? 'setup.runtime.cleanup.deleteAllScheduled'
+        : report.mode === 'reset-current-settings'
+          ? 'setup.runtime.cleanup.resetDone'
+          : 'setup.runtime.cleanup.deleteDone',
+    ))
+    await closeCleanupAndRestoreFocus()
+  } catch (err) {
+    pushToast(t('setup.runtime.cleanup.applyFailed', {
+      detail: err instanceof Error ? err.message : String(err),
+    }), { tone: 'danger' })
   } finally {
-    busy.value = false
+    cleanupBusy.value = false
   }
 }
 
 // --- Legacy-home import (rescue flow for users past first run) ---
 const migrationOpen = ref(false)
 const migrationBusy = ref(false)
-const migrationCandidate = ref<{ kind: string; path: string } | null>(null)
+const migrationCandidates = ref<MigrationCandidate[]>([])
+const migrationCandidate = ref<MigrationCandidate | null>(null)
 const migrationSummary = shallowRef<MigrationReportSummary | null>(null)
 const migrationPreviewId = ref('')
 const migrationOverwrite = ref(false)
 const migrationPhase = ref('')
+const migrationLastResult = shallowRef<MigrationTerminalResult | null>(null)
 let migrationProgressUnsub: (() => void) | null = null
+
+const migrationCandidateGroups = computed(() => ([
+  {
+    key: 'supported',
+    label: t('setup.runtime.migrationSupportedSources'),
+    candidates: migrationCandidates.value.filter((candidate) => (
+      profileSourceGroup(candidate.kind) === 'supported'
+    )),
+  },
+  {
+    key: 'historical',
+    label: t('setup.runtime.migrationHistoricalSources'),
+    candidates: migrationCandidates.value.filter((candidate) => (
+      profileSourceGroup(candidate.kind) === 'historical'
+    )),
+  },
+  {
+    key: 'other',
+    label: t('setup.runtime.migrationOtherSources'),
+    candidates: migrationCandidates.value.filter((candidate) => (
+      profileSourceGroup(candidate.kind) === 'unknown'
+    )),
+  },
+]).filter((group) => group.candidates.length > 0))
 
 const migrationCountsText = computed(() => {
   const summary = migrationSummary.value
@@ -210,7 +424,11 @@ const migrationCountsText = computed(() => {
   if (c.planned) parts.push(t('setup.runtime.migrationCountPlanned', { n: c.planned }))
   if (c.migrated) parts.push(t('setup.runtime.migrationCountMigrated', { n: c.migrated }))
   if (c.skipped) parts.push(t('setup.runtime.migrationCountSkipped', { n: c.skipped }))
-  if (c.error) parts.push(t('setup.runtime.migrationCountError', { n: c.error }))
+  if (summary.errorNotes.length) {
+    parts.push(t('setup.runtime.migrationCountError', {
+      n: summary.errorNotes.length,
+    }))
+  }
   return parts.length ? parts.join(' · ') : t('setup.runtime.migrationCountNone')
 })
 const migrationDiskText = computed(() => {
@@ -224,11 +442,49 @@ const migrationDiskText = computed(() => {
 const migrationHasBlockingErrors = computed(() => {
   const summary = migrationSummary.value
   if (!summary) return true
-  // The one preflight/target error is resolved by explicitly opting into
-  // overwrite-with-backups. Every other report error remains blocking.
-  const acknowledgedByOverwrite = summary.needsOverwrite ? 1 : 0
-  return summary.itemCounts.error > acknowledgedByOverwrite
+  return summary.errorNotes.length > 0
 })
+
+function migrationSourceLabel(kind: string): string {
+  return t(profileSourceLabelKey(kind))
+}
+
+function migrationActivityLabel(value?: string | null): string {
+  if (!value) return t('setup.runtime.migrationCandidateActivityUnavailable')
+  const relative = formatEstimatedActivity(value, locale.value)
+  return relative
+    ? t('setup.runtime.migrationCandidateActivityEstimate', { value: relative })
+    : t('setup.runtime.migrationCandidateActivityUnavailable')
+}
+
+async function copyMigrationPath(path: string) {
+  try {
+    await navigator.clipboard.writeText(path)
+    pushToast(t('setup.runtime.migrationPathCopied'))
+  } catch (err) {
+    pushToast(t('setup.runtime.migrationSummaryFailed', {
+      detail: err instanceof Error ? err.message : String(err),
+    }), { tone: 'danger' })
+  }
+}
+
+function isMigrationCandidate(value: unknown): value is MigrationCandidate {
+  return value !== null
+    && typeof value === 'object'
+    && typeof (value as MigrationCandidate).path === 'string'
+    && Boolean((value as MigrationCandidate).path)
+    && typeof (value as MigrationCandidate).kind === 'string'
+}
+
+function uniqueMigrationCandidates(candidates: MigrationCandidate[]): MigrationCandidate[] {
+  const seen = new Set<string>()
+  return candidates.filter((candidate) => {
+    const key = `${candidate.kind}\u0000${candidate.path}`
+    if (seen.has(key)) return false
+    seen.add(key)
+    return true
+  })
+}
 
 function subscribeMigrationProgress() {
   if (migrationProgressUnsub || !desktopBridge?.onMigrationProgress) return
@@ -249,31 +505,31 @@ async function openMigration() {
   migrationBusy.value = true
   try {
     const result = await desktopBridge.migrationSummary()
-    const candidate = result.candidate && typeof result.candidate.path === 'string'
-      ? result.candidate
-      : null
-    if (!candidate) {
-      if (!result?.ok) {
-        pushToast(t('setup.runtime.migrationSummaryFailed', { detail: result?.raw || t('setup.runtime.uninstallCheckLog') }), { tone: 'danger' })
-      } else {
-        pushToast(t('setup.runtime.migrationNone'))
-      }
+    const detected = Array.isArray(result.candidates)
+      ? result.candidates.filter(isMigrationCandidate)
+      : []
+    if (isMigrationCandidate(result.candidate)) detected.push(result.candidate)
+    const candidates = uniqueMigrationCandidates(detected)
+
+    if (result.requiresSelection || candidates.length > 0) {
+      migrationCandidates.value = candidates
+      migrationCandidate.value = null
+      migrationSummary.value = null
+      migrationPreviewId.value = ''
+      migrationOverwrite.value = false
+      migrationPhase.value = ''
+      migrationOpen.value = true
+      subscribeMigrationProgress()
       return
     }
-    // A blocked dry run exits nonzero but still emits the report that explains
-    // the preflight failure. Treat parsing (report !== null), not exit status,
-    // as the preview-validity signal.
-    if (result.report == null || typeof result.previewId !== 'string' || !result.previewId) {
-      pushToast(t('setup.runtime.migrationSummaryFailed', { detail: result?.raw || t('setup.runtime.uninstallCheckLog') }), { tone: 'danger' })
-      return
+
+    if (!result?.ok) {
+      pushToast(t('setup.runtime.migrationSummaryFailed', {
+        detail: result?.raw || t('setup.runtime.uninstallCheckLog'),
+      }), { tone: 'danger' })
+    } else {
+      pushToast(t('setup.runtime.migrationNone'))
     }
-    migrationCandidate.value = { kind: String(candidate.kind ?? ''), path: candidate.path }
-    migrationSummary.value = summarizeMigrationReport(result.report)
-    migrationPreviewId.value = result.previewId
-    migrationOverwrite.value = false
-    migrationPhase.value = ''
-    migrationOpen.value = true
-    subscribeMigrationProgress()
   } catch (err) {
     pushToast(t('setup.runtime.migrationSummaryFailed', { detail: err instanceof Error ? err.message : String(err) }), { tone: 'danger' })
   } finally {
@@ -281,8 +537,68 @@ async function openMigration() {
   }
 }
 
+async function previewMigrationCandidate(candidate: MigrationCandidate) {
+  if (!desktopBridge?.migrationSummary) return
+  migrationBusy.value = true
+  migrationSummary.value = null
+  migrationPreviewId.value = ''
+  migrationOverwrite.value = false
+  migrationPhase.value = ''
+  try {
+    const result = await desktopBridge.migrationSummary({ source: candidate.path })
+    if (
+      result.report == null
+      || typeof result.previewId !== 'string'
+      || !result.previewId
+      || !isMigrationCandidate(result.candidate)
+      || result.candidate.path !== candidate.path
+    ) {
+      pushToast(t('setup.runtime.migrationSummaryFailed', {
+        detail: result.raw || t('setup.runtime.uninstallCheckLog'),
+      }), { tone: 'danger' })
+      return
+    }
+    migrationCandidate.value = result.candidate
+    migrationSummary.value = summarizeMigrationReport(result.report)
+    migrationPreviewId.value = result.previewId
+  } catch (err) {
+    pushToast(t('setup.runtime.migrationSummaryFailed', {
+      detail: err instanceof Error ? err.message : String(err),
+    }), { tone: 'danger' })
+  } finally {
+    migrationBusy.value = false
+  }
+}
+
+async function browseMigrationSource(kind: ProfileSourceKind) {
+  if (!desktopBridge?.migrationBrowseSource) return
+  migrationBusy.value = true
+  try {
+    const result = await desktopBridge.migrationBrowseSource({ kind })
+    if (result.aborted) return
+    if (!result.ok || !isMigrationCandidate(result.candidate)) {
+      pushToast(t('setup.runtime.migrationSummaryFailed', {
+        detail: result.detail || result.error || t('setup.runtime.uninstallCheckLog'),
+      }), { tone: 'danger' })
+      return
+    }
+    migrationCandidates.value = uniqueMigrationCandidates([
+      ...migrationCandidates.value,
+      result.candidate,
+    ])
+    await previewMigrationCandidate(result.candidate)
+  } catch (err) {
+    pushToast(t('setup.runtime.migrationSummaryFailed', {
+      detail: err instanceof Error ? err.message : String(err),
+    }), { tone: 'danger' })
+  } finally {
+    migrationBusy.value = false
+  }
+}
+
 function cancelMigration() {
   migrationOpen.value = false
+  migrationCandidates.value = []
   migrationCandidate.value = null
   migrationSummary.value = null
   migrationPreviewId.value = ''
@@ -290,14 +606,26 @@ function cancelMigration() {
   unsubscribeMigrationProgress()
 }
 
+function backToMigrationSources() {
+  migrationCandidate.value = null
+  migrationSummary.value = null
+  migrationPreviewId.value = ''
+  migrationOverwrite.value = false
+  migrationPhase.value = ''
+}
+
 async function runMigration() {
   if (!desktopBridge?.migrationRun || !migrationOpen.value || !migrationPreviewId.value) return
-  const ok = await confirm({
-    title: t('setup.runtime.migrationConfirmTitle'),
-    body: t('setup.runtime.migrationConfirmBody'),
-    primaryLabel: t('setup.runtime.migrationConfirmPrimary'),
-  })
-  if (!ok) return
+  // Replacement has one trusted native confirmation in Electron after the
+  // preview is revalidated. Empty-target imports use the shared Web UI dialog.
+  if (!migrationOverwrite.value) {
+    const ok = await confirm({
+      title: t('setup.runtime.migrationConfirmTitle'),
+      body: t('setup.runtime.migrationConfirmBody'),
+      primaryLabel: t('setup.runtime.migrationConfirmPrimary'),
+    })
+    if (!ok) return
+  }
   migrationBusy.value = true
   // The run quiesces the gateway and restarts it behind the boot splash, so
   // this page's RPC connection is expected to drop mid-run. Surface the
@@ -310,11 +638,11 @@ async function runMigration() {
       previewId: migrationPreviewId.value,
     })
     if (result?.aborted) return
-    await desktopBridge.migrationTakeLastResult?.().catch(() => null)
     if (!result?.ok) {
       pushToast(t('setup.runtime.migrationFailed', { detail: result?.detail || t('setup.runtime.uninstallCheckLog') }), { tone: 'danger' })
       return
     }
+    migrationLastResult.value = result
     pushToast(t('setup.runtime.migrationDone'))
     cancelMigration()
   } catch (err) {
@@ -325,19 +653,42 @@ async function runMigration() {
 }
 
 async function showLastMigrationResult() {
-  if (!desktopBridge?.migrationTakeLastResult) return
+  const readResult = desktopBridge?.migrationPeekLastResult
+    ?? desktopBridge?.migrationTakeLastResult
+  if (!readResult) return
   try {
-    const result = await desktopBridge.migrationTakeLastResult()
+    const result = await readResult()
     if (!result) return
+    migrationLastResult.value = result
     if (result.ok) {
       pushToast(t('setup.runtime.migrationDone'))
     } else {
       pushToast(t('setup.runtime.migrationFailed', {
         detail: result.detail || t('setup.runtime.uninstallCheckLog'),
       }), { tone: 'danger' })
+      await desktopBridge?.migrationDismissLastResult?.().catch(() => null)
+      migrationLastResult.value = null
     }
   } catch (err) {
     pushToast(t('setup.runtime.migrationFailed', {
+      detail: err instanceof Error ? err.message : String(err),
+    }), { tone: 'danger' })
+  }
+}
+
+async function dismissLastMigrationResult() {
+  try {
+    await desktopBridge?.migrationDismissLastResult?.()
+  } finally {
+    migrationLastResult.value = null
+  }
+}
+
+async function revealMigrationBackups() {
+  try {
+    await desktopBridge?.revealRecoveryPath?.({ target: 'backups' })
+  } catch (err) {
+    pushToast(t('setup.runtime.migrationSummaryFailed', {
       detail: err instanceof Error ? err.message : String(err),
     }), { tone: 'danger' })
   }
@@ -380,18 +731,35 @@ onUnmounted(unsubscribeMigrationProgress)
 
     <SettingsUpdatePanel />
 
-    <div v-if="canReset" class="control-row">
-      <div class="control-row__label-block">
-        <span class="control-row__label">{{ t('setup.runtime.resetLabel') }}</span>
-        <span class="control-row__desc">{{ t('setup.runtime.resetDesc') }}</span>
-      </div>
-      <div class="control-row__control">
-        <button type="button" class="btn btn--ghost runtime-reset" :disabled="busy" @click="resetSetup">
-          {{ t('setup.runtime.resetButton') }}
+    <div
+      v-if="migrationLastResult?.ok"
+      class="migration-complete"
+      role="status"
+      data-testid="runtime-migration-complete"
+    >
+      <strong>{{ t('setup.runtime.migrationCompleteTitle') }}</strong>
+      <p>{{ t('setup.runtime.migrationCompleteCopied') }}</p>
+      <p v-if="migrationLastResult.source">
+        {{ t('setup.runtime.migrationCompleteSource', { path: migrationLastResult.source }) }}
+      </p>
+      <p>{{ t('setup.runtime.migrationCompleteIndependent') }}</p>
+      <p v-if="migrationLastResult.targetReplaced">
+        {{ t('setup.runtime.migrationCompleteReplacement') }}
+      </p>
+      <div class="migration-complete__actions">
+        <button
+          v-if="migrationLastResult.targetReplaced && desktopBridge?.revealRecoveryPath"
+          type="button"
+          class="btn btn--ghost"
+          @click="revealMigrationBackups"
+        >
+          {{ t('setup.runtime.migrationCompleteShowBackup') }}
+        </button>
+        <button type="button" class="btn btn--ghost" @click="dismissLastMigrationResult">
+          {{ t('setup.runtime.migrationCompleteDismiss') }}
         </button>
       </div>
     </div>
-
     <div v-if="canMigrate" class="control-row">
       <div class="control-row__label-block">
         <span class="control-row__label">{{ t('setup.runtime.migrationLabel') }}</span>
@@ -411,73 +779,315 @@ onUnmounted(unsubscribeMigrationProgress)
     </div>
 
     <div
-      v-if="migrationOpen && migrationSummary && migrationCandidate"
+      v-if="migrationOpen"
       class="migration-summary"
       data-testid="runtime-migration-summary"
+      :aria-busy="migrationBusy"
     >
-      <div class="migration-summary__head">
-        <span class="migration-summary__title">{{ t('setup.runtime.migrationSummaryTitle') }}</span>
-        <span class="migration-summary__kind">{{ migrationCandidate.kind }}</span>
+      <template v-if="!migrationCandidate || !migrationSummary">
+        <div class="migration-summary__head">
+          <span class="migration-summary__title">{{ t('setup.runtime.migrationChooseSource') }}</span>
+        </div>
+        <p class="migration-summary__source-help">
+          {{ t('setup.runtime.migrationChooseSourceDesc') }}
+        </p>
+        <section
+          v-for="group in migrationCandidateGroups"
+          :key="group.key"
+          class="migration-candidate-group"
+          :data-testid="`runtime-migration-${group.key}`"
+        >
+          <h4>{{ group.label }}</h4>
+          <ul class="migration-candidates">
+            <li v-for="candidate in group.candidates" :key="`${candidate.kind}:${candidate.path}`">
+              <button
+                type="button"
+                class="migration-candidate"
+                :disabled="migrationBusy"
+                :aria-label="t('setup.runtime.migrationPreviewSource', { path: candidate.path })"
+                @click="previewMigrationCandidate(candidate)"
+              >
+                <span class="migration-candidate__head">
+                  <strong>{{ migrationSourceLabel(candidate.kind) }}</strong>
+                  <span>
+                    {{ candidate.version || t('setup.runtime.migrationCandidateVersionUnavailable') }}
+                  </span>
+                </span>
+                <code>{{ candidate.path }}</code>
+                <span class="migration-candidate__meta">
+                  <span v-if="candidate.session_count != null">
+                    {{ t('setup.runtime.migrationCandidateSessions', { n: candidate.session_count }) }}
+                  </span>
+                  <span v-else>{{ t('setup.runtime.migrationCandidateSessionsUnavailable') }}</span>
+                  <span>
+                    {{ candidate.size_bytes != null
+                      ? formatByteSize(candidate.size_bytes)
+                      : t('setup.runtime.migrationCandidateSizeUnavailable') }}
+                  </span>
+                  <span>{{ migrationActivityLabel(candidate.estimated_activity_at) }}</span>
+                  <span v-if="candidate.previously_imported">
+                    {{ t('setup.runtime.migrationCandidatePreviouslyImported') }}
+                  </span>
+                </span>
+              </button>
+            </li>
+          </ul>
+        </section>
+        <div class="migration-summary__actions">
+          <template v-if="desktopBridge?.migrationBrowseSource">
+            <button
+              v-for="kind in MANUAL_MIGRATION_SOURCE_KINDS"
+              :key="kind"
+              type="button"
+              class="btn btn--ghost"
+              :data-testid="`runtime-migration-browse-${kind}`"
+              :disabled="migrationBusy"
+              @click="browseMigrationSource(kind)"
+            >
+              {{ t('setup.runtime.migrationBrowseSourceKind', {
+                source: migrationSourceLabel(kind),
+              }) }}
+            </button>
+          </template>
+          <button
+            type="button"
+            class="btn btn--ghost"
+            :disabled="migrationBusy"
+            data-testid="runtime-migration-cancel"
+            @click="cancelMigration"
+          >
+            {{ t('setup.runtime.migrationCancel') }}
+          </button>
+        </div>
+      </template>
+      <template v-else>
+        <div class="migration-summary__head">
+          <span class="migration-summary__title">{{ t('setup.runtime.migrationSummaryTitle') }}</span>
+          <span class="migration-summary__kind">
+            {{ migrationSourceLabel(migrationCandidate.kind) }}
+          </span>
+        </div>
+        <div class="migration-summary__path-row">
+          <code class="migration-summary__path">{{ migrationCandidate.path }}</code>
+          <button
+            type="button"
+            class="btn btn--ghost"
+            data-testid="runtime-migration-copy-path"
+            @click="copyMigrationPath(migrationCandidate.path)"
+          >
+            {{ t('setup.runtime.migrationCopyPath') }}
+          </button>
+        </div>
+        <ul class="migration-summary__content" data-testid="runtime-migration-content">
+          <li>{{ t('setup.runtime.migrationContentIdentity') }}</li>
+          <li>
+            {{ t('setup.runtime.migrationContentChats', {
+              n: migrationCandidate.session_count ?? 0,
+            }) }}
+          </li>
+          <li>{{ t('setup.runtime.migrationContentSettings') }}</li>
+          <li>{{ t('setup.runtime.migrationContentAssets') }}</li>
+          <li>{{ t('setup.runtime.migrationContentJobs', { n: migrationSummary.pausedJobs }) }}</li>
+        </ul>
+        <ul v-if="migrationSummary.errorNotes.length" class="migration-summary__errors">
+          <li v-for="note in migrationSummary.errorNotes" :key="note">{{ note }}</li>
+        </ul>
+        <div
+          v-if="migrationSummary.needsOverwrite"
+          class="migration-summary__replacement"
+          data-testid="runtime-migration-replacement"
+        >
+          <strong>{{ t('setup.runtime.migrationReplacementTitle') }}</strong>
+          <p v-if="migrationSummary.replacementReason">
+            {{ migrationSummary.replacementReason }}
+          </p>
+          <label data-testid="runtime-migration-overwrite">
+            <input v-model="migrationOverwrite" type="checkbox" />
+            <span>{{ t('setup.runtime.migrationOverwrite') }}</span>
+          </label>
+        </div>
+        <details class="migration-summary__technical" data-testid="runtime-migration-technical">
+          <summary>{{ t('setup.runtime.migrationTechnicalDetails') }}</summary>
+          <ul class="migration-summary__facts">
+            <li>{{ migrationCountsText }}</li>
+            <li>{{ migrationDiskText }}</li>
+          </ul>
+          <ul v-if="migrationSummary.notes.length" class="migration-summary__notes">
+            <li v-for="note in migrationSummary.notes" :key="note">{{ note }}</li>
+          </ul>
+        </details>
+        <p v-if="migrationPhase" class="migration-summary__phase" role="status" aria-live="polite">
+          {{ t('setup.runtime.migrationPhase', { phase: migrationPhase }) }}
+        </p>
+        <div class="migration-summary__actions">
+          <button
+            v-if="migrationCandidates.length > 0 || desktopBridge?.migrationBrowseSource"
+            type="button"
+            class="btn btn--ghost"
+            :disabled="migrationBusy"
+            @click="backToMigrationSources"
+          >
+            {{ t('setup.runtime.migrationBackToSources') }}
+          </button>
+          <button
+            type="button"
+            class="btn btn--ghost"
+            :disabled="migrationBusy"
+            data-testid="runtime-migration-cancel"
+            @click="cancelMigration"
+          >
+            {{ t('setup.runtime.migrationCancel') }}
+          </button>
+          <button
+            type="button"
+            class="btn"
+            :disabled="migrationBusy || migrationHasBlockingErrors || (migrationSummary.needsOverwrite && !migrationOverwrite)"
+            data-testid="runtime-migration-run"
+            @click="runMigration"
+          >
+            {{ t('setup.runtime.migrationImport') }}
+          </button>
+        </div>
+      </template>
+    </div>
+
+    <div v-if="canCleanup" class="control-row danger-zone">
+      <div class="control-row__label-block">
+        <span class="control-row__label">{{ t('setup.runtime.cleanup.label') }}</span>
+        <span class="control-row__desc">{{ t('setup.runtime.cleanup.desc') }}</span>
       </div>
-      <code class="migration-summary__path">{{ migrationCandidate.path }}</code>
-      <ul class="migration-summary__facts">
-        <li>{{ migrationCountsText }}</li>
-        <li>{{ t('setup.runtime.migrationPausedJobs', { n: migrationSummary.pausedJobs }) }}</li>
-        <li>{{ migrationDiskText }}</li>
-      </ul>
-      <ul v-if="migrationSummary.errorNotes.length" class="migration-summary__errors">
-        <li v-for="note in migrationSummary.errorNotes" :key="note">{{ note }}</li>
-      </ul>
-      <ul v-if="migrationSummary.notes.length" class="migration-summary__notes">
-        <li v-for="note in migrationSummary.notes" :key="note">{{ note }}</li>
-      </ul>
-      <label
-        v-if="migrationSummary.needsOverwrite"
-        class="migration-summary__overwrite"
-        data-testid="runtime-migration-overwrite"
+      <div
+        class="control-row__control danger-zone__actions"
+        role="group"
+        :aria-label="t('setup.runtime.cleanup.actionsLabel')"
       >
-        <input v-model="migrationOverwrite" type="checkbox" />
-        <span>{{ t('setup.runtime.migrationOverwrite') }}</span>
-      </label>
-      <p v-if="migrationPhase" class="migration-summary__phase" role="status" aria-live="polite">
-        {{ t('setup.runtime.migrationPhase', { phase: migrationPhase }) }}
-      </p>
-      <div class="migration-summary__actions">
         <button
           type="button"
           class="btn btn--ghost"
-          :disabled="migrationBusy"
-          data-testid="runtime-migration-cancel"
-          @click="cancelMigration"
+          :disabled="busy || cleanupBusy"
+          data-testid="runtime-cleanup-reset"
+          @click="openCleanup('reset-current-settings', $event.currentTarget)"
         >
-          {{ t('setup.runtime.migrationCancel') }}
+          {{ t('setup.runtime.cleanup.resetAction') }}
         </button>
         <button
           type="button"
-          class="btn"
-          :disabled="migrationBusy || migrationHasBlockingErrors || (migrationSummary.needsOverwrite && !migrationOverwrite)"
-          data-testid="runtime-migration-run"
-          @click="runMigration"
+          class="btn btn--ghost runtime-reset"
+          :disabled="busy || cleanupBusy"
+          data-testid="runtime-cleanup-profile"
+          @click="openCleanup('delete-current-profile', $event.currentTarget)"
         >
-          {{ t('setup.runtime.migrationImport') }}
+          {{ t('setup.runtime.cleanup.profileAction') }}
+        </button>
+        <button
+          type="button"
+          class="btn btn--ghost runtime-reset"
+          :disabled="busy || cleanupBusy"
+          data-testid="runtime-cleanup-all"
+          @click="openCleanup('delete-all-user-data', $event.currentTarget)"
+        >
+          {{ t('setup.runtime.cleanup.allAction') }}
         </button>
       </div>
     </div>
 
-    <div v-if="canUninstall" class="control-row danger-zone">
-      <div class="control-row__label-block">
-        <span class="control-row__label">{{ t('setup.runtime.uninstallLabel') }}</span>
-        <span class="control-row__desc">{{ t('setup.runtime.uninstallDesc') }}</span>
+    <section
+      v-if="cleanupOpen && cleanupReport"
+      class="cleanup-summary"
+      aria-labelledby="cleanup-summary-title"
+      data-testid="runtime-cleanup-summary"
+    >
+      <div class="cleanup-summary__head">
+        <h4 id="cleanup-summary-title" ref="cleanupTitleEl" tabindex="-1">
+          {{ cleanupModeTitle }}
+        </h4>
+        <span class="cleanup-summary__profile">
+          {{ cleanupProfile?.kind === 'recovery'
+            ? t('setup.runtime.cleanup.recoveryProfile')
+            : t('setup.runtime.cleanup.primaryProfile') }}
+        </span>
       </div>
-      <div class="control-row__control danger-zone__actions">
-        <button type="button" class="btn btn--ghost runtime-reset" :disabled="busy" @click="uninstall(false)">
-          {{ t('setup.runtime.uninstallKeepData') }}
+      <p class="cleanup-summary__warning">{{ cleanupModeWarning }}</p>
+      <p class="cleanup-summary__count">
+        {{ t('setup.runtime.cleanup.inventoryCount', {
+          existing: cleanupExistingCount,
+          total: cleanupReport.items.length,
+        }) }}
+      </p>
+      <ul class="cleanup-summary__items" :aria-label="t('setup.runtime.cleanup.inventoryLabel')">
+        <li v-for="item in cleanupReport.items" :key="`${item.kind}:${item.path}`">
+          <span class="cleanup-summary__item-kind">{{ item.kind }}</span>
+          <code>{{ item.path }}</code>
+          <span :class="item.exists ? 'cleanup-summary__present' : 'cleanup-summary__missing'">
+            {{ item.exists
+              ? t('setup.runtime.cleanup.present')
+              : t('setup.runtime.cleanup.missing') }}
+          </span>
+        </li>
+      </ul>
+      <div
+        v-if="cleanupReport.outcome === 'blocked'"
+        class="cleanup-summary__blocked"
+        role="alert"
+      >
+        <strong>{{ t('setup.runtime.cleanup.blocked') }}</strong>
+        <code>{{ cleanupReport.stable_code }}</code>
+        <p>{{ t('setup.runtime.cleanup.blockedHelp') }}</p>
+      </div>
+      <label v-if="cleanupNeedsAcknowledgement" class="cleanup-summary__ack">
+        <input v-model="cleanupAcknowledged" type="checkbox" />
+        <span>{{ t('setup.runtime.cleanup.acknowledge') }}</span>
+      </label>
+      <label
+        v-if="cleanupReport.outcome === 'ready' && cleanupPreviewId && cleanupReport.mode === 'delete-all-user-data'"
+        class="cleanup-summary__phrase"
+      >
+        <span>{{ t('setup.runtime.cleanup.typePhrase', { phrase: DELETE_ALL_CONFIRMATION }) }}</span>
+        <input
+          v-model="cleanupConfirmation"
+          type="text"
+          autocomplete="off"
+          spellcheck="false"
+          :aria-label="t('setup.runtime.cleanup.phraseLabel')"
+        />
+      </label>
+      <div class="cleanup-summary__actions">
+        <button type="button" class="btn btn--ghost" :disabled="cleanupBusy" @click="revealCleanupLocation">
+          {{ t('setup.runtime.cleanup.showLocation') }}
         </button>
-        <button type="button" class="btn btn--ghost runtime-reset" :disabled="busy" @click="uninstall(true)">
-          {{ t('setup.runtime.uninstallPurge') }}
+        <button
+          type="button"
+          class="btn btn--ghost"
+          :disabled="cleanupBusy"
+          data-testid="runtime-cleanup-cancel"
+          @click="cancelCleanup"
+        >
+          {{ t('setup.runtime.cleanup.cancel') }}
+        </button>
+        <button
+          v-if="cleanupReport.outcome === 'ready' && cleanupPreviewId"
+          type="button"
+          class="btn"
+          :disabled="cleanupBusy || !cleanupCanApply"
+          data-testid="runtime-cleanup-apply"
+          @click="applyCleanup"
+        >
+          {{ cleanupApplyLabel }}
+        </button>
+        <button
+          v-else
+          type="button"
+          class="btn"
+          :disabled="cleanupBusy"
+          @click="openCleanup(cleanupReport.mode)"
+        >
+          {{ t('setup.runtime.cleanup.retry') }}
         </button>
       </div>
-    </div>
+      <p class="cleanup-summary__status" role="status" aria-live="polite">
+        {{ cleanupBusy ? t('setup.runtime.cleanup.working') : '' }}
+      </p>
+    </section>
   </section>
 </template>
 
@@ -504,7 +1114,135 @@ onUnmounted(unsubscribeMigrationProgress)
   gap: var(--sp-2);
 }
 
-/* Inline dry-run summary + confirm block for the legacy-home import */
+.migration-complete {
+  display: grid;
+  gap: var(--sp-2);
+  padding: var(--sp-3);
+  border: 1px solid var(--success, var(--ok));
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--success, var(--ok)) 8%, var(--bg-elevated));
+}
+
+.migration-complete p,
+.migration-candidate-group h4 {
+  margin: 0;
+  font-size: var(--fs-sm);
+}
+
+.migration-complete__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+}
+
+.cleanup-summary {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+  padding: var(--sp-3);
+  border: 1px solid color-mix(in srgb, var(--danger) 40%, var(--border));
+  border-radius: var(--radius-md);
+  background: var(--bg-elevated);
+}
+
+.cleanup-summary__head,
+.cleanup-summary__actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+}
+
+.cleanup-summary__head h4,
+.cleanup-summary__warning,
+.cleanup-summary__count,
+.cleanup-summary__blocked p,
+.cleanup-summary__status {
+  margin: 0;
+}
+
+.cleanup-summary__head h4:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+.cleanup-summary__profile,
+.cleanup-summary__count,
+.cleanup-summary__missing {
+  color: var(--text-muted);
+  font-size: var(--fs-xs);
+}
+
+.cleanup-summary__warning,
+.cleanup-summary__blocked,
+.cleanup-summary__present {
+  color: var(--danger);
+}
+
+.cleanup-summary__items {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  max-height: 240px;
+  overflow: auto;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.cleanup-summary__items li {
+  display: grid;
+  grid-template-columns: minmax(110px, auto) minmax(160px, 1fr) auto;
+  align-items: baseline;
+  gap: var(--sp-2);
+  font-size: var(--fs-xs);
+}
+
+.cleanup-summary__items code {
+  overflow-wrap: anywhere;
+}
+
+.cleanup-summary__item-kind {
+  font-weight: 650;
+}
+
+.cleanup-summary__blocked {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  padding: var(--sp-2);
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--danger) 8%, transparent);
+}
+
+.cleanup-summary__ack,
+.cleanup-summary__phrase {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--sp-2);
+  font-size: var(--fs-sm);
+}
+
+.cleanup-summary__phrase {
+  flex-direction: column;
+}
+
+.cleanup-summary__phrase input {
+  width: min(100%, 420px);
+}
+
+@media (max-width: 640px) {
+  .cleanup-summary__items li {
+    grid-template-columns: 1fr auto;
+  }
+
+  .cleanup-summary__items code {
+    grid-column: 1 / -1;
+  }
+}
+
+/* Inline source selection, dry-run summary, and confirmation. */
 .migration-summary {
   display: flex;
   flex-direction: column;
@@ -519,6 +1257,60 @@ onUnmounted(unsubscribeMigrationProgress)
   display: flex;
   align-items: baseline;
   gap: var(--sp-2);
+}
+
+.migration-summary__source-help {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: var(--fs-sm);
+}
+
+.migration-candidates {
+  display: grid;
+  gap: var(--sp-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.migration-candidate-group {
+  display: grid;
+  gap: var(--sp-2);
+}
+
+.migration-candidate {
+  display: grid;
+  width: 100%;
+  gap: var(--sp-1);
+  padding: var(--sp-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  color: inherit;
+  background: var(--bg);
+  text-align: left;
+  cursor: pointer;
+}
+
+.migration-candidate:hover,
+.migration-candidate:focus-visible {
+  border-color: var(--accent);
+}
+
+.migration-candidate__head,
+.migration-candidate__meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+}
+
+.migration-candidate code {
+  overflow-wrap: anywhere;
+  font-size: var(--fs-xs);
+}
+
+.migration-candidate__meta {
+  color: var(--text-muted);
+  font-size: var(--fs-xs);
 }
 
 .migration-summary__title {
@@ -537,7 +1329,21 @@ onUnmounted(unsubscribeMigrationProgress)
   word-break: break-all;
 }
 
+.migration-summary__path-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-2);
+}
+
+.migration-summary__path-row code {
+  min-width: 0;
+  flex: 1;
+}
+
 .migration-summary__facts,
+.migration-summary__content,
 .migration-summary__errors,
 .migration-summary__notes {
   margin: 0;
@@ -553,10 +1359,29 @@ onUnmounted(unsubscribeMigrationProgress)
   color: var(--text-muted);
 }
 
-.migration-summary__overwrite {
+.migration-summary__replacement {
+  display: grid;
+  gap: var(--sp-2);
+  padding: var(--sp-3);
+  border: 1px solid var(--warn);
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--warn) 8%, var(--bg-elevated));
+  font-size: var(--fs-sm);
+}
+
+.migration-summary__replacement p {
+  margin: 0;
+}
+
+.migration-summary__replacement label {
   display: flex;
   align-items: center;
   gap: var(--sp-2);
+}
+
+.migration-summary__technical summary {
+  cursor: pointer;
+  color: var(--text-muted);
   font-size: var(--fs-sm);
 }
 
@@ -568,6 +1393,7 @@ onUnmounted(unsubscribeMigrationProgress)
 
 .migration-summary__actions {
   display: flex;
+  flex-wrap: wrap;
   justify-content: flex-end;
   gap: var(--sp-2);
 }

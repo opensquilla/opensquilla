@@ -7,8 +7,7 @@ compatibility gaps. The matrix test pins the era set, so shipping a new
 release line means extending the fixtures — old-config upgrade behavior is
 tested mechanically, not just fresh installs.
 
-Design: docs/features/legacy-home-migration-design.md (compatibility
-guarantee strategy).
+The fixtures and matrix below are the executable compatibility contract.
 """
 
 from __future__ import annotations

@@ -4,7 +4,7 @@ import { useI18n } from 'vue-i18n'
 import SetupTierTable from '@/components/setup/SetupTierTable.vue'
 import type { ModelStrategy } from '@/composables/setup/useSetupModelStrategyForm'
 import type { SetupTierRow } from '@/composables/setup/useSetupRouterForm'
-import type { DiscoveredModel } from '@/composables/setup/useSetupProviderForm'
+import type { DiscoveredModelsByProvider } from '@/composables/setup/useSetupProviderForm'
 import {
   ENSEMBLE_PROPOSER_ROLES,
   type EnsembleCandidateRole,
@@ -34,9 +34,7 @@ interface RouterPanelContract {
   textTiers: readonly string[]
   tierRows: readonly SetupTierRow[]
   tierLabel: (tier: string) => string
-  discoveredModels?: DiscoveredModel[]
-  discoveredModelsProvider?: string
-  discoveredModelSource?: string
+  discoveredModelsByProvider?: DiscoveredModelsByProvider
   hasMixedTierProviders: boolean
 }
 
@@ -268,9 +266,7 @@ function credentialLabel(candidate: EnsembleCandidateView): string {
           :rows="panel.router.tierRows"
           :tier-label="panel.router.tierLabel"
           :disabled="routerEditingDisabled"
-          :models="panel.router.discoveredModels || []"
-          :models-provider="panel.router.discoveredModelsProvider || ''"
-          :model-source="panel.router.discoveredModelSource || 'none'"
+          :models-by-provider="panel.router.discoveredModelsByProvider || {}"
           @update-tier-field="(name, key, value) => emit('updateTierField', name, key, value)"
         />
       </section>

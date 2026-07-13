@@ -121,7 +121,7 @@ describe('SidebarSetupBanner legacy advisory', () => {
     })
     const banner = el.querySelector('[data-testid="legacy-data-banner"]')
     expect(banner).toBeTruthy()
-    expect(banner?.textContent).toContain('Legacy OpenSquilla data found')
+    expect(banner?.textContent).toContain('Another OpenSquilla profile is available')
     expect(banner?.textContent).toContain('/tmp/legacy-home')
     expect(banner?.textContent).toContain(
       'opensquilla migrate opensquilla --home /tmp/legacy-home',
@@ -154,6 +154,7 @@ describe('SidebarSetupBanner legacy advisory', () => {
     const banner = el.querySelector('[data-testid="legacy-data-banner"]')
     expect(banner).toBeTruthy()
     expect(banner?.textContent).toContain('C:/OpenSquilla/data')
+    expect(banner?.textContent).toContain('Import from another OpenSquilla installation')
     expect(banner?.textContent).not.toContain('opensquilla migrate')
 
     const cta = el.querySelector<HTMLButtonElement>('[data-testid="legacy-data-open-settings"]')

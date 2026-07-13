@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+import sys
 import unicodedata
 from pathlib import Path
 from types import SimpleNamespace
@@ -121,6 +122,14 @@ def test_git_files_tolerates_undecodable_path_bytes(
     # it decodes through the filesystem rules (surrogateescape) instead.
     (tmp_path / ".git").mkdir()
     monkeypatch.setattr(completion.shutil, "which", lambda name: "/usr/bin/git")
+    # Windows uses surrogatepass for filesystem decoding, which still raises
+    # for this malformed UTF-8 byte. Simulate that handler on every platform so
+    # the fallback remains covered outside the Windows CI job too.
+    monkeypatch.setattr(
+        completion.os,
+        "fsdecode",
+        lambda entry: entry.decode("utf-8", errors="surrogatepass"),
+    )
     monkeypatch.setattr(
         completion.subprocess,
         "run",
@@ -131,7 +140,10 @@ def test_git_files_tolerates_undecodable_path_bytes(
 
     names = enumerate_workspace_files(tmp_path)
     assert "plain.txt" in names
-    assert os.fsdecode(b"caf\xe9.md") in names
+    expected = b"caf\xe9.md".decode(
+        sys.getfilesystemencoding(), errors="surrogateescape"
+    )
+    assert expected in names
 
 
 @pytest.mark.skipif(shutil.which("git") is None, reason="git is not on PATH")

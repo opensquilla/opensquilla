@@ -9617,12 +9617,15 @@ class Agent:
         stream_iter = stream.__aiter__()
         while True:
             wait_budget = max(0.001, self.config.iteration_timeout)
+            total_deadline_limits_wait = False
             if total_deadline is not None:
                 remaining_total = total_deadline - loop.time()
                 if remaining_total <= 0:
                     await self._close_provider_stream(stream_iter)
                     raise TimeoutError(f"Agent total timeout after {self.config.timeout}s")
-                wait_budget = min(wait_budget, remaining_total)
+                if remaining_total <= wait_budget:
+                    wait_budget = remaining_total
+                    total_deadline_limits_wait = True
 
             next_event: asyncio.Future[Any] = asyncio.ensure_future(stream_iter.__anext__())
             try:
@@ -9636,7 +9639,9 @@ class Agent:
                 next_event.cancel()
                 with contextlib.suppress(asyncio.CancelledError, StopAsyncIteration):
                     await next_event
-                if total_deadline is not None and loop.time() >= total_deadline:
+                if total_deadline_limits_wait or (
+                    total_deadline is not None and loop.time() >= total_deadline
+                ):
                     raise TimeoutError(f"Agent total timeout after {self.config.timeout}s")
                 raise _IterationStreamTimeoutError
             try:

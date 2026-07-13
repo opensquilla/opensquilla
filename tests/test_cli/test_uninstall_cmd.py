@@ -8,6 +8,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
 from typer.testing import CliRunner
 
 from opensquilla.cli import codetask_cmd
@@ -125,6 +126,26 @@ def test_yes_json_executes(monkeypatch, tmp_path: Path) -> None:
     assert captured.get("ran") is True
     payload = json.loads(result.stdout)
     assert payload["ok"] is True
+
+
+@pytest.mark.parametrize("purge_flag", ["--purge-state", "--purge-config", "--purge-all"])
+def test_desktop_profile_routes_data_deletion_to_complete_desktop_cleanup(
+    monkeypatch,
+    tmp_path: Path,
+    purge_flag: str,
+) -> None:
+    monkeypatch.setenv("OPENSQUILLA_PROFILE_KIND", "desktop-primary")
+
+    def _boom(*_args, **_kwargs):
+        raise AssertionError("generic Desktop purge must not inspect or delete partial data")
+
+    monkeypatch.setattr(inventory_module, "discover", _boom)
+    monkeypatch.setattr(actions_module, "execute", _boom)
+
+    result = runner.invoke(app, ["uninstall", purge_flag, "--yes", "--json"])
+
+    assert result.exit_code == 2, result.stdout
+    assert "DESKTOP_CLEANUP_REQUIRED" in (result.stdout + (result.stderr or ""))
 
 
 def test_purge_all_requires_confirmation_phrase(monkeypatch, tmp_path: Path) -> None:

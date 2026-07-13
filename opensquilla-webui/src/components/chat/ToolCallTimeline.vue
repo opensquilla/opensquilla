@@ -10,7 +10,7 @@
     :tool-elapsed-text="toolElapsedText"
     @toggle-group="$emit('toggleGroup', $event)"
     @toggle-item="$emit('toggleItem', $event)"
-    @show-result="(content, title) => $emit('showResult', content, title)"
+    @show-result="(content, title, context) => $emit('showResult', content, title, context)"
   />
 </template>
 
@@ -20,6 +20,7 @@ import type {
   ChatStreamTimelineItem,
   ChatToolCallGroup,
   ChatToolCallRenderItem,
+  ToolResultContext,
 } from '@/types/chat'
 
 defineProps<{
@@ -36,6 +37,6 @@ defineProps<{
 defineEmits<{
   toggleGroup: [groupId: string]
   toggleItem: [renderKey: string]
-  showResult: [content: string, title: string]
+  showResult: [content: string, title: string, context?: ToolResultContext]
 }>()
 </script>

@@ -15,11 +15,11 @@ import structlog
 from opensquilla.env import trust_env as _trust_env
 from opensquilla.secrets import clean_header_secret
 
+from .app_attribution import provider_app_headers
 from .catalog_types import CatalogSource, ModelCatalogEntry, coerce_entry_field
 from .models_dev import lookup_limits as _models_dev_limits
 from .models_dev import lookup_model as _models_dev_model
 from .ollama import _OLLAMA_DEFAULT_NUM_CTX
-from .openrouter_attribution import openrouter_app_headers
 from .registry import LOCAL_RUNTIME_PROVIDERS
 from .types import ModelCapabilities, ModelInfo
 
@@ -501,7 +501,7 @@ class ModelCatalog:
         headers = {
             "Authorization": f"Bearer {clean_header_secret(api_key, label='OpenRouter API key')}"
         }
-        headers.update(openrouter_app_headers(base_url))
+        headers.update(provider_app_headers(base_url))
         async with httpx.AsyncClient(
             timeout=10.0, trust_env=_trust_env(), proxy=proxy or None
         ) as client:

@@ -11,6 +11,7 @@ const repoRoot = resolve(packageRoot, '..', '..')
 const runtimeGatewayDir = join(packageRoot, 'runtime', 'gateway')
 const sourceMainPath = join(packageRoot, 'src', 'main.ts')
 const compiledMainPath = join(packageRoot, 'dist', 'main.js')
+const packageJsonPath = join(packageRoot, 'package.json')
 const desktopOutputDir = join(repoRoot, 'dist', 'desktop-electron')
 
 const failures = []
@@ -281,6 +282,13 @@ async function verifySourceMain() {
   verifyMainProcess(await readFile(sourceMainPath, 'utf8'), 'source')
 }
 
+async function verifyInstallerDataPolicy() {
+  const packageJson = JSON.parse(await readFile(packageJsonPath, 'utf8'))
+  if (packageJson.build?.nsis?.deleteAppDataOnUninstall !== false) {
+    fail('NSIS uninstall must preserve Desktop profile data (deleteAppDataOnUninstall=false)')
+  }
+}
+
 async function verifyCompiledMain() {
   if (!existsSync(compiledMainPath)) {
     fail(`compiled Electron main process is missing at ${compiledMainPath}; run npm run build first`)
@@ -374,6 +382,7 @@ async function verifyGeneratedBundle({ label, resourcesDir, platform }) {
 }
 
 await verifyRuntime(runtimeGatewayDir, 'source', { platform: process.platform, executeCommands: true })
+await verifyInstallerDataPolicy()
 await verifySourceMain()
 await verifyCompiledMain()
 

@@ -12,8 +12,11 @@ from collections.abc import Callable
 import typer
 
 from opensquilla.cli.gateway_lifecycle import (
+    DESKTOP_CONFIG_OUTSIDE_PROFILE,
     GatewayLifecycleManager,
     GatewayLifecycleResult,
+    desktop_config_path_is_profile_local,
+    desktop_profile_lifecycle_active,
     remote_gateway_status,
 )
 from opensquilla.cli.ui import ACCENT_MARKUP, console
@@ -122,6 +125,14 @@ def run_gateway(
     honoured as the fallback when no CLI flag or env var is supplied,
     matching what the field name promises.
     """
+    requested_config = config_path or os.environ.get("OPENSQUILLA_GATEWAY_CONFIG_PATH")
+    if not desktop_config_path_is_profile_local(requested_config):
+        console.print("DESKTOP_CONFIG_OUTSIDE_PROFILE")
+        console.print(
+            "[red]Gateway could not start:[/red] Desktop config is outside the selected "
+            f"profile ({DESKTOP_CONFIG_OUTSIDE_PROFILE})."
+        )
+        raise typer.Exit(code=1)
     # Load config FIRST so its ``host`` field can act as the final
     # fallback below ``OPENSQUILLA_GATEWAY_HOST``.
     config = GatewayConfig.load(config_path or os.environ.get("OPENSQUILLA_GATEWAY_CONFIG_PATH"))
@@ -307,7 +318,10 @@ def _lifecycle_manager(
     health_timeout: float = 60.0,
     shutdown_timeout: float = 10.0,
 ) -> GatewayLifecycleManager:
-    config = GatewayConfig.load(config_path or os.environ.get("OPENSQUILLA_GATEWAY_CONFIG_PATH"))
+    config = GatewayConfig.load(
+        config_path or os.environ.get("OPENSQUILLA_GATEWAY_CONFIG_PATH"),
+        read_only=desktop_profile_lifecycle_active(),
+    )
     host = _resolve_lifecycle_host(bind=bind or "127.0.0.1", listen=listen)
     if not listen and (bind is None or bind == "127.0.0.1"):
         host = resolve_listen_address(None, default=config.host or "127.0.0.1")

@@ -93,6 +93,14 @@ export interface DiscoveredModel {
   capabilitySource: string
 }
 
+export interface DiscoveredModelCatalog {
+  models: DiscoveredModel[]
+  source: 'live' | 'none'
+}
+
+/** Provider ids are normalized before they become catalog keys. */
+export type DiscoveredModelsByProvider = Record<string, DiscoveredModelCatalog>
+
 export interface ConnectionState {
   phase: ConnectionPhase
   failureKind: string
@@ -155,7 +163,7 @@ function normalizeLatencyMs(value: unknown): number | null {
   return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : null
 }
 
-function normalizeDiscoveredModels(rows: unknown): DiscoveredModel[] {
+export function normalizeDiscoveredModels(rows: unknown): DiscoveredModel[] {
   if (!Array.isArray(rows)) return []
   return rows
     .filter((row): row is Record<string, unknown> => Boolean(row) && typeof row === 'object')
@@ -221,9 +229,11 @@ export function useSetupProviderForm() {
   // Monotonic token: bumped by every reset and probe start so an in-flight
   // RPC result that raced a credential edit is discarded instead of applied.
   let connectionEpoch = 0
+  let discoverPromise: Promise<void> | null = null
 
   function resetConnection() {
     connectionEpoch += 1
+    discoverPromise = null
     connection.value = freshConnection(providerSelected.value)
   }
 
@@ -263,6 +273,7 @@ export function useSetupProviderForm() {
   async function probeConnection(options: { defaultModel?: string } = {}): Promise<void> {
     if (!providerSelected.value || connection.value.phase === 'probing') return
     const epoch = ++connectionEpoch
+    discoverPromise = null
     connection.value = { ...freshConnection(providerSelected.value), phase: 'probing' }
     const rpc = useRpcStore()
     let outcome: ConnectionState
@@ -303,43 +314,54 @@ export function useSetupProviderForm() {
     }
   }
 
-  async function discoverModels(): Promise<void> {
-    if (!providerSelected.value) return
+  function discoverModels(): Promise<void> {
+    if (!providerSelected.value) return Promise.resolve()
+    if (discoverPromise) return discoverPromise
     const epoch = connectionEpoch
     const rpc = useRpcStore()
-    try {
-      const res = await rpc.call<{
-        ok?: boolean
-        failureKind?: string
-        detail?: string
-        source?: string
-        models?: unknown
-      }>('onboarding.models.discover', connectionParams())
-      if (epoch !== connectionEpoch) return
-      if (res?.ok) {
-        connection.value = {
-          ...connection.value,
-          models: normalizeDiscoveredModels(res.models),
-          modelSource: res.source === 'live' ? 'live' : 'none',
-          discoverError: '',
+    const request = (async () => {
+      try {
+        const res = await rpc.call<{
+          ok?: boolean
+          failureKind?: string
+          detail?: string
+          source?: string
+          models?: unknown
+        }>('onboarding.models.discover', connectionParams())
+        if (epoch !== connectionEpoch) return
+        if (res?.ok) {
+          const modelSource = res.source === 'live' ? 'live' : 'none'
+          connection.value = {
+            ...connection.value,
+            models: modelSource === 'live' ? normalizeDiscoveredModels(res.models) : [],
+            modelSource,
+            discoverError: '',
+          }
+        } else {
+          connection.value = {
+            ...connection.value,
+            models: [],
+            modelSource: 'none',
+            discoverError: String(res?.detail || res?.failureKind || 'discover failed'),
+          }
         }
-      } else {
+      } catch (err) {
+        if (epoch !== connectionEpoch) return
         connection.value = {
           ...connection.value,
           models: [],
           modelSource: 'none',
-          discoverError: String(res?.detail || res?.failureKind || 'discover failed'),
+          discoverError: err instanceof Error ? err.message : String(err),
         }
       }
-    } catch (err) {
-      if (epoch !== connectionEpoch) return
-      connection.value = {
-        ...connection.value,
-        models: [],
-        modelSource: 'none',
-        discoverError: err instanceof Error ? err.message : String(err),
+    })()
+    const tracked = request.finally(() => {
+      if (discoverPromise === tracked) {
+        discoverPromise = null
       }
-    }
+    })
+    discoverPromise = tracked
+    return tracked
   }
 
   function initFromConfig(config: ProviderConfig, status: SetupStatus, providers: ProviderSpec[]) {

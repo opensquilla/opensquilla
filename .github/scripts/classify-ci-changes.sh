@@ -109,28 +109,39 @@ while IFS= read -r path || [[ -n "${path}" ]]; do
     opensquilla-webui/*)
       mark_frontend_changed
       ;;
+    src/opensquilla/gateway/static/dist/*)
+      # The committed Web UI bundle is runtime package data, but changing the
+      # generated bundle alone does not make platform-native recovery paths risky.
+      mark_frontend_changed
+      mark_runtime_changed
+      ;;
     src/opensquilla/cli/tui/opentui/package/*)
       mark_tui_changed
+      ;;
+    .github/workflows/ci.yml | .github/scripts/classify-ci-changes.sh | .github/scripts/check_ci_results.py | .github/scripts/windows_test_shards.py)
+      # Changes to the gate itself must exercise every path it can suppress.
+      mark_full_required
       ;;
     .github/workflows/wheelhouse-release.yml)
       mark_ci_changed
       mark_release_changed
       ;;
     .github/workflows/*)
+      mark_full_required
+      ;;
+    .github/scripts/verify-release-profile-preservation.py)
       mark_ci_changed
+      mark_release_changed
+      mark_platform_sensitive_changed
       ;;
     .github/scripts/*)
-      mark_ci_changed
+      mark_full_required
       ;;
     tests/test_scripts/test_build_wheelhouse_zip.py | tests/test_install_scripts.py | tests/test_root_start_scripts.py | tests/test_release_consistency.py | tests/test_public_release_hygiene.py)
       mark_test_changed
       mark_release_changed
       ;;
-    tests/test_tools/test_shell_* | tests/test_tools/test_path_* | tests/test_sandbox/* | tests/test_desktop/* | tests/test_compat/*)
-      mark_test_changed
-      mark_platform_sensitive_changed
-      ;;
-    tests/test_persistence/*)
+    tests/test_tools/test_shell_* | tests/test_tools/test_path_* | tests/test_sandbox/* | tests/test_desktop/* | tests/test_compat/* | tests/test_recovery/* | tests/test_migration/* | tests/test_migrations/* | tests/test_persistence/* | tests/test_session/* | tests/test_scheduler/* | tests/test_uninstall/* | tests/test_packaging/*)
       mark_test_changed
       mark_platform_sensitive_changed
       ;;
@@ -143,7 +154,9 @@ while IFS= read -r path || [[ -n "${path}" ]]; do
       mark_platform_sensitive_changed
       ;;
     tests/*)
+      # New or unclassified tests fail closed to the Windows high-risk suite.
       mark_test_changed
+      mark_platform_sensitive_changed
       ;;
     scripts/build_wheelhouse_zip.py | scripts/install_source.sh | scripts/install_source.ps1)
       mark_runtime_changed
@@ -152,11 +165,20 @@ while IFS= read -r path || [[ -n "${path}" ]]; do
     install.sh | install.ps1 | start.sh | start.ps1 | README.release.md | RELEASES.md)
       mark_release_changed
       ;;
+    desktop/electron/scripts/test-packaged-update-policy.mjs)
+      mark_desktop_changed
+      mark_platform_sensitive_changed
+      mark_release_changed
+      ;;
     desktop/*)
       mark_platform_sensitive_changed
       mark_desktop_changed
       ;;
-    src/opensquilla/persistence/* | src/opensquilla/sandbox/* | src/opensquilla/tools/boundary.py | src/opensquilla/tools/builtin/code_exec.py | src/opensquilla/tools/builtin/filesystem.py | src/opensquilla/tools/builtin/git.py | src/opensquilla/tools/builtin/shell.py | src/opensquilla/tools/builtin/shell_policy.py | src/opensquilla/tools/path_* | src/opensquilla/tools/policy* | src/opensquilla/tools/write_*)
+    src/opensquilla/uninstall/*)
+      mark_runtime_changed
+      mark_release_changed
+      ;;
+    src/opensquilla/recovery/* | src/opensquilla/migration/* | src/opensquilla/persistence/* | src/opensquilla/memory/* | src/opensquilla/session/* | src/opensquilla/scheduler/* | src/opensquilla/sandbox/* | src/opensquilla/tools/boundary.py | src/opensquilla/tools/builtin/code_exec.py | src/opensquilla/tools/builtin/filesystem.py | src/opensquilla/tools/builtin/git.py | src/opensquilla/tools/builtin/shell.py | src/opensquilla/tools/builtin/shell_policy.py | src/opensquilla/tools/path_* | src/opensquilla/tools/policy* | src/opensquilla/tools/write_*)
       mark_runtime_changed
       mark_platform_sensitive_changed
       ;;
@@ -169,12 +191,16 @@ while IFS= read -r path || [[ -n "${path}" ]]; do
       mark_platform_sensitive_changed
       ;;
     src/* | scripts/*)
+      # Unknown runtime surfaces are high risk until explicitly proven otherwise.
       mark_runtime_changed
+      mark_platform_sensitive_changed
       ;;
     docs/* | README.md | README.*.md | CHANGELOG.md | CODE_OF_CONDUCT.md | CONTRIBUTING.md | MIGRATION.md | SECURITY.md | SUPPORT.md | THIRD_PARTY_NOTICES.md | META_SKILL_GUIDE.md | .github/pull_request_template.md | .github/ISSUE_TEMPLATE/*)
       ;;
     *)
+      # Fail closed for new non-documentation paths.
       mark_runtime_changed
+      mark_platform_sensitive_changed
       ;;
   esac
 done < "${changed_files}"

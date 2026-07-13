@@ -167,7 +167,7 @@ def _git_head(root: Path) -> str | None:
 
 def _git_show_head_path(root: Path, relative_path: str) -> bytes | None:
     completed = subprocess.run(
-        ["git", "show", f"HEAD:{relative_path}"],
+        ["git", "show", "--end-of-options", f"HEAD:{relative_path}"],
         cwd=root,
         check=False,
         stdout=subprocess.PIPE,

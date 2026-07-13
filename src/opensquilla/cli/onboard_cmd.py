@@ -34,6 +34,7 @@ from opensquilla.onboarding.next_steps import (
     env_reference_warnings,
     format_next_steps,
     headless_setup_commands,
+    human_env_command,
     quote_cli_arg,
     setup_catalog_command,
 )
@@ -317,7 +318,7 @@ def _headless_section_paths(
 
 def _missing_env_paths(status: OnboardingStatus) -> list[tuple[str, str, str]]:
     return [
-        (str(entry["label"]), str(entry["command"]), "")
+        (str(entry["label"]), human_env_command(str(entry["command"])), "")
         for entry in env_recovery_commands(status)
     ]
 

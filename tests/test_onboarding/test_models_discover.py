@@ -12,7 +12,12 @@ import pytest
 from opensquilla.gateway import rpc_onboarding
 from opensquilla.gateway.config import GatewayConfig, LlmProviderConfig
 from opensquilla.gateway.rpc import RpcContext
-from opensquilla.onboarding.probe import discover_provider_models
+from opensquilla.onboarding import probe as probe_module
+from opensquilla.onboarding.probe import (
+    ProviderModelsDiscoverResult,
+    discover_provider_models,
+    discover_selectable_provider_models,
+)
 from opensquilla.provider.failures import ProviderFailureKind
 
 
@@ -63,6 +68,146 @@ def _models_response() -> httpx.Response:
 
 def _discover(**kwargs: Any):
     return asyncio.run(discover_provider_models(**kwargs))
+
+
+def _discover_selectable(**kwargs: Any):
+    return asyncio.run(discover_selectable_provider_models(**kwargs))
+
+
+def test_selectable_discovery_fails_closed_before_credentials_or_provider_build(
+    monkeypatch: Any,
+) -> None:
+    """Unverified adapters stay free text and must not touch secrets/network."""
+
+    def _unexpected(*_args: Any, **_kwargs: Any) -> Any:
+        raise AssertionError("untrusted discovery must not resolve credentials or build")
+
+    monkeypatch.setattr(probe_module, "_resolve_probe_api_key", _unexpected)
+    monkeypatch.setattr(probe_module, "build_provider", _unexpected)
+    monkeypatch.setattr(probe_module, "discover_provider_models", _unexpected)
+
+    result = _discover_selectable(
+        provider_id="openai",
+        api_key="synthetic-secret",
+        base_url="https://api.openai.com/v1",
+    )
+
+    assert result == ProviderModelsDiscoverResult(ok=True, provider_id="openai")
+
+
+@pytest.mark.parametrize("provider_id", ["openrouter", "tokenrhythm"])
+def test_selectable_discovery_delegates_verified_official_hosts(
+    monkeypatch: Any, provider_id: str
+) -> None:
+    calls: list[dict[str, Any]] = []
+
+    async def _fake_raw(**kwargs: Any) -> ProviderModelsDiscoverResult:
+        calls.append(kwargs)
+        return ProviderModelsDiscoverResult(
+            ok=True,
+            provider_id=kwargs["provider_id"],
+            source="live",
+            models=[{"id": "verified-model"}],
+        )
+
+    monkeypatch.setattr(probe_module, "discover_provider_models", _fake_raw)
+
+    result = _discover_selectable(provider_id=provider_id, api_key="synthetic-key")
+
+    assert result.source == "live"
+    assert result.models == [{"id": "verified-model"}]
+    assert calls == [
+        {
+            "provider_id": provider_id,
+            "api_key": "synthetic-key",
+            "api_key_env": "",
+            "base_url": "",
+            "proxy": "",
+        }
+    ]
+
+
+@pytest.mark.parametrize(
+    ("provider_id", "base_url"),
+    [
+        ("openrouter", "https://openrouter.ai.attacker.example/v1"),
+        ("tokenrhythm", "https://tokenrhythm.studio.attacker.example/v1"),
+    ],
+)
+def test_selectable_discovery_rejects_non_official_base_url_before_raw_discovery(
+    monkeypatch: Any, provider_id: str, base_url: str
+) -> None:
+    async def _unexpected_raw(**_kwargs: Any) -> ProviderModelsDiscoverResult:
+        raise AssertionError("a custom host must not be treated as a verified catalog")
+
+    monkeypatch.setattr(probe_module, "discover_provider_models", _unexpected_raw)
+
+    result = _discover_selectable(
+        provider_id=provider_id,
+        api_key="synthetic-key",
+        base_url=base_url,
+    )
+
+    assert result == ProviderModelsDiscoverResult(ok=True, provider_id=provider_id)
+
+
+@pytest.mark.parametrize(
+    ("provider_id", "base_url"),
+    [
+        ("openrouter", "http://openrouter.ai/api/v1"),
+        ("tokenrhythm", "http://tokenrhythm.studio/v1"),
+    ],
+)
+def test_selectable_discovery_rejects_plain_http_before_credentials_or_raw_discovery(
+    monkeypatch: Any, provider_id: str, base_url: str
+) -> None:
+    def _unexpected(*_args: Any, **_kwargs: Any) -> Any:
+        raise AssertionError("plain HTTP must not resolve credentials or discover models")
+
+    monkeypatch.setattr(probe_module, "_resolve_probe_api_key", _unexpected)
+    monkeypatch.setattr(probe_module, "discover_provider_models", _unexpected)
+
+    result = _discover_selectable(
+        provider_id=provider_id,
+        api_key="synthetic-key",
+        base_url=base_url,
+    )
+
+    assert result == ProviderModelsDiscoverResult(ok=True, provider_id=provider_id)
+
+
+def test_selectable_discovery_still_validates_unsupported_provider() -> None:
+    with pytest.raises(ValueError, match="no runtime support"):
+        _discover_selectable(provider_id="github_copilot")
+
+
+def test_selectable_discovery_still_validates_unknown_provider() -> None:
+    with pytest.raises(ValueError, match="Unknown provider"):
+        _discover_selectable(provider_id="no-such-provider")
+
+
+@pytest.mark.parametrize(
+    ("provider_id", "base_url"),
+    [
+        ("openrouter", "https://api.openrouter.ai/v1"),
+        ("tokenrhythm", "https://api.tokenrhythm.studio/v1"),
+    ],
+)
+def test_selectable_discovery_accepts_official_subdomains(
+    monkeypatch: Any, provider_id: str, base_url: str
+) -> None:
+    calls: list[str] = []
+
+    async def _fake_raw(**kwargs: Any) -> ProviderModelsDiscoverResult:
+        calls.append(kwargs["base_url"])
+        return ProviderModelsDiscoverResult(ok=True, provider_id=provider_id)
+
+    monkeypatch.setattr(probe_module, "discover_provider_models", _fake_raw)
+
+    result = _discover_selectable(provider_id=provider_id, base_url=base_url)
+
+    assert result.ok is True
+    assert calls == [base_url]
 
 
 def test_discover_reports_missing_key_without_network(monkeypatch: Any) -> None:
@@ -182,11 +327,11 @@ async def test_discover_rpc_reuses_stored_credentials_when_blank(
     seen = _patch_response(monkeypatch, _models_response)
     cfg = GatewayConfig(
         config_path=str(tmp_path / "opensquilla.toml"),
-        llm=LlmProviderConfig(provider="openai", model="m", api_key="sk-stored"),
+        llm=LlmProviderConfig(provider="openrouter", model="m", api_key="sk-stored"),
     )
     ctx = RpcContext(conn_id="t", config=cfg)
 
-    payload = await rpc_onboarding._models_discover({"providerId": "openai"}, ctx)
+    payload = await rpc_onboarding._models_discover({"providerId": "openrouter"}, ctx)
 
     assert payload["ok"] is True
     assert seen[0].headers["authorization"] == "Bearer sk-stored"
@@ -197,14 +342,14 @@ async def test_discover_rpc_does_not_leak_stored_credentials_across_providers(
 ) -> None:
     # The keep-current fallback is provider-bound: discovering a DIFFERENT
     # provider with blank credentials must not send the stored key.
-    monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
+    monkeypatch.delenv("TOKENRHYTHM_API_KEY", raising=False)
     cfg = GatewayConfig(
         config_path=str(tmp_path / "opensquilla.toml"),
-        llm=LlmProviderConfig(provider="openai", model="m", api_key="sk-stored"),
+        llm=LlmProviderConfig(provider="openrouter", model="m", api_key="sk-stored"),
     )
     ctx = RpcContext(conn_id="t", config=cfg)
 
-    payload = await rpc_onboarding._models_discover({"providerId": "deepseek"}, ctx)
+    payload = await rpc_onboarding._models_discover({"providerId": "tokenrhythm"}, ctx)
 
     assert payload["ok"] is False
     assert payload["failureKind"] == ProviderFailureKind.AUTH_INVALID.value
@@ -216,12 +361,12 @@ async def test_discover_rpc_explicit_credentials_override_stored(
     seen = _patch_response(monkeypatch, _models_response)
     cfg = GatewayConfig(
         config_path=str(tmp_path / "opensquilla.toml"),
-        llm=LlmProviderConfig(provider="openai", model="m", api_key="sk-stored"),
+        llm=LlmProviderConfig(provider="openrouter", model="m", api_key="sk-stored"),
     )
     ctx = RpcContext(conn_id="t", config=cfg)
 
     payload = await rpc_onboarding._models_discover(
-        {"providerId": "openai", "apiKey": "sk-candidate"}, ctx
+        {"providerId": "openrouter", "apiKey": "sk-candidate"}, ctx
     )
 
     assert payload["ok"] is True

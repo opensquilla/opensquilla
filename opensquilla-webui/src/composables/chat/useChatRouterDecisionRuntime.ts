@@ -12,6 +12,7 @@ export interface UseChatRouterDecisionRuntimeOptions {
   messages: Ref<ChatMessage[]>
   sessionKey: Ref<string>
   isStreaming: Ref<boolean>
+  autoScroll: Ref<boolean>
   modelRoutingMode: Ref<ModelRoutingMode>
   streamBubble: Ref<boolean>
   streamHasVisibleOutput: Ref<boolean>
@@ -25,12 +26,19 @@ export interface UseChatRouterDecisionRuntimeOptions {
 export function useChatRouterDecisionRuntime(options: UseChatRouterDecisionRuntimeOptions) {
   const pendingRouterDecision = ref<{ payload: RouterDecisionPayload; decision: NormalizedRouterDecision } | null>(null)
 
+  // Router and ensemble events can arrive throughout a long streamed answer.
+  // They should follow the live edge only while the reader has elected to stay
+  // there; otherwise every event would pull an upward-scrolled reader back down.
+  function scrollToBottomIfFollowing() {
+    if (options.autoScroll.value) options.scrollToBottom()
+  }
+
   function handleRouterControlReplay() {
     if (!options.isStreaming.value) options.startStreaming()
     pendingRouterDecision.value = null
     options.resetStreamForRouterReplay()
     options.resetStreamIdleTimer()
-    options.scrollToBottom()
+    scrollToBottomIfFollowing()
   }
 
   function appendRouterDecision(payload: RouterDecisionPayload, decision = normalizeRouterDecision(payload)) {
@@ -50,7 +58,7 @@ export function useChatRouterDecisionRuntime(options: UseChatRouterDecisionRunti
           message.messageId = messageId
           message.ts = new Date().toISOString()
           message.routerSettled = true
-          options.scrollToBottom()
+          scrollToBottomIfFollowing()
           return
         }
       }
@@ -64,7 +72,7 @@ export function useChatRouterDecisionRuntime(options: UseChatRouterDecisionRunti
       provenanceKind: 'router_decision',
       messageId,
     })
-    options.scrollToBottom()
+    scrollToBottomIfFollowing()
   }
 
   function queueRouterDecision(payload: RouterDecisionPayload) {
@@ -178,7 +186,7 @@ export function useChatRouterDecisionRuntime(options: UseChatRouterDecisionRunti
     }
     if (!isEnsembleRouterMessage(target)) return
     target.routerState = 'handoff'
-    options.scrollToBottom()
+    scrollToBottomIfFollowing()
   }
 
   // Accumulate an ensemble_progress delta onto the live turn's router message so
@@ -209,7 +217,7 @@ export function useChatRouterDecisionRuntime(options: UseChatRouterDecisionRunti
     if (target.routerDecision) target.routerDecision.source = 'llm_ensemble'
     if (!target.ensemble) target.ensemble = emptyEnsemble()
     upsertEnsembleMember(target.ensemble, member)
-    options.scrollToBottom()
+    scrollToBottomIfFollowing()
   }
 
   return {

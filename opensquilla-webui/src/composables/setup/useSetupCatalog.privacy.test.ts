@@ -153,6 +153,279 @@ describe('useSetupCatalog privacy settings', () => {
 })
 
 describe('useSetupCatalog model strategy IA', () => {
+  it('discovers the active provider model catalog when Model Strategy opens', async () => {
+    rpcCall.mockImplementation(async (method: string) => {
+      if (method === 'onboarding.catalog') {
+        return {
+          providers: [
+            {
+              providerId: 'tokenrhythm',
+              label: 'TokenRhythm',
+              runtimeSupported: true,
+              fields: [{ name: 'model', label: 'Model' }],
+            },
+          ],
+        }
+      }
+      if (method === 'onboarding.status') return { hasConfig: true }
+      if (method === 'channels.status') return { channels: [] }
+      if (method === 'config.get') {
+        return { llm: { provider: 'tokenrhythm', model: 'deepseek-v4-pro' } }
+      }
+      if (method === 'onboarding.models.discover') {
+        return {
+          ok: true,
+          source: 'live',
+          models: [
+            {
+              id: 'deepseek-v4-flash',
+              name: 'DeepSeek V4 Flash',
+              contextWindow: 128000,
+              maxOutputTokens: 16384,
+              capabilities: ['chat', 'tools'],
+              pricing: null,
+              capabilitySource: 'provider',
+            },
+          ],
+        }
+      }
+      throw new Error(`Unexpected RPC method: ${method}`)
+    })
+    const { api, app } = await mountCatalog()
+
+    api.setSection('modelStrategy')
+    await nextTick()
+    await Promise.resolve()
+    await nextTick()
+
+    expect(rpcCall).toHaveBeenCalledWith('onboarding.models.discover', {
+      providerId: 'tokenrhythm',
+      model: 'deepseek-v4-pro',
+    })
+    expect(api.routerPanel.value.discoveredModelsByProvider.tokenrhythm?.models).toHaveLength(1)
+    expect(api.routerPanel.value.discoveredModelsByProvider.tokenrhythm?.models[0]?.id).toBe('deepseek-v4-flash')
+    app.unmount()
+  })
+
+  it('rediscovers models when config reloads while Model Strategy stays open', async () => {
+    let discoverCalls = 0
+    rpcCall.mockImplementation(async (method: string) => {
+      if (method === 'onboarding.catalog') {
+        return {
+          providers: [
+            {
+              providerId: 'tokenrhythm',
+              label: 'TokenRhythm',
+              runtimeSupported: true,
+              fields: [{ name: 'model', label: 'Model' }],
+            },
+          ],
+        }
+      }
+      if (method === 'onboarding.status') return { hasConfig: true }
+      if (method === 'channels.status') return { channels: [] }
+      if (method === 'config.get') {
+        return { llm: { provider: 'tokenrhythm', model: 'deepseek-v4-pro' } }
+      }
+      if (method === 'onboarding.models.discover') {
+        discoverCalls += 1
+        return {
+          ok: true,
+          source: 'live',
+          models: [
+            {
+              id: 'deepseek-v4-flash',
+              name: 'DeepSeek V4 Flash',
+              contextWindow: 128000,
+              maxOutputTokens: 16384,
+              capabilities: ['chat', 'tools'],
+              pricing: null,
+              capabilitySource: 'provider',
+            },
+          ],
+        }
+      }
+      throw new Error(`Unexpected RPC method: ${method}`)
+    })
+    const { api, app } = await mountCatalog()
+
+    api.setSection('modelStrategy')
+    await nextTick()
+    await Promise.resolve()
+    await nextTick()
+    expect(discoverCalls).toBe(1)
+
+    await api.loadData()
+
+    expect(discoverCalls).toBe(2)
+    expect(api.routerPanel.value.discoveredModelsByProvider.tokenrhythm?.models[0]?.id).toBe('deepseek-v4-flash')
+    app.unmount()
+  })
+
+  it('does not wait for model discovery before a Model Strategy config reload completes', async () => {
+    let discoverCalls = 0
+    let releaseReloadDiscovery!: () => void
+    const reloadDiscovery = new Promise<void>((resolve) => { releaseReloadDiscovery = resolve })
+    rpcCall.mockImplementation(async (method: string) => {
+      if (method === 'onboarding.catalog') {
+        return {
+          providers: [{ providerId: 'tokenrhythm', label: 'TokenRhythm', runtimeSupported: true }],
+        }
+      }
+      if (method === 'onboarding.status') return { hasConfig: true }
+      if (method === 'channels.status') return { channels: [] }
+      if (method === 'config.get') {
+        return { llm: { provider: 'tokenrhythm', model: 'deepseek-v4-pro' } }
+      }
+      if (method === 'onboarding.models.discover') {
+        discoverCalls += 1
+        if (discoverCalls === 2) await reloadDiscovery
+        return { ok: true, source: 'live', models: [] }
+      }
+      throw new Error(`Unexpected RPC method: ${method}`)
+    })
+    const { api, app } = await mountCatalog()
+
+    api.setSection('modelStrategy')
+    await vi.waitFor(() => expect(discoverCalls).toBe(1))
+
+    let reloadCompleted = false
+    const reload = api.loadData().then(() => { reloadCompleted = true })
+    await vi.waitFor(() => expect(discoverCalls).toBe(2))
+    await Promise.resolve()
+
+    expect(reloadCompleted).toBe(true)
+    releaseReloadDiscovery()
+    await reload
+    app.unmount()
+  })
+
+  it('discovers and isolates catalogs for every provider used by mixed router tiers', async () => {
+    const requests: Array<Record<string, unknown>> = []
+    rpcCall.mockImplementation(async (method: string, params?: Record<string, unknown>) => {
+      if (method === 'onboarding.catalog') {
+        return {
+          providers: [
+            {
+              providerId: 'tokenrhythm',
+              label: 'TokenRhythm',
+              runtimeSupported: true,
+              fields: [
+                { name: 'model', label: 'Model' },
+                { name: 'api_key', label: 'API key', secret: true },
+              ],
+            },
+            { providerId: 'openrouter', label: 'OpenRouter', runtimeSupported: true },
+            { providerId: 'anthropic', label: 'Anthropic', runtimeSupported: true },
+          ],
+        }
+      }
+      if (method === 'onboarding.status') return { hasConfig: true }
+      if (method === 'channels.status') return { channels: [] }
+      if (method === 'config.get') {
+        return {
+          llm: { provider: 'tokenrhythm', model: 'deepseek-v4-pro' },
+          squilla_router: {
+            enabled: true,
+            tiers: {
+              c0: { provider: ' TokenRhythm ', model: 'deepseek-v4-flash' },
+              c1: { provider: 'OPENROUTER', model: 'deepseek/deepseek-v4-pro' },
+              c2: { provider: 'anthropic', model: 'claude-sonnet-4' },
+            },
+          },
+        }
+      }
+      if (method === 'onboarding.models.discover') {
+        requests.push(params || {})
+        const providerId = String(params?.providerId || '').toLowerCase()
+        if (providerId === 'anthropic') return { ok: true, source: 'none', models: [] }
+        return {
+          ok: true,
+          source: 'live',
+          models: [{
+            id: providerId === 'openrouter' ? 'deepseek/deepseek-v4-pro' : 'deepseek-v4-flash',
+            name: 'Model',
+            contextWindow: null,
+            maxOutputTokens: null,
+            capabilities: [],
+            pricing: null,
+            capabilitySource: 'provider',
+          }],
+        }
+      }
+      throw new Error(`Unexpected RPC method: ${method}`)
+    })
+    const { api, app } = await mountCatalog()
+
+    api.updateProviderField('api_key', 'unsaved-selected-provider-key')
+    api.setSection('modelStrategy')
+    await vi.waitFor(() => expect(requests).toHaveLength(3))
+
+    expect(requests).toContainEqual({
+      providerId: 'tokenrhythm',
+      apiKey: 'unsaved-selected-provider-key',
+      model: 'deepseek-v4-pro',
+    })
+    expect(requests).toContainEqual({ providerId: 'openrouter' })
+    expect(requests).toContainEqual({ providerId: 'anthropic' })
+    expect(requests.filter(request => request.apiKey !== undefined)).toHaveLength(1)
+
+    const byProvider = api.routerPanel.value.discoveredModelsByProvider
+    expect(Object.keys(byProvider).sort()).toEqual(['anthropic', 'openrouter', 'tokenrhythm'])
+    expect(byProvider.tokenrhythm?.models[0]?.id).toBe('deepseek-v4-flash')
+    expect(byProvider.openrouter?.models[0]?.id).toBe('deepseek/deepseek-v4-pro')
+    expect(byProvider.anthropic).toEqual({ models: [], source: 'none' })
+    app.unmount()
+  })
+
+  it('deduplicates provider-scoped discovery when Model Strategy is reopened mid-request', async () => {
+    const requests: string[] = []
+    let releaseDiscoveries!: () => void
+    const blocked = new Promise<void>((resolve) => { releaseDiscoveries = resolve })
+    rpcCall.mockImplementation(async (method: string, params?: Record<string, unknown>) => {
+      if (method === 'onboarding.catalog') {
+        return {
+          providers: [
+            { providerId: 'tokenrhythm', label: 'TokenRhythm', runtimeSupported: true },
+            { providerId: 'openrouter', label: 'OpenRouter', runtimeSupported: true },
+          ],
+        }
+      }
+      if (method === 'onboarding.status') return { hasConfig: true }
+      if (method === 'channels.status') return { channels: [] }
+      if (method === 'config.get') {
+        return {
+          llm: { provider: 'tokenrhythm', model: 'deepseek-v4-pro' },
+          squilla_router: {
+            enabled: true,
+            tiers: {
+              c0: { provider: 'tokenrhythm', model: 'deepseek-v4-flash' },
+              c1: { provider: 'openrouter', model: 'deepseek/deepseek-v4-pro' },
+            },
+          },
+        }
+      }
+      if (method === 'onboarding.models.discover') {
+        requests.push(String(params?.providerId || ''))
+        await blocked
+        return { ok: true, source: 'none', models: [] }
+      }
+      throw new Error(`Unexpected RPC method: ${method}`)
+    })
+    const { api, app } = await mountCatalog()
+
+    api.setSection('modelStrategy')
+    await vi.waitFor(() => expect(requests).toHaveLength(2))
+    api.setSection('provider')
+    await nextTick()
+    api.setSection('modelStrategy')
+    await nextTick()
+
+    expect(requests.sort()).toEqual(['openrouter', 'tokenrhythm'])
+    releaseDiscoveries()
+    app.unmount()
+  })
+
   it('exposes the Model Strategy facade panel cards', async () => {
     mockConfigSequence([
       {

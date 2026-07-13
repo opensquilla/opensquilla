@@ -534,6 +534,50 @@ async def test_call_compaction_llm_adds_openrouter_app_attribution(monkeypatch) 
 
 
 @pytest.mark.asyncio
+async def test_call_compaction_llm_adds_tokenrhythm_app_attribution(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    class FakeResponse:
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict:
+            return {"choices": [{"message": {"content": "summary"}}]}
+
+    class FakeClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb) -> bool:
+            return False
+
+        async def post(self, url, *, json, headers):
+            captured["url"] = url
+            captured["headers"] = headers
+            return FakeResponse()
+
+    monkeypatch.setattr(
+        "opensquilla.session.compaction.httpx.AsyncClient",
+        lambda **kwargs: FakeClient(),
+    )
+
+    result = await call_compaction_llm(
+        chunk_text="old conversation",
+        identifier_instruction="",
+        model="deepseek-v4-flash",
+        api_key="test-key",
+        base_url="https://tokenrhythm.studio/v1",
+    )
+
+    assert result == "summary"
+    assert captured["url"] == "https://tokenrhythm.studio/v1/chat/completions"
+    headers = captured["headers"]
+    assert isinstance(headers, dict)
+    assert headers["HTTP-Referer"] == "https://opensquilla.ai"
+    assert headers["X-Title"] == "OpenSquilla"
+
+
+@pytest.mark.asyncio
 async def test_call_compaction_llm_timeout_returns_none(monkeypatch) -> None:
     class FakeClient:
         async def __aenter__(self):

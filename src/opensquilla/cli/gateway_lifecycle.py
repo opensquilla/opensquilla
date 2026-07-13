@@ -22,13 +22,59 @@ from opensquilla.paths import default_opensquilla_home, state_dir
 UNMANAGED_GATEWAY_RUNNING = "UNMANAGED_GATEWAY_RUNNING"
 MANAGED_GATEWAY_TARGET_MISMATCH = "MANAGED_GATEWAY_TARGET_MISMATCH"
 REMOTE_GATEWAY_UNAVAILABLE = "REMOTE_GATEWAY_UNAVAILABLE"
+DESKTOP_PROFILE_RECOVERY_REQUIRED = "DESKTOP_PROFILE_RECOVERY_REQUIRED"
+DESKTOP_CONFIG_OUTSIDE_PROFILE = "desktop_config_outside_profile"
+
+_DESKTOP_PROFILE_KINDS = frozenset({"desktop-primary", "desktop-recovery"})
+_TRUTHY = frozenset({"1", "true", "yes", "on"})
+
+
+def desktop_profile_lifecycle_active() -> bool:
+    """Return whether lifecycle bookkeeping belongs to a Desktop profile."""
+
+    profile_kind = os.environ.get("OPENSQUILLA_PROFILE_KIND", "").strip().lower()
+    if profile_kind:
+        return profile_kind in _DESKTOP_PROFILE_KINDS
+    return os.environ.get("OPENSQUILLA_DESKTOP", "").strip().lower() in _TRUTHY
+
+
+def desktop_config_path_is_profile_local(config_path: str | None = None) -> bool:
+    """Desktop may only boot from the selected profile's canonical config."""
+
+    if not desktop_profile_lifecycle_active():
+        return True
+    requested = config_path or os.environ.get("OPENSQUILLA_GATEWAY_CONFIG_PATH", "").strip()
+    if not requested:
+        return True
+    candidate = Path(requested).expanduser()
+    if not candidate.is_absolute():
+        candidate = candidate.absolute()
+    expected = default_opensquilla_home().expanduser().absolute() / "config.toml"
+    return os.path.normcase(os.path.normpath(str(candidate))) == os.path.normcase(
+        os.path.normpath(str(expected))
+    )
+
+
+def _desktop_lifecycle_root() -> Path | None:
+    if not desktop_profile_lifecycle_active():
+        return None
+    from opensquilla.recovery.locking import profile_lock_key, user_state_dir
+
+    home = default_opensquilla_home()
+    return user_state_dir() / "OpenSquilla" / "gateway-lifecycle" / profile_lock_key(home)
 
 
 def gateway_pidfile_path() -> Path:
+    desktop_root = _desktop_lifecycle_root()
+    if desktop_root is not None:
+        return desktop_root / "gateway.json"
     return state_dir("gateway", "gateway.json")
 
 
 def gateway_log_path() -> Path:
+    desktop_root = _desktop_lifecycle_root()
+    if desktop_root is not None:
+        return desktop_root / "gateway.log"
     return default_opensquilla_home() / "logs" / "gateway.log"
 
 
@@ -205,6 +251,9 @@ class GatewayLifecycleManager:
         )
 
     def start(self) -> GatewayLifecycleResult:
+        blocked = self._desktop_profile_preflight("start")
+        if blocked is not None:
+            return blocked
         current = self.status()
         if current.state == "running" and current.managed:
             current.action = "start"
@@ -320,6 +369,9 @@ class GatewayLifecycleManager:
         )
 
     def restart(self) -> GatewayLifecycleResult:
+        blocked = self._desktop_profile_preflight("restart")
+        if blocked is not None:
+            return blocked
         stopped = self.stop()
         if stopped.exit_code != 0:
             return self._result(
@@ -338,6 +390,57 @@ class GatewayLifecycleManager:
         started.action = "restart"
         started.details = {**started.details, "stop": stopped.to_payload()}
         return started
+
+    def _desktop_profile_preflight(
+        self,
+        action: str,
+    ) -> GatewayLifecycleResult | None:
+        """Reject unsafe Desktop profiles before parent lifecycle bookkeeping writes."""
+
+        if not desktop_profile_lifecycle_active():
+            return None
+
+        if not desktop_config_path_is_profile_local(self.config_path):
+            return self._result(
+                action,
+                "recovery_required",
+                ok=False,
+                code=DESKTOP_PROFILE_RECOVERY_REQUIRED,
+                message=(
+                    "Desktop gateway refused a config outside the selected profile. "
+                    "Choose or repair the profile through Desktop recovery."
+                ),
+                details={
+                    "stableCode": DESKTOP_CONFIG_OUTSIDE_PROFILE,
+                    "outcome": "recovery_required",
+                    "allowedActions": ["retry-primary", "launch-recovery-profile"],
+                },
+                exit_code_value=1,
+            )
+
+        from opensquilla.recovery import RecoveryRequiredError, guard_desktop_profile
+
+        try:
+            guard_desktop_profile()
+        except RecoveryRequiredError as exc:
+            report = exc.report
+            return self._result(
+                action,
+                "recovery_required",
+                ok=False,
+                code=DESKTOP_PROFILE_RECOVERY_REQUIRED,
+                message=(
+                    "Desktop profile requires offline recovery before the gateway "
+                    f"can be {action}ed ({report.stable_code})."
+                ),
+                details={
+                    "stableCode": report.stable_code,
+                    "outcome": report.outcome,
+                    "allowedActions": list(report.allowed_actions),
+                },
+                exit_code_value=1,
+            )
+        return None
 
     def _result(
         self,
@@ -434,7 +537,11 @@ class GatewayLifecycleManager:
         return payload, None
 
     def _write_pidfile(self, record: dict[str, Any]) -> None:
-        self.pidfile.parent.mkdir(parents=True, exist_ok=True)
+        self.pidfile.parent.mkdir(
+            mode=0o700 if desktop_profile_lifecycle_active() else 0o777,
+            parents=True,
+            exist_ok=True,
+        )
         self.pidfile.write_text(json.dumps(record, indent=2, sort_keys=True), encoding="utf-8")
 
     def _remove_pidfile(self) -> None:
@@ -501,7 +608,11 @@ class GatewayLifecycleManager:
         return argv
 
     def _spawn_gateway(self, argv: list[str]) -> subprocess.Popen[Any]:
-        self.log_path.parent.mkdir(parents=True, exist_ok=True)
+        self.log_path.parent.mkdir(
+            mode=0o700 if desktop_profile_lifecycle_active() else 0o777,
+            parents=True,
+            exist_ok=True,
+        )
         env = os.environ.copy()
         if self.config_path:
             env["OPENSQUILLA_GATEWAY_CONFIG_PATH"] = self.config_path

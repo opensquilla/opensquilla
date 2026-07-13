@@ -1,14 +1,29 @@
 from __future__ import annotations
 
 import json
+import os
+import sqlite3
 import tomllib
 from pathlib import Path
 
+import pytest
+import tomli_w
 from typer.testing import CliRunner
 
 from opensquilla.cli.main import app
 
 runner = CliRunner()
+
+
+@pytest.fixture(autouse=True)
+def _isolate_profile_operation_locks(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Keep CLI migration locks out of the runner's real user-state tree."""
+
+    monkeypatch.setenv("OPENSQUILLA_TEST", "1")
+    monkeypatch.setenv("OPENSQUILLA_USER_STATE_DIR", str(tmp_path / "user-state"))
 
 
 def _set_fake_home(monkeypatch, home: Path) -> None:
@@ -245,6 +260,55 @@ def test_migrate_opensquilla_rejects_config_with_target_home_guidance(
     assert "target home" in result.stdout
 
 
+def test_migrate_opensquilla_keeps_its_internal_multi_profile_lock(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from opensquilla import recovery
+    from opensquilla.cli import migrate_cmd
+
+    source = tmp_path / "source-profile"
+    (source / "workspace").mkdir(parents=True)
+    (source / "state").mkdir()
+    (source / "config.toml").write_text("port = 18790\n", encoding="utf-8")
+    (source / "workspace" / "SOUL.md").write_text("source soul\n", encoding="utf-8")
+    target = tmp_path / "desktop-primary"
+    monkeypatch.setenv("OPENSQUILLA_STATE_DIR", str(target))
+    monkeypatch.setenv("OPENSQUILLA_PROFILE_KIND", "desktop-primary")
+    monkeypatch.delattr(os, "fchmod", raising=False)
+
+    def fail_foreign_guard() -> None:
+        pytest.fail("OpenSquilla self-import must not take the foreign migration lifecycle")
+
+    acquired: list[tuple[Path, ...]] = []
+    original_acquire = recovery.acquire_profile_locks
+
+    def track_internal_locks(*homes: str | Path, **kwargs: object) -> object:
+        acquired.append(tuple(Path(home) for home in homes))
+        return original_acquire(*homes, **kwargs)
+
+    monkeypatch.setattr(migrate_cmd, "_guard_foreign_migration_target", fail_foreign_guard)
+    monkeypatch.setattr(recovery, "acquire_profile_locks", track_internal_locks)
+
+    result = runner.invoke(
+        app,
+        [
+            "migrate",
+            "opensquilla",
+            "--source",
+            str(source),
+            "--apply",
+            "--json",
+        ],
+    )
+
+    assert result.exit_code == 0, result.stdout
+    assert acquired == [(source, target, target.parent)]
+    assert (target / "workspace" / "SOUL.md").read_text(encoding="utf-8") == (
+        "source soul\n"
+    )
+
+
 # ---------------------------------------------------------------------------
 # Auto-detect entry point: ``opensquilla migrate`` (no subcommand)
 # ---------------------------------------------------------------------------
@@ -308,6 +372,100 @@ def _seed_hermes(home: Path) -> Path:
     return source
 
 
+@pytest.mark.parametrize(
+    ("source_name", "entrypoint"),
+    [
+        ("openclaw", "subcommand"),
+        ("hermes", "subcommand"),
+        ("openclaw", "auto-detect"),
+        ("hermes", "auto-detect"),
+    ],
+)
+def test_foreign_migration_blocks_unsafe_desktop_before_any_write(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    source_name: str,
+    entrypoint: str,
+) -> None:
+    from opensquilla.recovery import RecoveryRequiredError
+
+    fake_home = tmp_path / "fake-home"
+    fake_home.mkdir()
+    source_path = (
+        _seed_openclaw(fake_home)
+        if source_name == "openclaw"
+        else _seed_hermes(fake_home)
+    )
+    target = tmp_path / "desktop-primary"
+    target.mkdir()
+    missing_workspace = tmp_path / "missing-workspace"
+    config = target / "config.toml"
+    config_bytes = f"workspace_dir = {json.dumps(str(missing_workspace))}\n".encode()
+    config.write_bytes(config_bytes)
+    _set_fake_home(monkeypatch, fake_home)
+    monkeypatch.setenv("OPENSQUILLA_STATE_DIR", str(target))
+    monkeypatch.setenv("OPENSQUILLA_PROFILE_KIND", "desktop-primary")
+
+    if entrypoint == "subcommand":
+        args = [
+            "migrate",
+            source_name,
+            "--source",
+            str(source_path),
+            "--apply",
+            "--json",
+        ]
+    else:
+        args = ["migrate", "--source", source_name, "--apply", "--json"]
+    result = runner.invoke(app, args)
+
+    assert result.exit_code != 0
+    assert isinstance(result.exception, RecoveryRequiredError)
+    assert result.exception.report.stable_code == "effective_state_missing"
+    assert config.read_bytes() == config_bytes
+    assert not missing_workspace.exists()
+    assert not (target / "workspace").exists()
+    assert not (target / "migration").exists()
+    assert not (target / "state" / "gateway.pid.lock").exists()
+    assert sorted(path.relative_to(target).as_posix() for path in target.rglob("*")) == [
+        "config.toml"
+    ]
+
+
+def test_foreign_migration_guard_is_noop_for_ordinary_cli_profile(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = _make_source(tmp_path / "source-root")
+    target = tmp_path / "cli-home"
+    target.mkdir()
+    workspace = tmp_path / "explicit-cli-workspace"
+    (target / "config.toml").write_text(
+        tomli_w.dumps({"workspace_dir": str(workspace)}),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("OPENSQUILLA_STATE_DIR", str(target))
+    monkeypatch.delenv("OPENSQUILLA_PROFILE_KIND", raising=False)
+    monkeypatch.delenv("OPENSQUILLA_DESKTOP", raising=False)
+
+    result = runner.invoke(
+        app,
+        [
+            "migrate",
+            "openclaw",
+            "--source",
+            str(source),
+            "--apply",
+            "--json",
+        ],
+    )
+
+    assert result.exit_code == 0, result.stdout
+    assert (workspace / "SOUL.md").read_text(encoding="utf-8") == "soul\n"
+    assert (target / "migration" / "openclaw").is_dir()
+    assert not (target / "state" / "gateway.pid.lock").exists()
+
+
 def test_migrate_auto_detect_no_source_reports_nothing(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -343,7 +501,38 @@ def test_migrate_auto_detect_single_source_auto_picks(
     assert "hermes" in payload["reports"]
 
 
-def test_migrate_auto_detect_single_portable_preserves_source_kind(
+def test_migrate_auto_detect_single_cli_home_still_requires_confirmation(
+    tmp_path: Path, monkeypatch
+) -> None:
+    home = tmp_path / "fake_home"
+    home.mkdir()
+    source = _seed_opensquilla(home)
+    _set_fake_home(monkeypatch, home)
+    monkeypatch.setenv("OPENSQUILLA_STATE_DIR", str(tmp_path / "desktop-home"))
+
+    result = runner.invoke(app, ["migrate", "--json"])
+
+    assert result.exit_code == 0, result.stdout
+    payload = json.loads(result.stdout)
+    assert payload["detected"] == [
+        {
+            "name": "opensquilla",
+            "kind": "cli-home",
+            "path": str(source),
+            "version": None,
+            "estimated_activity_at": payload["detected"][0]["estimated_activity_at"],
+            "session_count": 0,
+            "size_bytes": payload["detected"][0]["size_bytes"],
+            "previously_imported": False,
+        }
+    ]
+    assert payload["detected"][0]["estimated_activity_at"] is not None
+    assert payload["detected"][0]["size_bytes"] > 0
+    assert "explicit" in payload["message"].lower()
+    assert "--source opensquilla" in payload["message"]
+
+
+def test_migrate_auto_detect_single_portable_requires_explicit_confirmation(
     tmp_path: Path, monkeypatch
 ) -> None:
     home = tmp_path / "fake_home"
@@ -359,10 +548,230 @@ def test_migrate_auto_detect_single_portable_preserves_source_kind(
 
     assert result.exit_code == 0, result.stdout
     payload = json.loads(result.stdout)
-    assert payload["selected"] == ["opensquilla"]
-    report = payload["reports"]["opensquilla"]
-    assert report["source"] == str(portable)
-    assert report["source_kind"] == "windows-portable"
+    candidate = payload["detected"][0]
+    assert candidate["name"] == "opensquilla"
+    assert candidate["kind"] == "windows-portable"
+    assert candidate["path"] == str(portable)
+    assert candidate["session_count"] == 0
+    assert candidate["size_bytes"] > 0
+    assert "estimated_activity_at" in candidate
+    assert candidate["previously_imported"] is False
+    assert "Re-run with" in payload["message"]
+
+
+def test_migrate_opensquilla_single_portable_requires_home_flag(
+    tmp_path: Path, monkeypatch
+) -> None:
+    portable_base = tmp_path / "local-app-data"
+    portable = _seed_portable(portable_base)
+    monkeypatch.setenv("LOCALAPPDATA", str(portable_base))
+    monkeypatch.delenv("TEMP", raising=False)
+    monkeypatch.setenv("OPENSQUILLA_STATE_DIR", str(tmp_path / "target-home"))
+
+    refused = runner.invoke(
+        app, ["migrate", "opensquilla", "--kind", "windows-portable", "--json"]
+    )
+    accepted = runner.invoke(
+        app,
+        [
+            "migrate",
+            "opensquilla",
+            "--kind",
+            "windows-portable",
+            "--home",
+            str(portable),
+            "--json",
+        ],
+    )
+
+    assert refused.exit_code == 2
+    refused_payload = json.loads(refused.stdout)
+    assert refused_payload["requires_selection"] is True
+    assert refused_payload["candidates"][0]["path"] == str(portable)
+    assert refused_payload["candidates"][0]["session_count"] == 0
+    assert "estimated_activity_at" in refused_payload["candidates"][0]
+    assert accepted.exit_code == 0, accepted.stdout
+    assert json.loads(accepted.stdout)["source"] == str(portable)
+
+
+@pytest.mark.parametrize("kind", ["cli-home", "desktop-home"])
+def test_migrate_opensquilla_direct_same_product_source_requires_confirmation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    kind: str,
+) -> None:
+    import opensquilla.cli.migrate_cmd as migrate_cmd
+
+    fake_home = tmp_path / "fake-home"
+    fake_home.mkdir()
+    source = (
+        _seed_opensquilla(fake_home)
+        if kind == "cli-home"
+        else tmp_path / "detected-desktop" / "opensquilla"
+    )
+    if kind == "desktop-home":
+        source.mkdir(parents=True)
+        (source / "config.toml").write_text("port = 18790\n", encoding="utf-8")
+        monkeypatch.setattr(migrate_cmd, "detect_desktop_home", lambda: source)
+    _set_fake_home(monkeypatch, fake_home)
+    target = tmp_path / "target-home"
+    monkeypatch.setenv("OPENSQUILLA_STATE_DIR", str(target))
+
+    refused = runner.invoke(
+        app,
+        ["migrate", "opensquilla", "--kind", kind, "--json"],
+    )
+    accepted = runner.invoke(
+        app,
+        [
+            "migrate",
+            "opensquilla",
+            "--kind",
+            kind,
+            "--source",
+            str(source),
+            "--json",
+        ],
+    )
+
+    assert refused.exit_code == 2
+    payload = json.loads(refused.stdout)
+    assert payload["requires_selection"] is True
+    assert payload["candidates"][0]["path"] == str(source)
+    assert not target.exists()
+    assert accepted.exit_code == 0, accepted.stdout
+    assert json.loads(accepted.stdout)["source"] == str(source)
+
+
+def test_migrate_help_treats_cli_and_desktop_as_supported_profiles() -> None:
+    group_help = runner.invoke(app, ["migrate", "--help"])
+    command_help = runner.invoke(app, ["migrate", "opensquilla", "--help"])
+
+    assert group_help.exit_code == 0
+    assert command_help.exit_code == 0
+    combined = f"{group_help.stdout}\n{command_help.stdout}"
+    assert "legacy OpenSquilla home" not in combined
+    assert "supported OpenSquilla CLI or Desktop profile" in combined
+    assert "historical Windows Portable" in combined
+
+
+def test_portable_text_chooser_labels_activity_as_estimated_and_shows_metadata(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    portable_base = tmp_path / "local-app-data"
+    portable = _seed_portable(portable_base)
+    (portable / "install-receipt.json").write_text(
+        json.dumps({"version": "0.5.0rc3"}),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("LOCALAPPDATA", str(portable_base))
+    monkeypatch.delenv("TEMP", raising=False)
+    monkeypatch.setenv("OPENSQUILLA_STATE_DIR", str(tmp_path / "target-home"))
+
+    result = runner.invoke(
+        app,
+        ["migrate", "opensquilla", "--kind", "windows-portable"],
+    )
+
+    assert result.exit_code == 2
+    assert str(portable) in result.stdout
+    assert "version 0.5.0rc3" in result.stdout
+    assert "estimated recent activity" in result.stdout
+    assert "0 sessions" in result.stdout
+    assert "bytes" in result.stdout
+
+
+def test_migrate_opensquilla_inspect_candidate_json_is_metadata_only(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    source = _seed_portable(tmp_path / "portable-base")
+    (source / "install-receipt.json").write_text(
+        json.dumps({"version": "0.5.0rc3"}),
+        encoding="utf-8",
+    )
+    state = source / "state"
+    state.mkdir()
+    connection = sqlite3.connect(state / "sessions.db")
+    try:
+        connection.execute("CREATE TABLE sessions (session_key TEXT PRIMARY KEY, title TEXT)")
+        connection.execute("INSERT INTO sessions VALUES (?, ?)", ("secret-id", "secret-title"))
+        connection.commit()
+    finally:
+        connection.close()
+    target = tmp_path / "target"
+    monkeypatch.setenv("OPENSQUILLA_STATE_DIR", str(target))
+
+    result = runner.invoke(
+        app,
+        [
+            "migrate",
+            "opensquilla",
+            "--source",
+            str(source),
+            "--kind",
+            "windows-portable",
+            "--inspect-candidate",
+            "--json",
+        ],
+    )
+
+    assert result.exit_code == 0, result.stdout
+    payload = json.loads(result.stdout)
+    assert payload["candidate"]["version"] == "0.5.0rc3"
+    assert payload["candidate"]["session_count"] == 1
+    assert payload["candidate"]["path"] == str(source)
+    assert "secret-id" not in result.stdout
+    assert "secret-title" not in result.stdout
+    assert not target.exists()
+
+
+def test_migrate_opensquilla_replacement_flags_require_exact_target(
+    tmp_path: Path, monkeypatch
+) -> None:
+    source = tmp_path / "legacy-home"
+    source.mkdir()
+    (source / "config.toml").write_text("port = 18791\n", encoding="utf-8")
+    (source / "workspace").mkdir()
+    (source / "state").mkdir()
+    target = tmp_path / "target-home"
+    target.mkdir()
+    (target / "existing.txt").write_text("preserve", encoding="utf-8")
+    monkeypatch.setenv("OPENSQUILLA_STATE_DIR", str(target))
+
+    refused = runner.invoke(
+        app,
+        [
+            "migrate",
+            "opensquilla",
+            "--source",
+            str(source),
+            "--apply",
+            "--overwrite",
+            "--json",
+        ],
+    )
+    accepted = runner.invoke(
+        app,
+        [
+            "migrate",
+            "opensquilla",
+            "--source",
+            str(source),
+            "--apply",
+            "--replace-target",
+            "--confirm-replace-target",
+            str(target.resolve()),
+            "--json",
+        ],
+    )
+
+    assert refused.exit_code == 1
+    assert "exact confirmation" in refused.stdout
+    assert accepted.exit_code == 0, accepted.stdout
+    assert not (target / "existing.txt").exists()
+    assert (target / "config.toml").is_file()
 
 
 def test_migrate_auto_detect_multiple_sources_non_tty_lists_and_exits(

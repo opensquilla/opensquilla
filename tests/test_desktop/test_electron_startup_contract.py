@@ -1262,10 +1262,44 @@ def test_desktop_gateway_build_and_verifier_cover_runtime_capabilities() -> None
     assert "code-task', 'smoke-imports'" in verifier
     assert "code-task', 'smoke-router'" in verifier
     assert "timeout: 120000" in verifier
-    assert "OPENSQUILLA_GATEWAY_SMOKE_TIMEOUT_MS" in _read(
-        "desktop/electron/scripts/smoke-gateway.mjs"
+    gateway_smoke = _read("desktop/electron/scripts/smoke-gateway.mjs")
+    assert "OPENSQUILLA_GATEWAY_SMOKE_TIMEOUT_MS" in gateway_smoke
+    assert "'90000'" in gateway_smoke
+    assert "function smokeEnv(tempHome, config)" in gateway_smoke
+    assert "OPENSQUILLA_STATE_DIR: tempHome" in gateway_smoke
+    assert "OPENSQUILLA_STATE_DIR: stateDir" not in gateway_smoke
+    assert "env: smokeEnv(tempHome, config)" in gateway_smoke
+    assert "const workspaceDir = join(tempHome, 'workspace')" in gateway_smoke
+    assert "await mkdir(workspaceDir, { recursive: true })" in gateway_smoke
+    assert "writeFile(join(workspaceDir, 'SOUL.md')" in gateway_smoke
+
+
+def test_packaged_gateway_smoke_profile_satisfies_recovery_guard(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    from opensquilla.recovery import guard_desktop_profile
+
+    home = tmp_path / "opensquilla-gateway-smoke"
+    (home / "state").mkdir(parents=True)
+    workspace = home / "workspace"
+    workspace.mkdir()
+    (workspace / "SOUL.md").write_text(
+        "synthetic packaged gateway smoke\n",
+        encoding="utf-8",
     )
-    assert "'90000'" in _read("desktop/electron/scripts/smoke-gateway.mjs")
+    (home / "config.toml").write_text('[auth]\nmode = "none"\n', encoding="utf-8")
+    monkeypatch.setenv("OPENSQUILLA_DESKTOP", "1")
+    monkeypatch.setenv("OPENSQUILLA_INSTALL_METHOD", "desktop")
+    monkeypatch.setenv("OPENSQUILLA_STATE_DIR", str(home))
+    monkeypatch.setenv("OPENSQUILLA_GATEWAY_CONFIG_PATH", str(home / "config.toml"))
+
+    report = guard_desktop_profile(home)
+
+    assert report is not None
+    assert report.outcome == "ready"
+    assert report.stable_code == "canonical_workspace"
+    assert report.effective_workspace == workspace
 
 
 def test_windows_release_workflow_fails_fast_after_gateway_build_failure() -> None:

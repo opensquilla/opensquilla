@@ -42,4 +42,5 @@ def test_aliyun_oss_release_mirror_workflow_contract() -> None:
     assert '--content-type "text/html; charset=utf-8"' in workflow
     assert '--content-disposition "inline"' in workflow
     assert '--cache-control "no-cache"' in workflow
+    assert "--meta" not in workflow
     assert '"${mirror_root}/latest.html"' in workflow

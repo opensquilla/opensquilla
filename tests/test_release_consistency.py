@@ -12,8 +12,8 @@ from pathlib import Path
 import pytest
 import yaml
 
-CURRENT_VERSION = "0.5.0rc3"
-CURRENT_DESKTOP_VERSION = "0.5.0-rc3"
+CURRENT_VERSION = "0.5.0rc4"
+CURRENT_DESKTOP_VERSION = "0.5.0-rc4"
 CURRENT_TAG = f"v{CURRENT_VERSION}"
 HISTORICAL_PREVIEW_VERSION = "0.2.0rc1"
 HISTORICAL_PREVIEW_TAG = f"v{HISTORICAL_PREVIEW_VERSION}"
@@ -302,6 +302,12 @@ def test_release_workflow_gates_built_and_downloaded_installers_on_profile_reten
     assert "requestCount, 1" in update_banner_smoke
     assert "OPENSQUILLA_PRIVACY_DISABLE_NETWORK_OBSERVABILITY" in update_banner_smoke
     assert "writeSyntheticUpdateCache(privacyUserDataDir, baseVersion, 0)" in update_banner_smoke
+    assert "writeSyntheticCanonicalWorkspace(privacyUserDataDir)" in update_banner_smoke
+    assert update_banner_smoke.index(
+        "writeSyntheticCanonicalWorkspace(privacyUserDataDir)"
+    ) < update_banner_smoke.index(
+        "privacyApp = await launchCandidate("
+    )
     assert "GITHUB_ACTIONS: '0'" in update_banner_smoke
 
     mac_audit = workflow[
@@ -312,6 +318,8 @@ def test_release_workflow_gates_built_and_downloaded_installers_on_profile_reten
     windows_audit = workflow[workflow.index("  audit-downloaded-windows-release:") :]
     for audit in (mac_audit, windows_audit):
         assert "needs: publish-release" in audit
+        assert "contents: write" in audit
+        assert "contents: read" not in audit
         assert "gh release download" in audit
         assert "SHA256SUMS" in audit
         assert "isDraft" in audit
@@ -474,7 +482,7 @@ def test_release_docs_warn_rc3_users_to_upgrade_in_place() -> None:
     assert "must install the\nnew version directly over the existing installation" in releases
     assert "must not uninstall RC3\nfirst" in releases
     assert "deleteAppDataOnUninstall=false" in releases
-    assert "Do not uninstall Preview 3" in current_notes
+    assert "uninstall Preview 3 first" in current_notes
 
 
 def test_privacy_docs_describe_network_observability_controls() -> None:
@@ -590,7 +598,7 @@ def test_releases_md_exists_and_references_current_and_preview_tags() -> None:
     assert "separately branded macOS or Linux portable bundles" in text
     assert "macOS `.zip` is the Electron desktop and updater artifact" in text
     assert "macOS portable zips" not in text
-    assert "`0.5.0rc4` /\n    `v0.5.0rc4`" in text
+    assert "`0.5.0rc5` /\n    `v0.5.0rc5`" in text
     assert "tracks the most recently pushed release tag" in text
 
 
@@ -609,9 +617,9 @@ def test_readme_release_install_uses_latest_assets_and_pinned_alternative() -> N
 
     assert f"OpenSquilla-{CURRENT_DESKTOP_VERSION}-mac-arm64.dmg" in readme
     assert f"OpenSquilla-{CURRENT_DESKTOP_VERSION}-win-x64.exe" in readme
-    assert "Simplified release assets" in readme
-    assert "Electron installers" in readme
-    assert "versioned Python wheel" in readme
+    assert "versioned GitHub assets" in readme
+    assert "Alibaba Cloud OSS mirror" in readme
+    assert "Portable archives remain retired" in readme
     assert "releases/latest/download/OpenSquilla-windows-x64-portable.zip" not in readme
     assert (
         f"releases/download/{CURRENT_TAG}/opensquilla-{CURRENT_VERSION}-py3-none-any.whl"
@@ -727,7 +735,7 @@ def test_historical_040_release_notes_remain_available() -> None:
     assert "OpenSquilla-0.4.0-mac-arm64.dmg" in notes
 
 
-def test_current_release_notes_cover_migration_upgrade_and_containers() -> None:
+def test_current_release_notes_cover_recovery_transfer_upgrade_and_containers() -> None:
     notes = Path(f"docs/releases/{CURRENT_VERSION}.md").read_text(encoding="utf-8")
 
     assert "## Downloads" in notes
@@ -735,36 +743,41 @@ def test_current_release_notes_cover_migration_upgrade_and_containers() -> None:
     assert f"OpenSquilla-{CURRENT_DESKTOP_VERSION}-mac-arm64.zip" in notes
     assert f"OpenSquilla-{CURRENT_DESKTOP_VERSION}-win-x64.exe" in notes
     assert f"opensquilla-{CURRENT_VERSION}-py3-none-any.whl" in notes
-    assert notes.index("### Legacy home migration and upgrade safety") < notes.index(
-        "### Providers, models, and routing"
+    assert notes.index("### Profile recovery and upgrade safety") < notes.index(
+        "### Windows Portable transfer"
     )
-    assert notes.index("### Providers, models, and routing") < notes.index(
-        "### Desktop, terminal, and Control UI"
+    assert notes.index("### Windows Portable transfer") < notes.index(
+        "### Desktop cleanup, credentials, and updates"
     )
-    assert notes.index("### Runtime, safety, and data reliability") < notes.index(
-        "### Container deployment"
+    assert notes.index("### Model Ensemble, providers, and Control UI") < notes.index(
+        "### Runtime and channel reliability"
     )
-    assert "No Windows portable assets are published for 0.5.0 preview releases" in notes
-    assert "0.5.0rc3 portable zip" in notes
-    assert "## Upgrading from Preview 2, Preview 1, or 0.4.1" in notes
-    assert "should not wait for an in-app RC3\nnotification" in notes
-    assert "ghcr.io/opensquilla/opensquilla:v0.5.0rc3" in notes
-    assert "Docker `latest` follows the most recently pushed release tag" in notes
+    assert notes.index("### Runtime and channel reliability") < notes.index(
+        "### Downloads and deployment"
+    )
+    assert "Normal version upgrades do not require a data transfer" in notes
+    assert "not silently overwritten, deleted, or merged" in notes
+    assert "never silently merged" in notes
+    assert "automatic sync" in notes
+    assert "No Windows Portable assets are published for 0.5.0 preview releases" in notes
+    assert "0.5.0rc4 Portable zip" in notes
+    assert "## Upgrading from Preview 3, earlier previews, or 0.4.1" in notes
+    assert "uninstall Preview 3 first" in notes
+    assert r"%APPDATA%\OpenSquilla" in notes
+    assert "ghcr.io/opensquilla/opensquilla:v0.5.0rc4" in notes
+    assert "`latest` tag follows the most recently verified release tag" in notes
     assert (
-        "Configuration\nformats from every released OpenSquilla version remain supported"
+        "https://opensquilla-releases.oss-cn-beijing.aliyuncs.com/releases/latest.html"
         in notes
     )
     assert "Synthetic fixtures" not in notes
     assert "release gate" not in notes
     assert "## Acknowledgements" in notes
     for login in [
+        "@HuaXiawithMoon",
         "@ab2ence",
-        "@JarvisPei",
-        "@labulalala",
-        "@Liu-RK",
-        "@lyteen",
         "@nice-code-la",
-        "@TUOXI293",
+        "@nankingjing",
     ]:
         assert login in notes
     assert "CONTRIBUTORS.md" in notes
@@ -777,23 +790,21 @@ def test_docs_index_links_current_release_notes() -> None:
     assert "releases/0.4.0.md" in index
 
 
-def test_current_contributor_ledger_records_050rc3_attribution() -> None:
+def test_current_contributor_ledger_records_050rc4_attribution() -> None:
     ledger = Path("CONTRIBUTORS.md").read_text(encoding="utf-8")
-    section = ledger.split("## OpenSquilla 0.5.0rc3", 1)[1].split(
-        "## OpenSquilla 0.5.0rc2", 1
+    section = ledger.split("## OpenSquilla 0.5.0rc4", 1)[1].split(
+        "## OpenSquilla 0.5.0rc3", 1
     )[0]
 
     expected = {
-        "@ab2ence": "#491",
-        "@JarvisPei": "#550",
-        "@labulalala": "#502",
-        "@Liu-RK": "#486",
-        "@lyteen": "#212",
-        "@nice-code-la": "#560",
-        "@TUOXI293": "#487",
+        "@HuaXiawithMoon": "#582",
+        "@ab2ence": "#586",
+        "@nice-code-la": "#588",
+        "@nankingjing": "#598",
     }
     for login, evidence in expected.items():
         assert login in section
         assert evidence in section
+    assert "#636" in section
     assert "Codex" not in section
     assert "Claude Code" not in section

@@ -832,6 +832,8 @@ function statusPayload(overrides: Record<string, unknown> = {}) {
   return {
     connectionState: 'READY',
     capabilitiesStale: false,
+    capabilitiesVersion: '0123456789abcdef',
+    capabilitiesFetchedAt: 1_720_000_000_000,
     configuredDefaultRetrievalProfile: 'hybrid_rrf_bge_m3_fts5',
     effectiveDefaultRetrievalProfile: 'hybrid_rrf_bge_m3_fts5',
     defaultFallbackReason: null,
@@ -881,16 +883,33 @@ async function flushUi(): Promise<void> {
   await nextTick()
 }
 
-async function mountKnowledgeView(options: { status?: Record<string, unknown>; rawStatus?: Record<string, unknown>; results?: Array<Record<string, unknown>> } = {}) {
-  const status = options.rawStatus || statusPayload(options.status)
+interface MountKnowledgeViewOptions {
+  status?: Record<string, unknown>
+  rawStatus?: unknown
+  statusResponse?: Promise<unknown>
+  statusResponses?: Array<unknown | Promise<unknown>>
+  settingsPatch?: unknown | Error
+  results?: Array<Record<string, unknown>>
+}
+
+async function mountKnowledgeView(options: MountKnowledgeViewOptions = {}) {
+  const status = options.rawStatus ?? statusPayload(options.status)
   const results = options.results || [searchResult()]
+  const statusResponses = options.statusResponses?.slice()
 
   rpcMock.waitForConnection.mockResolvedValue(undefined)
   rpcMock.call.mockImplementation(async (method: string) => {
-    if (method === 'knowledge.status') return status
+    if (method === 'knowledge.status') {
+      if (statusResponses?.length) return statusResponses.shift()
+      return options.statusResponse || status
+    }
     if (method === 'knowledge.questions') return { questions: [] }
     if (method === 'tools.catalog') return { tools: [{ name: 'knowledge_search' }] }
     if (method === 'knowledge.search') return { results }
+    if (method === 'knowledge.settings.patch') {
+      if (options.settingsPatch instanceof Error) throw options.settingsPatch
+      return options.settingsPatch ?? status
+    }
     if (method === 'knowledge.ingest') return { jobId: 'job-1' }
     throw new Error(`Unexpected RPC method: ${method}`)
   })
@@ -905,10 +924,10 @@ async function mountKnowledgeView(options: { status?: Record<string, unknown>; r
   return { el }
 }
 
-function retrievalSelect(el: HTMLElement): HTMLSelectElement {
-  const select = el.querySelector<HTMLSelectElement>('.rag-source-panel select.control-input')
-  if (!select) throw new Error('retrieval select not found')
-  return select
+function byTestId<T extends HTMLElement>(el: HTMLElement, testId: string): T {
+  const element = el.querySelector<T>(`[data-testid="${testId}"]`)
+  if (!element) throw new Error(`${testId} not found`)
+  return element
 }
 
 function setInputValue(element: HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement, value: string): void {
@@ -918,6 +937,14 @@ function setInputValue(element: HTMLInputElement | HTMLTextAreaElement | HTMLSel
 
 function rpcCall(method: string): unknown[] | undefined {
   return rpcMock.call.mock.calls.find((call) => call[0] === method)
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void
+  const promise = new Promise<T>((resolver) => {
+    resolve = resolver
+  })
+  return { promise, resolve }
 }
 
 beforeEach(() => {
@@ -934,26 +961,23 @@ afterEach(() => {
 })
 
 describe('KnowledgeView retrieval UI wiring', () => {
-  it('renders service retrieval profiles and keeps the current profile when available', async () => {
-    const { el } = await mountKnowledgeView()
-    const select = retrievalSelect(el)
-
-    expect(select.value).toBe('sqlite_fts5_default')
-    expect(Array.from(select.options).map((option) => ({
-      value: option.value,
-      text: option.textContent?.trim(),
-      disabled: option.disabled,
-    }))).toEqual([
-      { value: 'sqlite_fts5_default', text: 'SQLite FTS5', disabled: false },
-      { value: 'hybrid_rrf_bge_m3_fts5', text: 'Hybrid RRF', disabled: false },
-      { value: 'vector_bge_m3_1024', text: 'Vector bge-m3 (vector_index_empty)', disabled: true },
-    ])
-  })
-
-  it('sends only the selected retrieval profile and renders scores using its kind', async () => {
-    const { el } = await mountKnowledgeView({ results: [searchResult({ retrievalProfile: null })] })
-    setInputValue(retrievalSelect(el), 'hybrid_rrf_bge_m3_fts5')
-    await flushUi()
+  it('renders LEGACY default-search results without an active retrieval profile', async () => {
+    const { el } = await mountKnowledgeView({
+      rawStatus: {
+        connectionState: 'LEGACY',
+        capabilitiesStale: false,
+        capabilitiesVersion: null,
+        capabilitiesFetchedAt: 1_720_000_000_000,
+        rootDir: '/mnt/data/datasets',
+        documentsIndexed: 3,
+        chunksIndexed: 12,
+        filesIndexed: 3,
+        pipeline: 'legacy pipeline',
+        indexProfiles: ['sqlite_fts5_default'],
+        defaultRetrievalProfile: null,
+      },
+      results: [searchResult({ retrievalProfile: undefined })],
+    })
 
     const query = el.querySelector<HTMLTextAreaElement>('.rag-searchbar__query')
     if (!query) throw new Error('search query input not found')
@@ -965,21 +989,144 @@ describe('KnowledgeView retrieval UI wiring', () => {
     form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
     await flushUi()
 
-    const searchPayload = rpcCall('knowledge.search')?.[1]
-    expect(searchPayload).toMatchObject({
+    expect(rpcCall('knowledge.search')?.[1]).toEqual({
+      query: 'What changed in revenue?',
+      topK: 8,
+      collectionId: 'datasets',
+    })
+    expect(el.textContent).toContain('Annual filing')
+    expect(el.textContent).toContain('service default')
+  })
+
+  it('locks DEGRADED retrieval controls to service-default search payloads', async () => {
+    const { el } = await mountKnowledgeView({
+      status: {
+        connectionState: 'DEGRADED',
+        capabilitiesStale: true,
+        defaultFallbackReason: 'capability_refresh_failed',
+      },
+    })
+
+    const retrievalControl = el.querySelector<HTMLSelectElement>('.rag-source-panel select.control-input')
+    expect(retrievalControl === null || retrievalControl.disabled).toBe(true)
+
+    const query = el.querySelector<HTMLTextAreaElement>('.rag-searchbar__query')
+    if (!query) throw new Error('search query input not found')
+    setInputValue(query, 'Use the service default')
+    await flushUi()
+
+    const form = el.querySelector<HTMLFormElement>('form.rag-searchbar')
+    if (!form) throw new Error('search form not found')
+    form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
+    await flushUi()
+
+    expect(rpcCall('knowledge.search')?.[1]).toEqual({
+      query: 'Use the service default',
+      topK: 8,
+      collectionId: 'datasets',
+    })
+  })
+
+  it('keeps both retrieval selectors empty while the initial status is pending', async () => {
+    const pendingStatus = deferred<Record<string, unknown>>()
+    const { el } = await mountKnowledgeView({ statusResponse: pendingStatus.promise })
+
+    const defaultSelect = byTestId<HTMLSelectElement>(el, 'knowledge-default-profile')
+    const querySelect = byTestId<HTMLSelectElement>(el, 'knowledge-query-profile')
+    expect(defaultSelect.value).toBe('')
+    expect(querySelect.value).toBe('')
+    expect(defaultSelect.textContent).not.toContain('SQLite FTS5')
+    expect(querySelect.textContent).not.toContain('SQLite FTS5')
+    expect(defaultSelect.disabled).toBe(true)
+    expect(querySelect.disabled).toBe(true)
+
+    pendingStatus.resolve(statusPayload())
+    await flushUi()
+  })
+
+  it('renders independent READY settings with stable semantic hooks', async () => {
+    const { el } = await mountKnowledgeView()
+    const testIds = [
+      'knowledge-connection-state',
+      'knowledge-default-profile',
+      'knowledge-effective-profile',
+      'knowledge-fallback-warning',
+      'knowledge-save-default',
+      'knowledge-query-profile',
+      'knowledge-query-input',
+      'knowledge-search',
+    ]
+    for (const testId of testIds) {
+      expect(el.querySelector(`[data-testid="${testId}"]`)).not.toBeNull()
+    }
+
+    const defaultSelect = byTestId<HTMLSelectElement>(el, 'knowledge-default-profile')
+    const querySelect = byTestId<HTMLSelectElement>(el, 'knowledge-query-profile')
+    expect(defaultSelect.value).toBe('hybrid_rrf_bge_m3_fts5')
+    expect(querySelect.value).toBe('')
+    expect(Array.from(defaultSelect.options).map((option) => ({
+      value: option.value,
+      disabled: option.disabled,
+    }))).toEqual([
+      { value: 'sqlite_fts5_default', disabled: false },
+      { value: 'hybrid_rrf_bge_m3_fts5', disabled: false },
+      { value: 'vector_bge_m3_1024', disabled: true },
+    ])
+    expect(Array.from(querySelect.options).map((option) => option.value)).toEqual([
+      '',
+      'sqlite_fts5_default',
+      'hybrid_rrf_bge_m3_fts5',
+    ])
+    expect(byTestId(el, 'knowledge-connection-state').textContent).toContain('READY')
+    expect(byTestId(el, 'knowledge-effective-profile').textContent).toContain('Hybrid RRF')
+    expect(byTestId(el, 'knowledge-fallback-warning').hidden).toBe(true)
+    expect(el.textContent).toContain('0123456789abcdef')
+    expect(el.querySelector('.rag-source-panel select')).toBeNull()
+  })
+
+  it('omits retrieval metadata from service-default search payloads', async () => {
+    const { el } = await mountKnowledgeView({ results: [searchResult({ retrievalProfile: null })] })
+    const query = byTestId<HTMLTextAreaElement>(el, 'knowledge-query-input')
+    setInputValue(query, 'What changed in revenue?')
+    await flushUi()
+
+    byTestId<HTMLButtonElement>(el, 'knowledge-search').click()
+    await flushUi()
+
+    expect(rpcCall('knowledge.search')?.[1]).toEqual({
+      query: 'What changed in revenue?',
+      topK: 8,
+      collectionId: 'datasets',
+    })
+    expect(el.textContent).toContain('fusion 0.023')
+  })
+
+  it('sends only an explicit query override and renders scores using its kind', async () => {
+    const { el } = await mountKnowledgeView({ results: [searchResult({ retrievalProfile: null })] })
+    setInputValue(byTestId<HTMLSelectElement>(el, 'knowledge-query-profile'), 'hybrid_rrf_bge_m3_fts5')
+    await flushUi()
+
+    const query = byTestId<HTMLTextAreaElement>(el, 'knowledge-query-input')
+    setInputValue(query, 'What changed in revenue?')
+    await flushUi()
+
+    byTestId<HTMLButtonElement>(el, 'knowledge-search').click()
+    await flushUi()
+
+    expect(rpcCall('knowledge.search')?.[1]).toEqual({
+      query: 'What changed in revenue?',
+      topK: 8,
+      collectionId: 'datasets',
       retrievalProfile: 'hybrid_rrf_bge_m3_fts5',
     })
-    expect(searchPayload).not.toHaveProperty('embeddingModel')
-    expect(searchPayload).not.toHaveProperty('embeddingDimensions')
     expect(el.textContent).toContain('fusion 0.023')
     expect(el.textContent).toContain('Vector #2')
     expect(el.textContent).not.toContain('Vector#2')
   })
 
-  it('keeps ingest index profile separate from the selected retrieval profile', async () => {
+  it('keeps collection ingest free of retrieval selectors and uses only index profiles', async () => {
     const { el } = await mountKnowledgeView()
-    setInputValue(retrievalSelect(el), 'hybrid_rrf_bge_m3_fts5')
-    await flushUi()
+    expect(el.querySelector('.rag-source-panel select')).toBeNull()
 
     const buildButton = Array.from(el.querySelectorAll<HTMLButtonElement>('.rag-source-panel button.btn--primary'))
       .find((button) => button.textContent?.includes('Build collection'))
@@ -992,7 +1139,80 @@ describe('KnowledgeView retrieval UI wiring', () => {
     })
   })
 
-  it('disables search and avoids RPC when service profiles are all unavailable', async () => {
+  it('keeps DEGRADED and LEGACY controls read-only while allowing default search', async () => {
+    for (const connectionState of ['DEGRADED', 'LEGACY']) {
+      const { el } = await mountKnowledgeView({
+        status: {
+          connectionState,
+          capabilitiesStale: connectionState === 'DEGRADED',
+        },
+      })
+      const defaultSelect = byTestId<HTMLSelectElement>(el, 'knowledge-default-profile')
+      const querySelect = byTestId<HTMLSelectElement>(el, 'knowledge-query-profile')
+      const saveButton = byTestId<HTMLButtonElement>(el, 'knowledge-save-default')
+      const queryInput = byTestId<HTMLTextAreaElement>(el, 'knowledge-query-input')
+      const searchButton = byTestId<HTMLButtonElement>(el, 'knowledge-search')
+
+      expect(defaultSelect.disabled).toBe(true)
+      expect(querySelect.disabled).toBe(true)
+      expect(Array.from(querySelect.options).map((option) => option.value)).toEqual([''])
+      expect(saveButton.disabled).toBe(true)
+      setInputValue(queryInput, `Search while ${connectionState}`)
+      await flushUi()
+      expect(searchButton.disabled).toBe(false)
+      expect(el.textContent).toContain(
+        connectionState === 'DEGRADED'
+          ? 'Searches use the service default while capabilities are degraded.'
+          : 'Legacy Knowledge service: default search only.',
+      )
+    }
+  })
+
+  it('disables search with explicit messages for transitional and unavailable states', async () => {
+    for (const [connectionState, message] of [
+      ['DISCOVERING', 'Discovering retrieval capabilities.'],
+      ['UNAVAILABLE', 'Knowledge retrieval is unavailable.'],
+    ] as const) {
+      const { el } = await mountKnowledgeView({ status: { connectionState } })
+      setInputValue(byTestId<HTMLTextAreaElement>(el, 'knowledge-query-input'), 'Can I search?')
+      await flushUi()
+
+      expect(byTestId<HTMLButtonElement>(el, 'knowledge-search').disabled).toBe(true)
+      expect(byTestId(el, 'knowledge-connection-state').textContent).toContain(connectionState)
+      expect(el.textContent).toContain(message)
+    }
+  })
+
+  it('disables stale READY saves even when the default draft changes', async () => {
+    const { el } = await mountKnowledgeView({ status: { capabilitiesStale: true } })
+    setInputValue(
+      byTestId<HTMLSelectElement>(el, 'knowledge-default-profile'),
+      'sqlite_fts5_default',
+    )
+    await flushUi()
+
+    expect(byTestId<HTMLButtonElement>(el, 'knowledge-save-default').disabled).toBe(true)
+    expect(el.textContent).toContain('Capability snapshot is stale. Refresh before saving.')
+  })
+
+  it('shows configured and effective profiles when the service default falls back', async () => {
+    const { el } = await mountKnowledgeView({
+      status: {
+        configuredDefaultRetrievalProfile: 'vector_bge_m3_1024',
+        effectiveDefaultRetrievalProfile: 'sqlite_fts5_default',
+        defaultFallbackReason: 'vector_index_empty',
+      },
+    })
+
+    expect(byTestId<HTMLSelectElement>(el, 'knowledge-default-profile').value).toBe('vector_bge_m3_1024')
+    expect(byTestId(el, 'knowledge-effective-profile').textContent).toContain('SQLite FTS5')
+    const warning = byTestId(el, 'knowledge-fallback-warning')
+    expect(warning.hidden).toBe(false)
+    expect(warning.textContent).toContain('Vector bge-m3')
+    expect(warning.textContent).toContain('SQLite FTS5')
+  })
+
+  it('disables search and avoids RPC when READY has no available service profile', async () => {
     const { el } = await mountKnowledgeView({
       status: {
         retrievalProfiles: [
@@ -1015,26 +1235,224 @@ describe('KnowledgeView retrieval UI wiring', () => {
             dimensions: 1024,
           },
         ],
-        defaultRetrievalProfile: 'vector_bge_m3_1024',
+        configuredDefaultRetrievalProfile: 'vector_bge_m3_1024',
+        effectiveDefaultRetrievalProfile: null,
       },
     })
 
-    const query = el.querySelector<HTMLTextAreaElement>('.rag-searchbar__query')
-    if (!query) throw new Error('search query input not found')
+    const query = byTestId<HTMLTextAreaElement>(el, 'knowledge-query-input')
     setInputValue(query, 'Can I search?')
     await flushUi()
 
-    const button = el.querySelector<HTMLButtonElement>('form.rag-searchbar button[type="submit"]')
-    if (!button) throw new Error('search button not found')
+    const button = byTestId<HTMLButtonElement>(el, 'knowledge-search')
     expect(button.disabled).toBe(true)
 
-    const form = el.querySelector<HTMLFormElement>('form.rag-searchbar')
-    if (!form) throw new Error('search form not found')
-    form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
+    button.click()
     await flushUi()
 
     expect(rpcMock.call.mock.calls.filter((call) => call[0] === 'knowledge.search')).toHaveLength(0)
     expect(el.textContent).toContain('No retrieval profile available')
+  })
+
+  it('saves an available default and adopts only the confirmed service status', async () => {
+    const confirmedStatus = statusPayload({
+      configuredDefaultRetrievalProfile: 'sqlite_fts5_default',
+      effectiveDefaultRetrievalProfile: 'sqlite_fts5_default',
+      capabilitiesVersion: 'fedcba9876543210',
+      capabilitiesFetchedAt: 1_720_000_100_000,
+    })
+    const { el } = await mountKnowledgeView({ settingsPatch: confirmedStatus })
+    const defaultSelect = byTestId<HTMLSelectElement>(el, 'knowledge-default-profile')
+    const querySelect = byTestId<HTMLSelectElement>(el, 'knowledge-query-profile')
+    const saveButton = byTestId<HTMLButtonElement>(el, 'knowledge-save-default')
+    setInputValue(querySelect, 'hybrid_rrf_bge_m3_fts5')
+    setInputValue(defaultSelect, 'sqlite_fts5_default')
+    await flushUi()
+
+    expect(saveButton.disabled).toBe(false)
+    saveButton.click()
+    await flushUi()
+
+    expect(rpcCall('knowledge.settings.patch')?.[1]).toEqual({
+      defaultRetrievalProfile: 'sqlite_fts5_default',
+    })
+    expect(defaultSelect.value).toBe('sqlite_fts5_default')
+    expect(querySelect.value).toBe('hybrid_rrf_bge_m3_fts5')
+    expect(byTestId(el, 'knowledge-effective-profile').textContent).toContain('SQLite FTS5')
+    expect(el.textContent).toContain('fedcba9876543210')
+    expect(saveButton.disabled).toBe(true)
+  })
+
+  it('preserves the dirty draft and shows the error when saving fails', async () => {
+    const { el } = await mountKnowledgeView({ settingsPatch: new Error('Save denied') })
+    const defaultSelect = byTestId<HTMLSelectElement>(el, 'knowledge-default-profile')
+    const saveButton = byTestId<HTMLButtonElement>(el, 'knowledge-save-default')
+    setInputValue(defaultSelect, 'sqlite_fts5_default')
+    await flushUi()
+
+    saveButton.click()
+    await flushUi()
+
+    expect(rpcCall('knowledge.settings.patch')?.[1]).toEqual({
+      defaultRetrievalProfile: 'sqlite_fts5_default',
+    })
+    expect(defaultSelect.value).toBe('sqlite_fts5_default')
+    expect(el.textContent).toContain('Save denied')
+    expect(saveButton.disabled).toBe(false)
+  })
+
+  it('does not save a draft that is not an available query override', async () => {
+    const { el } = await mountKnowledgeView()
+    const defaultSelect = byTestId<HTMLSelectElement>(el, 'knowledge-default-profile')
+    const saveButton = byTestId<HTMLButtonElement>(el, 'knowledge-save-default')
+    setInputValue(defaultSelect, 'vector_bge_m3_1024')
+    await flushUi()
+
+    expect(defaultSelect.value).toBe('vector_bge_m3_1024')
+    expect(saveButton.disabled).toBe(true)
+    saveButton.click()
+    await flushUi()
+    expect(rpcCall('knowledge.settings.patch')).toBeUndefined()
+  })
+
+  it('fails closed when settings.patch returns a malformed status', async () => {
+    const { el } = await mountKnowledgeView({ settingsPatch: {} })
+    const defaultSelect = byTestId<HTMLSelectElement>(el, 'knowledge-default-profile')
+    const saveButton = byTestId<HTMLButtonElement>(el, 'knowledge-save-default')
+    setInputValue(defaultSelect, 'sqlite_fts5_default')
+    await flushUi()
+
+    saveButton.click()
+    await flushUi()
+
+    expect(defaultSelect.value).toBe('sqlite_fts5_default')
+    expect(el.textContent).toContain('Invalid Knowledge settings response')
+    expect(saveButton.disabled).toBe(false)
+  })
+
+  it('preserves the dirty draft when confirmed READY relationships are invalid', async () => {
+    const malformedConfirmed = statusPayload({
+      configuredDefaultRetrievalProfile: 'missing_profile',
+    })
+    const { el } = await mountKnowledgeView({ settingsPatch: malformedConfirmed })
+    const defaultSelect = byTestId<HTMLSelectElement>(el, 'knowledge-default-profile')
+    const saveButton = byTestId<HTMLButtonElement>(el, 'knowledge-save-default')
+    setInputValue(defaultSelect, 'sqlite_fts5_default')
+    await flushUi()
+
+    saveButton.click()
+    await flushUi()
+
+    expect(defaultSelect.value).toBe('sqlite_fts5_default')
+    expect(el.textContent).toContain('Invalid Knowledge settings response')
+    expect(saveButton.disabled).toBe(false)
+  })
+
+  it('fails closed when confirmed settings change the connection state', async () => {
+    const confirmedStatus = statusPayload({
+      connectionState: 'DEGRADED',
+      capabilitiesStale: true,
+      configuredDefaultRetrievalProfile: 'sqlite_fts5_default',
+      effectiveDefaultRetrievalProfile: 'sqlite_fts5_default',
+    })
+    const { el } = await mountKnowledgeView({ settingsPatch: confirmedStatus })
+    const defaultSelect = byTestId<HTMLSelectElement>(el, 'knowledge-default-profile')
+    const querySelect = byTestId<HTMLSelectElement>(el, 'knowledge-query-profile')
+    const saveButton = byTestId<HTMLButtonElement>(el, 'knowledge-save-default')
+    setInputValue(querySelect, 'hybrid_rrf_bge_m3_fts5')
+    setInputValue(defaultSelect, 'sqlite_fts5_default')
+    await flushUi()
+
+    saveButton.click()
+    await flushUi()
+
+    expect(byTestId(el, 'knowledge-connection-state').textContent).toContain('DEGRADED')
+    expect(defaultSelect.disabled).toBe(true)
+    expect(querySelect.disabled).toBe(true)
+    expect(querySelect.value).toBe('')
+    expect(saveButton.disabled).toBe(true)
+  })
+
+  it('fails closed when knowledge.status returns a malformed payload', async () => {
+    const { el } = await mountKnowledgeView({ rawStatus: {} })
+
+    expect(byTestId<HTMLSelectElement>(el, 'knowledge-default-profile').disabled).toBe(true)
+    expect(byTestId<HTMLSelectElement>(el, 'knowledge-query-profile').disabled).toBe(true)
+    expect(byTestId<HTMLButtonElement>(el, 'knowledge-search').disabled).toBe(true)
+    expect(el.textContent).toContain('Invalid Knowledge status response')
+  })
+
+  it('rejects semantically invalid READY capability snapshots', async () => {
+    for (const rawStatus of [
+      statusPayload({ configuredDefaultRetrievalProfile: 'missing_profile' }),
+      statusPayload({ effectiveDefaultRetrievalProfile: 'missing_profile' }),
+      statusPayload({ capabilitiesVersion: 'not-a-version' }),
+      statusPayload({ capabilitiesFetchedAt: 'not-a-timestamp' }),
+    ]) {
+      const { el } = await mountKnowledgeView({ rawStatus })
+      expect(byTestId<HTMLButtonElement>(el, 'knowledge-search').disabled).toBe(true)
+      expect(el.textContent).toContain('Invalid Knowledge status response')
+    }
+  })
+
+  it('blocks refresh while a default save is pending', async () => {
+    const pendingPatch = deferred<Record<string, unknown>>()
+    const { el } = await mountKnowledgeView({ settingsPatch: pendingPatch.promise })
+    const defaultSelect = byTestId<HTMLSelectElement>(el, 'knowledge-default-profile')
+    const saveButton = byTestId<HTMLButtonElement>(el, 'knowledge-save-default')
+    const refreshButton = el.querySelector<HTMLButtonElement>('.rag-stage__header button.btn--ghost')
+    if (!refreshButton) throw new Error('header refresh button not found')
+    setInputValue(defaultSelect, 'sqlite_fts5_default')
+    await flushUi()
+
+    saveButton.click()
+    await flushUi()
+
+    expect(refreshButton.disabled).toBe(true)
+    refreshButton.click()
+    await flushUi()
+    expect(rpcMock.call.mock.calls.filter((call) => call[0] === 'knowledge.status')).toHaveLength(1)
+
+    pendingPatch.resolve(statusPayload({
+      configuredDefaultRetrievalProfile: 'sqlite_fts5_default',
+      effectiveDefaultRetrievalProfile: 'sqlite_fts5_default',
+    }))
+    await flushUi()
+  })
+
+  it('blocks default saves while a status refresh is pending', async () => {
+    const pendingRefresh = deferred<Record<string, unknown>>()
+    const { el } = await mountKnowledgeView({
+      statusResponses: [statusPayload(), pendingRefresh.promise],
+    })
+    const defaultSelect = byTestId<HTMLSelectElement>(el, 'knowledge-default-profile')
+    const querySelect = byTestId<HTMLSelectElement>(el, 'knowledge-query-profile')
+    const saveButton = byTestId<HTMLButtonElement>(el, 'knowledge-save-default')
+    const refreshButton = el.querySelector<HTMLButtonElement>('.rag-stage__header button.btn--ghost')
+    if (!refreshButton) throw new Error('header refresh button not found')
+    setInputValue(querySelect, 'hybrid_rrf_bge_m3_fts5')
+    setInputValue(defaultSelect, 'sqlite_fts5_default')
+    await flushUi()
+
+    refreshButton.click()
+    await flushUi()
+
+    expect(saveButton.disabled).toBe(true)
+    saveButton.click()
+    await flushUi()
+    expect(rpcCall('knowledge.settings.patch')).toBeUndefined()
+
+    pendingRefresh.resolve(statusPayload())
+    await flushUi()
+    expect(querySelect.value).toBe('hybrid_rrf_bge_m3_fts5')
+  })
+
+  it('renders an invalid finite capability timestamp as not reported', async () => {
+    const { el } = await mountKnowledgeView({
+      status: { capabilitiesFetchedAt: 1e300 },
+    })
+
+    expect(el.textContent).toContain('FetchedNot reported')
   })
 
   it('does not mark embedding ready when no vectors are indexed', async () => {
@@ -1059,6 +1477,8 @@ describe('KnowledgeView retrieval UI wiring', () => {
   it('shows unknown embedding status without warning class for legacy status payloads', async () => {
     const { el } = await mountKnowledgeView({
       rawStatus: {
+        connectionState: 'LEGACY',
+        capabilitiesStale: false,
         rootDir: '/mnt/data/datasets',
         documentsIndexed: 3,
         chunksIndexed: 12,

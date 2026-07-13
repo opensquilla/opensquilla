@@ -9,7 +9,7 @@
         <button
           class="btn btn--ghost mobile-action-strip__button"
           type="button"
-          :disabled="loading || preparing"
+          :disabled="loading || preparing || savingDefault"
           @click="refreshAll"
         >
           <Icon name="refresh" :size="16" />
@@ -75,19 +75,6 @@
             <span>Collection</span>
             <input v-model="collectionName" class="control-input" autocomplete="off" :disabled="preparing" />
           </label>
-          <label class="rag-field">
-            <span>Retrieval</span>
-            <select v-model="retrievalProfile" class="control-input">
-              <option
-                v-for="profile in retrievalProfiles"
-                :key="profile.id"
-                :value="profile.id"
-                :disabled="!profile.available"
-              >
-                {{ profile.label }}{{ profile.available ? '' : ` (${profile.reason || 'unavailable'})` }}
-              </option>
-            </select>
-          </label>
           <label class="rag-field rag-field--wide">
             <span>资料根目录</span>
             <input v-model="sourceRoot" class="control-input" autocomplete="off" :disabled="preparing" />
@@ -118,7 +105,12 @@
         </div>
 
         <div class="rag-panel-actions">
-          <button class="btn btn--ghost" type="button" :disabled="loading || preparing" @click="refreshAll">
+          <button
+            class="btn btn--ghost"
+            type="button"
+            :disabled="loading || preparing || savingDefault"
+            @click="refreshAll"
+          >
             <Icon name="refresh" :size="16" />
             <span>Refresh</span>
           </button>
@@ -165,6 +157,74 @@
       </section>
     </div>
 
+    <section class="control-panel rag-retrieval-settings">
+      <div class="control-panel__head">
+        <div>
+          <span class="control-panel__eyebrow">Knowledge settings</span>
+          <h2 class="control-panel__title">Retrieval defaults</h2>
+        </div>
+        <span data-testid="knowledge-connection-state" class="control-pill">
+          {{ connectionStateLabel }}
+        </span>
+      </div>
+
+      <div class="rag-settings-meta">
+        <span><strong>Capability version</strong>{{ capabilityVersionLabel }}</span>
+        <span><strong>Fetched</strong>{{ capabilityFetchedAtLabel }}</span>
+      </div>
+
+      <div class="rag-form-grid">
+        <label class="rag-field">
+          <span>Configured default</span>
+          <select
+            v-model="defaultProfileDraft"
+            data-testid="knowledge-default-profile"
+            class="control-input"
+            :disabled="defaultProfileDisabled"
+          >
+            <option v-if="retrievalProfiles.length === 0" value="">No service profiles</option>
+            <option
+              v-for="profile in retrievalProfiles"
+              :key="profile.id"
+              :value="profile.id"
+              :disabled="!profile.available"
+            >
+              {{ profile.label }}{{ profile.available ? '' : ` (${profile.reason || 'unavailable'})` }}
+            </option>
+          </select>
+        </label>
+        <div class="rag-effective-profile">
+          <span>Current effective</span>
+          <strong data-testid="knowledge-effective-profile">{{ effectiveProfileLabel }}</strong>
+        </div>
+      </div>
+
+      <p
+        data-testid="knowledge-fallback-warning"
+        class="rag-settings-message rag-settings-message--warn"
+        :hidden="!defaultFallbackActive"
+      >
+        Configured {{ configuredProfileLabel }} is using {{ effectiveProfileLabel }}.
+      </p>
+      <p class="rag-settings-message">{{ connectionStateMessage }}</p>
+      <p v-if="settingsError" class="rag-settings-message rag-settings-message--warn" role="alert">
+        {{ settingsError }}
+      </p>
+
+      <div class="rag-panel-actions">
+        <button
+          data-testid="knowledge-save-default"
+          class="btn btn--primary"
+          type="button"
+          :disabled="!canSave"
+          @click="saveDefault"
+        >
+          <Icon name="save" :size="16" />
+          <span>{{ savingDefault ? 'Saving' : 'Save default' }}</span>
+        </button>
+      </div>
+    </section>
+
     <div class="rag-review-layout">
       <section class="control-panel rag-search-panel">
         <div class="control-panel__head">
@@ -178,15 +238,39 @@
         <form class="rag-searchbar" @submit.prevent="runSearch">
           <textarea
             v-model="query"
+            data-testid="knowledge-query-input"
             class="control-input rag-searchbar__query"
             rows="2"
             placeholder="输入检索问题"
           />
+          <label class="rag-field rag-field--compact rag-field--profile">
+            <span>Query retrieval</span>
+            <select
+              v-model="queryProfileOverride"
+              data-testid="knowledge-query-profile"
+              class="control-input"
+              :disabled="queryProfileDisabled"
+            >
+              <option value="">Use Knowledge default</option>
+              <option
+                v-for="profile in queryProfiles"
+                :key="profile.id"
+                :value="profile.id"
+              >
+                {{ profile.label }}
+              </option>
+            </select>
+          </label>
           <label class="rag-field rag-field--compact">
             <span>Top K</span>
             <input v-model.number="topK" class="control-input control-input--narrow" type="number" min="1" max="20" />
           </label>
-          <button class="btn btn--primary" type="submit" :disabled="searching || !query.trim() || !searchProfilePayload">
+          <button
+            data-testid="knowledge-search"
+            class="btn btn--primary"
+            type="submit"
+            :disabled="searching || !query.trim() || !searchProfilePayload"
+          >
             <Icon name="search" :size="16" />
             <span>{{ searchActionLabel }}</span>
           </button>
@@ -236,7 +320,10 @@
               <div class="rag-result__meta">
                 <span><strong>Citation</strong>{{ result.citation }}</span>
                 <span><strong>Source</strong>{{ result.source }}</span>
-                <span><strong>Retrieval</strong>{{ result.retrievalProfile || activeRetrievalProfile.id }}</span>
+                <span>
+                  <strong>Retrieval</strong>
+                  {{ result.retrievalProfile || activeRetrievalProfile?.id || 'service default' }}
+                </span>
                 <span
                   v-for="meta in formatResultScoreMeta(result, activeRetrievalProfile)"
                   :key="`${result.chunkId}-${meta.label}-${meta.value}`"
@@ -369,19 +456,22 @@ import LoadingSpinner from '@/components/LoadingSpinner.vue'
 import { useRpcStore } from '@/stores/rpc'
 import {
   buildSearchProfilePayload,
-  defaultRetrievalProfileId,
+  canSaveDefault,
+  defaultProfileDraftFromStatus,
+  fallbackActive as hasDefaultFallback,
   formatResultScoreMeta,
   formatResultScorePrimary,
+  queryOverrideOptions,
   retrievalProfilesFromStatus,
   searchProgressLabel,
   selectedRetrievalProfile,
 } from './knowledgeRetrieval'
-import type { RetrievalProfileStatus } from './knowledgeRetrieval'
+import type { KnowledgeStatusLike, RetrievalProfileStatus } from './knowledgeRetrieval'
 
-interface KnowledgeStatus {
-  rootDir: string
-  documentsIndexed: number
-  chunksIndexed: number
+interface KnowledgeStatus extends KnowledgeStatusLike {
+  rootDir?: string
+  documentsIndexed?: number
+  chunksIndexed?: number
   filesIndexed?: number
   pipeline?: string
   indexProfiles?: string[]
@@ -392,7 +482,8 @@ interface KnowledgeStatus {
   embeddingWarnings?: string[]
   retrievalWarnings?: string[]
   retrievalProfiles?: RetrievalProfileStatus[]
-  defaultRetrievalProfile?: string
+  capabilitiesVersion?: string | null
+  capabilitiesFetchedAt?: number | null
   latestJob?: {
     status: string
     filesSeen: number
@@ -453,7 +544,8 @@ const rpc = useRpcStore()
 const sourceRoot = ref('/mnt/data/datasets')
 const collectionName = ref('datasets')
 const indexProfile = ref('sqlite_fts5_default')
-const retrievalProfile = ref('sqlite_fts5_default')
+const defaultProfileDraft = ref('')
+const queryProfileOverride = ref('')
 const sampleLimit = ref(30)
 const topK = ref(8)
 const query = ref('')
@@ -469,6 +561,8 @@ const loading = ref(false)
 const preparing = ref(false)
 const searching = ref(false)
 const questionsLoading = ref(false)
+const savingDefault = ref(false)
+const settingsError = ref('')
 const savingJudgment = ref(false)
 const detailLoadingId = ref('')
 const judgmentPath = ref('')
@@ -486,12 +580,74 @@ const sourceLabel = computed(() => basename(status.value?.rootDir || sourceRoot.
 const searchLimitLabel = computed(() => `top ${Number(topK.value || 0) || 8}`)
 const activeIndexProfile = computed(() => status.value?.indexProfiles?.[0] || indexProfile.value)
 const retrievalProfiles = computed(() => retrievalProfilesFromStatus(status.value))
+const queryProfiles = computed(() => queryOverrideOptions(status.value))
 const activeRetrievalProfile = computed(() => (
-  selectedRetrievalProfile(status.value, retrievalProfile.value)
-  || retrievalProfiles.value.find((profile) => profile.id === retrievalProfile.value)
-  || retrievalProfiles.value[0]
+  selectedRetrievalProfile(status.value, queryProfileOverride.value)
 ))
-const searchProfilePayload = computed(() => buildSearchProfilePayload(status.value, retrievalProfile.value))
+const searchProfilePayload = computed(() => (
+  buildSearchProfilePayload(status.value, queryProfileOverride.value)
+))
+const connectionStateLabel = computed(() => status.value?.connectionState || 'UNKNOWN')
+const defaultProfileDisabled = computed(() => (
+  status.value?.connectionState !== 'READY' || retrievalProfiles.value.length === 0
+))
+const queryProfileDisabled = computed(() => (
+  status.value?.connectionState !== 'READY' || queryProfiles.value.length === 0
+))
+const defaultDirty = computed(() => (
+  defaultProfileDraft.value !== defaultProfileDraftFromStatus(status.value)
+))
+const draftProfileAvailable = computed(() => (
+  queryProfiles.value.some((profile) => profile.id === defaultProfileDraft.value)
+))
+const canSave = computed(() => (
+  !savingDefault.value
+  && !loading.value
+  && defaultDirty.value
+  && draftProfileAvailable.value
+  && canSaveDefault(status.value)
+))
+const defaultFallbackActive = computed(() => hasDefaultFallback(status.value))
+const configuredProfileLabel = computed(() => (
+  profileLabel(status.value?.configuredDefaultRetrievalProfile)
+))
+const effectiveProfileLabel = computed(() => (
+  profileLabel(status.value?.effectiveDefaultRetrievalProfile)
+))
+const capabilityVersionLabel = computed(() => {
+  const version = status.value?.capabilitiesVersion
+  return typeof version === 'string' && version.trim() ? version : 'Not reported'
+})
+const capabilityFetchedAtLabel = computed(() => {
+  const fetchedAt = status.value?.capabilitiesFetchedAt
+  if (typeof fetchedAt !== 'number' || !Number.isFinite(fetchedAt)) return 'Not reported'
+  const fetchedAtDate = new Date(fetchedAt)
+  return Number.isFinite(fetchedAtDate.getTime())
+    ? fetchedAtDate.toISOString()
+    : 'Not reported'
+})
+const connectionStateMessage = computed(() => {
+  switch (status.value?.connectionState) {
+    case 'READY':
+      if (queryProfiles.value.length === 0) return 'No retrieval profile available.'
+      if (status.value.capabilitiesStale) {
+        return 'Capability snapshot is stale. Refresh before saving.'
+      }
+      return 'Retrieval capabilities are ready.'
+    case 'DEGRADED':
+      return 'Searches use the service default while capabilities are degraded.'
+    case 'LEGACY':
+      return 'Legacy Knowledge service: default search only.'
+    case 'DISCOVERING':
+      return 'Discovering retrieval capabilities.'
+    case 'UNAVAILABLE':
+      return 'Knowledge retrieval is unavailable.'
+    case 'DISCONNECTED':
+      return 'Knowledge service is disconnected.'
+    default:
+      return 'Waiting for Knowledge capability status.'
+  }
+})
 const hasVectorStatus = computed(() => (
   hasStatusField('vectorCoveragePct') || hasStatusField('vectorChunksIndexed')
 ))
@@ -527,7 +683,7 @@ const vectorCoverageLabel = computed(() => {
   return coverage === null || coverage === undefined ? '-' : `${Number(coverage).toFixed(1)}%`
 })
 const searchActionLabel = computed(() => (
-  searching.value ? searchProgressLabel(status.value, retrievalProfile.value) : 'Search'
+  searching.value ? searchProgressLabel(status.value, queryProfileOverride.value) : 'Search'
 ))
 const latestJobHint = computed(() => {
   const job = status.value?.latestJob
@@ -586,6 +742,7 @@ const searchMeta = computed(() => {
 })
 
 async function refreshAll(): Promise<void> {
+  if (loading.value || savingDefault.value) return
   loading.value = true
   error.value = ''
   try {
@@ -599,8 +756,35 @@ async function refreshAll(): Promise<void> {
 
 async function loadStatus(): Promise<void> {
   await rpc.waitForConnection()
-  status.value = await rpc.call<KnowledgeStatus>('knowledge.status', {})
-  retrievalProfile.value = defaultRetrievalProfileId(status.value, retrievalProfile.value)
+  const payload = await rpc.call<unknown>('knowledge.status', {})
+  const nextStatus = knowledgeStatusFromUnknown(payload)
+  if (!nextStatus) {
+    status.value = null
+    defaultProfileDraft.value = ''
+    queryProfileOverride.value = ''
+    throw new Error('Invalid Knowledge status response')
+  }
+  applyKnowledgeStatus(nextStatus)
+}
+
+async function saveDefault(): Promise<void> {
+  if (loading.value || savingDefault.value || !canSave.value) return
+  const draft = defaultProfileDraft.value
+  savingDefault.value = true
+  settingsError.value = ''
+  try {
+    await rpc.waitForConnection()
+    const payload = await rpc.call<unknown>('knowledge.settings.patch', {
+      defaultRetrievalProfile: draft,
+    })
+    const confirmed = knowledgeStatusFromUnknown(payload)
+    if (!confirmed) throw new Error('Invalid Knowledge settings response')
+    applyKnowledgeStatus(confirmed)
+  } catch (err) {
+    settingsError.value = messageFromError(err)
+  } finally {
+    savingDefault.value = false
+  }
 }
 
 async function loadQuestions(): Promise<void> {
@@ -731,6 +915,79 @@ function basename(path: string): string {
   return raw.split('/').filter(Boolean).pop() || raw
 }
 
+function profileLabel(profileId: unknown): string {
+  if (typeof profileId !== 'string' || !profileId.trim()) return 'Not reported'
+  return retrievalProfiles.value.find((profile) => profile.id === profileId)?.label || profileId
+}
+
+function knowledgeStatusFromUnknown(value: unknown): KnowledgeStatus | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null
+  const candidate = value as Record<string, unknown>
+  if (typeof candidate.capabilitiesStale !== 'boolean') return null
+  switch (candidate.connectionState) {
+    case 'READY':
+    case 'DEGRADED':
+      return validCapabilitySnapshot(candidate)
+    case 'DISCONNECTED':
+    case 'DISCOVERING':
+    case 'UNAVAILABLE':
+    case 'LEGACY':
+      return candidate as unknown as KnowledgeStatus
+    default:
+      return null
+  }
+}
+
+function validCapabilitySnapshot(candidate: Record<string, unknown>): KnowledgeStatus | null {
+  if (
+    typeof candidate.capabilitiesVersion !== 'string'
+    || !/^[0-9a-f]{16}$/.test(candidate.capabilitiesVersion)
+    || typeof candidate.capabilitiesFetchedAt !== 'number'
+    || !Number.isFinite(candidate.capabilitiesFetchedAt)
+    || typeof candidate.configuredDefaultRetrievalProfile !== 'string'
+    || !candidate.configuredDefaultRetrievalProfile.length
+    || candidate.configuredDefaultRetrievalProfile.trim()
+      !== candidate.configuredDefaultRetrievalProfile
+    || !(
+      candidate.effectiveDefaultRetrievalProfile === null
+      || (
+        typeof candidate.effectiveDefaultRetrievalProfile === 'string'
+        && candidate.effectiveDefaultRetrievalProfile.length > 0
+        && candidate.effectiveDefaultRetrievalProfile.trim()
+          === candidate.effectiveDefaultRetrievalProfile
+      )
+    )
+    || !(
+      candidate.defaultFallbackReason === undefined
+      || candidate.defaultFallbackReason === null
+      || typeof candidate.defaultFallbackReason === 'string'
+    )
+  ) return null
+
+  const statusCandidate = candidate as unknown as KnowledgeStatus
+  const profiles = retrievalProfilesFromStatus(statusCandidate)
+  if (!profiles.length) return null
+  if (!profiles.some(
+    (profile) => profile.id === candidate.configuredDefaultRetrievalProfile,
+  )) return null
+  const effectiveDefault = candidate.effectiveDefaultRetrievalProfile
+  if (
+    effectiveDefault !== null
+    && !profiles.some((profile) => profile.id === effectiveDefault && profile.available)
+  ) return null
+  return statusCandidate
+}
+
+function applyKnowledgeStatus(nextStatus: KnowledgeStatus): void {
+  const currentOverride = queryProfileOverride.value
+  status.value = nextStatus
+  defaultProfileDraft.value = defaultProfileDraftFromStatus(nextStatus)
+  queryProfileOverride.value = queryOverrideOptions(nextStatus).some(
+    (profile) => profile.id === currentOverride,
+  ) ? currentOverride : ''
+  settingsError.value = ''
+}
+
 function shortId(value?: string): string {
   const raw = String(value || '')
   if (!raw) return ''
@@ -805,6 +1062,10 @@ onActivated(() => {
   width: 104px;
 }
 
+.rag-field--profile {
+  width: 220px;
+}
+
 .rag-field span {
   color: var(--text-dim);
   font-size: var(--fs-xs);
@@ -861,6 +1122,54 @@ onActivated(() => {
   justify-content: flex-end;
 }
 
+.rag-settings-meta,
+.rag-effective-profile {
+  display: flex;
+  gap: var(--sp-2);
+}
+
+.rag-settings-meta {
+  color: var(--text-muted);
+  flex-wrap: wrap;
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+}
+
+.rag-settings-meta span {
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 4px 8px;
+}
+
+.rag-settings-meta strong {
+  color: var(--text);
+  margin-right: 5px;
+}
+
+.rag-effective-profile {
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  flex-direction: column;
+  justify-content: center;
+  padding: var(--sp-3);
+}
+
+.rag-effective-profile span,
+.rag-settings-message {
+  color: var(--text-muted);
+  font-size: var(--fs-xs);
+}
+
+.rag-settings-message {
+  margin: 0;
+}
+
+.rag-settings-message--warn {
+  color: var(--warn);
+}
+
 .rag-question-list {
   display: grid;
   gap: var(--sp-2);
@@ -907,7 +1216,7 @@ onActivated(() => {
   align-items: end;
   display: grid;
   gap: var(--sp-2);
-  grid-template-columns: minmax(0, 1fr) 104px auto;
+  grid-template-columns: minmax(0, 1fr) 220px 104px auto;
 }
 
 .rag-searchbar__query {

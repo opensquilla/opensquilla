@@ -7,11 +7,9 @@ import pytest
 
 from opensquilla.engine import Agent, AgentConfig, ToolResult
 from opensquilla.engine.types import EnsembleProgressEvent as EngineEnsembleProgressEvent
-from opensquilla.engine.types import RunHeartbeatEvent
-from opensquilla.engine.types import ToolCall
+from opensquilla.engine.types import RunHeartbeatEvent, ToolCall
 from opensquilla.provider import (
     ChatConfig,
-    ErrorEvent as ProviderErrorEvent,
     Message,
     ProviderHeartbeatEvent,
     ToolDefinition,
@@ -19,6 +17,9 @@ from opensquilla.provider import (
 )
 from opensquilla.provider import (
     DoneEvent as ProviderDone,
+)
+from opensquilla.provider import (
+    ErrorEvent as ProviderErrorEvent,
 )
 from opensquilla.provider import (
     TextDeltaEvent as ProviderText,

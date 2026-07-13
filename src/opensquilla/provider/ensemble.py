@@ -11,8 +11,15 @@ from collections.abc import AsyncIterator, Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from typing import Any, Literal
 
-from .model_catalog import shared_catalog
-from .protocol import LLMProvider, ProviderMetadata
+import structlog
+
+from opensquilla.context_budget import ContextBudgetGovernor
+
+from .model_catalog import resolve_effective_context_window, shared_catalog
+from .protocol import (
+    LLMProvider,
+    ProviderMetadata,
+)
 from .registry import get_provider_spec
 from .selector import ModelSelector, ProviderConfig, SelectorConfig
 from .types import (
@@ -35,6 +42,7 @@ from .types import (
 
 TRACE_CONTENT_MAX_CHARS = 8_000
 _ENSEMBLE_HEARTBEAT_INTERVAL_SECONDS = 15.0
+log = structlog.get_logger(__name__)
 
 
 def _ensemble_heartbeat_interval() -> float:
@@ -94,6 +102,17 @@ class EnsembleMemberConfig:
     max_tokens: int = 0
     thinking: str | None = None
     k: int = 1
+
+
+@dataclass(frozen=True)
+class _MemberRequestBudgetBinding:
+    """Private runtime provenance for one ensemble member's request cap."""
+
+    context_window_tokens: int | None
+    context_window_source: str
+    context_overflow_threshold: float
+    cap_source: str
+    rederive: bool
 
 
 @dataclass
@@ -264,7 +283,37 @@ def _member_max_tokens(member: EnsembleMemberConfig) -> int:
         return ChatConfig().max_tokens
 
 
-def _member_chat_config(base: ChatConfig | None, member: EnsembleMemberConfig) -> ChatConfig:
+def _member_budget_key(member: EnsembleMemberConfig) -> tuple[str, str, str]:
+    cfg = member.provider_config
+    return (
+        str(cfg.provider or "").strip().lower(),
+        str(cfg.model or "").strip().lower(),
+        str(cfg.base_url or "").strip().rstrip("/").lower(),
+    )
+
+
+def _effective_request_cap_source(
+    binding: _MemberRequestBudgetBinding | None,
+    chat_config: ChatConfig | None,
+) -> str:
+    cap = int(getattr(chat_config, "provider_request_max_chars", 0) or 0)
+    if cap <= 0 or binding is None:
+        return "inherited"
+    if binding.cap_source == "explicit":
+        return "explicit"
+    if binding.rederive:
+        return "member_context"
+    return "inherited"
+
+
+def _member_chat_config(
+    base: ChatConfig | None,
+    member: EnsembleMemberConfig,
+    *,
+    request_budget_binding: _MemberRequestBudgetBinding | None = None,
+    role: str = "member",
+    record_budget_rebound: bool = True,
+) -> ChatConfig:
     cfg = base.model_copy(deep=True) if base is not None else ChatConfig()
     updates: dict[str, Any] = {
         "max_tokens": _member_max_tokens(member),
@@ -277,7 +326,50 @@ def _member_chat_config(base: ChatConfig | None, member: EnsembleMemberConfig) -
         updates["thinking"] = thinking
     if thinking_level is not None:
         updates["thinking_level"] = thinking_level
-    return cfg.model_copy(update=updates)
+    effective = cfg.model_copy(update=updates)
+    inherited_cap = int(getattr(cfg, "provider_request_max_chars", 0) or 0)
+    if (
+        base is not None
+        and inherited_cap > 0
+        and request_budget_binding is not None
+        and request_budget_binding.rederive
+        and request_budget_binding.context_window_tokens is not None
+        and request_budget_binding.context_window_tokens > 0
+    ):
+        thinking_budget_tokens = (
+            max(0, int(effective.thinking_budget_tokens or 0))
+            if effective.thinking
+            else 0
+        )
+        rebound_cap = ContextBudgetGovernor.from_values(
+            context_window_tokens=request_budget_binding.context_window_tokens,
+            max_output_tokens=effective.max_tokens,
+            thinking_budget_tokens=thinking_budget_tokens,
+            context_overflow_threshold=(
+                request_budget_binding.context_overflow_threshold
+            ),
+        ).snapshot().provider_request_max_chars
+        effective = effective.model_copy(
+            update={"provider_request_max_chars": rebound_cap}
+        )
+        member_cfg = member.provider_config
+        if record_budget_rebound:
+            log.info(
+                "ensemble_member_request_budget_rebound",
+                role=role,
+                label=member.label or role,
+                provider=member_cfg.provider,
+                model=member_cfg.model,
+                inherited_request_max_chars=inherited_cap,
+                effective_request_max_chars=rebound_cap,
+                effective_context_window_tokens=(
+                    request_budget_binding.context_window_tokens
+                ),
+                effective_context_window_source=(
+                    request_budget_binding.context_window_source
+                ),
+            )
+    return effective
 
 
 def _build_provider(cfg: ProviderConfig) -> LLMProvider:
@@ -384,6 +476,10 @@ class EnsembleProvider:
         proposer_tools: bool = False,
         quorum_grace_seconds: float = 0.0,
         selection_plan: Mapping[str, Any] | None = None,
+        _member_request_budget_bindings: Mapping[
+            tuple[str, str, str], _MemberRequestBudgetBinding
+        ]
+        | None = None,
     ) -> None:
         self.profile_name = profile_name
         self.proposers = list(proposers)
@@ -399,6 +495,15 @@ class EnsembleProvider:
         self.proposer_tools = bool(proposer_tools)
         self.quorum_grace_seconds = max(0.0, float(quorum_grace_seconds or 0.0))
         self.selection_plan = dict(selection_plan or {})
+        self._member_request_budget_bindings = dict(
+            _member_request_budget_bindings or {}
+        )
+
+    def _member_request_budget_binding(
+        self,
+        member: EnsembleMemberConfig,
+    ) -> _MemberRequestBudgetBinding | None:
+        return self._member_request_budget_bindings.get(_member_budget_key(member))
 
     def provider_metadata(self) -> ProviderMetadata:
         return ProviderMetadata(
@@ -505,7 +610,12 @@ class EnsembleProvider:
                 yield event
             return
 
-        aggregator_cfg = _member_chat_config(config, self.aggregator)
+        aggregator_cfg = _member_chat_config(
+            config,
+            self.aggregator,
+            request_budget_binding=self._member_request_budget_binding(self.aggregator),
+            role="aggregator",
+        )
         if self.aggregator_timeout_seconds > 0:
             aggregator_cfg = aggregator_cfg.model_copy(
                 update={"timeout": self.aggregator_timeout_seconds}
@@ -737,7 +847,12 @@ class EnsembleProvider:
         started: float,
     ) -> _CandidateResult:
         provider = _build_provider(member.provider_config)
-        chat_cfg = _member_chat_config(config, member)
+        chat_cfg = _member_chat_config(
+            config,
+            member,
+            request_budget_binding=self._member_request_budget_binding(member),
+            role="proposer",
+        )
         if self.proposer_timeout_seconds > 0:
             chat_cfg = chat_cfg.model_copy(update={"timeout": self.proposer_timeout_seconds})
         result.execution = _member_execution_trace(
@@ -746,6 +861,7 @@ class EnsembleProvider:
             chat_config=chat_cfg,
             tools=tools,
             timeout_seconds=self.proposer_timeout_seconds,
+            request_budget_binding=self._member_request_budget_binding(member),
         )
         text_parts: list[str] = []
         tool_parts: list[str] = []
@@ -865,6 +981,9 @@ class EnsembleProvider:
                 chat_config=final_request_config,
                 tools=final_request_tools,
                 timeout_seconds=final_request_timeout_seconds,
+                request_budget_binding=self._member_request_budget_binding(
+                    final_request_member
+                ),
             )
         elif final_request_config is not None or final_request_tools is not None:
             final_request["execution"] = _request_execution_trace(
@@ -1112,6 +1231,7 @@ def _member_execution_trace(
     chat_config: ChatConfig | None,
     tools: list[ToolDefinition] | None,
     timeout_seconds: float | None,
+    request_budget_binding: _MemberRequestBudgetBinding | None = None,
 ) -> dict[str, Any]:
     cfg = member.provider_config
     payload = _request_execution_trace(
@@ -1132,6 +1252,25 @@ def _member_execution_trace(
             "base_url": cfg.base_url,
             "proxy_configured": bool(cfg.proxy),
             "provider_routing": _json_safe(dict(cfg.provider_routing)),
+            "effective_context_window_tokens": (
+                request_budget_binding.context_window_tokens
+                if request_budget_binding is not None
+                else None
+            ),
+            "effective_context_window_source": (
+                request_budget_binding.context_window_source
+                if request_budget_binding is not None
+                else "unbound"
+            ),
+            "effective_provider_request_max_chars": getattr(
+                chat_config,
+                "provider_request_max_chars",
+                None,
+            ),
+            "provider_request_max_chars_source": _effective_request_cap_source(
+                request_budget_binding,
+                chat_config,
+            ),
         }
     )
     return payload
@@ -2380,12 +2519,80 @@ def _member_from_ref(
     )
 
 
+def _runtime_member_request_budget_bindings(
+    *,
+    config: Any,
+    members: Sequence[EnsembleMemberConfig],
+    model_catalog: Any | None,
+    context_overflow_threshold: float,
+) -> dict[tuple[str, str, str], _MemberRequestBudgetBinding]:
+    """Resolve member windows only for the production runtime opt-in path."""
+
+    llm_cfg = getattr(config, "llm", None)
+    try:
+        explicit_cap = int(
+            getattr(llm_cfg, "provider_request_proof_max_chars", 0) or 0
+        )
+    except (TypeError, ValueError):
+        explicit_cap = 0
+    try:
+        global_context_override = int(
+            getattr(llm_cfg, "context_window_tokens", 0) or 0
+        )
+    except (TypeError, ValueError):
+        global_context_override = 0
+
+    bindings: dict[tuple[str, str, str], _MemberRequestBudgetBinding] = {}
+    for member in members:
+        key = _member_budget_key(member)
+        if key in bindings:
+            continue
+        member_cfg = member.provider_config
+        context_window: int | None = None
+        context_source = "error" if model_catalog is None else "default"
+        if model_catalog is None and global_context_override > 0:
+            # The global override is independently authoritative; catalog
+            # availability is only required for per-model/catalog resolution.
+            context_window = global_context_override
+            context_source = "config"
+        elif model_catalog is not None:
+            try:
+                resolved_window, resolved_source = resolve_effective_context_window(
+                    model_catalog,
+                    member_cfg.model,
+                    provider=member_cfg.provider,
+                    global_override=global_context_override,
+                )
+                context_window = int(resolved_window)
+                context_source = str(resolved_source or "default")
+            except Exception:  # noqa: BLE001 - an unknown member keeps the outer cap
+                context_window = None
+                context_source = "error"
+
+        reliable_context = (
+            context_window is not None
+            and context_window > 0
+            and context_source in {"override", "config", "catalog"}
+        )
+        bindings[key] = _MemberRequestBudgetBinding(
+            context_window_tokens=context_window,
+            context_window_source=context_source,
+            context_overflow_threshold=context_overflow_threshold,
+            cap_source="explicit" if explicit_cap > 0 else "inherited",
+            rederive=explicit_cap <= 0 and reliable_context,
+        )
+    return bindings
+
+
 def build_ensemble_provider_from_config(
     *,
     config: Any,
     inherited_provider_config: ProviderConfig,
     fallback_provider: LLMProvider | None,
     turn_metadata: Mapping[str, Any] | None = None,
+    _enable_member_request_budget_rebinding: bool = False,
+    _model_catalog: Any | None = None,
+    _context_overflow_threshold: float = 0.85,
 ) -> EnsembleProvider:
     ensemble_cfg = getattr(config, "llm_ensemble", None)
     if ensemble_cfg is None:
@@ -2466,6 +2673,16 @@ def build_ensemble_provider_from_config(
     selection_plan["configured_shuffle_candidates"] = configured_shuffle_candidates
     selection_plan["effective_shuffle_candidates"] = shuffle_candidates
     selection_plan["quorum_grace_seconds"] = quorum_grace_seconds
+    request_budget_bindings = (
+        _runtime_member_request_budget_bindings(
+            config=config,
+            members=[*proposers, aggregator],
+            model_catalog=_model_catalog,
+            context_overflow_threshold=_context_overflow_threshold,
+        )
+        if _enable_member_request_budget_rebinding
+        else {}
+    )
     return EnsembleProvider(
         profile_name=profile_name,
         proposers=proposers,
@@ -2481,4 +2698,5 @@ def build_ensemble_provider_from_config(
         proposer_tools=bool(getattr(ensemble_cfg, "proposer_tools", False)),
         quorum_grace_seconds=quorum_grace_seconds,
         selection_plan=selection_plan,
+        _member_request_budget_bindings=request_budget_bindings,
     )

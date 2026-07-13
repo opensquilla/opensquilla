@@ -81,6 +81,16 @@ async function writeSyntheticUpdateCache(userDataDir, baseVersion, timestamp) {
   )
 }
 
+async function writeSyntheticCanonicalWorkspace(userDataDir) {
+  const workspaceDir = resolve(userDataDir, 'opensquilla', 'workspace')
+  await mkdir(workspaceDir, { recursive: true })
+  await writeFile(
+    resolve(workspaceDir, 'SOUL.md'),
+    'synthetic packaged update-banner smoke\n',
+    { mode: 0o600 },
+  )
+}
+
 async function launchCandidate(
   executablePath,
   userDataDir,
@@ -208,6 +218,7 @@ try {
   app = null
 
   const beforePrivacyLaunch = requestCount
+  await writeSyntheticCanonicalWorkspace(privacyUserDataDir)
   privacyApp = await launchCandidate(
     executablePath,
     privacyUserDataDir,

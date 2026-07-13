@@ -1,5 +1,10 @@
 # Codex-Parity Sandbox Elevation Implementation Plan
 
+> **Superseded:** This plan implemented the branch's first approximation. Do
+> not continue it. The corrective design is
+> `../specs/2026-07-13-codex-exact-linux-sandbox-permissions-design.md`; a new
+> implementation plan derived from that document replaces this one.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Make sandboxed OpenSquilla expose the host filesystem read-only, keep only declared roots writable, and route exact out-of-sandbox operations through a Codex-style automatic risk/authorization reviewer before one-shot execution.

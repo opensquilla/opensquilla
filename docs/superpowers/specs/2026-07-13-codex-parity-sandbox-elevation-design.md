@@ -1,5 +1,11 @@
 # Codex-Parity Sandbox Read and Automatic Elevation Design
 
+> **Superseded:** This design described the first approximation that was
+> implemented on this branch. It is superseded by
+> `2026-07-13-codex-exact-linux-sandbox-permissions-design.md`, which records
+> the behavior of Codex `ea15456284` and the corrective implementation now
+> required. Do not use this document for new implementation work.
+
 **Date:** 2026-07-13
 
 **Status:** Approved for implementation planning

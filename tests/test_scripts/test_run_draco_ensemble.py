@@ -499,6 +499,7 @@ def test_draco_runner_single_model_baselines_cover_extra_frontiers() -> None:
         "B5": "moonshotai/kimi-k2.7-code",
         "B6": "qwen/qwen3.7-max",
         "B7": "google/gemini-3.1-pro-preview",
+        "B12": "openai/gpt-5.6-sol",
     }
     args = build_parser().parse_args([
         "--input",

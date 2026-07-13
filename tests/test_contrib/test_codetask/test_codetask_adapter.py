@@ -97,6 +97,34 @@ def test_agent_command_uses_packaged_cli_directly_for_gateway_executable():
     assert "-c" not in cmd
 
 
+def test_packaged_agent_run_uses_isolated_profile_env(monkeypatch, tmp_path):
+    parent_home = tmp_path / "desktop-profile"
+    monkeypatch.setenv("OPENSQUILLA_STATE_DIR", str(parent_home))
+    monkeypatch.setenv("OPENSQUILLA_PROFILE_KIND", "desktop-primary")
+    monkeypatch.setenv("OPENSQUILLA_DESKTOP", "1")
+    executable = (
+        "/Applications/OpenSquilla.app/Contents/Resources/runtime/gateway/"
+        "opensquilla-gateway/opensquilla-gateway"
+    )
+    monkeypatch.setattr(adapter, "agent_python", lambda: executable)
+    captured = {}
+    _install_popen(monkeypatch, captured, stdout='{"status": "ok", "text": "done"}')
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    out = LocalAdapter().run(
+        "x", repo=repo, scratch_dir=tmp_path / "s", artifact_dir=tmp_path / "a"
+    )
+
+    assert out.success is True
+    assert captured["cmd"][:2] == [executable, "agent"]
+    assert captured["env"]["OPENSQUILLA_STATE_DIR"] == str(
+        (tmp_path / "s").resolve() / "profile"
+    )
+    assert "OPENSQUILLA_PROFILE_KIND" not in captured["env"]
+    assert "OPENSQUILLA_DESKTOP" not in captured["env"]
+
+
 def test_timeout_kills_group_and_reports_timeout(monkeypatch, tmp_path):
     captured = {}
     _install_popen(monkeypatch, captured, timeout=True)
@@ -208,10 +236,43 @@ def _isolate_operator_config(monkeypatch, tmp_path):
 
 def test_run_points_agent_at_codetask_config(monkeypatch, tmp_path):
     # The agent subprocess must load code-task's own config (deny list etc.)
-    # via OPENSQUILLA_GATEWAY_CONFIG_PATH, while still inheriting the parent env.
+    # via OPENSQUILLA_GATEWAY_CONFIG_PATH. Runtime/provider env is inherited,
+    # but all persistent paths belong to the per-attempt profile.
     from opensquilla.contrib.codetask.config import agent_config_path
 
     _isolate_operator_config(monkeypatch, tmp_path)
+    profile_scoped = {
+        "OPENSQUILLA_DESKTOP": "1",
+        "OPENSQUILLA_DESKTOP_PROFILE_KIND": "desktop-primary",
+        "OPENSQUILLA_PROFILE_KIND": "desktop-primary",
+        "OPENSQUILLA_HOME": str(tmp_path / "profiles"),
+        "OPENSQUILLA_PROFILE": "desktop",
+        "OPENSQUILLA_STATE_DIR": str(tmp_path / "desktop-home"),
+        "OPENSQUILLA_GATEWAY_STATE_DIR": str(tmp_path / "gateway-state"),
+        "OPENSQUILLA_GATEWAY_WORKSPACE_DIR": str(tmp_path / "gateway-workspace"),
+        "OPENSQUILLA_WORKSPACE_DIR": str(tmp_path / "workspace"),
+        "OPENSQUILLA_MEMORY_DIR": str(tmp_path / "memory"),
+        "OPENSQUILLA_MEMORY_DB": str(tmp_path / "memory.db"),
+        "OPENSQUILLA_SESSION_ARCHIVE_DIR": str(tmp_path / "sessions"),
+        "OPENSQUILLA_LOG_DIR": str(tmp_path / "logs"),
+        "OPENSQUILLA_TURN_CALL_LOG_DIR": str(tmp_path / "turn-logs"),
+        "OPENSQUILLA_LLM_TRACE_PATH": str(tmp_path / "llm-trace.jsonl"),
+        "OPENSQUILLA_RUNTIME_EVENTS_PATH": str(tmp_path / "runtime-events.jsonl"),
+        "OPENSQUILLA_PATCH_EVIDENCE_LEDGER_PATH": str(tmp_path / "patch-ledger.jsonl"),
+        "OPENSQUILLA_SCHEDULER_DB": str(tmp_path / "scheduler.db"),
+        "OPENSQUILLA_META_RUNS_DB": str(tmp_path / "meta-runs.db"),
+        "OPENSQUILLA_ROUTER_DECISIONS_DB": str(tmp_path / "router.db"),
+    }
+    for name, value in profile_scoped.items():
+        monkeypatch.setenv(name, value)
+    inherited = {
+        "OPENROUTER_API_KEY": "synthetic-provider-key",
+        "HTTPS_PROXY": "http://127.0.0.1:19090",
+        "OPENSQUILLA_NODE_BIN_DIR": str(tmp_path / "node-bin"),
+        "OPENSQUILLA_MIGRATIONS_DIR": str(tmp_path / "migrations"),
+    }
+    for name, value in inherited.items():
+        monkeypatch.setenv(name, value)
     captured = {}
     _install_popen(monkeypatch, captured, stdout='{"status": "ok", "text": "done"}')
     repo = tmp_path / "repo"
@@ -226,6 +287,12 @@ def test_run_points_agent_at_codetask_config(monkeypatch, tmp_path):
     # global media root -- avoids the quadratic global-store rescan / spin.
     per_run_cfg = tmp_path / "a" / "agent-config.toml"
     assert env["OPENSQUILLA_GATEWAY_CONFIG_PATH"] == str(per_run_cfg)
+    assert env["OPENSQUILLA_STATE_DIR"] == str((tmp_path / "s").resolve() / "profile")
+    for name in profile_scoped:
+        if name != "OPENSQUILLA_STATE_DIR":
+            assert name not in env
+    for name, value in inherited.items():
+        assert env[name] == value
     import tomllib
 
     cfg_text = per_run_cfg.read_text(encoding="utf-8")
@@ -244,6 +311,69 @@ def test_run_points_agent_at_codetask_config(monkeypatch, tmp_path):
     conf = GatewayConfig.load(str(per_run_cfg))
     assert media_root_from_config(conf) == (tmp_path / "s").resolve() / "media"
     assert "PATH" in env  # inherits parent env (provider keys pass through)
+
+
+def test_desktop_writer_can_launch_codetask_agent_with_isolated_profile(
+    monkeypatch, tmp_path
+):
+    """Regression for #656: a Desktop-held lock must not reject code-task."""
+
+    desktop_home = tmp_path / "desktop-profile"
+    workspace = desktop_home / "workspace"
+    workspace.mkdir(parents=True)
+    (workspace / "SOUL.md").write_text("synthetic desktop profile\n", encoding="utf-8")
+    (desktop_home / "state").mkdir()
+    desktop_config = desktop_home / "config.toml"
+    desktop_config.write_text(
+        'state_dir = "state"\nworkspace_dir = "workspace"\n', encoding="utf-8"
+    )
+    monkeypatch.setenv("OPENSQUILLA_STATE_DIR", str(desktop_home))
+    monkeypatch.setenv("OPENSQUILLA_GATEWAY_CONFIG_PATH", str(desktop_config))
+    monkeypatch.setenv("OPENSQUILLA_PROFILE_KIND", "desktop-primary")
+    monkeypatch.setenv("OPENSQUILLA_DESKTOP", "1")
+    monkeypatch.setenv("OPENSQUILLA_TEST_PROFILE_LOCK_ROOT", "1")
+    monkeypatch.setenv("OPENSQUILLA_USER_STATE_DIR", str(tmp_path / "user-state"))
+
+    child_script = (
+        "import json\n"
+        "from opensquilla.paths import default_opensquilla_home\n"
+        "from opensquilla.recovery import guarded_desktop_profile\n"
+        "with guarded_desktop_profile():\n"
+        '    print(json.dumps({"status": "ok", "text": "locked", '
+        '"usage": {"profile_home": str(default_opensquilla_home())}}))\n'
+    )
+    monkeypatch.setattr(adapter, "agent_python", lambda: sys.executable)
+    monkeypatch.setattr(
+        adapter,
+        "_agent_command",
+        lambda executable, argv, py_code: [sys.executable, "-c", child_script],
+    )
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    scratch = tmp_path / "scratch"
+    artifact = tmp_path / "artifacts"
+
+    from opensquilla.recovery import guarded_desktop_profile
+
+    with guarded_desktop_profile():
+        desktop_files_before = {
+            path.relative_to(desktop_home) for path in desktop_home.rglob("*")
+        }
+        out = LocalAdapter(timeout=10).run(
+            "x",
+            repo=repo,
+            scratch_dir=scratch,
+            artifact_dir=artifact,
+            quiet_timeout=5,
+        )
+        desktop_files_after = {
+            path.relative_to(desktop_home) for path in desktop_home.rglob("*")
+        }
+
+    assert out.success is True
+    assert out.usage["profile_home"] == str(scratch.resolve() / "profile")
+    assert desktop_files_after == desktop_files_before
 
 
 def test_per_run_config_merges_existing_attachments(monkeypatch, tmp_path):

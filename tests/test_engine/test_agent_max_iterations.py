@@ -8,7 +8,7 @@ import pytest
 from opensquilla.engine import Agent, AgentConfig, ToolResult
 from opensquilla.engine.subagent import SubagentSpec
 from opensquilla.engine.types import ArtifactEvent, ErrorEvent
-from opensquilla.engine.usage import UsageTracker
+from opensquilla.engine.usage import UsageTracker, model_usage_cost_fields
 from opensquilla.provider import (
     ChatConfig,
     Message,
@@ -176,6 +176,46 @@ class _DoneBreakdownProvider:
                     "output_tokens": 0,
                     "billed_cost": 0.01,
                     "cost_source": "provider_billed",
+                },
+            ],
+        )
+
+    async def list_models(self) -> list[Any]:
+        return []
+
+
+class _DoneTokenRhythmBreakdownProvider:
+    provider_name = "tokenrhythm"
+
+    def chat(
+        self,
+        messages: list[Message],
+        tools: list[Any] | None = None,
+        config: ChatConfig | None = None,
+    ) -> AsyncIterator[Any]:
+        return self._stream()
+
+    async def _stream(self) -> AsyncIterator[Any]:
+        yield ProviderText(text="done")
+        yield ProviderDone(
+            stop_reason="stop",
+            input_tokens=2000,
+            output_tokens=200,
+            model="glm-5.2",
+            model_usage_breakdown=[
+                {
+                    "role": "proposer",
+                    "provider": "tokenrhythm",
+                    "model": "deepseek-v4-pro",
+                    "input_tokens": 1000,
+                    "output_tokens": 100,
+                },
+                {
+                    "role": "aggregator",
+                    "provider": "tokenrhythm",
+                    "model": "glm-5.2",
+                    "input_tokens": 1000,
+                    "output_tokens": 100,
                 },
             ],
         )
@@ -579,6 +619,42 @@ async def test_agent_enriches_model_usage_breakdown_with_estimated_costs() -> No
     assert aggregator_row["cost_usd"] == pytest.approx(0.01)
     assert aggregator_row["billed_cost_usd"] == pytest.approx(0.01)
     assert aggregator_row["cost_source"] == "provider_billed"
+
+
+@pytest.mark.asyncio
+async def test_agent_ensemble_breakdown_uses_member_provider_prices(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("OPENSQUILLA_OPENROUTER_LIVE_PRICING", "0")
+    tracker = UsageTracker()
+    session_key = "agent:test:webchat:tokenrhythm-ensemble-costs"
+    agent = Agent(
+        provider=_DoneTokenRhythmBreakdownProvider(),
+        config=AgentConfig(model_id="glm-5.2", provider_id="tokenrhythm"),
+        usage_tracker=tracker,
+        session_key=session_key,
+    )
+
+    events = [event async for event in agent.run_turn("hello")]
+    done = next(event for event in events if event.kind == "done")
+
+    expected_costs = [
+        model_usage_cost_fields(
+            model_id=model,
+            provider="tokenrhythm",
+            input_tokens=1000,
+            output_tokens=100,
+            billed_cost=0.0,
+        )["cost_usd"]
+        for model in ("deepseek-v4-pro", "glm-5.2")
+    ]
+    assert [row["cost_usd"] for row in done.model_usage_breakdown] == pytest.approx(
+        expected_costs,
+        abs=1e-6,
+    )
+    breakdown_sum = sum(row["cost_usd"] for row in done.model_usage_breakdown)
+    assert done.cost_source == "opensquilla_estimate"
+    assert done.cost_usd == pytest.approx(breakdown_sum, abs=1e-6)
 
 
 @pytest.mark.asyncio

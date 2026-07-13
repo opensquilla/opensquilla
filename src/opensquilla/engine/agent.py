@@ -577,6 +577,7 @@ def _with_model_usage_cost_fields(rows: list[dict[str, Any]]) -> list[dict[str, 
             item.update(
                 model_usage_cost_fields(
                     model_id=model_id,
+                    provider=str(item.get("provider") or ""),
                     input_tokens=_usage_int(item.get("input_tokens") or item.get("inputTokens")),
                     output_tokens=_usage_int(
                         item.get("output_tokens") or item.get("outputTokens")

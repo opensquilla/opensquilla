@@ -4,9 +4,26 @@ import subprocess
 from pathlib import Path
 
 from opensquilla.tools.candidate_patch_checkpoint import (
+    _git_show_head_path,
     create_candidate_patch_checkpoint,
     restore_candidate_patch_checkpoint,
 )
+
+
+def test_git_show_head_path_disambiguates_revision_like_paths(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    recorded: list[str] = []
+
+    def fake_run(command: list[str], **kwargs):
+        recorded.extend(command)
+        return subprocess.CompletedProcess(command, 0, stdout=b"content")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    assert _git_show_head_path(tmp_path, "--help") == b"content"
+    assert recorded == ["git", "show", "--end-of-options", "HEAD:--help"]
 
 
 def _init_git_workspace(path: Path) -> None:

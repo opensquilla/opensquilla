@@ -16,6 +16,11 @@ _PYTEST_STATE_ROOT = Path(tempfile.gettempdir()) / f"opensquilla-pytest-{os.getp
 os.environ.setdefault("OPENSQUILLA_STATE_DIR", str(_PYTEST_STATE_ROOT / "state"))
 os.environ.setdefault("OPENSQUILLA_LOG_DIR", str(_PYTEST_STATE_ROOT / "logs"))
 os.environ.setdefault("OPENSQUILLA_TURN_CALL_LOG", "0")
+os.environ.setdefault("OPENSQUILLA_TEST_PROFILE_LOCK_ROOT", "1")
+os.environ.setdefault(
+    "OPENSQUILLA_USER_STATE_DIR",
+    str(_PYTEST_STATE_ROOT / "profile-lock-state"),
+)
 
 _PROVIDER_ENV_KEYS = (
     "ANTHROPIC_API_KEY",

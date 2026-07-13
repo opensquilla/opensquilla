@@ -131,6 +131,13 @@ Quittez toute application de bureau OpenSquilla en cours d'exécution avant la m
 niveau. Les fichiers `~/.opensquilla/config.toml` et les données de session existants
 sont réutilisés.
 
+Pour mettre à niveau l'application de bureau Windows de RC3 vers RC4 ou une version
+ultérieure, exécutez le nouvel installateur directement sur l'installation existante.
+Ne désinstallez pas RC3 auparavant : son programme de désinstallation peut supprimer
+les données utilisateur de l'application. Sauvegardez `%APPDATA%\OpenSquilla` avant
+la mise à niveau. Les installateurs RC4 et ultérieurs conservent les données du profil
+lors d'une désinstallation normale.
+
 <a id="quick-terminal-install"></a>
 
 ### Installation rapide en terminal

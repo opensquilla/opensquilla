@@ -100,9 +100,8 @@ class MCPStdioClient(MCPClient):
         self, method: str, params: dict[str, Any] | None = None
     ) -> dict[str, Any]:
         """Send a JSON-RPC request and read the matching response."""
-        assert self._process is not None
-        assert self._process.stdin is not None
-        assert self._process.stdout is not None
+        if self._process is None or self._process.stdin is None or self._process.stdout is None:
+            raise ConnectionError("MCP stdio client is not connected")
 
         # One coroutine must own both the write and its matching read. Without
         # this lock, concurrent callers can each consume and discard the other
@@ -143,7 +142,11 @@ class MCPStdioClient(MCPClient):
             line = await self._process.stdout.readline()
             if not line:
                 raise ConnectionError("MCP stdio server closed the connection")
-            text = line.decode().strip()
+            try:
+                text = line.decode("utf-8").strip()
+            except UnicodeDecodeError:
+                log.debug("mcp.stdio.invalid_utf8_line")
+                continue
             if not text:
                 continue
             try:

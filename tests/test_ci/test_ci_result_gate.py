@@ -25,6 +25,8 @@ def _base_env() -> dict[str, str]:
         "RESULT_UBUNTU": "skipped",
         "RESULT_WINDOWS_SMOKE": "skipped",
         "RESULT_WINDOWS_FULL": "skipped",
+        "RESULT_MACOS_RECOVERY": "skipped",
+        "RESULT_DESKTOP_RECOVERY_E2E": "skipped",
         "RESULT_RELEASE": "skipped",
     }
     env.update({_flag_env(name): "false" for name in BOOLEAN_FLAGS})
@@ -84,6 +86,69 @@ def test_ci_result_gate_rejects_failure_cancellation_and_missing_results() -> No
         errors = check_ci_results(env)
 
         assert any("Windows high-risk matrix" in error for error in errors)
+
+
+def test_ci_result_gate_requires_macos_recovery_for_platform_sensitive_changes() -> None:
+    env = _base_env()
+    env[_flag_env("docs_only")] = "false"
+    env[_flag_env("runtime_changed")] = "true"
+    env[_flag_env("python_changed")] = "true"
+    env[_flag_env("platform_sensitive_changed")] = "true"
+    env[_flag_env("windows_full_required")] = "true"
+    env[_flag_env("build_wheel_required")] = "true"
+    env["RESULT_UBUNTU"] = "success"
+    env["RESULT_WINDOWS_SMOKE"] = "success"
+    env["RESULT_WINDOWS_FULL"] = "success"
+
+    errors = check_ci_results(env)
+
+    assert any(
+        "macOS profile recovery and native no-replace tests" in error
+        and "skipped" in error
+        for error in errors
+    )
+
+
+def test_ci_result_gate_rejects_failed_or_missing_required_macos_recovery() -> None:
+    for result in ("failure", "cancelled", ""):
+        env = _full_env()
+        env["RESULT_MACOS_RECOVERY"] = result
+
+        errors = check_ci_results(env)
+
+        assert any(
+            "macOS profile recovery and native no-replace tests" in error
+            for error in errors
+        )
+
+
+def test_ci_result_gate_requires_desktop_recovery_e2e_for_desktop_changes() -> None:
+    env = _base_env()
+    env[_flag_env("docs_only")] = "false"
+    env[_flag_env("runtime_changed")] = "true"
+    env[_flag_env("desktop_changed")] = "true"
+    env[_flag_env("platform_sensitive_changed")] = "true"
+    env[_flag_env("windows_full_required")] = "true"
+    env[_flag_env("build_wheel_required")] = "true"
+    env["RESULT_DESKTOP"] = "success"
+    env["RESULT_UBUNTU"] = "success"
+    env["RESULT_WINDOWS_SMOKE"] = "success"
+    env["RESULT_WINDOWS_FULL"] = "success"
+    env["RESULT_MACOS_RECOVERY"] = "success"
+
+    errors = check_ci_results(env)
+
+    assert any("Desktop recovery E2E matrix" in error and "skipped" in error for error in errors)
+
+
+def test_ci_result_gate_rejects_failed_or_missing_desktop_recovery_e2e() -> None:
+    for result in ("failure", "cancelled", ""):
+        env = _full_env()
+        env["RESULT_DESKTOP_RECOVERY_E2E"] = result
+
+        errors = check_ci_results(env)
+
+        assert any("Desktop recovery E2E matrix" in error for error in errors)
 
 
 def test_ci_result_gate_rejects_inconsistent_full_and_platform_flags() -> None:

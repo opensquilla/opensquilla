@@ -95,6 +95,16 @@ def check_ci_results(env: Mapping[str, str]) -> list[str]:
             flags["windows_full_required"] or full,
         ),
         (
+            "RESULT_MACOS_RECOVERY",
+            "macOS profile recovery and native no-replace tests",
+            flags["platform_sensitive_changed"] or flags["desktop_changed"] or full,
+        ),
+        (
+            "RESULT_DESKTOP_RECOVERY_E2E",
+            "Desktop recovery E2E matrix",
+            flags["platform_sensitive_changed"] or flags["desktop_changed"] or full,
+        ),
+        (
             "RESULT_RELEASE",
             "Release packaging contracts",
             flags["release_changed"] or full,

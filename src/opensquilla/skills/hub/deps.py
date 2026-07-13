@@ -39,8 +39,13 @@ async def _run(cmd: list[str], timeout: float = 120.0) -> tuple[int, str, str]:
         stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
     except TimeoutError:
         proc.kill()
+        await proc.communicate()
         return -1, "", "Timed out"
-    return proc.returncode or 0, stdout.decode(), stderr.decode()
+    return (
+        proc.returncode or 0,
+        stdout.decode("utf-8", errors="replace"),
+        stderr.decode("utf-8", errors="replace"),
+    )
 
 
 async def install_brew(spec: SkillInstallSpec) -> DepResult:

@@ -9,6 +9,7 @@ import sqlite3
 import stat
 import subprocess
 import sys
+import threading
 import warnings
 from pathlib import Path
 from types import SimpleNamespace
@@ -421,6 +422,38 @@ def test_read_applied_migration_ids_handles_missing_ledger(tmp_path: Path) -> No
 # ---------------------------------------------------------------------------
 
 
+def test_apply_pending_process_lock_precedes_sqlite_open(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from opensquilla.recovery.errors import ProfileLockBusyError
+    from opensquilla.recovery.locking import ProfileOperationLock
+
+    migrations_dir = tmp_path / "migrations"
+    _write_demo_migration(migrations_dir)
+    db_path = tmp_path / "sessions.db"
+    acquired = threading.Event()
+    release = threading.Event()
+
+    def hold_database_migration_lock() -> None:
+        with ProfileOperationLock(db_path):
+            acquired.set()
+            release.wait(timeout=10)
+
+    holder = threading.Thread(target=hold_database_migration_lock)
+    holder.start()
+    assert acquired.wait(timeout=5)
+    monkeypatch.setattr(migrator, "_MIGRATION_PROCESS_LOCK_TIMEOUT_SECONDS", 0.0)
+    try:
+        with pytest.raises(ProfileLockBusyError):
+            apply_pending(str(db_path), migrations_dir)
+        assert not db_path.exists(), "SQLite must not open before the external lock"
+    finally:
+        release.set()
+        holder.join(timeout=5)
+    assert not holder.is_alive()
+
+
 def test_apply_pending_recomputes_pending_under_lock_after_losing_race(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -535,6 +568,8 @@ print("APPLIED:" + json.dumps(applied), flush=True)
 
 def test_apply_pending_two_concurrent_callers_real_migrations(tmp_path: Path) -> None:
     """Two boot-style processes race on one DB using the repo migration chain."""
+    from opensquilla.recovery.locking import ProfileOperationLock
+
     assert _REPO_MIGRATIONS_DIR.is_dir()
     expected = sorted(entry.stem for entry in _REPO_MIGRATIONS_DIR.glob("V*.py"))
     assert expected
@@ -543,6 +578,12 @@ def test_apply_pending_two_concurrent_callers_real_migrations(tmp_path: Path) ->
     with sqlite3.connect(db_path) as connection:
         connection.execute("CREATE TABLE user_data (id INTEGER PRIMARY KEY, note TEXT)")
         connection.execute("INSERT INTO user_data VALUES (1, 'precious')")
+    # Runtime bootstrap has already established the external lock authority
+    # before migrations start. Seed the same authority here so this test
+    # isolates simultaneous migration ownership rather than also racing the
+    # first creation of the OS user-state directory tree.
+    with ProfileOperationLock(db_path):
+        pass
 
     go_file = tmp_path / "go"
     workers = [
@@ -827,6 +868,33 @@ def test_apply_pending_tolerates_uninspectable_ledger_after_apply(
 # ---------------------------------------------------------------------------
 # Audit username fallback
 # ---------------------------------------------------------------------------
+
+
+def test_apply_pending_audit_never_depends_on_fqdn_resolution(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    migrations_dir = tmp_path / "migrations"
+    _write_demo_migration(migrations_dir, name="V001__local_audit")
+    db_path = tmp_path / "sessions.db"
+
+    monkeypatch.setattr(
+        migrator.socket,
+        "getfqdn",
+        lambda *_args, **_kwargs: pytest.fail("migration audit must not resolve DNS"),
+    )
+    monkeypatch.setattr(migrator.socket, "gethostname", lambda: "synthetic-local-host")
+
+    applied = apply_pending(str(db_path), migrations_dir)
+
+    assert applied == ["V001__local_audit"]
+    with sqlite3.connect(db_path) as connection:
+        audit_rows = connection.execute(
+            "SELECT migration_id, username, hostname, operation FROM _yoyo_log"
+        ).fetchall()
+    assert audit_rows == [
+        ("V001__local_audit", getpass.getuser(), "synthetic-local-host", "apply")
+    ]
 
 
 @pytest.mark.skipif(os.name == "nt", reason="pwd module is POSIX only")

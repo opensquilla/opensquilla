@@ -1,9 +1,16 @@
 from __future__ import annotations
 
 import json
+import os
 import re
+import sqlite3
+import subprocess
+import sys
 import tomllib
 from pathlib import Path
+
+import pytest
+import yaml
 
 CURRENT_VERSION = "0.5.0rc3"
 CURRENT_DESKTOP_VERSION = "0.5.0-rc3"
@@ -47,6 +54,11 @@ def test_desktop_electron_release_config_matches_current_release() -> None:
     assert build["win"]["target"] == ["nsis"]
     assert build["nsis"]["oneClick"] is False
     assert build["nsis"]["allowToChangeInstallationDirectory"] is True
+    assert build["nsis"]["deleteAppDataOnUninstall"] is False
+    package_verifier = Path("desktop/electron/scripts/verify-package.mjs").read_text(
+        encoding="utf-8"
+    )
+    assert "deleteAppDataOnUninstall !== false" in package_verifier
 
 
 def test_release_workflow_builds_desktop_installers() -> None:
@@ -65,6 +77,255 @@ def test_release_workflow_builds_desktop_installers() -> None:
     assert "NOTES_FILE=\"docs/releases/${TAG#v}.md\"" in workflow
     assert "--notes-file \"${NOTES_FILE}\"" in workflow
     assert "gh release upload \"${TAG}\" dist/* --clobber" in workflow
+
+
+def _release_upload_script() -> str:
+    workflow = yaml.safe_load(
+        Path(".github/workflows/wheelhouse-release.yml").read_text(encoding="utf-8")
+    )
+    return next(
+        step["run"]
+        for step in workflow["jobs"]["publish-release"]["steps"]
+        if step.get("name") == "Upload to GitHub Release"
+    )
+
+
+def _run_release_upload_with_fake_gh(
+    tmp_path: Path,
+    *,
+    tag: str,
+    draft: bool,
+    prerelease: bool,
+) -> tuple[subprocess.CompletedProcess[str], str]:
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir(parents=True)
+    call_log = tmp_path / "gh-calls.log"
+    fake_gh = fake_bin / "gh"
+    fake_gh.write_text(
+        """#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\\n' "$*" >> "$FAKE_GH_LOG"
+if [[ "$*" == *"--json"* ]]; then
+  printf '%s\\n' "$FAKE_RELEASE_STATE"
+fi
+""",
+        encoding="utf-8",
+    )
+    fake_gh.chmod(0o755)
+    env = os.environ.copy()
+    env.update(
+        {
+            "FAKE_GH_LOG": str(call_log),
+            "FAKE_RELEASE_STATE": json.dumps(
+                {"assets": [], "isDraft": draft, "isPrerelease": prerelease}
+            ),
+            "GH_REPO": "opensquilla/opensquilla",
+            "GH_TOKEN": "synthetic-test-token",
+            "PATH": (
+                f"{fake_bin}{os.pathsep}{Path(sys.executable).parent}"
+                f"{os.pathsep}{env['PATH']}"
+            ),
+            "TAG": tag,
+        }
+    )
+    result = subprocess.run(
+        ["bash", "-c", _release_upload_script()],
+        cwd=Path.cwd(),
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    calls = call_log.read_text(encoding="utf-8") if call_log.exists() else ""
+    return result, calls
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="The release upload Bash step runs in the required Ubuntu packaging job.",
+)
+def test_release_upload_refuses_to_mutate_an_existing_public_release(tmp_path: Path) -> None:
+    result, calls = _run_release_upload_with_fake_gh(
+        tmp_path,
+        tag="v9.9.9rc1",
+        draft=False,
+        prerelease=True,
+    )
+
+    assert result.returncode != 0
+    assert "non-Draft" in result.stderr
+    for mutating_call in (
+        "release create",
+        "release edit",
+        "release delete-asset",
+        "release upload",
+    ):
+        assert mutating_call not in calls
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="The release upload Bash step runs in the required Ubuntu packaging job.",
+)
+def test_release_upload_derives_preview_state_from_each_tag(tmp_path: Path) -> None:
+    stable_result, stable_calls = _run_release_upload_with_fake_gh(
+        tmp_path / "stable",
+        tag="v9.9.9",
+        draft=True,
+        prerelease=False,
+    )
+    preview_result, preview_calls = _run_release_upload_with_fake_gh(
+        tmp_path / "preview",
+        tag="v9.9.9rc7",
+        draft=True,
+        prerelease=True,
+    )
+
+    assert stable_result.returncode == 0, stable_result.stderr
+    assert preview_result.returncode == 0, preview_result.stderr
+    assert "release upload v9.9.9" in stable_calls
+    assert "release upload v9.9.9rc7" in preview_calls
+
+
+def test_release_profile_preservation_probe_covers_identity_config_and_chat_db(
+    tmp_path: Path,
+) -> None:
+    probe = Path(".github/scripts/verify-release-profile-preservation.py")
+    home = tmp_path / "Application Support" / "OpenSquilla" / "opensquilla"
+    label = "contract-probe"
+
+    subprocess.run(
+        [sys.executable, str(probe), "seed", "--home", str(home), "--label", label],
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+    verified = subprocess.run(
+        [sys.executable, str(probe), "verify", "--home", str(home), "--label", label],
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+    assert "profile preservation verified" in verified.stdout
+
+    reseed = subprocess.run(
+        [sys.executable, str(probe), "seed", "--home", str(home), "--label", label],
+        check=False,
+        text=True,
+        capture_output=True,
+    )
+    assert reseed.returncode != 0
+    assert "refusing to overwrite" in reseed.stderr
+
+    identity = home / "workspace" / "IDENTITY.md"
+    identity.write_text("changed\n", encoding="utf-8")
+    rejected = subprocess.run(
+        [sys.executable, str(probe), "verify", "--home", str(home), "--label", label],
+        check=False,
+        text=True,
+        capture_output=True,
+    )
+    assert rejected.returncode != 0
+    assert "IDENTITY.md" in rejected.stderr
+
+    identity.write_text(f"# Synthetic {label} identity sentinel\n", encoding="utf-8")
+    with sqlite3.connect(home / "state" / "sessions.db") as connection:
+        connection.execute("UPDATE release_preservation_chat SET body = 'changed'")
+    rejected = subprocess.run(
+        [sys.executable, str(probe), "verify", "--home", str(home), "--label", label],
+        check=False,
+        text=True,
+        capture_output=True,
+    )
+    assert rejected.returncode != 0
+    assert "sessions.db retained-chat row changed" in rejected.stderr
+
+
+def test_release_workflow_gates_built_and_downloaded_installers_on_profile_retention() -> None:
+    workflow = Path(".github/workflows/wheelhouse-release.yml").read_text(encoding="utf-8")
+    mac_helper = Path(".github/scripts/verify-release-macos-upgrade.sh").read_text(
+        encoding="utf-8"
+    )
+    windows_helper = Path(".github/scripts/verify-release-windows-upgrade.ps1").read_text(
+        encoding="utf-8"
+    )
+    probe = Path(".github/scripts/verify-release-profile-preservation.py").read_text(
+        encoding="utf-8"
+    )
+
+    mac_build = workflow[
+        workflow.index("  build-desktop-macos:") : workflow.index(
+            "  build-desktop-windows:"
+        )
+    ]
+    windows_build = workflow[
+        workflow.index("  build-desktop-windows:") : workflow.index("  publish-release:")
+    ]
+    assert "verify-release-macos-upgrade.sh" in mac_build
+    assert "verify-release-windows-upgrade.ps1" in windows_build
+    assert mac_build.index("verify-release-macos-upgrade.sh") < mac_build.index(
+        "Upload macOS Electron artifacts"
+    )
+    assert windows_build.index("verify-release-windows-upgrade.ps1") < windows_build.index(
+        "Upload Windows Electron artifacts"
+    )
+
+    for artifact in (
+        "config.toml",
+        "IDENTITY.md",
+        "USER.md",
+        "SOUL.md",
+        "MEMORY.md",
+        "sessions.db",
+        "PRAGMA quick_check",
+        "synthetic retained chat",
+    ):
+        assert artifact in probe
+    for helper in (mac_helper, windows_helper):
+        assert "v0.5.0rc3" in helper
+        assert "recovery inspect" in helper
+        assert "verify-release-profile-preservation.py" in helper
+        assert "workspace" in helper
+        assert "state" in helper
+
+    mac_audit = workflow[
+        workflow.index("  audit-downloaded-macos-release:") : workflow.index(
+            "  audit-downloaded-windows-release:"
+        )
+    ]
+    windows_audit = workflow[workflow.index("  audit-downloaded-windows-release:") :]
+    for audit in (mac_audit, windows_audit):
+        assert "needs: publish-release" in audit
+        assert "gh release download" in audit
+        assert "SHA256SUMS" in audit
+        assert "isDraft" in audit
+    assert "codesign --verify --deep --strict" in mac_audit
+    assert "spctl -a -vv -t exec" in mac_audit
+    assert "xcrun stapler validate" in mac_audit
+    assert "@electron/asar@3.4.1 extract-file" in mac_audit
+    assert "verify-release-macos-upgrade.sh" in mac_audit
+    assert "Get-FileHash -Algorithm SHA256" in windows_audit
+    assert "verify-release-windows-upgrade.ps1" in windows_audit
+
+
+def test_manual_release_workflow_without_a_tag_only_uploads_aggregate_artifacts() -> None:
+    workflow = yaml.safe_load(
+        Path(".github/workflows/wheelhouse-release.yml").read_text(encoding="utf-8")
+    )
+    publish_steps = workflow["jobs"]["publish-release"]["steps"]
+    aggregate = next(
+        step
+        for step in publish_steps
+        if step["name"] == "Upload aggregate workflow artifact"
+    )
+    github_upload = next(
+        step for step in publish_steps if step["name"] == "Upload to GitHub Release"
+    )
+
+    assert "if" not in aggregate
+    assert "github.event.inputs.tag != ''" in github_upload["if"]
+    for job_name in ("audit-downloaded-macos-release", "audit-downloaded-windows-release"):
+        assert "github.event.inputs.tag != ''" in workflow["jobs"][job_name]["if"]
 
 
 def test_release_workflow_hydrates_and_smokes_desktop_router_runtime() -> None:
@@ -175,6 +436,29 @@ def test_release_docs_describe_unsigned_windows_policy() -> None:
         "es": "instaladores de escritorio firmados",
     }.items():
         assert phrase not in localized_readmes[locale]
+
+
+def test_release_docs_warn_rc3_users_to_upgrade_in_place() -> None:
+    readmes = [
+        Path("README.md"),
+        Path("README.zh-Hans.md"),
+        Path("README.ja.md"),
+        Path("README.fr.md"),
+        Path("README.de.md"),
+        Path("README.es.md"),
+    ]
+    for path in readmes:
+        text = path.read_text(encoding="utf-8")
+        assert "RC3" in text, path
+        assert "RC4" in text, path
+        assert r"%APPDATA%\OpenSquilla" in text, path
+
+    releases = Path("RELEASES.md").read_text(encoding="utf-8")
+    current_notes = Path(f"docs/releases/{CURRENT_VERSION}.md").read_text(encoding="utf-8")
+    assert "must install the\nnew version directly over the existing installation" in releases
+    assert "must not uninstall RC3\nfirst" in releases
+    assert "deleteAppDataOnUninstall=false" in releases
+    assert "Do not uninstall Preview 3" in current_notes
 
 
 def test_privacy_docs_describe_network_observability_controls() -> None:

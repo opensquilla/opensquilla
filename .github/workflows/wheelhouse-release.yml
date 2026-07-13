@@ -170,7 +170,7 @@ jobs:
   build-desktop-macos:
     name: Build macOS Electron installer
     runs-on: macos-latest
-    timeout-minutes: 120
+    timeout-minutes: 150
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -234,6 +234,20 @@ jobs:
           OPENSQUILLA_GATEWAY_SMOKE_TIMEOUT_MS: "240000"
         run: npm run verify:gateway-smoke
 
+      - name: Verify RC3-to-candidate macOS upgrade and uninstall preserve profile data
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          candidates=(dist/desktop-electron/OpenSquilla-*-mac-arm64.dmg)
+          if [[ "${#candidates[@]}" -ne 1 || ! -f "${candidates[0]}" ]]; then
+            echo "Expected exactly one candidate macOS DMG" >&2
+            exit 1
+          fi
+          .github/scripts/verify-release-macos-upgrade.sh \
+            "${candidates[0]}" built-candidate
+
       - name: List macOS artifacts
         run: find dist/desktop-electron -maxdepth 2 -type f -print
 
@@ -250,7 +264,7 @@ jobs:
   build-desktop-windows:
     name: Build unsigned Windows Electron installer
     runs-on: windows-latest
-    timeout-minutes: 120
+    timeout-minutes: 150
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -311,6 +325,20 @@ jobs:
         env:
           OPENSQUILLA_REQUIRE_PACKAGED_GATEWAY_SMOKE: "1"
         run: npm run verify:gateway-smoke
+
+      - name: Verify RC3-to-candidate Windows upgrade and uninstall preserve profile data
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $candidates = @(Get-ChildItem 'dist/desktop-electron/OpenSquilla-*-win-x64.exe' -File)
+          if ($candidates.Count -ne 1) {
+            throw "Expected exactly one candidate Windows installer; got $($candidates.Count)."
+          }
+          .github/scripts/verify-release-windows-upgrade.ps1 `
+            -CandidateInstaller $candidates[0].FullName `
+            -Label built-candidate
 
       - name: List Windows artifacts
         shell: bash
@@ -460,12 +488,18 @@ jobs:
           TAG: ${{ env.RELEASE_TAG }}
         shell: bash
         run: |
+          set -euo pipefail
           IS_PRERELEASE="$(python - <<'PY'
           import os
           import re
 
           tag = os.environ["TAG"]
-          print("true" if re.search(r"(?:a|b|rc)[0-9]+$", tag) else "false")
+          preview = re.search(
+              r"(?:[-.]?(?:a|alpha|b|beta|rc|pre|preview))[0-9]+$",
+              tag,
+              flags=re.IGNORECASE,
+          )
+          print("true" if preview else "false")
           PY
           )"
           TITLE="OpenSquilla ${TAG#v}"
@@ -490,11 +524,35 @@ jobs:
           if [[ -f "${NOTES_FILE}" ]]; then
             create_args+=(--notes-file "${NOTES_FILE}")
           fi
-          gh release view "${TAG}" >/dev/null 2>&1 || \
+
+          assert_release_is_safe_draft() {
+            local release_state
+            release_state="$(gh release view "${TAG}" --json isDraft,isPrerelease)"
+            RELEASE_STATE="${release_state}" EXPECTED_PRERELEASE="${IS_PRERELEASE}" python - <<'PY'
+          import json
+          import os
+
+          state = json.loads(os.environ["RELEASE_STATE"])
+          expected_prerelease = os.environ["EXPECTED_PRERELEASE"] == "true"
+          if state.get("isDraft") is not True:
+              raise SystemExit("Refusing to mutate an existing non-Draft GitHub Release")
+          if state.get("isPrerelease") is not expected_prerelease:
+              raise SystemExit(
+                  "Refusing to mutate a GitHub Release with an unexpected prerelease state"
+              )
+          PY
+          }
+
+          if gh release view "${TAG}" --json isDraft,isPrerelease >/dev/null 2>&1; then
+            assert_release_is_safe_draft
+          else
             gh release create "${create_args[@]}"
+            assert_release_is_safe_draft
+          fi
           if [[ -f "${NOTES_FILE}" ]]; then
             gh release edit "${TAG}" --title "${TITLE}" --notes-file "${NOTES_FILE}"
           fi
+          assert_release_is_safe_draft
           python - <<'PY'
           import json
           import os
@@ -522,7 +580,9 @@ jobs:
                       check=True,
                   )
           PY
+          assert_release_is_safe_draft
           gh release upload "${TAG}" dist/* --clobber
+          assert_release_is_safe_draft
 
       - name: Verify GitHub Release assets
         if: ${{ github.event_name == 'push' || github.event.inputs.tag != '' }}
@@ -558,10 +618,28 @@ jobs:
               "SHA256SUMS",
           }
           raw = subprocess.check_output(
-              ["gh", "release", "view", tag, "--json", "assets"],
+              [
+                  "gh",
+                  "release",
+                  "view",
+                  tag,
+                  "--json",
+                  "assets,isDraft,isPrerelease",
+              ],
               text=True,
           )
           data = json.loads(raw)
+          preview = re.search(
+              r"(?:[-.]?(?:a|alpha|b|beta|rc|pre|preview))[0-9]+$",
+              tag,
+              flags=re.IGNORECASE,
+          )
+          if data.get("isDraft") is not True:
+              print("Release asset verification requires a Draft release", file=sys.stderr)
+              raise SystemExit(1)
+          if data.get("isPrerelease") is not bool(preview):
+              print("Release prerelease state does not match the tag", file=sys.stderr)
+              raise SystemExit(1)
           names = {asset["name"] for asset in data.get("assets", [])}
           missing = sorted(expected - names)
           unexpected = sorted(names - expected)
@@ -577,3 +655,221 @@ jobs:
               )
               raise SystemExit(1)
           PY
+
+  audit-downloaded-macos-release:
+    name: Audit downloaded macOS draft assets
+    if: ${{ github.event_name == 'push' || github.event.inputs.tag != '' }}
+    needs: publish-release
+    runs-on: macos-latest
+    timeout-minutes: 75
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout release verification helpers
+        uses: actions/checkout@v4
+        with:
+          lfs: false
+          persist-credentials: false
+          ref: ${{ env.RELEASE_TAG }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Set up Node.js for app.asar verification
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22.12.0"
+
+      - name: Download actual draft release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ env.RELEASE_TAG }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          state="$(gh release view "${TAG}" --json isDraft)"
+          RELEASE_STATE="${state}" python - <<'PY'
+          import json
+          import os
+
+          assert json.loads(os.environ["RELEASE_STATE"])["isDraft"] is True, (
+              "downloaded release audit may only inspect a Draft release"
+          )
+          PY
+          mkdir -p release-audit
+          gh release download "${TAG}" --dir release-audit
+
+      - name: Verify checksums, signing, notarization, and packaged version
+        env:
+          TAG: ${{ env.RELEASE_TAG }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd release-audit
+          python - <<'PY'
+          from hashlib import sha256
+          from pathlib import Path
+
+          lines = Path("SHA256SUMS").read_text(encoding="utf-8").splitlines()
+          assert lines, "SHA256SUMS is empty"
+          for line in lines:
+              digest, name = line.split("  ", 1)
+              path = Path(name)
+              assert path.is_file(), f"downloaded release asset is missing: {name}"
+              assert sha256(path.read_bytes()).hexdigest() == digest, (
+                  f"checksum mismatch for downloaded asset: {name}"
+              )
+          PY
+
+          dmg_candidates=(OpenSquilla-*-mac-arm64.dmg)
+          zip_candidates=(OpenSquilla-*-mac-arm64.zip)
+          if [[ "${#dmg_candidates[@]}" -ne 1 || ! -f "${dmg_candidates[0]}" ]]; then
+            echo "Expected exactly one downloaded macOS DMG" >&2
+            exit 1
+          fi
+          if [[ "${#zip_candidates[@]}" -ne 1 || ! -f "${zip_candidates[0]}" ]]; then
+            echo "Expected exactly one downloaded macOS ZIP" >&2
+            exit 1
+          fi
+
+          expected_version="$(python - "${TAG#v}" <<'PY'
+          import re
+          import sys
+
+          print(re.sub(r"(?<=\d)(a|b|rc)(\d+)$", r"-\1\2", sys.argv[1]))
+          PY
+          )"
+
+          validate_app() {
+            local app_path plist actual_version asar_dir
+            app_path="$(cd "$(dirname "$1")" && pwd)/$(basename "$1")"
+            plist="${app_path}/Contents/Info.plist"
+            actual_version="$(/usr/libexec/PlistBuddy \
+              -c 'Print :CFBundleShortVersionString' "${plist}")"
+            test "${actual_version}" = "${expected_version}"
+            asar_dir="$(mktemp -d)"
+            (
+              cd "${asar_dir}"
+              npx --yes @electron/asar@3.4.1 extract-file \
+                "${app_path}/Contents/Resources/app.asar" package.json
+              python - "${expected_version}" <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+
+          packaged = json.loads(Path("package.json").read_text(encoding="utf-8"))
+          assert packaged["version"] == sys.argv[1], (
+              f"app.asar version {packaged['version']!r} != expected {sys.argv[1]!r}"
+          )
+          PY
+            )
+            python - "${asar_dir}" <<'PY'
+          import shutil
+          import sys
+
+          shutil.rmtree(sys.argv[1])
+          PY
+            codesign --verify --deep --strict --verbose=2 "${app_path}"
+            spctl -a -vv -t exec "${app_path}"
+            xcrun stapler validate "${app_path}"
+          }
+
+          extracted="$(mktemp -d)"
+          ditto -x -k "${zip_candidates[0]}" "${extracted}"
+          validate_app "${extracted}/OpenSquilla.app"
+
+          mounted="$(mktemp -d)"
+          cleanup_mount() {
+            hdiutil detach "${mounted}" -quiet >/dev/null 2>&1 || true
+          }
+          trap cleanup_mount EXIT
+          hdiutil attach -nobrowse -readonly -mountpoint "${mounted}" "${dmg_candidates[0]}"
+          validate_app "${mounted}/OpenSquilla.app"
+          hdiutil detach "${mounted}" -quiet
+
+      - name: Verify downloaded RC3-to-candidate macOS upgrade and uninstall
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          candidates=(release-audit/OpenSquilla-*-mac-arm64.dmg)
+          if [[ "${#candidates[@]}" -ne 1 || ! -f "${candidates[0]}" ]]; then
+            echo "Expected exactly one downloaded candidate macOS DMG" >&2
+            exit 1
+          fi
+          .github/scripts/verify-release-macos-upgrade.sh \
+            "${candidates[0]}" downloaded-asset
+
+  audit-downloaded-windows-release:
+    name: Audit downloaded Windows draft asset
+    if: ${{ github.event_name == 'push' || github.event.inputs.tag != '' }}
+    needs: publish-release
+    runs-on: windows-latest
+    timeout-minutes: 75
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout release verification helpers
+        uses: actions/checkout@v4
+        with:
+          lfs: false
+          persist-credentials: false
+          ref: ${{ env.RELEASE_TAG }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Download actual draft release assets
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ env.RELEASE_TAG }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $state = gh release view $env:TAG --json isDraft | ConvertFrom-Json
+          if (-not $state.isDraft) {
+            throw 'Downloaded release audit may only inspect a Draft release.'
+          }
+          New-Item -ItemType Directory -Force -Path release-audit | Out-Null
+          gh release download $env:TAG --dir release-audit
+          if ($LASTEXITCODE -ne 0) { throw 'Failed to download Draft release assets.' }
+
+      - name: Verify downloaded checksums
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $checksumLines = Get-Content -LiteralPath 'release-audit/SHA256SUMS'
+          if ($checksumLines.Count -eq 0) { throw 'SHA256SUMS is empty.' }
+          foreach ($line in $checksumLines) {
+            $parts = $line -split '  ', 2
+            if ($parts.Count -ne 2) { throw "Malformed checksum line: $line" }
+            $path = Join-Path 'release-audit' $parts[1]
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+              throw "Downloaded release asset is missing: $($parts[1])"
+            }
+            $actual = (Get-FileHash -Algorithm SHA256 -LiteralPath $path).Hash.ToLowerInvariant()
+            if ($actual -ne $parts[0].ToLowerInvariant()) {
+              throw "Checksum mismatch for downloaded asset: $($parts[1])"
+            }
+          }
+
+      - name: Verify downloaded RC3-to-candidate Windows upgrade and uninstall
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $candidates = @(Get-ChildItem 'release-audit/OpenSquilla-*-win-x64.exe' -File)
+          if ($candidates.Count -ne 1) {
+            throw "Expected exactly one downloaded Windows installer; got $($candidates.Count)."
+          }
+          .github/scripts/verify-release-windows-upgrade.ps1 `
+            -CandidateInstaller $candidates[0].FullName `
+            -Label downloaded-asset

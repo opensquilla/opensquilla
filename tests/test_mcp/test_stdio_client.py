@@ -112,6 +112,24 @@ class _ConcurrentProcess:
 
 
 @pytest.mark.asyncio
+async def test_send_request_before_connect_reports_connection_error() -> None:
+    client = MCPStdioClient(MCPServerConfig(name="demo", transport="stdio", command="demo"))
+
+    with pytest.raises(ConnectionError, match="not connected"):
+        await client._send_request("tools/list")
+
+
+@pytest.mark.asyncio
+async def test_read_response_skips_invalid_utf8_lines() -> None:
+    process = _ConcurrentProcess()
+    process.stdout.lines.put_nowait(b"\xff\n")
+    process.stdout.respond(1)
+    client = _client_with_process(process)  # type: ignore[arg-type]
+
+    assert await client._read_response(1) == {"jsonrpc": "2.0", "id": 1, "result": {}}
+
+
+@pytest.mark.asyncio
 async def test_concurrent_requests_are_serialized_to_preserve_responses() -> None:
     process = _ConcurrentProcess()
     client = _client_with_process(process)  # type: ignore[arg-type]

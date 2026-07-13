@@ -70,6 +70,32 @@ _DEFAULT_GRACEFUL_TIMEOUT_S = 30.0
 _MAX_GRACEFUL_TIMEOUT_S = 120.0
 
 
+class _KnowledgeRuntimeBackendProxy:
+    """Resolve every backend method from the runtime at call time."""
+
+    def __init__(self, runtime: Any) -> None:
+        self._runtime = runtime
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._runtime.current_backend(), name)
+
+
+def _accepts_keyword_argument(callback: Any, name: str) -> bool:
+    try:
+        parameters = inspect.signature(callback).parameters
+    except (TypeError, ValueError):
+        return False
+    parameter = parameters.get(name)
+    if parameter is not None and parameter.kind in {
+        inspect.Parameter.POSITIONAL_OR_KEYWORD,
+        inspect.Parameter.KEYWORD_ONLY,
+    }:
+        return True
+    return any(
+        item.kind is inspect.Parameter.VAR_KEYWORD for item in parameters.values()
+    )
+
+
 def gateway_graceful_timeout() -> float:
     """Per-phase graceful drain budget in seconds, env-overridable and bounded.
 
@@ -612,6 +638,8 @@ class ServiceContainer:
     _compaction_listener_remove: Callable[[], None] | None = None
     _approval_listener_remove: Callable[[], None] | None = None
     _approval_channel_notifier_remove: Callable[[], None] | None = None
+    knowledge_runtime: Any = None
+    _knowledge_runtime_stopped: bool = False
 
     # Backward-compat alias — returns the "main" store (or None).
     @property
@@ -649,6 +677,16 @@ class ServiceContainer:
             except Exception:
                 pass
             self._approval_channel_notifier_remove = None
+
+        if self.knowledge_runtime is not None and not self._knowledge_runtime_stopped:
+            self._knowledge_runtime_stopped = True
+            try:
+                await self.knowledge_runtime.stop()
+            except Exception as error:
+                log.warning(
+                    "service_container.knowledge_runtime_stop_failed",
+                    error_type=type(error).__name__,
+                )
 
         # ── 1. Stop scheduled producers (no further writes after this) ──
         if self.heartbeat_watcher is not None:
@@ -985,6 +1023,7 @@ async def dispatch_task_runtime_turn(
     session_manager: Any,
     turn_runner: Any,
     event_emitter: Any,
+    knowledge_runtime: Any = None,
 ) -> None:
     """Drive ``turn_runner.run`` for one ``TaskRun``.
 
@@ -1007,6 +1046,11 @@ async def dispatch_task_runtime_turn(
         workspace_dir=str(workspace_dir),
         workspace_strict=workspace_strict,
         default_elevated=configured_default_elevated(config),
+    )
+    setattr(
+        tool_context,
+        "knowledge_capability_snapshot",
+        knowledge_runtime.snapshot() if knowledge_runtime is not None else None,
     )
     tool_context.task_id = run.task_id
     session = None
@@ -2337,10 +2381,40 @@ async def build_services(
     except Exception as e:
         log.warning("build_services.memory_tools_failed", error=str(e))
 
+    knowledge_runtime = None
+    try:
+        from opensquilla.knowledge.manager import manager_from_config
+        from opensquilla.knowledge.runtime import KnowledgeRuntime
+
+        knowledge_runtime = KnowledgeRuntime(
+            lambda: manager_from_config(config),
+            enabled_provider=lambda: bool(config.knowledge.enabled),
+            ttl_seconds_provider=lambda: float(config.knowledge.capability_ttl_seconds),
+        )
+    except Exception as e:
+        log.warning("build_services.knowledge_runtime_failed", error=str(e))
+    if knowledge_runtime is not None:
+        try:
+            await knowledge_runtime.start()
+            log.info("build_services.knowledge_runtime_started")
+        except Exception as e:
+            log.warning("build_services.knowledge_runtime_start_failed", error=str(e))
+
     try:
         from opensquilla.tools.builtin.knowledge_tools import create_knowledge_tools
 
-        create_knowledge_tools(config=config, registry=tool_registry)
+        if knowledge_runtime is not None:
+            if _accepts_keyword_argument(create_knowledge_tools, "runtime"):
+                cast(Any, create_knowledge_tools)(
+                    runtime=knowledge_runtime, registry=tool_registry
+                )
+            else:
+                create_knowledge_tools(
+                    manager=_KnowledgeRuntimeBackendProxy(knowledge_runtime),
+                    registry=tool_registry,
+                )
+        else:
+            create_knowledge_tools(config=config, registry=tool_registry)
         log.info("build_services.knowledge_tools_registered")
     except Exception as e:
         log.warning("build_services.knowledge_tools_failed", error=str(e))
@@ -2695,6 +2769,7 @@ async def build_services(
         turn_error_writer=turn_error_writer,
         router_calibration_service=router_calibration_service,
         provider_stats=provider_stats,
+        knowledge_runtime=knowledge_runtime,
         deferred_warmups=deferred_warmups,
     )
     # Attach deferred callback ref so start_gateway_server can wire TurnRunner
@@ -3050,6 +3125,7 @@ async def start_gateway_server(
             session_manager=svc.session_manager,
             turn_runner=turn_runner,
             event_emitter=runtime_event_bridge.emit,
+            knowledge_runtime=getattr(svc, "knowledge_runtime", None),
         )
 
     task_runtime = TaskRuntime(
@@ -3620,6 +3696,7 @@ async def start_gateway_server(
         cron_scheduler=svc.cron_scheduler,
         turn_runner=turn_runner,
         task_runtime=task_runtime,
+        knowledge_runtime=getattr(svc, "knowledge_runtime", None),
         flush_service=svc.flush_service,
         heartbeat_service=heartbeat_service,
         heartbeat_loop=heartbeat_loop,

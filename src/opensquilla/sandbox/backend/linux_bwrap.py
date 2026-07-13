@@ -86,7 +86,11 @@ def build_bwrap_plan(
     if options.mount_proc:
         argv.extend(["--proc", "/proc"])
     argv.extend(["--dev", "/dev"])
-    if permissions.tmp_writable:
+    host_tmp_writable = any(
+        root.host_path == Path("/tmp") and root.sandbox_path == Path("/tmp")
+        for root in permissions.write_roots
+    )
+    if permissions.tmp_writable and not host_tmp_writable:
         argv.extend(["--tmpfs", "/tmp"])
     for key, value in (options.env or {}).items():
         argv.extend(["--setenv", key, value])
@@ -104,7 +108,7 @@ def build_bwrap_plan(
         )
     )
     special_overlay_roots = [Path("/dev")]
-    if permissions.tmp_writable:
+    if permissions.tmp_writable and not host_tmp_writable:
         special_overlay_roots.append(Path("/tmp"))
     if options.mount_proc:
         special_overlay_roots.append(Path("/proc"))

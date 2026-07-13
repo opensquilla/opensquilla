@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from opensquilla.sandbox.backend.linux_permissions import compile_linux_permissions
+from opensquilla.sandbox.permissions import FileSystemPermissionProfile
 from opensquilla.sandbox.types import (
     MountSpec,
     NetworkMode,
@@ -130,11 +131,26 @@ def test_compile_linux_permissions_detects_root_read_mount(tmp_path: Path) -> No
     assert compiled.read_all is True
 
 
-def test_compile_linux_permissions_adds_sensitive_deny_roots(tmp_path: Path) -> None:
+def test_compile_linux_permissions_has_no_builtin_sensitive_deny_roots(
+    tmp_path: Path,
+) -> None:
     compiled = compile_linux_permissions(_policy(tmp_path))
 
-    denied = {path.as_posix() for path in compiled.denied_roots}
+    assert compiled.denied_roots == ()
 
-    assert "/etc" not in denied
-    assert "/etc/shadow" in denied
-    assert str(tmp_path) not in denied
+
+def test_compile_linux_permissions_preserves_explicit_denied_roots(tmp_path: Path) -> None:
+    policy = _policy(tmp_path)
+    policy = SandboxPolicy(
+        **{
+            **policy.__dict__,
+            "file_system": FileSystemPermissionProfile.workspace(
+                workspace=tmp_path,
+                denied_read_roots=(tmp_path / "secret",),
+            ),
+        }
+    )
+
+    compiled = compile_linux_permissions(policy)
+
+    assert compiled.denied_roots == ((tmp_path / "secret").resolve(),)

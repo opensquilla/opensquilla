@@ -11,8 +11,14 @@ from opensquilla.sandbox.backend.linux_bwrap import (
     build_bwrap_argv,
     build_bwrap_plan,
 )
-from opensquilla.sandbox.backend.linux_permissions import LinuxPermissions, LinuxRoot
-from opensquilla.sandbox.types import NetworkMode, SandboxBackendError
+from opensquilla.sandbox.backend.linux_permissions import (
+    LinuxPermissions,
+    LinuxRoot,
+    compile_linux_permissions,
+)
+from opensquilla.sandbox.config import SandboxSettings
+from opensquilla.sandbox.policy import build_policy
+from opensquilla.sandbox.types import NetworkMode, SandboxBackendError, SecurityLevel
 
 pytestmark = pytest.mark.skipif(
     sys.platform.startswith("win"),
@@ -94,6 +100,27 @@ def test_bwrap_argv_uses_readonly_root_when_root_is_readable(tmp_path: Path) -> 
         "/",
     ]
     assert ["--tmpfs", "/"] not in [argv[index : index + 2] for index in range(len(argv) - 1)]
+
+
+def test_default_workspace_profile_binds_host_tmp_writable(tmp_path: Path) -> None:
+    policy = build_policy(
+        SecurityLevel.STANDARD,
+        "shell.exec",
+        tmp_path,
+        SandboxSettings(),
+    )
+
+    argv = build_bwrap_argv(
+        command=["/bin/true"],
+        command_cwd=tmp_path,
+        permissions=compile_linux_permissions(policy),
+        options=BwrapOptions(bwrap_path="bwrap", mount_proc=True),
+    )
+
+    triples = [argv[index : index + 3] for index in range(len(argv) - 2)]
+    pairs = [argv[index : index + 2] for index in range(len(argv) - 1)]
+    assert ["--bind", "/tmp", "/tmp"] in triples
+    assert ["--tmpfs", "/tmp"] not in pairs
 
 
 def test_readonly_root_skips_redundant_identity_mounts(tmp_path: Path) -> None:

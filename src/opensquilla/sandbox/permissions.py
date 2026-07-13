@@ -10,10 +10,10 @@ from __future__ import annotations
 
 import fnmatch
 import os
+from collections.abc import Iterable
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
-from typing import Iterable
 
 PROTECTED_METADATA_NAMES = (".git", ".agents", ".codex")
 

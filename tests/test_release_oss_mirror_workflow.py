@@ -27,6 +27,8 @@ def test_aliyun_oss_release_mirror_workflow_contract() -> None:
     assert "OSS_ENDPOINT" in workflow
     assert "OSS_ADDRESSING_STYLE" in workflow
     assert "ALIYUN_OSS_PREFIX_NORMALIZED" in workflow
+    assert "ALIYUN_OSS_PUBLIC_BASE_URL" in workflow
+    assert "OSS_PUBLIC_BASE_URL_NORMALIZED" in workflow
     assert "OSS_ADDRESSING_STYLE_NORMALIZED" in workflow
     assert "--addressing-style" in workflow
     assert (
@@ -35,3 +37,7 @@ def test_aliyun_oss_release_mirror_workflow_contract() -> None:
     ) in workflow
     assert 'ossutil cp --force --addressing-style' in workflow
     assert 'upload_asset "release-assets/SHA256SUMS" "SHA256SUMS"' in workflow
+    assert "Build latest download page" in workflow
+    assert 'release-assets/latest.html' in workflow
+    assert 'Content-Type:text/html; charset=utf-8#Cache-Control:no-cache' in workflow
+    assert '"${mirror_root}/latest.html"' in workflow

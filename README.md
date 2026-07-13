@@ -115,6 +115,8 @@ gateway runtime in an Electron shell.
 - macOS Apple Silicon: <https://github.com/opensquilla/opensquilla/releases/download/v0.5.0rc3/OpenSquilla-0.5.0-rc3-mac-arm64.dmg>
 - Windows x64: <https://github.com/opensquilla/opensquilla/releases/download/v0.5.0rc3/OpenSquilla-0.5.0-rc3-win-x64.exe>
 
+For faster Mainland China downloads, use the [China download mirror](https://opensquilla-releases.oss-cn-beijing.aliyuncs.com/releases/latest.html). It always lists the newest mirrored release; the GitHub Release links above remain the global fallback.
+
 Quit any running OpenSquilla desktop app before upgrading. On macOS, drag the
 app from the DMG into Applications for installation or updates, eject the DMG,
 then open the Applications copy. Existing `~/.opensquilla/config.toml` and

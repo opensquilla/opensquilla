@@ -881,6 +881,66 @@
     "field": {
       "keepCurrentPlaceholder": "空欄のままにすると現在の値を保持します",
       "secretComposePlaceholder": "トークンまたはシークレットを貼り付け"
+    },
+    "channelCatalog": {
+      "dingtalk": {
+        "description": "DingTalk 企業ロボット（stream 接続）。",
+        "needs": [
+          "Client id。",
+          "Client secret。"
+        ]
+      },
+      "discord": {
+        "description": "gateway websocket を使う Discord ボット。",
+        "needs": [
+          "Bot token。"
+        ]
+      },
+      "feishu": {
+        "description": "Feishu（または Lark）ボット — webhook または websocket 接続。",
+        "needs": [
+          "App id。",
+          "App secret。"
+        ]
+      },
+      "matrix": {
+        "description": "Matrix ホームサーバークライアント（sync ロングポーリング）。",
+        "needs": [
+          "Homeserver URL。",
+          "ユーザー id（@user:server）。",
+          "matrix オプション拡張をインストール。"
+        ]
+      },
+      "qq": {
+        "description": "websocket 経由の Tencent QQ ボット。",
+        "needs": [
+          "App id。",
+          "App secret。"
+        ]
+      },
+      "slack": {
+        "description": "Slack ワークスペースボット — Socket モード（websocket）または Events API webhook。",
+        "needs": [
+          "Bot token（xoxb-…）。",
+          "Signing secret。"
+        ]
+      },
+      "telegram": {
+        "description": "Telegram Bot API — ポーリングまたは webhook トランスポート。",
+        "needs": [
+          "Bot token。"
+        ]
+      },
+      "wecom": {
+        "description": "websocket 経由の企業 WeChat AI ボット、または法人アプリ webhook コールバック。",
+        "needs": [
+          "Corp id。",
+          "Corp secret。",
+          "Agent id（整数）。",
+          "Token。",
+          "Encoding AES キー。"
+        ]
+      }
     }
   },
   "sessions": {

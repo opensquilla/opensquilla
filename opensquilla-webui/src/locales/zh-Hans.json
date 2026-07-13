@@ -881,6 +881,66 @@
     "field": {
       "keepCurrentPlaceholder": "留空即保留当前值",
       "secretComposePlaceholder": "粘贴 token 或密钥"
+    },
+    "channelCatalog": {
+      "dingtalk": {
+        "description": "钉钉企业机器人，基于 stream 长连接。",
+        "needs": [
+          "Client id。",
+          "Client secret。"
+        ]
+      },
+      "discord": {
+        "description": "Discord 机器人，使用 gateway websocket。",
+        "needs": [
+          "Bot token。"
+        ]
+      },
+      "feishu": {
+        "description": "飞书（或 Lark）机器人——webhook 或 websocket 连接。",
+        "needs": [
+          "App id。",
+          "App secret。"
+        ]
+      },
+      "matrix": {
+        "description": "Matrix homeserver 客户端（sync 长轮询）。",
+        "needs": [
+          "Homeserver URL。",
+          "用户 id（@user:server）。",
+          "安装 matrix 可选扩展。"
+        ]
+      },
+      "qq": {
+        "description": "腾讯 QQ 机器人，基于 websocket。",
+        "needs": [
+          "App id。",
+          "App secret。"
+        ]
+      },
+      "slack": {
+        "description": "Slack 工作区机器人——Socket 模式（websocket）或 Events API webhook。",
+        "needs": [
+          "Bot token（xoxb-…）。",
+          "Signing secret。"
+        ]
+      },
+      "telegram": {
+        "description": "Telegram Bot API——轮询或 webhook 传输。",
+        "needs": [
+          "Bot token。"
+        ]
+      },
+      "wecom": {
+        "description": "企业微信 AI 机器人，基于 websocket，或企业应用 webhook 回调。",
+        "needs": [
+          "Corp id。",
+          "Corp secret。",
+          "Agent id（整数）。",
+          "Token。",
+          "Encoding AES key。"
+        ]
+      }
     }
   },
   "sessions": {

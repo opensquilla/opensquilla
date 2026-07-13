@@ -881,6 +881,66 @@
     "field": {
       "keepCurrentPlaceholder": "leer lassen, um den aktuellen Wert zu behalten",
       "secretComposePlaceholder": "Token oder Secret einfügen"
+    },
+    "channelCatalog": {
+      "dingtalk": {
+        "description": "DingTalk-Unternehmensroboter über Stream-Verbindung.",
+        "needs": [
+          "Client-id.",
+          "Client-secret."
+        ]
+      },
+      "discord": {
+        "description": "Discord-Bot über Gateway-Websocket.",
+        "needs": [
+          "Bot-Token."
+        ]
+      },
+      "feishu": {
+        "description": "Feishu- (oder Lark-) Bot — Webhook- oder Websocket-Verbindung.",
+        "needs": [
+          "App-id.",
+          "App-secret."
+        ]
+      },
+      "matrix": {
+        "description": "Matrix-Homeserver-Client (Sync-Long-Poll).",
+        "needs": [
+          "Homeserver-URL.",
+          "Benutzer-id (@user:server).",
+          "Optionales matrix-Extra installieren."
+        ]
+      },
+      "qq": {
+        "description": "Tencent-QQ-Bot über Websocket.",
+        "needs": [
+          "App-id.",
+          "App-secret."
+        ]
+      },
+      "slack": {
+        "description": "Slack-Workspace-Bot — Socket-Modus (Websocket) oder Events-API-Webhook.",
+        "needs": [
+          "Bot-Token (xoxb-…).",
+          "Signing-Secret."
+        ]
+      },
+      "telegram": {
+        "description": "Telegram-Bot-API — Polling- oder Webhook-Transport.",
+        "needs": [
+          "Bot-Token."
+        ]
+      },
+      "wecom": {
+        "description": "Enterprise-WeChat-KI-Bot über Websocket oder Corp-App-Webhook-Callback.",
+        "needs": [
+          "Corp-id.",
+          "Corp-secret.",
+          "Agent-id (Ganzzahl).",
+          "Token.",
+          "Encoding-AES-Key."
+        ]
+      }
     }
   },
   "sessions": {

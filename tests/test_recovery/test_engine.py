@@ -7,6 +7,7 @@ import shutil
 import sqlite3
 import subprocess
 import sys
+import tomllib
 import uuid
 from pathlib import Path
 
@@ -1201,7 +1202,7 @@ def test_choose_workspace_preserves_windows_config_dacl(tmp_path: Path) -> None:
     ]
     get_file_security.restype = ctypes.c_int
 
-    def dacl_bytes() -> bytes:
+    def dacl_semantics() -> tuple[int, bytes]:
         required = ctypes.c_uint32()
         get_file_security(
             _windows_extended_path(config_path),
@@ -1219,9 +1220,18 @@ def test_choose_workspace_preserves_windows_config_dacl(tmp_path: Path) -> None:
             required.value,
             ctypes.byref(required),
         )
-        return bytes(buffer.raw[: required.value])
+        descriptor = bytes(buffer.raw[: required.value])
+        control = int.from_bytes(descriptor[2:4], "little")
+        dacl_offset = int.from_bytes(descriptor[16:20], "little")
+        # Windows can normalize the AUTO_INHERITED bookkeeping bit when the
+        # same DACL is attached to a new file. Preserve and compare the access
+        # entries plus the flags that determine DACL presence/defaulting and
+        # whether future inheritance is blocked.
+        access_control_flags = control & 0x100C
+        dacl = descriptor[dacl_offset:] if dacl_offset else b""
+        return access_control_flags, dacl
 
-    dacl_before = dacl_bytes()
+    dacl_before = dacl_semantics()
     before = inspect_profile(home)
     choose_workspace(
         home,
@@ -1230,7 +1240,7 @@ def test_choose_workspace_preserves_windows_config_dacl(tmp_path: Path) -> None:
         workspace=selected,
     )
 
-    assert dacl_bytes() == dacl_before
+    assert dacl_semantics() == dacl_before
 
 
 def test_workspace_env_override_blocks_config_patch(
@@ -1346,7 +1356,7 @@ def test_crashed_workspace_config_park_is_recovered_without_overwrite(
 
     assert recovered.outcome == "ready"
     assert recovered.effective_workspace == selected
-    assert str(selected) in config.read_text(encoding="utf-8")
+    assert tomllib.loads(config.read_text(encoding="utf-8"))["workspace_dir"] == str(selected)
     backups = list(home.glob("config.toml.backup.*"))
     assert len(backups) == 1
     assert backups[0].read_text(encoding="utf-8") == old_text

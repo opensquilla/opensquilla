@@ -51,8 +51,10 @@ def _profile(tmp_path: Path) -> tuple[Path, Path, str, str]:
         },
         sort_keys=True,
     )
-    (home / "config.toml").write_text(config, encoding="utf-8")
-    (user_data / "desktop-credential.json").write_text(credential, encoding="utf-8")
+    # The settings protocol performs a byte-exact CAS. Keep fixture bytes
+    # platform-independent instead of letting Windows text I/O inject CRLF.
+    (home / "config.toml").write_bytes(config.encode())
+    (user_data / "desktop-credential.json").write_bytes(credential.encode())
     return home, user_data / "desktop-credential.json", config, credential
 
 

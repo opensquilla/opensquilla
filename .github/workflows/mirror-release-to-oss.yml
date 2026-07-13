@@ -249,7 +249,7 @@ jobs:
         run: |
           set -euo pipefail
           dest_prefix="oss://${ALIYUN_OSS_BUCKET}/${ALIYUN_OSS_PREFIX_NORMALIZED}/${TAG}"
-          mirror_root="${dest_prefix%/${TAG}}"
+          mirror_root="${dest_prefix%/"${TAG}"}"
           upload_asset() {
             local path="$1"
             local name="$2"

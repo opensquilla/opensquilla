@@ -14,6 +14,60 @@ CURRENT_RELEASE_TAG = "v0.5.0rc4"
 CURRENT_RELEASE_VERSION = CURRENT_RELEASE_TAG.removeprefix("v")
 
 
+def _run_posix_release_installer(
+    tmp_path: Path,
+    *,
+    system: str,
+    machine: str,
+    release_tag: str = CURRENT_RELEASE_TAG,
+    dry_run: bool = True,
+) -> subprocess.CompletedProcess[str]:
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    uname = fake_bin / "uname"
+    uname.write_text(
+        "#!/bin/sh\n"
+        'case "$1" in\n'
+        f"  -s) echo {system} ;;\n"
+        f"  -m) echo {machine} ;;\n"
+        "  *) exit 2 ;;\n"
+        "esac\n",
+        encoding="utf-8",
+    )
+    uname.chmod(0o755)
+    if not dry_run:
+        uv = fake_bin / "uv"
+        uv.write_text(
+            "#!/bin/sh\n"
+            'if [ "$1" = tool ] && [ "$2" = dir ]; then\n'
+            '  if [ "${3:-}" = --bin ]; then\n'
+            f"    echo {tmp_path}/tool-bin\n"
+            "  else\n"
+            f"    echo {tmp_path}/tools\n"
+            "  fi\n"
+            "fi\n",
+            encoding="utf-8",
+        )
+        uv.chmod(0o755)
+
+    env = os.environ.copy()
+    env["PATH"] = f"{fake_bin}:{env['PATH']}"
+    env["HOME"] = str(tmp_path / "home")
+    env["OPENSQUILLA_STATE_DIR"] = str(tmp_path / "state")
+    if dry_run:
+        env["OPENSQUILLA_INSTALL_DRY_RUN"] = "1"
+    else:
+        env.pop("OPENSQUILLA_INSTALL_DRY_RUN", None)
+    return subprocess.run(
+        ["bash", str(RELEASE_SH), "--version", release_tag],
+        cwd=ROOT,
+        env=env,
+        capture_output=True,
+        check=False,
+        text=True,
+    )
+
+
 def test_source_install_scripts_force_refresh_local_uv_tool_package() -> None:
     ps1 = SOURCE_PS1.read_text(encoding="utf-8")
     sh = SOURCE_SH.read_text(encoding="utf-8")
@@ -238,37 +292,130 @@ def test_release_sh_pairs_macos_companion_after_introduction(
     assert "installs core only" not in result.stdout
 
 
-def test_release_sh_keeps_linux_core_only_until_linux_companion_exists(tmp_path: Path) -> None:
-    fake_bin = tmp_path / "bin"
-    fake_bin.mkdir()
-    uname = fake_bin / "uname"
-    uname.write_text(
-        "#!/bin/sh\n"
-        'case "$1" in\n'
-        "  -s) echo Linux ;;\n"
-        "  -m) echo x86_64 ;;\n"
-        "  *) exit 2 ;;\n"
-        "esac\n",
-        encoding="utf-8",
+@pytest.mark.parametrize(
+    ("machine", "wheel_tag"),
+    [
+        ("aarch64", "manylinux_2_28_aarch64"),
+        ("arm64", "manylinux_2_28_aarch64"),
+        ("x86_64", "manylinux_2_28_x86_64"),
+        ("amd64", "manylinux_2_28_x86_64"),
+    ],
+)
+def test_release_sh_installs_same_version_linux_tui_companion(
+    tmp_path: Path,
+    machine: str,
+    wheel_tag: str,
+) -> None:
+    result = _run_posix_release_installer(tmp_path, system="Linux", machine=machine)
+
+    assert result.returncode == 0, result.stderr
+    normalized = result.stdout.replace("\\ ", " ")
+    assert "--with" in result.stdout
+    assert "--reinstall-package opensquilla " in normalized
+    assert "--reinstall-package opensquilla-tui-host" in normalized
+    assert (
+        f"opensquilla_tui_host-{CURRENT_RELEASE_VERSION}-py3-none-{wheel_tag}.whl" in result.stdout
     )
-    uname.chmod(0o755)
-    env = os.environ.copy()
-    env["PATH"] = f"{fake_bin}:{env['PATH']}"
-    env["OPENSQUILLA_INSTALL_DRY_RUN"] = "1"
-    result = subprocess.run(
-        ["bash", str(RELEASE_SH), "--version", CURRENT_RELEASE_TAG],
-        cwd=ROOT,
-        env=env,
-        capture_output=True,
-        check=False,
-        text=True,
+    assert f"opensquilla-{CURRENT_RELEASE_VERSION}-py3-none-any.whl" in result.stdout
+
+
+@pytest.mark.parametrize("release_tag", ["v0.5.0rc3", "v0.5.0b9", "v0.4.1"])
+def test_release_sh_rolls_back_before_linux_companion_as_core_only(
+    tmp_path: Path,
+    release_tag: str,
+) -> None:
+    result = _run_posix_release_installer(
+        tmp_path,
+        system="Linux",
+        machine="x86_64",
+        release_tag=release_tag,
     )
 
     assert result.returncode == 0, result.stderr
+    normalized = result.stdout.replace("\\ ", " ")
+    assert "Linux TUI companions start at v0.5.0rc4" in result.stdout
+    assert f"{release_tag} installs core only" in result.stdout
     assert "--with" not in result.stdout
-    assert "--reinstall-package opensquilla" in result.stdout.replace("\\ ", " ")
+    assert "--reinstall-package opensquilla " in normalized
     assert "opensquilla_tui_host" not in result.stdout
     assert "opensquilla-tui-host" not in result.stdout
+
+
+def test_release_sh_rejects_unsupported_linux_arch_for_paired_release(tmp_path: Path) -> None:
+    result = _run_posix_release_installer(tmp_path, system="Linux", machine="riscv64")
+
+    assert result.returncode != 0
+    assert "this Linux architecture does not have a TUI host release asset" in result.stderr
+    assert "supported Linux architectures: aarch64, x86_64" in result.stderr
+
+
+def test_release_sh_allows_unsupported_linux_arch_for_core_only_rollback(tmp_path: Path) -> None:
+    result = _run_posix_release_installer(
+        tmp_path,
+        system="Linux",
+        machine="riscv64",
+        release_tag="v0.5.0rc3",
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "installs core only" in result.stdout
+    assert "--with" not in result.stdout
+
+
+@pytest.mark.parametrize(
+    ("system", "machine", "platform_label"),
+    [
+        ("Darwin", "arm64", "macOS"),
+        ("Linux", "x86_64", "Linux"),
+    ],
+)
+def test_release_sh_completion_receipt_invites_paired_tui(
+    tmp_path: Path,
+    system: str,
+    machine: str,
+    platform_label: str,
+) -> None:
+    result = _run_posix_release_installer(
+        tmp_path,
+        system=system,
+        machine=machine,
+        dry_run=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "opensquilla chat --ui tui" in result.stdout
+    assert f"TUI companion: installed for {platform_label}." in result.stdout
+    assert "opensquilla chat --ui plain" not in result.stdout
+    assert "Windows" not in result.stdout
+
+
+@pytest.mark.parametrize(
+    ("system", "machine", "platform_label"),
+    [
+        ("Darwin", "arm64", "macOS"),
+        ("Linux", "x86_64", "Linux"),
+    ],
+)
+def test_release_sh_completion_receipt_explains_core_only_rollback(
+    tmp_path: Path,
+    system: str,
+    machine: str,
+    platform_label: str,
+) -> None:
+    result = _run_posix_release_installer(
+        tmp_path,
+        system=system,
+        machine=machine,
+        release_tag="v0.5.0rc3",
+        dry_run=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "opensquilla chat --ui plain" in result.stdout
+    assert f"TUI companion: not included for v0.5.0rc3 on {platform_label}." in result.stdout
+    assert "Use '--ui plain' for the supported rescue renderer." in result.stdout
+    assert "opensquilla chat --ui tui" not in result.stdout
+    assert "Windows" not in result.stdout
 
 
 def test_release_installer_rejects_non_release_selectors() -> None:

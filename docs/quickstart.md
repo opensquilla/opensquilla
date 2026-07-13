@@ -19,9 +19,9 @@ On macOS and Linux, install the current release with the release installer:
 curl -LsSf https://opensquilla.ai/install.sh | bash
 ```
 
-On macOS it selects the matching arm64 or x86_64 TUI host and installs it with
-the exact same version of the platform-neutral core wheel. The equivalent
-Apple Silicon command is:
+On macOS and Linux it selects the matching arm64 or x86_64 TUI host and
+installs it with the exact same version of the platform-neutral core wheel. The
+equivalent Apple Silicon command is:
 
 ```sh
 uv tool install --python 3.12 \
@@ -29,10 +29,23 @@ uv tool install --python 3.12 \
   "opensquilla[recommended] @ https://github.com/opensquilla/opensquilla/releases/download/v0.5.0rc4/opensquilla-0.5.0rc4-py3-none-any.whl"
 ```
 
-Intel macOS uses the sibling `macosx_11_0_x86_64` wheel. Bun, npm, and a
-first-launch binary download are not required. The `recommended` extra includes
-SquillaRouter dependencies and memory/search support used by the default
-product experience.
+Intel macOS uses the sibling `macosx_11_0_x86_64` wheel. Linux uses
+`manylinux_2_28_x86_64` or `manylinux_2_28_aarch64`, matching the machine. For
+example, Linux x86_64 can use:
+
+```sh
+uv tool install --python 3.12 \
+  --with "opensquilla-tui-host @ https://github.com/opensquilla/opensquilla/releases/download/v0.5.0rc4/opensquilla_tui_host-0.5.0rc4-py3-none-manylinux_2_28_x86_64.whl" \
+  "opensquilla[recommended] @ https://github.com/opensquilla/opensquilla/releases/download/v0.5.0rc4/opensquilla-0.5.0rc4-py3-none-any.whl"
+```
+
+The packaged Linux host requires glibc 2.28 or newer. Native musl/Alpine is not
+part of this RC; WSL uses the Linux package.
+
+Bun, npm, a source checkout, and a first-launch binary download are not
+required. Upgrade, reinstall, and rollback replace core and host as a pair.
+The `recommended` extra includes SquillaRouter dependencies and memory/search
+support used by the default product experience.
 
 Windows currently installs the core wheel; its native TUI host follows in the
 separate Windows platform release:
@@ -121,8 +134,13 @@ http://127.0.0.1:18791/control/
 Start terminal chat:
 
 ```sh
-opensquilla chat
+opensquilla chat --ui tui
 ```
+
+For this macOS and Linux RC, bare `opensquilla chat` remains on the minimal
+`plain` rescue renderer. `--ui auto` prefers the packaged TUI but may fall back
+to `plain` only before full-screen startup. Native Windows TUI support remains
+a separate follow-up release; Windows can use bare chat or `--ui plain` now.
 
 Run one automation turn:
 
@@ -140,15 +158,15 @@ opensquilla agent \
 ```
 
 Use the Web UI for browser-based chat, approvals, setup, channels, usage, and
-logs. Use `opensquilla chat` when you want a terminal conversation. Use
-`opensquilla agent` for one-shot automation.
+logs. Use `opensquilla chat --ui tui` when you want the full-screen terminal
+client on macOS or Linux. Use `opensquilla agent` for one-shot automation.
 
 ## Resume Work
 
 Resume a terminal chat session:
 
 ```sh
-opensquilla chat --session <session-key>
+opensquilla chat --ui tui --session <session-key>
 ```
 
 Inspect sessions:

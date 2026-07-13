@@ -9,16 +9,22 @@ especially while working in a local project directory.
 Start terminal chat:
 
 ```sh
-opensquilla chat
+opensquilla chat --ui tui
 ```
 
-The supported macOS RC keeps bare `opensquilla chat` on the minimal `plain`
-renderer while `opensquilla chat --ui tui` opts into the packaged full-screen
-host. `--ui auto` exercises the final startup policy and may fall back to plain
-only before full-screen startup. After the RC gate and at least seven days with
-no unresolved P0/P1 data, approval, input, or terminal-restoration issue, the
-next rollout release changes the bare command to `auto`. Release installs do
-not require Bun, npm, tmux, or a source checkout.
+The supported macOS and Linux RC keeps bare `opensquilla chat` on the minimal
+`plain` renderer while `opensquilla chat --ui tui` opts into the packaged
+full-screen host. `--ui auto` exercises the final startup policy and may fall
+back to plain only before full-screen startup. After the RC gate and at least
+seven days with no unresolved P0/P1 data, approval, input, or
+terminal-restoration issue, the next rollout release changes the bare command
+to `auto`. Release installs do not require Bun, npm, tmux, a source checkout,
+or a first-run host download.
+
+The packaged host is available on macOS arm64/x86_64 and Linux
+arm64/x86_64. Native Windows needs its ConPTY host and remains an independent
+platform follow-up; the session, history, approval, attachment, and UI-selection
+contracts do not change for that release.
 
 For the implicit local configuration, chat checks readiness before taking over
 the terminal and starts the lifecycle-managed Gateway when necessary. An
@@ -29,19 +35,19 @@ You can still manage the local Gateway explicitly:
 
 ```sh
 opensquilla gateway start --json
-opensquilla chat
+opensquilla chat --ui tui
 ```
 
 Use a specific model for the session:
 
 ```sh
-opensquilla chat --model gpt-5.4-mini
+opensquilla chat --ui tui --model gpt-5.4-mini
 ```
 
 Resume an existing session:
 
 ```sh
-opensquilla chat --session <session-key>
+opensquilla chat --ui tui --session <session-key>
 ```
 
 Choose the terminal presentation explicitly when diagnosing startup:
@@ -146,7 +152,8 @@ local file before sending the turn:
 Release installers pair the platform-neutral OpenSquilla package with a
 same-version, platform-specific TUI host. A missing or mismatched host is a
 strict error under `--ui tui`; `--ui auto` may fall back before entering the
-alternate screen.
+alternate screen. On macOS and Linux, install, upgrade, reinstall, and rollback
+replace core and host together; mixing release versions is unsupported.
 
 Maintainers can explicitly use the source host while developing:
 

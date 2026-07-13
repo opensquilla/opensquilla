@@ -52,7 +52,7 @@ OpenSquilla funciona en Windows, macOS y Linux. Elige la ruta que se ajuste a tu
 
 Los instaladores de escritorio y la instalación rápida desde terminal te ofrecen una **versión** precompilada, sin necesidad de Git. Las otras dos —instalar desde el código fuente y desarrollar desde el código fuente— se compilan **a partir de un checkout de Git** (`git clone` + Git LFS).
 
-Los comandos de instalación de versiones usan los recursos de release publicados en GitHub. Las instalaciones del wheel de Python usan nombres de archivo de wheel con versión, porque los instaladores validan la versión incrustada en el nombre del archivo del wheel. En macOS, el instalador desde terminal combina ese wheel principal con el companion `opensquilla-tui-host` de la misma versión y específico de la arquitectura; no instala Bun ni descarga un host en el primer inicio.
+Los comandos de instalación de versiones usan los recursos de release publicados en GitHub. Las instalaciones del wheel de Python usan nombres de archivo de wheel con versión, porque los instaladores validan la versión incrustada en el nombre del archivo del wheel. En macOS y Linux, el instalador desde terminal combina ese wheel principal con el companion `opensquilla-tui-host` de la misma versión y específico de la arquitectura; no requiere Bun, un checkout del código fuente ni una descarga del host en el primer inicio.
 
 Para el uso de escritorio de 0.5.0 Preview 4, opta por los instaladores de escritorio empaquetados de la Release de GitHub: `OpenSquilla-0.5.0-rc4-mac-arm64.dmg` en macOS y `OpenSquilla-0.5.0-rc4-win-x64.exe` en Windows.
 
@@ -137,7 +137,7 @@ uv tool install --python 3.12 \
   "opensquilla[recommended] @ https://github.com/opensquilla/opensquilla/releases/download/v0.5.0rc4/opensquilla-0.5.0rc4-py3-none-any.whl"
 ```
 
-Los Mac Intel usan el recurso hermano `opensquilla_tui_host-0.5.0rc4-py3-none-macosx_11_0_x86_64.whl`. Linux y Windows instalan actualmente solo el wheel principal neutro para la plataforma; sus hosts TUI llegarán en releases de plataforma independientes:
+Los Mac Intel usan el recurso hermano `opensquilla_tui_host-0.5.0rc4-py3-none-macosx_11_0_x86_64.whl`. Linux usa `opensquilla_tui_host-0.5.0rc4-py3-none-manylinux_2_28_x86_64.whl` o `opensquilla_tui_host-0.5.0rc4-py3-none-manylinux_2_28_aarch64.whl`, según la arquitectura. Windows nativo tendrá su host TUI en una release de plataforma independiente.
 
 ```sh
 uv tool install --python 3.12 "opensquilla[recommended] @ https://github.com/opensquilla/opensquilla/releases/download/v0.5.0rc4/opensquilla-0.5.0rc4-py3-none-any.whl"
@@ -150,12 +150,15 @@ El instalador coloca el paquete principal y el companion en el mismo entorno ais
 ```sh
 opensquilla onboard
 opensquilla gateway run
+opensquilla chat --ui tui
 ```
+
+Durante esta RC de macOS y Linux, `opensquilla chat --ui tui` abre la TUI de pantalla completa. El comando sin opciones `opensquilla chat` sigue usando el renderer de rescate `plain`; `--ui auto` prefiere la TUI, pero solo puede volver a `plain` antes de entrar en pantalla completa. La instalación, actualización, reinstalación y reversión mantienen el core y el companion en la misma versión.
 
 > [!NOTE]
 > Si no se encuentra `opensquilla` justo después de una instalación nueva con `uv`, abre una terminal nueva o vuelve a ejecutar la línea de PATH del paso 1.
 
-Para una instalación de macOS totalmente fijada, mantén las URL del wheel principal y del companion en la misma etiqueta de release. El instalador de release lo hace automáticamente y rechaza las versiones incompatibles.
+Para una instalación de macOS o Linux totalmente fijada, mantén las URL del wheel principal y del companion en la misma etiqueta de release. El instalador de release lo hace automáticamente y rechaza las versiones incompatibles.
 
 <a id="install-from-source"></a>
 

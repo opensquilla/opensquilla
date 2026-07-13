@@ -17,15 +17,20 @@ This guide is the product and usage entry point. The existing
    curl -LsSf https://opensquilla.ai/install.sh | bash
    ```
 
-   On macOS this installs the platform-neutral core wheel and the matching
-   architecture-specific TUI host companion in one `uv tool` environment. For
-   example, the pinned Apple Silicon form is:
+   On macOS and Linux this installs the platform-neutral core wheel and the
+   matching architecture-specific TUI host companion in one `uv tool`
+   environment. No Bun, source checkout, or first-run host download is needed.
+   For example, the pinned Apple Silicon form is:
 
    ```sh
    uv tool install --python 3.12 \
      --with "opensquilla-tui-host @ https://github.com/opensquilla/opensquilla/releases/download/v0.5.0rc4/opensquilla_tui_host-0.5.0rc4-py3-none-macosx_11_0_arm64.whl" \
      "opensquilla[recommended] @ https://github.com/opensquilla/opensquilla/releases/download/v0.5.0rc4/opensquilla-0.5.0rc4-py3-none-any.whl"
    ```
+
+   Linux uses the sibling `manylinux_2_28_x86_64` or
+   `manylinux_2_28_aarch64` companion. The installer keeps core and host on the
+   same release for install, upgrade, reinstall, and rollback.
 
    Windows currently uses the core wheel while its native TUI companion is
    delivered in the separate Windows platform release:
@@ -46,7 +51,17 @@ This guide is the product and usage entry point. The existing
    opensquilla gateway run
    ```
 
-4. Open the control UI:
+4. Start the supported opt-in TUI on macOS or Linux:
+
+   ```sh
+   opensquilla chat --ui tui
+   ```
+
+   During this RC, bare `opensquilla chat` stays on the minimal `plain`
+   renderer. `--ui auto` prefers TUI but may fall back before full-screen
+   startup. Native Windows TUI support follows separately.
+
+5. Open the control UI:
 
    <http://127.0.0.1:18791/control/>
 

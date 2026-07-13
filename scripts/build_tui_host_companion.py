@@ -32,6 +32,16 @@ _WHEEL_TAGS = {
     ("win32", "arm64"): "py3-none-win_arm64",
     ("win32", "x64"): "py3-none-win_amd64",
 }
+_BUN_COMPILE_TARGETS = {
+    # Platform metadata follows Node's ``process.platform`` (``win32``), while
+    # Bun's compiler spells that target ``windows``. Keep that translation here
+    # so the future Windows release does not need to change the host protocol.
+    ("win32", "arm64"): "bun-windows-arm64",
+    ("win32", "x64"): "bun-windows-x64-baseline",
+    # Platform wheels must not silently require a modern AVX2-class CPU.
+    ("darwin", "x64"): "bun-darwin-x64-baseline",
+    ("linux", "x64"): "bun-linux-x64-baseline",
+}
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -79,13 +89,14 @@ def main(argv: list[str] | None = None) -> int:
                     "install the pinned version or pass --binary"
                 )
             _run([bun, "install", "--frozen-lockfile"], cwd=HOST_SOURCE)
+            bun_target = _bun_compile_target(target_platform, target_arch)
             _run(
                 [
                     bun,
                     "build",
                     "--compile",
                     "--minify",
-                    f"--target=bun-{target_platform}-{target_arch}",
+                    f"--target={bun_target}",
                     str(HOST_SOURCE / "src" / "main.mjs"),
                     f"--outfile={executable}",
                 ],
@@ -115,6 +126,7 @@ def main(argv: list[str] | None = None) -> int:
             "executable": f"bin/{executable_name}",
             "sha256": digest,
             "bun_version": bun_version,
+            "bun_target": _bun_compile_target(target_platform, target_arch),
         }
         (package_dir / "_host_metadata.json").write_text(
             json.dumps(metadata, indent=2, sort_keys=True) + "\n",
@@ -170,6 +182,13 @@ def _current_platform() -> str:
 def _current_arch() -> str:
     value = platform_module.machine().lower()
     return {"arm64": "arm64", "aarch64": "arm64", "x86_64": "x64", "amd64": "x64"}.get(value, value)
+
+
+def _bun_compile_target(target_platform: str, target_arch: str) -> str:
+    return _BUN_COMPILE_TARGETS.get(
+        (target_platform, target_arch),
+        f"bun-{target_platform}-{target_arch}",
+    )
 
 
 def _require_native_target(target_platform: str, target_arch: str) -> None:

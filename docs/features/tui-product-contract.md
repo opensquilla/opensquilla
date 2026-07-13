@@ -33,17 +33,21 @@ exits. It does not hot-switch renderers mid-turn.
 
 Legacy chat is frozen during the TUI transition. It receives no new product
 features or parity work. Only security, data-loss, and migration-critical fixes
-are accepted until the macOS TUI release gate passes, after which legacy-only
-entrypoints, implementation, documentation, and tests are removed.
+are accepted until the supported TUI rollout gate passes, after which
+legacy-only entrypoints, implementation, documentation, and tests are removed.
 
-## macOS rollout gate
+## macOS and Linux rollout gate
 
-The first supported macOS RC installs the companion but keeps bare
-`opensquilla chat` on `plain`; `--ui tui` is the supported opt-in and explicit
-`--ui auto` exercises the final selection policy. The next release may change
-the omitted policy to `auto` only after:
+The first supported macOS and Linux RC installs an architecture-specific
+companion but keeps bare `opensquilla chat` on `plain`; `--ui tui` is the
+supported opt-in and explicit `--ui auto` exercises the final selection policy.
+Release installs use self-contained hosts and do not require Bun, source, or a
+first-run binary download. Upgrade, reinstall, and rollback keep core and host
+on the same version. The next release may change the omitted policy to `auto`
+only after:
 
 - the packaged-host macOS release gate passes on arm64 and x86_64;
+- the packaged-host Linux release gate passes on arm64 and x86_64;
 - at least seven calendar days of RC observation complete; and
 - no unresolved P0/P1 data, approval, input, or terminal-restoration issue
   remains.
@@ -52,3 +56,8 @@ The default switch and legacy alias deletion are a dedicated rollout change,
 not part of the opt-in RC artifact build. Existing redacted diagnostics, release
 test evidence, and issue reports are the decision inputs; the TUI does not add
 anonymous runtime telemetry.
+
+Native Windows remains a separate platform release for its host artifact,
+ConPTY terminal lifecycle, process-tree cleanup, signing, installer, and native
+terminal evidence. It reuses these additive product and Gateway contracts and
+must not require macOS/Linux-specific behavior changes.

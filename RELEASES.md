@@ -2,7 +2,7 @@
 
 | Version | Tag | Date | Notes |
 |---|---|---|---|
-| 0.5.0rc4 | v0.5.0rc4 | 2026-07-13 | Preview: supported opt-in macOS TUI, shared Gateway sessions, paired companion distribution, safe profile recovery and explicit whole-profile imports |
+| 0.5.0rc4 | v0.5.0rc4 | 2026-07-13 | Preview: supported opt-in macOS and Linux TUI, shared Gateway sessions, paired companion distribution, safe profile recovery and explicit whole-profile imports |
 | 0.5.0rc3 | v0.5.0rc3 | 2026-07-10 | Preview: legacy-home migration, provider and routing expansion, desktop/Web UI improvements, runtime hardening, and container images |
 | 0.5.0rc2 | v0.5.0rc2 | 2026-07-06 | Preview: provider/router recovery, Web UI upload refresh, desktop/session fixes, and CI contract repair |
 | 0.5.0rc1 | v0.5.0rc1 | 2026-07-04 | Preview: Model Ensemble routing, Control UI, managed execution, OpenTUI, and portable retirement |
@@ -41,21 +41,25 @@ first. The RC3 uninstaller may remove `%APPDATA%\OpenSquilla`; release guidance
 must tell users to back up that directory. RC4 and later NSIS packages set
 `deleteAppDataOnUninstall=false`.
 
-The Mac-first TUI release extends that set with
+The macOS and Linux TUI release extends that set with
 `opensquilla_tui_host-<version>-py3-none-macosx_11_0_arm64.whl` and
-`opensquilla_tui_host-<version>-py3-none-macosx_11_0_x86_64.whl`. These
-companion wheels contain a Developer ID-signed, Apple-notarized host executable.
-They are built on native arm64 and x86_64 macOS runners, must match the core
-wheel version exactly, and are included in the aggregate `SHA256SUMS`. Missing
+`opensquilla_tui_host-<version>-py3-none-macosx_11_0_x86_64.whl`, plus
+`opensquilla_tui_host-<version>-py3-none-manylinux_2_28_x86_64.whl` and
+`opensquilla_tui_host-<version>-py3-none-manylinux_2_28_aarch64.whl`. All
+companions must match the core wheel version exactly and are included in the
+aggregate `SHA256SUMS`. The macOS wheels contain a Developer ID-signed,
+Apple-notarized host executable. Missing
 Developer ID or notarization credentials are a release failure; an ad-hoc local
 signature is not accepted for these published assets. Because a bare executable
 inside a wheel cannot carry a stapled ticket, release CI also applies quarantine
 and requires Gatekeeper to resolve and accept the online notarization ticket.
-Both macOS architectures must also pass the deterministic real-terminal suite
-from a clean core-plus-companion wheel install with Bun and source overrides
-absent. Missing tmux capability, broken alternate-screen restoration, or an
-unusable returned shell blocks the release and preserves terminal evidence for
-diagnosis. The matrix must include one non-fake-app Gateway flow using the
+Both macOS architectures and both Linux architectures must also pass their
+native packaged-host and terminal release gates. The deterministic
+real-terminal suite runs from a clean core-plus-companion wheel install with
+Bun and source overrides absent. Missing tmux capability, broken
+alternate-screen restoration, or an unusable returned shell blocks the release
+and preserves terminal evidence for diagnosis. The matrix must include one
+non-fake-app Gateway flow using the
 installed `opensquilla chat --ui tui --session` command. That flow must prove
 canonical attachment/history hydration, Web-to-TUI turn projection, approval
 resolution convergence, queued-turn cancellation, and terminal restoration.
@@ -63,15 +67,22 @@ Its Gateway log, RPC/event snapshots, provider lifecycle log, frames,
 scrollback, and dynamic core/companion/host version provenance are release
 evidence; a capability miss may not silently skip this flow.
 
-The first macOS TUI RC is a supported opt-in: the installer includes the
-companion, `opensquilla chat --ui tui` is supported, and bare
+The first macOS and Linux TUI RC is a supported opt-in: the installer includes
+the matching companion, `opensquilla chat --ui tui` is supported, and bare
 `opensquilla chat` remains on `plain`. Record the RC publication time and
 blocking TUI issues in the release PR. Do not change the omitted UI policy to
 `auto` or delete legacy aliases until at least seven calendar days have elapsed,
-both architecture gates are green, and no unresolved P0/P1 data, approval,
-input, or terminal-restoration issue remains. The default switch and alias
-deletion require a separate reviewed rollout PR. A release rollback must keep
-the core and companion on the same version.
+all four macOS/Linux architecture gates are green, and no unresolved P0/P1
+data, approval, input, or terminal-restoration issue remains. The default switch
+and alias deletion require a separate reviewed rollout PR. A release rollback
+must keep the core and companion on the same version; rolling back to a release
+without a companion removes the newer companion instead of retaining a mixed
+tool environment.
+
+Native Windows remains a separate platform PR limited to the win_amd64 host,
+ConPTY/console guardian, process-tree cleanup, signing, `install.ps1`, and native
+terminal gates. It must reuse the additive CLI, Gateway, host, session,
+approval, and attachment contracts shipped here rather than changing them.
 
 Container tags follow a separate policy: each release publishes
 `ghcr.io/opensquilla/opensquilla:<git-tag>`, and Docker `:latest`
@@ -112,6 +123,8 @@ Preview README install commands must use tag-pinned URLs such as:
 - `https://github.com/opensquilla/opensquilla/releases/download/v0.5.0rc4/opensquilla-0.5.0rc4-py3-none-any.whl`
 - `https://github.com/opensquilla/opensquilla/releases/download/v0.5.0rc4/opensquilla_tui_host-0.5.0rc4-py3-none-macosx_11_0_arm64.whl`
 - `https://github.com/opensquilla/opensquilla/releases/download/v0.5.0rc4/opensquilla_tui_host-0.5.0rc4-py3-none-macosx_11_0_x86_64.whl`
+- `https://github.com/opensquilla/opensquilla/releases/download/v0.5.0rc4/opensquilla_tui_host-0.5.0rc4-py3-none-manylinux_2_28_x86_64.whl`
+- `https://github.com/opensquilla/opensquilla/releases/download/v0.5.0rc4/opensquilla_tui_host-0.5.0rc4-py3-none-manylinux_2_28_aarch64.whl`
 
 ## Release SOP
 
@@ -144,7 +157,7 @@ Preview README install commands must use tag-pinned URLs such as:
    `.github/workflows/docker-image.yml`. Review the draft GitHub Release. For
    `v0.5.0rc4`, confirm it is a pre-release, is not marked
    Latest, and contains only the Electron installers, updater metadata,
-   versioned core and macOS TUI host wheels, `SHA256SUMS`, plus GitHub's
+   versioned core and macOS/Linux TUI host wheels, `SHA256SUMS`, plus GitHub's
    generated source archives. It
    must not contain `OpenSquilla-*-portable.zip` or
    `OpenSquilla-windows-x64-portable.zip`.
@@ -161,6 +174,8 @@ Preview README install commands must use tag-pinned URLs such as:
    curl --fail --head --location https://github.com/opensquilla/opensquilla/releases/download/v0.5.0rc4/opensquilla-0.5.0rc4-py3-none-any.whl
    curl --fail --head --location https://github.com/opensquilla/opensquilla/releases/download/v0.5.0rc4/opensquilla_tui_host-0.5.0rc4-py3-none-macosx_11_0_arm64.whl
    curl --fail --head --location https://github.com/opensquilla/opensquilla/releases/download/v0.5.0rc4/opensquilla_tui_host-0.5.0rc4-py3-none-macosx_11_0_x86_64.whl
+   curl --fail --head --location https://github.com/opensquilla/opensquilla/releases/download/v0.5.0rc4/opensquilla_tui_host-0.5.0rc4-py3-none-manylinux_2_28_x86_64.whl
+   curl --fail --head --location https://github.com/opensquilla/opensquilla/releases/download/v0.5.0rc4/opensquilla_tui_host-0.5.0rc4-py3-none-manylinux_2_28_aarch64.whl
    curl --fail --head --location https://github.com/opensquilla/opensquilla/releases/download/v0.5.0rc4/SHA256SUMS
    ```
 
@@ -183,7 +198,7 @@ These checks cannot be fully proven by local artifact generation:
 - The draft GitHub Release title is `OpenSquilla 0.5.0 Preview 4`.
 - The draft GitHub Release is marked Pre-release and is not marked Latest.
 - Preview GitHub Releases contain the Electron installers, updater metadata,
-  versioned core and macOS TUI host wheels, and `SHA256SUMS` after
+  versioned core and macOS/Linux TUI host wheels, and `SHA256SUMS` after
   `gh release upload --clobber`.
 - Preview GitHub Releases do not contain Windows portable zips or portable
   latest aliases.

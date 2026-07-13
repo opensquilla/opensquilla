@@ -74,7 +74,7 @@ is_release_version() {
     [[ "$1" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+((a|b|rc)[0-9]+)?$ ]]
 }
 
-release_has_macos_tui_host() {
+release_has_tui_host() {
     local value="${1#v}"
     if [[ ! "${value}" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)((a|b|rc)([0-9]+))?$ ]]; then
         return 1
@@ -86,9 +86,10 @@ release_has_macos_tui_host() {
     local prerelease_kind="${BASH_REMATCH[5]:-}"
     local prerelease_number="${BASH_REMATCH[6]:-0}"
 
-    # The first published macOS companion is 0.5.0rc4. Stable 0.5.0 and
-    # every later release are paired as well; earlier releases remain valid
-    # core-only rollback targets and must not request an asset they predate.
+    # The first published macOS and Linux companions are 0.5.0rc4. Stable
+    # 0.5.0 and every later release are paired as well; earlier releases
+    # remain valid core-only rollback targets and must not request an asset
+    # they predate.
     if (( major > 0 || minor > 5 || (minor == 5 && patch > 0) )); then
         return 0
     fi
@@ -212,25 +213,47 @@ esac
 
 install_spec="${package_name} @ ${wheel_url}"
 tui_host_spec=""
-if [[ "$(uname -s 2>/dev/null || true)" == "Darwin" ]]; then
-    if release_has_macos_tui_host "${release_version}"; then
-        case "$(uname -m 2>/dev/null || true)" in
-            arm64|aarch64)
-                tui_host_wheel_tag="macosx_11_0_arm64"
-                ;;
-            x86_64|amd64)
-                tui_host_wheel_tag="macosx_11_0_x86_64"
-                ;;
-            *)
-                echo "install.sh: this macOS architecture does not have a TUI host release asset." >&2
-                echo "install.sh: supported macOS architectures: arm64, x86_64." >&2
-                exit 1
-                ;;
-        esac
+host_os="$(uname -s 2>/dev/null || true)"
+host_label="${host_os:-this platform}"
+if [[ "${host_os}" == "Darwin" ]]; then
+    host_label="macOS"
+fi
+if [[ "${host_os}" == "Darwin" || "${host_os}" == "Linux" ]]; then
+    if release_has_tui_host "${release_version}"; then
+        host_arch="$(uname -m 2>/dev/null || true)"
+        if [[ "${host_os}" == "Darwin" ]]; then
+            case "${host_arch}" in
+                arm64|aarch64)
+                    tui_host_wheel_tag="macosx_11_0_arm64"
+                    ;;
+                x86_64|amd64)
+                    tui_host_wheel_tag="macosx_11_0_x86_64"
+                    ;;
+                *)
+                    echo "install.sh: this macOS architecture does not have a TUI host release asset." >&2
+                    echo "install.sh: supported macOS architectures: arm64, x86_64." >&2
+                    exit 1
+                    ;;
+            esac
+        else
+            case "${host_arch}" in
+                arm64|aarch64)
+                    tui_host_wheel_tag="manylinux_2_28_aarch64"
+                    ;;
+                x86_64|amd64)
+                    tui_host_wheel_tag="manylinux_2_28_x86_64"
+                    ;;
+                *)
+                    echo "install.sh: this Linux architecture does not have a TUI host release asset." >&2
+                    echo "install.sh: supported Linux architectures: aarch64, x86_64." >&2
+                    exit 1
+                    ;;
+            esac
+        fi
         tui_host_url="https://github.com/${repo_slug}/releases/download/${release_tag}/opensquilla_tui_host-${release_version}-py3-none-${tui_host_wheel_tag}.whl"
         tui_host_spec="opensquilla-tui-host @ ${tui_host_url}"
     else
-        echo "install.sh: macOS TUI companions start at v0.5.0rc4; ${display_version} installs core only."
+        echo "install.sh: ${host_label} TUI companions start at v0.5.0rc4; ${display_version} installs core only."
     fi
 fi
 
@@ -331,7 +354,24 @@ OpenSquilla installed from ${display_version}.
 Next steps:
   opensquilla onboard
   opensquilla gateway run
+DONE
 
+if [[ -n "${tui_host_spec}" ]]; then
+    cat <<TUI_DONE
+  opensquilla chat --ui tui
+
+TUI companion: installed for ${host_label}.
+TUI_DONE
+else
+    cat <<PLAIN_DONE
+  opensquilla chat --ui plain
+
+TUI companion: not included for ${display_version} on ${host_label}.
+Use '--ui plain' for the supported rescue renderer.
+PLAIN_DONE
+fi
+
+cat <<DONE
 Default gateway bind: 127.0.0.1:18791 (loopback only).
 Do not expose the gateway on 0.0.0.0 unless it is behind a trusted reverse
 proxy or VPN.

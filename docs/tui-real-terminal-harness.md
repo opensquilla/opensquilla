@@ -61,7 +61,7 @@ uv run pytest tests/integration/cli/tui_real_terminal -q
 
 ### Packaged release gate
 
-macOS companion releases rerun the deterministic OpenTUI scenarios from a
+macOS and Linux companion releases rerun the deterministic OpenTUI scenarios from a
 clean environment containing only the built core and companion wheels plus test
 dependencies. The gate clears `PYTHONPATH`, source-host overrides, and Bun from
 `PATH`, forces the tmux driver, and passes `--tui-require-capabilities`; a

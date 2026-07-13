@@ -543,6 +543,356 @@ jobs:
             security delete-keychain "${TUI_HOST_KEYCHAIN_PATH}" || true
           fi
 
+  build-tui-host-linux:
+    name: Build Linux TUI host (${{ matrix.arch }})
+    needs: build-release-assets
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            runner: ubuntu-24.04
+            container_image: quay.io/pypa/manylinux_2_28_x86_64@sha256:b04887b645dde99b9e955aeae3ff4da414992d0bd88259f046295b56361c5614
+            native_machine: x86_64
+            elf_machine: Advanced Micro Devices X86-64
+            bun_target: bun-linux-x64-baseline
+            wheel_tag: manylinux_2_28_x86_64
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+            container_image: quay.io/pypa/manylinux_2_28_aarch64@sha256:d129a18d4aeecc9ce6db592474bdb127838339eed67cd7cd61617bb027b14c1e
+            native_machine: aarch64
+            elf_machine: AArch64
+            bun_target: bun-linux-arm64
+            wheel_tag: manylinux_2_28_aarch64
+    runs-on: ${{ matrix.runner }}
+    container:
+      image: ${{ matrix.container_image }}
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          ref: ${{ env.RELEASE_TAG != '' && env.RELEASE_TAG || github.ref }}
+
+      - name: Verify native Linux runner
+        shell: bash
+        env:
+          TUI_HOST_NATIVE_MACHINE: ${{ matrix.native_machine }}
+        run: |
+          set -euo pipefail
+          [[ "$(uname -s)" == "Linux" ]]
+          [[ "$(uname -m)" == "${TUI_HOST_NATIVE_MACHINE}" ]]
+          [[ "$(getconf GNU_LIBC_VERSION)" == "glibc 2.28" ]]
+
+      - name: Configure manylinux toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          dnf install --assumeyes binutils file findutils tmux util-linux
+          python_bin="/opt/python/cp312-cp312/bin"
+          "${python_bin}/python" --version
+          echo "${python_bin}" >> "${GITHUB_PATH}"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Set up pinned Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: src/opensquilla/cli/tui/opentui/package/.bun-version
+
+      - name: Download matching core wheel
+        uses: actions/download-artifact@v4
+        with:
+          name: opensquilla-release-assets-python-${{ env.RELEASE_PROFILE }}
+          path: dist/core
+
+      - name: Check companion version
+        shell: bash
+        run: |
+          python - <<'PY'
+          import tomllib
+          from pathlib import Path
+
+          core = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))["project"]["version"]
+          companion = tomllib.loads(
+              Path("packages/opensquilla-tui-host/pyproject.toml").read_text(encoding="utf-8")
+          )["project"]["version"]
+          assert companion == core, f"core/companion version mismatch: {core} != {companion}"
+          PY
+
+      - name: Build native Linux companion wheel
+        shell: bash
+        run: |
+          rm -rf dist/tui-host-linux-${{ matrix.arch }}
+          python scripts/build_tui_host_companion.py \
+            --platform linux \
+            --arch "${{ matrix.arch }}" \
+            --build-id "${GITHUB_SHA}" \
+            --output-dir "dist/tui-host-linux-${{ matrix.arch }}"
+
+      - name: Verify manylinux companion wheel and ELF contract
+        shell: bash
+        env:
+          TUI_HOST_ARCH: ${{ matrix.arch }}
+          TUI_HOST_BUN_TARGET: ${{ matrix.bun_target }}
+          TUI_HOST_CONTAINER_IMAGE: ${{ matrix.container_image }}
+          TUI_HOST_ELF_MACHINE: ${{ matrix.elf_machine }}
+          TUI_HOST_WHEEL_TAG: ${{ matrix.wheel_tag }}
+        run: |
+          set -euo pipefail
+          wheel="$(find "dist/tui-host-linux-${TUI_HOST_ARCH}" -maxdepth 1 -type f -name '*.whl' -print -quit)"
+          WHEEL="${wheel}" python - <<'PY'
+          import hashlib
+          import json
+          import os
+          import tomllib
+          from pathlib import Path
+          from zipfile import ZipFile
+
+          wheel = Path(os.environ["WHEEL"])
+          version = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))["project"]["version"]
+          arch = os.environ["TUI_HOST_ARCH"]
+          wheel_tag = os.environ["TUI_HOST_WHEEL_TAG"]
+          expected = f"opensquilla_tui_host-{version}-py3-none-{wheel_tag}.whl"
+          assert wheel.name == expected, f"unexpected companion wheel: {wheel.name}"
+          with ZipFile(wheel) as archive:
+              metadata_name = next(
+                  name for name in archive.namelist() if name.endswith("/_host_metadata.json")
+              )
+              executable_name = next(
+                  name for name in archive.namelist() if name.endswith("/bin/opensquilla-tui-host")
+              )
+              metadata = json.loads(archive.read(metadata_name))
+              executable = archive.read(executable_name)
+          assert metadata["product_version"] == version
+          assert metadata["host_version"] == version
+          assert metadata["platform"] == "linux"
+          assert metadata["arch"] == arch
+          assert metadata["bun_target"] == os.environ["TUI_HOST_BUN_TARGET"]
+          assert metadata["wheel_tag"] == f"py3-none-{wheel_tag}"
+          assert metadata["build_id"] == os.environ["GITHUB_SHA"]
+          assert metadata["sha256"] == hashlib.sha256(executable).hexdigest()
+          PY
+
+          rm -rf .tui-host-linux-verify
+          uv venv --python 3.12 .tui-host-linux-verify
+          uv pip install --python .tui-host-linux-verify/bin/python "${wheel}"
+          host="$(.tui-host-linux-verify/bin/python - <<'PY'
+          from opensquilla_tui_host import host_command
+          print(host_command()[0])
+          PY
+          )"
+          {
+            echo "container=${TUI_HOST_CONTAINER_IMAGE}"
+            echo "runner=${RUNNER_NAME}"
+            echo "runner_arch=${RUNNER_ARCH}"
+            uname -a
+            getconf GNU_LIBC_VERSION
+            bun --version
+            python --version
+            uv --version
+          } | tee "dist/tui-host-linux-${TUI_HOST_ARCH}/provenance.txt"
+          file "${host}" | tee "dist/tui-host-linux-${TUI_HOST_ARCH}/file.txt"
+          readelf -h "${host}" | tee "dist/tui-host-linux-${TUI_HOST_ARCH}/elf-header.txt"
+          readelf -d "${host}" | tee "dist/tui-host-linux-${TUI_HOST_ARCH}/dynamic.txt"
+          readelf --version-info "${host}" | tee "dist/tui-host-linux-${TUI_HOST_ARCH}/versions.txt"
+          ldd "${host}" | tee "dist/tui-host-linux-${TUI_HOST_ARCH}/ldd.txt"
+          file "${host}" | grep -F "ELF 64-bit LSB"
+          readelf -h "${host}" | grep -F "Machine:" | grep -F "${TUI_HOST_ELF_MACHINE}"
+          if readelf -d "${host}" | grep -E '(RPATH|RUNPATH)'; then
+            echo "Linux TUI host must not contain RPATH or RUNPATH entries." >&2
+            exit 1
+          fi
+          if ldd "${host}" | grep -F 'not found'; then
+            echo "Linux TUI host has unresolved dynamic dependencies." >&2
+            exit 1
+          fi
+          HOST="${host}" python - <<'PY'
+          import os
+          import re
+          import subprocess
+
+          host = os.environ["HOST"]
+          arch = os.environ["TUI_HOST_ARCH"]
+          dynamic_info = subprocess.run(
+              ["readelf", "-d", host],
+              check=True,
+              capture_output=True,
+              text=True,
+          ).stdout
+          needed = set(re.findall(r"Shared library: \[([^]]+)\]", dynamic_info))
+          loaders = {
+              "x64": "ld-linux-x86-64.so.2",
+              "arm64": "ld-linux-aarch64.so.1",
+          }
+          allowed = {
+              "libc.so.6",
+              "libpthread.so.0",
+              "libdl.so.2",
+              "libm.so.6",
+              loaders[arch],
+          }
+          assert "libc.so.6" in needed, needed
+          assert needed <= allowed, f"unexpected dynamic dependencies: {sorted(needed - allowed)}"
+          version_info = subprocess.run(
+              ["readelf", "--version-info", host],
+              check=True,
+              capture_output=True,
+              text=True,
+          ).stdout
+          required = {
+              tuple(map(int, match))
+              for match in re.findall(r"GLIBC_([0-9]+)[.]([0-9]+)", version_info)
+          }
+          assert required, "ELF does not declare a readable GLIBC floor"
+          maximum = max(required)
+          assert maximum <= (2, 28), (
+              f"manylinux_2_28 wheel requires GLIBC_{maximum[0]}.{maximum[1]}"
+          )
+          print({"maximum_required_glibc": f"{maximum[0]}.{maximum[1]}"})
+          PY
+          "${host}" --help | grep -F "OpenSquilla OpenTUI footer host"
+
+      - name: Smoke clean core and companion install without Bun
+        shell: bash
+        run: |
+          set -euo pipefail
+          uv_bin="$(command -v uv)"
+          core_wheel="$(find dist/core -maxdepth 1 -type f -name 'opensquilla-*-py3-none-any.whl' -print -quit)"
+          host_wheel="$(find "dist/tui-host-linux-${{ matrix.arch }}" -maxdepth 1 -type f -name '*.whl' -print -quit)"
+          rm -rf .tui-host-release-smoke
+          "${uv_bin}" venv --python 3.12 .tui-host-release-smoke
+          "${uv_bin}" pip install \
+            --python .tui-host-release-smoke/bin/python \
+            "${core_wheel}" \
+            "${host_wheel}"
+          clean_path="${PWD}/.tui-host-release-smoke/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+          if PATH="${clean_path}" command -v bun >/dev/null 2>&1; then
+            echo "Bun leaked into the packaged companion smoke PATH." >&2
+            exit 1
+          fi
+          smoke_log="${RUNNER_TEMP}/opensquilla-tui-host-bridge-linux-${{ matrix.arch }}.log"
+          command=(
+            env
+            -u PYTHONPATH
+            -u BUN_INSTALL
+            -u OPENSQUILLA_TUI_DEV_SOURCE_HOST
+            PATH="${clean_path}"
+            "${PWD}/.tui-host-release-smoke/bin/python"
+            "${GITHUB_WORKSPACE}/scripts/smoke_tui_host_companion.py"
+          )
+          printf -v smoke_command '%q ' "${command[@]}"
+          /usr/bin/script --quiet --return --command "${smoke_command}" "${smoke_log}" >/dev/null
+          SMOKE_LOG="${smoke_log}" python - <<'PY'
+          import os
+          from pathlib import Path
+
+          payload = Path(os.environ["SMOKE_LOG"]).read_bytes()
+          entered = payload.find(b"\x1b[?1049h")
+          restored = payload.rfind(b"\x1b[?1049l")
+          receipt = payload.find(b"TUI_HOST_BRIDGE_SMOKE_OK")
+          assert -1 < entered < restored < receipt, (
+              "packaged host did not enter and restore the alternate screen before receipt"
+          )
+          PY
+          echo "Packaged Linux TUI host bridge smoke passed without Bun."
+
+      - name: Verify tmux for packaged real-terminal gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          tmux_bin="$(command -v tmux)"
+          "${tmux_bin}" -V
+          echo "TUI_HOST_TMUX_BIN=${tmux_bin}" >> "${GITHUB_ENV}"
+
+      - name: Run packaged-host real-terminal release gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          uv_bin="$(command -v uv)"
+          core_wheel="$(find dist/core -maxdepth 1 -type f -name 'opensquilla-*-py3-none-any.whl' -print -quit)"
+          host_wheel="$(find "dist/tui-host-linux-${{ matrix.arch }}" -maxdepth 1 -type f -name '*.whl' -print -quit)"
+          gate_env="${PWD}/.tui-host-real-terminal"
+          artifact_root="${PWD}/dist/tui-host-real-terminal-linux-${{ matrix.arch }}"
+          rm -rf "${gate_env}" "${artifact_root}"
+          mkdir -p "${artifact_root}/runs"
+          "${uv_bin}" venv --python 3.12 "${gate_env}"
+          "${uv_bin}" pip install \
+            --python "${gate_env}/bin/python" \
+            "${core_wheel}[dev]" \
+            "${host_wheel}"
+          ln -sf "${TUI_HOST_TMUX_BIN}" "${gate_env}/bin/tmux"
+          clean_path="${gate_env}/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+          if PATH="${clean_path}" command -v bun >/dev/null 2>&1; then
+            echo "Bun leaked into the packaged real-terminal gate PATH." >&2
+            exit 1
+          fi
+          PATH="${clean_path}" \
+          PROJECT_SRC="${PWD}/src" \
+          env -u PYTHONPATH -u BUN_INSTALL -u OPENSQUILLA_TUI_DEV_SOURCE_HOST \
+            "${gate_env}/bin/python" - <<'PY'
+          import os
+          from pathlib import Path
+
+          import opensquilla
+          from opensquilla_tui_host import host_metadata
+
+          installed = Path(opensquilla.__file__).resolve()
+          source = Path(os.environ["PROJECT_SRC"]).resolve()
+          assert source not in installed.parents, (source, installed)
+          assert host_metadata().platform == "linux"
+          assert host_metadata().product_version == opensquilla.__version__
+          print({"installed_core": str(installed), "host": host_metadata().build_id})
+          PY
+          test_log="${artifact_root}/pytest.log"
+          set +e
+          PATH="${clean_path}" \
+          OPENSQUILLA_TUI_PACKAGED_GATE=1 \
+          env -u PYTHONPATH -u BUN_INSTALL -u OPENSQUILLA_TUI_DEV_SOURCE_HOST \
+            "${gate_env}/bin/python" -m pytest \
+              tests/integration/cli/tui_real_terminal/test_launch_input_loop.py \
+              tests/integration/cli/tui_real_terminal/test_long_streaming.py \
+              tests/integration/cli/tui_real_terminal/test_complex_ui_state.py \
+              tests/integration/cli/tui_real_terminal/test_architecture_prompt.py \
+              tests/integration/cli/tui_real_terminal/test_terminal_changes.py \
+              tests/integration/cli/tui_real_terminal/test_completion_menu.py \
+              tests/integration/cli/tui_real_terminal/test_exit_restoration.py \
+              tests/integration/cli/tui_real_terminal/test_packaged_gateway_e2e.py \
+              --tui-backend opentui \
+              --tui-driver tmux \
+              --tui-require-capabilities \
+              --tui-artifact-root "${artifact_root}/runs" \
+              --junitxml "${artifact_root}/junit.xml" \
+              -q \
+              2>&1 | tee "${test_log}"
+          pytest_status="${PIPESTATUS[0]}"
+          set -e
+          if [[ "${pytest_status}" != "0" ]]; then
+            echo "Packaged Linux real-terminal release gate failed; evidence will be uploaded." >&2
+            exit "${pytest_status}"
+          fi
+
+      - name: Upload packaged-host real-terminal evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: opensquilla-tui-real-terminal-linux-${{ matrix.arch }}
+          path: |
+            dist/tui-host-real-terminal-linux-${{ matrix.arch }}
+            dist/tui-host-linux-${{ matrix.arch }}/*.txt
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Upload Linux TUI host artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: opensquilla-tui-host-linux-${{ matrix.arch }}
+          path: dist/tui-host-linux-${{ matrix.arch }}/*.whl
+
   build-desktop-macos:
     name: Build macOS Electron installer
     runs-on: macos-latest
@@ -734,6 +1084,7 @@ jobs:
     needs:
       - build-release-assets
       - build-tui-host-macos
+      - build-tui-host-linux
       - build-desktop-macos
       - build-desktop-windows
     runs-on: ubuntu-latest
@@ -759,6 +1110,13 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           pattern: opensquilla-tui-host-macos-*
+          path: dist
+          merge-multiple: true
+
+      - name: Download Linux TUI host assets
+        uses: actions/download-artifact@v4
+        with:
+          pattern: opensquilla-tui-host-linux-*
           path: dist
           merge-multiple: true
 
@@ -807,6 +1165,8 @@ jobs:
               f"opensquilla-{version}-py3-none-any.whl",
               f"opensquilla_tui_host-{version}-py3-none-macosx_11_0_arm64.whl",
               f"opensquilla_tui_host-{version}-py3-none-macosx_11_0_x86_64.whl",
+              f"opensquilla_tui_host-{version}-py3-none-manylinux_2_28_aarch64.whl",
+              f"opensquilla_tui_host-{version}-py3-none-manylinux_2_28_x86_64.whl",
           ]
           lines = []
           for name in asset_names:
@@ -850,6 +1210,8 @@ jobs:
               f"opensquilla-{version}-py3-none-any.whl",
               f"opensquilla_tui_host-{version}-py3-none-macosx_11_0_arm64.whl",
               f"opensquilla_tui_host-{version}-py3-none-macosx_11_0_x86_64.whl",
+              f"opensquilla_tui_host-{version}-py3-none-manylinux_2_28_aarch64.whl",
+              f"opensquilla_tui_host-{version}-py3-none-manylinux_2_28_x86_64.whl",
           ]
           assets = [dist / name for name in asset_names]
           assert sha256s.is_file(), "missing SHA256SUMS"
@@ -1006,6 +1368,8 @@ jobs:
               f"opensquilla-{version}-py3-none-any.whl",
               f"opensquilla_tui_host-{version}-py3-none-macosx_11_0_arm64.whl",
               f"opensquilla_tui_host-{version}-py3-none-macosx_11_0_x86_64.whl",
+              f"opensquilla_tui_host-{version}-py3-none-manylinux_2_28_aarch64.whl",
+              f"opensquilla_tui_host-{version}-py3-none-manylinux_2_28_x86_64.whl",
               "SHA256SUMS",
           }
           raw = subprocess.check_output(

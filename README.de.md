@@ -71,10 +71,10 @@ Aus Quellcode entwickeln — bauen **aus einem Git-Checkout** (`git clone`
 Release-Installationsbefehle verwenden veröffentlichte GitHub-Release-Assets.
 Python-Wheel-Installationen verwenden versionsbehaftete Wheel-Dateinamen,
 weil die Installationsprogramme die im Wheel-Dateinamen eingebettete
-Version prüfen. Unter macOS kombiniert das Terminal-Installationsprogramm
+Version prüfen. Unter macOS und Linux kombiniert das Terminal-Installationsprogramm
 dieses Core-Wheel mit dem architekturspezifischen `opensquilla-tui-host`
-derselben Version; es installiert weder Bun noch lädt es beim ersten Start
-einen Host herunter.
+derselben Version; es benötigt weder Bun noch einen Quellcode-Checkout und lädt
+beim ersten Start keinen Host herunter.
 
 Für den Desktop-Einsatz von 0.5.0 Preview 4 bevorzugst du die gepackten
 Desktop-Installationsprogramme aus dem GitHub-Release:
@@ -192,13 +192,11 @@ uv tool install --python 3.12 \
 ```
 
 Intel-Macs verwenden stattdessen das benachbarte Asset
-`opensquilla_tui_host-0.5.0rc4-py3-none-macosx_11_0_x86_64.whl`. Linux und
-Windows installieren derzeit nur das plattformneutrale Core-Wheel; ihre
-TUI-Host-Assets folgen in separaten Plattform-Releases:
-
-```sh
-uv tool install --python 3.12 "opensquilla[recommended] @ https://github.com/opensquilla/opensquilla/releases/download/v0.5.0rc4/opensquilla-0.5.0rc4-py3-none-any.whl"
-```
+`opensquilla_tui_host-0.5.0rc4-py3-none-macosx_11_0_x86_64.whl`. Linux verwendet
+je nach Architektur
+`opensquilla_tui_host-0.5.0rc4-py3-none-manylinux_2_28_x86_64.whl` oder
+`opensquilla_tui_host-0.5.0rc4-py3-none-manylinux_2_28_aarch64.whl`. Der native
+Windows-TUI-Host folgt in einem separaten Plattform-Release.
 
 Das Installationsprogramm legt Core und Companion in derselben isolierten
 Tool-Umgebung ab und lässt `uv` anschließend die von den gewählten Extras
@@ -216,14 +214,21 @@ Ladefehler einer nativen Bibliothek meldet.
 ```sh
 opensquilla onboard
 opensquilla gateway run
+opensquilla chat --ui tui
 ```
+
+Während dieses macOS- und Linux-RC startet `opensquilla chat --ui tui` die
+Vollbild-TUI. Der bloße Befehl `opensquilla chat` bleibt vorerst beim minimalen
+`plain`-Renderer; `--ui auto` bevorzugt die TUI, darf aber nur vor dem
+Vollbildstart auf `plain` zurückfallen. Installation, Upgrade, Neuinstallation
+und Rollback halten Core und Companion auf derselben Version.
 
 > [!NOTE]
 > Wird `opensquilla` direkt nach einer frischen `uv`-Installation nicht
 > gefunden, öffne ein neues Terminal oder führe die PATH-Zeile aus
 > Schritt 1 erneut aus.
 
-Für eine vollständig festgelegte macOS-Installation müssen die URLs des
+Für eine vollständig festgelegte macOS- oder Linux-Installation müssen die URLs des
 Core-Wheels und des Companions dasselbe Release-Tag verwenden. Das
 Release-Installationsprogramm erledigt dies automatisch und weist nicht
 kompatible Versionen zurück.

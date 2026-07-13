@@ -41,6 +41,8 @@ def test_companion_version_and_bun_are_exactly_pinned() -> None:
     assert '"--options",' in source
     assert '"runtime",' in source
     assert 'MACOS_SIGNING_IDENTIFIER = "ai.opensquilla.tui-host"' in source
+    assert '("linux", "x64"): "bun-linux-x64-baseline"' in source
+    assert '("win32", "x64"): "bun-windows-x64-baseline"' in source
     entitlements = (COMPANION / "macos-entitlements.plist").read_text(encoding="utf-8")
     assert "com.apple.security.cs.allow-jit" in entitlements
     assert "com.apple.security.cs.disable-library-validation" in entitlements
@@ -197,6 +199,74 @@ def test_prebuilt_companion_wheel_has_platform_tag_and_public_api(tmp_path: Path
         sys.path.remove(str(install_dir))
         sys.modules.pop("opensquilla_tui_host.api", None)
         sys.modules.pop("opensquilla_tui_host", None)
+
+
+@pytest.mark.skipif(shutil.which("uv") is None, reason="uv not on PATH")
+@pytest.mark.parametrize(
+    ("target_platform", "target_arch", "wheel_tag", "executable_name"),
+    [
+        ("linux", "x64", "manylinux_2_28_x86_64", "opensquilla-tui-host"),
+        ("linux", "arm64", "manylinux_2_28_aarch64", "opensquilla-tui-host"),
+        ("win32", "x64", "win_amd64", "opensquilla-tui-host.exe"),
+        ("win32", "arm64", "win_arm64", "opensquilla-tui-host.exe"),
+    ],
+)
+def test_staged_companion_targets_keep_linux_and_windows_artifacts_isolated(
+    tmp_path: Path,
+    target_platform: str,
+    target_arch: str,
+    wheel_tag: str,
+    executable_name: str,
+) -> None:
+    """Linux release work must not consume or rename future Windows artifacts."""
+
+    binary = tmp_path / executable_name
+    binary.write_bytes(b"staged-host")
+    output_dir = tmp_path / f"{target_platform}-{target_arch}"
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(BUILDER),
+            "--platform",
+            target_platform,
+            "--arch",
+            target_arch,
+            "--binary",
+            str(binary),
+            "--bun-version",
+            "1.3.14",
+            "--build-id",
+            "platform-contract",
+            "--output-dir",
+            str(output_dir),
+        ],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        timeout=180,
+    )
+    assert result.returncode == 0, result.stderr
+    wheel = next(output_dir.glob("*.whl"))
+    assert wheel.name.endswith(f"-py3-none-{wheel_tag}.whl")
+
+    with zipfile.ZipFile(wheel) as archive:
+        names = archive.namelist()
+        metadata = json.loads(archive.read("opensquilla_tui_host/_host_metadata.json").decode())
+        wheel_metadata = next(name for name in names if name.endswith(".dist-info/WHEEL"))
+        wheel_text = archive.read(wheel_metadata).decode()
+
+    assert metadata["platform"] == target_platform
+    assert metadata["arch"] == target_arch
+    assert metadata["executable"] == f"bin/{executable_name}"
+    assert metadata["wheel_tag"] == f"py3-none-{wheel_tag}"
+    expected_bun_target = {
+        ("linux", "x64"): "bun-linux-x64-baseline",
+        ("win32", "x64"): "bun-windows-x64-baseline",
+        ("win32", "arm64"): "bun-windows-arm64",
+    }.get((target_platform, target_arch), f"bun-{target_platform}-{target_arch}")
+    assert metadata["bun_target"] == expected_bun_target
+    assert f"Tag: py3-none-{wheel_tag}" in wheel_text
+    assert f"opensquilla_tui_host/bin/{executable_name}" in names
 
 
 @pytest.mark.skipif(shutil.which("uv") is None, reason="uv not on PATH")

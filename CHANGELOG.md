@@ -10,8 +10,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Added
 
-- macOS terminal installs now include a same-version, architecture-specific
-  `opensquilla-tui-host` companion. During this supported opt-in RC,
+- macOS and Linux terminal installs now include a same-version,
+  architecture-specific `opensquilla-tui-host` companion. During this
+  supported opt-in RC,
   `opensquilla chat --ui tui` launches the packaged full-screen TUI without
   requiring Bun, Node, a source checkout, or a first-run binary download.
 - The TUI can hydrate canonical Gateway history, resume shared sessions, follow
@@ -25,9 +26,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Changed
 
-- macOS upgrades, reinstalls, and rollbacks pair the platform-neutral core
-  wheel with the matching arm64 or x86_64 companion wheel. Version or protocol
-  mismatches fail before full-screen startup.
+- macOS and Linux upgrades, reinstalls, and rollbacks pair the platform-neutral
+  core wheel with the matching arm64 or x86_64 companion wheel. Version or
+  protocol mismatches fail before full-screen startup; rolling back to a
+  core-only release removes the newer host instead of mixing versions.
 - Bare `opensquilla chat` remains on the plain rescue renderer for this RC;
   `--ui auto` remains available for explicit evaluation before the later
   default-switch review.

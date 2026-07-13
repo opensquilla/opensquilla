@@ -62,10 +62,10 @@ Develop from source — build **from a Git checkout** (`git clone` + Git LFS).
 
 Release install commands use published GitHub release assets.
 Python wheel installs use versioned wheel filenames because installers
-validate the version embedded in the wheel filename. On macOS, the terminal
-installer pairs that core wheel with the same-version, architecture-specific
-`opensquilla-tui-host` companion; it does not install Bun or download a host on
-first launch.
+validate the version embedded in the wheel filename. On macOS and Linux, the
+terminal installer pairs that core wheel with the same-version,
+architecture-specific `opensquilla-tui-host` companion; it does not install
+Bun, require a source checkout, or download a host on first launch.
 
 For 0.5.0 Preview 4 desktop use, prefer the packaged desktop installers from
 the GitHub Release: `OpenSquilla-0.5.0-rc4-mac-arm64.dmg` on macOS and
@@ -180,13 +180,21 @@ uv tool install --python 3.12 \
 ```
 
 Intel macOS uses the sibling
-`opensquilla_tui_host-0.5.0rc4-py3-none-macosx_11_0_x86_64.whl` asset. Linux
-and Windows currently install the platform-neutral core wheel; their TUI host
-assets follow in separate platform releases:
+`opensquilla_tui_host-0.5.0rc4-py3-none-macosx_11_0_x86_64.whl` asset. On Linux
+x86_64, the equivalent fully pinned command is:
 
 ```sh
-uv tool install --python 3.12 "opensquilla[recommended] @ https://github.com/opensquilla/opensquilla/releases/download/v0.5.0rc4/opensquilla-0.5.0rc4-py3-none-any.whl"
+uv tool install --python 3.12 \
+  --with "opensquilla-tui-host @ https://github.com/opensquilla/opensquilla/releases/download/v0.5.0rc4/opensquilla_tui_host-0.5.0rc4-py3-none-manylinux_2_28_x86_64.whl" \
+  "opensquilla[recommended] @ https://github.com/opensquilla/opensquilla/releases/download/v0.5.0rc4/opensquilla-0.5.0rc4-py3-none-any.whl"
 ```
+
+Linux arm64 uses the sibling
+`opensquilla_tui_host-0.5.0rc4-py3-none-manylinux_2_28_aarch64.whl` asset.
+The packaged Linux host targets glibc 2.28 or newer; native musl/Alpine is not
+part of this RC. WSL follows the Linux path.
+Native Windows currently installs the platform-neutral core wheel; its ConPTY
+TUI host remains a separate Windows platform release.
 
 The installer installs core and companion into one isolated tool environment,
 then lets `uv` download the dependencies declared by the selected extras. The
@@ -208,8 +216,10 @@ opensquilla gateway run
 > If `opensquilla` is not found right after a fresh `uv` install, open
 > a new terminal, or re-run the PATH line from step 1.
 
-For a fully pinned install, keep both macOS wheel URLs on the same release tag
-and version. A core/host version mismatch is rejected at TUI startup.
+For a fully pinned macOS or Linux install, keep the core and companion wheel
+URLs on the same release tag and version. Upgrade, reinstall, and rollback must
+replace them as a pair; a core/host version mismatch is rejected at TUI
+startup.
 
 ### Install from source
 
@@ -524,14 +534,16 @@ opensquilla chat                       # interactive REPL
 opensquilla agent -m "your prompt"     # one-shot, automation-friendly
 ```
 
-> **Terminal UI.** During the supported macOS RC, use
+> **Terminal UI.** During the supported macOS and Linux RC, use
 > `opensquilla chat --ui tui` to enter the packaged OpenTUI host. Bare
 > `opensquilla chat` temporarily remains on `plain` until the RC release gate
 > and seven-day observation pass; `--ui auto` can exercise the final startup
 > policy now. Both renderers use the same Gateway session runtime. Release
 > installers pair the platform-neutral OpenSquilla package with the matching
-> macOS host, so normal use does not require Bun, Node, a source checkout, or a
-> first-run download. Maintainers can explicitly run the source host with:
+> macOS or Linux host, so normal use does not require Bun, Node, a source
+> checkout, or a first-run download. Native Windows TUI support remains an
+> independent follow-up and does not change these shared contracts.
+> Maintainers can explicitly run the source host with:
 >
 > ```sh
 > bun install --frozen-lockfile --cwd=src/opensquilla/cli/tui/opentui/package
@@ -634,10 +646,11 @@ settings live in `opensquilla.toml.example`.
 OpenSquilla 0.5.0 Preview 4 is a broad preview update for migration, routing,
 desktop, runtime, and deployment:
 
-- **Supported opt-in macOS TUI** - packaged arm64 and x86_64 companion wheels,
-  shared Gateway sessions and approvals, attachment composition, and terminal
-  recovery are available through `opensquilla chat --ui tui`; bare chat remains
-  on the plain rescue renderer during this RC.
+- **Supported opt-in macOS and Linux TUI** - packaged arm64 and x86_64
+  companion wheels, shared Gateway sessions and approvals, attachment
+  composition, and terminal recovery are available through
+  `opensquilla chat --ui tui`; bare chat remains on the plain rescue renderer
+  during this RC.
 - **Safe profile recovery and imports** - Desktop guards writable startup when
   a profile is uncertain or interrupted, offers verified recovery/rollback,
   and supports an explicit whole-profile copy from another CLI/Desktop profile
@@ -656,8 +669,8 @@ desktop, runtime, and deployment:
 - **Container images** - prebuilt `linux/amd64` and `linux/arm64` gateway images
   are published as `v0.5.0rc4` and `latest` on GHCR.
 - **Simplified release assets** - releases publish Electron installers,
-  updater metadata, the versioned Python wheel, macOS TUI host companion
-  wheels, and checksums; Windows portable archives remain retired.
+  updater metadata, the versioned Python wheel, macOS and Linux TUI host
+  companion wheels, and checksums; Windows portable archives remain retired.
 
 Full notes: [`CHANGELOG.md`](CHANGELOG.md) ·
 [`docs/releases/0.5.0rc4.md`](docs/releases/0.5.0rc4.md).

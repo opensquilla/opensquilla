@@ -70,9 +70,10 @@ construisent **à partir d'un dépôt Git** (`git clone` + Git LFS).
 Les commandes d'installation de la version publiée utilisent les ressources de release
 GitHub publiées. Les installations de wheel Python utilisent des noms de fichier de
 wheel versionnés, car les installateurs valident la version intégrée au nom de
-fichier du wheel. Sous macOS, l'installateur en terminal associe ce wheel principal
-au companion `opensquilla-tui-host` de même version et adapté à l'architecture ; il
-n'installe pas Bun et ne télécharge aucun host au premier démarrage.
+fichier du wheel. Sous macOS et Linux, l'installateur en terminal associe ce wheel
+principal au companion `opensquilla-tui-host` de même version et adapté à
+l'architecture ; il ne nécessite ni Bun, ni dépôt source, ni téléchargement du host
+au premier démarrage.
 
 Pour un usage bureau en 0.5.0 Preview 4, préférez les installateurs de bureau empaquetés issus de la
 Release GitHub : `OpenSquilla-0.5.0-rc4-mac-arm64.dmg` sous macOS et
@@ -186,13 +187,11 @@ uv tool install --python 3.12 \
 ```
 
 Les Mac Intel utilisent la ressource sœur
-`opensquilla_tui_host-0.5.0rc4-py3-none-macosx_11_0_x86_64.whl`. Linux et
-Windows n'installent actuellement que le wheel principal indépendant de la
-plateforme ; leurs hosts TUI arriveront dans des releases de plateforme séparées :
-
-```sh
-uv tool install --python 3.12 "opensquilla[recommended] @ https://github.com/opensquilla/opensquilla/releases/download/v0.5.0rc4/opensquilla-0.5.0rc4-py3-none-any.whl"
-```
+`opensquilla_tui_host-0.5.0rc4-py3-none-macosx_11_0_x86_64.whl`. Linux utilise
+`opensquilla_tui_host-0.5.0rc4-py3-none-manylinux_2_28_x86_64.whl` ou
+`opensquilla_tui_host-0.5.0rc4-py3-none-manylinux_2_28_aarch64.whl`, selon
+l'architecture. Le host TUI Windows natif suivra dans une release de plateforme
+distincte.
 
 L'installateur place le paquet principal et le companion dans le même environnement
 d'outil isolé, puis laisse `uv` télécharger les dépendances déclarées par les extras
@@ -209,13 +208,20 @@ une erreur de chargement de bibliothèque native.
 ```sh
 opensquilla onboard
 opensquilla gateway run
+opensquilla chat --ui tui
 ```
+
+Pendant cette RC macOS et Linux, `opensquilla chat --ui tui` ouvre la TUI plein
+écran. La commande nue `opensquilla chat` conserve le renderer de secours
+`plain` ; `--ui auto` préfère la TUI mais ne peut revenir à `plain` qu'avant le
+plein écran. Installation, mise à niveau, réinstallation et retour arrière
+gardent le paquet principal et le companion à la même version.
 
 > [!NOTE]
 > Si `opensquilla` est introuvable juste après une installation `uv` neuve, ouvrez un
 > nouveau terminal, ou réexécutez la ligne PATH de l'étape 1.
 
-Pour une installation macOS entièrement épinglée, conservez les URL du wheel
+Pour une installation macOS ou Linux entièrement épinglée, conservez les URL du wheel
 principal et du companion sur la même étiquette de release. L'installateur de la
 release s'en charge automatiquement et refuse les versions incompatibles.
 

@@ -112,6 +112,23 @@ fi
     )
     fake_gh.chmod(0o755)
     env = os.environ.copy()
+    shell_prefix = ""
+    if os.name == "nt":
+        env.update(
+            {
+                "FAKE_GH_DIR": str(fake_bin),
+                "TEST_PYTHON_DIR": str(Path(sys.executable).parent),
+            }
+        )
+        shell_prefix = (
+            'export PATH="$(cygpath -u "$FAKE_GH_DIR"):'
+            '$(cygpath -u "$TEST_PYTHON_DIR"):$PATH"\n'
+        )
+    else:
+        env["PATH"] = (
+            f"{fake_bin}{os.pathsep}{Path(sys.executable).parent}"
+            f"{os.pathsep}{env['PATH']}"
+        )
     env.update(
         {
             "FAKE_GH_LOG": str(call_log),
@@ -120,15 +137,11 @@ fi
             ),
             "GH_REPO": "opensquilla/opensquilla",
             "GH_TOKEN": "synthetic-test-token",
-            "PATH": (
-                f"{fake_bin}{os.pathsep}{Path(sys.executable).parent}"
-                f"{os.pathsep}{env['PATH']}"
-            ),
             "TAG": tag,
         }
     )
     result = subprocess.run(
-        ["bash", "-c", _release_upload_script()],
+        ["bash", "-c", shell_prefix + _release_upload_script()],
         cwd=Path.cwd(),
         env=env,
         capture_output=True,

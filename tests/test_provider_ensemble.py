@@ -471,7 +471,16 @@ async def test_ensemble_runs_proposers_concurrently_and_tools_only_reach_aggrega
     assert done.output_tokens == 12
     assert done.billed_cost == 0.25
     assert done.model == "agg"
-    assert done.model_usage_breakdown == [
+    assert done.model_usage_breakdown is not None
+    elapsed_rows = [int(row.get("elapsed_ms") or 0) for row in done.model_usage_breakdown]
+    assert elapsed_rows[0] >= 100
+    assert elapsed_rows[1] >= 100
+    assert elapsed_rows[2] >= 0
+    rows_without_elapsed = [
+        {key: value for key, value in row.items() if key != "elapsed_ms"}
+        for row in done.model_usage_breakdown
+    ]
+    assert rows_without_elapsed == [
         {
             "role": "proposer",
             "profile": "default",
@@ -1156,6 +1165,15 @@ async def test_ensemble_emits_proposer_progress_events(
     assert starts == {"p1", "p2"}
     assert finishes == {"p1", "p2"}
 
+    aggregator_start = next(p for p in progress if p.event_type == "aggregator_start")
+    aggregator_finish = next(p for p in progress if p.event_type == "aggregator_finish")
+    assert aggregator_start.proposer_model == "agg"
+    assert aggregator_start.proposer_provider == "fake"
+    assert aggregator_finish.proposer_model == "agg"
+    assert aggregator_finish.input_tokens == 5
+    assert aggregator_finish.output_tokens == 6
+    assert aggregator_finish.error == ""
+
     # The finish delta carries the proposer's usage/cost so the UI can render
     # per-member tokens live (not just at the terminal breakdown).
     p1_finish = next(
@@ -1167,9 +1185,87 @@ async def test_ensemble_emits_proposer_progress_events(
     assert p1_finish.output_tokens == 2
 
     # Progress is delivered before the terminal DoneEvent that carries the breakdown.
-    last_progress = max(i for i, e in enumerate(events) if isinstance(e, EnsembleProgressEvent))
+    last_proposer_finish = max(
+        i
+        for i, e in enumerate(events)
+        if isinstance(e, EnsembleProgressEvent) and e.event_type == "proposer_finish"
+    )
+    aggregator_start_index = events.index(aggregator_start)
+    aggregator_finish_index = events.index(aggregator_finish)
     done_index = max(i for i, e in enumerate(events) if isinstance(e, DoneEvent))
-    assert last_progress < done_index
+    assert last_proposer_finish < aggregator_start_index < aggregator_finish_index < done_index
+
+    done = events[done_index]
+    assert isinstance(done, DoneEvent)
+    rows = done.model_usage_breakdown or []
+    assert all("elapsed_ms" in row for row in rows)
+    assert (
+        next(row for row in rows if row["model"] == "p1")["elapsed_ms"]
+        == p1_finish.elapsed_ms
+    )
+    assert next(row for row in rows if row["role"] == "aggregator")["elapsed_ms"] >= 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("mode", "expected_code", "expected_error"),
+    [
+        ("error", "agg_failed", "aggregator rejected request"),
+        ("incomplete", "ensemble_aggregator_incomplete", "ended before DoneEvent"),
+        ("timeout", "ensemble_aggregator_timeout", "timed out after"),
+    ],
+)
+async def test_ensemble_emits_aggregator_finish_before_terminal_error(
+    monkeypatch: pytest.MonkeyPatch,
+    mode: str,
+    expected_code: str,
+    expected_error: str,
+) -> None:
+    if mode == "error":
+        aggregator_plan = _FakePlan(
+            [ErrorEvent(message="aggregator rejected request", code="agg_failed")]
+        )
+    elif mode == "incomplete":
+        aggregator_plan = _FakePlan([TextDeltaEvent(text="partial")])
+    else:
+        aggregator_plan = _FakePlan(
+            [DoneEvent(model="agg")],
+            delay=0.05,
+        )
+    registry = _FakeRegistry(
+        {
+            "p1": _FakePlan(
+                [TextDeltaEvent(text="draft"), DoneEvent(model="p1")]
+            ),
+            "agg": aggregator_plan,
+        }
+    )
+    monkeypatch.setattr("opensquilla.provider.ensemble._build_provider", registry.provider_for)
+    provider = EnsembleProvider(
+        profile_name="default",
+        proposers=[_member("p1")],
+        aggregator=_member("agg"),
+        proposer_timeout_seconds=1,
+        aggregator_timeout_seconds=0.01 if mode == "timeout" else 1,
+        shuffle_candidates=False,
+    )
+
+    events = await _collect(provider)
+    aggregator_progress = [
+        event
+        for event in events
+        if isinstance(event, EnsembleProgressEvent)
+        and event.event_type.startswith("aggregator_")
+    ]
+    terminal_error = next(event for event in events if isinstance(event, ErrorEvent))
+
+    assert [event.event_type for event in aggregator_progress] == [
+        "aggregator_start",
+        "aggregator_finish",
+    ]
+    assert expected_error in aggregator_progress[-1].error
+    assert terminal_error.code == expected_code
+    assert events.index(aggregator_progress[-1]) < events.index(terminal_error)
 
 
 @pytest.mark.asyncio
@@ -1338,9 +1434,8 @@ def test_runtime_wrap_is_after_selector_resolution() -> None:
 
 
 @pytest.mark.asyncio
-async def test_runtime_normalizes_provider_ensemble_progress_event() -> None:
+async def test_selector_wrapper_preserves_provider_control_event_contract() -> None:
     from opensquilla.engine.runtime import _SelectorFallbackProvider
-    from opensquilla.engine.types import EnsembleProgressEvent as EngineEnsembleProgressEvent
 
     class _Provider:
         provider_name = "openrouter"
@@ -1373,6 +1468,10 @@ async def test_runtime_normalizes_provider_ensemble_progress_event() -> None:
                 cost_usd=0.003,
                 error="",
             )
+            yield ProviderHeartbeatEvent(
+                phase="ensemble_proposers_wait",
+                message="still generating candidates",
+            )
             yield DoneEvent(model="qwen/qwen3.7-max")
 
         async def list_models(self) -> list[Any]:
@@ -1385,7 +1484,7 @@ async def test_runtime_normalizes_provider_ensemble_progress_event() -> None:
 
     events = [event async for event in provider.chat([])]
 
-    assert isinstance(events[0], EngineEnsembleProgressEvent)
+    assert isinstance(events[0], EnsembleProgressEvent)
     assert events[0].event_type == "proposer_start"
     assert events[0].proposer_index == 2
     assert events[0].proposer_label == "proposer_3"
@@ -1397,6 +1496,45 @@ async def test_runtime_normalizes_provider_ensemble_progress_event() -> None:
     assert events[0].output_tokens == 22
     assert events[0].cost_usd == 0.003
     assert events[0].error == ""
+    assert isinstance(events[1], ProviderHeartbeatEvent)
+    assert events[1].phase == "ensemble_proposers_wait"
+    assert isinstance(events[2], DoneEvent)
+
+
+@pytest.mark.asyncio
+async def test_selector_wrapper_yields_provider_heartbeat_before_stream_completion() -> None:
+    from opensquilla.engine.runtime import _SelectorFallbackProvider
+
+    release = asyncio.Event()
+
+    class _Provider:
+        provider_name = "openrouter"
+
+        def chat(
+            self,
+            messages: list[Any],
+            tools: Any = None,
+            config: Any = None,
+        ) -> AsyncIterator[StreamEvent]:
+            return self._chat()
+
+        async def _chat(self) -> AsyncIterator[StreamEvent]:
+            yield ProviderHeartbeatEvent(phase="ensemble_proposers_wait")
+            await release.wait()
+            yield DoneEvent(model="qwen/qwen3.7-max")
+
+        async def list_models(self) -> list[Any]:
+            return []
+
+    class _Selector:
+        current_config = ProviderConfig(provider="openrouter", model="qwen/qwen3.7-max")
+
+    stream = _SelectorFallbackProvider(_Provider(), _Selector()).chat([]).__aiter__()
+    first = await asyncio.wait_for(stream.__anext__(), timeout=0.1)
+
+    assert isinstance(first, ProviderHeartbeatEvent)
+    release.set()
+    assert isinstance(await stream.__anext__(), DoneEvent)
 
 
 def _static_b5_gateway_config() -> Any:

@@ -322,10 +322,10 @@
           </div>
         </div>
 
-        <!-- Soft stall banner: content events went silent past the watchdog
-             threshold while nothing legitimate (tool run, approval) explains
-             it. "Keep waiting" dismisses and re-arms; "Interrupt" stops the
-             turn through the same path as the composer stop button. -->
+        <!-- Soft long-running banner: content events crossed the high watchdog
+             threshold while no backend-deadline-owned phase (tool, approval,
+             ensemble) explains it. "Keep waiting" suppresses this silence
+             episode; "Interrupt" uses the composer stop path. -->
         <ChatStallNotice
           v-if="stallActive"
           :seconds="stallSeconds"
@@ -773,6 +773,7 @@ const chatStream = useChatStream({
   stripProtocolTextLeak,
   scrollToBottom,
   interruptState,
+  rpcPolicy: () => rpc.policy,
 })
 const {
   isStreaming,
@@ -786,6 +787,7 @@ const {
   streamPhaseElapsed,
   streamStepLabel,
   streamToolElapsedText,
+  streamIdleTimeoutMs,
   thinkingVisible,
   thinkingText,
   startStreaming,
@@ -1430,10 +1432,10 @@ const liveInterruptParts = computed(() =>
       ),
 )
 
-// Soft content-silence watchdog: raises a dismissible stall banner when the
-// live turn stops producing content events (heartbeats keep the hard idle
-// timeout fed, so a wedged provider would otherwise spin silently for 210s).
-const stallWatchdog = useChatStallWatchdog({ isStreaming })
+// Soft content-silence watchdog: after the high negotiated threshold, surface
+// a neutral long-running notice. Backend-deadline-owned Ensemble phases remain
+// suppressed, while the hard idle timer continues to mean no events at all.
+const stallWatchdog = useChatStallWatchdog({ isStreaming, streamIdleGraceMs: streamIdleTimeoutMs })
 const { stallActive, stallSeconds } = stallWatchdog
 
 const chatRpcSubscriptions = useChatRpcSubscriptions(rpc, {

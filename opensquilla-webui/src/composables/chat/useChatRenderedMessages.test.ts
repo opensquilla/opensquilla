@@ -615,6 +615,7 @@ describe('useChatRenderedMessages ensemble metadata', () => {
               input_tokens: 10,
               output_tokens: 2,
               billed_cost: 0.01,
+              elapsed_ms: 105_000,
             },
             {
               role: 'aggregator',
@@ -624,6 +625,7 @@ describe('useChatRenderedMessages ensemble metadata', () => {
               input_tokens: 20,
               output_tokens: 8,
               billed_cost: 0.02,
+              elapsed_ms: 12_000,
             },
           ],
           ensemble_trace: {
@@ -648,6 +650,10 @@ describe('useChatRenderedMessages ensemble metadata', () => {
     expect(message.meta?.ensemble?.models.map(model => model.model)).toEqual([
       'deepseek/deepseek-v4-pro',
       'z-ai/glm-5.2',
+    ])
+    expect(message.meta?.ensemble?.models.map(model => model.elapsedMs)).toEqual([
+      105_000,
+      12_000,
     ])
   })
 

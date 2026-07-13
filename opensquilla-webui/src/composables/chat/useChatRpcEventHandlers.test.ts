@@ -169,3 +169,52 @@ describe('useChatRpcEventHandlers ensemble handoff', () => {
     }
   })
 })
+
+describe('useChatRpcEventHandlers ensemble activity', () => {
+  it('treats ensemble progress as a hard-idle liveness event', () => {
+    const { api, stream, stop } = createHarness()
+
+    try {
+      stream.isStreaming.value = false
+      api.handlers.onEnsembleProgress({
+        stream_seq: 1,
+        event_type: 'proposer_start',
+        proposer_label: 'anchor',
+        proposer_model: 'qwen/qwen3.7-plus',
+      })
+      expect(stream.startStreaming).toHaveBeenCalledTimes(1)
+      expect(stream.resetStreamIdleTimer).toHaveBeenCalledTimes(1)
+    } finally {
+      stop()
+    }
+  })
+
+  it('maps ensemble heartbeats to neutral proposer and aggregator phase copy', () => {
+    const { api, stream, stop } = createHarness()
+
+    try {
+      api.handlers.onRunHeartbeat({ stream_seq: 1, phase: 'ensemble_proposers_wait' })
+      expect(stream.setStreamActivity).toHaveBeenLastCalledWith('Generating candidates')
+
+      api.handlers.onRunHeartbeat({ stream_seq: 2, phase: 'ensemble_aggregator_stream' })
+      expect(stream.setStreamActivity).toHaveBeenLastCalledWith('Synthesizing candidates')
+
+      api.handlers.onRunHeartbeat({ stream_seq: 3, phase: 'provider_wait' })
+      expect(stream.setStreamActivity).toHaveBeenLastCalledWith('Planning next step')
+    } finally {
+      stop()
+    }
+  })
+
+  it('restarts the hard idle timer after reconnect while a turn is streaming', () => {
+    const { api, stream, stop } = createHarness()
+
+    try {
+      vi.mocked(stream.resetStreamIdleTimer).mockClear()
+      api.handlers.onConnectionState('connected')
+      expect(stream.resetStreamIdleTimer).toHaveBeenCalledTimes(1)
+    } finally {
+      stop()
+    }
+  })
+})

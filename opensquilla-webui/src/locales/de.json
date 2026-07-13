@@ -1908,6 +1908,7 @@
       "ensembleRouterPoolHidden": "Router-Pool ausgeblendet",
       "ensembleTokens": "{count} tok",
       "ensembleUsed": "verwendet",
+      "ensembleFailed": "fehlgeschlagen",
       "ensembleTracePending": "Trace ausstehend",
       "ensembleTraceUnavailable": "Trace nach Abschluss des Laufs verfügbar",
       "ensembleDetailUnavailable": "{count} Kandidaten · Details nicht verfügbar"
@@ -2090,12 +2091,14 @@
       "readingContext": "Kontext wird gelesen",
       "waitingForModel": "Warten auf Modell",
       "preparingOutput": "Ausgabe wird vorbereitet",
+      "generatingCandidates": "Kandidaten werden generiert",
+      "synthesizingCandidates": "Kandidaten werden zusammengeführt",
       "stillWaiting": "Warte weiterhin auf Modell",
       "stillWorking": "Noch in Arbeit — letztes Signal vor {seconds} s"
     },
     "stall": {
-      "title": "Antwort möglicherweise ins Stocken geraten",
-      "detail": "Seit {seconds} s keine neue Ausgabe — das Modell hängt möglicherweise.",
+      "title": "Die Antwort dauert länger als erwartet",
+      "detail": "Seit {seconds} s keine neue Ausgabe — der Lauf ist weiterhin aktiv.",
       "keepWaiting": "Weiter warten",
       "interrupt": "Durchlauf unterbrechen"
     },

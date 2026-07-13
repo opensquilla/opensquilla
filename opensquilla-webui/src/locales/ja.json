@@ -1908,6 +1908,7 @@
       "ensembleRouterPoolHidden": "router pool 非表示",
       "ensembleTokens": "{count} tok",
       "ensembleUsed": "使用済み",
+      "ensembleFailed": "失敗",
       "ensembleTracePending": "trace 待機中",
       "ensembleTraceUnavailable": "実行完了後に trace を表示できます",
       "ensembleDetailUnavailable": "{count} 個の候補 · 詳細は利用できません"
@@ -2090,12 +2091,14 @@
       "readingContext": "コンテキストを読み込み中",
       "waitingForModel": "モデルを待機中",
       "preparingOutput": "出力を準備中",
+      "generatingCandidates": "候補を生成中",
+      "synthesizingCandidates": "候補を統合中",
       "stillWaiting": "まだモデルを待機中",
       "stillWorking": "まだ処理中 — 最後の信号は {seconds} 秒前"
     },
     "stall": {
-      "title": "応答が停滞している可能性があります",
-      "detail": "{seconds} 秒間、新しい出力がありません — モデルが停止している可能性があります。",
+      "title": "応答に予想以上の時間がかかっています",
+      "detail": "{seconds} 秒間、新しい出力はありませんが、実行は継続中です。",
       "keepWaiting": "このまま待つ",
       "interrupt": "ターンを中断"
     },

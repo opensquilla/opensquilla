@@ -1908,6 +1908,7 @@
       "ensembleRouterPoolHidden": "router pool hidden",
       "ensembleTokens": "{count} tok",
       "ensembleUsed": "used",
+      "ensembleFailed": "failed",
       "ensembleTracePending": "trace pending",
       "ensembleTraceUnavailable": "trace unavailable until run completes",
       "ensembleDetailUnavailable": "{count} candidates · detail unavailable"
@@ -2090,12 +2091,14 @@
       "readingContext": "Reading context",
       "waitingForModel": "Waiting for model",
       "preparingOutput": "Preparing output",
+      "generatingCandidates": "Generating candidates",
+      "synthesizingCandidates": "Synthesizing candidates",
       "stillWaiting": "Still waiting for model",
       "stillWorking": "Still working — last signal {seconds}s ago"
     },
     "stall": {
-      "title": "Response may be stalled",
-      "detail": "No new output for {seconds}s — the model may be stuck.",
+      "title": "Response is taking longer than expected",
+      "detail": "No new output for {seconds}s — the run is still active.",
       "keepWaiting": "Keep waiting",
       "interrupt": "Interrupt turn"
     },

@@ -57,10 +57,12 @@ describe('appendEnsembleProgress', () => {
       proposer_model: 'qwen/qwen3.7-plus',
       input_tokens: 100,
       output_tokens: 20,
+      elapsed_ms: 105_000,
     })
     expect(router?.ensemble?.models).toHaveLength(1)
     expect(router?.ensemble?.models[0].status).toBe('done')
     expect(router?.ensemble?.models[0].input).toBe(100)
+    expect(router?.ensemble?.models[0].elapsedMs).toBe(105_000)
 
     // A second proposer grows the revealed count.
     runtime.appendEnsembleProgress({
@@ -71,6 +73,63 @@ describe('appendEnsembleProgress', () => {
     })
     expect(router?.ensemble?.models).toHaveLength(2)
     expect(router?.ensemble?.modelCount).toBe(2)
+  })
+
+  it('tracks failed candidates and the aggregator as independent lifecycle rows', () => {
+    const { runtime, messagesRef } = makeRuntime([{ role: 'user', text: 'q', ts: 0 }])
+
+    runtime.appendEnsembleProgress({
+      event_type: 'proposer_start',
+      proposer_index: 1,
+      proposer_label: 'critic',
+      proposer_provider: 'openrouter',
+      proposer_model: 'z-ai/glm-5.2',
+    })
+    runtime.appendEnsembleProgress({
+      event_type: 'proposer_finish',
+      proposer_index: 1,
+      proposer_label: 'critic',
+      proposer_provider: 'openrouter',
+      proposer_model: 'z-ai/glm-5.2',
+      elapsed_ms: 118_000,
+      error: 'provider timed out',
+    })
+    runtime.appendEnsembleProgress({
+      event_type: 'aggregator_start',
+      proposer_index: -1,
+      proposer_label: 'aggregator',
+      proposer_provider: 'openrouter',
+      proposer_model: 'anthropic/claude-sonnet',
+    })
+
+    const models = messagesRef.value.find(message => message.role === 'router')?.ensemble?.models
+    expect(models).toHaveLength(2)
+    expect(models?.[0]).toMatchObject({
+      role: 'critic',
+      label: 'critic',
+      status: 'failed',
+      elapsedMs: 118_000,
+      error: 'provider timed out',
+    })
+    expect(models?.[1]).toMatchObject({ role: 'aggregator', status: 'running' })
+
+    runtime.appendEnsembleProgress({
+      event_type: 'aggregator_finish',
+      proposer_index: -1,
+      proposer_label: 'aggregator',
+      proposer_provider: 'openrouter',
+      proposer_model: 'anthropic/claude-sonnet',
+      input_tokens: 200,
+      output_tokens: 40,
+      elapsed_ms: 12_000,
+    })
+    expect(models?.[1]).toMatchObject({
+      role: 'aggregator',
+      status: 'done',
+      input: 200,
+      output: 40,
+      elapsedMs: 12_000,
+    })
   })
 
   it('attaches members to the existing live router message instead of duplicating it', () => {

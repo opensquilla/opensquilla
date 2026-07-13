@@ -820,6 +820,7 @@ def test_cleanup_rolls_back_directory_swapped_at_no_replace_boundary(
     tmp_path: Path,
 ) -> None:
     import opensquilla.recovery.cleanup as cleanup_module
+    import opensquilla.recovery.locking as locking_module
 
     user_data = tmp_path / "user-data"
     user_data.mkdir()
@@ -833,14 +834,23 @@ def test_cleanup_rolls_back_directory_swapped_at_no_replace_boundary(
     displaced = user_data / "displaced-original-profile"
     real_move = cleanup_module.native_move_no_replace
     swapped = False
+    monkeypatch.setattr(
+        locking_module,
+        "_windows_requires_legacy_lock_handoff",
+        lambda: True,
+    )
 
-    def swap_then_move(source: Path, destination: Path) -> None:
+    def swap_then_move(
+        source: Path,
+        destination: Path,
+        **move_options: object,
+    ) -> None:
         nonlocal swapped
         if source == primary and not swapped:
             swapped = True
             source.rename(displaced)
             _home(source, "replacement profile")
-        real_move(source, destination)
+        real_move(source, destination, **move_options)  # type: ignore[arg-type]
 
     monkeypatch.setattr(cleanup_module, "native_move_no_replace", swap_then_move)
 

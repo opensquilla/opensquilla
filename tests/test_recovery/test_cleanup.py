@@ -188,7 +188,7 @@ def test_delete_current_profile_with_state_but_no_legacy_lock_completes(
     assert not primary.exists()
 
 
-def test_cleanup_revision_ignores_only_coordination_ancestor_metadata(
+def test_cleanup_revision_ignores_directory_metadata_but_not_child_changes(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -208,11 +208,12 @@ def test_cleanup_revision_ignores_only_coordination_ancestor_metadata(
         profile_kind="primary",
         recovery_id=None,
     )
-    home_stat = primary.stat()
-    os.utime(
-        primary,
-        ns=(home_stat.st_atime_ns, home_stat.st_mtime_ns + 1_000_000_000),
-    )
+    for directory in (primary, primary / "workspace", state):
+        value = directory.stat()
+        os.utime(
+            directory,
+            ns=(value.st_atime_ns, value.st_mtime_ns + 1_000_000_000),
+        )
     metadata_only = cleanup_module._build_plan(
         user_data,
         mode="delete-current-profile",

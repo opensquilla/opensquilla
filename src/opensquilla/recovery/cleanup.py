@@ -108,6 +108,17 @@ class _ManifestEntry:
     entry_type: str
 
     def signature(self) -> str:
+        if self.entry_type == "directory":
+            # A recursively enumerated directory's size and mtime are
+            # platform coordination metadata, not user content. Windows can
+            # publish those values lazily when descendant handles close. Its
+            # identity, mode, type, relative path, and every child entry stay
+            # in the manifest, so additions, removals, renames, path swaps,
+            # and file mutations still invalidate the cleanup CAS.
+            return (
+                f"{self.relative}:{self.device}:{self.inode}:{self.mode}:"
+                f"directory"
+            )
         return (
             f"{self.relative}:{self.device}:{self.inode}:{self.mode}:"
             f"{self.size}:{self.modified_at_ns}:{self.entry_type}"
@@ -1059,6 +1070,17 @@ def _current_item(planned: _PlannedItem) -> CleanupItem:
     )
 
 
+def _manifest_matches(
+    current: tuple[_ManifestEntry, ...],
+    expected: tuple[_ManifestEntry, ...],
+) -> bool:
+    """Compare content-bearing manifest state without volatile directory times."""
+
+    return tuple(item.signature() for item in current) == tuple(
+        item.signature() for item in expected
+    )
+
+
 def _delete_all_has_residual_root_entries(
     user_data: Path,
     *,
@@ -1274,7 +1296,7 @@ def _quarantine_directory(
     tombstone: Path,
 ) -> bool:
     source = planned.item.path
-    if _manifest(source) != planned.manifest:
+    if not _manifest_matches(_manifest(source), planned.manifest):
         return False
     moved = False
     try:
@@ -1284,7 +1306,7 @@ def _quarantine_directory(
         # the confirmed cleanup plan identifies the only object we are allowed
         # to quarantine. Compare both after publication to close the final
         # check-to-rename window for an uncooperative old process.
-        if _manifest(tombstone) != planned.manifest:
+        if not _manifest_matches(_manifest(tombstone), planned.manifest):
             raise ConfigChangedError("cleanup source changed while it was quarantined")
         return True
     except (OSError, RecoveryError):
@@ -1303,7 +1325,7 @@ def _delete_quarantined_directory(
 
     source = planned.item.path
     try:
-        if _manifest(tombstone) != planned.manifest:
+        if not _manifest_matches(_manifest(tombstone), planned.manifest):
             return False
         # Canonical ``source`` is observation-only from this point onward. An
         # old binary may recreate it with a second lock inode; recursive removal
@@ -1316,7 +1338,7 @@ def _delete_quarantined_directory(
         intact = False
         if not os.path.lexists(source) and os.path.lexists(tombstone):
             try:
-                intact = _manifest(tombstone) == planned.manifest
+                intact = _manifest_matches(_manifest(tombstone), planned.manifest)
             except (OSError, RecoveryError):
                 pass
         if intact:
@@ -1397,7 +1419,9 @@ def cleanup_apply(
                 if authoritative.mode == "reset-current-settings":
                     for planned in actions:
                         try:
-                            if _manifest(planned.item.path) != planned.manifest:
+                            if not _manifest_matches(
+                                _manifest(planned.item.path), planned.manifest
+                            ):
                                 failed = True
                                 break
                             _remove_no_follow(planned.item.path)
@@ -1501,7 +1525,9 @@ def cleanup_apply(
                                 if planned.container_only:
                                     planned.item.path.rmdir()
                                 else:
-                                    if _manifest(planned.item.path) != planned.manifest:
+                                    if not _manifest_matches(
+                                        _manifest(planned.item.path), planned.manifest
+                                    ):
                                         failed = True
                                         break
                                     _remove_no_follow(planned.item.path)

@@ -6,6 +6,19 @@ from typing import Any, Literal, overload
 
 import httpx
 
+from opensquilla.knowledge.backend import KnowledgeBackendError
+
+_SAFE_ERROR_MESSAGES = {
+    "knowledge_error": "knowledge service request failed",
+    "invalid_retrieval_profile": "invalid retrieval profile",
+    "retrieval_profile_unavailable": "retrieval profile unavailable",
+    "no_retrieval_profile_available": "no retrieval profile available",
+    "settings_persist_failed": "failed to persist retrieval settings",
+    "artifact_access_error": "knowledge artifact access failed",
+    "source_file_access_error": "knowledge source file access failed",
+    "not_found": "knowledge resource not found",
+}
+
 
 def _payload_path(value: Path | str | None) -> str | None:
     return str(value) if value else None
@@ -36,6 +49,12 @@ class HttpKnowledgeBackend:
 
     def collections(self) -> dict[str, Any]:
         return self._request("GET", "/v1/collections")
+
+    def settings(self) -> dict[str, Any]:
+        return self._request("GET", "/v1/settings")
+
+    def update_settings(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return self._request("PATCH", "/v1/settings", json=payload)
 
     def prepare_sample(
         self,
@@ -142,30 +161,65 @@ class HttpKnowledgeBackend:
         params: dict[str, Any] | None = None,
         missing_ok: bool = False,
     ) -> dict[str, Any] | None:
-        with httpx.Client(
-            base_url=self.endpoint,
-            headers=self.headers,
-            timeout=self.timeout_seconds,
-            transport=self.transport,
-        ) as client:
-            response = client.request(method, path, json=json, params=params)
-        if response.status_code == 404 and missing_ok:
-            return None
-        if response.status_code >= 400:
-            raise RuntimeError(_error_message(response))
-        payload = response.json()
-        if not isinstance(payload, dict):
-            raise RuntimeError("knowledge service returned a non-object JSON payload")
-        return payload
+        try:
+            with httpx.Client(
+                base_url=self.endpoint,
+                headers=self.headers,
+                timeout=self.timeout_seconds,
+                transport=self.transport,
+            ) as client:
+                response = client.request(method, path, json=json, params=params)
+        except httpx.HTTPError:
+            backend_error = KnowledgeBackendError(
+                status_code=None,
+                code="knowledge_backend_unavailable",
+                message="knowledge service request failed",
+            )
+        else:
+            if response.status_code == 404 and missing_ok:
+                return None
+            if response.status_code >= 400:
+                raise _response_error(response)
+            payload = _json_object(response)
+            if payload is None:
+                raise KnowledgeBackendError(
+                    status_code=response.status_code,
+                    code=None,
+                    message="knowledge service returned invalid response",
+                )
+            return payload
+        raise backend_error
 
 
-def _error_message(response: httpx.Response) -> str:
+def _response_error(response: httpx.Response) -> KnowledgeBackendError:
+    status_code = response.status_code
+    generic_error = KnowledgeBackendError(
+        status_code=status_code,
+        code=None,
+        message=f"knowledge service request failed with status {status_code}",
+    )
+    payload = _json_object(response)
+    if payload is None:
+        return generic_error
+    error = payload.get("error")
+    if not isinstance(error, dict):
+        return generic_error
+    raw_code = error.get("code")
+    if not isinstance(raw_code, str):
+        return generic_error
+    message = _SAFE_ERROR_MESSAGES.get(raw_code)
+    if message is None:
+        return generic_error
+    return KnowledgeBackendError(
+        status_code=status_code,
+        code=raw_code,
+        message=message,
+    )
+
+
+def _json_object(response: httpx.Response) -> dict[str, Any] | None:
     try:
         payload = response.json()
     except ValueError:
-        payload = None
-    if isinstance(payload, dict):
-        error = payload.get("error")
-        if isinstance(error, dict) and error.get("message"):
-            return f"knowledge service {response.status_code}: {error['message']}"
-    return f"knowledge service {response.status_code}: {response.text[:300]}"
+        return None
+    return payload if isinstance(payload, dict) else None

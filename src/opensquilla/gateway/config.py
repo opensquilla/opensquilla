@@ -252,6 +252,7 @@ class KnowledgeConfig(BaseModel):
     backend: Literal["local", "http"] = "local"
     endpoint: str = "http://127.0.0.1:18765"
     timeout_seconds: float = Field(default=30.0, gt=0.0)
+    capability_ttl_seconds: float = Field(default=60.0, gt=0.0)
     api_key: str | None = None
     api_key_env: str | None = None
     local_root_dir: str | None = None

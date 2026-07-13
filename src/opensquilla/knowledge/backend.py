@@ -1,13 +1,28 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
+
+
+@dataclass(frozen=True, kw_only=True)
+class KnowledgeBackendError(RuntimeError):
+    status_code: int | None
+    code: str | None
+    message: str
+
+    def __post_init__(self) -> None:
+        RuntimeError.__init__(self, self.message)
 
 
 class KnowledgeBackend(Protocol):
     def status(self) -> dict[str, Any]: ...
 
     def collections(self) -> dict[str, Any]: ...
+
+    def settings(self) -> dict[str, Any]: ...
+
+    def update_settings(self, payload: dict[str, Any]) -> dict[str, Any]: ...
 
     def prepare_sample(
         self,
@@ -53,6 +68,12 @@ class DisabledKnowledgeBackend:
 
     def collections(self) -> dict[str, Any]:
         return {"collections": []}
+
+    def settings(self) -> dict[str, Any]:
+        raise RuntimeError("knowledge backend is disabled")
+
+    def update_settings(self, payload: dict[str, Any]) -> dict[str, Any]:
+        raise RuntimeError("knowledge backend is disabled")
 
     def prepare_sample(
         self,

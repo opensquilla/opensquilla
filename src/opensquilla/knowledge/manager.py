@@ -32,6 +32,7 @@ from opensquilla.knowledge.pipeline import (
 
 _SUPPORTED_EXTENSIONS = {".md", ".markdown", ".txt", ".html", ".htm", ".pdf"}
 _DEFAULT_SOURCE_ROOT = Path("/mnt/data/datasets")
+_LOCAL_RETRIEVAL_PROFILE = "sqlite_fts5_default"
 
 
 class KnowledgeManager:
@@ -62,6 +63,20 @@ class KnowledgeManager:
 
     def collections(self) -> dict[str, Any]:
         return {"collections": self.index.list_collections()}
+
+    def settings(self) -> dict[str, Any]:
+        return {"defaultRetrievalProfile": _LOCAL_RETRIEVAL_PROFILE}
+
+    def update_settings(self, payload: dict[str, Any]) -> dict[str, Any]:
+        requested_profile = payload.get("defaultRetrievalProfile")
+        if requested_profile != _LOCAL_RETRIEVAL_PROFILE:
+            raise ValueError(
+                "local knowledge backend only supports sqlite_fts5_default"
+            )
+        return {
+            "configuredDefaultRetrievalProfile": _LOCAL_RETRIEVAL_PROFILE,
+            "effectiveDefaultRetrievalProfile": _LOCAL_RETRIEVAL_PROFILE,
+        }
 
     def prepare_sample(
         self,

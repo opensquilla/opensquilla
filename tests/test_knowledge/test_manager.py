@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
-from opensquilla.knowledge.manager import KnowledgeManager
+import pytest
+
+from opensquilla.knowledge.manager import KnowledgeManager, manager_from_config
 
 
 def test_manager_prepares_markdown_sample_and_eval_questions(tmp_path: Path) -> None:
@@ -98,3 +101,59 @@ def test_manager_records_judgment_jsonl(tmp_path: Path) -> None:
     rows = [json.loads(line) for line in judgment_path.read_text(encoding="utf-8").splitlines()]
     assert rows[0]["questionId"] == "q001"
     assert rows[0]["rating"] == "correct"
+
+
+def test_manager_from_config_local_backend_supports_settings_contract(
+    tmp_path: Path,
+) -> None:
+    configs = [
+        SimpleNamespace(state_dir=tmp_path / "default-state"),
+        SimpleNamespace(
+            state_dir=tmp_path / "explicit-state",
+            knowledge=SimpleNamespace(
+                enabled=True,
+                backend="local",
+                local_root_dir=str(tmp_path / "explicit-knowledge"),
+            ),
+        ),
+    ]
+
+    for config in configs:
+        manager = manager_from_config(config)
+        assert isinstance(manager, KnowledgeManager)
+        assert manager.settings() == {
+            "defaultRetrievalProfile": "sqlite_fts5_default",
+        }
+        assert manager.update_settings(
+            {"defaultRetrievalProfile": "sqlite_fts5_default"}
+        ) == {
+            "configuredDefaultRetrievalProfile": "sqlite_fts5_default",
+            "effectiveDefaultRetrievalProfile": "sqlite_fts5_default",
+        }
+        assert manager.settings() == {
+            "defaultRetrievalProfile": "sqlite_fts5_default",
+        }
+
+
+def test_local_manager_rejects_unsupported_settings(tmp_path: Path) -> None:
+    manager = manager_from_config(
+        SimpleNamespace(
+            state_dir=tmp_path,
+            knowledge=SimpleNamespace(enabled=True, backend="local", local_root_dir=None),
+        )
+    )
+
+    for payload in (
+        {},
+        {"defaultRetrievalProfile": ""},
+        {"defaultRetrievalProfile": "hybrid_rrf_bge_m3_fts5"},
+    ):
+        with pytest.raises(
+            ValueError,
+            match="local knowledge backend only supports sqlite_fts5_default",
+        ):
+            manager.update_settings(payload)
+
+    assert manager.settings() == {
+        "defaultRetrievalProfile": "sqlite_fts5_default",
+    }

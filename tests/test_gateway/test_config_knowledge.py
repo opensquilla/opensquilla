@@ -2,6 +2,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+from pydantic import ValidationError
+
 from opensquilla.gateway.config import GatewayConfig
 from opensquilla.onboarding.config_store import load_config, persist_config
 
@@ -16,6 +19,7 @@ def test_gateway_config_loads_knowledge_http_section(tmp_path: Path) -> None:
                 'endpoint = "http://127.0.0.1:18765"',
                 "timeout_seconds = 12.5",
                 'api_key_env = "OPENSQUILLA_KNOWLEDGE_API_KEY"',
+                "capability_ttl_seconds = 45",
             ]
         ),
         encoding="utf-8",
@@ -28,6 +32,18 @@ def test_gateway_config_loads_knowledge_http_section(tmp_path: Path) -> None:
     assert config.knowledge.endpoint == "http://127.0.0.1:18765"
     assert config.knowledge.timeout_seconds == 12.5
     assert config.knowledge.api_key_env == "OPENSQUILLA_KNOWLEDGE_API_KEY"
+    assert config.knowledge.capability_ttl_seconds == 45.0
+
+
+def test_gateway_config_defaults_knowledge_capability_ttl() -> None:
+    assert GatewayConfig().knowledge.capability_ttl_seconds == 60.0
+
+
+def test_gateway_config_rejects_zero_knowledge_capability_ttl() -> None:
+    with pytest.raises(ValidationError):
+        GatewayConfig.model_validate(
+            {"knowledge": {"capability_ttl_seconds": 0}},
+        )
 
 
 def test_env_knowledge_api_key_is_not_persisted(

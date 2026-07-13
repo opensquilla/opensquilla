@@ -43,7 +43,7 @@ TokenRhythm, OpenRouter, OpenAI, Anthropic, Ollama, DeepSeek, Gemini,
 Qwen/DashScope, and 20+ other LLM providers with no change to your code or config
 schema.
 
-OpenSquilla 0.5.0 Preview 3 is the current preview release.
+OpenSquilla 0.5.0 Preview 4 is the current preview release.
 
 For task-oriented product documentation, start with the
 [OpenSquilla Product Guide](README.product.md) or the
@@ -63,9 +63,9 @@ Develop from source — build **from a Git checkout** (`git clone` + Git LFS).
 Release install commands use published GitHub release assets. Python wheel installs use versioned wheel filenames because installers validate the version
 embedded in the wheel filename.
 
-For 0.5.0 Preview 3 desktop use, prefer the packaged desktop installers from
-the GitHub Release: `OpenSquilla-0.5.0-rc3-mac-arm64.dmg` on macOS and
-`OpenSquilla-0.5.0-rc3-win-x64.exe` on Windows.
+For 0.5.0 Preview 4 desktop use, prefer the packaged desktop installers from
+the GitHub Release: `OpenSquilla-0.5.0-rc4-mac-arm64.dmg` on macOS and
+`OpenSquilla-0.5.0-rc4-win-x64.exe` on Windows.
 
 | Path | Audience | When to use |
 | --- | --- | --- |
@@ -109,18 +109,20 @@ Install links: [Git](https://git-scm.com/downloads) ·
 
 ### Desktop installers
 
-The 0.5.0 Preview 3 desktop installers package the Vue control console and
+The 0.5.0 Preview 4 desktop installers package the Vue control console and
 gateway runtime in an Electron shell.
 
-- macOS Apple Silicon: <https://github.com/opensquilla/opensquilla/releases/download/v0.5.0rc3/OpenSquilla-0.5.0-rc3-mac-arm64.dmg>
-- Windows x64: <https://github.com/opensquilla/opensquilla/releases/download/v0.5.0rc3/OpenSquilla-0.5.0-rc3-win-x64.exe>
+- macOS Apple Silicon: <https://github.com/opensquilla/opensquilla/releases/download/v0.5.0rc4/OpenSquilla-0.5.0-rc4-mac-arm64.dmg>
+- Windows x64: <https://github.com/opensquilla/opensquilla/releases/download/v0.5.0rc4/OpenSquilla-0.5.0-rc4-win-x64.exe>
 
 For faster Mainland China downloads, use the [China download mirror](https://opensquilla-releases.oss-cn-beijing.aliyuncs.com/releases/latest.html). It always lists the newest mirrored release; the GitHub Release links above remain the global fallback.
 
 Quit any running OpenSquilla desktop app before upgrading. On macOS, drag the
 app from the DMG into Applications for installation or updates, eject the DMG,
-then open the Applications copy. Existing `~/.opensquilla/config.toml` and
-session data are reused.
+then open the Applications copy. The existing Desktop profile in the platform
+application-data directory is reused. A terminal installation's
+`~/.opensquilla` is a separate profile; transfer it explicitly from Settings
+only if needed.
 
 When upgrading the Windows Desktop from RC3 to RC4 or later, run the new
 installer directly over the existing installation. Do **not** uninstall RC3
@@ -163,7 +165,7 @@ $env:Path = "$env:USERPROFILE\.local\bin;" + $env:Path
 **2. Install OpenSquilla** — the same command on every platform.
 
 ```sh
-uv tool install --python 3.12 "opensquilla[recommended] @ https://github.com/opensquilla/opensquilla/releases/download/v0.5.0rc3/opensquilla-0.5.0rc3-py3-none-any.whl"
+uv tool install --python 3.12 "opensquilla[recommended] @ https://github.com/opensquilla/opensquilla/releases/download/v0.5.0rc4/opensquilla-0.5.0rc4-py3-none-any.whl"
 ```
 
 This installs the OpenSquilla wheel from the release URL, then lets
@@ -187,7 +189,7 @@ opensquilla gateway run
 > a new terminal, or re-run the PATH line from step 1.
 
 For a fully pinned install, use the versioned wheel URL:
-`https://github.com/opensquilla/opensquilla/releases/download/v0.5.0rc3/opensquilla-0.5.0rc3-py3-none-any.whl`.
+`https://github.com/opensquilla/opensquilla/releases/download/v0.5.0rc4/opensquilla-0.5.0rc4-py3-none-any.whl`.
 
 ### Install from source
 
@@ -581,8 +583,8 @@ to allow inbound TCP on that port. Do not expose the gateway with
 **Docker**
 
 Prebuilt multi-arch images (`amd64`/`arm64`) are published to
-`ghcr.io/opensquilla/opensquilla` on release tags. Preview 3 is published as
-both `v0.5.0rc3` and the moving `latest` tag —
+`ghcr.io/opensquilla/opensquilla` on release tags. Preview 4 is published as
+both `v0.5.0rc4` and the moving `latest` tag —
 [`docs/docker.md`](docs/docker.md) is the full container guide
 (home servers and NAS, LAN exposure with token auth, upgrades):
 
@@ -611,30 +613,29 @@ settings live in `opensquilla.toml.example`.
 
 ---
 
-## What's New in 0.5.0 Preview 3
+## What's New in 0.5.0 Preview 4
 
-OpenSquilla 0.5.0 Preview 3 is a broad preview update for migration, routing,
-desktop, runtime, and deployment:
+OpenSquilla 0.5.0 Preview 4 focuses on safe upgrades and existing user data:
 
-- **Legacy-home migration** - detect and transactionally import older CLI,
-  desktop, portable, relocated, restored, and Docker-volume homes.
-- **Providers and routing** - support expands across TokenRhythm, Tencent
-  TokenHub and Token Plan, and IQS, with live model discovery, probe and context
-  diagnostics, verified coding presets, richer ensemble configuration, and an
-  opt-in router self-learning loop.
-- **Desktop, terminal, and Control UI** - improved updater behavior, onboarding,
-  terminal interaction, diagnostics, themes, attachments, chat navigation, and
-  desktop platform integration.
-- **Runtime and safety hardening** - stronger persistence, MCP, session, tool,
-  sandbox, secret-redaction, same-origin, and provider retry contracts.
-- **Container images** - prebuilt `linux/amd64` and `linux/arm64` gateway images
-  are published as `v0.5.0rc3` and `latest` on GHCR.
-- **Simplified release assets** - 0.5 previews publish Electron installers,
-  updater metadata, the versioned Python wheel, and checksums; Windows portable
-  archives remain retired.
+- **Profile recovery** - validates the active workspace before any empty
+  workspace or chat database can be created, preserving identity, memory,
+  settings, and chats when upgrading RC2 or RC3 Desktop to RC4.
+- **Windows Portable transfer** - a fresh Windows Desktop can explicitly copy
+  an old Portable profile without modifying its source. Normal upgrades do not
+  show the transfer flow, and separate profiles are never silently merged.
+- **Desktop data protection** - normal uninstall now preserves profile data;
+  cleanup actions state exactly what they remove, and provider key changes
+  remain effective after restart.
+- **Updates and reliability** - long-running Desktop sessions can discover
+  later previews, while Model Ensemble progress, provider limits, WeCom
+  connectivity, SQLite, process, and checkpoint handling are more robust.
+- **Download options** - versioned GitHub assets,
+  multi-architecture GHCR images, and
+  an Alibaba Cloud OSS mirror provide release download options. Windows
+  Portable archives remain retired.
 
 Full notes: [`CHANGELOG.md`](CHANGELOG.md) ·
-[`docs/releases/0.5.0rc3.md`](docs/releases/0.5.0rc3.md).
+[`docs/releases/0.5.0rc4.md`](docs/releases/0.5.0rc4.md).
 
 ## What's New in 0.2.1
 

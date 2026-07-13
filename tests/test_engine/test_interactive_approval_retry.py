@@ -438,7 +438,7 @@ async def test_denied_approval_result_reaches_model_for_final_answer(
         tmp_path / "approval_queue.sqlite",
     )
     reset_approval_queue()
-    approval_prompt_seen = asyncio.Event()
+    denied_approval_ids: list[str] = []
 
     async def _handler(call: ToolCall) -> ToolResult:
         approval_id = call.arguments.get("approval_id")
@@ -490,26 +490,16 @@ async def test_denied_approval_result_reaches_model_for_final_answer(
         tool_handler=_handler,
     )
 
-    events: list[Any] = []
-
-    async def _drive() -> None:
+    try:
+        events: list[Any] = []
         async for event in agent.run_turn("can you inspect /outside?"):
             events.append(event)
             if isinstance(event, ToolResultEvent) and "approval_required" in event.result:
-                approval_prompt_seen.set()
+                approval_id = str(json.loads(event.result)["approval_id"])
+                denied_approval_ids.append(approval_id)
+                get_approval_queue().resolve(approval_id, False)
 
-    try:
-        task = asyncio.create_task(_drive())
-        await asyncio.wait_for(approval_prompt_seen.wait(), timeout=2.0)
-        approval_event = next(
-            event
-            for event in events
-            if isinstance(event, ToolResultEvent) and "approval_required" in event.result
-        )
-        approval_id = json.loads(approval_event.result)["approval_id"]
-        get_approval_queue().resolve(approval_id, False)
-        await asyncio.wait_for(task, timeout=2.0)
-
+        assert len(denied_approval_ids) == 1
         assert len(provider.calls) == 2
         second_provider_request = provider.calls[1]
         tool_result_blocks = [

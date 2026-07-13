@@ -65,7 +65,16 @@ class ToolRegistry:
         *,
         sort: bool = False,
     ) -> list[RegisteredTool]:
-        return visibility_policy.visible_registered_tools(self._tools.values(), ctx, sort=sort)
+        visible_tools = visibility_policy.visible_registered_tools(
+            self._tools.values(), ctx, sort=sort
+        )
+        snapshot = getattr(ctx, "knowledge_capability_snapshot", None)
+        state = getattr(getattr(snapshot, "state", None), "value", None)
+        if state in {"READY", "DEGRADED", "LEGACY"}:
+            return visible_tools
+        return [
+            tool for tool in visible_tools if tool.spec.name != "knowledge_search"
+        ]
 
     def _is_visible(self, rt: RegisteredTool, ctx: ToolContext | None = None) -> bool:
         return visibility_policy.is_tool_visible(rt, ctx)
@@ -111,6 +120,21 @@ class ToolRegistry:
         ):
             raw_parameters = raw_parameters["properties"]
         parameters = copy.deepcopy(raw_parameters)
+        if rt.spec.name == "knowledge_search":
+            snapshot = getattr(ctx, "knowledge_capability_snapshot", None)
+            state = getattr(getattr(snapshot, "state", None), "value", None)
+            if state == "READY":
+                retrieval_profile = parameters.get("retrieval_profile")
+                if isinstance(retrieval_profile, dict):
+                    retrieval_profile["enum"] = list(
+                        getattr(snapshot, "available_profile_ids", ())
+                    )
+            elif state in {"DEGRADED", "LEGACY"}:
+                for parameter in (
+                    "retrieval_profile", "embedding_model", "embedding_dimensions"
+                ):
+                    parameters.pop(parameter, None)
+            return parameters
         if rt.spec.name != "router_control":
             return parameters
         router_cfg = getattr(ctx, "router_control_config", None)

@@ -1,11 +1,18 @@
 from __future__ import annotations
 
+import copy
 import json
 
 import pytest
 import structlog.testing
 
 from opensquilla.engine.types import ToolCall
+from opensquilla.knowledge.runtime import (
+    KnowledgeCapabilitySnapshot,
+    KnowledgeConnectionState,
+    RetrievalProfileCapability,
+)
+from opensquilla.tools.builtin.knowledge_tools import create_knowledge_tools
 from opensquilla.tools.dispatch import build_tool_handler
 from opensquilla.tools.policy import ToolSurfaceCapabilities
 from opensquilla.tools.registry import ToolRegistry
@@ -14,6 +21,42 @@ from opensquilla.tools.types import CallerKind, InteractionMode, ToolContext, To
 
 async def _handler() -> str:
     return "ok"
+
+
+def _knowledge_snapshot(
+    state: KnowledgeConnectionState,
+) -> KnowledgeCapabilitySnapshot:
+    return KnowledgeCapabilitySnapshot(
+        state=state,
+        capabilities_version="0123456789abcdef",
+        profiles=(
+            RetrievalProfileCapability(
+                id="lexical",
+                label="Lexical",
+                kind="lexical",
+                available=True,
+            ),
+            RetrievalProfileCapability(
+                id="vector-disabled",
+                label="Vector disabled",
+                kind="vector",
+                available=False,
+            ),
+            RetrievalProfileCapability(
+                id="hybrid",
+                label="Hybrid",
+                kind="hybrid",
+                available=True,
+            ),
+        ),
+        configured_default="lexical",
+        effective_default="lexical",
+        fallback_reason=None,
+        fetched_at_ms=1,
+        service_status={},
+        stale=state is KnowledgeConnectionState.DEGRADED,
+        legacy=state is KnowledgeConnectionState.LEGACY,
+    )
 
 
 def _spec(name: str, *, exposed_by_default: bool = True) -> ToolSpec:
@@ -601,3 +644,115 @@ async def test_catalog_and_effective_names_agree_for_unattended_cli_context() ->
     catalog_names = {tool["name"] for tool in catalog}
     effective_names = {tool["name"] for tool in effective}
     assert catalog_names == effective_names == {"read_file", "sessions_list"}
+
+
+@pytest.mark.parametrize(
+    ("state", "search_visible", "profile_parameter"),
+    [
+        (KnowledgeConnectionState.READY, True, True),
+        (KnowledgeConnectionState.DEGRADED, True, False),
+        (KnowledgeConnectionState.LEGACY, True, False),
+        (KnowledgeConnectionState.DISCOVERING, False, False),
+        (KnowledgeConnectionState.UNAVAILABLE, False, False),
+        (None, False, False),
+    ],
+)
+def test_knowledge_definitions_follow_capability_snapshot(
+    state: KnowledgeConnectionState | None,
+    search_visible: bool,
+    profile_parameter: bool,
+) -> None:
+    registry = ToolRegistry()
+    create_knowledge_tools(manager=object(), registry=registry)  # type: ignore[arg-type]
+    snapshot = _knowledge_snapshot(state) if state is not None else None
+
+    definitions = {
+        definition.name: definition
+        for definition in registry.to_tool_definitions(
+            ToolContext(knowledge_capability_snapshot=snapshot)
+        )
+    }
+
+    assert "knowledge_status" in definitions
+    assert ("knowledge_search" in definitions) is search_visible
+    if not search_visible:
+        return
+
+    properties = definitions["knowledge_search"].input_schema.properties
+    assert ("retrieval_profile" in properties) is profile_parameter
+    assert properties.keys().isdisjoint(
+        {
+            "embedding_model",
+            "embedding_dimensions",
+        }
+    )
+    if state is KnowledgeConnectionState.READY:
+        assert properties["retrieval_profile"]["enum"] == ["lexical", "hybrid"]
+
+
+def test_knowledge_definition_enrichment_does_not_mutate_registered_spec() -> None:
+    registry = ToolRegistry()
+    create_knowledge_tools(manager=object(), registry=registry)  # type: ignore[arg-type]
+    registered = registry.get("knowledge_search")
+    assert registered is not None
+    original_parameters = copy.deepcopy(registered.spec.parameters)
+
+    ready = registry.to_tool_definitions(
+        ToolContext(
+            knowledge_capability_snapshot=_knowledge_snapshot(
+                KnowledgeConnectionState.READY
+            )
+        )
+    )
+    registry.to_tool_definitions(
+        ToolContext(
+            knowledge_capability_snapshot=_knowledge_snapshot(
+                KnowledgeConnectionState.DEGRADED
+            )
+        )
+    )
+
+    assert registered.spec.parameters == original_parameters
+    ready_search = next(item for item in ready if item.name == "knowledge_search")
+    ready_search.input_schema.properties["retrieval_profile"]["enum"].append(
+        "caller-mutation"
+    )
+    assert registered.spec.parameters == original_parameters
+
+
+def test_non_knowledge_definitions_are_identical_for_every_knowledge_snapshot() -> None:
+    registry = ToolRegistry()
+    create_knowledge_tools(manager=object(), registry=registry)  # type: ignore[arg-type]
+    registry.register(
+        ToolSpec(
+            name="plain",
+            description="Plain non-Knowledge tool.",
+            parameters={
+                "nested": {
+                    "type": "object",
+                    "properties": {"value": {"type": "string"}},
+                }
+            },
+        ),
+        _handler,
+    )
+    knowledge_names = {"knowledge_status", "knowledge_search", "knowledge_get"}
+
+    def serialized(snapshot: KnowledgeCapabilitySnapshot | None) -> list[dict[str, object]]:
+        return [
+            definition.model_dump(mode="json", by_alias=True)
+            for definition in registry.to_tool_definitions(
+                ToolContext(knowledge_capability_snapshot=snapshot)
+            )
+            if definition.name not in knowledge_names
+        ]
+
+    baseline = serialized(None)
+    for state in (
+        KnowledgeConnectionState.READY,
+        KnowledgeConnectionState.DEGRADED,
+        KnowledgeConnectionState.LEGACY,
+        KnowledgeConnectionState.DISCOVERING,
+        KnowledgeConnectionState.UNAVAILABLE,
+    ):
+        assert serialized(_knowledge_snapshot(state)) == baseline

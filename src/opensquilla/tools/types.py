@@ -97,6 +97,7 @@ class ToolContext:
     tool_run_budget_policy: Any | None = None
     tool_run_budget_tracker_factory: Callable[[], Any] | None = None
     tool_run_budget_key: str | None = None
+    knowledge_capability_snapshot: Any | None = None
     router_control_config: Any | None = None
     router_control_hold_store: Any | None = None
     router_control_replay_depth: int = 0

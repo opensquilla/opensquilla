@@ -4,12 +4,13 @@ import asyncio
 import json
 from typing import TYPE_CHECKING, Any
 
-from opensquilla.knowledge.backend import KnowledgeBackend
+from opensquilla.knowledge.backend import KnowledgeBackend, KnowledgeBackendError
 from opensquilla.knowledge.manager import manager_from_config
 from opensquilla.tools.registry import tool
-from opensquilla.tools.types import ToolError
+from opensquilla.tools.types import ToolError, current_tool_context
 
 if TYPE_CHECKING:
+    from opensquilla.knowledge.runtime import KnowledgeRuntime
     from opensquilla.tools.registry import ToolRegistry
 
 
@@ -40,6 +41,7 @@ def _merged_search_filters(
 def create_knowledge_tools(
     *,
     manager: KnowledgeBackend | None = None,
+    runtime: KnowledgeRuntime | None = None,
     registry: ToolRegistry | None = None,
     config: Any | None = None,
 ) -> None:
@@ -50,6 +52,8 @@ def create_knowledge_tools(
     """
 
     def current_manager() -> KnowledgeBackend:
+        if runtime is not None:
+            return runtime.current_backend()
         return manager if manager is not None else manager_from_config(config)
 
     @tool(
@@ -71,7 +75,10 @@ def create_knowledge_tools(
         result_budget_class="compact",
     )
     async def knowledge_status(collection: str | None = None) -> str:
-        payload = await asyncio.to_thread(current_manager().status)
+        if runtime is not None:
+            payload = runtime.status_payload()
+        else:
+            payload = await asyncio.to_thread(current_manager().status)
         if collection:
             payload["collection"] = collection
         return json.dumps(payload, ensure_ascii=False)
@@ -106,23 +113,7 @@ def create_knowledge_tools(
             "retrieval_profile": {
                 "type": "string",
                 "description": (
-                    "Optional retrieval profile id. Call knowledge_status first and use one "
-                    "of status.retrievalProfiles where available=true. Common ids include "
-                    "sqlite_fts5_default, vector_bge_m3_1024, and hybrid_rrf_bge_m3_fts5."
-                ),
-            },
-            "embedding_model": {
-                "type": "string",
-                "description": (
-                    "Optional embedding model for vector or hybrid retrieval. Use the model "
-                    "reported by the selected status.retrievalProfiles item."
-                ),
-            },
-            "embedding_dimensions": {
-                "type": "integer",
-                "description": (
-                    "Optional embedding dimensions for vector or hybrid retrieval. Use the "
-                    "dimensions reported by the selected status.retrievalProfiles item."
+                    "Optional one-request override. Omit to use the Knowledge service default."
                 ),
             },
             "filters": {
@@ -156,6 +147,25 @@ def create_knowledge_tools(
         clean_query = str(query or "").strip()
         if not clean_query:
             raise ToolError("query is required")
+        context = current_tool_context.get()
+        snapshot = getattr(context, "knowledge_capability_snapshot", None)
+        state = (
+            "LEGACY"
+            if context is None
+            else getattr(getattr(snapshot, "state", None), "value", None)
+        )
+        if state not in {"READY", "DEGRADED", "LEGACY"}:
+            raise ToolError("knowledge_search_unavailable")
+        filter_profile = (
+            filters.get("retrievalProfile") if isinstance(filters, dict) else None
+        )
+        resolved_profile = str(retrieval_profile or filter_profile or "").strip()
+        if resolved_profile and (
+            state != "READY"
+            or resolved_profile
+            not in getattr(snapshot, "available_profile_ids", ())
+        ):
+            raise ToolError("retrieval_profile_unavailable")
         merged_filters = _merged_search_filters(
             filters=filters,
             collection=collection,
@@ -164,12 +174,25 @@ def create_knowledge_tools(
             embedding_model=embedding_model,
             embedding_dimensions=embedding_dimensions,
         )
-        payload = await asyncio.to_thread(
-            current_manager().search,
-            clean_query,
-            top_k=top_k,
-            filters=merged_filters,
-        )
+
+        def search(backend: KnowledgeBackend) -> dict[str, Any]:
+            return backend.search(
+                clean_query,
+                top_k=top_k,
+                filters=merged_filters,
+            )
+
+        try:
+            capability_retry = getattr(runtime, "call_with_capability_retry", None)
+            if callable(capability_retry):
+                payload = await capability_retry(search)
+            else:
+                payload = await asyncio.to_thread(search, current_manager())
+        except KnowledgeBackendError as error:
+            backend_code = error.code or "unknown"
+            raise ToolError(
+                f"knowledge_search_failed (backend_code={backend_code})"
+            ) from None
         if collection:
             payload["collection"] = collection
         return json.dumps(payload, ensure_ascii=False)

@@ -4388,7 +4388,7 @@ async def exec_command(
     source_diff_block = _source_diff_preservation_shell_block(command, cwd, stdin=stdin)
     if source_diff_block is not None:
         return source_diff_block
-    if not host_execution and sandbox_permissions == "require_escalated":
+    if not host_execution:
         hard_block = _shell_elevation_hard_block(
             "exec_command",
             command,
@@ -4398,6 +4398,7 @@ async def exec_command(
         )
         if hard_block is not None:
             return json.dumps(hard_block, ensure_ascii=False)
+    if not host_execution and sandbox_permissions == "require_escalated":
         elevation = _gate_shell_elevation(
             _shell_elevation_action(
                 tool_name="exec_command",
@@ -4712,7 +4713,7 @@ async def background_process(
     source_diff_block = _source_diff_preservation_shell_block(command, cwd)
     if source_diff_block is not None:
         return source_diff_block
-    if not host_execution and sandbox_permissions == "require_escalated":
+    if not host_execution:
         hard_block = _shell_elevation_hard_block(
             "background_process",
             command,
@@ -4721,6 +4722,7 @@ async def background_process(
         )
         if hard_block is not None:
             return json.dumps(hard_block, ensure_ascii=False)
+    if not host_execution and sandbox_permissions == "require_escalated":
         elevation = _gate_shell_elevation(
             _shell_elevation_action(
                 tool_name="background_process",

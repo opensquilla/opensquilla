@@ -22,6 +22,12 @@ from opensquilla.tools.types import (
 )
 
 
+def _original_async(fn):
+    while hasattr(fn, "__wrapped__"):
+        fn = fn.__wrapped__  # type: ignore[attr-defined]
+    return fn
+
+
 @pytest.fixture(autouse=True)
 def reset_approval_state():
     reset_approval_queue()
@@ -488,7 +494,7 @@ async def test_outside_workspace_write_blocks_without_sandbox_path_approval(
     ctx.interaction_mode = InteractionMode.UNATTENDED
     ctx.workspace_dir = str(workspace)
 
-    write_file = filesystem.write_file.__wrapped__.__wrapped__  # type: ignore[attr-defined]
+    write_file = _original_async(filesystem.write_file)
     payload = json.loads(await write_file(str(outside), "ok"))
 
     assert payload["status"] == "blocked"
@@ -511,7 +517,7 @@ async def test_workspace_lockdown_blocks_outside_workspace_write_even_with_bypas
     ctx.workspace_dir = str(workspace)
     ctx.workspace_lockdown = True  # type: ignore[attr-defined]
 
-    write_file = filesystem.write_file.__wrapped__.__wrapped__  # type: ignore[attr-defined]
+    write_file = _original_async(filesystem.write_file)
     with pytest.raises(ToolError, match="workspace lockdown"):
         await write_file(str(outside), "ok")
 
@@ -536,7 +542,7 @@ async def test_workspace_lockdown_allows_configured_scratch_dir_write(
     ctx.scratch_dir = str(scratch)  # type: ignore[attr-defined]
     ctx.workspace_lockdown = True  # type: ignore[attr-defined]
 
-    result = await filesystem._gate_out_of_workspace_write(
+    result, elevated = await filesystem._gate_out_of_workspace_write(
         "write_file",
         target.resolve(strict=False),
         str(target),
@@ -544,6 +550,7 @@ async def test_workspace_lockdown_allows_configured_scratch_dir_write(
     )
 
     assert result is None
+    assert elevated is False
     assert not target.exists()
     assert get_approval_queue().list_pending("exec") == []
 
@@ -560,7 +567,7 @@ async def test_workspace_write_deny_globs_block_file_write(tmp_path: Path) -> No
     ctx.workspace_dir = str(workspace)
     ctx.workspace_write_deny_globs = ["blocked/**"]  # type: ignore[attr-defined]
 
-    write_file = filesystem.write_file.__wrapped__.__wrapped__  # type: ignore[attr-defined]
+    write_file = _original_async(filesystem.write_file)
     with pytest.raises(ToolError, match="workspace write deny policy"):
         await write_file(str(target), "nope")
 
@@ -583,7 +590,7 @@ async def test_workspace_write_deny_globs_block_nested_test_file_write(
     ctx.workspace_dir = str(workspace)
     ctx.workspace_write_deny_globs = ["**/test/**", "**/*Test.java"]  # type: ignore[attr-defined]
 
-    write_file = filesystem.write_file.__wrapped__.__wrapped__  # type: ignore[attr-defined]
+    write_file = _original_async(filesystem.write_file)
     with pytest.raises(ToolError, match="workspace write deny policy"):
         await write_file(str(target), "nope")
 
@@ -608,7 +615,7 @@ async def test_workspace_write_deny_globs_allow_configured_scratch_write_file(
     ctx.workspace_lockdown = True  # type: ignore[attr-defined]
     ctx.workspace_write_deny_globs = ["**/test_*.py"]  # type: ignore[attr-defined]
 
-    write_file = filesystem.write_file.__wrapped__.__wrapped__  # type: ignore[attr-defined]
+    write_file = _original_async(filesystem.write_file)
     result = await write_file(str(target), "print('scratch')\n")
 
     assert result.startswith("Written 17 bytes to ")
@@ -633,7 +640,7 @@ async def test_configured_scratch_dir_blocks_root_debug_workspace_write_file(
     ctx.scratch_dir = str(scratch)  # type: ignore[attr-defined]
     ctx.workspace_lockdown = True  # type: ignore[attr-defined]
 
-    write_file = filesystem.write_file.__wrapped__.__wrapped__  # type: ignore[attr-defined]
+    write_file = _original_async(filesystem.write_file)
     with pytest.raises(ToolError, match="configured scratch directory"):
         await write_file(str(target), "<?php echo 'debug';\n")
 
@@ -657,7 +664,7 @@ async def test_configured_scratch_dir_allows_plain_root_test_source_name(
     ctx.scratch_dir = str(scratch)  # type: ignore[attr-defined]
     ctx.workspace_lockdown = True  # type: ignore[attr-defined]
 
-    write_file = filesystem.write_file.__wrapped__.__wrapped__  # type: ignore[attr-defined]
+    write_file = _original_async(filesystem.write_file)
     result = await write_file(str(target), "def test_api():\n    assert True\n")
 
     assert "Written 32 bytes" in result
@@ -681,7 +688,7 @@ async def test_write_file_blocks_large_workspace_file_fragment_overwrite(
     ctx.workspace_dir = str(workspace)
 
     await filesystem.read_file(str(target))
-    write_file = filesystem.write_file.__wrapped__.__wrapped__  # type: ignore[attr-defined]
+    write_file = _original_async(filesystem.write_file)
     with pytest.raises(ToolError, match="write_file refused to overwrite"):
         await write_file(str(target), "int replacement_fragment;\n")
 
@@ -703,7 +710,7 @@ async def test_write_file_allows_scratch_file_fragment_overwrite(tmp_path: Path)
     ctx.workspace_dir = str(workspace)
     ctx.scratch_dir = str(scratch)  # type: ignore[attr-defined]
 
-    write_file = filesystem.write_file.__wrapped__.__wrapped__  # type: ignore[attr-defined]
+    write_file = _original_async(filesystem.write_file)
     result = await write_file(str(target), "int replacement_fragment;\n")
 
     assert result.startswith("Written 26 bytes to ")
@@ -723,7 +730,7 @@ async def test_write_file_allows_small_workspace_file_overwrite(tmp_path: Path) 
     ctx.workspace_dir = str(workspace)
 
     await filesystem.read_file(str(target))
-    write_file = filesystem.write_file.__wrapped__.__wrapped__  # type: ignore[attr-defined]
+    write_file = _original_async(filesystem.write_file)
     result = await write_file(str(target), "new\n")
 
     assert result.startswith("Written 4 bytes to ")

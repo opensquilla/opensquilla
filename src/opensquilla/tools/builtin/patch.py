@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from opensquilla.identity.workspace import BOOTSTRAP_FILENAMES
+from opensquilla.sandbox.elevation import ElevationAction, gate_elevated_action
 from opensquilla.sandbox.operation_runtime import (
     FilesystemOperationRequest,
     SandboxOperation,
@@ -386,8 +387,13 @@ def _gate_patch_ops(
     ops: list[PatchOp],
     root: Path,
     approval_id: str | None,
-) -> dict[str, object] | None:
-    """Return a hard block / sandbox approval payload, or None to proceed."""
+    *,
+    patch_digest: str,
+    sandbox_permissions: str = "use_default",
+    justification: str = "",
+    prefix_rule: list[str] | None = None,
+) -> tuple[dict[str, object] | None, bool]:
+    """Return ``(block, elevated)`` for a canonical multi-path patch."""
 
     from opensquilla.sandbox.sensitive_paths import build_block_envelope, sensitive_path_marker
     from opensquilla.tools.builtin import filesystem
@@ -398,33 +404,57 @@ def _gate_patch_ops(
 
     elevated_full = full_host_access_active()
     workspace = filesystem._workspace_root()
+    boundary_targets: list[tuple[Path, PatchOp]] = []
+
+    if sandbox_permissions not in {"use_default", "require_escalated"}:
+        return (
+            {
+                "status": "invalid_request",
+                "reason": "invalid_sandbox_permissions",
+            },
+            False,
+        )
 
     for op in ops:
         resolved = _validate_path(op.path, root)
         if not elevated_full:
             sensitive = sensitive_path_marker(str(resolved), workspace=workspace)
             if sensitive is not None:
-                return build_block_envelope(
-                    f"apply_patch {op.path}",
-                    sensitive,
-                    tool_name="apply_patch",
+                return (
+                    build_block_envelope(
+                        f"apply_patch {op.path}",
+                        sensitive,
+                        tool_name="apply_patch",
+                    ),
+                    False,
                 )
 
+        filesystem._gate_workspace_lockdown_write("apply_patch", resolved, op.path)
         deny_match = match_workspace_write_deny(
             resolved,
             original_path=op.path,
             workspace=workspace,
         )
         if deny_match is not None:
-            return workspace_write_deny_block("apply_patch", deny_match)
+            return workspace_write_deny_block("apply_patch", deny_match), False
 
-        path_access = filesystem._sandbox_path_access_envelope(
-            resolved,
-            write=True,
-            approval_id=approval_id,
-        )
-        if path_access is not None:
-            return path_access
+        if filesystem._memory_source_rel_path(resolved) is not None:
+            continue
+
+        if filesystem._sandbox_path_access_enabled():
+            from opensquilla.sandbox.path_validation import decide_path_access
+
+            decision = decide_path_access(
+                resolved,
+                workspace=workspace,
+                mounts=filesystem._active_sandbox_mounts(),
+                write=True,
+            )
+            if decision.status == "blocked":
+                return filesystem._path_access_blocked_envelope(decision), False
+            if decision.status == "request":
+                boundary_targets.append((resolved, op))
+            continue
 
         if filesystem._is_outside_workspace(resolved):
             if filesystem._memory_source_rel_path(resolved) is not None:
@@ -433,13 +463,68 @@ def _gate_patch_ops(
                 continue
             if elevated_full:
                 continue
-            return filesystem._outside_workspace_write_block(
-                "apply_patch",
-                resolved,
-                op.path,
+            return (
+                filesystem._outside_workspace_write_block(
+                    "apply_patch",
+                    resolved,
+                    op.path,
+                ),
+                False,
             )
 
-    return None
+    if not boundary_targets:
+        return None, False
+    if sandbox_permissions == "use_default":
+        return (
+            {
+                "status": "elevation_required",
+                "reason": "outside_writable_roots",
+                "paths": [str(path) for path, _op in boundary_targets],
+                "message": (
+                    "This patch writes outside the sandbox's writable roots. Retry "
+                    "the exact patch only if the user's request warrants it, using "
+                    "sandbox_permissions=require_escalated and a precise justification."
+                ),
+            },
+            False,
+        )
+    if not justification.strip():
+        return (
+            {
+                "status": "elevation_required",
+                "reason": "justification_required",
+                "message": "A precise justification is required for elevated execution.",
+            },
+            False,
+        )
+
+    target_paths: list[tuple[str, str]] = []
+    argv: list[str] = ["apply_patch"]
+    for op in ops:
+        resolved = _validate_path(op.path, root)
+        access = "delete" if isinstance(op, DeleteFile) else "write"
+        target_paths.append((str(resolved), access))
+        argv.append(f"{type(op).__name__}:{resolved}")
+    action = ElevationAction(
+        tool_name="apply_patch",
+        action_kind="patch.apply",
+        argv=tuple(argv),
+        cwd=str(root),
+        sandbox_permissions="require_escalated",
+        justification=justification,
+        target_paths=tuple(target_paths),
+        content_digest=patch_digest,
+        prefix_rule=tuple(prefix_rule) if prefix_rule is not None else None,
+    )
+    ctx = current_tool_context.get()
+    gate = gate_elevated_action(
+        action,
+        approval_id=approval_id,
+        session_key=ctx.session_key if ctx is not None else None,
+    )
+    if not gate.allowed:
+        return gate.to_envelope(), False
+    return None, True
 
 
 # ---------------------------------------------------------------------------
@@ -767,6 +852,20 @@ def _apply_ops(
                 "Use this only when patch text was already written to a scratch file."
             ),
         },
+        "sandbox_permissions": {
+            "type": "string",
+            "enum": ["use_default", "require_escalated"],
+            "description": "Use require_escalated only for an exact out-of-root patch.",
+        },
+        "justification": {
+            "type": "string",
+            "description": "Short user-facing reason for the exact elevated patch.",
+        },
+        "prefix_rule": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": "Optional narrow prefix suggestion; never persisted by auto review.",
+        },
         "approval_id": {
             "type": "string",
             "description": "Sandbox path approval record for patch writes outside the workspace.",
@@ -781,6 +880,7 @@ def _apply_ops(
             "path" if a.get("path") else "inline",
         ),
         request_factory=_patch_request,
+        enforce=False,
         record_payload=False,
     ),
 )
@@ -788,6 +888,9 @@ async def apply_patch(
     patch: str | None = None,
     approval_id: str | None = None,
     path: str | None = None,
+    sandbox_permissions: str = "use_default",
+    justification: str = "",
+    prefix_rule: list[str] | None = None,
 ) -> str:
     loop = asyncio.get_event_loop()
     root = _default_patch_root()
@@ -800,7 +903,15 @@ async def apply_patch(
             "directory and pass its `path`."
         )
     ops = _parse_patch(patch)
-    blocked = _gate_patch_ops(ops, root, approval_id)
+    blocked, elevated = _gate_patch_ops(
+        ops,
+        root,
+        approval_id,
+        patch_digest=hashlib.sha256(patch.encode("utf-8")).hexdigest(),
+        sandbox_permissions=sandbox_permissions,
+        justification=justification,
+        prefix_rule=prefix_rule,
+    )
     if blocked is not None:
         return json.dumps(blocked, ensure_ascii=False)
     from opensquilla.tools.builtin import filesystem
@@ -814,7 +925,8 @@ async def apply_patch(
             root=root,
             paths=paths,
             patch=patch,
-        )
+        ),
+        host_execution_active=elevated,
     )
     if sandbox_result is not None:
         _record_workspace_file_writes(ops, root)

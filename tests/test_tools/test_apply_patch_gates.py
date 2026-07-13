@@ -22,7 +22,9 @@ from opensquilla.tools.types import (
 
 
 def _original_async(fn: Callable[..., Awaitable[str]]) -> Callable[..., Awaitable[str]]:
-    return fn.__wrapped__.__wrapped__  # type: ignore[attr-defined, no-any-return]
+    while hasattr(fn, "__wrapped__"):
+        fn = fn.__wrapped__  # type: ignore[attr-defined]
+    return fn
 
 
 @pytest.fixture(autouse=True)
@@ -55,6 +57,19 @@ def test_apply_patch_schema_exposes_optional_approval_id() -> None:
     assert registered is not None
     assert "approval_id" in registered.spec.parameters
     assert "approval_id" not in registered.spec.required
+
+
+def test_apply_patch_schema_exposes_structured_elevation_fields() -> None:
+    registered = get_default_registry().get("apply_patch")
+
+    assert registered is not None
+    params = registered.spec.parameters
+    assert params["sandbox_permissions"]["enum"] == [
+        "use_default",
+        "require_escalated",
+    ]
+    assert "justification" in params
+    assert "prefix_rule" in params
 
 
 def test_apply_patch_schema_exposes_optional_patch_file_path() -> None:

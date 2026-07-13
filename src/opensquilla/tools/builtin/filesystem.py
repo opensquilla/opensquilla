@@ -6,21 +6,23 @@ import asyncio
 import contextvars
 import csv
 import fnmatch
+import hashlib
 import json
 import os
 import posixpath
 import re
+import sys
 import zipfile
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 from xml.etree import ElementTree as ET
 
+from opensquilla.sandbox.elevation import ElevationAction, gate_elevated_action
 from opensquilla.sandbox.escalation import (
     build_path_approval_params,
     current_tool_mounts,
     current_tool_run_context,
-    grant_temporary_mount_for_current_tool,
     request_sandbox_approval,
 )
 from opensquilla.sandbox.integration import get_runtime
@@ -40,7 +42,6 @@ from opensquilla.tools.registry import tool
 from opensquilla.tools.run_mode import (
     current_run_mode,
     full_host_access_active,
-    trusted_sandbox_active,
 )
 from opensquilla.tools.source_edit_contract import (
     SourceEditContractError,
@@ -568,7 +569,16 @@ def _sandbox_path_access_enabled() -> bool:
 
 
 def _active_sandbox_mounts() -> list[dict[str, object]]:
-    return current_tool_mounts()
+    mounts = current_tool_mounts()
+    runtime = get_runtime()
+    settings = getattr(runtime, "settings", None) if runtime is not None else None
+    if (
+        sys.platform.startswith("linux")
+        and bool(getattr(settings, "host_root_readonly", False))
+        and not any(str(item.get("path") or "") == "/" for item in mounts)
+    ):
+        mounts.insert(0, {"path": "/", "access": "ro"})
+    return mounts
 
 
 def _path_access_required_envelope(
@@ -646,9 +656,18 @@ def _sandbox_path_access_envelope(
         return None
     if decision.status == "blocked":
         return _path_access_blocked_envelope(decision)
-    if trusted_sandbox_active():
-        if grant_temporary_mount_for_current_tool(decision):
-            return None
+    if write:
+        return {
+            "status": "elevation_required",
+            "reason": decision.reason,
+            "path": decision.normalized_path,
+            "access": "rw",
+            "message": (
+                "This write is outside the sandbox's writable roots. Retry only if "
+                "the user's request warrants it, using sandbox_permissions="
+                "require_escalated and a precise justification."
+            ),
+        }
     return _path_access_required_envelope(decision, approval_id=approval_id)
 
 
@@ -685,10 +704,12 @@ def _active_filesystem_run_mode() -> str:
 
 async def _run_sandbox_operation_if_required(
     operation: SandboxOperation,
+    *,
+    host_execution_active: bool = False,
 ) -> object | None:
     return await SandboxOperationRuntime(
         get_runtime(),
-        host_execution_active=full_host_access_active(),
+        host_execution_active=full_host_access_active() or host_execution_active,
     ).run(operation)
 
 
@@ -992,15 +1013,13 @@ async def _gate_out_of_workspace_write(
     resolved: Path,
     original_path: str,
     approval_id: str | None,
-) -> dict | None:
-    """Return an approval-required/denied/blocked dict, or None to proceed.
-
-    Writes that stay inside the workspace pass through immediately. Writes
-    outside the current sandbox view are routed through the sandbox path grant
-    flow when the sandbox runtime is active. Without that unified path approval
-    path, outside-workspace writes fail closed instead of falling back to a
-    tool-local exec approval.
-    """
+    *,
+    sandbox_permissions: str = "use_default",
+    justification: str = "",
+    content_digest: str | None = None,
+    prefix_rule: list[str] | None = None,
+) -> tuple[dict[str, object] | None, bool]:
+    """Return ``(block, elevated)`` after hard policy and exact-action gating."""
     # Sensitive-path hard block — takes precedence over approval flow.
     from opensquilla.sandbox.sensitive_paths import build_block_envelope, sensitive_path_marker
 
@@ -1008,16 +1027,12 @@ async def _gate_out_of_workspace_write(
     if not elevated_full:
         sensitive = sensitive_path_marker(str(resolved), workspace=_workspace_root())
         if sensitive is not None:
-            return build_block_envelope(
-                f"{tool_name} {original_path}", sensitive, tool_name=tool_name
+            return (
+                build_block_envelope(
+                    f"{tool_name} {original_path}", sensitive, tool_name=tool_name
+                ),
+                False,
             )
-    path_access = _sandbox_path_access_envelope(
-        resolved,
-        write=True,
-        approval_id=approval_id,
-    )
-    if path_access is not None:
-        return path_access
 
     _gate_workspace_lockdown_write(tool_name, resolved, original_path)
     from opensquilla.tools.write_policy import (
@@ -1038,17 +1053,89 @@ async def _gate_out_of_workspace_write(
         workspace=_workspace_root(),
     )
 
+    if sandbox_permissions not in {"use_default", "require_escalated"}:
+        return (
+            {
+                "status": "invalid_request",
+                "reason": "invalid_sandbox_permissions",
+            },
+            False,
+        )
+
+    if _sandbox_path_access_enabled():
+        decision = decide_path_access(
+            resolved,
+            workspace=_workspace_root(),
+            mounts=_active_sandbox_mounts(),
+            write=True,
+        )
+        if decision.status == "blocked":
+            return _path_access_blocked_envelope(decision), False
+        if decision.status == "request":
+            if sandbox_permissions == "use_default":
+                return (
+                    {
+                        "status": "elevation_required",
+                        "reason": decision.reason,
+                        "path": decision.normalized_path,
+                        "access": "rw",
+                        "message": (
+                            "This write is outside the sandbox's writable roots. Retry "
+                            "only if the user's request warrants it, using "
+                            "sandbox_permissions=require_escalated and a precise "
+                            "justification."
+                        ),
+                    },
+                    False,
+                )
+            if not justification.strip():
+                return (
+                    {
+                        "status": "elevation_required",
+                        "reason": "justification_required",
+                        "message": (
+                            "A precise justification is required for elevated execution."
+                        ),
+                    },
+                    False,
+                )
+            action_kinds = {
+                "write_file": "fs.write",
+                "edit_file": "fs.edit",
+                "edit_source": "fs.edit_source",
+            }
+            action = ElevationAction(
+                tool_name=tool_name,
+                action_kind=action_kinds.get(tool_name, "fs.write"),
+                argv=(tool_name, str(resolved)),
+                cwd=str(_workspace_root() or Path.cwd()),
+                sandbox_permissions="require_escalated",
+                justification=justification,
+                target_paths=((str(resolved), "write"),),
+                content_digest=content_digest,
+                prefix_rule=tuple(prefix_rule) if prefix_rule is not None else None,
+            )
+            ctx = current_tool_context.get()
+            gate = gate_elevated_action(
+                action,
+                approval_id=approval_id,
+                session_key=ctx.session_key if ctx is not None else None,
+            )
+            if not gate.allowed:
+                return gate.to_envelope(), False
+            return None, True
+
     if not _is_outside_workspace(resolved):
-        return None
+        return None, False
     if _is_inside_scratch(resolved):
-        return None
+        return None, False
     if _memory_source_rel_path(resolved) is not None:
-        return None
+        return None, False
     if _active_sandbox_mount_allows(resolved, write=True):
-        return None
+        return None, False
     if elevated_full:
-        return None
-    return _outside_workspace_write_block(tool_name, resolved, original_path)
+        return None, False
+    return _outside_workspace_write_block(tool_name, resolved, original_path), False
 
 
 @tool(
@@ -1463,6 +1550,20 @@ def _format_spreadsheet(
             "type": "string",
             "description": "Complete file content to write; not a patch fragment.",
         },
+        "sandbox_permissions": {
+            "type": "string",
+            "enum": ["use_default", "require_escalated"],
+            "description": "Use require_escalated only for an exact out-of-root write.",
+        },
+        "justification": {
+            "type": "string",
+            "description": "Short user-facing reason for the exact elevated write.",
+        },
+        "prefix_rule": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": "Optional narrow prefix suggestion; never persisted by auto review.",
+        },
         "approval_id": {
             "type": "string",
             "description": "Sandbox path approval record for writes outside the workspace.",
@@ -1473,12 +1574,29 @@ def _format_spreadsheet(
         kind="fs.write",
         argv_factory=lambda a: ("fs.write", str(a.get("path", ""))),
         request_factory=_tool_path_request,
+        enforce=False,
         record_payload=False,
     ),
 )
-async def write_file(path: str, content: str, approval_id: str | None = None) -> str:
+async def write_file(
+    path: str,
+    content: str,
+    approval_id: str | None = None,
+    sandbox_permissions: str = "use_default",
+    justification: str = "",
+    prefix_rule: list[str] | None = None,
+) -> str:
     p = _resolve_path(path)
-    approval = await _gate_out_of_workspace_write("write_file", p, path, approval_id)
+    approval, elevated = await _gate_out_of_workspace_write(
+        "write_file",
+        p,
+        path,
+        approval_id,
+        sandbox_permissions=sandbox_permissions,
+        justification=justification,
+        content_digest=hashlib.sha256(content.encode("utf-8")).hexdigest(),
+        prefix_rule=prefix_rule,
+    )
     if approval is not None:
         return json.dumps(approval)
 
@@ -1498,7 +1616,8 @@ async def write_file(path: str, content: str, approval_id: str | None = None) ->
                 path=p,
                 paths=(p,),
                 content=content,
-            )
+            ),
+            host_execution_active=elevated,
         )
         if sandbox_result is not None:
             created = bool(getattr(sandbox_result, "created", created))
@@ -1848,6 +1967,20 @@ def _edit_file_retry_guidance(*, duplicate_match: bool = False) -> str:
                 },
             },
         },
+        "sandbox_permissions": {
+            "type": "string",
+            "enum": ["use_default", "require_escalated"],
+            "description": "Use require_escalated only for an exact out-of-root edit.",
+        },
+        "justification": {
+            "type": "string",
+            "description": "Short user-facing reason for the exact elevated edit.",
+        },
+        "prefix_rule": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": "Optional narrow prefix suggestion; never persisted by auto review.",
+        },
         "approval_id": {
             "type": "string",
             "description": "Sandbox path approval record for edits outside the workspace.",
@@ -1858,6 +1991,7 @@ def _edit_file_retry_guidance(*, duplicate_match: bool = False) -> str:
         kind="fs.edit",
         argv_factory=lambda a: ("fs.edit", str(a.get("path", ""))),
         request_factory=_tool_path_request,
+        enforce=False,
         record_payload=False,
     ),
 )
@@ -1867,17 +2001,40 @@ async def edit_file(
     new_text: str | None = None,
     approval_id: str | None = None,
     edits: list[dict[str, Any]] | str | None = None,
+    sandbox_permissions: str = "use_default",
+    justification: str = "",
+    prefix_rule: list[str] | None = None,
 ) -> str:
     p = _resolve_path(path)
-    approval = await _gate_out_of_workspace_write("edit_file", p, path, approval_id)
-    if approval is not None:
-        return json.dumps(approval)
     replacements = _normalize_edit_replacements(
         path=path,
         old_text=old_text,
         new_text=new_text,
         edits=edits,
     )
+    edit_digest = hashlib.sha256(
+        json.dumps(
+            [
+                {"old_text": item.old_text, "new_text": item.new_text}
+                for item in replacements
+            ],
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+    approval, elevated = await _gate_out_of_workspace_write(
+        "edit_file",
+        p,
+        path,
+        approval_id,
+        sandbox_permissions=sandbox_permissions,
+        justification=justification,
+        content_digest=edit_digest,
+        prefix_rule=prefix_rule,
+    )
+    if approval is not None:
+        return json.dumps(approval)
     require_fresh_workspace_file_read(p, tool_name="edit_file", original_path=path)
     workspace = _filesystem_operation_workspace()
     if workspace is not None:
@@ -1893,7 +2050,8 @@ async def edit_file(
                     paths=(p,),
                     old_text=sandbox_replacement.old_text,
                     new_text=sandbox_replacement.new_text,
-                )
+                ),
+                host_execution_active=elevated,
             )
             if sandbox_result is not None:
                 after_fingerprint = fingerprint_path(p)
@@ -1912,7 +2070,7 @@ async def edit_file(
                 _notify_memory_source_write(p)
                 _notify_bootstrap_source_write(p)
                 return str(getattr(sandbox_result, "message"))
-        elif _sandbox_path_access_enabled():
+        elif _sandbox_path_access_enabled() and not elevated:
             raise RetryableToolInputError(
                 "edit_file accepts only one replacement per call when edits are "
                 "dispatched through the sandbox runtime. Retry with a single "
@@ -1998,6 +2156,20 @@ async def edit_file(
                 "additionalProperties": False,
             },
         },
+        "sandbox_permissions": {
+            "type": "string",
+            "enum": ["use_default", "require_escalated"],
+            "description": "Use require_escalated only for an exact out-of-root edit.",
+        },
+        "justification": {
+            "type": "string",
+            "description": "Short user-facing reason for the exact elevated edit.",
+        },
+        "prefix_rule": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": "Optional narrow prefix suggestion; never persisted by auto review.",
+        },
         "approval_id": {
             "type": "string",
             "description": "Approval record to consume for edits outside the workspace.",
@@ -2009,6 +2181,7 @@ async def edit_file(
         kind="fs.edit",
         argv_factory=lambda a: ("fs.edit", str(a.get("path", ""))),
         request_factory=_tool_path_request,
+        enforce=False,
         record_payload=False,
     ),
 )
@@ -2017,9 +2190,29 @@ async def edit_source(
     expected_revision: str,
     edits: list[dict[str, Any]],
     approval_id: str | None = None,
+    sandbox_permissions: str = "use_default",
+    justification: str = "",
+    prefix_rule: list[str] | None = None,
 ) -> str:
     p = _resolve_path(path)
-    approval = await _gate_out_of_workspace_write("edit_source", p, path, approval_id)
+    edit_digest = hashlib.sha256(
+        json.dumps(
+            {"expected_revision": expected_revision, "edits": edits},
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+    approval, _elevated = await _gate_out_of_workspace_write(
+        "edit_source",
+        p,
+        path,
+        approval_id,
+        sandbox_permissions=sandbox_permissions,
+        justification=justification,
+        content_digest=edit_digest,
+        prefix_rule=prefix_rule,
+    )
     if approval is not None:
         return json.dumps(approval)
     if not p.exists():

@@ -270,7 +270,7 @@ async def test_workspace_inside_sensitive_parent_allows_normal_files(
     target.write_text("hello\n", encoding="utf-8")
 
     with tool_context(workspace):
-        write_gate = await fs._gate_out_of_workspace_write(
+        write_gate, elevated = await fs._gate_out_of_workspace_write(
             "write_file",
             target.resolve(),
             "notes/plan.md",
@@ -282,6 +282,7 @@ async def test_workspace_inside_sensitive_parent_allows_normal_files(
         grepped = await fs.grep_search("hello", path="notes")
 
     assert write_gate is None
+    assert elevated is False
     assert "1\thello" in read_result
     assert "plan.md" in listed
     assert "plan.md" in globbed
@@ -303,7 +304,7 @@ async def test_workspace_inside_sensitive_parent_keeps_leaf_secret_blocks(
     )
 
     with tool_context(workspace):
-        payload = await fs._gate_out_of_workspace_write(
+        payload, elevated = await fs._gate_out_of_workspace_write(
             "write_file",
             (workspace / ".env").resolve(),
             ".env",
@@ -311,6 +312,7 @@ async def test_workspace_inside_sensitive_parent_keeps_leaf_secret_blocks(
         )
 
     assert payload is not None
+    assert elevated is False
     assert payload["status"] == "blocked"
     assert payload["reason"] == "sensitive_path"
     assert not (workspace / ".env").exists()

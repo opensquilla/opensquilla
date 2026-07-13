@@ -4,6 +4,7 @@ import asyncio
 import inspect
 import json
 import time
+import traceback
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -503,13 +504,105 @@ async def test_knowledge_search_rejects_malicious_backend_error_details() -> Non
 
 
 @pytest.mark.asyncio
-async def test_knowledge_search_dispatch_sanitizes_backend_error_and_logs() -> None:
+async def test_knowledge_search_rejects_unhashable_backend_error_code() -> None:
+    malicious_code: Any = ["SECRET_list_code_token=ghi789"]
+
     class FailingRuntime(_RecordingRuntime):
         async def call_with_capability_retry(self, operation: Any) -> dict[str, Any]:
             raise KnowledgeBackendError(
                 status_code=502,
-                code="SECRET_code_token=abc123",
-                message="SECRET response body bearer=def456",
+                code=malicious_code,
+                message="SECRET unhashable response bearer=jkl012",
+            )
+
+    registry = ToolRegistry()
+    create_knowledge_tools(
+        runtime=FailingRuntime(_RecordingSearchBackend()),
+        registry=registry,
+    )
+    search_tool = registry.get("knowledge_search")
+    assert search_tool is not None
+
+    with pytest.raises(ToolError) as raised:
+        await _call_with_snapshot(
+            search_tool.handler,
+            _snapshot(KnowledgeConnectionState.READY),
+            query="revenue",
+        )
+
+    error = raised.value
+    assert str(error) == "knowledge_search_failed (backend_code=knowledge_error)"
+    assert error.__cause__ is None
+    assert error.__context__ is None
+    rendered = " ".join((str(error), repr(error), repr(error.__context__)))
+    assert "SECRET" not in rendered
+    assert "ghi789" not in rendered
+    assert "jkl012" not in rendered
+
+
+@pytest.mark.asyncio
+async def test_knowledge_search_does_not_touch_non_string_backend_error_code() -> None:
+    touched: list[str] = []
+
+    class HostileCode:
+        def __hash__(self) -> int:
+            touched.append("hash")
+            raise AssertionError("SECRET hash side effect")
+
+        def __eq__(self, other: object) -> bool:
+            touched.append("eq")
+            raise AssertionError("SECRET equality side effect")
+
+        def __str__(self) -> str:
+            touched.append("str")
+            raise AssertionError("SECRET string side effect")
+
+        def __repr__(self) -> str:
+            touched.append("repr")
+            raise AssertionError("SECRET repr side effect")
+
+    hostile_code: Any = HostileCode()
+
+    class FailingRuntime(_RecordingRuntime):
+        async def call_with_capability_retry(self, operation: Any) -> dict[str, Any]:
+            raise KnowledgeBackendError(
+                status_code=502,
+                code=hostile_code,
+                message="SECRET hostile response token=mno345",
+            )
+
+    registry = ToolRegistry()
+    create_knowledge_tools(
+        runtime=FailingRuntime(_RecordingSearchBackend()),
+        registry=registry,
+    )
+    search_tool = registry.get("knowledge_search")
+    assert search_tool is not None
+
+    with pytest.raises(ToolError) as raised:
+        await _call_with_snapshot(
+            search_tool.handler,
+            _snapshot(KnowledgeConnectionState.READY),
+            query="revenue",
+        )
+
+    error = raised.value
+    assert str(error) == "knowledge_search_failed (backend_code=knowledge_error)"
+    assert error.__cause__ is None
+    assert error.__context__ is None
+    assert touched == []
+
+
+@pytest.mark.asyncio
+async def test_knowledge_search_dispatch_sanitizes_unhashable_code_and_logs() -> None:
+    malicious_code: Any = ["SECRET_dispatch_code_token=pqr678"]
+
+    class FailingRuntime(_RecordingRuntime):
+        async def call_with_capability_retry(self, operation: Any) -> dict[str, Any]:
+            raise KnowledgeBackendError(
+                status_code=502,
+                code=malicious_code,
+                message="SECRET dispatch response bearer=stu901",
             )
 
     registry = ToolRegistry()
@@ -543,13 +636,24 @@ async def test_knowledge_search_dispatch_sanitizes_backend_error_and_logs() -> N
     failed_log = next(
         event for event in captured if event["event"] == "dispatch.tool_failed"
     )
-    rendered = " ".join((result.content, repr(failed_log), repr(captured)))
+    logged_exception = failed_log["exc_info"]
+    rendered = " ".join(
+        (
+            result.content,
+            repr(failed_log),
+            repr(captured),
+            repr(logged_exception.__context__),
+            "".join(traceback.format_exception(logged_exception)),
+        )
+    )
     assert "knowledge_error" in rendered
-    assert "SECRET_code_token=abc123" not in rendered
-    assert "SECRET response body bearer=def456" not in rendered
+    assert logged_exception.__cause__ is None
+    assert logged_exception.__context__ is None
+    assert "SECRET_dispatch_code_token=pqr678" not in rendered
+    assert "SECRET dispatch response bearer=stu901" not in rendered
     assert "SECRET" not in rendered
-    assert "abc123" not in rendered
-    assert "def456" not in rendered
+    assert "pqr678" not in rendered
+    assert "stu901" not in rendered
 
 
 @pytest.mark.asyncio

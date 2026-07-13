@@ -210,9 +210,10 @@ def create_knowledge_tools(
             else:
                 payload = await asyncio.to_thread(search, current_manager())
         except KnowledgeBackendError as error:
+            raw_code = error.code
             backend_code = (
-                error.code
-                if error.code in _SAFE_KNOWLEDGE_ERROR_CODES
+                raw_code
+                if type(raw_code) is str and raw_code in _SAFE_KNOWLEDGE_ERROR_CODES
                 else "knowledge_error"
             )
             sanitized_error = ToolError(

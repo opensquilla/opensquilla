@@ -2,6 +2,7 @@
 
 | Version | Tag | Date | Notes |
 |---|---|---|---|
+| 0.5.0rc4 | v0.5.0rc4 | 2026-07-13 | Preview: supported opt-in macOS TUI, shared Gateway sessions, paired companion distribution, safe profile recovery and explicit whole-profile imports |
 | 0.5.0rc3 | v0.5.0rc3 | 2026-07-10 | Preview: legacy-home migration, provider and routing expansion, desktop/Web UI improvements, runtime hardening, and container images |
 | 0.5.0rc2 | v0.5.0rc2 | 2026-07-06 | Preview: provider/router recovery, Web UI upload refresh, desktop/session fixes, and CI contract repair |
 | 0.5.0rc1 | v0.5.0rc1 | 2026-07-04 | Preview: Model Ensemble routing, Control UI, managed execution, OpenTUI, and portable retirement |
@@ -40,6 +41,38 @@ first. The RC3 uninstaller may remove `%APPDATA%\OpenSquilla`; release guidance
 must tell users to back up that directory. RC4 and later NSIS packages set
 `deleteAppDataOnUninstall=false`.
 
+The Mac-first TUI release extends that set with
+`opensquilla_tui_host-<version>-py3-none-macosx_11_0_arm64.whl` and
+`opensquilla_tui_host-<version>-py3-none-macosx_11_0_x86_64.whl`. These
+companion wheels contain a Developer ID-signed, Apple-notarized host executable.
+They are built on native arm64 and x86_64 macOS runners, must match the core
+wheel version exactly, and are included in the aggregate `SHA256SUMS`. Missing
+Developer ID or notarization credentials are a release failure; an ad-hoc local
+signature is not accepted for these published assets. Because a bare executable
+inside a wheel cannot carry a stapled ticket, release CI also applies quarantine
+and requires Gatekeeper to resolve and accept the online notarization ticket.
+Both macOS architectures must also pass the deterministic real-terminal suite
+from a clean core-plus-companion wheel install with Bun and source overrides
+absent. Missing tmux capability, broken alternate-screen restoration, or an
+unusable returned shell blocks the release and preserves terminal evidence for
+diagnosis. The matrix must include one non-fake-app Gateway flow using the
+installed `opensquilla chat --ui tui --session` command. That flow must prove
+canonical attachment/history hydration, Web-to-TUI turn projection, approval
+resolution convergence, queued-turn cancellation, and terminal restoration.
+Its Gateway log, RPC/event snapshots, provider lifecycle log, frames,
+scrollback, and dynamic core/companion/host version provenance are release
+evidence; a capability miss may not silently skip this flow.
+
+The first macOS TUI RC is a supported opt-in: the installer includes the
+companion, `opensquilla chat --ui tui` is supported, and bare
+`opensquilla chat` remains on `plain`. Record the RC publication time and
+blocking TUI issues in the release PR. Do not change the omitted UI policy to
+`auto` or delete legacy aliases until at least seven calendar days have elapsed,
+both architecture gates are green, and no unresolved P0/P1 data, approval,
+input, or terminal-restoration issue remains. The default switch and alias
+deletion require a separate reviewed rollout PR. A release rollback must keep
+the core and companion on the same version.
+
 Container tags follow a separate policy: each release publishes
 `ghcr.io/opensquilla/opensquilla:<git-tag>`, and Docker `:latest`
 tracks the most recently pushed release tag, including previews and backports.
@@ -74,9 +107,11 @@ release, download, or update checks may still contact GitHub after user intent.
 
 Preview README install commands must use tag-pinned URLs such as:
 
-- `https://github.com/opensquilla/opensquilla/releases/download/v0.5.0rc3/OpenSquilla-0.5.0-rc3-mac-arm64.dmg`
-- `https://github.com/opensquilla/opensquilla/releases/download/v0.5.0rc3/OpenSquilla-0.5.0-rc3-win-x64.exe`
-- `https://github.com/opensquilla/opensquilla/releases/download/v0.5.0rc3/opensquilla-0.5.0rc3-py3-none-any.whl`
+- `https://github.com/opensquilla/opensquilla/releases/download/v0.5.0rc4/OpenSquilla-0.5.0-rc4-mac-arm64.dmg`
+- `https://github.com/opensquilla/opensquilla/releases/download/v0.5.0rc4/OpenSquilla-0.5.0-rc4-win-x64.exe`
+- `https://github.com/opensquilla/opensquilla/releases/download/v0.5.0rc4/opensquilla-0.5.0rc4-py3-none-any.whl`
+- `https://github.com/opensquilla/opensquilla/releases/download/v0.5.0rc4/opensquilla_tui_host-0.5.0rc4-py3-none-macosx_11_0_arm64.whl`
+- `https://github.com/opensquilla/opensquilla/releases/download/v0.5.0rc4/opensquilla_tui_host-0.5.0rc4-py3-none-macosx_11_0_x86_64.whl`
 
 ## Release SOP
 
@@ -101,29 +136,32 @@ Preview README install commands must use tag-pinned URLs such as:
    more time, then create the annotated tag on that exact SHA:
 
    ```sh
-   git tag -a v0.5.0rc3 <verified-sha> -m "OpenSquilla 0.5.0 Preview 3"
-   git push origin v0.5.0rc3
+   git tag -a v0.5.0rc4 <verified-sha> -m "OpenSquilla 0.5.0 Preview 4"
+   git push origin v0.5.0rc4
    ```
 
 8. Wait for both `.github/workflows/wheelhouse-release.yml` and
    `.github/workflows/docker-image.yml`. Review the draft GitHub Release. For
-   `v0.5.0rc3`, confirm it is a pre-release, is not marked
+   `v0.5.0rc4`, confirm it is a pre-release, is not marked
    Latest, and contains only the Electron installers, updater metadata,
-   versioned wheel, `SHA256SUMS`, plus GitHub's generated source archives. It
+   versioned core and macOS TUI host wheels, `SHA256SUMS`, plus GitHub's
+   generated source archives. It
    must not contain `OpenSquilla-*-portable.zip` or
    `OpenSquilla-windows-x64-portable.zip`.
 9. Verify GHCR before publishing broadly. For the first container release, make
    the newly created `ghcr.io/opensquilla/opensquilla` package public, then
-   confirm both `v0.5.0rc3` and `latest` resolve to an amd64/arm64 manifest and
+   confirm both `v0.5.0rc4` and `latest` resolve to an amd64/arm64 manifest and
    pass a gateway health smoke test.
 10. Publish the GitHub Release only after maintainer confirmation, then run the
    post-publish tag URL checks:
 
    ```sh
-   curl --fail --head --location https://github.com/opensquilla/opensquilla/releases/download/v0.5.0rc3/OpenSquilla-0.5.0-rc3-mac-arm64.dmg
-   curl --fail --head --location https://github.com/opensquilla/opensquilla/releases/download/v0.5.0rc3/OpenSquilla-0.5.0-rc3-win-x64.exe
-   curl --fail --head --location https://github.com/opensquilla/opensquilla/releases/download/v0.5.0rc3/opensquilla-0.5.0rc3-py3-none-any.whl
-   curl --fail --head --location https://github.com/opensquilla/opensquilla/releases/download/v0.5.0rc3/SHA256SUMS
+   curl --fail --head --location https://github.com/opensquilla/opensquilla/releases/download/v0.5.0rc4/OpenSquilla-0.5.0-rc4-mac-arm64.dmg
+   curl --fail --head --location https://github.com/opensquilla/opensquilla/releases/download/v0.5.0rc4/OpenSquilla-0.5.0-rc4-win-x64.exe
+   curl --fail --head --location https://github.com/opensquilla/opensquilla/releases/download/v0.5.0rc4/opensquilla-0.5.0rc4-py3-none-any.whl
+   curl --fail --head --location https://github.com/opensquilla/opensquilla/releases/download/v0.5.0rc4/opensquilla_tui_host-0.5.0rc4-py3-none-macosx_11_0_arm64.whl
+   curl --fail --head --location https://github.com/opensquilla/opensquilla/releases/download/v0.5.0rc4/opensquilla_tui_host-0.5.0rc4-py3-none-macosx_11_0_x86_64.whl
+   curl --fail --head --location https://github.com/opensquilla/opensquilla/releases/download/v0.5.0rc4/SHA256SUMS
    ```
 
 11. If a release tag is wrong before publication, stop and report its peeled
@@ -131,8 +169,8 @@ Preview README install commands must use tag-pinned URLs such as:
     Move it only through the protected-tag repair procedure, restore protection,
     and verify both workflows and the remote peeled tag before continuing.
 12. For subsequent previews: bump the package version, docs, workflow
-    contracts, and tag to the next preview version, for example `0.5.0rc4` /
-    `v0.5.0rc4`. Preview GitHub Releases must remain pre-releases and use
+    contracts, and tag to the next preview version, for example `0.5.0rc5` /
+    `v0.5.0rc5`. Preview GitHub Releases must remain pre-releases and use
     tag-pinned README URLs until a later stable release is intentionally
     promoted.
 
@@ -142,13 +180,14 @@ These checks cannot be fully proven by local artifact generation:
 
 - The tag exists on GitHub and matches `pyproject.toml`.
 - The release workflow can fetch hydrated Git LFS router assets.
-- The draft GitHub Release title is `OpenSquilla 0.5.0 Preview 3`.
+- The draft GitHub Release title is `OpenSquilla 0.5.0 Preview 4`.
 - The draft GitHub Release is marked Pre-release and is not marked Latest.
 - Preview GitHub Releases contain the Electron installers, updater metadata,
-  versioned wheel, and `SHA256SUMS` after `gh release upload --clobber`.
+  versioned core and macOS TUI host wheels, and `SHA256SUMS` after
+  `gh release upload --clobber`.
 - Preview GitHub Releases do not contain Windows portable zips or portable
   latest aliases.
-- The GHCR package is public, and `v0.5.0rc3` plus `latest` expose both amd64
+- The GHCR package is public, and `v0.5.0rc4` plus `latest` expose both amd64
   and arm64 images that pass the gateway health smoke test.
 - After a preview GitHub Release is published, the tag-pinned release asset URLs
   resolve.
@@ -160,5 +199,5 @@ These checks cannot be fully proven by local artifact generation:
 
 Release assets are distributed as built artifacts, so the package filename,
 installer name, wheel name, and tag should describe the same preview build.
-PEP 440 accepts `0.5.0rc3`, while the public GitHub Release title can use the
-friendlier name "OpenSquilla 0.5.0 Preview 3".
+PEP 440 accepts `0.5.0rc4`, while the public GitHub Release title can use the
+friendlier name "OpenSquilla 0.5.0 Preview 4".

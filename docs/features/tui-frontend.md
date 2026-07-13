@@ -1,16 +1,16 @@
 # TUI Frontend
 
-OpenSquilla terminal chat has one stable default backend and one opt-in preview
-backend:
+OpenSquilla terminal chat exposes one public UI policy over two renderers:
 
 | Backend or target | Status | How to use | Requirements |
 | --- | --- | --- | --- |
-| `native` | Stable default | `opensquilla chat` | Python package only |
-| `opentui` | Preview opt-in | `OPENSQUILLA_TUI_BACKEND=opentui uv run opensquilla chat` | Source checkout, Bun, and local OpenTUI package dependencies |
+| `auto` | Final rollout policy / RC opt-in | `opensquilla chat --ui auto` | Packaged host preferred; startup-only plain fallback |
+| `tui` | Supported RC full-screen TUI | `opensquilla chat --ui tui` | Same-version platform companion |
+| `plain` | RC default and minimal rescue surface | `opensquilla chat` or `--ui plain` | Python package only |
 | `live-opentui` | Manual harness target | Real-terminal harness only | tmux, OpenTUI deps, and live provider config |
 
 `live-opentui` is not an `OPENSQUILLA_TUI_BACKEND` value. It is a guarded test
-target that launches the OpenTUI preview path through the real CLI.
+target that launches the OpenTUI path through the real CLI.
 
 The TUI contracts are renderer-independent and built around two separate planes:
 
@@ -19,9 +19,9 @@ The TUI contracts are renderer-independent and built around two separate planes:
 - **Structured UI plane:** sends normalized TUI domain events to plugins. Plugin
   snapshots can be rendered by capable TUI backends and by future renderers.
 
-The stable default terminal chat is Python-native and does not require Bun,
-npm, or OpenTUI node modules. OpenTUI is a source-checkout preview backend
-selected explicitly with `OPENSQUILLA_TUI_BACKEND=opentui`.
+The core wheel remains platform-neutral. Release installers add a same-version
+`opensquilla-tui-host` companion containing a self-contained OpenTUI host; Bun,
+npm, node modules, and source files are not runtime requirements.
 
 ## Plugin Slots
 
@@ -43,7 +43,7 @@ selection behavior.
 ## Router HUD
 
 When routing metadata is available, capable TUI backends can render a Router
-HUD. In the current implementation, the OpenTUI footer is the primary preview
+HUD. In the current implementation, the OpenTUI footer is the primary terminal
 display for this HUD. The HUD is display-only: it consumes turn metadata and
 does not change model selection.
 
@@ -64,22 +64,24 @@ The HUD can show:
 `routing_applied=false` or an observe rollout is shown as observe-only. Fallback
 routes use warning styling.
 
-## Backend Selection
+## UI Selection
 
-The default backend is stable Python-native terminal chat.
+The public selector is `--ui auto|tui|plain`. `auto` may fall back only before
+alternate-screen startup. Explicit `tui` fails clearly when the host is absent
+or incompatible. A host crash after startup restores the terminal and exits;
+it does not switch renderers during a turn.
 
-The internal backend selector reads `OPENSQUILLA_TUI_BACKEND`. Unset or empty
-values select stable terminal chat. Set the variable to `opentui` only in a
-source checkout when evaluating the preview backend. Legacy values fail before
-chat launch with a clear unsupported-backend error.
+The internal `OPENSQUILLA_TUI_BACKEND` selector remains a compatibility and
+source-development override when `--ui` is omitted. New user instructions must
+use `--ui`.
 
 ```sh
 bun install --frozen-lockfile --cwd=src/opensquilla/cli/tui/opentui/package
-OPENSQUILLA_TUI_BACKEND=opentui uv run opensquilla chat
+OPENSQUILLA_TUI_DEV_SOURCE_HOST=1 uv run opensquilla chat --ui tui
 ```
 
-The preview backend is loaded from the OpenTUI package next to the running
-source tree; it is not required for normal terminal chat.
+The source backend is loaded only under an explicit developer override. Normal
+release installs resolve the companion package instead.
 
 Do not add parallel terminal/frontend implementations without fresh product
 direction and replay plus real-terminal evidence.
@@ -99,7 +101,12 @@ Summary fields include `renderer`, `fixture`, `available`, `skip_reason`,
 `visible_items`, `expanded_tools`, `projection_wall_ms`,
 `rendered_text_matches`, `plugin_error_count`, and `errors`.
 
-Use the OpenTUI results as preview backend evidence.
+Use the OpenTUI results as renderer regression evidence. Release readiness
+also requires the packaged-host, real-terminal macOS gate; source-host results
+alone are not release evidence.
 
 For terminal-level launch and rendering evidence, use the
 [real-terminal TUI harness](../tui-real-terminal-harness.md).
+
+The product ownership and legacy-freeze rules are defined in
+[`tui-product-contract.md`](tui-product-contract.md).

@@ -27,7 +27,12 @@ from opensquilla.cli.tui.backend.contracts import (
 from opensquilla.cli.tui.backend.output_binding import TuiOutputBinding
 from opensquilla.cli.tui.backend.runtime import run_tui_runtime
 from opensquilla.cli.tui.backend.state import TuiRuntimeState
-from opensquilla.cli.tui.opentui.messages import ModelText, NoticeWrite, PromptEcho
+from opensquilla.cli.tui.opentui.messages import (
+    HistoryReplace,
+    ModelText,
+    NoticeWrite,
+    PromptEcho,
+)
 from opensquilla.cli.tui.opentui.notice_capture import capture_stdout_as_notices, real_stderr
 from opensquilla.cli.tui.opentui.surface import open_opentui_surface
 from opensquilla.engine.commands import Surface
@@ -57,6 +62,16 @@ class OpenTuiChatRuntimeContext(ChatRuntimeContext):
         if isinstance(ctx_workspace, str) and ctx_workspace:
             return ctx_workspace
         return None
+
+    @property
+    def history_replace(self) -> HistoryReplace | None:
+        value = self.scope.get("history_replace")
+        return value if isinstance(value, HistoryReplace) else None
+
+    @property
+    def workspace_label(self) -> str | None:
+        value = self.scope.get("workspace_label")
+        return value if isinstance(value, str) and value else None
 
 
 def get_tui_output(scope: MutableMapping[str, Any]) -> TuiOutputHandle | None:
@@ -182,6 +197,10 @@ async def run_opentui_chat_runtime(
         }
         if context.workspace_dir is not None:
             kwargs["workspace_dir"] = context.workspace_dir
+        if context.workspace_label is not None:
+            kwargs["workspace_label"] = context.workspace_label
+        if context.history_replace is not None:
+            kwargs["history_replace"] = context.history_replace
         return open_opentui_surface(**kwargs)
 
     notice_tasks: set[asyncio.Task[None]] = set()

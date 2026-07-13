@@ -9,6 +9,12 @@ from typing import Any, Protocol
 
 OPENSQUILLA_TUI_BACKEND_ENV = "OPENSQUILLA_TUI_BACKEND"
 DEFAULT_TUI_BACKEND_ID = "native"
+# macOS supported RC rollout: install the companion for every user, but keep
+# the full-screen surface opt-in until the release gate has observed it for at
+# least seven days.  The follow-up rollout PR changes this one policy default
+# to ``auto``; ``--ui auto`` is already supported and fully exercised.
+DEFAULT_CHAT_UI_MODE = "plain"
+CHAT_UI_MODES = frozenset({"auto", "tui", "plain"})
 
 
 @dataclass(frozen=True)
@@ -23,6 +29,15 @@ class RendererBackendSelectionError(ValueError):
 
 class RendererBackendUnavailableError(RuntimeError):
     """Raised when a selected renderer backend cannot be constructed."""
+
+
+@dataclass(frozen=True)
+class ChatUiSelection:
+    """Resolved renderer for the public ``--ui`` product contract."""
+
+    requested_mode: str
+    backend: TuiRendererBackend
+    fallback_reason: str | None = None
 
 
 class TuiRendererBackend(Protocol):
@@ -63,8 +78,8 @@ def get_renderer_backend(backend_id: str) -> TuiRendererBackend:
     except KeyError as exc:
         raise RendererBackendSelectionError(
             f"Unsupported TUI backend '{backend_id}'. "
-            f"Unset {OPENSQUILLA_TUI_BACKEND_ENV} for stable chat, "
-            f"or set it to "
+            f"Use the public --ui auto|tui|plain option; maintainers using "
+            f"{OPENSQUILLA_TUI_BACKEND_ENV} may set it to "
             f"{_backend_choices(backends)}."
         ) from exc
 
@@ -88,6 +103,47 @@ def select_renderer_backend_from_env(
 ) -> TuiRendererBackend:
     source = os.environ if env is None else env
     return select_renderer_backend(source.get(OPENSQUILLA_TUI_BACKEND_ENV))
+
+
+def select_chat_ui_backend(
+    ui_mode: str | None,
+    *,
+    env: Mapping[str, str] | None = None,
+) -> ChatUiSelection:
+    """Resolve ``auto|tui|plain`` without changing runtime ownership.
+
+    The legacy backend environment variable remains a strict developer
+    override only when the public CLI option was omitted.  ``auto`` may fall
+    back before the full-screen host starts; explicit ``tui`` never does.
+    """
+
+    source = os.environ if env is None else env
+    legacy_backend = source.get(OPENSQUILLA_TUI_BACKEND_ENV)
+    if ui_mode is None and legacy_backend is not None:
+        backend = select_renderer_backend(legacy_backend)
+        requested = "tui" if backend.backend_id == "opentui" else "plain"
+        return ChatUiSelection(requested_mode=requested, backend=backend)
+
+    requested = DEFAULT_CHAT_UI_MODE if ui_mode is None else ui_mode.strip().lower()
+    if requested not in CHAT_UI_MODES:
+        choices = ", ".join(sorted(CHAT_UI_MODES))
+        raise RendererBackendSelectionError(
+            f"Unsupported chat UI '{ui_mode}'. Choose one of: {choices}."
+        )
+    if requested == "plain":
+        return ChatUiSelection(requested_mode=requested, backend=select_renderer_backend("native"))
+    if requested == "tui":
+        return ChatUiSelection(requested_mode=requested, backend=select_renderer_backend("opentui"))
+
+    opentui = get_renderer_backend("opentui")
+    availability = opentui.is_available()
+    if availability.available:
+        return ChatUiSelection(requested_mode=requested, backend=opentui)
+    return ChatUiSelection(
+        requested_mode=requested,
+        backend=select_renderer_backend("native"),
+        fallback_reason=availability.reason or "OpenTUI host is unavailable",
+    )
 
 
 @dataclass(frozen=True)

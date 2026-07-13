@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -191,9 +192,7 @@ def all_scenarios() -> tuple[TuiScenario, ...]:
                     timeout_s=10.0,
                 ),
             ),
-            expected_text=(
-                "架构",
-            ),
+            expected_text=("架构",),
         ),
         TuiScenario(
             scenario_id="terminal_changes",
@@ -462,9 +461,16 @@ def run_scenario(
 def _run_step(session: RealTerminalSession, step: ScenarioStep) -> TerminalFrame:
     checkpoint = step.checkpoint or step.step_id
     if step.action == "wait_text":
+        timeout_s = step.timeout_s
+        if step.step_id == "wait-ready" and os.environ.get("OPENSQUILLA_TUI_PACKAGED_GATE") == "1":
+            # A packaged child starts from a cold interpreter and imports the
+            # installed core before the host bridge itself starts. Keep the
+            # renderer's own ready timeout unchanged while avoiding a harness
+            # race on the first scenario of a fresh release runner.
+            timeout_s = max(timeout_s, 15.0)
         return session.wait_for_text(
             step.value,
-            timeout_s=step.timeout_s,
+            timeout_s=timeout_s,
             checkpoint=checkpoint,
         )
     if step.action == "wait_any_text":

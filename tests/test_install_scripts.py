@@ -1,13 +1,17 @@
+import os
 import subprocess
 import sys
 from pathlib import Path
+
+import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 RELEASE_PS1 = ROOT / "install.ps1"
 RELEASE_SH = ROOT / "install.sh"
 SOURCE_PS1 = ROOT / "scripts" / "install_source.ps1"
 SOURCE_SH = ROOT / "scripts" / "install_source.sh"
-CURRENT_RELEASE_TAG = "v0.5.0rc3"
+CURRENT_RELEASE_TAG = "v0.5.0rc4"
+CURRENT_RELEASE_VERSION = CURRENT_RELEASE_TAG.removeprefix("v")
 
 
 def test_source_install_scripts_force_refresh_local_uv_tool_package() -> None:
@@ -53,6 +57,220 @@ def test_release_installers_install_version_pinned_wheel_with_uv() -> None:
         assert "Next steps:" in script
 
 
+@pytest.mark.parametrize(
+    ("machine", "wheel_tag"),
+    [
+        ("arm64", "macosx_11_0_arm64"),
+        ("x86_64", "macosx_11_0_x86_64"),
+    ],
+)
+def test_release_sh_installs_same_version_macos_tui_companion(
+    tmp_path: Path,
+    machine: str,
+    wheel_tag: str,
+) -> None:
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    uname = fake_bin / "uname"
+    uname.write_text(
+        "#!/bin/sh\n"
+        'case "$1" in\n'
+        "  -s) echo Darwin ;;\n"
+        f"  -m) echo {machine} ;;\n"
+        "  *) exit 2 ;;\n"
+        "esac\n",
+        encoding="utf-8",
+    )
+    uname.chmod(0o755)
+    env = os.environ.copy()
+    env["PATH"] = f"{fake_bin}:{env['PATH']}"
+    env["OPENSQUILLA_INSTALL_DRY_RUN"] = "1"
+    result = subprocess.run(
+        ["bash", str(RELEASE_SH), "--version", CURRENT_RELEASE_TAG],
+        cwd=ROOT,
+        env=env,
+        capture_output=True,
+        check=False,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "--with" in result.stdout
+    assert "--reinstall-package opensquilla " in result.stdout.replace("\\ ", " ")
+    assert "--reinstall-package opensquilla-tui-host" in result.stdout.replace("\\ ", " ")
+    assert (
+        f"opensquilla_tui_host-{CURRENT_RELEASE_VERSION}-py3-none-{wheel_tag}.whl"
+    ) in result.stdout
+    assert f"opensquilla-{CURRENT_RELEASE_VERSION}-py3-none-any.whl" in result.stdout
+
+
+@pytest.mark.parametrize(
+    ("machine", "wheel_tag"),
+    [
+        ("arm64", "macosx_11_0_arm64"),
+        ("x86_64", "macosx_11_0_x86_64"),
+    ],
+)
+def test_release_sh_resolves_latest_before_pairing_macos_companion(
+    tmp_path: Path,
+    machine: str,
+    wheel_tag: str,
+) -> None:
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    uname = fake_bin / "uname"
+    uname.write_text(
+        "#!/bin/sh\n"
+        'case "$1" in\n'
+        "  -s) echo Darwin ;;\n"
+        f"  -m) echo {machine} ;;\n"
+        "  *) exit 2 ;;\n"
+        "esac\n",
+        encoding="utf-8",
+    )
+    uname.chmod(0o755)
+    curl = fake_bin / "curl"
+    curl.write_text(
+        f"#!/bin/sh\nprintf '%s\\n' '{{\"tag_name\":\"{CURRENT_RELEASE_TAG}\"}}'\n",
+        encoding="utf-8",
+    )
+    curl.chmod(0o755)
+    env = os.environ.copy()
+    env["PATH"] = f"{fake_bin}:{env['PATH']}"
+    env["OPENSQUILLA_INSTALL_DRY_RUN"] = "1"
+    result = subprocess.run(
+        ["bash", str(RELEASE_SH), "--version", "latest"],
+        cwd=ROOT,
+        env=env,
+        capture_output=True,
+        check=False,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert f"releases/download/{CURRENT_RELEASE_TAG}/" in result.stdout
+    assert (
+        f"opensquilla_tui_host-{CURRENT_RELEASE_VERSION}-py3-none-{wheel_tag}.whl"
+    ) in result.stdout
+    normalized = result.stdout.replace("\\ ", " ")
+    assert "--reinstall-package opensquilla " in normalized
+    assert "--reinstall-package opensquilla-tui-host" in normalized
+    assert (f"opensquilla-{CURRENT_RELEASE_VERSION}-py3-none-any.whl") in result.stdout
+
+
+@pytest.mark.parametrize("release_tag", ["v0.5.0rc3", "v0.5.0b9", "v0.4.1"])
+def test_release_sh_rolls_back_before_macos_companion_as_core_only(
+    tmp_path: Path,
+    release_tag: str,
+) -> None:
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    uname = fake_bin / "uname"
+    uname.write_text(
+        "#!/bin/sh\n"
+        'case "$1" in\n'
+        "  -s) echo Darwin ;;\n"
+        "  -m) echo arm64 ;;\n"
+        "  *) exit 2 ;;\n"
+        "esac\n",
+        encoding="utf-8",
+    )
+    uname.chmod(0o755)
+    env = os.environ.copy()
+    env["PATH"] = f"{fake_bin}:{env['PATH']}"
+    env["OPENSQUILLA_INSTALL_DRY_RUN"] = "1"
+    result = subprocess.run(
+        ["bash", str(RELEASE_SH), "--version", release_tag],
+        cwd=ROOT,
+        env=env,
+        capture_output=True,
+        check=False,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    normalized = result.stdout.replace("\\ ", " ")
+    assert "macOS TUI companions start at v0.5.0rc4" in result.stdout
+    assert f"{release_tag} installs core only" in result.stdout
+    assert "--with" not in result.stdout
+    assert "--reinstall-package opensquilla " in normalized
+    assert "opensquilla_tui_host" not in result.stdout
+    assert "opensquilla-tui-host" not in result.stdout
+    release_version = release_tag.removeprefix("v")
+    assert f"opensquilla-{release_version}-py3-none-any.whl" in result.stdout
+
+
+@pytest.mark.parametrize("release_tag", ["v0.5.0rc5", "v0.5.0", "v0.5.1a1", "v0.6.0a1"])
+def test_release_sh_pairs_macos_companion_after_introduction(
+    tmp_path: Path,
+    release_tag: str,
+) -> None:
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    uname = fake_bin / "uname"
+    uname.write_text(
+        "#!/bin/sh\n"
+        'case "$1" in\n'
+        "  -s) echo Darwin ;;\n"
+        "  -m) echo arm64 ;;\n"
+        "  *) exit 2 ;;\n"
+        "esac\n",
+        encoding="utf-8",
+    )
+    uname.chmod(0o755)
+    env = os.environ.copy()
+    env["PATH"] = f"{fake_bin}:{env['PATH']}"
+    env["OPENSQUILLA_INSTALL_DRY_RUN"] = "1"
+    result = subprocess.run(
+        ["bash", str(RELEASE_SH), "--version", release_tag],
+        cwd=ROOT,
+        env=env,
+        capture_output=True,
+        check=False,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    release_version = release_tag.removeprefix("v")
+    assert "--with" in result.stdout
+    assert "--reinstall-package opensquilla-tui-host" in result.stdout.replace("\\ ", " ")
+    assert f"opensquilla_tui_host-{release_version}-py3-none-macosx_11_0_arm64.whl" in result.stdout
+    assert "installs core only" not in result.stdout
+
+
+def test_release_sh_keeps_linux_core_only_until_linux_companion_exists(tmp_path: Path) -> None:
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    uname = fake_bin / "uname"
+    uname.write_text(
+        "#!/bin/sh\n"
+        'case "$1" in\n'
+        "  -s) echo Linux ;;\n"
+        "  -m) echo x86_64 ;;\n"
+        "  *) exit 2 ;;\n"
+        "esac\n",
+        encoding="utf-8",
+    )
+    uname.chmod(0o755)
+    env = os.environ.copy()
+    env["PATH"] = f"{fake_bin}:{env['PATH']}"
+    env["OPENSQUILLA_INSTALL_DRY_RUN"] = "1"
+    result = subprocess.run(
+        ["bash", str(RELEASE_SH), "--version", CURRENT_RELEASE_TAG],
+        cwd=ROOT,
+        env=env,
+        capture_output=True,
+        check=False,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "--with" not in result.stdout
+    assert "--reinstall-package opensquilla" in result.stdout.replace("\\ ", " ")
+    assert "opensquilla_tui_host" not in result.stdout
+    assert "opensquilla-tui-host" not in result.stdout
+
+
 def test_release_installer_rejects_non_release_selectors() -> None:
     ps1 = RELEASE_PS1.read_text(encoding="utf-8")
 
@@ -73,12 +291,11 @@ def test_release_installer_rejects_non_release_selectors() -> None:
 def test_windows_installer_stops_when_native_install_command_fails() -> None:
     ps1 = SOURCE_PS1.read_text(encoding="utf-8")
 
-    assert 'if ($LASTEXITCODE -ne 0) {' in ps1
+    assert "if ($LASTEXITCODE -ne 0) {" in ps1
     assert "install_source.ps1: install command failed with exit code $LASTEXITCODE." in ps1
     assert (
         "Close any running OpenSquilla gateway or shell using the existing "
-        "tool environment, then retry."
-        in ps1
+        "tool environment, then retry." in ps1
     )
     assert "exit $LASTEXITCODE" in ps1
 

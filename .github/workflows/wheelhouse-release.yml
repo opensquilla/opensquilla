@@ -167,6 +167,382 @@ jobs:
             dist/*.whl
             dist/SHA256SUMS
 
+  build-tui-host-macos:
+    name: Build signed macOS TUI host (${{ matrix.arch }})
+    needs: build-release-assets
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: arm64
+            runner: macos-15
+            wheel_tag: macosx_11_0_arm64
+          - arch: x64
+            runner: macos-15-intel
+            wheel_tag: macosx_11_0_x86_64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          ref: ${{ env.RELEASE_TAG != '' && env.RELEASE_TAG || github.ref }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Set up pinned Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: src/opensquilla/cli/tui/opentui/package/.bun-version
+
+      - name: Download matching core wheel
+        uses: actions/download-artifact@v4
+        with:
+          name: opensquilla-release-assets-python-${{ env.RELEASE_PROFILE }}
+          path: dist/core
+
+      - name: Import Developer ID certificate
+        shell: bash
+        env:
+          MAC_CSC_LINK: ${{ secrets.MAC_CSC_LINK }}
+          MAC_CSC_KEY_PASSWORD: ${{ secrets.MAC_CSC_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${MAC_CSC_LINK}" || -z "${MAC_CSC_KEY_PASSWORD}" ]]; then
+            echo "Developer ID credentials are required for macOS TUI host release artifacts." >&2
+            exit 1
+          fi
+          certificate_path="${RUNNER_TEMP}/opensquilla-tui-host-signing.p12"
+          keychain_path="${RUNNER_TEMP}/opensquilla-tui-host-signing.keychain-db"
+          keychain_password="$(openssl rand -hex 32)"
+          python - "${certificate_path}" <<'PY'
+          import base64
+          import os
+          import shutil
+          import sys
+          import urllib.request
+          from pathlib import Path
+
+          value = os.environ["MAC_CSC_LINK"]
+          destination = Path(sys.argv[1])
+          if value.startswith(("https://", "http://")):
+              with urllib.request.urlopen(value, timeout=60) as response:
+                  destination.write_bytes(response.read())
+          elif value.startswith("file://"):
+              shutil.copyfile(value.removeprefix("file://"), destination)
+          elif len(value) < 1024 and Path(value).is_file():
+              shutil.copyfile(value, destination)
+          else:
+              encoded = value.split(",", 1)[1] if value.startswith("data:") else value
+              destination.write_bytes(base64.b64decode(encoded, validate=True))
+          PY
+          security create-keychain -p "${keychain_password}" "${keychain_path}"
+          security set-keychain-settings -lut 21600 "${keychain_path}"
+          security unlock-keychain -p "${keychain_password}" "${keychain_path}"
+          security import "${certificate_path}" \
+            -k "${keychain_path}" \
+            -P "${MAC_CSC_KEY_PASSWORD}" \
+            -T /usr/bin/codesign
+          security set-key-partition-list \
+            -S apple-tool:,apple:,codesign: \
+            -s \
+            -k "${keychain_password}" \
+            "${keychain_path}"
+          security list-keychains -d user -s "${keychain_path}"
+          identity="$(
+            security find-identity -v -p codesigning "${keychain_path}" \
+              | sed -n 's/.*"\(Developer ID Application:[^"]*\)".*/\1/p' \
+              | head -n 1
+          )"
+          if [[ -z "${identity}" ]]; then
+            echo "No Developer ID Application identity was imported." >&2
+            exit 1
+          fi
+          rm -f "${certificate_path}"
+          echo "TUI_HOST_CODESIGN_IDENTITY=${identity}" >> "${GITHUB_ENV}"
+          echo "TUI_HOST_KEYCHAIN_PATH=${keychain_path}" >> "${GITHUB_ENV}"
+
+      - name: Check companion version
+        shell: bash
+        run: |
+          python - <<'PY'
+          import tomllib
+          from pathlib import Path
+
+          core = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))["project"]["version"]
+          companion = tomllib.loads(
+              Path("packages/opensquilla-tui-host/pyproject.toml").read_text(encoding="utf-8")
+          )["project"]["version"]
+          assert companion == core, f"core/companion version mismatch: {core} != {companion}"
+          PY
+
+      - name: Build signed companion wheel
+        shell: bash
+        run: |
+          rm -rf dist/tui-host-${{ matrix.arch }}
+          python scripts/build_tui_host_companion.py \
+            --platform darwin \
+            --arch "${{ matrix.arch }}" \
+            --build-id "${GITHUB_SHA}" \
+            --codesign-identity "${TUI_HOST_CODESIGN_IDENTITY}" \
+            --require-codesign-identity \
+            --output-dir "dist/tui-host-${{ matrix.arch }}"
+
+      - name: Verify signed companion wheel
+        shell: bash
+        env:
+          TUI_HOST_ARCH: ${{ matrix.arch }}
+          TUI_HOST_WHEEL_TAG: ${{ matrix.wheel_tag }}
+        run: |
+          set -euo pipefail
+          wheel="$(find "dist/tui-host-${TUI_HOST_ARCH}" -maxdepth 1 -type f -name '*.whl' -print -quit)"
+          WHEEL="${wheel}" python - <<'PY'
+          import hashlib
+          import json
+          import os
+          import tomllib
+          from pathlib import Path
+          from zipfile import ZipFile
+
+          wheel = Path(os.environ["WHEEL"])
+          version = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))["project"]["version"]
+          arch = os.environ["TUI_HOST_ARCH"]
+          wheel_tag = os.environ["TUI_HOST_WHEEL_TAG"]
+          expected = f"opensquilla_tui_host-{version}-py3-none-{wheel_tag}.whl"
+          assert wheel.name == expected, f"unexpected companion wheel: {wheel.name}"
+          with ZipFile(wheel) as archive:
+              metadata_name = next(
+                  name for name in archive.namelist() if name.endswith("/_host_metadata.json")
+              )
+              executable_name = next(
+                  name for name in archive.namelist() if name.endswith("/bin/opensquilla-tui-host")
+              )
+              metadata = json.loads(archive.read(metadata_name))
+              executable = archive.read(executable_name)
+          assert metadata["product_version"] == version
+          assert metadata["host_version"] == version
+          assert metadata["platform"] == "darwin"
+          assert metadata["arch"] == arch
+          assert metadata["wheel_tag"] == f"py3-none-{wheel_tag}"
+          assert metadata["build_id"] == os.environ["GITHUB_SHA"]
+          assert metadata["sha256"] == hashlib.sha256(executable).hexdigest()
+          PY
+          rm -rf .tui-host-smoke
+          uv venv --python 3.12 .tui-host-smoke
+          uv pip install --python .tui-host-smoke/bin/python "${wheel}"
+          host="$(.tui-host-smoke/bin/python - <<'PY'
+          from opensquilla_tui_host import host_command
+          print(host_command()[0])
+          PY
+          )"
+          [[ "$(lipo -archs "${host}")" == "${TUI_HOST_ARCH/x64/x86_64}" ]]
+          codesign --verify --strict --verbose=2 "${host}"
+          codesign -dvv "${host}" 2>&1 | grep -F "Identifier=ai.opensquilla.tui-host"
+          codesign -dvv "${host}" 2>&1 | grep -F "Authority=Developer ID Application:"
+          codesign -dvv "${host}" 2>&1 | grep -E "flags=.*runtime"
+          "${host}" --help | grep -F "OpenSquilla OpenTUI footer host"
+
+      - name: Smoke clean core and companion install without Bun
+        shell: bash
+        run: |
+          set -euo pipefail
+          uv_bin="$(command -v uv)"
+          core_wheel="$(find dist/core -maxdepth 1 -type f -name 'opensquilla-*-py3-none-any.whl' -print -quit)"
+          host_wheel="$(find "dist/tui-host-${{ matrix.arch }}" -maxdepth 1 -type f -name '*.whl' -print -quit)"
+          rm -rf .tui-host-release-smoke
+          "${uv_bin}" venv --python 3.12 .tui-host-release-smoke
+          "${uv_bin}" pip install \
+            --python .tui-host-release-smoke/bin/python \
+            "${core_wheel}" \
+            "${host_wheel}"
+          clean_path="${PWD}/.tui-host-release-smoke/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+          if PATH="${clean_path}" command -v bun >/dev/null 2>&1; then
+            echo "Bun leaked into the packaged companion smoke PATH." >&2
+            exit 1
+          fi
+          smoke_log="${RUNNER_TEMP}/opensquilla-tui-host-bridge-${{ matrix.arch }}.log"
+          /usr/bin/script -q /dev/null \
+            env \
+            -u BUN_INSTALL \
+            -u OPENSQUILLA_TUI_DEV_SOURCE_HOST \
+            PATH="${clean_path}" \
+            "${PWD}/.tui-host-release-smoke/bin/python" \
+            "${GITHUB_WORKSPACE}/scripts/smoke_tui_host_companion.py" \
+            | tee "${smoke_log}" >/dev/null
+          SMOKE_LOG="${smoke_log}" python - <<'PY'
+          import os
+          from pathlib import Path
+
+          payload = Path(os.environ["SMOKE_LOG"]).read_bytes()
+          entered = payload.find(b"\x1b[?1049h")
+          restored = payload.rfind(b"\x1b[?1049l")
+          receipt = payload.find(b"TUI_HOST_BRIDGE_SMOKE_OK")
+          assert -1 < entered < restored < receipt, (
+              "packaged host did not enter and restore the alternate screen before receipt"
+          )
+          PY
+          echo "Packaged TUI host bridge smoke passed without Bun."
+
+      - name: Install tmux for packaged real-terminal gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          brew install tmux
+          tmux_bin="$(command -v tmux)"
+          "${tmux_bin}" -V
+          echo "TUI_HOST_TMUX_BIN=${tmux_bin}" >> "${GITHUB_ENV}"
+
+      - name: Run packaged-host real-terminal release gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          uv_bin="$(command -v uv)"
+          core_wheel="$(find dist/core -maxdepth 1 -type f -name 'opensquilla-*-py3-none-any.whl' -print -quit)"
+          host_wheel="$(find "dist/tui-host-${{ matrix.arch }}" -maxdepth 1 -type f -name '*.whl' -print -quit)"
+          gate_env="${PWD}/.tui-host-real-terminal"
+          artifact_root="${PWD}/dist/tui-host-real-terminal-${{ matrix.arch }}"
+          rm -rf "${gate_env}" "${artifact_root}"
+          mkdir -p "${artifact_root}/runs"
+          "${uv_bin}" venv --python 3.12 "${gate_env}"
+          "${uv_bin}" pip install \
+            --python "${gate_env}/bin/python" \
+            "${core_wheel}[dev]" \
+            "${host_wheel}"
+          ln -sf "${TUI_HOST_TMUX_BIN}" "${gate_env}/bin/tmux"
+          clean_path="${gate_env}/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+          if PATH="${clean_path}" command -v bun >/dev/null 2>&1; then
+            echo "Bun leaked into the packaged real-terminal gate PATH." >&2
+            exit 1
+          fi
+          PATH="${clean_path}" \
+          PROJECT_SRC="${PWD}/src" \
+          env -u PYTHONPATH -u BUN_INSTALL -u OPENSQUILLA_TUI_DEV_SOURCE_HOST \
+            "${gate_env}/bin/python" - <<'PY'
+          import os
+          from pathlib import Path
+
+          import opensquilla
+          from opensquilla_tui_host import host_metadata
+
+          installed = Path(opensquilla.__file__).resolve()
+          source = Path(os.environ["PROJECT_SRC"]).resolve()
+          assert source not in installed.parents, (source, installed)
+          assert host_metadata().product_version == opensquilla.__version__
+          print({"installed_core": str(installed), "host": host_metadata().build_id})
+          PY
+          test_log="${artifact_root}/pytest.log"
+          set +e
+          PATH="${clean_path}" \
+          OPENSQUILLA_TUI_PACKAGED_GATE=1 \
+          env -u PYTHONPATH -u BUN_INSTALL -u OPENSQUILLA_TUI_DEV_SOURCE_HOST \
+            "${gate_env}/bin/python" -m pytest \
+              tests/integration/cli/tui_real_terminal/test_launch_input_loop.py \
+              tests/integration/cli/tui_real_terminal/test_long_streaming.py \
+              tests/integration/cli/tui_real_terminal/test_complex_ui_state.py \
+              tests/integration/cli/tui_real_terminal/test_architecture_prompt.py \
+              tests/integration/cli/tui_real_terminal/test_terminal_changes.py \
+              tests/integration/cli/tui_real_terminal/test_completion_menu.py \
+              tests/integration/cli/tui_real_terminal/test_exit_restoration.py \
+              tests/integration/cli/tui_real_terminal/test_packaged_gateway_e2e.py \
+              --tui-backend opentui \
+              --tui-driver tmux \
+              --tui-require-capabilities \
+              --tui-artifact-root "${artifact_root}/runs" \
+              --junitxml "${artifact_root}/junit.xml" \
+              -q \
+              2>&1 | tee "${test_log}"
+          pytest_status="${PIPESTATUS[0]}"
+          set -e
+          if [[ "${pytest_status}" != "0" ]]; then
+            echo "Packaged-host real-terminal release gate failed; evidence will be uploaded." >&2
+            exit "${pytest_status}"
+          fi
+
+      - name: Upload packaged-host real-terminal evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: opensquilla-tui-real-terminal-macos-${{ matrix.arch }}
+          path: dist/tui-host-real-terminal-${{ matrix.arch }}
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Notarize and assess companion host
+        shell: bash
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          TUI_HOST_ARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${APPLE_ID}" || -z "${APPLE_APP_SPECIFIC_PASSWORD}" || -z "${APPLE_TEAM_ID}" ]]; then
+            echo "Apple notarization credentials are required for macOS TUI host release artifacts." >&2
+            exit 1
+          fi
+          host="$(.tui-host-smoke/bin/python - <<'PY'
+          from opensquilla_tui_host import host_command
+          print(host_command()[0])
+          PY
+          )"
+          notarization_archive="${RUNNER_TEMP}/opensquilla-tui-host-${TUI_HOST_ARCH}-notarization.zip"
+          notarization_result="${RUNNER_TEMP}/opensquilla-tui-host-${TUI_HOST_ARCH}-notarization.json"
+          ditto -c -k --keepParent "${host}" "${notarization_archive}"
+          xcrun notarytool submit "${notarization_archive}" \
+            --apple-id "${APPLE_ID}" \
+            --password "${APPLE_APP_SPECIFIC_PASSWORD}" \
+            --team-id "${APPLE_TEAM_ID}" \
+            --wait \
+            --output-format json > "${notarization_result}"
+          RESULT="${notarization_result}" python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          result = json.loads(Path(os.environ["RESULT"]).read_text(encoding="utf-8"))
+          assert result.get("status") == "Accepted", result
+          print({"id": result.get("id"), "status": result.get("status")})
+          PY
+          # A bare executable inside a wheel has no stapler-supported container.
+          # Assess the notarized code object with quarantine set so Gatekeeper
+          # must resolve Apple's online ticket for the exact signed bytes.
+          xattr -w com.apple.quarantine "0081;$(printf '%x' "$(date +%s)");OpenSquillaRelease;" "${host}"
+          accepted=0
+          for _ in {1..12}; do
+            if spctl --assess --type execute --verbose=4 "${host}"; then
+              accepted=1
+              break
+            fi
+            sleep 10
+          done
+          if [[ "${accepted}" != "1" ]]; then
+            echo "Gatekeeper did not accept the notarized TUI host." >&2
+            exit 1
+          fi
+
+      - name: Upload macOS TUI host artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: opensquilla-tui-host-macos-${{ matrix.arch }}
+          path: dist/tui-host-${{ matrix.arch }}/*.whl
+
+      - name: Delete temporary signing keychain
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          if [[ -n "${TUI_HOST_KEYCHAIN_PATH:-}" ]]; then
+            security delete-keychain "${TUI_HOST_KEYCHAIN_PATH}" || true
+          fi
+
   build-desktop-macos:
     name: Build macOS Electron installer
     runs-on: macos-latest
@@ -357,6 +733,7 @@ jobs:
     name: Publish release assets
     needs:
       - build-release-assets
+      - build-tui-host-macos
       - build-desktop-macos
       - build-desktop-windows
     runs-on: ubuntu-latest
@@ -375,6 +752,13 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           pattern: opensquilla-release-assets-python-${{ env.RELEASE_PROFILE }}
+          path: dist
+          merge-multiple: true
+
+      - name: Download macOS TUI host assets
+        uses: actions/download-artifact@v4
+        with:
+          pattern: opensquilla-tui-host-macos-*
           path: dist
           merge-multiple: true
 
@@ -421,6 +805,8 @@ jobs:
               f"OpenSquilla-{desktop_version}-win-x64.exe.blockmap",
               "latest.yml",
               f"opensquilla-{version}-py3-none-any.whl",
+              f"opensquilla_tui_host-{version}-py3-none-macosx_11_0_arm64.whl",
+              f"opensquilla_tui_host-{version}-py3-none-macosx_11_0_x86_64.whl",
           ]
           lines = []
           for name in asset_names:
@@ -462,6 +848,8 @@ jobs:
               f"OpenSquilla-{desktop_version}-win-x64.exe.blockmap",
               "latest.yml",
               f"opensquilla-{version}-py3-none-any.whl",
+              f"opensquilla_tui_host-{version}-py3-none-macosx_11_0_arm64.whl",
+              f"opensquilla_tui_host-{version}-py3-none-macosx_11_0_x86_64.whl",
           ]
           assets = [dist / name for name in asset_names]
           assert sha256s.is_file(), "missing SHA256SUMS"
@@ -572,6 +960,7 @@ jobs:
                   or name == "latest.yml"
                   or name.startswith("OpenSquilla-")
                   or name.startswith("opensquilla-")
+                  or name.startswith("opensquilla_tui_host-")
                   or name.endswith(".sha256")
               )
               if managed:
@@ -615,6 +1004,8 @@ jobs:
               f"OpenSquilla-{desktop_version}-win-x64.exe.blockmap",
               "latest.yml",
               f"opensquilla-{version}-py3-none-any.whl",
+              f"opensquilla_tui_host-{version}-py3-none-macosx_11_0_arm64.whl",
+              f"opensquilla_tui_host-{version}-py3-none-macosx_11_0_x86_64.whl",
               "SHA256SUMS",
           }
           raw = subprocess.check_output(

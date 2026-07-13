@@ -278,6 +278,15 @@ async def _handle_via_host(
         # pending entry never dangles as an implicit approval opportunity.
         await _resolve_decision(envelope, renderer, resolve_approval, deny_decision(envelope))
         return
+    if bool(getattr(response, "resolved_externally", False)):
+        approved = bool(getattr(response, "approved", False))
+        label = "approved" if approved else "denied"
+        await _render_notice(
+            renderer,
+            f"approval {label} in another client — {envelope.tool}",
+            style="green" if approved else "yellow",
+        )
+        return
     decision = decide_from_response(
         envelope,
         approved=bool(getattr(response, "approved", False)),
@@ -336,9 +345,7 @@ async def _handle_via_console(
         answer: str | None = await asyncio.shield(reader)
     except asyncio.CancelledError:
         with contextlib.suppress(BaseException):
-            await _resolve_decision(
-                envelope, renderer, resolve_approval, deny_decision(envelope)
-            )
+            await _resolve_decision(envelope, renderer, resolve_approval, deny_decision(envelope))
         with contextlib.suppress(BaseException):
             await asyncio.shield(reader)
         raise

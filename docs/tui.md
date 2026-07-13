@@ -6,16 +6,26 @@ especially while working in a local project directory.
 
 ## Start Chat
 
-Start the default terminal chat:
+Start terminal chat:
 
 ```sh
 opensquilla chat
 ```
 
-This uses the stable Python-native terminal backend. It does not require Bun,
-npm, tmux, or OpenTUI dependencies.
+The supported macOS RC keeps bare `opensquilla chat` on the minimal `plain`
+renderer while `opensquilla chat --ui tui` opts into the packaged full-screen
+host. `--ui auto` exercises the final startup policy and may fall back to plain
+only before full-screen startup. After the RC gate and at least seven days with
+no unresolved P0/P1 data, approval, input, or terminal-restoration issue, the
+next rollout release changes the bare command to `auto`. Release installs do
+not require Bun, npm, tmux, or a source checkout.
 
-If gateway-backed chat cannot connect, start the gateway first:
+For the implicit local configuration, chat checks readiness before taking over
+the terminal and starts the lifecycle-managed Gateway when necessary. An
+explicit `OPENSQUILLA_GATEWAY_URL` is operator-owned: chat never starts a local
+Gateway as a silent replacement.
+
+You can still manage the local Gateway explicitly:
 
 ```sh
 opensquilla gateway start --json
@@ -32,6 +42,13 @@ Resume an existing session:
 
 ```sh
 opensquilla chat --session <session-key>
+```
+
+Choose the terminal presentation explicitly when diagnosing startup:
+
+```sh
+opensquilla chat --ui tui    # require packaged OpenTUI
+opensquilla chat --ui plain  # minimal rescue renderer
 ```
 
 Terminal chat is interactive and requires a real TTY. For scripts, pipes, CI,
@@ -124,20 +141,24 @@ local file before sending the turn:
 /file ./report.pdf Extract the action items
 ```
 
-## OpenTUI Preview
+## TUI Host and Source Development
 
-The default terminal chat is the supported path for normal use. OpenTUI is an
-opt-in preview backend for evaluating a richer terminal UI from a source
-checkout. It is not required for day-to-day terminal chat.
+Release installers pair the platform-neutral OpenSquilla package with a
+same-version, platform-specific TUI host. A missing or mismatched host is a
+strict error under `--ui tui`; `--ui auto` may fall back before entering the
+alternate screen.
 
-From a source checkout:
+Maintainers can explicitly use the source host while developing:
 
 ```sh
 bun install --frozen-lockfile --cwd=src/opensquilla/cli/tui/opentui/package
-OPENSQUILLA_TUI_BACKEND=opentui uv run opensquilla chat
+OPENSQUILLA_TUI_DEV_SOURCE_HOST=1 uv run opensquilla chat --ui tui
 ```
 
-Leave `OPENSQUILLA_TUI_BACKEND` unset to use the stable terminal chat.
+`OPENSQUILLA_TUI_BACKEND` is a compatibility/development override when `--ui`
+is omitted. `OPENSQUILLA_TUI_DEV_SOURCE_HOST=1` is the explicit permission to
+run Bun/source instead of an installed companion. Users should prefer the
+public `--ui` option and the release installer.
 
 Read [`features/tui-frontend.md`](features/tui-frontend.md) for OpenTUI backend
 status, Router HUD details, and replay benchmarks. Read
@@ -153,5 +174,7 @@ running maintainer integration tests for terminal rendering.
   profiles and approval workflows.
 - [`features/meta-skill-user-guide.md`](features/meta-skill-user-guide.md) for
   `/meta` workflows.
+- [`features/tui-product-contract.md`](features/tui-product-contract.md) for
+  ownership, shared-session, fallback, and legacy-freeze rules.
 
 [Docs index](README.md) · [Product guide](../README.product.md) · [Improve this page](contributing-docs.md) · [Report a docs issue](https://github.com/opensquilla/opensquilla/issues/new?template=docs_report.yml)

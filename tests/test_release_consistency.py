@@ -12,9 +12,10 @@ from pathlib import Path
 import pytest
 import yaml
 
-CURRENT_VERSION = "0.5.0rc3"
-CURRENT_DESKTOP_VERSION = "0.5.0-rc3"
+CURRENT_VERSION = "0.5.0rc4"
+CURRENT_DESKTOP_VERSION = "0.5.0-rc4"
 CURRENT_TAG = f"v{CURRENT_VERSION}"
+CURRENT_RELEASE_TITLE = "OpenSquilla 0.5.0 Preview 4"
 HISTORICAL_PREVIEW_VERSION = "0.2.0rc1"
 HISTORICAL_PREVIEW_TAG = f"v{HISTORICAL_PREVIEW_VERSION}"
 
@@ -32,6 +33,14 @@ def test_lockfile_version_matches_current_release() -> None:
     package = next(item for item in lock["package"] if item["name"] == "opensquilla")
 
     assert package["version"] == CURRENT_VERSION
+
+
+def test_macos_tui_companion_version_matches_current_release() -> None:
+    config = tomllib.loads(
+        Path("packages/opensquilla-tui-host/pyproject.toml").read_text(encoding="utf-8")
+    )
+
+    assert config["project"]["version"] == CURRENT_VERSION
 
 
 def test_desktop_electron_release_config_matches_current_release() -> None:
@@ -67,6 +76,7 @@ def test_release_workflow_builds_desktop_installers() -> None:
     assert "name: Release Assets" in workflow
     assert "build-desktop-macos:" in workflow
     assert "build-desktop-windows:" in workflow
+    assert "build-tui-host-macos:" in workflow
     assert "npx electron-builder --mac --publish never" in workflow
     assert "npx electron-builder --win --publish never" in workflow
     assert "desktop_asset_version" in workflow
@@ -74,9 +84,30 @@ def test_release_workflow_builds_desktop_installers() -> None:
     assert "OpenSquilla-{desktop_version}-win-x64.exe" in workflow
     assert "latest-mac.yml" in workflow
     assert "latest.yml" in workflow
-    assert "NOTES_FILE=\"docs/releases/${TAG#v}.md\"" in workflow
-    assert "--notes-file \"${NOTES_FILE}\"" in workflow
-    assert "gh release upload \"${TAG}\" dist/* --clobber" in workflow
+    assert "opensquilla_tui_host-{version}-py3-none-macosx_11_0_arm64.whl" in workflow
+    assert "opensquilla_tui_host-{version}-py3-none-macosx_11_0_x86_64.whl" in workflow
+    assert "--require-codesign-identity" in workflow
+    assert 'grep -F "Authority=Developer ID Application:"' in workflow
+    assert "xcrun notarytool submit" in workflow
+    assert 'result.get("status") == "Accepted"' in workflow
+    assert "spctl --assess --type execute --verbose=4" in workflow
+    assert "scripts/smoke_tui_host_companion.py" in workflow
+    assert "command -v bun" in workflow
+    assert "-u OPENSQUILLA_TUI_DEV_SOURCE_HOST" in workflow
+    assert "Packaged TUI host bridge smoke passed without Bun." in workflow
+    assert "Run packaged-host real-terminal release gate" in workflow
+    assert '"${core_wheel}[dev]"' in workflow
+    assert "brew install tmux" in workflow
+    assert "OPENSQUILLA_TUI_PACKAGED_GATE=1" in workflow
+    assert "--tui-require-capabilities" in workflow
+    assert "test_exit_restoration.py" in workflow
+    assert "test_packaged_gateway_e2e.py" in workflow
+    assert "env -u PYTHONPATH -u BUN_INSTALL -u OPENSQUILLA_TUI_DEV_SOURCE_HOST" in workflow
+    assert "Upload packaged-host real-terminal evidence" in workflow
+    assert "if: ${{ always() }}" in workflow
+    assert 'NOTES_FILE="docs/releases/${TAG#v}.md"' in workflow
+    assert '--notes-file "${NOTES_FILE}"' in workflow
+    assert 'gh release upload "${TAG}" dist/* --clobber' in workflow
 
 
 def _release_upload_script() -> str:
@@ -122,8 +153,7 @@ fi
             "GH_REPO": "opensquilla/opensquilla",
             "GH_TOKEN": "synthetic-test-token",
             "PATH": (
-                f"{fake_bin}{os.pathsep}{Path(sys.executable).parent}"
-                f"{os.pathsep}{env['PATH']}"
+                f"{fake_bin}{os.pathsep}{Path(sys.executable).parent}{os.pathsep}{env['PATH']}"
             ),
             "TAG": tag,
         }
@@ -243,9 +273,7 @@ def test_release_profile_preservation_probe_covers_identity_config_and_chat_db(
 
 def test_release_workflow_gates_built_and_downloaded_installers_on_profile_retention() -> None:
     workflow = Path(".github/workflows/wheelhouse-release.yml").read_text(encoding="utf-8")
-    mac_helper = Path(".github/scripts/verify-release-macos-upgrade.sh").read_text(
-        encoding="utf-8"
-    )
+    mac_helper = Path(".github/scripts/verify-release-macos-upgrade.sh").read_text(encoding="utf-8")
     windows_helper = Path(".github/scripts/verify-release-windows-upgrade.ps1").read_text(
         encoding="utf-8"
     )
@@ -254,9 +282,7 @@ def test_release_workflow_gates_built_and_downloaded_installers_on_profile_reten
     )
 
     mac_build = workflow[
-        workflow.index("  build-desktop-macos:") : workflow.index(
-            "  build-desktop-windows:"
-        )
+        workflow.index("  build-desktop-macos:") : workflow.index("  build-desktop-windows:")
     ]
     windows_build = workflow[
         workflow.index("  build-desktop-windows:") : workflow.index("  publish-release:")
@@ -314,9 +340,7 @@ def test_manual_release_workflow_without_a_tag_only_uploads_aggregate_artifacts(
     )
     publish_steps = workflow["jobs"]["publish-release"]["steps"]
     aggregate = next(
-        step
-        for step in publish_steps
-        if step["name"] == "Upload aggregate workflow artifact"
+        step for step in publish_steps if step["name"] == "Upload aggregate workflow artifact"
     )
     github_upload = next(
         step for step in publish_steps if step["name"] == "Upload to GitHub Release"
@@ -549,17 +573,18 @@ def test_releases_md_exists_and_references_current_and_preview_tags() -> None:
     assert releases.is_file(), "RELEASES.md must exist at the repository root"
     text = releases.read_text(encoding="utf-8")
     assert CURRENT_TAG in text, f"RELEASES.md must reference the tag '{CURRENT_TAG}'"
-    assert (
-        HISTORICAL_PREVIEW_TAG in text
-    ), f"RELEASES.md must retain the historical tag '{HISTORICAL_PREVIEW_TAG}'"
+    assert HISTORICAL_PREVIEW_TAG in text, (
+        f"RELEASES.md must retain the historical tag '{HISTORICAL_PREVIEW_TAG}'"
+    )
     assert f"OpenSquilla-{CURRENT_DESKTOP_VERSION}-mac-arm64.dmg" in text
     assert f"OpenSquilla-{CURRENT_DESKTOP_VERSION}-win-x64.exe" in text
+    assert CURRENT_RELEASE_TITLE in text
     assert "do not publish Windows portable zips" in text
     assert "legacy Windows portable downloads" in text
     assert "separately branded macOS or Linux portable bundles" in text
     assert "macOS `.zip` is the Electron desktop and updater artifact" in text
     assert "macOS portable zips" not in text
-    assert "`0.5.0rc4` /\n    `v0.5.0rc4`" in text
+    assert "`0.5.0rc5` /\n    `v0.5.0rc5`" in text
     assert "tracks the most recently pushed release tag" in text
 
 
@@ -567,9 +592,9 @@ def test_changelog_has_current_release_section_and_unreleased() -> None:
     changelog = Path("CHANGELOG.md")
     assert changelog.is_file(), "CHANGELOG.md must exist at the repository root"
     text = changelog.read_text(encoding="utf-8")
-    assert (
-        f"[{CURRENT_VERSION}]" in text
-    ), f"CHANGELOG.md must contain a [{CURRENT_VERSION}] section"
+    assert f"[{CURRENT_VERSION}]" in text, (
+        f"CHANGELOG.md must contain a [{CURRENT_VERSION}] section"
+    )
     assert "[Unreleased]" in text, "CHANGELOG.md must retain an [Unreleased] section"
 
 
@@ -583,8 +608,7 @@ def test_readme_release_install_uses_latest_assets_and_pinned_alternative() -> N
     assert "versioned Python wheel" in readme
     assert "releases/latest/download/OpenSquilla-windows-x64-portable.zip" not in readme
     assert (
-        f"releases/download/{CURRENT_TAG}/opensquilla-{CURRENT_VERSION}-py3-none-any.whl"
-        in readme
+        f"releases/download/{CURRENT_TAG}/opensquilla-{CURRENT_VERSION}-py3-none-any.whl" in readme
     )
     assert "opensquilla-latest-py3-none-any.whl" not in readme
     assert "Python wheel installs use versioned wheel filenames" in readme
@@ -592,9 +616,7 @@ def test_readme_release_install_uses_latest_assets_and_pinned_alternative() -> N
 
 
 def test_all_readmes_default_install_paths_to_the_current_preview() -> None:
-    wheel_url = (
-        f"releases/download/{CURRENT_TAG}/opensquilla-{CURRENT_VERSION}-py3-none-any.whl"
-    )
+    wheel_url = f"releases/download/{CURRENT_TAG}/opensquilla-{CURRENT_VERSION}-py3-none-any.whl"
     readmes = [
         Path("README.md"),
         Path("README.zh-Hans.md"),
@@ -639,6 +661,29 @@ def test_user_facing_install_docs_use_current_release_wheel() -> None:
         for match in wheel_urls:
             assert match.group("tag_version") == CURRENT_VERSION
             assert match.group("file_version") == CURRENT_VERSION
+
+
+def test_macos_tui_install_docs_use_current_companion_assets() -> None:
+    arm_filename = f"opensquilla_tui_host-{CURRENT_VERSION}-py3-none-macosx_11_0_arm64.whl"
+    x86_filename = f"opensquilla_tui_host-{CURRENT_VERSION}-py3-none-macosx_11_0_x86_64.whl"
+    arm_url = f"releases/download/{CURRENT_TAG}/{arm_filename}"
+
+    for path in [
+        Path("README.md"),
+        Path("README.product.md"),
+        Path("docs/quickstart.md"),
+        Path(f"docs/releases/{CURRENT_VERSION}.md"),
+        Path("RELEASES.md"),
+    ]:
+        text = path.read_text(encoding="utf-8")
+        assert arm_url in text, path
+
+    for path in [
+        Path("README.md"),
+        Path(f"docs/releases/{CURRENT_VERSION}.md"),
+        Path("RELEASES.md"),
+    ]:
+        assert x86_filename in path.read_text(encoding="utf-8"), path
 
 
 def test_release_installers_default_to_current_tag() -> None:
@@ -696,46 +741,37 @@ def test_historical_040_release_notes_remain_available() -> None:
     assert "OpenSquilla-0.4.0-mac-arm64.dmg" in notes
 
 
-def test_current_release_notes_cover_migration_upgrade_and_containers() -> None:
+def test_current_release_notes_cover_supported_tui_upgrade_and_containers() -> None:
     notes = Path(f"docs/releases/{CURRENT_VERSION}.md").read_text(encoding="utf-8")
 
+    assert notes.startswith(f"# {CURRENT_RELEASE_TITLE}\n")
     assert "## Downloads" in notes
     assert f"OpenSquilla-{CURRENT_DESKTOP_VERSION}-mac-arm64.dmg" in notes
     assert f"OpenSquilla-{CURRENT_DESKTOP_VERSION}-mac-arm64.zip" in notes
     assert f"OpenSquilla-{CURRENT_DESKTOP_VERSION}-win-x64.exe" in notes
     assert f"opensquilla-{CURRENT_VERSION}-py3-none-any.whl" in notes
-    assert notes.index("### Legacy home migration and upgrade safety") < notes.index(
-        "### Providers, models, and routing"
-    )
-    assert notes.index("### Providers, models, and routing") < notes.index(
-        "### Desktop, terminal, and Control UI"
-    )
-    assert notes.index("### Runtime, safety, and data reliability") < notes.index(
-        "### Container deployment"
+    assert f"opensquilla_tui_host-{CURRENT_VERSION}-py3-none-macosx_11_0_arm64.whl" in notes
+    assert f"opensquilla_tui_host-{CURRENT_VERSION}-py3-none-macosx_11_0_x86_64.whl" in notes
+    assert (
+        notes.index("### Supported opt-in macOS TUI")
+        < notes.index("### Shared Gateway sessions")
+        < notes.index("### Packaging and recovery")
     )
     assert "No Windows portable assets are published for 0.5.0 preview releases" in notes
-    assert "0.5.0rc3 portable zip" in notes
-    assert "## Upgrading from Preview 2, Preview 1, or 0.4.1" in notes
-    assert "should not wait for an in-app RC3\nnotification" in notes
-    assert "ghcr.io/opensquilla/opensquilla:v0.5.0rc3" in notes
+    assert f"{CURRENT_VERSION} portable zip" in notes
+    assert "## Upgrading from Preview 3" in notes
+    assert "does not reuse or move the" in notes
+    assert "`v0.5.0rc3` tag" in notes
+    assert f"ghcr.io/opensquilla/opensquilla:{CURRENT_TAG}" in notes
     assert "Docker `latest` follows the most recently pushed release tag" in notes
+    normalized_notes = " ".join(notes.split())
     assert (
-        "Configuration\nformats from every released OpenSquilla version remain supported"
-        in notes
+        "Configuration formats from every released OpenSquilla version remain supported"
+        in normalized_notes
     )
     assert "Synthetic fixtures" not in notes
     assert "release gate" not in notes
     assert "## Acknowledgements" in notes
-    for login in [
-        "@ab2ence",
-        "@JarvisPei",
-        "@labulalala",
-        "@Liu-RK",
-        "@lyteen",
-        "@nice-code-la",
-        "@TUOXI293",
-    ]:
-        assert login in notes
     assert "CONTRIBUTORS.md" in notes
 
 
@@ -746,11 +782,9 @@ def test_docs_index_links_current_release_notes() -> None:
     assert "releases/0.4.0.md" in index
 
 
-def test_current_contributor_ledger_records_050rc3_attribution() -> None:
+def test_contributor_ledger_retains_050rc3_attribution() -> None:
     ledger = Path("CONTRIBUTORS.md").read_text(encoding="utf-8")
-    section = ledger.split("## OpenSquilla 0.5.0rc3", 1)[1].split(
-        "## OpenSquilla 0.5.0rc2", 1
-    )[0]
+    section = ledger.split("## OpenSquilla 0.5.0rc3", 1)[1].split("## OpenSquilla 0.5.0rc2", 1)[0]
 
     expected = {
         "@ab2ence": "#491",

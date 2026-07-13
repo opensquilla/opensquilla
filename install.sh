@@ -7,7 +7,7 @@
 
 set -euo pipefail
 
-default_version="v0.5.0rc3"
+default_version="v0.5.0rc4"
 repo_slug="${OPENSQUILLA_REPOSITORY:-opensquilla/opensquilla}"
 python_version="${OPENSQUILLA_PYTHON_VERSION:-3.12}"
 original_path="${PATH:-}"
@@ -18,10 +18,10 @@ cli_extras=""
 
 usage() {
     cat <<HELP
-Usage: bash install.sh [--version v0.5.0rc3|latest] [--profile recommended|core] [--extras name[,name]]
+Usage: bash install.sh [--version v0.5.0rc4|latest] [--profile recommended|core] [--extras name[,name]]
 
 Environment equivalents:
-  OPENSQUILLA_VERSION=v0.5.0rc3
+  OPENSQUILLA_VERSION=v0.5.0rc4
   OPENSQUILLA_INSTALL_PROFILE=recommended|core
   OPENSQUILLA_INSTALL_EXTRAS=matrix
   OPENSQUILLA_INSTALL_DRY_RUN=1
@@ -72,6 +72,36 @@ dry_run="${OPENSQUILLA_INSTALL_DRY_RUN:-0}"
 
 is_release_version() {
     [[ "$1" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+((a|b|rc)[0-9]+)?$ ]]
+}
+
+release_has_macos_tui_host() {
+    local value="${1#v}"
+    if [[ ! "${value}" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)((a|b|rc)([0-9]+))?$ ]]; then
+        return 1
+    fi
+
+    local major=$((10#${BASH_REMATCH[1]}))
+    local minor=$((10#${BASH_REMATCH[2]}))
+    local patch=$((10#${BASH_REMATCH[3]}))
+    local prerelease_kind="${BASH_REMATCH[5]:-}"
+    local prerelease_number="${BASH_REMATCH[6]:-0}"
+
+    # The first published macOS companion is 0.5.0rc4. Stable 0.5.0 and
+    # every later release are paired as well; earlier releases remain valid
+    # core-only rollback targets and must not request an asset they predate.
+    if (( major > 0 || minor > 5 || (minor == 5 && patch > 0) )); then
+        return 0
+    fi
+    if (( major < 0 || minor < 5 )); then
+        return 1
+    fi
+    if (( patch != 0 )); then
+        return 1
+    fi
+    if [[ -z "${prerelease_kind}" ]]; then
+        return 0
+    fi
+    [[ "${prerelease_kind}" == "rc" && $((10#${prerelease_number})) -ge 4 ]]
 }
 
 valid_extras=" matrix matrix-e2e document-extras "
@@ -133,7 +163,7 @@ fi
 
 if [[ "${release_selector}" != "latest" && "${release_selector}" != "stable" ]] && ! is_release_version "${release_selector}"; then
     echo "install.sh: unsupported OPENSQUILLA_VERSION='${release_selector}'." >&2
-    echo "install.sh: the release installer only supports latest, stable, or release versions like v0.5.0rc3." >&2
+    echo "install.sh: the release installer only supports latest, stable, or release versions like v0.5.0rc4." >&2
     echo "install.sh: use git clone plus scripts/install_source.sh for main, dev, branch, or source installs." >&2
     exit 1
 fi
@@ -162,11 +192,13 @@ case "${release_selector}" in
             exit 1
         fi
         release_version="${latest_tag#v}"
+        release_tag="${latest_tag}"
         wheel_url="https://github.com/${repo_slug}/releases/download/${latest_tag}/opensquilla-${release_version}-py3-none-any.whl"
         display_version="${latest_tag}"
         ;;
     v*)
         release_version="${release_selector#v}"
+        release_tag="${release_selector}"
         wheel_url="https://github.com/${repo_slug}/releases/download/${release_selector}/opensquilla-${release_version}-py3-none-any.whl"
         display_version="${release_selector}"
         ;;
@@ -179,6 +211,42 @@ case "${release_selector}" in
 esac
 
 install_spec="${package_name} @ ${wheel_url}"
+tui_host_spec=""
+if [[ "$(uname -s 2>/dev/null || true)" == "Darwin" ]]; then
+    if release_has_macos_tui_host "${release_version}"; then
+        case "$(uname -m 2>/dev/null || true)" in
+            arm64|aarch64)
+                tui_host_wheel_tag="macosx_11_0_arm64"
+                ;;
+            x86_64|amd64)
+                tui_host_wheel_tag="macosx_11_0_x86_64"
+                ;;
+            *)
+                echo "install.sh: this macOS architecture does not have a TUI host release asset." >&2
+                echo "install.sh: supported macOS architectures: arm64, x86_64." >&2
+                exit 1
+                ;;
+        esac
+        tui_host_url="https://github.com/${repo_slug}/releases/download/${release_tag}/opensquilla_tui_host-${release_version}-py3-none-${tui_host_wheel_tag}.whl"
+        tui_host_spec="opensquilla-tui-host @ ${tui_host_url}"
+    else
+        echo "install.sh: macOS TUI companions start at v0.5.0rc4; ${display_version} installs core only."
+    fi
+fi
+
+install_args=(
+    tool install
+    --python "${python_version}"
+    --force
+    --reinstall-package opensquilla
+)
+if [[ -n "${tui_host_spec}" ]]; then
+    install_args+=(
+        --reinstall-package opensquilla-tui-host
+        --with "${tui_host_spec}"
+    )
+fi
+install_args+=("${install_spec}")
 
 install_uv() {
     if command -v curl >/dev/null 2>&1; then
@@ -210,7 +278,9 @@ resolve_uv() {
 
 if [[ "${dry_run}" == "1" ]]; then
     echo "install.sh: dry-run - would install OpenSquilla ${display_version}"
-    echo "install.sh: dry-run - would run: uv tool install --python ${python_version} --force --reinstall-package opensquilla \"${install_spec}\""
+    printf 'install.sh: dry-run - would run: uv'
+    printf ' %q' "${install_args[@]}"
+    printf '\n'
     exit 0
 fi
 
@@ -228,7 +298,7 @@ if [[ -z "${uv_bin}" ]]; then
 fi
 
 echo "install.sh: installing OpenSquilla ${display_version} (${profile})"
-"${uv_bin}" tool install --python "${python_version}" --force --reinstall-package opensquilla "${install_spec}"
+"${uv_bin}" "${install_args[@]}"
 
 tool_bin_dir="$("${uv_bin}" tool dir --bin 2>/dev/null || true)"
 

@@ -58,23 +58,28 @@ Terminal chat:
 
 ```sh
 opensquilla chat
+opensquilla chat --ui tui
+opensquilla chat --ui plain
 opensquilla chat --model gpt-5.4-mini
 opensquilla chat --session <session-key>
 opensquilla chat --standalone --workspace /path/to/project
 ```
 
-Terminal chat uses the stable Python-native terminal backend by default.
-OpenTUI is a preview backend selected explicitly with
-`OPENSQUILLA_TUI_BACKEND=opentui` when evaluating that backend. Normal terminal
-chat does not require Bun or OpenTUI node modules. The OpenTUI preview is for
-source checkouts with local Bun dependencies installed:
+The supported macOS RC keeps the omitted `--ui` policy on `plain`; use
+`--ui tui` to opt into the same-version packaged OpenTUI host. `--ui auto`
+exercises the final startup policy and may fall back to `plain` only before the
+alternate screen starts. `--ui tui` is strict and `--ui plain` is the minimal
+rescue renderer. After the RC gate and seven-day observation, a dedicated
+rollout release changes the omitted policy to `auto`. Normal installed use does
+not require Bun, Node, OpenTUI modules, or a source checkout. Source-host
+development is explicit:
 
 ```sh
 bun install --frozen-lockfile --cwd=src/opensquilla/cli/tui/opentui/package
-OPENSQUILLA_TUI_BACKEND=opentui uv run opensquilla chat
+OPENSQUILLA_TUI_DEV_SOURCE_HOST=1 uv run opensquilla chat --ui tui
 ```
 
-Legacy backend values are rejected before launch. Read [`tui.md`](tui.md) for
+Invalid UI/backend values are rejected before launch. Read [`tui.md`](tui.md) for
 terminal chat usage and [`features/tui-frontend.md`](features/tui-frontend.md)
 for backend architecture, plugin slots, Router HUD, and replay benchmark
 workflow.
@@ -141,7 +146,7 @@ combined with `--repo`.
 install path. It requires Docker plus the `swebench` extra.
 
 ```sh
-uv tool install --python 3.12 "opensquilla[recommended,swebench] @ https://github.com/opensquilla/opensquilla/releases/download/v0.5.0rc3/opensquilla-0.5.0rc3-py3-none-any.whl"
+uv tool install --python 3.12 "opensquilla[recommended,swebench] @ https://github.com/opensquilla/opensquilla/releases/download/v0.5.0rc4/opensquilla-0.5.0rc4-py3-none-any.whl"
 opensquilla swebench pull django__django-16429 --dataset verified
 opensquilla swebench solve django__django-16429 --dataset verified --json
 opensquilla swebench eval predictions.jsonl --dataset verified

@@ -103,10 +103,7 @@ def _clean_cancel_source(value: Any, default: str) -> str:
     text = str(value or "").strip()
     if not text:
         return default
-    safe = "".join(
-        ch if ch.isalnum() or ch in {"_", "-", ".", ":"} else "_"
-        for ch in text
-    )
+    safe = "".join(ch if ch.isalnum() or ch in {"_", "-", ".", ":"} else "_" for ch in text)
     return (safe.strip("_") or default)[:80]
 
 
@@ -248,12 +245,12 @@ def _apply_run_context_route_metadata(
 def _normalize_session_send_source_hint(params: dict[str, Any]) -> dict[str, Any]:
     raw_hint = params.get("_source")
     source_hint = dict(raw_hint) if isinstance(raw_hint, dict) else {}
-    caller_kind = str(
-        source_hint.get("caller_kind") or source_hint.get("callerKind") or ""
-    ).strip().lower()
-    channel_kind = str(
-        source_hint.get("channel_kind") or source_hint.get("channelKind") or ""
-    ).strip().lower()
+    caller_kind = (
+        str(source_hint.get("caller_kind") or source_hint.get("callerKind") or "").strip().lower()
+    )
+    channel_kind = (
+        str(source_hint.get("channel_kind") or source_hint.get("channelKind") or "").strip().lower()
+    )
     if caller_kind:
         source_hint.setdefault("caller_kind", caller_kind)
     if channel_kind:
@@ -373,6 +370,7 @@ async def _drain_task_runtime_for_reset(task_runtime: Any, session_key: str) -> 
         log.warning("sessions.reset.task_runtime_drain_timeout", session_key=session_key)
     except Exception:
         log.warning("sessions.reset.task_runtime_drain_failed", session_key=session_key)
+
 
 def _optional_positive_timeout(config: Any, attr: str, default: float) -> float | None:
     raw = getattr(config, attr, default)
@@ -654,6 +652,18 @@ def _task_summary(row: Any) -> dict[str, Any]:
         "created_at": getattr(row, "created_at", None),
         "started_at": getattr(row, "started_at", None),
     }
+    details = getattr(row, "details", None)
+    if isinstance(details, dict):
+        for field in (
+            "turn_id",
+            "client_message_id",
+            "user_message_id",
+            "surface_id",
+            "session_id",
+        ):
+            value = details.get(field)
+            if isinstance(value, str) and value:
+                summary[field] = value
     finished_at = getattr(row, "finished_at", None)
     if finished_at is not None:
         summary["finished_at"] = finished_at
@@ -685,8 +695,7 @@ def _normalize_terminal_event_payload(event_name: str, payload: dict[str, Any]) 
     is_timeout = "timeout" in code_text or "stream idle" in raw_text.lower()
     terminal_payload = {
         "status": "timeout" if is_timeout else "failed",
-        "terminal_reason": payload.get("terminal_reason")
-        or ("timeout" if is_timeout else "error"),
+        "terminal_reason": payload.get("terminal_reason") or ("timeout" if is_timeout else "error"),
         "error_class": code,
         "error_message": raw_text,
         **payload,
@@ -825,10 +834,12 @@ async def _list_transcript_titles(storage: Any, sessions: list[Any]) -> dict[str
     if callable(storage_batch):
         try:
             grouped = await storage_batch(session_ids, limit_per_session=3)
-            title_inputs.update({
-                str(session_id): [str(value) for value in values if value]
-                for session_id, values in grouped.items()
-            })
+            title_inputs.update(
+                {
+                    str(session_id): [str(value) for value in values if value]
+                    for session_id, values in grouped.items()
+                }
+            )
         except Exception:
             log.warning("sessions.transcript_title_batch_failed", exc_info=True)
 
@@ -1333,6 +1344,12 @@ async def _handle_sessions_send(params: dict | None, ctx: RpcContext) -> dict:
 
     message_text: str = params["message"]
     source_hint = _normalize_session_send_source_hint(params)
+    requested_client_message_id = _optional_string_param(
+        params, "client_message_id", "clientMessageId"
+    ) or _optional_string_param(source_hint, "client_message_id", "clientMessageId")
+    requested_surface_id = _optional_string_param(
+        params, "surface_id", "surfaceId"
+    ) or _optional_string_param(source_hint, "surface_id", "surfaceId")
     incoming_attachments = params.get("attachments", [])
     normalized_input = normalize_incoming_text(
         message_text,
@@ -1618,6 +1635,26 @@ async def _handle_sessions_send(params: dict | None, ctx: RpcContext) -> dict:
         async with _persist_lock:
             await _persist_user_message()
 
+    client_message_id = (
+        requested_client_message_id
+        or getattr(persisted_entry, "message_id", None)
+        or uuid.uuid4().hex
+    )
+    user_message_id = getattr(persisted_entry, "message_id", None)
+    surface_id = (
+        requested_surface_id
+        or getattr(route_envelope, "channel_id", None)
+        or str(getattr(route_envelope, "source_kind", "unknown"))
+    )
+    route_envelope = replace(
+        route_envelope,
+        metadata={
+            **route_envelope.metadata,
+            "client_message_id": client_message_id,
+            "surface_id": surface_id,
+        },
+    )
+
     async def _rollback_persisted_user_message(reason: str) -> tuple[str | None, bool]:
         message_id = getattr(persisted_entry, "message_id", None)
         if not message_id or not hasattr(ctx.session_manager, "remove_message"):
@@ -1652,10 +1689,10 @@ async def _handle_sessions_send(params: dict | None, ctx: RpcContext) -> dict:
         )
         runtime_mode = "interrupt" if requested_mode == "steer" else requested_mode
         try:
-                handle = await start_turn_via_runtime(
-                    task_runtime,
-                    route_envelope,
-                    provider_message_text,
+            handle = await start_turn_via_runtime(
+                task_runtime,
+                route_envelope,
+                provider_message_text,
                 attachments=raw_attachments,
                 mode=runtime_mode,
                 run_kind=run_kind,
@@ -1728,9 +1765,31 @@ async def _handle_sessions_send(params: dict | None, ctx: RpcContext) -> dict:
             semantic_message_text or message_text,
             enabled=generate_title,
         )
-        return {"status": "accepted", "key": key, "task_id": handle.task_id}
+        return {
+            "status": "accepted",
+            "key": key,
+            "session_key": key,
+            "session_id": session_id,
+            "task_id": handle.task_id,
+            "turn_id": handle.task_id,
+            "client_message_id": client_message_id,
+            "user_message_id": user_message_id,
+            "surface_id": surface_id,
+        }
 
     # 2. Run agent turn in background via TurnRunner
+    turn_id = uuid.uuid4().hex
+
+    def _turn_event_payload(payload: dict[str, Any]) -> dict[str, Any]:
+        enriched = dict(payload)
+        enriched.setdefault("session_id", session_id)
+        enriched.setdefault("turn_id", turn_id)
+        enriched.setdefault("client_message_id", client_message_id)
+        if user_message_id:
+            enriched.setdefault("user_message_id", user_message_id)
+        enriched.setdefault("surface_id", surface_id)
+        return enriched
+
     async def _run() -> None:
         _terminal_emitted = False
 
@@ -1754,7 +1813,12 @@ async def _handle_sessions_send(params: dict | None, ctx: RpcContext) -> dict:
             if task is not None:
                 setattr(task, "_opensquilla_terminal_emitted", True)
             payload = _normalize_terminal_event_payload(event_name, payload)
-            await _emit_to_subscribers(ctx, key, event_name, payload)
+            await _emit_to_subscribers(
+                ctx,
+                key,
+                event_name,
+                _turn_event_payload(payload),
+            )
 
         try:
             _mark_started()
@@ -1817,13 +1881,18 @@ async def _handle_sessions_send(params: dict | None, ctx: RpcContext) -> dict:
                 if event_kind in ("done", "error"):
                     await _emit_terminal_once(f"session.event.{event_kind}", event_dict)
                 else:
-                    await _emit_to_subscribers(ctx, key, f"session.event.{event_kind}", event_dict)
+                    await _emit_to_subscribers(
+                        ctx,
+                        key,
+                        f"session.event.{event_kind}",
+                        _turn_event_payload(event_dict),
+                    )
 
             await _emit_to_subscribers(
                 ctx,
                 key,
                 "sessions.changed",
-                build_sessions_changed_payload(key, "turn_complete"),
+                _turn_event_payload(build_sessions_changed_payload(key, "turn_complete")),
             )
         except asyncio.CancelledError:
             log.info("sessions.send.aborted", session_key=key)
@@ -1841,9 +1910,7 @@ async def _handle_sessions_send(params: dict | None, ctx: RpcContext) -> dict:
                     "error_message": _STREAM_IDLE_TIMEOUT_MESSAGE,
                 }
             )
-            await ctx.session_manager.append_message(
-                key, role="system", content=timeout_message
-            )
+            await ctx.session_manager.append_message(key, role="system", content=timeout_message)
             await _emit_terminal_once(
                 "session.event.error",
                 {"message": _STREAM_IDLE_TIMEOUT_MESSAGE, "code": _STREAM_IDLE_TIMEOUT_CODE},
@@ -1859,9 +1926,7 @@ async def _handle_sessions_send(params: dict | None, ctx: RpcContext) -> dict:
                 fallback_error_class="agent_error",
                 fallback_error_message=str(exc) or "Agent error",
             )
-            event_code = (
-                error_code if error_code == "provider_request_too_large" else "agent_error"
-            )
+            event_code = error_code if error_code == "provider_request_too_large" else "agent_error"
             log.error("sessions.send.agent_failed", session_key=key, error=str(exc), exc_info=True)
             await ctx.session_manager.append_message(
                 key,
@@ -1904,7 +1969,16 @@ async def _handle_sessions_send(params: dict | None, ctx: RpcContext) -> dict:
         semantic_message_text or message_text,
         enabled=generate_title,
     )
-    return {"status": "accepted", "key": key}
+    return {
+        "status": "accepted",
+        "key": key,
+        "session_key": key,
+        "session_id": session_id,
+        "turn_id": turn_id,
+        "client_message_id": client_message_id,
+        "user_message_id": user_message_id,
+        "surface_id": surface_id,
+    }
 
 
 async def _emit_to_subscribers(
@@ -2144,13 +2218,11 @@ async def _handle_sessions_reset(params: dict | None, ctx: RpcContext) -> dict[s
             # checkpoint receipt. The whole read -> gate -> rotate window stays
             # under the same per-session lock used by sends.
             if transcript and not force:
-                checkpoint_safe = (
-                    await _durable_receipt_allows_covered_destructive_compaction(
-                        storage,
-                        key,
-                        previous_session_id,
-                        transcript,
-                    )
+                checkpoint_safe = await _durable_receipt_allows_covered_destructive_compaction(
+                    storage,
+                    key,
+                    previous_session_id,
+                    transcript,
                 )
                 if not checkpoint_safe:
                     raise RpcHandlerError(
@@ -2629,9 +2701,8 @@ async def _handle_sessions_context_compact(params: dict | None, ctx: RpcContext)
                 compact_kwargs: dict[str, Any] = {
                     "custom_instructions": custom_instructions,
                 }
-                if (
-                    flush_receipt_status is not None
-                    and _accepts_keyword_arg(compact_with_result, "flush_receipt_status")
+                if flush_receipt_status is not None and _accepts_keyword_arg(
+                    compact_with_result, "flush_receipt_status"
                 ):
                     compact_kwargs["flush_receipt_status"] = flush_receipt_status
                 result = await compact_with_result(
@@ -2646,9 +2717,7 @@ async def _handle_sessions_context_compact(params: dict | None, ctx: RpcContext)
                 kept_count = len(getattr(result, "kept_entries", []) or [])
                 tokens_before = int(getattr(result, "tokens_before", 0) or 0)
                 tokens_after = int(getattr(result, "tokens_after", 0) or 0)
-                remaining_budget_tokens = int(
-                    getattr(result, "remaining_budget_tokens", 0) or 0
-                )
+                remaining_budget_tokens = int(getattr(result, "remaining_budget_tokens", 0) or 0)
                 chunk_count = int(getattr(result, "chunks_processed", 0) or 0)
                 coverage_status = str(getattr(result, "coverage_status", "unknown") or "unknown")
                 skip_reason = str(getattr(result, "skip_reason", "") or "")
@@ -2729,9 +2798,7 @@ async def _handle_sessions_context_compact(params: dict | None, ctx: RpcContext)
         if flush_receipt_status is not None:
             payload["flush_receipt_status"] = flush_receipt_status
         final_event = (
-            COMPACTION_PERSISTED_EVENT
-            if removed_count > 0
-            else COMPACTION_TRIGGERED_EVENT
+            COMPACTION_PERSISTED_EVENT if removed_count > 0 else COMPACTION_TRIGGERED_EVENT
         )
         final_lifecycle_payload = compaction_lifecycle_payload(compaction_id, final_event)
         final_lifecycle_payload.pop("coverage_status", None)
@@ -3061,4 +3128,118 @@ async def _handle_sessions_resolve(params: dict | None, ctx: RpcContext) -> dict
         "model": getattr(session, "model", None),
         "created_at": session.created_at,
         "updated_at": session.updated_at,
+    }
+
+
+async def _bootstrap_epoch(
+    session_manager: Any,
+    storage: Any,
+    session: Any,
+    session_key: str,
+) -> int:
+    cached = get_session_epoch(session_manager, session_key)
+    if cached is not None:
+        return int(cached)
+
+    epoch: Any = None
+    get_epoch = getattr(storage, "get_epoch", None)
+    if callable(get_epoch):
+        try:
+            epoch = await get_epoch(session_key)
+        except Exception:
+            log.warning("sessions.bootstrap.epoch_read_failed", session_key=session_key)
+    if epoch is None:
+        epoch = getattr(session, "epoch", 0)
+    try:
+        resolved = max(0, int(epoch or 0))
+    except (TypeError, ValueError):
+        resolved = 0
+    set_session_epoch(session_manager, session_key, resolved)
+    return resolved
+
+
+@_d.method("sessions.bootstrap", scope="operator.read")
+async def _handle_sessions_bootstrap(params: dict | None, ctx: RpcContext) -> dict:
+    """Return the canonical startup snapshot for an interactive session client.
+
+    This composes existing session, history, task-ledger, epoch, and stream
+    services.  It intentionally does not subscribe the connection: clients use
+    the returned ``stream_cursor`` with ``sessions.messages.subscribe`` so no
+    events are consumed or routed away from other surfaces during bootstrap.
+    """
+
+    key = _require_key(params)
+    if ctx.session_manager is None:
+        raise KeyError("No session manager available")
+    storage = get_session_storage(ctx.session_manager)
+    if storage is None:
+        raise KeyError("No session storage available")
+
+    session = await _resolve_session_node(storage, key)
+    session_key = canonicalize_session_key(session.session_key)
+    # Capture the cursor before the slower durable reads below.  A client that
+    # subscribes from this cursor may see duplicate state (deduped by stable
+    # ids), but cannot miss a live event emitted while bootstrap is reading.
+    stream_cursor = get_session_streams().current_seq(session_key)
+    history_params: dict[str, Any] = {
+        "sessionKey": session_key,
+        "limit": (params or {}).get("limit", 200),
+    }
+    for source, target in (
+        ("before", "before"),
+        ("after", "after"),
+        ("includeCanonical", "includeCanonical"),
+        ("include_canonical", "includeCanonical"),
+        ("includeSummaries", "includeSummaries"),
+        ("include_summaries", "includeSummaries"),
+    ):
+        if isinstance(params, dict) and source in params:
+            history_params[target] = params[source]
+
+    # Local import avoids making rpc_chat/rpc_sessions module registration
+    # order part of the public RPC contract.
+    from opensquilla.gateway.rpc_chat import _handle_chat_history
+
+    history = await _handle_chat_history(history_params, ctx)
+    task_rows = await _list_task_rows(ctx, storage, session_key)
+    task_state = _task_state_summary(task_rows)
+    epoch = await _bootstrap_epoch(ctx.session_manager, storage, session, session_key)
+    queued_count = sum(
+        1 for row in task_rows if _enum_value(getattr(row, "status", None)) == "queued"
+    )
+    running_count = sum(
+        1 for row in task_rows if _enum_value(getattr(row, "status", None)) == "running"
+    )
+    agent_id = _effective_agent_id_for_session(session, session_key)
+    effective_model = _session_turn_model(ctx, session, agent_id)
+    from opensquilla.agents.scope import resolve_agent_workspace_dir
+
+    workspace_path = resolve_agent_workspace_dir(agent_id, ctx.config)
+    workspace = str(workspace_path) if workspace_path is not None else None
+
+    metadata = {
+        "session_key": session_key,
+        "session_id": session.session_id,
+        "status": session.status,
+        "agent_id": session.agent_id,
+        "model": getattr(session, "model", None),
+        "effective_model": effective_model,
+        "workspace": workspace,
+        "created_at": session.created_at,
+        "updated_at": session.updated_at,
+        "display_name": getattr(session, "display_name", None),
+        "queue_mode": getattr(session, "queue_mode", None),
+        **_derive_source_metadata(session),
+    }
+    return {
+        "session": metadata,
+        "history": history,
+        **task_state,
+        "queue": {
+            "mode": getattr(session, "queue_mode", None) or "followup",
+            "queued_count": queued_count,
+            "running_count": running_count,
+        },
+        "epoch": epoch,
+        "stream_cursor": stream_cursor,
     }

@@ -43,7 +43,7 @@ TokenRhythm, OpenRouter, OpenAI, Anthropic, Ollama, DeepSeek, Gemini,
 Qwen/DashScope, and 20+ other LLM providers with no change to your code or config
 schema.
 
-OpenSquilla 0.5.0 Preview 3 is the current preview release.
+OpenSquilla 0.5.0 Preview 4 is the current preview release.
 
 For task-oriented product documentation, start with the
 [OpenSquilla Product Guide](README.product.md) or the
@@ -60,12 +60,16 @@ Desktop installers and Quick terminal install give you a prebuilt **release** �
 no Git required. The other two — Install from source and
 Develop from source — build **from a Git checkout** (`git clone` + Git LFS).
 
-Release install commands use published GitHub release assets. Python wheel installs use versioned wheel filenames because installers validate the version
-embedded in the wheel filename.
+Release install commands use published GitHub release assets.
+Python wheel installs use versioned wheel filenames because installers
+validate the version embedded in the wheel filename. On macOS, the terminal
+installer pairs that core wheel with the same-version, architecture-specific
+`opensquilla-tui-host` companion; it does not install Bun or download a host on
+first launch.
 
-For 0.5.0 Preview 3 desktop use, prefer the packaged desktop installers from
-the GitHub Release: `OpenSquilla-0.5.0-rc3-mac-arm64.dmg` on macOS and
-`OpenSquilla-0.5.0-rc3-win-x64.exe` on Windows.
+For 0.5.0 Preview 4 desktop use, prefer the packaged desktop installers from
+the GitHub Release: `OpenSquilla-0.5.0-rc4-mac-arm64.dmg` on macOS and
+`OpenSquilla-0.5.0-rc4-win-x64.exe` on Windows.
 
 | Path | Audience | When to use |
 | --- | --- | --- |
@@ -109,11 +113,11 @@ Install links: [Git](https://git-scm.com/downloads) ·
 
 ### Desktop installers
 
-The 0.5.0 Preview 3 desktop installers package the Vue control console and
+The 0.5.0 Preview 4 desktop installers package the Vue control console and
 gateway runtime in an Electron shell.
 
-- macOS Apple Silicon: <https://github.com/opensquilla/opensquilla/releases/download/v0.5.0rc3/OpenSquilla-0.5.0-rc3-mac-arm64.dmg>
-- Windows x64: <https://github.com/opensquilla/opensquilla/releases/download/v0.5.0rc3/OpenSquilla-0.5.0-rc3-win-x64.exe>
+- macOS Apple Silicon: <https://github.com/opensquilla/opensquilla/releases/download/v0.5.0rc4/OpenSquilla-0.5.0-rc4-mac-arm64.dmg>
+- Windows x64: <https://github.com/opensquilla/opensquilla/releases/download/v0.5.0rc4/OpenSquilla-0.5.0-rc4-win-x64.exe>
 
 Quit any running OpenSquilla desktop app before upgrading. On macOS, drag the
 app from the DMG into Applications for installation or updates, eject the DMG,
@@ -158,14 +162,34 @@ powershell -c "irm https://astral.sh/uv/install.ps1 | iex"
 $env:Path = "$env:USERPROFILE\.local\bin;" + $env:Path
 ```
 
-**2. Install OpenSquilla** — the same command on every platform.
+**2. Install OpenSquilla.**
+
+On macOS and Linux, the release installer selects the platform assets and runs
+`uv tool install` for you:
 
 ```sh
-uv tool install --python 3.12 "opensquilla[recommended] @ https://github.com/opensquilla/opensquilla/releases/download/v0.5.0rc3/opensquilla-0.5.0rc3-py3-none-any.whl"
+curl -LsSf https://opensquilla.ai/install.sh | bash
 ```
 
-This installs the OpenSquilla wheel from the release URL, then lets
-`uv` download the dependencies declared by the selected extras. The
+On Apple Silicon macOS, the equivalent fully pinned command is:
+
+```sh
+uv tool install --python 3.12 \
+  --with "opensquilla-tui-host @ https://github.com/opensquilla/opensquilla/releases/download/v0.5.0rc4/opensquilla_tui_host-0.5.0rc4-py3-none-macosx_11_0_arm64.whl" \
+  "opensquilla[recommended] @ https://github.com/opensquilla/opensquilla/releases/download/v0.5.0rc4/opensquilla-0.5.0rc4-py3-none-any.whl"
+```
+
+Intel macOS uses the sibling
+`opensquilla_tui_host-0.5.0rc4-py3-none-macosx_11_0_x86_64.whl` asset. Linux
+and Windows currently install the platform-neutral core wheel; their TUI host
+assets follow in separate platform releases:
+
+```sh
+uv tool install --python 3.12 "opensquilla[recommended] @ https://github.com/opensquilla/opensquilla/releases/download/v0.5.0rc4/opensquilla-0.5.0rc4-py3-none-any.whl"
+```
+
+The installer installs core and companion into one isolated tool environment,
+then lets `uv` download the dependencies declared by the selected extras. The
 default `recommended` extra includes SquillaRouter runtime dependencies
 such as ONNX Runtime, LightGBM, NumPy, and tokenizers, so a first install
 needs network access unless those wheels are already cached. `uv` does
@@ -184,8 +208,8 @@ opensquilla gateway run
 > If `opensquilla` is not found right after a fresh `uv` install, open
 > a new terminal, or re-run the PATH line from step 1.
 
-For a fully pinned install, use the versioned wheel URL:
-`https://github.com/opensquilla/opensquilla/releases/download/v0.5.0rc3/opensquilla-0.5.0rc3-py3-none-any.whl`.
+For a fully pinned install, keep both macOS wheel URLs on the same release tag
+and version. A core/host version mismatch is rejected at TUI startup.
 
 ### Install from source
 
@@ -500,22 +524,21 @@ opensquilla chat                       # interactive REPL
 opensquilla agent -m "your prompt"     # one-shot, automation-friendly
 ```
 
-> **Preview — the OpenTUI terminal UI.** `opensquilla chat` runs the stable,
-> Python-native chat by default. A richer OpenTUI frontend (themes, one-card
-> turns, a live router HUD, drag-select copy) is an opt-in preview that runs
-> **only from a [Develop from source](#develop-from-source) checkout**: the host
-> is loaded from the OpenTUI package next to the running code, and that package
-> (plus its [Bun](https://bun.sh) dependencies) is not shipped in the release
-> wheel or the `Install from source` install. From the checkout, install the Bun
-> deps once, then launch with `uv run` so it runs against that same tree:
+> **Terminal UI.** During the supported macOS RC, use
+> `opensquilla chat --ui tui` to enter the packaged OpenTUI host. Bare
+> `opensquilla chat` temporarily remains on `plain` until the RC release gate
+> and seven-day observation pass; `--ui auto` can exercise the final startup
+> policy now. Both renderers use the same Gateway session runtime. Release
+> installers pair the platform-neutral OpenSquilla package with the matching
+> macOS host, so normal use does not require Bun, Node, a source checkout, or a
+> first-run download. Maintainers can explicitly run the source host with:
 >
 > ```sh
 > bun install --frozen-lockfile --cwd=src/opensquilla/cli/tui/opentui/package
-> OPENSQUILLA_TUI_BACKEND=opentui uv run opensquilla chat
+> OPENSQUILLA_TUI_DEV_SOURCE_HOST=1 uv run opensquilla chat --ui tui
 > ```
 >
-> Leave `OPENSQUILLA_TUI_BACKEND` unset for the stable chat. See
-> [docs/tui.md](docs/tui.md) for terminal chat usage and
+> See [docs/tui.md](docs/tui.md) for terminal chat usage and
 > [docs/features/tui-frontend.md](docs/features/tui-frontend.md) for backend
 > details.
 
@@ -576,8 +599,8 @@ to allow inbound TCP on that port. Do not expose the gateway with
 **Docker**
 
 Prebuilt multi-arch images (`amd64`/`arm64`) are published to
-`ghcr.io/opensquilla/opensquilla` on release tags. Preview 3 is published as
-both `v0.5.0rc3` and the moving `latest` tag —
+`ghcr.io/opensquilla/opensquilla` on release tags. Preview 4 is published as
+both `v0.5.0rc4` and the moving `latest` tag —
 [`docs/docker.md`](docs/docker.md) is the full container guide
 (home servers and NAS, LAN exposure with token auth, upgrades):
 
@@ -606,11 +629,19 @@ settings live in `opensquilla.toml.example`.
 
 ---
 
-## What's New in 0.5.0 Preview 3
+## What's New in 0.5.0 Preview 4
 
-OpenSquilla 0.5.0 Preview 3 is a broad preview update for migration, routing,
+OpenSquilla 0.5.0 Preview 4 is a broad preview update for migration, routing,
 desktop, runtime, and deployment:
 
+- **Supported opt-in macOS TUI** - packaged arm64 and x86_64 companion wheels,
+  shared Gateway sessions and approvals, attachment composition, and terminal
+  recovery are available through `opensquilla chat --ui tui`; bare chat remains
+  on the plain rescue renderer during this RC.
+- **Safe profile recovery and imports** - Desktop guards writable startup when
+  a profile is uncertain or interrupted, offers verified recovery/rollback,
+  and supports an explicit whole-profile copy from another CLI/Desktop profile
+  or historical Windows Portable data without changing or syncing the source.
 - **Legacy-home migration** - detect and transactionally import older CLI,
   desktop, portable, relocated, restored, and Docker-volume homes.
 - **Providers and routing** - support expands across TokenRhythm, Tencent
@@ -623,13 +654,13 @@ desktop, runtime, and deployment:
 - **Runtime and safety hardening** - stronger persistence, MCP, session, tool,
   sandbox, secret-redaction, same-origin, and provider retry contracts.
 - **Container images** - prebuilt `linux/amd64` and `linux/arm64` gateway images
-  are published as `v0.5.0rc3` and `latest` on GHCR.
-- **Simplified release assets** - 0.5 previews publish Electron installers,
-  updater metadata, the versioned Python wheel, and checksums; Windows portable
-  archives remain retired.
+  are published as `v0.5.0rc4` and `latest` on GHCR.
+- **Simplified release assets** - releases publish Electron installers,
+  updater metadata, the versioned Python wheel, macOS TUI host companion
+  wheels, and checksums; Windows portable archives remain retired.
 
 Full notes: [`CHANGELOG.md`](CHANGELOG.md) ·
-[`docs/releases/0.5.0rc3.md`](docs/releases/0.5.0rc3.md).
+[`docs/releases/0.5.0rc4.md`](docs/releases/0.5.0rc4.md).
 
 ## What's New in 0.2.1
 

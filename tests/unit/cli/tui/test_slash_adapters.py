@@ -75,6 +75,7 @@ class _StubGatewayClient:
         self.calls: list[tuple[str, Any]] = []
         self.created: list[dict[str, Any]] = []
         self.resolve_payloads: dict[str, dict[str, Any]] = {}
+        self.bootstrap_payloads: dict[str, dict[str, Any]] = {}
         self.history: list[dict[str, Any]] = []
         self.raise_map: dict[str, Exception] = {}
         self._counter = 0
@@ -113,6 +114,35 @@ class _StubGatewayClient:
         if payload is not None:
             return dict(payload)
         return {"session_key": key, "model": None}
+
+    async def bootstrap_session(
+        self,
+        key: str,
+        *,
+        limit: int = 200,
+    ) -> dict[str, Any]:
+        self._maybe_raise("bootstrap_session")
+        self.calls.append(("bootstrap_session", (key, limit)))
+        if key in self.bootstrap_payloads:
+            return dict(self.bootstrap_payloads[key])
+        resolved = dict(self.resolve_payloads.get(key) or {})
+        created = next((item for item in self.created if item["key"] == key), None)
+        return {
+            "session": {
+                "session_key": resolved.get("session_key") or resolved.get("key") or key,
+                "model": resolved.get("model")
+                if "model" in resolved
+                else (created.get("model") if created is not None else None),
+            },
+            "history": {
+                "messages": list(self.history),
+                "history_scope": "complete",
+                "loaded_count": len(self.history),
+                "has_more": False,
+                "canonical_available": True,
+                "compaction_summaries": [],
+            },
+        }
 
     async def delete_sessions(self, keys: list[str]) -> dict[str, Any]:
         self._maybe_raise("delete_sessions")
@@ -192,13 +222,68 @@ def _gateway_context(
     *,
     model: str | None = "openai/test",
     requested_model: str | None = None,
+    tui_output: Any | None = None,
+    stream_response: Any | None = None,
 ) -> GatewaySlashContext:
     return GatewaySlashContext(
         state=ChatSessionState(session_key="agent:main:test:0", model=model),
         client=client or _StubGatewayClient(),
         elevated_state={"mode": None},
         requested_model=requested_model,
+        tui_output=tui_output,
+        stream_response=stream_response,
     )
+
+
+class _StructuredOutput:
+    def __init__(self) -> None:
+        self.messages: list[tuple[str, dict[str, Any]]] = []
+        self.attachment_events: list[tuple[str, dict[str, Any]]] = []
+        self._attachment_seq = 0
+
+    async def send_message(self, message_type: str, payload: dict[str, Any]) -> None:
+        self.messages.append((message_type, payload))
+
+    async def add_attachment(
+        self,
+        *,
+        kind: str,
+        label: str,
+        status: str,
+    ) -> str:
+        self._attachment_seq += 1
+        attachment_id = f"attachment-{self._attachment_seq}"
+        self.attachment_events.append(
+            (
+                "add",
+                {
+                    "id": attachment_id,
+                    "kind": kind,
+                    "label": label,
+                    "status": status,
+                },
+            )
+        )
+        return attachment_id
+
+    async def update_attachment(
+        self,
+        attachment_id: str,
+        *,
+        status: str,
+        message: str = "",
+    ) -> bool:
+        self.attachment_events.append(
+            (
+                "update",
+                {"id": attachment_id, "status": status, "message": message},
+            )
+        )
+        return True
+
+    async def clear_attachments(self, *, status: str | None = None) -> int:
+        self.attachment_events.append(("clear", {"status": status}))
+        return 1
 
 
 class _StandaloneHarness:
@@ -535,6 +620,188 @@ async def test_gateway_new_warns_when_pin_read_fails(
     output = recorder.text()
     assert "Could not read the current session's model pin" in output
     assert "/model" in output
+
+
+async def test_gateway_resume_hydrates_canonical_history_atomically(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_gateway_io(monkeypatch)
+    client = _StubGatewayClient()
+    output = _StructuredOutput()
+    target = "agent:main:resumed"
+    client.bootstrap_payloads[target] = {
+        "session": {"session_key": target, "model": "openai/resumed"},
+        "history": {
+            "messages": [
+                {"message_id": "m1", "role": "user", "text": "old question"},
+                {"message_id": "m2", "role": "assistant", "text": "old answer"},
+            ],
+            "history_scope": "latest_window",
+            "has_more": True,
+            "loaded_count": 2,
+            "canonical_available": True,
+            "compaction_summaries": [],
+        },
+    }
+    context = _gateway_context(client, tui_output=output)
+    context.state.transcript.add("user", "stale")
+
+    handled = await handle_gateway_slash_command(f"/resume {target}", context)
+
+    assert handled is True
+    assert context.state.session_key == target
+    assert context.state.model == "openai/resumed"
+    assert [turn.content for turn in context.state.transcript.turns] == [
+        "old question",
+        "old answer",
+    ]
+    assert [message_type for message_type, _payload in output.messages] == [
+        "composer.set",
+        "history.replace",
+        "composer.set",
+    ]
+    assert output.messages[1][1]["history_scope"] == "latest_window"
+    assert [item["id"] for item in output.messages[1][1]["messages"]] == ["m1", "m2"]
+
+
+async def test_gateway_reset_replaces_transcript_with_empty_snapshot(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_gateway_io(monkeypatch)
+    client = _StubGatewayClient()
+    output = _StructuredOutput()
+    context = _gateway_context(client, tui_output=output)
+    context.state.transcript.add("user", "stale")
+
+    handled = await handle_gateway_slash_command("/reset", context)
+
+    assert handled is True
+    assert context.state.transcript.turns == []
+    assert output.messages[1][0] == "history.replace"
+    assert output.messages[1][1]["messages"] == ()
+
+
+async def test_gateway_file_attachment_reports_upload_progress_and_clears_ready(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_gateway_io(monkeypatch)
+    client = _StubGatewayClient()
+    output = _StructuredOutput()
+
+    async def fake_prepare(
+        command: str,
+        *,
+        upload_callable: Any,
+    ) -> tuple[str, list[dict[str, Any]]]:
+        assert command == "/file /private/brief.pdf summarize"
+        file_uuid = await upload_callable(
+            Path("/private/brief.pdf"),
+            "application/pdf",
+            "brief.pdf",
+        )
+        return "summarize", [{"type": "application/pdf", "file_uuid": file_uuid}]
+
+    async def fake_stream(*_args: Any, **_kwargs: Any) -> TurnResult:
+        return TurnResult(text="done")
+
+    monkeypatch.setattr(_slash_gateway, "_async_file_prompt_and_attachments", fake_prepare)
+    context = _gateway_context(
+        client,
+        tui_output=output,
+        stream_response=fake_stream,
+    )
+
+    handled = await handle_gateway_slash_command(
+        "/file /private/brief.pdf summarize",
+        context,
+    )
+
+    assert handled is True
+    assert [(kind, event.get("status")) for kind, event in output.attachment_events] == [
+        ("add", "reading"),
+        ("update", "uploading"),
+        ("update", "ready"),
+        ("clear", "ready"),
+    ]
+    assert output.attachment_events[0][1]["label"] == "brief.pdf"
+    assert "/private" not in str(output.attachment_events)
+
+
+async def test_gateway_image_and_path_attachments_show_ready_lifecycle(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_gateway_io(monkeypatch)
+    client = _StubGatewayClient()
+    client.is_local_gateway = True
+    output = _StructuredOutput()
+
+    monkeypatch.setattr(
+        _slash_gateway,
+        "_image_prompt_and_attachments",
+        lambda _cmd: ("describe", [{"type": "image/png", "data": "hidden"}]),
+    )
+    monkeypatch.setattr(
+        _slash_gateway,
+        "path_prompt_and_attachments",
+        lambda _cmd: ("inspect", []),
+    )
+
+    async def fake_stream(*_args: Any, **_kwargs: Any) -> TurnResult:
+        return TurnResult(text="done")
+
+    context = _gateway_context(
+        client,
+        tui_output=output,
+        stream_response=fake_stream,
+    )
+
+    assert await handle_gateway_slash_command(
+        "/image /private/chart.png describe",
+        context,
+    )
+    assert await handle_gateway_slash_command(
+        "/path /private/report.md inspect",
+        context,
+    )
+
+    add_events = [event for kind, event in output.attachment_events if kind == "add"]
+    assert [(event["kind"], event["label"]) for event in add_events] == [
+        ("image", "chart.png"),
+        ("path", "report.md"),
+    ]
+    updates = [event.get("status") for kind, event in output.attachment_events if kind == "update"]
+    assert updates == [
+        "ready",
+        "ready",
+    ]
+    assert "/private" not in str(output.attachment_events)
+
+
+async def test_gateway_attachment_failure_stays_visible_without_path_or_size_leak(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    recorder = _patch_gateway_io(monkeypatch)
+    output = _StructuredOutput()
+
+    def fail_prepare(_command: str) -> tuple[str, list[dict[str, Any]]]:
+        raise ValueError("File not found: /private/tmp/redaction-fixture/private.png (12345 bytes)")
+
+    monkeypatch.setattr(_slash_gateway, "_image_prompt_and_attachments", fail_prepare)
+    context = _gateway_context(tui_output=output)
+
+    handled = await handle_gateway_slash_command(
+        "/image /private/tmp/redaction-fixture/private.png describe",
+        context,
+    )
+
+    assert handled is True
+    assert [kind for kind, _event in output.attachment_events] == ["add", "update"]
+    failure = output.attachment_events[-1][1]
+    assert failure["status"] == "failed"
+    assert failure["message"] == ("Could not prepare private.png; check the file and retry /image.")
+    combined = f"{output.attachment_events}\n{recorder.text()}"
+    assert "/private/tmp/redaction-fixture" not in combined
+    assert "12345" not in combined
 
 
 async def test_gateway_model_records_explicit_request_on_context(

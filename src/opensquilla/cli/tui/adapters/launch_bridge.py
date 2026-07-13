@@ -27,18 +27,29 @@ _INTERACTIVE_STDLIB_LOG_HANDLER: Any | None = None
 _INTERACTIVE_LOG_HANDLER_ATTR = "_opensquilla_interactive_log_handler"
 
 
-def validate_tui_backend_or_exit() -> str:
-    from opensquilla.cli.tui.adapters import runtime_bridge  # noqa: PLC0415
+def validate_tui_backend_or_exit(ui_mode: str | None = None) -> str:
     from opensquilla.cli.tui.renderers.selection import (  # noqa: PLC0415
+        OPENSQUILLA_TUI_BACKEND_ENV,
         RendererBackendSelectionError,
         RendererBackendUnavailableError,
+        select_chat_ui_backend,
     )
 
     try:
-        return runtime_bridge.validate_tui_backend_selection()
+        selection = select_chat_ui_backend(ui_mode)
     except (RendererBackendSelectionError, RendererBackendUnavailableError) as exc:
         typer.echo(str(exc), err=True)
         raise typer.Exit(2) from exc
+    # Runtime adapters still resolve the internal backend through the legacy
+    # environment contract.  Pin the already validated choice for this
+    # short-lived CLI process so later factories cannot make a second choice.
+    os.environ[OPENSQUILLA_TUI_BACKEND_ENV] = selection.backend.backend_id
+    if selection.fallback_reason:
+        typer.echo(
+            f"OpenTUI unavailable; using plain mode: {selection.fallback_reason}",
+            err=True,
+        )
+    return selection.backend.backend_id
 
 
 def quiet_logs_for_interactive_chat() -> None:
@@ -146,6 +157,19 @@ def prepare_interactive_chat(
     clear_screen_for_interactive_chat(output_console=active_console)
 
 
+def preflight_gateway_chat_or_exit() -> None:
+    from opensquilla.cli.chat.preflight import (  # noqa: PLC0415
+        ChatGatewayPreflightError,
+        preflight_gateway_chat,
+    )
+
+    try:
+        preflight_gateway_chat()
+    except ChatGatewayPreflightError as exc:
+        typer.echo(f"Chat preflight failed [{exc.code}]: {exc}", err=True)
+        raise typer.Exit(1) from exc
+
+
 def launch_chat(
     *,
     model: str,
@@ -158,9 +182,12 @@ def launch_chat(
     gateway_runner: ChatRunner | None,
     output_console: Any | None = None,
     input_stream: Any | None = None,
+    ui: str | None = None,
 ) -> None:
     active_console = console if output_console is None else output_console
-    backend_id = validate_tui_backend_or_exit()
+    backend_id = validate_tui_backend_or_exit() if ui is None else validate_tui_backend_or_exit(ui)
+    if not standalone:
+        preflight_gateway_chat_or_exit()
     prepare_interactive_chat(
         input_stream=input_stream,
         output_console=active_console,
@@ -248,6 +275,7 @@ def launch_chat_command(
     active_launch_chat(
         model=request.model,
         session_id=request.session_id,
+        ui=request.ui,
         standalone=request.standalone,
         workspace=request.workspace,
         workspace_strict=request.workspace_strict,

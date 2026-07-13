@@ -42,8 +42,12 @@ OPERATOR_SCOPE_NAMESPACE = "operator."
 # transport. Mirrors what the desktop CLI declares on connect.
 CLI_DEFAULT_OPERATOR_SCOPES: frozenset[str] = frozenset(
     {
-        ADMIN_SCOPE, READ_SCOPE, WRITE_SCOPE,
-        APPROVALS_SCOPE, PROPOSALS_SCOPE, PAIRING_SCOPE,
+        ADMIN_SCOPE,
+        READ_SCOPE,
+        WRITE_SCOPE,
+        APPROVALS_SCOPE,
+        PROPOSALS_SCOPE,
+        PAIRING_SCOPE,
     }
 )
 
@@ -52,9 +56,7 @@ CLI_DEFAULT_OPERATOR_SCOPES: frozenset[str] = frozenset(
 # not get destructive privileges. Pairing and proposals are also excluded:
 # proposal mutation promotes generated SKILL.md files into the managed skill
 # layer, so remote callers need an authenticated/admin path for that surface.
-REMOTE_OPERATOR_SCOPES: frozenset[str] = frozenset(
-    {READ_SCOPE, WRITE_SCOPE, APPROVALS_SCOPE}
-)
+REMOTE_OPERATOR_SCOPES: frozenset[str] = frozenset({READ_SCOPE, WRITE_SCOPE, APPROVALS_SCOPE})
 
 # Default scopes for the node role (separate scope namespace).
 NODE_DEFAULT_SCOPES: frozenset[str] = frozenset({NODE_SCOPE})
@@ -95,6 +97,7 @@ METHOD_SCOPES: dict[str, str] = {
     "sessions.search": READ_SCOPE,
     "sessions.preview": READ_SCOPE,
     "sessions.resolve": READ_SCOPE,
+    "sessions.bootstrap": READ_SCOPE,
     "sessions.subscribe": READ_SCOPE,
     "sessions.unsubscribe": READ_SCOPE,
     "sessions.messages.subscribe": READ_SCOPE,

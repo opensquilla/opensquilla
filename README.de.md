@@ -49,7 +49,7 @@ Provider-Schicht spricht mit TokenRhythm, OpenRouter, OpenAI, Anthropic, Ollama,
 DeepSeek, Gemini, Qwen/DashScope und über 20 weiteren LLM-Providern —
 ohne Änderung an deinem Code oder deinem Konfigurationsschema.
 
-OpenSquilla 0.5.0 Preview 3 ist die aktuelle Preview-Version.
+OpenSquilla 0.5.0 Preview 4 ist die aktuelle Preview-Version.
 
 Für aufgabenorientierte Produktdokumentation beginnst du am besten mit
 dem [OpenSquilla-Produktleitfaden](README.product.md) oder dem
@@ -71,12 +71,15 @@ Aus Quellcode entwickeln — bauen **aus einem Git-Checkout** (`git clone`
 Release-Installationsbefehle verwenden veröffentlichte GitHub-Release-Assets.
 Python-Wheel-Installationen verwenden versionsbehaftete Wheel-Dateinamen,
 weil die Installationsprogramme die im Wheel-Dateinamen eingebettete
-Version prüfen.
+Version prüfen. Unter macOS kombiniert das Terminal-Installationsprogramm
+dieses Core-Wheel mit dem architekturspezifischen `opensquilla-tui-host`
+derselben Version; es installiert weder Bun noch lädt es beim ersten Start
+einen Host herunter.
 
-Für den Desktop-Einsatz von 0.5.0 Preview 3 bevorzugst du die gepackten
+Für den Desktop-Einsatz von 0.5.0 Preview 4 bevorzugst du die gepackten
 Desktop-Installationsprogramme aus dem GitHub-Release:
-`OpenSquilla-0.5.0-rc3-mac-arm64.dmg` unter macOS und
-`OpenSquilla-0.5.0-rc3-win-x64.exe` unter Windows.
+`OpenSquilla-0.5.0-rc4-mac-arm64.dmg` unter macOS und
+`OpenSquilla-0.5.0-rc4-win-x64.exe` unter Windows.
 
 | Weg | Zielgruppe | Wann verwenden |
 | --- | --- | --- |
@@ -128,8 +131,8 @@ Installationslinks: [Git](https://git-scm.com/downloads) ·
 Die 0.5.0-Preview-3-Desktop-Installationsprogramme bündeln die Vue-Steuerkonsole
 und die Gateway-Runtime in einer Electron-Hülle.
 
-- macOS Apple Silicon: <https://github.com/opensquilla/opensquilla/releases/download/v0.5.0rc3/OpenSquilla-0.5.0-rc3-mac-arm64.dmg>
-- Windows x64: <https://github.com/opensquilla/opensquilla/releases/download/v0.5.0rc3/OpenSquilla-0.5.0-rc3-win-x64.exe>
+- macOS Apple Silicon: <https://github.com/opensquilla/opensquilla/releases/download/v0.5.0rc4/OpenSquilla-0.5.0-rc4-mac-arm64.dmg>
+- Windows x64: <https://github.com/opensquilla/opensquilla/releases/download/v0.5.0rc4/OpenSquilla-0.5.0-rc4-win-x64.exe>
 
 Beende vor dem Upgrade jede laufende OpenSquilla-Desktop-App.
 Vorhandene `~/.opensquilla/config.toml` und Sitzungsdaten werden
@@ -169,20 +172,42 @@ powershell -c "irm https://astral.sh/uv/install.ps1 | iex"
 $env:Path = "$env:USERPROFILE\.local\bin;" + $env:Path
 ```
 
-**2. OpenSquilla installieren** — derselbe Befehl auf jeder Plattform.
+**2. OpenSquilla installieren.**
+
+Unter macOS und Linux wählt das Release-Installationsprogramm die passenden
+Plattform-Assets aus und führt `uv tool install` für dich aus:
 
 ```sh
-uv tool install --python 3.12 "opensquilla[recommended] @ https://github.com/opensquilla/opensquilla/releases/download/v0.5.0rc3/opensquilla-0.5.0rc3-py3-none-any.whl"
+curl -LsSf https://opensquilla.ai/install.sh | bash
 ```
 
-Damit wird das OpenSquilla-Wheel von der Release-URL installiert;
-anschließend lässt `uv` die von den gewählten Extras deklarierten
-Abhängigkeiten herunterladen. Das Standard-Extra `recommended` enthält
-SquillaRouter-Runtime-Abhängigkeiten wie ONNX Runtime, LightGBM, NumPy
-und tokenizers, sodass eine Erstinstallation Netzwerkzugriff benötigt,
-sofern diese Wheels nicht bereits zwischengespeichert sind. `uv`
-installiert keine nativen Systemruntimes wie macOS `libomp` oder das
-Windows Visual C++ Redistributable; siehe
+Unter macOS installiert dieser Befehl das Core-Wheel und den
+architekturspezifischen TUI-Host aus demselben Release gemeinsam. Der
+entsprechende vollständig fixierte Befehl für Apple Silicon lautet:
+
+```sh
+uv tool install --python 3.12 \
+  --with "opensquilla-tui-host @ https://github.com/opensquilla/opensquilla/releases/download/v0.5.0rc4/opensquilla_tui_host-0.5.0rc4-py3-none-macosx_11_0_arm64.whl" \
+  "opensquilla[recommended] @ https://github.com/opensquilla/opensquilla/releases/download/v0.5.0rc4/opensquilla-0.5.0rc4-py3-none-any.whl"
+```
+
+Intel-Macs verwenden stattdessen das benachbarte Asset
+`opensquilla_tui_host-0.5.0rc4-py3-none-macosx_11_0_x86_64.whl`. Linux und
+Windows installieren derzeit nur das plattformneutrale Core-Wheel; ihre
+TUI-Host-Assets folgen in separaten Plattform-Releases:
+
+```sh
+uv tool install --python 3.12 "opensquilla[recommended] @ https://github.com/opensquilla/opensquilla/releases/download/v0.5.0rc4/opensquilla-0.5.0rc4-py3-none-any.whl"
+```
+
+Das Installationsprogramm legt Core und Companion in derselben isolierten
+Tool-Umgebung ab und lässt `uv` anschließend die von den gewählten Extras
+deklarierten Abhängigkeiten herunterladen. Das Standard-Extra `recommended`
+enthält SquillaRouter-Runtime-Abhängigkeiten wie ONNX Runtime, LightGBM,
+NumPy und tokenizers, sodass eine Erstinstallation Netzwerkzugriff benötigt,
+sofern diese Wheels nicht bereits zwischengespeichert sind. `uv` installiert
+keine nativen Systemruntimes wie macOS `libomp` oder das Windows Visual C++
+Redistributable; siehe
 [Fehlerbehebung](#troubleshooting), falls die Router-Runtime einen
 Ladefehler einer nativen Bibliothek meldet.
 
@@ -198,9 +223,10 @@ opensquilla gateway run
 > gefunden, öffne ein neues Terminal oder führe die PATH-Zeile aus
 > Schritt 1 erneut aus.
 
-Für eine vollständig festgelegte Installation verwende die
-versionsbehaftete Wheel-URL:
-`https://github.com/opensquilla/opensquilla/releases/download/v0.5.0rc3/opensquilla-0.5.0rc3-py3-none-any.whl`.
+Für eine vollständig festgelegte macOS-Installation müssen die URLs des
+Core-Wheels und des Companions dasselbe Release-Tag verwenden. Das
+Release-Installationsprogramm erledigt dies automatisch und weist nicht
+kompatible Versionen zurück.
 
 <a id="install-from-source"></a>
 

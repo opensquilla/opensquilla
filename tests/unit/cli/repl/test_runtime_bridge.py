@@ -5,6 +5,7 @@ from types import SimpleNamespace
 from typing import Any, cast
 
 import pytest
+import typer
 from rich.console import Console
 from rich.panel import Panel
 
@@ -115,9 +116,7 @@ def test_gateway_runtime_notifier_maps_all_notice_kinds() -> None:
     ):
         notify(notice)
 
-    assert output_console.printed[0] == (
-        "[dim]Connected to gateway. Session: agent:main:new[/dim]"
-    )
+    assert output_console.printed[0] == ("[dim]Connected to gateway. Session: agent:main:new[/dim]")
     assert output_console.printed[1] == (
         "[dim]Connected to gateway. Resuming session: agent:main:old[/dim]"
     )
@@ -130,6 +129,73 @@ def test_gateway_runtime_notifier_maps_all_notice_kinds() -> None:
     assert output_console.printed[5] == "[yellow]Goodbye.[/yellow]"
     assert output_console.printed[6] == "[red]Unknown command.[/red] [dim]Use /help.[/dim]"
     assert isinstance(output_console.printed[7], Panel)
+
+
+def test_gateway_exit_receipt_is_plain_and_resumable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from opensquilla.cli.repl import runtime_bridge
+
+    output_console = _RecordingConsole()
+    monkeypatch.setenv("OPENSQUILLA_GATEWAY_URL", "ws://127.0.0.1:18791/ws")
+
+    runtime_bridge._print_session_exit_receipt(
+        output_console,
+        gateway_runtime.SessionExitSummary(
+            session_key="agent:main:with spaces",
+            title="Mac TUI work",
+            model="openai/test",
+            reason="surface_closed",
+        ),
+    )
+
+    assert len(output_console.printed) == 1
+    receipt = output_console.printed[0]
+    assert getattr(receipt, "plain") == (
+        "Session saved: Mac TUI work\n"
+        "Resume: opensquilla chat --session agent:main:with spaces\n"
+        "Web: http://127.0.0.1:18791/control/chat?session=agent%3Amain%3Awith%20spaces\n"
+        "Exit: surface_closed"
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("reason", ["host_crash", "gateway_disconnect", "runtime_error"])
+async def test_gateway_runtime_bridge_prints_failure_receipt_once(
+    monkeypatch: pytest.MonkeyPatch,
+    reason: str,
+) -> None:
+    from opensquilla.cli.repl import runtime_bridge
+
+    output_console = _RecordingConsole()
+
+    async def fake_run_gateway_chat(**kwargs: Any) -> gateway_runtime.SessionExitSummary:
+        raise gateway_runtime.SessionExitError(
+            gateway_runtime.SessionExitSummary(
+                session_key="agent:main:recover",
+                title="Recoverable session",
+                model="openai/test",
+                reason=cast(Any, reason),
+                active=True,
+                queued=2,
+            )
+        )
+
+    monkeypatch.setattr(gateway_runtime, "run_gateway_chat", fake_run_gateway_chat)
+
+    with pytest.raises(typer.Exit) as caught:
+        await runtime_bridge.run_gateway_chat(
+            model=None,
+            session_id="agent:main:recover",
+            output_console=output_console,
+        )
+
+    assert caught.value.exit_code == 1
+    assert len(output_console.printed) == 1
+    receipt = output_console.printed[0].plain
+    assert receipt.count("Session saved:") == 1
+    assert f"Exit: {reason}" in receipt
+    assert "Remaining work: active=true, queued=2" in receipt
 
 
 @pytest.mark.asyncio

@@ -73,6 +73,42 @@ class TuiPluginOutputHandle:
         response: object | None = await requester(request)
         return response
 
+    async def present_gateway_approval(self, request: dict[str, object]) -> bool:
+        presenter = getattr(self._output_handle, "present_gateway_approval", None)
+        if not callable(presenter):
+            return False
+        return bool(await presenter(request))
+
+    async def resolve_gateway_approval(
+        self,
+        approval_id: str,
+        *,
+        approved: bool,
+        resolution: str | None = None,
+    ) -> bool:
+        resolver = getattr(self._output_handle, "resolve_gateway_approval", None)
+        if not callable(resolver):
+            return False
+        return bool(
+            await resolver(
+                approval_id,
+                approved=approved,
+                resolution=resolution,
+            )
+        )
+
+    def cancel_pending_approvals(self) -> None:
+        cancel = getattr(self._output_handle, "cancel_pending_approvals", None)
+        if callable(cancel):
+            cancel()
+
+    async def fail_pending_gateway_approvals(self) -> None:
+        fail = getattr(self._output_handle, "fail_pending_gateway_approvals", None)
+        if callable(fail):
+            await fail()
+            return
+        self.cancel_pending_approvals()
+
     def stream_output(self) -> AbstractAsyncContextManager[Callable[[str], None]]:
         return self._output_handle.stream_output()
 

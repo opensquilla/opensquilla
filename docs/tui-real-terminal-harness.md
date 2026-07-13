@@ -59,6 +59,36 @@ Full deterministic suite:
 uv run pytest tests/integration/cli/tui_real_terminal -q
 ```
 
+### Packaged release gate
+
+macOS companion releases rerun the deterministic OpenTUI scenarios from a
+clean environment containing only the built core and companion wheels plus test
+dependencies. The gate clears `PYTHONPATH`, source-host overrides, and Bun from
+`PATH`, forces the tmux driver, and passes `--tui-require-capabilities`; a
+missing terminal capability is therefore a failure rather than a skip. It
+covers launch/input, CJK, long streaming, complex tool UI, architecture replay,
+resize and multiline paste, completion overlays, and primary-screen/shell
+restoration.
+
+The same matrix also runs
+`test_packaged_gateway_e2e.py`. That scenario does not use
+`fake_opentui_app.py`: it starts an auth-free loopback Gateway with a
+deterministic provider, creates a session through `GatewayClient`, uploads a
+small attachment, and resumes the session through the installed
+`opensquilla chat --ui tui --session` command and installed companion host. A
+second Gateway client acts as the Web surface. The scenario proves canonical
+history and attachment hydration, Web-to-TUI turn projection, first-valid
+approval convergence, queued-turn cancellation, alternate-screen recovery,
+and a usable echoed shell after exit.
+
+Scenario frames, scrollback, terminal logs, result files, pytest output, and
+JUnit output are retained as release evidence, including on failures. The real
+Gateway scenario additionally retains Gateway logs, provider lifecycle JSONL,
+RPC/event snapshots, installed core/companion/host version provenance, and an
+explicit `fake_opentui_app: false` assertion. Normal
+developer runs keep the existing capability-aware skip behavior unless they
+explicitly pass `--tui-require-capabilities`.
+
 Manual lab:
 
 ```bash
@@ -84,8 +114,8 @@ OPENSQUILLA_TUI_LIVE_REAL=1 uv run python scripts/tui_real_terminal_lab.py \
   --scenario live_opentui_architecture_prompt --backend live-opentui
 ```
 
-The live smoke launches `opensquilla chat --standalone` with
-`OPENSQUILLA_TUI_BACKEND=opentui`, drives it through tmux, sends a real prompt,
+The live smoke launches `opensquilla chat --standalone --ui tui`, drives it
+through tmux, sends a real prompt,
 and captures text evidence. Use it deliberately because it may hit the
 configured live provider.
 
@@ -102,6 +132,11 @@ Each run writes:
 - `result.json`
 - `visual-verdict.json`
 
-Capability misses are explicit skips. Deterministic assertion failures block.
+The packaged Gateway scenario also writes `gateway.log`,
+`provider-events.jsonl`, and `gateway-rpc-events.json`.
+
+Capability misses are explicit skips in normal developer runs and hard failures
+when `--tui-require-capabilities` is set by the release gate. Deterministic
+assertion failures block.
 Visual verdicts with `inspect` preserve evidence without blocking unrelated
 backend changes.

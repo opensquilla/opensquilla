@@ -8,6 +8,7 @@ typed session state, a gateway client, and an optional TUI output handle.
 from __future__ import annotations
 
 import asyncio
+import shlex
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from pathlib import Path
@@ -37,6 +38,13 @@ from opensquilla.cli.tui.adapters.slash_common import (
     slash_parts_any as _slash_parts_any,
 )
 from opensquilla.cli.tui.backend.contracts import TuiOutputHandle
+from opensquilla.cli.tui.opentui.history import (
+    HISTORY_BOOTSTRAP_LIMIT,
+    apply_bootstrap_to_state,
+    history_replace_from_bootstrap,
+    replace_tui_history,
+    set_tui_history_loading,
+)
 from opensquilla.cli.ui import ACCENT, ACCENT_HEADER, console, error_panel
 from opensquilla.engine.commands import Surface
 
@@ -62,6 +70,13 @@ class GatewayClientLike(Protocol):
     async def list_sessions(self, limit: int = 50) -> dict[str, Any]: ...
 
     async def resolve_session(self, key: str) -> dict[str, Any]: ...
+
+    async def bootstrap_session(
+        self,
+        key: str,
+        *,
+        limit: int = 200,
+    ) -> dict[str, Any]: ...
 
     async def delete_sessions(self, keys: list[str]) -> dict[str, Any]: ...
 
@@ -147,6 +162,85 @@ class GatewaySlashContext:
     requested_model: str | None = None
 
 
+def _attachment_label_from_command(command: str, *, fallback: str) -> str:
+    """Return only a basename for UI chips; never expose a local path."""
+
+    try:
+        words = shlex.split(command)
+    except ValueError:
+        words = command.split()
+    if len(words) < 2:
+        return fallback
+    raw = words[1].replace("\\", "/").rsplit("/", 1)[-1].strip()
+    return raw[:72] or fallback
+
+
+def _attachment_failure_message(kind: str, label: str) -> str:
+    return f"Could not prepare {label}; check the file and retry /{kind}."
+
+
+async def _add_attachment_chip(
+    output: object | None,
+    *,
+    kind: str,
+    label: str,
+) -> str | None:
+    add = getattr(output, "add_attachment", None)
+    if not callable(add):
+        return None
+    return str(await add(kind=kind, label=label, status="reading"))
+
+
+async def _update_attachment_chip(
+    output: object | None,
+    attachment_id: str | None,
+    *,
+    status: str,
+    message: str = "",
+) -> None:
+    if not attachment_id:
+        return
+    update = getattr(output, "update_attachment", None)
+    if callable(update):
+        await update(attachment_id, status=status, message=message)
+
+
+async def _clear_ready_attachment_chips(output: object | None) -> None:
+    clear = getattr(output, "clear_attachments", None)
+    if callable(clear):
+        await clear(status="ready")
+
+
+async def _activate_session_from_bootstrap(
+    context: GatewaySlashContext,
+    session_key: str,
+) -> dict[str, Any]:
+    """Replace UI + mutable state from one canonical session snapshot."""
+
+    await set_tui_history_loading(context.tui_output, loading=True)
+    try:
+        snapshot = await context.client.bootstrap_session(
+            session_key,
+            limit=HISTORY_BOOTSTRAP_LIMIT,
+        )
+        history = history_replace_from_bootstrap(
+            snapshot,
+            fallback_session_key=session_key,
+        )
+        # The host replacement is one frame. Update Python state only once it
+        # has landed so a renderer failure cannot leave scope and screen on two
+        # keys.
+        await replace_tui_history(
+            context.tui_output,
+            history,
+            manage_composer=False,
+        )
+        apply_bootstrap_to_state(context.state, snapshot, history)
+        return snapshot
+    finally:
+        await set_tui_history_loading(context.tui_output, loading=False)
+
+
 async def handle_gateway_slash_command(
     cmd: str,
     context: GatewaySlashContext,
@@ -222,14 +316,7 @@ async def _dispatch_gateway_slash_command(
         title = parts[1].strip() if len(parts) > 1 else None
         requested_model = await _requested_session_model(context)
         session_key = await client.create_session(model=requested_model, display_name=title)
-        state.session_key = session_key
-        state.transcript.clear()
-        state.usage.reset()
-        try:
-            _resolved = await asyncio.wait_for(client.resolve_session(session_key), timeout=2.0)
-            state.model = _resolved.get("model") or state.model
-        except Exception:  # noqa: BLE001 - network/timeout; non-fatal
-            pass
+        await _activate_session_from_bootstrap(context, session_key)
         label = f" ({title})" if title else ""
         console.print(f"[green]Started new session{label}:[/green] {session_key}")
         return True
@@ -259,11 +346,7 @@ async def _dispatch_gateway_slash_command(
             console.print("[red]Usage: /resume <id>[/red]")
             return True
         target = cmd.split(maxsplit=1)[1].strip()
-        payload = await client.resolve_session(target)
-        state.session_key = payload.get("session_key") or payload.get("key") or target
-        state.model = payload.get("model") or state.model
-        state.transcript.clear()
-        state.usage.reset()
+        await _activate_session_from_bootstrap(context, target)
         console.print(f"[green]Resumed session:[/green] {state.session_key}")
         return True
 
@@ -285,23 +368,9 @@ async def _dispatch_gateway_slash_command(
             if deleting_active:
                 # The REPL must not keep sending turns to a deleted key; move
                 # to a fresh session that keeps the user's explicit model pin.
-                replacement_model = (
-                    context.requested_model or resolved.get("model") or None
-                )
+                replacement_model = context.requested_model or resolved.get("model") or None
                 new_key = await client.create_session(model=replacement_model)
-                state.session_key = new_key
-                state.transcript.clear()
-                state.usage.reset()
-                # Refresh the display model like /new does, so /status and the
-                # HUD reflect the replacement session's actual pin instead of
-                # the deleted session's stale model.
-                try:
-                    _resolved = await asyncio.wait_for(
-                        client.resolve_session(new_key), timeout=2.0
-                    )
-                    state.model = _resolved.get("model") or replacement_model or state.model
-                except Exception:  # noqa: BLE001 - network/timeout; non-fatal
-                    state.model = replacement_model or state.model
+                await _activate_session_from_bootstrap(context, new_key)
                 console.print(
                     "[yellow]The deleted session was active; switched to a new "
                     f"session:[/yellow] {new_key}"
@@ -312,8 +381,7 @@ async def _dispatch_gateway_slash_command(
 
     if cmd in {"/clear", "/reset"}:
         await client.reset_session(state.session_key)
-        state.transcript.clear()
-        state.usage.reset()
+        await _activate_session_from_bootstrap(context, state.session_key)
         console.print(f"[{ACCENT}]cleared[/] [dim]{state.session_key}[/dim]")
         return True
 
@@ -379,19 +447,40 @@ async def _dispatch_gateway_slash_command(
         if len(parts) == 1 or not parts[1].strip():
             console.print("[red]Usage: /image <path> [prompt][/red]")
             return True
+        label = _attachment_label_from_command(cmd, fallback="image")
+        attachment_id = await _add_attachment_chip(
+            tui_output,
+            kind="image",
+            label=label,
+        )
         try:
             prompt, attachments = _image_prompt_and_attachments(cmd)
-        except ValueError as exc:
-            console.print(error_panel(str(exc)))
+        except ValueError:
+            message = _attachment_failure_message("image", label)
+            await _update_attachment_chip(
+                tui_output,
+                attachment_id,
+                status="failed",
+                message=message,
+            )
+            console.print(error_panel(message))
             return True
-        result = await stream(
-            client,
-            state.session_key,
-            prompt,
-            elevated_state,
-            attachments=attachments,
-            tui_output=tui_output,
+        await _update_attachment_chip(
+            tui_output,
+            attachment_id,
+            status="ready",
         )
+        try:
+            result = await stream(
+                client,
+                state.session_key,
+                prompt,
+                elevated_state,
+                attachments=attachments,
+                tui_output=tui_output,
+            )
+        finally:
+            await _clear_ready_attachment_chips(tui_output)
         record_turn(state, prompt, result)
         return True
 
@@ -426,19 +515,40 @@ async def _dispatch_gateway_slash_command(
         if not _gateway_client_is_local(client):
             console.print(error_panel(_PATH_REMOTE_GATEWAY_MESSAGE))
             return True
+        label = _attachment_label_from_command(cmd, fallback="path")
+        attachment_id = await _add_attachment_chip(
+            tui_output,
+            kind="path",
+            label=label,
+        )
         try:
             prompt, attachments = path_prompt_and_attachments(cmd)
-        except ValueError as exc:
-            console.print(error_panel(str(exc)))
+        except ValueError:
+            message = _attachment_failure_message("path", label)
+            await _update_attachment_chip(
+                tui_output,
+                attachment_id,
+                status="failed",
+                message=message,
+            )
+            console.print(error_panel(message))
             return True
-        result = await stream(
-            client,
-            state.session_key,
-            prompt,
-            elevated_state,
-            attachments=attachments,
-            tui_output=tui_output,
+        await _update_attachment_chip(
+            tui_output,
+            attachment_id,
+            status="ready",
         )
+        try:
+            result = await stream(
+                client,
+                state.session_key,
+                prompt,
+                elevated_state,
+                attachments=attachments,
+                tui_output=tui_output,
+            )
+        finally:
+            await _clear_ready_attachment_chips(tui_output)
         record_turn(state, prompt, result)
         return True
 
@@ -447,24 +557,51 @@ async def _dispatch_gateway_slash_command(
             console.print("[red]Usage: /file <path> [prompt][/red]")
             return True
 
+        label = _attachment_label_from_command(cmd, fallback="file")
+        attachment_id = await _add_attachment_chip(
+            tui_output,
+            kind="file",
+            label=label,
+        )
+
         async def _bridge_upload(path: Path, mime: str, name: str) -> str:
+            await _update_attachment_chip(
+                tui_output,
+                attachment_id,
+                status="uploading",
+            )
             return await client.upload_file(path, mime, name)
 
         try:
             prompt, attachments = await _async_file_prompt_and_attachments(
                 cmd, upload_callable=_bridge_upload
             )
-        except ValueError as exc:
-            console.print(error_panel(str(exc)))
+        except ValueError:
+            message = _attachment_failure_message("file", label)
+            await _update_attachment_chip(
+                tui_output,
+                attachment_id,
+                status="failed",
+                message=message,
+            )
+            console.print(error_panel(message))
             return True
-        result = await stream(
-            client,
-            state.session_key,
-            prompt,
-            elevated_state,
-            attachments=attachments,
-            tui_output=tui_output,
+        await _update_attachment_chip(
+            tui_output,
+            attachment_id,
+            status="ready",
         )
+        try:
+            result = await stream(
+                client,
+                state.session_key,
+                prompt,
+                elevated_state,
+                attachments=attachments,
+                tui_output=tui_output,
+            )
+        finally:
+            await _clear_ready_attachment_chips(tui_output)
         record_turn(state, prompt, result)
         return True
 
@@ -506,9 +643,7 @@ def _print_meta_skills_table(payload: Any) -> None:
         return
     skills = payload.get("skills")
     rows = (
-        [skill for skill in skills if isinstance(skill, dict)]
-        if isinstance(skills, list)
-        else []
+        [skill for skill in skills if isinstance(skill, dict)] if isinstance(skills, list) else []
     )
     if not rows:
         console.print("[dim]No meta-skills available.[/dim]")
@@ -626,9 +761,7 @@ async def _forget_server_approvals(
     return True
 
 
-async def _handle_approvals_command(
-    cmd: str, client: GatewayClientLike | None = None
-) -> None:
+async def _handle_approvals_command(cmd: str, client: GatewayClientLike | None = None) -> None:
     """Diagnostic view / reset for the approval queue."""
     parts = cmd.split()
     arg = parts[1].lower() if len(parts) > 1 else "status"
@@ -663,9 +796,7 @@ async def _handle_approvals_command(
     console.print(f"[{ACCENT}]mode:[/] {snap.get('mode')}")
 
 
-async def _handle_forget_command(
-    cmd: str, client: GatewayClientLike | None = None
-) -> None:
+async def _handle_forget_command(cmd: str, client: GatewayClientLike | None = None) -> None:
     """Compatibility no-op for removed approval cache."""
     parts = cmd.split(maxsplit=1)
     if len(parts) < 2:

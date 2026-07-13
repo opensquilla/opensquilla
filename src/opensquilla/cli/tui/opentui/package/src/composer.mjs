@@ -87,6 +87,33 @@ export function routerStripValue(value) {
   return clipToCells(String(value ?? "").replace(/\s+/gu, " ").trim() || "-", 18);
 }
 
+const ATTACHMENT_STATUS = new Set(["reading", "uploading", "ready", "failed"]);
+const ATTACHMENT_ICON = { reading: "◌", uploading: "⇡", ready: "✓", failed: "✗" };
+
+function normalizedAttachment(message, previous = null) {
+  const status = ATTACHMENT_STATUS.has(String(message?.status ?? ""))
+    ? String(message.status)
+    : previous?.status ?? "failed";
+  return {
+    id: String(message?.id ?? previous?.id ?? ""),
+    kind: stripTerminalControls(String(message?.kind ?? previous?.kind ?? "file")),
+    label: stripTerminalControls(String(message?.label ?? previous?.label ?? "attachment")),
+    status,
+    message: stripTerminalControls(String(message?.message ?? "")),
+  };
+}
+
+export function attachmentChipText(attachment) {
+  const item = normalizedAttachment(attachment);
+  const detail = item.status === "failed" && item.message ? ` · ${item.message}` : "";
+  return `[${ATTACHMENT_ICON[item.status]} ${item.kind} ${item.label}${detail}]`;
+}
+
+export function attachmentSubmitBlocked(attachments) {
+  return Array.from(attachments ?? []).some((item) =>
+    item?.status === "reading" || item?.status === "uploading");
+}
+
 function clamp(value, min, max) {
   if (max < min) return min;
   return Math.max(min, Math.min(max, value));
@@ -515,6 +542,7 @@ export function createComposer(deps) {
     files: [],
     filtersSensitivePaths: true,
   };
+  const attachments = new Map();
   const menu = {
     active: false,
     kind: null,
@@ -1005,7 +1033,25 @@ export function createComposer(deps) {
   // Content rows inside the composer box: box height (effFooterHeight - 1,
   // the router strip takes the top footer row) minus its two border rows.
   function composerContentRows() {
-    return Math.max(1, effFooterHeight() - 3);
+    return Math.max(1, effFooterHeight() - 3 - attachmentRowCount());
+  }
+
+  function attachmentRowCount() {
+    return attachments.size > 0 && effFooterHeight() >= 5 ? 1 : 0;
+  }
+
+  function attachmentLine() {
+    return clipToCells(
+      Array.from(attachments.values()).map(attachmentChipText).join(" "),
+      composerContentWidth(),
+    );
+  }
+
+  function attachmentColor() {
+    const values = Array.from(attachments.values());
+    if (values.some((item) => item.status === "failed")) return THEME.error;
+    if (attachmentSubmitBlocked(values)) return THEME.warning;
+    return THEME.muted;
   }
 
   // Lines to render inside the composer box: the wrapped, caret-windowed
@@ -1055,6 +1101,14 @@ export function createComposer(deps) {
       flexDirection: "column",
       justifyContent: "flex-start",
     });
+    if (attachmentRowCount()) {
+      composerNode.add(new TextRenderable(renderer, {
+        id: "attachment-chip-row",
+        content: attachmentLine(),
+        fg: attachmentColor(),
+        wrapMode: "none",
+      }));
+    }
     viewport.lines.forEach((line, index) => {
       composerNode.add(new TextRenderable(renderer, {
         id: `composer-text-${index}`,
@@ -1128,6 +1182,13 @@ export function createComposer(deps) {
 
   function submitInput() {
     const text = inputText;
+    // A staged attachment is not sendable until Python marks it ready. This
+    // also blocks a second slash submit while the first file is being read or
+    // uploaded. Failed chips remain visible but do not trap unrelated input.
+    if (composer.disabled || attachmentSubmitBlocked(attachments.values())) {
+      rerenderInputRegion();
+      return;
+    }
     // Enter on a blank composer is a no-op, like every shell/REPL: submitting
     // whitespace would echo an empty prompt card and queue a phantom message
     // behind a running turn.
@@ -1222,9 +1283,10 @@ export function createComposer(deps) {
     const maxX = Math.max(COMPOSER_CONTENT_LEFT, terminalWidth - COMPOSER_CONTENT_LEFT - 1);
     const maxY = Math.max(footerTop, footerTop + fh - 2);
     const x = clamp(COMPOSER_CONTENT_LEFT + viewport.caretCol, COMPOSER_CONTENT_LEFT, maxX);
+    const contentTop = COMPOSER_CONTENT_TOP_OFFSET + attachmentRowCount();
     const y = clamp(
-      footerTop + COMPOSER_CONTENT_TOP_OFFSET + screenRow,
-      footerTop + COMPOSER_CONTENT_TOP_OFFSET,
+      footerTop + contentTop + screenRow,
+      footerTop + contentTop,
       maxY,
     );
     // Pulse-driven re-renders (the 180ms status glyph tick while a turn runs)
@@ -1678,6 +1740,38 @@ export function createComposer(deps) {
     rerenderInputRegion();
   }
 
+  function addAttachmentState(message) {
+    const attachment = normalizedAttachment(message);
+    if (!attachment.id) return;
+    attachments.set(attachment.id, attachment);
+    rerenderInputRegion();
+  }
+
+  function updateAttachmentState(message) {
+    const id = String(message?.id ?? "");
+    const current = attachments.get(id);
+    if (!current) return;
+    attachments.set(id, normalizedAttachment(message, current));
+    rerenderInputRegion();
+  }
+
+  function removeAttachmentState(id) {
+    if (!attachments.delete(String(id ?? ""))) return;
+    rerenderInputRegion();
+  }
+
+  function clearAttachmentStates(status = null) {
+    const target = status === null || status === undefined ? null : String(status);
+    let changed = false;
+    for (const [id, attachment] of attachments) {
+      if (target === null || attachment.status === target) {
+        attachments.delete(id);
+        changed = true;
+      }
+    }
+    if (changed) rerenderInputRegion();
+  }
+
   function setRouterState(message) {
     Object.assign(routerState, {
       model: String(message.model ?? routerState.model),
@@ -1755,6 +1849,10 @@ export function createComposer(deps) {
     install,
     rerender: rerenderInputRegion,
     setComposerState,
+    addAttachmentState,
+    updateAttachmentState,
+    removeAttachmentState,
+    clearAttachmentStates,
     setRouterState,
     setTurnStatus,
     setCompletionContext,

@@ -1038,6 +1038,10 @@ async def dispatch_task_runtime_turn(
             heartbeat_interval=heartbeat_interval,
             stream_event_sink=getattr(run, "stream_event_sink", None),
             task_id=getattr(run, "task_id", None),
+            session_id=getattr(run.envelope, "session_id", None),
+            client_message_id=getattr(run.envelope, "metadata", {}).get("client_message_id"),
+            user_message_id=getattr(run, "persisted_user_message_id", None),
+            surface_id=getattr(run.envelope, "metadata", {}).get("surface_id"),
         )
     except TaskRuntimeStreamError as exc:
         if exc.code in {
@@ -1266,6 +1270,10 @@ async def _emit_task_runtime_stream_events(
     heartbeat_interval: float | None = None,
     stream_event_sink: Any = None,
     task_id: str | None = None,
+    session_id: str | None = None,
+    client_message_id: str | None = None,
+    user_message_id: str | None = None,
+    surface_id: str | None = None,
 ) -> None:
     """Emit turn events and fail the task if the stream reports an error.
 
@@ -1351,6 +1359,15 @@ async def _emit_task_runtime_stream_events(
             event_dict["error_message"] = safe_error_message
         if task_id:
             event_dict["task_id"] = task_id
+            event_dict["turn_id"] = task_id
+        if session_id:
+            event_dict["session_id"] = session_id
+        if client_message_id:
+            event_dict["client_message_id"] = client_message_id
+        if user_message_id:
+            event_dict["user_message_id"] = user_message_id
+        if surface_id:
+            event_dict["surface_id"] = surface_id
         await event_emitter(
             session_key,
             f"session.event.{event_kind}",
@@ -2085,9 +2102,7 @@ async def build_services(
             # 0o700: session transcripts are sensitive — keep a freshly created
             # state directory owner-only (umask-masked; no-op on Windows and on
             # pre-existing directories).
-            Path(session_db_path).expanduser().parent.mkdir(
-                mode=0o700, parents=True, exist_ok=True
-            )
+            Path(session_db_path).expanduser().parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         migrations_dir = _resolve_migrations_dir()
         applied = apply_pending(session_db_path, migrations_dir)
         if applied:
@@ -2214,9 +2229,7 @@ async def build_services(
                 from opensquilla.provider.live_catalog import warm_live_provider_catalogs
 
                 await asyncio.wait_for(
-                    warm_live_provider_catalogs(
-                        model_catalog, [config.llm.provider], proxy=proxy
-                    ),
+                    warm_live_provider_catalogs(model_catalog, [config.llm.provider], proxy=proxy),
                     timeout=5.0,
                 )
             except Exception as e:  # noqa: BLE001 - live metadata must never block boot
@@ -2556,8 +2569,7 @@ async def build_services(
                 # contended WAL write cannot stall service startup wiring.
                 await asyncio.to_thread(
                     meta_run_writer.mark_orphans_failed,
-                    age_ms=int(getattr(persistence_cfg, "orphan_cleanup_age_seconds", 3600))
-                    * 1000,
+                    age_ms=int(getattr(persistence_cfg, "orphan_cleanup_age_seconds", 3600)) * 1000,
                 )
     except Exception as e:  # noqa: BLE001 - meta traces must not block boot.
         log.warning("build_services.meta_run_writer_failed", error=str(e))
@@ -2591,8 +2603,7 @@ async def build_services(
                 router_decision_writer = open_router_decision_writer(
                     decisions_db_path,
                     retention_days=int(
-                        getattr(router_cfg_for_decisions, "decision_retention_days", 30)
-                        or 30
+                        getattr(router_cfg_for_decisions, "decision_retention_days", 30) or 30
                     ),
                 )
                 set_decision_writer(router_decision_writer)
@@ -2621,9 +2632,7 @@ async def build_services(
     try:
         errors_storage = get_session_storage(session_manager)
         errors_db_path = (
-            getattr(errors_storage, "_db_path", None)
-            if errors_storage is not None
-            else None
+            getattr(errors_storage, "_db_path", None) if errors_storage is not None else None
         )
         if errors_db_path and errors_db_path != ":memory:":
             from opensquilla.persistence.turn_error_writer import (
@@ -2778,9 +2787,7 @@ def build_turn_runner_from_services(
         compaction_hooks=getattr(svc, "compaction_hooks", None),
         meta_run_writer=getattr(svc, "meta_run_writer", None),
         turn_error_writer=getattr(svc, "turn_error_writer", None),
-        provider_call_observer=build_provider_call_observer(
-            getattr(svc, "provider_stats", None)
-        ),
+        provider_call_observer=build_provider_call_observer(getattr(svc, "provider_stats", None)),
     )
 
 

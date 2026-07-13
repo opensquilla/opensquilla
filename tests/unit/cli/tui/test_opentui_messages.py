@@ -10,8 +10,14 @@ from opensquilla.cli.tui.opentui.messages import (
     HOST_TO_PYTHON_TYPES,
     PYTHON_TO_HOST_TYPES,
     ApprovalDismiss,
+    AttachmentClear,
+    AttachmentRemove,
+    AttachmentState,
+    AttachmentUpdate,
     CompletionCandidate,
     CompletionContext,
+    HistoryMessage,
+    HistoryReplace,
     HostApprovalResponse,
     HostInputCancel,
     HostInputEof,
@@ -25,16 +31,12 @@ from opensquilla.cli.tui.opentui.messages import (
     python_message_to_json,
 )
 
-_PACKAGE_SRC = (
-    Path(__file__).resolve().parents[4] / "src/opensquilla/cli/tui/opentui/package/src"
-)
+_PACKAGE_SRC = Path(__file__).resolve().parents[4] / "src/opensquilla/cli/tui/opentui/package/src"
 
 
 def _production_host_sources() -> list[Path]:
     return [
-        path
-        for path in sorted(_PACKAGE_SRC.glob("*.mjs"))
-        if not path.name.endswith(".test.mjs")
+        path for path in sorted(_PACKAGE_SRC.glob("*.mjs")) if not path.name.endswith(".test.mjs")
     ]
 
 
@@ -88,11 +90,87 @@ def test_python_message_to_json_serializes_completion_context() -> None:
     assert '"filters_sensitive_paths":true' in payload
 
 
+def test_python_message_to_json_serializes_atomic_history_replace() -> None:
+    payload = python_message_to_json(
+        "history.replace",
+        HistoryReplace(
+            session_key="agent:main:session-1",
+            history_scope="latest_window",
+            has_more=True,
+            loaded_count=1,
+            canonical_available=True,
+            messages=(
+                HistoryMessage(
+                    id="message-1",
+                    role="user",
+                    text="你好",
+                    attachments=({"name": "brief.pdf"},),
+                ),
+            ),
+        ),
+    )
+
+    assert payload.endswith("\n")
+    assert '"type":"history.replace"' in payload
+    assert '"history_scope":"latest_window"' in payload
+    assert '"id":"message-1"' in payload
+    assert '"attachments":[{"name":"brief.pdf"}]' in payload
+
+
+def test_python_message_to_json_serializes_attachment_state_messages() -> None:
+    added = python_message_to_json(
+        "attachment.add",
+        AttachmentState(
+            id="attachment-1",
+            kind="file",
+            label="brief.pdf",
+            status="reading",
+        ),
+    )
+    updated = python_message_to_json(
+        "attachment.update",
+        AttachmentUpdate(
+            id="attachment-1",
+            status="failed",
+            message="check the file and retry /file",
+        ),
+    )
+
+    assert '"type":"attachment.add"' in added
+    assert '"label":"brief.pdf"' in added
+    assert '"status":"reading"' in added
+    assert '"type":"attachment.update"' in updated
+    assert '"status":"failed"' in updated
+    assert '"type":"attachment.remove"' in python_message_to_json(
+        "attachment.remove", AttachmentRemove(id="attachment-1")
+    )
+    assert '"status":"ready"' in python_message_to_json(
+        "attachment.clear", AttachmentClear(status="ready")
+    )
+
+
 def test_host_message_from_json_parses_ready_and_submit() -> None:
     assert host_message_from_json('{"type":"ready"}') == HostReady()
     assert host_message_from_json(
         '{"type":"input.submit","text":"中文 prompt"}'
     ) == HostInputSubmit(text="中文 prompt")
+
+
+def test_host_message_from_json_parses_versioned_ready_metadata() -> None:
+    parsed = host_message_from_json(
+        '{"type":"ready","protocol":1,"productVersion":"0.5.0",'
+        '"hostVersion":"0.5.0","platform":"darwin","arch":"arm64",'
+        '"buildId":"release","capabilities":["jsonl","authenticated"]}'
+    )
+    assert parsed == HostReady(
+        protocol=1,
+        product_version="0.5.0",
+        host_version="0.5.0",
+        platform="darwin",
+        arch="arm64",
+        build_id="release",
+        capabilities=("jsonl", "authenticated"),
+    )
 
 
 def test_host_message_from_json_parses_control_messages() -> None:
@@ -198,6 +276,7 @@ def test_block_messages_serialize_with_kind_and_fields() -> None:
         BlockUpdate,
         python_message_to_json,
     )
+
     begin = python_message_to_json(
         "block.begin",
         BlockBegin(id="b1", kind="tool", meta={"name": "ls", "args": "src"}),
@@ -236,7 +315,9 @@ def test_host_emitted_types_are_all_parseable_by_python() -> None:
             )
         )
     assert emitted, "could not parse emitter literals from the host sources"
-    unparseable = emitted - set(HOST_TO_PYTHON_TYPES)
+    # Authentication is consumed by the transport before product messages
+    # reach host_message_from_json().
+    unparseable = emitted - set(HOST_TO_PYTHON_TYPES) - {"auth"}
     assert not unparseable, f"host emits types Python cannot parse: {sorted(unparseable)}"
 
 
@@ -281,6 +362,23 @@ def test_js_snake_case_payload_reads_match_python_dataclass_fields() -> None:
     # Nested completion candidates plus the ad-hoc mapping payloads
     # (completion.response and theme.set carry dicts, not dataclasses).
     allowed.update(field.name for field in dataclasses.fields(CompletionCandidate))
-    allowed.update({"request_id", "kind", "items", "name"})
+    allowed.update(field.name for field in dataclasses.fields(HistoryMessage))
+    # History usage/tool-call rows are canonical Gateway dictionaries nested
+    # inside the typed HistoryMessage envelope.
+    allowed.update(
+        {
+            "request_id",
+            "kind",
+            "items",
+            "name",
+            "cost_usd",
+            "execution_status",
+            "input_tokens",
+            "is_error",
+            "output_tokens",
+            "tool_name",
+            "tool_use_id",
+        }
+    )
     stale = reads - allowed
     assert not stale, f"host reads payload fields Python does not send: {sorted(stale)}"

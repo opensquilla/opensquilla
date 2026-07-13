@@ -9,6 +9,7 @@ from typing import Literal
 from tui_real_terminal.driver import TerminalSize
 
 TuiBackendId = Literal["opentui", "live-opentui"]
+PACKAGED_GATE_ENV = "OPENSQUILLA_TUI_PACKAGED_GATE"
 
 
 @dataclass(frozen=True)
@@ -42,8 +43,17 @@ def build_tui_target(backend_id: str, context: TargetContext) -> TuiTarget:
 
 def _base_env(context: TargetContext, *, isolate_state: bool = True) -> dict[str, str]:
     env = os.environ.copy()
-    src_path = str(context.project_root / "src")
-    env["PYTHONPATH"] = src_path + os.pathsep + env.get("PYTHONPATH", "")
+    if env.get(PACKAGED_GATE_ENV) == "1":
+        # The release gate must prove the installed core+companion wheels. A
+        # checkout-local PYTHONPATH or source-host override would silently turn
+        # this back into a source test.
+        env.pop("PYTHONPATH", None)
+        env.pop("OPENSQUILLA_TUI_DEV_SOURCE_HOST", None)
+        env.pop("BUN_INSTALL", None)
+    else:
+        src_path = str(context.project_root / "src")
+        env["PYTHONPATH"] = src_path + os.pathsep + env.get("PYTHONPATH", "")
+        env["OPENSQUILLA_TUI_DEV_SOURCE_HOST"] = "1"
     if isolate_state:
         env["OPENSQUILLA_STATE_DIR"] = str(context.artifact_dir / "state")
     env["OPENSQUILLA_LOG_DIR"] = str(context.artifact_dir / "logs")
@@ -92,9 +102,11 @@ def _opentui_target(context: TargetContext) -> TuiTarget:
 
 def _live_opentui_target(context: TargetContext) -> TuiTarget:
     env = _base_env(context, isolate_state=False)
+    # Exercise the public CLI policy, even when the parent test process has a
+    # compatibility backend override from another launch-contract test.
+    env.pop("OPENSQUILLA_TUI_BACKEND", None)
     env.update(
         {
-            "OPENSQUILLA_TUI_BACKEND": "opentui",
             "OPENSQUILLA_TUI_READY_MARKER": "OPEN_SQUILLA_TUI_READY",
             "OPENSQUILLA_MEMORY_DREAM_DISABLED": "1",
             "OPENSQUILLA_OPENROUTER_LIVE_PRICING": "0",
@@ -112,6 +124,8 @@ def _live_opentui_target(context: TargetContext) -> TuiTarget:
             "opensquilla.cli.main",
             "chat",
             "--standalone",
+            "--ui",
+            "tui",
             "--workspace",
             str(context.project_root),
             "--workspace-strict",

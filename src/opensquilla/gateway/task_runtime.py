@@ -73,6 +73,27 @@ TERMINAL_STATUSES = frozenset(
 TaskStreamEventSink = Callable[[Any], Awaitable[None]]
 
 
+def _task_identity_payload(
+    envelope: RouteEnvelope,
+    task_id: str,
+    *,
+    user_message_id: str | None = None,
+) -> dict[str, str]:
+    payload = {"turn_id": task_id}
+    session_id = getattr(envelope, "session_id", None)
+    if isinstance(session_id, str) and session_id:
+        payload["session_id"] = session_id
+    metadata = getattr(envelope, "metadata", None)
+    if isinstance(metadata, dict):
+        for field in ("client_message_id", "surface_id"):
+            value = metadata.get(field)
+            if isinstance(value, str) and value:
+                payload[field] = value
+    if isinstance(user_message_id, str) and user_message_id:
+        payload["user_message_id"] = user_message_id
+    return payload
+
+
 @dataclass(frozen=True)
 class TaskHandle:
     task_id: str
@@ -229,9 +250,7 @@ class _TurnHardDeadlineExceeded(TimeoutError):  # noqa: N818
     """
 
     def __init__(self, *, deadline_s: float) -> None:
-        super().__init__(
-            f"turn exceeded hard deadline of {deadline_s:g}s"
-        )
+        super().__init__(f"turn exceeded hard deadline of {deadline_s:g}s")
         self.deadline_s = deadline_s
 
 
@@ -239,10 +258,7 @@ def _clean_cancel_detail(value: str | None, default: str) -> str:
     text = str(value or "").strip()
     if not text:
         return default
-    safe = "".join(
-        ch if ch.isalnum() or ch in {"_", "-", ".", ":"} else "_"
-        for ch in text
-    )
+    safe = "".join(ch if ch.isalnum() or ch in {"_", "-", ".", ":"} else "_" for ch in text)
     return (safe.strip("_") or default)[:80]
 
 
@@ -290,9 +306,7 @@ class TaskRuntime:
             pending_overflow_policy = PendingOverflowPolicy(pending_overflow_policy)
         except ValueError as exc:
             valid = ", ".join(member.value for member in PendingOverflowPolicy)
-            raise ValueError(
-                f"pending_overflow_policy must be one of {{{valid}}}"
-            ) from exc
+            raise ValueError(f"pending_overflow_policy must be one of {{{valid}}}") from exc
         # Clamp so subagents can always acquire eventually. A reservation that
         # consumes the entire pool would deadlock the subagent lane.
         if subagent_reserved_slots >= max_concurrency:
@@ -406,9 +420,7 @@ class TaskRuntime:
                     effective_policy = PendingOverflowPolicy(overflow_policy)
                 except ValueError as exc:
                     valid = ", ".join(member.value for member in PendingOverflowPolicy)
-                    raise ValueError(
-                        f"overflow_policy must be one of {{{valid}}}"
-                    ) from exc
+                    raise ValueError(f"overflow_policy must be one of {{{valid}}}") from exc
             await self._apply_overflow_policy(
                 envelope.session_key,
                 policy=effective_policy,
@@ -430,6 +442,14 @@ class TaskRuntime:
                 "fresh_user_session": fresh_user_session,
             },
         )
+        record.details = {
+            **(record.details or {}),
+            **_task_identity_payload(
+                envelope,
+                record.task_id,
+                user_message_id=persisted_user_message_id,
+            ),
+        }
         await self._storage.create_agent_task(record)
         runtime_task = _RuntimeTask(
             task_id=record.task_id,
@@ -477,6 +497,11 @@ class TaskRuntime:
                 "session_key": envelope.session_key,
                 "queue_depth": _queue_depth,
                 "queue_position": _queue_position,
+                **_task_identity_payload(
+                    envelope,
+                    record.task_id,
+                    user_message_id=persisted_user_message_id,
+                ),
             },
         )
         await self._notify_task_lifecycle(
@@ -681,9 +706,7 @@ class TaskRuntime:
                 resolved = PendingOverflowPolicy(policy)
             except ValueError as exc:
                 valid = ", ".join(member.value for member in PendingOverflowPolicy)
-                raise ValueError(
-                    f"overflow_policy must be one of {{{valid}}}"
-                ) from exc
+                raise ValueError(f"overflow_policy must be one of {{{valid}}}") from exc
         await self._apply_overflow_policy(
             canonicalize_session_key(session_key),
             policy=resolved,
@@ -716,11 +739,7 @@ class TaskRuntime:
             if pending_count >= self._max_pending_per_session:
                 if policy == PendingOverflowPolicy.DROP_OLDEST:
                     victim = next(
-                        (
-                            task
-                            for task in pending
-                            if task.status == AgentTaskStatus.QUEUED
-                        ),
+                        (task for task in pending if task.status == AgentTaskStatus.QUEUED),
                         None,
                     )
                 if policy != PendingOverflowPolicy.DROP_OLDEST or victim is None:
@@ -795,6 +814,11 @@ class TaskRuntime:
                 "collected": True,
                 "message_count": candidate.message.count("\n") + 1,
                 "no_memory_capture": candidate.no_memory_capture,
+                **_task_identity_payload(
+                    candidate.envelope,
+                    candidate.task_id,
+                    user_message_id=candidate.persisted_user_message_id,
+                ),
             }
         await self._storage.update_agent_task(candidate.task_id, details=details)
         return TaskHandle(
@@ -810,13 +834,9 @@ class TaskRuntime:
         try:
             async with execution_lock:
                 if task.cancel_requested:
-                    reason = (
-                        "overflow_drop" if task.overflow_dropped else "user_cancel"
-                    )
+                    reason = "overflow_drop" if task.overflow_dropped else "user_cancel"
                     terminal_reason = (
-                        "dropped_by_overflow"
-                        if task.overflow_dropped
-                        else "cancelled_before_start"
+                        "dropped_by_overflow" if task.overflow_dropped else "cancelled_before_start"
                     )
                     _emit_metric(
                         "turn_cancellations_total",
@@ -875,9 +895,7 @@ class TaskRuntime:
                         await self._release_slot(task)
         except asyncio.CancelledError:
             reason = "overflow_drop" if task.overflow_dropped else "interrupt"
-            terminal_reason = (
-                "dropped_by_overflow" if task.overflow_dropped else "cancelled"
-            )
+            terminal_reason = "dropped_by_overflow" if task.overflow_dropped else "cancelled"
             _emit_metric(
                 "turn_cancellations_total",
                 value=1,
@@ -920,9 +938,7 @@ class TaskRuntime:
         except Exception as exc:  # noqa: BLE001 - runtime ledger records the class.
             terminal_reason = str(getattr(exc, "terminal_reason", None) or "error")
             status = (
-                AgentTaskStatus.TIMEOUT
-                if terminal_reason == "timeout"
-                else AgentTaskStatus.FAILED
+                AgentTaskStatus.TIMEOUT if terminal_reason == "timeout" else AgentTaskStatus.FAILED
             )
             await self._mark_terminal(
                 task,
@@ -1057,10 +1073,7 @@ class TaskRuntime:
             return
         cond = self._ensure_slot_cond()
         async with cond:
-            while (
-                self._max_concurrency - self._global_in_flight
-                <= self._subagent_reserved_slots
-            ):
+            while self._max_concurrency - self._global_in_flight <= self._subagent_reserved_slots:
                 await cond.wait()
 
     async def _release_slot(self, task: _RuntimeTask) -> None:
@@ -1097,9 +1110,7 @@ class TaskRuntime:
         """
         return self._session_locks.setdefault(session_key, asyncio.Lock())
 
-    def _start_running_heartbeat(
-        self, task: _RuntimeTask
-    ) -> asyncio.Task[None] | None:
+    def _start_running_heartbeat(self, task: _RuntimeTask) -> asyncio.Task[None] | None:
         interval = self._running_heartbeat_interval_s
         if interval is None:
             return None
@@ -1156,7 +1167,15 @@ class TaskRuntime:
         await self._emit(
             task.envelope.session_key,
             "task.running",
-            {"task_id": task.task_id, "session_key": task.envelope.session_key},
+            {
+                "task_id": task.task_id,
+                "session_key": task.envelope.session_key,
+                **_task_identity_payload(
+                    task.envelope,
+                    task.task_id,
+                    user_message_id=task.persisted_user_message_id,
+                ),
+            },
         )
         await self._notify_task_lifecycle(
             TaskLifecycleEvent(
@@ -1218,16 +1237,10 @@ class TaskRuntime:
             "error_message": error_message,
         }
         if (
-            (
-                status == AgentTaskStatus.TIMEOUT
-                and terminal_reason != "hard_deadline_exceeded"
-            )
+            (status == AgentTaskStatus.TIMEOUT and terminal_reason != "hard_deadline_exceeded")
             or terminal_reason == "timeout"
             or is_context_payload_too_large(terminal_payload)
-            or (
-                terminal_reason == "output_truncated"
-                or error_class == "provider_output_truncated"
-            )
+            or (terminal_reason == "output_truncated" or error_class == "provider_output_truncated")
         ):
             error_class, error_message = sanitize_agent_error(
                 terminal_payload,
@@ -1255,6 +1268,11 @@ class TaskRuntime:
             "task_id": task.task_id,
             "session_key": task.envelope.session_key,
             "terminal_reason": terminal_reason,
+            **_task_identity_payload(
+                task.envelope,
+                task.task_id,
+                user_message_id=task.persisted_user_message_id,
+            ),
         }
         if status != AgentTaskStatus.SUCCEEDED:
             payload["terminal_message"] = build_terminal_reply(terminal_payload)

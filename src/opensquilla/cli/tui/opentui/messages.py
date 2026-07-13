@@ -80,6 +80,62 @@ class ComposerState:
 
 
 @dataclass(frozen=True)
+class AttachmentState:
+    """One sanitized attachment chip owned by the composer."""
+
+    id: str
+    kind: str
+    label: str
+    status: str
+    message: str = ""
+
+
+@dataclass(frozen=True)
+class AttachmentUpdate:
+    id: str
+    status: str
+    message: str = ""
+
+
+@dataclass(frozen=True)
+class AttachmentRemove:
+    id: str
+
+
+@dataclass(frozen=True)
+class AttachmentClear:
+    status: str | None = None
+
+
+@dataclass(frozen=True)
+class HistoryMessage:
+    """One canonical durable transcript row projected into the host."""
+
+    id: str
+    role: str
+    text: str = ""
+    timestamp: str | int | float | None = None
+    reasoning: str = ""
+    attachments: tuple[dict[str, Any], ...] = ()
+    artifacts: tuple[dict[str, Any], ...] = ()
+    tool_calls: tuple[dict[str, Any], ...] = ()
+    usage: dict[str, Any] | None = None
+
+
+@dataclass(frozen=True)
+class HistoryReplace:
+    """Atomically replace the host transcript with one bootstrap snapshot."""
+
+    session_key: str
+    history_scope: str = "complete"
+    has_more: bool = False
+    loaded_count: int = 0
+    canonical_available: bool = False
+    messages: tuple[HistoryMessage, ...] = ()
+    compaction_summaries: tuple[dict[str, Any], ...] = ()
+
+
+@dataclass(frozen=True)
 class CompletionCandidate:
     label: str
     description: str
@@ -133,7 +189,13 @@ class ApprovalDismiss:
 
 @dataclass(frozen=True)
 class HostReady:
-    pass
+    protocol: int = 1
+    product_version: str = "unknown"
+    host_version: str = "unknown"
+    platform: str = "unknown"
+    arch: str = "unknown"
+    build_id: str = "source"
+    capabilities: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -214,6 +276,11 @@ PYTHON_TO_HOST_TYPES: dict[str, type | None] = {
     "turn.end": TurnEnd,
     "turn.status": TurnStatusState,
     "composer.set": ComposerState,
+    "attachment.add": AttachmentState,
+    "attachment.update": AttachmentUpdate,
+    "attachment.remove": AttachmentRemove,
+    "attachment.clear": AttachmentClear,
+    "history.replace": HistoryReplace,
     "completion.context": CompletionContext,
     "completion.response": None,
     "router.update": RouterPluginState,
@@ -269,7 +336,15 @@ def host_message_from_json(raw: str) -> HostToPythonMessage:
         raise HostToPythonMessageError("OpenTUI host message requires string field 'type'")
 
     if message_type == "ready":
-        return HostReady()
+        return HostReady(
+            protocol=_optional_int(payload, "protocol", default=1),
+            product_version=_optional_str(payload, "productVersion") or "unknown",
+            host_version=_optional_str(payload, "hostVersion") or "unknown",
+            platform=_optional_str(payload, "platform") or "unknown",
+            arch=_optional_str(payload, "arch") or "unknown",
+            build_id=_optional_str(payload, "buildId") or "source",
+            capabilities=_optional_str_tuple(payload, "capabilities"),
+        )
     if message_type == "input.submit":
         return HostInputSubmit(text=_required_str(payload, "input.submit.text", "text"))
     if message_type == "input.cancel":
@@ -311,9 +386,7 @@ def _payload_dict(payload: object) -> dict[str, Any]:
         return asdict(payload)
     if isinstance(payload, dict):
         return dict(payload)
-    raise TypeError(
-        "OpenTUI Python message payload must be a dataclass instance or mapping"
-    )
+    raise TypeError("OpenTUI Python message payload must be a dataclass instance or mapping")
 
 
 def _required_str(payload: dict[str, Any], label: str, key: str) -> str:
@@ -337,6 +410,22 @@ def _required_int(payload: dict[str, Any], label: str, key: str) -> int:
     if not isinstance(value, int):
         raise HostToPythonMessageError(f"OpenTUI host message requires {label}")
     return value
+
+
+def _optional_int(payload: dict[str, Any], key: str, *, default: int) -> int:
+    value = payload.get(key, default)
+    if not isinstance(value, int):
+        raise HostToPythonMessageError(f"OpenTUI host message field {key} must be an integer")
+    return value
+
+
+def _optional_str_tuple(payload: dict[str, Any], key: str) -> tuple[str, ...]:
+    value = payload.get(key, ())
+    if not isinstance(value, list | tuple) or not all(isinstance(item, str) for item in value):
+        raise HostToPythonMessageError(
+            f"OpenTUI host message field {key} must be a list of text values"
+        )
+    return tuple(value)
 
 
 def _required_bool(payload: dict[str, Any], label: str, key: str) -> bool:

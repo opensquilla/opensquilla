@@ -5,8 +5,9 @@ import { registerThemeStyles } from "./syntaxTheme.mjs";
 import { noticeContent, recolorNoticeNodes } from "./ansiNotice.mjs";
 import { clampFooterHeight, copySelectionToClipboard, isPinnedToBottom, stripTerminalControls } from "./primitives.mjs";
 import { createComposer } from "./composer.mjs";
+import { replaceHistoryConversation } from "./historyRenderer.mjs";
 import { createTurnFlow, createTurnView } from "./turnView.mjs";
-import { createIpc, createDispatcher } from "./ipc.mjs";
+import { HOST_PROTOCOL_VERSION, connectIpcFromEnv, createDispatcher } from "./ipc.mjs";
 
 const HELP = `OpenSquilla OpenTUI footer host
 
@@ -14,7 +15,7 @@ Usage:
   bun src/main.mjs
 
 IPC:
-  reads Python JSON lines from fd 3 and writes host JSON lines to fd 4.
+  authenticated JSON-lines over a parent-owned loopback socket.
 `;
 
 if (import.meta.main && (process.argv.includes("--help") || process.argv.includes("-h"))) {
@@ -22,8 +23,6 @@ if (import.meta.main && (process.argv.includes("--help") || process.argv.include
   process.exit(0);
 }
 
-const FROM_PYTHON_FD = Number(process.env.OPENSQUILLA_OPENTUI_FROM_PYTHON_FD ?? "3");
-const TO_PYTHON_FD = Number(process.env.OPENSQUILLA_OPENTUI_TO_PYTHON_FD ?? "4");
 const FOOTER_HEIGHT = 6;
 // Footer height clamped to the terminal so a very short pane never overflows it.
 const footerRows = (h) => clampFooterHeight(FOOTER_HEIGHT, h);
@@ -181,7 +180,7 @@ async function main() {
   });
   renderer.root.add(overlayLayer);
 
-  const ipc = createIpc({ fromFd: FROM_PYTHON_FD, toFd: TO_PYTHON_FD });
+  const ipc = await connectIpcFromEnv();
   // Escape hatch (see createCtrlCExitHatch): created before the composer so
   // its per-press reset runs first, armed only by presses the composer routed
   // to the interrupt path, and installed after the composer's own handler.
@@ -219,7 +218,8 @@ async function main() {
   // resize can reflow ALL of them (their baked full-width header rules don't
   // re-rule themselves). The conversation already retains every turn box, so
   // this only adds a reference, not a copy.
-  const flow = createTurnFlow((id) => createTurnView(turnDeps, id ?? scrollbackSeq++));
+  const newTurnFlow = () => createTurnFlow((id) => createTurnView(turnDeps, id ?? scrollbackSeq++));
+  let flow = newTurnFlow();
   // Scrollback + notice lines live outside any turn view; register each with
   // the semantic token its color came from so a live /theme switch can
   // re-point it (renderables capture the color VALUE at creation).
@@ -261,9 +261,36 @@ async function main() {
       composer.setTurnStatus(m);
     },
     composerSet: (m) => composer.setComposerState(m),
+    attachmentAdd: (m) => composer.addAttachmentState(m),
+    attachmentUpdate: (m) => composer.updateAttachmentState(m),
+    attachmentRemove: (m) => composer.removeAttachmentState(m.id),
+    attachmentClear: (m) => composer.clearAttachmentStates(m.status),
     completionContext: (m) => composer.setCompletionContext(m),
     completionResponse: (m) => composer.applyCompletionResponse(m),
     routerUpdate: (m) => composer.setRouterState(m),
+    // A bootstrap/session switch is one atomic protocol frame. Clear every
+    // retained renderable and replay canonical rows through the same turn
+    // views as live prompt/tool/answer traffic before accepting more input.
+    historyReplace: (m) => {
+      looseNodes.length = 0;
+      flow = replaceHistoryConversation({
+        message: m,
+        conversationBox,
+        flowFactory: newTurnFlow,
+        addBoundary: (content) => {
+          const boundary = new TextRenderable(renderer, {
+            id: `history-boundary-${scrollbackSeq++}`,
+            content,
+            fg: THEME.detailText,
+          });
+          looseNodes.push({ node: boundary, token: "detailText" });
+          conversationBox.add(boundary);
+        },
+        nextId: (durableId) => `history-${String(durableId).replace(/[^a-zA-Z0-9_-]/g, "-")}-${scrollbackSeq++}`,
+      });
+      scrollConversationToBottom();
+      renderer.requestRender?.();
+    },
     blockBegin: (m) => withBottomFollow(() => flow.turnForBlock().begin(m.id, m.kind, m.meta)),
     blockAppend: (m) => withBottomFollow(() => flow.active()?.append(m.id, m.delta)),
     blockUpdate: (m) => withBottomFollow(() => flow.active()?.update(m.id, m.patch)),
@@ -386,7 +413,22 @@ async function main() {
     }
   }, 180).unref?.();
 
-  ipc.send({ type: "ready" });
+  ipc.send({
+    type: "ready",
+    protocol: HOST_PROTOCOL_VERSION,
+    productVersion: process.env.OPENSQUILLA_PRODUCT_VERSION ?? "unknown",
+    hostVersion: process.env.OPENSQUILLA_OPENTUI_HOST_VERSION ?? "0.0.0-dev",
+    platform: process.platform,
+    arch: process.arch,
+    buildId: process.env.OPENSQUILLA_OPENTUI_BUILD_ID ?? "source",
+    capabilities: [
+      "jsonl",
+      "loopback",
+      "authenticated",
+      "history.replace",
+      "attachment.state",
+    ],
+  });
   ipc.start(
     (m) => {
       try {

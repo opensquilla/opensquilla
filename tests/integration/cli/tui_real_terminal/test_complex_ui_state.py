@@ -30,12 +30,13 @@ def test_complex_ui_state(run_real_terminal_scenario) -> None:
     # reasoning and from the final answer card.
     assert_visible_text(intermediate_frame, "intermediate-before-tool")
     intermediate_lines = [
-        line
-        for line in intermediate_frame.text.splitlines()
-        if "intermediate-before-tool" in line
+        line for line in intermediate_frame.text.splitlines() if "intermediate-before-tool" in line
     ]
     assert intermediate_lines
-    assert intermediate_lines[0].lstrip().startswith("✱ ")
+    # The card rail is part of the captured terminal frame; the visible
+    # intermediate marker itself follows it and uses the Host's canonical
+    # thinking-accent glyph.
+    assert intermediate_lines[0].lstrip().startswith("│  ✻ ")
     assert "second-intermediate-line" in intermediate_frame.text
     # The reasoning PROCESS text is never shown verbatim — only ever a transient
     # "Thinking…" marker stood in for it.

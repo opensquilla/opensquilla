@@ -7,12 +7,14 @@ import os
 import re
 from collections.abc import AsyncIterator, Callable
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
 import structlog
 
 from opensquilla.cli.tui.backend.contracts import TuiSurface
+from opensquilla.cli.tui.backend.render_summary import sanitize_terminal_text
 from opensquilla.cli.tui.opentui.bridge import OpenTuiBridge
 from opensquilla.cli.tui.opentui.completion import (
     build_completion_context,
@@ -20,8 +22,13 @@ from opensquilla.cli.tui.opentui.completion import (
 )
 from opensquilla.cli.tui.opentui.messages import (
     ApprovalDismiss,
+    AttachmentClear,
+    AttachmentRemove,
+    AttachmentState,
+    AttachmentUpdate,
     CompletionContext,
     ComposerState,
+    HistoryReplace,
     HostApprovalResponse,
     HostCompletionRequest,
     HostError,
@@ -57,6 +64,19 @@ _FALLBACK_LABEL_RE = re.compile(r"^fallback\s+->\s+(?P<model>\S+)")
 _APPROVAL_RESPONSE_TIMEOUT_SECONDS = 300.0
 
 
+@dataclass(frozen=True)
+class ExternalApprovalResolution:
+    """Approval decision completed by another control surface."""
+
+    id: str
+    approved: bool
+    resolution: str | None = None
+    resolved_externally: bool = True
+
+
+_ATTACHMENT_STATUSES = frozenset({"reading", "uploading", "ready", "failed"})
+
+
 class _OpenTuiBridgeLike(Protocol):
     async def send(self, message_type: str, payload: object | None = None) -> None: ...
 
@@ -79,7 +99,14 @@ class OpenTuiOutputHandle:
         # (shared by the surface and the stream renderer, and stable across
         # next_line task recreation) so a pending overlay answer is never lost
         # when the runtime cancels and re-creates its input task.
-        self._approval_waiters: dict[str, asyncio.Future[HostApprovalResponse | None]] = {}
+        self._approval_waiters: dict[
+            str,
+            asyncio.Future[HostApprovalResponse | ExternalApprovalResolution | None],
+        ] = {}
+        self._resolved_gateway_approvals: dict[str, ExternalApprovalResolution] = {}
+        self._attachment_states: dict[str, AttachmentState] = {}
+        self._attachment_seq = 0
+        self._attachment_lock = asyncio.Lock()
 
     async def write_through(self, payload: str) -> None:
         await self._bridge.send("scrollback.write", ScrollbackWrite(text=payload))
@@ -87,12 +114,136 @@ class OpenTuiOutputHandle:
     async def send_message(self, message_type: str, payload: dict[str, object]) -> None:
         await self._bridge.send(message_type, payload)
 
+    async def add_attachment(
+        self,
+        *,
+        kind: str,
+        label: str,
+        status: str = "reading",
+        message: str = "",
+        attachment_id: str | None = None,
+    ) -> str:
+        """Add a chip and return its stable id for later updates/removal."""
+
+        normalized_status = _attachment_status(status)
+        safe_kind = _attachment_kind(kind)
+        safe_label = _attachment_label(label)
+        safe_message = _attachment_message(message)
+        async with self._attachment_lock:
+            # A failed retry replaces the old chip. A pending duplicate reuses
+            # its id so two callers cannot create two sends for one file.
+            for current in tuple(self._attachment_states.values()):
+                if current.kind != safe_kind or current.label != safe_label:
+                    continue
+                if current.status in {"reading", "uploading"}:
+                    return current.id
+                if current.status == "failed":
+                    await self._bridge.send(
+                        "attachment.remove",
+                        AttachmentRemove(id=current.id),
+                    )
+                    self._attachment_states.pop(current.id, None)
+            self._attachment_seq += 1
+            safe_id = _attachment_id(attachment_id or f"attachment-{self._attachment_seq}")
+            state = AttachmentState(
+                id=safe_id,
+                kind=safe_kind,
+                label=safe_label,
+                status=normalized_status,
+                message=safe_message,
+            )
+            self._attachment_states[safe_id] = state
+            try:
+                await self._bridge.send("attachment.add", state)
+            except Exception:
+                self._attachment_states.pop(safe_id, None)
+                raise
+            return safe_id
+
+    async def update_attachment(
+        self,
+        attachment_id: str,
+        *,
+        status: str,
+        message: str = "",
+    ) -> bool:
+        """Update a chip; return False when it has already been removed."""
+
+        safe_id = _attachment_id(attachment_id)
+        normalized_status = _attachment_status(status)
+        safe_message = _attachment_message(message)
+        async with self._attachment_lock:
+            current = self._attachment_states.get(safe_id)
+            if current is None:
+                return False
+            updated = AttachmentState(
+                id=current.id,
+                kind=current.kind,
+                label=current.label,
+                status=normalized_status,
+                message=safe_message,
+            )
+            self._attachment_states[safe_id] = updated
+            try:
+                await self._bridge.send(
+                    "attachment.update",
+                    AttachmentUpdate(
+                        id=safe_id,
+                        status=normalized_status,
+                        message=safe_message,
+                    ),
+                )
+            except Exception:
+                self._attachment_states[safe_id] = current
+                raise
+            return True
+
+    async def remove_attachment(self, attachment_id: str) -> bool:
+        safe_id = _attachment_id(attachment_id)
+        async with self._attachment_lock:
+            current = self._attachment_states.pop(safe_id, None)
+            if current is None:
+                return False
+            try:
+                await self._bridge.send(
+                    "attachment.remove",
+                    AttachmentRemove(id=safe_id),
+                )
+            except Exception:
+                self._attachment_states[safe_id] = current
+                raise
+            return True
+
+    async def clear_attachments(self, *, status: str | None = None) -> int:
+        """Clear every chip, or just chips in one terminal state."""
+
+        normalized_status = _attachment_status(status) if status is not None else None
+        async with self._attachment_lock:
+            removed = {
+                key: value
+                for key, value in self._attachment_states.items()
+                if normalized_status is None or value.status == normalized_status
+            }
+            if not removed:
+                return 0
+            for key in removed:
+                self._attachment_states.pop(key, None)
+            try:
+                await self._bridge.send(
+                    "attachment.clear",
+                    AttachmentClear(status=normalized_status),
+                )
+            except Exception:
+                self._attachment_states.update(removed)
+                raise
+            return len(removed)
+
     async def request_approval(
         self,
         request: dict[str, object],
         *,
         timeout: float | None = None,
-    ) -> HostApprovalResponse | None:
+    ) -> HostApprovalResponse | ExternalApprovalResolution | None:
         """Show the host approval overlay and await the user's decision.
 
         Returns None — which callers must treat as a deny — on timeout, on a
@@ -101,21 +252,37 @@ class OpenTuiOutputHandle:
         approval_id = str(request.get("id") or "")
         if not approval_id:
             return None
+        resolved = self._resolved_gateway_approvals.pop(approval_id, None)
+        if resolved is not None:
+            return resolved
         wait_seconds = _APPROVAL_RESPONSE_TIMEOUT_SECONDS if timeout is None else timeout
-        future: asyncio.Future[HostApprovalResponse | None] = (
-            asyncio.get_running_loop().create_future()
-        )
-        self._approval_waiters[approval_id] = future
+        future = self._approval_waiters.get(approval_id)
+        created = future is None
+        if future is None:
+            future = asyncio.get_running_loop().create_future()
+            self._approval_waiters[approval_id] = future
         try:
-            await self._bridge.send("approval.request", dict(request))
-            return await asyncio.wait_for(future, wait_seconds)
+            if created:
+                await self._bridge.send("approval.request", dict(request))
+            response = await asyncio.wait_for(asyncio.shield(future), wait_seconds)
+            # A gateway resolved push can race a keypress that completed the
+            # local future. If the push landed before this waiter resumed, the
+            # gateway decision is authoritative and suppresses a stale second
+            # resolve RPC from this client.
+            return self._resolved_gateway_approvals.pop(approval_id, None) or response
         except TimeoutError:
             log.warning("opentui.approval.timeout", approval_id=approval_id)
+            if not future.done():
+                future.set_result(None)
             await self._dismiss_host_approval(approval_id)
             return None
         except asyncio.CancelledError:
             # The turn stopped waiting (Ctrl+C, task teardown); close the host
             # overlay too, or the stale modal swallows the next keypress.
+            if not future.done():
+                future.set_result(None)
+            if self._approval_waiters.get(approval_id) is future:
+                self._approval_waiters.pop(approval_id, None)
             await self._dismiss_host_approval(approval_id)
             raise
         except Exception as exc:
@@ -126,7 +293,54 @@ class OpenTuiOutputHandle:
             )
             return None
         finally:
+            if future.done() and self._approval_waiters.get(approval_id) is future:
+                self._approval_waiters.pop(approval_id, None)
+
+    async def present_gateway_approval(self, request: dict[str, object]) -> bool:
+        """Pre-present a pushed approval without claiming its resolution RPC."""
+
+        approval_id = str(request.get("id") or "")
+        if not approval_id:
+            return False
+        if approval_id in self._resolved_gateway_approvals:
+            return False
+        if approval_id in self._approval_waiters:
+            return True
+        future: asyncio.Future[HostApprovalResponse | ExternalApprovalResolution | None] = (
+            asyncio.get_running_loop().create_future()
+        )
+        self._approval_waiters[approval_id] = future
+        try:
+            await self._bridge.send("approval.request", dict(request))
+        except Exception:
             self._approval_waiters.pop(approval_id, None)
+            if not future.done():
+                future.set_result(None)
+            return False
+        return True
+
+    async def resolve_gateway_approval(
+        self,
+        approval_id: str,
+        *,
+        approved: bool,
+        resolution: str | None = None,
+    ) -> bool:
+        """Apply a WebUI/other-client resolution and close the local overlay."""
+
+        decision = ExternalApprovalResolution(
+            id=approval_id,
+            approved=approved,
+            resolution=resolution,
+        )
+        self._resolved_gateway_approvals[approval_id] = decision
+        while len(self._resolved_gateway_approvals) > 256:
+            self._resolved_gateway_approvals.pop(next(iter(self._resolved_gateway_approvals)))
+        future = self._approval_waiters.pop(approval_id, None)
+        if future is not None and not future.done():
+            future.set_result(decision)
+        await self._dismiss_host_approval(approval_id)
+        return future is not None
 
     async def _dismiss_host_approval(self, approval_id: str) -> None:
         """Best-effort: tell the host to close an overlay Python abandoned.
@@ -158,6 +372,14 @@ class OpenTuiOutputHandle:
             _, future = self._approval_waiters.popitem()
             if not future.done():
                 future.set_result(None)
+
+    async def fail_pending_gateway_approvals(self) -> None:
+        """Fail closed and dismiss every overlay after gateway disconnect."""
+
+        approval_ids = list(self._approval_waiters)
+        self.cancel_pending_approvals()
+        for approval_id in approval_ids:
+            await self._dismiss_host_approval(approval_id)
 
     def stream_output(self) -> AbstractAsyncContextManager[Callable[[str], None]]:
         return _opentui_stream_output(self)
@@ -379,8 +601,9 @@ async def open_opentui_surface(
     bridge: OpenTuiBridge | None = None,
     completion_context: CompletionContext | None = None,
     workspace_dir: Path | str | None = None,
+    workspace_label: str | None = None,
+    history_replace: HistoryReplace | None = None,
 ) -> AsyncIterator[TuiSurface]:
-    del model, session_id
     active_bridge = bridge or OpenTuiBridge()
     active_workspace_dir = _normalize_workspace_dir(workspace_dir) or _workspace_dir()
     await active_bridge.start()
@@ -393,15 +616,49 @@ async def open_opentui_surface(
             if ready_marker is None
             else ready_marker
         )
+        if history_replace is not None:
+            await active_bridge.send(
+                "composer.set",
+                ComposerState(placeholder="loading session history", disabled=True),
+            )
+            await active_bridge.send("history.replace", history_replace)
         await active_bridge.send(
             "composer.set",
-            ComposerState(placeholder="send a message"),
+            ComposerState(placeholder="send a message", disabled=False),
+        )
+        mode = "gateway" if surface is Surface.CLI_GATEWAY else "standalone"
+        await active_bridge.send(
+            "router.update",
+            RouterPluginState(
+                model=model or "default",
+                route=mode,
+                saving="-",
+                context="ready",
+                style="dim",
+                source=session_id or "new session",
+                routing_applied=False,
+                rollout_phase="observe",
+            ),
         )
         await active_bridge.send(
             "completion.context",
             completion_context
             if completion_context is not None
             else build_completion_context(surface, workspace_dir=active_workspace_dir),
+        )
+        await active_bridge.send(
+            "scrollback.write",
+            ScrollbackWrite(
+                text=_startup_context_line(
+                    surface=surface,
+                    model=model,
+                    session_id=session_id,
+                    workspace=(
+                        workspace_label
+                        or (str(active_workspace_dir) if active_workspace_dir is not None else None)
+                    ),
+                )
+            ),
         )
         if print_ready_marker and marker:
             await active_bridge.send("scrollback.write", ScrollbackWrite(text=f"{marker}\n"))
@@ -421,6 +678,28 @@ def _workspace_dir() -> Path | None:
     return Path(workspace)
 
 
+def _startup_context_line(
+    *,
+    surface: Surface,
+    model: str | None,
+    session_id: str | None,
+    workspace: str | None,
+) -> str:
+    """One terminal-safe first-screen receipt with real resolved context."""
+
+    def _field(value: str | None, fallback: str) -> str:
+        clean = sanitize_terminal_text(str(value or fallback)).replace("\n", " ").strip()
+        return clean[:160] or fallback
+
+    mode = "gateway" if surface is Surface.CLI_GATEWAY else "standalone"
+    gateway = "ready" if surface is Surface.CLI_GATEWAY else "isolated"
+    return (
+        f"OpenSquilla · model {_field(model, 'default')} · "
+        f"session {_field(session_id, 'new')} · workspace {_field(workspace, 'gateway-managed')} · "
+        f"mode {mode} · gateway {gateway} · Enter send / Ctrl+C cancel / Ctrl+D exit / /help\n"
+    )
+
+
 def _normalize_workspace_dir(workspace_dir: Path | str | None) -> Path | None:
     if workspace_dir is None:
         return None
@@ -428,12 +707,52 @@ def _normalize_workspace_dir(workspace_dir: Path | str | None) -> Path | None:
 
 
 def _file_completion_item(path: str) -> dict[str, str]:
+    # @path is currently a textual workspace reference carried inside
+    # input.submit, not a staged attachment. It deliberately does not create a
+    # chip until the host→Python input contract can carry structured references;
+    # showing a ready chip today would falsely imply bytes were attached.
     return {
         "label": path,
         "description": path,
         "insert_text": f"@{path} ",
         "category": "file",
     }
+
+
+def _attachment_status(value: str) -> str:
+    normalized = str(value or "").strip().lower()
+    if normalized not in _ATTACHMENT_STATUSES:
+        raise ValueError("attachment status must be reading, uploading, ready, or failed")
+    return normalized
+
+
+def _attachment_id(value: str) -> str:
+    normalized = re.sub(r"[^a-zA-Z0-9_.:-]+", "-", str(value or "")).strip("-")
+    if not normalized:
+        raise ValueError("attachment id must not be empty")
+    return normalized[:96]
+
+
+def _attachment_kind(value: str) -> str:
+    normalized = re.sub(r"[^a-z0-9_-]+", "-", str(value or "").lower()).strip("-")
+    return (normalized or "file")[:24]
+
+
+def _attachment_label(value: str) -> str:
+    # Normalize both POSIX and Windows separators before taking the basename;
+    # the host must never receive an absolute local path.
+    basename = str(value or "attachment").replace("\\", "/").rsplit("/", 1)[-1]
+    clean = re.sub(r"[\x00-\x1f\x7f]+", "", basename).strip()
+    return (clean or "attachment")[:72]
+
+
+def _attachment_message(value: str) -> str:
+    clean = re.sub(r"[\x00-\x1f\x7f]+", " ", str(value or ""))
+    # Defensive redaction for future callers: messages are UI diagnostics, not
+    # transport payloads, so paths and byte counts never belong on the wire.
+    clean = re.sub(r"(?i)(?:[a-z]:[\\/]|/)[^\s]+", "<path>", clean)
+    clean = re.sub(r"(?i)\b\d[\d,._]*\s*bytes?\b", "<size>", clean)
+    return " ".join(clean.split())[:120]
 
 
 def _send_bridge_message(

@@ -123,7 +123,7 @@ class OpenTuiStreamRenderer:
                 "turn.status", TurnStatusState(phase="output", label="output", active=True)
             )
         # The agent tells us, per text segment, whether it is the turn's answer
-        # (-> cyan card) or intermediate narration between tool calls (-> purple ✱
+        # (-> cyan card) or intermediate narration between tool calls (-> purple ✻
         # thinking line), and we open the matching block kind from the first delta.
         # A single block never changes kind, but a call CAN switch presentation:
         # text streams live as the answer until a tool appears, after which later
@@ -147,9 +147,7 @@ class OpenTuiStreamRenderer:
         if self._open_text_id is None:
             self._open_text_id = self._next_block_id()
             self._open_text_presentation = kind
-            await self._emit(
-                "block.begin", BlockBegin(id=self._open_text_id, kind=kind, meta={})
-            )
+            await self._emit("block.begin", BlockBegin(id=self._open_text_id, kind=kind, meta={}))
         await self._emit("block.append", BlockAppend(id=self._open_text_id, delta=visible))
 
     async def aappend_reasoning(self, delta: str) -> None:
@@ -169,9 +167,7 @@ class OpenTuiStreamRenderer:
                 "block.begin",
                 BlockBegin(id=self._open_reasoning_id, kind="reasoning", meta={}),
             )
-        await self._emit(
-            "block.append", BlockAppend(id=self._open_reasoning_id, delta=delta)
-        )
+        await self._emit("block.append", BlockAppend(id=self._open_reasoning_id, delta=delta))
 
     async def _close_text(self) -> None:
         # A held tail that never completed into a directive tag is ordinary
@@ -236,9 +232,7 @@ class OpenTuiStreamRenderer:
             self._tool_block_ids[tool_use_id] = block_id
         self._last_tool_block_id = block_id
         self._tool_start_times[block_id] = time.monotonic()
-        await self._emit(
-            "turn.status", TurnStatusState(phase="tool", label=name, active=True)
-        )
+        await self._emit("turn.status", TurnStatusState(phase="tool", label=name, active=True))
         self._pill_phase = "tool"
         await self._emit(
             "block.begin",
@@ -312,9 +306,7 @@ class OpenTuiStreamRenderer:
         )
         await self._emit("block.end", BlockEnd(id=usage_id))
         await self._emit("turn.end", TurnEnd(id=self._turn_id, cancelled=cancelled))
-        await self._emit(
-            "turn.status", TurnStatusState(phase="idle", label="ready", active=False)
-        )
+        await self._emit("turn.status", TurnStatusState(phase="idle", label="ready", active=False))
         self._pill_phase = "idle"
         await self._emit_raw("composer.set", {"disabled": False})
         self._publish_usage_to_router_toolbar(usage)

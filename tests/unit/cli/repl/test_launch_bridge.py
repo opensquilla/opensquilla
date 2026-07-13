@@ -208,6 +208,7 @@ def test_launch_bridge_warns_gateway_workspace_options_without_forwarding(
         calls.append(kwargs)
 
     monkeypatch.setattr(launch_bridge, "prepare_interactive_chat", lambda **_kwargs: None)
+    monkeypatch.setattr(launch_bridge, "preflight_gateway_chat_or_exit", lambda: None)
 
     launch_bridge.launch_chat(
         model="",
@@ -264,6 +265,7 @@ def test_launch_chat_command_uses_typed_overrides() -> None:
         {
             "model": "openai/test",
             "session_id": "agent:main:test",
+            "ui": None,
             "standalone": True,
             "workspace": "repo",
             "workspace_strict": True,
@@ -309,6 +311,7 @@ def test_launch_chat_command_keeps_legacy_override_mapping() -> None:
         {
             "model": "openai/test",
             "session_id": "agent:main:test",
+            "ui": None,
             "standalone": False,
             "workspace": "",
             "workspace_strict": None,

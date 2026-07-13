@@ -91,6 +91,12 @@ class _FakeConsole:
         return self._answers.pop(0)
 
 
+class _ExternalResolution:
+    approved = True
+    choice = None
+    resolved_externally = True
+
+
 class _FakeResponse:
     def __init__(self, approved: bool, choice: str | None = None) -> None:
         self.approved = approved
@@ -334,6 +340,17 @@ async def test_handler_denies_on_host_timeout() -> None:
     assert resolver.calls == [("appr-1", False, "deny")]
 
 
+async def test_handler_does_not_reresolve_approval_completed_in_webui() -> None:
+    handler = tui_approval_handler(output_console=_FakeConsole())
+    resolver = _Resolver()
+    renderer = _RecordingRenderer(_HostOutputHandle(_ExternalResolution()))
+
+    await handler(_sandbox_envelope_payload(), renderer, resolver)
+
+    assert resolver.calls == []
+    assert any("another client" in message for message, _style in renderer.statuses)
+
+
 async def test_handler_denies_on_dead_bridge() -> None:
     handler = tui_approval_handler(output_console=_FakeConsole())
     resolver = _Resolver()
@@ -449,9 +466,7 @@ async def test_cancelled_console_prompt_denies_and_reaps_the_reader() -> None:
             reader_finished.set()
         return "y"
 
-    handler = tui_approval_handler(
-        output_console=_FakeConsole(), prompt_reader=blocking_reader
-    )
+    handler = tui_approval_handler(output_console=_FakeConsole(), prompt_reader=blocking_reader)
     resolver = _Resolver()
     renderer = _RecordingRenderer(_NativeOutputHandle())
 
@@ -478,9 +493,7 @@ async def test_cancelled_console_prompt_reaps_reader_even_when_deny_rpc_fails() 
         await release_reader.wait()
         return "y"
 
-    handler = tui_approval_handler(
-        output_console=_FakeConsole(), prompt_reader=blocking_reader
-    )
+    handler = tui_approval_handler(output_console=_FakeConsole(), prompt_reader=blocking_reader)
     resolver = _Resolver(error=RuntimeError("rpc down"))
     renderer = _RecordingRenderer(_NativeOutputHandle())
 
@@ -540,9 +553,7 @@ def test_default_turn_stream_dependencies_keeps_explicit_handler() -> None:
     async def explicit_handler(*_args: Any, **_kwargs: Any) -> None:
         return None
 
-    deps = turn_stream_defaults.default_turn_stream_dependencies(
-        approval_handler=explicit_handler
-    )
+    deps = turn_stream_defaults.default_turn_stream_dependencies(approval_handler=explicit_handler)
 
     assert deps.approval_handler is explicit_handler
 

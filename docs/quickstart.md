@@ -13,14 +13,33 @@ UI, SquillaRouter, memory/search support, and safe local defaults.
 
 ## Recommended Install
 
-Install the current release wheel with the recommended extras:
+On macOS and Linux, install the current release with the release installer:
 
 ```sh
-uv tool install --python 3.12 "opensquilla[recommended] @ https://github.com/opensquilla/opensquilla/releases/download/v0.5.0rc3/opensquilla-0.5.0rc3-py3-none-any.whl"
+curl -LsSf https://opensquilla.ai/install.sh | bash
 ```
 
-The `recommended` extra includes SquillaRouter dependencies and memory/search
-support used by the default product experience.
+On macOS it selects the matching arm64 or x86_64 TUI host and installs it with
+the exact same version of the platform-neutral core wheel. The equivalent
+Apple Silicon command is:
+
+```sh
+uv tool install --python 3.12 \
+  --with "opensquilla-tui-host @ https://github.com/opensquilla/opensquilla/releases/download/v0.5.0rc4/opensquilla_tui_host-0.5.0rc4-py3-none-macosx_11_0_arm64.whl" \
+  "opensquilla[recommended] @ https://github.com/opensquilla/opensquilla/releases/download/v0.5.0rc4/opensquilla-0.5.0rc4-py3-none-any.whl"
+```
+
+Intel macOS uses the sibling `macosx_11_0_x86_64` wheel. Bun, npm, and a
+first-launch binary download are not required. The `recommended` extra includes
+SquillaRouter dependencies and memory/search support used by the default
+product experience.
+
+Windows currently installs the core wheel; its native TUI host follows in the
+separate Windows platform release:
+
+```powershell
+uv tool install --python 3.12 "opensquilla[recommended] @ https://github.com/opensquilla/opensquilla/releases/download/v0.5.0rc4/opensquilla-0.5.0rc4-py3-none-any.whl"
+```
 
 If `opensquilla` is not found after install, open a new shell or run:
 

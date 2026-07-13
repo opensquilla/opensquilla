@@ -1,6 +1,6 @@
 [project]
 name = "opensquilla"
-version = "0.5.0rc3"
+version = "0.5.0rc4"
 description = "OpenSquilla — microkernel Python agent runtime with MCP-native tools and multi-channel messaging"
 license = "Apache-2.0"
 readme = "README.md"
@@ -114,6 +114,13 @@ exclude = [
     "src/opensquilla/skills/bundled/**/references/*.md",
     "src/opensquilla/skills/exp/**",
     "src/opensquilla/skills/meta/META_SKILL_AUTHORING.md",
+    # The core distribution may carry the OpenTUI JavaScript sources for
+    # explicit source-development mode, but never local dependency installs or
+    # compiled platform artifacts. Those belong to opensquilla-tui-host.
+    "src/opensquilla/cli/tui/opentui/package/node_modules/**",
+    "src/opensquilla/cli/tui/opentui/package/bin/**",
+    "src/opensquilla/cli/tui/opentui/package/build/**",
+    "src/opensquilla/cli/tui/opentui/package/dist/**",
 ]
 
 [tool.hatch.build.targets.wheel.force-include]

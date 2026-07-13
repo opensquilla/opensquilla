@@ -6,6 +6,42 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+## [0.5.0rc4] - 2026-07-13
+
+### Added
+
+- macOS terminal installs now include a same-version, architecture-specific
+  `opensquilla-tui-host` companion. During this supported opt-in RC,
+  `opensquilla chat --ui tui` launches the packaged full-screen TUI without
+  requiring Bun, Node, a source checkout, or a first-run binary download.
+- The TUI can hydrate canonical Gateway history, resume shared sessions, follow
+  cross-surface turn and approval state, and compose file and image attachments
+  through the same Gateway-owned session model as the Web UI.
+- Desktop startup now blocks unsafe writes when a profile is interrupted or
+  uncertain, and offers explicit recovery from a verified profile or recorded
+  backup. Users can also copy a complete CLI/Desktop or historical Windows
+  Portable profile; the source remains unchanged and imported scheduler jobs
+  remain paused.
+
+### Changed
+
+- macOS upgrades, reinstalls, and rollbacks pair the platform-neutral core
+  wheel with the matching arm64 or x86_64 companion wheel. Version or protocol
+  mismatches fail before full-screen startup.
+- Bare `opensquilla chat` remains on the plain rescue renderer for this RC;
+  `--ui auto` remains available for explicit evaluation before the later
+  default-switch review.
+- Profile imports are explicit whole-profile operations: existing targets are
+  kept as-is or backed up before replacement, never silently merged per chat or
+  file. Interrupted settings/import transactions can resume, roll back, or
+  complete after verification.
+
+### Fixed
+
+- Full-screen startup and shutdown now use one terminal-restoration path for
+  normal exit, interrupt, host failure, and Gateway disconnect, with a concise
+  session receipt after control returns to the shell.
+
 ## [0.5.0rc3] - 2026-07-10
 
 ### Added

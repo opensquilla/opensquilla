@@ -43,6 +43,17 @@ const noMacFeed = (tag) => ({ tag_name: tag, assets: [{ name: 'OpenSquilla-mac.z
   assert.equal(c.version, '0.5.0-rc3')
 }
 
+// 2a. A resolver-enabled Preview 3 client sees the new Preview 4 release.
+{
+  const c = selectMacPrereleaseCandidate(
+    { base: '0.5.0', rc: 3 },
+    [withMacFeed('v0.5.0rc4'), withMacFeed('v0.5.0rc3')],
+  )
+  assert.ok(c)
+  assert.equal(c.tag, 'v0.5.0rc4')
+  assert.equal(c.version, '0.5.0-rc4')
+}
+
 // 3. 0.5.0-rc2 sees the final stable v0.5.0 (stable outranks a later rc).
 {
   const c = selectMacPrereleaseCandidate({ base: '0.5.0', rc: 2 }, [

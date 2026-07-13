@@ -65,7 +65,7 @@ class TextDeltaEvent:
     text: str = ""
     # Whether this text is the turn's final answer (render as a card) or
     # intermediate narration between tool calls (render as a lightweight purple
-    # ✱ line). Decided by the agent from whether the producing provider call
+    # ✻ line). Decided by the agent from whether the producing provider call
     # ended up making tool calls — see agent.py. Defaults to "answer" so any
     # producer that does not set it keeps the pre-existing card behavior.
     presentation: Literal["intermediate", "answer"] = "answer"
@@ -317,9 +317,9 @@ class MetaStepStateEvent:
     kind: Literal["meta_step_state"] = field(default="meta_step_state", init=False)
     run_id: str = ""
     step_id: str = ""
-    state: Literal[
-        "pending", "running", "succeeded", "failed", "skipped", "substituted"
-    ] = "pending"
+    state: Literal["pending", "running", "succeeded", "failed", "skipped", "substituted"] = (
+        "pending"
+    )
     status_text: str | None = None
     error: str | None = None
     substitute_for: str | None = None

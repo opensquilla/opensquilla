@@ -8,7 +8,9 @@ import os
 import re
 import sys
 from collections.abc import AsyncIterator, Mapping
+from dataclasses import asdict
 from typing import Any, cast
+from urllib.parse import urlparse
 from uuid import uuid4
 
 import httpx
@@ -16,9 +18,10 @@ import structlog
 
 from opensquilla.env import trust_env as _trust_env
 from opensquilla.execution_status import compact_provider_status, derive_is_error
+from opensquilla.safety.secret_redaction import redact_secret_text
 from opensquilla.secrets import clean_header_secret
 
-from .app_attribution import provider_app_headers
+from .app_attribution import is_provider_app_host, provider_app_headers
 from .compat_policy import OpenAICompatPolicy, compat_policy_for_kind
 from .context_capabilities import supports_openrouter_explicit_prompt_cache
 from .failures import retry_after_from_headers
@@ -44,6 +47,8 @@ from .types import (
     ModelCapabilities,
     ModelInfo,
     ProviderHeartbeatEvent,
+    ProviderMessageCountProjection,
+    ProviderMessageLimitProof,
     StreamEvent,
     TextDeltaEvent,
     ToolDefinition,
@@ -191,6 +196,132 @@ def _http_error_body_text(body: bytes | str) -> str:
 def _format_chat_http_error(display_name: str, status_code: int, body: bytes | str) -> str:
     body_text = _http_error_body_text(body) or "empty response body"
     return f"{display_name} chat request failed (HTTP {status_code}): {body_text}"
+
+
+def _base_url_hostname(base_url: str) -> str:
+    raw = str(base_url or "").strip()
+    if not raw:
+        return ""
+    try:
+        parsed = urlparse(raw if "://" in raw else f"https://{raw}")
+        return (parsed.hostname or "").lower()
+    except ValueError:
+        return ""
+
+
+def _safe_validation_message(value: object) -> str:
+    """Return a bounded, single-line, secret-redacted validation detail."""
+    if not isinstance(value, str):
+        return ""
+    compact = " ".join(value.split())
+    if not compact:
+        return ""
+    return redact_secret_text(compact)[:500]
+
+
+def _format_tokenrhythm_message_limit_error(
+    display_name: str,
+    status_code: int,
+    body: bytes | str,
+    validation_message: str,
+) -> str:
+    """Format only allowlisted fields from an exact TokenRhythm rejection."""
+    text = body.decode("utf-8", errors="replace") if isinstance(body, bytes) else body
+    try:
+        payload = json.loads(text)
+    except (json.JSONDecodeError, TypeError):
+        payload = {}
+    top_message = (
+        _safe_validation_message(payload.get("message"))
+        if isinstance(payload, dict)
+        else ""
+    )
+    detail = f"BAD_REQUEST: {top_message}" if top_message else "BAD_REQUEST"
+    if validation_message:
+        detail = f"{detail}; {validation_message}"
+    return f"{display_name} chat request failed (HTTP {status_code}): {detail}"
+
+
+def _tokenrhythm_message_limit_evidence(
+    *,
+    provider_kind: str,
+    base_url: str,
+    model: str,
+    status_code: int,
+    body: bytes | str,
+    wire_messages: object,
+    logical_messages: int,
+) -> tuple[ProviderMessageLimitProof, str] | None:
+    """Parse TokenRhythm's exact structured ``messages[]`` size rejection.
+
+    This deliberately refuses text matching.  The observed limit is safe to
+    use for recovery only when the official host, HTTP status, envelope, field
+    path, numeric constraint, and locally observed wire count all agree.
+    """
+    if (
+        provider_kind != "tokenrhythm"
+        or status_code != 400
+        or not is_provider_app_host(base_url, "tokenrhythm.studio")
+        or not isinstance(wire_messages, list)
+    ):
+        return None
+    text = body.decode("utf-8", errors="replace") if isinstance(body, bytes) else body
+    try:
+        payload = json.loads(text)
+    except (json.JSONDecodeError, TypeError):
+        return None
+    if not isinstance(payload, dict) or payload.get("code") != "BAD_REQUEST":
+        return None
+    rows = payload.get("data")
+    if not isinstance(rows, list):
+        return None
+
+    limits: list[int] = []
+    first_validation_message = ""
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        maximum = row.get("maximum")
+        inclusive = row.get("inclusive")
+        if (
+            row.get("origin") != "array"
+            or row.get("code") != "too_big"
+            or row.get("path") != ["messages"]
+            or not isinstance(maximum, int)
+            or isinstance(maximum, bool)
+            or maximum <= 0
+            or not isinstance(inclusive, bool)
+        ):
+            continue
+        limits.append(maximum if inclusive else maximum - 1)
+        if not first_validation_message:
+            first_validation_message = _safe_validation_message(row.get("message"))
+
+    if not limits:
+        return None
+    limit = min(limits)
+    actual_wire_messages = len(wire_messages)
+    if actual_wire_messages <= limit:
+        return None
+    proof = ProviderMessageLimitProof(
+        actual_wire_messages=actual_wire_messages,
+        limit=limit,
+        logical_messages=max(0, logical_messages),
+        system_messages=sum(
+            1
+            for message in wire_messages
+            if isinstance(message, dict) and message.get("role") == "system"
+        ),
+        tool_result_messages=sum(
+            1
+            for message in wire_messages
+            if isinstance(message, dict) and message.get("role") == "tool"
+        ),
+        provider_kind=provider_kind,
+        model=model,
+        base_host=_base_url_hostname(base_url),
+    )
+    return proof, first_validation_message
 
 
 def _strip_tool_schema_keywords(value: Any, unsupported: frozenset[str]) -> Any:
@@ -1901,6 +2032,82 @@ def _build_openai_messages(
     ]
 
 
+def _build_openai_wire_messages(
+    messages: list[Message],
+    cfg: ChatConfig,
+    *,
+    policy: OpenAICompatPolicy,
+    provider_kind: str,
+    model: str,
+    replay_provider_state: bool,
+    reasoning_echo_turns: int | None,
+) -> list[dict[str, Any]]:
+    """Build the exact OpenAI-compatible wire-message array, without I/O."""
+    openai_messages: list[dict[str, Any]] = []
+    caps = cfg.model_capabilities
+    include_reasoning_content = _should_replay_reasoning_content(
+        policy=policy,
+        model=model,
+        caps=caps,
+        thinking=cfg.thinking,
+    )
+    explicit_cache_supported = False
+    if cfg.system:
+        explicit_cache_supported = policy.supports_explicit_prompt_cache and (
+            _supports_explicit_prompt_cache(
+                provider_kind,
+                model,
+                cfg.cache_mode,
+            )
+        )
+        if cfg.cache_breakpoints and explicit_cache_supported:
+            content_blocks = _build_cache_breakpoint_blocks(
+                cfg.cache_breakpoints,
+                max_cache_markers=(
+                    _DASHSCOPE_MAX_CACHE_MARKERS if provider_kind == "dashscope" else None
+                ),
+            )
+            openai_messages.append({"role": "system", "content": content_blocks})
+        else:
+            openai_messages.append({"role": "system", "content": cfg.system})
+    reasoning_echo_allowed = (
+        _reasoning_echo_allowed_indexes(messages, reasoning_echo_turns)
+        if include_reasoning_content
+        else None
+    )
+    for message_index, message in enumerate(messages):
+        openai_messages.extend(
+            _build_openai_messages(
+                message,
+                include_reasoning_content=(
+                    include_reasoning_content
+                    if reasoning_echo_allowed is None
+                    else message_index in reasoning_echo_allowed
+                ),
+                require_assistant_reasoning_content=(
+                    _requires_assistant_reasoning_content(policy, model)
+                ),
+                replay_provider_state=replay_provider_state,
+            )
+        )
+    if provider_kind == "dashscope" and cfg.cache_mode == "on":
+        _attach_cache_control_to_latest_text_messages(
+            openai_messages,
+            max_cache_markers=_DASHSCOPE_MAX_CACHE_MARKERS,
+        )
+    elif (
+        provider_kind == "openrouter"
+        and cfg.cache_mode in {"auto", "on"}
+        and explicit_cache_supported
+        and _openrouter_model_uses_alibaba_message_cache(model)
+    ):
+        _attach_cache_control_to_latest_text_messages(
+            openai_messages,
+            max_cache_markers=_DASHSCOPE_MAX_CACHE_MARKERS,
+        )
+    return openai_messages
+
+
 class OpenAIProvider:
     """Streams from OpenAI-compatible Chat Completions API (SSE)."""
 
@@ -1999,6 +2206,45 @@ class OpenAIProvider:
             return f"{self._base_url}{path[3:]}"
         return f"{self._base_url}{path}"
 
+    def project_message_count(
+        self,
+        messages: list[Message],
+        config: ChatConfig | None = None,
+        *,
+        additional_messages: int = 0,
+    ) -> ProviderMessageCountProjection:
+        """Project this adapter's exact wire-message expansion without I/O."""
+        if (
+            not isinstance(additional_messages, int)
+            or isinstance(additional_messages, bool)
+            or additional_messages < 0
+        ):
+            raise ValueError("additional_messages must be a non-negative integer")
+        cfg = config or ChatConfig()
+        wire_messages = _build_openai_wire_messages(
+            messages,
+            cfg,
+            policy=self._compat,
+            provider_kind=self._provider_kind,
+            model=self._model,
+            replay_provider_state=self._replay_provider_state,
+            reasoning_echo_turns=self._reasoning_echo_turns,
+        )
+        return ProviderMessageCountProjection(
+            actual_wire_messages=len(wire_messages) + additional_messages,
+            logical_messages=len(messages) + additional_messages,
+            system_messages=sum(
+                1 for message in wire_messages if message.get("role") == "system"
+            ),
+            tool_result_messages=sum(
+                1 for message in wire_messages if message.get("role") == "tool"
+            ),
+            additional_messages=additional_messages,
+            provider_kind=self._provider_kind,
+            model=self._model,
+            base_host=_base_url_hostname(self._base_url),
+        )
+
     def chat(
         self,
         messages: list[Message],
@@ -2014,7 +2260,6 @@ class OpenAIProvider:
         tools: list[ToolDefinition] | None,
         cfg: ChatConfig,
     ) -> AsyncIterator[StreamEvent]:
-        openai_messages: list[dict[str, Any]] = []
         caps = cfg.model_capabilities
         include_reasoning_content = _should_replay_reasoning_content(
             policy=self._compat,
@@ -2022,61 +2267,15 @@ class OpenAIProvider:
             caps=caps,
             thinking=cfg.thinking,
         )
-        if cfg.system:
-            explicit_cache_supported = (
-                self._compat.supports_explicit_prompt_cache
-                and _supports_explicit_prompt_cache(
-                    self._provider_kind,
-                    self._model,
-                    cfg.cache_mode,
-                )
-            )
-            if cfg.cache_breakpoints and explicit_cache_supported:
-                # Split system prompt into cached base + dynamic parts
-                content_blocks = _build_cache_breakpoint_blocks(
-                    cfg.cache_breakpoints,
-                    max_cache_markers=(
-                        _DASHSCOPE_MAX_CACHE_MARKERS if self._provider_kind == "dashscope" else None
-                    ),
-                )
-                openai_messages.append({"role": "system", "content": content_blocks})
-            else:
-                openai_messages.append({"role": "system", "content": cfg.system})
-        reasoning_echo_allowed = (
-            _reasoning_echo_allowed_indexes(messages, self._reasoning_echo_turns)
-            if include_reasoning_content
-            else None
+        openai_messages = _build_openai_wire_messages(
+            messages,
+            cfg,
+            policy=self._compat,
+            provider_kind=self._provider_kind,
+            model=self._model,
+            replay_provider_state=self._replay_provider_state,
+            reasoning_echo_turns=self._reasoning_echo_turns,
         )
-        for message_index, m in enumerate(messages):
-            openai_messages.extend(
-                _build_openai_messages(
-                    m,
-                    include_reasoning_content=(
-                        include_reasoning_content
-                        if reasoning_echo_allowed is None
-                        else message_index in reasoning_echo_allowed
-                    ),
-                    require_assistant_reasoning_content=(
-                        _requires_assistant_reasoning_content(self._compat, self._model)
-                    ),
-                    replay_provider_state=self._replay_provider_state,
-                )
-            )
-        if self._provider_kind == "dashscope" and cfg.cache_mode == "on":
-            _attach_cache_control_to_latest_text_messages(
-                openai_messages,
-                max_cache_markers=_DASHSCOPE_MAX_CACHE_MARKERS,
-            )
-        elif (
-            self._provider_kind == "openrouter"
-            and cfg.cache_mode in {"auto", "on"}
-            and explicit_cache_supported
-            and _openrouter_model_uses_alibaba_message_cache(self._model)
-        ):
-            _attach_cache_control_to_latest_text_messages(
-                openai_messages,
-                max_cache_markers=_DASHSCOPE_MAX_CACHE_MARKERS,
-            )
 
         payload: dict[str, Any] = {
             "model": self._model,
@@ -2368,6 +2567,47 @@ class OpenAIProvider:
                             response.status_code,
                             body,
                         )
+                        message_limit_evidence = _tokenrhythm_message_limit_evidence(
+                            provider_kind=self._provider_kind,
+                            base_url=self._base_url,
+                            model=self._model,
+                            status_code=response.status_code,
+                            body=body,
+                            wire_messages=payload.get("messages"),
+                            logical_messages=len(messages),
+                        )
+                        if message_limit_evidence is not None:
+                            message_limit_proof, validation_message = message_limit_evidence
+                            message = _format_tokenrhythm_message_limit_error(
+                                self._compat.display_name,
+                                response.status_code,
+                                body,
+                                validation_message,
+                            )
+                            proof_fields = asdict(message_limit_proof)
+                            log.warning(
+                                "provider.request_message_limit_detected",
+                                **proof_fields,
+                            )
+                            trace.record_error(
+                                code=str(response.status_code),
+                                message="Provider request message limit detected",
+                                status_code=response.status_code,
+                                metadata={
+                                    "cache_shape": cache_shape,
+                                    "message_limit_proof": proof_fields,
+                                },
+                            )
+                            yield ErrorEvent(
+                                message=message,
+                                code=str(response.status_code),
+                                retry_after_s=retry_after_from_headers(
+                                    response.status_code,
+                                    getattr(response, "headers", None),
+                                ),
+                                message_limit_proof=message_limit_proof,
+                            )
+                            return
                         # Diagnostic: dump payload head (no auth headers)
                         # so 400s from picky upstreams are debuggable. Truncated
                         # to keep memory low.

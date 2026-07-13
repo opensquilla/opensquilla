@@ -97,6 +97,40 @@ class DoneEvent:
         return self.billed_cost
 
 
+@dataclass(frozen=True)
+class ProviderMessageCountProjection:
+    """Pure projection of one provider request's final wire-message count.
+
+    ``additional_messages`` lets wrappers account for provider-local synthetic
+    messages (for example, an ensemble aggregator's candidate bundle) without
+    manufacturing ``Message`` objects or duplicating an adapter's expansion
+    rules.
+    """
+
+    actual_wire_messages: int
+    logical_messages: int
+    system_messages: int
+    tool_result_messages: int
+    additional_messages: int = 0
+    provider_kind: str = ""
+    model: str = ""
+    base_host: str = ""
+
+
+@dataclass(frozen=True)
+class ProviderMessageLimitProof:
+    """Structured proof of an upstream wire-message cardinality rejection."""
+
+    actual_wire_messages: int
+    limit: int
+    logical_messages: int
+    system_messages: int
+    tool_result_messages: int
+    provider_kind: str = ""
+    model: str = ""
+    base_host: str = ""
+
+
 @dataclass
 class ErrorEvent:
     """Stream error.
@@ -110,6 +144,10 @@ class ErrorEvent:
     message: str = ""
     code: str = ""
     retry_after_s: float | None = None
+    # Appended so positional construction of the long-standing fields remains
+    # source-compatible.  Only populated when an adapter has exact structured
+    # evidence for a provider request limit.
+    message_limit_proof: ProviderMessageLimitProof | None = None
 
 
 @dataclass

@@ -24,6 +24,7 @@ log = structlog.get_logger(__name__)
 _COMPACTION_TIMEOUT = 90.0
 _MAX_CUSTOM_INSTRUCTIONS_CHARS = 2000
 CompactionProfile = Literal["conversation", "coding", "research", "support"]
+CompactionTrigger = Literal["token_budget", "message_count"]
 
 
 @dataclass
@@ -49,6 +50,13 @@ class CompactionRequest:
     context_window_tokens: int
     config: CompactionConfig = field(default_factory=CompactionConfig)
     custom_instructions: str | None = None
+    # Optional caller-selected prefix boundary for non-token compaction.  The
+    # compactor validates that the exact boundary preserves the configured
+    # protected tail and tool-call pairing; it never silently chooses another
+    # cut when this is set.
+    forced_prefix_cut: int | None = None
+    trigger: CompactionTrigger = "token_budget"
+    reason: str | None = None
 
 
 @dataclass
@@ -68,6 +76,10 @@ class CompactionResult:
     critical_carry_forward: list[str] | None = None
     skip_reason: str | None = None
     quality_report: dict[str, Any] = field(default_factory=dict)
+    # Index in the original request.entries at which kept_entries begins.
+    # Prefix-only compaction therefore guarantees kept_start_index ==
+    # removed_count on successful results.  Zero also covers every no-op.
+    kept_start_index: int = 0
 
 
 def _string_value(value: Any) -> str:
@@ -290,6 +302,26 @@ def _retreat_to_turn_boundary(entries: list[dict[str, Any]], cut: int) -> int:
     return 0
 
 
+def _validate_forced_prefix_cut(
+    entries: list[dict[str, Any]],
+    cut: int | None,
+    cfg: CompactionConfig,
+) -> tuple[int | None, str | None]:
+    """Validate a caller-owned prefix cut without silently changing it."""
+
+    if cut is None:
+        return None, None
+    if isinstance(cut, bool) or not isinstance(cut, int):
+        return None, "invalid_forced_prefix_cut"
+    if cut <= 0 or cut > len(entries):
+        return None, "invalid_forced_prefix_cut"
+    if _apply_protected_tail(entries, cut, cfg) != cut:
+        return None, "forced_prefix_cut_overlaps_protected_tail"
+    if _retreat_to_turn_boundary(entries, cut) != cut:
+        return None, "forced_prefix_cut_splits_tool_segment"
+    return cut, None
+
+
 def _compaction_quality_report(
     *,
     cfg: CompactionConfig,
@@ -299,6 +331,7 @@ def _compaction_quality_report(
     tokens_after: int,
     removed_count: int,
     context_window_tokens: int,
+    trigger: CompactionTrigger = "token_budget",
 ) -> dict[str, Any]:
     protected_recent = _profile_protected_recent_messages(cfg)
     protected_tail_preserved = True
@@ -314,10 +347,18 @@ def _compaction_quality_report(
         else 1.0
     )
     fits_context_window = bool(tokens_after * cfg.safety_margin <= context_window_tokens)
+    reduces_tokens = tokens_after < tokens_before
+    # Message-count recovery removes wire-message cardinality rather than
+    # necessarily reducing token usage.  It remains safe only when the result
+    # still fits the context window.  The default token-budget path retains its
+    # historical strict token-reduction gate.
     passes_structural_gate = bool(
         removed_count > 0
         and protected_tail_preserved
-        and tokens_after < tokens_before
+        and (
+            reduces_tokens
+            or (trigger == "message_count" and fits_context_window)
+        )
     )
     return {
         "profile": str(getattr(cfg, "compaction_profile", "conversation") or "conversation"),
@@ -703,8 +744,28 @@ async def compact_context_new(request: CompactionRequest) -> CompactionResult:
             skip_reason="no_entries",
         )
 
-    # If we're within budget, no compaction needed.
-    if total_tokens * cfg.safety_margin <= window:
+    forced_cut, forced_cut_error = _validate_forced_prefix_cut(
+        entries,
+        request.forced_prefix_cut,
+        cfg,
+    )
+    if forced_cut_error is not None:
+        return CompactionResult(
+            summary="",
+            kept_entries=entries,
+            removed_count=0,
+            chunks_processed=0,
+            summary_source="skipped",
+            tokens_before=total_tokens,
+            tokens_after=total_tokens,
+            remaining_budget_tokens=max(window - total_tokens, 0),
+            skip_reason=forced_cut_error,
+        )
+
+    # If we're within budget, no token-driven compaction is needed.  A valid
+    # forced prefix cut is an independent cardinality recovery request and must
+    # still run even when the transcript already fits the token window.
+    if forced_cut is None and total_tokens * cfg.safety_margin <= window:
         return CompactionResult(
             summary="",
             kept_entries=entries,
@@ -717,11 +778,19 @@ async def compact_context_new(request: CompactionRequest) -> CompactionResult:
             skip_reason="within_compaction_budget",
         )
 
-    keep_budget = window // 2
-
-    # compaction: use turn-boundary-aware cut instead of raw token split.
-    cut = _find_turn_boundary_cut(entries, keep_budget)
-    cut = _retreat_to_turn_boundary(entries, _apply_protected_tail(entries, cut, cfg))
+    if forced_cut is not None:
+        # The caller already projected a sufficient count reduction.  Preserve
+        # its exact structured tail; validation above refuses unsafe boundaries
+        # instead of retreating to a different one.
+        cut = forced_cut
+    else:
+        keep_budget = window // 2
+        # compaction: use turn-boundary-aware cut instead of raw token split.
+        cut = _find_turn_boundary_cut(entries, keep_budget)
+        cut = _retreat_to_turn_boundary(
+            entries,
+            _apply_protected_tail(entries, cut, cfg),
+        )
     kept = entries[cut:]
     to_compact = entries[:cut]
 
@@ -741,8 +810,15 @@ async def compact_context_new(request: CompactionRequest) -> CompactionResult:
             skip_reason=skip_reason,
         )
 
-    chunk_ratio = max(cfg.min_chunk_ratio, cfg.base_chunk_ratio / cfg.default_parts)
-    chunks = _chunk_entries(to_compact, chunk_ratio)
+    if request.trigger == "message_count":
+        # The caller has already found the smallest sufficient prefix cut.
+        # Summarize that prefix in one request: chunking would turn one exact
+        # provider recovery into several unaccounted, independently-timed LLM
+        # calls without improving the cardinality result.
+        chunks = [to_compact]
+    else:
+        chunk_ratio = max(cfg.min_chunk_ratio, cfg.base_chunk_ratio / cfg.default_parts)
+        chunks = _chunk_entries(to_compact, chunk_ratio)
 
     id_instruction = (
         _build_strict_identifier_instruction() if cfg.identifier_policy == "strict" else ""
@@ -798,6 +874,7 @@ async def compact_context_new(request: CompactionRequest) -> CompactionResult:
             tokens_after=total_tokens,
             removed_count=0,
             context_window_tokens=window,
+            trigger=request.trigger,
         )
         log.warning(
             "compaction.coverage_blocked",
@@ -840,6 +917,7 @@ async def compact_context_new(request: CompactionRequest) -> CompactionResult:
         tokens_after=tokens_after,
         removed_count=len(to_compact),
         context_window_tokens=window,
+        trigger=request.trigger,
     )
     if not bool(quality_report.get("passes_structural_gate", False)):
         log.warning(
@@ -882,6 +960,7 @@ async def compact_context_new(request: CompactionRequest) -> CompactionResult:
         missing_obligations=coverage.missing_obligations,
         critical_carry_forward=coverage.critical_carry_forward,
         quality_report=quality_report,
+        kept_start_index=cut,
     )
 
 

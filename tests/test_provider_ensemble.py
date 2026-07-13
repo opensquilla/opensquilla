@@ -4,7 +4,7 @@ import asyncio
 import json
 import time
 from collections.abc import AsyncIterator
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 import pytest
@@ -28,7 +28,12 @@ from opensquilla.provider.ensemble import (
     build_ensemble_provider_from_config,
 )
 from opensquilla.provider.selector import ProviderConfig
-from opensquilla.provider.types import EnsembleProgressEvent, StreamEvent
+from opensquilla.provider.types import (
+    EnsembleProgressEvent,
+    ProviderMessageCountProjection,
+    ProviderMessageLimitProof,
+    StreamEvent,
+)
 
 
 @dataclass
@@ -88,6 +93,26 @@ class _FakeProvider:
 
     async def list_models(self) -> list[Any]:
         return []
+
+    def project_message_count(
+        self,
+        messages: list[Message],
+        config: ChatConfig | None = None,
+        *,
+        additional_messages: int = 0,
+    ) -> ProviderMessageCountProjection:
+        system_messages = int(bool(config is not None and config.system))
+        return ProviderMessageCountProjection(
+            actual_wire_messages=(
+                len(messages) + system_messages + additional_messages
+            ),
+            logical_messages=len(messages) + additional_messages,
+            system_messages=system_messages,
+            tool_result_messages=0,
+            additional_messages=additional_messages,
+            provider_kind="fake",
+            model=self._cfg.model,
+        )
 
 
 def _member(model: str, *, thinking: str | None = "high") -> EnsembleMemberConfig:
@@ -293,6 +318,94 @@ async def _collect(provider: EnsembleProvider) -> list[StreamEvent]:
             config=ChatConfig(max_tokens=99, thinking=False),
         )
     ]
+
+
+def test_ensemble_message_count_projection_includes_aggregator_bundle(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    registry = _FakeRegistry(
+        {
+            "p1": _FakePlan([]),
+            "p2": _FakePlan([]),
+            "agg": _FakePlan([]),
+        }
+    )
+    monkeypatch.setattr("opensquilla.provider.ensemble._build_provider", registry.provider_for)
+    provider = EnsembleProvider(
+        profile_name="count-projection",
+        proposers=[_member("p1"), _member("p2")],
+        aggregator=_member("agg"),
+        all_failed_policy="error",
+        shuffle_candidates=False,
+    )
+    messages = [Message(role="user", content="x") for _ in range(99)]
+
+    projection = provider.project_message_count(
+        messages,
+        ChatConfig(system="system"),
+    )
+
+    assert projection.actual_wire_messages == 101
+    assert projection.logical_messages == 100
+    assert projection.system_messages == 1
+    assert projection.additional_messages == 1
+    assert projection.model == "agg"
+
+
+@pytest.mark.asyncio
+async def test_ensemble_forwards_uniform_proposer_message_limit_proof(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    proof = ProviderMessageLimitProof(
+        actual_wire_messages=101,
+        limit=100,
+        logical_messages=101,
+        system_messages=0,
+        tool_result_messages=0,
+        provider_kind="tokenrhythm",
+        model="p1",
+        base_host="tokenrhythm.studio",
+    )
+    registry = _FakeRegistry(
+        {
+            "p1": _FakePlan(
+                [
+                    ErrorEvent(
+                        message="safe validation detail",
+                        code="400",
+                        message_limit_proof=proof,
+                    )
+                ]
+            ),
+            "p2": _FakePlan(
+                [
+                    ErrorEvent(
+                        message="same limit class",
+                        code="400",
+                        message_limit_proof=replace(proof, model="p2"),
+                    )
+                ]
+            ),
+            "agg": _FakePlan([]),
+        }
+    )
+    monkeypatch.setattr("opensquilla.provider.ensemble._build_provider", registry.provider_for)
+    provider = EnsembleProvider(
+        profile_name="proof-forwarding",
+        proposers=[_member("p1"), _member("p2")],
+        aggregator=_member("agg"),
+        all_failed_policy="error",
+        min_successful_proposers=1,
+        shuffle_candidates=False,
+    )
+
+    events = await _collect(provider)
+
+    error = next(event for event in events if isinstance(event, ErrorEvent))
+    assert error.code == "400"
+    assert error.message == "safe validation detail"
+    assert error.message_limit_proof == proof
+    assert [call["model"] for call in registry.calls] == ["p1", "p2"]
 
 
 @pytest.mark.asyncio

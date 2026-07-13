@@ -19,6 +19,7 @@ from .model_catalog import resolve_effective_context_window, shared_catalog
 from .protocol import (
     LLMProvider,
     ProviderMetadata,
+    project_provider_message_count,
 )
 from .registry import get_provider_spec
 from .selector import ModelSelector, ProviderConfig, SelectorConfig
@@ -31,6 +32,8 @@ from .types import (
     ModelCapabilities,
     ModelInfo,
     ProviderHeartbeatEvent,
+    ProviderMessageCountProjection,
+    ProviderMessageLimitProof,
     ReasoningDeltaEvent,
     StreamEvent,
     TextDeltaEvent,
@@ -135,6 +138,7 @@ class _CandidateResult:
     ttft_ms: int | None = None
     error: str = ""
     error_code: str = ""
+    message_limit_proof: ProviderMessageLimitProof | None = None
     execution: dict[str, Any] = field(default_factory=dict)
 
     @property
@@ -428,6 +432,30 @@ def _candidate_usage_rows(
     ]
 
 
+def _uniform_message_limit_proof(
+    candidates: Sequence[_CandidateResult],
+) -> ProviderMessageLimitProof | None:
+    """Return a proof only when every failed proposer has the same exact class."""
+
+    if not candidates:
+        return None
+    proofs: list[ProviderMessageLimitProof] = []
+    for candidate in candidates:
+        if candidate.ok or candidate.error_code != "400":
+            return None
+        if candidate.message_limit_proof is None:
+            return None
+        proofs.append(candidate.message_limit_proof)
+    provider_identities = {
+        (proof.provider_kind, proof.base_host) for proof in proofs
+    }
+    if len(provider_identities) != 1:
+        return None
+    # Limits can differ across mirrored endpoints/models.  The strictest exact
+    # proof is safe for a retry that must satisfy every relevant member.
+    return min(proofs, key=lambda proof: proof.limit)
+
+
 def _done_usage_row(
     event: DoneEvent,
     *,
@@ -521,6 +549,73 @@ class EnsembleProvider:
             except Exception:
                 continue
         return models
+
+    def project_message_count(
+        self,
+        messages: list[Message],
+        config: ChatConfig | None = None,
+        *,
+        additional_messages: int = 0,
+    ) -> ProviderMessageCountProjection:
+        """Project every possible ensemble request and return the largest.
+
+        Proposers receive the base conversation.  The aggregator receives the
+        same conversation plus exactly one synthetic candidate-bundle message.
+        A configured single-provider fallback is included because proposer
+        failure can select it without changing the outer request.
+        """
+
+        if (
+            not isinstance(additional_messages, int)
+            or isinstance(additional_messages, bool)
+            or additional_messages < 0
+        ):
+            raise ValueError("additional_messages must be a non-negative integer")
+
+        projections: list[ProviderMessageCountProjection] = []
+
+        def _require_projection(
+            provider: LLMProvider,
+            request_config: ChatConfig | None,
+            *,
+            synthetic_messages: int,
+        ) -> None:
+            projection = project_provider_message_count(
+                provider,
+                messages,
+                request_config,
+                additional_messages=synthetic_messages,
+            )
+            if projection is None:
+                raise RuntimeError("ensemble member message-count projection unavailable")
+            projections.append(projection)
+
+        for member in self.proposers:
+            member_config = _member_chat_config(config, member)
+            _require_projection(
+                _build_provider(member.provider_config),
+                member_config,
+                synthetic_messages=additional_messages,
+            )
+
+        if self.proposers:
+            aggregator_config = _member_chat_config(config, self.aggregator)
+            _require_projection(
+                _build_provider(self.aggregator.provider_config),
+                aggregator_config,
+                synthetic_messages=additional_messages + 1,
+            )
+
+        if self.all_failed_policy == "fallback_single" and self.fallback_provider is not None:
+            _require_projection(
+                self.fallback_provider,
+                config,
+                synthetic_messages=additional_messages,
+            )
+
+        if not projections:
+            raise RuntimeError("ensemble message-count projection unavailable")
+        return max(projections, key=lambda projection: projection.actual_wire_messages)
 
     def chat(
         self,
@@ -895,6 +990,7 @@ class EnsembleProvider:
             elif isinstance(event, ErrorEvent):
                 result.error = event.message
                 result.error_code = event.code
+                result.message_limit_proof = event.message_limit_proof
                 break
         result.text = _truncate_text("".join(text_parts + tool_parts), self.candidate_max_chars)
         if not got_done and not result.error:
@@ -1105,7 +1201,19 @@ class EnsembleProvider:
         candidates: Sequence[_CandidateResult],
     ) -> AsyncIterator[StreamEvent]:
         if self.all_failed_policy != "fallback_single" or self.fallback_provider is None:
-            yield ErrorEvent(message=reason, code=code)
+            message_limit_proof = _uniform_message_limit_proof(candidates)
+            if message_limit_proof is not None:
+                first_error = next(
+                    (candidate.error for candidate in candidates if candidate.error),
+                    reason,
+                )
+                yield ErrorEvent(
+                    message=first_error,
+                    code="400",
+                    message_limit_proof=message_limit_proof,
+                )
+            else:
+                yield ErrorEvent(message=reason, code=code)
             return
         trace = self._trace_payload(
             candidates,

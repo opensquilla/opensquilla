@@ -468,17 +468,20 @@
       "needs": "El canal necesita",
       "save": "Guardar canal",
       "runtimeStatus": "Estado del tiempo de ejecución",
-      "connected": "Conectado",
-      "actionNeeded": "Acción necesaria",
-      "connecting": "conectando",
       "none": "No hay canales configurados.",
-      "disabled": "Desactivado",
       "enable": "Activar",
       "disable": "Desactivar",
       "remove": "Eliminar",
       "removeConfirmTitle": "¿Eliminar este canal?",
       "removeConfirmBody": "{name} se eliminará de la configuración. Se requiere reiniciar para que surta efecto.",
-      "removeConfirmPrimary": "Eliminar"
+      "removeConfirmPrimary": "Eliminar",
+      "testConnection": "Probar conexión",
+      "testing": "Probando…",
+      "testVerified": "Verificado: proveedor accesible en {ms} ms",
+      "testFailed": "La prueba de conexión falló: {detail}",
+      "testUnsupported": "Este tipo de canal no tiene sonda en vivo segura: guarda y luego observa su estado de ejecución",
+      "testError": "No se pudo ejecutar la prueba: {error}",
+      "testNoDetail": "sin más detalles"
     },
     "search": {
       "title": "Búsqueda web",
@@ -780,7 +783,7 @@
       "ensembleSaved": "Conjunto guardado.",
       "presetApplied": "Preajuste de enrutamiento aplicado.",
       "presetAppliedRestart": "Preajuste de enrutamiento aplicado. Se requiere reinicio.",
-      "channelSaved": "Canal guardado. Se requiere reiniciar.",
+      "channelSaved": "Canal guardado: configuración validada localmente; usa «Probar conexión» para verificar las credenciales",
       "searchSaved": "Búsqueda guardada.",
       "memorySurface": "Incrustación de memoria",
       "memorySaved": "Memoria guardada.",
@@ -1176,11 +1179,9 @@
       "openSettings": "Abrir ajustes",
       "totalChannels": "Total de canales",
       "typeCount": "{n} tipos",
-      "connected": "Conectado",
       "live": "en vivo",
       "unhealthy": "{n} con problemas",
       "allIdle": "todos inactivos",
-      "inactive": "Inactivos",
       "needAttention": "{n} requieren atención",
       "restartAttempts": "Intentos de reinicio",
       "sinceGatewayStart": "desde el inicio de la puerta de enlace",
@@ -1194,16 +1195,9 @@
       "noInactive": "no hay canales inactivos",
       "disabledCount": "{n} desactivados",
       "configuredButIdle": "configurados pero inactivos",
-      "hintDisabled": "Desactivado en la configuración; se requiere reiniciar la puerta de enlace tras reactivarlo. Ejecuta `opensquilla onboard configure channels` para cambiarlo.",
-      "hintDead": "El adaptador está inactivo. Inspecciona los registros de la puerta de enlace y luego `{cmd}`.",
-      "hintRunning": "El adaptador está activo en el proceso actual de la puerta de enlace.",
-      "hintRestarting": "El adaptador se está reiniciando tras errores de despacho.",
-      "hintExhausted": "El adaptador agotó su presupuesto de reintentos. Prueba `{cmd}`.",
-      "hintConfiguredInactive": "Configurado en disco pero no activo en este proceso de la puerta de enlace; reinicia la puerta de enlace para cargarlo.",
       "addChannel": "Añadir canal",
       "addFirstChannel": "Añadir tu primer canal",
       "summaryLabel": "Resumen del estado de los canales",
-      "attention": "Requiere atención",
       "filtersLabel": "Filtros de canales",
       "searchLabel": "Buscar canales",
       "searchPlaceholder": "Buscar canales…",
@@ -1226,9 +1220,6 @@
       "edit": "Editar",
       "enable": "Activar",
       "disable": "Desactivar",
-      "disabled": "Desactivado",
-      "restarting": "Reiniciando",
-      "needsAttentionStatus": "Requiere atención",
       "notReported": "No informado",
       "tabs": {
         "overview": "Resumen",
@@ -1318,7 +1309,11 @@
         "revokeSuccess": "Acceso vinculado revocado para {sender}",
         "approveFailed": "No se pudo aprobar a {sender}: {error}",
         "revokeFailed": "No se pudo revocar a {sender}: {error}"
-      }
+      },
+      "probeFailed": "La prueba de conexión falló",
+      "editCredentials": "Editar credenciales",
+      "toastProbeFailedResult": "{name} falló la prueba de conexión: {detail}",
+      "restartNotLoaded": "Este canal aún no está cargado: reinicia el gateway para arrancarlo"
     }
   },
   "cronSkills": {
@@ -2362,6 +2357,40 @@
       "sectionResult": "resultado",
       "sectionError": "error",
       "viewFull": "ver completo"
+    }
+  },
+  "channelStatus": {
+    "connected": "Conectado",
+    "pendingRestart": "Pendiente de reinicio",
+    "notRunning": "Sin ejecutar",
+    "disabled": "Desactivado",
+    "restarting": "Reiniciando",
+    "failed": "Fallido",
+    "exhausted": "Reintentos agotados",
+    "unknown": "Desconocido ({raw})",
+    "hint": {
+      "pendingRestart": "Se aplicará tras reiniciar el gateway",
+      "notRunning": "Arranca tras reiniciar el gateway",
+      "restarting": "Reconectando automáticamente",
+      "failed": "Reinicios automáticos agotados: reinicia o edita este canal",
+      "exhausted": "Reintentos de entrega agotados: revisa el último error y reinicia"
+    },
+    "cause": {
+      "auth_invalid": "credenciales rechazadas",
+      "payload_rejected": "mensaje rechazado por la plataforma",
+      "target_missing": "chat o canal de destino no encontrado",
+      "contract_violation": "violación del contrato del adaptador",
+      "transport_transient": "problema de red: reintentando",
+      "rate_limited": "limitado por la plataforma",
+      "channel_degraded": "canal degradado"
+    },
+    "banner": {
+      "label": "Reinicio del gateway pendiente",
+      "message": "{count} cambio(s) de canal guardado(s) se aplicarán tras reiniciar el gateway",
+      "dismiss": "Descartar el marcador pendiente de {name}",
+      "copied": "Comando copiado",
+      "copyFailed": "No se pudo copiar el comando",
+      "copyLabel": "Copiar el comando de reinicio del gateway"
     }
   }
 }

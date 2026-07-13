@@ -468,17 +468,20 @@
       "needs": "チャンネルに必要な項目",
       "save": "チャンネルを保存",
       "runtimeStatus": "ランタイムの状態",
-      "connected": "接続済み",
-      "actionNeeded": "対応が必要",
-      "connecting": "接続中",
       "none": "チャンネルが設定されていません。",
-      "disabled": "無効",
       "enable": "有効化",
       "disable": "無効化",
       "remove": "削除",
       "removeConfirmTitle": "このチャンネルを削除しますか？",
       "removeConfirmBody": "{name} を設定から削除します。反映には再起動が必要です。",
-      "removeConfirmPrimary": "削除"
+      "removeConfirmPrimary": "削除",
+      "testConnection": "接続テスト",
+      "testing": "テスト中…",
+      "testVerified": "検証済み — {ms} ms でプロバイダーに到達",
+      "testFailed": "接続テストに失敗しました: {detail}",
+      "testUnsupported": "このチャンネルタイプには安全なライブプローブがありません — 保存後、実行状況を確認してください",
+      "testError": "テストを実行できませんでした: {error}",
+      "testNoDetail": "詳細情報なし"
     },
     "search": {
       "title": "ウェブ検索",
@@ -780,7 +783,7 @@
       "ensembleSaved": "アンサンブルを保存しました。",
       "presetApplied": "ルーティングプリセットを適用しました。",
       "presetAppliedRestart": "ルーティングプリセットを適用しました。再起動が必要です。",
-      "channelSaved": "チャンネルを保存しました。再起動が必要です。",
+      "channelSaved": "チャンネルを保存しました — ローカル検証済み。「接続テスト」で認証情報を確認できます",
       "searchSaved": "検索を保存しました。",
       "memorySurface": "メモリの埋め込み",
       "memorySaved": "メモリを保存しました。",
@@ -1176,11 +1179,9 @@
       "openSettings": "設定を開く",
       "totalChannels": "合計チャンネル数",
       "typeCount": "{n} 種類",
-      "connected": "接続済み",
       "live": "稼働中",
       "unhealthy": "{n} 件が不健全",
       "allIdle": "すべてアイドル",
-      "inactive": "非アクティブ",
       "needAttention": "{n} 件が要対応",
       "restartAttempts": "再起動の試行回数",
       "sinceGatewayStart": "ゲートウェイ起動以降",
@@ -1194,16 +1195,9 @@
       "noInactive": "非アクティブなチャンネルはありません",
       "disabledCount": "{n} 件が無効",
       "configuredButIdle": "設定済みだがアイドル",
-      "hintDisabled": "設定で無効になっています — 再有効化後にゲートウェイの再起動が必要です。変更するには `opensquilla onboard configure channels` を実行してください。",
-      "hintDead": "アダプターが停止しています。ゲートウェイのログを確認してから `{cmd}` を実行してください。",
-      "hintRunning": "アダプターは現在のゲートウェイプロセスで稼働中です。",
-      "hintRestarting": "ディスパッチエラーの後、アダプターを再起動しています。",
-      "hintExhausted": "アダプターは再試行の上限に達しました。`{cmd}` を試してください。",
-      "hintConfiguredInactive": "ディスク上に設定されていますが、このゲートウェイプロセスではアクティブではありません — ゲートウェイを再起動して読み込んでください。",
       "addChannel": "チャンネルを追加",
       "addFirstChannel": "最初のチャンネルを追加",
       "summaryLabel": "チャンネルの健全性の概要",
-      "attention": "要対応",
       "filtersLabel": "チャンネルフィルター",
       "searchLabel": "チャンネルを検索",
       "searchPlaceholder": "チャンネルを検索…",
@@ -1226,9 +1220,6 @@
       "edit": "編集",
       "enable": "有効化",
       "disable": "無効化",
-      "disabled": "無効",
-      "restarting": "再起動中",
-      "needsAttentionStatus": "要対応",
       "notReported": "報告なし",
       "tabs": {
         "overview": "概要",
@@ -1318,7 +1309,11 @@
         "revokeSuccess": "{sender} のペアリングアクセスを取り消しました",
         "approveFailed": "{sender} を承認できませんでした: {error}",
         "revokeFailed": "{sender} を取り消せませんでした: {error}"
-      }
+      },
+      "probeFailed": "接続テストに失敗しました",
+      "editCredentials": "認証情報を編集",
+      "toastProbeFailedResult": "{name} は接続テストに失敗しました: {detail}",
+      "restartNotLoaded": "このチャンネルはまだ読み込まれていません — ゲートウェイを再起動してください"
     }
   },
   "cronSkills": {
@@ -2362,6 +2357,40 @@
       "sectionResult": "結果",
       "sectionError": "エラー",
       "viewFull": "全文を表示"
+    }
+  },
+  "channelStatus": {
+    "connected": "接続済み",
+    "pendingRestart": "再起動待ち",
+    "notRunning": "未起動",
+    "disabled": "無効",
+    "restarting": "再起動中",
+    "failed": "失敗",
+    "exhausted": "リトライ上限到達",
+    "unknown": "不明（{raw}）",
+    "hint": {
+      "pendingRestart": "ゲートウェイ再起動後に反映されます",
+      "notRunning": "ゲートウェイ再起動後に起動します",
+      "restarting": "自動的に再接続しています",
+      "failed": "自動再起動の上限に達しました — このチャンネルを再起動または編集してください",
+      "exhausted": "配信リトライを使い切りました — 直近のエラーを確認して再起動してください"
+    },
+    "cause": {
+      "auth_invalid": "認証情報が拒否されました",
+      "payload_rejected": "メッセージがプラットフォームに拒否されました",
+      "target_missing": "対象のチャットまたはチャンネルが見つかりません",
+      "contract_violation": "アダプター契約違反",
+      "transport_transient": "ネットワーク障害 — 再試行中",
+      "rate_limited": "プラットフォームによるレート制限",
+      "channel_degraded": "チャンネルが劣化状態です"
+    },
+    "banner": {
+      "label": "ゲートウェイ再起動待ち",
+      "message": "保存済みのチャンネル変更 {count} 件はゲートウェイ再起動後に反映されます",
+      "dismiss": "{name} の再起動待ちマーカーを消す",
+      "copied": "コマンドをコピーしました",
+      "copyFailed": "コマンドをコピーできませんでした",
+      "copyLabel": "ゲートウェイ再起動コマンドをコピー"
     }
   }
 }

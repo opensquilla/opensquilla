@@ -21,14 +21,15 @@
       <button type="button" :class="['ch-summary__item', { 'is-active': statusFilter === 'all' }]" @click="statusFilter = 'all'">
         <strong>{{ total }}</strong><span>{{ t('console.channels.totalChannels') }}</span>
       </button>
-      <button type="button" :class="['ch-summary__item', 'is-ok', { 'is-active': statusFilter === 'connected' }]" @click="statusFilter = 'connected'">
-        <span class="dot ok" aria-hidden="true"></span><strong>{{ connected }}</strong><span>{{ t('console.channels.connected') }}</span>
-      </button>
-      <button type="button" :class="['ch-summary__item', 'is-attention', { 'is-active': statusFilter === 'attention' }]" @click="statusFilter = 'attention'">
-        <span class="dot warn" aria-hidden="true"></span><strong>{{ attention }}</strong><span>{{ t('console.channels.attention') }}</span>
-      </button>
-      <button type="button" :class="['ch-summary__item', { 'is-active': statusFilter === 'inactive' }]" @click="statusFilter = 'inactive'">
-        <span class="dot off" aria-hidden="true"></span><strong>{{ inactive }}</strong><span>{{ t('console.channels.inactive') }}</span>
+      <button
+        v-for="chip in summaryChips"
+        :key="chip.key"
+        type="button"
+        :class="['ch-summary__item', `tone-${chip.tone}`, { 'is-active': statusFilter === chip.key }]"
+        :aria-pressed="statusFilter === chip.key"
+        @click="statusFilter = statusFilter === chip.key ? 'all' : chip.key"
+      >
+        <span class="dot" aria-hidden="true"></span><strong>{{ chip.count }}</strong><span>{{ chip.label }}</span>
       </button>
     </section>
 
@@ -49,6 +50,8 @@
         {{ t('console.channels.filteredCount', { count: filteredChannels.length }) }}
       </span>
     </section>
+
+    <PendingRestartBanner />
 
     <ErrorState v-if="error" :message="error" :on-retry="loadData" />
 
@@ -93,7 +96,7 @@
               <td><span class="ch-provider-mark" aria-hidden="true">{{ providerInitial(ch.type) }}</span><span class="ch-provider-name">{{ providerLabel(ch.type) }}</span></td>
               <td><strong>{{ ch.name || ch.id || t('console.channels.unknown') }}</strong></td>
               <td><span class="ch-muted">{{ transportLabel(ch) }}</span></td>
-              <td><span :class="['ch-status', statusTone(ch)]"><span class="dot" aria-hidden="true"></span>{{ statusLabel(ch) }}</span></td>
+              <td><ChannelStatusPill :status="ch.status" :enabled="ch.enabled" :pending-restart="pendingRestart.isPending(channelKey(ch))" :error-class="lastErrorClass(ch.diagnostics)" show-cause /></td>
               <td><span :class="['ch-maturity', maturityTone(ch)]">{{ maturityLabel(ch) }}</span></td>
               <td><span class="ch-mono ch-muted">{{ formatSince(ch.connected_since) }}</span></td>
               <td><Icon name="chevronRight" :size="15" aria-hidden="true" /></td>
@@ -112,7 +115,7 @@
             <div>
               <div class="ch-detail__title-row">
                 <h2>{{ selectedChannel.name }}</h2>
-                <span :class="['ch-status', statusTone(selectedChannel)]"><span class="dot" aria-hidden="true"></span>{{ statusLabel(selectedChannel) }}</span>
+                <ChannelStatusPill :status="selectedChannel.status" :enabled="selectedChannel.enabled" :pending-restart="pendingRestart.isPending(channelKey(selectedChannel))" :error-class="lastErrorClass(selectedChannel.diagnostics)" />
               </div>
               <p>{{ providerLabel(selectedChannel.type) }} · {{ transportLabel(selectedChannel) }}</p>
             </div>
@@ -125,7 +128,13 @@
             <Icon name="gauge" :size="15" aria-hidden="true" />
             <span>{{ actionPending(selectedChannel, 'probe') ? t('console.channels.testing') : t('console.channels.testConnection') }}</span>
           </button>
-          <button class="btn btn--ghost" type="button" :disabled="actionPending(selectedChannel, 'restart') || selectedChannel.enabled === false" @click="restartChannel(selectedChannel)">
+          <button
+            class="btn btn--ghost"
+            type="button"
+            :disabled="actionPending(selectedChannel, 'restart') || selectedChannel.enabled === false || !adapterLoaded(selectedChannel)"
+            :title="selectedChannel.enabled !== false && !adapterLoaded(selectedChannel) ? t('console.channels.restartNotLoaded') : undefined"
+            @click="restartChannel(selectedChannel)"
+          >
             <Icon name="refresh" :size="15" aria-hidden="true" />
             <span>{{ t('console.channels.restart') }}</span>
           </button>
@@ -146,17 +155,21 @@
 
         <div class="ch-detail__body">
           <template v-if="detailTab === 'overview'">
-            <div v-if="probeResults[channelKey(selectedChannel)]" :class="['ch-probe-result', probeResults[channelKey(selectedChannel)]?.connected ? 'is-ok' : 'is-warn']" role="status">
-              <Icon :name="probeResults[channelKey(selectedChannel)]?.connected ? 'check' : 'info'" :size="17" aria-hidden="true" />
+            <div v-if="selectedProbe" :class="['ch-probe-result', probeToneClass(selectedProbe)]" role="status">
+              <Icon :name="selectedProbe.status === 'verified' ? 'check' : 'info'" :size="17" aria-hidden="true" />
               <div>
-                <strong>{{ probeResults[channelKey(selectedChannel)]?.connected ? t('console.channels.probeVerified') : t('console.channels.probeUnsupported') }}</strong>
+                <strong>{{ probeTitle(selectedProbe) }}</strong>
                 <p>{{ probeResultDetail(selectedChannel) }}</p>
+                <button v-if="selectedProbe.status === 'failed'" class="btn btn--ghost ch-probe-result__edit" type="button" @click="openSettingsSurface">
+                  <Icon name="edit" :size="13" aria-hidden="true" />
+                  <span>{{ t('console.channels.editCredentials') }}</span>
+                </button>
               </div>
             </div>
             <section class="ch-panel">
               <h3>{{ t('console.channels.healthChecks') }}</h3>
               <div class="ch-check-row"><Icon name="shield" :size="18" /><div><strong>{{ t('console.channels.authentication') }}</strong><span>{{ t('console.channels.authDescription') }}</span></div><b :class="selectedChannel.connected ? 'is-ok' : 'is-muted'">{{ selectedChannel.connected ? t('console.channels.passed') : t('console.channels.notVerified') }}</b></div>
-              <div class="ch-check-row"><Icon name="cloud" :size="18" /><div><strong>{{ t('console.channels.transport') }}</strong><span>{{ transportDescription(selectedChannel) }}</span></div><b :class="selectedChannel.connected ? 'is-ok' : 'is-muted'">{{ selectedChannel.connected ? t('console.channels.healthy') : statusLabel(selectedChannel) }}</b></div>
+              <div class="ch-check-row"><Icon name="cloud" :size="18" /><div><strong>{{ t('console.channels.transport') }}</strong><span>{{ transportDescription(selectedChannel) }}</span></div><b :class="selectedChannel.connected ? 'is-ok' : 'is-muted'">{{ selectedChannel.connected ? t('console.channels.healthy') : statusText(selectedChannel) }}</b></div>
               <div class="ch-check-row"><Icon name="channels" :size="18" /><div><strong>{{ t('console.channels.durableDelivery') }}</strong><span>{{ t('console.channels.durableDescription') }}</span></div><b class="is-ok">{{ t('console.channels.active') }}</b></div>
             </section>
             <section class="ch-panel ch-facts">
@@ -315,16 +328,27 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onActivated, onDeactivated, onUnmounted, ref } from 'vue'
+import { computed, onActivated, onDeactivated, onUnmounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
 import { useRpcStore } from '@/stores/rpc'
 import Icon from '@/components/Icon.vue'
+import ChannelStatusPill from '@/components/ChannelStatusPill.vue'
 import ErrorState from '@/components/ErrorState.vue'
 import LoadingSpinner from '@/components/LoadingSpinner.vue'
+import PendingRestartBanner from '@/components/PendingRestartBanner.vue'
 import { useRequest } from '@/composables/useRequest'
+import { usePendingRestart } from '@/composables/usePendingRestart'
 import { useToasts } from '@/composables/useToasts'
 import { useConfirm } from '@/composables/useConfirm'
+import {
+  CHANNEL_STATUS_ORDER,
+  CHANNEL_STATUS_TONES,
+  adapterLoaded,
+  lastErrorClass,
+  statusPresentation,
+  type ChannelStatusKey,
+} from '@/lib/channelStatus'
 
 interface CapabilityEvidence {
   declared?: boolean
@@ -378,9 +402,11 @@ interface ChannelPairing {
 
 interface PairingsResponse { pairings?: ChannelPairing[] }
 type DetailTab = 'overview' | 'pairings' | 'capabilities' | 'diagnostics' | 'configuration'
-type StatusFilter = 'all' | 'connected' | 'attention' | 'inactive'
+type StatusFilter = 'all' | ChannelStatusKey
 
-const STATUS_ORDER: Record<string, number> = { running: 0, connected: 0, restarting: 1, exhausted: 1, dead: 1, stopped: 2, disabled: 3 }
+const STATUS_SEVERITY = Object.fromEntries(
+  CHANNEL_STATUS_ORDER.map((key, index) => [key, index]),
+) as Record<ChannelStatusKey, number>
 const DETAIL_TABS: DetailTab[] = ['overview', 'pairings', 'capabilities', 'diagnostics', 'configuration']
 const SECRET_MARKER = '***'
 
@@ -389,6 +415,7 @@ const rpc = useRpcStore()
 const router = useRouter()
 const { pushToast } = useToasts()
 const { confirm } = useConfirm()
+const pendingRestart = usePendingRestart()
 const searchQuery = ref('')
 const providerFilter = ref('all')
 const statusFilter = ref<StatusFilter>('all')
@@ -412,21 +439,36 @@ const { data: channelsData, loading, error, execute, refresh } = useRequest<Chan
 
 const channels = computed<Channel[]>(() => {
   const raw = (channelsData.value?.channels || []).filter(ch => ch && ch.configured !== false)
-  return [...raw].sort((a, b) => (STATUS_ORDER[a.status || ''] ?? 1) - (STATUS_ORDER[b.status || ''] ?? 1))
+  return [...raw].sort(
+    (a, b) => STATUS_SEVERITY[presentationFor(a).key] - STATUS_SEVERITY[presentationFor(b).key],
+  )
 })
 const total = computed(() => channels.value.length)
-const connected = computed(() => channels.value.filter(ch => isRunning(ch.status)).length)
-const attention = computed(() => channels.value.filter(ch => needsAttention(ch.status)).length)
-const inactive = computed(() => total.value - connected.value - attention.value)
+// One chip per unified state actually present — chip words match row pills exactly.
+const summaryChips = computed(() => {
+  const counts = new Map<ChannelStatusKey, number>()
+  for (const ch of channels.value) {
+    const key = presentationFor(ch).key
+    counts.set(key, (counts.get(key) || 0) + 1)
+  }
+  return CHANNEL_STATUS_ORDER
+    .filter(key => (counts.get(key) || 0) > 0)
+    .map(key => ({
+      key,
+      count: counts.get(key) || 0,
+      tone: CHANNEL_STATUS_TONES[key],
+      label: key === 'unknown' ? t('console.channels.unknown') : t(`channelStatus.${key}`),
+    }))
+})
 const providers = computed(() => [...new Set(channels.value.map(ch => String(ch.type || 'unknown')))].sort())
 const selectedChannel = computed(() => channels.value.find(ch => channelKey(ch) === selectedName.value) || null)
+const selectedProbe = computed(() =>
+  selectedChannel.value ? probeResults.value[channelKey(selectedChannel.value)] : undefined)
 const filteredChannels = computed(() => {
   const query = searchQuery.value.trim().toLowerCase()
   return channels.value.filter(ch => {
     if (providerFilter.value !== 'all' && ch.type !== providerFilter.value) return false
-    if (statusFilter.value === 'connected' && !isRunning(ch.status)) return false
-    if (statusFilter.value === 'attention' && !needsAttention(ch.status)) return false
-    if (statusFilter.value === 'inactive' && (isRunning(ch.status) || needsAttention(ch.status))) return false
+    if (statusFilter.value !== 'all' && presentationFor(ch).key !== statusFilter.value) return false
     return !query || [ch.name, ch.id, ch.type, ch.status].some(value => String(value || '').toLowerCase().includes(query))
   })
 })
@@ -454,8 +496,27 @@ onUnmounted(teardownLive)
 
 function openSettingsSurface(): void { void router.push('/settings/channels') }
 function channelKey(ch: Channel): string { return String(ch.name || ch.id || ch.type || 'unknown') }
-function isRunning(status?: string): boolean { return status === 'running' || status === 'connected' }
-function needsAttention(status?: string): boolean { return status === 'dead' || status === 'restarting' || status === 'exhausted' }
+
+function presentationFor(ch: Channel) {
+  return statusPresentation({
+    status: ch.status,
+    enabled: ch.enabled,
+    connected: ch.connected,
+    pendingRestart: pendingRestart.isPending(channelKey(ch)),
+    errorClass: lastErrorClass(ch.diagnostics),
+  })
+}
+
+function statusText(ch: Channel): string {
+  const pres = presentationFor(ch)
+  return pres.key === 'unknown' ? t(pres.labelKey, { raw: pres.raw || '—' }) : t(pres.labelKey)
+}
+
+// Clear pending-restart entries the moment a status snapshot proves the
+// restart happened. Reconcile against RAW rows (incl. configured:false).
+watch(channelsData, data => {
+  pendingRestart.reconcile(data?.channels || [])
+})
 
 function selectChannel(ch: Channel): void {
   pairingsRequestId += 1
@@ -575,16 +636,36 @@ async function revokePairing(ch: Channel, pairing: ChannelPairing): Promise<void
   })
 }
 
+// Branch on the probe's three-way status, not the connected boolean: a bad
+// token must read as a failure, not as "probe unavailable".
 async function probeChannel(ch: Channel): Promise<void> {
   await withAction(ch, 'probe', async () => {
     try {
       const result = await rpc.call<ProbeResult>('channels.probe', { name: channelKey(ch) })
       probeResults.value = { ...probeResults.value, [channelKey(ch)]: result }
-      pushToast(result.connected ? t('console.channels.toastProbePassed', { name: channelKey(ch), ms: result.latencyMs ?? 0 }) : t('console.channels.toastProbeUnsupported', { name: channelKey(ch) }), { tone: result.connected ? 'ok' : 'info' })
+      if (result.status === 'verified') {
+        pushToast(t('console.channels.toastProbePassed', { name: channelKey(ch), ms: result.latencyMs ?? 0 }), { tone: 'ok' })
+      } else if (result.status === 'failed') {
+        pushToast(t('console.channels.toastProbeFailedResult', { name: channelKey(ch), detail: result.detail || t('console.channels.probeNoDetail') }), { tone: 'danger' })
+      } else {
+        pushToast(t('console.channels.toastProbeUnsupported', { name: channelKey(ch) }), { tone: 'info' })
+      }
     } catch (err) {
       pushToast(t('console.channels.toastProbeFailed', { name: channelKey(ch), error: errorMessage(err) }), { tone: 'danger' })
     }
   })
+}
+
+function probeToneClass(probe: ProbeResult): string {
+  if (probe.status === 'verified') return 'is-ok'
+  return probe.status === 'failed' ? 'is-danger' : 'is-muted'
+}
+
+function probeTitle(probe: ProbeResult): string {
+  if (probe.status === 'verified') return t('console.channels.probeVerified')
+  return probe.status === 'failed'
+    ? t('console.channels.probeFailed')
+    : t('console.channels.probeUnsupported')
 }
 
 async function restartChannel(ch: Channel): Promise<void> {
@@ -603,7 +684,8 @@ async function toggleChannel(ch: Channel): Promise<void> {
   await withAction(ch, 'toggle', async () => {
     const enabling = ch.enabled === false
     try {
-      await rpc.call(`onboarding.channel.${enabling ? 'enable' : 'disable'}`, { name: channelKey(ch) })
+      const res = await rpc.call<{ changed?: boolean }>(`onboarding.channel.${enabling ? 'enable' : 'disable'}`, { name: channelKey(ch) })
+      if (res?.changed !== false) pendingRestart.record(channelKey(ch), enabling ? 'enable' : 'disable')
       pushToast(t(enabling ? 'console.channels.toastEnabled' : 'console.channels.toastDisabled', { name: channelKey(ch) }), { tone: 'ok' })
       await refresh()
     } catch (err) {
@@ -632,20 +714,6 @@ function providerLabel(type?: string): string { return humanize(type || t('conso
 function humanize(value: string): string { return value.replace(/[_-]+/g, ' ').replace(/\b\w/g, char => char.toUpperCase()) }
 function transportLabel(ch: Channel): string { return (ch.capability_profile?.transports || []).map(humanize).join(' / ') || t('console.channels.notReported') }
 function transportDescription(ch: Channel): string { return t('console.channels.transportDescription', { transport: transportLabel(ch) }) }
-
-function statusTone(ch: Channel): string {
-  if (isRunning(ch.status)) return 'is-ok'
-  if (needsAttention(ch.status)) return 'is-warn'
-  return 'is-muted'
-}
-
-function statusLabel(ch: Channel): string {
-  if (ch.enabled === false || ch.status === 'disabled') return t('console.channels.disabled')
-  if (isRunning(ch.status)) return t('console.channels.connected')
-  if (ch.status === 'restarting') return t('console.channels.restarting')
-  if (ch.status === 'dead' || ch.status === 'exhausted') return t('console.channels.needsAttentionStatus')
-  return t('console.channels.inactive')
-}
 
 function maturityLabel(ch: Channel): string {
   const raw = String(ch.capability_profile?.maturity || 'unrated').replace(/^[A-Z]+-/, '')
@@ -724,9 +792,10 @@ function configRows(config: Record<string, unknown>): Array<{ key: string; value
 .ch-summary__item.is-active { box-shadow: inset 0 -2px var(--accent); }
 .ch-summary__item strong { color: var(--text); font-variant-numeric: tabular-nums; }
 .dot { background: var(--text-dim); border-radius: 50%; display: inline-block; height: 8px; width: 8px; }
-.dot.ok, .ch-status.is-ok .dot { background: var(--ok); }
-.dot.warn, .ch-status.is-warn .dot { background: var(--warn); }
-.dot.off, .ch-status.is-muted .dot { background: var(--text-dim); }
+.ch-summary__item.tone-ok .dot { background: var(--ok); }
+.ch-summary__item.tone-info .dot { background: var(--info); }
+.ch-summary__item.tone-danger .dot { background: var(--danger); }
+.ch-summary__item.tone-muted .dot { background: var(--text-dim); }
 .ch-toolbar { align-items: center; display: flex; flex-wrap: wrap; gap: var(--sp-3); }
 .ch-search { align-items: center; background: var(--bg-surface); border: 1px solid var(--border); border-radius: var(--radius-control); color: var(--text-dim); display: flex; gap: 8px; min-width: min(320px, 100%); padding: 0 11px; }
 .ch-search:focus-within, .ch-select:focus-within { border-color: var(--accent); box-shadow: var(--focus-ring); }
@@ -749,9 +818,6 @@ function configRows(config: Record<string, unknown>): Array<{ key: string; value
 .ch-provider-mark.is-large { border-radius: var(--radius-md); font-size: 18px; height: 42px; width: 42px; }
 .ch-muted { color: var(--text-dim); }
 .ch-mono { font-family: var(--font-mono); font-size: 11px; }
-.ch-status { align-items: center; color: var(--text-muted); display: inline-flex; gap: 7px; white-space: nowrap; }
-.ch-status.is-ok { color: var(--ok); }
-.ch-status.is-warn { color: var(--warn); }
 .ch-maturity, .ch-proof { border: 1px solid var(--border); border-radius: var(--radius-full); color: var(--text-muted); display: inline-flex; font-size: 10px; font-weight: 700; letter-spacing: .03em; padding: 3px 8px; text-transform: uppercase; white-space: nowrap; }
 .ch-maturity.is-stable, .ch-proof.is-effective { border-color: color-mix(in srgb, var(--ok) 45%, var(--border)); color: var(--ok); }
 .ch-maturity.is-experimental { border-color: color-mix(in srgb, var(--warn) 45%, var(--border)); color: var(--warn); }
@@ -792,7 +858,9 @@ function configRows(config: Record<string, unknown>): Array<{ key: string; value
 .ch-config-list dd.is-secret { color: var(--ok); font-family: var(--font-sans); }
 .ch-probe-result, .ch-alert { align-items: flex-start; display: flex; gap: 10px; padding: 12px 14px; }
 .ch-probe-result { background: color-mix(in srgb, var(--ok) 8%, var(--bg)); border: 1px solid color-mix(in srgb, var(--ok) 36%, var(--border)); border-radius: var(--radius-md); color: var(--ok); }
-.ch-probe-result.is-warn { background: color-mix(in srgb, var(--warn) 8%, var(--bg)); border-color: color-mix(in srgb, var(--warn) 36%, var(--border)); color: var(--warn); }
+.ch-probe-result.is-danger { background: color-mix(in srgb, var(--danger) 8%, var(--bg)); border-color: color-mix(in srgb, var(--danger) 36%, var(--border)); color: var(--danger); }
+.ch-probe-result.is-muted { background: var(--bg); border-color: var(--border); color: var(--text-muted); }
+.ch-probe-result__edit { margin-top: 8px; min-height: 28px; padding: 3px 9px; }
 .ch-probe-result p, .ch-alert p { color: var(--text-muted); font-size: var(--fs-sm); margin: 3px 0 0; }
 .ch-alert.is-danger { background: color-mix(in srgb, var(--danger) 8%, var(--bg)); border-color: color-mix(in srgb, var(--danger) 38%, var(--border)); color: var(--danger); }
 .ch-alert-text { color: var(--danger); font-size: var(--fs-sm); padding: 12px 14px; }

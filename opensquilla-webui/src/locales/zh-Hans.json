@@ -468,17 +468,20 @@
       "needs": "频道所需",
       "save": "保存频道",
       "runtimeStatus": "运行状态",
-      "connected": "已连接",
-      "actionNeeded": "需要处理",
-      "connecting": "连接中",
       "none": "尚未配置任何频道。",
-      "disabled": "已禁用",
       "enable": "启用",
       "disable": "禁用",
       "remove": "移除",
       "removeConfirmTitle": "移除此频道？",
       "removeConfirmBody": "{name} 将从配置中移除。需要重启后才能生效。",
-      "removeConfirmPrimary": "移除"
+      "removeConfirmPrimary": "移除",
+      "testConnection": "测试连接",
+      "testing": "测试中…",
+      "testVerified": "已验证——{ms} ms 内连通平台",
+      "testFailed": "连接测试失败：{detail}",
+      "testUnsupported": "该频道类型没有安全的在线探测——保存后请观察其运行状态",
+      "testError": "测试无法运行：{error}",
+      "testNoDetail": "无更多详情"
     },
     "search": {
       "title": "网页搜索",
@@ -780,7 +783,7 @@
       "ensembleSaved": "模型聚合已保存。",
       "presetApplied": "路由预设已应用。",
       "presetAppliedRestart": "路由预设已应用。需要重启。",
-      "channelSaved": "频道已保存。需要重启。",
+      "channelSaved": "频道已保存——本地校验通过；可点「测试连接」验证凭证",
       "searchSaved": "搜索已保存。",
       "memorySurface": "记忆嵌入",
       "memorySaved": "记忆已保存。",
@@ -1176,11 +1179,9 @@
       "openSettings": "打开设置",
       "totalChannels": "频道总数",
       "typeCount": "{n} 种类型",
-      "connected": "已连接",
       "live": "运行中",
       "unhealthy": "{n} 个异常",
       "allIdle": "全部空闲",
-      "inactive": "未激活",
       "needAttention": "{n} 个需要关注",
       "restartAttempts": "重启次数",
       "sinceGatewayStart": "自网关启动以来",
@@ -1194,16 +1195,9 @@
       "noInactive": "没有未激活的频道",
       "disabledCount": "{n} 个已禁用",
       "configuredButIdle": "已配置但空闲",
-      "hintDisabled": "已在配置中禁用——重新启用后需重启网关。运行 `opensquilla onboard configure channels` 进行更改。",
-      "hintDead": "适配器已停止。请检查网关日志，然后执行 `{cmd}`。",
-      "hintRunning": "适配器在当前网关进程中正常运行。",
-      "hintRestarting": "适配器在调度错误后正在重启。",
-      "hintExhausted": "适配器已耗尽重试预算。请尝试 `{cmd}`。",
-      "hintConfiguredInactive": "已在磁盘上配置，但在当前网关进程中未激活——请重启网关以加载它。",
       "addChannel": "添加频道",
       "addFirstChannel": "添加第一个频道",
       "summaryLabel": "频道健康状态摘要",
-      "attention": "需要关注",
       "filtersLabel": "频道筛选条件",
       "searchLabel": "搜索频道",
       "searchPlaceholder": "搜索频道…",
@@ -1226,9 +1220,6 @@
       "edit": "编辑",
       "enable": "启用",
       "disable": "禁用",
-      "disabled": "已禁用",
-      "restarting": "正在重启",
-      "needsAttentionStatus": "需要关注",
       "notReported": "未报告",
       "tabs": {
         "overview": "概览",
@@ -1318,7 +1309,11 @@
         "revokeSuccess": "已撤销 {sender} 的配对访问权限",
         "approveFailed": "无法批准 {sender}：{error}",
         "revokeFailed": "无法撤销 {sender}：{error}"
-      }
+      },
+      "probeFailed": "连接测试失败",
+      "editCredentials": "编辑凭证",
+      "toastProbeFailedResult": "{name} 连接测试失败：{detail}",
+      "restartNotLoaded": "该频道尚未加载——请重启网关以启动它"
     }
   },
   "cronSkills": {
@@ -2362,6 +2357,40 @@
       "sectionResult": "结果",
       "sectionError": "错误",
       "viewFull": "查看完整内容"
+    }
+  },
+  "channelStatus": {
+    "connected": "已连接",
+    "pendingRestart": "待重启",
+    "notRunning": "未运行",
+    "disabled": "已停用",
+    "restarting": "重启中",
+    "failed": "失败",
+    "exhausted": "重试耗尽",
+    "unknown": "未知（{raw}）",
+    "hint": {
+      "pendingRestart": "网关重启后生效",
+      "notRunning": "网关重启后启动",
+      "restarting": "正在自动重连",
+      "failed": "自动重启已耗尽——请重启或编辑此频道",
+      "exhausted": "投递重试次数已用完——请检查最近错误后重启"
+    },
+    "cause": {
+      "auth_invalid": "凭证被拒",
+      "payload_rejected": "消息被平台拒绝",
+      "target_missing": "目标会话或频道不存在",
+      "contract_violation": "适配器契约违规",
+      "transport_transient": "网络问题——自动重试中",
+      "rate_limited": "被平台限流",
+      "channel_degraded": "频道已降级"
+    },
+    "banner": {
+      "label": "等待网关重启",
+      "message": "{count} 项已保存的频道变更将在网关重启后生效",
+      "dismiss": "清除 {name} 的待重启标记",
+      "copied": "命令已复制",
+      "copyFailed": "无法复制命令",
+      "copyLabel": "复制网关重启命令"
     }
   }
 }

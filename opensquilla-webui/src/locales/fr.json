@@ -468,17 +468,20 @@
       "needs": "Le canal a besoin de",
       "save": "Enregistrer le canal",
       "runtimeStatus": "État d'exécution",
-      "connected": "Connecté",
-      "actionNeeded": "Action requise",
-      "connecting": "connexion en cours",
       "none": "Aucun canal configuré.",
-      "disabled": "Désactivé",
       "enable": "Activer",
       "disable": "Désactiver",
       "remove": "Supprimer",
       "removeConfirmTitle": "Supprimer ce canal ?",
       "removeConfirmBody": "{name} sera supprimé de la configuration. Redémarrage requis pour prendre effet.",
-      "removeConfirmPrimary": "Supprimer"
+      "removeConfirmPrimary": "Supprimer",
+      "testConnection": "Tester la connexion",
+      "testing": "Test en cours…",
+      "testVerified": "Vérifié — fournisseur joignable en {ms} ms",
+      "testFailed": "Échec du test de connexion : {detail}",
+      "testUnsupported": "Ce type de canal n'a pas de sonde en direct sûre — enregistrez puis surveillez son état d'exécution",
+      "testError": "Le test n'a pas pu s'exécuter : {error}",
+      "testNoDetail": "aucun détail supplémentaire"
     },
     "search": {
       "title": "Recherche web",
@@ -780,7 +783,7 @@
       "ensembleSaved": "Ensemble enregistré.",
       "presetApplied": "Préréglage de routage appliqué.",
       "presetAppliedRestart": "Préréglage de routage appliqué. Redémarrage requis.",
-      "channelSaved": "Canal enregistré. Redémarrage requis.",
+      "channelSaved": "Canal enregistré — configuration validée localement ; utilisez « Tester la connexion » pour vérifier les identifiants",
       "searchSaved": "Recherche enregistrée.",
       "memorySurface": "Embedding de mémoire",
       "memorySaved": "Mémoire enregistrée.",
@@ -1176,11 +1179,9 @@
       "openSettings": "Ouvrir les paramètres",
       "totalChannels": "Total des canaux",
       "typeCount": "{n} types",
-      "connected": "Connectés",
       "live": "en direct",
       "unhealthy": "{n} en mauvaise santé",
       "allIdle": "tous inactifs",
-      "inactive": "Inactifs",
       "needAttention": "{n} nécessitent votre attention",
       "restartAttempts": "Tentatives de redémarrage",
       "sinceGatewayStart": "depuis le démarrage de la passerelle",
@@ -1194,16 +1195,9 @@
       "noInactive": "aucun canal inactif",
       "disabledCount": "{n} désactivé(s)",
       "configuredButIdle": "configuré mais inactif",
-      "hintDisabled": "Désactivé dans la configuration — redémarrage de la passerelle requis après réactivation. Exécutez `opensquilla onboard configure channels` pour modifier.",
-      "hintDead": "L'adaptateur est mort. Inspectez les journaux de la passerelle, puis `{cmd}`.",
-      "hintRunning": "L'adaptateur est en direct dans le processus de passerelle actuel.",
-      "hintRestarting": "L'adaptateur redémarre après des erreurs de répartition.",
-      "hintExhausted": "L'adaptateur a épuisé son budget de nouvelles tentatives. Essayez `{cmd}`.",
-      "hintConfiguredInactive": "Configuré sur le disque mais non actif dans ce processus de passerelle — redémarrez la passerelle pour le charger.",
       "addChannel": "Ajouter un canal",
       "addFirstChannel": "Ajouter votre premier canal",
       "summaryLabel": "Résumé de l'état des canaux",
-      "attention": "Intervention requise",
       "filtersLabel": "Filtres des canaux",
       "searchLabel": "Rechercher des canaux",
       "searchPlaceholder": "Rechercher des canaux…",
@@ -1226,9 +1220,6 @@
       "edit": "Modifier",
       "enable": "Activer",
       "disable": "Désactiver",
-      "disabled": "Désactivé",
-      "restarting": "Redémarrage en cours",
-      "needsAttentionStatus": "Intervention requise",
       "notReported": "Non communiqué",
       "tabs": {
         "overview": "Vue d'ensemble",
@@ -1318,7 +1309,11 @@
         "revokeSuccess": "Accès associé révoqué pour {sender}",
         "approveFailed": "Impossible d’approuver {sender} : {error}",
         "revokeFailed": "Impossible de révoquer {sender} : {error}"
-      }
+      },
+      "probeFailed": "Échec du test de connexion",
+      "editCredentials": "Modifier les identifiants",
+      "toastProbeFailedResult": "{name} a échoué au test de connexion : {detail}",
+      "restartNotLoaded": "Ce canal n'est pas encore chargé — redémarrez la passerelle pour le démarrer"
     }
   },
   "cronSkills": {
@@ -2362,6 +2357,40 @@
       "sectionResult": "résultat",
       "sectionError": "erreur",
       "viewFull": "voir en entier"
+    }
+  },
+  "channelStatus": {
+    "connected": "Connecté",
+    "pendingRestart": "En attente de redémarrage",
+    "notRunning": "À l'arrêt",
+    "disabled": "Désactivé",
+    "restarting": "Redémarrage en cours",
+    "failed": "En échec",
+    "exhausted": "Tentatives épuisées",
+    "unknown": "Inconnu ({raw})",
+    "hint": {
+      "pendingRestart": "Prendra effet après un redémarrage de la passerelle",
+      "notRunning": "Démarre après un redémarrage de la passerelle",
+      "restarting": "Reconnexion automatique en cours",
+      "failed": "Redémarrages automatiques épuisés — redémarrez ou modifiez ce canal",
+      "exhausted": "Tentatives de livraison épuisées — vérifiez la dernière erreur puis redémarrez"
+    },
+    "cause": {
+      "auth_invalid": "identifiants rejetés",
+      "payload_rejected": "message rejeté par la plateforme",
+      "target_missing": "conversation ou canal cible introuvable",
+      "contract_violation": "violation du contrat de l'adaptateur",
+      "transport_transient": "problème réseau — nouvelle tentative",
+      "rate_limited": "limité par la plateforme",
+      "channel_degraded": "canal dégradé"
+    },
+    "banner": {
+      "label": "Redémarrage de la passerelle en attente",
+      "message": "{count} modification(s) de canal enregistrée(s) prendront effet après un redémarrage de la passerelle",
+      "dismiss": "Ignorer le marqueur en attente de {name}",
+      "copied": "Commande copiée",
+      "copyFailed": "Impossible de copier la commande",
+      "copyLabel": "Copier la commande de redémarrage de la passerelle"
     }
   }
 }

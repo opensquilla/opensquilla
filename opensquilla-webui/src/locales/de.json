@@ -468,17 +468,20 @@
       "needs": "Kanal benötigt",
       "save": "Kanal speichern",
       "runtimeStatus": "Laufzeitstatus",
-      "connected": "Verbunden",
-      "actionNeeded": "Aktion erforderlich",
-      "connecting": "wird verbunden",
       "none": "Keine Kanäle konfiguriert.",
-      "disabled": "Deaktiviert",
       "enable": "Aktivieren",
       "disable": "Deaktivieren",
       "remove": "Entfernen",
       "removeConfirmTitle": "Diesen Kanal entfernen?",
       "removeConfirmBody": "{name} wird aus der Konfiguration entfernt. Neustart erforderlich, damit es wirksam wird.",
-      "removeConfirmPrimary": "Entfernen"
+      "removeConfirmPrimary": "Entfernen",
+      "testConnection": "Verbindung testen",
+      "testing": "Wird getestet…",
+      "testVerified": "Verifiziert — Anbieter in {ms} ms erreichbar",
+      "testFailed": "Verbindungstest fehlgeschlagen: {detail}",
+      "testUnsupported": "Dieser Kanaltyp hat keine sichere Live-Prüfung — speichern und dann den Laufzeitstatus beobachten",
+      "testError": "Test konnte nicht ausgeführt werden: {error}",
+      "testNoDetail": "keine weiteren Details"
     },
     "search": {
       "title": "Websuche",
@@ -780,7 +783,7 @@
       "ensembleSaved": "Ensemble gespeichert.",
       "presetApplied": "Routing-Preset angewendet.",
       "presetAppliedRestart": "Routing-Preset angewendet. Neustart erforderlich.",
-      "channelSaved": "Kanal gespeichert. Neustart erforderlich.",
+      "channelSaved": "Kanal gespeichert — Konfiguration lokal validiert; mit „Verbindung testen“ die Zugangsdaten prüfen",
       "searchSaved": "Suche gespeichert.",
       "memorySurface": "Speicher-Embedding",
       "memorySaved": "Speicher gespeichert.",
@@ -1176,11 +1179,9 @@
       "openSettings": "Einstellungen öffnen",
       "totalChannels": "Kanäle gesamt",
       "typeCount": "{n} Typen",
-      "connected": "Verbunden",
       "live": "live",
       "unhealthy": "{n} fehlerhaft",
       "allIdle": "alle inaktiv",
-      "inactive": "Inaktiv",
       "needAttention": "{n} erfordern Aufmerksamkeit",
       "restartAttempts": "Neustartversuche",
       "sinceGatewayStart": "seit Gateway-Start",
@@ -1194,16 +1195,9 @@
       "noInactive": "keine inaktiven Kanäle",
       "disabledCount": "{n} deaktiviert",
       "configuredButIdle": "konfiguriert, aber inaktiv",
-      "hintDisabled": "In der Konfiguration deaktiviert — nach dem Reaktivieren ist ein Gateway-Neustart erforderlich. Führen Sie `opensquilla onboard configure channels` aus, um es zu ändern.",
-      "hintDead": "Adapter ist tot. Prüfen Sie die Gateway-Protokolle, dann `{cmd}`.",
-      "hintRunning": "Adapter ist im aktuellen Gateway-Prozess aktiv.",
-      "hintRestarting": "Adapter wird nach Dispatch-Fehlern neu gestartet.",
-      "hintExhausted": "Adapter hat sein Wiederholungsbudget erschöpft. Versuchen Sie `{cmd}`.",
-      "hintConfiguredInactive": "Auf der Festplatte konfiguriert, aber in diesem Gateway-Prozess nicht aktiv — starten Sie das Gateway neu, um ihn zu laden.",
       "addChannel": "Kanal hinzufügen",
       "addFirstChannel": "Ersten Kanal hinzufügen",
       "summaryLabel": "Zusammenfassung des Kanalstatus",
-      "attention": "Aufmerksamkeit erforderlich",
       "filtersLabel": "Kanalfilter",
       "searchLabel": "Kanäle suchen",
       "searchPlaceholder": "Kanäle suchen…",
@@ -1226,9 +1220,6 @@
       "edit": "Bearbeiten",
       "enable": "Aktivieren",
       "disable": "Deaktivieren",
-      "disabled": "Deaktiviert",
-      "restarting": "Wird neu gestartet",
-      "needsAttentionStatus": "Aufmerksamkeit erforderlich",
       "notReported": "Nicht gemeldet",
       "tabs": {
         "overview": "Übersicht",
@@ -1318,7 +1309,11 @@
         "revokeSuccess": "Kopplungszugriff für {sender} widerrufen",
         "approveFailed": "{sender} konnte nicht genehmigt werden: {error}",
         "revokeFailed": "{sender} konnte nicht widerrufen werden: {error}"
-      }
+      },
+      "probeFailed": "Verbindungstest fehlgeschlagen",
+      "editCredentials": "Zugangsdaten bearbeiten",
+      "toastProbeFailedResult": "{name} hat den Verbindungstest nicht bestanden: {detail}",
+      "restartNotLoaded": "Dieser Kanal ist noch nicht geladen — Gateway neu starten, um ihn zu starten"
     }
   },
   "cronSkills": {
@@ -2362,6 +2357,40 @@
       "sectionResult": "Ergebnis",
       "sectionError": "Fehler",
       "viewFull": "vollständig anzeigen"
+    }
+  },
+  "channelStatus": {
+    "connected": "Verbunden",
+    "pendingRestart": "Neustart ausstehend",
+    "notRunning": "Nicht aktiv",
+    "disabled": "Deaktiviert",
+    "restarting": "Wird neu gestartet",
+    "failed": "Fehlgeschlagen",
+    "exhausted": "Wiederholungen erschöpft",
+    "unknown": "Unbekannt ({raw})",
+    "hint": {
+      "pendingRestart": "Wirksam nach einem Gateway-Neustart",
+      "notRunning": "Startet nach einem Gateway-Neustart",
+      "restarting": "Automatische Wiederverbindung läuft",
+      "failed": "Automatische Neustarts erschöpft — Kanal neu starten oder bearbeiten",
+      "exhausted": "Zustellversuche aufgebraucht — letzten Fehler prüfen, dann neu starten"
+    },
+    "cause": {
+      "auth_invalid": "Zugangsdaten abgelehnt",
+      "payload_rejected": "Nachricht von der Plattform abgelehnt",
+      "target_missing": "Ziel-Chat oder -Kanal nicht gefunden",
+      "contract_violation": "Verstoß gegen den Adapter-Vertrag",
+      "transport_transient": "Netzwerkproblem — erneuter Versuch",
+      "rate_limited": "von der Plattform gedrosselt",
+      "channel_degraded": "Kanal beeinträchtigt"
+    },
+    "banner": {
+      "label": "Gateway-Neustart ausstehend",
+      "message": "{count} gespeicherte Kanaländerung(en) werden nach einem Gateway-Neustart wirksam",
+      "dismiss": "Ausstehend-Markierung für {name} entfernen",
+      "copied": "Befehl kopiert",
+      "copyFailed": "Befehl konnte nicht kopiert werden",
+      "copyLabel": "Gateway-Neustart-Befehl kopieren"
     }
   }
 }

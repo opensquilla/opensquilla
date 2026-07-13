@@ -39,6 +39,11 @@ _BACKUP_KEEP = 2
 _FALLBACK_AUDIT_USER = "opensquilla"
 #: Local-only hostname used when the operating system cannot report one.
 _FALLBACK_AUDIT_HOST = "localhost"
+# A schema rewrite can legitimately take longer than yoyo's ten-second
+# database-row lock timeout on an existing profile. New binaries serialize
+# before opening SQLite at all, while yoyo's lock remains the compatibility
+# authority for older binaries that do not know this external lock.
+_MIGRATION_PROCESS_LOCK_TIMEOUT_SECONDS = 120.0
 
 
 class SchemaAheadError(RuntimeError):
@@ -103,6 +108,33 @@ def _sqlite_path_from_db_url(db_url: str) -> Path | None:
     if os.name != "nt" and path.startswith("//") and not path.startswith("///"):
         path = path[1:]
     return Path(path).expanduser().resolve()
+
+
+@contextlib.contextmanager
+def _migration_process_lock(db_path: Path | None) -> Iterator[None]:
+    """Serialize local SQLite migration callers before either opens the DB.
+
+    Yoyo's lock row prevents two owners from applying a stale migration plan,
+    but a waiter must open SQLite and repeatedly attempt writes in order to
+    acquire that row. On Windows those attempts can block the owner's DDL even
+    though the logical yoyo lock is working correctly. The external lock is
+    keyed by the normalized database path and closes that pre-lock connection
+    race. Non-local backends keep using yoyo's native lock only.
+    """
+
+    if db_path is None:
+        yield
+        return
+
+    # Import lazily so the persistence module does not pull the recovery
+    # filesystem stack into non-SQLite migration discovery paths.
+    from opensquilla.recovery.locking import ProfileOperationLock
+
+    with ProfileOperationLock(
+        db_path,
+        timeout=_MIGRATION_PROCESS_LOCK_TIMEOUT_SECONDS,
+    ):
+        yield
 
 
 def _is_pid_alive_windows(pid: int, ctypes_module: Any = None) -> bool:
@@ -607,38 +639,45 @@ def apply_pending(db_url: str, migrations_dir: Path) -> list[str]:
         log.warning("migrator.missing_dir", extra={"migrations_dir": str(path)})
         return []
 
-    assert_schema_not_ahead(db_url, path)
-
-    _ensure_sqlite_datetime_adapter()
-    _ensure_yoyo_audit_user()
-
     db_path = _sqlite_path_from_db_url(db_url)
-    db_preexisted = db_path is not None and db_path.exists()
-    backup_db_path = db_path if db_preexisted else None
-    # Only tighten permissions on files this boot creates: pre-existing
-    # databases may carry deliberate operator permissions (group readers,
-    # split-user setups) that silently reverting every boot would break.
-    tighten_new_db = db_path is not None and not db_preexisted
+    with _migration_process_lock(db_path):
+        # The downgrade check and pre-existing-file decision belong inside the
+        # same cross-process boundary as backend creation. Otherwise a second
+        # caller can inspect a schema while the lock owner is rewriting it.
+        assert_schema_not_ahead(db_url, path)
 
-    try:
-        ids = _apply_pending_once(
-            db_url, path, backup_db_path=backup_db_path, tighten_new_db=tighten_new_db
-        )
-    except exceptions.LockTimeout as exc:
-        if not _recover_stale_yoyo_lock(db_url, exc):
-            raise
+        _ensure_sqlite_datetime_adapter()
+        _ensure_yoyo_audit_user()
+
+        db_preexisted = db_path is not None and db_path.exists()
+        backup_db_path = db_path if db_preexisted else None
+        # Only tighten permissions on files this boot creates: pre-existing
+        # databases may carry deliberate operator permissions (group readers,
+        # split-user setups) that silently reverting every boot would break.
+        tighten_new_db = db_path is not None and not db_preexisted
+
         try:
             ids = _apply_pending_once(
                 db_url, path, backup_db_path=backup_db_path, tighten_new_db=tighten_new_db
             )
-        except exceptions.LockTimeout:
-            log.warning("migrator.stale_lock_retry_failed", extra={"db_url": db_url})
-            raise
+        except exceptions.LockTimeout as exc:
+            if not _recover_stale_yoyo_lock(db_url, exc):
+                raise
+            try:
+                ids = _apply_pending_once(
+                    db_url,
+                    path,
+                    backup_db_path=backup_db_path,
+                    tighten_new_db=tighten_new_db,
+                )
+            except exceptions.LockTimeout:
+                log.warning("migrator.stale_lock_retry_failed", extra={"db_url": db_url})
+                raise
 
-    if ids:
-        log.info("migrator.applied", extra={"count": len(ids), "ids": ids})
-        _verify_ledger_after_apply(db_path, ids)
-    return ids
+        if ids:
+            log.info("migrator.applied", extra={"count": len(ids), "ids": ids})
+            _verify_ledger_after_apply(db_path, ids)
+        return ids
 
 
 def _apply_pending_once(

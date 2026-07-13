@@ -93,6 +93,7 @@ class WindowsSourceSnapshot:
     entries: tuple[WindowsManifestEntry, ...]
     role: str
     excluded: frozenset[Path]
+    excluded_leaf_suffixes: tuple[str, ...]
     root_attributes: int
 
 
@@ -205,8 +206,10 @@ def _entry_type(attributes: int) -> str:
 def _raise_windows_error(operation: str, path: Path | None = None) -> None:
     get_last_error = getattr(ctypes, "get_last_error", None)
     code = int(get_last_error()) if get_last_error is not None else 0
-    suffix = f": {path}" if path is not None else ""
-    raise WindowsSourceSnapshotError(code, f"{operation} failed (WinError {code}){suffix}")
+    message = f"{operation} failed (WinError {code})"
+    if path is None:
+        raise WindowsSourceSnapshotError(code, message)
+    raise WindowsSourceSnapshotError(code, message, str(path))
 
 
 class _Win32SourceApi:
@@ -399,7 +402,7 @@ class _Win32SourceApi:
                 offset += next_offset
         return tuple(sorted(names, key=lambda name: (os.path.normcase(name), name)))
 
-    def read(self, handle: int, size: int) -> bytes:
+    def read(self, handle: int, size: int, *, path: Path) -> bytes:
         buffer = ctypes.create_string_buffer(size)
         read = ctypes.c_uint32()
         if not self._read_file(
@@ -409,7 +412,7 @@ class _Win32SourceApi:
             ctypes.byref(read),
             None,
         ):
-            _raise_windows_error("ReadFile")
+            _raise_windows_error("ReadFile", path)
         return bytes(buffer.raw[: int(read.value)])
 
 
@@ -459,12 +462,23 @@ def _validate_information(information: _HandleInformation, *, path: Path) -> Non
         raise WindowsSourceSnapshotError(f"source file type is inconsistent: {path}")
 
 
-def _matches_entry(information: _HandleInformation, entry: WindowsManifestEntry) -> bool:
+def _matches_entry(
+    information: _HandleInformation,
+    entry: WindowsManifestEntry,
+    *,
+    ignore_directory_metadata: bool = False,
+) -> bool:
+    metadata_matches = (
+        ignore_directory_metadata
+        and entry.entry_type == "directory"
+    ) or (
+        information.size == entry.size
+        and information.mtime_ns == entry.mtime_ns
+    )
     return (
         information.identity == entry.identity
         and information.mode == entry.mode
-        and information.size == entry.size
-        and information.mtime_ns == entry.mtime_ns
+        and metadata_matches
         and information.attributes == entry.attributes
         and _entry_type(information.attributes) == entry.entry_type
     )
@@ -474,7 +488,10 @@ def _matches_root(information: _HandleInformation, snapshot: WindowsSourceSnapsh
     return (
         information.identity == snapshot.identity
         and information.mode == snapshot.root_mode
-        and information.mtime_ns == snapshot.root_mtime_ns
+        and (
+            bool(snapshot.excluded_leaf_suffixes)
+            or information.mtime_ns == snapshot.root_mtime_ns
+        )
         and information.attributes == snapshot.root_attributes
         and information.identity.file_type == stat.S_IFDIR
     )
@@ -547,6 +564,7 @@ def _open_child(
     path: Path,
     *,
     allow_file_writers: bool = False,
+    ignore_directory_metadata: bool = False,
 ) -> Iterator[tuple[int, _HandleInformation]]:
     handle = api.open_path(path, allow_writers=allow_file_writers)
     try:
@@ -560,7 +578,12 @@ def _open_child(
             try:
                 restrictive_information = api.information(restrictive_handle, path=path)
                 _validate_information(restrictive_information, path=path)
-                if not _same_information(restrictive_information, information):
+                information_matches = (
+                    _same_ancestor_information(restrictive_information, information)
+                    if ignore_directory_metadata
+                    else _same_information(restrictive_information, information)
+                )
+                if not information_matches:
                     raise WindowsSourceSnapshotError(
                         f"source changed while its directory handle was tightened: {path}"
                     )
@@ -573,7 +596,13 @@ def _open_child(
             api.close(permissive_handle)
         yield handle, information
         current = api.information(handle, path=path)
-        if not _same_information(current, information):
+        information_matches = (
+            _same_ancestor_information(current, information)
+            if ignore_directory_metadata
+            and information.identity.file_type == stat.S_IFDIR
+            else _same_information(current, information)
+        )
+        if not information_matches:
             raise WindowsSourceSnapshotError(f"source changed while pinned: {path}")
     finally:
         api.close(handle)
@@ -583,6 +612,7 @@ def _digest_handle(
     api: _Win32SourceApi,
     handle: int,
     *,
+    source: Path,
     destination: Path | None = None,
 ) -> str:
     descriptor: int | None = None
@@ -593,7 +623,7 @@ def _digest_handle(
             flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | int(getattr(os, "O_BINARY", 0))
             descriptor = os.open(destination, flags, 0o600)
         while True:
-            chunk = api.read(handle, 1024 * 1024)
+            chunk = api.read(handle, 1024 * 1024, path=source)
             if not chunk:
                 break
             digest.update(chunk)
@@ -628,9 +658,13 @@ def _scan_with_api(
     destination_prefix: Path,
     role: str,
     excluded: set[Path] | frozenset[Path],
+    excluded_leaf_suffixes: tuple[str, ...],
 ) -> WindowsSourceSnapshot:
     _validate_relative_path(destination_prefix, label="import destination prefix")
     normalized_excluded = frozenset(Path(value) for value in excluded)
+    normalized_suffixes = tuple(dict.fromkeys(excluded_leaf_suffixes))
+    if any(not suffix or "\\" in suffix or "/" in suffix for suffix in normalized_suffixes):
+        raise WindowsSourceSnapshotError("excluded source leaf suffix is unsafe")
     for value in normalized_excluded:
         _validate_relative_path(value, label="excluded source path")
 
@@ -640,7 +674,11 @@ def _scan_with_api(
 
         def visit(directory_path: Path, directory_handle: int, relative: Path) -> None:
             before = api.information(directory_handle, path=directory_path)
-            names_before = api.enumerate_names(directory_handle, path=directory_path)
+            names_before = tuple(
+                name
+                for name in api.enumerate_names(directory_handle, path=directory_path)
+                if not name.endswith(normalized_suffixes)
+            )
             for name in names_before:
                 child_relative = relative / name
                 if child_relative in normalized_excluded or any(
@@ -652,11 +690,12 @@ def _scan_with_api(
                     api,
                     child_path,
                     allow_file_writers=True,
+                    ignore_directory_metadata=bool(normalized_suffixes),
                 ) as (child_handle, information):
                     entry_type = _entry_type(information.attributes)
                     digest: str | None = None
                     if entry_type == "file":
-                        digest = _digest_handle(api, child_handle)
+                        digest = _digest_handle(api, child_handle, source=child_path)
                     entry = WindowsManifestEntry(
                         source=normalized_root / child_relative,
                         relative=child_relative,
@@ -671,16 +710,30 @@ def _scan_with_api(
                     entries.append(entry)
                     if entry_type == "directory":
                         visit(child_path, child_handle, child_relative)
-            names_after = api.enumerate_names(directory_handle, path=directory_path)
+            names_after = tuple(
+                name
+                for name in api.enumerate_names(directory_handle, path=directory_path)
+                if not name.endswith(normalized_suffixes)
+            )
             after = api.information(directory_handle, path=directory_path)
-            if names_after != names_before or not _same_information(after, before):
+            directory_matches = (
+                _same_ancestor_information(after, before)
+                if normalized_suffixes
+                else _same_information(after, before)
+            )
+            if names_after != names_before or not directory_matches:
                 raise WindowsSourceSnapshotError(
                     f"source directory changed during enumeration: {directory_path}"
                 )
 
         visit(root_path, root_handle, Path())
         current_root = api.information(root_handle, path=root_path)
-        if not _same_information(current_root, root_information):
+        root_matches = (
+            _same_ancestor_information(current_root, root_information)
+            if normalized_suffixes
+            else _same_information(current_root, root_information)
+        )
+        if not root_matches:
             raise WindowsSourceSnapshotError(
                 f"source root changed during enumeration: {normalized_root}"
             )
@@ -694,6 +747,7 @@ def _scan_with_api(
             entries=tuple(entries),
             role=role,
             excluded=normalized_excluded,
+            excluded_leaf_suffixes=normalized_suffixes,
             root_attributes=root_information.attributes,
         )
 
@@ -704,6 +758,7 @@ def scan_windows_source_tree(
     destination_prefix: Path,
     role: str,
     excluded: set[Path] | frozenset[Path] = frozenset(),
+    excluded_leaf_suffixes: tuple[str, ...] = (),
 ) -> WindowsSourceSnapshot:
     """Build a stable manifest through pinned no-reparse Win32 handles."""
 
@@ -713,6 +768,7 @@ def scan_windows_source_tree(
         destination_prefix=destination_prefix,
         role=role,
         excluded=excluded,
+        excluded_leaf_suffixes=excluded_leaf_suffixes,
     )
 
 
@@ -720,6 +776,7 @@ def _read_bounded_handle(
     api: _Win32SourceApi,
     handle: int,
     *,
+    source: Path,
     expected_size: int,
     limit: int,
 ) -> tuple[bytes, str]:
@@ -729,7 +786,7 @@ def _read_bounded_handle(
     chunks: list[bytes] = []
     digest = hashlib.sha256()
     while remaining > 0:
-        chunk = api.read(handle, min(64 * 1024, remaining))
+        chunk = api.read(handle, min(64 * 1024, remaining), path=source)
         if not chunk:
             break
         chunks.append(chunk)
@@ -774,6 +831,7 @@ def _capture_bounded_with_api(
                     data, digest = _read_bounded_handle(
                         api,
                         handle,
+                        source=path,
                         expected_size=information.size,
                         limit=max_bytes,
                     )
@@ -879,7 +937,11 @@ def _copy_with_api(
                 try:
                     information = api.information(handle, path=parent_path)
                     _validate_information(information, path=parent_path)
-                    if not _matches_entry(information, expected_directory):
+                    if not _matches_entry(
+                        information,
+                        expected_directory,
+                        ignore_directory_metadata=bool(snapshot.excluded_leaf_suffixes),
+                    ):
                         raise WindowsSourceSnapshotError(
                             f"source directory changed before copy: {expected_directory.source}"
                         )
@@ -898,7 +960,12 @@ def _copy_with_api(
                     raise WindowsSourceSnapshotError(
                         f"source file changed before copy: {entry.source}"
                     )
-                digest = _digest_handle(api, file_handle, destination=destination)
+                digest = _digest_handle(
+                    api,
+                    file_handle,
+                    source=file_path,
+                    destination=destination,
+                )
                 if digest != entry.digest:
                     destination.unlink(missing_ok=True)
                     raise WindowsSourceSnapshotError(
@@ -907,7 +974,12 @@ def _copy_with_api(
 
             for directory_path, handle, expected in opened_children:
                 current = api.information(handle, path=directory_path)
-                if not _same_information(current, expected):
+                directory_matches = (
+                    _same_ancestor_information(current, expected)
+                    if snapshot.excluded_leaf_suffixes
+                    else _same_information(current, expected)
+                )
+                if not directory_matches:
                     destination.unlink(missing_ok=True)
                     raise WindowsSourceSnapshotError(
                         f"source directory changed during copy: {directory_path}"

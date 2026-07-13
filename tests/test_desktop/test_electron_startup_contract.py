@@ -2082,6 +2082,14 @@ def test_migration_preload_bridge_and_progress_channel() -> None:
     assert "function publishDesktopMigrationProgress" in main_ts
     assert "webContents.send('desktop:migration:progress', payload)" in main_ts
     assert "persistDesktopMigrationResult" in main_ts
+    assert "failureCode?: string" in main_ts
+    assert "failureStage?: DesktopMigrationFailureStage" in main_ts
+    assert "function migrationFailureFromReport" in main_ts
+    assert "source_snapshot_locked" in main_ts
+    assert "source_snapshot_changed" in main_ts
+    assert "source_snapshot_unreadable" in main_ts
+    assert "gateway_restart_failed" in main_ts
+    assert "result.stderr || result.stdout" not in main_ts
 
 
 def test_compiled_electron_flows_preserve_xvfb_display_authority() -> None:

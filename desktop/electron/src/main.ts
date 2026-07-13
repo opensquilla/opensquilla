@@ -652,9 +652,52 @@ function migrationReportValidationError(
 }
 
 function migrationReportErrors(report: Record<string, unknown>): Record<string, unknown>[] {
-  return (report.items as unknown[])
+  if (!Array.isArray(report.items)) return []
+  return report.items
     .map((item) => migrationRecord(item))
     .filter((item): item is Record<string, unknown> => item?.status === 'error')
+}
+
+const DESKTOP_MIGRATION_FAILURE_CODES = new Set([
+  'source_snapshot_locked',
+  'source_snapshot_changed',
+  'source_snapshot_unreadable',
+  'migration_apply_failed',
+  'gateway_restart_failed',
+])
+
+function migrationFailureFromReport(report: Record<string, unknown> | null): {
+  failureCode: string
+  failureStage: DesktopMigrationFailureStage
+  detail: string
+} | null {
+  if (!report) return null
+  const item = migrationReportErrors(report)[0]
+  if (!item) return null
+  const details = migrationRecord(item.details)
+  const stableCode = typeof details?.stable_code === 'string'
+    && DESKTOP_MIGRATION_FAILURE_CODES.has(details.stable_code)
+    ? details.stable_code
+    : 'migration_apply_failed'
+  const kind = typeof item.kind === 'string' ? item.kind : ''
+  const detail = typeof item.reason === 'string' && item.reason.trim()
+    ? item.reason.trim().slice(0, 1000)
+    : 'Data transfer did not complete.'
+  return {
+    failureCode: stableCode,
+    failureStage: kind.startsWith('preflight/') || kind === 'source' || kind === 'target'
+      ? 'preflight'
+      : 'apply',
+    detail,
+  }
+}
+
+function conciseMigrationProcessError(value: string): string {
+  return value
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .find((line) => line && !line.startsWith('{') && !line.startsWith('['))
+    ?.slice(0, 1000) || 'The migration command did not return a valid result.'
 }
 
 const MIGRATION_TRANSACTION_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
@@ -9116,6 +9159,8 @@ interface TrustedDesktopMigrationPreview {
   createdAt: number
 }
 
+type DesktopMigrationFailureStage = 'preflight' | 'apply' | 'restart'
+
 interface DesktopMigrationResult {
   id: string
   at: string
@@ -9127,6 +9172,8 @@ interface DesktopMigrationResult {
   sourceKind?: MigrationSourceKind
   targetReplaced?: boolean
   credentialBackupPath?: string
+  failureCode?: string
+  failureStage?: DesktopMigrationFailureStage
   detail?: string
 }
 
@@ -9233,6 +9280,12 @@ async function readDesktopMigrationResult(): Promise<DesktopMigrationResult | nu
       : {}),
     ...(typeof parsed.credentialBackupPath === 'string' && parsed.credentialBackupPath
       ? { credentialBackupPath: parsed.credentialBackupPath }
+      : {}),
+    ...(typeof parsed.failureCode === 'string' && parsed.failureCode
+      ? { failureCode: parsed.failureCode }
+      : {}),
+    ...(['preflight', 'apply', 'restart'].includes(String(parsed.failureStage || ''))
+      ? { failureStage: parsed.failureStage as DesktopMigrationFailureStage }
       : {}),
     ...(typeof parsed.detail === 'string' && parsed.detail ? { detail: parsed.detail } : {}),
   }
@@ -9429,6 +9482,8 @@ ipcMain.handle('desktop:migration:run', async (
   let migrationApplied = false
   let restartOk = false
   let requiresProviderSetup = false
+  let failureCode = ''
+  let failureStage: DesktopMigrationFailureStage | '' = ''
   let detail = ''
   let intent: PendingMigrationProviderSetup | null = null
   let restartAllowed = true
@@ -9450,6 +9505,8 @@ ipcMain.handle('desktop:migration:run', async (
         migrationApplied: false,
         restartOk: true,
         requiresProviderSetup: false,
+        failureCode: 'migration_apply_failed',
+        failureStage: 'preflight',
         detail: 'A gateway is still serving this profile; stop it and retry.',
       }
       await persistDesktopMigrationResult(refused)
@@ -9518,15 +9575,22 @@ ipcMain.handle('desktop:migration:run', async (
       target: primaryDesktopHome(),
       apply: true,
     })
+    const reportFailure = migrationFailureFromReport(report)
     migrationVerified = result.ok
       && report !== null
       && validationError === null
       && migrationReportErrors(report).length === 0
-    detail = migrationVerified
-      ? ''
-      : (validationError || result.stderr || result.stdout || 'Invalid migration report').slice(-2000)
+    if (!migrationVerified) {
+      failureCode = reportFailure?.failureCode || 'migration_apply_failed'
+      failureStage = reportFailure?.failureStage || 'apply'
+      detail = validationError
+        || reportFailure?.detail
+        || conciseMigrationProcessError(result.stderr)
+    }
   } catch (error) {
-    detail = error instanceof Error ? error.message : String(error)
+    failureCode ||= 'migration_apply_failed'
+    failureStage ||= 'preflight'
+    detail ||= error instanceof Error ? error.message : String(error)
   } finally {
     if (intent) {
       try {
@@ -9548,12 +9612,16 @@ ipcMain.handle('desktop:migration:run', async (
         } else {
           if (migrationVerified) {
             detail = 'The migration command succeeded without a valid target-side receipt.'
+            failureCode = 'migration_apply_failed'
+            failureStage = 'apply'
             migrationVerified = false
           }
           await clearPendingMigrationProviderSetup()
         }
       } catch (error) {
         migrationVerified = false
+        failureCode ||= 'migration_apply_failed'
+        failureStage ||= 'apply'
         const reconciliationError = error instanceof Error ? error.message : String(error)
         detail = detail ? `${detail}; ${reconciliationError}` : reconciliationError
       }
@@ -9590,8 +9658,13 @@ ipcMain.handle('desktop:migration:run', async (
   } else if (!shouldRestart) {
     restartOk = Boolean(gatewayState.url) && await healthCheck(gatewayState.url)
   }
-  if (migrationApplied && !restartOk && !detail) {
-    detail = 'Transfer applied, but the desktop gateway did not become healthy.'
+  if (migrationApplied && !restartOk) {
+    failureCode = 'gateway_restart_failed'
+    failureStage = 'restart'
+    if (!detail) detail = 'Transfer applied, but the desktop gateway did not become healthy.'
+  } else if (!migrationApplied && !migrationVerified) {
+    failureCode ||= 'migration_apply_failed'
+    failureStage ||= 'apply'
   }
   const finalResult: DesktopMigrationResult = {
     id: randomUUID(),
@@ -9606,6 +9679,8 @@ ipcMain.handle('desktop:migration:run', async (
     ...(intent?.credentialBackupPath
       ? { credentialBackupPath: intent.credentialBackupPath }
       : {}),
+    ...(failureCode ? { failureCode } : {}),
+    ...(failureStage ? { failureStage } : {}),
     ...(detail ? { detail } : {}),
   }
   await persistDesktopMigrationResult(finalResult)

@@ -611,4 +611,102 @@ describe('DesktopRuntimePanel data transfer', () => {
     expect(el.querySelector('[data-testid="runtime-migration-complete"]')).toBeNull()
     app.unmount()
   })
+
+  it('keeps a failed unapplied result visible and rechecks only the same source', async () => {
+    const migrationDismissLastResult = vi.fn(async () => ({ ok: true }))
+    const migrationRun = vi.fn(async () => ({ ok: true }))
+    const migrationSummary = vi.fn(async ({ source }: { source?: string } = {}) => ({
+      ok: true,
+      candidates: [cliCandidate],
+      candidate: source ? cliCandidate : null,
+      report: source ? emptyTargetReport : null,
+      previewId: source ? 'rechecked-preview' : undefined,
+      requiresSelection: !source,
+    }))
+    const { app, el } = await mountPanel(desktopApi({
+      migrationPeekLastResult: vi.fn(async () => ({
+        ok: false,
+        migrationApplied: false,
+        restartOk: true,
+        source: cliCandidate.path,
+        sourceKind: 'cli-home',
+        failureCode: 'source_snapshot_locked',
+        failureStage: 'preflight',
+        detail: 'raw platform detail',
+      })),
+      migrationDismissLastResult,
+      migrationSummary,
+      migrationRun,
+    }))
+
+    const card = el.querySelector('[data-testid="runtime-migration-not-applied"]')
+    expect(card?.getAttribute('role')).toBe('alert')
+    expect(card?.textContent).toContain('Data transfer did not complete')
+    expect(card?.textContent).toContain('current sessions and data have not changed')
+    expect(card?.textContent).toContain('data file is in use')
+    expect(card?.textContent).toContain(cliCandidate.path)
+    expect(migrationDismissLastResult).not.toHaveBeenCalled()
+
+    ;(card?.querySelector('[data-testid="runtime-migration-recheck"]') as HTMLButtonElement).click()
+    await settle()
+    expect(migrationSummary).toHaveBeenCalledWith({ source: cliCandidate.path })
+    expect(migrationRun).not.toHaveBeenCalled()
+    expect(el.querySelector('[data-testid="runtime-migration-summary"]')).toBeTruthy()
+    app.unmount()
+  })
+
+  it('keeps legacy failures compatible and dismisses only on request', async () => {
+    const migrationDismissLastResult = vi.fn(async () => ({ ok: true }))
+    const { app, el } = await mountPanel(desktopApi({
+      migrationPeekLastResult: vi.fn(async () => ({
+        ok: false,
+        migrationApplied: false,
+        restartOk: true,
+        detail: 'legacy failure detail',
+      })),
+      migrationDismissLastResult,
+      migrationSummary: vi.fn(async () => ({ ok: true })),
+      migrationRun: vi.fn(async () => ({ ok: true })),
+    }))
+
+    const card = el.querySelector('[data-testid="runtime-migration-not-applied"]')
+    expect(card?.textContent).toContain('legacy failure detail')
+    expect(migrationDismissLastResult).not.toHaveBeenCalled()
+    ;(card?.querySelectorAll<HTMLButtonElement>('button')[0] as HTMLButtonElement).click()
+    await settle()
+    expect(migrationDismissLastResult).toHaveBeenCalledTimes(1)
+    app.unmount()
+  })
+
+  it('does not offer migration retry after commit and can restart the runtime', async () => {
+    const migrationDismissLastResult = vi.fn(async () => ({ ok: true }))
+    const retryStartup = vi.fn(async () => ({ ok: true }))
+    const migrationRun = vi.fn(async () => ({ ok: true }))
+    const { app, el } = await mountPanel(desktopApi({
+      retryStartup,
+      migrationPeekLastResult: vi.fn(async () => ({
+        ok: false,
+        migrationApplied: true,
+        restartOk: false,
+        source: cliCandidate.path,
+        sourceKind: 'cli-home',
+        failureCode: 'gateway_restart_failed',
+        failureStage: 'restart',
+      })),
+      migrationDismissLastResult,
+      migrationSummary: vi.fn(async () => ({ ok: true })),
+      migrationRun,
+    }))
+
+    const card = el.querySelector('[data-testid="runtime-migration-applied-restart-failed"]')
+    expect(card?.getAttribute('role')).toBe('alert')
+    expect(card?.textContent).toContain('already committed')
+    expect(card?.querySelector('[data-testid="runtime-migration-recheck"]')).toBeNull()
+    ;(card?.querySelector('[data-testid="runtime-migration-restart"]') as HTMLButtonElement).click()
+    await settle()
+    expect(retryStartup).toHaveBeenCalledTimes(1)
+    expect(migrationRun).not.toHaveBeenCalled()
+    expect(migrationDismissLastResult).toHaveBeenCalledTimes(1)
+    app.unmount()
+  })
 })

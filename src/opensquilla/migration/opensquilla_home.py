@@ -148,14 +148,20 @@ _EXCLUDED_AUTHORITY_NAMES = frozenset(
 )
 #: Runtime lock files under ``state/`` never copied.
 _EXCLUDED_STATE_FILES = ("gateway.pid", "gateway.pid.lock")
-#: SQLite stores whose ``-wal``/``-shm`` sidecars must travel with them.
+#: SQLite stores whose durable ``-wal`` sidecars must travel with them.
 _SQLITE_STORES = (
     Path("state/sessions.db"),
     Path("state/scheduler.db"),
     Path("state/approval_queue.sqlite"),
     Path("state/sandbox_user_grants.sqlite"),
 )
-_SQLITE_SIDECAR_SUFFIXES = ("-wal", "-shm")
+_SQLITE_DURABLE_SIDECAR_SUFFIXES = ("-wal",)
+_SQLITE_TRANSIENT_SIDECAR_SUFFIXES = ("-shm",)
+_SQLITE_ALL_SIDECAR_SUFFIXES = (
+    *_SQLITE_DURABLE_SIDECAR_SUFFIXES,
+    *_SQLITE_TRANSIENT_SIDECAR_SUFFIXES,
+)
+_WINDOWS_LOCK_ERROR_CODES = frozenset({32, 33})
 _REPARSE_POINT_ATTRIBUTE = 0x400
 _GATEWAY_AUTHORITY_MAX_BYTES = 64 * 1024
 _JOURNAL_PHASES = frozenset(
@@ -668,6 +674,32 @@ def _commit_journal_path(target: Path) -> Path:
     return target.parent / f".{target.name}.{_COMMIT_JOURNAL}"
 
 
+def _source_snapshot_failure_details(
+    exc: BaseException,
+    *,
+    fallback_code: str,
+) -> dict[str, Any]:
+    """Return a stable, non-secret Desktop failure classification."""
+
+    raw_code = getattr(exc, "winerror", None) or getattr(exc, "errno", None)
+    try:
+        error_code = int(raw_code) if raw_code is not None else None
+    except (TypeError, ValueError):
+        error_code = None
+    message = str(exc).lower()
+    if error_code in _WINDOWS_LOCK_ERROR_CODES:
+        stable_code = "source_snapshot_locked"
+    elif "changed" in message or "mutation" in message:
+        stable_code = "source_snapshot_changed"
+    else:
+        stable_code = fallback_code
+    path = getattr(exc, "filename", None)
+    details: dict[str, Any] = {"stable_code": stable_code}
+    if isinstance(path, (str, os.PathLike)) and str(path):
+        details["path"] = str(path)
+    return details
+
+
 def _normalized_path(path: Path) -> str:
     """Return the comparison/receipt spelling for a profile path."""
     try:
@@ -713,6 +745,7 @@ class _SourceSnapshot:
     entries: tuple[_ManifestEntry, ...]
     role: str
     excluded: frozenset[Path]
+    excluded_leaf_suffixes: tuple[str, ...]
     windows_snapshot: WindowsSourceSnapshot | None = None
 
 
@@ -918,6 +951,25 @@ def _stat_matches_manifest(result: os.stat_result, entry: _ManifestEntry) -> boo
         and int(result.st_mode) == entry.mode
         and int(result.st_size) == entry.size
         and int(result.st_mtime_ns) == entry.mtime_ns
+    )
+
+
+def _stat_matches_snapshot_entry(
+    result: os.stat_result,
+    entry: _ManifestEntry,
+    *,
+    ignore_directory_metadata: bool,
+) -> bool:
+    return (
+        _identity_from_stat(result) == entry.identity
+        and int(result.st_mode) == entry.mode
+        and (
+            ignore_directory_metadata and entry.entry_type == "directory"
+            or (
+                int(result.st_size) == entry.size
+                and int(result.st_mtime_ns) == entry.mtime_ns
+            )
+        )
     )
 
 
@@ -1335,6 +1387,7 @@ def _scan_source_tree_posix(
     destination_prefix: Path,
     role: str,
     excluded: set[Path] | frozenset[Path],
+    excluded_leaf_suffixes: tuple[str, ...] = (),
 ) -> _SourceSnapshot:
     root_descriptor = _open_posix_directory_chain(root)
     try:
@@ -1358,6 +1411,8 @@ def _scan_source_tree_posix(
                 if relative in excluded or any(
                     parent in excluded for parent in relative.parents
                 ):
+                    continue
+                if name.endswith(excluded_leaf_suffixes):
                     continue
                 source_path = root / relative
                 value = os.stat(name, dir_fd=directory_descriptor, follow_symlinks=False)
@@ -1426,7 +1481,10 @@ def _scan_source_tree_posix(
             if (
                 _identity_from_stat(after) != _identity_from_stat(before)
                 or int(after.st_mode) != int(before.st_mode)
-                or int(after.st_mtime_ns) != int(before.st_mtime_ns)
+                or (
+                    not excluded_leaf_suffixes
+                    and int(after.st_mtime_ns) != int(before.st_mtime_ns)
+                )
             ):
                 raise OSError(
                     f"source directory changed during enumeration: {root / relative_directory}"
@@ -1437,7 +1495,10 @@ def _scan_source_tree_posix(
         if (
             _identity_from_stat(after_root) != root_identity
             or int(after_root.st_mode) != int(root_stat.st_mode)
-            or int(after_root.st_mtime_ns) != int(root_stat.st_mtime_ns)
+            or (
+                not excluded_leaf_suffixes
+                and int(after_root.st_mtime_ns) != int(root_stat.st_mtime_ns)
+            )
         ):
             raise OSError(f"source root changed during enumeration: {root}")
         entries.sort(key=lambda entry: (len(entry.relative.parts), entry.relative.as_posix()))
@@ -1450,6 +1511,7 @@ def _scan_source_tree_posix(
             entries=tuple(entries),
             role=role,
             excluded=frozenset(excluded),
+            excluded_leaf_suffixes=tuple(excluded_leaf_suffixes),
         )
     finally:
         os.close(root_descriptor)
@@ -1461,6 +1523,7 @@ def _scan_source_tree_path(
     destination_prefix: Path,
     role: str,
     excluded: set[Path] | frozenset[Path] = frozenset(),
+    excluded_leaf_suffixes: tuple[str, ...] = (),
 ) -> _SourceSnapshot:
     """Create a stable, no-follow manifest with temporary content digests."""
     if destination_prefix.is_absolute() or ".." in destination_prefix.parts:
@@ -1484,6 +1547,8 @@ def _scan_source_tree_path(
         for child in children:
             relative = relative_directory / child.name
             if relative in excluded or any(parent in excluded for parent in relative.parents):
+                continue
+            if child.name.endswith(excluded_leaf_suffixes):
                 continue
             path = Path(child.path)
             result = child.stat(follow_symlinks=False)
@@ -1516,7 +1581,10 @@ def _scan_source_tree_path(
         after_directory = directory.lstat()
         if (
             _identity_from_stat(after_directory) != _identity_from_stat(before_directory)
-            or int(after_directory.st_mtime_ns) != int(before_directory.st_mtime_ns)
+            or (
+                not excluded_leaf_suffixes
+                and int(after_directory.st_mtime_ns) != int(before_directory.st_mtime_ns)
+            )
         ):
             raise OSError(f"source directory changed during enumeration: {directory}")
     after_root = root.lstat()
@@ -1532,6 +1600,7 @@ def _scan_source_tree_path(
         entries=tuple(entries),
         role=role,
         excluded=frozenset(excluded),
+        excluded_leaf_suffixes=tuple(excluded_leaf_suffixes),
     )
 
 
@@ -1541,6 +1610,7 @@ def _scan_source_tree(
     destination_prefix: Path,
     role: str,
     excluded: set[Path] | frozenset[Path] = frozenset(),
+    excluded_leaf_suffixes: tuple[str, ...] = (),
 ) -> _SourceSnapshot:
     """Create a stable manifest without path-following parent races."""
 
@@ -1552,6 +1622,7 @@ def _scan_source_tree(
             destination_prefix=destination_prefix,
             role=role,
             excluded=excluded,
+            excluded_leaf_suffixes=excluded_leaf_suffixes,
         )
         return _SourceSnapshot(
             root=windows_snapshot.root,
@@ -1582,6 +1653,7 @@ def _scan_source_tree(
             ),
             role=windows_snapshot.role,
             excluded=windows_snapshot.excluded,
+            excluded_leaf_suffixes=windows_snapshot.excluded_leaf_suffixes,
             windows_snapshot=windows_snapshot,
         )
     if _supports_posix_handle_walk():
@@ -1590,6 +1662,7 @@ def _scan_source_tree(
             destination_prefix=destination_prefix,
             role=role,
             excluded=excluded,
+            excluded_leaf_suffixes=excluded_leaf_suffixes,
         )
     # There is no safe path-based fallback for source profile data. Platforms
     # without openat-style traversal or the native Windows handle primitive
@@ -1597,6 +1670,40 @@ def _scan_source_tree(
     raise OSError(
         "safe handle-relative source traversal is unavailable on this platform"
     )
+
+
+def _source_snapshots_match(
+    current: _SourceSnapshot,
+    expected: _SourceSnapshot,
+) -> bool:
+    if not expected.excluded_leaf_suffixes:
+        return current == expected
+    if (
+        current.root != expected.root
+        or current.destination_prefix != expected.destination_prefix
+        or current.identity != expected.identity
+        or current.root_mode != expected.root_mode
+        or current.role != expected.role
+        or current.excluded != expected.excluded
+        or current.excluded_leaf_suffixes != expected.excluded_leaf_suffixes
+        or len(current.entries) != len(expected.entries)
+    ):
+        return False
+    for current_entry, expected_entry in zip(current.entries, expected.entries, strict=True):
+        if expected_entry.entry_type == "file":
+            if current_entry != expected_entry:
+                return False
+            continue
+        if (
+            current_entry.source != expected_entry.source
+            or current_entry.relative != expected_entry.relative
+            or current_entry.entry_type != expected_entry.entry_type
+            or current_entry.identity != expected_entry.identity
+            or current_entry.mode != expected_entry.mode
+            or current_entry.digest != expected_entry.digest
+        ):
+            return False
+    return True
 
 
 def _copy_snapshot_file_posix(
@@ -1614,7 +1721,10 @@ def _copy_snapshot_file_posix(
         if (
             _identity_from_stat(root_stat) != snapshot.identity
             or int(root_stat.st_mode) != snapshot.root_mode
-            or int(root_stat.st_mtime_ns) != snapshot.root_mtime_ns
+            or (
+                not snapshot.excluded_leaf_suffixes
+                and int(root_stat.st_mtime_ns) != snapshot.root_mtime_ns
+            )
         ):
             raise OSError(f"source root changed before copy: {snapshot.root}")
         relative_parent = Path()
@@ -1625,14 +1735,22 @@ def _copy_snapshot_file_posix(
                 raise OSError(f"source manifest parent is missing: {relative_parent}")
             parent_descriptor = directory_descriptors[-1]
             before = os.stat(part, dir_fd=parent_descriptor, follow_symlinks=False)
-            if not _stat_matches_manifest(before, expected_directory):
+            if not _stat_matches_snapshot_entry(
+                before,
+                expected_directory,
+                ignore_directory_metadata=bool(snapshot.excluded_leaf_suffixes),
+            ):
                 raise OSError(
                     f"source directory changed before copy: {expected_directory.source}"
                 )
             flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
             flags |= getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
             child_descriptor = os.open(part, flags, dir_fd=parent_descriptor)
-            if not _stat_matches_manifest(os.fstat(child_descriptor), expected_directory):
+            if not _stat_matches_snapshot_entry(
+                os.fstat(child_descriptor),
+                expected_directory,
+                ignore_directory_metadata=bool(snapshot.excluded_leaf_suffixes),
+            ):
                 os.close(child_descriptor)
                 raise OSError(
                     f"source directory changed while opened: {expected_directory.source}"
@@ -1681,14 +1799,21 @@ def _copy_snapshot_file_posix(
                 if (
                     _identity_from_stat(current) != snapshot.identity
                     or int(current.st_mode) != snapshot.root_mode
-                    or int(current.st_mtime_ns) != snapshot.root_mtime_ns
+                    or (
+                        not snapshot.excluded_leaf_suffixes
+                        and int(current.st_mtime_ns) != snapshot.root_mtime_ns
+                    )
                 ):
                     destination.unlink(missing_ok=True)
                     raise OSError(f"source root changed during copy: {snapshot.root}")
                 continue
             relative = Path(*entry.relative.parent.parts[:index])
             expected_directory = directory_entries[relative]
-            if not _stat_matches_manifest(current, expected_directory):
+            if not _stat_matches_snapshot_entry(
+                current,
+                expected_directory,
+                ignore_directory_metadata=bool(snapshot.excluded_leaf_suffixes),
+            ):
                 destination.unlink(missing_ok=True)
                 raise OSError(
                     f"source directory changed during copy: {expected_directory.source}"
@@ -2292,7 +2417,7 @@ def inspect_opensquilla_home_candidate(
         sessions_db = state_root / "sessions.db"
         bundle_size = 0
         bundle_safe = True
-        for suffix in ("", *_SQLITE_SIDECAR_SUFFIXES):
+        for suffix in ("", *_SQLITE_DURABLE_SIDECAR_SUFFIXES):
             member = sessions_db.with_name(sessions_db.name + suffix)
             try:
                 member_stat = member.lstat()
@@ -2541,7 +2666,7 @@ def _copy_sqlite_bundle(
     """Copy a SQLite database and present sidecars for mutation-free inspection."""
     destination_db = destination_dir / source_db.name
     captured: dict[str, tuple[_ManifestEntry, str]] = {}
-    for suffix in ("", *_SQLITE_SIDECAR_SUFFIXES):
+    for suffix in ("", *_SQLITE_DURABLE_SIDECAR_SUFFIXES):
         source_file = source_db.with_name(source_db.name + suffix)
         try:
             result = source_file.lstat()
@@ -2565,7 +2690,7 @@ def _copy_sqlite_bundle(
             raise OSError(f"could not snapshot SQLite bundle member: {source_file}")
         captured[suffix] = (entry, digest)
     if verify_stable_bundle:
-        for suffix in ("", *_SQLITE_SIDECAR_SUFFIXES):
+        for suffix in ("", *_SQLITE_DURABLE_SIDECAR_SUFFIXES):
             source_file = source_db.with_name(source_db.name + suffix)
             expected = captured.get(suffix)
             if expected is None:
@@ -2833,6 +2958,10 @@ class OpenSquillaHomeMigrator:
                 source,
                 destination_prefix=Path(),
                 role="initial-profile-safety",
+                excluded=frozenset(
+                    Path("state") / name for name in _EXCLUDED_STATE_FILES
+                ),
+                excluded_leaf_suffixes=_SQLITE_TRANSIENT_SIDECAR_SUFFIXES,
             )
         except (OSError, RuntimeError) as exc:
             self._record(
@@ -2841,6 +2970,10 @@ class OpenSquillaHomeMigrator:
                 self.target,
                 "error",
                 f"source profile cannot be inspected without following links: {exc}",
+                details=_source_snapshot_failure_details(
+                    exc,
+                    fallback_code="source_snapshot_unreadable",
+                ),
             )
             self._blocked = True
 
@@ -3407,6 +3540,7 @@ class OpenSquillaHomeMigrator:
                     destination_prefix=Path(),
                     role="profile",
                     excluded=frozenset(top_level_excluded),
+                    excluded_leaf_suffixes=_SQLITE_TRANSIENT_SIDECAR_SUFFIXES,
                 )
             )
             for name, roots in self._data_roots.items():
@@ -3420,6 +3554,7 @@ class OpenSquillaHomeMigrator:
                             destination_prefix=Path(name),
                             role=f"{name}:{index}",
                             excluded=frozenset(exclusions),
+                            excluded_leaf_suffixes=_SQLITE_TRANSIENT_SIDECAR_SUFFIXES,
                         )
                     )
             for agent_id, root in sorted(self._agent_workspace_roots.items()):
@@ -3428,6 +3563,7 @@ class OpenSquillaHomeMigrator:
                         root,
                         destination_prefix=Path("workspace") / "agents" / agent_id,
                         role=f"agent-workspace:{agent_id}",
+                        excluded_leaf_suffixes=_SQLITE_TRANSIENT_SIDECAR_SUFFIXES,
                     )
                 )
         except OSError as exc:
@@ -3437,6 +3573,10 @@ class OpenSquillaHomeMigrator:
                 self.target,
                 "error",
                 f"could not create a stable no-follow source manifest: {exc}",
+                details=_source_snapshot_failure_details(
+                    exc,
+                    fallback_code="source_snapshot_unreadable",
+                ),
             )
             self._blocked = True
             return
@@ -3446,7 +3586,7 @@ class OpenSquillaHomeMigrator:
         for relative in self._source_sqlite_stores():
             sqlite_members.update(
                 Path("state") / relative.with_name(relative.name + suffix)
-                for suffix in ("", *_SQLITE_SIDECAR_SUFFIXES)
+                for suffix in ("", *_SQLITE_DURABLE_SIDECAR_SUFFIXES)
             )
         self._sqlite_logical_members = sqlite_members
         self._record(
@@ -3469,9 +3609,19 @@ class OpenSquillaHomeMigrator:
             for root in (self._data_roots.get("state") or [source / "state"])
         }
         try:
-            self._source_gateway_authority = tuple(
-                _capture_legacy_gateway_authority(roots[key]) for key in sorted(roots)
+            authority_lock = LegacyGatewayLock(
+                source,
+                state_roots=(roots[key] for key in sorted(roots)),
+                create_if_missing=False,
             )
+            with authority_lock:
+                self._source_gateway_authority = tuple(
+                    _capture_legacy_gateway_authority(
+                        roots[key],
+                        held_lock=authority_lock.snapshot_state_root(roots[key]),
+                    )
+                    for key in sorted(roots)
+                )
         except OSError as exc:
             self._record(
                 "preflight/gateway-authority",
@@ -3534,8 +3684,9 @@ class OpenSquillaHomeMigrator:
                 destination_prefix=expected.destination_prefix,
                 role=expected.role,
                 excluded=expected.excluded,
+                excluded_leaf_suffixes=expected.excluded_leaf_suffixes,
             )
-            if current != expected:
+            if not _source_snapshots_match(current, expected):
                 raise OSError(
                     f"source changed during import ({expected.role}); publication cancelled"
                 )
@@ -3993,7 +4144,7 @@ class OpenSquillaHomeMigrator:
                 continue
             members = {
                 suffix: entry
-                for suffix in ("", *_SQLITE_SIDECAR_SUFFIXES)
+                for suffix in ("", *_SQLITE_DURABLE_SIDECAR_SUFFIXES)
                 for entry in snapshot.entries
                 if entry.entry_type == "file"
                 and entry.source == source_db.with_name(source_db.name + suffix)
@@ -4010,7 +4161,7 @@ class OpenSquillaHomeMigrator:
         snapshot, members = self._sqlite_bundle_entries(source_db)
         destination_dir.mkdir(parents=True, exist_ok=True)
         destination_db = destination_dir / source_db.name
-        for suffix in ("", *_SQLITE_SIDECAR_SUFFIXES):
+        for suffix in ("", *_SQLITE_DURABLE_SIDECAR_SUFFIXES):
             entry = members.get(suffix)
             if entry is None:
                 continue
@@ -4965,6 +5116,10 @@ class OpenSquillaHomeMigrator:
                 "error",
                 f"import failed before completion: {apply_error}; "
                 "the transaction was not completed",
+                details=_source_snapshot_failure_details(
+                    apply_error,
+                    fallback_code="migration_apply_failed",
+                ),
             )
             if not self._committed:
                 self._wrote_output_dir = False
@@ -4977,7 +5132,7 @@ class OpenSquillaHomeMigrator:
             for relative in self._source_sqlite_stores():
                 sqlite_bundle_members.update(
                     relative.with_name(relative.name + suffix)
-                    for suffix in ("", *_SQLITE_SIDECAR_SUFFIXES)
+                    for suffix in ("", *_SQLITE_DURABLE_SIDECAR_SUFFIXES)
                 )
         snapshots = sorted(
             (
@@ -5076,7 +5231,7 @@ class OpenSquillaHomeMigrator:
                 raise OSError(f"sqlite snapshot failed for state/{relative}") from exc
 
             self._unlink_staged_file_for_replacement(destination)
-            for suffix in _SQLITE_SIDECAR_SUFFIXES:
+            for suffix in _SQLITE_ALL_SIDECAR_SUFFIXES:
                 self._unlink_staged_file_for_replacement(
                     destination.with_name(destination.name + suffix)
                 )

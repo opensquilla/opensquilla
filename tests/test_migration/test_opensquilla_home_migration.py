@@ -765,7 +765,16 @@ def test_excluded_source_gateway_authority_change_blocks_publication(
     ) -> None:
         original_write_env(migrator, staging)
         try:
-            authority.write_bytes(changed)
+            if initial is None:
+                authority.write_bytes(changed)
+            else:
+                # Avoid Path.write_bytes(): it truncates before the Windows
+                # byte-range lock rejects the write, making the test fixture
+                # itself mutate the source even though publication is blocked.
+                with authority.open("r+b") as stream:
+                    stream.seek(0)
+                    stream.write(changed)
+                    stream.truncate()
         except OSError as exc:
             mutation_errors.append(exc)
             raise
@@ -1358,6 +1367,41 @@ def test_every_published_portable_release_completes_full_profile_apply(
 # ---------------------------------------------------------------------------
 # 9. WAL sidecars
 # ---------------------------------------------------------------------------
+
+
+def test_source_snapshot_ignores_shm_but_keeps_db_and_wal(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source-snapshot"
+    state = source / "state"
+    state.mkdir(parents=True)
+    (state / "sessions.db").write_bytes(b"database")
+    (state / "sessions.db-wal").write_bytes(b"durable-wal")
+    shm = state / "sessions.db-shm"
+    shm.write_bytes(b"transient-one")
+
+    first = migration_module._scan_source_tree(
+        source,
+        destination_prefix=Path(),
+        role="test",
+        excluded_leaf_suffixes=("-shm",),
+    )
+    shm.unlink()
+    shm.write_bytes(b"transient-two")
+    second = migration_module._scan_source_tree(
+        source,
+        destination_prefix=Path(),
+        role="test",
+        excluded_leaf_suffixes=first.excluded_leaf_suffixes,
+    )
+
+    files = {
+        entry.relative.as_posix()
+        for entry in first.entries
+        if entry.entry_type == "file"
+    }
+    assert files == {"state/sessions.db", "state/sessions.db-wal"}
+    assert migration_module._source_snapshots_match(second, first)
 
 
 def test_sqlite_snapshot_normalizes_empty_wal_sidecar(tmp_path: Path) -> None:

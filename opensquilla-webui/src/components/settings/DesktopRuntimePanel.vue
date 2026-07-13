@@ -110,6 +110,8 @@ interface MigrationTerminalResult {
   source?: string
   sourceKind?: ProfileSourceKind
   targetReplaced?: boolean
+  failureCode?: string
+  failureStage?: 'preflight' | 'apply' | 'restart'
   detail?: string
 }
 
@@ -409,12 +411,27 @@ const RECOVERY_MIGRATION_DETAILS = new Set([
   'Return to the primary profile before importing data.',
 ])
 
-function localizedMigrationDetail(value: unknown): string {
+const MIGRATION_FAILURE_DETAIL_KEYS: Record<string, string> = {
+  source_snapshot_locked: 'setup.runtime.migrationFailureLocked',
+  source_snapshot_changed: 'setup.runtime.migrationFailureChanged',
+  source_snapshot_unreadable: 'setup.runtime.migrationFailureUnreadable',
+  migration_apply_failed: 'setup.runtime.migrationFailureApply',
+  gateway_restart_failed: 'setup.runtime.migrationFailureRestart',
+}
+
+function localizedMigrationDetail(value: unknown, failureCode?: string): string {
+  const failureKey = failureCode ? MIGRATION_FAILURE_DETAIL_KEYS[failureCode] : undefined
+  if (failureKey) return t(failureKey)
   const detail = typeof value === 'string' ? value.trim() : ''
   return RECOVERY_MIGRATION_DETAILS.has(detail)
     ? t('setup.runtime.migrationRecoveryProfile')
     : detail || t('setup.runtime.uninstallCheckLog')
 }
+
+const migrationFailureReason = computed(() => localizedMigrationDetail(
+  migrationLastResult.value?.detail,
+  migrationLastResult.value?.failureCode,
+))
 
 async function loadMigrationProfileContext(): Promise<void> {
   try {
@@ -680,10 +697,8 @@ async function runMigration() {
     if (!ok) return
   }
   migrationBusy.value = true
-  // The run quiesces the gateway and restarts it behind the boot splash, so
-  // this page's RPC connection is expected to drop mid-run. Surface the
-  // restart notice up front. The main process persists the terminal result so
-  // the replacement renderer can surface it the next time this panel mounts.
+  // Validation and preparation happen before any target replacement. The main
+  // process persists the terminal result so a replacement renderer can show it.
   pushToast(t('setup.runtime.migrationStarted'))
   try {
     const result = await desktopBridge.migrationRun({
@@ -691,13 +706,14 @@ async function runMigration() {
       previewId: migrationPreviewId.value,
     })
     if (result?.aborted) return
+    migrationLastResult.value = result
     if (!result?.ok) {
       pushToast(t('setup.runtime.migrationFailed', {
-        detail: localizedMigrationDetail(result?.detail),
+        detail: localizedMigrationDetail(result?.detail, result?.failureCode),
       }), { tone: 'danger' })
+      await cancelMigration(false)
       return
     }
-    migrationLastResult.value = result
     pushToast(t('setup.runtime.migrationDone'))
     await cancelMigration(false)
   } catch (err) {
@@ -720,12 +736,6 @@ async function showLastMigrationResult() {
     migrationLastResult.value = result
     if (result.ok) {
       pushToast(t('setup.runtime.migrationDone'))
-    } else {
-      pushToast(t('setup.runtime.migrationFailed', {
-        detail: localizedMigrationDetail(result.detail),
-      }), { tone: 'danger' })
-      await desktopBridge?.migrationDismissLastResult?.().catch(() => null)
-      migrationLastResult.value = null
     }
   } catch (err) {
     pushToast(t('setup.runtime.migrationFailed', {
@@ -739,7 +749,53 @@ async function dismissLastMigrationResult() {
     await desktopBridge?.migrationDismissLastResult?.()
   } finally {
     migrationLastResult.value = null
+    await nextTick()
+    migrationTriggerEl.value?.focus()
   }
+}
+
+async function recheckLastMigrationSource() {
+  const source = migrationLastResult.value?.source
+  if (!source || !desktopBridge?.migrationSummary) return
+  migrationBusy.value = true
+  try {
+    const result = await desktopBridge.migrationSummary({ source })
+    if (
+      result.report == null
+      || typeof result.previewId !== 'string'
+      || !result.previewId
+      || !isMigrationCandidate(result.candidate)
+      || result.candidate.path !== source
+    ) {
+      pushToast(t('setup.runtime.migrationSummaryFailed', {
+        detail: localizedMigrationDetail(result.raw),
+      }), { tone: 'danger' })
+      return
+    }
+    const detected = Array.isArray(result.candidates)
+      ? result.candidates.filter(isMigrationCandidate)
+      : []
+    migrationCandidates.value = uniqueMigrationCandidates([...detected, result.candidate])
+    migrationCandidate.value = result.candidate
+    migrationSummary.value = summarizeMigrationReport(result.report)
+    migrationPreviewId.value = result.previewId
+    migrationOverwrite.value = false
+    migrationPhase.value = ''
+    migrationOpen.value = true
+    subscribeMigrationProgress()
+    await focusMigrationTitle()
+  } catch (err) {
+    pushToast(t('setup.runtime.migrationSummaryFailed', {
+      detail: localizedMigrationDetail(err instanceof Error ? err.message : String(err)),
+    }), { tone: 'danger' })
+  } finally {
+    migrationBusy.value = false
+  }
+}
+
+async function restartAfterMigration() {
+  await restartGateway()
+  if (gateway.value?.status === 'ready') await dismissLastMigrationResult()
 }
 
 async function revealMigrationBackups() {
@@ -814,6 +870,62 @@ onUnmounted(unsubscribeMigrationProgress)
           @click="revealMigrationBackups"
         >
           {{ t('setup.runtime.migrationCompleteShowBackup') }}
+        </button>
+        <button type="button" class="btn btn--ghost" @click="dismissLastMigrationResult">
+          {{ t('setup.runtime.migrationCompleteDismiss') }}
+        </button>
+      </div>
+    </div>
+    <div
+      v-else-if="migrationProfileKind === 'primary' && migrationLastResult && !migrationLastResult.migrationApplied"
+      class="migration-complete migration-result--failure"
+      role="alert"
+      data-testid="runtime-migration-not-applied"
+    >
+      <strong>{{ t('setup.runtime.migrationNotAppliedTitle') }}</strong>
+      <p>{{ t('setup.runtime.migrationNotAppliedUnchanged') }}</p>
+      <p v-if="migrationLastResult.source">
+        {{ t('setup.runtime.migrationCompleteSource', { path: migrationLastResult.source }) }}
+      </p>
+      <p>{{ migrationFailureReason }}</p>
+      <div class="migration-complete__actions">
+        <button
+          v-if="migrationLastResult.source && desktopBridge?.migrationSummary"
+          type="button"
+          class="btn btn--ghost"
+          :disabled="migrationBusy"
+          data-testid="runtime-migration-recheck"
+          @click="recheckLastMigrationSource"
+        >
+          {{ t('setup.runtime.migrationRecheckSource') }}
+        </button>
+        <button type="button" class="btn btn--ghost" @click="dismissLastMigrationResult">
+          {{ t('setup.runtime.migrationCompleteDismiss') }}
+        </button>
+      </div>
+    </div>
+    <div
+      v-else-if="migrationProfileKind === 'primary' && migrationLastResult"
+      class="migration-complete migration-result--failure"
+      role="alert"
+      data-testid="runtime-migration-applied-restart-failed"
+    >
+      <strong>{{ t('setup.runtime.migrationAppliedRestartTitle') }}</strong>
+      <p>{{ t('setup.runtime.migrationAppliedRestartCommitted') }}</p>
+      <p v-if="migrationLastResult.source">
+        {{ t('setup.runtime.migrationCompleteSource', { path: migrationLastResult.source }) }}
+      </p>
+      <p>{{ migrationFailureReason }}</p>
+      <div class="migration-complete__actions">
+        <button
+          v-if="!migrationLastResult.restartOk && canRestart"
+          type="button"
+          class="btn btn--ghost"
+          :disabled="busy"
+          data-testid="runtime-migration-restart"
+          @click="restartAfterMigration"
+        >
+          {{ t('setup.runtime.restartRuntime') }}
         </button>
         <button type="button" class="btn btn--ghost" @click="dismissLastMigrationResult">
           {{ t('setup.runtime.migrationCompleteDismiss') }}
@@ -1211,6 +1323,11 @@ onUnmounted(unsubscribeMigrationProgress)
   border: 1px solid var(--success, var(--ok));
   border-radius: var(--radius-md);
   background: color-mix(in srgb, var(--success, var(--ok)) 8%, var(--bg-elevated));
+}
+
+.migration-result--failure {
+  border-color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 8%, var(--bg-elevated));
 }
 
 .migration-complete p,

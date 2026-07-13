@@ -33,22 +33,27 @@ jobs:
       OSS_ACCESS_KEY_SECRET: ${{ secrets.ALIYUN_OSS_ACCESS_KEY_SECRET }}
       OSS_REGION: ${{ vars.ALIYUN_OSS_REGION }}
       OSS_ENDPOINT: ${{ vars.ALIYUN_OSS_ENDPOINT }}
+      OSS_ADDRESSING_STYLE: ${{ vars.ALIYUN_OSS_ADDRESSING_STYLE }}
     steps:
       - name: Resolve release tag
         id: release
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          MANUAL_RELEASE_TAG: ${{ inputs.tag }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
         shell: bash
         run: |
           set -euo pipefail
-          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
-            tag="${{ inputs.tag }}"
+          if [[ "${EVENT_NAME}" == "workflow_dispatch" ]]; then
+            tag="${MANUAL_RELEASE_TAG}"
           else
-            tag="${{ github.event.release.tag_name }}"
+            tag="${RELEASE_TAG}"
           fi
-          if [[ ! "${tag}" =~ ^v[0-9]+[.][0-9]+[.][0-9]+.*$ ]]; then
+          if [[ ! "${tag}" =~ ^v[0-9]+[.][0-9]+[.][0-9]+[A-Za-z0-9._+-]*$ ]]; then
             echo "Release tag must look like v0.5.0rc3 or v0.5.0: ${tag}" >&2
             exit 1
           fi
-          echo "tag=${tag}" >> "${GITHUB_OUTPUT}"
+          printf 'tag=%s\n' "${tag}" >> "${GITHUB_OUTPUT}"
 
       - name: Validate OSS configuration
         shell: bash
@@ -72,6 +77,26 @@ jobs:
             prefix="releases"
           fi
           echo "ALIYUN_OSS_PREFIX_NORMALIZED=${prefix}" >> "${GITHUB_ENV}"
+
+          endpoint_host="${OSS_ENDPOINT#http://}"
+          endpoint_host="${endpoint_host#https://}"
+          endpoint_host="${endpoint_host%%/*}"
+          addressing_style="${OSS_ADDRESSING_STYLE:-}"
+          if [[ -z "${addressing_style}" ]]; then
+            if [[ -n "${endpoint_host}" && ! "${endpoint_host}" =~ (^|[.])aliyuncs[.]com$ ]]; then
+              addressing_style="cname"
+            else
+              addressing_style="virtual"
+            fi
+          fi
+          case "${addressing_style}" in
+            virtual|path|cname) ;;
+            *)
+              echo "ALIYUN_OSS_ADDRESSING_STYLE must be virtual, path, or cname: ${addressing_style}" >&2
+              exit 1
+              ;;
+          esac
+          echo "OSS_ADDRESSING_STYLE_NORMALIZED=${addressing_style}" >> "${GITHUB_ENV}"
 
       - name: Download GitHub Release assets
         env:
@@ -100,7 +125,47 @@ jobs:
             echo "Missing SHA256SUMS in downloaded release assets" >&2
             exit 1
           fi
-          (cd release-assets && sha256sum -c SHA256SUMS)
+          (cd release-assets && sha256sum --strict -c SHA256SUMS)
+          python3 - <<'PY'
+          from pathlib import Path
+
+          root = Path("release-assets")
+          checksum_file = root / "SHA256SUMS"
+          expected = []
+          hex_chars = set("0123456789abcdefABCDEF")
+
+          for line_number, line in enumerate(checksum_file.read_text(encoding="utf-8").splitlines(), 1):
+              if not line.strip():
+                  continue
+              try:
+                  digest, name = line.split(None, 1)
+              except ValueError as exc:
+                  raise SystemExit(f"Invalid SHA256SUMS line {line_number}") from exc
+              if len(digest) != 64 or any(char not in hex_chars for char in digest):
+                  raise SystemExit(f"Invalid SHA256 digest on line {line_number}")
+              if name.startswith("*"):
+                  name = name[1:]
+              path = Path(name)
+              if not name or path.is_absolute() or len(path.parts) != 1 or ".." in path.parts:
+                  raise SystemExit(f"Unsafe checksum filename on line {line_number}: {name}")
+              if name == "SHA256SUMS":
+                  raise SystemExit("SHA256SUMS must not list itself")
+              expected.append(name)
+
+          if not expected:
+              raise SystemExit("SHA256SUMS does not list any release assets")
+
+          actual = {path.name for path in root.iterdir() if path.is_file()}
+          expected_set = set(expected)
+          missing = sorted(expected_set - actual)
+          extra = sorted(actual - expected_set - {"SHA256SUMS"})
+          if missing:
+              raise SystemExit("Missing checksummed release assets: " + ", ".join(missing))
+          if extra:
+              raise SystemExit("Release assets missing from SHA256SUMS: " + ", ".join(extra))
+
+          (root / "CHECKSUMMED_ASSETS").write_text("\n".join(expected) + "\n", encoding="utf-8")
+          PY
 
       - name: Install ossutil 2.0
         shell: bash
@@ -119,8 +184,15 @@ jobs:
         run: |
           set -euo pipefail
           dest_prefix="oss://${ALIYUN_OSS_BUCKET}/${ALIYUN_OSS_PREFIX_NORMALIZED}/${TAG}"
-          while IFS= read -r -d '' path; do
-            name="$(basename "${path}")"
-            ossutil cp "${path}" "${dest_prefix}/${name}"
-          done < <(find release-assets -maxdepth 1 -type f -print0 | sort -z)
-          ossutil ls "${dest_prefix}/"
+          upload_asset() {
+            local path="$1"
+            local name="$2"
+            ossutil cp --force --addressing-style "${OSS_ADDRESSING_STYLE_NORMALIZED}" \
+              "${path}" "${dest_prefix}/${name}"
+          }
+          while IFS= read -r name; do
+            [[ -n "${name}" ]] || continue
+            upload_asset "release-assets/${name}" "${name}"
+          done < release-assets/CHECKSUMMED_ASSETS
+          upload_asset "release-assets/SHA256SUMS" "SHA256SUMS"
+          ossutil ls --addressing-style "${OSS_ADDRESSING_STYLE_NORMALIZED}" "${dest_prefix}/"

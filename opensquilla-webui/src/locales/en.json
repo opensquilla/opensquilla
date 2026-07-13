@@ -1461,7 +1461,13 @@
       "staleData": "Status may be stale — last updated {time}.",
       "clearFilters": "Clear filters",
       "unconfiguredTitle": "Running but not in config",
-      "unconfiguredHint": "These channels are running in this gateway process but are not in the saved configuration."
+      "unconfiguredHint": "These channels are running in this gateway process but are not in the saved configuration.",
+      "maturityValue": {
+        "experimental": "Experimental",
+        "stable": "Stable",
+        "shipping": "Shipping",
+        "unrated": "Unrated"
+      }
     },
     "overview": {
       "channelsChip": "Channels",

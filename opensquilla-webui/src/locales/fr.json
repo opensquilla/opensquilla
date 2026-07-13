@@ -1461,7 +1461,13 @@
       "staleData": "Le statut peut être obsolète — dernière mise à jour {time}.",
       "clearFilters": "Effacer les filtres",
       "unconfiguredTitle": "En cours d'exécution mais absent de la configuration",
-      "unconfiguredHint": "Ces canaux s'exécutent dans cette passerelle mais ne figurent pas dans la configuration enregistrée."
+      "unconfiguredHint": "Ces canaux s'exécutent dans cette passerelle mais ne figurent pas dans la configuration enregistrée.",
+      "maturityValue": {
+        "experimental": "Expérimental",
+        "stable": "Stable",
+        "shipping": "Livré",
+        "unrated": "Non évalué"
+      }
     },
     "overview": {
       "channelsChip": "Canaux",

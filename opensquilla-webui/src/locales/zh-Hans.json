@@ -1461,7 +1461,13 @@
       "staleData": "状态可能已过期——最后更新于 {time}。",
       "clearFilters": "清除过滤",
       "unconfiguredTitle": "运行中但不在配置里",
-      "unconfiguredHint": "这些频道正在本网关进程中运行，但不在已保存的配置里。"
+      "unconfiguredHint": "这些频道正在本网关进程中运行，但不在已保存的配置里。",
+      "maturityValue": {
+        "experimental": "实验性",
+        "stable": "稳定",
+        "shipping": "已发布",
+        "unrated": "未评级"
+      }
     },
     "overview": {
       "channelsChip": "频道",

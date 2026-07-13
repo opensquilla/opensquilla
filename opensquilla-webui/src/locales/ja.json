@@ -1461,7 +1461,13 @@
       "staleData": "状態が古い可能性があります — 最終更新 {time}。",
       "clearFilters": "フィルターをクリア",
       "unconfiguredTitle": "実行中だが設定にない",
-      "unconfiguredHint": "これらのチャンネルはこのゲートウェイで実行中ですが、保存された設定にはありません。"
+      "unconfiguredHint": "これらのチャンネルはこのゲートウェイで実行中ですが、保存された設定にはありません。",
+      "maturityValue": {
+        "experimental": "実験的",
+        "stable": "安定",
+        "shipping": "提供中",
+        "unrated": "未評価"
+      }
     },
     "overview": {
       "channelsChip": "チャンネル",

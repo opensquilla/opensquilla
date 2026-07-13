@@ -6,6 +6,44 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+## [0.5.0rc4] - 2026-07-13
+
+### Added
+
+- Desktop profile recovery now validates the active workspace before any
+  identity, memory, or chat state can be initialized. Ambiguous profiles keep
+  their original data and can open a persistent recovery profile.
+- Fresh Windows Desktop installations can explicitly copy a retired Portable
+  profile during setup. The source remains unchanged, and other CLI or Desktop
+  profiles stay behind the deliberate Settings transfer flow.
+- Release downloads are mirrored to Alibaba Cloud OSS, including a stable
+  browser download page for users who cannot reliably reach GitHub assets.
+
+### Changed
+
+- Normal RC2/RC3 upgrades no longer present a generic data-import decision.
+  Complete profile transfers use stable snapshots, full backups, and
+  all-or-nothing replacement instead of file-level merging.
+- Desktop uninstall preserves profile data by default and distinguishes setup
+  reset, current-profile deletion, and deletion of all user data.
+- Long-running Desktop sessions can discover later 0.5 previews or the final
+  0.5.0 release while retaining the installed release channel.
+- Official TokenRhythm and OpenRouter API requests now include OpenSquilla's
+  public application-attribution headers; custom compatible hosts remain
+  unchanged.
+
+### Fixed
+
+- Provider API-key changes remain effective after restart instead of being
+  replaced by an older stored value.
+- Model Ensemble progress, stall handling, usage accounting, message limits,
+  and budget handoff are more reliable for slow and multi-model turns.
+- WeCom heartbeat handling, transport and child-process cleanup, SQLite
+  extension loading, and checkpoint recovery fail more predictably without
+  discarding valid state.
+- The Control UI more reliably preserves chat scroll position and exposes full
+  tool results and trustworthy model choices.
+
 ## [0.5.0rc3] - 2026-07-10
 
 ### Added

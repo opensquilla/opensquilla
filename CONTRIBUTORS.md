@@ -26,6 +26,19 @@ trailers.
 | [@ab2ence](https://github.com/ab2ence) | macOS Seatbelt backend execution, denial escalation, and release-candidate type-check cleanup. | [#46](https://github.com/opensquilla/opensquilla/pull/46), [`fb1e6225`](https://github.com/opensquilla/opensquilla/pull/46/commits/fb1e6225e4db9cb0801ea347a89c2066e3e0601b), [`f73ac3eb`](https://github.com/opensquilla/opensquilla/pull/46/commits/f73ac3eb0044c64c79cfd18f9ec03d1bba9128ff), [`cf3b046f`](https://github.com/opensquilla/opensquilla/pull/46/commits/cf3b046f42a42efc951320b0af80e9d066dcf7d2) |
 | [@kimjune01](https://github.com/kimjune01) | Provider stream timeout cleanup fix that prevents double-closing provider streams. | [#46](https://github.com/opensquilla/opensquilla/pull/46), [`06e3126d`](https://github.com/opensquilla/opensquilla/pull/46/commits/06e3126d8ebda4ad4cf349ca7be0d0804e0c008d) |
 
+## OpenSquilla 0.5.0rc4
+
+The 0.5.0 Preview 4 release records new human contributor work after the
+0.5.0 Preview 3 release. Contributors who also appeared in an earlier release
+are included only for new work in this release range.
+
+| Contributor | 0.5.0 Preview 4 contribution | Evidence |
+| --- | --- | --- |
+| [@HuaXiawithMoon](https://github.com/HuaXiawithMoon) | Replaced competing WeCom WebSocket heartbeats with the application-level heartbeat so connections remain stable. | [#582](https://github.com/opensquilla/opensquilla/pull/582) |
+| [@ab2ence](https://github.com/ab2ence) | Restructured Model Ensemble guidance around clear static lineups and dynamic routing choices. | [#586](https://github.com/opensquilla/opensquilla/pull/586) |
+| [@nice-code-la](https://github.com/nice-code-la) | Added the Alibaba Cloud OSS release mirror and its stable browser download page. | [#588](https://github.com/opensquilla/opensquilla/pull/588), [#636](https://github.com/opensquilla/opensquilla/pull/636) |
+| [@nankingjing](https://github.com/nankingjing) | Hardened low-level transport, child-process, SQLite extension, and checkpoint failure handling. | [#598](https://github.com/opensquilla/opensquilla/pull/598) |
+
 ## OpenSquilla 0.5.0rc3
 
 The 0.5.0 Preview 3 release records new human contributor work after the

@@ -111,24 +111,26 @@ fi
         encoding="utf-8",
     )
     fake_gh.chmod(0o755)
+    fake_python = fake_bin / "python"
+    fake_python.write_text(
+        """#!/usr/bin/env bash
+set -euo pipefail
+exec "$TEST_PYTHON" "$@"
+""",
+        encoding="utf-8",
+    )
+    fake_python.chmod(0o755)
     env = os.environ.copy()
+    env["TEST_PYTHON"] = sys.executable
     shell_prefix = ""
     if os.name == "nt":
-        env.update(
-            {
-                "FAKE_GH_DIR": str(fake_bin),
-                "TEST_PYTHON_DIR": str(Path(sys.executable).parent),
-            }
-        )
+        env["FAKE_GH_DIR"] = str(fake_bin)
         shell_prefix = (
-            'export PATH="$(cygpath -u "$FAKE_GH_DIR"):'
-            '$(cygpath -u "$TEST_PYTHON_DIR"):$PATH"\n'
+            'export TEST_PYTHON="$(cygpath -u "$TEST_PYTHON")"\n'
+            'export PATH="$(cygpath -u "$FAKE_GH_DIR"):$PATH"\n'
         )
     else:
-        env["PATH"] = (
-            f"{fake_bin}{os.pathsep}{Path(sys.executable).parent}"
-            f"{os.pathsep}{env['PATH']}"
-        )
+        env["PATH"] = f"{fake_bin}{os.pathsep}{env['PATH']}"
     env.update(
         {
             "FAKE_GH_LOG": str(call_log),

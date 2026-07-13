@@ -340,6 +340,7 @@ const testTone = computed(() => {
             <button v-if="row.enabled === false" type="button" class="btn btn--ghost setup-channels__action" @click="emit('enableChannel', row.name)">{{ t('setup.channels.enable') }}</button>
             <button v-else type="button" class="btn btn--ghost setup-channels__action" @click="emit('disableChannel', row.name)">{{ t('setup.channels.disable') }}</button>
             <button type="button" class="btn btn--ghost setup-channels__action setup-channels__remove" @click="emit('removeChannel', row.name)">{{ t('setup.channels.remove') }}</button>
+            <span class="setup-channels__actionsep" aria-hidden="true"></span>
             <button type="button" class="btn btn--ghost setup-channels__action" @click="emit('openDetails', row.name)">{{ t('setup.channels.details') }}</button>
           </span>
         </div>
@@ -363,6 +364,8 @@ const testTone = computed(() => {
 .setup-channels__remove {
   color: var(--danger);
 }
+
+.setup-channels__actionsep { align-self: stretch; background: var(--border); flex: 0 0 1px; margin: 2px 2px; width: 1px; }
 
 .setup-channels__test {
   font-size: var(--fs-sm);

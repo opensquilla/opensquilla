@@ -157,29 +157,38 @@
           <button class="ch-icon-btn" type="button" :title="t('common.close')" @click="closeDetail"><Icon name="x" :size="18" /></button>
         </header>
 
+        <!-- Actions grouped by consequence — observe/runtime ops, then
+             configuration writes, with destructive Remove isolated at the far
+             edge — so the row encodes the cost gradient instead of rendering
+             five equal buttons. -->
         <div class="ch-detail__actions">
-          <button class="btn btn--ghost" type="button" :disabled="actionPending(selectedChannel, 'probe')" @click="probeChannel(selectedChannel)">
-            <Icon name="gauge" :size="15" aria-hidden="true" />
-            <span>{{ actionPending(selectedChannel, 'probe') ? t('console.channels.testing') : t('console.channels.testConnection') }}</span>
-          </button>
-          <button
-            class="btn btn--ghost"
-            type="button"
-            :disabled="actionPending(selectedChannel, 'restart') || selectedChannel.enabled === false || !adapterLoaded(selectedChannel)"
-            :title="selectedChannel.enabled !== false && !adapterLoaded(selectedChannel) ? t('console.channels.restartNotLoaded') : undefined"
-            @click="restartChannel(selectedChannel)"
-          >
-            <Icon name="refresh" :size="15" aria-hidden="true" />
-            <span>{{ t('console.channels.restart') }}</span>
-          </button>
-          <button class="btn btn--ghost" type="button" @click="openChannelEdit(selectedChannel)">
-            <Icon name="edit" :size="15" aria-hidden="true" />
-            <span>{{ t('console.channels.edit') }}</span>
-          </button>
-          <button class="btn btn--ghost" type="button" :disabled="actionPending(selectedChannel, 'toggle')" @click="toggleChannel(selectedChannel)">
-            <span>{{ selectedChannel.enabled === false ? t('console.channels.enable') : t('console.channels.disable') }}</span>
-          </button>
-          <button class="btn btn--ghost ch-detail__remove" type="button" :disabled="actionPending(selectedChannel, 'remove')" @click="removeChannel(selectedChannel)">
+          <div class="ch-detail__actiongroup" role="group" :aria-label="t('console.channels.opsActionsLabel')">
+            <button class="btn btn--ghost" type="button" :disabled="actionPending(selectedChannel, 'probe')" @click="probeChannel(selectedChannel)">
+              <Icon name="gauge" :size="15" aria-hidden="true" />
+              <span>{{ actionPending(selectedChannel, 'probe') ? t('console.channels.testing') : t('console.channels.testConnection') }}</span>
+            </button>
+            <button
+              class="btn btn--ghost"
+              type="button"
+              :disabled="actionPending(selectedChannel, 'restart') || selectedChannel.enabled === false || !adapterLoaded(selectedChannel)"
+              :title="selectedChannel.enabled !== false && !adapterLoaded(selectedChannel) ? t('console.channels.restartNotLoaded') : undefined"
+              @click="restartChannel(selectedChannel)"
+            >
+              <Icon name="refresh" :size="15" aria-hidden="true" />
+              <span>{{ t('console.channels.restart') }}</span>
+            </button>
+          </div>
+          <span class="ch-detail__actionsep" aria-hidden="true"></span>
+          <div class="ch-detail__actiongroup" role="group" :aria-label="t('console.channels.configActionsLabel')">
+            <button class="btn btn--ghost" type="button" :title="t('console.channels.editActionHint')" @click="openChannelEdit(selectedChannel)">
+              <Icon name="edit" :size="15" aria-hidden="true" />
+              <span>{{ t('console.channels.edit') }}</span>
+            </button>
+            <button class="btn btn--ghost" type="button" :disabled="actionPending(selectedChannel, 'toggle')" :title="t('console.channels.configActionHint')" @click="toggleChannel(selectedChannel)">
+              <span>{{ selectedChannel.enabled === false ? t('console.channels.enable') : t('console.channels.disable') }}</span>
+            </button>
+          </div>
+          <button class="btn btn--ghost ch-detail__remove" type="button" :disabled="actionPending(selectedChannel, 'remove')" :title="t('console.channels.configActionHint')" @click="removeChannel(selectedChannel)">
             <span>{{ t('console.channels.removeChannel') }}</span>
           </button>
         </div>
@@ -1111,6 +1120,9 @@ function configRows(config: Record<string, unknown>): Array<{ key: string; value
 .ch-icon-btn:hover { background: var(--bg-surface-2); color: var(--text); }
 .ch-detail__actions { display: flex; flex-wrap: wrap; gap: 8px; padding: 0 var(--sp-4) var(--sp-3); }
 .ch-detail__actions .btn { min-height: 32px; padding: 5px 10px; }
+.ch-detail__actiongroup { display: flex; flex-wrap: wrap; gap: 8px; }
+.ch-detail__actionsep { align-self: stretch; background: var(--border); flex: 0 0 1px; margin: 3px 2px; width: 1px; }
+.ch-detail__actions .ch-detail__remove { margin-left: auto; }
 .ch-detail__tabs { border-bottom: 1px solid var(--border); border-top: 1px solid var(--border); display: flex; overflow-x: auto; padding: 0 var(--sp-4); }
 .ch-detail__tabs button { background: transparent; border: 0; color: var(--text-muted); cursor: pointer; font: inherit; font-size: var(--fs-sm); font-weight: 600; padding: 12px 13px; position: relative; white-space: nowrap; }
 .ch-detail__tabs button:hover, .ch-detail__tabs button.is-active { color: var(--text); }

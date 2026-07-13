@@ -248,8 +248,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          mirror_root="oss://${ALIYUN_OSS_BUCKET}/${ALIYUN_OSS_PREFIX_NORMALIZED}"
-          dest_prefix="${mirror_root}/${TAG}"
+          dest_prefix="oss://${ALIYUN_OSS_BUCKET}/${ALIYUN_OSS_PREFIX_NORMALIZED}/${TAG}"
+          mirror_root="${dest_prefix%/${TAG}}"
           upload_asset() {
             local path="$1"
             local name="$2"

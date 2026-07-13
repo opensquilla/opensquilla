@@ -13,8 +13,8 @@ export interface RetrievalProfileStatus {
   kind: RetrievalKind
   available: boolean
   reason: string | null
-  model?: string
-  dimensions?: number
+  model?: string | null
+  dimensions?: number | null
 }
 
 export interface KnowledgeStatusLike {
@@ -287,9 +287,14 @@ function isRetrievalProfileStatus(value: unknown): value is RetrievalProfileStat
     && (profile.kind === 'lexical' || profile.kind === 'vector' || profile.kind === 'hybrid')
     && typeof profile.available === 'boolean'
     && (profile.reason === null || typeof profile.reason === 'string')
-    && (profile.model === undefined || typeof profile.model === 'string')
+    && (
+      profile.model === undefined
+      || profile.model === null
+      || typeof profile.model === 'string'
+    )
     && (
       profile.dimensions === undefined
+      || profile.dimensions === null
       || Number.isInteger(profile.dimensions)
     )
   )

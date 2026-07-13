@@ -271,6 +271,27 @@ describe('knowledge retrieval capability state helpers', () => {
     expect(READY_STATUS).toEqual(before)
   })
 
+  it('preserves nullable runtime profile metadata without mutating status', () => {
+    const runtimeStatus = {
+      connectionState: 'READY' as const,
+      retrievalProfiles: [
+        {
+          id: 'sqlite_fts5_default',
+          label: 'SQLite FTS5',
+          kind: 'lexical' as const,
+          available: true,
+          reason: null,
+          model: null,
+          dimensions: null,
+        },
+      ],
+    }
+    const before = structuredClone(runtimeStatus)
+
+    expect(retrievalProfilesFromStatus(runtimeStatus)).toEqual(runtimeStatus.retrievalProfiles)
+    expect(runtimeStatus).toEqual(before)
+  })
+
   it('fails closed for READY statuses without valid available profiles', () => {
     const noAvailableProfiles = {
       ...READY_STATUS,
@@ -319,6 +340,8 @@ describe('knowledge retrieval capability state helpers', () => {
     for (const status of [
       readyStatus({ ...validProfile, label: '   ' }),
       readyStatus({ ...validProfile, label: ' SQLite FTS5 ' }),
+      readyStatus({ ...validProfile, model: 42 }),
+      readyStatus({ ...validProfile, dimensions: '1024' }),
       readyStatus({ ...validProfile, dimensions: 1024.5 }),
       duplicateIds,
     ]) {
@@ -1082,6 +1105,44 @@ describe('KnowledgeView retrieval UI wiring', () => {
     expect(byTestId(el, 'knowledge-fallback-warning').hidden).toBe(true)
     expect(el.textContent).toContain('0123456789abcdef')
     expect(el.querySelector('.rag-source-panel select')).toBeNull()
+  })
+
+  it('accepts READY runtime wire profiles with nullable lexical metadata', async () => {
+    const runtimeProfiles = SERVICE_PROFILES.map((profile) => (
+      profile.id === 'sqlite_fts5_default'
+        ? { ...profile, model: null, dimensions: null }
+        : profile
+    ))
+    const { el } = await mountKnowledgeView({
+      status: {
+        configuredDefaultRetrievalProfile: 'sqlite_fts5_default',
+        effectiveDefaultRetrievalProfile: 'sqlite_fts5_default',
+        retrievalProfiles: runtimeProfiles,
+      },
+    })
+
+    expect(byTestId(el, 'knowledge-connection-state').textContent).toContain('READY')
+    const defaultSelect = byTestId<HTMLSelectElement>(el, 'knowledge-default-profile')
+    const querySelect = byTestId<HTMLSelectElement>(el, 'knowledge-query-profile')
+    expect(defaultSelect.disabled).toBe(false)
+    expect(defaultSelect.value).toBe('sqlite_fts5_default')
+    expect(Array.from(querySelect.options).map((option) => option.value)).toContain(
+      'sqlite_fts5_default',
+    )
+
+    setInputValue(
+      byTestId<HTMLTextAreaElement>(el, 'knowledge-query-input'),
+      'Search with the runtime default',
+    )
+    await flushUi()
+    byTestId<HTMLButtonElement>(el, 'knowledge-search').click()
+    await flushUi()
+
+    expect(rpcCall('knowledge.search')?.[1]).toEqual({
+      query: 'Search with the runtime default',
+      topK: 8,
+      collectionId: 'datasets',
+    })
   })
 
   it('omits retrieval metadata from service-default search payloads', async () => {

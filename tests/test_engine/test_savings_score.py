@@ -114,6 +114,44 @@ def test_billed_cost_cost_usd_and_cache_tokens_do_not_change_score() -> None:
     assert cache_hit.actual_cost_usd == high_billed.actual_cost_usd
 
 
+def test_ensemble_trace_suppresses_savings() -> None:
+    result = _compute_comprehensive_turn_savings(
+        DoneEvent(
+            input_tokens=1000,
+            output_tokens=200,
+            reasoning_tokens=300,
+            model="deepseek/deepseek-v4-flash",
+            ensemble_trace={"profile": "router_dynamic", "mode": "llm_ensemble"},
+        ),
+        {},
+        TEXT_TIERS,
+        "deepseek/deepseek-v4-flash",
+    )
+
+    assert result.pct == 0.0
+    assert result.usd == 0.0
+    assert result.baseline_model == ""
+    assert result.baseline_cost_usd == 0.0
+    assert result.actual_cost_usd == 0.0
+
+
+def test_ensemble_metadata_flag_suppresses_savings() -> None:
+    result = _compute_comprehensive_turn_savings(
+        DoneEvent(
+            input_tokens=1000,
+            output_tokens=200,
+            reasoning_tokens=300,
+            model="deepseek/deepseek-v4-flash",
+        ),
+        {"ensemble_enabled": True},
+        TEXT_TIERS,
+        "deepseek/deepseek-v4-flash",
+    )
+
+    assert result.pct == 0.0
+    assert result.usd == 0.0
+
+
 def test_zero_price_baseline_returns_zero_savings() -> None:
     result = _compute_comprehensive_turn_savings(
         DoneEvent(input_tokens=1000, output_tokens=1000, model="local/routed"),

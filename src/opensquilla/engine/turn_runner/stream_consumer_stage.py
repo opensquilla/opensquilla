@@ -512,6 +512,7 @@ class _DoneHandler:
             _compute_route_input_savings_usd,
             _normalize_heartbeat_text,
             _should_add_artifact_delivery_failure_notice,
+            _turn_used_ensemble,
         )
         from opensquilla.engine.types import (
             WarningEvent as _WarningEvent,
@@ -543,14 +544,23 @@ class _DoneHandler:
         rollout_phase = str(metadata.get("rollout_phase") or "full")
         baseline_model = metadata.get("baseline_model", "")
         routed_model = metadata.get("routed_model", "") or event.model
-        savings_pct = float(metadata.get("savings_pct") or 0.0)
-        _max_p = float(metadata.get("savings_max_price_per_m") or 0.0)
-        _rte_p = float(metadata.get("savings_routed_price_per_m") or 0.0)
-        savings_usd = _compute_route_input_savings_usd(
-            _max_p,
-            _rte_p,
-            event.input_tokens,
-        )
+        if _turn_used_ensemble(event, metadata):
+            # Route-level savings share the single-model assumption the
+            # comprehensive score rejects for ensemble turns: the input-price
+            # delta would be applied to fan-out-multiplied token totals. Zero
+            # both so channels and the decision log never attribute savings
+            # to a turn that fanned out to several member models.
+            savings_pct = 0.0
+            savings_usd = 0.0
+        else:
+            savings_pct = float(metadata.get("savings_pct") or 0.0)
+            _max_p = float(metadata.get("savings_max_price_per_m") or 0.0)
+            _rte_p = float(metadata.get("savings_routed_price_per_m") or 0.0)
+            savings_usd = _compute_route_input_savings_usd(
+                _max_p,
+                _rte_p,
+                event.input_tokens,
+            )
         router_cfg = inp.router_cfg
         squilla_router_tiers = getattr(router_cfg, "tiers", {})
         estimated_output_savings_pct = getattr(

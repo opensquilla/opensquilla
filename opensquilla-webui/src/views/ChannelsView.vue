@@ -10,9 +10,9 @@
           <Icon name="plus" :size="16" aria-hidden="true" />
           <span>{{ t('console.channels.addChannel') }}</span>
         </button>
-        <button class="btn btn--ghost" type="button" :title="t('console.common.refresh')" :disabled="loading" @click="loadData">
-          <Icon name="refresh" :size="16" aria-hidden="true" />
-          <span>{{ t('console.common.refresh') }}</span>
+        <button class="btn btn--ghost" type="button" :title="t('console.common.refresh')" :disabled="loading || refreshing" @click="manualRefresh">
+          <Icon name="refresh" :size="16" aria-hidden="true" :class="{ 'is-spinning': refreshing }" />
+          <span>{{ refreshing ? t('console.common.refreshing') : t('console.common.refresh') }}</span>
         </button>
       </div>
     </header>
@@ -61,7 +61,15 @@
 
     <PendingRestartBanner />
 
-    <ErrorState v-if="error" :message="error" :on-retry="loadData" />
+    <!-- A background refresh failure keeps the last-good rows and warns inline;
+         the full-page error only stands in when the very first load fails. -->
+    <p v-if="error && channels.length > 0" class="ch-stale" role="status">
+      <Icon name="info" :size="15" aria-hidden="true" />
+      <span>{{ t('console.channels.staleData', { time: lastUpdatedLabel }) }}</span>
+      <button type="button" class="btn btn--ghost" @click="manualRefresh">{{ t('console.common.retry') }}</button>
+    </p>
+
+    <ErrorState v-if="error && channels.length === 0" :message="error" :on-retry="loadData" />
 
     <div v-else-if="loading && channels.length === 0" class="control-empty">
       <LoadingSpinner />
@@ -114,13 +122,29 @@
               <td><Icon name="chevronRight" :size="15" aria-hidden="true" /></td>
             </tr>
             <tr v-if="filteredChannels.length === 0">
-              <td colspan="7" class="ch-table__none">{{ t('console.channels.noMatches') }}</td>
+              <td colspan="7" class="ch-table__none">
+                <span>{{ t('console.channels.noMatches') }}</span>
+                <button v-if="hasActiveFilters" type="button" class="ch-inline-link" @click="clearFilters">{{ t('console.channels.clearFilters') }}</button>
+              </td>
             </tr>
           </tbody>
         </table>
+        <div v-if="unconfiguredChannels.length" class="ch-unconfigured">
+          <h4>{{ t('console.channels.unconfiguredTitle') }}</h4>
+          <p>{{ t('console.channels.unconfiguredHint') }}</p>
+          <div v-for="ch in unconfiguredChannels" :key="channelKey(ch)" class="ch-unconfigured__row">
+            <span class="ch-provider-mark" aria-hidden="true">{{ providerInitial(ch.type) }}</span>
+            <strong>{{ ch.name || ch.id }}</strong>
+            <span class="ch-muted">{{ providerLabel(ch.type) }}</span>
+            <ChannelStatusPill :status="ch.status" :enabled="ch.enabled" :error-class="lastErrorClass(ch.diagnostics)" />
+          </div>
+        </div>
       </div>
 
-      <aside v-if="selectedChannel" class="ch-detail" :aria-label="t('console.channels.detailLabel', { name: selectedChannel.name })" @keydown.esc="closeDetail">
+      <!-- Below the split-view breakpoint the detail becomes a fixed overlay;
+           the scrim dismisses it and gives the modal a backdrop. -->
+      <div v-if="selectedChannel" class="ch-scrim" @click="closeDetail"></div>
+      <aside v-if="selectedChannel" ref="detailRef" class="ch-detail" :aria-label="t('console.channels.detailLabel', { name: selectedChannel.name })" @keydown.esc="closeDetail">
         <header class="ch-detail__header">
           <div class="ch-detail__identity">
             <span class="ch-provider-mark is-large" aria-hidden="true">{{ providerInitial(selectedChannel.type) }}</span>
@@ -393,7 +417,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onActivated, onDeactivated, onUnmounted, ref, watch } from 'vue'
+import { computed, nextTick, onActivated, onDeactivated, onUnmounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
 import { useRpcStore } from '@/stores/rpc'
@@ -487,6 +511,9 @@ const providerFilter = ref('all')
 const statusFilter = ref<StatusFilter>('all')
 const selectedName = ref('')
 const detailTab = ref<DetailTab>('overview')
+const detailRef = ref<HTMLElement | null>(null)
+// Focus returns here when the (overlay) detail closes.
+let detailInvoker: HTMLElement | null = null
 const pendingActions = ref(new Set<string>())
 const probeResults = ref<Record<string, ProbeResult>>({})
 const selectedConfig = ref<Record<string, unknown> | null>(null)
@@ -509,6 +536,10 @@ const channels = computed<Channel[]>(() => {
     (a, b) => STATUS_SEVERITY[presentationFor(a).key] - STATUS_SEVERITY[presentationFor(b).key],
   )
 })
+// Channels running in this gateway process but absent from config — surfaced
+// separately so an operator can see (and remove) an orphaned runtime channel.
+const unconfiguredChannels = computed<Channel[]>(() =>
+  (channelsData.value?.channels || []).filter(ch => ch && ch.configured === false))
 const total = computed(() => channels.value.length)
 // One chip per unified state actually present — chip words match row pills exactly.
 const summaryChips = computed(() => {
@@ -530,6 +561,13 @@ const providers = computed(() => [...new Set(channels.value.map(ch => String(ch.
 const selectedChannel = computed(() => channels.value.find(ch => channelKey(ch) === selectedName.value) || null)
 const selectedProbe = computed(() =>
   selectedChannel.value ? probeResults.value[channelKey(selectedChannel.value)] : undefined)
+const hasActiveFilters = computed(() =>
+  Boolean(searchQuery.value.trim()) || providerFilter.value !== 'all' || statusFilter.value !== 'all')
+function clearFilters(): void {
+  searchQuery.value = ''
+  providerFilter.value = 'all'
+  statusFilter.value = 'all'
+}
 const filteredChannels = computed(() => {
   const query = searchQuery.value.trim().toLowerCase()
   return channels.value.filter(ch => {
@@ -560,18 +598,42 @@ const loadData = refresh
 let pollTimer: ReturnType<typeof setInterval> | null = null
 let unsubs: Array<() => void> = []
 let activatedOnce = false
+const refreshing = ref(false)
+const lastUpdatedAt = ref<number | null>(null)
+const lastUpdatedLabel = computed(() =>
+  lastUpdatedAt.value ? new Date(lastUpdatedAt.value).toLocaleTimeString() : '—')
+
+async function manualRefresh(): Promise<void> {
+  if (refreshing.value) return
+  refreshing.value = true
+  try {
+    await refresh()
+    if (!error.value) lastUpdatedAt.value = Date.now()
+  } finally {
+    refreshing.value = false
+  }
+}
 
 function teardownLive() {
   unsubs.forEach(unsub => unsub())
   unsubs = []
   if (pollTimer) { clearInterval(pollTimer); pollTimer = null }
+  document.removeEventListener('keydown', onDocumentKeydown)
+}
+
+function onDocumentKeydown(event: KeyboardEvent): void {
+  if (event.key === 'Escape' && selectedName.value) closeDetail()
 }
 
 onActivated(() => {
   applyDetailQuery()
   if (!activatedOnce) { activatedOnce = true; void execute() } else { void refresh() }
   unsubs = [rpc.on('channel.status', () => { void refresh() })]
-  pollTimer = setInterval(() => { void refresh() }, 30000)
+  pollTimer = setInterval(() => {
+    void refresh().then(() => { if (!error.value) lastUpdatedAt.value = Date.now() })
+  }, 30000)
+  document.addEventListener('keydown', onDocumentKeydown)
+  lastUpdatedAt.value = Date.now()
 })
 onDeactivated(teardownLive)
 onUnmounted(teardownLive)
@@ -617,6 +679,7 @@ function selectChannel(ch: Channel): void {
     return
   }
   pairingsRequestId += 1
+  detailInvoker = document.activeElement instanceof HTMLElement ? document.activeElement : null
   selectedName.value = channelKey(ch)
   detailTab.value = 'overview'
   selectedConfig.value = null
@@ -627,9 +690,21 @@ function selectChannel(ch: Channel): void {
   pairingsLoading.value = false
   pairingsError.value = ''
   pairingAnnouncement.value = ''
+  // When the detail is an overlay (narrow viewport), move focus into it so a
+  // keyboard user lands in the dialog; the scrim + Esc close it.
+  void nextTick(() => {
+    if (window.matchMedia('(max-width: 1180px)').matches) {
+      detailRef.value?.querySelector<HTMLElement>('button, [href], input, select, [tabindex]')?.focus()
+    }
+  })
 }
 
-function closeDetail(): void { selectedName.value = '' }
+function closeDetail(): void {
+  const invoker = detailInvoker
+  selectedName.value = ''
+  detailInvoker = null
+  void nextTick(() => invoker?.focus())
+}
 
 // ?channel=<name>&tab=<tab> keeps the aside URL-addressable: F5/relaunch
 // restores the selection, and links can target a specific channel and tab.
@@ -1111,11 +1186,24 @@ function configRows(config: Record<string, unknown>): Array<{ key: string; value
 .ch-metrics span { color: var(--text-dim); font-size: 11px; }
 .ch-metrics > div.is-warn strong { color: var(--warn); }
 .ch-empty { background: var(--bg-surface); border: 1px solid var(--border); border-radius: var(--radius-lg); gap: var(--sp-3); }
+.ch-stale { align-items: center; background: color-mix(in srgb, var(--warn) 8%, var(--bg-surface)); border: 1px solid color-mix(in srgb, var(--warn) 38%, var(--border)); border-radius: var(--radius-md); color: var(--text-muted); display: flex; font-size: var(--fs-sm); gap: var(--sp-2); margin: 0; padding: 7px 12px; }
+.ch-stale > svg { color: var(--warn); flex: 0 0 auto; }
+.ch-stale > span { flex: 1; }
+.ch-table__none { display: flex !important; flex-direction: column; gap: 8px; align-items: center; }
+.is-spinning { animation: ch-spin 0.9s linear infinite; }
+@keyframes ch-spin { to { transform: rotate(360deg); } }
+.ch-scrim { display: none; }
+.ch-unconfigured { border-top: 1px solid var(--border); padding: var(--sp-3) var(--sp-4); }
+.ch-unconfigured h4 { color: var(--text); font-size: var(--fs-sm); margin: 0 0 2px; }
+.ch-unconfigured p { color: var(--text-dim); font-size: 11px; margin: 0 0 var(--sp-2); }
+.ch-unconfigured__row { align-items: center; display: flex; gap: 9px; padding: 6px 0; }
+.ch-unconfigured__row strong { font-size: var(--fs-sm); }
 .ch-empty__icon { align-items: center; background: color-mix(in srgb, var(--accent) 12%, transparent); border: 1px solid color-mix(in srgb, var(--accent) 36%, var(--border)); border-radius: 50%; color: var(--accent); display: flex; height: 72px; justify-content: center; width: 72px; }
 
 @media (max-width: 1180px) {
   .ch-workspace.has-detail { grid-template-columns: minmax(0, 1fr); }
   .ch-detail { bottom: 12px; box-shadow: var(--elev-3); max-width: 560px; position: fixed; right: 12px; top: 64px; width: calc(100vw - 24px); z-index: 40; }
+  .ch-scrim { background: color-mix(in srgb, var(--bg) 60%, transparent); display: block; inset: 0; position: fixed; z-index: 39; }
 }
 @media (max-width: 760px) {
   .ch-stage__header { align-items: stretch; flex-direction: column; }

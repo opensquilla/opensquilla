@@ -1201,7 +1201,9 @@
       "refresh": "更新",
       "edit": "編集",
       "delete": "削除",
-      "confirm": "確認"
+      "confirm": "確認",
+      "refreshing": "更新中…",
+      "retry": "再試行"
     },
     "agents": {
       "title": "エージェント",
@@ -1455,7 +1457,11 @@
         "wiki": "Wiki",
         "permissions": "権限",
         "scopes": "スコープ"
-      }
+      },
+      "staleData": "状態が古い可能性があります — 最終更新 {time}。",
+      "clearFilters": "フィルターをクリア",
+      "unconfiguredTitle": "実行中だが設定にない",
+      "unconfiguredHint": "これらのチャンネルはこのゲートウェイで実行中ですが、保存された設定にはありません。"
     },
     "overview": {
       "channelsChip": "チャンネル",

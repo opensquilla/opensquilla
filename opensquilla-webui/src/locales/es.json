@@ -1201,7 +1201,9 @@
       "refresh": "Actualizar",
       "edit": "Editar",
       "delete": "Eliminar",
-      "confirm": "Confirmar"
+      "confirm": "Confirmar",
+      "refreshing": "Actualizando…",
+      "retry": "Reintentar"
     },
     "agents": {
       "title": "Agentes",
@@ -1455,7 +1457,11 @@
         "wiki": "Wiki",
         "permissions": "Permisos",
         "scopes": "Ámbitos"
-      }
+      },
+      "staleData": "El estado puede estar desactualizado: última actualización {time}.",
+      "clearFilters": "Borrar filtros",
+      "unconfiguredTitle": "En ejecución pero no en la configuración",
+      "unconfiguredHint": "Estos canales se ejecutan en esta puerta de enlace pero no están en la configuración guardada."
     },
     "overview": {
       "channelsChip": "Canales",

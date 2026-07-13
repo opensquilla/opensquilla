@@ -198,6 +198,29 @@ def test_readonly_root_allows_ordinary_etc_reads_but_not_writes(tmp_path: Path) 
     assert sensitive.status == "blocked"
 
 
+def test_readonly_root_mount_allows_root_directory_read_but_blocks_write(
+    tmp_path: Path,
+) -> None:
+    mounts = ({"path": "/", "access": "ro"},)
+
+    read = decide_path_access(
+        "/",
+        workspace=tmp_path / "workspace",
+        mounts=mounts,
+    )
+    write = decide_path_access(
+        "/",
+        workspace=tmp_path / "workspace",
+        mounts=mounts,
+        write=True,
+    )
+
+    assert read.status == "allowed"
+    assert read.access == "ro"
+    assert write.status == "blocked"
+    assert write.reason == "sensitive_path"
+
+
 def test_workspace_child_is_allowed(tmp_path: Path) -> None:
     workspace = tmp_path / "workspace"
     target = workspace / "src" / "app.py"
@@ -383,6 +406,24 @@ async def test_filesystem_read_outside_workspace_uses_global_readonly_root(
     assert "outside body" in result
     assert ctx.sandbox_mounts == []
     assert get_approval_queue().list_pending("exec") == []
+
+
+@pytest.mark.asyncio
+async def test_filesystem_list_root_uses_global_readonly_root(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(exist_ok=True)
+
+    _install_filesystem_read_backend()
+    monkeypatch.setattr(fs.asyncio, "get_event_loop", lambda: _InlineExecutorLoop())
+
+    with tool_context(workspace, workspace_strict=True):
+        result = await fs.list_dir("/")
+
+    assert '"status": "blocked"' not in result
+    assert "[dir]" in result
 
 
 @pytest.mark.asyncio

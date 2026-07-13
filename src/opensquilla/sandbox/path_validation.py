@@ -91,6 +91,20 @@ def decide_path_access(
             access=access,
         )
 
+    if (
+        not write
+        and _is_filesystem_root(normalized)
+        and any(
+            mount_root == normalized and mount_access == "ro"
+            for mount_root, mount_access in _iter_mount_roots(mounts)
+        )
+    ):
+        return MountDecision(
+            status="allowed",
+            normalized_path=normalized_text,
+            access="ro",
+        )
+
     if _is_blocked_path(normalized, workspace_path):
         return MountDecision(
             status="blocked",

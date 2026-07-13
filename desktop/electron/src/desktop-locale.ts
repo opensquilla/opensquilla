@@ -3,9 +3,9 @@
 // update-feed-resolver.ts). main.ts feeds it
 // [...app.getPreferredSystemLanguages(), app.getLocale()] in preference order.
 
-export type DesktopLocale = 'en' | 'zh-Hans' | 'ja' | 'fr' | 'de' | 'es'
+export type DesktopLocale = 'en' | 'zh-Hans' | 'zh-Hant' | 'ja' | 'fr' | 'de' | 'es'
 
-export const DESKTOP_LOCALES: DesktopLocale[] = ['en', 'zh-Hans', 'ja', 'fr', 'de', 'es']
+export const DESKTOP_LOCALES: DesktopLocale[] = ['en', 'zh-Hans', 'zh-Hant', 'ja', 'fr', 'de', 'es']
 
 /**
  * Map the user's ordered BCP-47 language tags to the first bundled locale.
@@ -30,16 +30,17 @@ export function resolveLocaleFromTags(tags: readonly unknown[]): DesktopLocale {
     // (e.g. fr-HK behind en-HK on a Hong Kong system) wins the loop.
     if (language === 'en') return 'en'
     if (language === 'zh') {
-      // Only Simplified Chinese is bundled. An explicit script subtag wins
-      // over region: zh-Hans-HK/TW/MO is Simplified wherever the reader
-      // lives. Only then route Traditional variants — explicit zh-Hant, or
-      // bare region tags that default to Traditional (zh-TW / zh-HK /
-      // zh-MO) — to the English fallback rather than forcing Simplified
-      // text a Traditional reader may not want.
+      // Both Simplified and Traditional Chinese are bundled. An explicit
+      // script subtag wins over region: zh-Hans-HK/TW/MO is Simplified
+      // wherever the reader lives, and zh-Hant-* is Traditional wherever the
+      // reader lives. Absent an explicit script, bare region tags that
+      // default to Traditional (zh-TW / zh-HK / zh-MO) route to Traditional;
+      // every other zh* (bare zh, zh-CN, zh-SG, and anything else) is the
+      // conservative Simplified fallback.
       const script = locale.script?.toLowerCase()
       const region = locale.region?.toLowerCase()
       if (script === 'hans') return 'zh-Hans'
-      if (script === 'hant' || region === 'tw' || region === 'hk' || region === 'mo') continue
+      if (script === 'hant' || region === 'tw' || region === 'hk' || region === 'mo') return 'zh-Hant'
       return 'zh-Hans'
     }
     for (const code of ['ja', 'fr', 'de', 'es'] as const) {

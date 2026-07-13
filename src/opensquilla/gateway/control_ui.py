@@ -128,7 +128,7 @@ def _request_ws_url(request: Request, config: GatewayConfig) -> str:
     return f"{ws_scheme}://{host}/ws"
 
 
-_SUPPORTED_LOCALES = ("en", "zh-Hans", "ja", "fr", "de", "es")
+_SUPPORTED_LOCALES = ("en", "zh-Hans", "zh-Hant", "ja", "fr", "de", "es")
 
 
 def _locale_from_tag(tag: str) -> str | None:
@@ -137,6 +137,12 @@ def _locale_from_tag(tag: str) -> str | None:
     if not t:
         return None
     if t.startswith("zh"):
+        # zh-Hant / zh-TW / zh-HK / zh-MO (and their sub-tags, hyphen- or
+        # underscore-separated) route to Traditional; zh-Hans / zh-CN /
+        # zh-SG and every other zh* stays on the conservative Simplified
+        # fallback.
+        if re.match(r"^zh[-_]hant(?:[-_]|$)", t) or re.match(r"^zh[-_](?:tw|hk|mo)(?:[-_]|$)", t):
+            return "zh-Hant"
         return "zh-Hans"
     for code in ("ja", "fr", "de", "es", "en"):
         if t == code or t.startswith(code + "-"):

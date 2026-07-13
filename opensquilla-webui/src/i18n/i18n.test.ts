@@ -3,6 +3,7 @@ import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest'
 import { setActivePinia, createPinia } from 'pinia'
 import en from '@/locales/en.json'
 import zhHans from '@/locales/zh-Hans.json'
+import zhHant from '@/locales/zh-Hant.json'
 import de from '@/locales/de.json'
 import es from '@/locales/es.json'
 import fr from '@/locales/fr.json'
@@ -38,14 +39,30 @@ describe('normalizeLocale', () => {
     expect(normalizeLocale('')).toBeNull()
     expect(normalizeLocale(null)).toBeNull()
   })
+
+  it('routes zh-Hant/zh-TW/zh-HK/zh-MO to zh-Hant, keeping other zh* on zh-Hans', () => {
+    expect(normalizeLocale('zh-Hant')).toBe('zh-Hant')
+    expect(normalizeLocale('zh-TW')).toBe('zh-Hant')
+    expect(normalizeLocale('zh-HK')).toBe('zh-Hant')
+    expect(normalizeLocale('zh-MO')).toBe('zh-Hant')
+    expect(normalizeLocale('ZH-tw')).toBe('zh-Hant')
+    expect(normalizeLocale('zh_TW')).toBe('zh-Hant')
+    expect(normalizeLocale('zh-Hant-HK')).toBe('zh-Hant')
+    // an explicit Hans script subtag wins over a Traditional-default region
+    expect(normalizeLocale('zh-Hans-TW')).toBe('zh-Hans')
+    expect(normalizeLocale('zh-SG')).toBe('zh-Hans')
+  })
 })
 
 describe('isSupportedLocale', () => {
   it('only accepts the canonical codes', () => {
     expect(isSupportedLocale('en')).toBe(true)
     expect(isSupportedLocale('zh-Hans')).toBe(true)
+    expect(isSupportedLocale('zh-Hant')).toBe(true)
     expect(isSupportedLocale('zh-CN')).toBe(false)
+    expect(isSupportedLocale('zh-TW')).toBe(false)
     expect(isSupportedLocale('zh-hans')).toBe(false)
+    expect(isSupportedLocale('zh-hant')).toBe(false)
     expect(isSupportedLocale(null)).toBe(false)
   })
 })
@@ -63,6 +80,11 @@ describe('resolveInitialLocale (first match wins)', () => {
     expect(resolveInitialLocale()).toBe('zh-Hans')
   })
 
+  it('1b. prefers a valid saved localStorage value (zh-Hant)', () => {
+    localStorage.setItem('opensquilla-locale', 'zh-Hant')
+    expect(resolveInitialLocale()).toBe('zh-Hant')
+  })
+
   it('2. ignores an unsupported saved value and reads #opensquilla-data data-locale', () => {
     localStorage.setItem('opensquilla-locale', 'ko')
     const el = document.createElement('div')
@@ -77,6 +99,11 @@ describe('resolveInitialLocale (first match wins)', () => {
     expect(resolveInitialLocale()).toBe('zh-Hans')
   })
 
+  it('3b. honors <html lang> zh-TW/zh-HK/zh-MO as zh-Hant', () => {
+    document.documentElement.setAttribute('lang', 'zh-TW')
+    expect(resolveInitialLocale()).toBe('zh-Hant')
+  })
+
   it('4. falls back to navigator.languages', () => {
     vi.stubGlobal('navigator', { languages: ['zh-CN', 'en'], language: 'zh-CN' })
     expect(resolveInitialLocale()).toBe('zh-Hans')
@@ -87,6 +114,11 @@ describe('resolveInitialLocale (first match wins)', () => {
     expect(resolveInitialLocale()).toBe('fr')
   })
 
+  it('4c. falls back to navigator.languages for a zh-Hant region (zh-HK)', () => {
+    vi.stubGlobal('navigator', { languages: ['zh-HK', 'en'], language: 'zh-HK' })
+    expect(resolveInitialLocale()).toBe('zh-Hant')
+  })
+
   it('5. defaults to en when nothing matches', () => {
     vi.stubGlobal('navigator', { languages: ['ko-KR'], language: 'ko-KR' })
     expect(resolveInitialLocale()).toBe('en')
@@ -95,6 +127,7 @@ describe('resolveInitialLocale (first match wins)', () => {
   it('honors the desktop OS locale (arg) ahead of navigator', () => {
     vi.stubGlobal('navigator', { languages: ['en-US'], language: 'en-US' })
     expect(resolveInitialLocale('zh-CN')).toBe('zh-Hans')
+    expect(resolveInitialLocale('zh-TW')).toBe('zh-Hant')
     expect(resolveInitialLocale('ja-JP')).toBe('ja')
     // an unsupported OS locale falls through to navigator → en
     expect(resolveInitialLocale('ko-KR')).toBe('en')
@@ -126,6 +159,18 @@ describe('appStore locale state', () => {
     expect(i18n.global.t('nav.sessions')).toBe('会话')
   })
 
+  it('setLocale loads the zh-Hant chunk, persists, and applies all side effects', async () => {
+    const store = useAppStore()
+    await store.setLocale('zh-Hant')
+    expect(store.locale).toBe('zh-Hant')
+    expect(localStorage.getItem('opensquilla-locale')).toBe('zh-Hant')
+    expect(document.documentElement.getAttribute('lang')).toBe('zh-Hant')
+    expect(document.documentElement.getAttribute('dir')).toBe('ltr')
+    expect(i18n.global.locale.value).toBe('zh-Hant')
+    // the lazily-loaded chunk is now resolvable
+    expect(i18n.global.t('nav.sessions')).toBe('工作階段')
+  })
+
   it('setLocale ignores unsupported codes (no throw, stays en)', async () => {
     const store = useAppStore()
     await store.setLocale('ko' as never)
@@ -151,7 +196,7 @@ describe('missing-key fallback', () => {
 describe('catalog parity', () => {
   it('all bundled locales share the exact flattened key set', () => {
     const enKeys = Object.keys(flatten(en as Record<string, unknown>)).sort()
-    const locales = { zhHans, de, es, fr, ja }
+    const locales = { zhHans, zhHant, de, es, fr, ja }
 
     for (const [locale, messages] of Object.entries(locales)) {
       const keys = Object.keys(flatten(messages as Record<string, unknown>)).sort()
@@ -168,10 +213,20 @@ describe('catalog parity', () => {
     expect(leaked).toEqual([])
   })
 
+  it('no zh-Hant value is left as the English source', () => {
+    const enFlat = flatten(en as Record<string, unknown>)
+    const zhFlat = flatten(zhHant as Record<string, unknown>)
+    const leaked = Object.keys(enFlat).filter(
+      (k) => typeof zhFlat[k] === 'string' && zhFlat[k] === enFlat[k] && /[A-Za-z]/.test(zhFlat[k] as string),
+    )
+    expect(leaked).toEqual([])
+  })
+
   it('ships the approved Model Service labels in every locale', () => {
     expect({
       en: en.settings.rail.provider,
       zhHans: zhHans.settings.rail.provider,
+      zhHant: zhHant.settings.rail.provider,
       ja: ja.settings.rail.provider,
       fr: fr.settings.rail.provider,
       de: de.settings.rail.provider,
@@ -179,6 +234,7 @@ describe('catalog parity', () => {
     }).toEqual({
       en: 'Model Service',
       zhHans: '模型服务',
+      zhHant: '模型服務',
       ja: 'モデルサービス',
       fr: 'Service de modèles',
       de: 'Modelldienst',
@@ -214,7 +270,7 @@ describe('catalog parity', () => {
       stepReplaceAndPaste: '先点击下方「更换密钥」，再粘贴 API Key',
     })
 
-    for (const messages of [en, zhHans, ja, fr, de, es]) {
+    for (const messages of [en, zhHans, zhHant, ja, fr, de, es]) {
       const copy = messages.setup.provider.recommendation
       expect(copy.title).toContain('TokenRhythm')
       expect(copy.registration).toContain('DeepSeek')

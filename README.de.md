@@ -21,7 +21,7 @@
 </p>
 
 <p align="center">
-  <a href="README.md">English</a> · <a href="README.zh-Hans.md">中文</a> · <a href="README.ja.md">日本語</a> · <a href="README.fr.md">Français</a> · <b>Deutsch</b> · <a href="README.es.md">Español</a>
+  <a href="README.md">English</a> · <a href="README.zh-Hans.md">中文</a> · <a href="README.zh-Hant.md">繁體中文</a> · <a href="README.ja.md">日本語</a> · <a href="README.fr.md">Français</a> · <b>Deutsch</b> · <a href="README.es.md">Español</a>
 </p>
 
 > Dieses Dokument wurde aus dem englischen [`README.md`](README.md) übersetzt; bei Abweichungen ist die englische Fassung maßgeblich.

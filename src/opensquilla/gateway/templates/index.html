@@ -22,7 +22,7 @@
         }
         try {
           var l = localStorage.getItem('opensquilla-locale');
-          if (l === 'en' || l === 'zh-Hans') {
+          if (l === 'en' || l === 'zh-Hans' || l === 'zh-Hant') {
             document.documentElement.setAttribute('lang', l);
           }
         } catch (e) { /* keep server-rendered lang */ }

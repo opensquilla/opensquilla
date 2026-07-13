@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import os
+import re
 import threading
 import warnings
 from enum import StrEnum
@@ -132,8 +133,9 @@ class ControlUiConfig(BaseSettings):
     frontend: Literal["vue", "legacy"] = "vue"
     # Default UI locale served on first paint when the browser has no saved
     # preference. The client (localStorage) and a manual switch always override
-    # it. Anything zh* clamps to zh-Hans; anything else to en.
-    default_locale: Literal["en", "zh-Hans", "ja", "fr", "de", "es"] = "en"
+    # it. zh-Hant/zh-TW/zh-HK/zh-MO clamp to zh-Hant; every other zh* clamps
+    # to zh-Hans; anything else to en.
+    default_locale: Literal["en", "zh-Hans", "zh-Hant", "ja", "fr", "de", "es"] = "en"
     allowed_origins: list[str] = Field(default_factory=list)
 
     @field_validator("base_path")
@@ -154,6 +156,12 @@ class ControlUiConfig(BaseSettings):
         if isinstance(v, str):
             s = v.strip().lower()
             if s.startswith("zh"):
+                # zh-Hant / zh-TW / zh-HK / zh-MO (and their sub-tags,
+                # hyphen- or underscore-separated) route to Traditional;
+                # zh-Hans / zh-CN / zh-SG and every other zh* stays on the
+                # conservative Simplified fallback.
+                if re.match(r"^zh[-_](?:hant|tw|hk|mo)(?:[-_]|$)", s):
+                    return "zh-Hant"
                 return "zh-Hans"
             for code in ("ja", "fr", "de", "es"):
                 if s.startswith(code):

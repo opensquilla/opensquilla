@@ -12,11 +12,12 @@ import { dirname, resolve } from 'node:path'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const localesDir = resolve(here, '..', 'src', 'locales')
-const OTHER_LOCALES = ['zh-Hans', 'ja', 'fr', 'de', 'es']
+const OTHER_LOCALES = ['zh-Hans', 'zh-Hant', 'ja', 'fr', 'de', 'es']
 // English-leakage (value identical to en) is only a reliable "untranslated"
 // signal for non-Latin scripts. fr/de/es legitimately share many words with
-// English, so we enforce only KEY PARITY there and check leakage for zh-Hans.
-const LEAKAGE_LOCALES = new Set(['zh-Hans'])
+// English, so we enforce only KEY PARITY there and check leakage for
+// zh-Hans/zh-Hant (both non-Latin scripts).
+const LEAKAGE_LOCALES = new Set(['zh-Hans', 'zh-Hant'])
 
 function load(name) {
   return JSON.parse(readFileSync(resolve(localesDir, `${name}.json`), 'utf8'))

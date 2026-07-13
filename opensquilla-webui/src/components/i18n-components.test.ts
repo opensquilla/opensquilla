@@ -32,14 +32,16 @@ beforeEach(() => {
 })
 
 describe('SettingsAppearancePanel — Language row', () => {
-  it('renders a Language radiogroup with native English / 中文 labels', async () => {
+  it('renders a Language radiogroup with native English / 中文 / 繁體中文 labels', async () => {
     const { el } = await mount(SettingsAppearancePanel)
     const group = el.querySelector('[data-testid="settings-language-group"]')
     expect(group).toBeTruthy()
     expect(el.querySelector('[data-testid="settings-language-en"]')).toBeTruthy()
     expect(el.querySelector('[data-testid="settings-language-zh-Hans"]')).toBeTruthy()
+    expect(el.querySelector('[data-testid="settings-language-zh-Hant"]')).toBeTruthy()
     expect(group!.textContent).toContain('English')
     expect(group!.textContent).toContain('中文')
+    expect(group!.textContent).toContain('繁體中文')
   })
 
   it('switching the radio sets the locale, persists it, and reactively localizes the panel', async () => {
@@ -59,6 +61,23 @@ describe('SettingsAppearancePanel — Language row', () => {
     // section title re-renders in Chinese (reactive t())
     expect(el.querySelector('.control-section__title')!.textContent).toContain('外观')
   })
+
+  it('switching the radio to zh-Hant sets the locale, persists it, and reactively localizes the panel', async () => {
+    const { el } = await mount(SettingsAppearancePanel)
+    const store = useAppStore()
+
+    const zhHant = el.querySelector('[data-testid="settings-language-zh-Hant"]') as HTMLInputElement
+    zhHant.checked = true
+    zhHant.dispatchEvent(new Event('change', { bubbles: true }))
+    await settle()
+    await nextTick()
+
+    expect(store.locale).toBe('zh-Hant')
+    expect(localStorage.getItem('opensquilla-locale')).toBe('zh-Hant')
+    expect(document.documentElement.getAttribute('lang')).toBe('zh-Hant')
+    // section title re-renders in Traditional Chinese (reactive t())
+    expect(el.querySelector('.control-section__title')!.textContent).toContain('外觀')
+  })
 })
 
 describe('LanguageSwitcher — topbar dropdown', () => {
@@ -74,6 +93,7 @@ describe('LanguageSwitcher — topbar dropdown', () => {
     expect(trigger.getAttribute('aria-expanded')).toBe('true')
     expect(el.querySelector('[data-testid="language-option-en"]')).toBeTruthy()
     expect(el.querySelector('[data-testid="language-option-zh-Hans"]')).toBeTruthy()
+    expect(el.querySelector('[data-testid="language-option-zh-Hant"]')).toBeTruthy()
   })
 
   it('picking 中文 sets the locale and closes the menu', async () => {
@@ -89,6 +109,22 @@ describe('LanguageSwitcher — topbar dropdown', () => {
 
     expect(store.locale).toBe('zh-Hans')
     expect(trigger.textContent).toContain('中文')
+    expect(trigger.getAttribute('aria-expanded')).toBe('false')
+  })
+
+  it('picking 繁體中文 sets the locale and closes the menu', async () => {
+    const { el } = await mount(LanguageSwitcher)
+    const store = useAppStore()
+    const trigger = el.querySelector('[data-testid="language-switcher-trigger"]') as HTMLButtonElement
+
+    trigger.click()
+    await nextTick()
+    ;(el.querySelector('[data-testid="language-option-zh-Hant"]') as HTMLButtonElement).click()
+    await settle()
+    await nextTick()
+
+    expect(store.locale).toBe('zh-Hant')
+    expect(trigger.textContent).toContain('繁體中文')
     expect(trigger.getAttribute('aria-expanded')).toBe('false')
   })
 })

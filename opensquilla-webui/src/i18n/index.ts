@@ -8,7 +8,7 @@ import en from '@/locales/en.json'
 // never untranslated and any missing key degrades to English; every other
 // locale is a lazy dynamic-import chunk loaded on demand by loadLocaleMessages.
 
-export const SUPPORTED_LOCALES = ['en', 'zh-Hans', 'ja', 'fr', 'de', 'es'] as const
+export const SUPPORTED_LOCALES = ['en', 'zh-Hans', 'zh-Hant', 'ja', 'fr', 'de', 'es'] as const
 export type LocaleCode = (typeof SUPPORTED_LOCALES)[number]
 // Literal 'en' (not widened to LocaleCode) so Exclude<LocaleCode, …> below
 // resolves to the non-en locales rather than never.
@@ -38,6 +38,7 @@ export const t = i18n.global.t
 // into the lazy chunk, so each locale gets an explicit specifier.
 const loaders: Record<Exclude<LocaleCode, typeof DEFAULT_LOCALE>, () => Promise<{ default: MessageSchema }>> = {
   'zh-Hans': () => import('@/locales/zh-Hans.json'),
+  'zh-Hant': () => import('@/locales/zh-Hant.json'),
   ja: () => import('@/locales/ja.json'),
   fr: () => import('@/locales/fr.json'),
   de: () => import('@/locales/de.json'),
@@ -55,7 +56,15 @@ export function normalizeLocale(raw: string | null | undefined): LocaleCode | nu
   if (!raw) return null
   const lower = raw.toLowerCase()
   if (lower === 'en' || lower.startsWith('en-') || lower.startsWith('en_')) return 'en'
-  if (lower.startsWith('zh')) return 'zh-Hans'
+  if (lower.startsWith('zh')) {
+    // zh-Hant / zh-TW / zh-HK / zh-MO (and their sub-tags, hyphen- or
+    // underscore-separated) route to Traditional; zh-Hans / zh-CN / zh-SG
+    // and every other zh* stays on the conservative Simplified fallback.
+    if (/^zh[-_]hant(?:[-_]|$)/.test(lower) || /^zh[-_](?:tw|hk|mo)(?:[-_]|$)/.test(lower)) {
+      return 'zh-Hant'
+    }
+    return 'zh-Hans'
+  }
   if (lower.startsWith('ja')) return 'ja'
   if (lower.startsWith('fr')) return 'fr'
   if (lower.startsWith('de')) return 'de'

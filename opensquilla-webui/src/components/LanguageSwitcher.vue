@@ -18,6 +18,7 @@ const { t } = useI18n()
 const LOCALE_LABELS: Record<LocaleCode, string> = {
   en: 'English',
   'zh-Hans': '中文',
+  'zh-Hant': '繁體中文',
   ja: '日本語',
   fr: 'Français',
   de: 'Deutsch',

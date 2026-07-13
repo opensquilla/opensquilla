@@ -24,6 +24,14 @@ def test_accept_language_zh_yields_zh_hans():
     assert control_ui._resolve_locale(cfg, _req("zh-CN,zh;q=0.9,en;q=0.8")) == "zh-Hans"
 
 
+def test_accept_language_zh_hant_variants_yield_zh_hant():
+    cfg = GatewayConfig()
+    assert control_ui._resolve_locale(cfg, _req("zh-Hant,zh;q=0.9,en;q=0.8")) == "zh-Hant"
+    assert control_ui._resolve_locale(cfg, _req("zh-TW,zh;q=0.9,en;q=0.8")) == "zh-Hant"
+    assert control_ui._resolve_locale(cfg, _req("zh-HK,zh;q=0.9,en;q=0.8")) == "zh-Hant"
+    assert control_ui._resolve_locale(cfg, _req("zh-MO,zh;q=0.9,en;q=0.8")) == "zh-Hant"
+
+
 def test_accept_language_supported_non_en():
     cfg = GatewayConfig()
     assert control_ui._resolve_locale(cfg, _req("fr-FR,fr;q=0.9")) == "fr"
@@ -42,6 +50,11 @@ def test_configured_default_wins_over_accept_language():
     assert control_ui._resolve_locale(cfg, _req("en-US,en;q=0.9")) == "zh-Hans"
 
 
+def test_configured_zh_hant_default_wins_over_accept_language():
+    cfg = GatewayConfig(control_ui=ControlUiConfig(default_locale="zh-Hant"))
+    assert control_ui._resolve_locale(cfg, _req("en-US,en;q=0.9")) == "zh-Hant"
+
+
 def test_garbage_accept_language_never_throws():
     cfg = GatewayConfig()
     assert control_ui._resolve_locale(cfg, _req(";;;,,q=junk")) == "en"
@@ -49,8 +62,19 @@ def test_garbage_accept_language_never_throws():
 
 def test_config_clamps_arbitrary_locale_values():
     assert ControlUiConfig(default_locale="zh").default_locale == "zh-Hans"
-    assert ControlUiConfig(default_locale="zh-TW").default_locale == "zh-Hans"
+    assert ControlUiConfig(default_locale="zh-CN").default_locale == "zh-Hans"
+    assert ControlUiConfig(default_locale="zh-SG").default_locale == "zh-Hans"
     assert ControlUiConfig(default_locale="ZH-hans").default_locale == "zh-Hans"
+    # An explicit Hans script subtag wins over a Traditional-default region.
+    assert ControlUiConfig(default_locale="zh-Hans-TW").default_locale == "zh-Hans"
+    # Traditional-圈 tags (explicit Hant, or bare Traditional-default regions,
+    # any case, hyphen- or underscore-separated) clamp to zh-Hant.
+    assert ControlUiConfig(default_locale="zh-Hant").default_locale == "zh-Hant"
+    assert ControlUiConfig(default_locale="zh-TW").default_locale == "zh-Hant"
+    assert ControlUiConfig(default_locale="zh-HK").default_locale == "zh-Hant"
+    assert ControlUiConfig(default_locale="zh-MO").default_locale == "zh-Hant"
+    assert ControlUiConfig(default_locale="ZH-tw").default_locale == "zh-Hant"
+    assert ControlUiConfig(default_locale="zh_TW").default_locale == "zh-Hant"
     assert ControlUiConfig(default_locale="fr").default_locale == "fr"
     assert ControlUiConfig(default_locale="ja-JP").default_locale == "ja"
     assert ControlUiConfig(default_locale="ko").default_locale == "en"
@@ -92,6 +116,12 @@ def test_template_injects_zh_hans():
     html = _render("zh-Hans")
     assert '<html lang="zh-Hans">' in html
     assert 'data-locale="zh-Hans"' in html
+
+
+def test_template_injects_zh_hant():
+    html = _render("zh-Hant")
+    assert '<html lang="zh-Hant">' in html
+    assert 'data-locale="zh-Hant"' in html
 
 
 def test_template_injects_en():

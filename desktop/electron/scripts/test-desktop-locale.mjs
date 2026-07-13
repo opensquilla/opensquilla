@@ -24,17 +24,25 @@ assert.equal(resolveLocaleFromTags(['zh-Hans-CN']), 'zh-Hans')
 assert.equal(resolveLocaleFromTags(['zh_Hans_HK']), 'zh-Hans')
 
 // Traditional variants (explicit Hant, or bare Traditional-default regions)
-// skip to the next preference rather than forcing Simplified text.
-assert.equal(resolveLocaleFromTags(['zh-Hant']), 'en')
-assert.equal(resolveLocaleFromTags(['zh-Hant-HK', 'ja-JP']), 'ja')
-assert.equal(resolveLocaleFromTags(['zh-TW']), 'en')
-assert.equal(resolveLocaleFromTags(['zh-HK', 'fr-FR']), 'fr')
-assert.equal(resolveLocaleFromTags(['zh-MO', 'de']), 'de')
-assert.equal(resolveLocaleFromTags(['zh_HK', 'fr-FR']), 'fr')
+// resolve to zh-Hant — both Simplified and Traditional are bundled, so
+// neither needs to fall through to a lower-preference tag or to English.
+assert.equal(resolveLocaleFromTags(['zh-Hant']), 'zh-Hant')
+assert.equal(resolveLocaleFromTags(['zh-Hant-HK', 'ja-JP']), 'zh-Hant')
+assert.equal(resolveLocaleFromTags(['zh-TW']), 'zh-Hant')
+assert.equal(resolveLocaleFromTags(['zh-tw']), 'zh-Hant')
+assert.equal(resolveLocaleFromTags(['zh-HK', 'fr-FR']), 'zh-Hant')
+assert.equal(resolveLocaleFromTags(['zh-MO', 'de']), 'zh-Hant')
+assert.equal(resolveLocaleFromTags(['zh_HK', 'fr-FR']), 'zh-Hant')
+assert.equal(resolveLocaleFromTags(['zh_TW']), 'zh-Hant')
+// A lower-preference zh-Hant is still reached once earlier tags are skipped.
+assert.equal(resolveLocaleFromTags(['ko-KR', 'zh-TW']), 'zh-Hant')
+// A top-preference Simplified tag still wins over a lower-preference
+// Traditional one — first bundled match wins regardless of script.
+assert.equal(resolveLocaleFromTags(['zh-CN', 'zh-TW']), 'zh-Hans')
 
 // Script detection is structural, never a substring match against extensions
 // or private-use subtags.
-assert.equal(resolveLocaleFromTags(['zh-Hant-x-hans', 'ja-JP']), 'ja')
+assert.equal(resolveLocaleFromTags(['zh-Hant-x-hans', 'ja-JP']), 'zh-Hant')
 assert.equal(resolveLocaleFromTags(['zh-CN-x-hant', 'fr-FR']), 'zh-Hans')
 
 // --- other bundled languages and fallback ---

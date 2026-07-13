@@ -96,4 +96,4 @@ developer design notes or source comments, not in the first-run path.
 
 ---
 
-[Product guide](../README.product.md) · [中文](../README.zh-Hans.md) · [日本語](../README.ja.md) · [Français](../README.fr.md) · [Deutsch](../README.de.md) · [Español](../README.es.md) · [Improve these docs](contributing-docs.md) · [Report a docs issue](https://github.com/opensquilla/opensquilla/issues/new?template=docs_report.yml) · [Contributing](../CONTRIBUTING.md)
+[Product guide](../README.product.md) · [中文](../README.zh-Hans.md) · [繁體中文](../README.zh-Hant.md) · [日本語](../README.ja.md) · [Français](../README.fr.md) · [Deutsch](../README.de.md) · [Español](../README.es.md) · [Improve these docs](contributing-docs.md) · [Report a docs issue](https://github.com/opensquilla/opensquilla/issues/new?template=docs_report.yml) · [Contributing](../CONTRIBUTING.md)

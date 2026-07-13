@@ -262,7 +262,9 @@ jobs:
           done < release-assets/CHECKSUMMED_ASSETS
           upload_asset "release-assets/SHA256SUMS" "SHA256SUMS"
           ossutil cp --force --addressing-style "${OSS_ADDRESSING_STYLE_NORMALIZED}" \
-            --meta="Content-Type:text/html; charset=utf-8#Cache-Control:no-cache" \
             "release-assets/latest.html" "${mirror_root}/latest.html"
+          ossutil set-meta "${mirror_root}/latest.html" \
+            "Content-Type:text/html; charset=utf-8#Cache-Control:no-cache" \
+            --update
           ossutil ls --addressing-style "${OSS_ADDRESSING_STYLE_NORMALIZED}" "${dest_prefix}/"
           ossutil ls --addressing-style "${OSS_ADDRESSING_STYLE_NORMALIZED}" "${mirror_root}/latest.html"

@@ -1471,12 +1471,14 @@
       "opsActionsLabel": "Acciones de ejecución",
       "configActionsLabel": "Acciones de configuración",
       "configActionHint": "Escribe la configuración: se aplica tras reiniciar el gateway",
-      "editActionHint": "Abre el editor en Config. de canales"
+      "editActionHint": "Abre el editor en Config. de canales",
+      "pendingApproval": "Pendiente de aprobación"
     },
     "overview": {
       "channelsChip": "Canales",
       "channelsChipConnected": "{connected} conectado(s)",
-      "channelsChipFailed": "{failed} con error"
+      "channelsChipFailed": "{failed} con error",
+      "channelsChipPending": "{pending} esperando aprobación"
     }
   },
   "cronSkills": {

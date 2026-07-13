@@ -1471,12 +1471,14 @@
       "opsActionsLabel": "运维动作",
       "configActionsLabel": "配置动作",
       "configActionHint": "写入配置——网关重启后生效",
-      "editActionHint": "在频道设置中打开编辑器"
+      "editActionHint": "在频道设置中打开编辑器",
+      "pendingApproval": "待审批"
     },
     "overview": {
       "channelsChip": "频道",
       "channelsChipConnected": "{connected} 已连接",
-      "channelsChipFailed": "{failed} 失败"
+      "channelsChipFailed": "{failed} 失败",
+      "channelsChipPending": "{pending} 人待审批"
     }
   },
   "cronSkills": {

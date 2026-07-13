@@ -643,26 +643,30 @@ onActivated(() => {
 })
 
 // Channels rollup for the KPI chip — best-effort; a failure just hides it.
-const channelStats = ref({ total: 0, connected: 0, failed: 0 })
+const channelStats = ref({ total: 0, connected: 0, failed: 0, pending: 0 })
 const channelChipHint = computed(() => {
   const parts = [t('console.overview.channelsChipConnected', { connected: channelStats.value.connected })]
   if (channelStats.value.failed > 0) {
     parts.push(t('console.overview.channelsChipFailed', { failed: channelStats.value.failed }))
+  }
+  if (channelStats.value.pending > 0) {
+    parts.push(t('console.overview.channelsChipPending', { pending: channelStats.value.pending }))
   }
   return parts.join(' · ')
 })
 
 async function loadChannelStats() {
   try {
-    const res = await rpc.call<{ channels?: Array<{ status?: string; configured?: boolean }> }>('channels.status')
+    const res = await rpc.call<{ channels?: Array<{ status?: string; configured?: boolean; pendingPairings?: number }> }>('channels.status')
     const rows = (res.channels || []).filter(ch => ch && ch.configured !== false)
     channelStats.value = {
       total: rows.length,
       connected: rows.filter(ch => ch.status === 'connected').length,
       failed: rows.filter(ch => ch.status === 'dead' || ch.status === 'exhausted').length,
+      pending: rows.reduce((sum, ch) => sum + (ch.pendingPairings || 0), 0),
     }
   } catch {
-    channelStats.value = { total: 0, connected: 0, failed: 0 }
+    channelStats.value = { total: 0, connected: 0, failed: 0, pending: 0 }
   }
 }
 

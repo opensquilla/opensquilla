@@ -67,6 +67,7 @@ async def test_channels_status_includes_configured_channels_without_manager():
             "bot_user_id": None,
             "connected_since": None,
             "restart_attempts": 0,
+            "pendingPairings": 0,
             "type": "slack",
             "enabled": True,
             "configured": True,
@@ -427,3 +428,46 @@ async def test_channels_restart_unloaded_channel_returns_typed_error():
     assert rpc_res.error is not None
     assert rpc_res.error.code == "channels.adapter_not_loaded"
     assert "restart the gateway" in rpc_res.error.message
+
+
+@pytest.mark.asyncio
+async def test_channels_status_counts_pending_pairings_per_channel():
+    class _Store:
+        def list_pairings(self, *, channel_name=None, status=None):
+            assert status == "pending"
+            mk = type("P", (), {})
+            out = []
+            for name in ("work", "work", "other"):
+                rec = mk()
+                rec.channel_name = name
+                out.append(rec)
+            return out
+
+    class _Manager:
+        _delivery_store = _Store()
+        _channel_types: dict = {}
+
+        async def health(self):
+            return {}
+
+        def get(self, name):
+            return None
+
+    ctx = _read_ctx()
+    res = upsert_channel(
+        GatewayConfig(),
+        entry_payload={
+            "type": "slack",
+            "name": "work",
+            "token": "xoxb-secret",
+            "signing_secret": "ss",
+        },
+    )
+    ctx.config = res.config
+    ctx.channel_manager = _Manager()
+
+    rpc_res = await get_dispatcher().dispatch("r1", "channels.status", {}, ctx)
+
+    assert rpc_res.error is None, rpc_res.error
+    rows = {row["name"]: row for row in rpc_res.payload["channels"]}
+    assert rows["work"]["pendingPairings"] == 2

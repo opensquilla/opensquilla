@@ -221,6 +221,25 @@ def _redact_probe_result(value: Any, secrets: tuple[str, ...]) -> Any:
     return value
 
 
+def _pending_pairings_by_channel(ctx: RpcContext) -> dict[str, int]:
+    """One query for every channel's pending-approval count.
+
+    A pending pairing is an inbound sender waiting on the operator — the one
+    state that otherwise produces a confusing "nothing happened" in the UI —
+    so the status roll-up carries it to every surface for free. Best-effort:
+    a missing store just means zero badges.
+    """
+    counts: dict[str, int] = {}
+    try:
+        for record in _pairing_store(ctx).list_pairings(status="pending"):
+            name = str(getattr(record, "channel_name", "") or "")
+            if name:
+                counts[name] = counts.get(name, 0) + 1
+    except Exception:  # noqa: BLE001 - status must not fail on pairing storage
+        return {}
+    return counts
+
+
 @_d.method("channels.status", scope="operator.read")
 async def _handle_channels_status(params: dict | None, ctx: RpcContext) -> dict[str, Any]:
     health_map = await ctx.channel_manager.health() if ctx.channel_manager else {}
@@ -228,6 +247,7 @@ async def _handle_channels_status(params: dict | None, ctx: RpcContext) -> dict[
     manager_types = (
         getattr(ctx.channel_manager, "_channel_types", {}) if ctx.channel_manager else {}
     )
+    pending_pairings = _pending_pairings_by_channel(ctx)
     channels: list[dict[str, Any]] = []
     seen: set[str] = set()
 
@@ -254,6 +274,7 @@ async def _handle_channels_status(params: dict | None, ctx: RpcContext) -> dict[
                 "bot_user_id": getattr(health, "bot_user_id", None) if health else None,
                 "connected_since": extra.get("connected_since"),
                 "restart_attempts": extra.get("restart_attempts", 0),
+                "pendingPairings": pending_pairings.get(name, 0),
                 "type": entry.get("type"),
                 "enabled": enabled,
                 "configured": True,
@@ -289,6 +310,7 @@ async def _handle_channels_status(params: dict | None, ctx: RpcContext) -> dict[
                 "bot_user_id": getattr(health, "bot_user_id", None),
                 "connected_since": extra.get("connected_since"),
                 "restart_attempts": extra.get("restart_attempts", 0),
+                "pendingPairings": pending_pairings.get(name, 0),
                 "type": manager_types.get(name) or type(adapter).__name__,
                 "enabled": True,
                 "configured": False,

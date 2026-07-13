@@ -5,6 +5,7 @@ import multiprocessing
 import os
 import sys
 import uuid
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
@@ -706,6 +707,62 @@ def test_cleanup_never_deletes_canonical_profile_recreated_after_quarantine(
     assert (user_data / "desktop-credential.json").is_file()
     assert (user_data / "desktop-profile-context.json").is_file()
     assert (user_data / ".opensquilla.profile-cleanup.json").is_file()
+
+
+def test_cleanup_releases_legacy_handles_before_deleting_profile_tombstone(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    import opensquilla.recovery.cleanup as cleanup_module
+
+    user_data = tmp_path / "user-data"
+    user_data.mkdir()
+    monkeypatch.setenv("OPENSQUILLA_USER_STATE_DIR", str(tmp_path / "lock-state"))
+    primary = _desktop_primary(user_data)
+    state = primary / "state"
+    state.mkdir()
+    (state / "gateway.pid.lock").write_bytes(b"synthetic lock authority\n")
+    inspected = cleanup_inspect(
+        user_data,
+        mode="delete-current-profile",
+        profile_kind="primary",
+    )
+    real_acquire = cleanup_module.acquire_legacy_gateway_locks
+    captured_locks = []
+
+    @contextmanager
+    def capture_locks(*homes, **kwargs):
+        with real_acquire(*homes, **kwargs) as locks:
+            captured_locks.extend(locks)
+            yield locks
+
+    real_remove = cleanup_module._remove_no_follow
+    observed_tombstone_delete = False
+
+    def assert_handles_released(path: Path) -> None:
+        nonlocal observed_tombstone_delete
+        if path.name.startswith(f".{primary.name}.cleanup."):
+            observed_tombstone_delete = True
+            moved_state = path / "state"
+            assert not any(lock.holds_state_root(moved_state) for lock in captured_locks)
+        real_remove(path)
+
+    monkeypatch.setattr(cleanup_module, "acquire_legacy_gateway_locks", capture_locks)
+    monkeypatch.setattr(cleanup_module, "_remove_no_follow", assert_handles_released)
+
+    result = cleanup_apply(
+        user_data,
+        mode="delete-current-profile",
+        profile_kind="primary",
+        transaction_id=inspected.transaction_id,
+        expected_revision=inspected.revision,
+        confirm_user_data=user_data,
+    )
+
+    assert result.outcome == "complete"
+    assert observed_tombstone_delete is True
+    assert captured_locks
+    assert not primary.exists()
 
 
 def test_cleanup_rolls_back_directory_swapped_at_no_replace_boundary(

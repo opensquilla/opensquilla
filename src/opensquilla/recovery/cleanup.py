@@ -28,8 +28,8 @@ from opensquilla.recovery.locking import (
     acquire_legacy_gateway_locks,
     acquire_profile_locks,
     effective_state_roots,
+    move_profile_no_replace,
     profile_lock_path,
-    rebind_legacy_gateway_lock,
     replacement_history_lock_scope,
 )
 
@@ -1139,53 +1139,14 @@ def _tombstone_path(path: Path, *, transaction_id: str, index: int) -> Path:
     return path.with_name(f".{path.name}.cleanup.{transaction_id}.{index}")
 
 
-def _relative_descendant(path: Path, parent: Path) -> Path | None:
-    try:
-        return _absolute(path).relative_to(_absolute(parent))
-    except ValueError:
-        return None
-
-
-def _legacy_lock_handoffs(
-    source: Path,
-    tombstone: Path,
-    profile_homes: tuple[Path, ...],
-) -> tuple[tuple[Path, Path], ...]:
-    handoffs: dict[str, tuple[Path, Path]] = {}
-    for profile_home in profile_homes:
-        if _relative_descendant(profile_home, source) is None:
-            continue
-        for state_root in effective_state_roots(profile_home):
-            relative = _relative_descendant(state_root, source)
-            if relative is None:
-                continue
-            try:
-                value = state_root.lstat()
-            except OSError:
-                continue
-            if (
-                stat.S_ISLNK(value.st_mode)
-                or _is_reparse(value)
-                or not stat.S_ISDIR(value.st_mode)
-                or not os.path.lexists(state_root / "gateway.pid.lock")
-            ):
-                continue
-            key = _lexical_normalized(state_root)
-            handoffs.setdefault(key, (state_root, tombstone / relative))
-    return tuple(handoffs[key] for key in sorted(handoffs))
-
-
 def _rollback_quarantined_directory(
     source: Path,
     tombstone: Path,
-    rebound: tuple[tuple[Path, Path], ...],
 ) -> bool:
     if not os.path.lexists(tombstone) or os.path.lexists(source):
         return False
     try:
-        native_move_no_replace(tombstone, source)
-        for original_state, moved_state in reversed(rebound):
-            rebind_legacy_gateway_lock(moved_state, original_state)
+        move_profile_no_replace(tombstone, source, move=native_move_no_replace)
     except (OSError, RecoveryError):
         return False
     return True
@@ -1282,43 +1243,60 @@ def abandon_cleanup_transaction(
         return destination
 
 
-def _quarantine_and_delete_directory(
+def _quarantine_directory(
     planned: _PlannedItem,
     tombstone: Path,
-    *,
-    profile_homes: tuple[Path, ...],
 ) -> bool:
     source = planned.item.path
     if _manifest(source) != planned.manifest:
         return False
-    handoffs = _legacy_lock_handoffs(source, tombstone, profile_homes)
     moved = False
-    rebound: list[tuple[Path, Path]] = []
     try:
-        native_move_no_replace(source, tombstone)
+        move_profile_no_replace(source, tombstone, move=native_move_no_replace)
         moved = True
-        for original_state, moved_state in handoffs:
-            rebind_legacy_gateway_lock(original_state, moved_state)
-            rebound.append((original_state, moved_state))
         # The native primitive verifies the identity it actually moved, while
         # the confirmed cleanup plan identifies the only object we are allowed
-        # to delete.  Compare both after publication to close the final
+        # to quarantine. Compare both after publication to close the final
         # check-to-rename window for an uncooperative old process.
         if _manifest(tombstone) != planned.manifest:
             raise ConfigChangedError("cleanup source changed while it was quarantined")
-        # From this point onward canonical ``source`` is observation-only. An
-        # old binary may recreate it with a second lock inode; recursive removal
-        # is permanently scoped to the identity-bound tombstone instead.
-        _remove_no_follow(tombstone)
-        if os.path.lexists(tombstone) or os.path.lexists(source):
-            return False
         return True
     except (OSError, RecoveryError):
         if not moved and not os.path.lexists(source) and os.path.lexists(tombstone):
             moved = True
         if moved:
-            _rollback_quarantined_directory(source, tombstone, tuple(rebound))
+            _rollback_quarantined_directory(source, tombstone)
         return False
+
+
+def _delete_quarantined_directory(
+    planned: _PlannedItem,
+    tombstone: Path,
+) -> bool:
+    """Delete only the identity-bound tombstone after legacy handles close."""
+
+    source = planned.item.path
+    try:
+        if _manifest(tombstone) != planned.manifest:
+            return False
+        # Canonical ``source`` is observation-only from this point onward. An
+        # old binary may recreate it with a second lock inode; recursive removal
+        # remains permanently scoped to the verified tombstone.
+        _remove_no_follow(tombstone)
+    except (OSError, RecoveryError):
+        # A fail-before-delete leaves the complete quarantine recoverable at its
+        # canonical path. A partial recursive deletion is retained with the
+        # journal instead of guessing or merging the remaining tree.
+        intact = False
+        if not os.path.lexists(source) and os.path.lexists(tombstone):
+            try:
+                intact = _manifest(tombstone) == planned.manifest
+            except (OSError, RecoveryError):
+                pass
+        if intact:
+            _rollback_quarantined_directory(source, tombstone)
+        return False
+    return not os.path.lexists(tombstone) and not os.path.lexists(source)
 
 
 def cleanup_apply(
@@ -1364,7 +1342,7 @@ def cleanup_apply(
             with acquire_legacy_gateway_locks(
                 *initial.profile_homes,
                 timeout=lock_timeout,
-            ):
+            ) as legacy_locks:
                 authoritative = _build_plan(
                     user_data,
                     mode=mode,
@@ -1455,18 +1433,38 @@ def cleanup_apply(
                     }
                     journal_snapshot = _write_cleanup_journal(journal_path, journal_payload)
 
+                    quarantined: list[tuple[_PlannedItem, Path]] = []
                     for planned, tombstone in zip(
                         directory_actions,
                         tombstones,
                         strict=True,
                     ):
-                        if not _quarantine_and_delete_directory(
-                            planned,
-                            tombstone,
-                            profile_homes=authoritative.profile_homes,
-                        ):
+                        if not _quarantine_directory(planned, tombstone):
                             failed = True
                             break
+                        quarantined.append((planned, tombstone))
+
+                    if failed:
+                        for planned, tombstone in reversed(quarantined):
+                            _rollback_quarantined_directory(
+                                planned.item.path,
+                                tombstone,
+                            )
+
+                    if not failed:
+                        # On Windows a directory containing an open file handle
+                        # cannot be removed. All identity-bound moves must finish
+                        # before releasing old-gateway exclusion, but recursive
+                        # deletion must happen only after the compatibility lock
+                        # handles inside those tombstones are closed. The outer
+                        # profile-operation locks remain held throughout.
+                        for legacy_lock in reversed(legacy_locks):
+                            legacy_lock.release()
+
+                        for planned, tombstone in quarantined:
+                            if not _delete_quarantined_directory(planned, tombstone):
+                                failed = True
+                                break
 
                     if not failed:
                         directory_ids = {id(planned) for planned in directory_actions}

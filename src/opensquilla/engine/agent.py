@@ -53,6 +53,7 @@ from opensquilla.engine.finalize_evidence_gate import (
 from opensquilla.engine.finalize_evidence_gate import (
     WRITE_TOOL_NAMES as _GATE_WRITE_TOOL_NAMES,
 )
+from opensquilla.engine.guardian_review import GuardianAssessment, GuardianReviewer
 from opensquilla.engine.history import limit_turns, repair_tool_pairing
 from opensquilla.engine.patch_evidence_ledger import PatchEvidenceLedger
 from opensquilla.engine.post_write_convergence import (
@@ -148,6 +149,7 @@ from opensquilla.result_budget import (
 )
 from opensquilla.router_control import router_control_replay_event_from_payload
 from opensquilla.safety.secret_redaction import redact_secret_value
+from opensquilla.sandbox.elevation import ElevationAction
 from opensquilla.session.compaction import (
     CompactionConfig,
     CompactionRequest,
@@ -916,6 +918,22 @@ def _is_threshold_denial(result: ToolResult) -> bool:
 _PENDING_APPROVAL_STATUSES: frozenset[str] = frozenset({"approval_required", "approval_pending"})
 
 
+@dataclass
+class _AutoReviewCircuitBreaker:
+    """Per-turn guard against repeated model-denied elevation attempts."""
+
+    limit: int = 3
+    completed_denials: int = 0
+
+    @property
+    def is_open(self) -> bool:
+        return self.completed_denials >= self.limit
+
+    def observe(self, assessment: GuardianAssessment) -> None:
+        if assessment.status == "completed" and assessment.outcome == "deny":
+            self.completed_denials += 1
+
+
 def _pending_approval_payload(content: str) -> dict[str, Any] | None:
     try:
         payload = json.loads(content)
@@ -945,6 +963,132 @@ async def _wait_for_pending_approval_resolution(
         await get_approval_queue().wait(approval_id, timeout=timeout)
     except KeyError:
         return
+
+
+async def _review_pending_elevation_if_configured(
+    payload: dict[str, Any],
+    *,
+    provider: LLMProvider,
+    transcript: list[Message],
+    circuit: _AutoReviewCircuitBreaker,
+    runtime_events_path: str | None,
+) -> GuardianAssessment | None:
+    """Resolve one internal elevation record through Guardian, or leave it human-owned."""
+
+    approval_id = payload.get("approval_id")
+    if not isinstance(approval_id, str) or not approval_id:
+        return None
+
+    from opensquilla.gateway.approval_queue import get_approval_queue
+    from opensquilla.sandbox.config import SandboxSettings
+    from opensquilla.sandbox.integration import get_runtime
+
+    queue = get_approval_queue()
+    try:
+        entry = queue.get(approval_id)
+    except KeyError:
+        return None
+    params = entry.params
+    if (
+        entry.namespace != "exec"
+        or params.get("approvalKind") != "sandbox_elevation"
+        or params.get("reviewer") != "auto_review"
+        or params.get("humanActionable") is not False
+    ):
+        return None
+    if entry.resolved:
+        return None
+
+    fingerprint = str(params.get("fingerprint") or "")
+    append_runtime_event(
+        runtime_events_path,
+        {
+            "event_type": "sandbox_elevation_review",
+            "phase": "started",
+            "approval_id": approval_id,
+            "fingerprint": fingerprint,
+        },
+    )
+
+    if circuit.is_open:
+        assessment = GuardianAssessment(
+            risk_level="high",
+            user_authorization="unknown",
+            outcome="deny",
+            rationale=(
+                "Automatic elevation review stopped after three denied requests in "
+                "this turn. Explain the risk and obtain a new explicit user instruction."
+            ),
+            status="failed_closed",
+        )
+    else:
+        try:
+            raw_action = params.get("action")
+            if not isinstance(raw_action, dict):
+                raise ValueError("missing_canonical_elevation_action")
+            action = ElevationAction.from_canonical_payload(raw_action)
+            if action.fingerprint() != fingerprint:
+                raise ValueError("elevation_action_fingerprint_mismatch")
+            runtime = get_runtime()
+            settings = runtime.settings if runtime is not None else SandboxSettings()
+            assessment = await GuardianReviewer(
+                provider,
+                timeout_seconds=settings.approval_review_timeout_seconds,
+                max_attempts=settings.approval_review_max_attempts,
+            ).review(action, transcript)
+        except Exception as exc:
+            assessment = GuardianAssessment(
+                risk_level="high",
+                user_authorization="unknown",
+                outcome="deny",
+                rationale=(
+                    "Automatic approval review could not validate the exact action and "
+                    f"failed closed: {str(exc) or type(exc).__name__}"
+                ),
+                status="failed_closed",
+            )
+
+    updated_params = dict(params)
+    updated_params.update(
+        {
+            "reviewRiskLevel": assessment.risk_level,
+            "reviewAuthorization": assessment.user_authorization,
+            "reviewOutcome": assessment.outcome,
+            "reviewStatus": assessment.status,
+            "reviewRationale": assessment.rationale,
+        }
+    )
+    try:
+        queue.update_params(approval_id, updated_params)
+        queue.resolve(approval_id, assessment.outcome == "allow")
+    except ValueError:
+        # Another resolver won the race. Never override an existing decision.
+        return None
+
+    circuit.observe(assessment)
+    append_runtime_event(
+        runtime_events_path,
+        {
+            "event_type": "sandbox_elevation_review",
+            "phase": "completed",
+            "approval_id": approval_id,
+            "fingerprint": fingerprint,
+            "risk_level": assessment.risk_level,
+            "authorization": assessment.user_authorization,
+            "outcome": assessment.outcome,
+            "status": assessment.status,
+        },
+    )
+    logger.info(
+        "sandbox_elevation.review_completed",
+        approval_id=approval_id,
+        fingerprint=fingerprint,
+        risk_level=assessment.risk_level,
+        authorization=assessment.user_authorization,
+        outcome=assessment.outcome,
+        status=assessment.status,
+    )
+    return assessment
 
 
 @functools.lru_cache(maxsize=4096)
@@ -3986,6 +4130,7 @@ class Agent:
         )
         turn_llm_calls = 0
         turn_tool_errors = 0
+        auto_review_circuit = _AutoReviewCircuitBreaker()
         last_actual_model = ""
         turn_model_usage_breakdown: list[dict[str, Any]] = []
         last_ensemble_trace: dict[str, Any] | None = None
@@ -7567,6 +7712,13 @@ class Agent:
                         yield replay_event
                     pending_approval = _pending_approval_payload(result.content)
                     if pending_approval is not None and not tc.arguments.get("approval_id"):
+                        await _review_pending_elevation_if_configured(
+                            pending_approval,
+                            provider=self.provider,
+                            transcript=turn_messages,
+                            circuit=auto_review_circuit,
+                            runtime_events_path=self.config.runtime_events_path,
+                        )
                         await _wait_for_pending_approval_resolution(
                             pending_approval,
                             timeout=_cap_timeout_by_deadlines(self._approval_wait_timeout()),

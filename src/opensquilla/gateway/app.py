@@ -40,6 +40,19 @@ log = structlog.get_logger(__name__)
 _start_time = time.time()
 
 
+def _human_actionable_approvals(pending: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Exclude internal automatic reviews from operator approval surfaces."""
+
+    return [
+        item
+        for item in pending
+        if not (
+            isinstance(item.get("params"), dict)
+            and item["params"].get("humanActionable") is False
+        )
+    ]
+
+
 def create_gateway_app(
     config: GatewayConfig,
     session_manager: Any = None,
@@ -416,7 +429,7 @@ def create_gateway_app(
         settings = result.payload or {}
         mode = settings.get("mode", "prompt")
         queue = get_approval_queue()
-        pending = queue.list_pending()
+        pending = _human_actionable_approvals(queue.list_pending())
         # Enrich pending items with params fields for UI display
         items = []
         for p in pending:

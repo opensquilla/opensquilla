@@ -8,6 +8,7 @@ import pytest
 
 from opensquilla.application.approval_queue import ApprovalQueue
 from opensquilla.gateway.approval_events import (
+    approval_event_name,
     build_approval_event_payload,
     register_approval_event_bridge,
 )
@@ -213,3 +214,21 @@ def test_build_approval_event_payload_maps_sandbox_session_id() -> None:
     )
 
     assert payload["session_key"] == "agent:main:webchat:demo"
+
+
+def test_auto_review_approval_does_not_emit_actionable_push() -> None:
+    info = {
+        "namespace": "exec",
+        "params": {"humanActionable": False, "reviewer": "auto_review"},
+    }
+
+    assert approval_event_name("requested", info) is None
+
+
+def test_human_approval_still_emits_actionable_push() -> None:
+    info = {
+        "namespace": "exec",
+        "params": {"humanActionable": True, "reviewer": "user"},
+    }
+
+    assert approval_event_name("requested", info) == "exec.approval.requested"

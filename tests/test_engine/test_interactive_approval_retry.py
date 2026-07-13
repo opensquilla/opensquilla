@@ -8,6 +8,8 @@ from typing import Any
 import pytest
 
 from opensquilla.engine import Agent, AgentConfig, ToolResult
+from opensquilla.engine.agent import _AutoReviewCircuitBreaker
+from opensquilla.engine.guardian_review import GUARDIAN_POLICY, GuardianAssessment
 from opensquilla.engine.types import ToolCall, ToolResultEvent
 from opensquilla.gateway.approval_queue import get_approval_queue, reset_approval_queue
 from opensquilla.provider import ChatConfig, Message, ToolDefinition, ToolInputSchema
@@ -15,6 +17,7 @@ from opensquilla.provider import DoneEvent as ProviderDone
 from opensquilla.provider import TextDeltaEvent as ProviderTextDelta
 from opensquilla.provider import ToolUseEndEvent as ProviderToolUseEnd
 from opensquilla.provider import ToolUseStartEvent as ProviderToolUseStart
+from opensquilla.sandbox.elevation import ElevationAction, gate_elevated_action
 
 
 class _OneApprovalToolProvider:
@@ -147,6 +150,204 @@ def _exec_definition() -> ToolDefinition:
             required=["command"],
         ),
     )
+
+
+class _AutoReviewProvider:
+    provider_name = "fake"
+
+    def __init__(self, assessment: str) -> None:
+        self.assessment = assessment
+        self.main_calls: list[list[Message]] = []
+        self.guardian_calls = 0
+
+    def chat(
+        self,
+        messages: list[Message],
+        tools: list[Any] | None = None,
+        config: ChatConfig | None = None,
+    ) -> AsyncIterator[Any]:
+        del tools
+        if config is not None and config.system == GUARDIAN_POLICY:
+            self.guardian_calls += 1
+            return self._guardian_stream()
+        self.main_calls.append(messages)
+        return self._main_stream(len(self.main_calls))
+
+    async def _guardian_stream(self) -> AsyncIterator[Any]:
+        yield ProviderTextDelta(text=self.assessment)
+        yield ProviderDone(stop_reason="stop", input_tokens=1, output_tokens=1)
+
+    async def _main_stream(self, call_number: int) -> AsyncIterator[Any]:
+        if call_number > 1:
+            yield ProviderTextDelta(text="done")
+            yield ProviderDone(stop_reason="stop", input_tokens=1, output_tokens=1)
+            return
+        yield ProviderToolUseStart(tool_use_id="tool-auto", tool_name="exec_command")
+        yield ProviderToolUseEnd(
+            tool_use_id="tool-auto",
+            tool_name="exec_command",
+            arguments={
+                "command": "touch /home/lrk/Desktop/probe",
+                "sandbox_permissions": "require_escalated",
+            },
+        )
+        yield ProviderDone(stop_reason="tool_use", input_tokens=1, output_tokens=1)
+
+    async def list_models(self) -> list[Any]:
+        return []
+
+
+def _auto_review_action() -> ElevationAction:
+    return ElevationAction(
+        tool_name="exec_command",
+        action_kind="shell.exec",
+        argv=("sh", "-lc", "touch /home/lrk/Desktop/probe"),
+        cwd="/home/lrk/opensquilla",
+        sandbox_permissions="require_escalated",
+        justification="Create the fixed probe file requested by the user.",
+        target_paths=(("/home/lrk/Desktop/probe", "write"),),
+    )
+
+
+@pytest.mark.asyncio
+async def test_auto_review_allows_and_retries_the_exact_tool_call() -> None:
+    reset_approval_queue()
+    provider = _AutoReviewProvider(
+        json.dumps(
+            {
+                "risk_level": "low",
+                "user_authorization": "medium",
+                "outcome": "allow",
+                "rationale": "The requested fixed-file write is narrow.",
+            }
+        )
+    )
+    tool_calls: list[dict[str, Any]] = []
+    executed = False
+
+    async def _handler(call: ToolCall) -> ToolResult:
+        nonlocal executed
+        tool_calls.append(dict(call.arguments))
+        gate = gate_elevated_action(
+            _auto_review_action(),
+            approval_id=call.arguments.get("approval_id"),
+            session_key="session-auto",
+            queue=get_approval_queue(),
+        )
+        if gate.allowed:
+            executed = True
+            content = json.dumps({"status": "executed"})
+        else:
+            content = json.dumps(gate.to_envelope())
+        return ToolResult(call.tool_use_id, call.tool_name, content)
+
+    agent = Agent(
+        provider=provider,
+        config=AgentConfig(max_iterations=2),
+        session_key="session-auto",
+        tool_definitions=[_exec_definition()],
+        tool_handler=_handler,
+    )
+    try:
+        events = [event async for event in agent.run_turn("Create one Desktop probe file")]
+
+        approval_event = next(
+            event
+            for event in events
+            if isinstance(event, ToolResultEvent) and "approval_required" in event.result
+        )
+        approval_id = json.loads(approval_event.result)["approval_id"]
+        assert tool_calls == [
+            {
+                "command": "touch /home/lrk/Desktop/probe",
+                "sandbox_permissions": "require_escalated",
+            },
+            {
+                "command": "touch /home/lrk/Desktop/probe",
+                "sandbox_permissions": "require_escalated",
+                "approval_id": approval_id,
+            },
+        ]
+        assert executed is True
+        assert provider.guardian_calls == 1
+        assert get_approval_queue().get(approval_id).consumed is True
+    finally:
+        reset_approval_queue()
+
+
+@pytest.mark.asyncio
+async def test_auto_review_denial_returns_rationale_without_side_effect() -> None:
+    reset_approval_queue()
+    provider = _AutoReviewProvider(
+        json.dumps(
+            {
+                "risk_level": "high",
+                "user_authorization": "low",
+                "outcome": "allow",
+                "rationale": "The authorization does not cover this high-risk action.",
+            }
+        )
+    )
+    tool_calls: list[dict[str, Any]] = []
+    executed = False
+
+    async def _handler(call: ToolCall) -> ToolResult:
+        nonlocal executed
+        tool_calls.append(dict(call.arguments))
+        gate = gate_elevated_action(
+            _auto_review_action(),
+            approval_id=call.arguments.get("approval_id"),
+            session_key="session-deny",
+            queue=get_approval_queue(),
+        )
+        if gate.allowed:
+            executed = True
+        return ToolResult(
+            call.tool_use_id,
+            call.tool_name,
+            json.dumps(gate.to_envelope()),
+        )
+
+    agent = Agent(
+        provider=provider,
+        config=AgentConfig(max_iterations=2),
+        session_key="session-deny",
+        tool_definitions=[_exec_definition()],
+        tool_handler=_handler,
+    )
+    try:
+        _ = [event async for event in agent.run_turn("Create one Desktop probe file")]
+
+        assert executed is False
+        assert len(tool_calls) == 2
+        result_blocks = [
+            block
+            for message in provider.main_calls[-1]
+            for block in message.content
+            if getattr(block, "type", None) == "tool_result"
+        ]
+        assert "approval_denied" in result_blocks[-1].content
+        assert "authorization does not cover" in result_blocks[-1].content
+    finally:
+        reset_approval_queue()
+
+
+def test_auto_review_circuit_breaker_counts_only_completed_denials() -> None:
+    circuit = _AutoReviewCircuitBreaker(limit=3)
+    denied = GuardianAssessment("high", "low", "deny", "denied")
+    failed = GuardianAssessment(
+        "high", "unknown", "deny", "failed", status="failed_closed"
+    )
+    allowed = GuardianAssessment("low", "medium", "allow", "allowed")
+
+    circuit.observe(denied)
+    circuit.observe(failed)
+    circuit.observe(allowed)
+    circuit.observe(denied)
+    assert circuit.is_open is False
+
+    circuit.observe(denied)
+    assert circuit.is_open is True
 
 
 @pytest.mark.asyncio

@@ -4,6 +4,7 @@ import errno
 import json
 import multiprocessing
 import os
+import stat
 import sys
 import threading
 import uuid
@@ -228,6 +229,11 @@ def test_restore_missing_backup_lock_authority_fails_without_mutating_backup(
     _profile(backup, "recorded backup")
     _record_backup(target, backup, transaction_id)
     backup_before = no_follow_manifest(backup)
+    backup_file_bytes = {
+        relative: (backup / relative).read_bytes()
+        for relative, identity in backup_before.items()
+        if relative != "." and stat.S_ISREG(identity.mode)
+    }
 
     with pytest.raises(
         RestoreValidationError,
@@ -236,7 +242,24 @@ def test_restore_missing_backup_lock_authority_fails_without_mutating_backup(
         restore_profile(backup)
 
     assert exc_info.value.stable_code == "restore_backup_lock_authority_missing"
-    assert no_follow_manifest(backup) == backup_before
+    backup_after = no_follow_manifest(backup)
+    assert backup_after.keys() == backup_before.keys()
+    for relative, expected in backup_before.items():
+        current = backup_after[relative]
+        if stat.S_ISDIR(expected.mode):
+            # Windows can report a delayed directory mtime after a child was
+            # created before this operation. Membership and object identity
+            # are the mutation contract; directory timestamps are not data.
+            assert (current.device, current.inode, current.mode) == (
+                expected.device,
+                expected.inode,
+                expected.mode,
+            )
+        else:
+            assert current == expected
+    assert {
+        relative: (backup / relative).read_bytes() for relative in backup_file_bytes
+    } == backup_file_bytes
     assert not (backup / "state" / "gateway.pid.lock").exists()
     assert (target / "workspace" / "SOUL.md").read_text(encoding="utf-8") == "current\n"
     assert not (tmp_path / ".opensquilla.profile-replace.json").exists()

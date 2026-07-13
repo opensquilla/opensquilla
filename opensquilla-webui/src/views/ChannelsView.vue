@@ -3,128 +3,319 @@
     <header class="ch-stage__header control-stage__header">
       <div class="ch-stage__title-block control-stage__title-block">
         <h1 class="ch-stage__title control-stage__title">{{ t('console.channels.title') }}</h1>
-        <p class="ch-stage__subtitle control-stage__subtitle">
-          {{ t('console.channels.subtitle') }}
-        </p>
+        <p class="ch-stage__subtitle control-stage__subtitle">{{ t('console.channels.subtitle') }}</p>
       </div>
       <div class="ch-stage__actions control-stage__actions">
-        <button class="btn btn--ghost" :title="t('console.channels.settingsHint')" @click="openSettingsSurface">
-          <Icon name="settings" :size="16" aria-hidden="true" />
-          <span>{{ t('console.channels.openSettings') }}</span>
+        <button class="btn btn--primary" type="button" @click="openSettingsSurface">
+          <Icon name="plus" :size="16" aria-hidden="true" />
+          <span>{{ t('console.channels.addChannel') }}</span>
         </button>
-        <button class="btn btn--ghost" :title="t('console.common.refresh')" @click="loadData">
-          <Icon name="refresh" :size="16" />
+        <button class="btn btn--ghost" type="button" :title="t('console.common.refresh')" :disabled="loading" @click="loadData">
+          <Icon name="refresh" :size="16" aria-hidden="true" />
           <span>{{ t('console.common.refresh') }}</span>
         </button>
       </div>
     </header>
 
-    <!-- Status line (quiet-canvas): inline counts on the canvas instead of a
-         stat-tile band — a page whose population is 0-3 channels doesn't earn
-         four count cards. Hidden entirely at zero (the empty state speaks). -->
-    <section v-if="total > 0" class="ch-statusline" :aria-label="t('console.channels.title')">
-      <span class="ch-count"><b>{{ total }}</b> {{ t('console.channels.totalChannels') }}</span>
-      <span class="ch-count is-ok"><b>{{ connected }}</b> {{ t('console.channels.connected') }}</span>
-      <span v-if="attention > 0" class="ch-count is-attention">{{ t('console.channels.needAttention', { n: attention }) }}</span>
-      <span v-if="inactive > 0" class="ch-count"><b>{{ inactive }}</b> {{ t('console.channels.inactive') }}</span>
-      <span v-if="restarts > 0" class="ch-count"><b>{{ restarts }}</b> {{ t('console.channels.restartAttempts') }}</span>
+    <section v-if="total > 0" class="ch-summary" :aria-label="t('console.channels.summaryLabel')">
+      <button type="button" :class="['ch-summary__item', { 'is-active': statusFilter === 'all' }]" @click="statusFilter = 'all'">
+        <strong>{{ total }}</strong><span>{{ t('console.channels.totalChannels') }}</span>
+      </button>
+      <button type="button" :class="['ch-summary__item', 'is-ok', { 'is-active': statusFilter === 'connected' }]" @click="statusFilter = 'connected'">
+        <span class="dot ok" aria-hidden="true"></span><strong>{{ connected }}</strong><span>{{ t('console.channels.connected') }}</span>
+      </button>
+      <button type="button" :class="['ch-summary__item', 'is-attention', { 'is-active': statusFilter === 'attention' }]" @click="statusFilter = 'attention'">
+        <span class="dot warn" aria-hidden="true"></span><strong>{{ attention }}</strong><span>{{ t('console.channels.attention') }}</span>
+      </button>
+      <button type="button" :class="['ch-summary__item', { 'is-active': statusFilter === 'inactive' }]" @click="statusFilter = 'inactive'">
+        <span class="dot off" aria-hidden="true"></span><strong>{{ inactive }}</strong><span>{{ t('console.channels.inactive') }}</span>
+      </button>
     </section>
 
-    <section class="ch-list">
-      <div class="ch-list__head">
-        <h3 class="ch-list__title">
-          {{ t('console.channels.configuredChannels') }}
-          <span v-if="channels.length > 0" class="ch-list__count">{{ channels.length }}</span>
-        </h3>
+    <section class="ch-toolbar" :aria-label="t('console.channels.filtersLabel')">
+      <label class="ch-search">
+        <span class="ch-sr-only">{{ t('console.channels.searchLabel') }}</span>
+        <Icon name="search" :size="16" aria-hidden="true" />
+        <input v-model="searchQuery" type="search" :placeholder="t('console.channels.searchPlaceholder')" />
+      </label>
+      <label class="ch-select">
+        <span class="ch-sr-only">{{ t('console.channels.providerFilter') }}</span>
+        <select v-model="providerFilter">
+          <option value="all">{{ t('console.channels.allProviders') }}</option>
+          <option v-for="provider in providers" :key="provider" :value="provider">{{ providerLabel(provider) }}</option>
+        </select>
+      </label>
+      <span v-if="filteredChannels.length !== channels.length" class="ch-toolbar__result">
+        {{ t('console.channels.filteredCount', { count: filteredChannels.length }) }}
+      </span>
+    </section>
+
+    <ErrorState v-if="error" :message="error" :on-retry="loadData" />
+
+    <div v-else-if="loading && channels.length === 0" class="control-empty">
+      <LoadingSpinner />
+    </div>
+
+    <section v-else-if="channels.length === 0" class="control-empty ch-empty">
+      <div class="ch-empty__icon" aria-hidden="true"><Icon name="channels" :size="34" /></div>
+      <div class="control-empty__title">{{ t('console.channels.emptyTitle') }}</div>
+      <p class="control-empty__hint">{{ t('console.channels.emptyMsg') }}</p>
+      <button class="btn btn--primary" type="button" @click="openSettingsSurface">
+        <Icon name="plus" :size="16" aria-hidden="true" />
+        <span>{{ t('console.channels.addFirstChannel') }}</span>
+      </button>
+    </section>
+
+    <section v-else class="ch-workspace" :class="{ 'has-detail': selectedChannel }">
+      <div class="ch-table-wrap">
+        <table class="ch-table">
+          <thead>
+            <tr>
+              <th scope="col">{{ t('console.channels.provider') }}</th>
+              <th scope="col">{{ t('console.channels.channel') }}</th>
+              <th scope="col">{{ t('console.channels.transport') }}</th>
+              <th scope="col">{{ t('console.channels.status') }}</th>
+              <th scope="col">{{ t('console.channels.maturity') }}</th>
+              <th scope="col">{{ t('console.channels.connectedSince') }}</th>
+              <th scope="col"><span class="ch-sr-only">{{ t('console.channels.actions') }}</span></th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr
+              v-for="ch in filteredChannels"
+              :key="channelKey(ch)"
+              :class="{ 'is-selected': selectedName === channelKey(ch) }"
+              tabindex="0"
+              @click="selectChannel(ch)"
+              @keydown.enter="selectChannel(ch)"
+              @keydown.space.prevent="selectChannel(ch)"
+            >
+              <td><span class="ch-provider-mark" aria-hidden="true">{{ providerInitial(ch.type) }}</span><span class="ch-provider-name">{{ providerLabel(ch.type) }}</span></td>
+              <td><strong>{{ ch.name || ch.id || t('console.channels.unknown') }}</strong></td>
+              <td><span class="ch-muted">{{ transportLabel(ch) }}</span></td>
+              <td><span :class="['ch-status', statusTone(ch)]"><span class="dot" aria-hidden="true"></span>{{ statusLabel(ch) }}</span></td>
+              <td><span :class="['ch-maturity', maturityTone(ch)]">{{ maturityLabel(ch) }}</span></td>
+              <td><span class="ch-mono ch-muted">{{ formatSince(ch.connected_since) }}</span></td>
+              <td><Icon name="chevronRight" :size="15" aria-hidden="true" /></td>
+            </tr>
+            <tr v-if="filteredChannels.length === 0">
+              <td colspan="7" class="ch-table__none">{{ t('console.channels.noMatches') }}</td>
+            </tr>
+          </tbody>
+        </table>
       </div>
 
-      <div v-if="loading && channels.length === 0" class="control-empty">
-        <LoadingSpinner />
-      </div>
+      <aside v-if="selectedChannel" class="ch-detail" :aria-label="t('console.channels.detailLabel', { name: selectedChannel.name })" @keydown.esc="closeDetail">
+        <header class="ch-detail__header">
+          <div class="ch-detail__identity">
+            <span class="ch-provider-mark is-large" aria-hidden="true">{{ providerInitial(selectedChannel.type) }}</span>
+            <div>
+              <div class="ch-detail__title-row">
+                <h2>{{ selectedChannel.name }}</h2>
+                <span :class="['ch-status', statusTone(selectedChannel)]"><span class="dot" aria-hidden="true"></span>{{ statusLabel(selectedChannel) }}</span>
+              </div>
+              <p>{{ providerLabel(selectedChannel.type) }} · {{ transportLabel(selectedChannel) }}</p>
+            </div>
+          </div>
+          <button class="ch-icon-btn" type="button" :title="t('common.close')" @click="closeDetail"><Icon name="x" :size="18" /></button>
+        </header>
 
-      <ErrorState v-else-if="error" :message="error" :on-retry="loadData" />
-
-      <div v-else-if="channels.length === 0" class="control-empty ch-empty">
-        <div class="ch-empty__art" aria-hidden="true">
-          <svg viewBox="0 0 120 120" xmlns="http://www.w3.org/2000/svg">
-            <defs>
-              <radialGradient id="cg2" cx="50%" cy="50%" r="50%">
-                <stop offset="0%" stop-color="color-mix(in srgb, var(--accent) 18%, transparent)" />
-                <stop offset="60%" stop-color="color-mix(in srgb, var(--accent) 4%, transparent)" />
-                <stop offset="100%" stop-color="transparent" />
-              </radialGradient>
-            </defs>
-            <circle cx="60" cy="60" r="58" fill="url(#cg2)" />
-            <g fill="none" stroke="currentColor" stroke-width="1.4" opacity="0.55">
-              <rect x="20" y="40" width="36" height="40" rx="6" />
-              <line x1="28" y1="52" x2="48" y2="52" />
-              <line x1="28" y1="60" x2="44" y2="60" />
-            </g>
-            <g fill="none" stroke="var(--accent)" stroke-width="1.6">
-              <rect x="64" y="40" width="36" height="40" rx="6" />
-              <line x1="72" y1="52" x2="92" y2="52" />
-              <line x1="72" y1="60" x2="88" y2="60" />
-            </g>
-            <g stroke="var(--accent)" stroke-width="1.4" stroke-dasharray="2 4" opacity="0.7">
-              <line x1="56" y1="60" x2="64" y2="60" />
-            </g>
-          </svg>
-        </div>
-        <div class="control-empty__title">{{ t('console.channels.emptyTitle') }}</div>
-        <p class="control-empty__hint">
-          {{ t('console.channels.emptyMsg') }}
-        </p>
-        <div class="ch-empty__actions">
-          <button class="btn btn--primary" type="button" @click="openSettingsSurface">
-            <Icon name="settings" :size="16" />
-            <span>{{ t('console.channels.openSettingsBtn') }}</span>
+        <div class="ch-detail__actions">
+          <button class="btn btn--ghost" type="button" :disabled="actionPending(selectedChannel, 'probe')" @click="probeChannel(selectedChannel)">
+            <Icon name="gauge" :size="15" aria-hidden="true" />
+            <span>{{ actionPending(selectedChannel, 'probe') ? t('console.channels.testing') : t('console.channels.testConnection') }}</span>
+          </button>
+          <button class="btn btn--ghost" type="button" :disabled="actionPending(selectedChannel, 'restart') || selectedChannel.enabled === false" @click="restartChannel(selectedChannel)">
+            <Icon name="refresh" :size="15" aria-hidden="true" />
+            <span>{{ t('console.channels.restart') }}</span>
+          </button>
+          <button class="btn btn--ghost" type="button" @click="openSettingsSurface">
+            <Icon name="edit" :size="15" aria-hidden="true" />
+            <span>{{ t('console.channels.edit') }}</span>
+          </button>
+          <button class="btn btn--ghost" type="button" :disabled="actionPending(selectedChannel, 'toggle')" @click="toggleChannel(selectedChannel)">
+            <span>{{ selectedChannel.enabled === false ? t('console.channels.enable') : t('console.channels.disable') }}</span>
           </button>
         </div>
-        <code class="ch-empty__code">opensquilla onboard configure channels &middot; opensquilla channels list</code>
-      </div>
 
-      <div v-else class="ch-cards control-card-grid" style="--control-card-min: 300px">
-        <article
-          v-for="(ch, i) in channels"
-          :key="ch.id || ch.name || i"
-          class="ch-card control-card"
-          :style="{ '--i': i }"
-        >
-          <header class="ch-card__head">
-            <span :class="['dot', dotClass(ch.status)]"></span>
-            <span class="ch-card__name" :title="ch.name || ch.id || t('console.channels.unknown')">
-              {{ ch.name || ch.id || t('console.channels.unknown') }}
-            </span>
-            <span class="chip mono">{{ ch.type || 'unknown' }}</span>
-          </header>
-          <div class="ch-card__status">
-            <span :class="['chip', chipClass(ch.status)]">{{ ch.status || 'stopped' }}</span>
-          </div>
-          <dl class="ch-card__meta">
-            <div>
-              <dt>{{ t('console.channels.connected') }}</dt>
-              <dd class="ch-mono">{{ formatSince(ch.connected_since) }}</dd>
+        <nav class="ch-detail__tabs" role="tablist" :aria-label="t('console.channels.detailSections')">
+          <button v-for="tab in DETAIL_TABS" :key="tab" type="button" role="tab" :aria-selected="detailTab === tab" :class="{ 'is-active': detailTab === tab }" @click="setDetailTab(tab)">
+            {{ t(`console.channels.tabs.${tab}`) }}
+          </button>
+        </nav>
+
+        <div class="ch-detail__body">
+          <template v-if="detailTab === 'overview'">
+            <div v-if="probeResults[channelKey(selectedChannel)]" :class="['ch-probe-result', probeResults[channelKey(selectedChannel)]?.connected ? 'is-ok' : 'is-warn']" role="status">
+              <Icon :name="probeResults[channelKey(selectedChannel)]?.connected ? 'check' : 'info'" :size="17" aria-hidden="true" />
+              <div>
+                <strong>{{ probeResults[channelKey(selectedChannel)]?.connected ? t('console.channels.probeVerified') : t('console.channels.probeUnsupported') }}</strong>
+                <p>{{ probeResultDetail(selectedChannel) }}</p>
+              </div>
             </div>
-            <div>
-              <dt>{{ t('console.channels.restartAttempts') }}</dt>
-              <dd class="ch-mono">{{ ch.restart_attempts ?? '0' }}</dd>
-            </div>
-          </dl>
-          <details class="ch-card__config">
-            <summary>{{ t('console.channels.adapterConfig') }}</summary>
-            <pre class="ch-card__config-pre">{{ formatConfig(ch) }}</pre>
-          </details>
-          <footer class="ch-card__footnote">
-            <span>{{ statusHint(ch) }}</span>
-          </footer>
-        </article>
-      </div>
+            <section class="ch-panel">
+              <h3>{{ t('console.channels.healthChecks') }}</h3>
+              <div class="ch-check-row"><Icon name="shield" :size="18" /><div><strong>{{ t('console.channels.authentication') }}</strong><span>{{ t('console.channels.authDescription') }}</span></div><b :class="selectedChannel.connected ? 'is-ok' : 'is-muted'">{{ selectedChannel.connected ? t('console.channels.passed') : t('console.channels.notVerified') }}</b></div>
+              <div class="ch-check-row"><Icon name="cloud" :size="18" /><div><strong>{{ t('console.channels.transport') }}</strong><span>{{ transportDescription(selectedChannel) }}</span></div><b :class="selectedChannel.connected ? 'is-ok' : 'is-muted'">{{ selectedChannel.connected ? t('console.channels.healthy') : statusLabel(selectedChannel) }}</b></div>
+              <div class="ch-check-row"><Icon name="channels" :size="18" /><div><strong>{{ t('console.channels.durableDelivery') }}</strong><span>{{ t('console.channels.durableDescription') }}</span></div><b class="is-ok">{{ t('console.channels.active') }}</b></div>
+            </section>
+            <section class="ch-panel ch-facts">
+              <h3>{{ t('console.channels.runtime') }}</h3>
+              <dl>
+                <div><dt>{{ t('console.channels.connectedSince') }}</dt><dd>{{ formatSince(selectedChannel.connected_since) }}</dd></div>
+                <div><dt>{{ t('console.channels.restartAttempts') }}</dt><dd>{{ selectedChannel.restart_attempts ?? 0 }}</dd></div>
+                <div><dt>{{ t('console.channels.botIdentity') }}</dt><dd>{{ selectedChannel.bot_user_id || '—' }}</dd></div>
+                <div><dt>{{ t('console.channels.maturity') }}</dt><dd>{{ maturityLabel(selectedChannel) }}</dd></div>
+              </dl>
+            </section>
+          </template>
+
+          <template v-else-if="detailTab === 'capabilities'">
+            <section class="ch-panel">
+              <div class="ch-panel__heading"><h3>{{ t('console.channels.capabilityEvidence') }}</h3><span class="ch-maturity">{{ maturityLabel(selectedChannel) }}</span></div>
+              <p class="ch-panel__intro">{{ t('console.channels.capabilityEvidenceHint') }}</p>
+              <div v-if="capabilityRows(selectedChannel).length" class="ch-capabilities">
+                <div v-for="capability in capabilityRows(selectedChannel)" :key="capability.name" class="ch-capability">
+                  <Icon :name="capability.effective ? 'check' : 'info'" :size="15" />
+                  <div><strong>{{ humanize(capability.name) }}</strong><span>{{ evidenceLabel(capability) }}</span></div>
+                  <span :class="['ch-proof', capability.effective ? 'is-effective' : 'is-declared']">{{ capability.effective ? t('console.channels.implemented') : t('console.channels.declaredOnly') }}</span>
+                </div>
+              </div>
+              <p v-else class="ch-muted">{{ t('console.channels.noCapabilityEvidence') }}</p>
+            </section>
+          </template>
+
+          <template v-else-if="detailTab === 'pairings'">
+            <section class="ch-panel ch-pairings" :aria-busy="pairingsLoading">
+              <div class="ch-panel__heading">
+                <div>
+                  <h3>{{ t('console.channels.pairings.title') }}</h3>
+                  <p>{{ t('console.channels.pairings.description') }}</p>
+                </div>
+                <button
+                  class="btn btn--ghost"
+                  type="button"
+                  :disabled="pairingsLoading"
+                  @click="loadPairings(selectedChannel)"
+                >
+                  <Icon name="refresh" :size="14" aria-hidden="true" />
+                  {{ t('console.channels.pairings.refresh') }}
+                </button>
+              </div>
+
+              <div class="ch-pairing-summary" :aria-label="t('console.channels.pairings.summaryLabel')">
+                <span><strong>{{ pendingPairings.length }}</strong> {{ t('console.channels.pairings.pending') }}</span>
+                <span><strong>{{ approvedPairings.length }}</strong> {{ t('console.channels.pairings.approved') }}</span>
+              </div>
+
+              <div v-if="pairingsLoading && pairings.length === 0" class="ch-pairing-state" role="status">
+                <LoadingSpinner />
+                <span>{{ t('console.channels.pairings.loading') }}</span>
+              </div>
+              <div v-else-if="pairingsError" class="ch-pairing-state is-error" role="alert">
+                <Icon name="info" :size="17" aria-hidden="true" />
+                <span>{{ pairingsError }}</span>
+                <button class="btn btn--ghost" type="button" @click="loadPairings(selectedChannel)">
+                  {{ t('console.channels.pairings.tryAgain') }}
+                </button>
+              </div>
+              <div v-else-if="pairings.length === 0" class="ch-pairing-state">
+                <Icon name="shield" :size="20" aria-hidden="true" />
+                <strong>{{ t('console.channels.pairings.emptyTitle') }}</strong>
+                <span>{{ t('console.channels.pairings.emptyDescription') }}</span>
+              </div>
+              <div v-else class="ch-pairing-groups">
+                <section v-if="pendingPairings.length" :aria-label="t('console.channels.pairings.pendingRequests')">
+                  <h4>{{ t('console.channels.pairings.pendingRequests') }}</h4>
+                  <article v-for="pairing in pendingPairings" :key="pairing.pairingId" class="ch-pairing-row">
+                    <div class="ch-pairing-avatar" aria-hidden="true">{{ pairingInitial(pairing) }}</div>
+                    <div class="ch-pairing-identity">
+                      <strong>{{ pairing.senderName || pairing.senderId }}</strong>
+                      <span class="ch-mono">{{ pairing.senderId }}</span>
+                      <span v-if="pairing.pairingCode" class="ch-mono ch-pairing-code">{{ t('console.channels.pairings.requestCode', { code: pairing.pairingCode }) }}</span>
+                      <time v-if="pairing.createdAt" :datetime="pairing.createdAt">{{ t('console.channels.pairings.requestedAt', { time: formatSince(pairing.createdAt) }) }}</time>
+                    </div>
+                    <span class="ch-pairing-status is-pending">{{ t('console.channels.pairings.pending') }}</span>
+                    <button
+                      class="btn btn--primary"
+                      type="button"
+                      :disabled="pairingActionPending(selectedChannel, pairing, 'approve')"
+                      :aria-label="t('console.channels.pairings.approveLabel', { sender: pairing.senderName || pairing.senderId })"
+                      @click="approvePairing(selectedChannel, pairing)"
+                    >
+                      {{ pairingActionPending(selectedChannel, pairing, 'approve') ? t('console.channels.pairings.approving') : t('console.channels.pairings.approve') }}
+                    </button>
+                  </article>
+                </section>
+
+                <section v-if="approvedPairings.length" :aria-label="t('console.channels.pairings.approvedAccess')">
+                  <h4>{{ t('console.channels.pairings.approvedAccess') }}</h4>
+                  <article v-for="pairing in approvedPairings" :key="pairing.pairingId" class="ch-pairing-row">
+                    <div class="ch-pairing-avatar" aria-hidden="true">{{ pairingInitial(pairing) }}</div>
+                    <div class="ch-pairing-identity">
+                      <strong>{{ pairing.senderName || pairing.senderId }}</strong>
+                      <span class="ch-mono">{{ pairing.senderId }}</span>
+                      <time v-if="pairing.approvedAt" :datetime="pairing.approvedAt">{{ t('console.channels.pairings.approvedAt', { time: formatSince(pairing.approvedAt) }) }}</time>
+                    </div>
+                    <span class="ch-pairing-status is-approved">{{ t('console.channels.pairings.approved') }}</span>
+                    <button
+                      class="btn btn--ghost ch-pairing-revoke"
+                      type="button"
+                      :disabled="pairingActionPending(selectedChannel, pairing, 'revoke')"
+                      :aria-label="t('console.channels.pairings.revokeLabel', { sender: pairing.senderName || pairing.senderId })"
+                      @click="revokePairing(selectedChannel, pairing)"
+                    >
+                      {{ pairingActionPending(selectedChannel, pairing, 'revoke') ? t('console.channels.pairings.revoking') : t('console.channels.pairings.revoke') }}
+                    </button>
+                  </article>
+                </section>
+              </div>
+              <p class="ch-sr-only" role="status" aria-live="polite">{{ pairingAnnouncement }}</p>
+            </section>
+          </template>
+
+          <template v-else-if="detailTab === 'diagnostics'">
+            <section v-if="lastError(selectedChannel)" class="ch-alert is-danger">
+              <Icon name="info" :size="18" /><div><strong>{{ t('console.channels.lastError') }}</strong><p>{{ lastError(selectedChannel) }}</p></div>
+            </section>
+            <section class="ch-panel">
+              <h3>{{ t('console.channels.deliveryJournal') }}</h3>
+              <div class="ch-metrics">
+                <div><strong>{{ deliveryCount(selectedChannel, 'ingress', 'accepted') }}</strong><span>{{ t('console.channels.acceptedIngress') }}</span></div>
+                <div><strong>{{ deliveryCount(selectedChannel, 'ingress', 'processing') }}</strong><span>{{ t('console.channels.processingIngress') }}</span></div>
+                <div><strong>{{ deliveryCount(selectedChannel, 'outbox', 'sent') }}</strong><span>{{ t('console.channels.confirmedOutbound') }}</span></div>
+                <div :class="{ 'is-warn': deliveryCount(selectedChannel, 'outbox', 'unknown') > 0 }"><strong>{{ deliveryCount(selectedChannel, 'outbox', 'unknown') }}</strong><span>{{ t('console.channels.unknownOutbound') }}</span></div>
+              </div>
+            </section>
+            <section class="ch-panel ch-facts">
+              <h3>{{ t('console.channels.transportLease') }}</h3>
+              <dl>
+                <div><dt>{{ t('console.channels.leaseState') }}</dt><dd>{{ leaseSummary(selectedChannel) }}</dd></div>
+                <div><dt>{{ t('console.channels.networkProbe') }}</dt><dd>{{ probeResults[channelKey(selectedChannel)]?.status || diagnosticProbe(selectedChannel) }}</dd></div>
+              </dl>
+            </section>
+          </template>
+
+          <template v-else>
+            <section class="ch-panel">
+              <div class="ch-panel__heading"><h3>{{ t('console.channels.savedConfiguration') }}</h3><button class="btn btn--ghost" type="button" @click="openSettingsSurface"><Icon name="edit" :size="14" />{{ t('console.channels.editInSettings') }}</button></div>
+              <p class="ch-panel__intro">{{ t('console.channels.secretRedactionHint') }}</p>
+              <LoadingSpinner v-if="configLoading" />
+              <p v-else-if="configError" class="ch-alert-text">{{ configError }}</p>
+              <dl v-else-if="selectedConfig" class="ch-config-list">
+                <div v-for="field in configRows(selectedConfig)" :key="field.key"><dt>{{ humanize(field.key) }}</dt><dd :class="{ 'is-secret': field.secret }">{{ field.value }}</dd></div>
+              </dl>
+              <p v-else class="ch-muted">{{ t('console.channels.selectConfigurationHint') }}</p>
+            </section>
+          </template>
+        </div>
+      </aside>
     </section>
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed, onActivated, onDeactivated, onUnmounted } from 'vue'
+import { computed, onActivated, onDeactivated, onUnmounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
 import { useRpcStore } from '@/stores/rpc'
@@ -132,103 +323,119 @@ import Icon from '@/components/Icon.vue'
 import ErrorState from '@/components/ErrorState.vue'
 import LoadingSpinner from '@/components/LoadingSpinner.vue'
 import { useRequest } from '@/composables/useRequest'
+import { useToasts } from '@/composables/useToasts'
+import { useConfirm } from '@/composables/useConfirm'
 
-// ---------------------------------------------------------------------------
-// Types
-// ---------------------------------------------------------------------------
+interface CapabilityEvidence {
+  declared?: boolean
+  implemented?: boolean
+  effective?: boolean
+  evidence_kind?: string
+  methods?: string[]
+  proof_status?: string
+}
 
 interface Channel {
   name?: string
   id?: string
   type?: string
   status?: string
+  connected?: boolean
   connected_since?: string | number | null
   restart_attempts?: number
+  bot_user_id?: string | null
   enabled?: boolean
   configured?: boolean
+  capabilities?: string[]
+  capability_profile?: {
+    transports?: string[]
+    maturity?: string
+    evidence?: Record<string, CapabilityEvidence>
+  } | null
+  diagnostics?: Record<string, unknown>
   [key: string]: unknown
 }
 
-interface ChannelsStatusResponse {
-  channels?: Channel[]
+interface ProbeResult {
+  status: string
+  connected: boolean
+  latencyMs?: number | null
+  detail?: string
+  result?: Record<string, unknown>
 }
 
-// ---------------------------------------------------------------------------
-// Constants
-// ---------------------------------------------------------------------------
-
-const STATUS_ORDER: Record<string, number> = {
-  running: 0,
-  connected: 0,
-  restarting: 1,
-  exhausted: 1,
-  dead: 1,
-  stopped: 2,
-  disabled: 3,
+interface ChannelsStatusResponse { channels?: Channel[] }
+interface ChannelPairing {
+  pairingId: string
+  pairingCode?: string
+  channelName: string
+  senderId: string
+  senderName?: string | null
+  status: 'pending' | 'approved' | string
+  createdAt?: string | null
+  approvedAt?: string | null
 }
 
-// ---------------------------------------------------------------------------
-// State
-// ---------------------------------------------------------------------------
+interface PairingsResponse { pairings?: ChannelPairing[] }
+type DetailTab = 'overview' | 'pairings' | 'capabilities' | 'diagnostics' | 'configuration'
+type StatusFilter = 'all' | 'connected' | 'attention' | 'inactive'
+
+const STATUS_ORDER: Record<string, number> = { running: 0, connected: 0, restarting: 1, exhausted: 1, dead: 1, stopped: 2, disabled: 3 }
+const DETAIL_TABS: DetailTab[] = ['overview', 'pairings', 'capabilities', 'diagnostics', 'configuration']
+const SECRET_MARKER = '***'
 
 const { t } = useI18n()
 const rpc = useRpcStore()
 const router = useRouter()
+const { pushToast } = useToasts()
+const { confirm } = useConfirm()
+const searchQuery = ref('')
+const providerFilter = ref('all')
+const statusFilter = ref<StatusFilter>('all')
+const selectedName = ref('')
+const detailTab = ref<DetailTab>('overview')
+const pendingActions = ref(new Set<string>())
+const probeResults = ref<Record<string, ProbeResult>>({})
+const selectedConfig = ref<Record<string, unknown> | null>(null)
+const selectedSecretFields = ref<string[]>([])
+const configLoading = ref(false)
+const configError = ref('')
+const pairings = ref<ChannelPairing[]>([])
+const pairingsLoading = ref(false)
+const pairingsError = ref('')
+const pairingAnnouncement = ref('')
+let pairingsRequestId = 0
 
-// immediate: false — under <KeepAlive> the composable's onMounted fetch fires
-// only on first mount, so loading is driven from onActivated instead (execute()
-// on the first display for the spinner, refresh() silently afterwards).
 const { data: channelsData, loading, error, execute, refresh } = useRequest<ChannelsStatusResponse>(
-  'channels.status',
-  undefined,
-  { immediate: false, errorLabel: t('console.channels.loadFailed') },
+  'channels.status', undefined, { immediate: false, errorLabel: t('console.channels.loadFailed') },
 )
 
 const channels = computed<Channel[]>(() => {
-  const raw = (channelsData.value?.channels || []).filter(c => c && c.configured !== false)
-  return [...raw].sort((a, b) => {
-    const oa = STATUS_ORDER[a.status || ''] ?? 1
-    const ob = STATUS_ORDER[b.status || ''] ?? 1
-    return oa - ob
+  const raw = (channelsData.value?.channels || []).filter(ch => ch && ch.configured !== false)
+  return [...raw].sort((a, b) => (STATUS_ORDER[a.status || ''] ?? 1) - (STATUS_ORDER[b.status || ''] ?? 1))
+})
+const total = computed(() => channels.value.length)
+const connected = computed(() => channels.value.filter(ch => isRunning(ch.status)).length)
+const attention = computed(() => channels.value.filter(ch => needsAttention(ch.status)).length)
+const inactive = computed(() => total.value - connected.value - attention.value)
+const providers = computed(() => [...new Set(channels.value.map(ch => String(ch.type || 'unknown')))].sort())
+const selectedChannel = computed(() => channels.value.find(ch => channelKey(ch) === selectedName.value) || null)
+const filteredChannels = computed(() => {
+  const query = searchQuery.value.trim().toLowerCase()
+  return channels.value.filter(ch => {
+    if (providerFilter.value !== 'all' && ch.type !== providerFilter.value) return false
+    if (statusFilter.value === 'connected' && !isRunning(ch.status)) return false
+    if (statusFilter.value === 'attention' && !needsAttention(ch.status)) return false
+    if (statusFilter.value === 'inactive' && (isRunning(ch.status) || needsAttention(ch.status))) return false
+    return !query || [ch.name, ch.id, ch.type, ch.status].some(value => String(value || '').toLowerCase().includes(query))
   })
 })
+const pendingPairings = computed(() => pairings.value.filter(pairing => pairing.status === 'pending'))
+const approvedPairings = computed(() => pairings.value.filter(pairing => pairing.status === 'approved'))
 
 const loadData = refresh
-
 let pollTimer: ReturnType<typeof setInterval> | null = null
 let unsubs: Array<() => void> = []
-
-// ---------------------------------------------------------------------------
-// Computed
-// ---------------------------------------------------------------------------
-
-const total = computed(() => channels.value.length)
-
-const connected = computed(() =>
-  channels.value.filter(c => c.status === 'running' || c.status === 'connected').length
-)
-
-const attention = computed(() =>
-  channels.value.filter(c => needsAttention(c.status)).length
-)
-
-const inactive = computed(() => total.value - connected.value - attention.value)
-
-const restarts = computed(() =>
-  channels.value.reduce((acc, c) => acc + (Number(c.restart_attempts) || 0), 0)
-)
-
-// ---------------------------------------------------------------------------
-// Lifecycle
-// ---------------------------------------------------------------------------
-
-// This view is kept-alive (route meta.keepAlive), so the live `channel.status`
-// subscription and the fallback poll are bound on activation and released on
-// deactivation — they must not keep firing while the view is cached off-screen.
-// onActivated also runs on first display: execute() (with the spinner) covers the
-// initial empty load, refresh() (silent) covers every keep-alive revisit so the
-// background refresh never flashes the spinner over already-rendered data.
-// onUnmounted is a final safety net for KeepAlive cache eviction.
 let activatedOnce = false
 
 function teardownLive() {
@@ -238,321 +445,413 @@ function teardownLive() {
 }
 
 onActivated(() => {
-  if (!activatedOnce) {
-    activatedOnce = true
-    void execute()
-  } else {
-    void refresh()
-  }
+  if (!activatedOnce) { activatedOnce = true; void execute() } else { void refresh() }
   unsubs = [rpc.on('channel.status', () => { void refresh() })]
   pollTimer = setInterval(() => { void refresh() }, 30000)
 })
-
 onDeactivated(teardownLive)
 onUnmounted(teardownLive)
 
-// Deep-link straight to the Channels section — the button promises channel
-// configuration, so it must not land on the default (Model Service) section.
-function openSettingsSurface(): void {
-  void router.push('/settings/channels')
+function openSettingsSurface(): void { void router.push('/settings/channels') }
+function channelKey(ch: Channel): string { return String(ch.name || ch.id || ch.type || 'unknown') }
+function isRunning(status?: string): boolean { return status === 'running' || status === 'connected' }
+function needsAttention(status?: string): boolean { return status === 'dead' || status === 'restarting' || status === 'exhausted' }
+
+function selectChannel(ch: Channel): void {
+  pairingsRequestId += 1
+  selectedName.value = channelKey(ch)
+  detailTab.value = 'overview'
+  selectedConfig.value = null
+  selectedSecretFields.value = []
+  configError.value = ''
+  pairings.value = []
+  pairingsLoading.value = false
+  pairingsError.value = ''
+  pairingAnnouncement.value = ''
 }
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
+function closeDetail(): void { selectedName.value = '' }
 
-function needsAttention(status?: string): boolean {
-  return status === 'dead' || status === 'restarting' || status === 'exhausted'
+function setDetailTab(tab: DetailTab): void {
+  detailTab.value = tab
+  if (tab === 'configuration' && selectedChannel.value && !selectedConfig.value && !configLoading.value) {
+    void loadConfiguration(selectedChannel.value)
+  }
+  if (tab === 'pairings' && selectedChannel.value && !pairingsLoading.value) {
+    void loadPairings(selectedChannel.value)
+  }
 }
 
-function isRunning(status?: string): boolean {
-  return status === 'running' || status === 'connected'
+async function withAction(ch: Channel, action: string, run: () => Promise<void>): Promise<void> {
+  const key = `${channelKey(ch)}:${action}`
+  if (pendingActions.value.has(key)) return
+  pendingActions.value = new Set(pendingActions.value).add(key)
+  try { await run() } finally {
+    const next = new Set(pendingActions.value)
+    next.delete(key)
+    pendingActions.value = next
+  }
 }
 
-function isDead(status?: string): boolean {
-  return status === 'dead'
+function actionPending(ch: Channel, action: string): boolean { return pendingActions.value.has(`${channelKey(ch)}:${action}`) }
+
+function pairingActionKey(ch: Channel, pairing: ChannelPairing, action: string): string {
+  return `pairing:${channelKey(ch)}:${pairing.pairingId}:${action}`
 }
 
-function dotClass(status?: string): string {
-  if (isRunning(status)) return 'ok'
-  if (isDead(status)) return 'err'
-  return 'off'
+function pairingActionPending(ch: Channel, pairing: ChannelPairing, action: string): boolean {
+  return pendingActions.value.has(pairingActionKey(ch, pairing, action))
 }
 
-function chipClass(status?: string): string {
-  if (isRunning(status)) return 'chip-ok'
-  if (isDead(status)) return 'chip-danger'
-  return ''
+async function withPairingAction(ch: Channel, pairing: ChannelPairing, action: string, run: () => Promise<void>): Promise<void> {
+  const key = pairingActionKey(ch, pairing, action)
+  if (pendingActions.value.has(key)) return
+  pendingActions.value = new Set(pendingActions.value).add(key)
+  try { await run() } finally {
+    const next = new Set(pendingActions.value)
+    next.delete(key)
+    pendingActions.value = next
+  }
+}
+
+async function loadPairings(ch: Channel): Promise<void> {
+  const name = channelKey(ch)
+  const requestId = ++pairingsRequestId
+  pairingsLoading.value = true
+  pairingsError.value = ''
+  try {
+    const result = await rpc.call<PairingsResponse>('channels.pairings', { channelName: name })
+    if (selectedName.value !== name || requestId !== pairingsRequestId) return
+    pairings.value = (result.pairings || []).filter(pairing => pairing.channelName === name)
+  } catch (err) {
+    if (selectedName.value === name && requestId === pairingsRequestId) {
+      pairingsError.value = t('console.channels.pairings.loadFailed', { error: errorMessage(err) })
+    }
+  } finally {
+    if (selectedName.value === name && requestId === pairingsRequestId) pairingsLoading.value = false
+  }
+}
+
+async function approvePairing(ch: Channel, pairing: ChannelPairing): Promise<void> {
+  const sender = pairing.senderName || pairing.senderId
+  const confirmed = await confirm({
+    title: t('console.channels.pairings.approveConfirmTitle'),
+    body: t('console.channels.pairings.approveConfirmBody', { sender, channel: channelKey(ch) }),
+    primaryLabel: t('console.channels.pairings.approve'),
+    primaryClass: 'btn--primary',
+  })
+  if (!confirmed) return
+  await withPairingAction(ch, pairing, 'approve', async () => {
+    pairingsError.value = ''
+    try {
+      await rpc.call('channels.pairing.approve', { channelName: channelKey(ch), pairingId: pairing.pairingId })
+      pairingAnnouncement.value = t('console.channels.pairings.approveSuccess', { sender })
+      pushToast(pairingAnnouncement.value, { tone: 'ok' })
+      await loadPairings(ch)
+    } catch (err) {
+      pairingsError.value = t('console.channels.pairings.approveFailed', { sender, error: errorMessage(err) })
+    }
+  })
+}
+
+async function revokePairing(ch: Channel, pairing: ChannelPairing): Promise<void> {
+  const sender = pairing.senderName || pairing.senderId
+  const confirmed = await confirm({
+    title: t('console.channels.pairings.revokeConfirmTitle'),
+    body: t('console.channels.pairings.revokeConfirmBody', { sender, channel: channelKey(ch) }),
+    primaryLabel: t('console.channels.pairings.revoke'),
+  })
+  if (!confirmed) return
+  await withPairingAction(ch, pairing, 'revoke', async () => {
+    pairingsError.value = ''
+    try {
+      await rpc.call('channels.pairing.revoke', { channelName: channelKey(ch), pairingId: pairing.pairingId })
+      pairingAnnouncement.value = t('console.channels.pairings.revokeSuccess', { sender })
+      pushToast(pairingAnnouncement.value, { tone: 'ok' })
+      await loadPairings(ch)
+    } catch (err) {
+      pairingsError.value = t('console.channels.pairings.revokeFailed', { sender, error: errorMessage(err) })
+    }
+  })
+}
+
+async function probeChannel(ch: Channel): Promise<void> {
+  await withAction(ch, 'probe', async () => {
+    try {
+      const result = await rpc.call<ProbeResult>('channels.probe', { name: channelKey(ch) })
+      probeResults.value = { ...probeResults.value, [channelKey(ch)]: result }
+      pushToast(result.connected ? t('console.channels.toastProbePassed', { name: channelKey(ch), ms: result.latencyMs ?? 0 }) : t('console.channels.toastProbeUnsupported', { name: channelKey(ch) }), { tone: result.connected ? 'ok' : 'info' })
+    } catch (err) {
+      pushToast(t('console.channels.toastProbeFailed', { name: channelKey(ch), error: errorMessage(err) }), { tone: 'danger' })
+    }
+  })
+}
+
+async function restartChannel(ch: Channel): Promise<void> {
+  await withAction(ch, 'restart', async () => {
+    try {
+      await rpc.call('channels.restart', { name: channelKey(ch) })
+      pushToast(t('console.channels.toastRestarted', { name: channelKey(ch) }), { tone: 'ok' })
+      await refresh()
+    } catch (err) {
+      pushToast(t('console.channels.toastRestartFailed', { name: channelKey(ch), error: errorMessage(err) }), { tone: 'danger' })
+    }
+  })
+}
+
+async function toggleChannel(ch: Channel): Promise<void> {
+  await withAction(ch, 'toggle', async () => {
+    const enabling = ch.enabled === false
+    try {
+      await rpc.call(`onboarding.channel.${enabling ? 'enable' : 'disable'}`, { name: channelKey(ch) })
+      pushToast(t(enabling ? 'console.channels.toastEnabled' : 'console.channels.toastDisabled', { name: channelKey(ch) }), { tone: 'ok' })
+      await refresh()
+    } catch (err) {
+      pushToast(t('console.channels.toastToggleFailed', { name: channelKey(ch), error: errorMessage(err) }), { tone: 'danger' })
+    }
+  })
+}
+
+async function loadConfiguration(ch: Channel): Promise<void> {
+  configLoading.value = true
+  configError.value = ''
+  try {
+    const result = await rpc.call<{ entry: Record<string, unknown>; secretFields?: string[] }>('channels.get', { name: channelKey(ch) })
+    if (selectedName.value !== channelKey(ch)) return
+    selectedConfig.value = result.entry
+    selectedSecretFields.value = result.secretFields || []
+  } catch (err) {
+    configError.value = t('console.channels.configurationUnavailable', { error: errorMessage(err) })
+  } finally { configLoading.value = false }
+}
+
+function errorMessage(err: unknown): string { return err instanceof Error ? err.message : String(err) }
+function providerInitial(type?: string): string { return String(type || '?').slice(0, 1).toUpperCase() }
+function pairingInitial(pairing: ChannelPairing): string { return String(pairing.senderName || pairing.senderId || '?').slice(0, 1).toUpperCase() }
+function providerLabel(type?: string): string { return humanize(type || t('console.channels.unknown')) }
+function humanize(value: string): string { return value.replace(/[_-]+/g, ' ').replace(/\b\w/g, char => char.toUpperCase()) }
+function transportLabel(ch: Channel): string { return (ch.capability_profile?.transports || []).map(humanize).join(' / ') || t('console.channels.notReported') }
+function transportDescription(ch: Channel): string { return t('console.channels.transportDescription', { transport: transportLabel(ch) }) }
+
+function statusTone(ch: Channel): string {
+  if (isRunning(ch.status)) return 'is-ok'
+  if (needsAttention(ch.status)) return 'is-warn'
+  return 'is-muted'
+}
+
+function statusLabel(ch: Channel): string {
+  if (ch.enabled === false || ch.status === 'disabled') return t('console.channels.disabled')
+  if (isRunning(ch.status)) return t('console.channels.connected')
+  if (ch.status === 'restarting') return t('console.channels.restarting')
+  if (ch.status === 'dead' || ch.status === 'exhausted') return t('console.channels.needsAttentionStatus')
+  return t('console.channels.inactive')
+}
+
+function maturityLabel(ch: Channel): string {
+  const raw = String(ch.capability_profile?.maturity || 'unrated').replace(/^[A-Z]+-/, '')
+  return humanize(raw)
+}
+
+function maturityTone(ch: Channel): string {
+  const value = maturityLabel(ch).toLowerCase()
+  if (value.includes('shipping') || value.includes('stable')) return 'is-stable'
+  if (value.includes('experimental')) return 'is-experimental'
+  return 'is-unrated'
 }
 
 function formatSince(since?: string | number | null): string {
   if (!since) return '—'
-  const d = new Date(since)
-  if (isNaN(d.getTime())) return String(since)
-  return d.toLocaleString()
+  const date = new Date(since)
+  return Number.isNaN(date.getTime()) ? String(since) : date.toLocaleString()
 }
 
-function formatConfig(ch: Channel): string {
-  try {
-    return JSON.stringify(ch, null, 2)
-  } catch {
-    return String(ch)
-  }
+function capabilityRows(ch: Channel): Array<CapabilityEvidence & { name: string }> {
+  const evidence = ch.capability_profile?.evidence || {}
+  return Object.entries(evidence).map(([name, value]) => ({ name, ...value })).sort((a, b) => Number(Boolean(b.effective)) - Number(Boolean(a.effective)) || a.name.localeCompare(b.name))
 }
 
-function statusHint(ch: Channel): string {
-  const status = ch.status || (ch.connected ? 'connected' : 'stopped')
-  const running = isRunning(status)
-  const dead = isDead(status)
-  const enabled = ch.enabled !== false
-  const name = ch.name || '<name>'
+function evidenceLabel(capability: CapabilityEvidence): string {
+  if (capability.methods?.length) return t('console.channels.methodEvidence', { methods: capability.methods.join(', ') })
+  return capability.proof_status === 'verified' ? t('console.channels.liveVerified') : t('console.channels.declarationEvidence')
+}
 
-  if (!enabled) {
-    return t('console.channels.hintDisabled')
-  }
-  if (dead) {
-    return t('console.channels.hintDead', { cmd: `opensquilla channels restart ${name}` })
-  }
-  if (running) {
-    return t('console.channels.hintRunning')
-  }
-  if (status === 'restarting') {
-    return t('console.channels.hintRestarting')
-  }
-  if (status === 'exhausted') {
-    return t('console.channels.hintExhausted', { cmd: `opensquilla channels restart ${name}` })
-  }
-  return t('console.channels.hintConfiguredInactive')
+function diagnostics(ch: Channel): Record<string, unknown> { return ch.diagnostics && typeof ch.diagnostics === 'object' ? ch.diagnostics : {} }
+function delivery(ch: Channel): Record<string, unknown> { const value = diagnostics(ch).delivery; return value && typeof value === 'object' ? value as Record<string, unknown> : {} }
+function record(value: unknown): Record<string, unknown> { return value && typeof value === 'object' ? value as Record<string, unknown> : {} }
+
+function deliveryCount(ch: Channel, section: string, state: string): number {
+  return Number(record(record(delivery(ch)[section])[state]).count || 0)
+}
+
+function lastError(ch: Channel): string {
+  const value = diagnostics(ch).last_error
+  if (!value || typeof value !== 'object') return ''
+  return String(record(value).message || record(value).error_class || '')
+}
+
+function diagnosticProbe(ch: Channel): string { return humanize(String(diagnostics(ch).network_probe || 'not_run')) }
+
+function leaseSummary(ch: Channel): string {
+  if (record(diagnostics(ch).transport_lease).fencing_token) return t('console.channels.leaseHeld')
+  const leases = delivery(ch).leases
+  if (!Array.isArray(leases) || leases.length === 0) return t('console.channels.noActiveLease')
+  return leases.some(lease => !record(lease).expired) ? t('console.channels.leaseHeld') : t('console.channels.leaseExpired')
+}
+
+function probeResultDetail(ch: Channel): string {
+  const result = probeResults.value[channelKey(ch)]
+  if (!result) return ''
+  if (result.detail) return result.detail
+  if (result.latencyMs != null) return t('console.channels.probeLatency', { ms: result.latencyMs })
+  return t('console.channels.probeNoDetail')
+}
+
+function configRows(config: Record<string, unknown>): Array<{ key: string; value: string; secret: boolean }> {
+  return Object.entries(config).filter(([key]) => !['name', 'type'].includes(key)).map(([key, value]) => {
+    const secret = value === SECRET_MARKER || selectedSecretFields.value.includes(key)
+    const display = secret ? t('console.channels.secretStored') : Array.isArray(value) ? value.join(', ') || '—' : String(value ?? '—')
+    return { key, value: display, secret }
+  })
 }
 </script>
 
 <style scoped>
-/* Inline status counts on the canvas (replaces the former stat-tile band). */
-.ch-statusline {
-  align-items: center;
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--sp-2) var(--sp-4);
-}
-.ch-count {
-  color: var(--text-dim);
-  font-size: var(--fs-sm);
-}
-.ch-count b {
-  color: var(--text);
-  font-variant-numeric: tabular-nums;
-  font-weight: 600;
-  margin-right: 4px;
-}
-.ch-count.is-ok b { color: var(--ok); }
-.ch-count.is-attention { color: var(--danger); font-weight: 600; }
+.ch-sr-only { height: 1px; margin: -1px; overflow: hidden; padding: 0; position: absolute; width: 1px; clip: rect(0, 0, 0, 0); white-space: nowrap; }
+.ch-summary { align-items: stretch; display: flex; flex-wrap: wrap; width: fit-content; background: var(--bg-surface); border: 1px solid var(--border); border-radius: var(--radius-control); overflow: hidden; }
+.ch-summary__item { align-items: center; background: transparent; border: 0; border-right: 1px solid var(--border); color: var(--text-muted); cursor: pointer; display: flex; font: inherit; gap: 7px; min-height: 38px; padding: 7px 14px; }
+.ch-summary__item:last-child { border-right: 0; }
+.ch-summary__item:hover, .ch-summary__item.is-active { background: var(--bg-surface-2); color: var(--text); }
+.ch-summary__item.is-active { box-shadow: inset 0 -2px var(--accent); }
+.ch-summary__item strong { color: var(--text); font-variant-numeric: tabular-nums; }
+.dot { background: var(--text-dim); border-radius: 50%; display: inline-block; height: 8px; width: 8px; }
+.dot.ok, .ch-status.is-ok .dot { background: var(--ok); }
+.dot.warn, .ch-status.is-warn .dot { background: var(--warn); }
+.dot.off, .ch-status.is-muted .dot { background: var(--text-dim); }
+.ch-toolbar { align-items: center; display: flex; flex-wrap: wrap; gap: var(--sp-3); }
+.ch-search { align-items: center; background: var(--bg-surface); border: 1px solid var(--border); border-radius: var(--radius-control); color: var(--text-dim); display: flex; gap: 8px; min-width: min(320px, 100%); padding: 0 11px; }
+.ch-search:focus-within, .ch-select:focus-within { border-color: var(--accent); box-shadow: var(--focus-ring); }
+.ch-search input, .ch-select select { background: transparent; border: 0; color: var(--text); font: inherit; min-height: 36px; outline: 0; width: 100%; }
+.ch-select { background: var(--bg-surface); border: 1px solid var(--border); border-radius: var(--radius-control); min-width: 180px; padding: 0 8px; }
+.ch-toolbar__result { color: var(--text-dim); font-size: var(--fs-sm); }
+.ch-workspace { display: grid; gap: var(--sp-4); grid-template-columns: minmax(0, 1fr); min-height: 480px; }
+.ch-workspace.has-detail { grid-template-columns: minmax(460px, 1fr) minmax(420px, 46%); }
+.ch-table-wrap { background: var(--bg-surface); border: 1px solid var(--border); border-radius: var(--radius-lg); min-width: 0; overflow: auto; }
+.ch-table { border-collapse: collapse; font-size: var(--fs-sm); min-width: 760px; width: 100%; }
+.ch-table th { color: var(--text-dim); font-size: 11px; font-weight: 600; letter-spacing: .04em; padding: 12px 14px; text-align: left; text-transform: uppercase; }
+.ch-table td { border-top: 1px solid var(--border); color: var(--text); padding: 14px; vertical-align: middle; }
+.ch-table tbody tr { cursor: pointer; outline: 0; }
+.ch-table tbody tr:hover, .ch-table tbody tr:focus-visible, .ch-table tbody tr.is-selected { background: var(--bg-surface-2); }
+.ch-table tbody tr.is-selected { box-shadow: inset 3px 0 var(--accent); }
+.ch-table td:first-child { align-items: center; display: flex; gap: 9px; }
+.ch-table td:last-child { color: var(--text-dim); text-align: right; }
+.ch-table__none { color: var(--text-dim) !important; padding: 36px !important; text-align: center !important; }
+.ch-provider-mark { align-items: center; background: color-mix(in srgb, var(--accent) 16%, var(--bg-surface-2)); border: 1px solid color-mix(in srgb, var(--accent) 38%, var(--border)); border-radius: var(--radius-sm); color: var(--accent); display: inline-flex; flex: 0 0 auto; font-weight: 800; height: 28px; justify-content: center; width: 28px; }
+.ch-provider-mark.is-large { border-radius: var(--radius-md); font-size: 18px; height: 42px; width: 42px; }
+.ch-muted { color: var(--text-dim); }
+.ch-mono { font-family: var(--font-mono); font-size: 11px; }
+.ch-status { align-items: center; color: var(--text-muted); display: inline-flex; gap: 7px; white-space: nowrap; }
+.ch-status.is-ok { color: var(--ok); }
+.ch-status.is-warn { color: var(--warn); }
+.ch-maturity, .ch-proof { border: 1px solid var(--border); border-radius: var(--radius-full); color: var(--text-muted); display: inline-flex; font-size: 10px; font-weight: 700; letter-spacing: .03em; padding: 3px 8px; text-transform: uppercase; white-space: nowrap; }
+.ch-maturity.is-stable, .ch-proof.is-effective { border-color: color-mix(in srgb, var(--ok) 45%, var(--border)); color: var(--ok); }
+.ch-maturity.is-experimental { border-color: color-mix(in srgb, var(--warn) 45%, var(--border)); color: var(--warn); }
+.ch-detail { background: var(--bg-surface); border: 1px solid var(--border); border-radius: var(--radius-lg); display: flex; flex-direction: column; min-height: 620px; min-width: 0; overflow: hidden; }
+.ch-detail__header { align-items: flex-start; display: flex; gap: var(--sp-3); justify-content: space-between; padding: var(--sp-4); }
+.ch-detail__identity { align-items: center; display: flex; gap: var(--sp-3); min-width: 0; }
+.ch-detail__title-row { align-items: center; display: flex; flex-wrap: wrap; gap: 10px; }
+.ch-detail__title-row h2 { font-size: var(--fs-lg); margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ch-detail__identity p { color: var(--text-dim); font-size: var(--fs-sm); margin: 4px 0 0; }
+.ch-icon-btn { align-items: center; background: transparent; border: 0; border-radius: var(--radius-sm); color: var(--text-muted); cursor: pointer; display: inline-flex; justify-content: center; padding: 6px; }
+.ch-icon-btn:hover { background: var(--bg-surface-2); color: var(--text); }
+.ch-detail__actions { display: flex; flex-wrap: wrap; gap: 8px; padding: 0 var(--sp-4) var(--sp-3); }
+.ch-detail__actions .btn { min-height: 32px; padding: 5px 10px; }
+.ch-detail__tabs { border-bottom: 1px solid var(--border); border-top: 1px solid var(--border); display: flex; overflow-x: auto; padding: 0 var(--sp-4); }
+.ch-detail__tabs button { background: transparent; border: 0; color: var(--text-muted); cursor: pointer; font: inherit; font-size: var(--fs-sm); font-weight: 600; padding: 12px 13px; position: relative; white-space: nowrap; }
+.ch-detail__tabs button:hover, .ch-detail__tabs button.is-active { color: var(--text); }
+.ch-detail__tabs button.is-active::after { background: var(--accent); bottom: 0; content: ''; height: 2px; left: 10px; position: absolute; right: 10px; }
+.ch-detail__body { display: grid; gap: var(--sp-3); overflow-y: auto; padding: var(--sp-4); }
+.ch-panel, .ch-alert { background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius-md); overflow: hidden; }
+.ch-panel > h3, .ch-panel__heading { align-items: center; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; margin: 0; padding: 12px 14px; }
+.ch-panel h3 { font-size: var(--fs-sm); margin: 0; }
+.ch-panel__intro { color: var(--text-dim); font-size: var(--fs-sm); line-height: 1.5; margin: 0; padding: 12px 14px 0; }
+.ch-check-row { align-items: center; border-top: 1px solid var(--border); display: grid; gap: 11px; grid-template-columns: 20px minmax(0, 1fr) auto; padding: 13px 14px; }
+.ch-panel > h3 + .ch-check-row { border-top: 0; }
+.ch-check-row > svg { color: var(--text-muted); }
+.ch-check-row div { display: grid; gap: 3px; }
+.ch-check-row strong { font-size: var(--fs-sm); }
+.ch-check-row span { color: var(--text-dim); font-size: 11px; }
+.ch-check-row b { font-size: 11px; }
+.is-ok { color: var(--ok); }
+.is-muted { color: var(--text-dim); }
+.is-warn { color: var(--warn); }
+.ch-facts dl, .ch-config-list { margin: 0; }
+.ch-facts dl > div, .ch-config-list > div { align-items: baseline; border-top: 1px solid var(--border); display: flex; gap: var(--sp-3); justify-content: space-between; padding: 11px 14px; }
+.ch-facts dl > div:first-child, .ch-config-list > div:first-child { border-top: 0; }
+.ch-facts dt, .ch-config-list dt { color: var(--text-dim); font-size: var(--fs-sm); }
+.ch-facts dd, .ch-config-list dd { font-family: var(--font-mono); font-size: 11px; margin: 0; max-width: 64%; overflow-wrap: anywhere; text-align: right; }
+.ch-config-list dd.is-secret { color: var(--ok); font-family: var(--font-sans); }
+.ch-probe-result, .ch-alert { align-items: flex-start; display: flex; gap: 10px; padding: 12px 14px; }
+.ch-probe-result { background: color-mix(in srgb, var(--ok) 8%, var(--bg)); border: 1px solid color-mix(in srgb, var(--ok) 36%, var(--border)); border-radius: var(--radius-md); color: var(--ok); }
+.ch-probe-result.is-warn { background: color-mix(in srgb, var(--warn) 8%, var(--bg)); border-color: color-mix(in srgb, var(--warn) 36%, var(--border)); color: var(--warn); }
+.ch-probe-result p, .ch-alert p { color: var(--text-muted); font-size: var(--fs-sm); margin: 3px 0 0; }
+.ch-alert.is-danger { background: color-mix(in srgb, var(--danger) 8%, var(--bg)); border-color: color-mix(in srgb, var(--danger) 38%, var(--border)); color: var(--danger); }
+.ch-alert-text { color: var(--danger); font-size: var(--fs-sm); padding: 12px 14px; }
+.ch-capabilities { padding: 8px 0; }
+.ch-capability { align-items: center; display: grid; gap: 10px; grid-template-columns: 18px minmax(0, 1fr) auto; padding: 9px 14px; }
+.ch-capability > svg { color: var(--ok); }
+.ch-capability div { display: grid; gap: 2px; }
+.ch-capability strong { font-size: var(--fs-sm); }
+.ch-capability span:not(.ch-proof) { color: var(--text-dim); font-size: 11px; }
+.ch-proof.is-declared { color: var(--text-dim); }
+.ch-pairings .ch-panel__heading { align-items: flex-start; gap: var(--sp-3); }
+.ch-pairings .ch-panel__heading > div { min-width: 0; }
+.ch-pairings .ch-panel__heading p { color: var(--text-dim); font-size: 11px; line-height: 1.45; margin: 4px 0 0; }
+.ch-pairing-summary { align-items: center; border-bottom: 1px solid var(--border); color: var(--text-muted); display: flex; font-size: 11px; gap: var(--sp-4); padding: 9px 14px; }
+.ch-pairing-summary strong { color: var(--text); font-family: var(--font-mono); }
+.ch-pairing-state { align-items: center; color: var(--text-dim); display: flex; flex-direction: column; gap: 8px; justify-content: center; min-height: 180px; padding: var(--sp-4); text-align: center; }
+.ch-pairing-state.is-error { color: var(--danger); }
+.ch-pairing-groups > section + section { border-top: 1px solid var(--border); }
+.ch-pairing-groups h4 { color: var(--text-dim); font-size: 11px; letter-spacing: .04em; margin: 0; padding: 11px 14px 7px; text-transform: uppercase; }
+.ch-pairing-row { align-items: center; display: grid; gap: 10px; grid-template-columns: 32px minmax(0, 1fr) auto auto; padding: 10px 14px; }
+.ch-pairing-row + .ch-pairing-row { border-top: 1px solid var(--border); }
+.ch-pairing-avatar { align-items: center; background: var(--bg-surface-2); border: 1px solid var(--border); border-radius: 50%; color: var(--text-muted); display: flex; font-size: 12px; font-weight: 800; height: 32px; justify-content: center; width: 32px; }
+.ch-pairing-identity { display: grid; gap: 2px; min-width: 0; }
+.ch-pairing-identity strong, .ch-pairing-identity span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ch-pairing-identity strong { font-size: var(--fs-sm); }
+.ch-pairing-identity .ch-pairing-code { color: var(--warn); font-size: 10px; }
+.ch-pairing-identity time { color: var(--text-dim); font-size: 10px; }
+.ch-pairing-status { border: 1px solid var(--border); border-radius: var(--radius-full); font-size: 10px; font-weight: 700; padding: 3px 8px; text-transform: uppercase; }
+.ch-pairing-status.is-pending { border-color: color-mix(in srgb, var(--warn) 42%, var(--border)); color: var(--warn); }
+.ch-pairing-status.is-approved { border-color: color-mix(in srgb, var(--ok) 42%, var(--border)); color: var(--ok); }
+.ch-pairing-revoke { color: var(--danger); }
+.ch-metrics { display: grid; grid-template-columns: repeat(2, 1fr); }
+.ch-metrics > div { border-right: 1px solid var(--border); border-top: 1px solid var(--border); display: grid; gap: 4px; padding: 14px; }
+.ch-metrics > div:nth-child(even) { border-right: 0; }
+.ch-metrics strong { font-family: var(--font-mono); font-size: var(--fs-lg); }
+.ch-metrics span { color: var(--text-dim); font-size: 11px; }
+.ch-metrics > div.is-warn strong { color: var(--warn); }
+.ch-empty { background: var(--bg-surface); border: 1px solid var(--border); border-radius: var(--radius-lg); gap: var(--sp-3); }
+.ch-empty__icon { align-items: center; background: color-mix(in srgb, var(--accent) 12%, transparent); border: 1px solid color-mix(in srgb, var(--accent) 36%, var(--border)); border-radius: 50%; color: var(--accent); display: flex; height: 72px; justify-content: center; width: 72px; }
 
-.dot {
-  border-radius: var(--radius-full);
-  display: inline-block;
-  height: 8px;
-  width: 8px;
+@media (max-width: 1180px) {
+  .ch-workspace.has-detail { grid-template-columns: minmax(0, 1fr); }
+  .ch-detail { bottom: 12px; box-shadow: var(--elev-3); max-width: 560px; position: fixed; right: 12px; top: 64px; width: calc(100vw - 24px); z-index: 40; }
 }
-
-.dot.ok {
-  background: var(--ok);
-}
-
-.dot.err {
-  background: var(--danger);
-}
-
-.dot.off {
-  background: var(--text-dim);
-}
-
-.ch-neg {
-  color: var(--danger);
-}
-
-.ch-list__head {
-  align-items: center;
-  display: flex;
-  gap: var(--sp-3);
-  justify-content: space-between;
-}
-
-.ch-list__title {
-  font-size: var(--fs-md);
-  letter-spacing: 0;
-  margin: 0;
-}
-
-.ch-list__count {
-  background: var(--bg-elevated);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  color: var(--text-muted);
-  font-family: var(--font-mono);
-  font-size: var(--fs-sm);
-  font-variant-numeric: tabular-nums;
-  margin-left: 6px;
-  padding: 2px 8px;
-}
-
-.ch-card__head {
-  align-items: center;
-  display: flex;
-  gap: 10px;
-}
-
-.ch-card__name {
-  flex: 1;
-  font-weight: 600;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.ch-card__status {
-  display: flex;
-}
-
-.ch-card__meta {
-  display: grid;
-  gap: var(--sp-2);
-  margin: 0;
-}
-
-.ch-card__meta > div {
-  align-items: center;
-  display: flex;
-  gap: var(--sp-2);
-  justify-content: space-between;
-}
-
-.ch-card__meta dt {
-  color: var(--text-dim);
-  font-size: var(--fs-sm);
-}
-
-.ch-card__meta dd {
-  color: var(--text-muted);
-  font-family: var(--font-mono);
-  font-size: var(--fs-sm);
-  margin: 0;
-}
-
-.ch-card__config {
-  border: 1px solid var(--border);
-  border-radius: var(--radius-md);
-  margin-top: var(--sp-1);
-}
-
-.ch-card__config summary {
-  color: var(--text-muted);
-  cursor: pointer;
-  font-size: var(--fs-sm);
-  font-weight: 500;
-  padding: var(--sp-2) var(--sp-3);
-  user-select: none;
-}
-
-.ch-card__config-pre {
-  background: var(--bg-elevated);
-  border-top: 1px solid var(--border);
-  color: var(--text-muted);
-  font-family: var(--font-mono);
-  font-size: 11px;
-  line-height: 1.5;
-  margin: 0;
-  max-height: 240px;
-  overflow: auto;
-  padding: var(--sp-3);
-  white-space: pre-wrap;
-  word-break: break-word;
-}
-
-.ch-card__footnote {
-  color: var(--text-dim);
-  font-size: 11px;
-  line-height: 1.5;
-  margin-top: auto;
-}
-
-.ch-empty {
-  background: var(--bg-surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
-  gap: var(--sp-4);
-}
-
-.ch-empty__art {
-  color: var(--text-dim);
-  height: 120px;
-  width: 120px;
-}
-
-.ch-empty__art svg {
-  display: block;
-  height: 100%;
-  width: 100%;
-}
-
-.ch-empty__actions {
-  display: flex;
-  gap: var(--sp-3);
-}
-
-.ch-empty__code {
-  background: var(--bg-elevated);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  color: var(--text-muted);
-  font-family: var(--font-mono);
-  font-size: 11px;
-  padding: 6px 12px;
-}
-
-.chip {
-  background: var(--bg-elevated);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  color: var(--text-muted);
-  display: inline-flex;
-  font-size: 11px;
-  font-weight: 600;
-  letter-spacing: 0.04em;
-  padding: 3px 8px;
-  text-transform: uppercase;
-}
-
-.chip.mono {
-  font-family: var(--font-mono);
-  text-transform: none;
-}
-
-.chip-ok {
-  background: color-mix(in srgb, var(--ok) 12%, transparent);
-  border-color: color-mix(in srgb, var(--ok) 40%, var(--border));
-  color: var(--ok);
-}
-
-.chip-danger {
-  background: color-mix(in srgb, var(--danger) 10%, transparent);
-  border-color: color-mix(in srgb, var(--danger) 40%, var(--border));
-  color: var(--danger);
-}
-
 @media (max-width: 760px) {
-  .ch-stage__header {
-    align-items: stretch;
-    flex-direction: column;
-  }
-
-  .ch-stage__header .btn {
-    align-self: flex-start;
-    width: auto;
-  }
-
-  .ch-cards {
-    grid-template-columns: 1fr;
-  }
+  .ch-stage__header { align-items: stretch; flex-direction: column; }
+  .ch-stage__actions { justify-content: stretch; }
+  .ch-stage__actions .btn { flex: 1; }
+  .ch-summary { display: grid; grid-template-columns: repeat(2, 1fr); width: 100%; }
+  .ch-summary__item { border-bottom: 1px solid var(--border); }
+  .ch-search, .ch-select { min-width: 100%; }
+  .ch-provider-name { display: none; }
+  .ch-detail { border-radius: var(--radius-md); bottom: 0; right: 0; top: 48px; width: 100vw; }
+  .ch-detail__body { padding: var(--sp-3); }
+  .ch-check-row { grid-template-columns: 20px minmax(0, 1fr); }
+  .ch-check-row > b { grid-column: 2; }
+  .ch-capability { grid-template-columns: 18px minmax(0, 1fr); }
+  .ch-proof { grid-column: 2; width: fit-content; }
+  .ch-pairing-row { grid-template-columns: 32px minmax(0, 1fr) auto; }
+  .ch-pairing-row .btn { grid-column: 2 / -1; justify-self: start; }
 }
 </style>

@@ -54,8 +54,8 @@ class _DefaultDebounceCoordinator:
             first = state.buffer[0]
             content = "\n".join(m.content for m in state.buffer)
             attachments = [a for m in state.buffer for a in (m.attachments or [])]
-            msg = IncomingMessage(sender_id=first.sender_id, channel_id=first.channel_id, content=content, attachments=attachments, metadata=dict(first.metadata or {}))
-            combined = SimpleNamespace(content=content, attachments=attachments, message=msg, coalesced_count=len(state.buffer))
+            msg = IncomingMessage(sender_id=first.sender_id, channel_id=first.channel_id, content=content, attachments=attachments, metadata=dict(first.metadata or {}), provenance=first.provenance)
+            combined = SimpleNamespace(content=content, attachments=attachments, message=msg, source_messages=tuple(state.buffer), coalesced_count=len(state.buffer))
             log.info("channel.debounce_coalesced", session_key=session_key, coalesced_count=combined.coalesced_count)
             await state.on_fire(combined)
         except asyncio.CancelledError:

@@ -3125,6 +3125,7 @@ def test_all_imported_sqlite_stores_are_consistent_without_report_copies(
     source = _build_source_home(tmp_path)
     _write_simple_sqlite(source / "state" / "approval_queue.sqlite", "approval")
     _write_simple_sqlite(source / "state" / "sandbox_user_grants.sqlite", "sandbox")
+    _write_simple_sqlite(source / "state" / "channel_delivery.sqlite", "delivery")
     _write_simple_sqlite(source / "state" / "agents" / "main" / "memory.db", "memory")
     target = tmp_path / "target-home"
 
@@ -3136,6 +3137,7 @@ def test_all_imported_sqlite_stores_are_consistent_without_report_copies(
         Path("scheduler.db"),
         Path("approval_queue.sqlite"),
         Path("sandbox_user_grants.sqlite"),
+        Path("channel_delivery.sqlite"),
         Path("agents/main/memory.db"),
     ]
     for relative in expected:

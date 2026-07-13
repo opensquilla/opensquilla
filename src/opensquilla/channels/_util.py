@@ -14,6 +14,7 @@ import time
 from collections import OrderedDict
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
+from enum import StrEnum
 from typing import Any, Literal
 
 import httpx
@@ -25,6 +26,14 @@ log = structlog.get_logger(__name__)
 # ---------------------------------------------------------------------------
 # Channel access policy
 # ---------------------------------------------------------------------------
+
+
+class ChannelDmAccess(StrEnum):
+    """Typed direct-message admission modes for channel adapters."""
+
+    PAIRING = "pairing"
+    OPEN = "open"
+    ALLOWLIST = "allowlist"
 
 
 @dataclass(frozen=True, slots=True)
@@ -39,6 +48,7 @@ class ChannelAccessPolicy:
     """
 
     dm_allowed: bool = True
+    dm_access: ChannelDmAccess = ChannelDmAccess.PAIRING
     group_allowed: bool = True
     mention_required_in_group: bool = True
     allowlist: frozenset[str] = field(default_factory=frozenset)
@@ -56,6 +66,8 @@ class AccessDecision:
         "group_denied",
         "not_mentioned_in_group",
         "not_in_allowlist",
+        "pairing_required",
+        "pairing_revoked",
     ]
 
 
@@ -65,6 +77,7 @@ def evaluate_policy(
     is_group: bool,
     mentioned: bool,
     sender_id: str = "",
+    pairing_status: Literal["pending", "approved", "revoked"] | None = None,
 ) -> AccessDecision:
     """Evaluate a single inbound message against a channel's access policy.
 
@@ -83,7 +96,12 @@ def evaluate_policy(
         return AccessDecision(admit=True, reason="group_admitted")
     if not policy.dm_allowed:
         return AccessDecision(admit=False, reason="dm_denied")
-    if policy.allowlist and sender_id not in policy.allowlist:
+    if policy.dm_access == ChannelDmAccess.PAIRING:
+        if pairing_status == "revoked":
+            return AccessDecision(admit=False, reason="pairing_revoked")
+        if pairing_status != "approved":
+            return AccessDecision(admit=False, reason="pairing_required")
+    if policy.dm_access == ChannelDmAccess.ALLOWLIST and sender_id not in policy.allowlist:
         return AccessDecision(admit=False, reason="not_in_allowlist")
     return AccessDecision(admit=True, reason="dm_admitted")
 

@@ -154,6 +154,7 @@ _SQLITE_STORES = (
     Path("state/scheduler.db"),
     Path("state/approval_queue.sqlite"),
     Path("state/sandbox_user_grants.sqlite"),
+    Path("state/channel_delivery.sqlite"),
 )
 _SQLITE_SIDECAR_SUFFIXES = ("-wal", "-shm")
 _REPARSE_POINT_ATTRIBUTE = 0x400

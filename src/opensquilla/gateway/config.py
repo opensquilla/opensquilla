@@ -1405,6 +1405,31 @@ class ConfiguredChannelEntry(BaseModel):
     agent_id: str = "main"
     debounce_window_s: float = 0.0
     status_reactions_enabled: bool = False
+    dm_access: Literal["pairing", "open", "allowlist"] = "pairing"
+    allowed_senders: list[str] = Field(default_factory=list)
+
+    @field_validator("allowed_senders", mode="before")
+    @classmethod
+    def _normalize_allowed_senders(cls, value: Any) -> Any:
+        if isinstance(value, str):
+            value = value.split(",")
+        if not isinstance(value, list | tuple | set | frozenset):
+            return value
+        return list(
+            dict.fromkeys(str(item).strip() for item in value if str(item).strip())
+        )
+
+    @model_validator(mode="after")
+    def _validate_dm_access(self) -> ConfiguredChannelEntry:
+        if self.dm_access == "allowlist" and not self.allowed_senders:
+            raise ValueError("dm_access=allowlist requires allowed_senders")
+        return self
+    # Group conversations are isolated by sender by default. Deployments that
+    # intentionally want one transcript shared by the whole room can opt in.
+    group_session_scope: Literal["per_sender", "shared_room"] = "per_sender"
+    # Controls what happens when another channel message arrives while the
+    # same session is busy. TaskRuntime validates and executes these modes.
+    busy_input_mode: Literal["followup", "queue", "steer", "interrupt"] = "followup"
 
     @field_validator("debounce_window_s")
     @classmethod
@@ -1450,6 +1475,12 @@ class FeishuChannelEntry(ConfiguredChannelEntry):
     connection_mode: Literal["webhook", "websocket"] = "websocket"
     domain: Literal["feishu", "lark"] = "feishu"
 
+    @model_validator(mode="after")
+    def _validate_webhook_verification(self) -> FeishuChannelEntry:
+        if self.connection_mode == "webhook" and not self.verification_token.strip():
+            raise ValueError("feishu webhook channels require verification_token")
+        return self
+
 
 class DiscordChannelEntry(ConfiguredChannelEntry):
     """Gateway config entry for a Discord channel."""
@@ -1459,7 +1490,10 @@ class DiscordChannelEntry(ConfiguredChannelEntry):
     application_id: str = ""
     default_channel_id: str = ""
     gateway_url: str = "wss://gateway.discord.gg/?v=10&encoding=json"
-    intents: int = 33281
+    # GUILDS | GUILD_MESSAGES | GUILD_MESSAGE_REACTIONS | DIRECT_MESSAGES |
+    # DIRECT_MESSAGE_REACTIONS | MESSAGE_CONTENT. Keep this aligned with
+    # channels.discord.GATEWAY_INTENTS.
+    intents: int = 46593
 
 
 class DingTalkChannelEntry(ConfiguredChannelEntry):

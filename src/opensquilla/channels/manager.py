@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
+import uuid
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from functools import partial
 from typing import Any
 
@@ -16,7 +18,13 @@ from opensquilla.channels.registry import build_managed_channel
 from opensquilla.channels.types import ChannelHealth, DeliveryTargetResolution, ManagedChannel
 from opensquilla.gateway._debounce import _DefaultDebounceCoordinator
 from opensquilla.gateway.channel_dispatch import run_channel_dispatch
-from opensquilla.session.keys import DmScope, build_direct_key, build_group_key, build_thread_key
+from opensquilla.session.keys import (
+    DmScope,
+    build_direct_key,
+    build_group_key,
+    build_group_sender_key,
+    build_thread_key,
+)
 
 log = structlog.get_logger(__name__)
 
@@ -54,9 +62,15 @@ class ChannelManager:
     _task_runtime: Any = None
     _rpc_dispatcher: Any = None
     _channel_rpc_context_factory: Callable[[Any], Any] | None = None
+    _delivery_store: Any = None
+    _lease_owner_id: str = field(default_factory=lambda: uuid.uuid4().hex)
+    _transport_leases: dict[str, Any] = field(default_factory=dict)
+    _lease_tasks: dict[str, asyncio.Task[Any]] = field(default_factory=dict)
     _debounce_coordinator: Any = field(default_factory=_DefaultDebounceCoordinator)
     _agent_ids: dict[str, str] = field(default_factory=dict)
     _channel_types: dict[str, str] = field(default_factory=dict)
+    _group_session_scopes: dict[str, str] = field(default_factory=dict)
+    _busy_input_modes: dict[str, str] = field(default_factory=dict)
     _tasks: dict[str, asyncio.Task] = field(default_factory=dict)
     # Per-channel in-flight reply task sets.
     # Keyed by channel name; populated in _safe_start and consumed in stop_channel.
@@ -99,8 +113,16 @@ class ChannelManager:
         Disabled entries are skipped.
         """
         channels: dict[str, ManagedChannel] = {}
+        from opensquilla.channels.delivery_store import (
+            delivery_store_for_config,
+            install_outbox,
+        )
+
+        delivery_store = delivery_store_for_config(config)
         agent_ids: dict[str, str] = {}
         channel_types: dict[str, str] = {}
+        group_session_scopes: dict[str, str] = {}
+        busy_input_modes: dict[str, str] = {}
         for entry in entries:
             if not entry.enabled:
                 log.info("channel.skipped_disabled", name=entry.name)
@@ -112,9 +134,30 @@ class ChannelManager:
                 continue
 
             channels[entry.name] = adapter
+            from opensquilla.channels._util import ChannelAccessPolicy, ChannelDmAccess
+
+            declared_policy = getattr(adapter, "policy", None)
+            if not isinstance(declared_policy, ChannelAccessPolicy):
+                declared_policy = ChannelAccessPolicy()
+            setattr(
+                adapter,
+                "policy",
+                replace(
+                    declared_policy,
+                    dm_access=ChannelDmAccess(str(getattr(entry, "dm_access", "pairing"))),
+                    allowlist=frozenset(getattr(entry, "allowed_senders", ())),
+                ),
+            )
+            setattr(adapter, "_delivery_store", delivery_store)
+            setattr(adapter, "_delivery_channel_name", entry.name)
+            install_outbox(adapter)
             cls._register_tool_channel(entry.name, adapter)
             agent_ids[entry.name] = getattr(entry, "agent_id", "main")
             channel_types[entry.name] = entry.type
+            group_session_scopes[entry.name] = getattr(
+                entry, "group_session_scope", "per_sender"
+            )
+            busy_input_modes[entry.name] = getattr(entry, "busy_input_mode", "followup")
             setattr(adapter, "debounce_window_s", getattr(entry, "debounce_window_s", 0.0))
             log.info("channel.adapter_created", name=entry.name, type=entry.type)
 
@@ -127,8 +170,11 @@ class ChannelManager:
             _task_runtime=task_runtime,
             _rpc_dispatcher=rpc_dispatcher,
             _channel_rpc_context_factory=channel_rpc_context_factory,
+            _delivery_store=delivery_store,
             _agent_ids=agent_ids,
             _channel_types=channel_types,
+            _group_session_scopes=group_session_scopes,
+            _busy_input_modes=busy_input_modes,
         )
 
     @staticmethod
@@ -234,8 +280,25 @@ class ChannelManager:
         from opensquilla.gateway.channel_dispatch import _ChannelInFlightSet, _compute_channel_cap
 
         adapter = self._channels[name]
+        lease = None
+        if self._delivery_store is not None:
+            account_id = self._transport_account_id(name, adapter)
+            lease = self._delivery_store.acquire_transport_lease(
+                self._channel_types.get(name, name),
+                account_id,
+                self._lease_owner_id,
+            )
+            if lease is None:
+                raise RuntimeError(f"channel transport lease is already held for {name}")
+            self._transport_leases[name] = lease
+            setattr(adapter, "_transport_fencing_token", lease.fencing_token)
         startup_timeout = float(getattr(adapter, "startup_timeout_s", 30.0))
         try:
+            if lease is not None and self._delivery_store is not None:
+                enqueue = getattr(adapter, "enqueue", None)
+                if callable(enqueue):
+                    for recovered in self._delivery_store.recover_inbound(name):
+                        enqueue(recovered)
             self._unregister_tool_channel(name, adapter)
             await asyncio.wait_for(adapter.start(), timeout=startup_timeout)
             self._register_tool_channel(name, adapter)
@@ -245,9 +308,22 @@ class ChannelManager:
                 with contextlib.suppress(Exception):
                     await stop()
             self._unregister_tool_channel(name, adapter)
+            if lease is not None and self._delivery_store is not None:
+                self._delivery_store.release_transport_lease(lease)
+                self._transport_leases.pop(name, None)
             raise
+        if lease is not None:
+            self._lease_tasks[name] = asyncio.create_task(
+                self._renew_transport_lease(name),
+                name=f"channel-lease:{name}",
+            )
         entry_agent_id = self._agent_ids.get(name, "main")
-        key_builder = partial(self._build_session_key, name, agent_id=entry_agent_id)
+        key_builder = partial(
+            self._build_session_key,
+            name,
+            agent_id=entry_agent_id,
+            group_session_scope=self._group_session_scopes.get(name, "per_sender"),
+        )
         cap = _compute_channel_cap(self._config)
         in_flight = _ChannelInFlightSet(cap)
         self._in_flight_sets[name] = in_flight
@@ -255,6 +331,47 @@ class ChannelManager:
             self._dispatch_with_retry(name, key_builder, in_flight=in_flight),
             name=f"channel:{name}",
         )
+
+    def _transport_account_id(self, name: str, adapter: Any) -> str:
+        config = getattr(adapter, "config", None)
+        candidates: list[str] = []
+        for source in (config, adapter):
+            if source is None:
+                continue
+            for field_name in (
+                "app_id",
+                "bot_id",
+                "corp_id",
+                "client_id",
+                "user_id",
+                "homeserver_url",
+                "token",
+                "app_token",
+            ):
+                value = str(getattr(source, field_name, "") or "").strip()
+                if value:
+                    candidates.append(f"{field_name}={value}")
+        if not candidates:
+            candidates.append(f"name={name}")
+        return hashlib.sha256("\0".join(candidates).encode()).hexdigest()[:24]
+
+    async def _renew_transport_lease(self, name: str) -> None:
+        while True:
+            await asyncio.sleep(30.0)
+            lease = self._transport_leases.get(name)
+            if lease is None or self._delivery_store is None:
+                return
+            renewed = self._delivery_store.renew_transport_lease(lease)
+            if renewed is not None:
+                self._transport_leases[name] = renewed
+                continue
+            log.error("channel.transport_lease_lost", channel=name)
+            adapter = self._channels.get(name)
+            if adapter is not None:
+                setattr(adapter, "_connected", False)
+                with contextlib.suppress(Exception):
+                    await adapter.stop()
+            return
 
     async def _run_one_dispatch_cycle(
         self,
@@ -286,6 +403,7 @@ class ChannelManager:
                     channel_rpc_context_factory=self._channel_rpc_context_factory,
                     debounce_coordinator=self._debounce_coordinator,
                     debounce_window_s=getattr(self._channels[name], "debounce_window_s", 0.0),
+                    busy_input_mode=self._busy_input_modes.get(name, "followup"),
                     _in_flight=in_flight,
                 )
             except asyncio.CancelledError:
@@ -357,6 +475,9 @@ class ChannelManager:
         for name in list(self._channels):
             await self.stop_channel(name)
         await self._debounce_coordinator.cancel_all()
+        if self._delivery_store is not None:
+            self._delivery_store.close()
+            self._delivery_store = None
 
     async def stop_channel(self, name: str) -> None:
         """Cancel dispatch task, cancel all in-flight reply tasks, then stop adapter.
@@ -378,9 +499,19 @@ class ChannelManager:
         if in_flight is not None:
             await in_flight.cancel_all()
         adapter = self._channels.get(name)
-        if adapter:
-            await adapter.stop()
-        self._unregister_tool_channel(name, adapter)
+        try:
+            if adapter:
+                await adapter.stop()
+        finally:
+            lease_task = self._lease_tasks.pop(name, None)
+            if lease_task is not None and not lease_task.done():
+                lease_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await lease_task
+            lease = self._transport_leases.pop(name, None)
+            if lease is not None and self._delivery_store is not None:
+                self._delivery_store.release_transport_lease(lease)
+            self._unregister_tool_channel(name, adapter)
 
     async def restart_channel(self, name: str) -> None:
         """Stop then re-start a single channel.
@@ -409,6 +540,13 @@ class ChannelManager:
         for name, a in self._channels.items():
             health = await a.health_check()
             health.extra["dispatch_state"] = self._dispatch_states.get(name, "unknown")
+            lease = self._transport_leases.get(name)
+            if lease is not None:
+                health.extra["transport_lease"] = {
+                    "owner_id": lease.owner_id,
+                    "fencing_token": lease.fencing_token,
+                    "expires_at": lease.expires_at,
+                }
             out[name] = health
         return out
 
@@ -511,7 +649,12 @@ class ChannelManager:
     # ── Session key builder ──────────────────────────────────
 
     @staticmethod
-    def _build_session_key(channel_name: str, msg: Any, agent_id: str = "main") -> str:
+    def _build_session_key(
+        channel_name: str,
+        msg: Any,
+        agent_id: str = "main",
+        group_session_scope: str = "per_sender",
+    ) -> str:
         """Build a proper session key using ``session/keys.py`` builders.
 
         Detects group vs DM from message metadata:
@@ -519,7 +662,10 @@ class ChannelManager:
         - Discord: ``metadata.guild_id is not None``
         - Slack: ``metadata.channel_type in ("channel", "group")``
 
-        Group keys use ``msg.channel_id`` as peer_id (per-room session).
+        Group keys use ``msg.channel_id`` as peer_id and, by default,
+        ``msg.sender_id`` to isolate participants in the same room.
+        ``group_session_scope='shared_room'`` preserves the explicit
+        compatibility mode where every participant shares one transcript.
         DM keys use ``msg.sender_id`` as peer_id (per-user session).
         """
         meta = getattr(msg, "metadata", {}) or {}
@@ -536,11 +682,19 @@ class ChannelManager:
             )
 
         if is_group:
-            base_key = build_group_key(
-                agent_id=agent_id,
-                channel=channel_name,
-                peer_id=msg.channel_id,  # group/room ID, NOT sender
-            )
+            if group_session_scope == "shared_room":
+                base_key = build_group_key(
+                    agent_id=agent_id,
+                    channel=channel_name,
+                    peer_id=msg.channel_id,
+                )
+            else:
+                base_key = build_group_sender_key(
+                    agent_id=agent_id,
+                    channel=channel_name,
+                    peer_id=msg.channel_id,
+                    sender_id=msg.sender_id,
+                )
             thread_id = (
                 meta.get("native_thread_id") or meta.get("thread_ts") or meta.get("thread_id")
             )

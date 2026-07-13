@@ -17,7 +17,7 @@ case-insensitive), never the raw approval/exec id. Raw ids leak in group
 history and are hidden elsewhere in the product, so the code is the only
 thing shown to a channel and the only thing a user types back. The
 code→approval_id binding (and the originating ``sender_id`` for owner-only
-resolution) lives server-side in :data:`_CODE_REGISTRY`.
+resolution) lives durably beside the approval queue in SQLite.
 """
 
 from __future__ import annotations
@@ -64,21 +64,14 @@ class _CodeBinding:
     namespace: str
     session_key: str
     owner_sender_id: str
-
-
-# code (uppercased) -> binding. Process-local, mirroring the approval queue's
-# single-process model. Pruned when the bound approval is resolved.
-_CODE_REGISTRY: dict[str, _CodeBinding] = {}
-# Reverse index so a re-notified request reuses its existing code rather than
-# minting a second one for the same approval.
-_APPROVAL_TO_CODE: dict[str, str] = {}
+    origin_channel_name: str = ""
+    origin_channel_id: str = ""
+    origin_thread_id: str = ""
+    approver_policy: str = "requester_only"
 
 
 def _mint_code() -> str:
-    while True:
-        code = "".join(secrets.choice(_CODE_ALPHABET) for _ in range(_CODE_LENGTH))
-        if code not in _CODE_REGISTRY:
-            return code
+    return "".join(secrets.choice(_CODE_ALPHABET) for _ in range(_CODE_LENGTH))
 
 
 def normalize_code(code: str) -> str:
@@ -92,42 +85,67 @@ def bind_short_code(
     namespace: str,
     session_key: str,
     owner_sender_id: str,
+    origin_channel_name: str = "",
+    origin_channel_id: str = "",
+    origin_thread_id: str = "",
 ) -> str:
     """Bind ``approval_id`` to a fresh short code (idempotent per approval).
 
     Returns the existing code when this approval was already bound so a
     re-``requested`` notification does not mint a duplicate handle.
     """
-    existing = _APPROVAL_TO_CODE.get(approval_id)
-    if existing is not None and existing in _CODE_REGISTRY:
+    from opensquilla.gateway.approval_queue import get_approval_queue
+
+    queue = get_approval_queue()
+    existing = queue.channel_code_for_approval(approval_id)
+    if existing is not None:
         return existing
-    code = _mint_code()
-    _CODE_REGISTRY[code] = _CodeBinding(
-        approval_id=approval_id,
-        namespace=namespace,
-        session_key=session_key,
-        owner_sender_id=owner_sender_id,
-    )
-    _APPROVAL_TO_CODE[approval_id] = code
-    return code
+    while True:
+        code = _mint_code()
+        if queue.bind_channel_code(
+            code,
+            approval_id=approval_id,
+            namespace=namespace,
+            session_key=session_key,
+            owner_sender_id=owner_sender_id,
+            origin_channel_name=origin_channel_name,
+            origin_channel_id=origin_channel_id,
+            origin_thread_id=origin_thread_id,
+        ):
+            return code
 
 
 def resolve_short_code(code: str) -> _CodeBinding | None:
     """Look up a code's binding, or ``None`` for an unknown/expired code."""
-    return _CODE_REGISTRY.get(normalize_code(code))
+    from opensquilla.gateway.approval_queue import get_approval_queue
+
+    raw = get_approval_queue().resolve_channel_code(normalize_code(code))
+    if raw is None:
+        return None
+    return _CodeBinding(
+        approval_id=raw["approval_id"],
+        namespace=raw["namespace"],
+        session_key=raw["session_key"],
+        owner_sender_id=raw["owner_sender_id"],
+        origin_channel_name=raw["origin_channel_name"],
+        origin_channel_id=raw["origin_channel_id"],
+        origin_thread_id=raw["origin_thread_id"],
+        approver_policy=raw["approver_policy"],
+    )
 
 
 def release_short_code(approval_id: str) -> None:
     """Drop the binding for a resolved approval (best-effort, idempotent)."""
-    code = _APPROVAL_TO_CODE.pop(approval_id, None)
-    if code is not None:
-        _CODE_REGISTRY.pop(code, None)
+    from opensquilla.gateway.approval_queue import get_approval_queue
+
+    get_approval_queue().release_channel_code(approval_id)
 
 
 def reset_short_codes() -> None:
     """Clear all bindings (test helper)."""
-    _CODE_REGISTRY.clear()
-    _APPROVAL_TO_CODE.clear()
+    from opensquilla.gateway.approval_queue import get_approval_queue
+
+    get_approval_queue().clear_channel_codes()
 
 
 def _adapter_supports_interactive_cards(profile: Any) -> bool:
@@ -203,8 +221,7 @@ def _interactive_card(request: ApprovalPromptRequest) -> dict[str, Any]:
                     {
                         "tag": "plain_text",
                         "content": (
-                            f"Or reply /approve {request.short_code} "
-                            f"or /deny {request.short_code}."
+                            f"Or reply /approve {request.short_code} or /deny {request.short_code}."
                         ),
                     }
                 ],

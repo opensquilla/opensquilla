@@ -17,7 +17,6 @@ import contextlib
 import inspect
 import json
 import re
-import weakref
 from collections.abc import AsyncIterator, Callable
 from typing import TYPE_CHECKING, Any, cast
 
@@ -25,7 +24,10 @@ import structlog
 
 from opensquilla.agents.scope import resolve_agent_model
 from opensquilla.artifacts import artifact_payload
-from opensquilla.channels._util import ChannelAccessPolicy, evaluate_policy
+from opensquilla.channels.admission import (
+    ChannelAdmissionDecision,
+    decide_channel_admission,
+)
 from opensquilla.channels.artifact_delivery import (
     artifact_delivery_key as _artifact_delivery_key,
 )
@@ -70,6 +72,8 @@ if TYPE_CHECKING:
     from opensquilla.gateway.event_bridge import EventBridge
 
 log = structlog.get_logger(__name__)
+
+_CHANNEL_BUSY_INPUT_MODES = frozenset({"followup", "queue", "steer", "interrupt"})
 
 
 def _terminal_payload_from_exception(exc: BaseException) -> dict[str, str]:
@@ -129,6 +133,37 @@ def _resolve_channel_overflow_policy(channel: Any, config: Any) -> str | None:
     if not isinstance(value, str) or not value:
         return None
     return value
+
+
+def _resolve_channel_busy_input_mode(task_runtime: Any, configured_mode: str) -> str:
+    """Resolve a channel busy-input policy against runtime capabilities.
+
+    Invalid adapter state and runtimes that do not advertise exact support
+    fail closed to the historical ``followup`` behavior.
+    """
+    mode = str(configured_mode or "followup").strip().lower()
+    if mode not in _CHANNEL_BUSY_INPUT_MODES:
+        log.warning(
+            "channel_dispatch.invalid_busy_input_mode",
+            configured_mode=mode,
+            fallback="followup",
+        )
+        return "followup"
+    supports_mode = getattr(task_runtime, "supports_queue_mode", None)
+    if callable(supports_mode):
+        try:
+            if supports_mode(mode):
+                return mode
+        except Exception:
+            pass
+    elif mode == "followup":
+        return mode
+    log.warning(
+        "channel_dispatch.unsupported_busy_input_mode",
+        configured_mode=mode,
+        fallback="followup",
+    )
+    return "followup"
 
 
 class _ChannelInFlightSet:
@@ -340,6 +375,7 @@ async def run_channel_dispatch(
     channel_rpc_context_factory: Callable[[Any], Any] | None = None,
     debounce_coordinator: Any = None,
     debounce_window_s: float = 0.0,
+    busy_input_mode: str = "followup",
     _in_flight: _ChannelInFlightSet | None = None,
 ) -> None:
     """Receive-dispatch-respond loop for a channel adapter.
@@ -356,7 +392,63 @@ async def run_channel_dispatch(
         _in_flight = _ChannelInFlightSet(cap)
     while True:
         msg = await channel.receive()
+        delivery_store = getattr(channel, "_delivery_store", None)
+        delivery_channel_name = str(
+            getattr(channel, "_delivery_channel_name", session_prefix) or session_prefix
+        )
+        ingress_claim = None
+        if delivery_store is not None:
+            ingress_claim = delivery_store.claim_inbound(delivery_channel_name, msg)
+            if ingress_claim is None:
+                log.info(
+                    "channel.ingress_duplicate_skipped",
+                    channel=delivery_channel_name,
+                )
+                continue
         session_key = session_key_builder(msg)
+        admission = decide_channel_admission(channel, msg, session_key)
+        if not admission.admit:
+            log.info(
+                "channel.admission_denied",
+                channel=session_prefix,
+                reason=admission.reason,
+                is_group=admission.is_group,
+            )
+            if (
+                admission.reason == "pairing_required"
+                and admission.pairing_notice
+                and admission.pairing_id
+            ):
+                from opensquilla.gateway.routing import build_channel_route_envelope
+
+                route_envelope = build_channel_route_envelope(
+                    msg,
+                    session_key=session_key,
+                    session_prefix=session_prefix,
+                )
+                pairing_code = admission.pairing_id[:8]
+                notice = _route_envelope_reply_message(
+                    "Access approval is required. "
+                    f"Pairing request: {pairing_code}. "
+                    "Ask an OpenSquilla operator to approve it before sending another message.",
+                    route_envelope,
+                    metadata={"pairing_required": True, "pairing_code": pairing_code},
+                )
+                try:
+                    await channel.send(notice)
+                except Exception as exc:
+                    log.warning(
+                        "channel.pairing_notice_failed",
+                        channel=session_prefix,
+                        error_type=type(exc).__name__,
+                    )
+            if delivery_store is not None:
+                delivery_store.complete_inbound(
+                    ingress_claim,
+                    "admission_denied",
+                    scrub_payload=True,
+                )
+            continue
         raw_content = msg.content
         from opensquilla.gateway.routing import build_channel_route_envelope
 
@@ -368,6 +460,8 @@ async def run_channel_dispatch(
         approval_reply = _maybe_resolve_channel_approval(msg=msg, session_key=session_key)
         if approval_reply is not None:
             await channel.send(_preserve_route_channel_metadata(approval_reply, route_envelope))
+            if delivery_store is not None:
+                delivery_store.complete_inbound(ingress_claim, "approval_resolved")
             continue
         # fmt: off
         if getattr(channel, "supports_slash_commands", False) and rpc_dispatcher is not None and channel_rpc_context_factory is not None:  # noqa: E501
@@ -384,17 +478,20 @@ async def run_channel_dispatch(
                     event = "channel.command_intercepted"
                 emit(event, command=command_reply.metadata.get("command"), method=command_reply.metadata.get("method"), session_key=session_key)  # noqa: E501
                 await channel.send(command_reply)
+                if delivery_store is not None:
+                    delivery_store.complete_inbound(ingress_claim, "command_dispatched")
                 continue
         # fmt: on
 
         # fmt: off
-        if task_runtime is not None and debounce_window_s > 0.0 and debounce_coordinator is not None:  # noqa: E501
+        if task_runtime is not None and debounce_window_s > 0.0 and debounce_coordinator is not None and delivery_store is None:  # noqa: E501
             async def _on_debounce_fire(
                 combined: Any,
                 key: str = session_key,
                 _ifl: _ChannelInFlightSet = cast(_ChannelInFlightSet, _in_flight),
+                _admission: ChannelAdmissionDecision = admission,
             ) -> None:
-                await _dispatch_combined_message_after_debounce(channel, combined, turn_runner, session_manager, key, session_prefix, task_runtime, config, event_bridge, _ifl, channel_rpc_context_factory=channel_rpc_context_factory)  # noqa: E501
+                await _dispatch_combined_message_after_debounce(channel, combined, turn_runner, session_manager, key, session_prefix, task_runtime, config, event_bridge, _ifl, channel_rpc_context_factory=channel_rpc_context_factory, admission_decision=_admission, busy_input_mode=busy_input_mode)  # noqa: E501
 
             await debounce_coordinator.schedule(session_key, msg, window_s=debounce_window_s, on_fire=_on_debounce_fire)  # noqa: E501
             continue
@@ -420,10 +517,6 @@ async def run_channel_dispatch(
                 session_prefix,
                 route_envelope=route_envelope,
             )
-
-            # Gap 2: Skip unmentioned group messages
-            if _should_skip_unmentioned(channel, msg, session_key):
-                continue
 
         await _apply_saved_channel_run_context(
             route_envelope,
@@ -473,6 +566,8 @@ async def run_channel_dispatch(
                     )
                 )
                 await status_reactor.completed(msg)
+                if delivery_store is not None:
+                    delivery_store.complete_inbound(ingress_claim, "capacity_rejected")
                 continue
 
             transcript_watermark = await _transcript_watermark(session_manager, session_key)
@@ -505,7 +600,9 @@ async def run_channel_dispatch(
                         route_envelope,
                         msg.content,
                         attachments=ingested.attachments,
-                        mode="followup",
+                        mode=_resolve_channel_busy_input_mode(
+                            task_runtime, busy_input_mode
+                        ),
                         run_kind="channel_turn",
                         semantic_message=raw_content,
                         stream_event_sink=stream_relay.emit if stream_relay is not None else None,
@@ -523,6 +620,8 @@ async def run_channel_dispatch(
                     await stream_relay.close()
 
                 if not isinstance(exc, TaskQueueFullError):
+                    if delivery_store is not None:
+                        delivery_store.fail_inbound(ingress_claim, exc)
                     raise
                 await status_reactor.failed(msg)
                 await channel.send(
@@ -534,6 +633,8 @@ async def run_channel_dispatch(
                         route_envelope,
                     )
                 )
+                if delivery_store is not None:
+                    delivery_store.complete_inbound(ingress_claim, "queue_rejected")
             else:
                 await status_reactor.running(msg)
 
@@ -602,6 +703,8 @@ async def run_channel_dispatch(
                         )
 
                 reply_task.add_done_callback(_reply_done)
+                if delivery_store is not None:
+                    delivery_store.complete_inbound(ingress_claim, "turn_dispatched")
             continue
 
         # Gap 3: Start typing indicator (background task)
@@ -619,6 +722,10 @@ async def run_channel_dispatch(
                 route_envelope=route_envelope,
                 attachments=ingested.attachments,
             )
+        except BaseException as exc:
+            if delivery_store is not None:
+                delivery_store.fail_inbound(ingress_claim, exc)
+            raise
         finally:
             if typing_task is not None:
                 typing_task.cancel()
@@ -630,6 +737,8 @@ async def run_channel_dispatch(
                 session_key,
                 "turn_complete",
             )
+        if delivery_store is not None:
+            delivery_store.complete_inbound(ingress_claim, "turn_completed")
 
 
 def _slash_command_head(content: str) -> str | None:
@@ -670,7 +779,31 @@ def _maybe_resolve_channel_approval(
         log.info("channel.approval_unknown_code", code=code, session_key=session_key)
         return OutgoingMessage(content=f"No pending approval {code}.")
 
-    sender_id = (msg.sender_id or "").strip()
+    if binding.session_key and binding.session_key != session_key:
+        log.warning(
+            "channel.approval_session_mismatch",
+            code=code,
+            session_key=session_key,
+        )
+        return OutgoingMessage(content=f"Approval {code} belongs to another session.")
+
+    if binding.origin_channel_id and msg.channel_id != binding.origin_channel_id:
+        log.warning(
+            "channel.approval_origin_mismatch",
+            code=code,
+            session_key=session_key,
+            channel_id=msg.channel_id,
+        )
+        return OutgoingMessage(content=f"Approval {code} must be resolved where it was requested.")
+
+    provenance = getattr(msg, "provenance", None)
+    principal = getattr(provenance, "principal", None)
+    authenticated = bool(getattr(provenance, "authenticated", False))
+    sender_id = (
+        str(getattr(principal, "subject_id", "") or "").strip()
+        if authenticated
+        else (msg.sender_id or "").strip()
+    )
     if not sender_id or sender_id != binding.owner_sender_id:
         log.warning(
             "channel.approval_owner_mismatch",
@@ -813,10 +946,14 @@ async def _dispatch_channel_new_command(
 
 
 # fmt: off
-async def _dispatch_combined_message_after_debounce(channel: Any, combined: Any, turn_runner: Any, session_manager: Any, session_key: str, session_prefix: str, task_runtime: Any, config: Any = None, event_bridge: EventBridge | None = None, _in_flight: _ChannelInFlightSet | None = None, channel_rpc_context_factory: Callable[[Any], Any] | None = None) -> None:  # noqa: E501
+async def _dispatch_combined_message_after_debounce(channel: Any, combined: Any, turn_runner: Any, session_manager: Any, session_key: str, session_prefix: str, task_runtime: Any, config: Any = None, event_bridge: EventBridge | None = None, _in_flight: _ChannelInFlightSet | None = None, channel_rpc_context_factory: Callable[[Any], Any] | None = None, admission_decision: ChannelAdmissionDecision | None = None, busy_input_mode: str = "followup") -> None:  # noqa: E501
     from opensquilla.gateway.routing import build_channel_route_envelope
 
     msg = combined.message
+    admission = admission_decision or decide_channel_admission(channel, msg, session_key)
+    if not admission.admit:
+        log.info("channel.admission_denied", channel=session_prefix, reason=admission.reason, is_group=admission.is_group)  # noqa: E501
+        return
     route_envelope = build_channel_route_envelope(msg, session_key=session_key, session_prefix=session_prefix)  # noqa: E501
     approval_reply = _maybe_resolve_channel_approval(msg=msg, session_key=session_key)
     if approval_reply is not None:
@@ -826,9 +963,6 @@ async def _dispatch_combined_message_after_debounce(channel: Any, combined: Any,
     session_lock = _get_lock(session_key) if callable(_get_lock) else None
     async with _maybe_lock(session_lock):
         await _record_delivery_context(session_manager, session_key, msg, session_prefix, route_envelope=route_envelope)  # noqa: E501
-
-        if _should_skip_unmentioned(channel, msg, session_key):
-            return
 
     await _apply_saved_channel_run_context(
         route_envelope,
@@ -888,7 +1022,7 @@ async def _dispatch_combined_message_after_debounce(channel: Any, combined: Any,
                 apply_policy = getattr(task_runtime, "apply_overflow_policy", None)
                 if callable(apply_policy):
                     await apply_policy(session_key, policy=channel_overflow_policy)
-            handle = await start_turn_via_runtime(task_runtime, route_envelope, msg.content, attachments=ingested.attachments, mode="followup", run_kind="channel_turn", semantic_message=raw_content, stream_event_sink=stream_relay.emit if stream_relay is not None else None)  # noqa: E501
+            handle = await start_turn_via_runtime(task_runtime, route_envelope, msg.content, attachments=ingested.attachments, mode=_resolve_channel_busy_input_mode(task_runtime, busy_input_mode), run_kind="channel_turn", semantic_message=raw_content, stream_event_sink=stream_relay.emit if stream_relay is not None else None)  # noqa: E501
             _persisted, persisted_content = await _append_channel_user_message(
                 session_manager=session_manager,
                 session_key=session_key,
@@ -1047,36 +1181,7 @@ async def resolve_delivery_target(
     }
 
 
-# ── Gap 2: Mention gating ────────────────────────────────────────────────
-
-
-_MENTION_GATE_WARNED: dict[int, weakref.ReferenceType[Any] | None] = {}
-
-
-def _warn_missing_mention_hook(channel: Any) -> None:
-    """Emit one warning per channel instance for adapters lacking the hook."""
-    key = id(channel)
-    existing = _MENTION_GATE_WARNED.get(key)
-    if existing is None and key in _MENTION_GATE_WARNED:
-        return
-    if existing is not None:
-        existing_channel = existing()
-        if existing_channel is channel:
-            return
-        if existing_channel is None:
-            _MENTION_GATE_WARNED.pop(key, None)
-
-    def _forget_warned_channel(_ref: weakref.ReferenceType[Any], key: int = key) -> None:
-        _MENTION_GATE_WARNED.pop(key, None)
-
-    try:
-        _MENTION_GATE_WARNED[key] = weakref.ref(channel, _forget_warned_channel)
-    except TypeError:
-        _MENTION_GATE_WARNED[key] = None
-    log.warning(
-        "channel.mention_gate_default_deny",
-        channel_type=type(channel).__name__,
-    )
+# ── Gap 2: Authenticated admission / mention gating ─────────────────────
 
 
 def _should_skip_unmentioned(
@@ -1084,60 +1189,9 @@ def _should_skip_unmentioned(
     msg: IncomingMessage,
     session_key: str,
 ) -> bool:
-    """Return True when channel policy says to skip this inbound message.
+    """Compatibility wrapper around the shared pre-dispatch admission decision."""
 
-    Adapters that declare ``ChannelAccessPolicy`` can choose closed groups,
-    open groups, or mention-only groups. Mention-only groups still fail closed
-    if the adapter forgot to implement ``is_group_mentioned``.
-    """
-    from opensquilla.session.keys import derive_chat_type
-
-    is_group = derive_chat_type(session_key) == "group"
-    policy = getattr(channel, "policy", None)
-    if isinstance(policy, ChannelAccessPolicy):
-        if not is_group:
-            decision = evaluate_policy(
-                policy,
-                is_group=False,
-                mentioned=False,
-                sender_id=msg.sender_id,
-            )
-            return not decision.admit
-        if not policy.group_allowed:
-            decision = evaluate_policy(
-                policy,
-                is_group=True,
-                mentioned=False,
-                sender_id=msg.sender_id,
-            )
-            return not decision.admit
-        if not policy.mention_required_in_group:
-            decision = evaluate_policy(
-                policy,
-                is_group=True,
-                mentioned=True,
-                sender_id=msg.sender_id,
-            )
-            return not decision.admit
-
-    if not is_group:
-        return False  # DMs always processed for legacy adapters.
-
-    hook = getattr(channel, "is_group_mentioned", None)
-    if not callable(hook):
-        _warn_missing_mention_hook(channel)
-        return True  # fail-closed: missing mention hook on a group channel
-
-    mentioned = bool(hook(msg))
-    if isinstance(policy, ChannelAccessPolicy):
-        decision = evaluate_policy(
-            policy,
-            is_group=True,
-            mentioned=mentioned,
-            sender_id=msg.sender_id,
-        )
-        return not decision.admit
-    return not mentioned
+    return not decide_channel_admission(channel, msg, session_key).admit
 
 
 # ── Gap 3: Typing indicator ──────────────────────────────────────────────
@@ -1336,7 +1390,7 @@ def _route_envelope_reply_message(
     """Build a reply that preserves channel id when targeting a thread id."""
     channel_id = getattr(route_envelope, "channel_id", None)
     thread_id = getattr(route_envelope, "thread_id", None)
-    merged_metadata = dict(metadata or {})
+    merged_metadata = _merge_route_reply_metadata(metadata, route_envelope)
     if thread_id and channel_id:
         merged_metadata.setdefault("channel", channel_id)
     return _sanitize_outgoing_message(
@@ -1348,25 +1402,47 @@ def _route_envelope_reply_message(
     )
 
 
+_INTERACTION_REPLY_METADATA_KEYS = (
+    "interaction_token",
+    "application_id",
+    "interaction_deferred",
+)
+
+
+def _merge_route_reply_metadata(
+    metadata: dict[str, Any] | None,
+    route_envelope: Any,
+) -> dict[str, Any]:
+    """Merge only provider callback fields that are safe for an interaction reply."""
+
+    merged = dict(metadata or {})
+    route_metadata = getattr(route_envelope, "metadata", None)
+    if not isinstance(route_metadata, dict):
+        return merged
+    for key in _INTERACTION_REPLY_METADATA_KEYS:
+        value = route_metadata.get(key)
+        if key == "interaction_deferred":
+            if isinstance(value, bool):
+                merged.setdefault(key, value)
+        elif isinstance(value, str) and value:
+            merged.setdefault(key, value)
+    return merged
+
+
 def _preserve_route_channel_metadata(
     reply: OutgoingMessage,
     route_envelope: Any,
 ) -> OutgoingMessage:
-    """Add route channel metadata to thread-targeted replies when needed."""
+    """Preserve thread and allowlisted interaction reply routing metadata."""
+
     channel_id = getattr(route_envelope, "channel_id", None)
     thread_id = getattr(route_envelope, "thread_id", None)
-    if not channel_id or not thread_id or reply.reply_to != thread_id:
+    metadata = _merge_route_reply_metadata(reply.metadata, route_envelope)
+    if channel_id and thread_id and reply.reply_to == thread_id:
+        metadata.setdefault("channel", channel_id)
+    if metadata == reply.metadata:
         return _sanitize_outgoing_message(reply)
-    metadata = dict(reply.metadata or {})
-    metadata.setdefault("channel", channel_id)
-    return _sanitize_outgoing_message(
-        OutgoingMessage(
-            content=reply.content,
-            attachments=list(reply.attachments),
-            metadata=metadata,
-            reply_to=reply.reply_to,
-        )
-    )
+    return _sanitize_outgoing_message(reply.model_copy(update={"metadata": metadata}))
 
 
 def _status_reactor(channel: Any) -> Any:

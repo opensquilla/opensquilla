@@ -118,6 +118,30 @@ def test_preserve_route_channel_metadata_for_registry_thread_reply() -> None:
     assert fixed.metadata == {"command": "compact", "channel": "C42"}
 
 
+def test_preserve_route_metadata_allows_only_interaction_reply_context() -> None:
+    route_envelope = SimpleNamespace(
+        channel_id="C42",
+        thread_id=None,
+        metadata={
+            "interaction_token": "interaction-secret",
+            "application_id": "app-1",
+            "interaction_deferred": True,
+            "authorization": "must-not-leak",
+            "guild_id": "must-not-leak",
+        },
+    )
+    reply = OutgoingMessage(content="done", metadata={"command": "help"})
+
+    fixed = _preserve_route_channel_metadata(reply, route_envelope)
+
+    assert fixed.metadata == {
+        "command": "help",
+        "interaction_token": "interaction-secret",
+        "application_id": "app-1",
+        "interaction_deferred": True,
+    }
+
+
 @pytest.mark.asyncio
 async def test_registered_slash_command_preserves_channel_for_thread_target() -> None:
     msg = IncomingMessage(

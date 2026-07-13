@@ -84,6 +84,9 @@ async def _deliver_channel_prompt(
         namespace=str(info.get("namespace") or "exec"),
         session_key=session_key,
         owner_sender_id=owner_sender_id,
+        origin_channel_name=str(channel_name or ""),
+        origin_channel_id=str(channel_id or ""),
+        origin_thread_id=str(thread_id or ""),
     )
     request = ApprovalPromptRequest(
         approval_id=approval_id,

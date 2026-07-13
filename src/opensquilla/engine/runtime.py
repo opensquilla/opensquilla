@@ -5265,6 +5265,11 @@ class TurnRunner:
                     inherited_provider_config=current_provider_config,
                     fallback_provider=provider,
                     turn_metadata=turn.metadata,
+                    _enable_member_request_budget_rebinding=True,
+                    _model_catalog=self._model_catalog,
+                    _context_overflow_threshold=(
+                        AgentConfig().context_overflow_threshold
+                    ),
                 )
 
         return turn, provider

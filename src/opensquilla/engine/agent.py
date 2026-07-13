@@ -10,6 +10,7 @@ import contextlib
 import functools
 import hashlib
 import json
+import math
 import os
 import re
 import subprocess
@@ -125,7 +126,13 @@ from opensquilla.provider import (
     ToolUseStartEvent as ProviderToolUseStart,
 )
 from opensquilla.provider.failures import ProviderFailureKind, classify_provider_error
-from opensquilla.provider.types import ContentBlockImage, FailureInjector
+from opensquilla.provider.protocol import project_provider_message_count
+from opensquilla.provider.types import (
+    ContentBlockImage,
+    FailureInjector,
+    ProviderMessageCountProjection,
+    ProviderMessageLimitProof,
+)
 from opensquilla.provider.types import (
     EnsembleProgressEvent as ProviderEnsembleProgressEvent,
 )
@@ -1219,6 +1226,69 @@ class _ProviderRetryPolicy:
                 < self.provider_failure_budgets.get(failure_kind, self.max_provider_retries)
             )
         return provider_retry_attempt < self.max_provider_retries
+
+
+@dataclass(frozen=True)
+class _MessageCountRecoveryOutcome:
+    """Ephemeral provider-view rewrite produced by count-aware compaction."""
+
+    messages: list[Message]
+    request_context_insert_index: int
+    runtime_context_insert_index: int
+    protected_turn_start_index: int
+    projected_wire_messages: int
+    removed_count: int
+
+
+@dataclass(frozen=True)
+class _MessageCountRequestView:
+    """Compacted request-only prefix plus later canonical messages.
+
+    Count recovery must not rewrite ``turn_messages`` because that list becomes
+    the transcript at turn completion.  This view records the canonical length
+    it covered so later assistant/tool messages can be spliced into requests.
+    """
+
+    messages: list[Message]
+    canonical_tail_start: int
+    request_context_insert_index: int
+    runtime_context_insert_index: int
+    protected_turn_start_index: int
+
+    def materialize(self, canonical_messages: list[Message]) -> list[Message]:
+        tail_start = max(0, min(self.canonical_tail_start, len(canonical_messages)))
+        return [*self.messages, *canonical_messages[tail_start:]]
+
+    def rebase_after_canonical_suffix_cleanup(
+        self,
+        canonical_before: list[Message],
+        canonical_after: list[Message],
+    ) -> _MessageCountRequestView:
+        """Keep an ephemeral request view aligned after a canonical suffix drop.
+
+        Runtime-recovery scaffolding is removed from the canonical transcript
+        before the next tool exchange.  Count recovery may already have
+        snapshotted that suffix, so advance the append boundary and apply the
+        same cleanup to the request-only view instead of letting it skip the
+        next canonical message.
+        """
+
+        if canonical_after != canonical_before[: len(canonical_after)]:
+            raise ValueError("canonical cleanup must remove a suffix")
+        removed_count = len(canonical_before) - len(canonical_after)
+        materialized = self.materialize(canonical_before)
+        if removed_count > len(materialized):
+            raise ValueError("canonical cleanup exceeds the request view")
+        rebased_messages = (
+            materialized[:-removed_count] if removed_count else materialized
+        )
+        return _MessageCountRequestView(
+            messages=rebased_messages,
+            canonical_tail_start=len(canonical_after),
+            request_context_insert_index=self.request_context_insert_index,
+            runtime_context_insert_index=self.runtime_context_insert_index,
+            protected_turn_start_index=self.protected_turn_start_index,
+        )
 
 
 def _classify_provider_attempt(
@@ -2827,6 +2897,8 @@ class Agent:
     def _sanitize_projected_tool_use_arguments_for_provider(
         self,
         messages: list[Message],
+        *,
+        record: bool = True,
     ) -> list[Message]:
         cap = self._tool_use_argument_provider_request_max_chars("")
         replacements: dict[tuple[int, int], ContentBlockToolUse] = {}
@@ -2901,16 +2973,17 @@ class Agent:
                 )
             )
 
-        self.config.metadata["tool_argument_provider_view_summaries_applied"] = True
-        metadata_key = "tool_argument_provider_view_summaries"
-        self.config.metadata[metadata_key] = self.config.metadata.get(metadata_key, 0) + len(
-            replacements
-        )
-        self._write_turn_call_log(
-            "tool_argument_provider_view_summary",
-            sanitized_tool_uses=len(replacements),
-            max_chars=cap,
-        )
+        if record:
+            self.config.metadata["tool_argument_provider_view_summaries_applied"] = True
+            metadata_key = "tool_argument_provider_view_summaries"
+            self.config.metadata[metadata_key] = self.config.metadata.get(
+                metadata_key, 0
+            ) + len(replacements)
+            self._write_turn_call_log(
+                "tool_argument_provider_view_summary",
+                sanitized_tool_uses=len(replacements),
+                max_chars=cap,
+            )
         return sanitized_messages
 
     def _store_tool_result_snapshot(
@@ -3801,6 +3874,11 @@ class Agent:
 
         # Build initial message list
         turn_messages: list[Message] = list(history)
+        # Count-aware recovery may summarize only content before this boundary.
+        # Skills context, multimodal inputs, and the active user request all
+        # belong to the protected current turn.
+        current_turn_start_index = len(turn_messages)
+        message_count_request_view: _MessageCountRequestView | None = None
         # Insert this turn's skills context BEFORE the user content so it
         # joins turn_messages permanently (persists into self._history at
         # turn end). Re-inserting a fresh skills_ctx into request_messages
@@ -4383,6 +4461,7 @@ class Agent:
                 )
                 _attempt_retries_used = _retry_policy.used_attempts()
                 _invalid_response_fallback_done = False
+                _message_limit_recovery_done = False
                 while _retry_attempt <= _fallback.max_retries:
                     provider_error = None
                     assistant_text_parts = []
@@ -4430,22 +4509,36 @@ class Agent:
                         and not post_write_convergence_finalization_pending
                     )
                     ignored_post_delivery_tool_use = False
+                    if message_count_request_view is not None:
+                        base_request_turn_messages = message_count_request_view.materialize(
+                            turn_messages
+                        )
+                        active_request_context_insert_index = (
+                            message_count_request_view.request_context_insert_index
+                        )
+                        active_runtime_context_insert_index = (
+                            message_count_request_view.runtime_context_insert_index
+                        )
+                        active_protected_turn_start_index = (
+                            message_count_request_view.protected_turn_start_index
+                        )
+                    else:
+                        base_request_turn_messages = turn_messages
+                        active_request_context_insert_index = request_context_insert_index
+                        active_runtime_context_insert_index = runtime_context_insert_index
+                        active_protected_turn_start_index = current_turn_start_index
+
+                    request_suffix_messages: list[Message] = []
                     if (
                         post_write_convergence_finalization_pending
                         and post_write_convergence_finalization_message is not None
                     ):
-                        request_turn_messages = [
-                            *turn_messages,
-                            post_write_convergence_finalization_message,
-                        ]
+                        request_suffix_messages = [post_write_convergence_finalization_message]
                     elif (
                         max_iterations_finalization_pending
                         and max_iterations_finalization_message is not None
                     ):
-                        request_turn_messages = [
-                            *turn_messages,
-                            max_iterations_finalization_message,
-                        ]
+                        request_suffix_messages = [max_iterations_finalization_message]
                     elif deadline_wrapup_message is not None and (
                         not turn_messages or turn_messages[-1].role != "assistant"
                     ):
@@ -4454,21 +4547,20 @@ class Agent:
                         # while the turn ends on an assistant message: the
                         # reasoning-prefill continuation requires the assistant
                         # tail to stay the last request message.
-                        request_turn_messages = [
-                            *turn_messages,
-                            deadline_wrapup_message,
-                        ]
-                    else:
-                        request_turn_messages = turn_messages
+                        request_suffix_messages = [deadline_wrapup_message]
+                    request_turn_messages = [
+                        *base_request_turn_messages,
+                        *request_suffix_messages,
+                    ]
                     (
                         request_messages,
                         request_sanitize_result,
                     ) = await self._provider_request_messages_with_sanitize_async(
                         request_turn_messages,
                         request_context_message=request_context_message,
-                        request_context_insert_index=request_context_insert_index,
+                        request_context_insert_index=active_request_context_insert_index,
                         runtime_context_message=runtime_context_message,
-                        runtime_context_insert_index=runtime_context_insert_index,
+                        runtime_context_insert_index=active_runtime_context_insert_index,
                         turn_objective_message=turn_objective_message,
                     )
                     identical_request_action = self._identical_request_loop_break_action(
@@ -5848,6 +5940,144 @@ class Agent:
                             status_code=provider_error_status_code,
                             raw_code=provider_error.code,
                         )
+                        message_limit_proof = provider_error.message_limit_proof
+                        if message_limit_proof is not None:
+                            proof_log = {
+                                "actual_wire_messages": (
+                                    message_limit_proof.actual_wire_messages
+                                ),
+                                "limit": message_limit_proof.limit,
+                                "logical_messages": message_limit_proof.logical_messages,
+                                "system_messages": message_limit_proof.system_messages,
+                                "tool_result_messages": (
+                                    message_limit_proof.tool_result_messages
+                                ),
+                                "provider_kind": message_limit_proof.provider_kind,
+                                "model": message_limit_proof.model,
+                                "base_host": message_limit_proof.base_host,
+                                "iteration": iterations,
+                                "attempt": _call_attempt,
+                            }
+                            _log.warning(
+                                "provider_request_message_limit_detected",
+                                **proof_log,
+                            )
+                            self._write_turn_call_log(
+                                "provider_request_message_limit_detected",
+                                **proof_log,
+                            )
+                            if _message_limit_recovery_done:
+                                _log.warning(
+                                    "provider_request_message_limit_recovery_repeated",
+                                    **proof_log,
+                                )
+                                self._write_turn_call_log(
+                                    "provider_request_message_limit_recovery_repeated",
+                                    **proof_log,
+                                )
+                                yield self._transition(AgentState.ERROR)
+                                terminal_error = ErrorEvent(
+                                    message=(
+                                        "The provider rejected the request message count "
+                                        "again after one safe recovery attempt."
+                                    ),
+                                    code="provider_request_message_limit_exhausted",
+                                )
+                                yield terminal_error
+                                break
+
+                            _message_limit_recovery_done = True
+                            recovery_outcome, recovery_reason = (
+                                await self._recover_provider_message_count_limit(
+                                    base_request_turn_messages,
+                                    request_suffix_messages=request_suffix_messages,
+                                    proof=message_limit_proof,
+                                    config=call_chat_cfg,
+                                    identical_request_perturbed=(
+                                        identical_request_action == "perturb"
+                                    ),
+                                    request_context_message=request_context_message,
+                                    request_context_insert_index=(
+                                        active_request_context_insert_index
+                                    ),
+                                    runtime_context_message=runtime_context_message,
+                                    runtime_context_insert_index=(
+                                        active_runtime_context_insert_index
+                                    ),
+                                    turn_objective_message=turn_objective_message,
+                                    protected_turn_start_index=(
+                                        active_protected_turn_start_index
+                                    ),
+                                )
+                            )
+                            if recovery_outcome is None:
+                                _log.warning(
+                                    "provider_request_message_limit_recovery_refused",
+                                    reason=recovery_reason,
+                                    **proof_log,
+                                )
+                                self._write_turn_call_log(
+                                    "provider_request_message_limit_recovery_refused",
+                                    reason=recovery_reason,
+                                    **proof_log,
+                                )
+                                yield self._transition(AgentState.ERROR)
+                                terminal_error = ErrorEvent(
+                                    message=(
+                                        "The provider request exceeds its message-count "
+                                        "limit, and older history could not be summarized "
+                                        "without changing protected turn or tool state."
+                                    ),
+                                    code="provider_request_message_limit_exhausted",
+                                )
+                                yield terminal_error
+                                break
+
+                            message_count_request_view = _MessageCountRequestView(
+                                messages=recovery_outcome.messages,
+                                canonical_tail_start=len(turn_messages),
+                                request_context_insert_index=(
+                                    recovery_outcome.request_context_insert_index
+                                ),
+                                runtime_context_insert_index=(
+                                    recovery_outcome.runtime_context_insert_index
+                                ),
+                                protected_turn_start_index=(
+                                    recovery_outcome.protected_turn_start_index
+                                ),
+                            )
+                            recovery_log = {
+                                **proof_log,
+                                "target_wire_messages": (
+                                    message_limit_proof.limit
+                                    - self._message_count_headroom(
+                                        message_limit_proof.limit
+                                    )
+                                ),
+                                "projected_wire_messages": (
+                                    recovery_outcome.projected_wire_messages
+                                ),
+                                "removed_logical_messages": (
+                                    recovery_outcome.removed_count
+                                ),
+                            }
+                            _log.info(
+                                "provider_request_message_limit_recovery_success",
+                                **recovery_log,
+                            )
+                            self._write_turn_call_log(
+                                "provider_request_message_limit_recovery_success",
+                                **recovery_log,
+                            )
+                            yield WarningEvent(
+                                code="provider_request_message_limit_recovery_success",
+                                message=(
+                                    "Older history was summarized for this provider "
+                                    "request; retrying once."
+                                ),
+                            )
+                            _call_attempt += 1
+                            continue
                         if artifact_delivery_final_response_pending:
                             yield _finish_artifact_delivery_degraded(
                                 reason=provider_error.message,
@@ -5970,6 +6200,7 @@ class Agent:
                                 overflow_total_tokens,
                                 request_context_insert_index=request_context_insert_index,
                                 runtime_context_insert_index=runtime_context_insert_index,
+                                protected_turn_start_index=current_turn_start_index,
                                 compaction_window_tokens=provider_compaction_window_tokens,
                             )
                             if overflow_outcome is None:
@@ -6018,6 +6249,11 @@ class Agent:
                             turn_messages = overflow_outcome.messages
                             request_context_insert_index = next_request_context_insert_index
                             runtime_context_insert_index = next_runtime_context_insert_index
+                            if overflow_outcome.protected_turn_start_index is not None:
+                                current_turn_start_index = (
+                                    overflow_outcome.protected_turn_start_index
+                                )
+                            message_count_request_view = None
                             yield WarningEvent(
                                 code="context_auto_compaction_retry",
                                 message="Context compacted; retrying the provider request.",
@@ -6175,6 +6411,7 @@ class Agent:
                     estimated_context_tokens,
                     request_context_insert_index=request_context_insert_index,
                     runtime_context_insert_index=runtime_context_insert_index,
+                    protected_turn_start_index=current_turn_start_index,
                 )
                 if overflow_outcome is None:
                     if overflow_retries >= self.config.max_overflow_retries:
@@ -6198,6 +6435,9 @@ class Agent:
                         request_context_insert_index = overflow_outcome.request_context_insert_index
                     if overflow_outcome.runtime_context_insert_index is not None:
                         runtime_context_insert_index = overflow_outcome.runtime_context_insert_index
+                    if overflow_outcome.protected_turn_start_index is not None:
+                        current_turn_start_index = overflow_outcome.protected_turn_start_index
+                    message_count_request_view = None
                     yield CompactionEvent(
                         compaction_id=overflow_outcome.compaction_id,
                         summary=overflow_outcome.summary,
@@ -6302,7 +6542,15 @@ class Agent:
                 tool_calls = resolved_tool_calls
 
                 if runtime_recovery_scaffolding_pending:
-                    turn_messages = _drop_runtime_recovery_scaffolding(turn_messages)
+                    cleaned_turn_messages = _drop_runtime_recovery_scaffolding(turn_messages)
+                    if message_count_request_view is not None:
+                        message_count_request_view = (
+                            message_count_request_view.rebase_after_canonical_suffix_cleanup(
+                                turn_messages,
+                                cleaned_turn_messages,
+                            )
+                        )
+                    turn_messages = cleaned_turn_messages
                     runtime_recovery_scaffolding_pending = False
 
                 repeated_tool_call_recovery_message: str | None = None
@@ -9688,8 +9936,9 @@ class Agent:
         runtime_context_message: Message,
         runtime_context_insert_index: int,
         turn_objective_message: Message | None = None,
+        preview: bool = False,
     ) -> tuple[list[Message], SessionSanitizeResult]:
-        capsule_message = self._runtime_state_capsule_provider_message()
+        capsule_message = self._runtime_state_capsule_provider_message(preview=preview)
         if capsule_message is not None:
             messages = [*messages, capsule_message]
         source_messages = self._with_request_context_messages(
@@ -9701,19 +9950,39 @@ class Agent:
             turn_objective_message=turn_objective_message,
         )
         source_messages = self._apply_provider_tool_result_overrides(source_messages)
-        source_messages = self._strip_provider_context_marker_replay_for_provider(source_messages)
-        source_messages = self._dedup_repeated_tool_results_for_provider(source_messages)
-        source_messages = self._compact_aggregate_tool_results_for_provider(source_messages)
-        source_messages = self._sanitize_projected_tool_use_arguments_for_provider(source_messages)
+        source_messages = self._strip_provider_context_marker_replay_for_provider(
+            source_messages,
+            record=not preview,
+        )
+        # These provider projections replace content in place and therefore do
+        # not affect message cardinality.  Skip them during a count preview:
+        # the normal paths update metadata, logs, and snapshot stores.
+        if not preview:
+            source_messages = self._dedup_repeated_tool_results_for_provider(source_messages)
+            source_messages = self._compact_aggregate_tool_results_for_provider(source_messages)
+        source_messages = self._sanitize_projected_tool_use_arguments_for_provider(
+            source_messages,
+            record=not preview,
+        )
         source_messages = repair_tool_pairing(source_messages)
         request_messages, sanitize_result = sanitize_session_messages(source_messages)
-        self._remember_provider_visible_tool_results(request_messages)
+        if not preview:
+            self._remember_provider_visible_tool_results(request_messages)
         return request_messages, sanitize_result
 
-    def _runtime_state_capsule_provider_message(self) -> Message | None:
+    def _runtime_state_capsule_provider_message(self, *, preview: bool = False) -> Message | None:
         mode = str(getattr(self.config, "runtime_state_capsule_mode", "off") or "off")
         if mode not in {"log", "inject"}:
             return None
+        if preview:
+            # Count projection needs the exact assembly rule, not capsule
+            # contents.  Avoid filesystem reads, metadata writes, and runtime
+            # events while preserving the one-message injection cardinality.
+            return (
+                Message(role="user", content="[runtime state capsule preview]")
+                if mode == "inject"
+                else None
+            )
         ctx = self._tool_context or current_tool_context.get()
         workspace = (
             getattr(ctx, "workspace_dir", None)
@@ -9789,6 +10058,285 @@ class Agent:
             turn_objective_message=turn_objective_message,
         )
         return request_messages
+
+    def _provider_request_messages_for_count_projection(
+        self,
+        messages: list[Message],
+        *,
+        request_context_message: Message | None,
+        request_context_insert_index: int,
+        runtime_context_message: Message,
+        runtime_context_insert_index: int,
+        turn_objective_message: Message | None = None,
+    ) -> list[Message]:
+        """Assemble the provider view without logs, snapshots, or state writes."""
+
+        request_messages, _ = self._provider_request_messages_with_sanitize(
+            messages,
+            request_context_message=request_context_message,
+            request_context_insert_index=request_context_insert_index,
+            runtime_context_message=runtime_context_message,
+            runtime_context_insert_index=runtime_context_insert_index,
+            turn_objective_message=turn_objective_message,
+            preview=True,
+        )
+        return request_messages
+
+    def _project_provider_request_message_count(
+        self,
+        messages: list[Message],
+        *,
+        config: ChatConfig,
+        identical_request_perturbed: bool,
+        request_context_message: Message | None,
+        request_context_insert_index: int,
+        runtime_context_message: Message,
+        runtime_context_insert_index: int,
+        turn_objective_message: Message | None,
+    ) -> ProviderMessageCountProjection | None:
+        request_messages = self._provider_request_messages_for_count_projection(
+            messages,
+            request_context_message=request_context_message,
+            request_context_insert_index=request_context_insert_index,
+            runtime_context_message=runtime_context_message,
+            runtime_context_insert_index=runtime_context_insert_index,
+            turn_objective_message=turn_objective_message,
+        )
+        if identical_request_perturbed:
+            request_messages = self._append_identical_request_loop_nudge(
+                request_messages
+            )
+        return project_provider_message_count(
+            self.provider,
+            request_messages,
+            config,
+        )
+
+    @staticmethod
+    def _message_count_headroom(limit: int) -> int:
+        return min(16, max(2, math.ceil(limit * 0.10)))
+
+    @staticmethod
+    def _adjust_index_after_prefix_summary(original_index: int, cut: int) -> int:
+        return 2 + max(0, original_index - cut)
+
+    @staticmethod
+    def _message_count_safe_prefix_cuts(
+        messages: list[Message],
+        *,
+        protected_turn_start_index: int,
+    ) -> list[int]:
+        """Return whole-turn cuts that cannot orphan structured tool state."""
+
+        protected_start = max(0, min(protected_turn_start_index, len(messages)))
+        cuts: list[int] = []
+        for cut in range(1, protected_start + 1):
+            if cut >= len(messages):
+                break
+            first_kept = messages[cut]
+            # A historical turn and the protected current-turn prefix both
+            # begin with a run of user-side messages.  Require the preceding
+            # assistant boundary so skills context, multimodal inputs, and the
+            # actual user message cannot be split into separate turns.  A tool
+            # result is never a legal boundary even though its role is ``user``.
+            if (
+                first_kept.role != "user"
+                or _message_has_tool_result(first_kept)
+                or messages[cut - 1].role != "assistant"
+            ):
+                continue
+            prefix = messages[:cut]
+            tail = messages[cut:]
+            if repair_tool_pairing(prefix) != prefix:
+                continue
+            if repair_tool_pairing(tail) != tail:
+                continue
+            cuts.append(cut)
+        return cuts
+
+    @staticmethod
+    def _message_count_compaction_entries(messages: list[Message]) -> list[dict[str, Any]]:
+        entries: list[dict[str, Any]] = []
+        for message in messages:
+            if isinstance(message.content, str):
+                flat = message.content
+                real_tokens = get_approx_tokens(message.content)
+            else:
+                flat = _flatten_content_blocks(message.content)
+                real_tokens = get_approx_tokens(
+                    json.dumps(Agent._live_request_jsonable(message.content))
+                )
+            entries.append(
+                {
+                    "role": message.role,
+                    "content": flat,
+                    "token_count": real_tokens,
+                }
+            )
+        return entries
+
+    async def _recover_provider_message_count_limit(
+        self,
+        messages: list[Message],
+        *,
+        request_suffix_messages: list[Message],
+        proof: ProviderMessageLimitProof,
+        config: ChatConfig,
+        identical_request_perturbed: bool,
+        request_context_message: Message | None,
+        request_context_insert_index: int,
+        runtime_context_message: Message,
+        runtime_context_insert_index: int,
+        turn_objective_message: Message | None,
+        protected_turn_start_index: int,
+    ) -> tuple[_MessageCountRecoveryOutcome | None, str]:
+        """Find one safe prefix cut, summarize it once, then re-project.
+
+        This method only returns a request view.  It deliberately does not
+        mutate the canonical turn transcript and does not emit a persistent
+        ``CompactionEvent``.
+        """
+
+        limit = int(proof.limit)
+        target = limit - self._message_count_headroom(limit)
+        if target <= 0:
+            return None, "invalid_recovery_target"
+
+        projected_current = self._project_provider_request_message_count(
+            [*messages, *request_suffix_messages],
+            config=config,
+            identical_request_perturbed=identical_request_perturbed,
+            request_context_message=request_context_message,
+            request_context_insert_index=request_context_insert_index,
+            runtime_context_message=runtime_context_message,
+            runtime_context_insert_index=runtime_context_insert_index,
+            turn_objective_message=turn_objective_message,
+        )
+        if projected_current is None:
+            return None, "projection_unavailable"
+        if projected_current.actual_wire_messages <= limit:
+            return None, "local_wire_count_not_over_limit"
+
+        placeholder_summary = Message(
+            role="user",
+            content="[Context summary]\n[message-count projection placeholder]",
+        )
+        summary_ack = Message(
+            role="assistant",
+            content="Understood. Continuing from summary.",
+        )
+        selected_cut: int | None = None
+        selected_projection: ProviderMessageCountProjection | None = None
+        selected_request_idx = 0
+        selected_runtime_idx = 0
+        protected_start = max(0, min(protected_turn_start_index, len(messages)))
+        for cut in self._message_count_safe_prefix_cuts(
+            messages,
+            protected_turn_start_index=protected_start,
+        ):
+            candidate = [placeholder_summary, summary_ack, *messages[cut:]]
+            request_idx = self._adjust_index_after_prefix_summary(
+                request_context_insert_index,
+                cut,
+            )
+            runtime_idx = self._adjust_index_after_prefix_summary(
+                runtime_context_insert_index,
+                cut,
+            )
+            projection = self._project_provider_request_message_count(
+                [*candidate, *request_suffix_messages],
+                config=config,
+                identical_request_perturbed=identical_request_perturbed,
+                request_context_message=request_context_message,
+                request_context_insert_index=request_idx,
+                runtime_context_message=runtime_context_message,
+                runtime_context_insert_index=runtime_idx,
+                turn_objective_message=turn_objective_message,
+            )
+            if projection is None:
+                return None, "projection_unavailable"
+            if projection.actual_wire_messages <= target:
+                selected_cut = cut
+                selected_projection = projection
+                selected_request_idx = request_idx
+                selected_runtime_idx = runtime_idx
+                break
+
+        if selected_cut is None or selected_projection is None:
+            return None, "no_safe_cut"
+
+        compaction_config = self._build_compaction_config()
+        protected_tail_count = len(messages) - protected_start
+        compaction_config.protected_recent_messages = max(
+            int(compaction_config.protected_recent_messages or 0),
+            protected_tail_count,
+        )
+        request = CompactionRequest(
+            session_id="agent-turn-message-count",
+            entries=self._message_count_compaction_entries(messages),
+            context_window_tokens=self.config.context_window_tokens,
+            config=compaction_config,
+            forced_prefix_cut=selected_cut,
+            trigger="message_count",
+            reason="provider_request_message_limit",
+        )
+        try:
+            result = await compact_context(request)
+        except Exception:  # noqa: BLE001 - refusal is surfaced as a stable terminal state
+            return None, "summary_failed"
+        kept_start_index = int(
+            getattr(result, "kept_start_index", result.removed_count)
+            or result.removed_count
+        )
+        if (
+            result.removed_count != selected_cut
+            or kept_start_index != selected_cut
+            or not result.summary
+        ):
+            return None, str(result.skip_reason or "summary_failed")
+
+        compacted = [
+            Message(role="user", content=f"[Context summary]\n{result.summary}"),
+            summary_ack,
+            *messages[selected_cut:],
+        ]
+        adjusted_protected_start = self._adjust_index_after_prefix_summary(
+            protected_start,
+            selected_cut,
+        )
+        # The protected current turn remains the original structured objects,
+        # in the original order.  Refuse rather than repairing or flattening it.
+        if compacted[adjusted_protected_start:] != messages[protected_start:]:
+            return None, "protected_tail_changed"
+        if repair_tool_pairing(compacted) != compacted:
+            return None, "tool_pairing_changed"
+
+        verified = self._project_provider_request_message_count(
+            [*compacted, *request_suffix_messages],
+            config=config,
+            identical_request_perturbed=identical_request_perturbed,
+            request_context_message=request_context_message,
+            request_context_insert_index=selected_request_idx,
+            runtime_context_message=runtime_context_message,
+            runtime_context_insert_index=selected_runtime_idx,
+            turn_objective_message=turn_objective_message,
+        )
+        if verified is None:
+            return None, "projection_unavailable_after_summary"
+        if verified.actual_wire_messages > target:
+            return None, "projection_above_target_after_summary"
+
+        return (
+            _MessageCountRecoveryOutcome(
+                messages=compacted,
+                request_context_insert_index=selected_request_idx,
+                runtime_context_insert_index=selected_runtime_idx,
+                protected_turn_start_index=adjusted_protected_start,
+                projected_wire_messages=verified.actual_wire_messages,
+                removed_count=result.removed_count,
+            ),
+            "recovered",
+        )
 
     def _apply_provider_tool_result_overrides(self, messages: list[Message]) -> list[Message]:
         if (
@@ -10097,6 +10645,7 @@ class Agent:
         *,
         request_context_insert_index: int | None = None,
         runtime_context_insert_index: int | None = None,
+        protected_turn_start_index: int | None = None,
         compaction_window_tokens: int | None = None,
     ) -> CompactionOutcome | None:
         """Check if estimated live context tokens exceed the overflow threshold.
@@ -10112,6 +10661,7 @@ class Agent:
                 messages=messages,
                 request_context_insert_index=request_context_insert_index,
                 runtime_context_insert_index=runtime_context_insert_index,
+                protected_turn_start_index=protected_turn_start_index,
             )
 
         compaction_id = new_compaction_id()
@@ -10412,7 +10962,12 @@ class Agent:
                         COMPACTION_TRIGGERED_EVENT,
                     ),
                 )
-            return CompactionOutcome(messages=messages)
+            return CompactionOutcome(
+                messages=messages,
+                request_context_insert_index=request_context_insert_index,
+                runtime_context_insert_index=runtime_context_insert_index,
+                protected_turn_start_index=protected_turn_start_index,
+            )
 
         # Rebuild message list from compacted entries
         compacted: list[Message] = []
@@ -10434,16 +10989,29 @@ class Agent:
             self._memory_sync_manager.mark_dirty()
 
         kept_entries = [{"role": e["role"], "content": e["content"]} for e in result.kept_entries]
-        adjusted_request_idx = self._adjust_compacted_insert_index(
-            entries,
-            kept_entries,
+        # compact_context is prefix-only.  Use its exact cut instead of
+        # content matching: duplicate role/content pairs can otherwise match
+        # an older row and move the protected current-turn boundary forward.
+        # ``getattr`` keeps older/custom compactor result stubs compatible;
+        # prefix-only compaction already guarantees that removed_count is the
+        # same boundary when the additive field is absent.
+        kept_start_index = int(
+            getattr(result, "kept_start_index", result.removed_count)
+            or result.removed_count
+        )
+        adjusted_request_idx = self._adjust_index_after_prefix_compaction(
             request_context_insert_index,
+            kept_start_index,
             summary_present=bool(result.summary),
         )
-        adjusted_runtime_idx = self._adjust_compacted_insert_index(
-            entries,
-            kept_entries,
+        adjusted_runtime_idx = self._adjust_index_after_prefix_compaction(
             runtime_context_insert_index,
+            kept_start_index,
+            summary_present=bool(result.summary),
+        )
+        adjusted_protected_idx = self._adjust_index_after_prefix_compaction(
+            protected_turn_start_index,
+            kept_start_index,
             summary_present=bool(result.summary),
         )
         return CompactionOutcome(
@@ -10455,6 +11023,7 @@ class Agent:
             compaction_id=compaction_id,
             request_context_insert_index=adjusted_request_idx,
             runtime_context_insert_index=adjusted_runtime_idx,
+            protected_turn_start_index=adjusted_protected_idx,
         )
 
     def _consume_completed_flush_task(self) -> None:
@@ -10518,33 +11087,17 @@ class Agent:
         return self._record_flush_timeout_backoff()
 
     @staticmethod
-    def _adjust_compacted_insert_index(
-        entries: list[dict[str, Any]],
-        kept_entries: list[dict[str, Any]],
+    def _adjust_index_after_prefix_compaction(
         original_index: int | None,
+        kept_start_index: int,
         *,
         summary_present: bool,
     ) -> int | None:
-        """Map a pre-compaction insertion boundary onto the compacted message list."""
+        """Map an insertion boundary through an exact prefix compaction cut."""
         if original_index is None:
             return None
-        adjusted = 2 if summary_present and original_index > 0 else 0
-        search_start = 0
-        for kept in kept_entries:
-            matched_index = None
-            for idx in range(search_start, len(entries)):
-                entry = entries[idx]
-                if entry.get("role") == kept.get("role") and entry.get("content") == kept.get(
-                    "content"
-                ):
-                    matched_index = idx
-                    break
-            if matched_index is None:
-                continue
-            if matched_index < original_index:
-                adjusted += 1
-            search_start = matched_index + 1
-        return adjusted
+        summary_prefix = 2 if summary_present and original_index > 0 else 0
+        return summary_prefix + max(0, original_index - kept_start_index)
 
     async def _run_flush(
         self,
@@ -10621,6 +11174,8 @@ class Agent:
     def _strip_provider_context_marker_replay_for_provider(
         self,
         messages: list[Message],
+        *,
+        record: bool = True,
     ) -> list[Message]:
         blocked_tool_ids: set[str] = set()
         for message in messages:
@@ -10641,6 +11196,7 @@ class Agent:
             return self._project_blocked_context_replay_with_feedback(
                 messages,
                 blocked_tool_ids,
+                record=record,
             )
 
         stripped_messages: list[Message] = []
@@ -10680,21 +11236,24 @@ class Agent:
         if stripped_blocks and stripped_messages and stripped_messages[-1].role == "assistant":
             stripped_messages.append(Message(role="user", content=_PROVIDER_CONTEXT_REPAIR_PROMPT))
 
-        self.config.metadata["tool_argument_projection_replay_stripped"] = (
-            self.config.metadata.get("tool_argument_projection_replay_stripped", 0)
-            + stripped_blocks
-        )
-        self._write_turn_call_log(
-            "tool_argument_projection_replay_stripped",
-            tool_use_ids=sorted(blocked_tool_ids),
-            stripped_blocks=stripped_blocks,
-        )
+        if record:
+            self.config.metadata["tool_argument_projection_replay_stripped"] = (
+                self.config.metadata.get("tool_argument_projection_replay_stripped", 0)
+                + stripped_blocks
+            )
+            self._write_turn_call_log(
+                "tool_argument_projection_replay_stripped",
+                tool_use_ids=sorted(blocked_tool_ids),
+                stripped_blocks=stripped_blocks,
+            )
         return stripped_messages
 
     def _project_blocked_context_replay_with_feedback(
         self,
         messages: list[Message],
         blocked_tool_ids: set[str],
+        *,
+        record: bool = True,
     ) -> list[Message]:
         """Project blocked compacted-placeholder calls without hiding the rejection.
 
@@ -10759,16 +11318,17 @@ class Agent:
                 Message(role="user", content=_PROVIDER_CONTEXT_REPAIR_PROMPT)
             )
 
-        self.config.metadata["tool_argument_projection_replay_feedback"] = (
-            self.config.metadata.get("tool_argument_projection_replay_feedback", 0)
-            + projected_blocks
-        )
-        self._write_turn_call_log(
-            "tool_argument_projection_replay_feedback",
-            tool_use_ids=sorted(blocked_tool_ids),
-            projected_blocks=projected_blocks,
-            repair_prompt_appended=repair_prompt_appended,
-        )
+        if record:
+            self.config.metadata["tool_argument_projection_replay_feedback"] = (
+                self.config.metadata.get("tool_argument_projection_replay_feedback", 0)
+                + projected_blocks
+            )
+            self._write_turn_call_log(
+                "tool_argument_projection_replay_feedback",
+                tool_use_ids=sorted(blocked_tool_ids),
+                projected_blocks=projected_blocks,
+                repair_prompt_appended=repair_prompt_appended,
+            )
         return projected_messages
 
     def _identical_request_loop_break_action(

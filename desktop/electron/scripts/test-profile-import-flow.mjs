@@ -84,8 +84,8 @@ from pathlib import Path
 home = Path(sys.argv[1])
 payload = tomllib.loads((home / "config.toml").read_text(encoding="utf-8"))
 print(json.dumps({
-    "workspace_dir": payload.get("workspace_dir", ""),
-    "state_dir": payload.get("state_dir", ""),
+    "workspace_dir": payload.get("workspace_dir") or str(home / "workspace"),
+    "state_dir": payload.get("state_dir") or str(home / "state"),
 }))
 `, [home]))
 }

@@ -10124,8 +10124,14 @@ function onboardingPortableTransferError(): string | null {
   return null
 }
 
-function onboardingTargetNotEmptyError(report: Record<string, unknown> | null): string | null {
-  return report && migrationReportErrors(report).some((item) => item.kind === 'preflight/target')
+function onboardingTargetNotEmptyError(
+  report: Record<string, unknown> | null,
+  raw = '',
+): string | null {
+  const blockedByReport = report !== null
+    && migrationReportErrors(report).some((item) => item.kind === 'preflight/target')
+  const blockedBeforeReport = raw.includes('target home contains real data;')
+  return blockedByReport || blockedBeforeReport
     ? 'This Desktop profile is no longer empty. Finish setup, then use Settings to transfer data safely.'
     : null
 }
@@ -10203,7 +10209,7 @@ ipcMain.handle('desktop:onboarding:migrate:preview', async (event) => {
     target: primaryDesktopHome(),
     apply: false,
   })
-  const targetNotEmptyError = onboardingTargetNotEmptyError(report)
+  const targetNotEmptyError = onboardingTargetNotEmptyError(report, raw)
   const approved = report !== null
     && validationError === null
     && migrationReportErrors(report).length === 0
@@ -10267,13 +10273,13 @@ ipcMain.handle('desktop:onboarding:migrate:apply', async (event) => {
     )
     if (!receipt) {
       await clearPendingMigrationProviderSetup()
-      const detail = onboardingTargetNotEmptyError(result.report)
+      const detail = onboardingTargetNotEmptyError(result.report, result.raw)
         || validationError
         || result.raw
         || 'Copy did not publish a valid receipt.'
       const recoveryRequired = await refreshPrimaryRecoveryAfterImportAttempt()
       publishDesktopMigrationProgress('error', detail)
-      return { ok: false, report: result.report, raw: detail, prefill: null, recoveryRequired }
+      return { ok: false, error: detail, report: result.report, raw: detail, prefill: null, recoveryRequired }
     }
 
     intent = await bindMigrationIntentToReceipt(intent, receipt)
@@ -10295,7 +10301,8 @@ ipcMain.handle('desktop:onboarding:migrate:apply', async (event) => {
       prefill,
     }
   } catch (error) {
-    const detail = error instanceof Error ? error.message : String(error)
+    const rawDetail = error instanceof Error ? error.message : String(error)
+    const detail = onboardingTargetNotEmptyError(null, rawDetail) || rawDetail
     if (intent) {
       const receipt = await findAppliedReceiptForIntent(intent).catch(() => null)
       if (receipt) {
@@ -10310,7 +10317,7 @@ ipcMain.handle('desktop:onboarding:migrate:apply', async (event) => {
     }
     const recoveryRequired = await refreshPrimaryRecoveryAfterImportAttempt()
     publishDesktopMigrationProgress('error', detail)
-    return { ok: false, report: null, raw: detail, prefill: null, recoveryRequired }
+    return { ok: false, error: detail, report: null, raw: detail, prefill: null, recoveryRequired }
   }
   } finally {
     exclusive.finish()

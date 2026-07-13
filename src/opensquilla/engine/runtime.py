@@ -557,6 +557,13 @@ def _restored_output_side_tokens(
     return actual_output_side_tokens / (1.0 - rate)
 
 
+def _turn_used_ensemble(event: DoneEvent, metadata: Mapping[str, Any]) -> bool:
+    """True when any part of the turn ran through the ensemble provider."""
+    if metadata.get("ensemble_enabled"):
+        return True
+    return getattr(event, "ensemble_trace", None) is not None
+
+
 def _compute_comprehensive_turn_savings(
     event: DoneEvent,
     metadata: Mapping[str, Any],
@@ -566,6 +573,12 @@ def _compute_comprehensive_turn_savings(
     estimated_output_savings_pct: float = 0.03,
 ) -> _ComprehensiveTurnSavings:
     """Estimate per-turn savings from token counts and model prices only."""
+    if _turn_used_ensemble(event, metadata):
+        # Ensemble turns have no single-model counterfactual: the turn's token
+        # totals are multiplied by the member fan-out while the routed-model
+        # price covers only one member, so the formula below would report a
+        # large saving on a turn that deliberately spends more for quality.
+        return _ComprehensiveTurnSavings()
     actual_input_tokens = _non_negative_int(event.input_tokens)
     actual_output_side_tokens = _non_negative_int(event.output_tokens) + _non_negative_int(
         event.reasoning_tokens

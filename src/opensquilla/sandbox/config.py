@@ -34,6 +34,7 @@ BackendName = Literal[
 ]
 NetworkDefault = Literal["none", "proxy_allowlist"]
 RunModeName = Literal["standard", "trusted", "full"]
+ApprovalsReviewerName = Literal["user", "auto_review"]
 
 
 @dataclass(frozen=True)
@@ -87,6 +88,10 @@ class SandboxSettings(BaseSettings):
     allow_legacy_mode: bool = False
     run_mode: RunModeName | None = None
     auto_setup: bool = True
+    host_root_readonly: bool = True
+    approvals_reviewer: ApprovalsReviewerName = "auto_review"
+    approval_review_timeout_seconds: float = Field(default=20.0, gt=0.0, le=120.0)
+    approval_review_max_attempts: int = Field(default=3, ge=1, le=3)
 
     network_default: NetworkDefault = "proxy_allowlist"
     denial_threshold: int = 3
@@ -183,6 +188,7 @@ class SandboxSettings(BaseSettings):
 
 
 __all__ = [
+    "ApprovalsReviewerName",
     "BackendName",
     "EffectiveMode",
     "NetworkDefault",

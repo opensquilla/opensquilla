@@ -14,6 +14,7 @@ layer can call them without side effects.
 
 from __future__ import annotations
 
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -193,6 +194,15 @@ def _collect_mounts(
     mounts from settings come after so their precedence is unambiguous.
     """
     mounts: list[MountSpec] = []
+    if sys.platform.startswith("linux") and settings.host_root_readonly:
+        mounts.append(
+            MountSpec(
+                host_path=Path("/"),
+                sandbox_path=Path("/"),
+                mode="ro",
+                required=True,
+            )
+        )
     workspace_rw = level != SecurityLevel.LOCKED
     mounts.append(
         MountSpec(

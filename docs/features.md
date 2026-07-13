@@ -166,16 +166,23 @@ Read: [`scheduling.md`](scheduling.md)
 
 ## Migration
 
-OpenSquilla can import compatible state from OpenClaw and Hermes Agent:
+OpenSquilla can import compatible state from OpenClaw and Hermes Agent. It can
+also copy a complete supported CLI/Desktop profile, or historical Windows
+Portable data, into a separately owned OpenSquilla profile:
 
 ```sh
 opensquilla migrate openclaw --json
 opensquilla migrate openclaw --apply
 opensquilla migrate hermes --json
 opensquilla migrate hermes --apply
+opensquilla migrate opensquilla --source PATH --json
+opensquilla migrate opensquilla --source PATH --apply
 ```
 
-Read: [`../MIGRATION.md`](../MIGRATION.md)
+Same-product imports always require explicit source selection. A populated
+target is never merged: it can only be kept or fully backed up and replaced.
+
+Read: [`../MIGRATION.md`](../MIGRATION.md).
 
 ---
 

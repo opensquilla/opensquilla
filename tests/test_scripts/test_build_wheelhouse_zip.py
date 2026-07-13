@@ -838,7 +838,8 @@ def test_release_workflow_publishes_wheel_and_electron_assets_without_portable()
     assert "release-assets-${{" in workflow
     assert "cancel-in-progress: false" in workflow
     assert "timeout-minutes: 90" in workflow
-    assert "timeout-minutes: 120" in workflow
+    assert workflow.count("timeout-minutes: 150") == 2
+    assert workflow.count("timeout-minutes: 75") == 2
     assert "timeout-minutes: 20" in workflow
     assert "build-desktop-macos:" in workflow
     assert "build-desktop-windows:" in workflow

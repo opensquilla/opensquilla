@@ -34,6 +34,12 @@ Existing 0.4.x release pages keep their legacy Windows portable downloads for
 historical compatibility, while new 0.5.x releases publish only the listed
 Electron desktop artifacts, updater metadata, versioned wheel, and checksums.
 
+For Windows Desktop upgrades from RC3 to RC4 or later, users must install the
+new version directly over the existing installation and must not uninstall RC3
+first. The RC3 uninstaller may remove `%APPDATA%\OpenSquilla`; release guidance
+must tell users to back up that directory. RC4 and later NSIS packages set
+`deleteAppDataOnUninstall=false`.
+
 Container tags follow a separate policy: each release publishes
 `ghcr.io/opensquilla/opensquilla:<git-tag>`, and Docker `:latest`
 tracks the most recently pushed release tag, including previews and backports.

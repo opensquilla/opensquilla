@@ -92,6 +92,13 @@ Los instaladores de escritorio de 0.5.0 Preview 3 empaquetan la consola de contr
 
 Cierra cualquier aplicación de escritorio de OpenSquilla en ejecución antes de actualizar. Se reutilizan el `~/.opensquilla/config.toml` y los datos de sesión existentes.
 
+Al actualizar la aplicación de escritorio de Windows de RC3 a RC4 o una versión
+posterior, ejecuta el instalador nuevo directamente sobre la instalación existente.
+No desinstales RC3 primero: su desinstalador puede eliminar los datos de usuario de
+la aplicación. Haz una copia de seguridad de `%APPDATA%\OpenSquilla` antes de
+actualizar. Los instaladores RC4 y posteriores conservan los datos del perfil durante
+una desinstalación normal.
+
 <a id="quick-terminal-install"></a>
 
 ### Instalación rápida desde terminal

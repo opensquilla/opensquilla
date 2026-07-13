@@ -106,6 +106,10 @@ PowerShell 安装器会通过 `winget` 自动装好它；而**终端快速安装
 升级前请退出任何正在运行的 OpenSquilla 桌面应用。已有的
 `~/.opensquilla/config.toml` 和会话数据会被复用。
 
+在 Windows 上从 RC3 升级到 RC4 或更高版本时，请直接运行新安装包覆盖现有安装。
+请勿先卸载 RC3：RC3 的卸载程序可能会删除桌面端用户数据。升级前请备份
+`%APPDATA%\OpenSquilla`。RC4 及更高版本的安装包在常规卸载时会保留用户配置数据。
+
 <a id="quick-terminal-install"></a>
 
 ### 终端快速安装

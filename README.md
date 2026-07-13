@@ -120,6 +120,12 @@ app from the DMG into Applications for installation or updates, eject the DMG,
 then open the Applications copy. Existing `~/.opensquilla/config.toml` and
 session data are reused.
 
+When upgrading the Windows Desktop from RC3 to RC4 or later, run the new
+installer directly over the existing installation. Do **not** uninstall RC3
+first: its uninstaller may remove Desktop user data. Back up
+`%APPDATA%\OpenSquilla` before upgrading. RC4 and later installers preserve
+profile data during a normal uninstall.
+
 Code signing policy: [`docs/code-signing-policy.md`](docs/code-signing-policy.md).
 
 > [!NOTE]

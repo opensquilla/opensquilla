@@ -165,6 +165,7 @@
         <nav class="ch-detail__tabs" role="tablist" :aria-label="t('console.channels.detailSections')">
           <button v-for="tab in DETAIL_TABS" :key="tab" type="button" role="tab" :aria-selected="detailTab === tab" :class="{ 'is-active': detailTab === tab }" @click="setDetailTab(tab)">
             {{ t(`console.channels.tabs.${tab}`) }}
+            <span v-if="tab === 'pairings' && pendingPairingCount > 0" class="ch-tab-badge" :aria-label="t('console.channels.pairings.pendingBadge', { count: pendingPairingCount })">{{ pendingPairingCount }}</span>
           </button>
         </nav>
 
@@ -256,7 +257,13 @@
               <div class="ch-pairing-summary" :aria-label="t('console.channels.pairings.summaryLabel')">
                 <span><strong>{{ pendingPairings.length }}</strong> {{ t('console.channels.pairings.pending') }}</span>
                 <span><strong>{{ approvedPairings.length }}</strong> {{ t('console.channels.pairings.approved') }}</span>
+                <span v-if="revokedPairings.length"><strong>{{ revokedPairings.length }}</strong> {{ t('console.channels.pairings.revoked') }}</span>
               </div>
+              <label v-if="pairings.length > 0" class="ch-pairing-search">
+                <span class="ch-sr-only">{{ t('console.channels.pairings.searchLabel') }}</span>
+                <Icon name="search" :size="15" aria-hidden="true" />
+                <input v-model="pairingSearch" type="search" :placeholder="t('console.channels.pairings.searchPlaceholder')" />
+              </label>
 
               <div v-if="pairingsLoading && pairings.length === 0" class="ch-pairing-state" role="status">
                 <LoadingSpinner />
@@ -316,6 +323,27 @@
                       @click="revokePairing(selectedChannel, pairing)"
                     >
                       {{ pairingActionPending(selectedChannel, pairing, 'revoke') ? t('console.channels.pairings.revoking') : t('console.channels.pairings.revoke') }}
+                    </button>
+                  </article>
+                </section>
+
+                <section v-if="revokedPairings.length" :aria-label="t('console.channels.pairings.revokedAccess')">
+                  <h4>{{ t('console.channels.pairings.revokedAccess') }}</h4>
+                  <article v-for="pairing in revokedPairings" :key="pairing.pairingId" class="ch-pairing-row">
+                    <div class="ch-pairing-avatar" aria-hidden="true">{{ pairingInitial(pairing) }}</div>
+                    <div class="ch-pairing-identity">
+                      <strong>{{ pairing.senderName || pairing.senderId }}</strong>
+                      <span class="ch-mono">{{ pairing.senderId }}</span>
+                    </div>
+                    <span class="ch-pairing-status is-revoked">{{ t('console.channels.pairings.revoked') }}</span>
+                    <button
+                      class="btn btn--ghost"
+                      type="button"
+                      :disabled="pairingActionPending(selectedChannel, pairing, 'reapprove')"
+                      :aria-label="t('console.channels.pairings.reapproveLabel', { sender: pairing.senderName || pairing.senderId })"
+                      @click="approvePairing(selectedChannel, pairing)"
+                    >
+                      {{ pairingActionPending(selectedChannel, pairing, 'reapprove') ? t('console.channels.pairings.approving') : t('console.channels.pairings.reapprove') }}
                     </button>
                   </article>
                 </section>
@@ -510,8 +538,23 @@ const filteredChannels = computed(() => {
     return !query || [ch.name, ch.id, ch.type, ch.status].some(value => String(value || '').toLowerCase().includes(query))
   })
 })
-const pendingPairings = computed(() => pairings.value.filter(pairing => pairing.status === 'pending'))
-const approvedPairings = computed(() => pairings.value.filter(pairing => pairing.status === 'approved'))
+const pairingSearch = ref('')
+function matchesPairingSearch(pairing: ChannelPairing): boolean {
+  const query = pairingSearch.value.trim().toLowerCase()
+  if (!query) return true
+  return [pairing.senderName, pairing.senderId, pairing.pairingCode]
+    .some(value => String(value || '').toLowerCase().includes(query))
+}
+const pendingPairings = computed(() =>
+  pairings.value.filter(pairing => pairing.status === 'pending' && matchesPairingSearch(pairing)))
+const approvedPairings = computed(() =>
+  pairings.value.filter(pairing => pairing.status === 'approved' && matchesPairingSearch(pairing)))
+const revokedPairings = computed(() =>
+  pairings.value.filter(pairing => pairing.status === 'revoked' && matchesPairingSearch(pairing)))
+// Unfiltered pending count drives the tab badge (a filtered-out request still
+// awaits the operator).
+const pendingPairingCount = computed(() =>
+  pairings.value.filter(pairing => pairing.status === 'pending').length)
 
 const loadData = refresh
 let pollTimer: ReturnType<typeof setInterval> | null = null
@@ -580,6 +623,7 @@ function selectChannel(ch: Channel): void {
   selectedSecretFields.value = []
   configError.value = ''
   pairings.value = []
+  pairingSearch.value = ''
   pairingsLoading.value = false
   pairingsError.value = ''
   pairingAnnouncement.value = ''
@@ -706,7 +750,7 @@ async function approvePairing(ch: Channel, pairing: ChannelPairing): Promise<voi
     primaryClass: 'btn--primary',
   })
   if (!confirmed) return
-  await withPairingAction(ch, pairing, 'approve', async () => {
+  await withPairingAction(ch, pairing, pairing.status === 'revoked' ? 'reapprove' : 'approve', async () => {
     pairingsError.value = ''
     try {
       await rpc.call('channels.pairing.approve', { channelName: channelKey(ch), pairingId: pairing.pairingId })
@@ -999,6 +1043,7 @@ function configRows(config: Record<string, unknown>): Array<{ key: string; value
 .ch-detail__tabs button { background: transparent; border: 0; color: var(--text-muted); cursor: pointer; font: inherit; font-size: var(--fs-sm); font-weight: 600; padding: 12px 13px; position: relative; white-space: nowrap; }
 .ch-detail__tabs button:hover, .ch-detail__tabs button.is-active { color: var(--text); }
 .ch-detail__tabs button.is-active::after { background: var(--accent); bottom: 0; content: ''; height: 2px; left: 10px; position: absolute; right: 10px; }
+.ch-tab-badge { background: color-mix(in srgb, var(--warn) 20%, transparent); border: 1px solid color-mix(in srgb, var(--warn) 45%, var(--border)); border-radius: var(--radius-full); color: var(--warn); font-size: 10px; font-weight: 700; margin-left: 6px; padding: 0 6px; }
 .ch-detail__body { display: grid; gap: var(--sp-3); overflow-y: auto; padding: var(--sp-4); }
 .ch-panel, .ch-alert { background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius-md); overflow: hidden; }
 .ch-panel > h3, .ch-panel__heading { align-items: center; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; margin: 0; padding: 12px 14px; }
@@ -1055,6 +1100,9 @@ function configRows(config: Record<string, unknown>): Array<{ key: string; value
 .ch-pairing-status { border: 1px solid var(--border); border-radius: var(--radius-full); font-size: 10px; font-weight: 700; padding: 3px 8px; text-transform: uppercase; }
 .ch-pairing-status.is-pending { border-color: color-mix(in srgb, var(--warn) 42%, var(--border)); color: var(--warn); }
 .ch-pairing-status.is-approved { border-color: color-mix(in srgb, var(--ok) 42%, var(--border)); color: var(--ok); }
+.ch-pairing-status.is-revoked { border-color: color-mix(in srgb, var(--danger) 42%, var(--border)); color: var(--danger); }
+.ch-pairing-search { align-items: center; border-bottom: 1px solid var(--border); color: var(--text-dim); display: flex; gap: 8px; padding: 8px 14px; }
+.ch-pairing-search input { background: transparent; border: 0; color: var(--text); font: inherit; outline: 0; width: 100%; }
 .ch-pairing-revoke { color: var(--danger); }
 .ch-metrics { display: grid; grid-template-columns: repeat(2, 1fr); }
 .ch-metrics > div { border-right: 1px solid var(--border); border-top: 1px solid var(--border); display: grid; gap: 4px; padding: 14px; }

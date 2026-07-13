@@ -797,6 +797,74 @@ def test_done_handler_carries_vision_followup_metadata() -> None:
     assert extra == []
 
 
+_ROUTE_SAVINGS_METADATA = {
+    "routed_tier": "c1",
+    "routing_source": "squilla_router",
+    "savings_pct": 62.0,
+    "savings_max_price_per_m": 5.0,
+    "savings_routed_price_per_m": 0.5,
+}
+
+
+def test_done_handler_zeroes_savings_for_ensemble_turns() -> None:
+    state = _make_state()
+    handler = _DoneHandler()
+    inp = _make_input(
+        state=state,
+        turn=_make_turn(metadata=dict(_ROUTE_SAVINGS_METADATA)),
+    )
+
+    transformed, _ = handler.handle(
+        DoneEvent(
+            text="ok",
+            input_tokens=1_000_000,
+            output_tokens=500,
+            ensemble_trace={"profile": "router_dynamic", "mode": "llm_ensemble"},
+        ),
+        inp,
+        state,
+    )
+
+    assert transformed.savings_pct == 0.0
+    assert transformed.savings_usd == 0.0
+    assert transformed.total_savings_pct == 0.0
+    assert transformed.total_savings_usd == 0.0
+
+
+def test_done_handler_zeroes_savings_when_ensemble_metadata_flag_is_set() -> None:
+    state = _make_state()
+    handler = _DoneHandler()
+    inp = _make_input(
+        state=state,
+        turn=_make_turn(metadata={**_ROUTE_SAVINGS_METADATA, "ensemble_enabled": True}),
+    )
+
+    transformed, _ = handler.handle(
+        DoneEvent(text="ok", input_tokens=1_000_000, output_tokens=500), inp, state
+    )
+
+    assert transformed.savings_pct == 0.0
+    assert transformed.savings_usd == 0.0
+    assert transformed.total_savings_pct == 0.0
+    assert transformed.total_savings_usd == 0.0
+
+
+def test_done_handler_keeps_route_savings_for_single_model_turns() -> None:
+    state = _make_state()
+    handler = _DoneHandler()
+    inp = _make_input(
+        state=state,
+        turn=_make_turn(metadata=dict(_ROUTE_SAVINGS_METADATA)),
+    )
+
+    transformed, _ = handler.handle(
+        DoneEvent(text="ok", input_tokens=1_000_000, output_tokens=500), inp, state
+    )
+
+    assert transformed.savings_pct == 62.0
+    assert transformed.savings_usd == pytest.approx(4.5)
+
+
 @pytest.mark.asyncio
 async def test_compaction_handler_runs_persist_snapshot_prompt_in_order() -> None:
     persist = _RecordingCompactionPersist()

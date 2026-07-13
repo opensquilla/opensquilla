@@ -88,6 +88,49 @@ describe('AssistantMessage ensemble footer metadata', () => {
     app.unmount()
   })
 
+  it('never renders a savings row in the ensemble usage popover', async () => {
+    const { app, el } = await mountMessage(
+      assistantMessage({
+        meta: {
+          model: 'z-ai/glm-5.2-20260616',
+          modelShort: 'glm-5.2-20260616',
+          input: 2700000,
+          output: 39500,
+          hasTokens: true,
+          cachedTokens: 0,
+          reasoningTokens: 0,
+          costUsd: 3.590973,
+          hasSaved: false,
+          savedLabel: '',
+          ensemble: {
+            profile: 'router_dynamic/c1',
+            modelCount: 3,
+            totalCandidates: 3,
+            requestCount: 36,
+            fallbackUsed: false,
+            fallbackReason: '',
+            costUsd: 3.590973,
+            // Stale nonzero savings persisted by older gateways must not
+            // resurface a savings row when the session is restored.
+            savedUsd: 2.725456,
+            savedPct: 69,
+            models: [],
+          },
+        },
+      }),
+    )
+
+    el.querySelector<HTMLElement>('.msg-meta__more-btn')?.click()
+    await nextTick()
+
+    const labels = Array.from(el.querySelectorAll('.msg-meta-popover__label')).map(
+      node => node.textContent,
+    )
+    expect(labels).toContain('cost')
+    expect(labels).not.toContain('saved')
+    app.unmount()
+  })
+
   it('keeps the savings badge for non-ensemble optimized messages', async () => {
     const { app, el } = await mountMessage(
       assistantMessage({

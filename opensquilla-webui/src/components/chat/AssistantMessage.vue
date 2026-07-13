@@ -144,10 +144,6 @@
                     <span class="msg-meta-popover__label">{{ t('chat.msgMeta.cost') }}</span>
                     <span class="msg-meta-popover__value">{{ fmtUsd(message.meta.ensemble.costUsd || message.meta.costUsd) }}</span>
                   </div>
-                  <div class="msg-meta-popover__row">
-                    <span class="msg-meta-popover__label">{{ t('chat.msgMeta.saved') }}</span>
-                    <span class="msg-meta-popover__value">{{ ensembleSavedText }}</span>
-                  </div>
                   <div v-if="message.meta.ensemble.fallbackUsed" class="msg-meta-popover__row">
                     <span class="msg-meta-popover__label">{{ t('chat.msgMeta.fallback') }}</span>
                     <span class="msg-meta-popover__value">{{ t('chat.msgMeta.fallbackUsed') }}</span>
@@ -391,13 +387,6 @@ const ensembleSummary = computed(() => {
   const requests = ensemble.requestCount > 0 ? `${ensemble.requestCount} requests` : ''
   const profile = ensemble.profile && ensemble.profile !== 'llm_ensemble' ? ensemble.profile : ''
   return [profile, requests].filter(Boolean).join(' · ') || `${ensemble.modelCount} models`
-})
-
-const ensembleSavedText = computed(() => {
-  const ensemble = props.message.meta?.ensemble
-  if (!ensemble) return fmtUsd(0)
-  const suffix = ensemble.savedPct > 0 ? ` · ${Math.round(ensemble.savedPct)}%` : ''
-  return `${fmtUsd(ensemble.savedUsd)}${suffix}`
 })
 
 const metaDetailsId = computed(

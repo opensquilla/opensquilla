@@ -198,7 +198,7 @@ def test_recovery_ui_scaffold_has_all_six_locales() -> None:
         "noWorkspaceCandidates",
     )
     for key in locale_keys:
-        assert boot_html.count(f"{key}:") == 6, key
+        assert boot_html.count(f"{key}:") == 7, key
 
 
 def test_desktop_profile_context_and_recovery_ipc_are_activated() -> None:
@@ -381,14 +381,14 @@ def test_desktop_onboarding_defaults_to_tokenrhythm_with_trusted_registration_ct
         "onboarding.step2.tokenrhythmCtaExternalLabel",
         "onboarding.step2.otherProviders",
     ):
-        assert main_ts.count(f"'{key}':") == 6, key
+        assert main_ts.count(f"'{key}':") == 7, key
 
     localized_ctas = re.findall(
         r"'onboarding\.step2\.tokenrhythmCta': '([^']+)',\n"
         r"\s*'onboarding\.step2\.tokenrhythmCtaExternalLabel': '([^']+)',",
         main_ts,
     )
-    assert len(localized_ctas) == 6
+    assert len(localized_ctas) == 7
     for visible_cta, accessible_label in localized_ctas:
         assert visible_cta in accessible_label
 
@@ -1856,7 +1856,7 @@ def test_migration_locale_keys_exist_in_all_six_locale_blocks() -> None:
         "migration.overwriteConfirm",
     ]
     for key in desktop_keys:
-        assert desktop_catalog.count(f"'{key}':") == 6, key
+        assert desktop_catalog.count(f"'{key}':") == 7, key
 
     script_keys = [
         "migrationPreviewRunning",
@@ -1870,7 +1870,7 @@ def test_migration_locale_keys_exist_in_all_six_locale_blocks() -> None:
         "migrationDone",
     ]
     for key in script_keys:
-        assert script_catalog.count(f"{key}:") == 6, key
+        assert script_catalog.count(f"{key}:") == 7, key
 
 
 def test_onboarding_route_prepends_migration_step_only_when_detected() -> None:

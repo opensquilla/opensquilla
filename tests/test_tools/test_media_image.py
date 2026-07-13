@@ -108,41 +108,17 @@ async def test_image_tool_reports_corrupt_image_as_safe_error(tmp_path: Path) ->
     assert "corrupt or unreadable" in exc_info.value.user_message
 
 
-_INTERNAL_SECRET = b"INTERNAL-METADATA-SECRET-169.254.169.254"
 _PUBLIC_IP = "93.184.216.34"
-
-
-class _SecretHandler(BaseHTTPRequestHandler):
-    def do_GET(self) -> None:  # noqa: N802 - stdlib API name
-        self.send_response(200)
-        self.send_header("Content-Type", "image/png")
-        self.send_header("Content-Length", str(len(_INTERNAL_SECRET)))
-        self.end_headers()
-        self.wfile.write(_INTERNAL_SECRET)
-
-    def log_message(self, *args: object) -> None:
-        return
-
-
-@pytest.fixture()
-def loopback_server():
-    server = HTTPServer(("127.0.0.1", 0), _SecretHandler)
-    port = server.server_address[1]
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
-    try:
-        yield port
-    finally:
-        server.shutdown()
-        server.server_close()
 
 
 @pytest.mark.asyncio
 async def test_fetch_image_url_pins_vetted_ip_against_dns_rebind(
-    monkeypatch: pytest.MonkeyPatch, loopback_server: int
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    port = loopback_server
+    import httpx
+
     counter = {"n": 0}
+    attempted_hosts: list[str] = []
     real = socket.getaddrinfo
 
     def rebinding_getaddrinfo(host, req_port, *args, **kwargs):
@@ -154,15 +130,30 @@ async def test_fetch_image_url_pins_vetted_ip_against_dns_rebind(
         # rebinds to loopback — the connection must never follow it.
         if counter["n"] == 1:
             return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", (_PUBLIC_IP, req_port or 0))]
-        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.1", port))]
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.1", req_port or 0))]
+
+    async def fail_connection_immediately(
+        _transport: httpx.AsyncHTTPTransport,
+        request: httpx.Request,
+    ) -> httpx.Response:
+        # The production pinned transport rewrites the logical hostname before
+        # delegating here. Recording that boundary proves the vetted address is
+        # used without waiting for a real public-network timeout.
+        attempted_hosts.append(request.url.host)
+        raise httpx.ConnectError("deterministic test connection failure", request=request)
 
     monkeypatch.setattr(socket, "getaddrinfo", rebinding_getaddrinfo)
+    monkeypatch.setattr(
+        httpx.AsyncHTTPTransport,
+        "handle_async_request",
+        fail_connection_immediately,
+    )
 
-    try:
-        image_bytes, _ = await media._fetch_image_url(f"http://rebind.test:{port}/metadata.png")
-    except ToolError:
-        return
-    assert image_bytes != _INTERNAL_SECRET
+    with pytest.raises(ToolError, match="deterministic test connection failure"):
+        await media._fetch_image_url("http://rebind.test:8080/metadata.png")
+
+    assert attempted_hosts == [_PUBLIC_IP]
+    assert counter["n"] == 1
 
 
 @pytest.mark.asyncio

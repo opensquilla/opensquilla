@@ -257,27 +257,24 @@ jobs:
         shell: bash
         run: uv run mypy src/opensquilla --show-error-codes
 
-      - name: Test
+      - name: Test targeted PR suite
+        if: ${{ needs.classify-changes.outputs.full_required != 'true' }}
         shell: bash
         run: |
           set -euo pipefail
           markers="not llm and not live_search and not live_channel and not webui_browser and not tui_real_terminal and not local_golden and not agent_context_boundary and not llm_router_acc"
 
-          if [[ "${{ needs.classify-changes.outputs.full_required }}" == "true" ]]; then
-            uv run pytest tests -q -m "${markers}" --durations=50
-          else
-            uv run pytest \
-              tests/unit \
-              tests/test_ci \
-              --ignore=tests/test_ci/test_router_artifact_manifest.py \
-              tests/test_desktop/test_electron_startup_contract.py \
-              tests/test_recovery \
-              tests/test_migration/test_opensquilla_home_migration.py \
-              tests/test_engine/test_coding_mode.py \
-              tests/test_engine/test_stream_wrappers.py \
-              tests/test_tools/test_shell_process_isolation.py \
-              -q -m "${markers}" --durations=50
-          fi
+          uv run pytest \
+            tests/unit \
+            tests/test_ci \
+            --ignore=tests/test_ci/test_router_artifact_manifest.py \
+            tests/test_desktop/test_electron_startup_contract.py \
+            tests/test_recovery \
+            tests/test_migration/test_opensquilla_home_migration.py \
+            tests/test_engine/test_coding_mode.py \
+            tests/test_engine/test_stream_wrappers.py \
+            tests/test_tools/test_shell_process_isolation.py \
+            -q -m "${markers}" --durations=50
 
       - name: Verify metric counter names unchanged
         shell: bash
@@ -301,6 +298,86 @@ jobs:
         if: ${{ needs.classify-changes.outputs.build_wheel_required == 'true' || needs.classify-changes.outputs.full_required == 'true' }}
         shell: bash
         run: uv build --wheel
+
+  ubuntu-full:
+    name: Full offline tests (ubuntu-latest, ${{ matrix.shard }})
+    needs: classify-changes
+    if: ${{ needs.classify-changes.outputs.full_required == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        shard:
+          - core
+          - gateway-sqlite
+          - recovery-migration
+          - desktop-installer-contracts
+
+    env:
+      UV_PYTHON: "3.12"
+      PYTHONPATH: ${{ github.workspace }}
+      OPENSQUILLA_TURN_CALL_LOG: "0"
+
+    steps:
+      - name: Prepare Ubuntu full report
+        shell: bash
+        run: |
+          set -euo pipefail
+          report_dir="${RUNNER_TEMP}/ci-reports/ubuntu-${{ matrix.shard }}"
+          mkdir -p "${report_dir}"
+          printf 'CI_REPORT_DIR=%s\n' "${report_dir}" >> "${GITHUB_ENV}"
+          printf 'pytest_status=not_started\n' > "${report_dir}/first-failure.txt"
+
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          lfs: true
+
+      - name: Configure runtime directories
+        shell: bash
+        run: |
+          printf 'OPENSQUILLA_STATE_DIR=%s/opensquilla-state\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
+          printf 'OPENSQUILLA_LOG_DIR=%s/opensquilla-logs\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Install dependencies
+        shell: bash
+        run: uv sync --extra dev --extra recommended --extra mcp --frozen
+
+      - name: Test Ubuntu full shard
+        shell: bash
+        run: |
+          set -euo pipefail
+          markers="not llm and not live_search and not live_channel and not webui_browser and not tui_real_terminal and not local_golden and not agent_context_boundary and not llm_router_acc"
+
+          uv run python .github/scripts/windows_test_shards.py run \
+            "${{ matrix.shard }}" \
+            --junit "${CI_REPORT_DIR}/junit.xml" \
+            --summary "${CI_REPORT_DIR}/first-failure.txt" \
+            -- \
+            -q \
+            -m "${markers}" \
+            --durations=50 \
+            2>&1 | tee "${CI_REPORT_DIR}/pytest.log"
+
+      - name: Upload Ubuntu full shard report
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: ubuntu-full-${{ matrix.shard }}-attempt-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/ci-reports/ubuntu-${{ matrix.shard }}
+          if-no-files-found: error
+          retention-days: 14
 
   windows-compat:
     name: Windows compatibility smoke (3.12)
@@ -390,7 +467,7 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
         with:
-          lfs: ${{ matrix.shard == 'core' }}
+          lfs: true
 
       - name: Configure runtime directories
         shell: bash
@@ -610,20 +687,20 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          maxfail_args=()
+          pytest_args=(
+            tests/test_recovery
+            tests/test_migration/test_opensquilla_home_migration.py
+            tests/test_desktop/test_electron_startup_contract.py
+            -q
+            --durations=50
+            --junitxml="${CI_REPORT_DIR}/junit.xml"
+          )
           if [[ "${{ github.event_name }}" == "pull_request" ]]; then
-            maxfail_args+=(--maxfail=3)
+            pytest_args+=(--maxfail=3)
           fi
 
           set +e
-          uv run pytest \
-            tests/test_recovery \
-            tests/test_migration/test_opensquilla_home_migration.py \
-            tests/test_desktop/test_electron_startup_contract.py \
-            -q \
-            --durations=50 \
-            --junitxml="${CI_REPORT_DIR}/junit.xml" \
-            "${maxfail_args[@]}" \
+          uv run pytest "${pytest_args[@]}" \
             2>&1 | tee "${CI_REPORT_DIR}/pytest.log"
           status=${PIPESTATUS[0]}
           set -e
@@ -642,7 +719,7 @@ jobs:
   desktop-recovery-e2e:
     name: Desktop recovery E2E (${{ matrix.os }})
     needs: classify-changes
-    if: ${{ needs.classify-changes.outputs.platform_sensitive_changed == 'true' || needs.classify-changes.outputs.desktop_changed == 'true' || needs.classify-changes.outputs.full_required == 'true' }}
+    if: ${{ needs.classify-changes.outputs.frontend_changed == 'true' || needs.classify-changes.outputs.platform_sensitive_changed == 'true' || needs.classify-changes.outputs.desktop_changed == 'true' || needs.classify-changes.outputs.full_required == 'true' }}
     strategy:
       fail-fast: false
       matrix:
@@ -828,6 +905,7 @@ jobs:
       - tui-check
       - desktop-check
       - ubuntu-quality
+      - ubuntu-full
       - windows-compat
       - windows-full
       - macos-recovery
@@ -854,6 +932,7 @@ jobs:
           RESULT_TUI: ${{ needs.tui-check.result }}
           RESULT_DESKTOP: ${{ needs.desktop-check.result }}
           RESULT_UBUNTU: ${{ needs.ubuntu-quality.result }}
+          RESULT_UBUNTU_FULL: ${{ needs.ubuntu-full.result }}
           RESULT_WINDOWS_SMOKE: ${{ needs.windows-compat.result }}
           RESULT_WINDOWS_FULL: ${{ needs.windows-full.result }}
           RESULT_MACOS_RECOVERY: ${{ needs.macos-recovery.result }}

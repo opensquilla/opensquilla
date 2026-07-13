@@ -77,6 +77,24 @@ with sqlite3.connect(state / "sessions.db") as connection:
 `, [home, identity, chat])
 }
 
+function readConfiguredDataRoots(home) {
+  return JSON.parse(runPython(`
+import json, sys, tomllib
+from pathlib import Path
+home = Path(sys.argv[1])
+payload = tomllib.loads((home / "config.toml").read_text(encoding="utf-8"))
+print(json.dumps({
+    "workspace_dir": payload.get("workspace_dir", ""),
+    "state_dir": payload.get("state_dir", ""),
+}))
+`, [home]))
+}
+
+function comparablePath(value) {
+  const normalized = resolve(String(value || ''))
+  return process.platform === 'win32' ? normalized.toLowerCase() : normalized
+}
+
 async function writeProviderProfileConfig(home, settings) {
   const workspace = join(home, 'workspace')
   const state = join(home, 'state')
@@ -471,9 +489,15 @@ try {
     assert.equal(await readFile(join(copyTarget, 'workspace', 'SOUL.md'), 'utf8'), '# Synthetic soul\n')
     assert.equal(await readFile(join(copyTarget, 'workspace', 'MEMORY.md'), 'utf8'), '# Synthetic memory\n')
     assert.equal(readSyntheticChat(copyTarget), SOURCE_CHAT)
-    const copiedConfig = await readFile(join(copyTarget, 'config.toml'), 'utf8')
-    assert.equal(copiedConfig.includes(copyTarget), true)
-    assert.equal(copiedConfig.includes(localPortable), false)
+    const copiedRoots = readConfiguredDataRoots(copyTarget)
+    assert.equal(
+      comparablePath(copiedRoots.workspace_dir),
+      comparablePath(join(copyTarget, 'workspace')),
+    )
+    assert.equal(
+      comparablePath(copiedRoots.state_dir),
+      comparablePath(join(copyTarget, 'state')),
+    )
     assert.deepEqual(await snapshotTree(localPortable), localPortableBefore)
     assert.equal((await readdir(copyUserData)).some((name) => name.startsWith('opensquilla.backup.')), false)
     await app.close()

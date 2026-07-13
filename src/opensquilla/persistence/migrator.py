@@ -126,9 +126,9 @@ def _migration_process_lock(db_path: Path | None) -> Iterator[None]:
         yield
         return
 
-    # Import lazily so the persistence module does not pull the recovery
-    # filesystem stack into non-SQLite migration discovery paths.
-    from opensquilla.recovery.locking import ProfileOperationLock
+    # Import lazily so non-SQLite migration discovery does not load the
+    # platform-specific profile lock implementation.
+    from opensquilla.profile_operation_lock import ProfileOperationLock
 
     with ProfileOperationLock(
         db_path,

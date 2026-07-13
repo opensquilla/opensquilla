@@ -124,6 +124,10 @@ APPROVED_PACKAGE_IMPORTS: frozenset[tuple[str, str]] = frozenset({
     ("onboarding", "gateway"),
     ("onboarding", "provider"),
     ("onboarding", "search"),
+    # Runtime writers acquire the hardened profile-operation lock through a
+    # narrow top-level facade. Recovery owns the platform-specific mechanics;
+    # lower-level packages must not import the recovery package directly.
+    ("profile_operation_lock.py", "recovery"),
     ("permissions.py", "sandbox"),
     # turn_error_writer scrubs free-text error records through the low-level
     # observability.redact utility before insert — sound downward layering.

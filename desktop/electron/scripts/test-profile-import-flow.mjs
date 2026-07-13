@@ -440,7 +440,25 @@ try {
       'Portable preview must not create or mutate the Desktop target',
     )
     await page.locator('#migrationImport').click()
-    await page.locator('#migrationDoneNote').waitFor({ state: 'visible', timeout: 90_000 })
+    let copyOutcome
+    try {
+      copyOutcome = await waitFor(async () => {
+        if (await page.locator('#migrationDoneNote').isVisible()) {
+          return { ok: true, detail: '' }
+        }
+        const detail = String(await page.locator('#error').textContent() || '').trim()
+        return detail ? { ok: false, detail } : null
+      }, 'Portable copy result')
+    } catch (error) {
+      if (importScreenshotDir) {
+        await captureOnboarding(app, join(importScreenshotDir, '03-portable-copy-timeout.png'))
+      }
+      throw error
+    }
+    if (!copyOutcome.ok && importScreenshotDir) {
+      await captureOnboarding(app, join(importScreenshotDir, '03-portable-copy-failed.png'))
+    }
+    assert.equal(copyOutcome.ok, true, `Portable copy failed: ${copyOutcome.detail}`)
     assert.equal((await page.locator('#migrationDoneNote').textContent()).includes(localPortable), true)
     if (importScreenshotDir) {
       await captureOnboarding(app, join(importScreenshotDir, '03-portable-copy-complete.png'))

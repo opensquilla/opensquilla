@@ -492,11 +492,60 @@ def verify_committed_profile_import(
     with acquire_profile_locks(normalized_source, normalized_target):
         try:
             source_before = _path_identity_payload(normalized_source)
-            target_before = _path_identity_payload(normalized_target)
             source_type = _supported_entry_type(normalized_source, normalized_source.lstat())
+            if source_type != "directory":
+                raise OSError("profile import receipt source must be a directory")
+        except OSError:
+            return {
+                **base,
+                "outcome": "unsafe",
+                "stable_code": "profile_import_receipt_path_unsafe",
+            }
+
+        try:
+            target_before = _path_identity_payload(normalized_target)
             target_type = _supported_entry_type(normalized_target, normalized_target.lstat())
-            if source_type != "directory" or target_type != "directory":
-                raise OSError("profile import receipt roots must be directories")
+            if target_type != "directory":
+                raise OSError("profile import receipt target must be a directory")
+        except FileNotFoundError:
+            # A first import intentionally has no target profile yet. Prove the
+            # missing leaf against a stable, ordinary parent while holding the
+            # same source/target profile lock pair used by later receipt reads.
+            # This is a read-only baseline; the importer still performs its own
+            # no-replace preflight before publishing anything.
+            parent = normalized_target.parent
+            try:
+                parent_before = _path_identity_payload(parent)
+                parent_type = _supported_entry_type(parent, parent.lstat())
+                if parent_type != "directory":
+                    raise OSError("profile import target parent must be a directory")
+            except OSError:
+                return {
+                    **base,
+                    "outcome": "unsafe",
+                    "stable_code": "profile_import_receipt_path_unsafe",
+                }
+            source_unchanged = _identity_payload_matches(normalized_source, source_before)
+            parent_unchanged = _object_identity_matches(parent, parent_before)
+            try:
+                normalized_target.lstat()
+            except FileNotFoundError:
+                target_still_missing = True
+            except OSError:
+                return {
+                    **base,
+                    "outcome": "unsafe",
+                    "stable_code": "profile_import_receipt_path_unsafe",
+                }
+            else:
+                target_still_missing = False
+            if source_unchanged and parent_unchanged and target_still_missing:
+                return base
+            return {
+                **base,
+                "outcome": "unsafe",
+                "stable_code": "profile_import_receipt_root_changed",
+            }
         except OSError:
             return {
                 **base,

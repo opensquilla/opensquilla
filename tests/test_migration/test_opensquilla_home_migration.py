@@ -3587,6 +3587,63 @@ def test_committed_import_verifier_returns_only_locked_protocol_metadata(
     assert excluded["report"] is None
 
 
+def test_committed_import_verifier_treats_proven_missing_target_as_not_found(
+    tmp_path: Path,
+) -> None:
+    source = _build_source_home(tmp_path)
+    target = tmp_path / "missing-target-home"
+
+    verified = migration_module.verify_committed_profile_import(
+        source,
+        target,
+        source_kind="windows-portable",
+    )
+
+    assert verified["outcome"] == "not_found"
+    assert verified["stable_code"] == "profile_import_receipt_not_found"
+    assert verified["matching_transaction_ids"] == []
+    assert verified["report"] is None
+    assert not target.exists()
+
+
+@pytest.mark.parametrize("unsafe_source", ["missing", "file"])
+def test_committed_import_verifier_rejects_unsafe_source_with_missing_target(
+    tmp_path: Path,
+    unsafe_source: str,
+) -> None:
+    source = tmp_path / "source-home"
+    if unsafe_source == "file":
+        source.write_text("not a profile directory", encoding="utf-8")
+    target = tmp_path / "missing-target-home"
+
+    verified = migration_module.verify_committed_profile_import(
+        source,
+        target,
+        source_kind="windows-portable",
+    )
+
+    assert verified["outcome"] == "unsafe"
+    assert verified["stable_code"] == "profile_import_receipt_path_unsafe"
+    assert not target.exists()
+
+
+def test_committed_import_verifier_rejects_existing_non_directory_target(
+    tmp_path: Path,
+) -> None:
+    source = _build_source_home(tmp_path)
+    target = tmp_path / "target-home"
+    target.write_text("not a profile directory", encoding="utf-8")
+
+    verified = migration_module.verify_committed_profile_import(
+        source,
+        target,
+        source_kind="windows-portable",
+    )
+
+    assert verified["outcome"] == "unsafe"
+    assert verified["stable_code"] == "profile_import_receipt_path_unsafe"
+
+
 def test_committed_import_verifier_never_emits_private_provider_url(
     tmp_path: Path,
 ) -> None:

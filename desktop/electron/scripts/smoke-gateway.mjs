@@ -339,6 +339,7 @@ async function main() {
   const tempHome = await mkdtemp(join(tmpdir(), 'opensquilla-gateway-smoke-'))
   const config = join(tempHome, 'config.toml')
   const stateDir = join(tempHome, 'state')
+  const workspaceDir = join(tempHome, 'workspace')
   let child = null
   const stdoutTail = []
   const stderrTail = []
@@ -347,6 +348,8 @@ async function main() {
 
   try {
     await mkdir(stateDir, { recursive: true })
+    await mkdir(workspaceDir, { recursive: true })
+    await writeFile(join(workspaceDir, 'SOUL.md'), 'synthetic packaged gateway smoke\n', 'utf8')
     await writeFile(
       config,
       [

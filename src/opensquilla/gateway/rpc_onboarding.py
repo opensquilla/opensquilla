@@ -174,12 +174,12 @@ def _sync_search_provider(config: Any) -> None:
 def _persist(ctx: RpcContext, new_cfg: Any, *, restart_required: bool) -> str:
     from opensquilla.onboarding.config_store import persist_config
 
-    if (
-        ctx.config is not None
-        and ctx.config is not new_cfg
-        and hasattr(new_cfg, "inherit_runtime_secrets")
-    ):
-        inherit_runtime_secrets(ctx.config, new_cfg)
+    # Mutation results are cloned from the active config and carry their own
+    # authoritative runtime-secret markers.  Do not re-inherit the live set
+    # here: an explicit credential replacement deliberately clears its old
+    # env-derived marker so the new value is persisted.  Copying the marker
+    # back would silently omit the replacement from disk and keep exposing the
+    # startup environment credential through the live settings UI.
     path = _config_path_for(ctx, new_cfg) or _config_path_for(ctx, ctx.config)
     persist = persist_config(new_cfg, path=path, restart_required=restart_required)
     # Preserve the resolved path on the running config so subsequent saves

@@ -1034,6 +1034,14 @@ def test_enumerate_portable_homes_orders_and_era_hints(tmp_path: Path) -> None:
     assert all(candidate.previously_imported is False for candidate in candidates)
 
 
+def test_rc_update_cache_is_a_portable_home_era_hint(tmp_path: Path) -> None:
+    home = tmp_path / "portable-home"
+    (home / "state").mkdir(parents=True)
+    (home / "state" / "update_check_rc.json").write_text("{}", encoding="utf-8")
+
+    assert migration_module._era_hint(home) == "0.5.0rc2+"
+
+
 def test_candidate_metadata_is_privacy_narrow_stable_and_read_only(tmp_path: Path) -> None:
     source = _build_source_home(tmp_path / "source")
     config = tomllib.loads((source / "config.toml").read_text(encoding="utf-8"))

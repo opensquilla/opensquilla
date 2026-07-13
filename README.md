@@ -352,8 +352,9 @@ full reference.
 OpenSquilla uses anonymous installation telemetry to estimate install counts,
 version adoption, and runtime compatibility. Data is sent on first gateway
 startup and once per OpenSquilla version. OpenSquilla may also make passive
-update checks, including desktop startup auto-update checks. Uploads use a
-short timeout and never block startup.
+update checks, including automatic desktop update checks at startup and, while
+the app remains open, at most once per day. Uploads use a short timeout and
+never block startup.
 
 See [`PRIVACY.md`](PRIVACY.md) for the full privacy policy covering local data,
 provider requests, network observability, logs, release downloads, and deletion.
@@ -393,9 +394,11 @@ disable_network_observability = true
 ```
 
 That unified switch covers automatic install telemetry, passive update checks,
-and desktop startup auto-update checks. Manual user-initiated actions may still
-contact network services after user intent, including manual release, download,
-or update checks and configured providers, search, or channels.
+and automatic desktop update checks at startup and during long-running app
+sessions. Explicit update-availability checks remain disabled while the unified
+or legacy opt-out is active. Other user-initiated actions may still contact
+network services after user intent, including release downloads and configured
+providers, search, or channels.
 
 Legacy opt-out environment variables remain honored:
 

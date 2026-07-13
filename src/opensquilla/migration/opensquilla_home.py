@@ -2164,11 +2164,18 @@ def _era_hint(home: Path) -> str:
         version = config.get("version")
         if isinstance(version, str) and version.strip():
             return version.strip()[:80]
-    update_check = home / "state" / "update_check.json"
-    try:
-        has_update_check = _supported_entry_type(update_check, update_check.lstat()) == "file"
-    except OSError:
-        has_update_check = False
+    update_checks = (
+        home / "state" / "update_check.json",
+        home / "state" / "update_check_rc.json",
+    )
+    has_update_check = False
+    for update_check in update_checks:
+        try:
+            if _supported_entry_type(update_check, update_check.lstat()) == "file":
+                has_update_check = True
+                break
+        except OSError:
+            continue
     if has_update_check:
         return "0.5.0rc2+"
     return ""

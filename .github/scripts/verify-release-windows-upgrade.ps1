@@ -3,7 +3,8 @@ param(
   [string]$CandidateInstaller,
   [Parameter(Mandatory = $true)]
   [ValidatePattern('^[A-Za-z0-9._-]{1,80}$')]
-  [string]$Label
+  [string]$Label,
+  [switch]$VerifyLongRunningUpdateBanner
 )
 
 $ErrorActionPreference = 'Stop'
@@ -11,6 +12,7 @@ $repository = 'opensquilla/opensquilla'
 $oldTag = 'v0.5.0rc3'
 $oldAsset = 'OpenSquilla-0.5.0-rc3-win-x64.exe'
 $candidate = (Resolve-Path -LiteralPath $CandidateInstaller).Path
+$candidateName = [IO.Path]::GetFileName($candidate)
 $sandbox = Join-Path $env:RUNNER_TEMP "opensquilla-release-preservation-$Label"
 $oldDir = Join-Path $sandbox 'rc3'
 $installDir = Join-Path $sandbox 'OpenSquilla'
@@ -18,6 +20,7 @@ $appData = Join-Path $sandbox 'appdata'
 $userData = Join-Path $appData 'OpenSquilla'
 $profile = Join-Path $userData 'opensquilla'
 $probe = Join-Path $PWD '.github\scripts\verify-release-profile-preservation.py'
+$updateBannerSmoke = Join-Path $PWD 'desktop\electron\scripts\test-packaged-update-banner.mjs'
 $env:APPDATA = $appData
 $env:OPENSQUILLA_DESKTOP_DISABLE_AUTO_UPDATE = '1'
 $env:OPENSQUILLA_RECOVERY_OFFLINE = '1'
@@ -62,11 +65,25 @@ try {
   if (-not (Test-Path -LiteralPath $app -PathType Leaf)) {
     throw 'Candidate installation did not publish OpenSquilla.exe.'
   }
+  # Preserve the original packaged launch gate for every channel. The RC-only
+  # long-running banner smoke below is additive; stable candidates must not
+  # silently skip all launch verification when that script exits early.
   $launched = Start-Process -FilePath $app `
     -ArgumentList @('--use-mock-keychain', "--user-data-dir=$userData") -PassThru
   Start-Sleep -Seconds 8
   if ($launched.HasExited) {
     throw "Candidate Desktop exited during launch verification: $($launched.ExitCode)"
+  }
+  Stop-InstalledProcesses
+
+  if ($VerifyLongRunningUpdateBanner) {
+    & node $updateBannerSmoke `
+      --executable $app `
+      --user-data-dir $userData `
+      --candidate-name $candidateName
+    if ($LASTEXITCODE -ne 0) {
+      throw 'Candidate long-running update-banner smoke failed.'
+    }
   }
   Stop-InstalledProcesses
 

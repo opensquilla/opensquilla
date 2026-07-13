@@ -727,7 +727,7 @@ def test_desktop_mock_update_is_dev_only_and_uses_native_update_surface() -> Non
     assert "autoUpdateSupported() && macUpdateLocationOk()" in native_gate
     assert "desktopUpdateMenuEnabled()" in main_ts
     assert "mockUpdateVersion() !== null" in startup
-    assert "void checkForUpdates(false)" in startup
+    assert "desktopUpdateCheckScheduler.start(MOCK_UPDATE_CHECK_INITIAL_DELAY_MS)" in startup
 
 
 def test_desktop_mock_update_flow_is_nonblocking_until_renderer_downloads() -> None:
@@ -783,8 +783,13 @@ def test_desktop_update_actions_are_guarded_against_reentry() -> None:
     )
     check_update = _section(
         main_ts,
-        "async function checkForUpdates",
+        "async function runDesktopUpdateCheck",
         "function gatewayProcessForUpdateInstall",
+    )
+    check_allowed = _section(
+        main_ts,
+        "function desktopUpdateCheckAllowed",
+        "async function runDesktopUpdateCheck",
     )
     apply_update = _section(
         main_ts,
@@ -800,7 +805,10 @@ def test_desktop_update_actions_are_guarded_against_reentry() -> None:
     assert download_update.index("updateDownloadInProgress || updateApplying") < (
         download_update.index("const mockVersion = mockUpdateVersion()")
     )
-    assert "if (updateDownloadInProgress || updateApplying) return" in check_update
+    assert "if (!desktopUpdateCheckAllowed()) return" in check_update
+    assert "downloading: updateDownloadInProgress" in check_allowed
+    assert "applying: updateApplying" in check_allowed
+    assert "downloaded: downloadedUpdateVersion !== null" in check_allowed
     assert "if (!mockDownloadedUpdate && !downloadedUpdateVersion) return" in apply_update
     assert apply_update.index("if (updateApplying) return") < apply_update.index(
         "if (!mockDownloadedUpdate && !downloadedUpdateVersion) return"
@@ -903,7 +911,10 @@ def test_silent_startup_update_error_is_not_published_as_visible_error() -> None
         "async function runMockUpdateFlow",
     )
 
-    assert "const shouldNotify = manualUpdateCheck || updateDownloadInProgress" in show_error
+    assert (
+        "const shouldNotify = desktopUpdateCheckScheduler.consumeManualRequest() || "
+        "updateDownloadInProgress"
+    ) in show_error
     assert "if (!shouldNotify)" in show_error
     assert "status: downloadedUpdateVersion ? 'downloaded' : 'idle'" in show_error
     assert "error: null" in show_error
@@ -1171,9 +1182,28 @@ def test_desktop_network_observability_disable_gates_native_update_and_gateway_e
         "process.env.OPENSQUILLA_DESKTOP_DISABLE_AUTO_UPDATE"
     )
     assert "if (autoUpdateSupported())" in startup
-    assert "void checkForUpdates(false)" in startup
+    assert "desktopUpdateCheckScheduler.start(UPDATE_CHECK_INITIAL_DELAY_MS)" in startup
     assert "connection.disableNetworkObservability" in start
     assert "OPENSQUILLA_PRIVACY_DISABLE_NETWORK_OBSERVABILITY: '1'" in start
+
+
+def test_desktop_native_update_rechecks_daily_without_overlapping() -> None:
+    main_ts = _read("desktop/electron/src/main.ts")
+    scheduler_ts = _read("desktop/electron/src/update-check-scheduler.ts")
+    scheduler_test = _read("desktop/electron/scripts/test-update-check-scheduler.mjs")
+    startup = _section(main_ts, "void app.whenReady().then", "})\n}")
+    before_quit = _section(main_ts, "app.on('before-quit'", "function shutdownFromSignal")
+
+    assert "const UPDATE_CHECK_INITIAL_DELAY_MS = 12_000" in main_ts
+    assert "const UPDATE_CHECK_REPEAT_DELAY_MS = 24 * 60 * 60 * 1000" in main_ts
+    assert "desktopUpdateCheckScheduler.start(UPDATE_CHECK_INITIAL_DELAY_MS)" in startup
+    assert "desktopUpdateCheckScheduler.stop()" in before_quit
+    assert "if (this.inFlight)" in scheduler_ts
+    assert "return this.inFlight" in scheduler_ts
+    assert "if (manual) this.promoteToManual()" in scheduler_ts
+    assert "this.schedule(this.repeatDelayMs)" in scheduler_ts
+    assert "repeat delay starts at completion" in scheduler_test
+    assert "manual caller must join the active promise" in scheduler_test
 
 
 def test_package_verifier_hard_fails_stale_runtime_and_boot_contract() -> None:
@@ -1354,7 +1384,7 @@ def test_desktop_macos_prerelease_update_resolver_wires_generic_feed() -> None:
     package_json = json.loads(_read("desktop/electron/package.json"))
     check = _section(
         main_ts,
-        "async function checkForUpdates",
+        "async function runDesktopUpdateCheck",
         "function gatewayProcessForUpdateInstall",
     )
 
@@ -1373,7 +1403,7 @@ def test_desktop_macos_prerelease_update_resolver_wires_generic_feed() -> None:
     resolver_feed = _section(
         main_ts,
         "async function configureDesktopUpdateFeed()",
-        "async function checkForUpdates",
+        "async function runDesktopUpdateCheck",
     )
     assert "autoUpdater.allowDowngrade = false" in resolver_feed
     assert "autoUpdater.allowDowngrade = true" in resolver_feed

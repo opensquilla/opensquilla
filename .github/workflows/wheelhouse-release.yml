@@ -338,7 +338,8 @@ jobs:
           }
           .github/scripts/verify-release-windows-upgrade.ps1 `
             -CandidateInstaller $candidates[0].FullName `
-            -Label built-candidate
+            -Label built-candidate `
+            -VerifyLongRunningUpdateBanner
 
       - name: List Windows artifacts
         shell: bash

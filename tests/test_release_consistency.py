@@ -249,6 +249,9 @@ def test_release_workflow_gates_built_and_downloaded_installers_on_profile_reten
     windows_helper = Path(".github/scripts/verify-release-windows-upgrade.ps1").read_text(
         encoding="utf-8"
     )
+    update_banner_smoke = Path(
+        "desktop/electron/scripts/test-packaged-update-banner.mjs"
+    ).read_text(encoding="utf-8")
     probe = Path(".github/scripts/verify-release-profile-preservation.py").read_text(
         encoding="utf-8"
     )
@@ -263,6 +266,7 @@ def test_release_workflow_gates_built_and_downloaded_installers_on_profile_reten
     ]
     assert "verify-release-macos-upgrade.sh" in mac_build
     assert "verify-release-windows-upgrade.ps1" in windows_build
+    assert "-VerifyLongRunningUpdateBanner" in windows_build
     assert mac_build.index("verify-release-macos-upgrade.sh") < mac_build.index(
         "Upload macOS Electron artifacts"
     )
@@ -287,6 +291,18 @@ def test_release_workflow_gates_built_and_downloaded_installers_on_profile_reten
         assert "verify-release-profile-preservation.py" in helper
         assert "workspace" in helper
         assert "state" in helper
+
+    assert "test-packaged-update-banner.mjs" in windows_helper
+    assert "if ($VerifyLongRunningUpdateBanner)" in windows_helper
+    assert windows_helper.index("$launched = Start-Process") < windows_helper.index(
+        "if ($VerifyLongRunningUpdateBanner)"
+    )
+    assert "OPENSQUILLA_UPDATE_CHECK_ENDPOINT" in update_banner_smoke
+    assert "visibilitychange" in update_banner_smoke
+    assert "requestCount, 1" in update_banner_smoke
+    assert "OPENSQUILLA_PRIVACY_DISABLE_NETWORK_OBSERVABILITY" in update_banner_smoke
+    assert "writeSyntheticUpdateCache(privacyUserDataDir, baseVersion, 0)" in update_banner_smoke
+    assert "GITHUB_ACTIONS: '0'" in update_banner_smoke
 
     mac_audit = workflow[
         workflow.index("  audit-downloaded-macos-release:") : workflow.index(
@@ -484,8 +500,23 @@ def test_privacy_docs_describe_network_observability_controls() -> None:
     privacy = docs["PRIVACY.md"]
     assert "automatic install telemetry" in privacy
     assert "passive update checks" in privacy
-    assert "desktop startup auto-update checks" in privacy
+    assert "automatic desktop update checks at startup" in privacy
+    assert "during long-running app sessions" in privacy
     assert "Manual user-initiated actions may still contact network services" in privacy
+    assert "do not bypass the\nunified or legacy opt-out controls" in privacy
+    assert "Explicit update-availability checks remain disabled" in docs["README.md"]
+    assert "用户显式触发的更新可用性检查也不会绕过它" in docs["README.zh-Hans.md"]
+    assert "update-availability checks do not bypass these controls" in docs["RELEASES.md"]
+
+
+def test_release_docs_describe_channel_aware_long_running_update_checks() -> None:
+    releases = Path("RELEASES.md").read_text(encoding="utf-8")
+
+    assert "Stable builds only\noffer newer stable releases" in releases
+    assert "a later RC or the final stable release" in releases
+    assert "never\njump to a preview on a different base" in releases
+    assert "included starting with RC4" in releases
+    assert "Windows RC3 still requires a manual, in-place RC4 upgrade" in releases
 
 
 def _dep_names(specs: list[str]) -> set[str]:

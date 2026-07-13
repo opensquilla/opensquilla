@@ -45,7 +45,8 @@ corresponding feature is enabled by configuration or user action.
 
 OpenSquilla groups non-user-initiated network observability under one switch.
 Set this before startup to disable automatic install telemetry, passive update
-checks, and desktop startup auto-update checks:
+checks, and automatic desktop update checks at startup and during long-running
+app sessions:
 
 ```sh
 OPENSQUILLA_PRIVACY_DISABLE_NETWORK_OBSERVABILITY=true
@@ -66,8 +67,10 @@ OPENSQUILLA_UPDATE_CHECK_DISABLED=true
 ```
 
 Manual user-initiated actions may still contact network services after user
-intent, including manual release, download, or update checks and configured
-providers, search, channels, automation, or integrations.
+intent, including release downloads and configured providers, search, channels,
+automation, or integrations. Update-availability checks, including
+`opensquilla version --check` and the desktop manual check, do not bypass the
+unified or legacy opt-out controls.
 
 ## Installation Telemetry
 
@@ -122,8 +125,10 @@ to GitHub and network intermediaries. Release checksums are published in
 `SHA256SUMS` when release assets are generated.
 
 The unified network observability switch disables passive update checks and
-desktop startup auto-update checks. Manual release, download, or update checks
-may still contact GitHub after the user asks OpenSquilla to perform them.
+automatic desktop update checks at startup and during long-running app sessions.
+Explicit update-availability checks remain disabled while this switch (or a
+legacy update opt-out) is active. Opening a release page or downloading an asset
+is a separate user-initiated action and may still contact GitHub.
 
 ## Deletion
 

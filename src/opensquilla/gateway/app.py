@@ -187,6 +187,37 @@ def create_gateway_app(
             }
         )
 
+    async def api_system_update(request: Request) -> JSONResponse:
+        """Return cached update state and ensure a passive refresh is running.
+
+        The handler never waits for GitHub. Repeated callers share the update
+        checker's in-process single-flight thread and its persisted TTL.
+        """
+        from opensquilla.observability.update_check import (
+            default_update_info,
+            get_cached_update_info,
+            start_background_update_check,
+        )
+
+        try:
+            info = get_cached_update_info(config=config, version=__version__)
+        except Exception:  # pragma: no cover - never break the Control UI
+            log.debug("gateway.update_check_cache_read_failed", exc_info=True)
+            info = None
+        try:
+            start_background_update_check(config=config, version=__version__)
+        except Exception:  # pragma: no cover - never break the Control UI
+            log.debug("gateway.update_check_refresh_failed", exc_info=True)
+        payload = (
+            info.to_public_dict()
+            if info is not None
+            else default_update_info(version=__version__).to_public_dict()
+        )
+        response = JSONResponse(payload)
+        response.headers["Cache-Control"] = "no-store"
+        response.headers["Pragma"] = "no-cache"
+        return response
+
     async def api_system_shutdown(request: Request) -> JSONResponse:
         """Owner-only graceful shutdown trigger.
 
@@ -533,6 +564,7 @@ def create_gateway_app(
         Route("/api/agents", api_agents, methods=["GET"]),
         Route("/api/cron", api_cron, methods=["GET"]),
         Route("/api/system/status", api_system_status, methods=["GET"]),
+        Route("/api/system/update", api_system_update, methods=["GET"]),
         Route("/api/system/shutdown", _same_origin(api_system_shutdown), methods=["POST"]),
         Route("/api/usage", api_usage, methods=["GET"]),
         Route("/api/channels/status", api_channels_status, methods=["GET"]),

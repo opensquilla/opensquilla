@@ -22,6 +22,7 @@
     "test:cli-invocation": "npm run build && node scripts/test-cli-invocation.mjs",
     "test:secret-storage": "npm run build && node scripts/test-secret-storage-policy.mjs",
     "test:update-resolver": "npm run build && node scripts/test-update-resolver.mjs",
+    "test:update-scheduler": "npm run build && node scripts/test-update-check-scheduler.mjs",
     "test:desktop-locale": "npm run build && node scripts/test-desktop-locale.mjs",
     "test:profile-substrate": "npm run build && node scripts/test-desktop-profile-substrate.mjs && node scripts/test-desktop-profile-context.mjs",
     "test:profile-recovery-flow": "npm run build && node scripts/test-profile-recovery-flow.mjs",

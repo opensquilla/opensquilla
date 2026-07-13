@@ -1461,7 +1461,13 @@
       "staleData": "Status ist möglicherweise veraltet — zuletzt aktualisiert {time}.",
       "clearFilters": "Filter löschen",
       "unconfiguredTitle": "Aktiv, aber nicht in der Konfiguration",
-      "unconfiguredHint": "Diese Kanäle laufen in diesem Gateway-Prozess, stehen aber nicht in der gespeicherten Konfiguration."
+      "unconfiguredHint": "Diese Kanäle laufen in diesem Gateway-Prozess, stehen aber nicht in der gespeicherten Konfiguration.",
+      "maturityValue": {
+        "experimental": "Experimentell",
+        "stable": "Stabil",
+        "shipping": "Ausgeliefert",
+        "unrated": "Unbewertet"
+      }
     },
     "overview": {
       "channelsChip": "Kanäle",

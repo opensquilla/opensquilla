@@ -1461,7 +1461,13 @@
       "staleData": "El estado puede estar desactualizado: última actualización {time}.",
       "clearFilters": "Borrar filtros",
       "unconfiguredTitle": "En ejecución pero no en la configuración",
-      "unconfiguredHint": "Estos canales se ejecutan en esta puerta de enlace pero no están en la configuración guardada."
+      "unconfiguredHint": "Estos canales se ejecutan en esta puerta de enlace pero no están en la configuración guardada.",
+      "maturityValue": {
+        "experimental": "Experimental",
+        "stable": "Estable",
+        "shipping": "Publicado",
+        "unrated": "Sin calificar"
+      }
     },
     "overview": {
       "channelsChip": "Canales",

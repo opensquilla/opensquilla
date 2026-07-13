@@ -98,8 +98,7 @@
               <th scope="col">{{ t('console.channels.channel') }}</th>
               <th scope="col">{{ t('console.channels.transport') }}</th>
               <th scope="col">{{ t('console.channels.status') }}</th>
-              <th scope="col">{{ t('console.channels.maturity') }}</th>
-              <th scope="col">{{ t('console.channels.connectedSince') }}</th>
+              <th v-if="!selectedChannel" scope="col">{{ t('console.channels.connectedSince') }}</th>
               <th scope="col"><span class="ch-sr-only">{{ t('console.channels.actions') }}</span></th>
             </tr>
           </thead>
@@ -117,12 +116,11 @@
               <td><strong>{{ ch.name || ch.id || t('console.channels.unknown') }}</strong></td>
               <td><span class="ch-muted">{{ transportLabel(ch) }}</span></td>
               <td><ChannelStatusPill :status="ch.status" :enabled="ch.enabled" :pending-restart="pendingRestart.isPending(channelKey(ch))" :error-class="lastErrorClass(ch.diagnostics)" show-cause /></td>
-              <td><span :class="['ch-maturity', maturityTone(ch)]">{{ maturityLabel(ch) }}</span></td>
-              <td><span class="ch-mono ch-muted">{{ formatSince(ch.connected_since) }}</span></td>
+              <td v-if="!selectedChannel"><span class="ch-mono ch-muted">{{ formatSince(ch.connected_since) }}</span></td>
               <td><Icon name="chevronRight" :size="15" aria-hidden="true" /></td>
             </tr>
             <tr v-if="filteredChannels.length === 0">
-              <td colspan="7" class="ch-table__none">
+              <td colspan="6" class="ch-table__none">
                 <span>{{ t('console.channels.noMatches') }}</span>
                 <button v-if="hasActiveFilters" type="button" class="ch-inline-link" @click="clearFilters">{{ t('console.channels.clearFilters') }}</button>
               </td>
@@ -227,7 +225,7 @@
                 <div><dt>{{ t('console.channels.connectedSince') }}</dt><dd>{{ formatSince(selectedChannel.connected_since) }}</dd></div>
                 <div><dt>{{ t('console.channels.restartAttempts') }}</dt><dd>{{ selectedChannel.restart_attempts ?? 0 }}</dd></div>
                 <div><dt>{{ t('console.channels.botIdentity') }}</dt><dd>{{ selectedChannel.bot_user_id || '—' }}</dd></div>
-                <div><dt>{{ t('console.channels.maturity') }}</dt><dd>{{ maturityLabel(selectedChannel) }}</dd></div>
+                <div v-if="maturityKey(selectedChannel) !== 'unrated'"><dt>{{ t('console.channels.maturity') }}</dt><dd>{{ maturityLabel(selectedChannel) }}</dd></div>
               </dl>
             </section>
           </template>
@@ -236,7 +234,7 @@
             <section class="ch-panel">
               <div class="ch-panel__heading">
                 <h3>{{ t('console.channels.worksTitle') }}</h3>
-                <span class="ch-maturity" :title="t('console.channels.maturityHint')">{{ maturityLabel(selectedChannel) }}</span>
+                <span v-if="maturityKey(selectedChannel) !== 'unrated'" class="ch-maturity" :title="t('console.channels.maturityHint')">{{ maturityLabel(selectedChannel) }}</span>
               </div>
               <p class="ch-panel__intro">{{ t('console.channels.worksHint') }}</p>
               <div v-if="platformRows(selectedChannel).length" class="ch-capabilities">
@@ -993,17 +991,16 @@ function ownerSummary(ch: Channel): string {
   return t('console.channels.ownerNone')
 }
 
-function maturityLabel(ch: Channel): string {
-  const raw = String(ch.capability_profile?.maturity || 'unrated').replace(/^[A-Z]+-/, '')
-  return humanize(raw)
+function maturityKey(ch: Channel): string {
+  return String(ch.capability_profile?.maturity || 'unrated').replace(/^[A-Z]+-/, '').toLowerCase()
 }
 
-function maturityTone(ch: Channel): string {
-  const value = maturityLabel(ch).toLowerCase()
-  if (value.includes('shipping') || value.includes('stable')) return 'is-stable'
-  if (value.includes('experimental')) return 'is-experimental'
-  return 'is-unrated'
+const MATURITY_KEYS = new Set(['experimental', 'stable', 'shipping', 'unrated'])
+function maturityLabel(ch: Channel): string {
+  const key = maturityKey(ch)
+  return MATURITY_KEYS.has(key) ? t(`console.channels.maturityValue.${key}`) : humanize(key)
 }
+
 
 function formatSince(since?: string | number | null): string {
   if (!since) return '—'

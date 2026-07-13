@@ -989,9 +989,10 @@ async def _review_pending_elevation_if_configured(
     except KeyError:
         return None
     params = entry.params
+    approval_kind = str(params.get("approvalKind") or "")
     if (
         entry.namespace != "exec"
-        or params.get("approvalKind") != "sandbox_elevation"
+        or approval_kind not in {"sandbox_elevation", "sandbox_network"}
         or params.get("reviewer") != "auto_review"
         or params.get("humanActionable") is not False
     ):
@@ -999,7 +1000,14 @@ async def _review_pending_elevation_if_configured(
     if entry.resolved:
         return None
 
-    fingerprint = str(params.get("fingerprint") or "")
+    fingerprint = str(
+        (
+            params.get("reviewFingerprint")
+            if approval_kind == "sandbox_network"
+            else params.get("fingerprint")
+        )
+        or ""
+    )
     append_runtime_event(
         runtime_events_path,
         {
@@ -1064,6 +1072,11 @@ async def _review_pending_elevation_if_configured(
     except ValueError:
         # Another resolver won the race. Never override an existing decision.
         return None
+
+    if assessment.outcome == "allow" and approval_kind == "sandbox_network":
+        from opensquilla.sandbox.escalation import grant_auto_review_network_once
+
+        grant_auto_review_network_once(updated_params)
 
     circuit.observe(assessment)
     append_runtime_event(
@@ -4131,6 +4144,22 @@ class Agent:
         turn_llm_calls = 0
         turn_tool_errors = 0
         auto_review_circuit = _AutoReviewCircuitBreaker()
+        auto_review_lock = asyncio.Lock()
+
+        async def _review_inflight_sandbox_request(
+            payload: dict[str, object],
+        ) -> GuardianAssessment | None:
+            async with auto_review_lock:
+                return await _review_pending_elevation_if_configured(
+                    dict(payload),
+                    provider=self.provider,
+                    transcript=turn_messages,
+                    circuit=auto_review_circuit,
+                    runtime_events_path=self.config.runtime_events_path,
+                )
+
+        if self._tool_context is not None:
+            self._tool_context.on_sandbox_auto_review = _review_inflight_sandbox_request
         last_actual_model = ""
         turn_model_usage_breakdown: list[dict[str, Any]] = []
         last_ensemble_trace: dict[str, Any] | None = None
@@ -7723,36 +7752,93 @@ class Agent:
                             pending_approval,
                             timeout=_cap_timeout_by_deadlines(self._approval_wait_timeout()),
                         )
-                        retry_arguments = dict(tc.arguments)
-                        retry_arguments["approval_id"] = pending_approval["approval_id"]
-                        retry_call = ToolCall(
-                            tool_use_id=tc.tool_use_id,
-                            tool_name=tc.tool_name,
-                            arguments=retry_arguments,
-                            synthetic_from_text=tc.synthetic_from_text,
-                            origin_trace=tc.origin_trace,
+                        network_approval = (
+                            pending_approval.get("approvalKind") == "sandbox_network"
                         )
-                        result = await _run_one(retry_call)
-                        result_tool_call = retry_call
-                        for artifact in result.artifacts:
-                            yield ArtifactEvent(**_artifact_event_kwargs(artifact))
-                        projected_result = await self._project_tool_result_for_delivery(
-                            result,
-                            tool_call=result_tool_call,
-                        )
-                        yield ToolResultEvent(
-                            tool_use_id=projected_result.tool_use_id,
-                            tool_name=projected_result.tool_name,
-                            result=projected_result.content,
-                            is_error=projected_result.is_error,
-                            arguments=retry_arguments,
-                            execution_status=projected_result.execution_status,
-                        )
-                        replay_event = router_control_replay_event_from_payload(result.content)
-                        if replay_event is not None:
-                            yield replay_event
-                        if _pending_approval_payload(result.content) is not None:
+                        approval_entry = None
+                        if network_approval:
+                            from opensquilla.gateway.approval_queue import get_approval_queue
+
+                            try:
+                                approval_entry = get_approval_queue().get(
+                                    str(pending_approval["approval_id"])
+                                )
+                            except KeyError:
+                                approval_entry = None
+                        if network_approval and (
+                            approval_entry is None or not approval_entry.resolved
+                        ):
                             turn_yielded = True
+                        elif (
+                            network_approval
+                            and approval_entry is not None
+                            and not approval_entry.approved
+                        ):
+                            rationale = str(
+                                approval_entry.params.get("reviewRationale") or ""
+                            ).strip()
+                            result = ToolResult(
+                                tool_use_id=tc.tool_use_id,
+                                tool_name=tc.tool_name,
+                                content=json.dumps(
+                                    {
+                                        "status": "approval_denied",
+                                        "approval_id": pending_approval["approval_id"],
+                                        "message": rationale
+                                        or "The managed-network action was not approved.",
+                                    },
+                                    ensure_ascii=False,
+                                ),
+                                is_error=False,
+                            )
+                            projected_result = await self._project_tool_result_for_delivery(
+                                result,
+                                tool_call=tc,
+                            )
+                            yield ToolResultEvent(
+                                tool_use_id=projected_result.tool_use_id,
+                                tool_name=projected_result.tool_name,
+                                result=projected_result.content,
+                                is_error=projected_result.is_error,
+                                arguments=tc.arguments,
+                                execution_status=projected_result.execution_status,
+                            )
+                        else:
+                            retry_arguments = dict(tc.arguments)
+                            if not network_approval:
+                                retry_arguments["approval_id"] = pending_approval[
+                                    "approval_id"
+                                ]
+                            retry_call = ToolCall(
+                                tool_use_id=tc.tool_use_id,
+                                tool_name=tc.tool_name,
+                                arguments=retry_arguments,
+                                synthetic_from_text=tc.synthetic_from_text,
+                                origin_trace=tc.origin_trace,
+                            )
+                            result = await _run_one(retry_call)
+                            result_tool_call = retry_call
+                            for artifact in result.artifacts:
+                                yield ArtifactEvent(**_artifact_event_kwargs(artifact))
+                            projected_result = await self._project_tool_result_for_delivery(
+                                result,
+                                tool_call=result_tool_call,
+                            )
+                            yield ToolResultEvent(
+                                tool_use_id=projected_result.tool_use_id,
+                                tool_name=projected_result.tool_name,
+                                result=projected_result.content,
+                                is_error=projected_result.is_error,
+                                arguments=retry_arguments,
+                                execution_status=projected_result.execution_status,
+                            )
+                            replay_event = router_control_replay_event_from_payload(
+                                result.content
+                            )
+                            if replay_event is not None:
+                                yield replay_event
+                            if _pending_approval_payload(result.content) is not None:
+                                turn_yielded = True
                     executed_results.append(result)
                     while self._pending_warnings:
                         yield self._pending_warnings.pop(0)

@@ -45,6 +45,7 @@ from urllib.parse import urlparse
 from opensquilla.sandbox.backend import Backend, NoopBackend, UnavailableBackend, select_backend
 from opensquilla.sandbox.capability_profile import capability_profile_for_command
 from opensquilla.sandbox.config import EffectiveMode, SandboxSettings
+from opensquilla.sandbox.elevation import ApprovalReviewerName
 from opensquilla.sandbox.escalation import (
     build_network_approval_params,
     build_package_bundle_approval_params,
@@ -807,6 +808,15 @@ def _network_grant_workspace(request: SandboxRequest, runtime: SandboxRuntime) -
     return str(getattr(runtime, "workspace", None) or request.cwd)
 
 
+def _configured_approval_reviewer(runtime: SandboxRuntime | object) -> ApprovalReviewerName:
+    settings = getattr(runtime, "settings", None)
+    reviewer = str(getattr(settings, "approvals_reviewer", "user") or "user")
+    return cast(
+        "ApprovalReviewerName",
+        reviewer if reviewer in {"user", "auto_review"} else "user",
+    )
+
+
 def _current_sandbox_persistence_handles() -> tuple[Any | None, Any | None]:
     try:
         from opensquilla.tools.builtin import sessions as sessions_mod
@@ -1379,6 +1389,7 @@ async def _preflight_cached_network_artifact_access(
                 session_key=_resolve_session_id(runtime, None),
                 workspace=_network_grant_workspace(request, runtime),
                 fingerprint=fingerprint,
+                reviewer=_configured_approval_reviewer(runtime),
             )
             if params is not None:
                 return request_sandbox_approval(
@@ -1438,6 +1449,7 @@ async def _preflight_request_package_bundle(
         session_key=_resolve_session_id(runtime, None),
         workspace=_network_grant_workspace(request, runtime),
         fingerprint=fingerprint,
+        reviewer=_configured_approval_reviewer(runtime),
     )
     return request_sandbox_approval(
         params,

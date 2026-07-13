@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import shutil
@@ -41,6 +42,173 @@ def test_shell_tools_publish_structured_elevation_fields() -> None:
         ]
         assert "justification" in params
         assert "prefix_rule" in params
+
+
+def test_code_exec_publishes_structured_elevation_fields() -> None:
+    from opensquilla.tools.builtin import code_exec  # noqa: F401
+    from opensquilla.tools.registry import get_default_registry
+
+    registered = get_default_registry().get("execute_code")
+    assert registered is not None
+    params = registered.spec.parameters
+    assert params["sandbox_permissions"]["enum"] == [
+        "use_default",
+        "require_escalated",
+    ]
+    assert "justification" in params
+    assert "prefix_rule" in params
+
+
+@pytest.mark.asyncio
+async def test_code_exec_exact_elevation_runs_host_once(
+    managed_runtime: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from opensquilla.tools.builtin import code_exec, shell
+
+    code = "print('approved host code')"
+    host_calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
+
+    class _FakeProcess:
+        returncode = 0
+
+        async def communicate(self) -> tuple[bytes, bytes]:
+            return b"approved\n", b""
+
+        def kill(self) -> None:
+            raise AssertionError("approved code should not time out")
+
+    async def _fake_create_subprocess_exec(*args: object, **kwargs: object) -> _FakeProcess:
+        host_calls.append((args, kwargs))
+        return _FakeProcess()
+
+    monkeypatch.setattr(code_exec.asyncio, "create_subprocess_exec", _fake_create_subprocess_exec)
+    monkeypatch.setattr(code_exec, "_resolve_python_bin", lambda *, sandbox_enabled: sys.executable)
+    monkeypatch.setattr(shell, "_host_execution_allowed", lambda: False)
+    token = current_tool_context.set(
+        ToolContext(
+            is_owner=True,
+            caller_kind=CallerKind.CLI,
+            workspace_dir=str(managed_runtime),
+            session_key="code-approved",
+            run_mode="standard",
+        )
+    )
+    try:
+        requested = json.loads(
+            await code_exec.execute_code(
+                code,
+                sandbox_permissions="require_escalated",
+                justification="Run the exact short Python calculation requested by the user.",
+            )
+        )
+        approval_id = requested["approval_id"]
+        entry = get_approval_queue().get(approval_id)
+        action = entry.params["action"]
+        assert requested["status"] == "approval_required"
+        assert action["argv"] == ["execute_code"]
+        assert action["cwd"] == str(managed_runtime.resolve())
+        assert action["content_digest"] == hashlib.sha256(code.encode()).hexdigest()
+        assert action["content_length"] == len(code)
+        assert code not in json.dumps(entry.params)
+        assert host_calls == []
+
+        get_approval_queue().resolve(approval_id, True)
+        result = json.loads(
+            await code_exec.execute_code(
+                code,
+                sandbox_permissions="require_escalated",
+                justification="Run the exact short Python calculation requested by the user.",
+                approval_id=approval_id,
+            )
+        )
+    finally:
+        current_tool_context.reset(token)
+
+    assert result["exit_code"] == 0
+    assert result["stdout"] == "approved\n"
+    assert len(host_calls) == 1
+    assert host_calls[0][0][-2:] == ("-c", code)
+    assert host_calls[0][1]["cwd"] == str(managed_runtime.resolve())
+    assert get_approval_queue().get(approval_id).consumed is True
+
+
+@pytest.mark.asyncio
+async def test_code_exec_changed_code_cannot_reuse_elevation(
+    managed_runtime: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from opensquilla.tools.builtin import code_exec, shell
+
+    async def _host_must_not_run(*args: object, **kwargs: object) -> object:
+        raise AssertionError("changed code must not execute on the host")
+
+    monkeypatch.setattr(code_exec.asyncio, "create_subprocess_exec", _host_must_not_run)
+    monkeypatch.setattr(code_exec, "_resolve_python_bin", lambda *, sandbox_enabled: sys.executable)
+    monkeypatch.setattr(shell, "_host_execution_allowed", lambda: False)
+    token = current_tool_context.set(
+        ToolContext(
+            is_owner=True,
+            caller_kind=CallerKind.CLI,
+            workspace_dir=str(managed_runtime),
+            session_key="code-changed",
+            run_mode="standard",
+        )
+    )
+    try:
+        requested = json.loads(
+            await code_exec.execute_code(
+                "print('safe')",
+                sandbox_permissions="require_escalated",
+                justification="Run the exact short Python calculation requested by the user.",
+            )
+        )
+        get_approval_queue().resolve(requested["approval_id"], True)
+        changed = json.loads(
+            await code_exec.execute_code(
+                "import shutil\nshutil.rmtree('/')",
+                sandbox_permissions="require_escalated",
+                justification="Run the exact short Python calculation requested by the user.",
+                approval_id=requested["approval_id"],
+            )
+        )
+    finally:
+        current_tool_context.reset(token)
+
+    assert changed["status"] == "approval_action_mismatch"
+
+
+@pytest.mark.asyncio
+async def test_code_exec_sensitive_path_blocks_before_elevation_request(
+    managed_runtime: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from opensquilla.tools.builtin import code_exec, shell
+
+    monkeypatch.setattr(shell, "_host_execution_allowed", lambda: False)
+    token = current_tool_context.set(
+        ToolContext(
+            is_owner=True,
+            caller_kind=CallerKind.CLI,
+            workspace_dir=str(managed_runtime),
+            session_key="code-sensitive",
+            run_mode="standard",
+        )
+    )
+    try:
+        result = json.loads(
+            await code_exec.execute_code(
+                "from pathlib import Path\nprint(Path('.env').read_text())",
+                sandbox_permissions="require_escalated",
+                justification="Read a secret file.",
+            )
+        )
+    finally:
+        current_tool_context.reset(token)
+
+    assert result["status"] == "blocked"
+    assert result["reason"] == "sensitive_path"
+    assert get_approval_queue().list_pending("exec") == []
 
 
 @pytest.mark.asyncio

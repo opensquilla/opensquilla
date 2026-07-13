@@ -85,6 +85,7 @@ class ToolContext:
     on_memory_source_write: Callable[[str, str], None] | None = None
     on_bootstrap_source_write: Callable[[str, str], None] | None = None
     on_runtime_event: Callable[[dict[str, Any]], None] | None = None
+    on_sandbox_auto_review: Callable[[dict[str, object]], Awaitable[Any]] | None = None
     # Legacy elevated mode compatibility. New code should treat only "full" as
     # host execution; standard/trusted run modes stay sandboxed.
     elevated: str | None = None

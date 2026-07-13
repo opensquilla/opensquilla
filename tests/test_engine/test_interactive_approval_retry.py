@@ -17,7 +17,29 @@ from opensquilla.provider import DoneEvent as ProviderDone
 from opensquilla.provider import TextDeltaEvent as ProviderTextDelta
 from opensquilla.provider import ToolUseEndEvent as ProviderToolUseEnd
 from opensquilla.provider import ToolUseStartEvent as ProviderToolUseStart
+from opensquilla.sandbox.config import SandboxSettings
 from opensquilla.sandbox.elevation import ElevationAction, gate_elevated_action
+from opensquilla.sandbox.escalation import (
+    build_network_approval_params,
+    request_sandbox_approval,
+    resolved_run_context_overlay,
+)
+from opensquilla.sandbox.network_guard import NetworkDecision
+from opensquilla.sandbox.network_runtime import (
+    NetworkApprovalService,
+    NetworkPolicyRequest,
+    NetworkProtocol,
+)
+from opensquilla.sandbox.run_context import RunContext
+from opensquilla.sandbox.run_mode import RunMode
+from opensquilla.sandbox.types import (
+    NetworkMode,
+    ResourceLimits,
+    SandboxPolicy,
+    SandboxRequest,
+    SecurityLevel,
+)
+from opensquilla.tools.types import ToolContext
 
 
 class _OneApprovalToolProvider:
@@ -328,6 +350,157 @@ async def test_auto_review_denial_returns_rationale_without_side_effect() -> Non
         ]
         assert "approval_denied" in result_blocks[-1].content
         assert "authorization does not cover" in result_blocks[-1].content
+    finally:
+        reset_approval_queue()
+
+
+@pytest.mark.asyncio
+async def test_agent_guardian_reviews_inflight_network_approval_once(tmp_path) -> None:
+    reset_approval_queue()
+    provider = _AutoReviewProvider(
+        json.dumps(
+            {
+                "risk_level": "medium",
+                "user_authorization": "medium",
+                "outcome": "allow",
+                "rationale": "The exact public host is required by the user request.",
+            }
+        )
+    )
+    approval_ids: list[str] = []
+    decisions: list[str] = []
+    policy = SandboxPolicy(
+        level=SecurityLevel.STANDARD,
+        network=NetworkMode.PROXY_ALLOWLIST,
+        mounts=(),
+        workspace_rw=True,
+        tmp_writable=True,
+        limits=ResourceLimits(),
+        env_allowlist=("PATH",),
+        require_approval=False,
+    )
+
+    def _request(params: dict[str, object], **kwargs: object) -> dict[str, object]:
+        payload = request_sandbox_approval(params, **kwargs)
+        approval_ids.append(str(payload["approval_id"]))
+        return payload
+
+    async def _handler(call: ToolCall) -> ToolResult:
+        request = SandboxRequest(
+            argv=("http_request", "GET", "https://unknown.test/path"),
+            cwd=tmp_path,
+            action_kind="network.http",
+            policy=policy,
+            session_id="network-agent",
+            run_mode="standard",
+        )
+        decision = await NetworkApprovalService(
+            context=RunContext(run_mode=RunMode.STANDARD, workspace=str(tmp_path)),
+            request=request,
+            runtime=type(
+                "Runtime",
+                (),
+                {
+                    "workspace": tmp_path,
+                    "settings": SandboxSettings(approvals_reviewer="auto_review"),
+                },
+            )(),
+            approval_timeout_seconds=1.0,
+            approval_requester=_request,
+        ).decide(
+            NetworkPolicyRequest(
+                protocol=NetworkProtocol.HTTPS_CONNECT,
+                host="unknown.test",
+                port=443,
+                method="CONNECT",
+            )
+        )
+        decisions.append(decision.status)
+        return ToolResult(call.tool_use_id, call.tool_name, json.dumps({"status": "done"}))
+
+    tool_context = ToolContext(
+        workspace_dir=str(tmp_path),
+        session_key="network-agent",
+        sandbox_run_context=RunContext(
+            run_mode=RunMode.STANDARD,
+            workspace=str(tmp_path),
+        ),
+    )
+    agent = Agent(
+        provider=provider,
+        config=AgentConfig(max_iterations=2),
+        session_key="network-agent",
+        tool_definitions=[_exec_definition()],
+        tool_handler=_handler,
+        tool_context=tool_context,
+    )
+    try:
+        _ = [event async for event in agent.run_turn("Fetch the exact unknown.test URL")]
+
+        assert decisions == ["allow"]
+        assert provider.guardian_calls == 1
+        assert len(approval_ids) == 1
+        entry = get_approval_queue().get(approval_ids[0])
+        assert entry.approved is True
+        assert entry.params["humanActionable"] is False
+        assert entry.params["reviewOutcome"] == "allow"
+        overlay = resolved_run_context_overlay("network-agent", str(tmp_path))
+        assert overlay is not None
+        assert overlay.temporary_grants == ()
+    finally:
+        reset_approval_queue()
+
+
+@pytest.mark.asyncio
+async def test_agent_network_review_denial_returns_rationale_without_replay(tmp_path) -> None:
+    reset_approval_queue()
+    provider = _AutoReviewProvider(
+        json.dumps(
+            {
+                "risk_level": "high",
+                "user_authorization": "low",
+                "outcome": "deny",
+                "rationale": "Uploading workspace data was not explicitly authorized.",
+            }
+        )
+    )
+    calls: list[dict[str, Any]] = []
+
+    async def _handler(call: ToolCall) -> ToolResult:
+        calls.append(dict(call.arguments))
+        params = build_network_approval_params(
+            NetworkDecision("ask", "upload.test", "unknown_domain", None),
+            session_key="network-denied",
+            workspace=str(tmp_path),
+            fingerprint="request-fingerprint",
+            reviewer="auto_review",
+        )
+        payload = request_sandbox_approval(
+            params,
+            message="Review one exact network target.",
+        )
+        return ToolResult(call.tool_use_id, call.tool_name, json.dumps(payload))
+
+    agent = Agent(
+        provider=provider,
+        config=AgentConfig(max_iterations=2),
+        session_key="network-denied",
+        tool_definitions=[_exec_definition()],
+        tool_handler=_handler,
+    )
+    try:
+        _ = [event async for event in agent.run_turn("Inspect the project")]
+
+        assert len(calls) == 1
+        assert provider.guardian_calls == 1
+        result_blocks = [
+            block
+            for message in provider.main_calls[-1]
+            for block in message.content
+            if getattr(block, "type", None) == "tool_result"
+        ]
+        assert "approval_denied" in result_blocks[-1].content
+        assert "not explicitly authorized" in result_blocks[-1].content
     finally:
         reset_approval_queue()
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 import ast
 import asyncio
 import dataclasses
+import hashlib
 import json
 import os
 import re
@@ -13,7 +14,9 @@ import sys
 import tempfile
 import time
 from pathlib import Path
+from urllib.parse import urlparse
 
+from opensquilla.sandbox.elevation import ElevationAction, gate_elevated_action
 from opensquilla.sandbox.integration import (
     SandboxRuntime,
     escalate_backend_denial,
@@ -153,6 +156,52 @@ def _check_code_sensitive_access(code: str) -> tuple[str, str] | None:
 def _code_needs_network(code: str) -> bool:
     lowered = code.lower()
     return any(token in lowered for token in _CODE_NETWORK_TOKENS)
+
+
+def _code_elevation_effects(
+    code: str,
+    *,
+    workdir: Path,
+    destructive_warning: str | None,
+) -> tuple[tuple[tuple[str, str], ...], tuple[str, ...], tuple[str, ...]]:
+    """Return conservative static effects without persisting the code body."""
+
+    network_targets: list[str] = []
+    target_paths: list[tuple[str, str]] = []
+    risk_markers = ["arbitrary_python_host_execution"]
+    if destructive_warning is not None:
+        risk_markers.append(destructive_warning)
+    if _code_needs_network(code):
+        risk_markers.append("network_capable_code")
+
+    access = "delete" if destructive_warning is not None else "read"
+    lowered = code.lower()
+    if any(token in lowered for token in ("write_text(", "write_bytes(", ".write(")) or re.search(
+        r"\bopen\s*\([^\n]{0,300},\s*['\"][wax+]",
+        code,
+        flags=re.IGNORECASE,
+    ):
+        access = "write"
+
+    for literal in _iter_code_string_literals(code):
+        parsed = urlparse(literal)
+        if parsed.scheme.lower() in {"http", "https"} and parsed.hostname:
+            host = parsed.hostname.casefold()
+            if host not in network_targets:
+                network_targets.append(host)
+            continue
+        stripped = literal.strip()
+        if not stripped.startswith(("/", "~", ".")):
+            continue
+        candidate = Path(stripped).expanduser()
+        if not candidate.is_absolute():
+            candidate = workdir / candidate
+        resolved = str(candidate.resolve(strict=False))
+        item = (resolved, access)
+        if item not in target_paths:
+            target_paths.append(item)
+
+    return tuple(target_paths), tuple(network_targets), tuple(risk_markers)
 
 
 def _windows_sandbox_backend_active(runtime: object | None) -> bool:
@@ -345,6 +394,20 @@ def _resolve_python_bin(*, sandbox_enabled: bool) -> str:
                 f"Execution timeout in seconds (1-{_MAX_TIMEOUT}, default {_DEFAULT_TIMEOUT})."
             ),
         },
+        "sandbox_permissions": {
+            "type": "string",
+            "enum": ["use_default", "require_escalated"],
+            "description": "Use require_escalated only for one exact host Python run.",
+        },
+        "justification": {
+            "type": "string",
+            "description": "Short user-facing reason for the exact elevated code run.",
+        },
+        "prefix_rule": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": "Optional narrow prefix suggestion; never persisted by auto review.",
+        },
         "approval_id": {
             "type": "string",
             "description": "Deprecated; sandbox approvals are handled by the runtime.",
@@ -362,8 +425,10 @@ async def execute_code(
     code: str,
     timeout: float = _DEFAULT_TIMEOUT,
     approval_id: str | None = None,
+    sandbox_permissions: str = "use_default",
+    justification: str = "",
+    prefix_rule: list[str] | None = None,
 ) -> str:
-    _ = approval_id
     if not code.strip():
         raise ToolError("Code must not be empty")
 
@@ -401,11 +466,6 @@ async def execute_code(
     sandbox_enabled = bool(
         runtime is not None and runtime.effective.sandbox_enabled and not host_execution
     )
-    if sandbox_enabled and _windows_sandbox_backend_active(runtime):
-        misuse = _windows_environment_subprocess_misuse(code)
-        if misuse is not None:
-            return _unsupported_windows_environment_subprocess_payload(misuse)
-    python_bin = _resolve_python_bin(sandbox_enabled=sandbox_enabled)
     workspace = (
         Path(ctx.workspace_dir).expanduser().resolve() if ctx and ctx.workspace_dir else None
     )
@@ -420,11 +480,61 @@ async def execute_code(
         workdir = tempfile.mkdtemp(prefix="opensquilla_exec_")
         workdir_path = Path(workdir)
         cleanup_dir = workdir
+
+    elevated_code_execution = False
+    if sandbox_enabled and sandbox_permissions not in {"use_default", "require_escalated"}:
+        return json.dumps(
+            {"status": "invalid_request", "reason": "invalid_sandbox_permissions"}
+        )
+    if sandbox_enabled and sandbox_permissions == "require_escalated":
+        if not justification.strip():
+            return json.dumps(
+                {
+                    "status": "elevation_required",
+                    "reason": "justification_required",
+                    "message": "A precise justification is required for elevated execution.",
+                }
+            )
+        target_paths, network_targets, risk_markers = _code_elevation_effects(
+            code,
+            workdir=workdir_path,
+            destructive_warning=destructive_warning,
+        )
+        action = ElevationAction(
+            tool_name="execute_code",
+            action_kind="code.exec",
+            argv=("execute_code",),
+            cwd=str(workdir_path),
+            sandbox_permissions="require_escalated",
+            justification=justification,
+            target_paths=target_paths,
+            network_targets=network_targets,
+            content_digest=hashlib.sha256(code.encode("utf-8")).hexdigest(),
+            content_length=len(code),
+            risk_markers=risk_markers,
+            prefix_rule=tuple(prefix_rule) if prefix_rule is not None else None,
+        )
+        gate = gate_elevated_action(
+            action,
+            approval_id=approval_id,
+            session_key=ctx.session_key if ctx is not None else None,
+        )
+        if not gate.allowed:
+            return json.dumps(gate.to_envelope(), ensure_ascii=False)
+        host_execution = True
+        sandbox_enabled = False
+        elevated_code_execution = True
+
+    if sandbox_enabled and _windows_sandbox_backend_active(runtime):
+        misuse = _windows_environment_subprocess_misuse(code)
+        if misuse is not None:
+            return _unsupported_windows_environment_subprocess_payload(misuse)
+    python_bin = _resolve_python_bin(sandbox_enabled=sandbox_enabled)
     start_ns = time.monotonic_ns()
 
     safe_env = (
         os.environ.copy()
-        if host_execution
+        if host_execution and not elevated_code_execution
         else {k: v for k, v in os.environ.items() if k in _SAFE_ENV_KEYS}
     )
     apply_utf8_child_env(safe_env)

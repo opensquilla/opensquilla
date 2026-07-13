@@ -26,6 +26,8 @@ class ElevationAction:
     target_paths: tuple[tuple[str, str], ...] = ()
     network_targets: tuple[str, ...] = ()
     content_digest: str | None = None
+    content_length: int | None = None
+    risk_markers: tuple[str, ...] = ()
     tty: bool = False
     prefix_rule: tuple[str, ...] | None = None
 
@@ -42,6 +44,8 @@ class ElevationAction:
             "target_paths": [list(item) for item in self.target_paths],
             "network_targets": list(self.network_targets),
             "content_digest": self.content_digest,
+            "content_length": self.content_length,
+            "risk_markers": list(self.risk_markers),
             "tty": self.tty,
             "prefix_rule": list(self.prefix_rule) if self.prefix_rule is not None else None,
         }
@@ -67,11 +71,23 @@ class ElevationAction:
 
         raw_argv = payload.get("argv", [])
         raw_network_targets = payload.get("network_targets", [])
+        raw_risk_markers = payload.get("risk_markers", [])
         raw_prefix_rule = payload.get("prefix_rule")
-        if not isinstance(raw_argv, list) or not isinstance(raw_network_targets, list):
+        if (
+            not isinstance(raw_argv, list)
+            or not isinstance(raw_network_targets, list)
+            or not isinstance(raw_risk_markers, list)
+        ):
             raise ValueError("invalid_elevation_action")
         if raw_prefix_rule is not None and not isinstance(raw_prefix_rule, list):
             raise ValueError("invalid_prefix_rule")
+        raw_content_length = payload.get("content_length")
+        if raw_content_length is not None and (
+            isinstance(raw_content_length, bool)
+            or not isinstance(raw_content_length, int)
+            or raw_content_length < 0
+        ):
+            raise ValueError("invalid_content_length")
 
         return cls(
             tool_name=str(payload.get("tool_name") or ""),
@@ -87,6 +103,12 @@ class ElevationAction:
                 if payload.get("content_digest") is not None
                 else None
             ),
+            content_length=(
+                raw_content_length
+                if raw_content_length is not None
+                else None
+            ),
+            risk_markers=tuple(str(item) for item in raw_risk_markers),
             tty=bool(payload.get("tty", False)),
             prefix_rule=(
                 tuple(str(item) for item in raw_prefix_rule)

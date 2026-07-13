@@ -664,7 +664,7 @@ jobs:
     runs-on: macos-latest
     timeout-minutes: 75
     permissions:
-      contents: read
+      contents: write
     steps:
       - name: Checkout release verification helpers
         uses: actions/checkout@v4
@@ -812,7 +812,7 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 75
     permissions:
-      contents: read
+      contents: write
     steps:
       - name: Checkout release verification helpers
         uses: actions/checkout@v4

@@ -318,6 +318,8 @@ def test_release_workflow_gates_built_and_downloaded_installers_on_profile_reten
     windows_audit = workflow[workflow.index("  audit-downloaded-windows-release:") :]
     for audit in (mac_audit, windows_audit):
         assert "needs: publish-release" in audit
+        assert "contents: write" in audit
+        assert "contents: read" not in audit
         assert "gh release download" in audit
         assert "SHA256SUMS" in audit
         assert "isDraft" in audit

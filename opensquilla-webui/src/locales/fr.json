@@ -881,6 +881,66 @@
     "field": {
       "keepCurrentPlaceholder": "laisser vide pour conserver la valeur actuelle",
       "secretComposePlaceholder": "Collez le jeton ou le secret"
+    },
+    "channelCatalog": {
+      "dingtalk": {
+        "description": "Robot d'entreprise DingTalk via connexion stream.",
+        "needs": [
+          "Client id.",
+          "Client secret."
+        ]
+      },
+      "discord": {
+        "description": "Bot Discord utilisant le websocket gateway.",
+        "needs": [
+          "Jeton du bot."
+        ]
+      },
+      "feishu": {
+        "description": "Bot Feishu (ou Lark) — connexion webhook ou websocket.",
+        "needs": [
+          "App id.",
+          "App secret."
+        ]
+      },
+      "matrix": {
+        "description": "Client de homeserver Matrix (sync long-poll).",
+        "needs": [
+          "URL du homeserver.",
+          "Id utilisateur (@user:server).",
+          "Installer l'extra matrix optionnel."
+        ]
+      },
+      "qq": {
+        "description": "Bot QQ de Tencent via websocket.",
+        "needs": [
+          "App id.",
+          "App secret."
+        ]
+      },
+      "slack": {
+        "description": "Bot d'espace Slack — mode Socket (websocket) ou webhook Events API.",
+        "needs": [
+          "Jeton du bot (xoxb-…).",
+          "Secret de signature."
+        ]
+      },
+      "telegram": {
+        "description": "API Bot Telegram — transport polling ou webhook.",
+        "needs": [
+          "Jeton du bot."
+        ]
+      },
+      "wecom": {
+        "description": "Bot IA WeChat Entreprise via websocket, ou rappel webhook d'app d'entreprise.",
+        "needs": [
+          "Corp id.",
+          "Corp secret.",
+          "Agent id (entier).",
+          "Jeton.",
+          "Clé AES d'encodage."
+        ]
+      }
     }
   },
   "sessions": {

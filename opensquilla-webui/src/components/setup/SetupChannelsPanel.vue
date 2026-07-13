@@ -8,11 +8,13 @@ import SetupChannelSecretField from '@/components/setup/SetupChannelSecretField.
 import SetupField from '@/components/SetupField.vue'
 import SetupNeedList from '@/components/SetupNeedList.vue'
 import { usePendingRestart } from '@/composables/usePendingRestart'
+import { useChannelCatalogI18n } from '@/composables/setup/useChannelCatalogI18n'
 import { lastErrorClass } from '@/lib/channelStatus'
 import type { ChannelSecretRow } from '@/composables/setup/useSetupChannelsForm'
 import type { ChannelEditState, ChannelTestState } from '@/composables/setup/useSetupCatalog'
 
 const { t } = useI18n()
+const { localizeDescription, localizeNeeds } = useChannelCatalogI18n()
 const pendingRestart = usePendingRestart()
 
 interface ChannelSpec {
@@ -229,8 +231,8 @@ const testTone = computed(() => {
               <span v-if="c.requiresPublicUrl" class="setup-channels__typechip is-warn">{{ t('setup.channels.needsPublicUrl') }}</span>
             </span>
           </span>
-          <span v-if="c.description" class="setup-channels__carddesc">{{ c.description }}</span>
-          <span v-if="c.whatYouNeed?.length" class="setup-channels__cardneeds">{{ c.whatYouNeed.slice(0, 2).join(' · ') }}</span>
+          <span v-if="c.description" class="setup-channels__carddesc">{{ localizeDescription(c.type, c.description) }}</span>
+          <span v-if="c.whatYouNeed?.length" class="setup-channels__cardneeds">{{ localizeNeeds(c.type, c.whatYouNeed).slice(0, 2).join(' · ') }}</span>
         </button>
       </div>
 
@@ -238,14 +240,14 @@ const testTone = computed(() => {
         <div v-if="!isEdit" class="setup-channels__selected">
           <div class="setup-channels__selectedinfo">
             <strong>{{ typeLabel }}</strong>
-            <span v-if="spec?.description">{{ spec.description }}</span>
+            <span v-if="spec?.description">{{ localizeDescription(spec.type, spec.description) }}</span>
           </div>
           <span class="setup-channels__selectedactions">
             <a v-if="spec?.docsHint" class="setup-channels__link" :href="spec.docsHint" target="_blank" rel="noreferrer noopener">{{ t('setup.channels.openDocs') }}</a>
             <button type="button" class="setup-channels__link" @click="backToGallery">{{ t('setup.channels.changeType') }}</button>
           </span>
         </div>
-        <SetupNeedList v-if="!isEdit" :items="panel.channelSpec?.whatYouNeed" :label="t('setup.channels.needs')" />
+        <SetupNeedList v-if="!isEdit" :items="localizeNeeds(panel.channelType, panel.channelSpec?.whatYouNeed)" :label="t('setup.channels.needs')" />
 
         <template v-for="group in fieldGroups" :key="group.name || 'main'">
           <h4 v-if="group.name" class="setup-channels__group">{{ humanize(group.name) }}</h4>

@@ -96,6 +96,99 @@ def test_bwrap_argv_uses_readonly_root_when_root_is_readable(tmp_path: Path) -> 
     assert ["--tmpfs", "/"] not in [argv[index : index + 2] for index in range(len(argv) - 1)]
 
 
+def test_readonly_root_skips_redundant_identity_mounts(tmp_path: Path) -> None:
+    identity_root = Path.home()
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    permissions = LinuxPermissions(
+        read_roots=(
+            LinuxRoot(Path("/"), Path("/"), required=True),
+            LinuxRoot(identity_root, identity_root, required=True),
+        ),
+        write_roots=(LinuxRoot(workspace, workspace, required=True),),
+        denied_roots=(),
+        protected_subpaths=(),
+        env_allowlist=("PATH",),
+        network=NetworkMode.NONE,
+        tmp_writable=True,
+        wall_timeout_s=30,
+    )
+
+    argv = build_bwrap_argv(
+        command=["/bin/true"],
+        command_cwd=workspace,
+        permissions=permissions,
+        options=BwrapOptions(bwrap_path="bwrap", mount_proc=True),
+    )
+
+    assert ["--ro-bind", str(identity_root), str(identity_root)] not in [
+        argv[index : index + 3] for index in range(len(argv) - 2)
+    ]
+
+
+def test_readonly_root_keeps_identity_mount_below_tmpfs(tmp_path: Path) -> None:
+    payload_dir = tmp_path / "payload"
+    payload_dir.mkdir()
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    permissions = LinuxPermissions(
+        read_roots=(
+            LinuxRoot(Path("/"), Path("/"), required=True),
+            LinuxRoot(payload_dir, payload_dir, required=True),
+        ),
+        write_roots=(LinuxRoot(workspace, workspace, required=True),),
+        denied_roots=(),
+        protected_subpaths=(),
+        env_allowlist=("PATH",),
+        network=NetworkMode.NONE,
+        tmp_writable=True,
+        wall_timeout_s=30,
+    )
+
+    argv = build_bwrap_argv(
+        command=["/bin/true"],
+        command_cwd=workspace,
+        permissions=permissions,
+        options=BwrapOptions(bwrap_path="bwrap", mount_proc=True),
+    )
+
+    assert ["--ro-bind", str(payload_dir), str(payload_dir)] in [
+        argv[index : index + 3] for index in range(len(argv) - 2)
+    ]
+
+
+def test_readonly_root_canonicalizes_denied_symlink_aliases(tmp_path: Path) -> None:
+    real_dir = tmp_path / "run"
+    real_dir.mkdir()
+    secret = real_dir / "service.sock"
+    secret.write_text("secret", encoding="utf-8")
+    alias_dir = tmp_path / "var-run"
+    alias_dir.symlink_to(real_dir, target_is_directory=True)
+    alias = alias_dir / secret.name
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    permissions = LinuxPermissions(
+        read_roots=(LinuxRoot(Path("/"), Path("/"), required=True),),
+        write_roots=(LinuxRoot(workspace, workspace, required=True),),
+        denied_roots=(alias, secret),
+        protected_subpaths=(),
+        env_allowlist=("PATH",),
+        network=NetworkMode.NONE,
+        tmp_writable=True,
+        wall_timeout_s=30,
+    )
+
+    argv = build_bwrap_argv(
+        command=["/bin/true"],
+        command_cwd=workspace,
+        permissions=permissions,
+        options=BwrapOptions(bwrap_path="bwrap", mount_proc=True),
+    )
+
+    assert str(alias) not in argv
+    assert argv.count(str(secret)) == 1
+
+
 def test_bwrap_argv_keeps_host_network_when_network_mode_host(tmp_path: Path) -> None:
     argv = build_bwrap_argv(
         command=["/bin/echo", "ok"],

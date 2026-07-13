@@ -1341,7 +1341,11 @@ async def test_rpc_sandbox_path_pick_validates_workspace_selection(
     import opensquilla.gateway.rpc_sandbox as rpc_sandbox
 
     manager = _SessionManager()
-    monkeypatch.setattr(rpc_sandbox, "_pick_directory_path", lambda initial_dir=None: "/etc")
+    monkeypatch.setattr(
+        rpc_sandbox,
+        "_pick_directory_path",
+        lambda initial_dir=None: "/etc/shadow",
+    )
 
     with pytest.raises(ValueError, match="sensitive_path"):
         await rpc_sandbox._handle_sandbox_path_pick(

@@ -103,10 +103,32 @@ def build_bwrap_plan(
             for path in (mount.root.host_path, mount.source)
         )
     )
+    special_overlay_roots = [Path("/dev")]
+    if permissions.tmp_writable:
+        special_overlay_roots.append(Path("/tmp"))
+    if options.mount_proc:
+        special_overlay_roots.append(Path("/proc"))
 
     for root in permissions.read_roots:
         _validate_root(root)
         if read_all and root.host_path == Path("/") and root.sandbox_path == Path("/"):
+            continue
+        # A read-only host root already exposes every identity-mapped path.
+        # Rebinding one of those paths is redundant and can fail for absolute
+        # symlink aliases (for example uv's versioned Python directory),
+        # because bwrap resolves the source through /oldroot while the target
+        # resolves through the new root. Keep non-identity mappings, which may
+        # intentionally add an alias at a different sandbox path.
+        hidden_by_special_mount = any(
+            _is_relative_to(root.sandbox_path, special_root)
+            for special_root in special_overlay_roots
+        )
+        if (
+            read_all
+            and root.host_path == root.sandbox_path
+            and root.host_path.exists()
+            and not hidden_by_special_mount
+        ):
             continue
         if not root.host_path.exists() and not root.required:
             continue
@@ -119,7 +141,10 @@ def build_bwrap_plan(
     protected_create_targets: list[Path] = []
     denied_paths = tuple(
         dict.fromkeys(
-            _remap_path_for_write_mounts(path, write_mounts)
+            _remap_path_for_write_mounts(
+                _canonical_target_if_symlinked_path(path) or path,
+                write_mounts,
+            )
             for path in [
                 *permissions.denied_roots,
                 *_expand_denied_globs(permissions.denied_globs, cwd=command_cwd),

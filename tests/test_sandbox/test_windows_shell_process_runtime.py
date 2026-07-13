@@ -43,6 +43,17 @@ def _configure_approval_queue(
     )
 
 
+def _allow_exact_elevation(monkeypatch, shell) -> list[object]:
+    actions: list[object] = []
+
+    def allow(action, **_kwargs):
+        actions.append(action)
+        return SimpleNamespace(allowed=True)
+
+    monkeypatch.setattr(shell, "gate_elevated_action", allow)
+    return actions
+
+
 def test_windows_exec_command_uses_shell_host_wrapper(monkeypatch, tmp_path) -> None:
     from opensquilla.tools.builtin import shell
 
@@ -161,7 +172,7 @@ def test_windows_shell_host_skips_windowsapps_git_alias(
 
 
 @pytest.mark.asyncio
-async def test_auto_approve_owner_host_effect_command_runs_on_host_once(
+async def test_auto_approve_mode_does_not_bypass_explicit_elevation(
     monkeypatch,
     tmp_path,
 ) -> None:
@@ -203,12 +214,14 @@ async def test_auto_approve_owner_host_effect_command_runs_on_host_once(
         current_tool_context.reset(token)
         reset_approval_queue()
 
-    assert "host-ok" in result
-    assert [call["command"] for call in host_calls] == ["winget install Tencent.QQ.NT"]
+    payload = json.loads(result)
+    assert payload["status"] == "elevation_required"
+    assert payload["reason"] == "software_management"
+    assert host_calls == []
 
 
 @pytest.mark.asyncio
-async def test_trusted_owner_host_effect_command_runs_on_host_without_legacy_auto_approve(
+async def test_trusted_mode_does_not_bypass_explicit_elevation(
     monkeypatch,
     tmp_path,
 ) -> None:
@@ -250,12 +263,14 @@ async def test_trusted_owner_host_effect_command_runs_on_host_without_legacy_aut
         current_tool_context.reset(token)
         reset_approval_queue()
 
-    assert "host-ok" in result
-    assert [call["command"] for call in host_calls] == ["winget install Tencent.QQ.NT"]
+    payload = json.loads(result)
+    assert payload["status"] == "elevation_required"
+    assert payload["reason"] == "software_management"
+    assert host_calls == []
 
 
 @pytest.mark.asyncio
-async def test_trusted_powershell_file_with_installer_actions_runs_on_host(
+async def test_powershell_file_installer_requires_and_uses_exact_elevation(
     monkeypatch,
     tmp_path,
 ) -> None:
@@ -291,6 +306,7 @@ async def test_trusted_powershell_file_with_installer_actions_runs_on_host(
     monkeypatch.setattr(shell, "get_runtime", lambda: runtime)
     monkeypatch.setattr(shell, "gate_action", fail_gate_action)
     monkeypatch.setattr(shell, "_run_host_shell_command", fake_host)
+    actions = _allow_exact_elevation(monkeypatch, shell)
     monkeypatch.setattr(
         shell,
         "check_safe_bin",
@@ -308,13 +324,35 @@ async def test_trusted_powershell_file_with_installer_actions_runs_on_host(
         )
     )
     try:
-        result = await shell.exec_command(command, workdir=str(tmp_path))
+        default_result = await shell.exec_command(command, workdir=str(tmp_path))
+        result = await shell.exec_command(
+            command,
+            workdir=str(tmp_path),
+            sandbox_permissions="require_escalated",
+            justification="Run the exact installer script requested by the user.",
+        )
     finally:
         current_tool_context.reset(token)
         reset_approval_queue()
 
+    default_payload = json.loads(default_result)
+    assert default_payload["status"] == "elevation_required"
+    assert default_payload["reason"] == "software_management"
     assert "host-ok" in result
     assert [call["command"] for call in host_calls] == [command]
+    assert len(actions) == 1
+    assert actions[0].content_digest
+    original_fingerprint = actions[0].fingerprint()
+    script_path.write_text("Write-Output changed", encoding="utf-8")
+    changed_action = shell._shell_elevation_action(
+        tool_name="exec_command",
+        action_kind="shell.exec",
+        command=command,
+        cwd=str(tmp_path),
+        profile=shell._profile_shell_command(command, workdir=str(tmp_path)),
+        justification="Run the exact installer script requested by the user.",
+    )
+    assert changed_action.fingerprint() != original_fingerprint
 
 
 @pytest.mark.asyncio
@@ -330,7 +368,7 @@ async def test_trusted_powershell_file_with_installer_actions_runs_on_host(
         "Stop-Process -Name DingTalk -Force",
     ],
 )
-async def test_trusted_windows_uninstall_flow_commands_run_on_host(
+async def test_windows_uninstall_flow_commands_require_exact_elevation(
     monkeypatch,
     tmp_path,
     command,
@@ -352,6 +390,7 @@ async def test_trusted_windows_uninstall_flow_commands_run_on_host(
     monkeypatch.setattr(shell, "get_runtime", lambda: runtime)
     monkeypatch.setattr(shell, "gate_action", fail_gate_action)
     monkeypatch.setattr(shell, "_run_host_shell_command", fake_host)
+    actions = _allow_exact_elevation(monkeypatch, shell)
     monkeypatch.setattr(
         shell,
         "check_safe_bin",
@@ -368,13 +407,21 @@ async def test_trusted_windows_uninstall_flow_commands_run_on_host(
         )
     )
     try:
-        result = await shell.exec_command(command, workdir=str(tmp_path))
+        default_result = await shell.exec_command(command, workdir=str(tmp_path))
+        result = await shell.exec_command(
+            command,
+            workdir=str(tmp_path),
+            sandbox_permissions="require_escalated",
+            justification="Run the exact uninstall operation requested by the user.",
+        )
     finally:
         current_tool_context.reset(token)
         reset_approval_queue()
 
+    assert json.loads(default_result)["status"] == "elevation_required"
     assert "host-ok" in result
     assert host_calls == [command]
+    assert len(actions) == 1
 
 
 @pytest.mark.asyncio
@@ -399,6 +446,7 @@ async def test_trusted_host_shell_folds_windows_env_key_duplicates(
     monkeypatch.setenv("SystemRoot", r"C:\Windows")
     monkeypatch.setattr(shell, "get_runtime", lambda: runtime)
     monkeypatch.setattr(shell, "_run_host_shell_command", fake_host)
+    _allow_exact_elevation(monkeypatch, shell)
     monkeypatch.setattr(
         shell,
         "check_safe_bin",
@@ -419,6 +467,8 @@ async def test_trusted_host_shell_folds_windows_env_key_duplicates(
             "winget uninstall DingTalk",
             workdir=str(tmp_path),
             env={"SYSTEMROOT": r"C:\Windows"},
+            sandbox_permissions="require_escalated",
+            justification="Run the exact uninstall operation requested by the user.",
         )
     finally:
         current_tool_context.reset(token)
@@ -431,7 +481,7 @@ async def test_trusted_host_shell_folds_windows_env_key_duplicates(
 
 
 @pytest.mark.asyncio
-async def test_auto_host_escalation_adds_user_windowsapps_to_host_path(
+async def test_exact_elevation_adds_user_windowsapps_to_host_path(
     monkeypatch,
     tmp_path,
 ) -> None:
@@ -460,6 +510,7 @@ async def test_auto_host_escalation_adds_user_windowsapps_to_host_path(
     monkeypatch.setattr(shell, "get_runtime", lambda: runtime)
     monkeypatch.setattr(shell, "gate_action", fail_gate_action)
     monkeypatch.setattr(shell, "_run_host_shell_command", fake_host)
+    _allow_exact_elevation(monkeypatch, shell)
     monkeypatch.setattr(
         shell,
         "check_safe_bin",
@@ -476,7 +527,12 @@ async def test_auto_host_escalation_adds_user_windowsapps_to_host_path(
         )
     )
     try:
-        result = await shell.exec_command("winget install Tencent.QQ.NT", workdir=str(tmp_path))
+        result = await shell.exec_command(
+            "winget install Tencent.QQ.NT",
+            workdir=str(tmp_path),
+            sandbox_permissions="require_escalated",
+            justification="Install the exact package requested by the user.",
+        )
     finally:
         current_tool_context.reset(token)
         reset_approval_queue()
@@ -546,7 +602,7 @@ async def test_auto_host_escalation_honors_deny_patterns(
 
 
 @pytest.mark.asyncio
-async def test_auto_host_escalation_background_process_runs_on_host_once(
+async def test_exact_elevation_background_process_runs_on_host_once(
     monkeypatch,
     tmp_path,
 ) -> None:
@@ -584,6 +640,7 @@ async def test_auto_host_escalation_background_process_runs_on_host_once(
     monkeypatch.setattr(shell, "get_runtime", lambda: runtime)
     monkeypatch.setattr(shell, "gate_action", fail_gate_action)
     monkeypatch.setattr(shell.asyncio, "create_subprocess_shell", fake_create_subprocess_shell)
+    _allow_exact_elevation(monkeypatch, shell)
     monkeypatch.setattr(
         shell,
         "check_safe_bin",
@@ -600,7 +657,12 @@ async def test_auto_host_escalation_background_process_runs_on_host_once(
         )
     )
     try:
-        result = await shell.background_process("msiexec /i app.msi", workdir=str(tmp_path))
+        result = await shell.background_process(
+            "msiexec /i app.msi",
+            workdir=str(tmp_path),
+            sandbox_permissions="require_escalated",
+            justification="Run the exact installer requested by the user.",
+        )
         session_id = result.splitlines()[0].split("=", 1)[1]
         session = shell._bg_sessions[session_id]
         if session.collector_task is not None:
@@ -614,7 +676,7 @@ async def test_auto_host_escalation_background_process_runs_on_host_once(
 
 
 @pytest.mark.asyncio
-async def test_auto_host_background_batch_requests_write_path_access_before_host(
+async def test_background_host_effect_batch_requires_one_exact_elevation(
     monkeypatch,
     tmp_path,
 ) -> None:
@@ -628,12 +690,32 @@ async def test_auto_host_background_batch_requests_write_path_access_before_host
 
     _configure_approval_queue(monkeypatch, tmp_path, "prompt")
     runtime = _windows_runtime()
+    spawn_calls: list[str] = []
 
-    async def fail_create_subprocess_shell(*args, **kwargs):
-        raise AssertionError("background auto-host batch should not spawn before path approval")
+    class FakeStdout:
+        async def read(self, _size):
+            return b""
+
+    class FakeProcess:
+        stdout = FakeStdout()
+        returncode = 0
+
+        async def wait(self):
+            return 0
+
+        def terminate(self):
+            self.returncode = -15
+
+        def kill(self):
+            self.returncode = -9
+
+    async def fake_create_subprocess_shell(command, **_kwargs):
+        spawn_calls.append(command)
+        return FakeProcess()
 
     monkeypatch.setattr(shell, "get_runtime", lambda: runtime)
-    monkeypatch.setattr(shell.asyncio, "create_subprocess_shell", fail_create_subprocess_shell)
+    monkeypatch.setattr(shell.asyncio, "create_subprocess_shell", fake_create_subprocess_shell)
+    actions = _allow_exact_elevation(monkeypatch, shell)
     monkeypatch.setattr(
         shell,
         "check_safe_bin",
@@ -650,15 +732,27 @@ async def test_auto_host_background_batch_requests_write_path_access_before_host
         )
     )
     try:
-        result = await shell.background_process(command, workdir=str(workspace))
+        default_result = await shell.background_process(command, workdir=str(workspace))
+        result = await shell.background_process(
+            command,
+            workdir=str(workspace),
+            sandbox_permissions="require_escalated",
+            justification="Run the exact installer and write the requested output.",
+        )
+        session_id = result.splitlines()[0].split("=", 1)[1]
+        session = shell._bg_sessions[session_id]
+        if session.collector_task is not None:
+            await session.collector_task
     finally:
         current_tool_context.reset(token)
+        shell._bg_sessions.clear()
         reset_approval_queue()
 
-    payload = json.loads(result)
-    assert payload["status"] == "approval_required"
-    assert payload["access"] == "rw"
-    assert payload["path"] == str(outside.resolve(strict=False))
+    payload = json.loads(default_result)
+    assert payload["status"] == "elevation_required"
+    assert spawn_calls == [command]
+    assert len(actions) == 1
+    assert (str(outside.resolve(strict=False)), "write") in actions[0].target_paths
 
 
 @pytest.mark.asyncio
@@ -669,7 +763,7 @@ async def test_auto_host_background_batch_requests_write_path_access_before_host
         ("auto-approve", False),
     ],
 )
-async def test_host_effect_command_stays_sandboxed_without_owner(
+async def test_host_effect_command_requires_explicit_elevation_without_owner(
     monkeypatch,
     tmp_path,
     mode,
@@ -746,13 +840,14 @@ async def test_host_effect_command_stays_sandboxed_without_owner(
         current_tool_context.reset(token)
         reset_approval_queue()
 
-    assert "sandbox-ok" in result
-    assert backend_calls
+    payload = json.loads(result)
+    assert payload["status"] == "elevation_required"
+    assert backend_calls == []
     assert host_calls == []
 
 
 @pytest.mark.asyncio
-async def test_standard_auto_approve_owner_host_effect_command_stays_sandboxed(
+async def test_standard_auto_approve_host_effect_requires_explicit_elevation(
     monkeypatch,
     tmp_path,
 ) -> None:
@@ -827,13 +922,14 @@ async def test_standard_auto_approve_owner_host_effect_command_stays_sandboxed(
         current_tool_context.reset(token)
         reset_approval_queue()
 
-    assert "sandbox-ok" in result
-    assert backend_calls
+    payload = json.loads(result)
+    assert payload["status"] == "elevation_required"
+    assert backend_calls == []
     assert host_calls == []
 
 
 @pytest.mark.asyncio
-async def test_trusted_windows_host_probe_adds_user_windowsapps_to_host_env(
+async def test_exact_windows_host_probe_adds_user_windowsapps_to_host_env(
     monkeypatch,
     tmp_path,
 ) -> None:
@@ -862,6 +958,7 @@ async def test_trusted_windows_host_probe_adds_user_windowsapps_to_host_env(
     monkeypatch.setattr(shell, "get_runtime", lambda: runtime)
     monkeypatch.setattr(shell, "gate_action", fake_gate_action)
     monkeypatch.setattr(shell, "_run_host_shell_command", fake_host)
+    _allow_exact_elevation(monkeypatch, shell)
     monkeypatch.setattr(
         shell,
         "check_safe_bin",
@@ -878,7 +975,12 @@ async def test_trusted_windows_host_probe_adds_user_windowsapps_to_host_env(
         )
     )
     try:
-        result = await shell.exec_command("where winget", workdir=str(tmp_path))
+        result = await shell.exec_command(
+            "where winget",
+            workdir=str(tmp_path),
+            sandbox_permissions="require_escalated",
+            justification="Locate the exact host executable requested by the user.",
+        )
     finally:
         current_tool_context.reset(token)
         reset_approval_queue()
@@ -1128,7 +1230,7 @@ async def test_windows_exec_command_uses_shared_path_envelopes(monkeypatch, tmp_
 
 
 @pytest.mark.asyncio
-async def test_auto_host_exec_batch_requests_write_path_access_before_host(
+async def test_host_effect_exec_batch_requires_one_exact_elevation(
     monkeypatch,
     tmp_path,
 ) -> None:
@@ -1150,6 +1252,7 @@ async def test_auto_host_exec_batch_requests_write_path_access_before_host(
 
     monkeypatch.setattr(shell, "get_runtime", lambda: runtime)
     monkeypatch.setattr(shell, "_run_host_shell_command", fake_host)
+    actions = _allow_exact_elevation(monkeypatch, shell)
     monkeypatch.setattr(
         shell,
         "check_safe_bin",
@@ -1166,16 +1269,23 @@ async def test_auto_host_exec_batch_requests_write_path_access_before_host(
         )
     )
     try:
-        result = await shell.exec_command(command, workdir=str(workspace))
+        default_result = await shell.exec_command(command, workdir=str(workspace))
+        result = await shell.exec_command(
+            command,
+            workdir=str(workspace),
+            sandbox_permissions="require_escalated",
+            justification="Probe the host and write the exact requested file.",
+        )
     finally:
         current_tool_context.reset(token)
         reset_approval_queue()
 
-    payload = json.loads(result)
-    assert payload["status"] == "approval_required"
-    assert payload["access"] == "rw"
-    assert payload["path"] == str(outside.resolve(strict=False))
-    assert host_calls == []
+    payload = json.loads(default_result)
+    assert payload["status"] == "elevation_required"
+    assert "host-ok" in result
+    assert host_calls == [command]
+    assert len(actions) == 1
+    assert (str(outside.resolve(strict=False)), "write") in actions[0].target_paths
 
 
 @pytest.mark.asyncio
@@ -1218,7 +1328,12 @@ async def test_auto_host_exec_batch_blocks_protected_metadata_write_before_host(
         )
     )
     try:
-        result = await shell.exec_command(command, workdir=str(workspace))
+        result = await shell.exec_command(
+            command,
+            workdir=str(workspace),
+            sandbox_permissions="require_escalated",
+            justification="Probe the host and update the requested metadata.",
+        )
     finally:
         current_tool_context.reset(token)
         reset_approval_queue()

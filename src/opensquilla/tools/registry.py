@@ -523,12 +523,16 @@ def tool(
                 await record_tool_operation_success(guard, result)
             return cast(str, result)
 
-        if spec.sandbox.enforce:
-            @functools.wraps(fn)
-            async def _descriptor_unwrap_compat(*args: Any, **kwargs: Any) -> str:
-                return await fn(*args, **kwargs)
+        # Keep the historical two-step ``__wrapped__`` chain even for tools
+        # whose descriptor records metadata without enforcing the generic
+        # operation guard. A few internal registries deliberately unwrap the
+        # public tool wrapper twice to call the raw handler in a controlled
+        # ToolContext; changing descriptor enforcement must not break them.
+        @functools.wraps(fn)
+        async def _descriptor_unwrap_compat(*args: Any, **kwargs: Any) -> str:
+            return await fn(*args, **kwargs)
 
-            wrapper.__wrapped__ = _descriptor_unwrap_compat  # type: ignore[attr-defined]
+        wrapper.__wrapped__ = _descriptor_unwrap_compat  # type: ignore[attr-defined]
 
         return wrapper
 

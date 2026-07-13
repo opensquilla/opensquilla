@@ -296,7 +296,19 @@ def gate_elevated_action(
             configured if configured in {"user", "auto_review"} else "auto_review",
         )
     if approval_id:
-        return consume_approved_elevation(queue, approval_id, action)
+        try:
+            return consume_approved_elevation(queue, approval_id, action)
+        except KeyError:
+            reason = "approval not found"
+        except ValueError as exc:
+            reason = str(exc).split(":", 1)[0].strip().lower()
+        return ElevationGateResult(
+            requested=True,
+            allowed=False,
+            status="approval_invalid",
+            approval_id=approval_id,
+            reason=reason,
+        )
     return request_elevation(
         queue,
         action,

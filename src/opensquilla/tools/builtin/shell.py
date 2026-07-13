@@ -140,6 +140,7 @@ _EXEC_STDIN_WRITE_CHUNK_BYTES = 64 * 1024
 _EXEC_STDIN_GUARD_CHUNK_CHARS = 64 * 1024
 _EXEC_STDIN_GUARD_OVERLAP_CHARS = 1024
 _COMMAND_AUDIT_MAX_CHARS = 4096
+_POWERSHELL_SCRIPT_PROFILE_MAX_CHARS = 128 * 1024
 _WINDOWS_ENV_CANONICAL_KEYS = {
     "COMSPEC": "ComSpec",
     "PATH": "PATH",
@@ -409,8 +410,26 @@ def _sandbox_network_hint() -> str:
     return _SANDBOX_NETWORK_HINT
 
 
-def _profile_shell_command(command: str) -> OperationProfile:
-    return classify_command(("sh", "-lc", command))
+def _profile_shell_command(
+    command: str,
+    *,
+    workdir: str | None = None,
+) -> OperationProfile:
+    profile = classify_command(("sh", "-lc", command))
+    script_profile = _profile_referenced_powershell_file(command, workdir=workdir)
+    if script_profile is None:
+        return profile
+    if profile.host_effect is not None:
+        return profile
+    if (
+        script_profile.host_effect is not None
+        or script_profile.needs_network
+        or script_profile.requested_paths
+        or script_profile.requested_write_paths
+        or script_profile.high_impact
+    ):
+        return script_profile
+    return profile
 
 
 def _level_hints_for_shell_profile(
@@ -532,6 +551,76 @@ def _host_execution_allowed() -> bool:
     runtime = get_runtime()
     effective = getattr(runtime, "effective", None) if runtime is not None else None
     return runtime is not None and not bool(getattr(effective, "sandbox_enabled", False))
+
+
+def _profile_referenced_powershell_file(
+    command: str,
+    *,
+    workdir: str | None = None,
+) -> OperationProfile | None:
+    script_path = _referenced_powershell_file(command, workdir=workdir)
+    if script_path is None:
+        return None
+    with contextlib.suppress(OSError, UnicodeError):
+        if script_path.suffix.lower() not in {".ps1", ".psm1"}:
+            return None
+        with script_path.open("r", encoding="utf-8", errors="replace") as handle:
+            script = handle.read(_POWERSHELL_SCRIPT_PROFILE_MAX_CHARS)
+        if not script.strip():
+            return None
+        normalized_script = re.sub(r"[\r\n]+", ";", script)
+        return classify_command(("powershell", "-NoProfile", "-Command", normalized_script))
+    return None
+
+
+def _referenced_powershell_file(
+    command: str,
+    *,
+    workdir: str | None = None,
+) -> Path | None:
+    tokens = _windows_shell_tokens(command)
+    for index, token in enumerate(tokens):
+        if _shell_command_basename(token) not in {"powershell", "pwsh"}:
+            continue
+        cursor = index + 1
+        while cursor < len(tokens):
+            option = tokens[cursor].lower()
+            if option in {"-command", "-c", "-encodedcommand", "-ec"}:
+                break
+            if option in {"-file", "-f"}:
+                if cursor + 1 >= len(tokens):
+                    return None
+                return _resolve_shell_script_path(tokens[cursor + 1], workdir=workdir)
+            cursor += 1
+    return None
+
+
+def _resolve_shell_script_path(raw_path: str, *, workdir: str | None = None) -> Path:
+    cleaned = raw_path.strip().strip("'\"")
+    expanded = os.path.expandvars(os.path.expanduser(cleaned))
+    path = Path(expanded)
+    if not path.is_absolute():
+        base = Path(workdir).expanduser() if workdir else Path.cwd()
+        path = base / path
+    return path.resolve(strict=False)
+
+
+def _referenced_powershell_file_digest(
+    command: str,
+    *,
+    workdir: str | None = None,
+) -> tuple[str, str] | None:
+    script_path = _referenced_powershell_file(command, workdir=workdir)
+    if script_path is None:
+        return None
+    try:
+        digest = hashlib.sha256()
+        with script_path.open("rb") as handle:
+            while chunk := handle.read(64 * 1024):
+                digest.update(chunk)
+    except OSError:
+        return None
+    return str(script_path), digest.hexdigest()
 
 
 def _shell_command_basename(value: str) -> str:
@@ -2691,9 +2780,44 @@ def _shell_write_targets(command: str) -> list[str]:
     return targets
 
 
+_STDIN_BASIC_WRITE_MARKERS = (
+    ">",
+    "tee",
+    "set-content",
+    "add-content",
+    "out-file",
+    "new-item",
+    "copy-item",
+    "move-item",
+    "remove-item",
+)
+_STDIN_MUTATOR_MARKERS = (
+    "sed",
+    "perl",
+    "rm",
+    "unlink",
+    "mv",
+    "cp",
+    "dd",
+    "truncate",
+    "touch",
+    "mkdir",
+    "rmdir",
+    "git",
+)
+
+
+def _stdin_may_contain_write_syntax(stdin: str, markers: tuple[str, ...]) -> bool:
+    lowered = stdin.casefold()
+    return any(marker in lowered for marker in markers)
+
+
 def _shell_write_targets_from_inputs(command: str, stdin: str | None = None) -> list[str]:
     targets = _shell_write_targets(command)
-    if stdin is not None:
+    if stdin is not None and _stdin_may_contain_write_syntax(
+        stdin,
+        _STDIN_BASIC_WRITE_MARKERS,
+    ):
         for stdin_chunk in _iter_stdin_guard_chunks(stdin):
             targets.extend(_shell_write_targets(stdin_chunk))
     return targets
@@ -3026,7 +3150,10 @@ def _mutating_command_write_targets_from_inputs(
     stdin: str | None = None,
 ) -> list[str]:
     targets = _mutating_command_write_targets(command)
-    if stdin is not None:
+    if stdin is not None and _stdin_may_contain_write_syntax(
+        stdin,
+        _STDIN_MUTATOR_MARKERS,
+    ):
         for stdin_chunk in _iter_stdin_guard_chunks(stdin):
             for target in _mutating_command_write_targets(stdin_chunk):
                 if target not in targets:
@@ -3820,6 +3947,7 @@ def _shell_elevation_action(
         "stdin_sha256": (
             hashlib.sha256(stdin.encode("utf-8")).hexdigest() if stdin is not None else None
         ),
+        "powershell_file": _referenced_powershell_file_digest(command, workdir=cwd),
     }
     content_digest = hashlib.sha256(
         json.dumps(
@@ -4346,6 +4474,7 @@ async def exec_command(
                 "reason": "invalid_sandbox_permissions",
             }
         )
+    original_profile = _profile_shell_command(command, workdir=workdir)
     host_execution = _host_execution_allowed()
     if (
         windows_process_sandbox
@@ -4358,7 +4487,7 @@ async def exec_command(
 
     result = check_safe_bin(command)
     cwd = _effective_workdir(workdir)
-    profile = _profile_shell_command(command)
+    profile = original_profile
 
     # Denylist: hard-block, never bypassable
     if not result.allowed:
@@ -4673,6 +4802,7 @@ async def background_process(
                 "reason": "invalid_sandbox_permissions",
             }
         )
+    original_profile = _profile_shell_command(command, workdir=workdir)
     host_execution = _host_execution_allowed()
     if (
         windows_process_sandbox
@@ -4685,7 +4815,7 @@ async def background_process(
 
     result = check_safe_bin(command)
     cwd = _effective_workdir(workdir)
-    profile = _profile_shell_command(command)
+    profile = original_profile
     if not result.allowed:
         raise ToolError(result.reason)
     sensitive_block = _sensitive_shell_block("background_process", command, workdir=cwd)

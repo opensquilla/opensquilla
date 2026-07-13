@@ -171,6 +171,33 @@ def test_sensitive_ssh_path_is_blocked(tmp_path: Path) -> None:
     assert decision.reason == "sensitive_path"
 
 
+def test_readonly_root_allows_ordinary_etc_reads_but_not_writes(tmp_path: Path) -> None:
+    mounts = ({"path": "/", "access": "ro"},)
+
+    read = decide_path_access(
+        "/etc/hosts",
+        workspace=tmp_path / "workspace",
+        mounts=mounts,
+    )
+    write = decide_path_access(
+        "/etc/hosts",
+        workspace=tmp_path / "workspace",
+        mounts=mounts,
+        write=True,
+    )
+    sensitive = decide_path_access(
+        "/etc/shadow",
+        workspace=tmp_path / "workspace",
+        mounts=mounts,
+    )
+
+    assert read.status == "allowed"
+    assert read.access == "ro"
+    assert write.status == "request"
+    assert write.access == "rw"
+    assert sensitive.status == "blocked"
+
+
 def test_workspace_child_is_allowed(tmp_path: Path) -> None:
     workspace = tmp_path / "workspace"
     target = workspace / "src" / "app.py"

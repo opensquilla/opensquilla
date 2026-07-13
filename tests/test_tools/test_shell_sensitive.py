@@ -41,14 +41,14 @@ async def test_exec_command_blocks_sensitive_stdin_payload() -> None:
 async def test_exec_command_blocks_sensitive_path_in_stdin() -> None:
     result = await shell.exec_command(
         "python -",
-        stdin="from pathlib import Path\nPath('/etc/passwd').read_text()\n",
+        stdin="from pathlib import Path\nPath('/etc/shadow').read_text()\n",
     )
 
     payload = json.loads(result)
     assert payload["status"] == "blocked"
     assert payload["reason"] == "sensitive_path"
-    assert payload["sensitive_path"] == "/etc"
-    assert "/etc/passwd" not in payload["command"]
+    assert payload["sensitive_path"] == "/etc/shadow"
+    assert "/etc/shadow" not in payload["command"]
 
 
 @pytest.mark.asyncio

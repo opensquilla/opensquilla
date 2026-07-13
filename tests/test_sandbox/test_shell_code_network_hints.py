@@ -304,12 +304,23 @@ async def test_shell_exact_elevation_grant_runs_host_once(
             justification="Create the one fixed file requested by the user.",
             approval_id=approval_id,
         )
+        replay = json.loads(
+            await shell.exec_command(
+                command,
+                workdir=str(managed_runtime),
+                sandbox_permissions="require_escalated",
+                justification="Create the one fixed file requested by the user.",
+                approval_id=approval_id,
+            )
+        )
     finally:
         current_tool_context.reset(token)
 
     assert result == "exit_code=0\ncreated\n"
     assert host_calls == [(command, str(managed_runtime.resolve()))]
     assert get_approval_queue().get(approval_id).consumed is True
+    assert replay["status"] == "approval_invalid"
+    assert replay["message"] == "approval already consumed"
 
 
 @pytest.mark.asyncio

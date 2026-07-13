@@ -278,6 +278,58 @@ def test_version_check_honors_config_privacy_network_observability(
     assert payload["error"] is None
 
 
+def test_version_check_on_rc_uses_rc_channel_and_keeps_json_contract(
+    tmp_path: Path,
+    monkeypatch,
+):
+    import opensquilla
+    from opensquilla.observability import network_policy, update_check
+
+    target = tmp_path / "config.toml"
+    target.write_text(
+        f"state_dir = {json.dumps(str(tmp_path / 'state'))}\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("OPENSQUILLA_GATEWAY_CONFIG_PATH", str(target))
+    for name in (
+        network_policy.NETWORK_OBSERVABILITY_DISABLED_ENV,
+        update_check.UPDATE_CHECK_DISABLED_ENV,
+        update_check.TELEMETRY_DISABLED_ENV,
+        "GITHUB_ACTIONS",
+        "PYTEST_CURRENT_TEST",
+        update_check.TELEMETRY_TESTING_ENV,
+    ):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setattr(opensquilla, "__version__", "0.5.0rc4")
+    monkeypatch.setattr(update_check, "_CACHED_INFO", {})
+    calls: list[tuple[str, str]] = []
+
+    def fake_fetch(endpoint: str, current_version: str, *, timeout: float):
+        calls.append((endpoint, current_version))
+        assert timeout == update_check.DEFAULT_TIMEOUT_SECONDS
+        return (
+            "0.5.0rc5",
+            "https://github.com/opensquilla/opensquilla/releases/tag/v0.5.0rc5",
+            None,
+        )
+
+    monkeypatch.setattr(update_check, "_fetch_latest_release", fake_fetch)
+
+    result = runner.invoke(app, ["version", "--check", "--json"])
+
+    assert result.exit_code == 0, result.stdout
+    payload = json.loads(result.stdout)
+    assert payload == {
+        "current": "0.5.0rc4",
+        "latest": "0.5.0rc5",
+        "updateAvailable": True,
+        "releaseUrl": "https://github.com/opensquilla/opensquilla/releases/tag/v0.5.0rc5",
+        "disabled": False,
+        "error": None,
+    }
+    assert calls == [(update_check.DEFAULT_RC_UPDATE_CHECK_ENDPOINT, "0.5.0rc4")]
+
+
 def test_gateway_json_errors_go_to_stderr(monkeypatch):
     _install_fake_gateway(monkeypatch, FailingConnectGatewayClient)
 

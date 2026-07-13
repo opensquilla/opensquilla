@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import json
+import os
+import stat
+import threading
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -13,7 +16,9 @@ from opensquilla.observability import network_policy, update_check
 @pytest.fixture(autouse=True)
 def _reset_module_cache(monkeypatch: pytest.MonkeyPatch) -> None:
     # The module memoizes the last result in a global; clear it between tests.
-    monkeypatch.setattr(update_check, "_CACHED_INFO", None)
+    monkeypatch.setattr(update_check, "_CACHED_INFO", {})
+    monkeypatch.setattr(update_check, "_REFRESH_LOCKS", {})
+    monkeypatch.setattr(update_check, "_BACKGROUND_THREADS", {})
 
 
 def _enable(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -81,6 +86,7 @@ def test_refresh_detects_and_persists_update(tmp_path: Path, monkeypatch) -> Non
     state = _load(state_path)
     assert state["latest_version"] == "0.5.0"
     assert isinstance(state["checked_ts"], int)
+    assert fetch.calls == [update_check.DEFAULT_UPDATE_CHECK_ENDPOINT]
 
 
 def test_refresh_reports_no_update(tmp_path: Path, monkeypatch) -> None:
@@ -92,6 +98,27 @@ def test_refresh_reports_no_update(tmp_path: Path, monkeypatch) -> None:
 
     assert info.latest_version == "0.4.1"
     assert info.update_available is False
+
+
+def test_candidate_without_exact_url_uses_generic_releases_page(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    _enable(monkeypatch)
+    monkeypatch.setattr(
+        update_check,
+        "_fetch_latest_release",
+        _fake_fetch("0.5.0", None),
+    )
+
+    info = update_check.refresh_update_check(
+        state_path=tmp_path / "update_check.json",
+        version="0.4.1",
+    )
+
+    assert info.update_available is True
+    assert info.release_url == update_check.DEFAULT_RELEASES_INDEX_PAGE
+    assert not info.release_url.endswith("/latest")
 
 
 def test_refresh_uses_cache_within_ttl(tmp_path: Path, monkeypatch) -> None:
@@ -204,6 +231,47 @@ def test_privacy_config_disable_skips_refresh_cached_and_background(
     assert fetch.calls == []
 
 
+@pytest.mark.parametrize(
+    "env_name",
+    [
+        network_policy.NETWORK_OBSERVABILITY_DISABLED_ENV,
+        update_check.TELEMETRY_DISABLED_ENV,
+        update_check.UPDATE_CHECK_DISABLED_ENV,
+    ],
+)
+def test_all_privacy_env_controls_prevent_network_and_thread_creation(
+    env_name: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _enable(monkeypatch)
+    monkeypatch.setenv(env_name, "true")
+    fetch = _fake_fetch("0.5.0rc5")
+    monkeypatch.setattr(update_check, "_fetch_latest_release", fetch)
+
+    class UnexpectedThread:
+        def __init__(self, *_args, **_kwargs):
+            raise AssertionError("privacy-disabled checks must not create a thread")
+
+    monkeypatch.setattr(update_check.threading, "Thread", UnexpectedThread)
+    state_path = tmp_path / "update_check_rc.json"
+
+    info = update_check.refresh_update_check(
+        state_path=state_path,
+        version="0.5.0rc4",
+        force=True,
+    )
+    background = update_check.start_background_update_check(
+        state_path=state_path,
+        version="0.5.0rc4",
+    )
+
+    assert info.disabled is True
+    assert background is None
+    assert fetch.calls == []
+    assert not state_path.exists()
+
+
 def test_get_cached_honors_disabled_env_after_prior_check(tmp_path: Path, monkeypatch) -> None:
     _enable(monkeypatch)
     monkeypatch.setattr(update_check, "_fetch_latest_release", _fake_fetch("0.5.0"))
@@ -259,3 +327,434 @@ def test_fetch_failure_keeps_prior_cache(tmp_path: Path, monkeypatch) -> None:
     assert info.latest_version == "0.5.0"
     assert info.update_available is True
     assert info.error == "offline"
+
+
+@pytest.mark.parametrize(
+    "value",
+    ["0.5.0rc4", "0.5.0-rc4", "0.5.0-rc.4", "v0.5.0-RC4"],
+)
+def test_rc_channel_accepts_supported_tag_spellings(value: str) -> None:
+    channel = update_check._channel_for(value)
+
+    assert channel.kind == "rc"
+    assert channel.scope == "rc:0.5.0"
+    assert channel.state_file == "update_check_rc.json"
+
+
+@pytest.mark.parametrize(
+    ("latest", "current", "expected"),
+    [
+        ("0.5.0rc5", "0.5.0rc4", True),
+        ("0.5.0-rc.5", "0.5.0-rc4", True),
+        ("0.5.0rc10", "0.5.0rc9", True),
+        ("0.5.0rc9", "0.5.0rc10", False),
+        ("0.5.0", "0.5.0rc10", True),
+        ("0.6.0rc1", "0.5.0rc4", False),
+    ],
+)
+def test_rc_channel_comparison_is_numeric_and_same_base(
+    latest: str, current: str, expected: bool
+) -> None:
+    channel = update_check._channel_for(current)
+
+    assert update_check._is_newer_for_channel(latest, current, channel) is expected
+
+
+def test_rc_release_selection_is_order_independent_and_final_wins() -> None:
+    channel = update_check._channel_for("0.5.0rc4")
+    releases = [
+        {
+            "tag_name": "v0.6.0rc9",
+            "html_url": "https://example.test/cross-base",
+            "prerelease": True,
+        },
+        {
+            "tag_name": "v0.5.0rc99",
+            "html_url": "https://example.test/draft",
+            "draft": True,
+        },
+        {
+            "tag_name": "vv0.5.0rc999",
+            "html_url": "https://example.test/double-v",
+            "prerelease": True,
+        },
+        {
+            "tag_name": "v0.5.0rc10",
+            "html_url": "https://example.test/rc10",
+            "prerelease": True,
+        },
+        {
+            "tag_name": "v0.5.0rc9",
+            "html_url": "https://example.test/rc9",
+            "prerelease": True,
+        },
+        {
+            "tag_name": "v0.5.0",
+            "html_url": "https://example.test/final",
+        },
+    ]
+
+    assert update_check._select_rc_release(releases, channel) == (
+        "0.5.0",
+        "https://example.test/final",
+    )
+
+    without_final = releases[:-1]
+    assert update_check._select_rc_release(without_final, channel) == (
+        "0.5.0rc10",
+        "https://example.test/rc10",
+    )
+
+
+def test_rc_release_selection_rejects_double_v_and_malformed_tags() -> None:
+    channel = update_check._channel_for("0.5.0rc4")
+
+    assert (
+        update_check._select_rc_release(
+            [
+                {"tag_name": "vv0.5.0rc5"},
+                {"tag_name": "release-0.5.0rc6"},
+                {"tag_name": "0.5.0rc"},
+                {"tag_name": "0.5.0.rc7"},
+                {"tag_name": "0.5.0rc-8"},
+                {"tag_name": "0.5.0-rc-9"},
+            ],
+            channel,
+        )
+        is None
+    )
+
+
+def test_stable_release_selection_requires_a_strict_three_part_final_tag() -> None:
+    releases = [
+        {"tag_name": "vv9.9.9", "html_url": "https://example.test/double-v"},
+        {"tag_name": "9.9", "html_url": "https://example.test/two-part"},
+        {"tag_name": "v9.8", "html_url": "https://example.test/two-part-v"},
+        {"tag_name": "v0.5.0rc9", "html_url": "https://example.test/rc"},
+        {"tag_name": "v0.5.0", "html_url": "https://example.test/stable"},
+    ]
+
+    assert update_check._select_stable_release(releases) == (
+        "0.5.0",
+        "https://example.test/stable",
+    )
+    assert update_check._select_stable_release(releases[:-1]) is None
+
+
+def test_rc_fetch_accepts_github_release_list(monkeypatch) -> None:
+    import httpx
+
+    payload = [
+        {
+            "tag_name": "v0.5.0rc5",
+            "html_url": "https://example.test/rc5",
+            "prerelease": True,
+        }
+    ]
+
+    class FakeClient:
+        def __init__(self, **_kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def get(self, endpoint: str, *, headers: dict[str, str]):
+            assert endpoint == update_check.DEFAULT_RC_UPDATE_CHECK_ENDPOINT
+            assert headers["User-Agent"] == "opensquilla/0.5.0rc4"
+            return SimpleNamespace(status_code=200, json=lambda: payload)
+
+    monkeypatch.setattr(httpx, "Client", FakeClient)
+
+    assert update_check._fetch_latest_release(
+        update_check.DEFAULT_RC_UPDATE_CHECK_ENDPOINT,
+        "0.5.0rc4",
+        timeout=1.0,
+    ) == ("0.5.0rc5", "https://example.test/rc5", None)
+
+
+def test_legacy_stable_cache_without_scope_remains_compatible(
+    tmp_path: Path, monkeypatch
+) -> None:
+    _enable(monkeypatch)
+    state_path = tmp_path / "update_check.json"
+    state_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "latest_version": "0.5.0",
+                "release_url": "https://example.test/stable",
+                "checked_at": "2026-07-13T00:00:00Z",
+                "checked_ts": update_check._now_ts(),
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    def fail_fetch(*_args, **_kwargs):
+        raise AssertionError("fresh legacy stable state must not access the network")
+
+    monkeypatch.setattr(update_check, "_fetch_latest_release", fail_fetch)
+
+    info = update_check.refresh_update_check(
+        state_path=state_path, version="0.4.1"
+    )
+
+    assert info.from_cache is True
+    assert info.update_available is True
+    assert info.latest_version == "0.5.0"
+
+
+def test_rc_refresh_uses_separate_scoped_state_file(tmp_path: Path, monkeypatch) -> None:
+    _enable(monkeypatch)
+    stable_path = tmp_path / "update_check.json"
+    stable_state = {
+        "schema_version": 1,
+        "latest_version": "0.4.1",
+        "release_url": "https://example.test/stable",
+        "checked_ts": update_check._now_ts(),
+    }
+    stable_path.write_text(json.dumps(stable_state), encoding="utf-8")
+    original_stable_bytes = stable_path.read_bytes()
+    fetch = _fake_fetch("0.5.0rc5", "https://example.test/rc5")
+    monkeypatch.setattr(update_check, "_fetch_latest_release", fetch)
+    config = SimpleNamespace(state_dir=str(tmp_path), privacy=None)
+
+    info = update_check.refresh_update_check(config=config, version="0.5.0rc4")
+
+    assert info.update_available is True
+    assert info.latest_version == "0.5.0rc5"
+    assert stable_path.read_bytes() == original_stable_bytes
+    rc_state = _load(tmp_path / "update_check_rc.json")
+    assert rc_state["cache_scope"] == "rc:0.5.0"
+    assert rc_state["latest_version"] == "0.5.0rc5"
+    assert fetch.calls == [update_check.DEFAULT_RC_UPDATE_CHECK_ENDPOINT]
+
+
+def test_rc_cached_candidate_recomputes_for_upgrade_and_downgrade(
+    tmp_path: Path, monkeypatch
+) -> None:
+    _enable(monkeypatch)
+    state_path = tmp_path / "update_check_rc.json"
+    monkeypatch.setattr(
+        update_check,
+        "_fetch_latest_release",
+        _fake_fetch("0.5.0rc5", "https://example.test/rc5"),
+    )
+    update_check.refresh_update_check(state_path=state_path, version="0.5.0rc4")
+
+    current = update_check.get_cached_update_info(
+        state_path=state_path, version="0.5.0rc5"
+    )
+    downgraded = update_check.get_cached_update_info(
+        state_path=state_path, version="0.5.0rc4"
+    )
+
+    assert current is not None and current.update_available is False
+    assert downgraded is not None and downgraded.update_available is True
+
+
+def test_rc_scope_mismatch_never_falls_back_on_failure(tmp_path: Path, monkeypatch) -> None:
+    _enable(monkeypatch)
+    state_path = tmp_path / "update_check_rc.json"
+    state_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 2,
+                "cache_scope": "rc:0.5.0",
+                "latest_version": "0.5.0rc5",
+                "release_url": "https://example.test/rc5",
+                "checked_at": "2026-07-13T00:00:00Z",
+                "checked_ts": update_check._now_ts(),
+                "last_attempt_ts": update_check._now_ts(),
+            }
+        ),
+        encoding="utf-8",
+    )
+    fetch = _fake_fetch(None, None, "offline")
+    monkeypatch.setattr(update_check, "_fetch_latest_release", fetch)
+
+    info = update_check.refresh_update_check(
+        state_path=state_path, version="0.6.0rc1"
+    )
+
+    assert info.latest_version is None
+    assert info.update_available is False
+    assert info.error == "offline"
+    assert len(fetch.calls) == 1
+    state = _load(state_path)
+    assert state["cache_scope"] == "rc:0.6.0"
+    assert "latest_version" not in state
+
+
+def test_successful_empty_rc_result_is_cached_and_clears_candidate(
+    tmp_path: Path, monkeypatch
+) -> None:
+    _enable(monkeypatch)
+    state_path = tmp_path / "update_check_rc.json"
+    monkeypatch.setattr(
+        update_check, "_fetch_latest_release", _fake_fetch("0.5.0rc5")
+    )
+    update_check.refresh_update_check(state_path=state_path, version="0.5.0rc4")
+
+    empty_fetch = _fake_fetch(None, None, None)
+    monkeypatch.setattr(update_check, "_fetch_latest_release", empty_fetch)
+    emptied = update_check.refresh_update_check(
+        state_path=state_path,
+        version="0.5.0rc4",
+        force=True,
+    )
+    monkeypatch.setattr(update_check, "_CACHED_INFO", {})
+    cached = update_check.refresh_update_check(
+        state_path=state_path, version="0.5.0rc4"
+    )
+
+    assert emptied.latest_version is None
+    assert cached.latest_version is None
+    assert cached.from_cache is True
+    assert len(empty_fetch.calls) == 1
+    state = _load(state_path)
+    assert state["latest_version"] is None
+    assert state["last_error"] is None
+    assert isinstance(state["checked_ts"], int)
+
+
+def test_failed_attempt_is_throttled_across_memory_reset(tmp_path: Path, monkeypatch) -> None:
+    _enable(monkeypatch)
+    state_path = tmp_path / "update_check_rc.json"
+    fetch = _fake_fetch(None, None, "offline")
+    monkeypatch.setattr(update_check, "_fetch_latest_release", fetch)
+
+    first = update_check.refresh_update_check(
+        state_path=state_path, version="0.5.0rc4"
+    )
+    monkeypatch.setattr(update_check, "_CACHED_INFO", {})
+    second = update_check.refresh_update_check(
+        state_path=state_path, version="0.5.0rc4"
+    )
+
+    assert first.error == "offline"
+    assert second.error == "offline"
+    assert second.from_cache is True
+    assert len(fetch.calls) == 1
+    state = _load(state_path)
+    assert isinstance(state["last_attempt_ts"], int)
+    assert "checked_ts" not in state
+
+
+def test_background_update_check_is_single_flight(tmp_path: Path, monkeypatch) -> None:
+    _enable(monkeypatch)
+    entered = threading.Event()
+    release = threading.Event()
+    calls: list[str] = []
+
+    def fetch(endpoint: str, current_version: str, *, timeout: float):
+        calls.append(endpoint)
+        entered.set()
+        assert release.wait(timeout=5)
+        return "0.5.0rc5", "https://example.test/rc5", None
+
+    monkeypatch.setattr(update_check, "_fetch_latest_release", fetch)
+    state_path = tmp_path / "update_check_rc.json"
+
+    first = update_check.start_background_update_check(
+        state_path=state_path, version="0.5.0rc4"
+    )
+    assert first is not None
+    assert entered.wait(timeout=5)
+    second = update_check.start_background_update_check(
+        state_path=state_path, version="0.5.0rc4"
+    )
+
+    assert second is first
+    release.set()
+    first.join(timeout=5)
+    assert not first.is_alive()
+    assert len(calls) == 1
+
+
+def test_background_update_check_does_not_spawn_for_fresh_state(
+    tmp_path: Path, monkeypatch
+) -> None:
+    _enable(monkeypatch)
+    state_path = tmp_path / "update_check_rc.json"
+    fetch = _fake_fetch("0.5.0rc5")
+    monkeypatch.setattr(update_check, "_fetch_latest_release", fetch)
+    update_check.refresh_update_check(state_path=state_path, version="0.5.0rc4")
+
+    class UnexpectedThread:
+        def __init__(self, *_args, **_kwargs):
+            raise AssertionError("fresh state must not create a background thread")
+
+    monkeypatch.setattr(update_check.threading, "Thread", UnexpectedThread)
+
+    assert (
+        update_check.start_background_update_check(
+            state_path=state_path, version="0.5.0rc4"
+        )
+        is None
+    )
+    assert len(fetch.calls) == 1
+
+
+@pytest.mark.parametrize(
+    "corrupt_bytes",
+    [
+        b"{not-json",
+        b"\xff\xfe\xfa",
+        b'{"cache_scope":"rc:0.5.0","last_attempt_ts":NaN}',
+        b'{"cache_scope":"rc:0.5.0","last_attempt_ts":Infinity}',
+    ],
+)
+def test_corrupt_state_is_softly_replaced_by_a_valid_scoped_result(
+    corrupt_bytes: bytes,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _enable(monkeypatch)
+    state_path = tmp_path / "update_check_rc.json"
+    state_path.write_bytes(corrupt_bytes)
+    monkeypatch.setattr(
+        update_check,
+        "_fetch_latest_release",
+        _fake_fetch("0.5.0rc5", "https://example.test/rc5"),
+    )
+
+    info = update_check.refresh_update_check(
+        state_path=state_path,
+        version="0.5.0rc4",
+    )
+
+    assert info.update_available is True
+    state = _load(state_path)
+    assert state["schema_version"] == 2
+    assert state["cache_scope"] == "rc:0.5.0"
+    assert state["latest_version"] == "0.5.0rc5"
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX mode bits are not portable to Windows")
+def test_state_replace_is_private_and_leaves_no_temporary_file(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _enable(monkeypatch)
+    state_path = tmp_path / "update_check_rc.json"
+    state_path.write_text("{}", encoding="utf-8")
+    state_path.chmod(0o644)
+    monkeypatch.setattr(
+        update_check,
+        "_fetch_latest_release",
+        _fake_fetch("0.5.0rc5", "https://example.test/rc5"),
+    )
+
+    update_check.refresh_update_check(
+        state_path=state_path,
+        version="0.5.0rc4",
+        force=True,
+    )
+
+    assert stat.S_IMODE(state_path.stat().st_mode) == 0o600
+    assert list(tmp_path.glob(".update_check_rc.json.*.tmp")) == []

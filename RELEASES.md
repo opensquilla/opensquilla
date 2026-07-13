@@ -66,11 +66,23 @@ switch. `OPENSQUILLA_PRIVACY_DISABLE_NETWORK_OBSERVABILITY=true` or:
 disable_network_observability = true
 ```
 
-disables automatic install telemetry, passive update checks, and desktop
-startup auto-update checks. The legacy compatibility environment variables
+disables automatic install telemetry, passive update checks, and automatic
+desktop update checks at startup and, while the app remains open, at most once
+per day. The legacy compatibility environment variables
 `OPENSQUILLA_TELEMETRY_DISABLED=true` and
 `OPENSQUILLA_UPDATE_CHECK_DISABLED=true` remain honored. Manual user-initiated
-release, download, or update checks may still contact GitHub after user intent.
+update-availability checks do not bypass these controls. Opening a release page
+or downloading an asset is a separate user-initiated action and may still
+contact GitHub.
+
+Update discovery follows the installed release channel. Stable builds only
+offer newer stable releases. Preview builds offer the highest published release
+on the same version base — a later RC or the final stable release — and never
+jump to a preview on a different base. Supported macOS desktop builds check
+after startup and at most once per day while the app remains open; surfaces
+without native update support refresh the passive Control UI notice through the
+local gateway. These long-running checks are included starting with RC4, so an
+already-installed Windows RC3 still requires a manual, in-place RC4 upgrade.
 
 Preview README install commands must use tag-pinned URLs such as:
 

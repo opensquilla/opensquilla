@@ -207,6 +207,7 @@ jobs:
           node scripts/test-onboarding-data-flow.mjs
           node scripts/test-secret-storage-policy.mjs
           node scripts/test-update-resolver.mjs
+          node scripts/test-update-check-scheduler.mjs
           node scripts/test-desktop-locale.mjs
           node scripts/test-desktop-profile-substrate.mjs
           node scripts/test-desktop-profile-context.mjs

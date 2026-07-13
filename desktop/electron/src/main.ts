@@ -47,6 +47,7 @@ import {
   selectMacPrereleaseCandidate,
   type ReleaseSummary,
 } from './update-feed-resolver.js'
+import { isUpdateCheckAllowed, UpdateCheckScheduler } from './update-check-scheduler.js'
 
 interface GatewayState {
   url: string
@@ -7154,7 +7155,6 @@ function stopGateway(): void {
 const { autoUpdater } = electronUpdater
 
 let autoUpdaterReady = false
-let manualUpdateCheck = false
 let updateDownloadInProgress = false
 let updateApplying = false
 let downloadedUpdateVersion: string | null = null
@@ -7194,6 +7194,9 @@ interface DesktopUpdatePersistedState {
 }
 
 const UPDATE_SNOOZE_MS = 24 * 60 * 60 * 1000
+const UPDATE_CHECK_INITIAL_DELAY_MS = 12_000
+const MOCK_UPDATE_CHECK_INITIAL_DELAY_MS = 1_000
+const UPDATE_CHECK_REPEAT_DELAY_MS = 24 * 60 * 60 * 1000
 
 let desktopUpdateStatus: DesktopUpdateStatus = 'idle'
 let desktopUpdateLatestVersion: string | null = null
@@ -7453,8 +7456,7 @@ function showUpdateDialog(
 }
 
 function showUpdateError(err: unknown): void {
-  const shouldNotify = manualUpdateCheck || updateDownloadInProgress
-  manualUpdateCheck = false
+  const shouldNotify = desktopUpdateCheckScheduler.consumeManualRequest() || updateDownloadInProgress
   updateDownloadInProgress = false
   if (!shouldNotify) {
     // electron-updater delivers each failure twice (it emits 'error' AND rejects
@@ -7504,7 +7506,6 @@ async function runMockUpdateFlow(version: string): Promise<void> {
   } finally {
     mockUpdatePromptActive = false
     updateDownloadInProgress = false
-    manualUpdateCheck = false
   }
 }
 
@@ -7584,7 +7585,6 @@ function initAutoUpdater(): void {
 
   autoUpdater.on('update-available', (info) => {
     const version = String(info?.version ?? '')
-    manualUpdateCheck = false
     updateDownloadInProgress = false
     setDesktopUpdateState({
       status: 'available',
@@ -7596,7 +7596,6 @@ function initAutoUpdater(): void {
   })
 
   autoUpdater.on('update-not-available', () => {
-    manualUpdateCheck = false
     updateDownloadInProgress = false
     setDesktopUpdateState({
       status: 'not-available',
@@ -7617,7 +7616,6 @@ function initAutoUpdater(): void {
   })
 
   autoUpdater.on('update-downloaded', (info) => {
-    manualUpdateCheck = false
     updateDownloadInProgress = false
     const version = String(info?.version ?? '')
     downloadedUpdateVersion = version
@@ -7684,12 +7682,21 @@ async function configureDesktopUpdateFeed(): Promise<'default' | 'configured' | 
   return 'configured'
 }
 
-async function checkForUpdates(manual: boolean): Promise<void> {
-  if (updateDownloadInProgress || updateApplying) return
+function desktopUpdateCheckAllowed(): boolean {
+  return isUpdateCheckAllowed({
+    downloading: updateDownloadInProgress,
+    applying: updateApplying,
+    downloaded: downloadedUpdateVersion !== null || desktopUpdateStatus === 'downloaded',
+  })
+}
+
+async function runDesktopUpdateCheck(): Promise<void> {
+  // Keep this defensive guard even though the scheduler checks the same state:
+  // download/apply events can change it between admission and execution.
+  if (!desktopUpdateCheckAllowed()) return
 
   const mockVersion = mockUpdateVersion()
   if (mockVersion !== null) {
-    manualUpdateCheck = manual
     setDesktopUpdateState({
       status: 'checking',
       latestVersion: desktopUpdateLatestVersion || mockVersion,
@@ -7702,7 +7709,7 @@ async function checkForUpdates(manual: boolean): Promise<void> {
   }
 
   if (!autoUpdateSupported()) {
-    if (manual) {
+    if (desktopUpdateCheckScheduler.manualRequestPending) {
       setDesktopUpdateState({
         status: 'error',
         progress: null,
@@ -7725,7 +7732,6 @@ async function checkForUpdates(manual: boolean): Promise<void> {
   }
 
   initAutoUpdater()
-  manualUpdateCheck = manual
   setDesktopUpdateState({
     status: 'checking',
     progress: null,
@@ -7738,7 +7744,6 @@ async function checkForUpdates(manual: boolean): Promise<void> {
       // A packaged macOS prerelease with no newer same-base release. Report
       // up-to-date directly — the default GitHub provider would find nothing
       // (the rc tags are PEP440, not npm semver) and raise a spurious error.
-      manualUpdateCheck = false
       setDesktopUpdateState({
         status: 'not-available',
         latestVersion: app.getVersion(),
@@ -7753,6 +7758,16 @@ async function checkForUpdates(manual: boolean): Promise<void> {
     console.error('[updater] checkForUpdates failed', err)
     showUpdateError(err)
   }
+}
+
+const desktopUpdateCheckScheduler = new UpdateCheckScheduler({
+  runCheck: runDesktopUpdateCheck,
+  canCheck: desktopUpdateCheckAllowed,
+  repeatDelayMs: UPDATE_CHECK_REPEAT_DELAY_MS,
+})
+
+function checkForUpdates(manual: boolean): Promise<void> {
+  return desktopUpdateCheckScheduler.request(manual)
 }
 
 function gatewayProcessForUpdateInstall(): ChildProcessWithoutNullStreams | null {
@@ -10332,6 +10347,7 @@ let quitDeferredForDesktopWriters = false
 let quitWriterAdmission: symbol | null = null
 
 app.on('before-quit', (event) => {
+  desktopUpdateCheckScheduler.stop()
   if (desktopWriters.activeCount > 0 || quitDeferredForDesktopWriters) {
     event.preventDefault()
     if (!quitDeferredForDesktopWriters) {
@@ -10479,14 +10495,10 @@ if (!gotSingleInstanceLock) {
     void openOrResumeDesktopApp()
     initAutoUpdater()
     if (mockUpdateVersion() !== null) {
-      setTimeout(() => {
-        void checkForUpdates(false)
-      }, 1_000).unref()
+      desktopUpdateCheckScheduler.start(MOCK_UPDATE_CHECK_INITIAL_DELAY_MS)
     } else if (autoUpdateSupported()) {
       // Delay the silent startup check so it doesn't compete with gateway boot.
-      setTimeout(() => {
-        void checkForUpdates(false)
-      }, 12_000).unref()
+      desktopUpdateCheckScheduler.start(UPDATE_CHECK_INITIAL_DELAY_MS)
     }
   })
 }

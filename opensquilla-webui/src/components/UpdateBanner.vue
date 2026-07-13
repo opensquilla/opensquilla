@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import Icon from './Icon.vue'
 import { getPlatform } from '@/platform'
@@ -22,13 +22,24 @@ const platform = getPlatform()
 const isDesktop = platform.id === 'desktop'
 
 const DISMISS_KEY = 'opensquilla-update-dismissed'
-const RELEASES_FALLBACK = 'https://github.com/opensquilla/opensquilla/releases/latest'
+const RELEASES_FALLBACK = 'https://github.com/opensquilla/opensquilla/releases'
+const UPDATE_STATUS_URL = '/api/system/update'
+const POLL_INTERVAL_MS = 15 * 60 * 1000
+const REQUEST_TIMEOUT_MS = 5 * 1000
 
 interface UpdateInfo {
   current?: string
   latest?: string
   available?: boolean
   url?: string
+}
+
+interface UpdateStatusPayload {
+  current: string
+  latest: string | null
+  available: boolean
+  url: string | null
+  checkedAt: string | null
 }
 
 function readUpdate(): UpdateInfo | null {
@@ -45,19 +56,142 @@ function readUpdate(): UpdateInfo | null {
   }
 }
 
-const info = readUpdate()
+function normalizeUpdateStatus(payload: unknown): UpdateInfo | null | undefined {
+  if (!payload || typeof payload !== 'object') return undefined
+  const raw = payload as Partial<UpdateStatusPayload>
+  if (
+    typeof raw.current !== 'string'
+    || typeof raw.available !== 'boolean'
+    || (raw.latest !== null && typeof raw.latest !== 'string')
+    || (raw.url !== null && typeof raw.url !== 'string')
+    || (raw.checkedAt !== null && typeof raw.checkedAt !== 'string')
+  ) {
+    return undefined
+  }
+  if (!raw.available) return null
+  if (typeof raw.latest !== 'string' || !raw.latest.trim()) return undefined
+  return {
+    current: raw.current,
+    latest: raw.latest,
+    available: true,
+    url: typeof raw.url === 'string' && raw.url ? raw.url : undefined,
+  }
+}
+
+const info = ref<UpdateInfo | null>(readUpdate())
 
 // True where the host applies updates natively. Assume native on desktop until
 // the shell confirms otherwise, so macOS never flashes the web banner; the
 // browser starts false and shows immediately. Windows (pre-signing) resolves to
 // false → banner appears; (post-signing) resolves to true → banner stays hidden.
 const nativeUpdate = ref(isDesktop)
-onMounted(async () => {
+let mounted = false
+let pollingEnabled = false
+let pollTimer: number | null = null
+let activeController: AbortController | null = null
+let activeRequestTimeout: number | null = null
+let inFlight: Promise<void> | null = null
+
+function authHeaders(): Record<string, string> {
+  const headers: Record<string, string> = {}
   try {
-    nativeUpdate.value = await platform.nativeAutoUpdateEnabled()
+    const token = sessionStorage.getItem('opensquilla.wsToken') || ''
+    if (token) headers.Authorization = `Bearer ${token}`
   } catch {
-    nativeUpdate.value = isDesktop
+    // sessionStorage unavailable (private mode) — let gateway auth decide.
   }
+  return headers
+}
+
+async function refreshUpdateInfo(): Promise<void> {
+  if (inFlight) return inFlight
+
+  const controller = new AbortController()
+  activeController = controller
+  const timeout = window.setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS)
+  activeRequestTimeout = timeout
+
+  const request = (async () => {
+    try {
+      const response = await fetch(UPDATE_STATUS_URL, {
+        cache: 'no-store',
+        headers: authHeaders(),
+        signal: controller.signal,
+      })
+      if (!response.ok) return
+
+      const next = normalizeUpdateStatus(await response.json())
+      // undefined means an invalid response: preserve the last known status.
+      if (mounted && next !== undefined) info.value = next
+    } catch {
+      // A transient gateway/network/parse failure must not erase a known update.
+    } finally {
+      window.clearTimeout(timeout)
+      if (activeRequestTimeout === timeout) activeRequestTimeout = null
+      if (activeController === controller) activeController = null
+    }
+  })()
+
+  inFlight = request
+  try {
+    await request
+  } finally {
+    if (inFlight === request) inFlight = null
+  }
+}
+
+function stopPolling(): void {
+  if (pollTimer !== null) {
+    window.clearInterval(pollTimer)
+    pollTimer = null
+  }
+}
+
+function startVisiblePolling(): void {
+  stopPolling()
+  if (!pollingEnabled || document.visibilityState !== 'visible') return
+  void refreshUpdateInfo()
+  pollTimer = window.setInterval(() => {
+    void refreshUpdateInfo()
+  }, POLL_INTERVAL_MS)
+}
+
+function onVisibilityChange(): void {
+  if (document.visibilityState === 'visible') startVisiblePolling()
+  else stopPolling()
+}
+
+onMounted(async () => {
+  mounted = true
+  let enabled: boolean
+  try {
+    enabled = await platform.nativeAutoUpdateEnabled()
+  } catch {
+    // Capability failures are conservative: keep the bootstrap behavior, but
+    // do not start a second update channel that might duplicate native UI.
+    return
+  }
+  if (!mounted) return
+
+  nativeUpdate.value = enabled
+  if (enabled) return
+
+  pollingEnabled = true
+  document.addEventListener('visibilitychange', onVisibilityChange)
+  startVisiblePolling()
+})
+
+onBeforeUnmount(() => {
+  mounted = false
+  pollingEnabled = false
+  document.removeEventListener('visibilitychange', onVisibilityChange)
+  stopPolling()
+  if (activeRequestTimeout !== null) {
+    window.clearTimeout(activeRequestTimeout)
+    activeRequestTimeout = null
+  }
+  activeController?.abort()
+  activeController = null
 })
 
 function readDismissed(): string | null {
@@ -71,12 +205,12 @@ function readDismissed(): string | null {
 // Dismissal is keyed to the version, so a future release re-arms the notice.
 const dismissedVersion = ref<string | null>(readDismissed())
 const visible = computed(
-  () => !!info && !nativeUpdate.value && dismissedVersion.value !== info.latest,
+  () => !!info.value && !nativeUpdate.value && dismissedVersion.value !== info.value.latest,
 )
-const releaseUrl = computed(() => info?.url || RELEASES_FALLBACK)
+const releaseUrl = computed(() => info.value?.url || RELEASES_FALLBACK)
 
 function dismiss() {
-  const latest = info?.latest ?? null
+  const latest = info.value?.latest ?? null
   dismissedVersion.value = latest
   try {
     if (latest) localStorage.setItem(DISMISS_KEY, latest)

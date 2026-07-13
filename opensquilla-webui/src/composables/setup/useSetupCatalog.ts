@@ -285,6 +285,7 @@ const config = ref<ConfigData>({})
 const channelStatus = ref<{ channels: ChannelStatusRow[] }>({ channels: [] })
 const channelTest = ref<ChannelTestState>({ phase: 'idle' })
 const channelEdit = ref<ChannelEditState>({ phase: 'idle' })
+const channelFieldErrors = ref<Record<string, string>>({})
 const channelEditActive = computed(() => channelEdit.value.phase !== 'idle')
 const loaded = ref(false)
 const { section, setSection } = useSettingsSection('provider')
@@ -1134,11 +1135,9 @@ async function saveDirtySections() {
   if (providerDirty.value) await saveProvider()
   if (behaviorDirty.value) await saveBehavior()
   if (modelStrategyDirty.value) await saveModelStrategy()
-  // Never save an in-progress channel EDIT as a side effect of the global
-  // Save: an edit payload always passes probe (keep-current merge), so an
-  // auto-save would silently persist half-edits. The panel's own Save is the
-  // only path for edits. A half-composed new draft still fails probe loudly.
-  if (channelsDirty.value && !channelEditActive.value) await saveChannel()
+  // The channels draft is never saved as a side effect of the global Save —
+  // the panel's own Save button is the only submit path. The draft still
+  // feeds hasUnsavedChanges, so the close guard keeps protecting it.
   if (capabilitiesForm.searchDirty.value) await saveSearch()
   if (capabilitiesForm.memoryDirty.value || promotedForm.captureDirty.value) await saveMemory()
   if (capabilitiesForm.imageDirty.value) await saveImage()
@@ -1248,6 +1247,7 @@ function envRecoveryCommand(section: string): string {
 function onChannelTypeChange() {
   channelsForm.resetForSpec(channelSpec.value)
   channelTest.value = { phase: 'idle' }
+  channelFieldErrors.value = {}
 }
 
 function selectChannelType(value: string) {
@@ -1258,6 +1258,28 @@ function updateChannelField(name: string, value: unknown) {
   channelsForm.updateField(name, value)
   // A test verdict describes the draft it ran against; any edit voids it.
   if (channelTest.value.phase !== 'idle') channelTest.value = { phase: 'idle' }
+  if (channelFieldErrors.value[name]) {
+    const next = { ...channelFieldErrors.value }
+    delete next[name]
+    channelFieldErrors.value = next
+  }
+}
+
+// "invalid channel entry: token: Field required; name: ..." → field-anchored
+// errors for paths that match a rendered field; anything else degrades to the
+// existing toast (the durable fix is a structured error envelope, backend track).
+function parseChannelFieldErrors(message: string): Record<string, string> {
+  const match = /invalid channel entry: (.+)$/s.exec(message)
+  if (!match) return {}
+  const out: Record<string, string> = {}
+  for (const part of match[1].split('; ')) {
+    const idx = part.indexOf(': ')
+    if (idx <= 0) continue
+    const field = part.slice(0, idx).trim()
+    const detail = part.slice(idx + 2).trim()
+    if (field && detail && channelSpecFields.value.some(f => f.name === field)) out[field] = detail
+  }
+  return out
 }
 
 // Open the channel editor for an existing entry: fetch the redacted config,
@@ -1266,6 +1288,7 @@ function updateChannelField(name: string, value: unknown) {
 async function openChannelEditor(name: string) {
   channelEdit.value = { phase: 'loading', name }
   channelTest.value = { phase: 'idle' }
+  channelFieldErrors.value = {}
   try {
     const res = await rpc.call<{ entry?: Record<string, unknown>; secretFields?: string[] }>(
       'channels.get', { name },
@@ -1758,6 +1781,16 @@ async function applyProviderPreset() {
 }
 
 async function saveChannel() {
+  // Field-anchored validation before any RPC round-trip.
+  const missing = channelsForm.missingRequiredFields()
+  if (missing.length > 0) {
+    channelFieldErrors.value = Object.fromEntries(
+      missing.map(name => [name, t('setup.channels.fieldRequired')]),
+    )
+    pushToast(t('setup.channels.fixRequired'), { tone: 'danger' })
+    return
+  }
+  channelFieldErrors.value = {}
   const entry = channelsForm.payload()
   const wasEditing = channelEditActive.value
   try {
@@ -1777,6 +1810,8 @@ async function saveChannel() {
     // leaves memory.
     if (wasEditing && name) await openChannelEditor(name)
   } catch (err) {
+    const fieldErrors = parseChannelFieldErrors(err instanceof Error ? err.message : String(err))
+    if (Object.keys(fieldErrors).length > 0) channelFieldErrors.value = fieldErrors
     pushToast(saveFailedMessage(err), { tone: 'danger' })
   }
 }
@@ -2015,6 +2050,7 @@ async function copyConfigPath() {
     testChannel,
     channelEdit,
     channelEditActive,
+    channelFieldErrors,
     channelsFormDirty: channelsForm.isDirty,
     openChannelEditor,
     exitChannelEditor,

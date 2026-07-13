@@ -21,7 +21,7 @@ test.describe.serial('channel edit deep link', () => {
     // Compose a telegram channel with a dummy token.
     await openSettingsChannels(page)
     const dlg = dialog(page)
-    await dlg.locator('select[name="setup_channel_type"]').selectOption('telegram')
+    await dlg.locator('button[data-channel-type="telegram"]').click()
     await dlg.locator('input[name="setup_channel_name"]').fill(NAME)
     await dlg.locator('input[name="setup_channel_token"]').fill('0000:e2e-dummy-token')
     await dlg.getByRole('button', { name: 'Save Channel' }).click()

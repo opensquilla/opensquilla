@@ -60,7 +60,8 @@
     "logs": "Journaux",
     "settings": "Paramètres",
     "groupBuild": "Construire",
-    "groupMonitor": "Surveiller"
+    "groupMonitor": "Surveiller",
+    "channelSetup": "Config. des canaux"
   },
   "chrome": {
     "settings": "Paramètres",
@@ -124,7 +125,10 @@
       "unsavedIn": "Modifications non enregistrées dans {sections}",
       "moreOptionsIn": "Plus d'options se trouvent dans",
       "copyConfigPath": "Copier le chemin de configuration",
-      "applyLiveNote": "La plupart des changements s'appliquent à chaud ; certains nécessitent un redémarrage de la passerelle"
+      "applyLiveNote": "La plupart des changements s'appliquent à chaud ; certains nécessitent un redémarrage de la passerelle",
+      "discardTitle": "Abandonner les modifications non enregistrées ?",
+      "discardBody": "Vous avez des modifications non enregistrées. Fermer maintenant les perdra.",
+      "discardPrimary": "Abandonner"
     },
     "rail": {
       "connection": "Connexion",
@@ -135,7 +139,7 @@
       "privacy": "Confidentialité",
       "router": "Routeur",
       "ensemble": "Ensemble",
-      "channels": "Canaux",
+      "channels": "Config. des canaux",
       "capabilities": "Capacités",
       "appearance": "Apparence",
       "keyboard": "Clavier",
@@ -500,7 +504,17 @@
       "secretReplace": "Remplacer",
       "secretReplacePlaceholder": "Collez la nouvelle valeur",
       "secretKeepStored": "Conserver la valeur enregistrée",
-      "edit": "Modifier"
+      "edit": "Modifier",
+      "openRuntime": "Ouvrir l'état d'exécution →",
+      "details": "Détails →",
+      "galleryPick": "Choisissez une plateforme à connecter",
+      "changeType": "Changer de type",
+      "openDocs": "Ouvrir la console du fournisseur ↗",
+      "needsPublicUrl": "URL publique requise",
+      "advancedGroup": "Avancé : accès et comportement",
+      "fieldRequired": "Ce champ est obligatoire",
+      "fixRequired": "Renseignez d'abord les champs obligatoires en surbrillance",
+      "pairingExplainer": "Avec l'appairage, la première personne qui écrit à votre bot reçoit un code à 8 caractères — approuvez-le dans Canaux → Appairages. Elle n'est pas notifiée de l'approbation et doit écrire à nouveau au bot."
     },
     "search": {
       "title": "Recherche web",
@@ -863,6 +877,10 @@
         "insufficient_class_diversity": "Pas encore entraîné — les corrections couvrent trop peu de niveaux de routage"
       },
       "detachedNote": "Les poids de base du routage ont été mis à niveau. L’apprentissage bâti sur les anciens poids a été archivé ; vos corrections sont conservées et seront réapprises automatiquement sur les nouveaux poids. Aucune action requise."
+    },
+    "field": {
+      "keepCurrentPlaceholder": "laisser vide pour conserver la valeur actuelle",
+      "secretComposePlaceholder": "Collez le jeton ou le secret"
     }
   },
   "sessions": {
@@ -1208,7 +1226,7 @@
       "unknown": "Inconnu",
       "adapterConfig": "Configuration de l'adaptateur",
       "emptyTitle": "Aucun canal configuré.",
-      "emptyMsg": "Le provisionnement des canaux se trouve dans les Paramètres et la CLI afin que les identifiants, les extras de dépendances, les URL de webhook et les exigences de redémarrage restent explicites.",
+      "emptyMsg": "Aucun canal pour l'instant. Connectez Slack, Telegram, Discord et plus encore pour que votre agent discute là où travaille votre équipe.",
       "openSettingsBtn": "Ouvrir les paramètres",
       "loadFailed": "Échec du chargement des canaux",
       "noInactive": "aucun canal inactif",
@@ -1332,7 +1350,17 @@
       "probeFailed": "Échec du test de connexion",
       "editCredentials": "Modifier les identifiants",
       "toastProbeFailedResult": "{name} a échoué au test de connexion : {detail}",
-      "restartNotLoaded": "Ce canal n'est pas encore chargé — redémarrez la passerelle pour le démarrer"
+      "restartNotLoaded": "Ce canal n'est pas encore chargé — redémarrez la passerelle pour le démarrer",
+      "contextStrip": "État d'exécution des canaux configurés — ajoutez ou modifiez la configuration dans {link}",
+      "contextStripLink": "Config. des canaux",
+      "removeChannel": "Supprimer",
+      "queryNotFound": "Canal {name} introuvable — il a peut-être été supprimé.",
+      "queryNotFoundDismiss": "Fermer"
+    },
+    "overview": {
+      "channelsChip": "Canaux",
+      "channelsChipConnected": "{connected} connecté(s)",
+      "channelsChipFailed": "{failed} en échec"
     }
   },
   "cronSkills": {

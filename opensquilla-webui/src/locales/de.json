@@ -60,7 +60,8 @@
     "logs": "Protokolle",
     "settings": "Einstellungen",
     "groupBuild": "Erstellen",
-    "groupMonitor": "Überwachen"
+    "groupMonitor": "Überwachen",
+    "channelSetup": "Kanal-Einrichtung"
   },
   "chrome": {
     "settings": "Einstellungen",
@@ -124,7 +125,10 @@
       "unsavedIn": "Nicht gespeicherte Änderungen in {sections}",
       "moreOptionsIn": "Weitere Optionen finden sich in",
       "copyConfigPath": "Konfigurationspfad kopieren",
-      "applyLiveNote": "Die meisten Änderungen werden sofort übernommen; einige erfordern einen Neustart des Gateways"
+      "applyLiveNote": "Die meisten Änderungen werden sofort übernommen; einige erfordern einen Neustart des Gateways",
+      "discardTitle": "Ungespeicherte Änderungen verwerfen?",
+      "discardBody": "Es gibt ungespeicherte Änderungen. Beim Schließen gehen sie verloren.",
+      "discardPrimary": "Verwerfen"
     },
     "rail": {
       "connection": "Verbindung",
@@ -135,7 +139,7 @@
       "privacy": "Datenschutz",
       "router": "Router",
       "ensemble": "Ensemble",
-      "channels": "Kanäle",
+      "channels": "Kanal-Einrichtung",
       "capabilities": "Fähigkeiten",
       "appearance": "Darstellung",
       "keyboard": "Tastatur",
@@ -500,7 +504,17 @@
       "secretReplace": "Ersetzen",
       "secretReplacePlaceholder": "Neuen Wert einfügen",
       "secretKeepStored": "Gespeicherten Wert behalten",
-      "edit": "Bearbeiten"
+      "edit": "Bearbeiten",
+      "openRuntime": "Laufzeitstatus öffnen →",
+      "details": "Details →",
+      "galleryPick": "Plattform zum Verbinden wählen",
+      "changeType": "Typ ändern",
+      "openDocs": "Anbieter-Konsole öffnen ↗",
+      "needsPublicUrl": "Öffentliche URL nötig",
+      "advancedGroup": "Erweitert: Zugriff & Verhalten",
+      "fieldRequired": "Dieses Feld ist erforderlich",
+      "fixRequired": "Bitte zuerst die markierten Pflichtfelder ausfüllen",
+      "pairingExplainer": "Beim Pairing erhält die erste Person, die dem Bot schreibt, einen 8-stelligen Code — genehmigen Sie ihn unter Kanäle → Pairings. Die Person wird nicht benachrichtigt und muss dem Bot erneut schreiben."
     },
     "search": {
       "title": "Websuche",
@@ -863,6 +877,10 @@
         "insufficient_class_diversity": "Noch nicht trainiert — Korrekturen decken zu wenige Routing-Stufen ab"
       },
       "detachedNote": "Die Basisgewichte des Routings wurden aktualisiert. Auf den alten Gewichten aufgebautes Lernen wurde archiviert; Ihre Korrekturen bleiben erhalten und werden auf den neuen Gewichten automatisch neu gelernt. Keine Aktion nötig."
+    },
+    "field": {
+      "keepCurrentPlaceholder": "leer lassen, um den aktuellen Wert zu behalten",
+      "secretComposePlaceholder": "Token oder Secret einfügen"
     }
   },
   "sessions": {
@@ -1208,7 +1226,7 @@
       "unknown": "Unbekannt",
       "adapterConfig": "Adapter-Konfiguration",
       "emptyTitle": "Keine konfigurierten Kanäle.",
-      "emptyMsg": "Die Kanalbereitstellung erfolgt über die Einstellungen und die CLI, damit Zugangsdaten, zusätzliche Abhängigkeiten, Webhook-URLs und Neustartanforderungen explizit bleiben.",
+      "emptyMsg": "Noch keine Kanäle. Verbinden Sie Slack, Telegram, Discord und mehr, damit Ihr Agent dort chattet, wo Ihr Team arbeitet.",
       "openSettingsBtn": "Einstellungen öffnen",
       "loadFailed": "Kanäle konnten nicht geladen werden",
       "noInactive": "keine inaktiven Kanäle",
@@ -1332,7 +1350,17 @@
       "probeFailed": "Verbindungstest fehlgeschlagen",
       "editCredentials": "Zugangsdaten bearbeiten",
       "toastProbeFailedResult": "{name} hat den Verbindungstest nicht bestanden: {detail}",
-      "restartNotLoaded": "Dieser Kanal ist noch nicht geladen — Gateway neu starten, um ihn zu starten"
+      "restartNotLoaded": "Dieser Kanal ist noch nicht geladen — Gateway neu starten, um ihn zu starten",
+      "contextStrip": "Laufzeitstatus der konfigurierten Kanäle — hinzufügen oder bearbeiten unter {link}",
+      "contextStripLink": "Kanal-Einrichtung",
+      "removeChannel": "Entfernen",
+      "queryNotFound": "Kanal {name} wurde nicht gefunden — er wurde möglicherweise entfernt.",
+      "queryNotFoundDismiss": "Schließen"
+    },
+    "overview": {
+      "channelsChip": "Kanäle",
+      "channelsChipConnected": "{connected} verbunden",
+      "channelsChipFailed": "{failed} fehlgeschlagen"
     }
   },
   "cronSkills": {

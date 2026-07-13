@@ -72,6 +72,13 @@
         <div class="control-stat__hint">{{ t('sessions.overview.viewAll') }}</div>
       </button>
 
+      <button v-if="channelStats.total > 0" class="control-stat control-stat--clickable" type="button" @click="router.push('/channels')">
+        <div class="control-stat__icon"><Icon name="channels" :size="18" /></div>
+        <div class="control-stat__label">{{ t('console.overview.channelsChip') }}</div>
+        <div class="control-stat__value">{{ channelStats.total }}</div>
+        <div class="control-stat__hint">{{ channelChipHint }}</div>
+      </button>
+
       <div class="control-stat control-stat--static">
         <div class="control-stat__icon"><Icon name="cron" :size="18" /></div>
         <div class="control-stat__label">{{ t('sessions.overview.uptime') }}</div>
@@ -632,7 +639,32 @@ onActivated(() => {
   startTimers()
   // A returning view refreshes immediately so cached numbers don't linger.
   loadData()
+  void loadChannelStats()
 })
+
+// Channels rollup for the KPI chip — best-effort; a failure just hides it.
+const channelStats = ref({ total: 0, connected: 0, failed: 0 })
+const channelChipHint = computed(() => {
+  const parts = [t('console.overview.channelsChipConnected', { connected: channelStats.value.connected })]
+  if (channelStats.value.failed > 0) {
+    parts.push(t('console.overview.channelsChipFailed', { failed: channelStats.value.failed }))
+  }
+  return parts.join(' · ')
+})
+
+async function loadChannelStats() {
+  try {
+    const res = await rpc.call<{ channels?: Array<{ status?: string; configured?: boolean }> }>('channels.status')
+    const rows = (res.channels || []).filter(ch => ch && ch.configured !== false)
+    channelStats.value = {
+      total: rows.length,
+      connected: rows.filter(ch => ch.status === 'connected').length,
+      failed: rows.filter(ch => ch.status === 'dead' || ch.status === 'exhausted').length,
+    }
+  } catch {
+    channelStats.value = { total: 0, connected: 0, failed: 0 }
+  }
+}
 
 onDeactivated(() => {
   stopTimers()

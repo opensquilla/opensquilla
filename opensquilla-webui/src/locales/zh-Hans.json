@@ -60,7 +60,8 @@
     "logs": "日志",
     "settings": "设置",
     "groupBuild": "构建",
-    "groupMonitor": "监控"
+    "groupMonitor": "监控",
+    "channelSetup": "频道设置"
   },
   "chrome": {
     "settings": "设置",
@@ -124,7 +125,10 @@
       "unsavedIn": "{sections}中有未保存的更改",
       "moreOptionsIn": "更多选项位于",
       "copyConfigPath": "复制配置路径",
-      "applyLiveNote": "大多数更改即时生效；部分需要重启网关"
+      "applyLiveNote": "大多数更改即时生效；部分需要重启网关",
+      "discardTitle": "放弃未保存的修改？",
+      "discardBody": "有尚未保存的编辑，现在关闭将丢失它们。",
+      "discardPrimary": "放弃"
     },
     "rail": {
       "connection": "连接",
@@ -135,7 +139,7 @@
       "privacy": "隐私",
       "router": "路由",
       "ensemble": "模型聚合",
-      "channels": "频道",
+      "channels": "频道设置",
       "capabilities": "能力",
       "appearance": "外观",
       "keyboard": "键盘",
@@ -500,7 +504,17 @@
       "secretReplace": "替换",
       "secretReplacePlaceholder": "粘贴新值",
       "secretKeepStored": "保留已存值",
-      "edit": "编辑"
+      "edit": "编辑",
+      "openRuntime": "打开运行状态 →",
+      "details": "详情 →",
+      "galleryPick": "选择要接入的平台",
+      "changeType": "更换类型",
+      "openDocs": "打开平台控制台 ↗",
+      "needsPublicUrl": "需要公网 URL",
+      "advancedGroup": "高级：访问与行为",
+      "fieldRequired": "此字段必填",
+      "fixRequired": "请先填写高亮的必填字段",
+      "pairingExplainer": "配对模式下，第一次私聊 bot 的人会收到一个 8 位配对码——请在 频道 › 配对 中批准。批准后对方不会收到通知，需要再给 bot 发一条消息。"
     },
     "search": {
       "title": "网页搜索",
@@ -863,6 +877,10 @@
         "insufficient_class_diversity": "未训练——纠错样本覆盖的路由档位过少"
       },
       "detachedNote": "模型路由基础权重已升级。基于旧权重的学习成果已归档;纠错样本不受影响,将基于新权重自动重新学习。无需任何操作。"
+    },
+    "field": {
+      "keepCurrentPlaceholder": "留空即保留当前值",
+      "secretComposePlaceholder": "粘贴 token 或密钥"
     }
   },
   "sessions": {
@@ -1208,7 +1226,7 @@
       "unknown": "未知",
       "adapterConfig": "适配器配置",
       "emptyTitle": "尚无已配置的频道。",
-      "emptyMsg": "频道的配置在设置和 CLI 中进行，以便凭据、依赖扩展、Webhook URL 和重启要求都保持明确。",
+      "emptyMsg": "还没有频道。接入 Slack、Telegram、Discord 等，让你的 agent 在团队聊天的地方工作。",
       "openSettingsBtn": "打开设置",
       "loadFailed": "加载频道失败",
       "noInactive": "没有未激活的频道",
@@ -1332,7 +1350,17 @@
       "probeFailed": "连接测试失败",
       "editCredentials": "编辑凭证",
       "toastProbeFailedResult": "{name} 连接测试失败：{detail}",
-      "restartNotLoaded": "该频道尚未加载——请重启网关以启动它"
+      "restartNotLoaded": "该频道尚未加载——请重启网关以启动它",
+      "contextStrip": "已配置频道的运行状态——添加或编辑配置请到 {link}",
+      "contextStripLink": "频道设置",
+      "removeChannel": "移除",
+      "queryNotFound": "未找到频道 {name}——它可能已被移除。",
+      "queryNotFoundDismiss": "关闭"
+    },
+    "overview": {
+      "channelsChip": "频道",
+      "channelsChipConnected": "{connected} 已连接",
+      "channelsChipFailed": "{failed} 失败"
     }
   },
   "cronSkills": {

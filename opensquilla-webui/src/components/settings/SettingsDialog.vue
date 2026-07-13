@@ -203,12 +203,15 @@
               :test="channelTest"
               :edit="channelEdit"
               :duplicate="composeDuplicate"
+              :errors="channelFieldErrors"
               @update-channel-type="selectChannelType"
               @channel-type-change="onChannelTypeChange"
               @update-channel-field="updateChannelField"
               @save="saveChannel"
               @test="testChannel"
               @edit-channel="onEditChannel"
+              @open-runtime="onOpenChannelRuntime"
+              @open-details="onOpenChannelDetails"
               @add-new="onAddNewChannel"
               @duplicate-as-new="onDuplicateChannelAsNew"
               @retry-edit="onRetryChannelEdit"
@@ -364,6 +367,7 @@ const {
   testChannel,
   channelEdit,
   channelEditActive,
+  channelFieldErrors,
   channelsFormDirty,
   openChannelEditor,
   exitChannelEditor,
@@ -524,6 +528,14 @@ function onDuplicateChannelAsNew() {
   void router.replace({ path: '/settings/channels', hash: '#channel-new' })
 }
 
+function onOpenChannelRuntime() {
+  void router.push('/channels')
+}
+
+function onOpenChannelDetails(name: string) {
+  void router.push({ path: '/channels', query: { channel: name, tab: 'overview' } })
+}
+
 function onRetryChannelEdit() {
   const name = channelEdit.value.name
   if (name) void openChannelEditor(name)
@@ -600,9 +612,9 @@ function closeOverlay() {
 // close button, backdrop click) and the history-back leave guard below.
 function confirmDiscard(): Promise<boolean> {
   return confirm({
-    title: 'Discard unsaved changes?',
-    body: 'You have unsaved edits. Closing now will lose them.',
-    primaryLabel: 'Discard',
+    title: t('settings.dialog.discardTitle'),
+    body: t('settings.dialog.discardBody'),
+    primaryLabel: t('settings.dialog.discardPrimary'),
   })
 }
 

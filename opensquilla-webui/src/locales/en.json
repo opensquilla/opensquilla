@@ -60,7 +60,8 @@
     "logs": "Logs",
     "settings": "Settings",
     "groupBuild": "Build",
-    "groupMonitor": "Monitor"
+    "groupMonitor": "Monitor",
+    "channelSetup": "Channel setup"
   },
   "chrome": {
     "settings": "Settings",
@@ -124,7 +125,10 @@
       "unsavedIn": "Unsaved changes in {sections}",
       "moreOptionsIn": "More options live in",
       "copyConfigPath": "Copy config path",
-      "applyLiveNote": "Most changes apply live; some need a gateway restart"
+      "applyLiveNote": "Most changes apply live; some need a gateway restart",
+      "discardTitle": "Discard unsaved changes?",
+      "discardBody": "You have unsaved edits. Closing now will lose them.",
+      "discardPrimary": "Discard"
     },
     "rail": {
       "connection": "Connection",
@@ -135,7 +139,7 @@
       "privacy": "Privacy",
       "router": "Router",
       "ensemble": "Ensemble",
-      "channels": "Channels",
+      "channels": "Channel setup",
       "capabilities": "Capabilities",
       "appearance": "Appearance",
       "keyboard": "Keyboard",
@@ -500,7 +504,17 @@
       "secretReplace": "Replace",
       "secretReplacePlaceholder": "Paste the new value",
       "secretKeepStored": "Keep stored value",
-      "edit": "Edit"
+      "edit": "Edit",
+      "openRuntime": "Open runtime status →",
+      "details": "Details →",
+      "galleryPick": "Choose a platform to connect",
+      "changeType": "Change type",
+      "openDocs": "Open provider console ↗",
+      "needsPublicUrl": "Needs a public URL",
+      "advancedGroup": "Advanced: access & behavior",
+      "fieldRequired": "This field is required",
+      "fixRequired": "Fill the highlighted required fields first",
+      "pairingExplainer": "With pairing, the first person to message your bot receives an 8-character code — approve it under Channels → Pairings. They are not notified on approval and must message the bot again."
     },
     "search": {
       "title": "Web search",
@@ -863,6 +877,10 @@
         "insufficient_class_diversity": "Not trained yet — corrections cover too few routing tiers"
       },
       "detachedNote": "The base routing weights were upgraded. Learning built on the old weights was archived; your corrections are unaffected and will retrain automatically on the new weights. No action needed."
+    },
+    "field": {
+      "keepCurrentPlaceholder": "leave blank to keep current",
+      "secretComposePlaceholder": "Paste the token or secret"
     }
   },
   "sessions": {
@@ -1208,7 +1226,7 @@
       "unknown": "Unknown",
       "adapterConfig": "Adapter config",
       "emptyTitle": "No configured channels.",
-      "emptyMsg": "Channel provisioning lives in Settings and the CLI so credentials, dependency extras, webhook URLs, and restart requirements stay explicit.",
+      "emptyMsg": "No channels yet. Connect Slack, Telegram, Discord and more so your agent can chat where your team does.",
       "openSettingsBtn": "Open settings",
       "loadFailed": "Failed to load channels",
       "noInactive": "no inactive channels",
@@ -1332,7 +1350,17 @@
       "probeFailed": "Connection test failed",
       "editCredentials": "Edit credentials",
       "toastProbeFailedResult": "{name} failed the connection test: {detail}",
-      "restartNotLoaded": "This channel isn't loaded yet — restart the gateway to start it"
+      "restartNotLoaded": "This channel isn't loaded yet — restart the gateway to start it",
+      "contextStrip": "Runtime status for configured channels — add or edit configuration in {link}",
+      "contextStripLink": "Channel setup",
+      "removeChannel": "Remove",
+      "queryNotFound": "Channel {name} was not found — it may have been removed.",
+      "queryNotFoundDismiss": "Dismiss"
+    },
+    "overview": {
+      "channelsChip": "Channels",
+      "channelsChipConnected": "{connected} connected",
+      "channelsChipFailed": "{failed} failed"
     }
   },
   "cronSkills": {

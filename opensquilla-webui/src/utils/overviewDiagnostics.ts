@@ -62,7 +62,15 @@ export function settingsLinkForFinding(
     }
     return { path: '/settings/provider' }
   }
-  if (surface === 'channels') return { path: '/settings/channels' }
+  if (surface === 'channels') {
+    // Runtime findings carry the channel name in evidence once the backend
+    // populates it; a nameless finding degrades to the bare section.
+    const name = finding?.evidence?.channelName ?? finding?.evidence?.channel
+    if (typeof name === 'string' && name.trim() && name !== 'new') {
+      return { path: '/settings/channels', hash: `#channel-${encodeURIComponent(name.trim())}` }
+    }
+    return { path: '/settings/channels' }
+  }
   if (surface === 'router' || surface === 'squilla_router') {
     return { path: '/settings/modelStrategy' }
   }

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import csv
 import json
 import os
 import secrets
@@ -14,7 +15,7 @@ from typing import Any
 
 from opensquilla.sandbox.backend.windows_default_network import WindowsNetworkSetup
 
-SETUP_VERSION = 1
+SETUP_VERSION = 2
 OFFLINE_USERNAME = "OpenSquillaSandbox"
 SETUP_HELPER_REPORT = "setup_helper_report.json"
 
@@ -203,7 +204,7 @@ def run_elevated_setup_helper(path: Path) -> None:
         setup_helper_report_path(path).unlink()
     except FileNotFoundError:
         pass
-    payload = _encode_setup_helper_payload(path)
+    payload = _encode_setup_helper_payload(path, user_sid=_current_windows_user_sid())
     parameters = subprocess.list2cmdline(
         [
             "-m",
@@ -239,6 +240,11 @@ def elevated_setup_helper_main(argv: list[str] | None = None) -> int:
     write_setup_helper_report(marker_path, state="running")
     try:
         network = establish_windows_network_setup(marker_path)
+        lock_persistent_sandbox_dirs(
+            marker_path,
+            offline_sid=network.offline_user_sid,
+            real_user_sid=payload.get("userSid"),
+        )
         write_setup_marker(marker_path, network=network)
         write_setup_helper_report(marker_path, state="ready", detail="setup_complete")
         return 0
@@ -264,10 +270,13 @@ def _setup_helper_import_root() -> Path:
     return Path.cwd()
 
 
-def _encode_setup_helper_payload(path: Path) -> str:
+def _encode_setup_helper_payload(path: Path, *, user_sid: str | None = None) -> str:
     import base64
 
-    raw = json.dumps({"markerPath": str(path)}, separators=(",", ":")).encode("utf-8")
+    data = {"markerPath": str(path)}
+    if user_sid:
+        data["userSid"] = user_sid
+    raw = json.dumps(data, separators=(",", ":")).encode("utf-8")
     return base64.urlsafe_b64encode(raw).decode("ascii")
 
 
@@ -284,7 +293,13 @@ def _decode_setup_helper_payload(value: str) -> dict[str, str]:
     marker_path = payload.get("markerPath")
     if not isinstance(marker_path, str) or not marker_path:
         raise OSError("windows_setup_helper_payload_invalid")
-    return {"markerPath": marker_path}
+    result = {"markerPath": marker_path}
+    user_sid = payload.get("userSid")
+    if user_sid is not None:
+        if not isinstance(user_sid, str) or not user_sid.startswith("S-1-"):
+            raise OSError("windows_setup_helper_payload_invalid")
+        result["userSid"] = user_sid
+    return result
 
 
 def _shell_execute_runas_and_wait(
@@ -413,6 +428,58 @@ def ensure_offline_sandbox_user(state_root: Path) -> dict[str, str]:
         "username": OFFLINE_USERNAME,
         "protectedPassword": protect_password(password),
     }
+
+
+def lock_persistent_sandbox_dirs(
+    marker_path: Path,
+    *,
+    offline_sid: str,
+    real_user_sid: str | None = None,
+) -> None:
+    opensquilla_root = marker_path.parent.parent
+    roots = (
+        marker_path.parent,
+        opensquilla_root / "sandbox-secrets",
+        opensquilla_root / "sandbox-bin",
+    )
+    real_sid = real_user_sid or _current_windows_user_sid()
+    for root in roots:
+        root.mkdir(parents=True, exist_ok=True)
+        commands = (
+            ["icacls", str(root), "/reset", "/t", "/c"],
+            ["icacls", str(root), "/inheritance:r", "/t", "/c"],
+            [
+                "icacls",
+                str(root),
+                "/grant:r",
+                f"*{real_sid}:(OI)(CI)F",
+                "*S-1-5-18:(OI)(CI)F",
+                "*S-1-5-32-544:(OI)(CI)F",
+                "/t",
+                "/c",
+            ],
+            ["icacls", str(root), "/remove:g", f"*{offline_sid}", "/t", "/c"],
+        )
+        for command in commands:
+            completed = subprocess.run(command, capture_output=True, text=True, check=False)
+            if completed.returncode != 0:
+                detail = completed.stderr.strip() or completed.stdout.strip()
+                raise OSError(detail or f"persistent_sandbox_acl_failed: {root}")
+
+
+def _current_windows_user_sid() -> str:
+    completed = subprocess.run(
+        ["whoami", "/user", "/fo", "csv", "/nh"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if completed.returncode != 0:
+        raise OSError("persistent_sandbox_user_sid_unavailable")
+    rows = list(csv.reader(completed.stdout.splitlines()))
+    if not rows or len(rows[-1]) < 2 or not rows[-1][1].startswith("S-1-"):
+        raise OSError("persistent_sandbox_user_sid_unavailable")
+    return rows[-1][1]
 
 
 def _generate_offline_user_password() -> str:

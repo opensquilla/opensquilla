@@ -248,6 +248,7 @@ def test_run_elevated_setup_helper_launches_python_module_with_runas(
     marker = tmp_path / "setup_marker.json"
 
     monkeypatch.setattr(mod.sys, "executable", r"C:\Python312\python.exe")
+    monkeypatch.setattr(mod, "_current_windows_user_sid", lambda: "S-1-real")
 
     def fake_runas(*, executable, parameters, directory):
         launched["executable"] = executable
@@ -279,6 +280,7 @@ def test_run_elevated_setup_helper_reports_nonzero_exit(monkeypatch, tmp_path) -
     from opensquilla.sandbox.backend import windows_default_setup as mod
 
     monkeypatch.setattr(mod, "_shell_execute_runas_and_wait", lambda **kwargs: 9)
+    monkeypatch.setattr(mod, "_current_windows_user_sid", lambda: "S-1-real")
 
     with pytest.raises(OSError, match="windows_setup_helper_failed: exit=9"):
         mod.run_elevated_setup_helper(tmp_path / "setup_marker.json")
@@ -321,6 +323,7 @@ def test_run_elevated_setup_helper_includes_failure_report_detail(
         return 1
 
     monkeypatch.setattr(mod, "_shell_execute_runas_and_wait", fake_runas)
+    monkeypatch.setattr(mod, "_current_windows_user_sid", lambda: "S-1-real")
 
     with pytest.raises(OSError, match="Set-LocalUser access denied"):
         mod.run_elevated_setup_helper(marker)

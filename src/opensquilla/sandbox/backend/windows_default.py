@@ -238,11 +238,7 @@ def _payload_for_request(
     private_mounts_are_required: bool = False,
 ) -> dict[str, Any]:
     base_env = _process_base_env(request)
-    env = (
-        build_cache_env(request.cwd, base_env=base_env)
-        if rehome_user_state
-        else base_env
-    )
+    env = build_cache_env(request.cwd, base_env=base_env) if rehome_user_state else base_env
     policy = request.policy.summary()
     policy["windowsAclPlan"] = _acl_plan_payload(
         request,
@@ -252,9 +248,7 @@ def _payload_for_request(
     if network_boundary is not None:
         policy["windowsNetworkBoundary"] = network_boundary
     stdin_b64 = (
-        base64.b64encode(request.stdin).decode("ascii")
-        if request.stdin is not None
-        else None
+        base64.b64encode(request.stdin).decode("ascii") if request.stdin is not None else None
     )
     return {
         "backend": "windows_default",
@@ -344,6 +338,16 @@ def _deny_acl_state_path() -> Path:
     return default_setup_marker_path().with_name("deny_acl_state.json")
 
 
+def _protected_opensquilla_state_roots() -> tuple[Path, ...]:
+    sandbox_root = default_setup_marker_path().parent
+    opensquilla_root = sandbox_root.parent
+    return (
+        sandbox_root,
+        opensquilla_root / "sandbox-secrets",
+        opensquilla_root / "sandbox-bin",
+    )
+
+
 def _validate_filesystem_operation_targets(
     operation: SandboxOperation,
     request: FilesystemOperationRequest,
@@ -414,9 +418,7 @@ def _filesystem_operation_targets(
             raise SandboxBackendError(f"invalid apply_patch targets: {exc}") from exc
     else:
         raise SandboxBackendError(f"unsupported filesystem operation: {operation.kind!r}")
-    declared = tuple(
-        dict.fromkeys(_canonical_filesystem_target(path) for path in request.paths)
-    )
+    declared = tuple(dict.fromkeys(_canonical_filesystem_target(path) for path in request.paths))
     if set(declared) != set(targets):
         raise SandboxBackendError(
             "declared filesystem paths do not match derived operation targets: "
@@ -459,8 +461,7 @@ def _validate_filesystem_private_transport_roots(
     for root in runtime_roots:
         if profile.is_explicitly_denied(root):
             raise SandboxBackendError(
-                "windows_default filesystem profile denies private runtime root: "
-                f"{root}"
+                f"windows_default filesystem profile denies private runtime root: {root}"
             )
 
 
@@ -474,6 +475,33 @@ def _validate_profile_is_windows_compilable(profile: FileSystemPermissionProfile
         raise SandboxBackendError(
             "windows_default cannot reliably enforce denied filesystem read globs"
         )
+    entries = _effective_raw_profile_entries(profile)
+    writable = tuple(
+        Path(entry.path).resolve(strict=False)
+        for entry in entries
+        if entry.access is FileSystemAccess.WRITE
+    )
+    for entry in entries:
+        if entry.access is not FileSystemAccess.WRITE:
+            continue
+        candidate = Path(entry.path).resolve(strict=False)
+        for restriction in entries:
+            if restriction.access is FileSystemAccess.WRITE:
+                continue
+            restricted = Path(restriction.path).resolve(strict=False)
+            if (
+                _windows_acl_path_key(candidate) != _windows_acl_path_key(restricted)
+                and _is_relative_to_casefold(candidate, restricted)
+                and any(
+                    _windows_acl_path_key(restricted) != _windows_acl_path_key(root)
+                    and _is_relative_to_casefold(restricted, root)
+                    for root in writable
+                )
+            ):
+                raise SandboxBackendError(
+                    "windows_default cannot reopen a writable descendant below a "
+                    f"READ/DENY ACL carveout: {entry.path}"
+                )
 
 
 def _filesystem_request(operation: SandboxOperation) -> FilesystemOperationRequest:
@@ -579,9 +607,7 @@ def _acl_plan_payload(
         }
     profile = request.policy.file_system
     if profile is None:
-        raise SandboxBackendError(
-            "windows_default requires a resolved filesystem profile"
-        )
+        raise SandboxBackendError("windows_default requires a resolved filesystem profile")
     _validate_profile_is_windows_compilable(profile)
     process_rx_roots = tuple(
         root for root in process_executable_rx_roots(request.argv, request.env) if root.exists()
@@ -637,8 +663,7 @@ def _acl_plan_payload(
     if plan.denied:
         denied = plan.denied[0]
         raise SandboxBackendError(
-            f"windows_default denied sensitive ACL grant for {denied.grant.path}: "
-            f"{denied.reason}"
+            f"windows_default denied sensitive ACL grant for {denied.grant.path}: {denied.reason}"
         )
     if plan.approval_required:
         grant = plan.approval_required[0]
@@ -691,11 +716,7 @@ def _profile_acl_grants(
         path = Path(entry.path)
         if entry.access is FileSystemAccess.DENY or not path.exists():
             continue
-        access = (
-            AclAccess.RWX
-            if entry.access is FileSystemAccess.WRITE
-            else AclAccess.RX
-        )
+        access = AclAccess.RWX if entry.access is FileSystemAccess.WRITE else AclAccess.RX
         if access is AclAccess.RX and not _rx_root_needs_acl_grant(path, request.env):
             continue
         grants.append(AclGrant(path, access, AclGrantKind.POLICY))
@@ -709,22 +730,37 @@ def _deny_write_paths_for_request(
     include_private_mounts: bool,
 ) -> tuple[Path, ...]:
     writable_roots = tuple(Path(path) for path in profile.writable_roots)
+    writable_acl_roots = _dedupe_acl_paths(
+        variant
+        for entry in _effective_raw_profile_entries(profile)
+        if entry.access is FileSystemAccess.WRITE
+        for variant in _acl_path_variants(Path(entry.path))
+    )
     paths: list[Path] = [
         root
         for root in _runtime_readonly_roots()
-        if root.exists()
-        and not _is_filesystem_root(root)
-        and _acl_sensitive_marker(root) is None
+        if root.exists() and not _is_filesystem_root(root) and _acl_sensitive_marker(root) is None
     ]
+    for entry in _effective_raw_profile_entries(profile):
+        if entry.access is FileSystemAccess.WRITE:
+            continue
+        entry_path = Path(entry.path)
+        if not _acl_target_is_nested_under_writable_root(entry_path, writable_acl_roots):
+            continue
+        variants = _acl_path_variants(entry_path)
+        paths.extend(variants)
+        for variant in variants:
+            paths.extend(_writable_reparse_ancestors(variant, writable_acl_roots))
     paths.extend(
-        path
-        for entry in _effective_raw_profile_entries(profile)
-        if entry.access is not FileSystemAccess.WRITE
-        and _acl_target_is_nested_under_writable_root(
-            Path(entry.path),
-            writable_roots,
+        protected_root
+        for protected_root in _protected_opensquilla_state_roots()
+        if any(
+            _is_relative_to_casefold(
+                protected_root.resolve(strict=False),
+                writable_root.resolve(strict=False),
+            )
+            for writable_root in writable_roots
         )
-        for path in _acl_path_variants(Path(entry.path))
     )
     paths.extend(
         mount.host_path
@@ -742,16 +778,33 @@ def _acl_target_is_nested_under_writable_root(
     path: Path,
     writable_roots: tuple[Path, ...],
 ) -> bool:
-    canonical_target = path.expanduser().resolve(strict=False)
-    canonical_writable_roots = tuple(
-        root.resolve(strict=False) for root in writable_roots
-    )
     return any(
-        _windows_acl_path_key(canonical_target)
-        != _windows_acl_path_key(writable_root)
-        and _is_relative_to_casefold(canonical_target, writable_root)
-        for writable_root in canonical_writable_roots
+        _windows_acl_path_key(target) != _windows_acl_path_key(writable_root)
+        and _is_relative_to_casefold(target, writable_root)
+        for target in _acl_path_variants(path)
+        for writable_root in writable_roots
     )
+
+
+def _writable_reparse_ancestors(
+    target: Path,
+    writable_roots: tuple[Path, ...],
+) -> tuple[Path, ...]:
+    result: list[Path] = []
+    for root in writable_roots:
+        if not _is_relative_to_casefold(target, root):
+            continue
+        try:
+            relative = target.relative_to(root)
+        except ValueError:
+            continue
+        current = root
+        for part in relative.parts[:-1]:
+            current = current / part
+            is_junction = bool(getattr(os.path, "isjunction", lambda _path: False)(current))
+            if current.is_symlink() or is_junction:
+                result.extend(_acl_path_variants(current))
+    return _dedupe_acl_paths(result)
 
 
 def _profile_denied_read_paths(
@@ -827,9 +880,7 @@ def _windows_acl_path_key(path: Path) -> str:
 
 
 def _rx_root_needs_acl_grant(path: Path, env: dict[str, str]) -> bool:
-    return not any(
-        _is_relative_to_casefold(path, root) for root in windows_platform_rx_roots(env)
-    )
+    return not any(_is_relative_to_casefold(path, root) for root in windows_platform_rx_roots(env))
 
 
 def _workspace_traversal_roots(cwd: Path) -> tuple[Path, ...]:

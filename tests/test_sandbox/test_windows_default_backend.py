@@ -64,16 +64,14 @@ def test_windows_acl_plan_compiles_profile_reads_writes_and_denies(
     workspace = tmp_path / "workspace"
     readonly = workspace / ".git"
     secret = readable / "secret"
-    writable_reopen = readonly / "objects"
     readable_reopen = secret / "public"
-    for path in (readable, workspace, readonly, secret, writable_reopen, readable_reopen):
+    for path in (readable, workspace, readonly, secret, readable_reopen):
         path.mkdir(parents=True, exist_ok=True)
     profile = FileSystemPermissionProfile(
         entries=(
             FileSystemPermissionEntry(readable, FileSystemAccess.READ),
             FileSystemPermissionEntry(workspace, FileSystemAccess.WRITE),
             FileSystemPermissionEntry(readonly, FileSystemAccess.READ),
-            FileSystemPermissionEntry(writable_reopen, FileSystemAccess.WRITE),
             FileSystemPermissionEntry(secret, FileSystemAccess.DENY),
             FileSystemPermissionEntry(readable_reopen, FileSystemAccess.READ),
         )
@@ -100,7 +98,6 @@ def test_windows_acl_plan_compiles_profile_reads_writes_and_denies(
 
     assert grants[str(readable)] == "RX"
     assert grants[str(workspace)] == "RWX"
-    assert grants[str(writable_reopen)] == "RWX"
     assert grants[str(readable_reopen)] == "RX"
     assert str(readonly) in plan["denyWritePaths"]
     assert str(secret) in plan["denyReadPaths"]
@@ -154,20 +151,14 @@ def test_windows_acl_plan_denies_write_through_lexical_and_canonical_aliases(
     alias.symlink_to(workspace, target_is_directory=True)
     profile = FileSystemPermissionProfile.workspace(
         workspace=workspace,
-        readable_roots=(
-            (lexical_secret,) if carveout_access is FileSystemAccess.READ else ()
-        ),
-        denied_read_roots=(
-            (lexical_secret,) if carveout_access is FileSystemAccess.DENY else ()
-        ),
+        readable_roots=((lexical_secret,) if carveout_access is FileSystemAccess.READ else ()),
+        denied_read_roots=((lexical_secret,) if carveout_access is FileSystemAccess.DENY else ()),
         host_root_readonly=False,
         tmp_writable=False,
         tmpdir_env_writable=False,
         protect_metadata=False,
     )
-    request = _request(workspace).with_policy(
-        replace(_policy(), file_system=profile)
-    )
+    request = _request(workspace).with_policy(replace(_policy(), file_system=profile))
     monkeypatch.setattr(
         mod,
         "capability_sids_for_command",
@@ -185,6 +176,81 @@ def test_windows_acl_plan_denies_write_through_lexical_and_canonical_aliases(
         expected if carveout_access is FileSystemAccess.DENY else set()
     )
     assert set(plan["denyWritePaths"]) == expected
+
+
+def test_windows_acl_plan_protects_reparse_ancestor_when_target_is_outside_write(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from opensquilla.sandbox.backend import windows_default as mod
+
+    workspace = tmp_path / "workspace"
+    outside = tmp_path / "outside"
+    alias = workspace / "alias"
+    lexical_secret = alias / "secret"
+    canonical_secret = outside / "secret"
+    workspace.mkdir()
+    canonical_secret.mkdir(parents=True)
+    alias.symlink_to(outside, target_is_directory=True)
+    profile = FileSystemPermissionProfile.workspace(
+        workspace=workspace,
+        denied_read_roots=(lexical_secret,),
+        host_root_readonly=False,
+        tmp_writable=False,
+        tmpdir_env_writable=False,
+        protect_metadata=False,
+    )
+    request = _request(workspace).with_policy(replace(_policy(), file_system=profile))
+    monkeypatch.setattr(
+        mod,
+        "capability_sids_for_command",
+        lambda _s, roots, **_k: tuple(f"S-{i}" for i, _ in enumerate(roots)),
+    )
+    monkeypatch.setattr(mod, "_runtime_readonly_roots", lambda: ())
+    monkeypatch.setattr(mod, "runtime_rx_roots", lambda _e: ())
+    monkeypatch.setattr(mod, "process_executable_rx_roots", lambda _a, _e: ())
+    monkeypatch.setattr(mod, "_windows_tool_path_roots", lambda *_a, **_k: ())
+
+    plan = mod._acl_plan_payload(request)
+
+    assert {str(lexical_secret), str(canonical_secret), str(alias), str(outside)} <= set(
+        plan["denyWritePaths"]
+    )
+
+
+def test_windows_acl_plan_protects_internal_state_under_broad_home_write(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from opensquilla.sandbox.backend import windows_default as mod
+
+    home = tmp_path / "home"
+    home.mkdir()
+    marker = home / ".opensquilla" / "sandbox" / "setup_marker.json"
+    profile = FileSystemPermissionProfile.workspace(
+        workspace=home,
+        host_root_readonly=False,
+        tmp_writable=False,
+        tmpdir_env_writable=False,
+        protect_metadata=False,
+    )
+    request = _request(home).with_policy(replace(_policy(), file_system=profile))
+    monkeypatch.setattr(mod, "default_setup_marker_path", lambda: marker)
+    monkeypatch.setattr(
+        mod,
+        "capability_sids_for_command",
+        lambda _s, roots, **_k: tuple(f"S-{i}" for i, _ in enumerate(roots)),
+    )
+    monkeypatch.setattr(mod, "_runtime_readonly_roots", lambda: ())
+    monkeypatch.setattr(mod, "runtime_rx_roots", lambda _e: ())
+    monkeypatch.setattr(mod, "process_executable_rx_roots", lambda _a, _e: ())
+    monkeypatch.setattr(mod, "_windows_tool_path_roots", lambda *_a, **_k: ())
+
+    plan = mod._acl_plan_payload(request)
+
+    assert {
+        str(marker.parent),
+        str(home / ".opensquilla" / "sandbox-secrets"),
+        str(home / ".opensquilla" / "sandbox-bin"),
+    } <= set(plan["denyWritePaths"])
 
 
 @pytest.mark.skipif(os.name != "nt", reason="requires native Windows junctions")
@@ -215,20 +281,21 @@ def test_windows_acl_plan_protects_junction_and_canonical_target(
         tmpdir_env_writable=False,
         protect_metadata=False,
     )
-    request = _request(workspace).with_policy(
-        replace(_policy(), file_system=profile)
-    )
+    request = _request(workspace).with_policy(replace(_policy(), file_system=profile))
     monkeypatch.setattr(mod, "_runtime_readonly_roots", lambda: ())
 
     expected = {lexical_secret, canonical_secret}
     assert set(mod._profile_denied_read_paths(profile)) == expected
-    assert set(
-        mod._deny_write_paths_for_request(
-            request,
-            profile,
-            include_private_mounts=False,
+    assert (
+        set(
+            mod._deny_write_paths_for_request(
+                request,
+                profile,
+                include_private_mounts=False,
+            )
         )
-    ) == expected
+        == expected
+    )
 
 
 def test_windows_acl_plan_requests_access_namespaced_capability_sids(
@@ -265,12 +332,11 @@ def test_windows_acl_plan_requests_access_namespaced_capability_sids(
     assert captured["accesses"] == ("RX", "RWX")
 
 
-def test_windows_acl_plan_preserves_nested_denial_after_write_reopen(
+def test_windows_acl_plan_rejects_writable_descendant_reopen(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from opensquilla.sandbox.backend import windows_default as mod
-    from opensquilla.sandbox.backend import windows_default_runner as runner
 
     workspace = tmp_path / "workspace"
     readonly = workspace / ".git"
@@ -299,14 +365,8 @@ def test_windows_acl_plan_preserves_nested_denial_after_write_reopen(
     monkeypatch.setattr(mod, "process_executable_rx_roots", lambda argv, env: ())
     monkeypatch.setattr(mod, "_windows_tool_path_roots", lambda *args, **kwargs: ())
 
-    plan = mod._acl_plan_payload(request)
-
-    assert plan["denyWritePaths"] == [str(readonly), str(denied_nested)]
-    assert runner._deny_write_capability_sids_for_path(plan, readonly) == ("S-0",)
-    assert runner._deny_write_capability_sids_for_path(plan, denied_nested) == (
-        "S-0",
-        "S-2",
-    )
+    with pytest.raises(SandboxBackendError, match="cannot reopen a writable descendant"):
+        mod._acl_plan_payload(request)
 
 
 def test_windows_acl_plan_does_not_make_readonly_cwd_writable(
@@ -343,8 +403,7 @@ def test_windows_acl_plan_does_not_make_readonly_cwd_writable(
     plan = mod._acl_plan_payload(request)
 
     assert not any(
-        item["path"] == str(tmp_path) and item["access"] == "RWX"
-        for item in plan["autoGrants"]
+        item["path"] == str(tmp_path) and item["access"] == "RWX" for item in plan["autoGrants"]
     )
 
 
@@ -388,9 +447,7 @@ def test_windows_profile_grants_keep_final_pure_windows_declaration(
 
     grants = mod._profile_acl_grants(request, profile)
 
-    assert [(str(grant.path), grant.access.value) for grant in grants] == [
-        ("D:/workspace", "RX")
-    ]
+    assert [(str(grant.path), grant.access.value) for grant in grants] == [("D:/workspace", "RX")]
 
 
 def test_payload_contains_cache_env_and_run_mode(
@@ -572,9 +629,11 @@ def test_payload_prepends_real_windows_tool_paths_and_grants_user_tool_acl(
     monkeypatch.setattr(
         mod,
         "_acl_sensitive_marker",
-        lambda path: "windows_system"
-        if Path(path).resolve(strict=False) == git_cmd.resolve(strict=False)
-        else original_sensitive_marker(path),
+        lambda path: (
+            "windows_system"
+            if Path(path).resolve(strict=False) == git_cmd.resolve(strict=False)
+            else original_sensitive_marker(path)
+        ),
     )
 
     request = _request(workspace)
@@ -893,9 +952,7 @@ def test_payload_skips_windows_reserved_device_expansion_roots(
         policy=request.policy,
         env={
             **request.env,
-            "OPENSQUILLA_WINDOWS_SANDBOX_EXPANSION_ROOTS": (
-                f"{reserved_device};{external}"
-            ),
+            "OPENSQUILLA_WINDOWS_SANDBOX_EXPANSION_ROOTS": (f"{reserved_device};{external}"),
         },
         run_mode=request.run_mode,
     )
@@ -1265,9 +1322,7 @@ def test_windows_filesystem_operation_request_uses_stdin_and_shared_profile(
         "opensquilla.sandbox.filesystem_worker",
         "-",
     )
-    assert request.stdin == json.dumps(
-        operation.to_payload(), ensure_ascii=False
-    ).encode("utf-8")
+    assert request.stdin == json.dumps(operation.to_payload(), ensure_ascii=False).encode("utf-8")
     assert not (workspace / ".opensquilla-cache").exists()
 
 

@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import json
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+
+import pytest
 
 
 def test_capability_sid_is_stable_per_root(tmp_path: Path) -> None:
@@ -173,3 +176,34 @@ def test_legacy_path_only_sid_is_not_reused_for_access_namespaced_key(tmp_path: 
     )
 
     assert sid == "S-1-5-21-200-201-202-203"
+
+
+def test_concurrent_capability_store_updates_do_not_lose_roots(tmp_path: Path) -> None:
+    from opensquilla.sandbox.backend.windows_default_capability import (
+        capability_sid_for_root,
+        load_capability_store,
+    )
+
+    store = tmp_path / "cap_sids.json"
+    distinct_roots = tuple(tmp_path / f"root-{index}" for index in range(12))
+    roots = (*distinct_roots, *([distinct_roots[0]] * 8))
+    with ThreadPoolExecutor(max_workers=6) as pool:
+        sids = tuple(pool.map(lambda root: capability_sid_for_root(store, root), roots))
+
+    loaded = load_capability_store(store)
+    assert len(set(sids)) == len(distinct_roots)
+    assert len(loaded.root_sids) == len(distinct_roots)
+    assert not tuple(tmp_path.glob(".cap_sids.json.tmp-*"))
+
+
+def test_capability_store_atomic_failure_cleans_temp(tmp_path: Path, monkeypatch) -> None:
+    from opensquilla.sandbox.backend import windows_default_capability as mod
+
+    store = tmp_path / "cap_sids.json"
+    monkeypatch.setattr(mod.os, "replace", lambda *_args: (_ for _ in ()).throw(OSError("replace")))
+    with pytest.raises(OSError, match="replace"):
+        mod.save_capability_store(
+            store,
+            mod.CapabilityStore(root_sids={"rx|root": "S-1-5-21-1-2-3-4"}),
+        )
+    assert not tuple(tmp_path.glob(".cap_sids.json.tmp-*"))

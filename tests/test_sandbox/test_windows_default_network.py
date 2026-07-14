@@ -289,8 +289,11 @@ def test_run_elevated_setup_helper_reports_nonzero_exit(monkeypatch, tmp_path) -
 def test_elevated_setup_helper_main_writes_failure_report(monkeypatch, tmp_path) -> None:
     from opensquilla.sandbox.backend import windows_default_setup as mod
 
-    marker = tmp_path / "setup_marker.json"
-    payload = mod._encode_setup_helper_payload(marker)
+    profile = tmp_path / "profile"
+    profile.mkdir()
+    marker = mod.default_setup_marker_path(profile)
+    payload = mod._encode_setup_helper_payload(marker, user_sid="S-1-real")
+    monkeypatch.setattr(mod, "_windows_profile_path_for_sid", lambda _sid: profile)
 
     def fail_setup(path):
         raise OSError("Set-LocalUser access denied")
@@ -303,6 +306,122 @@ def test_elevated_setup_helper_main_writes_failure_report(monkeypatch, tmp_path)
     report = json.loads((marker.parent / "setup_helper_report.json").read_text())
     assert report["state"] == "failed"
     assert "Set-LocalUser access denied" in report["detail"]
+
+
+def test_elevated_setup_rejects_payload_path_before_any_report_write(monkeypatch, tmp_path) -> None:
+    from opensquilla.sandbox.backend import windows_default_setup as mod
+
+    profile = tmp_path / "profile"
+    profile.mkdir()
+    attacker_marker = tmp_path / "attacker" / "setup_marker.json"
+    payload = mod._encode_setup_helper_payload(attacker_marker, user_sid="S-1-real")
+    reports = []
+    monkeypatch.setattr(mod, "_windows_profile_path_for_sid", lambda _sid: profile)
+    monkeypatch.setattr(
+        mod,
+        "write_setup_helper_report",
+        lambda *args, **kwargs: reports.append((args, kwargs)),
+    )
+
+    assert mod.elevated_setup_helper_main(["--elevated-helper", payload]) == 2
+    assert reports == []
+    assert not attacker_marker.parent.exists()
+
+
+def test_elevated_setup_rejects_precreated_junction_before_writing(monkeypatch, tmp_path) -> None:
+    from opensquilla.sandbox.backend import windows_default_setup as mod
+
+    profile = tmp_path / "profile"
+    outside = tmp_path / "outside"
+    profile.mkdir()
+    outside.mkdir()
+    (profile / ".opensquilla").symlink_to(outside, target_is_directory=True)
+    marker = mod.default_setup_marker_path(profile)
+    payload = mod._encode_setup_helper_payload(marker, user_sid="S-1-real")
+    reports = []
+    monkeypatch.setattr(mod, "_windows_profile_path_for_sid", lambda _sid: profile)
+    monkeypatch.setattr(
+        mod,
+        "write_setup_helper_report",
+        lambda *args, **kwargs: reports.append((args, kwargs)),
+    )
+
+    assert mod.elevated_setup_helper_main(["--elevated-helper", payload]) == 2
+    assert reports == []
+    assert list(outside.iterdir()) == []
+
+
+def test_setup_directory_handle_is_no_follow_and_blocks_delete_sharing() -> None:
+    from opensquilla.sandbox.backend import windows_default_setup as mod
+
+    source = inspect.getsource(mod._open_directory_no_follow)
+
+    assert "file_flag_open_reparse_point" in source
+    assert "file_flag_backup_semantics" in source
+    assert "file_share_read | file_share_write" in source
+    assert "file_share_delete" not in source
+    assert "CreateFileW.argtypes" in source
+    assert "GetFileInformationByHandleEx.argtypes" in source
+
+
+def test_setup_output_writer_is_no_follow_and_blocks_delete_sharing() -> None:
+    from opensquilla.sandbox.backend import windows_default_setup as mod
+
+    source = inspect.getsource(mod._write_json_windows_no_follow)
+
+    assert "file_flag_open_reparse_point" in source
+    assert "GetFileInformationByHandleEx" in source
+    assert "file_share_read | file_share_write" in source
+    assert "file_share_delete" not in source
+
+
+def test_setup_marker_replaces_symlink_without_writing_its_target(tmp_path) -> None:
+    from opensquilla.sandbox.backend import windows_default_setup as mod
+
+    outside = tmp_path / "outside.json"
+    outside.write_text("do not touch", encoding="utf-8")
+    marker = tmp_path / "setup_marker.json"
+    marker.symlink_to(outside)
+
+    mod.write_setup_marker(marker)
+
+    assert outside.read_text(encoding="utf-8") == "do not touch"
+    assert not marker.is_symlink()
+    assert json.loads(marker.read_text(encoding="utf-8"))["setupVersion"] == mod.SETUP_VERSION
+
+
+def test_lock_revalidates_tree_before_each_recursive_acl_mutation(monkeypatch, tmp_path) -> None:
+    from opensquilla.sandbox.backend import windows_default_setup as mod
+
+    profile = tmp_path / "profile"
+    profile.mkdir()
+    marker = mod.default_setup_marker_path(profile)
+    validations = []
+    commands = []
+    original_validate = mod._validate_setup_directory_lease
+
+    def record_validate(lease, *, recursive):
+        validations.append(recursive)
+        return original_validate(lease, recursive=recursive)
+
+    class Completed:
+        returncode = 0
+        stdout = ""
+        stderr = ""
+
+    monkeypatch.setattr(mod, "_validate_setup_directory_lease", record_validate)
+    monkeypatch.setattr(
+        mod.subprocess,
+        "run",
+        lambda command, **_kwargs: commands.append(command) or Completed(),
+    )
+    monkeypatch.setattr(mod, "_current_windows_user_sid", lambda: "S-1-real")
+
+    mod.lock_persistent_sandbox_dirs(marker, offline_sid="S-1-offline")
+
+    assert len(validations) >= len(commands)
+    assert commands
+    assert all("/L" in command for command in commands)
 
 
 def test_run_elevated_setup_helper_includes_failure_report_detail(

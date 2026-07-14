@@ -1214,12 +1214,14 @@ def test_deny_acl_state_sync_rolls_back_acl_when_state_write_fails(
         "_revoke_path_for_sid",
         lambda path, sid: calls.append(("revoke", path, None)),
     )
-    monkeypatch.setattr(
-        mod,
-        "_write_deny_acl_state",
-        lambda *_args: (_ for _ in ()).throw(OSError("disk full")),
-        raising=False,
-    )
+    original_write = mod._write_deny_acl_state
+
+    def fail_state_write(path, payload):
+        if path == state_path:
+            raise OSError("disk full")
+        original_write(path, payload)
+
+    monkeypatch.setattr(mod, "_write_deny_acl_state", fail_state_write)
 
     with pytest.raises(SystemExit, match="state sync failed"):
         mod._sync_deny_acl_state(
@@ -1238,7 +1240,7 @@ def test_deny_acl_state_sync_rolls_back_acl_when_state_write_fails(
     assert json.loads(state_path.read_text(encoding="utf-8")) == original
 
 
-def test_deny_acl_rollback_failure_leaves_taint_and_future_sync_refuses(
+def test_deny_acl_rollback_failure_leaves_taint_and_future_sync_repairs(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from opensquilla.sandbox.backend import windows_default_runner as mod
@@ -1247,9 +1249,14 @@ def test_deny_acl_rollback_failure_leaves_taint_and_future_sync_refuses(
     path = tmp_path / "path"
     path.mkdir()
     monkeypatch.setattr(mod, "_deny_path_to_sid", lambda *_a, **_k: None)
-    monkeypatch.setattr(
-        mod, "_write_deny_acl_state", lambda *_a: (_ for _ in ()).throw(OSError("disk"))
-    )
+    original_write = mod._write_deny_acl_state
+
+    def fail_state_write(path_arg, payload):
+        if path_arg == state:
+            raise OSError("disk")
+        original_write(path_arg, payload)
+
+    monkeypatch.setattr(mod, "_write_deny_acl_state", fail_state_write)
     monkeypatch.setattr(
         mod, "_revoke_path_for_sid", lambda *_a: (_ for _ in ()).throw(OSError("restore"))
     )
@@ -1257,8 +1264,12 @@ def test_deny_acl_rollback_failure_leaves_taint_and_future_sync_refuses(
     with pytest.raises(SystemExit, match="rollback_errors"):
         mod._sync_deny_acl_state(state, "S", {path: mod.FILE_READ_DENY_MASK})
     assert mod._acl_state_taint_path(state).exists()
-    with pytest.raises(SystemExit, match="tainted and requires repair"):
-        mod._sync_deny_acl_state(state, "S", {path: mod.FILE_READ_DENY_MASK})
+    monkeypatch.setattr(mod, "_revoke_path_for_sid", lambda *_a: None)
+    monkeypatch.setattr(mod, "_write_deny_acl_state", original_write)
+
+    mod._sync_deny_acl_state(state, "S", {path: mod.FILE_READ_DENY_MASK})
+
+    assert not mod._acl_state_taint_path(state).exists()
 
 
 def test_handle_and_reader_guards_fail_deterministically() -> None:
@@ -1311,6 +1322,161 @@ def test_allow_acl_state_sync_revokes_stale_and_changes_access(
     assert ("revoke", stale, None) in calls
     assert ("grant", changed, "RX") in calls
     assert ("grant", new, "RWX") in calls
+
+
+def test_allow_acl_grants_child_before_revoking_inherited_parent_access(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from opensquilla.sandbox.backend import windows_default_runner as mod
+
+    state = tmp_path / "allow_acl_state.json"
+    parent = tmp_path / "parent"
+    child = parent / "child"
+    child.mkdir(parents=True)
+    state.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "principals": {"S": [{"path": str(parent), "access": "RWX"}]},
+            }
+        ),
+        encoding="utf-8",
+    )
+    calls = []
+    monkeypatch.setattr(
+        mod,
+        "_grant_path_to_sid",
+        lambda path, access, sid: calls.append(("grant", path, access)),
+    )
+    monkeypatch.setattr(
+        mod,
+        "_revoke_allow_path_for_sid",
+        lambda path, sid: calls.append(("revoke", path, None)),
+    )
+
+    mod._sync_allow_acl_state(state, "S", {child: "RX"})
+
+    assert calls.index(("grant", child, "RX")) < calls.index(("revoke", parent, None))
+
+
+@pytest.mark.parametrize("persisted_is_new", [False, True])
+def test_allow_taint_recovers_crash_before_or_after_state_replace(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, persisted_is_new: bool
+) -> None:
+    from opensquilla.sandbox.backend import windows_default_runner as mod
+
+    state = tmp_path / "allow.json"
+    previous = tmp_path / "previous"
+    desired = tmp_path / "desired"
+    previous.mkdir()
+    desired.mkdir()
+    persisted = desired if persisted_is_new else previous
+    state.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "principals": {"S": [{"path": str(persisted), "access": "RX"}]},
+            }
+        ),
+        encoding="utf-8",
+    )
+    mod._mark_acl_state_tainted(state, kind="allow", sid="S", paths=(previous, desired))
+    calls = []
+    monkeypatch.setattr(
+        mod,
+        "_revoke_allow_path_for_sid",
+        lambda path, sid: calls.append(("revoke", path)),
+    )
+    monkeypatch.setattr(
+        mod,
+        "_grant_path_to_sid",
+        lambda path, access, sid: calls.append(("grant", path)),
+    )
+
+    mod._sync_allow_acl_state(state, "S", {persisted: "RX"})
+
+    assert ("revoke", previous) in calls
+    assert ("revoke", desired) in calls
+    assert ("grant", persisted) in calls
+    assert not mod._acl_state_taint_path(state).exists()
+
+
+@pytest.mark.parametrize("persisted_is_new", [False, True])
+def test_deny_taint_recovers_crash_before_or_after_state_replace(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, persisted_is_new: bool
+) -> None:
+    from opensquilla.sandbox.backend import windows_default_runner as mod
+
+    state = tmp_path / "deny.json"
+    previous = tmp_path / "previous"
+    desired = tmp_path / "desired"
+    previous.mkdir()
+    desired.mkdir()
+    persisted = desired if persisted_is_new else previous
+    state.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "principals": {"S": [{"path": str(persisted), "mask": mod.FILE_READ_DENY_MASK}]},
+            }
+        ),
+        encoding="utf-8",
+    )
+    mod._mark_acl_state_tainted(state, kind="deny", sid="S", paths=(previous, desired))
+    calls = []
+    monkeypatch.setattr(
+        mod,
+        "_revoke_path_for_sid",
+        lambda path, sid: calls.append(("revoke", path)),
+    )
+    monkeypatch.setattr(
+        mod,
+        "_deny_path_to_sid",
+        lambda path, sid, *, mask, label: calls.append(("deny", path)),
+    )
+
+    mod._sync_deny_acl_state(state, "S", {persisted: mod.FILE_READ_DENY_MASK})
+
+    assert ("revoke", previous) in calls
+    assert ("revoke", desired) in calls
+    assert ("deny", persisted) in calls
+    assert not mod._acl_state_taint_path(state).exists()
+
+
+def test_taint_repair_failure_remains_fail_closed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from opensquilla.sandbox.backend import windows_default_runner as mod
+
+    state = tmp_path / "allow.json"
+    path = tmp_path / "path"
+    path.mkdir()
+    state.write_text(
+        json.dumps({"version": 1, "principals": {"S": [{"path": str(path), "access": "RX"}]}}),
+        encoding="utf-8",
+    )
+    mod._mark_acl_state_tainted(state, kind="allow", sid="S", paths=(path,))
+    monkeypatch.setattr(
+        mod,
+        "_revoke_allow_path_for_sid",
+        lambda *_a: (_ for _ in ()).throw(OSError("repair failed")),
+    )
+
+    with pytest.raises(SystemExit, match="remains fail-closed"):
+        mod._sync_allow_acl_state(state, "S", {path: "RX"})
+
+    assert mod._acl_state_taint_path(state).exists()
+
+
+def test_sandbox_rwx_omits_delete_child_and_native_acl_ignores_inherited_allow() -> None:
+    from opensquilla.sandbox.backend import windows_default_runner as mod
+
+    assert not mod.MANAGED_ALLOW_MASK & mod.FILE_DELETE_CHILD
+    source = inspect.getsource(mod._grant_path_to_sid_native)
+    revoke_source = inspect.getsource(mod._revoke_path_for_sid_native)
+    assert "allow_mask" in source and "| FILE_DELETE_CHILD" not in source
+    assert "INHERITED_ACE" in source
+    assert "INHERITED_ACE" in revoke_source
 
 
 def test_managed_deny_mask_includes_read_and_write_denies() -> None:
@@ -1497,6 +1663,91 @@ def test_child_stdin_writer_failure_terminates_and_surfaces(monkeypatch) -> None
         ("close", 42),
         ("terminate", "finish"),
     ]
+
+
+def test_finish_child_io_cancels_and_rejoins_blocking_writer_and_readers() -> None:
+    from opensquilla.sandbox.backend import windows_default_runner as mod
+
+    cancelled = False
+    events = []
+
+    class BlockingThread:
+        def __init__(self, name):
+            self.name = name
+            self.joins = 0
+
+        def join(self, timeout):
+            self.joins += 1
+            events.append(("join", self.name, timeout))
+
+        def is_alive(self):
+            return not cancelled
+
+    writer = BlockingThread("writer")
+    readers = (BlockingThread("stdout"), BlockingThread("stderr"))
+
+    def cancel_io():
+        nonlocal cancelled
+        cancelled = True
+        events.append(("cancel",))
+
+    mod._finish_child_io(
+        writer_thread=writer,
+        reader_threads=readers,
+        writer_errors=(),
+        close_writer=lambda: events.append(("close",)),
+        label="test child",
+        terminate=lambda: events.append(("terminate",)),
+        cancel_io=cancel_io,
+        force_cancel=True,
+        ignore_writer_errors=True,
+    )
+
+    assert events[:3] == [("terminate",), ("cancel",), ("close",)]
+    assert writer.joins == 1
+    assert all(reader.joins == 1 for reader in readers)
+
+
+def test_timeout_cleanup_preserves_primary_result_over_broken_stdin() -> None:
+    from opensquilla.sandbox.backend import windows_default_runner as mod
+
+    events = []
+
+    class StoppedThread:
+        def join(self, timeout):
+            events.append(("join", timeout))
+
+        def is_alive(self):
+            return False
+
+    mod._finish_child_io(
+        writer_thread=StoppedThread(),
+        reader_threads=(StoppedThread(), StoppedThread()),
+        writer_errors=(OSError("broken after timeout"),),
+        close_writer=lambda: events.append(("close",)),
+        label="test child",
+        terminate=lambda: events.append(("terminate",)),
+        cancel_io=lambda: events.append(("cancel",)),
+        force_cancel=True,
+        ignore_writer_errors=True,
+    )
+
+    assert events[:3] == [("terminate",), ("cancel",), ("close",)]
+
+
+def test_cancel_child_pipe_io_targets_every_retained_handle() -> None:
+    from opensquilla.sandbox.backend import windows_default_runner as mod
+
+    calls = []
+    kernel = type(
+        "Kernel",
+        (),
+        {"CancelIoEx": lambda self, handle, overlapped: calls.append((handle, overlapped))},
+    )()
+
+    mod._cancel_child_pipe_io(kernel, (11, 22, 33))
+
+    assert calls == [(11, None), (22, None), (33, None)]
 
 
 def test_runner_uses_offline_token_for_proxy_allowlist(monkeypatch, tmp_path) -> None:
@@ -1882,6 +2133,7 @@ def test_offline_identity_native_launch_sets_all_stdio_handles(
                 lambda *_args: events.append("assign_job") or 1
             )
             self.ResumeThread = FakeFunction(lambda *_args: events.append("resume") or 1)
+            self.CancelIoEx = FakeFunction(lambda *_args: 1)
             self.TerminateJobObject = FakeFunction(lambda *_args: 1)
             self.GetExitCodeProcess = FakeFunction(_get_exit_code_process)
             self.WriteFile = FakeFunction(_write_file)

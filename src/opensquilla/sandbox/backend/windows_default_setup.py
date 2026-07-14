@@ -1,5 +1,7 @@
 """Setup state for the Windows default sandbox."""
 
+# mypy: disable-error-code="attr-defined"
+
 from __future__ import annotations
 
 import csv
@@ -9,6 +11,8 @@ import secrets
 import string
 import subprocess
 import sys
+from collections.abc import Iterator
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -30,6 +34,14 @@ class WindowsDefaultSetupMarker:
         if self.network is not None:
             payload["network"] = self.network.to_json()
         return payload
+
+
+@dataclass(frozen=True)
+class _SetupDirectoryLease:
+    marker_path: Path
+    profile_path: Path
+    roots: tuple[Path, ...]
+    handles: tuple[object, ...]
 
 
 def default_setup_marker_path(home: Path | None = None) -> Path:
@@ -56,10 +68,7 @@ def write_setup_marker(
 ) -> None:
     marker = WindowsDefaultSetupMarker(setup_version=setup_version, network=network)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        json.dumps(marker.to_json(), sort_keys=True),
-        encoding="utf-8",
-    )
+    _write_json_atomic_no_follow(path, marker.to_json())
 
 
 def read_setup_marker(path: Path) -> WindowsDefaultSetupMarker | None:
@@ -148,7 +157,7 @@ def write_setup_helper_report(
         report["detail"] = detail
     path = setup_helper_report_path(marker_path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(report, sort_keys=True), encoding="utf-8")
+    _write_json_atomic_no_follow(path, report)
 
 
 def read_setup_helper_report(marker_path: Path) -> dict[str, str] | None:
@@ -233,25 +242,32 @@ def elevated_setup_helper_main(argv: list[str] | None = None) -> int:
         return 2
     try:
         payload = _decode_setup_helper_payload(args[1])
-        marker_path = Path(payload["markerPath"])
+        marker_path, profile_path = _validated_elevated_setup_target(payload)
     except Exception as exc:
         print(f"windows_default_setup helper failed: {exc}", file=sys.stderr)
         return 2
-    write_setup_helper_report(marker_path, state="running")
     try:
-        network = establish_windows_network_setup(marker_path)
-        lock_persistent_sandbox_dirs(
-            marker_path,
-            offline_sid=network.offline_user_sid,
-            real_user_sid=payload.get("userSid"),
-        )
-        write_setup_marker(marker_path, network=network)
-        write_setup_helper_report(marker_path, state="ready", detail="setup_complete")
-        return 0
+        with _secure_setup_directory_lease(marker_path, profile_path) as lease:
+            write_setup_helper_report(marker_path, state="running")
+            try:
+                network = establish_windows_network_setup(marker_path)
+                lock_persistent_sandbox_dirs(
+                    marker_path,
+                    offline_sid=network.offline_user_sid,
+                    real_user_sid=payload["userSid"],
+                    lease=lease,
+                )
+                _validate_setup_directory_lease(lease, recursive=True)
+                write_setup_marker(marker_path, network=network)
+                write_setup_helper_report(marker_path, state="ready", detail="setup_complete")
+                return 0
+            except Exception as exc:
+                write_setup_helper_report(marker_path, state="failed", detail=str(exc))
+                print(f"windows_default_setup helper failed: {exc}", file=sys.stderr)
+                return 1
     except Exception as exc:
-        write_setup_helper_report(marker_path, state="failed", detail=str(exc))
         print(f"windows_default_setup helper failed: {exc}", file=sys.stderr)
-        return 1
+        return 2
 
 
 def _setup_helper_report_detail(marker_path: Path) -> str | None:
@@ -300,6 +316,336 @@ def _decode_setup_helper_payload(value: str) -> dict[str, str]:
             raise OSError("windows_setup_helper_payload_invalid")
         result["userSid"] = user_sid
     return result
+
+
+def _validated_elevated_setup_target(payload: dict[str, str]) -> tuple[Path, Path]:
+    sid = payload.get("userSid")
+    if not sid:
+        raise OSError("windows_setup_helper_real_user_sid_missing")
+    profile_path = _windows_profile_path_for_sid(sid).expanduser().absolute()
+    expected = default_setup_marker_path(profile_path).absolute()
+    supplied = Path(payload["markerPath"]).expanduser().absolute()
+    if _setup_path_key(supplied) != _setup_path_key(expected):
+        raise OSError("windows_setup_helper_marker_path_mismatch")
+    _validate_existing_non_reparse_components(expected)
+    profile_canonical = profile_path.resolve(strict=True)
+    marker_parent_canonical = expected.parent.resolve(strict=False)
+    try:
+        marker_parent_canonical.relative_to(profile_canonical)
+    except ValueError as exc:
+        raise OSError("windows_setup_helper_marker_outside_profile") from exc
+    return expected, profile_path
+
+
+def _windows_profile_path_for_sid(sid: str) -> Path:
+    if not sys.platform.startswith("win"):
+        raise OSError("windows_setup_helper_profile_lookup_requires_windows")
+    import winreg
+
+    key_path = r"SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList" + rf"\{sid}"
+    try:
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, key_path) as key:
+            value, _kind = winreg.QueryValueEx(key, "ProfileImagePath")
+    except OSError as exc:
+        raise OSError("windows_setup_helper_profile_lookup_failed") from exc
+    if not isinstance(value, str) or not value:
+        raise OSError("windows_setup_helper_profile_lookup_failed")
+    return Path(os.path.expandvars(value))
+
+
+def _setup_path_key(path: Path) -> str:
+    return os.path.normcase(os.path.abspath(str(path))).replace("\\", "/").rstrip("/")
+
+
+def _is_reparse_path(path: Path) -> bool:
+    try:
+        stat_result = path.lstat()
+    except FileNotFoundError:
+        return False
+    attributes = int(getattr(stat_result, "st_file_attributes", 0))
+    is_junction = getattr(path, "is_junction", lambda: False)
+    return path.is_symlink() or bool(is_junction()) or bool(attributes & 0x400)
+
+
+def _validate_existing_non_reparse_components(path: Path) -> None:
+    absolute = path.absolute()
+    current = Path(absolute.anchor) if absolute.anchor else Path()
+    parts = absolute.parts[1:] if absolute.anchor else absolute.parts
+    for part in parts:
+        current /= part
+        if not os.path.lexists(current):
+            continue
+        if _is_reparse_path(current):
+            raise OSError(f"windows_setup_helper_reparse_component: {current}")
+
+
+def _open_directory_no_follow(path: Path) -> object:
+    if not sys.platform.startswith("win"):
+        flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+        return os.open(path, flags)
+
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    file_read_attributes = 0x0080
+    file_share_read = 0x00000001
+    file_share_write = 0x00000002
+    open_existing = 3
+    file_flag_backup_semantics = 0x02000000
+    file_flag_open_reparse_point = 0x00200000
+    invalid_handle_value = wintypes.HANDLE(-1).value
+    file_attribute_tag_info = 9
+
+    class FileAttributeTagInfo(ctypes.Structure):
+        _fields_ = [
+            ("FileAttributes", wintypes.DWORD),
+            ("ReparseTag", wintypes.DWORD),
+        ]
+
+    kernel32.CreateFileW.argtypes = [
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.HANDLE,
+    ]
+    kernel32.CreateFileW.restype = wintypes.HANDLE
+    kernel32.GetFileInformationByHandleEx.argtypes = [
+        wintypes.HANDLE,
+        ctypes.c_int,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+    ]
+    kernel32.GetFileInformationByHandleEx.restype = wintypes.BOOL
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel32.CloseHandle.restype = wintypes.BOOL
+    handle = kernel32.CreateFileW(
+        str(path),
+        file_read_attributes,
+        file_share_read | file_share_write,
+        None,
+        open_existing,
+        file_flag_backup_semantics | file_flag_open_reparse_point,
+        None,
+    )
+    if handle == invalid_handle_value:
+        code = ctypes.get_last_error()
+        raise OSError(code, f"windows_setup_helper_open_directory_failed: {path}")
+    tag_info = FileAttributeTagInfo()
+    if not kernel32.GetFileInformationByHandleEx(
+        handle,
+        file_attribute_tag_info,
+        ctypes.byref(tag_info),
+        ctypes.sizeof(tag_info),
+    ):
+        code = ctypes.get_last_error()
+        kernel32.CloseHandle(handle)
+        raise OSError(code, f"windows_setup_helper_inspect_directory_failed: {path}")
+    if tag_info.FileAttributes & 0x400:
+        kernel32.CloseHandle(handle)
+        raise OSError(f"windows_setup_helper_reparse_component: {path}")
+    return handle
+
+
+def _close_directory_handle(handle: Any) -> None:
+    if not sys.platform.startswith("win"):
+        os.close(int(handle))
+        return
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel32.CloseHandle.restype = wintypes.BOOL
+    kernel32.CloseHandle(handle)
+
+
+@contextmanager
+def _secure_setup_directory_lease(
+    marker_path: Path,
+    profile_path: Path,
+) -> Iterator[_SetupDirectoryLease]:
+    opensquilla_root = profile_path / ".opensquilla"
+    roots = (
+        opensquilla_root / "sandbox",
+        opensquilla_root / "sandbox-secrets",
+        opensquilla_root / "sandbox-bin",
+    )
+    handles: list[object] = []
+    try:
+        _validate_existing_non_reparse_components(marker_path)
+        handles.append(_open_directory_no_follow(profile_path))
+        for directory in (opensquilla_root, *roots):
+            directory.mkdir(exist_ok=True)
+            if _is_reparse_path(directory):
+                raise OSError(f"windows_setup_helper_reparse_component: {directory}")
+            handles.append(_open_directory_no_follow(directory))
+        lease = _SetupDirectoryLease(
+            marker_path=marker_path,
+            profile_path=profile_path,
+            roots=roots,
+            handles=tuple(handles),
+        )
+        _validate_setup_directory_lease(lease, recursive=True)
+        yield lease
+    finally:
+        for handle in reversed(handles):
+            _close_directory_handle(handle)
+
+
+def _validate_setup_directory_lease(
+    lease: _SetupDirectoryLease,
+    *,
+    recursive: bool,
+) -> None:
+    _validate_existing_non_reparse_components(lease.marker_path)
+    profile = lease.profile_path.resolve(strict=True)
+    for root in lease.roots:
+        if _is_reparse_path(root):
+            raise OSError(f"windows_setup_helper_reparse_component: {root}")
+        try:
+            root.resolve(strict=True).relative_to(profile)
+        except ValueError as exc:
+            raise OSError(f"windows_setup_helper_root_outside_profile: {root}") from exc
+        if not recursive:
+            continue
+        for current, directories, files in os.walk(root, followlinks=False):
+            for name in (*directories, *files):
+                candidate = Path(current) / name
+                if _is_reparse_path(candidate):
+                    raise OSError(f"windows_setup_helper_reparse_component: {candidate}")
+
+
+def _write_json_atomic_no_follow(path: Path, payload: dict[str, object]) -> None:
+    data = (json.dumps(payload, sort_keys=True) + "\n").encode("utf-8")
+    if os.name == "nt":
+        _write_json_windows_no_follow(path, data)
+        return
+    temporary = path.with_name(f".{path.name}.{secrets.token_hex(8)}.tmp")
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(temporary, flags, 0o600)
+    try:
+        with os.fdopen(descriptor, "wb", closefd=False) as stream:
+            stream.write(data)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+    finally:
+        os.close(descriptor)
+        temporary.unlink(missing_ok=True)
+
+
+def _write_json_windows_no_follow(path: Path, data: bytes) -> None:
+    if os.name != "nt":
+        raise OSError("windows_setup_helper_output_requires_windows")
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    generic_write = 0x40000000
+    file_share_read = 0x00000001
+    file_share_write = 0x00000002
+    open_always = 4
+    file_attribute_normal = 0x00000080
+    file_flag_open_reparse_point = 0x00200000
+    file_attribute_tag_info = 9
+    file_begin = 0
+    invalid_handle_value = wintypes.HANDLE(-1).value
+
+    class FileAttributeTagInfo(ctypes.Structure):
+        _fields_ = [
+            ("FileAttributes", wintypes.DWORD),
+            ("ReparseTag", wintypes.DWORD),
+        ]
+
+    kernel32.CreateFileW.argtypes = [
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.HANDLE,
+    ]
+    kernel32.CreateFileW.restype = wintypes.HANDLE
+    kernel32.GetFileInformationByHandleEx.argtypes = [
+        wintypes.HANDLE,
+        ctypes.c_int,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+    ]
+    kernel32.GetFileInformationByHandleEx.restype = wintypes.BOOL
+    kernel32.SetFilePointerEx.argtypes = [
+        wintypes.HANDLE,
+        ctypes.c_longlong,
+        ctypes.POINTER(ctypes.c_longlong),
+        wintypes.DWORD,
+    ]
+    kernel32.SetFilePointerEx.restype = wintypes.BOOL
+    kernel32.SetEndOfFile.argtypes = [wintypes.HANDLE]
+    kernel32.SetEndOfFile.restype = wintypes.BOOL
+    kernel32.WriteFile.argtypes = [
+        wintypes.HANDLE,
+        wintypes.LPCVOID,
+        wintypes.DWORD,
+        ctypes.POINTER(wintypes.DWORD),
+        wintypes.LPVOID,
+    ]
+    kernel32.WriteFile.restype = wintypes.BOOL
+    kernel32.FlushFileBuffers.argtypes = [wintypes.HANDLE]
+    kernel32.FlushFileBuffers.restype = wintypes.BOOL
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel32.CloseHandle.restype = wintypes.BOOL
+
+    handle = kernel32.CreateFileW(
+        str(path),
+        generic_write,
+        file_share_read | file_share_write,
+        None,
+        open_always,
+        file_attribute_normal | file_flag_open_reparse_point,
+        None,
+    )
+    if handle == invalid_handle_value:
+        code = ctypes.get_last_error()
+        raise OSError(code, f"windows_setup_helper_open_output_failed: {path}")
+    try:
+        tag_info = FileAttributeTagInfo()
+        if not kernel32.GetFileInformationByHandleEx(
+            handle,
+            file_attribute_tag_info,
+            ctypes.byref(tag_info),
+            ctypes.sizeof(tag_info),
+        ):
+            code = ctypes.get_last_error()
+            raise OSError(code, f"windows_setup_helper_inspect_output_failed: {path}")
+        if tag_info.FileAttributes & 0x400:
+            raise OSError(f"windows_setup_helper_reparse_output: {path}")
+        if not kernel32.SetFilePointerEx(handle, 0, None, file_begin):
+            code = ctypes.get_last_error()
+            raise OSError(code, f"windows_setup_helper_seek_output_failed: {path}")
+        if not kernel32.SetEndOfFile(handle):
+            code = ctypes.get_last_error()
+            raise OSError(code, f"windows_setup_helper_truncate_output_failed: {path}")
+        written = wintypes.DWORD()
+        buffer = ctypes.create_string_buffer(data)
+        if not kernel32.WriteFile(
+            handle,
+            buffer,
+            len(data),
+            ctypes.byref(written),
+            None,
+        ) or written.value != len(data):
+            code = ctypes.get_last_error()
+            raise OSError(code, f"windows_setup_helper_write_output_failed: {path}")
+        if not kernel32.FlushFileBuffers(handle):
+            code = ctypes.get_last_error()
+            raise OSError(code, f"windows_setup_helper_flush_output_failed: {path}")
+    finally:
+        kernel32.CloseHandle(handle)
 
 
 def _shell_execute_runas_and_wait(
@@ -435,6 +781,7 @@ def lock_persistent_sandbox_dirs(
     *,
     offline_sid: str,
     real_user_sid: str | None = None,
+    lease: _SetupDirectoryLease | None = None,
 ) -> None:
     opensquilla_root = marker_path.parent.parent
     roots = (
@@ -443,28 +790,38 @@ def lock_persistent_sandbox_dirs(
         opensquilla_root / "sandbox-bin",
     )
     real_sid = real_user_sid or _current_windows_user_sid()
-    for root in roots:
-        root.mkdir(parents=True, exist_ok=True)
-        commands = (
-            ["icacls", str(root), "/reset", "/t", "/c"],
-            ["icacls", str(root), "/inheritance:r", "/t", "/c"],
-            [
-                "icacls",
-                str(root),
-                "/grant:r",
-                f"*{real_sid}:(OI)(CI)F",
-                "*S-1-5-18:(OI)(CI)F",
-                "*S-1-5-32-544:(OI)(CI)F",
-                "/t",
-                "/c",
-            ],
-            ["icacls", str(root), "/remove:g", f"*{offline_sid}", "/t", "/c"],
-        )
-        for command in commands:
-            completed = subprocess.run(command, capture_output=True, text=True, check=False)
-            if completed.returncode != 0:
-                detail = completed.stderr.strip() or completed.stdout.strip()
-                raise OSError(detail or f"persistent_sandbox_acl_failed: {root}")
+    profile_path = marker_path.parent.parent.parent
+    lease_context = (
+        nullcontext(lease)
+        if lease is not None
+        else _secure_setup_directory_lease(marker_path, profile_path)
+    )
+    with lease_context as active_lease:
+        assert active_lease is not None
+        for root in roots:
+            _validate_setup_directory_lease(active_lease, recursive=True)
+            commands = (
+                ["icacls", str(root), "/reset", "/t", "/c"],
+                ["icacls", str(root), "/inheritance:r", "/t", "/c"],
+                [
+                    "icacls",
+                    str(root),
+                    "/grant:r",
+                    f"*{real_sid}:(OI)(CI)F",
+                    "*S-1-5-18:(OI)(CI)F",
+                    "*S-1-5-32-544:(OI)(CI)F",
+                    "/t",
+                    "/c",
+                ],
+                ["icacls", str(root), "/remove:g", f"*{offline_sid}", "/t", "/c"],
+            )
+            for command in commands:
+                _validate_setup_directory_lease(active_lease, recursive=True)
+                command.append("/L")
+                completed = subprocess.run(command, capture_output=True, text=True, check=False)
+                if completed.returncode != 0:
+                    detail = completed.stderr.strip() or completed.stdout.strip()
+                    raise OSError(detail or f"persistent_sandbox_acl_failed: {root}")
 
 
 def _current_windows_user_sid() -> str:

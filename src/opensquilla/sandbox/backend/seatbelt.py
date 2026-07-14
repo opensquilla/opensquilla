@@ -4,8 +4,9 @@ Executes requests through ``sandbox-exec`` with a generated SBPL profile.
 Seatbelt is not a Linux namespace equivalent: paths stay as host paths, there
 is no PID/user namespace, and V1 intentionally supports only host network or
 no network. The profile is still deny-by-default for filesystem and network
-access, with explicit read/write allowances for the workspace, configured
-mounts, system runtime paths, and a backend-owned temporary directory.
+access, with read/write allowances compiled from the shared filesystem
+profile plus private worker runtime transport and backend-owned temporary
+directories.
 """
 
 from __future__ import annotations
@@ -21,12 +22,14 @@ import signal
 import sys
 import tempfile
 import time
-from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path, PurePath
 from typing import Any, cast
 
 from opensquilla.sandbox.backend.base import Backend
+from opensquilla.sandbox.backend.filesystem_worker_policy import (
+    build_filesystem_worker_policy,
+)
 from opensquilla.sandbox.managed_proxy_env import managed_proxy_env
 from opensquilla.sandbox.operation_runtime import (
     SANDBOX_FILESYSTEM_WRITE_KINDS,
@@ -35,17 +38,15 @@ from opensquilla.sandbox.operation_runtime import (
     SandboxOperationDomain,
     SandboxOperationResult,
 )
+from opensquilla.sandbox.permissions import FileSystemAccess, FileSystemPermissionProfile
 from opensquilla.sandbox.run_mode import normalize_run_mode
 from opensquilla.sandbox.types import (
-    MountSpec,
     NetworkMode,
     NetworkProxySpec,
-    ResourceLimits,
     SandboxBackendError,
     SandboxPolicy,
     SandboxRequest,
     SandboxResult,
-    SecurityLevel,
 )
 
 log = logging.getLogger(__name__)
@@ -137,7 +138,6 @@ _SEATBELT_NETWORK_POLICY = """; allow safe AF_SYSTEM sockets used for local plat
   (sysctl-name-regex #"^net.routetable"))
 """
 
-_TMP_RW_PATHS: tuple[Path, ...] = (Path("/tmp"),)
 _PROTECTED_SUBPATH_NAMES = (".git", ".codex", ".agents")
 _SEATBELT_LOOPBACK_PROXY_HOSTS = {"127.0.0.1", "::1", "localhost"}
 
@@ -187,26 +187,6 @@ def _literal(path: Path) -> str:
 
 def _subpath(path: Path) -> str:
     return f"(subpath {_scheme_string(str(path))})"
-
-
-def _unique_existing(paths: Iterable[Path]) -> list[Path]:
-    seen: set[str] = set()
-    result: list[Path] = []
-    for path in paths:
-        candidates = [path]
-        try:
-            resolved = path.resolve(strict=False)
-        except OSError:
-            resolved = path
-        if resolved != path:
-            candidates.append(resolved)
-        for candidate in candidates:
-            key = str(candidate)
-            if key in seen or not candidate.exists():
-                continue
-            seen.add(key)
-            result.append(candidate)
-    return result
 
 
 def seatbelt_env_for_policy(
@@ -273,17 +253,43 @@ def _protected_metadata_regex(root: Path, name: str) -> str:
     return f"^{escaped_root}/{escaped_name}(/.*)?$"
 
 
-def _write_rules(paths: Iterable[Path]) -> list[str]:
-    rules: list[str] = []
-    for root in _unique_existing(paths):
-        if root.is_file():
+def _seatbelt_path(path: PurePath) -> Path:
+    candidate = Path(str(path))
+    _validate_mount_path(candidate, kind="filesystem profile")
+    return candidate
+
+
+def _unique_seatbelt_paths(paths: tuple[PurePath, ...]) -> tuple[Path, ...]:
+    unique: list[Path] = []
+    seen: set[str] = set()
+    for path in paths:
+        candidate = _seatbelt_path(path)
+        key = str(candidate)
+        if key in seen:
             continue
-        require_parts = [_subpath(root)]
+        seen.add(key)
+        unique.append(candidate)
+    return tuple(unique)
+
+
+def _seatbelt_access_rule(
+    action: str,
+    root: Path,
+    excluded: tuple[Path, ...],
+) -> str:
+    if action not in {"file-read*", "file-write*"}:
+        raise ValueError(f"unsupported Seatbelt filesystem action: {action!r}")
+    root = _seatbelt_path(root)
+    excluded = _unique_seatbelt_paths(excluded)
+    clauses = [
+        _subpath(root),
+        *(f"(require-not {_subpath(path)})" for path in excluded),
+    ]
+    if action == "file-write*":
         for name in _PROTECTED_SUBPATH_NAMES:
             regex = _regex_string(_protected_metadata_regex(root, name))
-            require_parts.append(f'(require-not (regex #"{regex}"))')
-        rules.append(f"(allow file-write* (require-all {' '.join(require_parts)}))")
-    return rules
+            clauses.append(f'(require-not (regex #"{regex}"))')
+    return f"(allow {action} (require-all {' '.join(clauses)}))"
 
 
 def _seatbelt_proxy_endpoint(proxy: NetworkProxySpec) -> str:
@@ -305,17 +311,103 @@ def _network_proxy_rule(proxy: NetworkProxySpec) -> str:
     return f"(allow network-outbound (remote ip {_scheme_string(endpoint)}))"
 
 
-def _tmp_write_paths(tmp_dir: Path | None) -> list[Path]:
-    paths: list[Path] = []
-    if tmp_dir is not None:
-        paths.append(tmp_dir)
-    paths.extend(_TMP_RW_PATHS)
-    env_tmp = os.environ.get("TMPDIR")
-    if env_tmp:
-        candidate = Path(env_tmp)
-        if candidate.is_absolute():
-            paths.append(candidate)
-    return paths
+def _filesystem_profile(policy: SandboxPolicy) -> FileSystemPermissionProfile:
+    profile = policy.file_system
+    if profile is None:
+        log.error("sandbox.seatbelt_filesystem_profile_missing: deny all filesystem access")
+        return FileSystemPermissionProfile(entries=())
+    if profile.denied_read_globs:
+        log.error(
+            "sandbox.seatbelt_denied_glob_unsupported: patterns=%r",
+            profile.denied_read_globs,
+        )
+        raise SandboxBackendError("seatbelt cannot safely enforce denied read glob rules")
+    return profile
+
+
+def _profile_roots(
+    profile: FileSystemPermissionProfile,
+    accesses: frozenset[FileSystemAccess],
+) -> tuple[Path, ...]:
+    return _unique_seatbelt_paths(
+        tuple(entry.path for entry in profile.effective_entries if entry.access in accesses)
+    )
+
+
+def _profile_exclusions(
+    profile: FileSystemPermissionProfile,
+    root: Path,
+    accesses: frozenset[FileSystemAccess],
+) -> tuple[Path, ...]:
+    excluded: list[PurePath] = []
+    for entry in profile.effective_entries:
+        if entry.access not in accesses:
+            continue
+        path = _seatbelt_path(entry.path)
+        if path.is_relative_to(root):
+            excluded.append(path)
+    return _unique_seatbelt_paths(tuple(excluded))
+
+
+def _profile_read_rules(profile: FileSystemPermissionProfile) -> list[str]:
+    read_roots = list(
+        _profile_roots(
+            profile,
+            frozenset({FileSystemAccess.READ, FileSystemAccess.WRITE}),
+        )
+    )
+    root = Path("/")
+    if profile.has_full_disk_read_baseline and root not in read_roots:
+        read_roots.insert(0, root)
+    denied = frozenset({FileSystemAccess.DENY})
+    return [
+        _seatbelt_access_rule(
+            "file-read*",
+            read_root,
+            _profile_exclusions(profile, read_root, denied),
+        )
+        for read_root in read_roots
+    ]
+
+
+def _profile_write_rules(profile: FileSystemPermissionProfile) -> list[str]:
+    write_roots = list(_profile_roots(profile, frozenset({FileSystemAccess.WRITE})))
+    root = Path("/")
+    if profile.default_access is FileSystemAccess.WRITE and root not in write_roots:
+        write_roots.insert(0, root)
+    carveouts = frozenset({FileSystemAccess.READ, FileSystemAccess.DENY})
+    return [
+        _seatbelt_access_rule(
+            "file-write*",
+            write_root,
+            _profile_exclusions(profile, write_root, carveouts),
+        )
+        for write_root in write_roots
+    ]
+
+
+def _worker_private_mount_roots(
+    request: SandboxRequest,
+) -> tuple[tuple[Path, ...], tuple[Path, ...]]:
+    if not request.action_kind.startswith("fs.worker."):
+        return (), ()
+    readable: list[Path] = []
+    writable: list[Path] = []
+    for mount in request.policy.mounts:
+        if not mount.host_path.exists():
+            if mount.required:
+                raise SandboxBackendError(
+                    f"required mount missing on host: {mount.host_path!r}"
+                )
+            log.debug("sandbox.seatbelt_mount_skipped: %s (not present)", mount.host_path)
+            continue
+        readable.append(mount.host_path)
+        if mount.mode == "rw":
+            writable.append(mount.host_path)
+    return (
+        _unique_seatbelt_paths(tuple(readable)),
+        _unique_seatbelt_paths(tuple(writable)),
+    )
 
 
 def render_seatbelt_profile(
@@ -325,6 +417,7 @@ def render_seatbelt_profile(
 ) -> str:
     """Render a deny-by-default SBPL profile for ``request``."""
     policy = request.policy
+    file_system = _filesystem_profile(policy)
     if policy.network == NetworkMode.PROXY_ALLOWLIST:
         if policy.network_proxy is None:
             raise SandboxBackendError(
@@ -332,36 +425,23 @@ def render_seatbelt_profile(
                 "for the seatbelt backend"
             )
 
-    write_paths: list[Path] = []
-    workspace = next(
-        (m for m in policy.mounts if m.sandbox_path.as_posix() == "/workspace"),
-        None,
-    )
-    if workspace is not None:
-        if workspace.mode == "rw" or policy.workspace_rw:
-            write_paths.append(workspace.host_path)
-
-    for spec in policy.mounts:
-        if spec is workspace:
-            continue
-        if not spec.host_path.exists():
-            if spec.required:
-                raise SandboxBackendError(
-                    f"required mount missing on host: {spec.host_path!r}"
-                )
-            log.debug("sandbox.seatbelt_mount_skipped: %s (not present)", spec.host_path)
-            continue
-        if spec.mode == "rw":
-            write_paths.append(spec.host_path)
-
-    if policy.tmp_writable:
-        write_paths.extend(_tmp_write_paths(tmp_dir))
-
     lines: list[str] = [
         _SEATBELT_BASE_POLICY.rstrip(),
         "; allow read-only file operations",
-        "(allow file-read*)",
     ]
+    lines.extend(_profile_read_rules(file_system))
+    lines.extend(_profile_write_rules(file_system))
+
+    private_read_roots, private_write_roots = _worker_private_mount_roots(request)
+    if tmp_dir is not None:
+        private_read_roots = _unique_seatbelt_paths((*private_read_roots, tmp_dir))
+        private_write_roots = _unique_seatbelt_paths((*private_write_roots, tmp_dir))
+    lines.extend(_seatbelt_access_rule("file-read*", root, ()) for root in private_read_roots)
+    lines.extend(
+        _seatbelt_access_rule("file-write*", root, ())
+        for root in private_write_roots
+    )
+
     if policy.network == NetworkMode.NONE:
         lines.append("(deny network*)")
     elif policy.network == NetworkMode.HOST:
@@ -379,7 +459,6 @@ def render_seatbelt_profile(
     else:  # pragma: no cover - exhaustive guard for future enum values
         raise SandboxBackendError(f"unsupported seatbelt network mode: {policy.network!r}")
 
-    lines.extend(_write_rules(write_paths))
     return "\n".join(lines) + "\n"
 
 
@@ -434,7 +513,22 @@ def _filesystem_operation_request(
     worker_root = payload_path.parent
     worker_root.mkdir(parents=True, exist_ok=True)
     _validate_filesystem_operation_targets(operation)
-    policy = _filesystem_operation_policy(operation, worker_root, payload_path)
+    policy = build_filesystem_worker_policy(
+        operation,
+        private_rw_roots=(worker_root, payload_path.parent),
+        private_ro_roots=_runtime_readonly_roots(),
+        env_allowlist=(
+            "PATH",
+            "PYTHONPATH",
+            "HOME",
+            "TMP",
+            "TEMP",
+            "TMPDIR",
+            "LANG",
+            "LC_ALL",
+        ),
+        description=f"macOS filesystem worker policy for {operation.kind}",
+    )
     env = {
         "PATH": str(_python_executable().parent),
         "PYTHONPATH": _pythonpath_for_worker(),
@@ -456,81 +550,24 @@ def _filesystem_operation_request(
     )
 
 
-def _filesystem_operation_policy(
-    operation: SandboxOperation,
-    worker_root: Path,
-    payload_path: Path,
-) -> SandboxPolicy:
-    target_mounts = [
-        MountSpec(
-            host_path=root,
-            sandbox_path=root,
-            mode="rw" if operation.kind in SANDBOX_FILESYSTEM_WRITE_KINDS else "ro",
-            required=True,
-        )
-        for root in _filesystem_operation_target_roots(operation)
-    ]
-    runtime_mounts = [
-        MountSpec(host_path=root, sandbox_path=root, mode="ro", required=True)
-        for root in _runtime_readonly_roots()
-    ]
-    worker_mount = MountSpec(
-        host_path=worker_root,
-        sandbox_path=worker_root,
-        mode="rw",
-        required=True,
-    )
-    payload_mount = MountSpec(
-        host_path=payload_path.parent,
-        sandbox_path=payload_path.parent,
-        mode="rw",
-        required=True,
-    )
-    return SandboxPolicy(
-        level=SecurityLevel.STANDARD,
-        network=NetworkMode.NONE,
-        mounts=tuple(dict.fromkeys((*target_mounts, *runtime_mounts, worker_mount, payload_mount))),
-        workspace_rw=False,
-        tmp_writable=True,
-        limits=ResourceLimits(cpu_seconds=30, memory_mb=1024, pids=64, wall_timeout_s=30),
-        env_allowlist=(
-            "PATH",
-            "PYTHONPATH",
-            "HOME",
-            "TMP",
-            "TEMP",
-            "TMPDIR",
-            "LANG",
-            "LC_ALL",
-        ),
-        require_approval=False,
-        description=f"macOS filesystem worker policy for {operation.kind}",
-    )
-
-
-def _filesystem_operation_target_roots(operation: SandboxOperation) -> tuple[Path, ...]:
-    request = _filesystem_request(operation)
-    roots: list[Path] = []
-    for path in request.paths:
-        root = path.parent if operation.kind in SANDBOX_FILESYSTEM_WRITE_KINDS else path
-        roots.append(_nearest_existing_path(root))
-    return tuple(dict.fromkeys(roots))
-
-
-def _nearest_existing_path(path: Path) -> Path:
-    candidate = path
-    while not candidate.exists():
-        parent = candidate.parent
-        if parent == candidate:
-            break
-        candidate = parent
-    return candidate
-
-
 def _validate_filesystem_operation_targets(operation: SandboxOperation) -> None:
+    request = _filesystem_request(operation)
+    if operation.kind == "read_file" and request.path is not None:
+        display = request.display_path or str(request.path)
+        if not request.path.exists():
+            raise FileNotFoundError(f"File not found: {display}")
+        if not request.path.is_file():
+            raise IsADirectoryError(f"Path is a directory: {display}")
+        return
+    if operation.kind == "list_dir" and request.path is not None:
+        display = request.display_path or str(request.path)
+        if not request.path.exists():
+            raise FileNotFoundError(f"Path not found: {display}")
+        if not request.path.is_dir():
+            raise NotADirectoryError(f"Not a directory: {display}")
+        return
     if operation.kind not in SANDBOX_FILESYSTEM_WRITE_KINDS:
         return
-    request = _filesystem_request(operation)
     readonly_roots = _runtime_readonly_roots()
     for path in request.paths:
         for root in readonly_roots:

@@ -2,6 +2,8 @@ import type { NodeStep, RunTraceSummary } from '@/types/runTrace'
 import type {
   ChatStreamTimelineItem,
   ChatToolCallRenderItem,
+  ToolResultDeliverySummary,
+  ToolResultPreviewSummary,
 } from '@/types/chat'
 import type { ChatHistoryMessage } from '@/types/rpc'
 import type { ToolPartState } from '@/types/parts'
@@ -14,6 +16,7 @@ import {
   toolDisplayName,
   truncateToolPreview,
 } from '@/utils/chat/toolDisplay'
+import { normalizeToolResultSummaries } from '@/utils/chat/toolResultSummary'
 
 /** status enum → tone + glyph. Returns CSS-class suffixes only (never a raw
  *  colour); the SFC owns the var() bindings, so the colour guard stays happy. */
@@ -65,6 +68,8 @@ function stepFromRenderItem(
     output: call.result,
     outputPreview: call.resultPreview,
     isError: call.isError,
+    deliverySummary: call.deliverySummary,
+    previewSummary: call.previewSummary,
   }
 }
 
@@ -83,6 +88,8 @@ export function nodeStepsFromHistoryMessage(msg: ChatHistoryMessage): NodeStep[]
     input: string
     output: string
     isError: boolean
+    deliverySummary?: ToolResultDeliverySummary
+    previewSummary?: ToolResultPreviewSummary
   }
   const byId = new Map<string, Pending>()
   const order: string[] = []
@@ -117,6 +124,11 @@ export function nodeStepsFromHistoryMessage(msg: ChatHistoryMessage): NodeStep[]
     if (input) pending.input = input
     if (output) pending.output = output
     if (isError) pending.isError = true
+    if (type === 'tool_result') {
+      const summaries = normalizeToolResultSummaries(record, output, { completeResult: false })
+      pending.deliverySummary = summaries.delivery
+      pending.previewSummary = summaries.preview
+    }
   }
 
   const steps: NodeStep[] = []
@@ -143,6 +155,8 @@ export function nodeStepsFromHistoryMessage(msg: ChatHistoryMessage): NodeStep[]
       output,
       outputPreview: truncateToolPreview(output),
       isError,
+      deliverySummary: pending.deliverySummary,
+      previewSummary: pending.previewSummary,
     })
   }
   return steps

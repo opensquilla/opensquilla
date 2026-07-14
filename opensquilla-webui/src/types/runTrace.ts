@@ -1,4 +1,8 @@
 import type { ToolPartState } from '@/types/parts'
+import type {
+  ToolResultDeliverySummary,
+  ToolResultPreviewSummary,
+} from '@/types/chat'
 
 /**
  * One flat step in a run trace, as a backend would emit it. The frontend
@@ -19,6 +23,8 @@ export interface NodeStep {
   output?: string               // raw output (full), for the OUTPUT panel
   outputPreview?: string        // truncated preview
   isError?: boolean
+  deliverySummary?: ToolResultDeliverySummary
+  previewSummary?: ToolResultPreviewSummary
 }
 
 export type RunTraceStatus =

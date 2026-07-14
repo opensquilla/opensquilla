@@ -1037,15 +1037,27 @@ def _persisted_tool_result_segment(
 
     parsed_result: Any = None
     parsed_result_available = False
-    if event.tool_name == "web_search" or len(result) > max_chars:
-        with contextlib.suppress(json.JSONDecodeError, TypeError):
-            parsed_result = json.loads(result)
-            parsed_result_available = True
+    with contextlib.suppress(json.JSONDecodeError, TypeError):
+        parsed_result = json.loads(result)
+        parsed_result_available = True
+    delivered_count = (
+        _structured_result_count(parsed_result) if parsed_result_available else None
+    )
+    segment["delivery_summary"] = {
+        "returned_count": delivered_count,
+        "result_chars": len(result),
+        "provider_budget_violation": (
+            parsed_result.get("providerBudgetViolation") is True
+            if isinstance(parsed_result, dict)
+            else False
+        ),
+    }
     if event.tool_name == "web_search" and parsed_result_available:
         sources = _persisted_web_search_sources(parsed_result)
         if sources:
             segment["sources"] = sources
     if len(result) <= max_chars:
+        _add_tool_result_preview_summary(segment, delivered_count)
         return segment
 
     segment["result_truncated"] = True
@@ -1054,6 +1066,7 @@ def _persisted_tool_result_segment(
         segment["execution_status"] = mark_execution_status_truncated(segment["execution_status"])
     if not parsed_result_available:
         segment["result"] = result[:max_chars]
+        _add_tool_result_preview_summary(segment, delivered_count)
         return segment
 
     parsed = parsed_result
@@ -1063,7 +1076,64 @@ def _persisted_tool_result_segment(
         if sources:
             segment["sources"] = sources
     segment["result"] = _json_tool_result_preview(parsed, len(result), max_chars)
+    _add_tool_result_preview_summary(segment, delivered_count)
     return segment
+
+
+def _structured_result_count(value: Any) -> int | None:
+    if not isinstance(value, dict):
+        return None
+    for key in ("results", "items", "data", "matches"):
+        items = value.get(key)
+        if isinstance(items, list):
+            return len(items)
+    returned = value.get("returnedCount")
+    if isinstance(returned, int) and not isinstance(returned, bool) and returned >= 0:
+        return returned
+    return None
+
+
+def _structured_preview_count(value: Any) -> int | None:
+    """Count objects actually retained in a persisted preview.
+
+    Preview JSON can preserve the original ``returnedCount`` while bounding a
+    results array.  Array length therefore takes precedence here; otherwise
+    the UI would repeat the exact ambiguity this metadata is intended to fix.
+    """
+    if not isinstance(value, dict):
+        return None
+    for key in ("results", "items", "data", "matches"):
+        items = value.get(key)
+        if isinstance(items, list):
+            return len(items)
+    returned = value.get("returnedCount")
+    if isinstance(returned, int) and not isinstance(returned, bool) and returned >= 0:
+        return returned
+    return None
+
+
+def _add_tool_result_preview_summary(
+    segment: dict[str, Any],
+    delivered_count: int | None,
+) -> None:
+    preview = segment.get("result")
+    parsed_preview: Any = None
+    if isinstance(preview, str):
+        with contextlib.suppress(json.JSONDecodeError, TypeError):
+            parsed_preview = json.loads(preview)
+    displayed_count = _structured_preview_count(parsed_preview)
+    truncated = segment.get("result_truncated") is True
+    if (
+        delivered_count is not None
+        and displayed_count is not None
+        and displayed_count < delivered_count
+    ):
+        truncated = True
+    segment["preview_summary"] = {
+        "displayed_count": displayed_count,
+        "preview_chars": len(preview) if isinstance(preview, str) else 0,
+        "preview_truncated": truncated,
+    }
 
 
 def _artifact_delivery_failure_summary(event: ToolResultEvent) -> str | None:

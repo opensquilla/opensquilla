@@ -54,6 +54,18 @@ export interface ChatRouterTierConfig {
   imageOnly: boolean
 }
 
+export interface ToolResultDeliverySummary {
+  returnedCount: number | null
+  resultChars: number
+  providerBudgetViolation: boolean
+}
+
+export interface ToolResultPreviewSummary {
+  displayedCount: number | null
+  previewChars: number
+  previewTruncated: boolean
+}
+
 export interface ChatToolCall {
   toolId: string
   name: string
@@ -67,6 +79,8 @@ export interface ChatToolCall {
   result: string
   resultPreview: string
   sources?: unknown
+  deliverySummary?: ToolResultDeliverySummary
+  previewSummary?: ToolResultPreviewSummary
   isOpen: boolean
 }
 
@@ -156,6 +170,14 @@ export interface RawToolCallPayload extends Record<string, unknown> {
   execution_status?: { status?: string }
   groupId?: string
   group_id?: string
+  delivery_summary?: unknown
+  deliverySummary?: unknown
+  preview_summary?: unknown
+  previewSummary?: unknown
+  result_truncated?: boolean
+  resultTruncated?: boolean
+  result_original_chars?: number
+  resultOriginalChars?: number
 }
 
 export interface ChatTimelineSegment extends Record<string, unknown> {

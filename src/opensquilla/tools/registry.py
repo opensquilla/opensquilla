@@ -5,7 +5,7 @@ from __future__ import annotations
 import copy
 import functools
 import inspect
-from collections.abc import Callable, Mapping
+from collections.abc import Mapping
 from dataclasses import replace
 from pathlib import Path
 from typing import Any, cast
@@ -40,23 +40,6 @@ class ToolRegistry:
 
     def __init__(self) -> None:
         self._tools: dict[str, RegisteredTool] = {}
-        self._knowledge_capability_snapshot_provider: Callable[[], Any | None] | None = None
-
-    def set_knowledge_capability_snapshot_provider(
-        self,
-        provider: Callable[[], Any | None] | None,
-    ) -> None:
-        self._knowledge_capability_snapshot_provider = provider
-
-    def _with_knowledge_capability_snapshot(self, ctx: ToolContext) -> ToolContext:
-        provider = self._knowledge_capability_snapshot_provider
-        if provider is None:
-            return ctx
-        try:
-            snapshot = provider()
-        except Exception:  # noqa: BLE001 - capability schemas fail closed
-            snapshot = None
-        return replace(ctx, knowledge_capability_snapshot=snapshot)
 
     def register(self, spec: ToolSpec, handler: ToolHandler) -> None:
         if spec.name in self._tools:
@@ -85,26 +68,16 @@ class ToolRegistry:
         visible_tools = visibility_policy.visible_registered_tools(
             self._tools.values(), ctx, sort=sort
         )
-        snapshot = getattr(ctx, "knowledge_capability_snapshot", None)
-        state = getattr(getattr(snapshot, "state", None), "value", None)
-        if state in {"READY", "DEGRADED", "LEGACY"}:
-            return visible_tools
-        return [
-            tool for tool in visible_tools if tool.spec.name != "knowledge_search"
-        ]
+        return visible_tools
 
     def _is_visible(self, rt: RegisteredTool, ctx: ToolContext | None = None) -> bool:
         return visibility_policy.is_tool_visible(rt, ctx)
 
     def _default_context(self) -> ToolContext:
-        return self._with_knowledge_capability_snapshot(
-            visibility_policy.default_tool_context()
-        )
+        return visibility_policy.default_tool_context()
 
     def _context_for_profile(self, profile: str | None) -> ToolContext:
-        return self._with_knowledge_capability_snapshot(
-            visibility_policy.tool_context_for_profile(profile)
-        )
+        return visibility_policy.tool_context_for_profile(profile)
 
     def _effective_context(
         self,
@@ -124,7 +97,7 @@ class ToolRegistry:
             is_owner=is_owner,
         )
 
-        return self._with_knowledge_capability_snapshot(ctx)
+        return ctx
 
     @staticmethod
     def _schema_for(rt: RegisteredTool) -> dict[str, Any]:
@@ -143,24 +116,6 @@ class ToolRegistry:
         ):
             raw_parameters = raw_parameters["properties"]
         parameters = copy.deepcopy(raw_parameters)
-        if rt.spec.name == "knowledge_search":
-            snapshot = getattr(ctx, "knowledge_capability_snapshot", None)
-            state = getattr(getattr(snapshot, "state", None), "value", None)
-            if state == "READY":
-                retrieval_profile = parameters.get("retrieval_profile")
-                available_profile_ids = list(
-                    getattr(snapshot, "available_profile_ids", ())
-                )
-                if isinstance(retrieval_profile, dict) and available_profile_ids:
-                    retrieval_profile["enum"] = available_profile_ids
-                elif not available_profile_ids:
-                    parameters.pop("retrieval_profile", None)
-            elif state in {"DEGRADED", "LEGACY"}:
-                for parameter in (
-                    "retrieval_profile", "embedding_model", "embedding_dimensions"
-                ):
-                    parameters.pop(parameter, None)
-            return parameters
         if rt.spec.name != "router_control":
             return parameters
         router_cfg = getattr(ctx, "router_control_config", None)

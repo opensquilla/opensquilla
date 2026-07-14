@@ -12265,10 +12265,6 @@ class Agent:
 
         parent_session_key = self._session_key or "unknown"
         subagent_label = spec.label or "subagent"
-        parent_tool_context = current_tool_context.get() or self._tool_context
-        knowledge_capability_snapshot = getattr(
-            parent_tool_context, "knowledge_capability_snapshot", None
-        )
 
         # Schema-time filtering: subagents cannot see dangerous tools
         filtered_defs = [td for td in self.tool_definitions if td.name not in SUBAGENT_TOOL_DENY]
@@ -12290,7 +12286,6 @@ class Agent:
             ),
             source_diff_preservation_mode=self.config.source_diff_preservation_mode,
             source_diff_candidate_mode=self.config.source_diff_candidate_mode,
-            knowledge_capability_snapshot=knowledge_capability_snapshot,
             tool_run_budget_key=(
                 f"subagent:{parent_session_key}:{subagent_label}:{depth}:{uuid.uuid4().hex}"
             ),

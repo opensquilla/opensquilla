@@ -94,7 +94,7 @@ class RpcContext:
     memory_stores: dict[str, Any] = field(default_factory=dict)
     memory_retrievers: dict[str, Any] = field(default_factory=dict)
     originating_envelope: Any = None  # Channel RouteEnvelope for RPC side effects
-    knowledge_runtime: Any = None  # KnowledgeRuntime instance (injected at boot)
+    rag_provider_runtime: Any = None  # RagProviderRuntime instance (injected at boot)
 
     @property
     def role(self) -> str:

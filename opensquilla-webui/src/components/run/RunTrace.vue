@@ -434,6 +434,7 @@ import {
 import { toolState } from '@/utils/chat/toParts'
 import { composeTree, statusVisual, type StatusVisual } from '@/components/run/runTrace'
 import { copyTextWithFallback } from '@/utils/browser'
+import { toolResultSummaryText } from '@/utils/chat/toolResultSummary'
 
 const { t } = useI18n()
 
@@ -618,6 +619,8 @@ function stepToRenderItem(step: NodeStep): ChatToolCallRenderItem {
     isError: step.isError ?? step.state === 'output-error',
     result: step.output ?? '',
     resultPreview: step.outputPreview ?? '',
+    deliverySummary: step.deliverySummary,
+    previewSummary: step.previewSummary,
     isOpen: false,
   }
 }
@@ -723,6 +726,11 @@ function groupBulletClass(group: ChatToolCallGroup) {
 
 function resultCountText(call: ChatToolCallRenderItem): string {
   if (call.isRunning || call.isError) return ''
+  const summary = toolResultSummaryText(
+    call.deliverySummary,
+    call.previewSummary,
+  )
+  if (summary) return summary
   const count = toolResultCount(call.result)
   return count === null ? '' : t('shared.runTrace.resultsCount', { count })
 }

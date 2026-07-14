@@ -39,6 +39,7 @@ import type { InterruptViewState } from '@/types/parts'
 import { toParts, toolState, type ToPartsInterrupt } from '@/utils/chat/toParts'
 import { toSources } from '@/utils/chat/toSources'
 import { relativeTime } from '@/utils/messageTime'
+import { normalizeToolResultSummaries } from '@/utils/chat/toolResultSummary'
 
 export interface NormalizedRouterDecision extends Record<string, unknown> {
   tier: string
@@ -657,6 +658,13 @@ export function useChatRenderedMessages(options: UseChatRenderedMessagesOptions)
         call.status = call.isError ? 'error' : 'success'
         call.result = resultStr
         call.resultPreview = truncate(resultStr, 200)
+        const summaries = normalizeToolResultSummaries(
+          segment,
+          resultStr,
+          { completeResult: false },
+        )
+        call.deliverySummary = summaries.delivery
+        call.previewSummary = summaries.preview
         if (segment.sources !== undefined) call.sources = segment.sources
       }
     })

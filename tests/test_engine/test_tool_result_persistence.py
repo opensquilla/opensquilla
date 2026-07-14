@@ -255,6 +255,16 @@ def test_persisted_tool_result_keeps_short_result_unchanged() -> None:
         "name": "web_search",
         "result": result,
         "is_error": False,
+        "delivery_summary": {
+            "returned_count": 0,
+            "result_chars": len(result),
+            "provider_budget_violation": False,
+        },
+        "preview_summary": {
+            "displayed_count": 0,
+            "preview_chars": len(result),
+            "preview_truncated": False,
+        },
     }
 
 
@@ -273,3 +283,103 @@ def test_persisted_tool_result_marks_oversized_non_json_prefix() -> None:
     assert segment["result"] == result[:2000]
     assert segment["result_truncated"] is True
     assert segment["result_original_chars"] == len(result)
+    assert segment["delivery_summary"]["returned_count"] is None
+    assert segment["preview_summary"]["displayed_count"] is None
+    assert segment["preview_summary"]["preview_truncated"] is True
+
+
+def test_persisted_search_distinguishes_model_delivery_from_bounded_preview() -> None:
+    result = json.dumps(
+        {
+            "returnedCount": 20,
+            "totalMatched": 57,
+            "resultsTruncated": True,
+            "providerBudgetViolation": False,
+            "results": [
+                {
+                    "evidenceId": f"ev_{index:03d}",
+                    "snippet": "NAND capacity evidence " * 30,
+                    "snippetTruncated": False,
+                    "citation": {"title": f"Document {index}"},
+                }
+                for index in range(20)
+            ],
+        },
+        ensure_ascii=False,
+    )
+    assert len(result) > 2_000
+
+    segment = _persisted_tool_result_segment(
+        ToolResultEvent(
+            tool_use_id="call_knowledge_search_20",
+            tool_name="knowledge_search",
+            result=result,
+            is_error=False,
+        )
+    )
+    preview = json.loads(segment["result"])
+
+    assert len(preview["results"]) < 20
+    assert segment["delivery_summary"] == {
+        "returned_count": 20,
+        "result_chars": len(result),
+        "provider_budget_violation": False,
+    }
+    assert segment["preview_summary"] == {
+        "displayed_count": len(preview["results"]),
+        "preview_chars": len(segment["result"]),
+        "preview_truncated": True,
+    }
+
+
+def test_structured_result_count_is_generic_across_common_array_shapes() -> None:
+    for key in ("results", "items", "data", "matches"):
+        raw = json.dumps({key: [{"id": 1}, {"id": 2}]})
+        segment = _persisted_tool_result_segment(
+            ToolResultEvent(
+                tool_use_id=f"call_{key}",
+                tool_name="custom_tool",
+                result=raw,
+                is_error=False,
+            )
+        )
+
+        assert segment["delivery_summary"]["returned_count"] == 2
+        assert segment["preview_summary"]["displayed_count"] == 2
+        assert segment["preview_summary"]["preview_truncated"] is False
+
+
+def test_structured_result_count_prefers_actual_array_over_stale_metadata() -> None:
+    segment = _persisted_tool_result_segment(
+        ToolResultEvent(
+            tool_use_id="call_stale_count",
+            tool_name="custom_tool",
+            result='{"returnedCount":20,"results":[{"id":1}]}',
+            is_error=False,
+        )
+    )
+
+    assert segment["delivery_summary"]["returned_count"] == 1
+    assert segment["preview_summary"]["displayed_count"] == 1
+
+
+def test_provider_budget_violation_requires_a_real_boolean() -> None:
+    true_segment = _persisted_tool_result_segment(
+        ToolResultEvent(
+            tool_use_id="call_true",
+            tool_name="custom_tool",
+            result='{"results": [], "providerBudgetViolation": true}',
+            is_error=False,
+        )
+    )
+    string_segment = _persisted_tool_result_segment(
+        ToolResultEvent(
+            tool_use_id="call_string",
+            tool_name="custom_tool",
+            result='{"results": [], "providerBudgetViolation": "true"}',
+            is_error=False,
+        )
+    )
+
+    assert true_segment["delivery_summary"]["provider_budget_violation"] is True
+    assert string_segment["delivery_summary"]["provider_budget_violation"] is False

@@ -5,6 +5,7 @@ import type {
   ChatToolCallRenderItem,
 } from '@/types/chat'
 import type { IconName } from '@/utils/icons'
+import { toolResultSummaryText } from '@/utils/chat/toolResultSummary'
 
 function truncateToolText(text: string, max = 200): string {
   if (!text || text.length <= max) return text || ''
@@ -202,6 +203,11 @@ export function toolStatusText(toolCall: ChatToolCall): string {
   const t = i18n.global.t
   if (toolCall.isRunning) return t('chat.tool.running')
   if (toolCall.status === 'error') return t('chat.tool.failed')
+  const summary = toolResultSummaryText(
+    toolCall.deliverySummary,
+    toolCall.previewSummary,
+  )
+  if (summary) return summary
   const count = toolResultCount(toolCall.result)
   if (count !== null) return t('chat.tool.results', { count })
   if (toolCall.status === 'success') return t('chat.tool.done')
@@ -212,6 +218,13 @@ export function toolGroupStatusText(group: ChatToolCallGroup): string {
   const t = i18n.global.t
   if (group.isRunning) return t('chat.tool.running')
   if (group.isError) return t('chat.tool.failed')
+  if (group.calls.length === 1) {
+    const summary = toolResultSummaryText(
+      group.calls[0].deliverySummary,
+      group.calls[0].previewSummary,
+    )
+    if (summary) return summary
+  }
   const counts = group.calls.map(toolCall => toolResultCount(toolCall.result)).filter((count): count is number => count !== null)
   if (counts.length && group.calls.length === 1) return t('chat.tool.results', { count: counts[0] })
   if (counts.length) return t('chat.tool.results', { count: counts.reduce((sum, count) => sum + count, 0) })

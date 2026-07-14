@@ -33,6 +33,7 @@ import {
 } from '@/utils/chat/toolDisplay'
 import { segmentsToTimelineItems } from '@/utils/chat/segmentsToTimelineItems'
 import { useChatTurnLog } from '@/composables/chat/useChatTurnLog'
+import { normalizeToolResultSummaries } from '@/utils/chat/toolResultSummary'
 
 const DEFAULT_STREAM_IDLE_TIMEOUT_MS = 210000
 const THINKING_DELAY_MS = 400
@@ -655,6 +656,13 @@ export function useChatStream(options: UseChatStreamOptions) {
       tc.isError = toolResultIsError(payload)
       tc.result = content
       tc.resultPreview = truncateToolPreview(content, 200)
+      const summaries = normalizeToolResultSummaries(
+        payload,
+        content,
+        { completeResult: true },
+      )
+      tc.deliverySummary = summaries.delivery
+      tc.previewSummary = summaries.preview
 
       const timing = toolTimes.value.get(tc.toolId)
       if (timing && !timing.endedAt) timing.endedAt = Date.now()

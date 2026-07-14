@@ -11,8 +11,21 @@ from opensquilla.gateway.config import GatewayConfig
 from opensquilla.tools.registry import ToolRegistry
 
 
+def _config(tmp_path: Path, *, enabled: bool) -> GatewayConfig:
+    return GatewayConfig(
+        state_dir=str(tmp_path / "state"),
+        workspace_dir=str(tmp_path / "workspace"),
+        control_ui={"enabled": False},
+        channels={"channels": []},
+        mcp={"enabled": False},
+        memory={"flush_enabled": False},
+        sandbox={"auto_setup": False},
+        knowledge={"enabled": enabled},
+    )
+
+
 @pytest.mark.asyncio
-async def test_service_container_close_stops_knowledge_runtime_once() -> None:
+async def test_service_container_close_stops_rag_provider_runtime_once() -> None:
     class Runtime:
         def __init__(self) -> None:
             self.stop_count = 0
@@ -23,7 +36,7 @@ async def test_service_container_close_stops_knowledge_runtime_once() -> None:
     runtime = Runtime()
     services = ServiceContainer(
         config=GatewayConfig(),
-        knowledge_runtime=runtime,
+        rag_provider_runtime=runtime,
         session_manager=SimpleNamespace(),
     )
 
@@ -34,27 +47,43 @@ async def test_service_container_close_stops_knowledge_runtime_once() -> None:
 
 
 @pytest.mark.asyncio
-async def test_build_services_owns_one_started_knowledge_runtime(
+async def test_disabled_config_does_not_construct_rag_provider_runtime(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from opensquilla.knowledge import runtime as runtime_module
-    from opensquilla.tools.builtin import knowledge_tools
+    from opensquilla.rag_provider import runtime as runtime_module
+
+    calls: list[tuple[Any, Any]] = []
+
+    def factory(config: Any, registry: Any) -> Any:
+        calls.append((config, registry))
+        raise AssertionError("disabled provider must not be constructed")
+
+    monkeypatch.setattr(runtime_module, "create_rag_provider_runtime", factory)
+    services = await build_services(
+        config=_config(tmp_path, enabled=False),
+        tool_registry=ToolRegistry(),
+        session_db_path=str(tmp_path / "sessions.sqlite"),
+        seed_agent_workspaces=False,
+    )
+    try:
+        assert calls == []
+        assert services.rag_provider_runtime is None
+    finally:
+        await services.close()
+
+
+@pytest.mark.asyncio
+async def test_enabled_config_owns_one_started_rag_provider_runtime(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from opensquilla.rag_provider import runtime as runtime_module
 
     instances: list[Any] = []
-    tool_kwargs: dict[str, Any] = {}
 
     class Runtime:
-        def __init__(
-            self,
-            backend_provider: Any,
-            *,
-            enabled_provider: Any,
-            ttl_seconds_provider: Any,
-        ) -> None:
-            self.backend_provider = backend_provider
-            self.enabled_provider = enabled_provider
-            self.ttl_seconds_provider = ttl_seconds_provider
+        def __init__(self) -> None:
             self.start_count = 0
             self.stop_count = 0
             instances.append(self)
@@ -65,36 +94,20 @@ async def test_build_services_owns_one_started_knowledge_runtime(
         async def stop(self) -> None:
             self.stop_count += 1
 
-    def capture_tools(*, runtime: Any, registry: Any) -> None:
-        tool_kwargs.update(runtime=runtime, registry=registry)
-
-    monkeypatch.setattr(runtime_module, "KnowledgeRuntime", Runtime)
-    monkeypatch.setattr(knowledge_tools, "create_knowledge_tools", capture_tools)
-    config = GatewayConfig(
-        state_dir=str(tmp_path / "state"),
-        workspace_dir=str(tmp_path / "workspace"),
-        control_ui={"enabled": False},
-        channels={"channels": []},
-        mcp={"enabled": False},
-        memory={"flush_enabled": False},
-        sandbox={"auto_setup": False},
+    monkeypatch.setattr(
+        runtime_module,
+        "create_rag_provider_runtime",
+        lambda config, registry: Runtime(),
     )
-    registry = ToolRegistry()
-
     services = await build_services(
-        config=config,
-        tool_registry=registry,
+        config=_config(tmp_path, enabled=True),
+        tool_registry=ToolRegistry(),
         session_db_path=str(tmp_path / "sessions.sqlite"),
         seed_agent_workspaces=False,
     )
     try:
-        assert len(instances) == 1
-        runtime = instances[0]
-        assert services.knowledge_runtime is runtime
-        assert runtime.start_count == 1
-        assert tool_kwargs == {"runtime": runtime, "registry": registry}
-        assert runtime.enabled_provider() is config.knowledge.enabled
-        assert runtime.ttl_seconds_provider() == config.knowledge.capability_ttl_seconds
+        assert services.rag_provider_runtime is instances[0]
+        assert instances[0].start_count == 1
     finally:
         await services.close()
 
@@ -102,64 +115,7 @@ async def test_build_services_owns_one_started_knowledge_runtime(
 
 
 @pytest.mark.asyncio
-async def test_build_services_does_not_retry_runtime_capable_tool_type_error(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from opensquilla.knowledge import runtime as runtime_module
-    from opensquilla.tools.builtin import knowledge_tools
-
-    instances: list[Any] = []
-    tool_calls: list[dict[str, Any]] = []
-
-    class Runtime:
-        def __init__(
-            self,
-            backend_provider: Any,
-            *,
-            enabled_provider: Any,
-            ttl_seconds_provider: Any,
-        ) -> None:
-            instances.append(self)
-
-        async def start(self) -> None:
-            return None
-
-        async def stop(self) -> None:
-            return None
-
-    def failing_tools(**kwargs: Any) -> None:
-        tool_calls.append(kwargs)
-        raise TypeError("unexpected keyword argument 'runtime': secret internal failure")
-
-    monkeypatch.setattr(runtime_module, "KnowledgeRuntime", Runtime)
-    monkeypatch.setattr(knowledge_tools, "create_knowledge_tools", failing_tools)
-    config = GatewayConfig(
-        state_dir=str(tmp_path / "state"),
-        workspace_dir=str(tmp_path / "workspace"),
-        control_ui={"enabled": False},
-        channels={"channels": []},
-        mcp={"enabled": False},
-        memory={"flush_enabled": False},
-        sandbox={"auto_setup": False},
-    )
-    registry = ToolRegistry()
-
-    services = await build_services(
-        config=config,
-        tool_registry=registry,
-        session_db_path=str(tmp_path / "sessions.sqlite"),
-        seed_agent_workspaces=False,
-    )
-    try:
-        assert len(instances) == 1
-        assert tool_calls == [{"runtime": instances[0], "registry": registry}]
-    finally:
-        await services.close()
-
-
-@pytest.mark.asyncio
-async def test_service_container_stop_failure_logs_only_fixed_metadata(
+async def test_runtime_stop_failure_logs_only_fixed_metadata(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from opensquilla.gateway import boot
@@ -177,14 +133,14 @@ async def test_service_container_stop_failure_logs_only_fixed_metadata(
     monkeypatch.setattr(boot, "log", Log())
     services = ServiceContainer(
         config=GatewayConfig(),
-        knowledge_runtime=Runtime(),
+        rag_provider_runtime=Runtime(),
     )
 
     await services.close()
 
     assert warnings == [
         (
-            "service_container.knowledge_runtime_stop_failed",
+            "service_container.rag_provider_runtime_stop_failed",
             {"error_type": "RuntimeError"},
         )
     ]

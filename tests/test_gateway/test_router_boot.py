@@ -33,7 +33,6 @@ from opensquilla.gateway.config import (
 )
 from opensquilla.gateway.diagnostics import DiagnosticsState
 from opensquilla.gateway.routing import build_cli_route_envelope, build_cron_route_envelope
-from opensquilla.knowledge.runtime import parse_capability_snapshot
 from opensquilla.onboarding.mutations import upsert_channel
 from opensquilla.provider import Message
 from opensquilla.scheduler.types import CronJob, JobStatus
@@ -46,7 +45,6 @@ from opensquilla.tools.types import (
     CallerKind,
     ToolContext,
     ToolSpec,
-    current_tool_context,
 )
 
 
@@ -2084,148 +2082,7 @@ async def test_task_runtime_turn_uses_owner_boundary_for_owner_cron_job() -> Non
     assert tool_context.allowed_tools is None
     assert tool_context.tool_policy == job.tool_policy
     assert "exec_command" not in tool_context.denied_tools
-
-
-@pytest.mark.asyncio
-async def test_build_services_knowledge_tools_resolve_current_backend(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from opensquilla.knowledge import runtime as runtime_module
-
-    instances: list[Any] = []
-
-    class Backend:
-        def __init__(self, name: str) -> None:
-            self.name = name
-
-        def search(
-            self,
-            query: str,
-            *,
-            top_k: int,
-            filters: dict[str, Any] | None,
-        ) -> dict[str, Any]:
-            return {
-                "query": query,
-                "backend": self.name,
-                "results": [],
-                "count": 0,
-            }
-
-    class Runtime:
-        def __init__(
-            self,
-            backend_provider: Any,
-            *,
-            enabled_provider: Any,
-            ttl_seconds_provider: Any,
-        ) -> None:
-            self.backend = Backend("first")
-            instances.append(self)
-
-        def current_backend(self) -> Backend:
-            return self.backend
-
-        async def start(self) -> None:
-            return None
-
-        async def stop(self) -> None:
-            return None
-
-    monkeypatch.setattr(runtime_module, "KnowledgeRuntime", Runtime)
-    config = GatewayConfig(
-        state_dir=str(tmp_path / "state"),
-        workspace_dir=str(tmp_path / "workspace"),
-        control_ui={"enabled": False},
-        channels={"channels": []},
-        mcp={"enabled": False},
-        memory={"flush_enabled": False},
-        sandbox={"auto_setup": False},
-    )
-    registry = ToolRegistry()
-
-    services = await build_services(
-        config=config,
-        tool_registry=registry,
-        session_db_path=str(tmp_path / "sessions.sqlite"),
-        seed_agent_workspaces=False,
-    )
-    try:
-        registered = registry.get("knowledge_search")
-        assert registered is not None
-        legacy_snapshot = parse_capability_snapshot({"ok": True}, fetched_at_ms=1)
-        token = current_tool_context.set(
-            ToolContext(knowledge_capability_snapshot=legacy_snapshot)
-        )
-        try:
-            first = json.loads(await registered.handler(query="revenue"))
-            instances[0].backend = Backend("second")
-            second = json.loads(await registered.handler(query="revenue"))
-        finally:
-            current_tool_context.reset(token)
-    finally:
-        await services.close()
-
-    assert first["backend"] == "first"
-    assert second["backend"] == "second"
-
-
-@pytest.mark.asyncio
-async def test_build_services_knowledge_runtime_start_failure_is_non_blocking(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from opensquilla.knowledge import runtime as runtime_module
-
-    instances: list[Any] = []
-
-    class Runtime:
-        def __init__(
-            self,
-            backend_provider: Any,
-            *,
-            enabled_provider: Any,
-            ttl_seconds_provider: Any,
-        ) -> None:
-            self.start_count = 0
-            self.stop_count = 0
-            instances.append(self)
-
-        async def start(self) -> None:
-            self.start_count += 1
-            raise RuntimeError("knowledge unavailable")
-
-        async def stop(self) -> None:
-            self.stop_count += 1
-
-    monkeypatch.setattr(runtime_module, "KnowledgeRuntime", Runtime)
-    config = GatewayConfig(
-        state_dir=str(tmp_path / "state"),
-        workspace_dir=str(tmp_path / "workspace"),
-        control_ui={"enabled": False},
-        channels={"channels": []},
-        mcp={"enabled": False},
-        memory={"flush_enabled": False},
-        sandbox={"auto_setup": False},
-    )
-
-    services = await build_services(
-        config=config,
-        tool_registry=ToolRegistry(),
-        session_db_path=str(tmp_path / "sessions.sqlite"),
-        seed_agent_workspaces=False,
-    )
-    try:
-        assert services.knowledge_runtime is instances[0]
-        assert instances[0].start_count == 1
-    finally:
-        await services.close()
-
-    assert instances[0].stop_count == 1
-
-
-def test_gateway_http_rpc_context_receives_knowledge_runtime(
+def test_gateway_http_rpc_context_receives_rag_provider_runtime(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from starlette.testclient import TestClient
@@ -2237,31 +2094,25 @@ def test_gateway_http_rpc_context_receives_knowledge_runtime(
     contexts: list[Any] = []
 
     class Dispatcher:
-        async def dispatch(
-            self,
-            req_id: str,
-            method: str,
-            params: Any,
-            ctx: Any,
-        ) -> Any:
+        async def dispatch(self, req_id: str, method: str, params: Any, ctx: Any) -> Any:
             contexts.append(ctx)
             return make_ok_res(req_id, {})
 
     monkeypatch.setattr(app_module, "get_dispatcher", lambda: Dispatcher())
     app = app_module.create_gateway_app(
         GatewayConfig(control_ui={"enabled": False}),
-        knowledge_runtime=runtime,
+        rag_provider_runtime=runtime,
     )
 
     with TestClient(app, client=("127.0.0.1", 50000)) as client:
         response = client.get("/api/config")
 
     assert response.status_code == 200
-    assert contexts[0].knowledge_runtime is runtime
+    assert contexts[0].rag_provider_runtime is runtime
 
 
 @pytest.mark.asyncio
-async def test_gateway_websocket_rpc_context_receives_knowledge_runtime() -> None:
+async def test_gateway_websocket_rpc_context_receives_rag_provider_runtime() -> None:
     from starlette.websockets import WebSocketDisconnect
 
     from opensquilla.gateway.auth import Principal
@@ -2305,13 +2156,7 @@ async def test_gateway_websocket_rpc_context_receives_knowledge_runtime() -> Non
             self.responses.append(response)
 
     class Dispatcher:
-        async def dispatch(
-            self,
-            req_id: str,
-            method: str,
-            params: Any,
-            ctx: Any,
-        ) -> Any:
+        async def dispatch(self, req_id: str, method: str, params: Any, ctx: Any) -> Any:
             contexts.append(ctx)
             return make_ok_res(req_id, {})
 
@@ -2321,21 +2166,21 @@ async def test_gateway_websocket_rpc_context_receives_knowledge_runtime() -> Non
         GatewayConfig(client_ws_keepalive_timeout_s=0.0),
         Dispatcher(),
         None,
-        knowledge_runtime=runtime,
+        rag_provider_runtime=runtime,
     )
 
-    assert contexts[0].knowledge_runtime is runtime
+    assert contexts[0].rag_provider_runtime is runtime
     assert len(connection.responses) == 1
 
 
 @pytest.mark.asyncio
-async def test_start_gateway_server_passes_service_knowledge_runtime_to_app(
+async def test_start_gateway_server_passes_rag_provider_runtime_to_app(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from opensquilla.gateway import boot
 
-    knowledge_runtime = object()
+    rag_provider_runtime = object()
     captured_app: dict[str, Any] = {}
 
     class FakeTurnRunner:
@@ -2365,7 +2210,7 @@ async def test_start_gateway_server_passes_service_knowledge_runtime_to_app(
             flush_service=None,
             cron_scheduler=None,
             task_runtime=None,
-            knowledge_runtime=knowledge_runtime,
+            rag_provider_runtime=rag_provider_runtime,
             agent_registry=None,
             memory_managers={},
             memory_stores={},
@@ -2384,14 +2229,8 @@ async def test_start_gateway_server_passes_service_knowledge_runtime_to_app(
     monkeypatch.setattr(boot, "create_gateway_app", capture_gateway_app)
     monkeypatch.setattr(boot, "_setup_file_logging", lambda config: None)
     monkeypatch.setattr(boot, "emit_skill_filter_banner", lambda config: None)
-    monkeypatch.setattr(
-        "opensquilla.gateway.pidlock.GatewayPidLock.acquire",
-        lambda self: None,
-    )
-    monkeypatch.setattr(
-        "opensquilla.gateway.pidlock.GatewayPidLock.release",
-        lambda self: None,
-    )
+    monkeypatch.setattr("opensquilla.gateway.pidlock.GatewayPidLock.acquire", lambda self: None)
+    monkeypatch.setattr("opensquilla.gateway.pidlock.GatewayPidLock.release", lambda self: None)
     config = GatewayConfig(
         state_dir=str(tmp_path / "state"),
         workspace_dir=str(tmp_path / "workspace"),
@@ -2401,23 +2240,13 @@ async def test_start_gateway_server_passes_service_knowledge_runtime_to_app(
 
     server = await boot.start_gateway_server(config=config, run=False)
     try:
-        assert captured_app["knowledge_runtime"] is knowledge_runtime
+        assert captured_app["rag_provider_runtime"] is rag_provider_runtime
     finally:
         await server.close()
 
 
 @pytest.mark.asyncio
-async def test_dispatch_task_runtime_turn_injects_knowledge_snapshot() -> None:
-    snapshot = object()
-
-    class KnowledgeRuntime:
-        def __init__(self) -> None:
-            self.snapshot_count = 0
-
-        def snapshot(self) -> object:
-            self.snapshot_count += 1
-            return snapshot
-
+async def test_dispatch_task_runtime_turn_has_no_rag_specific_tool_context() -> None:
     class RecordingTurnRunner:
         def __init__(self) -> None:
             self.calls: list[dict[str, Any]] = []
@@ -2429,15 +2258,10 @@ async def test_dispatch_task_runtime_turn_injects_knowledge_snapshot() -> None:
     async def emit(session_key: str, event_name: str, payload: dict[str, Any]) -> None:
         return None
 
-    runtime = KnowledgeRuntime()
     runner = RecordingTurnRunner()
-    config = GatewayConfig(
-        agent_stream_heartbeat_interval_seconds=0.0,
-        agent_stream_idle_timeout_seconds=1.0,
-    )
     run = SimpleNamespace(
         agent_id="main",
-        task_id="task-knowledge",
+        task_id="task-rag-boundary",
         session_key="agent:main:task-runtime",
         message="hello",
         envelope=build_cli_route_envelope(
@@ -2455,16 +2279,17 @@ async def test_dispatch_task_runtime_turn_injects_knowledge_snapshot() -> None:
 
     await dispatch_task_runtime_turn(
         run,
-        config=config,
+        config=GatewayConfig(
+            agent_stream_heartbeat_interval_seconds=0.0,
+            agent_stream_idle_timeout_seconds=1.0,
+        ),
         session_manager=None,
         turn_runner=runner,
         event_emitter=emit,
-        knowledge_runtime=runtime,
     )
 
     tool_context = runner.calls[0]["tool_context"]
-    assert tool_context.knowledge_capability_snapshot is snapshot
-    assert runtime.snapshot_count == 1
+    assert not hasattr(tool_context, "knowledge_capability_snapshot")
 
 
 @pytest.mark.parametrize(

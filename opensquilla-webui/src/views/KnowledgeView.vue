@@ -1,1528 +1,260 @@
 <template>
-  <div class="rag-stage control-stage control-stage--spacious">
-    <header class="rag-stage__header control-stage__header">
-      <div class="rag-stage__title-block control-stage__title-block">
-        <h1 class="rag-stage__title control-stage__title">RAG</h1>
-        <p class="rag-stage__subtitle control-stage__subtitle">本地金融资料库检索、证据查看与人工评测</p>
+  <div class="rag-provider control-stage control-stage--spacious">
+    <header class="control-stage__header">
+      <div class="control-stage__title-block">
+        <h1 class="control-stage__title">RAG Provider</h1>
+        <p class="control-stage__subtitle">外部知识检索连接状态、协议能力与合同测试</p>
       </div>
-      <div class="rag-stage__actions control-stage__actions mobile-action-strip">
-        <button
-          class="btn btn--ghost mobile-action-strip__button"
-          type="button"
-          :disabled="loading || preparing || savingDefault"
-          @click="refreshAll"
-        >
-          <Icon name="refresh" :size="16" />
-          <span class="mobile-action-strip__label">{{ loading ? '刷新中' : '刷新' }}</span>
-        </button>
-        <button
-          class="btn btn--primary mobile-action-strip__button"
-          type="button"
-          :disabled="preparing"
-          @click="prepareSample"
-        >
-          <Icon name="plus" :size="16" />
-          <span class="mobile-action-strip__label">{{ preparing ? '构建中' : '构建知识库' }}</span>
-        </button>
-      </div>
+      <button class="btn btn--ghost" type="button" :disabled="loading" @click="loadStatus">
+        {{ loading ? '刷新中' : '刷新状态' }}
+      </button>
     </header>
 
-    <ErrorState v-if="error && !status" :message="error" :on-retry="refreshAll" />
+    <p v-if="error" class="rag-provider__error" role="alert">{{ error }}</p>
 
-    <section v-else class="rag-stat-row control-stat-grid control-stat-grid--fixed" style="--control-stat-columns: 6">
-      <article
-        v-for="metric in statusMetrics"
-        :key="metric.label"
-        class="control-stat rag-stat"
-        :class="metric.className"
-      >
-        <span class="control-stat__label">{{ metric.label }}</span>
-        <strong class="control-stat__value">{{ metric.value }}</strong>
-        <span class="control-stat__hint">{{ metric.hint }}</span>
+    <section class="control-stat-grid control-stat-grid--fixed" style="--control-stat-columns: 4">
+      <article class="control-stat control-stat--static">
+        <span class="control-stat__label">连接状态</span>
+        <strong data-testid="rag-state" class="control-stat__value">{{ status?.connectionState || '—' }}</strong>
+        <span class="control-stat__hint">{{ stateHint }}</span>
+      </article>
+      <article class="control-stat control-stat--static">
+        <span class="control-stat__label">Provider</span>
+        <strong class="control-stat__value">{{ status?.provider?.name || '—' }}</strong>
+        <span class="control-stat__hint">{{ providerIdentity }}</span>
+      </article>
+      <article class="control-stat control-stat--static">
+        <span class="control-stat__label">协议</span>
+        <strong class="control-stat__value">{{ status?.protocolVersion || '—' }}</strong>
+        <span class="control-stat__hint">search {{ capabilityLabel(status?.capabilities?.search) }} · get {{ capabilityLabel(status?.capabilities?.get) }}</span>
+      </article>
+      <article class="control-stat control-stat--static">
+        <span class="control-stat__label">上次成功</span>
+        <strong class="control-stat__value">{{ lastSuccess }}</strong>
+        <span class="control-stat__hint">失败计数 {{ status?.consecutiveFailures ?? 0 }}</span>
       </article>
     </section>
 
-    <section v-if="preparing || judgmentPath" class="rag-job control-panel" aria-live="polite">
-      <div class="rag-job__head">
-        <div class="rag-job__title">
-          <LoadingSpinner v-if="preparing" />
-          <span v-else class="rag-dot rag-dot--ok"></span>
-          <div>
-            <strong>{{ preparing ? 'Building collection index' : 'Judgment saved' }}</strong>
-            <small>{{ preparing ? sourceRoot : judgmentPath }}</small>
-          </div>
-        </div>
-        <span class="control-pill" :class="preparing ? 'control-pill--warn' : 'control-pill--ok'">
-          {{ preparing ? 'Running' : 'Saved' }}
-        </span>
-      </div>
+    <section v-if="status?.warning" class="control-panel rag-provider__warning" role="status">
+      {{ status.warning }}
     </section>
 
-    <div class="rag-workbench">
-      <section class="control-panel rag-source-panel">
+    <div class="rag-provider__grid">
+      <section class="control-panel">
         <div class="control-panel__head">
           <div>
-            <span class="control-panel__eyebrow">Source</span>
-            <h2 class="control-panel__title">Collection ingest</h2>
+            <span class="control-panel__eyebrow">Capabilities</span>
+            <h2 class="control-panel__title">生效能力与预算</h2>
           </div>
-          <span class="control-pill" :class="hasIndex ? 'control-pill--ok' : 'control-pill--warn'">
-            {{ hasIndex ? 'Indexed' : 'Pending' }}
-          </span>
-        </div>
-
-        <div class="rag-form-grid">
-          <label class="rag-field">
-            <span>Collection</span>
-            <input v-model="collectionName" class="control-input" autocomplete="off" :disabled="preparing" />
-          </label>
-          <label class="rag-field rag-field--wide">
-            <span>资料根目录</span>
-            <input v-model="sourceRoot" class="control-input" autocomplete="off" :disabled="preparing" />
-          </label>
-          <label class="rag-field">
-            <span>样本数量</span>
-            <input
-              v-model.number="sampleLimit"
-              class="control-input control-input--narrow"
-              type="number"
-              min="1"
-              max="120"
-              :disabled="preparing"
-            />
-          </label>
-          <label class="rag-field">
-            <span>默认 Top K</span>
-            <input v-model.number="topK" class="control-input control-input--narrow" type="number" min="1" max="20" />
-          </label>
-        </div>
-
-        <div class="rag-source-summary">
-          <div>
-            <strong>{{ sourceLabel }}</strong>
-            <small>{{ status?.rootDir || sourceRoot }}</small>
-          </div>
-          <span class="control-pill">{{ activeIndexProfile }}</span>
-        </div>
-
-        <div class="rag-panel-actions">
-          <button
+          <a
+            v-if="status?.links.management"
             class="btn btn--ghost"
-            type="button"
-            :disabled="loading || preparing || savingDefault"
-            @click="refreshAll"
-          >
-            <Icon name="refresh" :size="16" />
-            <span>Refresh</span>
-          </button>
-          <button class="btn btn--primary" type="button" :disabled="preparing" @click="prepareSample">
-            <Icon name="regenerate" :size="16" />
-            <span>{{ preparing ? 'Building' : 'Build collection' }}</span>
-          </button>
+            :href="status.links.management"
+            target="_blank"
+            rel="noopener noreferrer"
+          >打开 Provider 管理页面</a>
         </div>
+        <dl class="rag-provider__details">
+          <div><dt>Search 数量</dt><dd>{{ status?.effectiveLimits?.maxSearchResults ?? '—' }}</dd></div>
+          <div><dt>Snippet 字符</dt><dd>{{ status?.effectiveLimits?.maxSnippetChars ?? '—' }}</dd></div>
+          <div><dt>Search 总字符</dt><dd>{{ status?.effectiveLimits?.maxSearchResponseChars ?? '—' }}</dd></div>
+          <div><dt>Get 正文字符</dt><dd>{{ status?.effectiveLimits?.maxGetContentChars ?? '—' }}</dd></div>
+          <div><dt>Collection scope</dt><dd>{{ scopeLabel }}</dd></div>
+          <div><dt>Profile override</dt><dd>{{ status?.retrievalProfileOverride || 'Provider 默认' }}</dd></div>
+          <div><dt>Provider 默认 profile</dt><dd>{{ status?.searchOptions?.defaultRetrievalProfile || '—' }}</dd></div>
+          <div><dt>最近错误</dt><dd>{{ status?.lastErrorCode || '无' }}</dd></div>
+        </dl>
       </section>
 
-      <section class="control-panel rag-questions-panel">
+      <section class="control-panel">
         <div class="control-panel__head">
           <div>
-            <span class="control-panel__eyebrow">Eval</span>
-            <h2 class="control-panel__title">Golden queries</h2>
+            <span class="control-panel__eyebrow">Contract test</span>
+            <h2 class="control-panel__title">测试检索</h2>
           </div>
-          <button class="btn btn--ghost" type="button" :disabled="questionsLoading" @click="loadQuestions">
-            <Icon name="refresh" :size="16" />
-            <span>{{ questionsLoading ? 'Loading' : 'Load' }}</span>
-          </button>
         </div>
-
-        <div v-if="questionsLoading && questions.length === 0" class="control-empty">
-          <LoadingSpinner />
-        </div>
-        <div v-else-if="questions.length === 0" class="control-empty">
-          <Icon class="control-empty__icon" name="listChecks" :size="28" />
-          <div class="control-empty__title">No queries</div>
-          <div class="control-empty__hint">Build the sample index to load evaluation prompts.</div>
-        </div>
-        <div v-else class="rag-question-list">
-          <button
-            v-for="question in questions"
-            :key="question.id"
-            class="rag-question"
-            :class="{ 'is-active': question.id === activeQuestionId }"
-            type="button"
-            @click="selectQuestion(question)"
-          >
-            <span class="rag-question__id">{{ question.id }}</span>
-            <span class="rag-question__text">{{ question.question }}</span>
-          </button>
-        </div>
-      </section>
-    </div>
-
-    <section class="control-panel rag-retrieval-settings">
-      <div class="control-panel__head">
-        <div>
-          <span class="control-panel__eyebrow">Knowledge settings</span>
-          <h2 class="control-panel__title">Retrieval defaults</h2>
-        </div>
-        <span data-testid="knowledge-connection-state" class="control-pill">
-          {{ connectionStateLabel }}
-        </span>
-      </div>
-
-      <div class="rag-settings-meta">
-        <span><strong>Capability version</strong>{{ capabilityVersionLabel }}</span>
-        <span><strong>Fetched</strong>{{ capabilityFetchedAtLabel }}</span>
-      </div>
-
-      <div class="rag-form-grid">
-        <label class="rag-field">
-          <span>Configured default</span>
-          <select
-            v-model="defaultProfileDraft"
-            data-testid="knowledge-default-profile"
-            class="control-input"
-            :disabled="defaultProfileDisabled"
-          >
-            <option v-if="retrievalProfiles.length === 0" value="">No service profiles</option>
-            <option
-              v-for="profile in retrievalProfiles"
-              :key="profile.id"
-              :value="profile.id"
-              :disabled="!profile.available"
-            >
-              {{ profile.label }}{{ profile.available ? '' : ` (${profile.reason || 'unavailable'})` }}
-            </option>
-          </select>
-        </label>
-        <div class="rag-effective-profile">
-          <span>Current effective</span>
-          <strong data-testid="knowledge-effective-profile">{{ effectiveProfileLabel }}</strong>
-        </div>
-      </div>
-
-      <p
-        data-testid="knowledge-fallback-warning"
-        class="rag-settings-message rag-settings-message--warn"
-        :hidden="!defaultFallbackActive"
-      >
-        Configured {{ configuredProfileLabel }} is using {{ effectiveProfileLabel }}.
-      </p>
-      <p class="rag-settings-message">{{ connectionStateMessage }}</p>
-      <p v-if="settingsError" class="rag-settings-message rag-settings-message--warn" role="alert">
-        {{ settingsError }}
-      </p>
-
-      <div class="rag-panel-actions">
-        <button
-          data-testid="knowledge-save-default"
-          class="btn btn--primary"
-          type="button"
-          :disabled="!canSave"
-          @click="saveDefault"
-        >
-          <Icon name="save" :size="16" />
-          <span>{{ savingDefault ? 'Saving' : 'Save default' }}</span>
-        </button>
-      </div>
-    </section>
-
-    <div class="rag-review-layout">
-      <section class="control-panel rag-search-panel">
-        <div class="control-panel__head">
-          <div>
-            <span class="control-panel__eyebrow">Search</span>
-            <h2 class="control-panel__title">Retrieval preview</h2>
-          </div>
-          <span class="control-pill">{{ searchLimitLabel }}</span>
-        </div>
-
-        <form class="rag-searchbar" @submit.prevent="runSearch">
+        <form class="rag-provider__search" @submit.prevent="search">
           <textarea
             v-model="query"
-            data-testid="knowledge-query-input"
-            class="control-input rag-searchbar__query"
-            rows="2"
-            placeholder="输入检索问题"
+            data-testid="rag-query"
+            class="control-input"
+            rows="3"
+            placeholder="输入要发送给 knowledge.search 的查询"
           />
-          <label class="rag-field rag-field--compact rag-field--profile">
-            <span>Query retrieval</span>
-            <select
-              v-model="queryProfileOverride"
-              data-testid="knowledge-query-profile"
-              class="control-input"
-              :disabled="queryProfileDisabled"
-            >
-              <option value="">Use Knowledge default</option>
-              <option
-                v-for="profile in queryProfiles"
-                :key="profile.id"
-                :value="profile.id"
-              >
-                {{ profile.label }}
-              </option>
-            </select>
-          </label>
-          <label class="rag-field rag-field--compact">
-            <span>Top K</span>
-            <input v-model.number="topK" class="control-input control-input--narrow" type="number" min="1" max="20" />
+          <label>
+            <span>Limit</span>
+            <input v-model.number="limit" class="control-input" type="number" min="1" max="20" />
           </label>
           <button
-            data-testid="knowledge-search"
+            data-testid="rag-search"
             class="btn btn--primary"
             type="submit"
-            :disabled="searching || !query.trim() || !searchProfilePayload"
-          >
-            <Icon name="search" :size="16" />
-            <span>{{ searchActionLabel }}</span>
-          </button>
+            :disabled="searching || !canSearch || !query.trim()"
+          >{{ searching ? '检索中' : '执行检索' }}</button>
         </form>
-
-        <ErrorState v-if="error && status" :message="error" :on-retry="refreshAll" />
-        <div v-else-if="searching" class="control-empty">
-          <LoadingSpinner />
-        </div>
-        <div v-else-if="results.length === 0" class="control-empty rag-search-empty">
-          <Icon class="control-empty__icon" name="search" :size="28" />
-          <div class="control-empty__title">No search yet</div>
-          <div class="control-empty__hint">Select a golden query or submit a question.</div>
-        </div>
-        <div v-else class="rag-results">
-          <div class="rag-inspect">
-            <div>
-              <strong>{{ results.length }} chunk matches</strong>
-              <small>{{ searchMeta }}</small>
-            </div>
-            <span class="control-pill">{{ sourceLabel }}</span>
-          </div>
-
-          <article
-            v-for="(result, index) in results"
-            :key="result.chunkId"
-            class="rag-result control-card"
-            :class="{ 'control-card--selected': result.chunkId === selectedChunkId }"
-          >
-            <div class="rag-result__rank">#{{ index + 1 }}</div>
-            <div class="rag-result__body">
-              <div class="rag-result__topline">
-                <span class="control-pill control-pill--accent">chunk</span>
-                <span class="control-pill">{{ result.languageBucket || 'text' }}</span>
-                <span class="control-pill">{{ result.chunkingStrategy || 'chunker' }}</span>
-                <span class="rag-result__score">
-                  {{ formatResultScorePrimary(result, activeRetrievalProfile) }}
-                </span>
-              </div>
-
-              <button class="rag-result__title" type="button" @click="toggleResult(result)">
-                {{ result.title || result.documentId }}
-              </button>
-              <div class="rag-result__path">{{ result.sourcePath || result.source }}</div>
-              <p class="rag-result__preview">{{ result.snippet }}</p>
-
-              <div class="rag-result__meta">
-                <span><strong>Citation</strong>{{ result.citation }}</span>
-                <span><strong>Source</strong>{{ result.source }}</span>
-                <span>
-                  <strong>Retrieval</strong>
-                  {{ result.retrievalProfile || activeRetrievalProfile?.id || 'service default' }}
-                </span>
-                <span
-                  v-for="meta in formatResultScoreMeta(result, activeRetrievalProfile)"
-                  :key="`${result.chunkId}-${meta.label}-${meta.value}`"
-                >
-                  <strong>{{ meta.label }}</strong> {{ meta.value }}
-                </span>
-                <span v-if="result.pageStart"><strong>Page</strong>{{ result.pageStart }}</span>
-                <span><strong>Chunk</strong>{{ shortId(result.chunkId) }}</span>
-              </div>
-
-              <div class="rag-result__actions">
-                <button
-                  class="btn btn--ghost"
-                  type="button"
-                  :disabled="detailLoadingId === result.chunkId"
-                  @click="toggleResult(result)"
-                >
-                  <Icon :name="result.chunkId === selectedChunkId ? 'chevronDown' : 'chevronRight'" :size="16" />
-                  <span>{{ result.chunkId === selectedChunkId ? 'Hide chunk' : 'Show chunk' }}</span>
-                </button>
-              </div>
-
-              <div v-if="detailLoadingId === result.chunkId" class="rag-expanded">
-                <div class="rag-expanded__head">
-                  <strong>Chunk detail</strong>
-                  <span class="control-pill control-pill--warn">Loading</span>
-                </div>
-                <div class="rag-expanded__loading">
-                  <LoadingSpinner />
-                </div>
-              </div>
-
-              <div v-else-if="selectedDetail && selectedDetail.chunkId === result.chunkId" class="rag-expanded">
-                <div class="rag-expanded__head">
-                  <strong>Chunk detail</strong>
-                  <span class="control-pill">{{ selectedDetail.citation }}</span>
-                </div>
-                <pre>{{ selectedDetail.text }}</pre>
-                <div v-if="selectedDetail.lineage?.length" class="rag-lineage">
-                  <span
-                    v-for="step in selectedDetail.lineage"
-                    :key="`${selectedDetail.chunkId}-${step.stepOrdinal}`"
-                    class="control-pill"
-                  >
-                    {{ step.stepOrdinal }} · {{ step.operation }}
-                  </span>
-                </div>
-              </div>
-            </div>
+        <p v-if="searchResponse" class="rag-provider__summary">
+          返回 {{ searchResponse.returnedCount }} 条
+          <template v-if="searchResponse.totalMatched !== null"> · 匹配 {{ searchResponse.totalMatched }} 条</template>
+          <template v-if="searchResponse.resultsTruncated"> · Provider 已截断</template>
+          <template v-if="searchResponse.providerBudgetViolation"> · OpenSquilla 已执行预算裁剪</template>
+        </p>
+        <div class="rag-provider__results">
+          <article v-for="item in searchResponse?.results || []" :key="item.evidenceId" class="control-card">
+            <strong>{{ item.citation.title }}</strong>
+            <small>{{ item.citation.source || item.citation.locator || item.evidenceId }}</small>
+            <p>{{ item.snippet }}<span v-if="item.snippetTruncated">…</span></p>
+            <button class="btn btn--ghost" type="button" :disabled="reading || !status?.capabilities?.get" @click="readEvidence(item.evidenceId, null)">
+              读取原文
+            </button>
           </article>
         </div>
       </section>
-
-      <aside class="control-panel rag-evidence-panel">
-        <div class="control-panel__head">
-          <div>
-            <span class="control-panel__eyebrow">Review</span>
-            <h2 class="control-panel__title">Evidence judgment</h2>
-          </div>
-          <button class="btn btn--ghost" type="button" :disabled="!selectedDetail" @click="clearSelection">
-            <Icon name="x" :size="16" />
-            <span>Clear</span>
-          </button>
-        </div>
-
-        <div v-if="selectedDetail" class="rag-evidence">
-          <strong>{{ selectedDetail.title }}</strong>
-          <small>{{ selectedDetail.citation }}</small>
-          <pre>{{ selectedDetail.text }}</pre>
-          <div v-if="selectedDetail.lineage?.length" class="rag-lineage">
-            <span
-              v-for="step in selectedDetail.lineage"
-              :key="`${selectedDetail.chunkId}-aside-${step.stepOrdinal}`"
-              class="control-pill"
-            >
-              {{ step.operation }}
-            </span>
-          </div>
-        </div>
-        <div v-else class="control-empty rag-evidence-empty">
-          <Icon class="control-empty__icon" name="fileText" :size="28" />
-          <div class="control-empty__title">No evidence selected</div>
-          <div class="control-empty__hint">Open a result chunk before saving a judgment.</div>
-        </div>
-
-        <form class="rag-judge" @submit.prevent="saveJudgment">
-          <label class="rag-field">
-            <span>答案/检索质量</span>
-            <select v-model="judgment.rating" class="control-input">
-              <option value="correct">正确</option>
-              <option value="partial">部分正确</option>
-              <option value="wrong">错误</option>
-            </select>
-          </label>
-          <label class="rag-field">
-            <span>证据</span>
-            <select v-model="judgment.evidence" class="control-input">
-              <option value="supported">证据充分</option>
-              <option value="weak">证据不足</option>
-              <option value="missing">无证据</option>
-            </select>
-          </label>
-          <label class="rag-field">
-            <span>幻觉</span>
-            <select v-model="judgment.hallucination" class="control-input">
-              <option value="none">无幻觉</option>
-              <option value="possible">可能有</option>
-              <option value="yes">有幻觉</option>
-            </select>
-          </label>
-          <label class="rag-field">
-            <span>备注</span>
-            <textarea v-model="judgment.notes" class="control-input rag-judge__notes" rows="3" />
-          </label>
-          <button class="btn btn--primary" type="submit" :disabled="savingJudgment || !query.trim()">
-            <Icon name="save" :size="16" />
-            <span>{{ savingJudgment ? 'Saving' : 'Save judgment' }}</span>
-          </button>
-        </form>
-      </aside>
     </div>
+
+    <section v-if="getResponse" class="control-panel rag-provider__reader">
+      <div class="control-panel__head">
+        <div>
+          <span class="control-panel__eyebrow">Evidence</span>
+          <h2 class="control-panel__title">{{ getResponse.document.title }}</h2>
+        </div>
+        <span>{{ getResponse.citation.locator || getResponse.document.source }}</span>
+      </div>
+      <p v-if="getResponse.legacyLimitedGet" class="rag-provider__warning">Legacy 模式只保证旧 chunk 内容，不代表完整全文。</p>
+      <pre data-testid="rag-content" class="rag-provider__content">{{ getResponse.content }}</pre>
+      <div class="rag-provider__pager">
+        <button class="btn btn--ghost" type="button" :disabled="reading || !getResponse.previousCursor" @click="readEvidence(getResponse.evidenceId, getResponse.previousCursor)">上一页</button>
+        <button class="btn btn--ghost" type="button" :disabled="reading || !getResponse.nextCursor" @click="readEvidence(getResponse.evidenceId, getResponse.nextCursor)">下一页</button>
+      </div>
+    </section>
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed, onActivated, onMounted, reactive, ref } from 'vue'
-import ErrorState from '@/components/ErrorState.vue'
-import Icon from '@/components/Icon.vue'
-import LoadingSpinner from '@/components/LoadingSpinner.vue'
+import { computed, onMounted, ref } from 'vue'
 import { useRpcStore } from '@/stores/rpc'
 import {
-  buildSearchProfilePayload,
-  canSaveDefault,
-  defaultProfileDraftFromStatus,
-  fallbackActive as hasDefaultFallback,
-  formatResultScoreMeta,
-  formatResultScorePrimary,
-  queryOverrideOptions,
-  retrievalProfilesFromStatus,
-  searchProgressLabel,
-  selectedRetrievalProfile,
-} from './knowledgeRetrieval'
-import type { KnowledgeStatusLike, RetrievalProfileStatus } from './knowledgeRetrieval'
-
-interface KnowledgeStatus extends KnowledgeStatusLike {
-  rootDir?: string
-  documentsIndexed?: number
-  chunksIndexed?: number
-  filesIndexed?: number
-  pipeline?: string
-  indexProfiles?: string[]
-  vectorChunksIndexed?: number
-  vectorCoveragePct?: number
-  embeddingModel?: string
-  embeddingDimensions?: number
-  embeddingWarnings?: string[]
-  retrievalWarnings?: string[]
-  retrievalProfiles?: RetrievalProfileStatus[]
-  capabilitiesVersion?: string | null
-  capabilitiesFetchedAt?: number | null
-  latestJob?: {
-    status: string
-    filesSeen: number
-    filesReady: number
-    filesFailed: number
-  }
-}
-
-interface KnowledgeQuestion {
-  id: string
-  question: string
-  expectedDocIds?: string[]
-  expectedEvidenceHint?: string
-}
-
-interface KnowledgeResult {
-  evidenceId: string
-  documentId: string
-  chunkId: string
-  title: string
-  source: string
-  sourcePath: string
-  pageStart: number | null
-  pageEnd: number | null
-  section: string | null
-  snippet: string
-  score: number
-  bm25Rank?: number | null
-  vectorRank?: number | null
-  vectorScore?: number | null
-  fusionScore?: number | null
-  rankPosition?: number
-  citation: string
-  languageBucket: string
-  pairId?: string | null
-  collectionId?: string
-  retrievalProfile?: string
-  chunkingStrategy?: string | null
-}
-
-interface KnowledgeDetail {
-  chunkId: string
-  documentId: string
-  collectionId?: string
-  title: string
-  text: string
-  citation: string
-  preprocessorStrategy?: string | null
-  chunkingStrategy?: string | null
-  lineage?: Array<{
-    stepOrdinal: number
-    operation: string
-    reversible: boolean
-  }>
-}
+  normalizeRagGetResponse,
+  normalizeRagProviderStatus,
+  normalizeRagSearchResponse,
+  type RagGetResponse,
+  type RagProviderStatus,
+  type RagSearchResponse,
+} from './ragProvider'
 
 const rpc = useRpcStore()
-const sourceRoot = ref('/mnt/data/datasets')
-const collectionName = ref('datasets')
-const indexProfile = ref('sqlite_fts5_default')
-const defaultProfileDraft = ref('')
-const queryProfileOverride = ref('')
-const sampleLimit = ref(30)
-const topK = ref(8)
-const query = ref('')
-const status = ref<KnowledgeStatus | null>(null)
-const questions = ref<KnowledgeQuestion[]>([])
-const results = ref<KnowledgeResult[]>([])
-const selectedDetail = ref<KnowledgeDetail | null>(null)
-const selectedChunkId = computed(() => selectedDetail.value?.chunkId || '')
-const activeQuestionId = ref('')
-const toolNames = ref<string[]>([])
-const error = ref('')
+const status = ref<RagProviderStatus | null>(null)
+const searchResponse = ref<RagSearchResponse | null>(null)
+const getResponse = ref<RagGetResponse | null>(null)
 const loading = ref(false)
-const preparing = ref(false)
 const searching = ref(false)
-const questionsLoading = ref(false)
-const savingDefault = ref(false)
-const settingsError = ref('')
-const savingJudgment = ref(false)
-const detailLoadingId = ref('')
-const judgmentPath = ref('')
+const reading = ref(false)
+const error = ref('')
+const query = ref('')
+const limit = ref(8)
 
-const judgment = reactive({
-  rating: 'correct',
-  evidence: 'supported',
-  hallucination: 'none',
-  notes: '',
+const canSearch = computed(() => status.value?.connectionState === 'READY' || status.value?.connectionState === 'LEGACY')
+const providerIdentity = computed(() => {
+  const provider = status.value?.provider
+  return provider ? `${provider.version} · ${provider.instanceId}` : '尚未发现兼容 Provider'
 })
-
-const toolCount = computed(() => toolNames.value.filter((name) => name.startsWith('knowledge_')).length)
-const hasIndex = computed(() => Number(status.value?.chunksIndexed || 0) > 0)
-const sourceLabel = computed(() => basename(status.value?.rootDir || sourceRoot.value) || 'local')
-const searchLimitLabel = computed(() => `top ${Number(topK.value || 0) || 8}`)
-const activeIndexProfile = computed(() => status.value?.indexProfiles?.[0] || indexProfile.value)
-const retrievalProfiles = computed(() => retrievalProfilesFromStatus(status.value))
-const queryProfiles = computed(() => queryOverrideOptions(status.value))
-const activeRetrievalProfile = computed(() => (
-  selectedRetrievalProfile(status.value, queryProfileOverride.value)
-))
-const searchProfilePayload = computed(() => (
-  buildSearchProfilePayload(status.value, queryProfileOverride.value)
-))
-const connectionStateLabel = computed(() => status.value?.connectionState || 'UNKNOWN')
-const defaultProfileDisabled = computed(() => (
-  status.value?.connectionState !== 'READY' || retrievalProfiles.value.length === 0
-))
-const queryProfileDisabled = computed(() => (
-  status.value?.connectionState !== 'READY' || queryProfiles.value.length === 0
-))
-const defaultDirty = computed(() => (
-  defaultProfileDraft.value !== defaultProfileDraftFromStatus(status.value)
-))
-const draftProfileAvailable = computed(() => (
-  queryProfiles.value.some((profile) => profile.id === defaultProfileDraft.value)
-))
-const canSave = computed(() => (
-  !savingDefault.value
-  && !loading.value
-  && defaultDirty.value
-  && draftProfileAvailable.value
-  && canSaveDefault(status.value)
-))
-const defaultFallbackActive = computed(() => hasDefaultFallback(status.value))
-const configuredProfileLabel = computed(() => (
-  profileLabel(status.value?.configuredDefaultRetrievalProfile)
-))
-const effectiveProfileLabel = computed(() => (
-  profileLabel(status.value?.effectiveDefaultRetrievalProfile)
-))
-const capabilityVersionLabel = computed(() => {
-  const version = status.value?.capabilitiesVersion
-  return typeof version === 'string' && version.trim() ? version : 'Not reported'
+const scopeLabel = computed(() => status.value?.collectionScope.length ? status.value.collectionScope.join(', ') : '未限制')
+const lastSuccess = computed(() => {
+  const value = status.value?.lastSuccessAt
+  return value ? new Date(value * 1000).toLocaleString() : '—'
 })
-const capabilityFetchedAtLabel = computed(() => {
-  const fetchedAt = status.value?.capabilitiesFetchedAt
-  if (typeof fetchedAt !== 'number' || !Number.isFinite(fetchedAt)) return 'Not reported'
-  const fetchedAtDate = new Date(fetchedAt)
-  return Number.isFinite(fetchedAtDate.getTime())
-    ? fetchedAtDate.toISOString()
-    : 'Not reported'
-})
-const connectionStateMessage = computed(() => {
+const stateHint = computed(() => {
   switch (status.value?.connectionState) {
-    case 'READY':
-      if (queryProfiles.value.length === 0) return 'No retrieval profile available.'
-      if (status.value.capabilitiesStale) {
-        return 'Capability snapshot is stale. Refresh before saving.'
-      }
-      return 'Retrieval capabilities are ready.'
-    case 'DEGRADED':
-      return 'Searches use the service default while capabilities are degraded.'
-    case 'LEGACY':
-      return 'Legacy Knowledge service: default search only.'
-    case 'DISCOVERING':
-      return 'Discovering retrieval capabilities.'
-    case 'UNAVAILABLE':
-      return 'Knowledge retrieval is unavailable.'
-    case 'DISCONNECTED':
-      return 'Knowledge service is disconnected.'
-    default:
-      return 'Waiting for Knowledge capability status.'
+    case 'READY': return '标准协议可用，工具已注册'
+    case 'DEGRADED': return '短暂故障，工具保留但调用会安全失败'
+    case 'UNAVAILABLE': return 'Provider 不可用，工具已注销'
+    case 'INCOMPATIBLE': return '协议主版本不兼容'
+    case 'CONNECTING': return '正在发现能力'
+    case 'LEGACY': return '显式旧版兼容模式'
+    default: return '默认关闭，不建立网络连接'
   }
 })
-const hasVectorStatus = computed(() => (
-  hasStatusField('vectorCoveragePct') || hasStatusField('vectorChunksIndexed')
-))
-const hasEmbeddingStatus = computed(() => (
-  hasStatusField('embeddingModel')
-  || hasStatusField('embeddingDimensions')
-  || hasStatusField('embeddingWarnings')
-))
-const hasIndexedEmbeddings = computed(() => {
-  if (!hasEmbeddingStatus.value) return false
-  if (!hasVectorStatus.value) return Boolean(status.value?.embeddingModel)
-  return Number(status.value?.vectorChunksIndexed || 0) > 0
-    || Number(status.value?.vectorCoveragePct || 0) > 0
-})
-const embeddingHint = computed(() => {
-  if (!hasEmbeddingStatus.value) return 'not reported'
-  const model = status.value?.embeddingModel
-  const dimensions = status.value?.embeddingDimensions
-  if (!hasIndexedEmbeddings.value) return 'not indexed'
-  return model && dimensions ? `${model} · ${dimensions}d` : 'not indexed'
-})
-const embeddingStatusLabel = computed(() => {
-  if (!hasEmbeddingStatus.value) return 'Unknown'
-  return hasIndexedEmbeddings.value ? 'Ready' : 'Missing'
-})
-const embeddingStatusClass = computed(() => {
-  if (!hasEmbeddingStatus.value) return ''
-  return hasIndexedEmbeddings.value ? 'control-stat--accent' : 'control-stat--warn'
-})
-const vectorCoverageLabel = computed(() => {
-  if (!hasVectorStatus.value) return 'N/A'
-  const coverage = status.value?.vectorCoveragePct
-  return coverage === null || coverage === undefined ? '-' : `${Number(coverage).toFixed(1)}%`
-})
-const searchActionLabel = computed(() => (
-  searching.value ? searchProgressLabel(status.value, queryProfileOverride.value) : 'Search'
-))
-const latestJobHint = computed(() => {
-  const job = status.value?.latestJob
-  if (!job) return 'Analyzed files'
-  return `${job.status}: ${formatCount(job.filesReady)}/${formatCount(job.filesSeen)} ready`
-})
 
-const statusMetrics = computed(() => [
-  {
-    label: 'RAG',
-    value: hasIndex.value ? 'Ready' : 'Pending',
-    hint: 'Local tool source',
-    className: hasIndex.value ? 'control-stat--accent' : 'control-stat--warn',
-  },
-  {
-    label: 'Files',
-    value: formatCount(status.value?.filesIndexed),
-    hint: latestJobHint.value,
-    className: '',
-  },
-  {
-    label: 'Chunks',
-    value: formatCount(status.value?.chunksIndexed),
-    hint: 'Retrievable evidence',
-    className: hasIndex.value ? 'control-stat--accent' : '',
-  },
-  {
-    label: 'Vector',
-    value: vectorCoverageLabel.value,
-    hint: 'Embedding coverage',
-    className: hasVectorStatus.value && Number(status.value?.vectorCoveragePct || 0) >= 99
-      ? 'control-stat--accent'
-      : '',
-  },
-  {
-    label: 'Tools',
-    value: formatCount(toolCount.value),
-    hint: 'Agent callable',
-    className: toolCount.value > 0 ? 'control-stat--accent' : 'control-stat--warn',
-  },
-  {
-    label: 'Embedding',
-    value: embeddingStatusLabel.value,
-    hint: embeddingHint.value,
-    className: embeddingStatusClass.value,
-  },
-])
+function capabilityLabel(value: boolean | undefined): string {
+  return value === true ? '可用' : '不可用'
+}
 
-const searchMeta = computed(() => {
-  const parts = [
-    query.value.trim(),
-    `${results.value.length} results`,
-    searchLimitLabel.value,
-  ]
-  return parts.filter(Boolean).join(' · ')
-})
+function message(value: unknown): string {
+  return value instanceof Error ? value.message : String(value)
+}
 
-async function refreshAll(): Promise<void> {
-  if (loading.value || savingDefault.value) return
+async function loadStatus() {
   loading.value = true
   error.value = ''
   try {
-    await Promise.all([loadStatus(), loadQuestions(), loadTools()])
-  } catch (err) {
-    error.value = messageFromError(err)
+    await rpc.waitForConnection()
+    const normalized = normalizeRagProviderStatus(await rpc.call('knowledge.status', {}))
+    if (!normalized) throw new Error('Invalid RAG Provider status response')
+    status.value = normalized
+  } catch (value) {
+    status.value = null
+    error.value = message(value)
   } finally {
     loading.value = false
   }
 }
 
-async function loadStatus(): Promise<void> {
-  await rpc.waitForConnection()
-  const payload = await rpc.call<unknown>('knowledge.status', {})
-  const nextStatus = knowledgeStatusFromUnknown(payload)
-  if (!nextStatus) {
-    status.value = null
-    defaultProfileDraft.value = ''
-    queryProfileOverride.value = ''
-    throw new Error('Invalid Knowledge status response')
-  }
-  applyKnowledgeStatus(nextStatus)
-}
-
-async function saveDefault(): Promise<void> {
-  if (loading.value || savingDefault.value || !canSave.value) return
-  const draft = defaultProfileDraft.value
-  savingDefault.value = true
-  settingsError.value = ''
-  try {
-    await rpc.waitForConnection()
-    const payload = await rpc.call<unknown>('knowledge.settings.patch', {
-      defaultRetrievalProfile: draft,
-    })
-    const confirmed = knowledgeStatusFromUnknown(payload)
-    if (!confirmed) throw new Error('Invalid Knowledge settings response')
-    applyKnowledgeStatus(confirmed)
-  } catch (err) {
-    settingsError.value = messageFromError(err)
-  } finally {
-    savingDefault.value = false
-  }
-}
-
-async function loadQuestions(): Promise<void> {
-  questionsLoading.value = true
-  try {
-    await rpc.waitForConnection()
-    const payload = await rpc.call<{ questions: KnowledgeQuestion[] }>('knowledge.questions', {})
-    questions.value = payload.questions || []
-  } finally {
-    questionsLoading.value = false
-  }
-}
-
-async function loadTools(): Promise<void> {
-  await rpc.waitForConnection()
-  const payload = await rpc.call<{ tools: Array<{ name: string }> }>('tools.catalog', {})
-  toolNames.value = (payload.tools || []).map((tool) => tool.name)
-}
-
-async function prepareSample(): Promise<void> {
-  preparing.value = true
-  error.value = ''
-  judgmentPath.value = ''
-  try {
-    await rpc.waitForConnection()
-    const collectionId = collectionName.value.trim() || 'datasets'
-    await rpc.call('knowledge.ingest', {
-      sourceRoot: sourceRoot.value,
-      limit: Number(sampleLimit.value || 30),
-      collectionName: collectionId,
-      collectionId,
-      indexProfiles: [indexProfile.value],
-    })
-    await refreshAll()
-  } catch (err) {
-    error.value = messageFromError(err)
-  } finally {
-    preparing.value = false
-  }
-}
-
-function selectQuestion(question: KnowledgeQuestion): void {
-  activeQuestionId.value = question.id
-  query.value = question.question
-  void runSearch()
-}
-
-async function runSearch(): Promise<void> {
-  const cleanQuery = query.value.trim()
-  if (!cleanQuery) return
-  const profilePayload = searchProfilePayload.value
-  if (!profilePayload) {
-    error.value = 'No retrieval profile available'
-    return
-  }
+async function search() {
+  const clean = query.value.trim()
+  if (!clean || !canSearch.value) return
   searching.value = true
   error.value = ''
-  selectedDetail.value = null
   try {
-    await rpc.waitForConnection()
-    const payload = await rpc.call<{ results: KnowledgeResult[] }>('knowledge.search', {
-      query: cleanQuery,
-      topK: Number(topK.value || 8),
-      collectionId: collectionName.value.trim() || 'datasets',
-      ...profilePayload,
-    })
-    results.value = payload.results || []
-  } catch (err) {
-    error.value = messageFromError(err)
+    const boundedLimit = Math.min(20, Math.max(1, Number(limit.value) || 8))
+    const normalized = normalizeRagSearchResponse(
+      await rpc.call('knowledge.search', { query: clean, limit: boundedLimit }),
+    )
+    if (!normalized) throw new Error('Invalid RAG Provider search response')
+    searchResponse.value = normalized
+    getResponse.value = null
+  } catch (value) {
+    error.value = message(value)
   } finally {
     searching.value = false
   }
 }
 
-async function toggleResult(result: KnowledgeResult): Promise<void> {
-  if (selectedDetail.value?.chunkId === result.chunkId) {
-    selectedDetail.value = null
-    return
-  }
-  await openResult(result)
-}
-
-async function openResult(result: KnowledgeResult): Promise<void> {
-  detailLoadingId.value = result.chunkId
+async function readEvidence(evidenceId: string, cursor: string | null) {
+  reading.value = true
   error.value = ''
   try {
-    await rpc.waitForConnection()
-    selectedDetail.value = await rpc.call<KnowledgeDetail>('knowledge.get', {
-      chunkId: result.chunkId,
-    })
-  } catch (err) {
-    error.value = messageFromError(err)
+    const params: { evidenceId: string; cursor?: string } = { evidenceId }
+    if (cursor) params.cursor = cursor
+    const normalized = normalizeRagGetResponse(await rpc.call('knowledge.get', params))
+    if (!normalized) throw new Error('Invalid RAG Provider get response')
+    getResponse.value = normalized
+  } catch (value) {
+    error.value = message(value)
   } finally {
-    detailLoadingId.value = ''
+    reading.value = false
   }
 }
 
-function clearSelection(): void {
-  selectedDetail.value = null
-}
-
-async function saveJudgment(): Promise<void> {
-  savingJudgment.value = true
-  error.value = ''
-  try {
-    await rpc.waitForConnection()
-    const payload = await rpc.call<{ path: string }>('knowledge.judgment', {
-      questionId: activeQuestionId.value,
-      question: query.value,
-      rating: judgment.rating,
-      evidence: judgment.evidence,
-      hallucination: judgment.hallucination,
-      notes: judgment.notes,
-      selectedChunkId: selectedDetail.value?.chunkId || null,
-      collectionId: collectionName.value.trim() || 'datasets',
-      results: results.value.slice(0, 5),
-    })
-    judgmentPath.value = payload.path
-  } catch (err) {
-    error.value = messageFromError(err)
-  } finally {
-    savingJudgment.value = false
-  }
-}
-
-function basename(path: string): string {
-  const raw = String(path || '').replace(/\/+$/, '')
-  return raw.split('/').filter(Boolean).pop() || raw
-}
-
-function profileLabel(profileId: unknown): string {
-  if (typeof profileId !== 'string' || !profileId.trim()) return 'Not reported'
-  return retrievalProfiles.value.find((profile) => profile.id === profileId)?.label || profileId
-}
-
-function knowledgeStatusFromUnknown(value: unknown): KnowledgeStatus | null {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return null
-  const candidate = value as Record<string, unknown>
-  if (typeof candidate.capabilitiesStale !== 'boolean') return null
-  switch (candidate.connectionState) {
-    case 'READY':
-    case 'DEGRADED':
-      return validCapabilitySnapshot(candidate)
-    case 'DISCONNECTED':
-    case 'DISCOVERING':
-    case 'UNAVAILABLE':
-    case 'LEGACY':
-      return candidate as unknown as KnowledgeStatus
-    default:
-      return null
-  }
-}
-
-function validCapabilitySnapshot(candidate: Record<string, unknown>): KnowledgeStatus | null {
-  if (
-    typeof candidate.capabilitiesVersion !== 'string'
-    || !/^[0-9a-f]{16}$/.test(candidate.capabilitiesVersion)
-    || typeof candidate.capabilitiesFetchedAt !== 'number'
-    || !Number.isFinite(candidate.capabilitiesFetchedAt)
-    || typeof candidate.configuredDefaultRetrievalProfile !== 'string'
-    || !candidate.configuredDefaultRetrievalProfile.length
-    || candidate.configuredDefaultRetrievalProfile.trim()
-      !== candidate.configuredDefaultRetrievalProfile
-    || !(
-      candidate.effectiveDefaultRetrievalProfile === null
-      || (
-        typeof candidate.effectiveDefaultRetrievalProfile === 'string'
-        && candidate.effectiveDefaultRetrievalProfile.length > 0
-        && candidate.effectiveDefaultRetrievalProfile.trim()
-          === candidate.effectiveDefaultRetrievalProfile
-      )
-    )
-    || !(
-      candidate.defaultFallbackReason === undefined
-      || candidate.defaultFallbackReason === null
-      || typeof candidate.defaultFallbackReason === 'string'
-    )
-  ) return null
-
-  const statusCandidate = candidate as unknown as KnowledgeStatus
-  const profiles = retrievalProfilesFromStatus(statusCandidate)
-  if (!profiles.length) return null
-  if (!profiles.some(
-    (profile) => profile.id === candidate.configuredDefaultRetrievalProfile,
-  )) return null
-  const effectiveDefault = candidate.effectiveDefaultRetrievalProfile
-  if (
-    effectiveDefault !== null
-    && !profiles.some((profile) => profile.id === effectiveDefault && profile.available)
-  ) return null
-  return statusCandidate
-}
-
-function applyKnowledgeStatus(nextStatus: KnowledgeStatus): void {
-  const currentOverride = queryProfileOverride.value
-  status.value = nextStatus
-  defaultProfileDraft.value = defaultProfileDraftFromStatus(nextStatus)
-  queryProfileOverride.value = queryOverrideOptions(nextStatus).some(
-    (profile) => profile.id === currentOverride,
-  ) ? currentOverride : ''
-  settingsError.value = ''
-}
-
-function shortId(value?: string): string {
-  const raw = String(value || '')
-  if (!raw) return ''
-  return raw.length > 16 ? `${raw.slice(0, 12)}...` : raw
-}
-
-function formatCount(value: unknown): string {
-  return new Intl.NumberFormat().format(Number(value || 0))
-}
-
-function hasStatusField(field: keyof KnowledgeStatus): boolean {
-  return Boolean(status.value && Object.prototype.hasOwnProperty.call(status.value, field))
-}
-
-function messageFromError(err: unknown): string {
-  return err instanceof Error ? err.message : String(err)
-}
-
-let activatedOnce = false
-
-onMounted(() => {
-  void refreshAll()
-})
-
-onActivated(() => {
-  if (!activatedOnce) {
-    activatedOnce = true
-    return
-  }
-  void refreshAll()
-})
+onMounted(loadStatus)
 </script>
 
 <style scoped>
-.rag-stage {
-  gap: var(--sp-4);
-}
-
-.rag-stat-row {
-  --control-stat-min: 150px;
-}
-
-.rag-stat {
-  min-height: 116px;
-}
-
-.rag-workbench,
-.rag-review-layout {
-  display: grid;
-  gap: var(--sp-4);
-  grid-template-columns: minmax(0, 1.15fr) minmax(320px, 0.85fr);
-}
-
-.rag-form-grid {
-  display: grid;
-  gap: var(--sp-3);
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-}
-
-.rag-field {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  min-width: 0;
-}
-
-.rag-field--wide {
-  grid-column: 1 / -1;
-}
-
-.rag-field--compact {
-  width: 104px;
-}
-
-.rag-field--profile {
-  width: 220px;
-}
-
-.rag-field span {
-  color: var(--text-dim);
-  font-size: var(--fs-xs);
-  font-weight: 600;
-}
-
-.rag-field .control-input,
-.rag-searchbar .control-input,
-.rag-judge .control-input {
-  max-width: none;
-  width: 100%;
-}
-
-.rag-source-summary {
-  align-items: center;
-  background: var(--bg-elevated);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-md);
-  display: flex;
-  gap: var(--sp-3);
-  justify-content: space-between;
-  padding: var(--sp-3);
-}
-
-.rag-source-summary div {
-  min-width: 0;
-}
-
-.rag-source-summary strong,
-.rag-source-summary small {
-  display: block;
-}
-
-.rag-source-summary strong {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.rag-source-summary small {
-  color: var(--text-muted);
-  font-family: var(--font-mono);
-  font-size: var(--fs-xs);
-  margin-top: 2px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.rag-panel-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--sp-2);
-  justify-content: flex-end;
-}
-
-.rag-settings-meta,
-.rag-effective-profile {
-  display: flex;
-  gap: var(--sp-2);
-}
-
-.rag-settings-meta {
-  color: var(--text-muted);
-  flex-wrap: wrap;
-  font-family: var(--font-mono);
-  font-size: var(--fs-xs);
-}
-
-.rag-settings-meta span {
-  background: var(--bg-elevated);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  padding: 4px 8px;
-}
-
-.rag-settings-meta strong {
-  color: var(--text);
-  margin-right: 5px;
-}
-
-.rag-effective-profile {
-  background: var(--bg-elevated);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-md);
-  flex-direction: column;
-  justify-content: center;
-  padding: var(--sp-3);
-}
-
-.rag-effective-profile span,
-.rag-settings-message {
-  color: var(--text-muted);
-  font-size: var(--fs-xs);
-}
-
-.rag-settings-message {
-  margin: 0;
-}
-
-.rag-settings-message--warn {
-  color: var(--warn);
-}
-
-.rag-question-list {
-  display: grid;
-  gap: var(--sp-2);
-  max-height: 330px;
-  overflow: auto;
-  padding-right: 2px;
-}
-
-.rag-question {
-  align-items: flex-start;
-  background: var(--bg-elevated);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-md);
-  color: var(--text);
-  cursor: pointer;
-  display: grid;
-  gap: var(--sp-2);
-  grid-template-columns: 52px minmax(0, 1fr);
-  padding: var(--sp-3);
-  text-align: left;
-  transition: background var(--transition), border-color var(--transition);
-}
-
-.rag-question:hover,
-.rag-question.is-active {
-  background: var(--bg-hover);
-  border-color: var(--accent);
-}
-
-.rag-question__id {
-  color: var(--text-dim);
-  font-family: var(--font-mono);
-  font-size: var(--fs-xs);
-}
-
-.rag-question__text {
-  font-size: var(--fs-sm);
-  line-height: 1.45;
-  min-width: 0;
-  overflow-wrap: anywhere;
-}
-
-.rag-searchbar {
-  align-items: end;
-  display: grid;
-  gap: var(--sp-2);
-  grid-template-columns: minmax(0, 1fr) 220px 104px auto;
-}
-
-.rag-searchbar__query {
-  min-height: 76px;
-  resize: vertical;
-}
-
-.rag-search-empty {
-  border: 1px solid var(--border);
-  border-radius: var(--radius-md);
-}
-
-.rag-results {
-  display: grid;
-  gap: var(--sp-3);
-}
-
-.rag-inspect {
-  align-items: center;
-  background: var(--bg-elevated);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-md);
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--sp-2);
-  justify-content: space-between;
-  padding: var(--sp-3);
-}
-
-.rag-inspect strong,
-.rag-inspect small {
-  display: block;
-}
-
-.rag-inspect small {
-  color: var(--text-muted);
-  font-size: var(--fs-xs);
-  margin-top: 2px;
-}
-
-.rag-result {
-  display: grid;
-  gap: var(--sp-3);
-  grid-template-columns: 48px minmax(0, 1fr);
-}
-
-.rag-result__rank {
-  color: var(--text-dim);
-  font-family: var(--font-mono);
-  font-size: var(--fs-sm);
-  padding-top: 2px;
-}
-
-.rag-result__body {
-  min-width: 0;
-}
-
-.rag-result__topline,
-.rag-result__meta,
-.rag-result__actions {
-  align-items: center;
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--sp-2);
-}
-
-.rag-result__score {
-  color: var(--text-muted);
-  font-family: var(--font-mono);
-  font-size: var(--fs-xs);
-  margin-left: auto;
-}
-
-.rag-result__title {
-  background: transparent;
-  border: 0;
-  color: var(--text);
-  cursor: pointer;
-  display: block;
-  font: inherit;
-  font-size: var(--fs-md);
-  font-weight: 700;
-  letter-spacing: 0;
-  margin: var(--sp-3) 0 2px;
-  padding: 0;
-  text-align: left;
-  width: 100%;
-}
-
-.rag-result__title:hover {
-  color: var(--accent);
-}
-
-.rag-result__path {
-  color: var(--text-muted);
-  font-family: var(--font-mono);
-  font-size: var(--fs-xs);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.rag-result__preview {
-  color: var(--text-muted);
-  font-size: var(--fs-sm);
-  line-height: 1.55;
-  margin: var(--sp-3) 0;
-  overflow-wrap: anywhere;
-}
-
-.rag-result__meta {
-  margin-bottom: var(--sp-3);
-}
-
-.rag-result__meta span {
-  background: var(--bg-elevated);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  color: var(--text-muted);
-  font-size: var(--fs-xs);
-  max-width: 100%;
-  overflow: hidden;
-  padding: 4px 8px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.rag-result__meta strong {
-  color: var(--text);
-  margin-right: 5px;
-}
-
-.rag-expanded {
-  border: 1px solid var(--border);
-  border-radius: var(--radius-md);
-  margin-top: var(--sp-3);
-  overflow: hidden;
-}
-
-.rag-expanded__head {
-  align-items: center;
-  background: var(--bg-elevated);
-  border-bottom: 1px solid var(--border);
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--sp-2);
-  justify-content: space-between;
-  padding: var(--sp-3);
-}
-
-.rag-expanded pre,
-.rag-evidence pre {
-  color: var(--text-muted);
-  font-family: var(--font-mono);
-  font-size: var(--fs-xs);
-  line-height: 1.55;
-  margin: 0;
-  overflow: auto;
-  padding: var(--sp-3);
-  white-space: pre-wrap;
-  word-break: break-word;
-}
-
-.rag-expanded pre {
-  max-height: 420px;
-}
-
-.rag-expanded__loading {
-  padding: var(--sp-4);
-}
-
-.rag-lineage {
-  align-items: center;
-  border-top: 1px solid var(--border);
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--sp-2);
-  padding: var(--sp-3);
-}
-
-.rag-evidence {
-  border: 1px solid var(--border);
-  border-radius: var(--radius-md);
-  overflow: hidden;
-}
-
-.rag-evidence strong,
-.rag-evidence small {
-  display: block;
-  padding-inline: var(--sp-3);
-}
-
-.rag-evidence strong {
-  padding-top: var(--sp-3);
-}
-
-.rag-evidence small {
-  color: var(--text-muted);
-  font-family: var(--font-mono);
-  font-size: var(--fs-xs);
-  margin-top: 2px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.rag-evidence pre {
-  max-height: 360px;
-}
-
-.rag-evidence-empty {
-  border: 1px solid var(--border);
-  border-radius: var(--radius-md);
-}
-
-.rag-judge {
-  border-top: 1px solid var(--border);
-  display: grid;
-  gap: var(--sp-3);
-  padding-top: var(--sp-3);
-}
-
-.rag-judge__notes {
-  resize: vertical;
-}
-
-.rag-job {
-  gap: var(--sp-4);
-}
-
-.rag-job__head,
-.rag-job__title {
-  align-items: center;
-  display: flex;
-  gap: var(--sp-3);
-}
-
-.rag-job__head {
-  justify-content: space-between;
-}
-
-.rag-job__title strong,
-.rag-job__title small {
-  display: block;
-}
-
-.rag-job__title small {
-  color: var(--text-muted);
-  font-size: var(--fs-xs);
-  margin-top: 2px;
-  overflow-wrap: anywhere;
-}
-
-.rag-dot {
-  border-radius: 50%;
-  display: inline-flex;
-  height: 10px;
-  width: 10px;
-}
-
-.rag-dot--ok {
-  background: var(--ok-fill);
-}
-
-@media (max-width: 1180px) {
-  .rag-stat-row {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-  }
-
-  .rag-workbench,
-  .rag-review-layout {
-    grid-template-columns: 1fr;
-  }
-}
-
-@media (max-width: 760px) {
-  .rag-stage__header {
-    align-items: stretch;
-    flex-direction: column;
-  }
-
-  .rag-form-grid,
-  .rag-searchbar,
-  .rag-result {
-    grid-template-columns: 1fr;
-  }
-
-  .rag-field--compact {
-    width: 100%;
-  }
-
-  .rag-source-summary,
-  .rag-inspect,
-  .rag-job__head {
-    align-items: flex-start;
-    flex-direction: column;
-  }
-
-  .rag-result__score {
-    margin-left: 0;
-  }
-}
-
-@media (max-width: 520px) {
-  .rag-stat-row {
-    grid-template-columns: 1fr;
-  }
+.rag-provider { display: grid; gap: var(--space-4); }
+.rag-provider__grid { display: grid; grid-template-columns: minmax(0, 0.8fr) minmax(0, 1.2fr); gap: var(--space-4); }
+.rag-provider__details { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-3); margin: 0; }
+.rag-provider__details div { padding: var(--space-3); border: 1px solid var(--border); border-radius: var(--radius-md); }
+.rag-provider__details dt { color: var(--text-muted); font-size: var(--font-size-xs); }
+.rag-provider__details dd { margin: var(--space-1) 0 0; overflow-wrap: anywhere; }
+.rag-provider__search { display: grid; grid-template-columns: minmax(0, 1fr) 6rem auto; align-items: end; gap: var(--space-3); }
+.rag-provider__search label { display: grid; gap: var(--space-1); }
+.rag-provider__results { display: grid; gap: var(--space-3); margin-top: var(--space-3); }
+.rag-provider__results article { display: grid; gap: var(--space-2); }
+.rag-provider__results small, .rag-provider__summary { color: var(--text-muted); }
+.rag-provider__content { max-height: 32rem; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
+.rag-provider__pager { display: flex; justify-content: flex-end; gap: var(--space-2); }
+.rag-provider__error, .rag-provider__warning { color: var(--status-warning-text); }
+@media (max-width: 900px) {
+  .rag-provider__grid { grid-template-columns: 1fr; }
+  .rag-provider__search { grid-template-columns: 1fr; }
+  .rag-provider__details { grid-template-columns: 1fr; }
 }
 </style>

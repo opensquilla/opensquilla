@@ -799,13 +799,6 @@ async def _handle_config_patch(params: dict | None, ctx: RpcContext) -> dict[str
     _sync_image_generation(new_config)
     _sync_model_catalog_overrides(new_config)
 
-    knowledge_runtime = getattr(ctx, "knowledge_runtime", None)
-    if knowledge_runtime is not None and any(
-        path == "knowledge" or path.startswith("knowledge.") for path in explicit_paths
-    ):
-        knowledge_runtime.invalidate("config_changed")
-        knowledge_runtime.request_refresh()
-
     change_meta = _change_meta(
         old_memory_fingerprint=old_memory_fingerprint,
         old_channels_fingerprint=old_channels_fingerprint,

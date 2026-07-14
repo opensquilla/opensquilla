@@ -547,7 +547,7 @@ async def handle_ws_connection(
     memory_managers: dict[str, Any] | None = None,
     memory_stores: dict[str, Any] | None = None,
     memory_retrievers: dict[str, Any] | None = None,
-    knowledge_runtime: Any = None,
+    rag_provider_runtime: Any = None,
 ) -> None:
     """Main WebSocket connection handler."""
     conn_id = str(uuid.uuid4())
@@ -704,7 +704,7 @@ async def handle_ws_connection(
             memory_stores,
             memory_retrievers,
             provider_stats=provider_stats,
-            knowledge_runtime=knowledge_runtime,
+            rag_provider_runtime=rag_provider_runtime,
         )
     except WebSocketDisconnect:
         pass
@@ -763,7 +763,7 @@ async def _message_loop(
     memory_stores: dict[str, Any] | None = None,
     memory_retrievers: dict[str, Any] | None = None,
     provider_stats: Any = None,
-    knowledge_runtime: Any = None,
+    rag_provider_runtime: Any = None,
 ) -> None:
     ws = conn.ws
     keepalive_timeout = max(0.0, float(getattr(config, "client_ws_keepalive_timeout_s", 0.0)))
@@ -822,7 +822,7 @@ async def _message_loop(
                 cron_scheduler=cron_scheduler,
                 turn_runner=turn_runner,
                 task_runtime=task_runtime,
-                knowledge_runtime=knowledge_runtime,
+                rag_provider_runtime=rag_provider_runtime,
                 flush_service=flush_service,
                 heartbeat_service=heartbeat_service,
                 heartbeat_loop=heartbeat_loop,

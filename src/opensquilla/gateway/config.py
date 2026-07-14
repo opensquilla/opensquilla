@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import copy
 import os
+import re
 import threading
 import warnings
 from enum import StrEnum
 from pathlib import Path
 from typing import Any, Literal, cast
+from urllib.parse import urlsplit
 
 from pydantic import (
     AliasChoices,
@@ -244,18 +246,94 @@ class PermissionsConfig(BaseModel):
 
 
 class KnowledgeConfig(BaseModel):
-    """OpenSquilla integration settings for an external knowledge backend."""
+    """Configuration for one external OpenSquilla RAG Provider.
 
-    model_config = ConfigDict(extra="ignore")
+    The standard integration is opt-in.  Deprecated fields are retained only
+    so existing configuration files remain loadable and can be reported to an
+    operator; they have no effect unless ``legacy_knowledge_adapter`` is
+    explicitly enabled.
+    """
 
-    enabled: bool = True
-    backend: Literal["local", "http"] = "local"
-    endpoint: str = "http://127.0.0.1:18765"
-    timeout_seconds: float = Field(default=30.0, gt=0.0)
-    capability_ttl_seconds: float = Field(default=60.0, gt=0.0)
-    api_key: str | None = None
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = False
+    provider_base_url: str = "http://127.0.0.1:18765/opensquilla-rag"
+    authentication_token_env: str | None = None
+    connect_timeout_seconds: float = Field(default=5.0, gt=0.0)
+    request_timeout_seconds: float = Field(default=30.0, gt=0.0)
+    probe_interval_seconds: float = Field(default=60.0, gt=0.0)
+    unavailable_after_seconds: float = Field(default=300.0, gt=0.0)
+    max_consecutive_failures: int = Field(default=3, ge=1)
+    retrieval_profile_override: str | None = None
+    collection_scope: list[str] = Field(default_factory=list)
+    legacy_knowledge_adapter: bool = False
+
+    # Deprecated OpenSquilla-Knowledge integration settings.  These are
+    # intentionally optional: ``model_fields_set`` can therefore distinguish
+    # a file that still carries legacy configuration from a clean default.
+    backend: Literal["local", "http"] | None = None
+    endpoint: str | None = None
+    timeout_seconds: float | None = Field(default=None, gt=0.0)
+    capability_ttl_seconds: float | None = Field(default=None, gt=0.0)
     api_key_env: str | None = None
     local_root_dir: str | None = None
+
+    @field_validator("provider_base_url")
+    @classmethod
+    def _validate_provider_base_url(cls, value: str) -> str:
+        normalized = value.strip().rstrip("/")
+        parsed = urlsplit(normalized)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            raise ValueError("provider_base_url must be an HTTP URL")
+        if parsed.username or parsed.password or parsed.query or parsed.fragment:
+            raise ValueError(
+                "provider_base_url cannot contain credentials, query, or fragment"
+            )
+        return normalized
+
+    @field_validator("authentication_token_env")
+    @classmethod
+    def _validate_authentication_token_env(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip()
+        if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", normalized) is None:
+            raise ValueError("authentication_token_env must be an environment variable name")
+        return normalized
+
+    @field_validator("retrieval_profile_override")
+    @classmethod
+    def _normalize_retrieval_profile(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip()
+        return normalized or None
+
+    @field_validator("collection_scope")
+    @classmethod
+    def _normalize_collection_scope(cls, values: list[str]) -> list[str]:
+        normalized: list[str] = []
+        seen: set[str] = set()
+        for raw in values:
+            value = raw.strip()
+            if not value:
+                raise ValueError("collection_scope entries must not be empty")
+            if value not in seen:
+                seen.add(value)
+                normalized.append(value)
+        return normalized
+
+    @property
+    def legacy_config_present(self) -> bool:
+        legacy_fields = {
+            "backend",
+            "endpoint",
+            "timeout_seconds",
+            "capability_ttl_seconds",
+            "api_key_env",
+            "local_root_dir",
+        }
+        return bool(self.model_fields_set & legacy_fields)
 
 
 class TaskRuntimeConfig(BaseModel):

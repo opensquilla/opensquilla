@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import subprocess
+import sys
 import textwrap
 from pathlib import Path
 
@@ -20,6 +22,12 @@ def _upload_step_script() -> str:
 def _install_fake_ossutil(tmp_path: Path) -> tuple[Path, Path, Path]:
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir()
+    python3 = fake_bin / "python3"
+    python3.write_text(
+        f'#!/usr/bin/env bash\nexec {shlex.quote(Path(sys.executable).as_posix())} "$@"\n',
+        encoding="utf-8",
+    )
+    python3.chmod(0o755)
     remote_root = tmp_path / "oss"
     call_log = tmp_path / "ossutil-calls.jsonl"
     fake = fake_bin / "ossutil"

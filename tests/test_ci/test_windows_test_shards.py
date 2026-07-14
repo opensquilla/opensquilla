@@ -57,6 +57,7 @@ RECENTLY_ADDED_ACTIVE_TESTS = {
     "tests/test_recovery/test_runtime_writer_guard.py",
     "tests/test_recovery/test_settings_transaction.py",
     "tests/test_recovery/test_transaction.py",
+    "tests/test_scripts/test_release_channel_manifest.py",
     "tests/test_skills/test_hub_deps_subprocess.py",
 }
 

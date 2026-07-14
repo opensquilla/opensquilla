@@ -13,7 +13,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: oss-release-mirror-${{ github.event_name == 'release' && github.event.release.tag_name || github.event.inputs.tag }}
+  group: oss-release-mirror-latest-aliases
   cancel-in-progress: false
 
 env:
@@ -29,7 +29,6 @@ jobs:
     env:
       ALIYUN_OSS_BUCKET: ${{ vars.ALIYUN_OSS_BUCKET }}
       ALIYUN_OSS_PREFIX: ${{ vars.ALIYUN_OSS_PREFIX }}
-      ALIYUN_OSS_PUBLIC_BASE_URL: ${{ vars.ALIYUN_OSS_PUBLIC_BASE_URL }}
       OSS_ACCESS_KEY_ID: ${{ secrets.ALIYUN_OSS_ACCESS_KEY_ID }}
       OSS_ACCESS_KEY_SECRET: ${{ secrets.ALIYUN_OSS_ACCESS_KEY_SECRET }}
       OSS_REGION: ${{ vars.ALIYUN_OSS_REGION }}
@@ -78,14 +77,6 @@ jobs:
             prefix="releases"
           fi
           echo "ALIYUN_OSS_PREFIX_NORMALIZED=${prefix}" >> "${GITHUB_ENV}"
-
-          public_base_url="${ALIYUN_OSS_PUBLIC_BASE_URL:-https://${ALIYUN_OSS_BUCKET}.oss-${OSS_REGION}.aliyuncs.com}"
-          public_base_url="${public_base_url%/}"
-          if [[ ! "${public_base_url}" =~ ^https://[^[:space:]]+$ ]]; then
-            echo "ALIYUN_OSS_PUBLIC_BASE_URL must be an HTTPS URL: ${public_base_url}" >&2
-            exit 1
-          fi
-          echo "OSS_PUBLIC_BASE_URL_NORMALIZED=${public_base_url}" >> "${GITHUB_ENV}"
 
           endpoint_host="${OSS_ENDPOINT#http://}"
           endpoint_host="${endpoint_host#https://}"
@@ -176,61 +167,25 @@ jobs:
           (root / "CHECKSUMMED_ASSETS").write_text("\n".join(expected) + "\n", encoding="utf-8")
           PY
 
-      - name: Build latest download page
-        env:
-          TAG: ${{ steps.release.outputs.tag }}
+      - name: Build stable installer aliases
         shell: bash
         run: |
           set -euo pipefail
-          python3 - <<'PY'
-          from html import escape
-          import os
-          from pathlib import Path
-          from urllib.parse import quote
-
-          root = Path("release-assets")
-          assets = [
-              line.strip()
-              for line in (root / "CHECKSUMMED_ASSETS").read_text(
-                  encoding="utf-8"
-              ).splitlines()
-              if line.strip()
-          ]
-          tag = os.environ["TAG"]
-          base_url = os.environ["OSS_PUBLIC_BASE_URL_NORMALIZED"]
-          prefix = os.environ["ALIYUN_OSS_PREFIX_NORMALIZED"]
-          release_url = "https://github.com/{}/releases/tag/{}".format(
-              os.environ["GITHUB_REPOSITORY"], tag
-          )
-          links = "\n".join(
-              '      <li><a href="{}">{}</a></li>'.format(
-                  escape("{}/{}/{}/{}".format(
-                      base_url, prefix, tag, quote(name, safe="")
-                  ), quote=True),
-                  escape(name),
-              )
-              for name in assets
-          )
-          page = """<!doctype html>
-          <html lang="en">
-            <head>
-              <meta charset="utf-8">
-              <meta name="viewport" content="width=device-width, initial-scale=1">
-              <title>OpenSquilla {tag} downloads</title>
-            </head>
-            <body>
-              <h1>OpenSquilla {tag} downloads</h1>
-              <ul>
-          {links}
-              </ul>
-              <p><a href="{release_url}">GitHub Release</a></p>
-            </body>
-          </html>
-          """.format(
-              tag=escape(tag), links=links, release_url=escape(release_url, quote=True)
-          )
-          (root / "latest.html").write_text(page, encoding="utf-8")
-          PY
+          root="release-assets"
+          make_alias() {
+            local pattern="$1"
+            local alias="$2"
+            local -a matches=()
+            mapfile -t matches < <(compgen -G "${root}/${pattern}" || true)
+            if (( ${#matches[@]} != 1 )); then
+              echo "Expected exactly one release asset matching ${pattern}; found ${#matches[@]}" >&2
+              exit 1
+            fi
+            cp -- "${matches[0]}" "${root}/${alias}"
+          }
+          make_alias "OpenSquilla-*-mac-arm64.dmg" "OpenSquilla-mac-arm64.dmg"
+          make_alias "OpenSquilla-*-win-x64.exe" "OpenSquilla-win-x64.exe"
+          sha256sum "${root}/OpenSquilla-mac-arm64.dmg" "${root}/OpenSquilla-win-x64.exe"
 
       - name: Install ossutil 2.0
         shell: bash
@@ -251,20 +206,111 @@ jobs:
           dest_prefix="oss://${ALIYUN_OSS_BUCKET}/${ALIYUN_OSS_PREFIX_NORMALIZED}/${TAG}"
           mirror_root="${dest_prefix%/"${TAG}"}"
           upload_asset() {
-            local path="$1"
+            local source="$1"
             local name="$2"
-            ossutil cp --force --addressing-style "${OSS_ADDRESSING_STYLE_NORMALIZED}" \
-              "${path}" "${dest_prefix}/${name}"
+            local destination="${3:-${dest_prefix}}"
+            local cache_control="${4:-}"
+            local -a options=(
+              cp
+              --force
+              --addressing-style "${OSS_ADDRESSING_STYLE_NORMALIZED}"
+            )
+            if [[ -n "${cache_control}" ]]; then
+              options+=(--cache-control "${cache_control}")
+            fi
+            ossutil "${options[@]}" "${source}" "${destination}/${name}"
           }
+          object_exists() {
+            local object="$1"
+            local listing
+            if ! listing="$(ossutil ls \
+              --addressing-style "${OSS_ADDRESSING_STYLE_NORMALIZED}" \
+              --short-format "${object}")"; then
+              echo "Unable to list OSS object: ${object}" >&2
+              return 2
+            fi
+            grep -Fxq "${object}" <<<"${listing}"
+          }
+          latest_prefix="${mirror_root}/latest"
+          backup_prefix="${mirror_root}/.latest-backups/${GITHUB_RUN_ID}"
+          latest_aliases=(
+            OpenSquilla-mac-arm64.dmg
+            OpenSquilla-win-x64.exe
+          )
+          backed_up_aliases=()
+          promoted_aliases=()
+          has_backup() {
+            local candidate="$1"
+            local name
+            for name in "${backed_up_aliases[@]}"; do
+              [[ "${name}" == "${candidate}" ]] && return 0
+            done
+            return 1
+          }
+          rollback_latest_aliases() {
+            local status="$?"
+            local rollback_failed=0
+            local name
+            trap - EXIT
+            if (( status != 0 )); then
+              echo "Latest alias promotion failed; restoring the previous state." >&2
+              for name in "${promoted_aliases[@]}"; do
+                if has_backup "${name}"; then
+                  upload_asset "${backup_prefix}/${name}" "${name}" "${latest_prefix}" "no-cache" \
+                    || rollback_failed=1
+                else
+                  ossutil rm --force --addressing-style "${OSS_ADDRESSING_STYLE_NORMALIZED}" \
+                    "${latest_prefix}/${name}" || rollback_failed=1
+                fi
+              done
+            fi
+            if (( ${#backed_up_aliases[@]} )); then
+              ossutil rm --force --recursive \
+                --addressing-style "${OSS_ADDRESSING_STYLE_NORMALIZED}" \
+                "${backup_prefix}/" || rollback_failed=1
+            fi
+            if (( rollback_failed )); then
+              echo "Latest alias rollback did not complete." >&2
+            fi
+            exit "${status}"
+          }
+          trap rollback_latest_aliases EXIT
+          for name in "${latest_aliases[@]}"; do
+            if object_exists "${latest_prefix}/${name}"; then
+              upload_asset "${latest_prefix}/${name}" "${name}" "${backup_prefix}"
+              backed_up_aliases+=("${name}")
+            else
+              exists_status="$?"
+              if (( exists_status != 1 )); then
+                echo "Refusing to promote aliases after an OSS existence-check error." >&2
+                exit "${exists_status}"
+              fi
+            fi
+          done
           while IFS= read -r name; do
             [[ -n "${name}" ]] || continue
             upload_asset "release-assets/${name}" "${name}"
           done < release-assets/CHECKSUMMED_ASSETS
           upload_asset "release-assets/SHA256SUMS" "SHA256SUMS"
-          ossutil cp --force --addressing-style "${OSS_ADDRESSING_STYLE_NORMALIZED}" \
-            --content-type "text/html; charset=utf-8" \
-            --content-disposition "inline" \
-            --cache-control "no-cache" \
-            "release-assets/latest.html" "${mirror_root}/latest.html"
+          for name in "${latest_aliases[@]}"; do
+            upload_asset "release-assets/${name}" "${name}" "${latest_prefix}" "no-cache"
+            promoted_aliases+=("${name}")
+          done
+          if object_exists "${mirror_root}/latest.html"; then
+            ossutil rm --force --addressing-style "${OSS_ADDRESSING_STYLE_NORMALIZED}" \
+              "${mirror_root}/latest.html"
+          else
+            latest_html_status="$?"
+            if (( latest_html_status != 1 )); then
+              echo "Refusing to finish promotion after a legacy-page existence-check error." >&2
+              exit "${latest_html_status}"
+            fi
+          fi
+          trap - EXIT
+          if (( ${#backed_up_aliases[@]} )); then
+            ossutil rm --force --recursive \
+              --addressing-style "${OSS_ADDRESSING_STYLE_NORMALIZED}" \
+              "${backup_prefix}/"
+          fi
           ossutil ls --addressing-style "${OSS_ADDRESSING_STYLE_NORMALIZED}" "${dest_prefix}/"
-          ossutil ls --addressing-style "${OSS_ADDRESSING_STYLE_NORMALIZED}" "${mirror_root}/latest.html"
+          ossutil ls --addressing-style "${OSS_ADDRESSING_STYLE_NORMALIZED}" "${latest_prefix}/"

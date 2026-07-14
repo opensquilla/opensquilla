@@ -11,6 +11,7 @@ def test_aliyun_oss_release_mirror_workflow_contract() -> None:
     assert "name: Mirror Release Assets to Aliyun OSS" in workflow
     assert "release:\n    types: [published]" in workflow
     assert "workflow_dispatch:" in workflow
+    assert "group: oss-release-mirror-latest-aliases" in workflow
     assert "MANUAL_RELEASE_TAG: ${{ inputs.tag }}" in workflow
     assert 'tag="${MANUAL_RELEASE_TAG}"' in workflow
     assert 'tag="${{ inputs.tag }}"' not in workflow
@@ -27,20 +28,30 @@ def test_aliyun_oss_release_mirror_workflow_contract() -> None:
     assert "OSS_ENDPOINT" in workflow
     assert "OSS_ADDRESSING_STYLE" in workflow
     assert "ALIYUN_OSS_PREFIX_NORMALIZED" in workflow
-    assert "ALIYUN_OSS_PUBLIC_BASE_URL" in workflow
-    assert "OSS_PUBLIC_BASE_URL_NORMALIZED" in workflow
     assert "OSS_ADDRESSING_STYLE_NORMALIZED" in workflow
     assert "--addressing-style" in workflow
     assert (
         'dest_prefix="oss://${ALIYUN_OSS_BUCKET}/'
         '${ALIYUN_OSS_PREFIX_NORMALIZED}/${TAG}"'
     ) in workflow
-    assert 'ossutil cp --force --addressing-style' in workflow
+    assert "local -a options=(" in workflow
+    assert '--cache-control "${cache_control}"' in workflow
     assert 'upload_asset "release-assets/SHA256SUMS" "SHA256SUMS"' in workflow
-    assert "Build latest download page" in workflow
-    assert 'release-assets/latest.html' in workflow
-    assert '--content-type "text/html; charset=utf-8"' in workflow
-    assert '--content-disposition "inline"' in workflow
-    assert '--cache-control "no-cache"' in workflow
-    assert "--meta" not in workflow
+    assert "Build stable installer aliases" in workflow
+    assert 'make_alias "OpenSquilla-*-mac-arm64.dmg" "OpenSquilla-mac-arm64.dmg"' in workflow
+    assert 'make_alias "OpenSquilla-*-win-x64.exe" "OpenSquilla-win-x64.exe"' in workflow
+    assert 'latest_prefix="${mirror_root}/latest"' in workflow
+    assert 'backup_prefix="${mirror_root}/.latest-backups/${GITHUB_RUN_ID}"' in workflow
+    assert "rollback_latest_aliases" in workflow
+    assert "local listing" in workflow
+    assert "return 2" in workflow
+    assert "if (( exists_status != 1 )); then" in workflow
+    assert "if (( latest_html_status != 1 )); then" in workflow
+    assert (
+        'upload_asset "release-assets/${name}" "${name}" "${latest_prefix}" "no-cache"'
+        in workflow
+    )
     assert '"${mirror_root}/latest.html"' in workflow
+    assert workflow.index(
+        'upload_asset "release-assets/${name}" "${name}" "${latest_prefix}" "no-cache"'
+    ) < workflow.index('"${mirror_root}/latest.html"')

@@ -131,6 +131,12 @@ und die Gateway-Runtime in einer Electron-Hülle.
 - macOS Apple Silicon: <https://github.com/opensquilla/opensquilla/releases/download/v0.5.0rc4/OpenSquilla-0.5.0-rc4-mac-arm64.dmg>
 - Windows x64: <https://github.com/opensquilla/opensquilla/releases/download/v0.5.0rc4/OpenSquilla-0.5.0-rc4-win-x64.exe>
 
+Für schnellere Downloads in Festlandchina verwende die direkten OSS-Download-Aliasse:
+- macOS Apple Silicon: <https://opensquilla-releases.oss-cn-beijing.aliyuncs.com/releases/latest/OpenSquilla-mac-arm64.dmg>
+- Windows x64: <https://opensquilla-releases.oss-cn-beijing.aliyuncs.com/releases/latest/OpenSquilla-win-x64.exe>
+
+Diese festen Links werden nach jeder erfolgreichen Release-Spiegelung aktualisiert. Verwende die oben stehenden versionierten GitHub-Release-Links, wenn du eine bestimmte Version benötigst.
+
 Beende vor dem Upgrade jede laufende OpenSquilla-Desktop-App. Das vorhandene
 Desktop-Profil im Anwendungsdatenverzeichnis der Plattform wird weiterverwendet.
 `~/.opensquilla` der Terminal-Installation ist ein separates Profil; übertrage es

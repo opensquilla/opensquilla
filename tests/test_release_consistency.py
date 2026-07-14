@@ -643,10 +643,18 @@ def test_all_readmes_default_install_paths_to_the_current_preview() -> None:
         Path("README.es.md"),
     ]
 
+    oss_latest_assets = (
+        "https://opensquilla-releases.oss-cn-beijing.aliyuncs.com/releases/latest/"
+        "OpenSquilla-mac-arm64.dmg",
+        "https://opensquilla-releases.oss-cn-beijing.aliyuncs.com/releases/latest/"
+        "OpenSquilla-win-x64.exe",
+    )
+
     for path in readmes:
         text = path.read_text(encoding="utf-8")
         assert f"OpenSquilla-{CURRENT_DESKTOP_VERSION}-mac-arm64.dmg" in text, path
         assert f"OpenSquilla-{CURRENT_DESKTOP_VERSION}-win-x64.exe" in text, path
+        assert all(url in text for url in oss_latest_assets), path
         assert wheel_url in text, path
         assert "ghcr.io/opensquilla/opensquilla:latest" in text, path
         assert "0.5.0-Preview-2-Desktop" not in text, path
@@ -767,9 +775,16 @@ def test_current_release_notes_cover_recovery_transfer_upgrade_and_containers() 
     assert "ghcr.io/opensquilla/opensquilla:v0.5.0rc4" in notes
     assert "`latest` tag follows the most recently verified release tag" in notes
     assert (
-        "https://opensquilla-releases.oss-cn-beijing.aliyuncs.com/releases/latest.html"
+        "https://opensquilla-releases.oss-cn-beijing.aliyuncs.com/releases/latest/"
+        "OpenSquilla-mac-arm64.dmg"
         in notes
     )
+    assert (
+        "https://opensquilla-releases.oss-cn-beijing.aliyuncs.com/releases/latest/"
+        "OpenSquilla-win-x64.exe"
+        in notes
+    )
+    assert "releases/latest.html" not in notes
     assert "Synthetic fixtures" not in notes
     assert "release gate" not in notes
     assert "## Acknowledgements" in notes

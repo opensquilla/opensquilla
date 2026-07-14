@@ -13,7 +13,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: oss-release-mirror-${{ github.event_name == 'release' && github.event.release.tag_name || github.event.inputs.tag }}
+  group: oss-release-mirror-latest-aliases
   cancel-in-progress: false
 
 env:

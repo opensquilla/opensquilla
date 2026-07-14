@@ -166,8 +166,12 @@ def _run_upload_step(
     # this cross-platform contract test on the active pytest interpreter rather
     # than the Windows Store ``python3.exe`` app-execution alias.
     script = 'python3() { "$FAKE_OSS_PYTHON" "$@"; }\n' + _upload_step_script()
+    # Windows process creation cannot reliably carry this large, heavily quoted
+    # workflow body as a ``bash -c`` argument. Execute an LF-normalized file.
+    script_path = tmp_path / "upload-step.sh"
+    script_path.write_text(script, encoding="utf-8", newline="\n")
     return subprocess.run(
-        [_bash_executable(), "-c", script],
+        [_bash_executable(), script_path.as_posix()],
         cwd=tmp_path,
         env=env,
         capture_output=True,

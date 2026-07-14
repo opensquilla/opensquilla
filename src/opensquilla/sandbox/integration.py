@@ -1775,7 +1775,7 @@ async def escalate_backend_denial(
     policy: SandboxPolicy,
     *,
     runtime: SandboxRuntime | None = None,
-) -> ApprovalDecision | ElevationGateResult:
+) -> DenialResult | ElevationGateResult:
     """Suspend one attributable failure for a fresh broader-context review."""
     fp = action_fingerprint(request)
     notes_str = "; ".join(result.backend_notes)

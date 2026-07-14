@@ -34,6 +34,7 @@ from opensquilla.sandbox.backend.windows_default_roots import (
     runtime_rx_roots,
     windows_platform_rx_roots,
     windows_sensitive_marker,
+    workspace_cache_root,
 )
 from opensquilla.sandbox.backend.windows_default_setup import (
     default_setup_marker_path,
@@ -49,6 +50,7 @@ from opensquilla.sandbox.operation_runtime import (
 )
 from opensquilla.sandbox.permissions import (
     FileSystemAccess,
+    FileSystemPermissionEntry,
     FileSystemPermissionProfile,
 )
 from opensquilla.sandbox.run_mode import normalize_run_mode
@@ -125,10 +127,11 @@ class WindowsDefaultBackend(Backend):
         return SandboxOperationResult.from_worker_stdout(result.stdout)
 
     async def run(self, request: SandboxRequest) -> SandboxResult:
+        cache_writable = _request_allows_cache_write(request)
         return await self._run(
             request,
-            prepare_cache=True,
-            rehome_user_state=True,
+            prepare_cache=cache_writable,
+            rehome_user_state=cache_writable,
             private_mounts_are_required=False,
         )
 
@@ -217,6 +220,15 @@ def _support_ready() -> bool:
 
 def _helper_supervision_timeout(command_timeout_s: float) -> float:
     return max(0.01, float(command_timeout_s)) + _HELPER_TIMEOUT_GRACE_S
+
+
+def _request_allows_cache_write(request: SandboxRequest) -> bool:
+    if normalize_run_mode(request.run_mode).value == "full":
+        return True
+    profile = request.policy.file_system
+    if profile is None:
+        return False
+    return profile.resolve(workspace_cache_root(request.cwd)) is FileSystemAccess.WRITE
 
 
 def _payload_for_request(
@@ -326,6 +338,10 @@ def _python_executable() -> Path:
 
 def _capability_store_path() -> Path:
     return default_setup_marker_path().with_name("cap_sids.json")
+
+
+def _deny_acl_state_path() -> Path:
+    return default_setup_marker_path().with_name("deny_acl_state.json")
 
 
 def _validate_filesystem_operation_targets(
@@ -635,18 +651,23 @@ def _acl_plan_payload(
         profile,
         include_private_mounts=private_mounts_are_required,
     )
-    deny_read_paths = _dedupe_paths(Path(path) for path in profile.denied_read_roots)
-    roots = tuple(dict.fromkeys(grant.path for grant in plan.auto_grants))
-    sids = capability_sids_for_command(_capability_store_path(), roots)
-    sid_by_root = {str(root): sid for root, sid in zip(roots, sids, strict=False)}
+    deny_read_paths = _profile_denied_read_paths(profile)
+    merged_grants = _merge_acl_grants(plan.auto_grants)
+    roots = tuple(grant.path for grant in merged_grants)
+    accesses = tuple(grant.access.value for grant in merged_grants)
+    sids = capability_sids_for_command(
+        _capability_store_path(),
+        roots,
+        accesses=accesses,
+    )
     grants: list[dict[str, str]] = []
-    for grant in plan.auto_grants:
+    for grant, sid in zip(merged_grants, sids, strict=True):
         grants.append(
             {
                 "path": str(grant.path),
                 "access": grant.access.value,
                 "kind": grant.kind.value,
-                "capabilitySid": sid_by_root[str(grant.path)],
+                "capabilitySid": sid,
             }
         )
     return {
@@ -656,6 +677,7 @@ def _acl_plan_payload(
         "capabilitySids": list(dict.fromkeys(item["capabilitySid"] for item in grants)),
         "denyWritePaths": [str(path) for path in deny_write_paths],
         "denyReadPaths": [str(path) for path in deny_read_paths],
+        "denyAclStatePath": str(_deny_acl_state_path()),
         "grantCurrentUserAccess": True,
     }
 
@@ -665,7 +687,7 @@ def _profile_acl_grants(
     profile: FileSystemPermissionProfile,
 ) -> tuple[AclGrant, ...]:
     grants: list[AclGrant] = []
-    for entry in profile.effective_entries:
+    for entry in _effective_raw_profile_entries(profile):
         path = Path(entry.path)
         if entry.access is FileSystemAccess.DENY or not path.exists():
             continue
@@ -695,14 +717,15 @@ def _deny_write_paths_for_request(
         and _acl_sensitive_marker(root) is None
     ]
     paths.extend(
-        Path(entry.path)
-        for entry in profile.effective_entries
+        path
+        for entry in _effective_raw_profile_entries(profile)
         if entry.access is not FileSystemAccess.WRITE
         and any(
             Path(entry.path) != writable_root
             and _is_relative_to_casefold(Path(entry.path), writable_root)
             for writable_root in writable_roots
         )
+        for path in _acl_path_variants(Path(entry.path))
     )
     paths.extend(
         mount.host_path
@@ -713,7 +736,79 @@ def _deny_write_paths_for_request(
         and not _is_filesystem_root(mount.host_path)
         and _acl_sensitive_marker(mount.host_path) is None
     )
-    return _dedupe_paths(paths)
+    return _dedupe_acl_paths(paths)
+
+
+def _profile_denied_read_paths(
+    profile: FileSystemPermissionProfile,
+) -> tuple[Path, ...]:
+    return _dedupe_acl_paths(
+        path
+        for entry in _effective_raw_profile_entries(profile)
+        if entry.access is FileSystemAccess.DENY
+        for path in _acl_path_variants(Path(entry.path))
+    )
+
+
+def _effective_raw_profile_entries(
+    profile: FileSystemPermissionProfile,
+) -> tuple[FileSystemPermissionEntry, ...]:
+    latest: dict[str, tuple[int, FileSystemPermissionEntry]] = {}
+    for index, entry in enumerate(profile.entries):
+        canonical = Path(entry.path).expanduser().resolve(strict=False)
+        latest[_windows_acl_path_key(canonical)] = (index, entry)
+    return tuple(entry for _index, entry in sorted(latest.values()))
+
+
+def _acl_path_variants(path: Path) -> tuple[Path, ...]:
+    lexical = path.expanduser().absolute()
+    variants = [lexical]
+    if lexical.exists():
+        variants.append(lexical.resolve(strict=False))
+    return _dedupe_acl_paths(variants)
+
+
+def _dedupe_acl_paths(paths: Iterable[Path | str]) -> tuple[Path, ...]:
+    seen: set[str] = set()
+    result: list[Path] = []
+    for raw in paths:
+        path = Path(raw).expanduser().absolute()
+        key = _windows_acl_path_key(path)
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(path)
+    return tuple(result)
+
+
+def _merge_acl_grants(grants: Iterable[AclGrant]) -> tuple[AclGrant, ...]:
+    merged: dict[str, tuple[int, AclGrant]] = {}
+    for index, grant in enumerate(grants):
+        key = _windows_acl_path_key(grant.path.resolve(strict=False))
+        previous = merged.get(key)
+        if previous is None:
+            merged[key] = (index, grant)
+            continue
+        previous_index, previous_grant = previous
+        access = (
+            AclAccess.RWX
+            if AclAccess.RWX in {previous_grant.access, grant.access}
+            else AclAccess.RX
+        )
+        kind = (
+            AclGrantKind.REQUIRED
+            if AclGrantKind.REQUIRED in {previous_grant.kind, grant.kind}
+            else grant.kind
+        )
+        merged[key] = (
+            previous_index,
+            AclGrant(path=grant.path, access=access, kind=kind),
+        )
+    return tuple(grant for _index, grant in sorted(merged.values()))
+
+
+def _windows_acl_path_key(path: Path) -> str:
+    return str(path).replace("\\", "/").rstrip("/").casefold()
 
 
 def _rx_root_needs_acl_grant(path: Path, env: dict[str, str]) -> bool:

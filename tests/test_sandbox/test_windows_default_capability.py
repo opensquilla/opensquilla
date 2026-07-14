@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 
@@ -23,7 +24,8 @@ def test_capability_sid_is_stable_per_root(tmp_path: Path) -> None:
 
     assert first == "S-1-5-21-100-101-102-103"
     assert second == first
-    assert loaded.root_sids[str(tmp_path / "workspace")] == first
+    assert list(loaded.root_sids.values()) == [first]
+    assert next(iter(loaded.root_sids)).startswith("rwx|")
 
 
 def test_command_capabilities_only_include_current_roots(tmp_path: Path) -> None:
@@ -85,4 +87,89 @@ def test_legacy_app_capability_sids_are_not_reused(tmp_path: Path) -> None:
     )
 
     assert loaded.root_sids == {}
+    assert sid == "S-1-5-21-200-201-202-203"
+
+
+def test_capability_sid_is_isolated_by_access_level_on_downgrade(tmp_path: Path) -> None:
+    from opensquilla.sandbox.backend.windows_default_capability import (
+        capability_sid_for_root,
+        capability_sids_for_command,
+    )
+
+    store_path = tmp_path / "cap_sids.json"
+    root = tmp_path / "workspace"
+    generator = iter(
+        [
+            "S-1-5-21-100-101-102-103",
+            "S-1-5-21-200-201-202-203",
+        ]
+    ).__next__
+
+    write_sid = capability_sid_for_root(
+        store_path,
+        root,
+        access="RWX",
+        sid_factory=generator,
+    )
+    read_sid = capability_sid_for_root(
+        store_path,
+        root,
+        access="RX",
+        sid_factory=generator,
+    )
+
+    assert read_sid != write_sid
+    assert capability_sids_for_command(
+        store_path,
+        (root,),
+        accesses=("RX",),
+    ) == (read_sid,)
+
+
+def test_capability_sid_key_is_windows_case_insensitive(tmp_path: Path) -> None:
+    from opensquilla.sandbox.backend.windows_default_capability import (
+        capability_sid_for_root,
+    )
+
+    store_path = tmp_path / "cap_sids.json"
+    generator = iter(
+        [
+            "S-1-5-21-100-101-102-103",
+            "S-1-5-21-200-201-202-203",
+        ]
+    ).__next__
+
+    first = capability_sid_for_root(
+        store_path,
+        Path(r"C:\\Users\\LRK\\Workspace"),
+        access="RWX",
+        sid_factory=generator,
+    )
+    second = capability_sid_for_root(
+        store_path,
+        Path(r"c:\\users\\lrk\\workspace\\"),
+        access="RWX",
+        sid_factory=generator,
+    )
+
+    assert second == first
+
+
+def test_legacy_path_only_sid_is_not_reused_for_access_namespaced_key(tmp_path: Path) -> None:
+    from opensquilla.sandbox.backend.windows_default_capability import capability_sid_for_root
+
+    store_path = tmp_path / "cap_sids.json"
+    root = tmp_path / "workspace"
+    store_path.write_text(
+        json.dumps({"rootSids": {str(root): "S-1-5-21-100-101-102-103"}}),
+        encoding="utf-8",
+    )
+
+    sid = capability_sid_for_root(
+        store_path,
+        root,
+        access="RX",
+        sid_factory=lambda: "S-1-5-21-200-201-202-203",
+    )
+
     assert sid == "S-1-5-21-200-201-202-203"

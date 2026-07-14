@@ -80,12 +80,18 @@ def test_windows_acl_plan_compiles_profile_reads_writes_and_denies(
     monkeypatch.setattr(
         mod,
         "capability_sids_for_command",
-        lambda path, roots: tuple(f"S-{i}" for i, _ in enumerate(roots)),
+        lambda path, roots, **kwargs: tuple(f"S-{i}" for i, _ in enumerate(roots)),
     )
     monkeypatch.setattr(mod, "_runtime_readonly_roots", lambda: ())
     monkeypatch.setattr(mod, "runtime_rx_roots", lambda executable: ())
     monkeypatch.setattr(mod, "process_executable_rx_roots", lambda argv, env: ())
     monkeypatch.setattr(mod, "_windows_tool_path_roots", lambda *args, **kwargs: ())
+    monkeypatch.setattr(
+        mod,
+        "_deny_acl_state_path",
+        lambda: tmp_path / "deny-acl.json",
+        raising=False,
+    )
 
     plan = mod._acl_plan_payload(request)
     grants = {item["path"]: item["access"] for item in plan["autoGrants"]}
@@ -96,6 +102,73 @@ def test_windows_acl_plan_compiles_profile_reads_writes_and_denies(
     assert grants[str(readable_reopen)] == "RX"
     assert str(readonly) in plan["denyWritePaths"]
     assert str(secret) in plan["denyReadPaths"]
+    assert plan["denyAclStatePath"] == str(tmp_path / "deny-acl.json")
+
+
+def test_windows_acl_plan_preserves_lexical_and_canonical_denied_paths(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from opensquilla.sandbox.backend import windows_default as mod
+
+    target = tmp_path / "target-secret"
+    lexical = tmp_path / "configured-secret"
+    target.mkdir()
+    lexical.symlink_to(target, target_is_directory=True)
+    profile = FileSystemPermissionProfile(
+        entries=(
+            FileSystemPermissionEntry(tmp_path, FileSystemAccess.READ),
+            FileSystemPermissionEntry(lexical, FileSystemAccess.DENY),
+        )
+    )
+    request = _request(tmp_path).with_policy(replace(_policy(), file_system=profile))
+    monkeypatch.setattr(
+        mod,
+        "capability_sids_for_command",
+        lambda store, roots, **kwargs: tuple(f"S-{i}" for i, _ in enumerate(roots)),
+    )
+    monkeypatch.setattr(mod, "_runtime_readonly_roots", lambda: ())
+    monkeypatch.setattr(mod, "runtime_rx_roots", lambda executable: ())
+    monkeypatch.setattr(mod, "process_executable_rx_roots", lambda argv, env: ())
+    monkeypatch.setattr(mod, "_windows_tool_path_roots", lambda *args, **kwargs: ())
+
+    plan = mod._acl_plan_payload(request)
+
+    assert set(plan["denyReadPaths"]) == {str(lexical), str(target)}
+
+
+def test_windows_acl_plan_requests_access_namespaced_capability_sids(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from opensquilla.sandbox.backend import windows_default as mod
+
+    readable = tmp_path / "readable"
+    writable = tmp_path / "writable"
+    readable.mkdir()
+    writable.mkdir()
+    profile = FileSystemPermissionProfile(
+        entries=(
+            FileSystemPermissionEntry(readable, FileSystemAccess.READ),
+            FileSystemPermissionEntry(writable, FileSystemAccess.WRITE),
+        )
+    )
+    captured: dict[str, tuple[str, ...]] = {}
+
+    def fake_sids(store, roots, *, accesses=None):
+        captured["accesses"] = accesses
+        return tuple(f"S-{i}" for i, _ in enumerate(roots))
+
+    request = _request(tmp_path).with_policy(replace(_policy(), file_system=profile))
+    monkeypatch.setattr(mod, "capability_sids_for_command", fake_sids)
+    monkeypatch.setattr(mod, "_runtime_readonly_roots", lambda: ())
+    monkeypatch.setattr(mod, "runtime_rx_roots", lambda executable: ())
+    monkeypatch.setattr(mod, "process_executable_rx_roots", lambda argv, env: ())
+    monkeypatch.setattr(mod, "_windows_tool_path_roots", lambda *args, **kwargs: ())
+
+    mod._acl_plan_payload(request)
+
+    assert captured["accesses"] == ("RX", "RWX")
 
 
 def test_windows_acl_plan_preserves_nested_denial_after_write_reopen(
@@ -125,7 +198,7 @@ def test_windows_acl_plan_preserves_nested_denial_after_write_reopen(
     monkeypatch.setattr(
         mod,
         "capability_sids_for_command",
-        lambda path, roots: tuple(f"S-{i}" for i, _ in enumerate(roots)),
+        lambda path, roots, **kwargs: tuple(f"S-{i}" for i, _ in enumerate(roots)),
     )
     monkeypatch.setattr(mod, "_runtime_readonly_roots", lambda: ())
     monkeypatch.setattr(mod, "runtime_rx_roots", lambda executable: ())
@@ -167,7 +240,7 @@ def test_windows_acl_plan_does_not_make_readonly_cwd_writable(
     monkeypatch.setattr(
         mod,
         "capability_sids_for_command",
-        lambda path, roots: tuple(f"S-{i}" for i, _ in enumerate(roots)),
+        lambda path, roots, **kwargs: tuple(f"S-{i}" for i, _ in enumerate(roots)),
     )
     monkeypatch.setattr(mod, "_runtime_readonly_roots", lambda: ())
     monkeypatch.setattr(mod, "process_executable_rx_roots", lambda argv, env: ())
@@ -560,6 +633,52 @@ async def test_backend_validates_profile_before_preparing_cache(
         await WindowsDefaultBackend().run(_request(tmp_path).with_policy(_policy()))
 
     assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_backend_readonly_cwd_does_not_prepare_or_rehome_cache(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from opensquilla.sandbox.backend import windows_default as mod
+    from opensquilla.sandbox.backend.windows_default import WindowsDefaultBackend
+
+    class _Proc:
+        returncode = 0
+
+        async def communicate(self):
+            return b"", b""
+
+    captured: dict[str, object] = {}
+    calls: list[Path] = []
+
+    async def fake_exec(*argv, stdout=None, stderr=None, env=None):
+        captured["env"] = env
+        return _Proc()
+
+    profile = FileSystemPermissionProfile(
+        entries=(FileSystemPermissionEntry(tmp_path, FileSystemAccess.READ),)
+    )
+    request = _request(tmp_path).with_policy(replace(_policy(), file_system=profile))
+    monkeypatch.setattr(mod, "_support_ready", lambda: True)
+    monkeypatch.setattr(mod, "ensure_cache_dirs", lambda path: calls.append(path))
+    monkeypatch.setattr(
+        mod,
+        "capability_sids_for_command",
+        lambda store, roots, **kwargs: tuple(f"S-{i}" for i, _ in enumerate(roots)),
+    )
+    monkeypatch.setattr(mod, "runtime_rx_roots", lambda executable: ())
+    monkeypatch.setattr(mod, "process_executable_rx_roots", lambda argv, env: ())
+    monkeypatch.setattr(mod, "_windows_tool_path_roots", lambda *args, **kwargs: ())
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+
+    await WindowsDefaultBackend().run(request)
+
+    assert calls == []
+    helper_env = captured["env"]
+    assert isinstance(helper_env, dict)
+    payload = json.loads(helper_env["OPENSQUILLA_WINDOWS_DEFAULT_PAYLOAD"])
+    assert ".opensquilla-cache" not in json.dumps(payload["env"])
 
 
 @pytest.mark.asyncio

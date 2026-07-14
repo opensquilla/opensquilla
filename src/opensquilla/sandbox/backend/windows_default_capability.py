@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import ntpath
 import re
 import secrets
 from collections.abc import Callable
@@ -47,10 +48,11 @@ def capability_sid_for_root(
     store_path: Path,
     root: Path,
     *,
+    access: str = "RWX",
     sid_factory: Callable[[], str] | None = None,
 ) -> str:
     store = load_capability_store(store_path)
-    key = str(root)
+    key = _capability_root_key(root, access)
     existing = store.root_sids.get(key)
     if existing:
         return existing
@@ -63,8 +65,31 @@ def capability_sid_for_root(
     return sid
 
 
-def capability_sids_for_command(store_path: Path, roots: tuple[Path, ...]) -> tuple[str, ...]:
-    return tuple(capability_sid_for_root(store_path, root) for root in roots)
+def capability_sids_for_command(
+    store_path: Path,
+    roots: tuple[Path, ...],
+    *,
+    accesses: tuple[str, ...] | None = None,
+) -> tuple[str, ...]:
+    effective_accesses = accesses or tuple("RWX" for _root in roots)
+    if len(effective_accesses) != len(roots):
+        raise ValueError("capability roots and accesses must have equal length")
+    return tuple(
+        capability_sid_for_root(store_path, root, access=access)
+        for root, access in zip(roots, effective_accesses, strict=True)
+    )
+
+
+def _capability_root_key(root: Path, access: str) -> str:
+    normalized_access = access.strip().upper()
+    if normalized_access not in {"RX", "RWX"}:
+        raise ValueError(f"unsupported capability access: {access!r}")
+    raw = str(root)
+    if "\\" in raw or re.match(r"^[A-Za-z]:", raw):
+        path_key = ntpath.normcase(ntpath.normpath(raw.replace("/", "\\")))
+    else:
+        path_key = str(root.expanduser().resolve(strict=False)).casefold()
+    return f"{normalized_access.casefold()}|{path_key.casefold()}"
 
 
 def _new_capability_sid() -> str:

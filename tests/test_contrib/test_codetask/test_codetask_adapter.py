@@ -7,6 +7,7 @@ import pytest
 
 from opensquilla.contrib.codetask import adapter
 from opensquilla.contrib.codetask.adapter import LocalAdapter, _agent_command
+from opensquilla.contrib.codetask.agent_config import AgentConfigBundle
 
 
 class FakePopen:
@@ -46,27 +47,109 @@ def _install_popen(monkeypatch, captured, **popen_kw):
     monkeypatch.setattr(adapter.subprocess, "Popen", fake_popen)
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="code-task Windows support is WIP")
-def test_argv_has_host_containment_flags(monkeypatch, tmp_path):
+def _capture_agent_argv(monkeypatch, captured):
+    def fake_agent_command(executable, argv, py_code):
+        captured["argv"] = list(argv)
+        return [sys.executable, "-c", py_code]
+
+    monkeypatch.setattr(adapter, "_agent_command", fake_agent_command)
+
+
+def test_sandbox_off_uses_full_host_access_without_workspace_containment(
+    monkeypatch, tmp_path
+):
     captured = {}
     _install_popen(monkeypatch, captured, stdout='{"status": "ok", "text": "done", "usage": {}}')
+    _capture_agent_argv(monkeypatch, captured)
+    _isolate_operator_config(monkeypatch, tmp_path)
     repo = tmp_path / "repo"
     repo.mkdir()
     out = LocalAdapter(model="m", timeout=10).run(
         "fix it", repo=repo, scratch_dir=tmp_path / "s", artifact_dir=tmp_path / "art"
     )
     assert out.success is True
-    code = captured["code"]
+    argv = captured["argv"]
     for flag in (
         "--workspace",
-        "--workspace-strict",
-        "--workspace-lockdown",
+        "--no-workspace-strict",
         "--scratch-dir",
         "--stateless",
         "--permissions",
     ):
-        assert flag in code
+        assert flag in argv
+    assert argv[argv.index("--permissions") + 1] == "full"
+    assert "--workspace-strict" not in argv
+    assert "--workspace-lockdown" not in argv
     assert captured["cwd"] == str(repo)
+
+
+def test_sandbox_on_keeps_workspace_containment(monkeypatch, tmp_path):
+    captured = {}
+    _install_popen(monkeypatch, captured, stdout='{"status": "ok", "text": "done", "usage": {}}')
+    _capture_agent_argv(monkeypatch, captured)
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    bundle = AgentConfigBundle(
+        payload={
+            "sandbox": {
+                "sandbox": True,
+                "security_grading": True,
+                "run_mode": "trusted",
+            }
+        }
+    )
+
+    out = LocalAdapter(model="m", timeout=10, agent_config=bundle).run(
+        "fix it", repo=repo, scratch_dir=tmp_path / "s", artifact_dir=tmp_path / "art"
+    )
+
+    assert out.success is True
+    argv = captured["argv"]
+    assert argv[argv.index("--permissions") + 1] == "bypass"
+    assert "--workspace-strict" in argv
+    assert "--workspace-lockdown" in argv
+    assert "--no-workspace-strict" not in argv
+
+
+def test_standard_sandbox_uses_restricted_permission_profile(monkeypatch, tmp_path):
+    captured = {}
+    _install_popen(monkeypatch, captured, stdout='{"status": "ok", "text": "done"}')
+    _capture_agent_argv(monkeypatch, captured)
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    bundle = AgentConfigBundle(
+        payload={
+            "sandbox": {
+                "sandbox": True,
+                "security_grading": True,
+                "run_mode": "standard",
+            }
+        }
+    )
+
+    out = LocalAdapter(agent_config=bundle).run(
+        "fix it", repo=repo, scratch_dir=tmp_path / "s", artifact_dir=tmp_path / "art"
+    )
+
+    assert out.success is True
+    argv = captured["argv"]
+    assert argv[argv.index("--permissions") + 1] == "restricted"
+    assert "--workspace-strict" in argv
+    assert "--workspace-lockdown" in argv
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="process-group signal differs on Windows")
+def test_agent_process_starts_in_its_own_posix_session(monkeypatch, tmp_path):
+    captured = {}
+    _install_popen(monkeypatch, captured, stdout='{"status": "ok", "text": "done", "usage": {}}')
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    out = LocalAdapter(model="m", timeout=10).run(
+        "fix it", repo=repo, scratch_dir=tmp_path / "s", artifact_dir=tmp_path / "art"
+    )
+
+    assert out.success is True
     # Descendant-killable process group (codex review #6).
     assert captured["new_session"] is True
 

@@ -121,7 +121,7 @@ def test_linux_runtime_readonly_paths_match_codex_platform_defaults() -> None:
     }.issubset(paths)
 
 
-def test_bwrap_argv_uses_readonly_root_when_root_is_readable(tmp_path: Path) -> None:
+def test_bwrap_argv_does_not_expand_legacy_root_without_read_all(tmp_path: Path) -> None:
     permissions = LinuxPermissions(
         read_roots=(LinuxRoot(Path("/"), Path("/"), required=True),),
         write_roots=(LinuxRoot(tmp_path, tmp_path, required=True),),
@@ -140,12 +140,10 @@ def test_bwrap_argv_uses_readonly_root_when_root_is_readable(tmp_path: Path) -> 
         options=BwrapOptions(bwrap_path="bwrap", mount_proc=True),
     )
 
-    assert argv[argv.index("--ro-bind") : argv.index("--ro-bind") + 3] == [
-        "--ro-bind",
-        "/",
-        "/",
-    ]
-    assert ["--tmpfs", "/"] not in [argv[index : index + 2] for index in range(len(argv) - 1)]
+    triples = [argv[index : index + 3] for index in range(len(argv) - 2)]
+    pairs = [argv[index : index + 2] for index in range(len(argv) - 1)]
+    assert ["--ro-bind", "/", "/"] not in triples
+    assert ["--tmpfs", "/"] in pairs
 
 
 def test_default_workspace_profile_binds_host_tmp_writable(tmp_path: Path) -> None:
@@ -226,6 +224,7 @@ def test_readonly_root_skips_redundant_identity_mounts(tmp_path: Path) -> None:
         network=NetworkMode.NONE,
         tmp_writable=True,
         wall_timeout_s=30,
+        read_all=True,
     )
 
     argv = build_bwrap_argv(

@@ -63,7 +63,7 @@ def build_bwrap_plan(
 ) -> BwrapPlan:
     _validate_path(command_cwd, kind="command cwd")
     command_cwd = _normalize_command_cwd(command_cwd)
-    read_all = permissions.read_all or _has_root_read_mount(permissions.read_roots)
+    read_all = permissions.read_all
     argv = [
         options.bwrap_path,
         "--new-session",
@@ -115,6 +115,8 @@ def build_bwrap_plan(
 
     for root in permissions.read_roots:
         _validate_root(root)
+        if not read_all and root.host_path == Path("/"):
+            continue
         if read_all and root.host_path == Path("/") and root.sandbox_path == Path("/"):
             continue
         # A read-only host root already exposes every identity-mapped path.
@@ -598,13 +600,6 @@ def _ancestor_has_git_metadata(ancestor: Path) -> bool:
         except OSError:
             return False
     return False
-
-
-def _has_root_read_mount(read_roots: tuple[LinuxRoot, ...]) -> bool:
-    return any(
-        root.host_path == Path("/") and root.sandbox_path == Path("/")
-        for root in read_roots
-    )
 
 
 def _expand_denied_globs(patterns: tuple[str, ...], *, cwd: Path) -> tuple[Path, ...]:

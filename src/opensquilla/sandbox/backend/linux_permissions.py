@@ -38,6 +38,14 @@ class LinuxPermissions:
 
 
 def compile_linux_permissions(policy: SandboxPolicy) -> LinuxPermissions:
+    if (
+        policy.file_system is not None
+        and policy.file_system.default_access is FileSystemAccess.WRITE
+    ):
+        raise ValueError(
+            "unrestricted/default-write filesystem profile must bypass Bubblewrap"
+        )
+
     read_roots: list[LinuxRoot] = []
     write_roots: list[LinuxRoot] = []
     denied_roots: list[Path] = []

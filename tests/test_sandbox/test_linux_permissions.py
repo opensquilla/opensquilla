@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import replace
 from pathlib import Path
 
+import pytest
+
 from opensquilla.sandbox.backend.linux_permissions import compile_linux_permissions
 from opensquilla.sandbox.permissions import (
     FileSystemAccess,
@@ -139,12 +141,30 @@ def test_compile_linux_permissions_does_not_infer_read_all_from_private_mount(
     assert compiled.read_all is False
 
 
-def test_compile_linux_permissions_uses_profile_full_disk_baseline(tmp_path: Path) -> None:
+def test_compile_linux_permissions_rejects_default_write_profile(tmp_path: Path) -> None:
     policy = replace(
         _policy(tmp_path),
         mounts=(),
         workspace_rw=False,
         file_system=FileSystemPermissionProfile.full_access(),
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="unrestricted/default-write.*must bypass Bubblewrap",
+    ):
+        compile_linux_permissions(policy)
+
+
+def test_compile_linux_permissions_accepts_default_read_profile(tmp_path: Path) -> None:
+    policy = replace(
+        _policy(tmp_path),
+        mounts=(),
+        workspace_rw=False,
+        file_system=FileSystemPermissionProfile(
+            entries=(),
+            default_access=FileSystemAccess.READ,
+        ),
     )
 
     compiled = compile_linux_permissions(policy)

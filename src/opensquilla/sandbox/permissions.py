@@ -13,7 +13,7 @@ import os
 from collections.abc import Iterable
 from dataclasses import dataclass
 from enum import StrEnum
-from pathlib import Path, PurePath, PureWindowsPath
+from pathlib import Path, PurePath, PurePosixPath, PureWindowsPath
 
 from opensquilla.sandbox.platform_permissions import (
     FileSystemPlatformContext,
@@ -276,7 +276,7 @@ class FileSystemPermissionProfile:
         return tuple(
             entry.path
             for entry in self.effective_entries
-            if entry.access is FileSystemAccess.READ
+            if entry.access is not FileSystemAccess.WRITE
             and entry.path != root
             and entry.path.is_relative_to(root)
         )
@@ -287,7 +287,8 @@ class FileSystemPermissionProfile:
             return True
         return any(
             entry.access in (FileSystemAccess.READ, FileSystemAccess.WRITE)
-            and entry.path.parent == entry.path
+            and isinstance(entry.path, PurePosixPath)
+            and entry.path == PurePosixPath("/")
             for entry in self.effective_entries
         )
 

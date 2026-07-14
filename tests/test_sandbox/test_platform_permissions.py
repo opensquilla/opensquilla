@@ -4,6 +4,7 @@ from pathlib import Path, PurePath, PurePosixPath, PureWindowsPath
 
 import pytest
 
+from opensquilla.sandbox import platform_permissions as platform_permissions_module
 from opensquilla.sandbox import policy as policy_module
 from opensquilla.sandbox.config import SandboxSettings
 from opensquilla.sandbox.permissions import (
@@ -17,6 +18,7 @@ from opensquilla.sandbox.platform_permissions import (
     FileSystemPlatform,
     FileSystemPlatformContext,
     FileSystemSpecialPath,
+    current_platform_context,
     resolve_special_path,
     resolve_temp_write_paths,
 )
@@ -45,20 +47,46 @@ def _context(
     )
 
 
+def test_platform_context_optional_fields_have_safe_defaults() -> None:
+    context = FileSystemPlatformContext(
+        platform="linux",
+        cwd=PurePosixPath("/work/repo"),
+        home=PurePosixPath("/home/codex"),
+    )
+
+    assert context.helper_roots == ()
+    assert context.writable_roots == ()
+    assert context.user_profile_children is None
+    assert context.env == {}
+
+
+def test_unknown_host_platform_falls_back_to_linux(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(platform_permissions_module.sys, "platform", "freebsd14")
+
+    context = current_platform_context(cwd=tmp_path)
+
+    assert context.platform == "linux"
+
+
 def test_windows_codex_projection_constants_are_exact() -> None:
-    assert WINDOWS_PROFILE_READ_EXCLUSIONS == (
-        ".ssh",
-        ".tsh",
-        ".brev",
-        ".gnupg",
-        ".aws",
-        ".azure",
-        ".kube",
-        ".docker",
-        ".config",
-        ".npm",
-        ".pki",
-        ".terraform.d",
+    assert WINDOWS_PROFILE_READ_EXCLUSIONS == frozenset(
+        {
+            ".ssh",
+            ".tsh",
+            ".brev",
+            ".gnupg",
+            ".aws",
+            ".azure",
+            ".kube",
+            ".docker",
+            ".config",
+            ".npm",
+            ".pki",
+            ".terraform.d",
+        }
     )
     assert WINDOWS_PLATFORM_READ_ROOTS == (
         PureWindowsPath(r"C:\Windows"),
@@ -286,6 +314,22 @@ def test_full_access_uses_default_write_and_becomes_full_read_only() -> None:
     assert read_only.has_full_disk_read_baseline
 
 
+@pytest.mark.parametrize(
+    "path",
+    (
+        PurePosixPath("."),
+        PureWindowsPath("C:"),
+        PureWindowsPath("C:/"),
+    ),
+)
+def test_non_posix_root_does_not_create_full_disk_read_baseline(path: PurePath) -> None:
+    profile = FileSystemPermissionProfile(
+        entries=(FileSystemPermissionEntry(path, FileSystemAccess.READ),)
+    )
+
+    assert not profile.has_full_disk_read_baseline
+
+
 def test_profile_root_views_use_effective_entries() -> None:
     workspace = PurePosixPath("/work/repo")
     profile = FileSystemPermissionProfile(
@@ -299,5 +343,21 @@ def test_profile_root_views_use_effective_entries() -> None:
 
     assert profile.readable_roots == (PurePosixPath("/"), workspace / ".git")
     assert profile.writable_roots == (workspace,)
-    assert profile.read_only_subpaths(workspace) == (workspace / ".git",)
+    assert profile.read_only_subpaths(workspace) == (
+        workspace / ".git",
+        workspace / "secret",
+    )
     assert profile.has_full_disk_read_baseline
+
+
+def test_read_only_subpaths_include_denied_carveouts() -> None:
+    workspace = PurePosixPath("/work/repo")
+    denied = workspace / "secret"
+    profile = FileSystemPermissionProfile(
+        entries=(
+            FileSystemPermissionEntry(workspace, FileSystemAccess.WRITE),
+            FileSystemPermissionEntry(denied, FileSystemAccess.DENY),
+        )
+    )
+
+    assert profile.read_only_subpaths(workspace) == (denied,)

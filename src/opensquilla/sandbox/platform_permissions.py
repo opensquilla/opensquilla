@@ -5,26 +5,28 @@ from __future__ import annotations
 import os
 import sys
 from collections.abc import Iterable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path, PurePath, PurePosixPath, PureWindowsPath
 from typing import Literal
 
 FileSystemPlatform = Literal["linux", "macos", "windows"]
 
-WINDOWS_PROFILE_READ_EXCLUSIONS = (
-    ".ssh",
-    ".tsh",
-    ".brev",
-    ".gnupg",
-    ".aws",
-    ".azure",
-    ".kube",
-    ".docker",
-    ".config",
-    ".npm",
-    ".pki",
-    ".terraform.d",
+WINDOWS_PROFILE_READ_EXCLUSIONS = frozenset(
+    {
+        ".ssh",
+        ".tsh",
+        ".brev",
+        ".gnupg",
+        ".aws",
+        ".azure",
+        ".kube",
+        ".docker",
+        ".config",
+        ".npm",
+        ".pki",
+        ".terraform.d",
+    }
 )
 
 WINDOWS_PLATFORM_READ_ROOTS = (
@@ -46,10 +48,10 @@ class FileSystemPlatformContext:
     platform: FileSystemPlatform
     cwd: PurePath
     home: PurePath
-    helper_roots: tuple[PurePath, ...]
-    writable_roots: tuple[PurePath, ...]
-    user_profile_children: tuple[PurePath, ...] | None
-    env: Mapping[str, str]
+    helper_roots: tuple[PurePath, ...] = ()
+    writable_roots: tuple[PurePath, ...] = ()
+    user_profile_children: tuple[PurePath, ...] | None = None
+    env: Mapping[str, str] = field(default_factory=dict)
 
 
 def current_platform_context(
@@ -140,13 +142,11 @@ def resolve_temp_write_paths(
 
 
 def _current_platform() -> FileSystemPlatform:
-    if sys.platform.startswith("linux"):
-        return "linux"
-    if sys.platform == "darwin":
-        return "macos"
     if sys.platform.startswith("win"):
         return "windows"
-    raise RuntimeError(f"unsupported filesystem platform: {sys.platform}")
+    if sys.platform == "darwin":
+        return "macos"
+    return "linux"
 
 
 def _as_windows_path(path: str | PurePath) -> PureWindowsPath:

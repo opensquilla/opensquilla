@@ -42,6 +42,11 @@ pytestmark = pytest.mark.skipif(
     reason="Seatbelt backend tests model macOS/POSIX paths",
 )
 
+_DISALLOWED_PATH_CHARACTERS = tuple(chr(value) for value in (*range(0x20), 0x7F))
+_DISALLOWED_PATH_CHARACTER_IDS = tuple(
+    f"0x{ord(character):02x}" for character in _DISALLOWED_PATH_CHARACTERS
+)
+
 
 def _policy(
     workspace: Path,
@@ -330,9 +335,9 @@ def test_profile_missing_readonly_path_blocks_creation_but_writable_child_reopen
     tmp_path: Path,
 ) -> None:
     workspace = tmp_path / "workspace"
-    readonly = workspace / "missing-readonly"
+    readonly = workspace / "readonly"
     writable_child = readonly / "generated"
-    workspace.mkdir()
+    readonly.mkdir(parents=True)
     profile = FileSystemPermissionProfile(
         entries=(
             FileSystemPermissionEntry(workspace, FileSystemAccess.WRITE),
@@ -345,9 +350,13 @@ def test_profile_missing_readonly_path_blocks_creation_but_writable_child_reopen
     rendered = render_seatbelt_profile(_request(policy, workspace))
 
     workspace_write = _access_rule(rendered, "file-write*", workspace)
+    child_write = _access_rule(rendered, "file-write*", writable_child)
     assert f'(require-not (literal "{readonly}"))' in workspace_write
     assert f'(require-not (subpath "{readonly}"))' in workspace_write
-    assert _access_rule(rendered, "file-write*", writable_child)
+    assert child_write.startswith(
+        f'(allow file-write* (literal "{writable_child}") '
+        f'(require-all (subpath "{writable_child}")'
+    )
 
 
 def test_profile_scoped_workspace_write_also_grants_read_without_ambient_access(
@@ -416,7 +425,35 @@ def test_profile_adds_ambient_tmp_write_only_once_from_shared_profile(
     assert len(tmp_write_rules) == 1
 
 
-def test_profile_process_local_tmp_is_private_readwrite_transport(
+def test_internal_profile_process_local_tmp_is_private_readwrite_transport(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    private_tmp = tmp_path / "seatbelt-private-tmp"
+    workspace.mkdir()
+    private_tmp.mkdir()
+    file_system = FileSystemPermissionProfile.workspace(
+        workspace=workspace,
+        host_root_readonly=False,
+        tmp_writable=False,
+        tmpdir_env_writable=False,
+    )
+    policy = replace(_policy(workspace), file_system=file_system)
+
+    private_transport = seatbelt_mod._SeatbeltPrivateTransport(
+        read_roots=(private_tmp,),
+        write_roots=(private_tmp,),
+    )
+    rendered = seatbelt_mod._render_seatbelt_profile(
+        _request(policy, workspace),
+        private_transport=private_transport,
+    )
+
+    assert _access_rule(rendered, "file-read*", private_tmp)
+    assert _access_rule(rendered, "file-write*", private_tmp)
+
+
+def test_profile_explicit_backend_tmp_uses_private_transport(
     tmp_path: Path,
 ) -> None:
     workspace = tmp_path / "workspace"
@@ -466,12 +503,15 @@ def test_profile_private_runtime_read_preserves_denied_descendant(
         ),
         file_system=file_system,
     )
-    request = replace(
-        _request(policy, workspace),
-        action_kind="fs.worker.list_dir",
+    private_transport = seatbelt_mod._SeatbeltPrivateTransport(
+        read_roots=(runtime_root,),
+        write_roots=(),
     )
 
-    rendered = render_seatbelt_profile(request)
+    rendered = seatbelt_mod._render_seatbelt_profile(
+        _request(policy, workspace),
+        private_transport=private_transport,
+    )
 
     runtime_read = _access_rule(rendered, "file-read*", runtime_root)
     assert f'(require-not (subpath "{denied}"))' in runtime_read
@@ -503,13 +543,16 @@ def test_profile_private_runtime_fails_closed_below_explicit_denied_ancestor(
         ),
         file_system=file_system,
     )
-    request = replace(
-        _request(policy, workspace),
-        action_kind="fs.worker.list_dir",
+    private_transport = seatbelt_mod._SeatbeltPrivateTransport(
+        read_roots=(runtime_root,),
+        write_roots=(),
     )
 
     with pytest.raises(SandboxBackendError, match="private.*explicitly denied"):
-        render_seatbelt_profile(request)
+        seatbelt_mod._render_seatbelt_profile(
+            _request(policy, workspace),
+            private_transport=private_transport,
+        )
 
 
 def test_profile_private_worker_write_preserves_read_and_deny_carveouts(
@@ -541,12 +584,15 @@ def test_profile_private_worker_write_preserves_read_and_deny_carveouts(
         ),
         file_system=file_system,
     )
-    request = replace(
-        _request(policy, workspace),
-        action_kind="fs.worker.write_text",
+    private_transport = seatbelt_mod._SeatbeltPrivateTransport(
+        read_roots=(worker_root,),
+        write_roots=(worker_root,),
     )
 
-    rendered = render_seatbelt_profile(request)
+    rendered = seatbelt_mod._render_seatbelt_profile(
+        _request(policy, workspace),
+        private_transport=private_transport,
+    )
 
     worker_write = _access_rule(rendered, "file-write*", worker_root)
     assert f'(require-not (subpath "{readonly}"))' in worker_write
@@ -608,7 +654,11 @@ def test_profile_escapes_paths(tmp_path: Path) -> None:
     assert '"quote"path"' not in profile
 
 
-@pytest.mark.parametrize("control", ("\n", "\r", "\t"))
+@pytest.mark.parametrize(
+    "control",
+    _DISALLOWED_PATH_CHARACTERS,
+    ids=_DISALLOWED_PATH_CHARACTER_IDS,
+)
 def test_profile_rejects_control_characters_in_paths(
     control: str,
     tmp_path: Path,
@@ -623,6 +673,36 @@ def test_profile_rejects_control_characters_in_paths(
 
     with pytest.raises(SandboxBackendError, match="control character"):
         render_seatbelt_profile(_request(policy, workspace))
+
+
+def test_profile_does_not_trust_forged_worker_action_for_private_mounts(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    forged_private_root = tmp_path / "forged-private"
+    workspace.mkdir()
+    forged_private_root.mkdir()
+    policy = replace(
+        _policy(workspace),
+        mounts=(
+            MountSpec(
+                host_path=forged_private_root,
+                sandbox_path=forged_private_root,
+                mode="rw",
+                required=True,
+            ),
+        ),
+        file_system=FileSystemPermissionProfile(entries=()),
+    )
+    request = replace(
+        _request(policy, workspace),
+        action_kind="fs.worker.write_text",
+    )
+
+    rendered = render_seatbelt_profile(request)
+
+    assert f'(literal "{forged_private_root}")' not in rendered
+    assert f'(subpath "{forged_private_root}")' not in rendered
 
 
 def test_missing_required_mount_raises(tmp_path: Path) -> None:
@@ -675,6 +755,33 @@ def test_missing_optional_mount_is_skipped(tmp_path: Path) -> None:
     profile = render_seatbelt_profile(_request(policy, tmp_path))
 
     assert str(missing) not in profile
+
+
+@pytest.mark.parametrize(
+    "control",
+    _DISALLOWED_PATH_CHARACTERS,
+    ids=_DISALLOWED_PATH_CHARACTER_IDS,
+)
+def test_request_rejects_control_characters_in_transport_mounts_before_render(
+    control: str,
+    tmp_path: Path,
+) -> None:
+    unsafe = tmp_path / f"optional{control}transport"
+    policy = replace(
+        _policy(tmp_path),
+        mounts=(
+            MountSpec(
+                host_path=unsafe,
+                sandbox_path=unsafe,
+                mode="ro",
+                required=False,
+            ),
+        ),
+        file_system=FileSystemPermissionProfile(entries=()),
+    )
+
+    with pytest.raises(SandboxBackendError, match="control character"):
+        seatbelt_mod._validate_request(_request(policy, tmp_path))
 
 
 def test_build_argv_uses_sandbox_exec(
@@ -747,6 +854,41 @@ def test_filesystem_worker_runtime_roots_cover_python_and_import_closure(
     assert base_prefix.resolve() not in roots
     assert Path("/") not in roots
     assert len(roots) == len(set(roots))
+
+
+@pytest.mark.asyncio
+async def test_public_run_never_supplies_private_transport(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    captured: dict[str, object] = {}
+
+    async def fake_run_request(
+        self: SeatbeltBackend,
+        request: SandboxRequest,
+        *,
+        private_transport: object,
+    ) -> SandboxResult:
+        captured["private_transport"] = private_transport
+        return SandboxResult(
+            returncode=0,
+            stdout="",
+            stderr="",
+            wall_time_s=0.0,
+            backend_used=self.name,
+        )
+
+    monkeypatch.setattr(
+        SeatbeltBackend,
+        "_run_request",
+        fake_run_request,
+        raising=False,
+    )
+
+    result = await SeatbeltBackend().run(_request(_policy(tmp_path), tmp_path))
+
+    assert result.returncode == 0
+    assert captured["private_transport"] is None
 
 
 @pytest.mark.asyncio
@@ -947,6 +1089,84 @@ async def test_real_seatbelt_scoped_filesystem_worker_runtime_closure(
     )
 
     assert "hello" in result.message
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(sys.platform != "darwin", reason="native Seatbelt required")
+async def test_real_seatbelt_exact_carveouts_and_missing_writable_reopen(
+    tmp_path: Path,
+) -> None:
+    backend = SeatbeltBackend()
+    if not backend.available():
+        pytest.skip("requires macOS sandbox-exec")
+    workspace = tmp_path / "workspace"
+    readonly = workspace / "readonly"
+    writable_child = readonly / "generated"
+    denied_file = workspace / "denied.txt"
+    missing_readonly = workspace / "missing-readonly"
+    missing_denied = workspace / "missing-denied"
+    readonly.mkdir(parents=True)
+    denied_file.write_text("secret", encoding="utf-8")
+    profile = FileSystemPermissionProfile(
+        entries=(
+            FileSystemPermissionEntry(Path("/"), FileSystemAccess.READ),
+            FileSystemPermissionEntry(workspace, FileSystemAccess.WRITE),
+            FileSystemPermissionEntry(readonly, FileSystemAccess.READ),
+            FileSystemPermissionEntry(writable_child, FileSystemAccess.WRITE),
+            FileSystemPermissionEntry(denied_file, FileSystemAccess.DENY),
+            FileSystemPermissionEntry(missing_readonly, FileSystemAccess.READ),
+            FileSystemPermissionEntry(missing_denied, FileSystemAccess.DENY),
+        )
+    )
+    policy = replace(_policy(workspace), file_system=profile)
+    script = """
+import sys
+from pathlib import Path
+
+writable_child, readonly, denied_file, missing_readonly, missing_denied = map(
+    Path, sys.argv[1:]
+)
+writable_child.mkdir()
+(writable_child / "ok.txt").write_text("ok", encoding="utf-8")
+for action in (
+    lambda: (readonly / "blocked.txt").write_text("blocked", encoding="utf-8"),
+    lambda: denied_file.read_text(encoding="utf-8"),
+    missing_readonly.mkdir,
+    missing_denied.mkdir,
+):
+    try:
+        action()
+    except PermissionError:
+        pass
+    else:
+        raise SystemExit("Seatbelt exact carveout unexpectedly allowed access")
+print("ok")
+"""
+    request = SandboxRequest(
+        argv=(
+            sys.executable,
+            "-c",
+            script,
+            str(writable_child),
+            str(readonly),
+            str(denied_file),
+            str(missing_readonly),
+            str(missing_denied),
+        ),
+        cwd=workspace,
+        action_kind="code.exec",
+        policy=policy,
+        env={"PATH": "/bin:/usr/bin"},
+    )
+
+    result = await backend.run(request)
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "ok\n"
+    assert (writable_child / "ok.txt").read_text(encoding="utf-8") == "ok"
+    assert not (readonly / "blocked.txt").exists()
+    assert not missing_readonly.exists()
+    assert not missing_denied.exists()
 
 
 @pytest.mark.asyncio
@@ -1294,9 +1514,15 @@ async def test_run_operation_delegates_filesystem_to_seatbelt_worker(
     profile = FileSystemPermissionProfile.workspace(workspace=workspace)
     captured: dict[str, object] = {}
 
-    async def fake_run(self: SeatbeltBackend, request: SandboxRequest) -> object:
+    async def fake_run_request(
+        self: SeatbeltBackend,
+        request: SandboxRequest,
+        *,
+        private_transport: object,
+    ) -> object:
         payload_path = Path(request.argv[-1])
         captured["request"] = request
+        captured["private_transport"] = private_transport
         captured["payload_path"] = payload_path
         captured["payload"] = json.loads(payload_path.read_text(encoding="utf-8"))
         return SandboxResult(
@@ -1307,7 +1533,12 @@ async def test_run_operation_delegates_filesystem_to_seatbelt_worker(
             backend_used=self.name,
         )
 
-    monkeypatch.setattr(SeatbeltBackend, "run", fake_run)
+    monkeypatch.setattr(
+        SeatbeltBackend,
+        "_run_request",
+        fake_run_request,
+        raising=False,
+    )
 
     operation = SandboxOperation.filesystem(
         kind="write_text",
@@ -1329,6 +1560,7 @@ async def test_run_operation_delegates_filesystem_to_seatbelt_worker(
     assert request.action_kind == "fs.worker.write_text"
     assert request.cwd == workspace / ".opensquilla-cache" / "fs-worker"
     assert request.policy.network == NetworkMode.NONE
+    assert request.policy.tmp_writable is False
     assert request.policy.file_system is profile
     assert target not in {mount.host_path for mount in request.policy.mounts}
     runtime_roots = set(seatbelt_mod._runtime_readonly_roots())
@@ -1338,6 +1570,14 @@ async def test_run_operation_delegates_filesystem_to_seatbelt_worker(
     assert {mount.host_path for mount in request.policy.mounts if mount.mode == "rw"} == {
         request.cwd
     }
+    assert request.env["HOME"] == str(request.cwd)
+    assert request.env["TMP"] == str(request.cwd)
+    assert request.env["TEMP"] == str(request.cwd)
+    assert request.env["TMPDIR"] == str(request.cwd)
+    private_transport = captured["private_transport"]
+    assert private_transport is not None
+    assert set(getattr(private_transport, "read_roots")) == {*runtime_roots, request.cwd}
+    assert set(getattr(private_transport, "write_roots")) == {request.cwd}
     assert "opensquilla.sandbox.filesystem_worker" in request.argv
     assert captured["payload"] == {
         "domain": "filesystem",
@@ -1440,6 +1680,162 @@ def test_filesystem_operation_request_construction_has_no_host_side_effects(
     )
 
     assert request.policy.file_system is profile
+    assert not worker_root.exists()
+
+
+@pytest.mark.asyncio
+async def test_run_operation_preflights_denied_globs_without_side_effects(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    worker_root = workspace / ".opensquilla-cache" / "fs-worker"
+    target = workspace / "notes.txt"
+    workspace.mkdir()
+    target.write_text("hello", encoding="utf-8")
+    profile = FileSystemPermissionProfile.workspace(
+        workspace=workspace,
+        denied_read_globs=(str(workspace / "**" / "*.pem"),),
+    )
+    operation = SandboxOperation.filesystem(
+        kind="read_file",
+        workspace=workspace,
+        run_mode="trusted",
+        path=target,
+        file_system_profile=profile,
+    )
+    monkeypatch.setattr(SeatbeltBackend, "available", lambda self: True)
+
+    with pytest.raises(SandboxBackendError, match="denied read glob"):
+        await SeatbeltBackend().run_operation(operation)
+    assert not worker_root.exists()
+
+
+@pytest.mark.asyncio
+async def test_run_operation_preflights_unrelated_invalid_profile_path_without_side_effects(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    worker_root = workspace / ".opensquilla-cache" / "fs-worker"
+    target = workspace / "notes.txt"
+    unsafe = tmp_path / "unrelated\x01path"
+    workspace.mkdir()
+    profile = FileSystemPermissionProfile(
+        entries=(
+            FileSystemPermissionEntry(workspace, FileSystemAccess.WRITE),
+            FileSystemPermissionEntry(unsafe, FileSystemAccess.READ),
+        )
+    )
+    operation = SandboxOperation.filesystem(
+        kind="write_text",
+        workspace=workspace,
+        run_mode="trusted",
+        path=target,
+        content="hello",
+        file_system_profile=profile,
+    )
+    monkeypatch.setattr(SeatbeltBackend, "available", lambda self: True)
+
+    with pytest.raises(SandboxBackendError, match="control character"):
+        await SeatbeltBackend().run_operation(operation)
+    assert not worker_root.exists()
+
+
+@pytest.mark.parametrize(
+    "control",
+    _DISALLOWED_PATH_CHARACTERS,
+    ids=_DISALLOWED_PATH_CHARACTER_IDS,
+)
+def test_filesystem_preflight_rejects_every_control_character_in_profile_paths(
+    control: str,
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    worker_root = workspace / ".opensquilla-cache" / "fs-worker"
+    target = workspace / "notes.txt"
+    unsafe = tmp_path / f"unrelated{control}path"
+    workspace.mkdir()
+    profile = FileSystemPermissionProfile(
+        entries=(
+            FileSystemPermissionEntry(workspace, FileSystemAccess.WRITE),
+            FileSystemPermissionEntry(unsafe, FileSystemAccess.READ),
+        )
+    )
+    operation = SandboxOperation.filesystem(
+        kind="write_text",
+        workspace=workspace,
+        run_mode="trusted",
+        path=target,
+        content="hello",
+        file_system_profile=profile,
+    )
+
+    with pytest.raises(SandboxBackendError, match="control character"):
+        seatbelt_mod._filesystem_operation_request(
+            operation,
+            worker_root / "payload.json",
+        )
+    assert not worker_root.exists()
+
+
+@pytest.mark.parametrize(
+    "control",
+    _DISALLOWED_PATH_CHARACTERS,
+    ids=_DISALLOWED_PATH_CHARACTER_IDS,
+)
+def test_filesystem_operation_rejects_control_characters_in_targets_before_side_effects(
+    control: str,
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    worker_root = workspace / ".opensquilla-cache" / "fs-worker"
+    target = workspace / f"unsafe{control}path"
+    workspace.mkdir()
+    operation = SandboxOperation.filesystem(
+        kind="write_text",
+        workspace=workspace,
+        run_mode="trusted",
+        path=target,
+        content="hello",
+        file_system_profile=FileSystemPermissionProfile.workspace(workspace=workspace),
+    )
+
+    with pytest.raises(SandboxBackendError, match="control character"):
+        seatbelt_mod._filesystem_operation_request(
+            operation,
+            worker_root / "payload.json",
+        )
+    assert not worker_root.exists()
+
+
+@pytest.mark.parametrize(
+    "control",
+    _DISALLOWED_PATH_CHARACTERS,
+    ids=_DISALLOWED_PATH_CHARACTER_IDS,
+)
+def test_filesystem_operation_rejects_control_characters_in_transport_before_side_effects(
+    control: str,
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    worker_root = workspace / ".opensquilla-cache" / "fs-worker"
+    target = workspace / "notes.txt"
+    workspace.mkdir()
+    operation = SandboxOperation.filesystem(
+        kind="write_text",
+        workspace=workspace,
+        run_mode="trusted",
+        path=target,
+        content="hello",
+        file_system_profile=FileSystemPermissionProfile.workspace(workspace=workspace),
+    )
+
+    with pytest.raises(SandboxBackendError, match="control character"):
+        seatbelt_mod._filesystem_operation_request(
+            operation,
+            worker_root / f"payload{control}.json",
+        )
     assert not worker_root.exists()
 
 
@@ -1574,6 +1970,36 @@ async def test_run_operation_rejects_private_root_conflict_without_side_effects(
     )
 
     with pytest.raises(SandboxBackendError, match="private.*explicitly denied"):
+        await SeatbeltBackend().run_operation(operation)
+    assert not worker_root.exists()
+
+
+@pytest.mark.asyncio
+async def test_run_operation_rejects_readonly_tmp_transport_without_side_effects(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    worker_root = workspace / ".opensquilla-cache" / "fs-worker"
+    target = workspace / "notes.txt"
+    workspace.mkdir()
+    profile = FileSystemPermissionProfile(
+        entries=(
+            FileSystemPermissionEntry(workspace, FileSystemAccess.WRITE),
+            FileSystemPermissionEntry(worker_root, FileSystemAccess.READ),
+        )
+    )
+    operation = SandboxOperation.filesystem(
+        kind="write_text",
+        workspace=workspace,
+        run_mode="trusted",
+        path=target,
+        content="hello",
+        file_system_profile=profile,
+    )
+    monkeypatch.setattr(SeatbeltBackend, "available", lambda self: True)
+
+    with pytest.raises(SandboxBackendError, match="private.*read-only"):
         await SeatbeltBackend().run_operation(operation)
     assert not worker_root.exists()
 

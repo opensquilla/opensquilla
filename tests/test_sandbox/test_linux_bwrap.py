@@ -20,9 +20,19 @@ from opensquilla.sandbox.backend.linux_permissions import (
 )
 from opensquilla.sandbox.config import SandboxSettings
 from opensquilla.sandbox.operation_runtime import SandboxOperation
-from opensquilla.sandbox.permissions import FileSystemPermissionProfile
+from opensquilla.sandbox.permissions import (
+    FileSystemAccess,
+    FileSystemPermissionEntry,
+    FileSystemPermissionProfile,
+)
 from opensquilla.sandbox.policy import build_policy
-from opensquilla.sandbox.types import NetworkMode, SandboxBackendError, SecurityLevel
+from opensquilla.sandbox.types import (
+    NetworkMode,
+    ResourceLimits,
+    SandboxBackendError,
+    SandboxPolicy,
+    SecurityLevel,
+)
 
 pytestmark = pytest.mark.skipif(
     sys.platform.startswith("win"),
@@ -663,6 +673,137 @@ def test_bwrap_plan_denied_globs_mask_symlink_targets(tmp_path: Path) -> None:
     )
 
     assert str(secret) in plan.argv
+
+
+def test_compiled_profile_reopens_read_grant_below_denied_parent(
+    tmp_path: Path,
+) -> None:
+    denied_parent = tmp_path / "home"
+    readable_child = denied_parent / "user" / "project"
+    denied_grandchild = readable_child / "private"
+    denied_grandchild.mkdir(parents=True)
+    profile = FileSystemPermissionProfile(
+        entries=(
+            FileSystemPermissionEntry(Path("/"), FileSystemAccess.READ),
+            FileSystemPermissionEntry(denied_parent, FileSystemAccess.DENY),
+            FileSystemPermissionEntry(readable_child, FileSystemAccess.READ),
+            FileSystemPermissionEntry(denied_grandchild, FileSystemAccess.DENY),
+        )
+    )
+    policy = SandboxPolicy(
+        level=SecurityLevel.STANDARD,
+        network=NetworkMode.NONE,
+        mounts=(),
+        workspace_rw=False,
+        tmp_writable=False,
+        limits=ResourceLimits(wall_timeout_s=30),
+        env_allowlist=("PATH",),
+        require_approval=False,
+        file_system=profile,
+    )
+
+    argv = build_bwrap_argv(
+        command=["/bin/true"],
+        command_cwd=readable_child,
+        permissions=compile_linux_permissions(policy),
+        options=BwrapOptions(bwrap_path="bwrap", mount_proc=True),
+    )
+
+    parent_mask_indices = [
+        index
+        for index in range(len(argv) - 1)
+        if argv[index : index + 2] == ["--tmpfs", str(denied_parent)]
+    ]
+    child_bind_indices = [
+        index
+        for index in range(len(argv) - 2)
+        if argv[index : index + 3]
+        == ["--ro-bind", str(readable_child), str(readable_child)]
+    ]
+    grandchild_mask_indices = [
+        index
+        for index in range(len(argv) - 1)
+        if argv[index : index + 2] == ["--tmpfs", str(denied_grandchild)]
+    ]
+
+    assert len(parent_mask_indices) == 1
+    assert len(child_bind_indices) == 1
+    assert len(grandchild_mask_indices) == 1
+    parent_mask_index = parent_mask_indices[0]
+    child_bind_index = child_bind_indices[0]
+    grandchild_mask_index = grandchild_mask_indices[0]
+    assert argv[parent_mask_index - 2 : parent_mask_index + 2] == [
+        "--perms",
+        "111",
+        "--tmpfs",
+        str(denied_parent),
+    ]
+    assert parent_mask_index < child_bind_index < grandchild_mask_index
+
+
+def test_compiled_profile_reopens_read_carveout_inside_write_root(
+    tmp_path: Path,
+) -> None:
+    denied_parent = tmp_path / "home"
+    readable_child = denied_parent / "user" / "project"
+    denied_grandchild = readable_child / "private"
+    denied_grandchild.mkdir(parents=True)
+    profile = FileSystemPermissionProfile(
+        entries=(
+            FileSystemPermissionEntry(Path("/"), FileSystemAccess.READ),
+            FileSystemPermissionEntry(tmp_path, FileSystemAccess.WRITE),
+            FileSystemPermissionEntry(denied_parent, FileSystemAccess.DENY),
+            FileSystemPermissionEntry(readable_child, FileSystemAccess.READ),
+            FileSystemPermissionEntry(denied_grandchild, FileSystemAccess.DENY),
+        )
+    )
+    policy = SandboxPolicy(
+        level=SecurityLevel.STANDARD,
+        network=NetworkMode.NONE,
+        mounts=(),
+        workspace_rw=False,
+        tmp_writable=False,
+        limits=ResourceLimits(wall_timeout_s=30),
+        env_allowlist=("PATH",),
+        require_approval=False,
+        file_system=profile,
+    )
+
+    argv = build_bwrap_argv(
+        command=["/bin/true"],
+        command_cwd=readable_child,
+        permissions=compile_linux_permissions(policy),
+        options=BwrapOptions(bwrap_path="bwrap", mount_proc=True),
+    )
+
+    workspace_bind_index = next(
+        index
+        for index in range(len(argv) - 2)
+        if argv[index : index + 3] == ["--bind", str(tmp_path), str(tmp_path)]
+    )
+    parent_mask_index = max(
+        index
+        for index in range(len(argv) - 1)
+        if argv[index : index + 2] == ["--tmpfs", str(denied_parent)]
+    )
+    child_bind_index = max(
+        index
+        for index in range(len(argv) - 2)
+        if argv[index : index + 3]
+        == ["--ro-bind", str(readable_child), str(readable_child)]
+    )
+    grandchild_mask_index = max(
+        index
+        for index in range(len(argv) - 1)
+        if argv[index : index + 2] == ["--tmpfs", str(denied_grandchild)]
+    )
+
+    assert (
+        workspace_bind_index
+        < parent_mask_index
+        < child_bind_index
+        < grandchild_mask_index
+    )
 
 
 def test_bwrap_argv_binds_symlinked_writable_root_real_target_and_remaps_denied_child(

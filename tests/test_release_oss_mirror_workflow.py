@@ -21,6 +21,12 @@ def _upload_step_script() -> str:
 def _install_fake_ossutil(tmp_path: Path) -> tuple[Path, Path, Path]:
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir()
+    poison_python3 = fake_bin / "python3"
+    poison_python3.write_text(
+        "#!/usr/bin/env bash\necho 'unexpected python3 PATH lookup' >&2\nexit 97\n",
+        encoding="utf-8",
+    )
+    poison_python3.chmod(0o755)
     remote_root = tmp_path / "oss"
     call_log = tmp_path / "ossutil-calls.jsonl"
     fake_script = fake_bin / "ossutil.py"
@@ -136,8 +142,12 @@ def _run_upload_step(
         env["FAKE_OSS_RACE_OBJECT"] = race_object
     if versioning_status is not None:
         env["FAKE_OSS_VERSIONING_STATUS"] = versioning_status
+    # The production job runs on Ubuntu, where ``python3`` is guaranteed. Keep
+    # this cross-platform contract test on the active pytest interpreter rather
+    # than the Windows Store ``python3.exe`` app-execution alias.
+    script = 'python3() { "$FAKE_OSS_PYTHON" "$@"; }\n' + _upload_step_script()
     return subprocess.run(
-        ["bash", "-c", _upload_step_script()],
+        ["bash", "-c", script],
         cwd=tmp_path,
         env=env,
         capture_output=True,
@@ -283,7 +293,7 @@ def test_version_scoped_oss_objects_are_write_once_and_race_safe(tmp_path: Path)
         call_log,
         attempt=1,
     )
-    assert first.returncode == 0, first.stderr
+    assert first.returncode == 0, f"stdout:\n{first.stdout}\nstderr:\n{first.stderr}"
     remote_release = remote_root / "release-bucket" / "releases" / "v0.5.0rc4"
     assert (remote_release / "payload.bin").read_bytes() == b"first-published-payload"
     assert (remote_release / "SHA256SUMS").read_text(encoding="utf-8") == (

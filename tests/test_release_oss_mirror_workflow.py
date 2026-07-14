@@ -45,6 +45,7 @@ def test_aliyun_oss_release_mirror_workflow_contract() -> None:
     assert "local listing" in workflow
     assert "return 2" in workflow
     assert "if (( exists_status != 1 )); then" in workflow
+    assert "if (( latest_html_status != 1 )); then" in workflow
     assert (
         'upload_asset "release-assets/${name}" "${name}" "${latest_prefix}" "no-cache"'
         in workflow

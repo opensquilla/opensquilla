@@ -28,7 +28,7 @@ from opensquilla.contrib.codetask.preflight import provider_block_reason, provid
 from opensquilla.contrib.codetask.types import TaskResult, TaskState
 from opensquilla.contrib.codetask.verification import verify
 from opensquilla.paths import default_opensquilla_home
-from opensquilla.recovery.locking import ProfileOperationLock
+from opensquilla.profile_operation_lock import ProfileOperationLock
 
 logger = logging.getLogger(__name__)
 

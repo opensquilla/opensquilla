@@ -206,20 +206,93 @@ jobs:
           dest_prefix="oss://${ALIYUN_OSS_BUCKET}/${ALIYUN_OSS_PREFIX_NORMALIZED}/${TAG}"
           mirror_root="${dest_prefix%/"${TAG}"}"
           upload_asset() {
-            local path="$1"
+            local source="$1"
             local name="$2"
             local destination="${3:-${dest_prefix}}"
-            ossutil cp --force --addressing-style "${OSS_ADDRESSING_STYLE_NORMALIZED}" \
-              "${path}" "${destination}/${name}"
+            local cache_control="${4:-}"
+            local -a options=(
+              cp
+              --force
+              --addressing-style "${OSS_ADDRESSING_STYLE_NORMALIZED}"
+            )
+            if [[ -n "${cache_control}" ]]; then
+              options+=(--cache-control "${cache_control}")
+            fi
+            ossutil "${options[@]}" "${source}" "${destination}/${name}"
           }
+          object_exists() {
+            local object="$1"
+            ossutil ls --addressing-style "${OSS_ADDRESSING_STYLE_NORMALIZED}" \
+              --short-format "${object}" | grep -Fxq "${object}"
+          }
+          latest_prefix="${mirror_root}/latest"
+          backup_prefix="${mirror_root}/.latest-backups/${GITHUB_RUN_ID}"
+          latest_aliases=(
+            OpenSquilla-mac-arm64.dmg
+            OpenSquilla-win-x64.exe
+          )
+          backed_up_aliases=()
+          promoted_aliases=()
+          has_backup() {
+            local candidate="$1"
+            local name
+            for name in "${backed_up_aliases[@]}"; do
+              [[ "${name}" == "${candidate}" ]] && return 0
+            done
+            return 1
+          }
+          rollback_latest_aliases() {
+            local status="$?"
+            local rollback_failed=0
+            local name
+            trap - EXIT
+            if (( status != 0 )); then
+              echo "Latest alias promotion failed; restoring the previous state." >&2
+              for name in "${promoted_aliases[@]}"; do
+                if has_backup "${name}"; then
+                  upload_asset "${backup_prefix}/${name}" "${name}" "${latest_prefix}" "no-cache" \
+                    || rollback_failed=1
+                else
+                  ossutil rm --force --addressing-style "${OSS_ADDRESSING_STYLE_NORMALIZED}" \
+                    "${latest_prefix}/${name}" || rollback_failed=1
+                fi
+              done
+            fi
+            if (( ${#backed_up_aliases[@]} )); then
+              ossutil rm --force --recursive \
+                --addressing-style "${OSS_ADDRESSING_STYLE_NORMALIZED}" \
+                "${backup_prefix}/" || rollback_failed=1
+            fi
+            if (( rollback_failed )); then
+              echo "Latest alias rollback did not complete." >&2
+            fi
+            exit "${status}"
+          }
+          trap rollback_latest_aliases EXIT
+          for name in "${latest_aliases[@]}"; do
+            if object_exists "${latest_prefix}/${name}"; then
+              upload_asset "${latest_prefix}/${name}" "${name}" "${backup_prefix}"
+              backed_up_aliases+=("${name}")
+            fi
+          done
           while IFS= read -r name; do
             [[ -n "${name}" ]] || continue
             upload_asset "release-assets/${name}" "${name}"
           done < release-assets/CHECKSUMMED_ASSETS
           upload_asset "release-assets/SHA256SUMS" "SHA256SUMS"
-          latest_prefix="${mirror_root}/latest"
-          for name in OpenSquilla-mac-arm64.dmg OpenSquilla-win-x64.exe; do
-            upload_asset "release-assets/${name}" "${name}" "${latest_prefix}"
+          for name in "${latest_aliases[@]}"; do
+            upload_asset "release-assets/${name}" "${name}" "${latest_prefix}" "no-cache"
+            promoted_aliases+=("${name}")
           done
+          trap - EXIT
+          if (( ${#backed_up_aliases[@]} )); then
+            ossutil rm --force --recursive \
+              --addressing-style "${OSS_ADDRESSING_STYLE_NORMALIZED}" \
+              "${backup_prefix}/"
+          fi
+          if object_exists "${mirror_root}/latest.html"; then
+            ossutil rm --force --addressing-style "${OSS_ADDRESSING_STYLE_NORMALIZED}" \
+              "${mirror_root}/latest.html"
+          fi
           ossutil ls --addressing-style "${OSS_ADDRESSING_STYLE_NORMALIZED}" "${dest_prefix}/"
           ossutil ls --addressing-style "${OSS_ADDRESSING_STYLE_NORMALIZED}" "${latest_prefix}/"

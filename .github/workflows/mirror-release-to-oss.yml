@@ -296,15 +296,21 @@ jobs:
             upload_asset "release-assets/${name}" "${name}" "${latest_prefix}" "no-cache"
             promoted_aliases+=("${name}")
           done
+          if object_exists "${mirror_root}/latest.html"; then
+            ossutil rm --force --addressing-style "${OSS_ADDRESSING_STYLE_NORMALIZED}" \
+              "${mirror_root}/latest.html"
+          else
+            latest_html_status="$?"
+            if (( latest_html_status != 1 )); then
+              echo "Refusing to finish promotion after a legacy-page existence-check error." >&2
+              exit "${latest_html_status}"
+            fi
+          fi
           trap - EXIT
           if (( ${#backed_up_aliases[@]} )); then
             ossutil rm --force --recursive \
               --addressing-style "${OSS_ADDRESSING_STYLE_NORMALIZED}" \
               "${backup_prefix}/"
-          fi
-          if object_exists "${mirror_root}/latest.html"; then
-            ossutil rm --force --addressing-style "${OSS_ADDRESSING_STYLE_NORMALIZED}" \
-              "${mirror_root}/latest.html"
           fi
           ossutil ls --addressing-style "${OSS_ADDRESSING_STYLE_NORMALIZED}" "${dest_prefix}/"
           ossutil ls --addressing-style "${OSS_ADDRESSING_STYLE_NORMALIZED}" "${latest_prefix}/"

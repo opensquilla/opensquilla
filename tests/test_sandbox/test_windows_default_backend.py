@@ -138,30 +138,97 @@ def test_windows_acl_plan_preserves_lexical_and_canonical_denied_paths(
     assert set(plan["denyReadPaths"]) == {str(lexical), str(target)}
 
 
-@pytest.mark.skipif(os.name != "nt", reason="requires native Windows junctions")
-def test_windows_acl_plan_protects_junction_and_canonical_target(
+@pytest.mark.parametrize("carveout_access", [FileSystemAccess.READ, FileSystemAccess.DENY])
+def test_windows_acl_plan_denies_write_through_lexical_and_canonical_aliases(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    carveout_access: FileSystemAccess,
 ) -> None:
     from opensquilla.sandbox.backend import windows_default as mod
 
-    target = tmp_path / "target-secret"
-    junction = tmp_path / "configured-secret"
-    target.mkdir()
+    workspace = tmp_path / "real-workspace"
+    alias = tmp_path / "workspace-alias"
+    canonical_secret = workspace / "secret"
+    lexical_secret = alias / "secret"
+    canonical_secret.mkdir(parents=True)
+    alias.symlink_to(workspace, target_is_directory=True)
+    profile = FileSystemPermissionProfile.workspace(
+        workspace=workspace,
+        readable_roots=(
+            (lexical_secret,) if carveout_access is FileSystemAccess.READ else ()
+        ),
+        denied_read_roots=(
+            (lexical_secret,) if carveout_access is FileSystemAccess.DENY else ()
+        ),
+        host_root_readonly=False,
+        tmp_writable=False,
+        tmpdir_env_writable=False,
+        protect_metadata=False,
+    )
+    request = _request(workspace).with_policy(
+        replace(_policy(), file_system=profile)
+    )
+    monkeypatch.setattr(
+        mod,
+        "capability_sids_for_command",
+        lambda store, roots, **kwargs: tuple(f"S-{i}" for i, _ in enumerate(roots)),
+    )
+    monkeypatch.setattr(mod, "_runtime_readonly_roots", lambda: ())
+    monkeypatch.setattr(mod, "runtime_rx_roots", lambda executable: ())
+    monkeypatch.setattr(mod, "process_executable_rx_roots", lambda argv, env: ())
+    monkeypatch.setattr(mod, "_windows_tool_path_roots", lambda *args, **kwargs: ())
+
+    plan = mod._acl_plan_payload(request)
+
+    expected = {str(lexical_secret), str(canonical_secret)}
+    assert set(plan["denyReadPaths"]) == (
+        expected if carveout_access is FileSystemAccess.DENY else set()
+    )
+    assert set(plan["denyWritePaths"]) == expected
+
+
+@pytest.mark.skipif(os.name != "nt", reason="requires native Windows junctions")
+def test_windows_acl_plan_protects_junction_and_canonical_target(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from opensquilla.sandbox.backend import windows_default as mod
+
+    workspace = tmp_path / "real-workspace"
+    junction = tmp_path / "workspace-alias"
+    canonical_secret = workspace / "secret"
+    lexical_secret = junction / "secret"
+    canonical_secret.mkdir(parents=True)
     result = subprocess.run(
-        ["cmd.exe", "/d", "/c", "mklink", "/J", str(junction), str(target)],
+        ["cmd.exe", "/d", "/c", "mklink", "/J", str(junction), str(workspace)],
         capture_output=True,
         check=False,
         text=True,
     )
     if result.returncode != 0:
         pytest.skip(f"could not create junction: {result.stderr or result.stdout}")
-    profile = FileSystemPermissionProfile.read_only(
-        readable_roots=(tmp_path,),
-        denied_read_roots=(junction,),
+    profile = FileSystemPermissionProfile.workspace(
+        workspace=workspace,
+        denied_read_roots=(lexical_secret,),
         host_root_readonly=False,
+        tmp_writable=False,
+        tmpdir_env_writable=False,
+        protect_metadata=False,
     )
+    request = _request(workspace).with_policy(
+        replace(_policy(), file_system=profile)
+    )
+    monkeypatch.setattr(mod, "_runtime_readonly_roots", lambda: ())
 
-    assert set(mod._profile_denied_read_paths(profile)) == {junction, target}
+    expected = {lexical_secret, canonical_secret}
+    assert set(mod._profile_denied_read_paths(profile)) == expected
+    assert set(
+        mod._deny_write_paths_for_request(
+            request,
+            profile,
+            include_private_mounts=False,
+        )
+    ) == expected
 
 
 def test_windows_acl_plan_requests_access_namespaced_capability_sids(

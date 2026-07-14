@@ -98,7 +98,7 @@ class FileSystemPermissionProfile:
                 for path in resolve_special_path(FileSystemSpecialPath.ROOT, context)
             )
         entries.extend(
-            FileSystemPermissionEntry(_canonical(path), FileSystemAccess.READ)
+            FileSystemPermissionEntry(_lexical_absolute(path), FileSystemAccess.READ)
             for path in readable_roots
         )
         entries.extend(
@@ -140,7 +140,7 @@ class FileSystemPermissionProfile:
                 for path in resolve_special_path(FileSystemSpecialPath.ROOT, context)
             )
         entries.extend(
-            FileSystemPermissionEntry(_canonical(path), FileSystemAccess.READ)
+            FileSystemPermissionEntry(_lexical_absolute(path), FileSystemAccess.READ)
             for path in readable_roots
         )
         entries.extend(

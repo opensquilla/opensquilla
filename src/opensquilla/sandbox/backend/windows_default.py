@@ -720,10 +720,9 @@ def _deny_write_paths_for_request(
         path
         for entry in _effective_raw_profile_entries(profile)
         if entry.access is not FileSystemAccess.WRITE
-        and any(
-            Path(entry.path) != writable_root
-            and _is_relative_to_casefold(Path(entry.path), writable_root)
-            for writable_root in writable_roots
+        and _acl_target_is_nested_under_writable_root(
+            Path(entry.path),
+            writable_roots,
         )
         for path in _acl_path_variants(Path(entry.path))
     )
@@ -737,6 +736,22 @@ def _deny_write_paths_for_request(
         and _acl_sensitive_marker(mount.host_path) is None
     )
     return _dedupe_acl_paths(paths)
+
+
+def _acl_target_is_nested_under_writable_root(
+    path: Path,
+    writable_roots: tuple[Path, ...],
+) -> bool:
+    canonical_target = path.expanduser().resolve(strict=False)
+    canonical_writable_roots = tuple(
+        root.resolve(strict=False) for root in writable_roots
+    )
+    return any(
+        _windows_acl_path_key(canonical_target)
+        != _windows_acl_path_key(writable_root)
+        and _is_relative_to_casefold(canonical_target, writable_root)
+        for writable_root in canonical_writable_roots
+    )
 
 
 def _profile_denied_read_paths(

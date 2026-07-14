@@ -933,13 +933,18 @@ def _workspace_strict_candidate_marker(
     original_path: str | None = None,
     strict_root: Path | None = None,
     strict_roots: tuple[Path, ...] | None = None,
+    resolved_candidate: Path | None = None,
 ) -> str | None:
     """Return a per-candidate blocked marker for directory/search tools."""
 
     roots = (strict_root,) if strict_root is not None else (strict_roots or _strict_read_roots())
     if not roots:
         return None
-    resolved = candidate.expanduser().resolve(strict=False)
+    resolved = (
+        resolved_candidate
+        if resolved_candidate is not None
+        else candidate.expanduser().resolve(strict=False)
+    )
     if not _is_within_any_root(resolved, roots):
         root_labels = ", ".join(str(root) for root in roots)
         return f"[blocked] {candidate}: outside active read roots ({root_labels})"
@@ -969,6 +974,15 @@ def _is_sensitive_access_path(resolved: Path, workspace: Path | None = None) -> 
     return (
         not full_host_access_active()
         and sensitive_path_marker(str(resolved), workspace=root) is not None
+    )
+
+
+def _is_pathlib_symlink_loop_error(exc: RuntimeError) -> bool:
+    """Return whether ``Path.resolve`` converted an OS symlink loop error."""
+
+    return str(exc).startswith("Symlink loop from ") and isinstance(
+        exc.__context__,
+        OSError,
     )
 
 
@@ -2745,23 +2759,28 @@ async def list_dir(path: str, approval_id: str | None = None) -> str:
         blocked_entries: list[str] = []
         for entry in sorted(p.iterdir(), key=lambda e: e.name):
             try:
-                marker = _workspace_strict_candidate_marker(
-                    "list_dir",
-                    entry,
-                    strict_roots=strict_roots,
-                )
-                if marker is not None:
-                    blocked_entries.append(marker)
-                    continue
-                if _is_sensitive_access_path(
-                    entry.resolve(strict=False),
-                    workspace=workspace_root,
-                ):
-                    continue
-            except (OSError, RuntimeError):
-                # Failure to resolve one child must not hide its listable siblings.
-                # The shared formatter still classifies what can be observed safely.
-                pass
+                resolved_entry = entry.resolve(strict=False)
+            except OSError:
+                is_directory, line = format_directory_entry(entry, follow_target=False)
+                (dirs if is_directory else files).append(line)
+                continue
+            except RuntimeError as exc:
+                if not _is_pathlib_symlink_loop_error(exc):
+                    raise
+                is_directory, line = format_directory_entry(entry, follow_target=False)
+                (dirs if is_directory else files).append(line)
+                continue
+            marker = _workspace_strict_candidate_marker(
+                "list_dir",
+                entry,
+                strict_roots=strict_roots,
+                resolved_candidate=resolved_entry,
+            )
+            if marker is not None:
+                blocked_entries.append(marker)
+                continue
+            if _is_sensitive_access_path(resolved_entry, workspace=workspace_root):
+                continue
             is_directory, line = format_directory_entry(entry)
             (dirs if is_directory else files).append(line)
         return dirs + files + blocked_entries

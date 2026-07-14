@@ -680,27 +680,80 @@ async def test_list_dir_survives_broken_symlink(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_list_dir_host_fallback_keeps_siblings_when_child_is_dir_raises(
+async def test_list_dir_host_fallback_marks_child_lstat_error_unavailable(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     (tmp_path / "ok.txt").write_text("hello", encoding="utf-8")
     blocked = tmp_path / "blocked.txt"
     blocked.write_text("secret", encoding="utf-8")
-    original_is_dir = Path.is_dir
+    original_lstat = Path.lstat
 
-    def selective_is_dir(path: Path) -> bool:
+    def selective_lstat(path: Path):
         if path == blocked:
             raise PermissionError("child denied for test")
-        return original_is_dir(path)
+        return original_lstat(path)
 
-    monkeypatch.setattr(Path, "is_dir", selective_is_dir)
+    monkeypatch.setattr(Path, "lstat", selective_lstat)
 
     with tool_context(tmp_path):
         output = await fs.list_dir(str(tmp_path))
 
     assert "[file] ok.txt (5 bytes)" in output
-    assert "blocked.txt" in output
+    assert "[file] blocked.txt (metadata unavailable)" in output
+
+
+@pytest.mark.asyncio
+async def test_list_dir_host_fallback_does_not_follow_symlink_after_policy_resolve_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "ok.txt").write_text("hello", encoding="utf-8")
+    outside = tmp_path / "outside.txt"
+    outside.write_text("secret", encoding="utf-8")
+    escape = workspace / "escape"
+    _make_symlink(escape, outside)
+    original_resolve = Path.resolve
+    original_stat = Path.stat
+
+    def selective_resolve(path: Path, strict: bool = False) -> Path:
+        if path == escape:
+            raise PermissionError("policy resolution denied for test")
+        return original_resolve(path, strict=strict)
+
+    def reject_target_stat(path: Path, *args: object, **kwargs: object):
+        if path == escape and kwargs.get("follow_symlinks", True):
+            raise AssertionError("failed policy resolution must not follow target")
+        return original_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "resolve", selective_resolve)
+    monkeypatch.setattr(Path, "stat", reject_target_stat)
+
+    with tool_context(workspace):
+        output = await fs.list_dir(str(workspace))
+
+    assert "[file] ok.txt (5 bytes)" in output
+    assert "[link] escape (target metadata unavailable)" in output
+    assert "[link] escape (6 bytes target)" not in output
+
+
+@pytest.mark.asyncio
+async def test_list_dir_host_fallback_propagates_policy_runtime_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    (tmp_path / "child.txt").write_text("hello", encoding="utf-8")
+
+    def fail_policy(*_args: object, **_kwargs: object) -> str | None:
+        raise RuntimeError("policy bug for test")
+
+    monkeypatch.setattr(fs, "_workspace_strict_candidate_marker", fail_policy)
+
+    with tool_context(tmp_path):
+        with pytest.raises(RuntimeError, match="policy bug for test"):
+            await fs.list_dir(str(tmp_path))
 
 
 @pytest.mark.asyncio

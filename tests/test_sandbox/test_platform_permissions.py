@@ -163,6 +163,32 @@ def test_windows_workspace_profile_matches_codex_projection() -> None:
     assert not profile.has_full_disk_read_baseline
 
 
+def test_supplied_windows_context_preserves_special_root_flavor(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace = tmp_path / "repo"
+    workspace.mkdir()
+    monkeypatch.chdir(workspace)
+    context = FileSystemPlatformContext(
+        platform="windows",
+        cwd=workspace,
+        home=PureWindowsPath(r"C:\Users\codex"),
+        user_profile_children=(),
+    )
+
+    profile = FileSystemPermissionProfile.workspace(
+        workspace=workspace,
+        tmp_writable=False,
+        tmpdir_env_writable=False,
+        platform_context=context,
+    )
+
+    assert PureWindowsPath(r"C:\Windows") in profile.readable_roots
+    assert profile.resolve(workspace / r"C:\Windows" / "System32") is FileSystemAccess.WRITE
+    assert profile.resolve(workspace / "src" / "app.py") is FileSystemAccess.WRITE
+
+
 def test_build_policy_uses_windows_context_for_host_root_projection(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -269,6 +295,23 @@ def test_windows_temp_writes_use_temp_without_slash_tmp() -> None:
     ) == (PureWindowsPath(r"C:\Users\codex\AppData\Local\Temp"),)
 
 
+def test_windows_temp_roots_ignore_relative_values() -> None:
+    context = _context(
+        "windows",
+        cwd=PureWindowsPath(r"C:\work\repo"),
+        home=PureWindowsPath(r"C:\Users\codex"),
+        env={
+            "TEMP": r"relative\temp",
+            "TMP": r"D:\absolute\temp",
+            "TMPDIR": r"..\other-relative-temp",
+        },
+    )
+
+    assert resolve_special_path(FileSystemSpecialPath.TMPDIR, context) == (
+        PureWindowsPath(r"D:\absolute\temp"),
+    )
+
+
 def test_windows_glob_with_backslashes_denies_pem_file() -> None:
     workspace = PureWindowsPath(r"C:\work\repo")
     profile = FileSystemPermissionProfile(
@@ -278,6 +321,18 @@ def test_windows_glob_with_backslashes_denies_pem_file() -> None:
 
     assert profile.resolve(workspace / "keys" / "identity.pem") is FileSystemAccess.DENY
     assert profile.resolve(workspace / "keys" / "identity.pub") is FileSystemAccess.WRITE
+
+
+def test_windows_denied_glob_matching_is_case_insensitive() -> None:
+    workspace = PureWindowsPath(r"C:\work\repo")
+    candidate = PureWindowsPath(r"c:\WORK\REPO\Keys\Identity.PEM")
+    profile = FileSystemPermissionProfile(
+        entries=(FileSystemPermissionEntry(workspace, FileSystemAccess.WRITE),),
+        denied_read_globs=(r"C:\work\repo\**\*.pem",),
+    )
+
+    assert profile.resolve(candidate) is FileSystemAccess.DENY
+    assert profile.is_explicitly_denied(candidate)
 
 
 def test_same_windows_target_deny_then_write_has_only_effective_write() -> None:

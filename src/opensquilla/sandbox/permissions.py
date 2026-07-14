@@ -182,11 +182,7 @@ class FileSystemPermissionProfile:
         """Return effective access for ``path`` using canonical longest match."""
 
         candidate = _canonical(path)
-        candidate_text = candidate.as_posix()
-        if any(
-            fnmatch.fnmatchcase(candidate_text, _canonical_glob(pattern))
-            for pattern in self.denied_read_globs
-        ):
+        if any(_matches_denied_read_glob(candidate, pattern) for pattern in self.denied_read_globs):
             return FileSystemAccess.DENY
 
         matches = (
@@ -204,11 +200,7 @@ class FileSystemPermissionProfile:
         """Distinguish an explicit deny from a path with no matching grant."""
 
         candidate = _canonical(path)
-        candidate_text = candidate.as_posix()
-        if any(
-            fnmatch.fnmatchcase(candidate_text, _canonical_glob(pattern))
-            for pattern in self.denied_read_globs
-        ):
+        if any(_matches_denied_read_glob(candidate, pattern) for pattern in self.denied_read_globs):
             return True
         matches = [
             (len(root.parts), index, entry.access)
@@ -309,7 +301,11 @@ def _canonical_platform_path(
     path: PurePath,
     context: FileSystemPlatformContext,
 ) -> PurePath:
-    if isinstance(context.cwd, Path):
+    same_concrete_flavor = isinstance(context.cwd, Path) and (
+        (isinstance(context.cwd, PureWindowsPath) and isinstance(path, PureWindowsPath))
+        or (isinstance(context.cwd, PurePosixPath) and isinstance(path, PurePosixPath))
+    )
+    if same_concrete_flavor:
         return _canonical(Path(str(path)))
     return _canonical(path)
 
@@ -334,6 +330,15 @@ def _deduplicate_paths(paths: Iterable[PurePath]) -> tuple[PurePath, ...]:
 
 def _canonical_glob(pattern: str) -> str:
     return os.path.expanduser(pattern).replace("\\", "/")
+
+
+def _matches_denied_read_glob(candidate: PurePath, pattern: str) -> bool:
+    candidate_text = candidate.as_posix()
+    canonical_pattern = _canonical_glob(pattern)
+    if isinstance(candidate, PureWindowsPath):
+        candidate_text = candidate_text.casefold()
+        canonical_pattern = canonical_pattern.casefold()
+    return fnmatch.fnmatchcase(candidate_text, canonical_pattern)
 
 
 __all__ = [

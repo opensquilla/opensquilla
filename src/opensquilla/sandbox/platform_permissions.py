@@ -112,11 +112,14 @@ def resolve_special_path(
         return (PurePosixPath("/tmp"),)
 
     if context.platform == "windows":
-        return _deduplicate_paths(
-            _as_windows_path(raw)
-            for name in ("TEMP", "TMP", "TMPDIR")
-            if (raw := context.env.get(name))
-        )
+        paths: list[PurePath] = []
+        for name in ("TEMP", "TMP", "TMPDIR"):
+            if not (raw := context.env.get(name)):
+                continue
+            path = _as_windows_path(raw)
+            if path.is_absolute():
+                paths.append(path)
+        return _deduplicate_paths(paths)
 
     raw_tmpdir = context.env.get("TMPDIR")
     if not raw_tmpdir:

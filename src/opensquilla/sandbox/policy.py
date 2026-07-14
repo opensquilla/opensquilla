@@ -20,6 +20,7 @@ from pathlib import Path
 
 from opensquilla.sandbox.config import SandboxSettings
 from opensquilla.sandbox.permissions import FileSystemPermissionProfile
+from opensquilla.sandbox.platform_permissions import current_platform_context
 from opensquilla.sandbox.types import (
     SANDBOX_WORKSPACE_PATH,
     MountSpec,
@@ -290,6 +291,11 @@ def build_policy(
         raise ValueError(f"workspace must be an absolute path, got {workspace!r}")
 
     mounts, workspace_rw = _collect_mounts(level, workspace, settings, session_mounts)
+    declared_writable_roots = tuple(mount.host_path for mount in mounts if mount.mode == "rw")
+    platform_context = current_platform_context(
+        cwd=workspace,
+        writable_roots=declared_writable_roots,
+    )
     limits = _resolve_limits(level, settings)
     network = _resolve_network(level, action_kind, settings, hints)
     tmp_writable = level != SecurityLevel.LOCKED
@@ -303,9 +309,7 @@ def build_policy(
     if level == SecurityLevel.DISABLED:
         file_system = FileSystemPermissionProfile.full_access()
     elif workspace_rw:
-        readable_roots = tuple(
-            mount.host_path for mount in mounts if mount.mode == "ro"
-        )
+        readable_roots = tuple(mount.host_path for mount in mounts if mount.mode == "ro")
         writable_roots = tuple(
             mount.host_path
             for mount in mounts
@@ -317,22 +321,19 @@ def build_policy(
             writable_roots=writable_roots,
             denied_read_roots=denied_read_roots,
             denied_read_globs=denied_read_globs,
-            host_root_readonly=(
-                sys.platform.startswith("linux") and settings.host_root_readonly
-            ),
+            host_root_readonly=settings.host_root_readonly,
             tmp_writable=tmp_writable and not settings.exclude_slash_tmp,
-            tmpdir_env_writable=(
-                tmp_writable and not settings.exclude_tmpdir_env_var
-            ),
+            tmpdir_env_writable=(tmp_writable and not settings.exclude_tmpdir_env_var),
+            platform_context=platform_context,
         )
     else:
         readable_roots = [mount.host_path for mount in mounts]
-        if sys.platform.startswith("linux") and settings.host_root_readonly:
-            readable_roots.insert(0, Path("/"))
         file_system = FileSystemPermissionProfile.read_only(
             readable_roots=readable_roots,
             denied_read_roots=denied_read_roots,
             denied_read_globs=denied_read_globs,
+            host_root_readonly=settings.host_root_readonly,
+            platform_context=platform_context,
         )
 
     return SandboxPolicy(

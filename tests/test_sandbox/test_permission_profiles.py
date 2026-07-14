@@ -1,15 +1,15 @@
 from __future__ import annotations
 
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 
 import pytest
 
-from opensquilla.sandbox import permissions
 from opensquilla.sandbox.config import SandboxSettings
 from opensquilla.sandbox.permissions import (
     FileSystemAccess,
     FileSystemPermissionProfile,
 )
+from opensquilla.sandbox.platform_permissions import FileSystemPlatformContext
 from opensquilla.sandbox.policy import build_policy
 from opensquilla.sandbox.types import SecurityLevel
 
@@ -115,11 +115,21 @@ def test_build_policy_applies_configured_denied_reads(tmp_path: Path) -> None:
 
 def test_non_linux_workspace_profile_does_not_add_posix_tmp(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(permissions.sys, "platform", "win32")
+    platform_context = FileSystemPlatformContext(
+        platform="windows",
+        cwd=PureWindowsPath(r"C:\work\repo"),
+        home=PureWindowsPath(r"C:\Users\codex"),
+        helper_roots=(),
+        writable_roots=(),
+        user_profile_children=(),
+        env={},
+    )
 
-    profile = FileSystemPermissionProfile.workspace(workspace=tmp_path)
+    profile = FileSystemPermissionProfile.workspace(
+        workspace=tmp_path,
+        platform_context=platform_context,
+    )
 
     assert profile.resolve(Path("/tmp/guardian-probe")) is not FileSystemAccess.WRITE
 

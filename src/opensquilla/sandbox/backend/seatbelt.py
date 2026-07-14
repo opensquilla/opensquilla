@@ -175,6 +175,7 @@ class _SeatbeltPrivateTransport:
 class _FilesystemWorkerLaunch:
     request: SandboxRequest
     private_transport: _SeatbeltPrivateTransport
+    payload_path: Path
 
 
 def _sandbox_exec_binary(binary: str | None = None) -> str | None:
@@ -326,15 +327,18 @@ def _seatbelt_access_rule(
         raise ValueError(f"unsupported Seatbelt filesystem action: {action!r}")
     root = _seatbelt_path(root)
     excluded = _unique_seatbelt_paths(excluded)
-    clauses = [_subpath(root)]
+    guards: list[str] = []
     for path in excluded:
-        clauses.append(f"(require-not {_literal(path)})")
-        clauses.append(f"(require-not {_subpath(path)})")
+        guards.append(f"(require-not {_literal(path)})")
+        guards.append(f"(require-not {_subpath(path)})")
     if action == "file-write*":
         for name in _PROTECTED_SUBPATH_NAMES:
             regex = _regex_string(_protected_metadata_regex(root, name))
-            clauses.append(f'(require-not (regex #"{regex}"))')
-    return f"(allow {action} {_literal(root)} (require-all {' '.join(clauses)}))"
+            guards.append(f'(require-not (regex #"{regex}"))')
+    guard_suffix = f" {' '.join(guards)}" if guards else ""
+    exact = f"(require-all {_literal(root)}{guard_suffix})"
+    descendants = f"(require-all {_subpath(root)}{guard_suffix})"
+    return f"(allow {action} {exact} {descendants})"
 
 
 def _seatbelt_proxy_endpoint(proxy: NetworkProxySpec) -> str:
@@ -729,7 +733,11 @@ def _filesystem_operation_launch(
         private_transport=private_transport,
         require_private_roots=False,
     )
-    return _FilesystemWorkerLaunch(sandbox_request, private_transport)
+    return _FilesystemWorkerLaunch(
+        request=sandbox_request,
+        private_transport=private_transport,
+        payload_path=payload_path,
+    )
 
 
 def _filesystem_operation_request(
@@ -954,8 +962,11 @@ class SeatbeltBackend(Backend):
         if operation.workspace is None:
             raise SandboxBackendError("filesystem operation is missing workspace")
         _filesystem_request(operation)
-        payload_path = _filesystem_operation_payload_path(operation.workspace)
-        launch = _filesystem_operation_launch(operation, payload_path)
+        launch = _filesystem_operation_launch(
+            operation,
+            _filesystem_operation_payload_path(operation.workspace),
+        )
+        payload_path = launch.payload_path
         payload_path.parent.mkdir(parents=True, exist_ok=True)
         try:
             payload_path.write_text(

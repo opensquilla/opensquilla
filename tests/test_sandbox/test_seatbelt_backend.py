@@ -247,6 +247,46 @@ def test_profile_full_read_excludes_explicit_denied_root(tmp_path: Path) -> None
     assert f'(subpath "{workspace}")' in workspace_write
 
 
+def test_profile_default_read_does_not_reopen_exact_denied_root(
+    tmp_path: Path,
+) -> None:
+    file_system = FileSystemPermissionProfile(
+        entries=(FileSystemPermissionEntry(Path("/"), FileSystemAccess.DENY),),
+        default_access=FileSystemAccess.READ,
+    )
+    policy = replace(_policy(tmp_path), file_system=file_system)
+
+    rendered = render_seatbelt_profile(_request(policy, tmp_path))
+
+    root_read = _access_rule(rendered, "file-read*", Path("/"))
+    guards = '(require-not (literal "/")) (require-not (subpath "/"))'
+    assert root_read.startswith(
+        f'(allow file-read* (require-all (literal "/") {guards}) '
+        f'(require-all (subpath "/") {guards})'
+    )
+
+
+@pytest.mark.parametrize("carveout", (FileSystemAccess.READ, FileSystemAccess.DENY))
+def test_profile_default_write_does_not_reopen_exact_restricted_root(
+    carveout: FileSystemAccess,
+    tmp_path: Path,
+) -> None:
+    file_system = FileSystemPermissionProfile(
+        entries=(FileSystemPermissionEntry(Path("/"), carveout),),
+        default_access=FileSystemAccess.WRITE,
+    )
+    policy = replace(_policy(tmp_path), file_system=file_system)
+
+    rendered = render_seatbelt_profile(_request(policy, tmp_path))
+
+    root_write = _access_rule(rendered, "file-write*", Path("/"))
+    guards = '(require-not (literal "/")) (require-not (subpath "/"))'
+    assert root_write.startswith(
+        f'(allow file-write* (require-all (literal "/") {guards} '
+    )
+    assert f'(require-all (subpath "/") {guards} ' in root_write
+
+
 def test_profile_fails_closed_for_unrepresentable_denied_glob(tmp_path: Path) -> None:
     file_system = FileSystemPermissionProfile.workspace(
         workspace=tmp_path,
@@ -354,9 +394,9 @@ def test_profile_missing_readonly_path_blocks_creation_but_writable_child_reopen
     assert f'(require-not (literal "{readonly}"))' in workspace_write
     assert f'(require-not (subpath "{readonly}"))' in workspace_write
     assert child_write.startswith(
-        f'(allow file-write* (literal "{writable_child}") '
-        f'(require-all (subpath "{writable_child}")'
+        f'(allow file-write* (require-all (literal "{writable_child}") '
     )
+    assert f'(require-all (subpath "{writable_child}")' in child_write
 
 
 def test_profile_scoped_workspace_write_also_grants_read_without_ambient_access(
@@ -627,10 +667,12 @@ def test_profile_denies_writes_to_protected_metadata_under_workspace(tmp_path: P
         (tmp_path / name).mkdir()
 
     profile = render_seatbelt_profile(_request(_policy(tmp_path), tmp_path))
+    workspace_write = _access_rule(profile, "file-write*", tmp_path)
 
     for name in (".git", ".codex", ".agents"):
         assert name.replace(".", "\\.") in profile
         assert "(require-not (regex" in profile
+        assert workspace_write.count(name.replace(".", "\\.")) == 2
 
 
 def test_profile_escapes_paths(tmp_path: Path) -> None:
@@ -1632,6 +1674,80 @@ async def test_run_operation_delegates_filesystem_to_seatbelt_worker(
     payload_path = captured["payload_path"]
     assert isinstance(payload_path, Path)
     assert not payload_path.exists()
+
+
+@pytest.mark.asyncio
+async def test_run_operation_uses_canonical_payload_after_workspace_alias_swap(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    original_workspace = tmp_path / "original-workspace"
+    replacement_workspace = tmp_path / "replacement-workspace"
+    workspace_alias = tmp_path / "workspace-alias"
+    original_workspace.mkdir()
+    replacement_workspace.mkdir()
+    try:
+        workspace_alias.symlink_to(original_workspace, target_is_directory=True)
+    except (NotImplementedError, OSError) as exc:
+        pytest.skip(f"directory symlinks unavailable: {exc}")
+    target = workspace_alias / "notes.txt"
+    profile = FileSystemPermissionProfile.workspace(workspace=workspace_alias)
+    operation = SandboxOperation.filesystem(
+        kind="write_text",
+        workspace=workspace_alias,
+        run_mode="trusted",
+        path=target,
+        content="hello",
+        file_system_profile=profile,
+    )
+    captured: dict[str, object] = {}
+    real_launch = seatbelt_mod._filesystem_operation_launch
+
+    def launch_then_swap_alias(
+        launched_operation: SandboxOperation,
+        payload_path: Path,
+    ) -> object:
+        launch = real_launch(launched_operation, payload_path)
+        captured["launch_payload"] = getattr(launch, "payload_path", None)
+        workspace_alias.unlink()
+        workspace_alias.symlink_to(replacement_workspace, target_is_directory=True)
+        return launch
+
+    async def fake_run_request(
+        self: SeatbeltBackend,
+        request: SandboxRequest,
+        *,
+        private_transport: object,
+    ) -> SandboxResult:
+        canonical_payload = Path(request.argv[-1])
+        captured["request_payload"] = canonical_payload
+        captured["request_payload_existed"] = canonical_payload.exists()
+        return SandboxResult(
+            returncode=0,
+            stdout=json.dumps({"message": "Written 5 bytes", "created": True}),
+            stderr="",
+            wall_time_s=0.0,
+            backend_used=self.name,
+        )
+
+    monkeypatch.setattr(
+        seatbelt_mod,
+        "_filesystem_operation_launch",
+        launch_then_swap_alias,
+    )
+    monkeypatch.setattr(SeatbeltBackend, "_run_request", fake_run_request)
+
+    await SeatbeltBackend().run_operation(operation)
+
+    expected_worker_root = original_workspace / ".opensquilla-cache" / "fs-worker"
+    canonical_payload = captured["request_payload"]
+    assert isinstance(canonical_payload, Path)
+    assert captured["launch_payload"] == canonical_payload
+    assert captured["request_payload_existed"] is True
+    assert canonical_payload.parent == expected_worker_root
+    assert expected_worker_root.exists()
+    assert not canonical_payload.exists()
+    assert not (replacement_workspace / ".opensquilla-cache").exists()
 
 
 @pytest.mark.asyncio

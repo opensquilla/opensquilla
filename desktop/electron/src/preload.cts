@@ -3,6 +3,7 @@ import { contextBridge, ipcRenderer } from 'electron'
 contextBridge.exposeInMainWorld('opensquillaDesktop', {
   getOsLocale: () => ipcRenderer.invoke('desktop:os-locale'),
   isAutoUpdateEnabled: () => ipcRenderer.invoke('desktop:update:supported'),
+  isDesktopUpdateManaged: () => ipcRenderer.invoke('desktop:update:managed'),
   getUpdateState: () => ipcRenderer.invoke('desktop:update:state'),
   checkForUpdates: () => ipcRenderer.invoke('desktop:update:check'),
   downloadUpdate: () => ipcRenderer.invoke('desktop:update:download'),

@@ -108,7 +108,7 @@ PowerShell 安装器会通过 `winget` 自动装好它；而**终端快速安装
 - macOS Apple Silicon：<https://opensquilla-releases.oss-cn-beijing.aliyuncs.com/releases/latest/OpenSquilla-mac-arm64.dmg>
 - Windows x64：<https://opensquilla-releases.oss-cn-beijing.aliyuncs.com/releases/latest/OpenSquilla-win-x64.exe>
 
-这两个链接会在每次 Release 成功镜像后更新到最新版本；需要固定版本时，请使用上方的 GitHub Release 版本化链接。
+这两个链接仅会在更新且符合条件的 Release 通过镜像校验后向前更新；需要固定版本时，请使用上方的 GitHub Release 版本化链接。
 
 升级前请退出任何正在运行的 OpenSquilla 桌面应用。桌面安装版会继续使用平台应用数据
 目录中的现有 Desktop profile。终端安装版的 `~/.opensquilla` 是另一套独立数据；如需

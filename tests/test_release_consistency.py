@@ -767,9 +767,16 @@ def test_current_release_notes_cover_recovery_transfer_upgrade_and_containers() 
     assert "ghcr.io/opensquilla/opensquilla:v0.5.0rc4" in notes
     assert "`latest` tag follows the most recently verified release tag" in notes
     assert (
-        "https://opensquilla-releases.oss-cn-beijing.aliyuncs.com/releases/latest.html"
+        "https://opensquilla-releases.oss-cn-beijing.aliyuncs.com/releases/latest/"
+        "OpenSquilla-mac-arm64.dmg"
         in notes
     )
+    assert (
+        "https://opensquilla-releases.oss-cn-beijing.aliyuncs.com/releases/latest/"
+        "OpenSquilla-win-x64.exe"
+        in notes
+    )
+    assert "releases/latest.html" not in notes
     assert "Synthetic fixtures" not in notes
     assert "release gate" not in notes
     assert "## Acknowledgements" in notes

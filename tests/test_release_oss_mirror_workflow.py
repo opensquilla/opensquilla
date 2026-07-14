@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import os
-import shlex
 import subprocess
 import sys
 import textwrap
@@ -22,19 +21,12 @@ def _upload_step_script() -> str:
 def _install_fake_ossutil(tmp_path: Path) -> tuple[Path, Path, Path]:
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir()
-    python3 = fake_bin / "python3"
-    python3.write_text(
-        f'#!/usr/bin/env bash\nexec {shlex.quote(Path(sys.executable).as_posix())} "$@"\n',
-        encoding="utf-8",
-    )
-    python3.chmod(0o755)
     remote_root = tmp_path / "oss"
     call_log = tmp_path / "ossutil-calls.jsonl"
-    fake = fake_bin / "ossutil"
-    fake.write_text(
+    fake_script = fake_bin / "ossutil.py"
+    fake_script.write_text(
         textwrap.dedent(
             """\
-            #!/usr/bin/env python3
             import json
             import os
             import shutil
@@ -104,6 +96,11 @@ def _install_fake_ossutil(tmp_path: Path) -> tuple[Path, Path, Path]:
         ),
         encoding="utf-8",
     )
+    fake = fake_bin / "ossutil"
+    fake.write_text(
+        '#!/usr/bin/env bash\nexec "$FAKE_OSS_PYTHON" "$FAKE_OSS_SCRIPT" "$@"\n',
+        encoding="utf-8",
+    )
     fake.chmod(0o755)
     return fake_bin, remote_root, call_log
 
@@ -124,7 +121,9 @@ def _run_upload_step(
             "ALIYUN_OSS_BUCKET": "release-bucket",
             "ALIYUN_OSS_PREFIX_NORMALIZED": "releases",
             "FAKE_OSS_LOG": str(call_log),
+            "FAKE_OSS_PYTHON": Path(sys.executable).as_posix(),
             "FAKE_OSS_ROOT": str(remote_root),
+            "FAKE_OSS_SCRIPT": (fake_bin / "ossutil.py").as_posix(),
             "GITHUB_RUN_ATTEMPT": str(attempt),
             "GITHUB_RUN_ID": "12345",
             "OSS_ADDRESSING_STYLE_NORMALIZED": "virtual",

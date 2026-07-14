@@ -8,6 +8,7 @@ from typing import Any
 
 import pytest
 
+from opensquilla.engine.guardian_prompt import guardian_output_schema
 from opensquilla.engine.guardian_review import (
     GuardianAssessment,
     GuardianCircuitBreaker,
@@ -311,6 +312,8 @@ async def test_guardian_reviews_with_no_tools_and_returns_assessment() -> None:
     assert provider.tool_calls == [None]
     assert provider.configs[0] is not None
     assert provider.configs[0].timeout == 90.0
+    assert provider.configs[0].output_json_schema == guardian_output_schema()
+    assert provider.configs[0].output_json_schema_strict is False
 
 
 @pytest.mark.asyncio

@@ -1603,6 +1603,8 @@ def _chat_config_with_thinking_disabled(chat_cfg: ChatConfig) -> ChatConfig:
         stop_sequences=chat_cfg.stop_sequences,
         cache_breakpoints=chat_cfg.cache_breakpoints,
         cache_mode=chat_cfg.cache_mode,
+        output_json_schema=chat_cfg.output_json_schema,
+        output_json_schema_strict=chat_cfg.output_json_schema_strict,
         model_capabilities=chat_cfg.model_capabilities,
         thinking_level=None,
         provider_request_max_chars=chat_cfg.provider_request_max_chars,
@@ -4033,6 +4035,29 @@ class Agent:
         self._guardian_review_session_key = session_key
         return self._guardian_review_session
 
+    def _prewarm_guardian_session_for_approval(self) -> None:
+        """Prepare the Guardian trunk before an approval reaches the hot path."""
+
+        if (self.config.metadata or {}).get("agent_role") == "guardian":
+            return
+        from opensquilla.sandbox.integration import get_runtime
+
+        runtime = get_runtime()
+        if runtime is not None and not runtime.effective.sandbox_enabled:
+            return
+        settings = getattr(runtime, "settings", None)
+        reviewer = str(getattr(settings, "approvals_reviewer", "auto_review") or "auto_review")
+        if reviewer != "auto_review":
+            return
+        manager = self._guardian_session_for_approval()
+        if manager is None:
+            return
+        try:
+            if manager.prewarm():
+                logger.debug("guardian.session_prewarmed")
+        except Exception as exc:
+            logger.warning("guardian.session_prewarm_failed", reason=str(exc))
+
     def set_history(self, messages: list[Message]) -> None:
         self._history = list(messages)
 
@@ -4054,6 +4079,7 @@ class Agent:
         Explicit state machine — no recursion. Tool loop iterates until
         the model finishes, unless config.max_iterations is a positive cap.
         """
+        self._prewarm_guardian_session_for_approval()
         if self._session_key:
             from opensquilla.sandbox.escalation import (
                 clear_sandbox_approval_denials,
@@ -4251,6 +4277,8 @@ class Agent:
                 self.config.cache_breakpoints
             ),
             cache_mode=self.config.cache_mode,
+            output_json_schema=self.config.output_json_schema,
+            output_json_schema_strict=self.config.output_json_schema_strict,
             model_capabilities=self.config.model_capabilities,
             thinking_level=(
                 self.config.thinking if isinstance(self.config.thinking, ThinkingLevel) else None
@@ -6903,6 +6931,8 @@ class Agent:
                             self.config.cache_breakpoints
                         ),
                         cache_mode=chat_cfg.cache_mode,
+                        output_json_schema=chat_cfg.output_json_schema,
+                        output_json_schema_strict=chat_cfg.output_json_schema_strict,
                         model_capabilities=self.config.model_capabilities,
                         thinking_level=(
                             self.config.thinking

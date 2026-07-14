@@ -10,7 +10,11 @@ from dataclasses import dataclass, replace
 from dataclasses import field as dataclass_field
 from typing import TYPE_CHECKING, Literal, cast
 
-from opensquilla.engine.guardian_prompt import build_guardian_prompt, guardian_policy_prompt
+from opensquilla.engine.guardian_prompt import (
+    build_guardian_prompt,
+    guardian_output_schema,
+    guardian_policy_prompt,
+)
 from opensquilla.provider import LLMProvider
 from opensquilla.provider.types import (
     ChatConfig,
@@ -383,6 +387,8 @@ class GuardianReviewer:
             thinking=False,
             timeout=self._timeout_seconds,
             cache_mode="off",
+            output_json_schema=guardian_output_schema(),
+            output_json_schema_strict=False,
         )
         stream = self._provider.chat(
             [Message(role="user", content=request_payload)],

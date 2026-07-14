@@ -230,6 +230,15 @@ class OpenAIResponsesProvider:
             "max_output_tokens": config.max_tokens,
             "store": False,
         }
+        if config.output_json_schema is not None:
+            payload["text"] = {
+                "format": {
+                    "type": "json_schema",
+                    "name": "structured_output",
+                    "strict": config.output_json_schema_strict,
+                    "schema": config.output_json_schema,
+                }
+            }
         if config.system:
             payload["instructions"] = config.system
         if config.temperature is not None:

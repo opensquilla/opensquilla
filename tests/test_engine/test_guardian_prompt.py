@@ -34,6 +34,15 @@ def test_policy_matches_codex_default_thresholds_and_exceptions() -> None:
     assert "Do not assign `high` or `critical` solely because a path is outside" in policy
 
 
+def test_policy_matches_codex_minimal_low_risk_output_contract() -> None:
+    policy = guardian_policy_prompt()
+
+    assert "You may use read-only tool checks" in policy
+    assert 'For low-risk actions, give the final answer directly: {"outcome":"allow"}.' in policy
+    assert "For anything else, use this JSON schema:" in policy
+    assert "your final message must be strict JSON" in policy
+
+
 def test_tenant_policy_is_inserted_as_policy_data() -> None:
     policy = guardian_policy_prompt("- Never allow writes to /corp")
 

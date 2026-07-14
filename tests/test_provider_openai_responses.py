@@ -140,6 +140,55 @@ def test_openai_responses_provider_posts_responses_payload_and_usage(
     assert done.model == "gpt-5.4"
 
 
+def test_openai_responses_sends_configured_json_output_schema(
+    monkeypatch: Any,
+) -> None:
+    captured: dict[str, Any] = {}
+    _patch_transport(
+        monkeypatch,
+        captured,
+        httpx.Response(
+            200,
+            json={
+                "id": "resp_schema",
+                "model": "gpt-5.4",
+                "output": [],
+                "usage": {"input_tokens": 1, "output_tokens": 1},
+            },
+        ),
+    )
+    provider = OpenAIResponsesProvider(api_key="test", model="gpt-5.4")
+    schema = {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {"outcome": {"type": "string", "enum": ["allow", "deny"]}},
+        "required": ["outcome"],
+    }
+
+    async def _run() -> list[Any]:
+        return [
+            event
+            async for event in provider.chat(
+                [Message(role="user", content="hi")],
+                config=ChatConfig(
+                    output_json_schema=schema,
+                    output_json_schema_strict=False,
+                ),
+            )
+        ]
+
+    asyncio.run(_run())
+
+    assert captured["payload"]["text"] == {
+        "format": {
+            "type": "json_schema",
+            "name": "structured_output",
+            "strict": False,
+            "schema": schema,
+        }
+    }
+
+
 def test_openai_responses_provider_writes_llm_trace(monkeypatch: Any, tmp_path: Any) -> None:
     captured: dict[str, Any] = {}
     trace_path = tmp_path / "responses-llm-calls.jsonl"

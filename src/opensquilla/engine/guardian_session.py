@@ -11,6 +11,7 @@ from typing import Any, Protocol
 from opensquilla.engine.guardian_prompt import (
     build_guardian_prompt,
     collect_guardian_transcript_entries,
+    guardian_output_schema,
     guardian_policy_prompt,
 )
 from opensquilla.engine.types import AgentConfig, ErrorEvent, TextDeltaEvent
@@ -120,6 +121,7 @@ class GuardianReviewSessionManager:
             source_diff_preservation_mode="off",
             source_diff_candidate_mode="off",
         )
+        policy_prompt = guardian_policy_prompt()
         self._config = AgentConfig(
             max_iterations=8,
             timeout=timeout_seconds,
@@ -129,12 +131,15 @@ class GuardianReviewSessionManager:
             max_tokens=1_000,
             temperature=0,
             thinking=False,
-            system_prompt=guardian_policy_prompt(),
+            system_prompt=policy_prompt,
             workspace_dir=str(self._workspace),
             model_id=parent_config.model_id,
             provider_id=parent_config.provider_id,
             max_provider_retries=0,
+            cache_breakpoints=[{"text": policy_prompt, "cache": "true"}],
             cache_mode=parent_config.cache_mode,
+            output_json_schema=guardian_output_schema(),
+            output_json_schema_strict=False,
             context_window_tokens=parent_config.context_window_tokens,
             max_history_turns=0,
             flush_enabled=False,
@@ -175,6 +180,14 @@ class GuardianReviewSessionManager:
         )
         agent.set_history(history)
         return agent
+
+    def prewarm(self) -> bool:
+        """Eagerly create the reusable trunk without calling the provider."""
+
+        if self._trunk is not None or self._busy:
+            return False
+        self._trunk = self._agent_factory(list(self._committed_history))
+        return True
 
     async def review(
         self,

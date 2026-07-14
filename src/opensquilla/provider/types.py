@@ -299,6 +299,8 @@ class ChatConfig(BaseModel):
     # Prompt caching: when set, system prompt is split into cached/dynamic blocks
     cache_breakpoints: list[dict[str, str]] | None = None
     cache_mode: Literal["off", "auto", "on"] = "off"
+    output_json_schema: dict[str, Any] | None = None
+    output_json_schema_strict: bool = True
     model_capabilities: ModelCapabilities | None = None
     thinking_level: Any | None = None
     provider_request_max_chars: int = 0

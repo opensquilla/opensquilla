@@ -33,11 +33,17 @@ def test_aliyun_oss_release_mirror_workflow_contract() -> None:
         'dest_prefix="oss://${ALIYUN_OSS_BUCKET}/'
         '${ALIYUN_OSS_PREFIX_NORMALIZED}/${TAG}"'
     ) in workflow
-    assert 'ossutil cp --force --addressing-style' in workflow
+    assert "local -a options=(" in workflow
+    assert '--cache-control "${cache_control}"' in workflow
     assert 'upload_asset "release-assets/SHA256SUMS" "SHA256SUMS"' in workflow
     assert "Build stable installer aliases" in workflow
     assert 'make_alias "OpenSquilla-*-mac-arm64.dmg" "OpenSquilla-mac-arm64.dmg"' in workflow
     assert 'make_alias "OpenSquilla-*-win-x64.exe" "OpenSquilla-win-x64.exe"' in workflow
     assert 'latest_prefix="${mirror_root}/latest"' in workflow
-    assert 'upload_asset "release-assets/${name}" "${name}" "${latest_prefix}"' in workflow
-    assert "latest.html" not in workflow
+    assert 'backup_prefix="${mirror_root}/.latest-backups/${GITHUB_RUN_ID}"' in workflow
+    assert "rollback_latest_aliases" in workflow
+    assert 'upload_asset "release-assets/${name}" "${name}" "${latest_prefix}" "no-cache"' in workflow
+    assert '"${mirror_root}/latest.html"' in workflow
+    assert workflow.index(
+        'upload_asset "release-assets/${name}" "${name}" "${latest_prefix}" "no-cache"'
+    ) < workflow.index('"${mirror_root}/latest.html"')

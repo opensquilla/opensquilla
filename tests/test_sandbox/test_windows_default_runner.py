@@ -1473,10 +1473,33 @@ def test_sandbox_rwx_omits_delete_child_and_native_acl_ignores_inherited_allow()
 
     assert not mod.MANAGED_ALLOW_MASK & mod.FILE_DELETE_CHILD
     source = inspect.getsource(mod._grant_path_to_sid_native)
+    status_source = inspect.getsource(mod._explicit_allow_ace_status)
     revoke_source = inspect.getsource(mod._revoke_path_for_sid_native)
     assert "allow_mask" in source and "| FILE_DELETE_CHILD" not in source
-    assert "INHERITED_ACE" in source
+    assert "_explicit_allow_ace_status" in source
+    assert "INHERITED_ACE_FLAG" in status_source
     assert "INHERITED_ACE" in revoke_source
+
+
+def test_legacy_delete_child_cleanup_preserves_host_custom_full_control() -> None:
+    from opensquilla.sandbox.backend import windows_default_runner as mod
+
+    write_owner = 0x00080000
+    host_custom_mask = mod.MANAGED_ALLOW_MASK | mod.FILE_DELETE_CHILD | write_owner
+    managed_legacy_mask = mod.MANAGED_ALLOW_MASK | mod.FILE_DELETE_CHILD
+
+    assert mod._explicit_allow_ace_status(
+        ace_mask=host_custom_mask,
+        ace_flags=0,
+        required_mask=mod.MANAGED_ALLOW_MASK,
+        cleanup_legacy_delete_child=False,
+    ) == (True, False)
+    assert mod._explicit_allow_ace_status(
+        ace_mask=managed_legacy_mask,
+        ace_flags=0,
+        required_mask=mod.MANAGED_ALLOW_MASK & ~mod.WRITE_DAC,
+        cleanup_legacy_delete_child=True,
+    ) == (False, True)
 
 
 def test_managed_deny_mask_includes_read_and_write_denies() -> None:

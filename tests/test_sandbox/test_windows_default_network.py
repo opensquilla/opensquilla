@@ -358,7 +358,8 @@ def test_setup_directory_handle_is_no_follow_and_blocks_delete_sharing() -> None
 
     assert "file_flag_open_reparse_point" in source
     assert "file_flag_backup_semantics" in source
-    assert "file_share_read | file_share_write" in source
+    assert "file_share_read," in source
+    assert "file_share_write" not in source
     assert "file_share_delete" not in source
     assert "CreateFileW.argtypes" in source
     assert "GetFileInformationByHandleEx.argtypes" in source
@@ -422,6 +423,44 @@ def test_lock_revalidates_tree_before_each_recursive_acl_mutation(monkeypatch, t
     assert len(validations) >= len(commands)
     assert commands
     assert all("/L" in command for command in commands)
+
+
+def test_elevated_setup_does_not_write_failure_report_after_lease_race(
+    monkeypatch, tmp_path
+) -> None:
+    from opensquilla.sandbox.backend import windows_default_setup as mod
+
+    profile = tmp_path / "profile"
+    profile.mkdir()
+    marker = mod.default_setup_marker_path(profile)
+    payload = mod._encode_setup_helper_payload(marker, user_sid="S-1-real")
+    reports = []
+    validations = 0
+    original_validate = mod._validate_setup_directory_lease
+
+    monkeypatch.setattr(mod, "_windows_profile_path_for_sid", lambda _sid: profile)
+    monkeypatch.setattr(
+        mod,
+        "write_setup_helper_report",
+        lambda marker_path, *, state, detail=None: reports.append(state),
+    )
+    monkeypatch.setattr(
+        mod,
+        "establish_windows_network_setup",
+        lambda _path: (_ for _ in ()).throw(OSError("network failed")),
+    )
+
+    def race_on_failure_report(lease, *, recursive):
+        nonlocal validations
+        validations += 1
+        if validations > 1:
+            raise OSError("lease changed")
+        return original_validate(lease, recursive=recursive)
+
+    monkeypatch.setattr(mod, "_validate_setup_directory_lease", race_on_failure_report)
+
+    assert mod.elevated_setup_helper_main(["--elevated-helper", payload]) == 2
+    assert reports == ["running"]
 
 
 def test_run_elevated_setup_helper_includes_failure_report_detail(

@@ -35,6 +35,8 @@ FILE_GENERIC_EXECUTE = 0x001200A0
 FILE_WRITE_ATTRIBUTES = 0x00000100
 FILE_WRITE_DATA = 0x00000002
 FILE_WRITE_EA = 0x00000010
+INHERIT_ONLY_ACE_FLAG = 0x08
+INHERITED_ACE_FLAG = 0x10
 FILE_MUTATION_DENY_MASK = (
     FILE_WRITE_DATA
     | FILE_APPEND_DATA
@@ -562,6 +564,22 @@ def _ace_mask_covers(existing_mask: int, required_mask: int) -> bool:
     return existing_mask & required_mask == required_mask
 
 
+def _explicit_allow_ace_status(
+    *,
+    ace_mask: int,
+    ace_flags: int,
+    required_mask: int,
+    cleanup_legacy_delete_child: bool,
+) -> tuple[bool, bool]:
+    if ace_flags & (INHERIT_ONLY_ACE_FLAG | INHERITED_ACE_FLAG):
+        return False, False
+    unsafe_managed_legacy = cleanup_legacy_delete_child and bool(ace_mask & FILE_DELETE_CHILD)
+    return (
+        not unsafe_managed_legacy and _ace_mask_covers(ace_mask, required_mask),
+        unsafe_managed_legacy,
+    )
+
+
 def _network_boundary(policy: dict[str, Any]) -> dict[str, object] | None:
     boundary = policy.get("windowsNetworkBoundary")
     return boundary if isinstance(boundary, dict) else None
@@ -835,8 +853,6 @@ def _grant_path_to_sid_native(path: Path, access: str, sid: str) -> None:
     TRUSTEE_IS_SID = 0
     TRUSTEE_IS_UNKNOWN = 0
     ACCESS_ALLOWED_ACE_TYPE = 0
-    INHERIT_ONLY_ACE = 0x08
-    INHERITED_ACE = 0x10
     NO_INHERITANCE = 0
     OBJECT_INHERIT_ACE = 0x1
     CONTAINER_INHERIT_ACE = 0x2
@@ -873,16 +889,20 @@ def _grant_path_to_sid_native(path: Path, access: str, sid: str) -> None:
             header = ctypes.cast(ace_ptr, ctypes.POINTER(ACE_HEADER)).contents
             if header.AceType != ACCESS_ALLOWED_ACE_TYPE:
                 continue
-            if header.AceFlags & (INHERIT_ONLY_ACE | INHERITED_ACE):
-                continue
             ace = ctypes.cast(ace_ptr, ctypes.POINTER(ACCESS_ALLOWED_ACE)).contents
             sid_ptr_value = int(ace_ptr.value) + ctypes.sizeof(ACE_HEADER) + ctypes.sizeof(DWORD)
             ace_sid = LPVOID(sid_ptr_value)
             if not advapi32.EqualSid(ace_sid, sid_to_check):
                 continue
-            if ace.Mask & FILE_DELETE_CHILD:
+            ace_covers, unsafe_legacy = _explicit_allow_ace_status(
+                ace_mask=int(ace.Mask),
+                ace_flags=int(header.AceFlags),
+                required_mask=mask,
+                cleanup_legacy_delete_child=access != "HOST_RWX",
+            )
+            if unsafe_legacy:
                 unsafe_indices.append(index)
-            elif (ace.Mask & mask) == mask:
+            elif ace_covers:
                 covers = True
         return covers, tuple(unsafe_indices)
 

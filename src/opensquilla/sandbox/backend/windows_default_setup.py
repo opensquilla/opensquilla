@@ -262,6 +262,14 @@ def elevated_setup_helper_main(argv: list[str] | None = None) -> int:
                 write_setup_helper_report(marker_path, state="ready", detail="setup_complete")
                 return 0
             except Exception as exc:
+                try:
+                    _validate_setup_directory_lease(lease, recursive=True)
+                except Exception as lease_exc:
+                    print(
+                        f"windows_default_setup helper failed without report: {lease_exc}",
+                        file=sys.stderr,
+                    )
+                    return 2
                 write_setup_helper_report(marker_path, state="failed", detail=str(exc))
                 print(f"windows_default_setup helper failed: {exc}", file=sys.stderr)
                 return 1
@@ -390,7 +398,6 @@ def _open_directory_no_follow(path: Path) -> object:
     kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
     file_read_attributes = 0x0080
     file_share_read = 0x00000001
-    file_share_write = 0x00000002
     open_existing = 3
     file_flag_backup_semantics = 0x02000000
     file_flag_open_reparse_point = 0x00200000
@@ -425,7 +432,7 @@ def _open_directory_no_follow(path: Path) -> object:
     handle = kernel32.CreateFileW(
         str(path),
         file_read_attributes,
-        file_share_read | file_share_write,
+        file_share_read,
         None,
         open_existing,
         file_flag_backup_semantics | file_flag_open_reparse_point,

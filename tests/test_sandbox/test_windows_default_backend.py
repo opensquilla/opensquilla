@@ -83,6 +83,7 @@ def test_windows_acl_plan_compiles_profile_reads_writes_and_denies(
         lambda path, roots: tuple(f"S-{i}" for i, _ in enumerate(roots)),
     )
     monkeypatch.setattr(mod, "_runtime_readonly_roots", lambda: ())
+    monkeypatch.setattr(mod, "runtime_rx_roots", lambda executable: ())
     monkeypatch.setattr(mod, "process_executable_rx_roots", lambda argv, env: ())
     monkeypatch.setattr(mod, "_windows_tool_path_roots", lambda *args, **kwargs: ())
 
@@ -95,6 +96,50 @@ def test_windows_acl_plan_compiles_profile_reads_writes_and_denies(
     assert grants[str(readable_reopen)] == "RX"
     assert str(readonly) in plan["denyWritePaths"]
     assert str(secret) in plan["denyReadPaths"]
+
+
+def test_windows_acl_plan_preserves_nested_denial_after_write_reopen(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from opensquilla.sandbox.backend import windows_default as mod
+    from opensquilla.sandbox.backend import windows_default_runner as runner
+
+    workspace = tmp_path / "workspace"
+    readonly = workspace / ".git"
+    writable_reopen = readonly / "objects"
+    denied_nested = writable_reopen / "private"
+    deeper_reopen = denied_nested / "generated"
+    for path in (readonly, writable_reopen, denied_nested, deeper_reopen):
+        path.mkdir(parents=True, exist_ok=True)
+    profile = FileSystemPermissionProfile(
+        entries=(
+            FileSystemPermissionEntry(workspace, FileSystemAccess.WRITE),
+            FileSystemPermissionEntry(readonly, FileSystemAccess.READ),
+            FileSystemPermissionEntry(writable_reopen, FileSystemAccess.WRITE),
+            FileSystemPermissionEntry(denied_nested, FileSystemAccess.DENY),
+            FileSystemPermissionEntry(deeper_reopen, FileSystemAccess.WRITE),
+        )
+    )
+    request = _request(tmp_path).with_policy(replace(_policy(), file_system=profile))
+    monkeypatch.setattr(
+        mod,
+        "capability_sids_for_command",
+        lambda path, roots: tuple(f"S-{i}" for i, _ in enumerate(roots)),
+    )
+    monkeypatch.setattr(mod, "_runtime_readonly_roots", lambda: ())
+    monkeypatch.setattr(mod, "runtime_rx_roots", lambda executable: ())
+    monkeypatch.setattr(mod, "process_executable_rx_roots", lambda argv, env: ())
+    monkeypatch.setattr(mod, "_windows_tool_path_roots", lambda *args, **kwargs: ())
+
+    plan = mod._acl_plan_payload(request)
+
+    assert plan["denyWritePaths"] == [str(readonly), str(denied_nested)]
+    assert runner._deny_write_capability_sids_for_path(plan, readonly) == ("S-0",)
+    assert runner._deny_write_capability_sids_for_path(plan, denied_nested) == (
+        "S-0",
+        "S-2",
+    )
 
 
 def test_windows_acl_plan_does_not_make_readonly_cwd_writable(

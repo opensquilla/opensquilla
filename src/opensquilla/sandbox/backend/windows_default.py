@@ -713,7 +713,7 @@ def _deny_write_paths_for_request(
         and not _is_filesystem_root(mount.host_path)
         and _acl_sensitive_marker(mount.host_path) is None
     )
-    return _dedupe_covering_paths(paths)
+    return _dedupe_paths(paths)
 
 
 def _rx_root_needs_acl_grant(path: Path, env: dict[str, str]) -> bool:
@@ -972,16 +972,6 @@ def _dedupe_paths(paths: Iterable[Path | str]) -> tuple[Path, ...]:
         if key in seen:
             continue
         seen.add(key)
-        result.append(path)
-    return tuple(result)
-
-
-def _dedupe_covering_paths(paths: Iterable[Path | str]) -> tuple[Path, ...]:
-    ordered = sorted(_dedupe_paths(paths), key=lambda item: len(str(item)))
-    result: list[Path] = []
-    for path in ordered:
-        if any(_is_relative_to_casefold(path, existing) for existing in result):
-            continue
         result.append(path)
     return tuple(result)
 

@@ -25,7 +25,7 @@
 
 ## News
 
-- 📢 **2026-07-03** — Our technical report **[Agentic Routing: The Harness-Native Data Flywheel](docs/releases/agentic_routing_v0.pdf)** (preview) is out, released alongside OpenSquilla **0.5.0 Preview 1**. It details how the harness-native router turns everyday agent traffic into a self-improving data flywheel.
+- 📢 **2026-07-14** — Our technical report **[Agentic Routing: The Harness-Native Data Flywheel](https://arxiv.org/abs/2607.11399)** is now on arXiv. It shows how the harness-native router turns everyday agent traffic into a self-improving data flywheel, and how **multi-model ensemble routing surpasses Fable 5**.
 
 ---
 

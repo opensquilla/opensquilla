@@ -66,6 +66,13 @@ _FILESYSTEM_PATH_OPERATION_KINDS = frozenset(
     }
 )
 _FILESYSTEM_OPERATION_KINDS = _FILESYSTEM_PATH_OPERATION_KINDS | {"apply_patch"}
+_FILESYSTEM_WORKER_ENV_ALLOWLIST = (
+    "PATH",
+    "PYTHONPATH",
+    "PYTHONDONTWRITEBYTECODE",
+    "LANG",
+    "LC_ALL",
+)
 _OUTPUT_BYTE_CAP = 1_048_576
 _TERMINATE_GRACE_S = 2.0
 
@@ -175,7 +182,6 @@ class _SeatbeltPrivateTransport:
 class _FilesystemWorkerLaunch:
     request: SandboxRequest
     private_transport: _SeatbeltPrivateTransport
-    payload_path: Path
 
 
 def _sandbox_exec_binary(binary: str | None = None) -> str | None:
@@ -650,13 +656,8 @@ def _filesystem_operation_targets(
     return targets
 
 
-def _filesystem_operation_payload_path(workspace: Path) -> Path:
-    return workspace / ".opensquilla-cache" / "fs-worker" / f"{time.monotonic_ns()}.json"
-
-
 def _filesystem_operation_launch(
     operation: SandboxOperation,
-    payload_path: Path,
 ) -> _FilesystemWorkerLaunch:
     if operation.workspace is None:
         raise SandboxBackendError("filesystem operation is missing workspace")
@@ -669,8 +670,6 @@ def _filesystem_operation_launch(
     if operation.file_system_profile is None:
         raise ValueError("filesystem operation is missing resolved filesystem profile")
     _validate_filesystem_profile_paths(operation.file_system_profile)
-    payload_path = _canonical_filesystem_target(payload_path, kind="worker payload")
-    worker_root = payload_path.parent
     targets = _filesystem_operation_targets(operation, request)
     runtime_roots = _runtime_readonly_roots()
     _validate_filesystem_operation_targets(
@@ -681,51 +680,40 @@ def _filesystem_operation_launch(
     )
     _validate_filesystem_private_transport_roots(
         operation.file_system_profile,
-        worker_root,
         runtime_roots,
     )
     policy = replace(
         build_filesystem_worker_policy(
             operation,
-            private_rw_roots=(worker_root,),
+            private_rw_roots=(),
             private_ro_roots=runtime_roots,
-            env_allowlist=(
-                "PATH",
-                "PYTHONPATH",
-                "HOME",
-                "TMP",
-                "TEMP",
-                "TMPDIR",
-                "LANG",
-                "LC_ALL",
-            ),
+            env_allowlist=_FILESYSTEM_WORKER_ENV_ALLOWLIST,
             description=f"macOS filesystem worker policy for {operation.kind}",
         ),
         tmp_writable=False,
     )
-    env = {
-        "PATH": str(_python_executable().parent),
-        "PYTHONPATH": _pythonpath_for_worker(),
-        **_worker_home_env(worker_root),
-    }
+    env = _filesystem_worker_env()
+    stdin = json.dumps(operation.to_payload(), ensure_ascii=False).encode("utf-8")
     sandbox_request = SandboxRequest(
         argv=(
             str(_python_executable()),
+            "-B",
             "-m",
             _FILESYSTEM_WORKER_MODULE,
-            str(payload_path),
+            "-",
         ),
-        cwd=worker_root,
+        cwd=workspace,
         action_kind=f"fs.worker.{operation.kind}",
         policy=policy,
         env=env,
+        stdin=stdin,
         reason="sandboxed filesystem side-effect worker",
         run_mode=normalize_run_mode(operation.run_mode).value,
     )
     private_transport = _filesystem_worker_private_transport(
         operation,
         sandbox_request,
-        payload_path,
+        workspace,
         runtime_roots,
     )
     _render_seatbelt_profile(
@@ -736,21 +724,19 @@ def _filesystem_operation_launch(
     return _FilesystemWorkerLaunch(
         request=sandbox_request,
         private_transport=private_transport,
-        payload_path=payload_path,
     )
 
 
 def _filesystem_operation_request(
     operation: SandboxOperation,
-    payload_path: Path,
 ) -> SandboxRequest:
-    return _filesystem_operation_launch(operation, payload_path).request
+    return _filesystem_operation_launch(operation).request
 
 
 def _filesystem_worker_private_transport(
     operation: SandboxOperation,
     request: SandboxRequest,
-    payload_path: Path,
+    workspace: Path,
     runtime_roots: tuple[Path, ...],
 ) -> _SeatbeltPrivateTransport:
     if operation.kind not in _FILESYSTEM_OPERATION_KINDS:
@@ -759,16 +745,35 @@ def _filesystem_worker_private_transport(
         )
     expected_argv = (
         str(_python_executable()),
+        "-B",
         "-m",
         _FILESYSTEM_WORKER_MODULE,
-        str(payload_path),
+        "-",
     )
     if request.argv != expected_argv:
         raise SandboxBackendError("seatbelt filesystem worker argv is inconsistent")
     if request.action_kind != f"fs.worker.{operation.kind}":
         raise SandboxBackendError("seatbelt filesystem worker action kind is inconsistent")
-    if request.cwd != payload_path.parent:
+    if request.cwd != workspace:
         raise SandboxBackendError("seatbelt filesystem worker cwd is inconsistent")
+    if (
+        request.env != _filesystem_worker_env()
+        or request.policy.env_allowlist != _FILESYSTEM_WORKER_ENV_ALLOWLIST
+    ):
+        raise SandboxBackendError("seatbelt filesystem worker environment is inconsistent")
+    if request.stdin is None:
+        raise SandboxBackendError("seatbelt filesystem worker stdin must be a JSON object")
+    try:
+        stdin_payload = json.loads(request.stdin.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise SandboxBackendError(
+            "seatbelt filesystem worker stdin must be a JSON object"
+        ) from exc
+    if not isinstance(stdin_payload, dict):
+        raise SandboxBackendError("seatbelt filesystem worker stdin must be a JSON object")
+    expected_stdin = json.dumps(operation.to_payload(), ensure_ascii=False).encode("utf-8")
+    if request.stdin != expected_stdin:
+        raise SandboxBackendError("seatbelt filesystem worker stdin is inconsistent")
     if request.policy.tmp_writable:
         raise SandboxBackendError("seatbelt filesystem worker must not create backend tmp")
     readonly_mounts = tuple(
@@ -777,11 +782,11 @@ def _filesystem_worker_private_transport(
     writable_mounts = tuple(
         mount.host_path for mount in request.policy.mounts if mount.mode == "rw"
     )
-    if readonly_mounts != runtime_roots or writable_mounts != (payload_path.parent,):
+    if readonly_mounts != runtime_roots or writable_mounts:
         raise SandboxBackendError("seatbelt filesystem worker transport roots are inconsistent")
     return _SeatbeltPrivateTransport(
-        read_roots=(*runtime_roots, payload_path.parent),
-        write_roots=(payload_path.parent,),
+        read_roots=runtime_roots,
+        write_roots=(),
     )
 
 
@@ -846,21 +851,11 @@ def _validate_filesystem_operation_profile_targets(
 
 def _validate_filesystem_private_transport_roots(
     profile: FileSystemPermissionProfile,
-    worker_root: Path,
     runtime_roots: tuple[Path, ...],
 ) -> None:
     denied = frozenset({FileSystemAccess.DENY})
-    for root in (*runtime_roots, worker_root):
+    for root in runtime_roots:
         _private_transport_exclusions(profile, root, denied)
-    worker_exclusions = _private_transport_exclusions(
-        profile,
-        worker_root,
-        frozenset({FileSystemAccess.READ, FileSystemAccess.DENY}),
-    )
-    if worker_root in worker_exclusions:
-        raise SandboxBackendError(
-            f"seatbelt private transport root is explicitly read-only: {worker_root}"
-        )
 
 
 def _runtime_readonly_roots() -> tuple[Path, ...]:
@@ -914,13 +909,11 @@ def _python_executable() -> Path:
     return Path(sys.executable)
 
 
-def _worker_home_env(worker_root: Path) -> dict[str, str]:
-    home = str(worker_root)
+def _filesystem_worker_env() -> dict[str, str]:
     return {
-        "HOME": home,
-        "TMP": home,
-        "TEMP": home,
-        "TMPDIR": home,
+        "PATH": str(_python_executable().parent),
+        "PYTHONPATH": _pythonpath_for_worker(),
+        "PYTHONDONTWRITEBYTECODE": "1",
     }
 
 
@@ -962,24 +955,11 @@ class SeatbeltBackend(Backend):
         if operation.workspace is None:
             raise SandboxBackendError("filesystem operation is missing workspace")
         _filesystem_request(operation)
-        launch = _filesystem_operation_launch(
-            operation,
-            _filesystem_operation_payload_path(operation.workspace),
+        launch = _filesystem_operation_launch(operation)
+        result = await self._run_request(
+            launch.request,
+            private_transport=launch.private_transport,
         )
-        payload_path = launch.payload_path
-        payload_path.parent.mkdir(parents=True, exist_ok=True)
-        try:
-            payload_path.write_text(
-                json.dumps(operation.to_payload(), ensure_ascii=False),
-                encoding="utf-8",
-            )
-            result = await self._run_request(
-                launch.request,
-                private_transport=launch.private_transport,
-            )
-        finally:
-            with contextlib.suppress(FileNotFoundError):
-                payload_path.unlink()
         if result.returncode != 0:
             detail = result.stderr.strip() or result.stdout.strip() or "filesystem worker failed"
             raise SandboxBackendError(f"seatbelt filesystem worker failed: {detail}")

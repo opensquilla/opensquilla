@@ -1562,11 +1562,9 @@ async def test_run_operation_delegates_filesystem_to_seatbelt_worker(
         *,
         private_transport: object,
     ) -> object:
-        payload_path = Path(request.argv[-1])
         captured["request"] = request
         captured["private_transport"] = private_transport
-        captured["payload_path"] = payload_path
-        captured["payload"] = json.loads(payload_path.read_text(encoding="utf-8"))
+        captured["payload"] = json.loads((request.stdin or b"").decode("utf-8"))
         return SandboxResult(
             returncode=0,
             stdout=json.dumps({"message": f"Written 5 bytes to {target}", "created": True}),
@@ -1600,27 +1598,36 @@ async def test_run_operation_delegates_filesystem_to_seatbelt_worker(
     request = captured["request"]
     assert isinstance(request, SandboxRequest)
     assert request.action_kind == "fs.worker.write_text"
-    assert request.cwd == workspace / ".opensquilla-cache" / "fs-worker"
+    assert request.cwd == workspace.resolve()
+    assert request.argv == (
+        str(seatbelt_mod._python_executable()),
+        "-B",
+        "-m",
+        "opensquilla.sandbox.filesystem_worker",
+        "-",
+    )
+    assert request.stdin == json.dumps(
+        operation.to_payload(), ensure_ascii=False
+    ).encode("utf-8")
     assert request.policy.network == NetworkMode.NONE
     assert request.policy.tmp_writable is False
     assert request.policy.file_system is profile
+    assert {"HOME", "TMP", "TEMP", "TMPDIR"}.isdisjoint(
+        request.policy.env_allowlist
+    )
     assert target not in {mount.host_path for mount in request.policy.mounts}
     runtime_roots = set(seatbelt_mod._runtime_readonly_roots())
     assert {
         mount.host_path for mount in request.policy.mounts if mount.mode == "ro"
     } == runtime_roots
-    assert {mount.host_path for mount in request.policy.mounts if mount.mode == "rw"} == {
-        request.cwd
-    }
-    assert request.env["HOME"] == str(request.cwd)
-    assert request.env["TMP"] == str(request.cwd)
-    assert request.env["TEMP"] == str(request.cwd)
-    assert request.env["TMPDIR"] == str(request.cwd)
+    assert {mount.host_path for mount in request.policy.mounts if mount.mode == "rw"} == set()
+    assert set(request.env) == {"PATH", "PYTHONPATH", "PYTHONDONTWRITEBYTECODE"}
+    assert request.env["PYTHONDONTWRITEBYTECODE"] == "1"
+    assert {"HOME", "TMP", "TEMP", "TMPDIR"}.isdisjoint(request.env)
     private_transport = captured["private_transport"]
     assert private_transport is not None
-    assert set(getattr(private_transport, "read_roots")) == {*runtime_roots, request.cwd}
-    assert set(getattr(private_transport, "write_roots")) == {request.cwd}
-    assert "opensquilla.sandbox.filesystem_worker" in request.argv
+    assert set(getattr(private_transport, "read_roots")) == runtime_roots
+    assert getattr(private_transport, "write_roots") == ()
     assert captured["payload"] == {
         "domain": "filesystem",
         "kind": "write_text",
@@ -1671,30 +1678,113 @@ async def test_run_operation_delegates_filesystem_to_seatbelt_worker(
         "include": None,
         "maxResults": None,
     }
-    payload_path = captured["payload_path"]
-    assert isinstance(payload_path, Path)
-    assert not payload_path.exists()
+    assert not (workspace / ".opensquilla-cache").exists()
 
 
-@pytest.mark.asyncio
-async def test_run_operation_uses_canonical_payload_after_workspace_alias_swap(
+def test_filesystem_worker_transport_validator_binds_launch_capability(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    original_workspace = tmp_path / "original-workspace"
-    replacement_workspace = tmp_path / "replacement-workspace"
-    workspace_alias = tmp_path / "workspace-alias"
-    original_workspace.mkdir()
-    replacement_workspace.mkdir()
-    try:
-        workspace_alias.symlink_to(original_workspace, target_is_directory=True)
-    except (NotImplementedError, OSError) as exc:
-        pytest.skip(f"directory symlinks unavailable: {exc}")
-    target = workspace_alias / "notes.txt"
-    profile = FileSystemPermissionProfile.workspace(workspace=workspace_alias)
+    workspace = tmp_path / "workspace"
+    runtime_root = tmp_path / "runtime"
+    workspace.mkdir()
+    runtime_root.mkdir()
+    target = workspace / "notes.txt"
     operation = SandboxOperation.filesystem(
         kind="write_text",
-        workspace=workspace_alias,
+        workspace=workspace,
+        run_mode="trusted",
+        path=target,
+        content="hello",
+        file_system_profile=FileSystemPermissionProfile.workspace(workspace=workspace),
+    )
+    runtime_roots = (runtime_root.resolve(),)
+    monkeypatch.setattr(seatbelt_mod, "_runtime_readonly_roots", lambda: runtime_roots)
+    request = seatbelt_mod._filesystem_operation_request(operation)
+    writable_mount = MountSpec(
+        host_path=workspace.resolve(),
+        sandbox_path=workspace.resolve(),
+        mode="rw",
+    )
+    tampered_requests = (
+        (replace(request, argv=(*request.argv[:-1], "payload.json")), "argv"),
+        (replace(request, cwd=tmp_path.resolve()), "cwd"),
+        (replace(request, action_kind="fs.worker.read_file"), "action kind"),
+        (replace(request, stdin=b"[]"), "stdin must be a JSON object"),
+        (replace(request, stdin=b"{}"), "stdin is inconsistent"),
+        (
+            replace(request, env={**request.env, "TMPDIR": "/tmp"}),
+            "environment",
+        ),
+        (
+            replace(
+                request,
+                policy=replace(
+                    request.policy,
+                    env_allowlist=(*request.policy.env_allowlist, "TMPDIR"),
+                ),
+            ),
+            "environment",
+        ),
+        (
+            replace(request, policy=replace(request.policy, tmp_writable=True)),
+            "must not create backend tmp",
+        ),
+        (
+            replace(request, policy=replace(request.policy, mounts=())),
+            "transport roots",
+        ),
+        (
+            replace(
+                request,
+                policy=replace(
+                    request.policy,
+                    mounts=(*request.policy.mounts, writable_mount),
+                ),
+            ),
+            "transport roots",
+        ),
+    )
+
+    for tampered, message in tampered_requests:
+        with pytest.raises(SandboxBackendError, match=message):
+            seatbelt_mod._filesystem_worker_private_transport(
+                operation,
+                tampered,
+                workspace.resolve(),
+                runtime_roots,
+            )
+
+    with pytest.raises(SandboxBackendError, match="unsupported filesystem operation"):
+        seatbelt_mod._filesystem_worker_private_transport(
+            replace(operation, kind="delete_file"),
+            request,
+            workspace.resolve(),
+            runtime_roots,
+        )
+
+
+@pytest.mark.asyncio
+async def test_run_operation_does_not_touch_inserted_cache_symlink(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    replacement = tmp_path / "replacement"
+    workspace.mkdir()
+    replacement.mkdir()
+    cache_link = workspace / ".opensquilla-cache"
+    try:
+        probe = tmp_path / "symlink-probe"
+        probe.symlink_to(replacement, target_is_directory=True)
+        probe.unlink()
+    except (NotImplementedError, OSError) as exc:
+        pytest.skip(f"directory symlinks unavailable: {exc}")
+    target = workspace / "notes.txt"
+    profile = FileSystemPermissionProfile.workspace(workspace=workspace)
+    operation = SandboxOperation.filesystem(
+        kind="write_text",
+        workspace=workspace,
         run_mode="trusted",
         path=target,
         content="hello",
@@ -1703,14 +1793,12 @@ async def test_run_operation_uses_canonical_payload_after_workspace_alias_swap(
     captured: dict[str, object] = {}
     real_launch = seatbelt_mod._filesystem_operation_launch
 
-    def launch_then_swap_alias(
+    def launch_then_insert_cache_symlink(
         launched_operation: SandboxOperation,
-        payload_path: Path,
+        *args: object,
     ) -> object:
-        launch = real_launch(launched_operation, payload_path)
-        captured["launch_payload"] = getattr(launch, "payload_path", None)
-        workspace_alias.unlink()
-        workspace_alias.symlink_to(replacement_workspace, target_is_directory=True)
+        launch = real_launch(launched_operation, *args)
+        cache_link.symlink_to(replacement, target_is_directory=True)
         return launch
 
     async def fake_run_request(
@@ -1719,9 +1807,8 @@ async def test_run_operation_uses_canonical_payload_after_workspace_alias_swap(
         *,
         private_transport: object,
     ) -> SandboxResult:
-        canonical_payload = Path(request.argv[-1])
-        captured["request_payload"] = canonical_payload
-        captured["request_payload_existed"] = canonical_payload.exists()
+        captured["request"] = request
+        captured["private_transport"] = private_transport
         return SandboxResult(
             returncode=0,
             stdout=json.dumps({"message": "Written 5 bytes", "created": True}),
@@ -1733,21 +1820,21 @@ async def test_run_operation_uses_canonical_payload_after_workspace_alias_swap(
     monkeypatch.setattr(
         seatbelt_mod,
         "_filesystem_operation_launch",
-        launch_then_swap_alias,
+        launch_then_insert_cache_symlink,
     )
     monkeypatch.setattr(SeatbeltBackend, "_run_request", fake_run_request)
 
     await SeatbeltBackend().run_operation(operation)
 
-    expected_worker_root = original_workspace / ".opensquilla-cache" / "fs-worker"
-    canonical_payload = captured["request_payload"]
-    assert isinstance(canonical_payload, Path)
-    assert captured["launch_payload"] == canonical_payload
-    assert captured["request_payload_existed"] is True
-    assert canonical_payload.parent == expected_worker_root
-    assert expected_worker_root.exists()
-    assert not canonical_payload.exists()
-    assert not (replacement_workspace / ".opensquilla-cache").exists()
+    request = captured["request"]
+    assert isinstance(request, SandboxRequest)
+    assert request.argv[-1] == "-"
+    assert request.stdin == json.dumps(
+        operation.to_payload(), ensure_ascii=False
+    ).encode("utf-8")
+    assert getattr(captured["private_transport"], "write_roots") == ()
+    assert cache_link.is_symlink()
+    assert list(replacement.iterdir()) == []
 
 
 @pytest.mark.asyncio
@@ -1790,12 +1877,12 @@ def test_filesystem_operation_request_construction_has_no_host_side_effects(
         file_system_profile=profile,
     )
 
-    request = seatbelt_mod._filesystem_operation_request(
-        operation,
-        worker_root / "payload.json",
-    )
+    request = seatbelt_mod._filesystem_operation_request(operation)
 
     assert request.policy.file_system is profile
+    assert request.cwd == workspace.resolve()
+    assert request.stdin is not None
+    assert not {mount.host_path for mount in request.policy.mounts if mount.mode == "rw"}
     assert not worker_root.exists()
 
 
@@ -1888,10 +1975,7 @@ def test_filesystem_preflight_rejects_every_control_character_in_profile_paths(
     )
 
     with pytest.raises(SandboxBackendError, match="control character"):
-        seatbelt_mod._filesystem_operation_request(
-            operation,
-            worker_root / "payload.json",
-        )
+        seatbelt_mod._filesystem_operation_request(operation)
     assert not worker_root.exists()
 
 
@@ -1918,40 +2002,7 @@ def test_filesystem_operation_rejects_control_characters_in_targets_before_side_
     )
 
     with pytest.raises(SandboxBackendError, match="control character"):
-        seatbelt_mod._filesystem_operation_request(
-            operation,
-            worker_root / "payload.json",
-        )
-    assert not worker_root.exists()
-
-
-@pytest.mark.parametrize(
-    "control",
-    _DISALLOWED_PATH_CHARACTERS,
-    ids=_DISALLOWED_PATH_CHARACTER_IDS,
-)
-def test_filesystem_operation_rejects_control_characters_in_transport_before_side_effects(
-    control: str,
-    tmp_path: Path,
-) -> None:
-    workspace = tmp_path / "workspace"
-    worker_root = workspace / ".opensquilla-cache" / "fs-worker"
-    target = workspace / "notes.txt"
-    workspace.mkdir()
-    operation = SandboxOperation.filesystem(
-        kind="write_text",
-        workspace=workspace,
-        run_mode="trusted",
-        path=target,
-        content="hello",
-        file_system_profile=FileSystemPermissionProfile.workspace(workspace=workspace),
-    )
-
-    with pytest.raises(SandboxBackendError, match="control character"):
-        seatbelt_mod._filesystem_operation_request(
-            operation,
-            worker_root / f"payload{control}.json",
-        )
+        seatbelt_mod._filesystem_operation_request(operation)
     assert not worker_root.exists()
 
 
@@ -2062,8 +2113,7 @@ async def test_run_operation_rejects_apply_patch_without_root_before_side_effect
     assert not worker_root.exists()
 
 
-@pytest.mark.asyncio
-async def test_run_operation_rejects_private_root_conflict_without_side_effects(
+def test_filesystem_operation_ignores_denied_legacy_cache_without_transport(
     tmp_path: Path,
 ) -> None:
     workspace = tmp_path / "workspace"
@@ -2085,14 +2135,13 @@ async def test_run_operation_rejects_private_root_conflict_without_side_effects(
         file_system_profile=profile,
     )
 
-    with pytest.raises(SandboxBackendError, match="private.*explicitly denied"):
-        await SeatbeltBackend().run_operation(operation)
+    request = seatbelt_mod._filesystem_operation_request(operation)
+
+    assert worker_root not in {mount.host_path for mount in request.policy.mounts}
     assert not worker_root.exists()
 
 
-@pytest.mark.asyncio
-async def test_run_operation_rejects_readonly_tmp_transport_without_side_effects(
-    monkeypatch: pytest.MonkeyPatch,
+def test_filesystem_operation_ignores_readonly_legacy_cache_without_transport(
     tmp_path: Path,
 ) -> None:
     workspace = tmp_path / "workspace"
@@ -2113,10 +2162,9 @@ async def test_run_operation_rejects_readonly_tmp_transport_without_side_effects
         content="hello",
         file_system_profile=profile,
     )
-    monkeypatch.setattr(SeatbeltBackend, "available", lambda self: True)
+    request = seatbelt_mod._filesystem_operation_request(operation)
 
-    with pytest.raises(SandboxBackendError, match="private.*read-only"):
-        await SeatbeltBackend().run_operation(operation)
+    assert worker_root not in {mount.host_path for mount in request.policy.mounts}
     assert not worker_root.exists()
 
 
@@ -2133,10 +2181,7 @@ def test_filesystem_operation_validates_missing_read_target(tmp_path: Path) -> N
     )
 
     with pytest.raises(FileNotFoundError, match="File not found"):
-        seatbelt_mod._filesystem_operation_request(
-            operation,
-            workspace / ".opensquilla-cache" / "fs-worker" / "payload.json",
-        )
+        seatbelt_mod._filesystem_operation_request(operation)
 
 
 def test_filesystem_operation_validates_list_target_type(tmp_path: Path) -> None:
@@ -2153,10 +2198,7 @@ def test_filesystem_operation_validates_list_target_type(tmp_path: Path) -> None
     )
 
     with pytest.raises(NotADirectoryError, match="Not a directory"):
-        seatbelt_mod._filesystem_operation_request(
-            operation,
-            workspace / ".opensquilla-cache" / "fs-worker" / "payload.json",
-        )
+        seatbelt_mod._filesystem_operation_request(operation)
 
 
 def test_filesystem_operation_rejects_denied_read_target_in_private_runtime(
@@ -2190,10 +2232,7 @@ def test_filesystem_operation_rejects_denied_read_target_in_private_runtime(
     )
 
     with pytest.raises(SandboxBackendError, match="profile denies read access"):
-        seatbelt_mod._filesystem_operation_request(
-            operation,
-            worker_root / "payload.json",
-        )
+        seatbelt_mod._filesystem_operation_request(operation)
     assert not worker_root.exists()
 
 
@@ -2225,14 +2264,11 @@ def test_filesystem_operation_rejects_write_target_in_readonly_runtime(
     )
 
     with pytest.raises(SandboxBackendError, match="read-only runtime"):
-        seatbelt_mod._filesystem_operation_request(
-            operation,
-            worker_root / "payload.json",
-        )
+        seatbelt_mod._filesystem_operation_request(operation)
     assert not worker_root.exists()
 
 
-def test_filesystem_operation_rejects_readonly_write_target_in_private_worker_root(
+def test_filesystem_operation_rejects_readonly_write_target_in_legacy_cache(
     tmp_path: Path,
 ) -> None:
     workspace = tmp_path / "workspace"
@@ -2250,14 +2286,11 @@ def test_filesystem_operation_rejects_readonly_write_target_in_private_worker_ro
     )
 
     with pytest.raises(SandboxBackendError, match="profile requires write access"):
-        seatbelt_mod._filesystem_operation_request(
-            operation,
-            worker_root / "payload.json",
-        )
+        seatbelt_mod._filesystem_operation_request(operation)
     assert not worker_root.exists()
 
 
-def test_filesystem_operation_allows_profile_write_target_in_private_worker_root(
+def test_filesystem_operation_allows_profile_write_target_in_legacy_cache(
     tmp_path: Path,
 ) -> None:
     workspace = tmp_path / "workspace"
@@ -2279,10 +2312,7 @@ def test_filesystem_operation_allows_profile_write_target_in_private_worker_root
         file_system_profile=profile,
     )
 
-    request = seatbelt_mod._filesystem_operation_request(
-        operation,
-        worker_root / "payload.json",
-    )
+    request = seatbelt_mod._filesystem_operation_request(operation)
 
     assert request.policy.file_system is profile
 
@@ -2299,10 +2329,7 @@ def test_filesystem_operation_allows_etc_with_root_read_profile(tmp_path: Path) 
         file_system_profile=profile,
     )
 
-    request = seatbelt_mod._filesystem_operation_request(
-        operation,
-        workspace / ".opensquilla-cache" / "fs-worker" / "payload.json",
-    )
+    request = seatbelt_mod._filesystem_operation_request(operation)
 
     assert request.policy.file_system is profile
 
@@ -2336,9 +2363,6 @@ def test_filesystem_operation_runtime_containment_is_case_sensitive(
         file_system_profile=profile,
     )
 
-    request = seatbelt_mod._filesystem_operation_request(
-        operation,
-        workspace / ".opensquilla-cache" / "fs-worker" / "payload.json",
-    )
+    request = seatbelt_mod._filesystem_operation_request(operation)
 
     assert request.policy.file_system is profile

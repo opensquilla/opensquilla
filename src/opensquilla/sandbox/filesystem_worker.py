@@ -15,8 +15,8 @@ def main(argv: Sequence[str] | None = None) -> None:
     args = list(sys.argv[1:] if argv is None else argv)
     try:
         if len(args) != 1:
-            raise ValueError("filesystem worker expects one payload path")
-        payload = _load_payload(Path(args[0]))
+            raise ValueError("filesystem worker expects one payload source")
+        payload = _load_payload(args[0])
         result = _run(payload)
         print(json.dumps(result, ensure_ascii=False))
     except Exception as exc:
@@ -33,8 +33,16 @@ def main(argv: Sequence[str] | None = None) -> None:
         raise SystemExit(1) from None
 
 
-def _load_payload(path: Path) -> dict[str, Any]:
-    payload = json.loads(path.read_text(encoding="utf-8"))
+def _load_payload(source: str | Path) -> dict[str, Any]:
+    raw_payload = (
+        sys.stdin.read()
+        if str(source) == "-"
+        else Path(source).read_text(encoding="utf-8")
+    )
+    try:
+        payload = json.loads(raw_payload)
+    except json.JSONDecodeError as exc:
+        raise ValueError("filesystem worker payload must be valid JSON") from exc
     if not isinstance(payload, dict):
         raise ValueError("filesystem worker payload must be an object")
     return payload

@@ -152,7 +152,8 @@ def _persist_refreshed_tokens(auth_path: Path, refreshed: dict[str, Any]) -> Non
     # builds CPython ships today (``os.chmod`` is not), so this also
     # closes the Windows no-op gap.
     nofollow = getattr(os, "O_NOFOLLOW", 0)
-    fd, tmp_name = tempfile.mkstemp(dir=str(auth_path.parent), prefix=".auth-")
+    fd, initial_tmp_name = tempfile.mkstemp(dir=str(auth_path.parent), prefix=".auth-")
+    tmp_name: str | None = initial_tmp_name
     try:
         try:
             os.close(fd)

@@ -166,7 +166,8 @@ class GatewayClient:
             raise SystemExit(f"Handshake failed: {hello!r}")
         if hello.get("type") != "hello-ok":
             raise SystemExit(f"Handshake failed: {hello}")
-        policy = hello.get("policy") if isinstance(hello.get("policy"), dict) else {}
+        policy_value = hello.get("policy")
+        policy = cast(dict[str, Any], policy_value) if isinstance(policy_value, dict) else {}
         self._heartbeat_interval = _heartbeat_interval_from_policy(policy)
 
         # Start background listener and application-level keepalive.
@@ -256,7 +257,7 @@ class GatewayClient:
                 frame_type = frame.get("type")
                 if frame_type == "res":
                     frame_id = frame.get("id")
-                    if isinstance(frame_id, (str, int)):
+                    if isinstance(frame_id, str):
                         fut = self._pending.pop(frame_id, None)
                         if fut and not fut.done():
                             fut.set_result(frame)

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 import io
 import json
 import threading
@@ -1402,6 +1403,102 @@ def test_child_stdin_writer_writes_payload_and_closes(monkeypatch) -> None:
     assert calls == [("write", 42, b"abc"), ("close", 42)]
 
 
+def test_native_launchers_assign_and_resume_before_starting_stdin_writer() -> None:
+    from opensquilla.sandbox.backend import windows_default_runner as mod
+
+    for launcher in (
+        mod._run_payload_as_offline_identity_native,
+        mod._run_restricted_process_native_impl,
+    ):
+        source = inspect.getsource(launcher)
+        assigned = source.index("job_assigned = True")
+        resumed = source.index('raise win_error("ResumeThread")')
+        writer_started = source.index("_start_child_stdin_writer")
+
+        assert assigned < resumed < writer_started
+        assert "_write_child_stdin" not in source
+
+
+def test_child_stdin_writer_runs_concurrently_and_closes_once(monkeypatch) -> None:
+    from opensquilla.sandbox.backend import windows_default_runner as mod
+
+    started = threading.Event()
+    release = threading.Event()
+    closed = []
+
+    class FakeKernel32:
+        def CloseHandle(self, handle):  # noqa: N802
+            closed.append(handle)
+            return 1
+
+    def blocking_write(kernel32, handle, stdin, *, close_handle=True):
+        assert close_handle is False
+        started.set()
+        assert release.wait(timeout=2)
+
+    monkeypatch.setattr(mod, "_write_child_stdin", blocking_write)
+
+    thread, errors, close_writer = mod._start_child_stdin_writer(
+        FakeKernel32(),
+        42,
+        b"large payload",
+        on_error=lambda: None,
+    )
+
+    assert started.wait(timeout=1)
+    assert thread.is_alive()
+    release.set()
+    mod._finish_child_io(
+        writer_thread=thread,
+        reader_threads=(),
+        writer_errors=errors,
+        close_writer=close_writer,
+        label="test child",
+        terminate=lambda: None,
+    )
+    close_writer()
+
+    assert closed == [42]
+
+
+def test_child_stdin_writer_failure_terminates_and_surfaces(monkeypatch) -> None:
+    from opensquilla.sandbox.backend import windows_default_runner as mod
+
+    actions = []
+
+    class FakeKernel32:
+        def CloseHandle(self, handle):  # noqa: N802
+            actions.append(("close", handle))
+            return 1
+
+    def failing_write(kernel32, handle, stdin, *, close_handle=True):
+        raise OSError("broken stdin")
+
+    monkeypatch.setattr(mod, "_write_child_stdin", failing_write)
+    thread, errors, close_writer = mod._start_child_stdin_writer(
+        FakeKernel32(),
+        42,
+        b"payload",
+        on_error=lambda: actions.append(("terminate", "writer")),
+    )
+
+    with pytest.raises(OSError, match="stdin writer failed: broken stdin"):
+        mod._finish_child_io(
+            writer_thread=thread,
+            reader_threads=(),
+            writer_errors=errors,
+            close_writer=close_writer,
+            label="test child",
+            terminate=lambda: actions.append(("terminate", "finish")),
+        )
+
+    assert actions == [
+        ("terminate", "writer"),
+        ("close", 42),
+        ("terminate", "finish"),
+    ]
+
+
 def test_runner_uses_offline_token_for_proxy_allowlist(monkeypatch, tmp_path) -> None:
     from opensquilla.sandbox.backend import windows_default_runner as mod
 
@@ -1708,6 +1805,7 @@ def test_offline_identity_native_launch_sets_all_stdio_handles(
         timeout=5,
     )
     captured: dict[str, object] = {}
+    events: list[str] = []
     next_handle = 1000
 
     def _handle_value(value: object) -> int:
@@ -1762,6 +1860,7 @@ def test_offline_identity_native_launch_sets_all_stdio_handles(
         return 1
 
     def _write_file(_handle, data, size, written, _overlapped):
+        events.append("write_stdin")
         captured["payload_stdin"] = bytes(data[:size])
         written._obj.value = size
         return 1
@@ -1775,12 +1874,14 @@ def test_offline_identity_native_launch_sets_all_stdio_handles(
             self.CreatePipe = FakeFunction(_create_pipe)
             self.SetHandleInformation = FakeFunction(lambda *_args: 1)
             self.CloseHandle = FakeFunction(lambda *_args: 1)
-            self.WaitForSingleObject = FakeFunction(lambda *_args: 0)
+            self.WaitForSingleObject = FakeFunction(lambda *_args: events.append("wait") or 0)
             self.TerminateProcess = FakeFunction(lambda *_args: 1)
             self.CreateJobObjectW = FakeFunction(lambda *_args: _new_handle())
             self.SetInformationJobObject = FakeFunction(lambda *_args: 1)
-            self.AssignProcessToJobObject = FakeFunction(lambda *_args: 1)
-            self.ResumeThread = FakeFunction(lambda *_args: 1)
+            self.AssignProcessToJobObject = FakeFunction(
+                lambda *_args: events.append("assign_job") or 1
+            )
+            self.ResumeThread = FakeFunction(lambda *_args: events.append("resume") or 1)
             self.TerminateJobObject = FakeFunction(lambda *_args: 1)
             self.GetExitCodeProcess = FakeFunction(_get_exit_code_process)
             self.WriteFile = FakeFunction(_write_file)
@@ -1818,6 +1919,7 @@ def test_offline_identity_native_launch_sets_all_stdio_handles(
     assert "--payload-env" not in captured["command_line"]
     assert mod.OFFLINE_PAYLOAD_ENV not in captured["env_block"]
     assert json.loads(captured["payload_stdin"])["offlineChild"] is False
+    assert events.index("assign_job") < events.index("resume") < events.index("write_stdin")
 
 
 def test_offline_reexecuted_helper_uses_current_token(monkeypatch, tmp_path) -> None:

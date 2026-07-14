@@ -11,7 +11,8 @@ import os
 import re
 import subprocess
 import sys
-from collections.abc import Iterator, Sequence
+import threading
+from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from pathlib import Path, PureWindowsPath
@@ -1881,12 +1882,67 @@ def _clear_handle_inheritance(kernel32: object, handle: object, label: str) -> N
 
 
 def _require_reader_threads_stopped(
-    threads: Sequence[object],
+    threads: Sequence[threading.Thread],
     *,
     label: str,
 ) -> None:
     if any(thread.is_alive() for thread in threads):
         raise OSError(f"{label} pipe reader did not terminate")
+
+
+def _start_child_stdin_writer(
+    kernel32: object,
+    stdin_write: object,
+    stdin: bytes | None,
+    *,
+    on_error: Callable[[], None],
+) -> tuple[threading.Thread, list[BaseException], Callable[[], None]]:
+    errors: list[BaseException] = []
+    close_lock = threading.Lock()
+    closed = False
+
+    def close_once() -> None:
+        nonlocal closed
+        with close_lock:
+            if not closed:
+                closed = True
+                kernel32.CloseHandle(stdin_write)
+
+    def write() -> None:
+        try:
+            _write_child_stdin(kernel32, stdin_write, stdin, close_handle=False)
+        except BaseException as exc:
+            errors.append(exc)
+            on_error()
+        finally:
+            close_once()
+
+    thread = threading.Thread(target=write, daemon=True)
+    thread.start()
+    return thread, errors, close_once
+
+
+def _finish_child_io(
+    *,
+    writer_thread: threading.Thread,
+    reader_threads: Sequence[threading.Thread],
+    writer_errors: Sequence[BaseException],
+    close_writer: Callable[[], None],
+    label: str,
+    terminate: Callable[[], None],
+    ignore_writer_errors: bool = False,
+) -> None:
+    writer_thread.join(timeout=5)
+    for thread in reader_threads:
+        thread.join(timeout=5)
+    if writer_thread.is_alive() or any(thread.is_alive() for thread in reader_threads):
+        terminate()
+        close_writer()
+        writer_thread.join(timeout=1)
+        raise OSError(f"{label} pipe I/O thread did not terminate")
+    if writer_errors and not ignore_writer_errors:
+        terminate()
+        raise OSError(f"{label} stdin writer failed: {writer_errors[0]}") from writer_errors[0]
 
 
 def _run_payload_as_offline_identity_native(
@@ -2145,12 +2201,6 @@ def _run_payload_as_offline_identity_native(
 
         close(stdin_read)
         stdin_read = HANDLE()
-        _write_child_stdin(
-            kernel32,
-            stdin_write,
-            _payload_to_json(payload).encode("utf-8"),
-        )
-        stdin_write = HANDLE()
         close(stdout_write)
         stdout_write = HANDLE()
         close(stderr_write)
@@ -2169,23 +2219,42 @@ def _run_payload_as_offline_identity_native(
         stdout_read = HANDLE()
         stderr_read = HANDLE()
 
+        writer_thread, writer_errors, close_writer = _start_child_stdin_writer(
+            kernel32,
+            stdin_write,
+            _payload_to_json(payload).encode("utf-8"),
+            on_error=lambda: kernel32.TerminateJobObject(job, 125),
+        )
+        stdin_write = HANDLE()
+
         wait_ms = max(1, int(payload.timeout * 1000))
         wait_result = kernel32.WaitForSingleObject(process_info.hProcess, wait_ms)
+        wait_error: OSError | None = None
         if wait_result == WAIT_TIMEOUT:
             kernel32.TerminateJobObject(job, 124)
             kernel32.WaitForSingleObject(process_info.hProcess, 5000)
             exit_code = 124
         elif wait_result == WAIT_FAILED:
-            raise win_error("WaitForSingleObject")
+            wait_error = win_error("WaitForSingleObject")
+            kernel32.TerminateJobObject(job, 125)
+            exit_code = 125
         else:
             code = DWORD()
             if not kernel32.GetExitCodeProcess(process_info.hProcess, ctypes.byref(code)):
                 raise win_error("GetExitCodeProcess")
             exit_code = int(code.value)
 
-        for thread in reader_threads:
-            thread.join(timeout=5)
-        _require_reader_threads_stopped(reader_threads, label="offline helper")
+        _finish_child_io(
+            writer_thread=writer_thread,
+            reader_threads=reader_threads,
+            writer_errors=writer_errors,
+            close_writer=close_writer,
+            label="offline helper",
+            terminate=lambda: kernel32.TerminateJobObject(job, 125),
+            ignore_writer_errors=wait_result in {WAIT_TIMEOUT, WAIT_FAILED},
+        )
+        if wait_error is not None:
+            raise wait_error
         sys.stdout.buffer.write(outputs["stdout"])
         sys.stderr.buffer.write(outputs["stderr"])
         return exit_code
@@ -2421,7 +2490,13 @@ def _enable_token_privilege_native(token: int, name: str) -> None:
         )
 
 
-def _write_child_stdin(kernel32: object, stdin_write: object, stdin: bytes | None) -> None:
+def _write_child_stdin(
+    kernel32: object,
+    stdin_write: object,
+    stdin: bytes | None,
+    *,
+    close_handle: bool = True,
+) -> None:
     import ctypes
     from ctypes import wintypes
 
@@ -2444,7 +2519,8 @@ def _write_child_stdin(kernel32: object, stdin_write: object, stdin: bytes | Non
                     raise OSError(0, "WriteFile(stdin) wrote zero bytes")
                 offset += written.value
     finally:
-        kernel32.CloseHandle(stdin_write)
+        if close_handle:
+            kernel32.CloseHandle(stdin_write)
 
 
 def _run_restricted_process_native_impl(
@@ -2845,8 +2921,6 @@ def _run_restricted_process_native_impl(
 
         close(stdin_read)
         stdin_read = HANDLE()
-        _write_child_stdin(kernel32, stdin_write, payload.stdin)
-        stdin_write = HANDLE()
         close(stdout_write)
         stdout_write = HANDLE()
         close(stderr_write)
@@ -2871,27 +2945,42 @@ def _run_restricted_process_native_impl(
         stdout_read = HANDLE()
         stderr_read = HANDLE()
 
+        writer_thread, writer_errors, close_writer = _start_child_stdin_writer(
+            kernel32,
+            stdin_write,
+            payload.stdin,
+            on_error=lambda: kernel32.TerminateJobObject(job, 125),
+        )
+        stdin_write = HANDLE()
+
         wait_ms = max(1, int(payload.timeout * 1000))
         wait_result = kernel32.WaitForSingleObject(process_info.hProcess, wait_ms)
+        wait_error: OSError | None = None
         if wait_result == WAIT_TIMEOUT:
             kernel32.TerminateJobObject(job, 124)
             kernel32.WaitForSingleObject(process_info.hProcess, 5000)
             exit_code = 124
         elif wait_result == WAIT_FAILED:
-            raise win_error("WaitForSingleObject")
+            wait_error = win_error("WaitForSingleObject")
+            kernel32.TerminateJobObject(job, 125)
+            exit_code = 125
         else:
             code = DWORD()
             if not kernel32.GetExitCodeProcess(process_info.hProcess, ctypes.byref(code)):
                 raise win_error("GetExitCodeProcess")
             exit_code = int(code.value)
 
-        for thread in reader_threads:
-            thread.join(timeout=5)
-        try:
-            _require_reader_threads_stopped(reader_threads, label="restricted process")
-        except OSError:
-            kernel32.TerminateJobObject(job, 125)
-            raise
+        _finish_child_io(
+            writer_thread=writer_thread,
+            reader_threads=reader_threads,
+            writer_errors=writer_errors,
+            close_writer=close_writer,
+            label="restricted process",
+            terminate=lambda: kernel32.TerminateJobObject(job, 125),
+            ignore_writer_errors=wait_result in {WAIT_TIMEOUT, WAIT_FAILED},
+        )
+        if wait_error is not None:
+            raise wait_error
         sys.stdout.buffer.write(outputs["stdout"])
         sys.stderr.buffer.write(outputs["stderr"])
         return exit_code

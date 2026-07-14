@@ -60,6 +60,67 @@ def test_platform_context_optional_fields_have_safe_defaults() -> None:
     assert context.env == {}
 
 
+def test_linux_policy_tolerates_unavailable_home(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace = tmp_path / "repo"
+
+    def unavailable_home(cls: type[Path]) -> Path:
+        raise RuntimeError("home is unavailable")
+
+    monkeypatch.setattr(platform_permissions_module.sys, "platform", "linux")
+    monkeypatch.setattr(
+        platform_permissions_module.Path,
+        "home",
+        classmethod(unavailable_home),
+    )
+
+    policy = build_policy(
+        SecurityLevel.STANDARD,
+        "shell.exec",
+        workspace,
+        SandboxSettings(exclude_slash_tmp=True, exclude_tmpdir_env_var=True),
+    )
+
+    assert policy.file_system is not None
+    assert policy.file_system.resolve(PurePosixPath("/etc/hosts")) is FileSystemAccess.READ
+    assert policy.file_system.resolve(workspace / "src" / "app.py") is FileSystemAccess.WRITE
+
+
+def test_windows_context_does_not_enumerate_fallback_home(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    helper_root = PureWindowsPath(r"C:\Codex\bin")
+    writable_root = PureWindowsPath(r"D:\cache")
+
+    def unavailable_home(cls: type[Path]) -> Path:
+        raise OSError("home is unavailable")
+
+    monkeypatch.setattr(platform_permissions_module.sys, "platform", "win32")
+    monkeypatch.setattr(
+        platform_permissions_module.Path,
+        "home",
+        classmethod(unavailable_home),
+    )
+
+    context = current_platform_context(
+        cwd=tmp_path,
+        helper_roots=(helper_root,),
+        writable_roots=(writable_root,),
+    )
+
+    assert context.home == tmp_path
+    assert context.user_profile_children == ()
+    assert resolve_special_path(FileSystemSpecialPath.ROOT, context) == (
+        *WINDOWS_PLATFORM_READ_ROOTS,
+        helper_root,
+        PureWindowsPath(str(tmp_path)),
+        writable_root,
+    )
+
+
 def test_unknown_host_platform_falls_back_to_linux(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

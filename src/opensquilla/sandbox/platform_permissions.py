@@ -63,13 +63,21 @@ def current_platform_context(
     """Capture the host values needed to resolve platform-special paths."""
 
     platform = _current_platform()
-    home = Path.home()
+    home_available = True
+    try:
+        home = Path.home()
+    except (OSError, RuntimeError):
+        home = cwd
+        home_available = False
     user_profile_children: tuple[PurePath, ...] | None = None
     if platform == "windows":
-        try:
-            user_profile_children = tuple(home.iterdir())
-        except OSError:
+        if not home_available:
             user_profile_children = ()
+        else:
+            try:
+                user_profile_children = tuple(home.iterdir())
+            except OSError:
+                user_profile_children = ()
     return FileSystemPlatformContext(
         platform=platform,
         cwd=cwd,

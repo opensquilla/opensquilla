@@ -47,6 +47,10 @@ _WINDOWS_FILE_ATTRIBUTE_TAG_INFO = 9
 _WINDOWS_FILE_ID_INFO = 18
 _WINDOWS_FILE_RENAME_INFORMATION = 10
 
+_PROFILE_LINK_LEAF_DIRECTORIES = frozenset({"workspace", "state/workspace"})
+_PROFILE_OPAQUE_DIRECTORIES = frozenset({"code-task"})
+_WINDOWS_PROFILE_OPAQUE_DIRECTORIES = frozenset({"sandbox"})
+
 
 def _chmod_open_file(fd: int, mode: int) -> None:
     """Apply a POSIX mode when the host exposes descriptor chmod.
@@ -163,11 +167,15 @@ def no_follow_manifest(
     root: str | Path,
     *,
     opaque_directories: frozenset[str] = frozenset(),
+    link_leaf_directories: frozenset[str] = frozenset(),
 ) -> dict[str, PathIdentity]:
     """Enumerate a regular file/directory tree without following links.
 
     The manifest intentionally contains metadata only. Recovery diagnostics and
     receipts must never persist hashes of user-authored Markdown or transcripts.
+    Links are rejected by default. When a real directory is explicitly named in
+    ``link_leaf_directories``, links below (but never in place of) that directory
+    are recorded by their no-follow identity and are not traversed.
     """
 
     root_path = Path(root)
@@ -188,25 +196,59 @@ def no_follow_manifest(
             raise UnsafePathError(f"cannot enumerate recovery source: {directory}") from exc
         for entry in entries:
             child_relative = relative / entry.name
+            child_key = child_relative.as_posix()
             try:
                 value = entry.stat(follow_symlinks=False)
             except OSError as exc:
                 raise UnsafePathError(f"cannot inspect recovery source: {entry.path}") from exc
             if _is_link_or_reparse(value):
-                raise UnsafePathError(
-                    f"automatic operations refuse links or reparse points: {entry.path}"
-                )
+                if not any(
+                    child_relative != Path(link_root)
+                    and child_relative.is_relative_to(Path(link_root))
+                    for link_root in link_leaf_directories
+                ):
+                    raise UnsafePathError(
+                        f"automatic operations refuse links or reparse points: {entry.path}"
+                    )
+                result[child_key] = PathIdentity.from_stat(value)
+                continue
             if not (stat.S_ISDIR(value.st_mode) or stat.S_ISREG(value.st_mode)):
                 raise UnsafePathError(f"automatic operations refuse special files: {entry.path}")
-            result[child_relative.as_posix()] = PathIdentity.from_stat(value)
+            result[child_key] = PathIdentity.from_stat(value)
             if (
                 stat.S_ISDIR(value.st_mode)
-                and child_relative.as_posix() not in opaque_directories
+                and child_key not in opaque_directories
             ):
                 visit(Path(entry.path), child_relative)
 
     visit(root_path, Path())
     return result
+
+
+def _profile_opaque_manifest_directories() -> frozenset[str]:
+    opaque = _PROFILE_OPAQUE_DIRECTORIES
+    if os.name == "nt" or sys.platform == "win32":
+        opaque |= _WINDOWS_PROFILE_OPAQUE_DIRECTORIES
+    return opaque
+
+
+def profile_no_follow_manifest(root: str | Path) -> dict[str, PathIdentity]:
+    """Manifest one whole profile without dereferencing profile-owned links.
+
+    ``workspace`` (including the historical ``state/workspace`` layout) is
+    persistent user data and may contain Git/npm links, which are verified as
+    no-follow leaves across a native rename. ``code-task`` is machine-local
+    execution state and is kept opaque while a complete existing profile is
+    parked or restored. Their policy roots must still be real directories.
+    Windows runtime ``sandbox`` data retains its established opaque-directory
+    contract.
+    """
+
+    return no_follow_manifest(
+        root,
+        opaque_directories=_profile_opaque_manifest_directories(),
+        link_leaf_directories=_PROFILE_LINK_LEAF_DIRECTORIES,
+    )
 
 
 def _manifest_matches_after_move(
@@ -723,6 +765,8 @@ def native_move_no_replace(
     _mutation_guard: Callable[[], contextlib.AbstractContextManager[None]] | None = None,
     _allowed_manifest_mtime_changes: frozenset[str] = frozenset(),
     _opaque_manifest_directories: frozenset[str] = frozenset(),
+    _link_leaf_manifest_directories: frozenset[str] = frozenset(),
+    _use_profile_manifest_policy: bool = False,
 ) -> None:
     """Atomically move ``source`` without ever replacing ``destination``.
 
@@ -751,9 +795,16 @@ def native_move_no_replace(
     else:
         raise DestinationExistsError(f"destination already exists: {destination_path}")
 
+    opaque_manifest_directories = _opaque_manifest_directories
+    link_leaf_manifest_directories = _link_leaf_manifest_directories
+    if _use_profile_manifest_policy:
+        opaque_manifest_directories |= _profile_opaque_manifest_directories()
+        link_leaf_manifest_directories |= _PROFILE_LINK_LEAF_DIRECTORIES
+
     manifest_before = no_follow_manifest(
         source_path,
-        opaque_directories=_opaque_manifest_directories,
+        opaque_directories=opaque_manifest_directories,
+        link_leaf_directories=link_leaf_manifest_directories,
     )
     if sys.platform.startswith("linux"):
         _linux_rename_no_replace(
@@ -786,7 +837,8 @@ def native_move_no_replace(
         destination_parent_after = path_identity(destination_path.parent)
         manifest_after = no_follow_manifest(
             destination_path,
-            opaque_directories=_opaque_manifest_directories,
+            opaque_directories=opaque_manifest_directories,
+            link_leaf_directories=link_leaf_manifest_directories,
         )
     except AtomicStateUnknownError:
         raise
@@ -830,4 +882,5 @@ __all__ = [
     "native_move_no_replace",
     "no_follow_manifest",
     "path_identity",
+    "profile_no_follow_manifest",
 ]

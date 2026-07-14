@@ -184,6 +184,15 @@ def run_sandboxed(
             stdout, stderr = proc.communicate()
         except Exception:
             stdout, stderr = None, None
+        # ``communicate()`` already calls ``wait()`` on success, but if
+        # the second ``communicate()`` above raised we may never have
+        # reaped the child. Guard that explicitly so the timeout branch
+        # upholds the same "always reap" guarantee as the other paths.
+        if proc.returncode is None:
+            try:
+                proc.wait(timeout=5)
+            except Exception:
+                pass
     except BaseException:
         # Propagate cancellation / KeyboardInterrupt but still ensure
         # the child is killed and waited on so we don't leak it.

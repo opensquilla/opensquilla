@@ -153,7 +153,62 @@ def test_run_sandboxed_timeout_branch_reaps_child(
 
     assert result.reason == REASON_WALL_LIMIT
     assert proc.killed is True
+    assert proc.waited is True
     # Pipes closed by the finally block.
+    assert proc.stdout_closed is True
+    assert proc.stderr_closed is True
+
+
+@pytest.mark.skipif(
+    not sandbox_mod.HAS_RESOURCE, reason="resource module unavailable on this platform"
+)
+def test_run_sandboxed_timeout_branch_reaps_when_recollect_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """If the post-kill ``communicate()`` call also raises, the child
+    must still be reaped so the timeout branch upholds the "always
+    reap" guarantee."""
+
+    class _RecollectFailsProcess(_FakeProcess):
+        def __init__(self, *args, **kwargs):  # type: ignore[no-untyped-def]
+            super().__init__(*args, **kwargs)
+            self.first = True
+
+        def communicate(self, input=None, timeout=None):  # type: ignore[no-untyped-def]
+            if self.first:
+                self.first = False
+                raise subprocess.TimeoutExpired(cmd=["/bin/sleep"], timeout=10)
+            # Second call (post-kill) must also raise — that's the
+            # path that previously left the child un-reaped.
+            raise RuntimeError("simulated post-kill read failure")
+
+        def kill(self) -> None:
+            self.killed = True
+            # ``returncode`` stays ``None`` so the new fallback
+            # ``wait()`` branch is exercised.
+
+        def wait(self, timeout=None):  # type: ignore[no-untyped-def]
+            self.waited = True
+            self.returncode = -9
+            return self.returncode
+
+    captured: dict[str, _FakeProcess] = {}
+
+    def fake_popen(*args, **kwargs):  # type: ignore[no-untyped-def]
+        proc = _RecollectFailsProcess(*args, **kwargs)
+        captured["proc"] = proc
+        return proc
+
+    monkeypatch.setattr(sandbox_mod.subprocess, "Popen", fake_popen)
+    proc = captured["proc"]
+
+    result = run_sandboxed(["/bin/sleep", "999"], SandboxLimits(wall_seconds=1))
+
+    assert result.reason == REASON_WALL_LIMIT
+    assert proc.killed is True, "child must be killed on timeout"
+    assert proc.waited is True, (
+        "child must be waited on even when post-kill communicate() raises"
+    )
     assert proc.stdout_closed is True
     assert proc.stderr_closed is True
 

@@ -70,6 +70,13 @@
     "more": "Más",
     "moreDestinations": "Más destinos",
     "expandSidebar": "Expandir barra lateral",
+    "collapseSidebar": "Contraer barra lateral",
+    "toggleSidebar": "Alternar barra lateral",
+    "resizeSidebar": "Cambiar el ancho de la barra lateral",
+    "sidebarWidthValue": "Ancho de la barra lateral: {width}px, {preset}",
+    "sidebarWidthLimitedValue": "Ancho de la barra lateral: {width}px, {preset}; limitado por esta ventana (preferencia: {preference}px)",
+    "releaseToCollapseSidebar": "Suelta para contraer la barra lateral",
+    "sidebarCollapseCanceled": "Se canceló la contracción de la barra lateral",
     "openBlockedSession": "Abrir la sesión bloqueada",
     "approvalRequired": "Aprobación requerida",
     "manageConnection": "Gestionar conexión de la puerta de enlace",
@@ -102,13 +109,32 @@
   "settings": {
     "appearance": {
       "title": "Apariencia",
-      "desc": "Tema e idioma para este navegador. Los cambios se aplican al instante; no es necesario guardar.",
+      "desc": "Tema, idioma y preferencias de interfaz locales de este navegador. Los preajustes se aplican al instante; usa Aplicar para un ancho personalizado.",
       "themeLabel": "Tema",
       "themeDesc": "Sigue tu sistema o fuerza el modo claro u oscuro. El conmutador de la barra lateral es un atajo a este mismo ajuste.",
       "languageLabel": "Idioma",
       "languageDesc": "Idioma de visualización de la interfaz. Se aplica al instante a este navegador.",
       "bgmLabel": "Música de fondo",
-      "bgmDesc": "Muestra el control de música de fondo en la barra superior. Desactivado por defecto; también se puede alternar desde la paleta de comandos."
+      "bgmDesc": "Muestra el control de música de fondo en la barra superior. Desactivado por defecto; también se puede alternar desde la paleta de comandos.",
+      "sidebarWidthLabel": "Ancho de la barra lateral",
+      "sidebarWidthDesc": "Elige el ancho de la barra lateral en el escritorio. Los diseños compacto y de cajón usan un ancho fijo.",
+      "sidebarWidthCompact": "Compacto",
+      "sidebarWidthDefault": "Predeterminado",
+      "sidebarWidthWide": "Ancho",
+      "sidebarWidthCustom": "Personalizado",
+      "sidebarWidthCustomLabel": "Ancho personalizado",
+      "sidebarWidthCustomHint": "Usa los botones menos y más o introduce un valor y aplícalo.",
+      "sidebarWidthDecrease": "Reducir el ancho de la barra lateral",
+      "sidebarWidthIncrease": "Aumentar el ancho de la barra lateral",
+      "sidebarWidthApply": "Aplicar",
+      "sidebarWidthRange": "Introduce un número entero entre {min} y {max}.",
+      "sidebarWidthModeResizable": "Redimensionable",
+      "sidebarWidthModeCompact": "Diseño compacto",
+      "sidebarWidthModeDrawer": "Diseño de cajón",
+      "sidebarWidthResizableStatus": "Ancho actual en el escritorio: {current}px.",
+      "sidebarWidthClampedStatus": "Se guardaron {saved}px; esta ventana usa actualmente {current}px.",
+      "sidebarWidthCompactStatus": "El diseño compacto usa {current}px. Se conserva tu preferencia de escritorio de {saved}px.",
+      "sidebarWidthDrawerStatus": "El diseño de cajón usa {current}px. Se conserva tu preferencia de escritorio de {saved}px."
     },
     "dialog": {
       "title": "Ajustes",
@@ -1824,6 +1850,14 @@
     "steerModeHint": "Redirigir: el mensaje se envía ahora y redirige la respuesta en curso",
     "deliveryModeLabel": "Modo de entrega mientras el agente responde",
     "conversation": "Conversación de chat",
+    "historyNavigatorLabel": "Historial de la conversación, {count} mensajes",
+    "historyNavigatorLoadedLabel": "Historial cargado, {count} mensajes; hay mensajes anteriores disponibles",
+    "historyTurnLabel": "Mensaje {number} de {total}: {preview}",
+    "historyTurnLoadedLabel": "Mensaje cargado {number} de {total}: {preview}",
+    "historyTurnCount": "Mensaje {number} de {total}",
+    "historyTurnLoadedCount": "Mensaje cargado {number} de {total}",
+    "historyAttachmentOnly": "Mensaje solo con archivos adjuntos",
+    "historyAttachmentCount": "Archivos adjuntos: {count}",
     "noMessagesYet": "Aún no hay mensajes.",
     "newChat": "Nuevo chat",
     "chatWithSuffix": "Chat {suffix}",
@@ -2223,6 +2257,10 @@
       "copyCommand": "Copiar el comando de transferencia de datos"
     },
     "shortcuts": {
+      "toggleSidebar": {
+        "label": "Alternar barra lateral",
+        "description": "Muestra u oculta la barra lateral principal."
+      },
       "commandPalette": {
         "label": "Búsqueda / paleta de comandos",
         "description": "Abre la paleta de búsqueda e ir a para saltar a cualquier página, acción o conversación."

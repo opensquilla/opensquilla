@@ -1,5 +1,5 @@
 <template>
-  <template v-for="(message, index) in messages" :key="message.id || `${message.role}-${index}`">
+  <template v-for="(message, index) in messages" :key="chatMessageKey(message, index)">
     <slot
       v-if="message.isRouterStrip"
       name="router-strip"
@@ -8,6 +8,9 @@
     />
     <UserMessage
       v-else-if="message.displayRole === 'user'"
+      :id="`chat-turn-${index}`"
+      :data-chat-turn-key="chatMessageKey(message, index)"
+      tabindex="-1"
       :message="message"
       :share-mode="shareMode"
       :share-selected="selectedMessageIds.has(chatMessageKey(message, index))"

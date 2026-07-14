@@ -286,6 +286,8 @@ export interface ChatMessage {
   role: ChatRole
   text: string
   ts: string | number | null
+  /** Stable client-only identity for optimistic rows before the backend assigns messageId. */
+  clientId?: string
   reasoning?: ChatReasoning
   routerDecision?: import('./rpc').RouterDecisionPayload | null
   artifacts?: ArtifactPayload[]
@@ -336,6 +338,7 @@ export interface ChatMessageMeta {
 
 export interface ChatRenderedMessage {
   id?: string
+  clientId?: string
   sourceIndex?: number
   role: string
   displayRole: string

@@ -70,6 +70,13 @@
     "more": "Plus",
     "moreDestinations": "Plus de destinations",
     "expandSidebar": "Déplier la barre latérale",
+    "collapseSidebar": "Réduire la barre latérale",
+    "toggleSidebar": "Afficher ou masquer la barre latérale",
+    "resizeSidebar": "Redimensionner la barre latérale",
+    "sidebarWidthValue": "Largeur de la barre latérale : {width} px, {preset}",
+    "sidebarWidthLimitedValue": "Largeur de la barre latérale : {width} px, {preset} ; limitée par cette fenêtre (préférence : {preference} px)",
+    "releaseToCollapseSidebar": "Relâchez pour réduire la barre latérale",
+    "sidebarCollapseCanceled": "Réduction de la barre latérale annulée",
     "openBlockedSession": "Ouvrir la session bloquée",
     "approvalRequired": "Approbation requise",
     "manageConnection": "Gérer la connexion à la passerelle",
@@ -102,13 +109,32 @@
   "settings": {
     "appearance": {
       "title": "Apparence",
-      "desc": "Thème et langue pour ce navigateur. Les changements s'appliquent immédiatement — aucun enregistrement nécessaire.",
+      "desc": "Thème, langue et préférences d'interface locales à ce navigateur. Les préréglages s'appliquent immédiatement ; utilisez Appliquer pour une largeur personnalisée.",
       "themeLabel": "Thème",
       "themeDesc": "Suivez votre système, ou forcez le mode clair ou sombre. Le bouton de la barre latérale est un raccourci vers ce même paramètre.",
       "languageLabel": "Langue",
       "languageDesc": "Langue d'affichage de l'interface. S'applique immédiatement à ce navigateur.",
       "bgmLabel": "Musique de fond",
-      "bgmDesc": "Affiche la commande de musique de fond dans la barre supérieure. Désactivé par défaut ; modifiable aussi depuis la palette de commandes."
+      "bgmDesc": "Affiche la commande de musique de fond dans la barre supérieure. Désactivé par défaut ; modifiable aussi depuis la palette de commandes.",
+      "sidebarWidthLabel": "Largeur de la barre latérale",
+      "sidebarWidthDesc": "Choisissez la largeur de la barre latérale sur ordinateur. Les dispositions compacte et en tiroir utilisent une largeur fixe.",
+      "sidebarWidthCompact": "Compacte",
+      "sidebarWidthDefault": "Par défaut",
+      "sidebarWidthWide": "Large",
+      "sidebarWidthCustom": "Personnalisée",
+      "sidebarWidthCustomLabel": "Largeur personnalisée",
+      "sidebarWidthCustomHint": "Utilisez les boutons moins et plus ou saisissez une valeur, puis appliquez-la.",
+      "sidebarWidthDecrease": "Réduire la largeur de la barre latérale",
+      "sidebarWidthIncrease": "Augmenter la largeur de la barre latérale",
+      "sidebarWidthApply": "Appliquer",
+      "sidebarWidthRange": "Saisissez un nombre entier compris entre {min} et {max}.",
+      "sidebarWidthModeResizable": "Redimensionnable",
+      "sidebarWidthModeCompact": "Disposition compacte",
+      "sidebarWidthModeDrawer": "Disposition en tiroir",
+      "sidebarWidthResizableStatus": "Largeur actuelle sur ordinateur : {current} px.",
+      "sidebarWidthClampedStatus": "Valeur enregistrée : {saved} px ; cette fenêtre utilise actuellement {current} px.",
+      "sidebarWidthCompactStatus": "La disposition compacte utilise {current} px. Votre préférence sur ordinateur de {saved} px est conservée.",
+      "sidebarWidthDrawerStatus": "La disposition en tiroir utilise {current} px. Votre préférence sur ordinateur de {saved} px est conservée."
     },
     "dialog": {
       "title": "Paramètres",
@@ -1824,6 +1850,14 @@
     "steerModeHint": "Réorienter : le message s'envoie maintenant et redirige la réponse en cours",
     "deliveryModeLabel": "Mode de livraison pendant que l'agent répond",
     "conversation": "Conversation de chat",
+    "historyNavigatorLabel": "Historique de la conversation, {count} messages",
+    "historyNavigatorLoadedLabel": "Historique chargé, {count} messages ; des messages antérieurs sont disponibles",
+    "historyTurnLabel": "Message {number} sur {total} : {preview}",
+    "historyTurnLoadedLabel": "Message chargé {number} sur {total} : {preview}",
+    "historyTurnCount": "Message {number} sur {total}",
+    "historyTurnLoadedCount": "Message chargé {number} sur {total}",
+    "historyAttachmentOnly": "Message contenant uniquement des pièces jointes",
+    "historyAttachmentCount": "Pièces jointes : {count}",
     "noMessagesYet": "Aucun message pour l'instant.",
     "newChat": "Nouveau chat",
     "chatWithSuffix": "Chat {suffix}",
@@ -2223,6 +2257,10 @@
       "copyCommand": "Copier la commande de transfert de données"
     },
     "shortcuts": {
+      "toggleSidebar": {
+        "label": "Afficher ou masquer la barre latérale",
+        "description": "Affiche ou masque la barre latérale principale."
+      },
       "commandPalette": {
         "label": "Recherche / palette de commandes",
         "description": "Ouvre la palette de recherche-et-navigation pour accéder à n'importe quelle page, action ou conversation."

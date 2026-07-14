@@ -70,6 +70,13 @@
     "more": "その他",
     "moreDestinations": "その他の移動先",
     "expandSidebar": "サイドバーを展開",
+    "collapseSidebar": "サイドバーを折りたたむ",
+    "toggleSidebar": "サイドバーを切り替え",
+    "resizeSidebar": "サイドバーの幅を変更",
+    "sidebarWidthValue": "サイドバーの幅: {width}px、{preset}",
+    "sidebarWidthLimitedValue": "サイドバーの幅: {width}px、{preset}（このウィンドウでは上限あり、設定値 {preference}px）",
+    "releaseToCollapseSidebar": "離すとサイドバーを折りたたみます",
+    "sidebarCollapseCanceled": "サイドバーの折りたたみをキャンセルしました",
     "openBlockedSession": "ブロックされたセッションを開く",
     "approvalRequired": "承認が必要です",
     "manageConnection": "ゲートウェイ接続を管理",
@@ -102,13 +109,32 @@
   "settings": {
     "appearance": {
       "title": "外観",
-      "desc": "このブラウザーのテーマと言語です。変更は即時に反映され、保存は不要です。",
+      "desc": "このブラウザーのテーマ、言語、ローカルの表示設定です。プリセットは即時に反映され、カスタム幅は「適用」で確定します。",
       "themeLabel": "テーマ",
       "themeDesc": "システムに従うか、ライトまたはダークを指定します。サイドバーの切り替えはこの設定へのショートカットです。",
       "languageLabel": "言語",
       "languageDesc": "インターフェースの表示言語です。このブラウザーに即時に適用されます。",
       "bgmLabel": "BGM",
-      "bgmDesc": "トップバーにBGMコントロールを表示します。既定ではオフで、コマンドパレットからも切り替えられます。"
+      "bgmDesc": "トップバーにBGMコントロールを表示します。既定ではオフで、コマンドパレットからも切り替えられます。",
+      "sidebarWidthLabel": "サイドバーの幅",
+      "sidebarWidthDesc": "デスクトップのサイドバー幅を選びます。コンパクト表示とドロワー表示では固定幅を使用します。",
+      "sidebarWidthCompact": "コンパクト",
+      "sidebarWidthDefault": "既定",
+      "sidebarWidthWide": "ワイド",
+      "sidebarWidthCustom": "カスタム",
+      "sidebarWidthCustomLabel": "カスタム幅",
+      "sidebarWidthCustomHint": "マイナスとプラスのボタンを使うか値を入力して、適用します。",
+      "sidebarWidthDecrease": "サイドバーを狭くする",
+      "sidebarWidthIncrease": "サイドバーを広くする",
+      "sidebarWidthApply": "適用",
+      "sidebarWidthRange": "{min} から {max} までの整数を入力してください。",
+      "sidebarWidthModeResizable": "幅を変更可能",
+      "sidebarWidthModeCompact": "コンパクト表示",
+      "sidebarWidthModeDrawer": "ドロワー表示",
+      "sidebarWidthResizableStatus": "現在のデスクトップ幅: {current}px。",
+      "sidebarWidthClampedStatus": "保存値は {saved}px、現在のウィンドウでは {current}px です。",
+      "sidebarWidthCompactStatus": "コンパクト表示では {current}px を使用します。デスクトップ設定の {saved}px は保持されます。",
+      "sidebarWidthDrawerStatus": "ドロワー表示では {current}px を使用します。デスクトップ設定の {saved}px は保持されます。"
     },
     "dialog": {
       "title": "設定",
@@ -1824,6 +1850,14 @@
     "steerModeHint": "誘導: メッセージを今すぐ送信し、進行中の応答を方向転換します",
     "deliveryModeLabel": "エージェントの応答中の配信モード",
     "conversation": "チャットの会話",
+    "historyNavigatorLabel": "会話履歴、{count} 件のプロンプト",
+    "historyNavigatorLoadedLabel": "読み込み済みの会話履歴、{count} 件のプロンプト。さらに前のメッセージがあります",
+    "historyTurnLabel": "{total} 件中 {number} 件目：{preview}",
+    "historyTurnLoadedLabel": "読み込み済み {total} 件中 {number} 件目：{preview}",
+    "historyTurnCount": "{total} 件中 {number} 件目",
+    "historyTurnLoadedCount": "読み込み済み {total} 件中 {number} 件目",
+    "historyAttachmentOnly": "添付ファイルのみのメッセージ",
+    "historyAttachmentCount": "添付ファイル：{count}",
     "noMessagesYet": "メッセージはまだありません。",
     "newChat": "新規チャット",
     "chatWithSuffix": "チャット {suffix}",
@@ -2223,6 +2257,10 @@
       "copyCommand": "データ転送コマンドをコピー"
     },
     "shortcuts": {
+      "toggleSidebar": {
+        "label": "サイドバーを切り替え",
+        "description": "メインサイドバーの表示と非表示を切り替えます。"
+      },
       "commandPalette": {
         "label": "検索 / コマンドパレット",
         "description": "検索して移動するパレットを開き、任意のページ、アクション、会話にジャンプします。"

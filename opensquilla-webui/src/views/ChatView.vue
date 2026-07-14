@@ -110,14 +110,15 @@
           {{ t('common.cancel') }}
         </button>
       </div>
-      <div
-        ref="threadRef"
-        class="chat-thread"
-        role="region"
-        :aria-label="t('chat.conversation')"
-        :aria-busy="isStreaming"
-        @scroll="onThreadScroll"
-      >
+      <div class="chat-thread-shell">
+        <div
+          ref="threadRef"
+          class="chat-thread"
+          role="region"
+          :aria-label="t('chat.conversation')"
+          :aria-busy="isStreaming"
+          @scroll="onThreadScroll"
+        >
         <template v-if="isNewChatLanding">
           <div ref="agentSwitcherRef" class="chat-landing-agent">
             <button
@@ -374,6 +375,19 @@
             @dismiss="dismissClarify"
           />
         </template>
+        </div>
+        <ConversationMinimap
+          v-if="!isNewChatLanding && !shareMode"
+          :messages="renderedMessages"
+          :scroll-container="threadRef"
+          :strip-time-prefix="stripTimePrefix"
+          :session-key="sessionKey"
+          :history-has-more="historyState.hasMore"
+          :history-loading="historyState.loading"
+          @navigate="onHistoryNavigate"
+          @navigate-end="onHistoryNavigateEnd"
+          @load-earlier="loadEarlierHistory"
+        />
       </div>
     </div>
 
@@ -538,6 +552,7 @@ import ChatHistoryScopeRow from '@/components/chat/ChatHistoryScopeRow.vue'
 import ChatMessageList from '@/components/chat/ChatMessageList.vue'
 import ChatStallNotice from '@/components/chat/ChatStallNotice.vue'
 import ClarifyCard from '@/components/chat/ClarifyCard.vue'
+import ConversationMinimap from '@/components/chat/ConversationMinimap.vue'
 import EmptyStateChips from '@/components/chat/EmptyStateChips.vue'
 import InterruptPart from '@/components/chat/parts/InterruptPart.vue'
 import MetaPreflightCard from '@/components/chat/MetaPreflightCard.vue'
@@ -605,6 +620,7 @@ import type { ModelRoutingMode } from '@/types/modelRouting'
 import type { SandboxRunMode } from '@/types/sandbox'
 import type { InterruptViewState } from '@/types/parts'
 import { artifactDownloadUrl } from '@/utils/chat/artifacts'
+import { createHistoryNavigationScrollLock } from '@/utils/chat/historyNavigationScrollLock'
 import { isCurrentSessionPayload as payloadIsCurrentSession } from '@/utils/chat/streamEvents'
 import { copyTextWithFallback, copyImageToClipboard, downloadBlob, shareCopyImageSupported } from '@/utils/browser'
 import { useCopyFeedback } from '@/composables/chat/useCopyFeedback'
@@ -682,6 +698,7 @@ const sessionKey = ref('')
 const inputText = ref('')
 const aborted = ref(false)
 const autoScroll = ref(true)
+const historyNavigationScrollLock = createHistoryNavigationScrollLock(autoScroll)
 const composing = ref(false)
 const messages = ref<Message[]>([])
 
@@ -1983,7 +2000,18 @@ function scrollToBottom() {
 function onThreadScroll() {
   if (!threadRef.value) return
   const gap = threadRef.value.scrollHeight - threadRef.value.scrollTop - threadRef.value.clientHeight
-  autoScroll.value = gap < 60
+  historyNavigationScrollLock.updateFromScroll(gap)
+}
+
+function onHistoryNavigate() {
+  historyNavigationScrollLock.start()
+}
+
+function onHistoryNavigateEnd() {
+  historyNavigationScrollLock.finish()
+  // Reconcile once at the final position: scroll events emitted during the
+  // smooth transition were intentionally ignored while the lock was active.
+  onThreadScroll()
 }
 
 // Show the jump-to-latest affordance whenever the reader has scrolled up off the
@@ -1991,6 +2019,7 @@ function onThreadScroll() {
 // Re-pinning autoScroll lets the stream resume following the bottom.
 const showJumpToLatest = computed(() => !autoScroll.value && messages.value.length > 0)
 function jumpToLatest() {
+  historyNavigationScrollLock.finish()
   autoScroll.value = true
   scrollToBottom()
 }

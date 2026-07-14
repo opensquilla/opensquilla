@@ -70,6 +70,13 @@
     "more": "更多",
     "moreDestinations": "更多去处",
     "expandSidebar": "展开侧边栏",
+    "collapseSidebar": "收起侧边栏",
+    "toggleSidebar": "切换侧边栏",
+    "resizeSidebar": "调整侧边栏宽度",
+    "sidebarWidthValue": "侧边栏宽度：{width}px，{preset}",
+    "sidebarWidthLimitedValue": "侧边栏宽度：{width}px，{preset}；受当前窗口限制（偏好 {preference}px）",
+    "releaseToCollapseSidebar": "松开以收起侧边栏",
+    "sidebarCollapseCanceled": "已取消收起侧边栏",
     "openBlockedSession": "打开被阻塞的会话",
     "approvalRequired": "需要审批",
     "manageConnection": "管理网关连接",
@@ -102,13 +109,32 @@
   "settings": {
     "appearance": {
       "title": "外观",
-      "desc": "此浏览器的主题与语言。更改即时生效，无需保存。",
+      "desc": "此浏览器的主题、语言和本地界面偏好。预设即时生效；自定义宽度需点击应用。",
       "themeLabel": "主题",
       "themeDesc": "跟随系统，或强制使用浅色或深色。侧边栏的切换按钮是此设置的快捷方式。",
       "languageLabel": "语言",
       "languageDesc": "界面的显示语言。即时应用于此浏览器。",
       "bgmLabel": "背景音乐",
-      "bgmDesc": "在顶栏显示背景音乐控件。默认关闭；也可通过命令面板切换。"
+      "bgmDesc": "在顶栏显示背景音乐控件。默认关闭；也可通过命令面板切换。",
+      "sidebarWidthLabel": "侧边栏宽度",
+      "sidebarWidthDesc": "选择桌面端侧边栏宽度。紧凑和抽屉布局使用固定宽度。",
+      "sidebarWidthCompact": "紧凑",
+      "sidebarWidthDefault": "默认",
+      "sidebarWidthWide": "宽",
+      "sidebarWidthCustom": "自定义",
+      "sidebarWidthCustomLabel": "自定义宽度",
+      "sidebarWidthCustomHint": "使用减号和加号按钮或输入数值，然后应用。",
+      "sidebarWidthDecrease": "减小侧边栏宽度",
+      "sidebarWidthIncrease": "增大侧边栏宽度",
+      "sidebarWidthApply": "应用",
+      "sidebarWidthRange": "请输入 {min} 到 {max} 之间的整数。",
+      "sidebarWidthModeResizable": "可调宽",
+      "sidebarWidthModeCompact": "紧凑布局",
+      "sidebarWidthModeDrawer": "抽屉布局",
+      "sidebarWidthResizableStatus": "当前桌面端宽度：{current}px。",
+      "sidebarWidthClampedStatus": "已保存 {saved}px；当前窗口使用 {current}px。",
+      "sidebarWidthCompactStatus": "紧凑布局使用 {current}px。已保留桌面端偏好 {saved}px。",
+      "sidebarWidthDrawerStatus": "抽屉布局使用 {current}px。已保留桌面端偏好 {saved}px。"
     },
     "dialog": {
       "title": "设置",
@@ -1824,6 +1850,14 @@
     "steerModeHint": "引导：消息立即发送并改变正在进行的回复方向",
     "deliveryModeLabel": "智能体回复时的发送模式",
     "conversation": "聊天会话",
+    "historyNavigatorLabel": "对话历史，共 {count} 条提问",
+    "historyNavigatorLoadedLabel": "已加载的对话历史，共 {count} 条提问；还有更早消息",
+    "historyTurnLabel": "第 {number} 条，共 {total} 条：{preview}",
+    "historyTurnLoadedLabel": "已加载记录中的第 {number} 条，共 {total} 条：{preview}",
+    "historyTurnCount": "第 {number} 条，共 {total} 条",
+    "historyTurnLoadedCount": "已加载记录中的第 {number} 条，共 {total} 条",
+    "historyAttachmentOnly": "仅包含附件的消息",
+    "historyAttachmentCount": "附件：{count}",
     "noMessagesYet": "暂无消息。",
     "newChat": "新建聊天",
     "chatWithSuffix": "聊天 {suffix}",
@@ -2223,6 +2257,10 @@
       "copyCommand": "复制数据转移命令"
     },
     "shortcuts": {
+      "toggleSidebar": {
+        "label": "切换侧边栏",
+        "description": "显示或隐藏主侧边栏。"
+      },
       "commandPalette": {
         "label": "搜索 / 命令面板",
         "description": "打开搜索并跳转面板，快速跳转到任意页面、操作或会话。"

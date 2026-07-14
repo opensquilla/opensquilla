@@ -1,21 +1,16 @@
 <template>
-  <!-- Hover trigger strip (left edge, only active when sidebar is collapsed) -->
-  <div
-    v-show="!appStore.sidebarOpen"
-    class="sidebar-hover-trigger"
-    @mouseenter="onHoverEnter"
-  />
-
   <!-- Sidebar -->
   <nav
+    ref="sidebarRef"
     class="sidebar"
     :class="{
       docked: appStore.sidebarOpen,
-      hovered: appStore.sidebarHovered,
+      'sidebar--drawer': isSidebarDrawer,
     }"
+    :inert="!appStore.sidebarOpen"
+    :aria-hidden="appStore.sidebarOpen ? undefined : 'true'"
     :aria-label="t('chrome.primaryNav')"
     id="sidebar-nav"
-    @mouseleave="onHoverLeave"
   >
     <!-- Brand -->
     <div class="sidebar-brand">
@@ -29,12 +24,25 @@
         <span class="sidebar-brand-text">OpenSquilla</span>
       </router-link>
       <button
+        ref="sidebarDockToggleRef"
         class="sidebar-dock-toggle"
-        :title="appStore.sidebarOpen ? 'Collapse sidebar' : 'Expand sidebar'"
-        :aria-label="appStore.sidebarOpen ? 'Collapse sidebar' : 'Expand sidebar'"
-        @click="toggleDock"
+        :aria-label="t('chrome.collapseSidebar')"
+        aria-controls="sidebar-nav"
+        :aria-expanded="appStore.sidebarOpen"
+        :aria-keyshortcuts="sidebarToggleAriaShortcut"
+        aria-describedby="sidebar-toggle-tip-expanded"
+        data-testid="sidebar-toggle-expanded"
+        @click="toggleDock('sidebar-button')"
       >
         <Icon :name="appStore.sidebarOpen ? 'panel-left-close' : 'panel-left-open'" :size="16" />
+        <span
+          id="sidebar-toggle-tip-expanded"
+          class="sidebar-toggle-tip sidebar-toggle-tip--sidebar"
+          role="tooltip"
+        >
+          <span>{{ t('chrome.toggleSidebar') }}</span>
+          <kbd v-if="sidebarToggleHint">{{ sidebarToggleHint }}</kbd>
+        </span>
       </button>
     </div>
 
@@ -168,18 +176,31 @@
     </div>
   </nav>
 
-  <!-- Sidebar drop-shadow on its own compositor layer (see .sidebar-shadow):
-       fades via opacity + slides in sync with the sidebar's hover overlay,
-       instead of repainting box-shadow on the overflow:hidden .sidebar. -->
-  <div class="sidebar-shadow" :class="{ visible: appStore.sidebarHovered }" aria-hidden="true" />
+  <SidebarResizer
+    v-if="appStore.sidebarOpen && isSidebarResizable"
+    ref="sidebarResizerRef"
+    :enabled="appStore.sidebarOpen && isSidebarResizable"
+    :width="sidebarEffectiveWidth"
+    :min="SIDEBAR_MIN_WIDTH"
+    :max="sidebarDynamicMaximum"
+    :preference="appStore.sidebarWidthPreference.width"
+    :preference-source="appStore.sidebarWidthPreference.source"
+    @resize-start="handleSidebarResizeStart"
+    @preview="applySidebarPreview"
+    @commit="commitSidebarWidth"
+    @reset="resetSidebarWidth"
+    @collapse="collapseSidebarFromResize"
+    @cancel="applySidebarPreview"
+    @resize-end="handleSidebarResizeEnd"
+  />
 
-  <!-- Mobile drawer scrim: tap outside the sidebar to close it (<=768px only) -->
+  <!-- Drawer scrim is driven by the same runtime mode as JS focus/Escape logic. -->
   <div
-    v-if="appStore.sidebarOpen"
+    v-if="appStore.sidebarOpen && isSidebarDrawer"
     class="sidebar-scrim"
     role="presentation"
     aria-hidden="true"
-    @click="appStore.setSidebarOpen(false)"
+    @click="closeSidebarDrawer"
   />
 
   <CommandPalette
@@ -194,9 +215,13 @@
   <!-- Main content -->
   <div
     ref="mainRef"
+    id="app-main"
     class="main"
+    :inert="appStore.sidebarOpen && isSidebarDrawer"
     :class="{
       docked: appStore.sidebarOpen,
+      'main--sidebar-drawer': isSidebarDrawer,
+      'main--sidebar-compact': sidebarLayoutMode === 'compact',
       'main--chat': isChatRoute,
       'main--chat-sidebar-collapsed': isChatRoute && !appStore.sidebarOpen,
       'main--tabbar-hidden': mobileKeyboardOpen,
@@ -207,12 +232,21 @@
         <!-- Sidebar toggle — visible when sidebar is collapsed -->
         <button
           v-show="!appStore.sidebarOpen"
+          ref="topbarSidebarToggleRef"
           class="sidebar-dock-toggle topbar-toggle"
-          :title="t('chrome.expandSidebar')"
           :aria-label="t('chrome.expandSidebar')"
-          @click="toggleDock"
+          aria-controls="sidebar-nav"
+          :aria-expanded="appStore.sidebarOpen"
+          :aria-keyshortcuts="sidebarToggleAriaShortcut"
+          aria-describedby="sidebar-toggle-tip-collapsed"
+          data-testid="sidebar-toggle-collapsed"
+          @click="toggleDock('topbar-button')"
         >
           <Icon name="panel-left-open" :size="16" />
+          <span id="sidebar-toggle-tip-collapsed" class="sidebar-toggle-tip" role="tooltip">
+            <span>{{ t('chrome.toggleSidebar') }}</span>
+            <kbd v-if="sidebarToggleHint">{{ sidebarToggleHint }}</kbd>
+          </span>
         </button>
       </div>
       <div ref="topbarRightRef" class="topbar-right">
@@ -319,6 +353,7 @@
   <nav
     class="mobile-tabbar"
     :class="{ 'is-keyboard-open': mobileKeyboardOpen }"
+    :inert="appStore.sidebarOpen && isSidebarDrawer"
     :aria-label="t('chrome.primaryMobile')"
   >
     <router-link
@@ -362,7 +397,7 @@
       type="button"
       class="mobile-tab"
       :class="{ 'is-active': appStore.sidebarOpen }"
-      @click="appStore.setSidebarOpen(true)"
+      @click="openSidebarDrawer"
     >
       <Icon name="menu" :size="20" />
       <span class="mobile-tab__label">{{ t('chrome.more') }}</span>
@@ -404,10 +439,12 @@ import UpdateBanner from './components/UpdateBanner.vue'
 import DesktopUpdateIndicator from './components/DesktopUpdateIndicator.vue'
 import SidebarConversations from './components/SidebarConversations.vue'
 import SidebarSetupBanner from './components/SidebarSetupBanner.vue'
+import SidebarResizer from './components/SidebarResizer.vue'
 import CommandPalette from './components/CommandPalette.vue'
 import LanguageSwitcher from './components/LanguageSwitcher.vue'
 import BgmControl from './components/BgmControl.vue'
 import { useBgm } from './composables/useBgm'
+import { useSidebarLayout } from './composables/useSidebarLayout'
 import { useDocumentEvent } from './composables/useDocumentEvent'
 import { useAgentOptions } from './composables/useAgentOptions'
 import { useToasts } from './composables/useToasts'
@@ -420,6 +457,7 @@ import type { RpcEventHandler } from '@/lib/rpc'
 import { isMacPlatform } from './utils/browser'
 import { useShortcutsStore } from './stores/shortcuts'
 import { bindingMatches, formatBinding } from './utils/keychord'
+import { SIDEBAR_MIN_WIDTH, type SidebarWidthPreference } from './utils/sidebarLayout'
 import {
   dispatchLocalSessionsDeleted,
   localSessionsDeletedDetail,
@@ -431,6 +469,31 @@ const rpcStore = useRpcStore()
 const shortcutsStore = useShortcutsStore()
 const { t } = useI18n()
 const $route = useRoute()
+const sidebarRef = ref<HTMLElement | null>(null)
+const sidebarDockToggleRef = ref<HTMLButtonElement | null>(null)
+const topbarSidebarToggleRef = ref<HTMLButtonElement | null>(null)
+type SidebarResizerHandle = { cancel: () => boolean }
+const sidebarResizerRef = ref<SidebarResizerHandle | null>(null)
+
+const {
+  mode: sidebarLayoutMode,
+  dynamicMax: sidebarDynamicMaximum,
+  effectiveWidth: sidebarEffectiveWidth,
+} = useSidebarLayout()
+const isSidebarDrawer = computed(() => sidebarLayoutMode.value === 'drawer')
+const isSidebarResizable = computed(() => sidebarLayoutMode.value === 'resizable')
+const sidebarResizeActive = ref(false)
+
+function setSidebarCssWidth(width: number) {
+  if (!Number.isFinite(width)) return
+  document.getElementById('app')?.style.setProperty('--sidebar-width', `${Math.round(width)}px`)
+}
+
+// Persisted/pre-set changes are infrequent. Pointer previews bypass App's
+// reactive tree and write the same root custom property directly once per rAF.
+watch(sidebarEffectiveWidth, width => {
+  if (!sidebarResizeActive.value) setSidebarCssWidth(width)
+}, { immediate: true })
 
 interface DeleteSessionsResponse {
   deleted?: string[]
@@ -491,6 +554,18 @@ const commandPaletteHint = computed(() =>
   formatBinding(shortcutsStore.effectiveBinding('command-palette'), isMac))
 const newChatHint = computed(() =>
   formatBinding(shortcutsStore.effectiveBinding('new-chat'), isMac))
+const sidebarToggleBinding = computed(() => shortcutsStore.effectiveBinding('toggle-sidebar'))
+const sidebarToggleHint = computed(() => formatBinding(sidebarToggleBinding.value, isMac))
+const sidebarToggleAriaShortcut = computed(() => {
+  const binding = sidebarToggleBinding.value
+  if (!binding) return undefined
+  const parts: string[] = []
+  if (binding.primary) parts.push(isMac ? 'Meta' : 'Control')
+  if (binding.alt) parts.push('Alt')
+  if (binding.shift) parts.push('Shift')
+  parts.push(binding.key.length === 1 ? binding.key.toUpperCase() : binding.key)
+  return parts.join('+')
+})
 
 const themeIconName = computed(() => {
   if (appStore.theme === 'system') return 'monitor'
@@ -563,6 +638,7 @@ function widestPillWidth(pill: Element): number {
 // syncTopbarReserve() directly since they need it after a specific layout pass.
 let topbarReserveRaf = 0
 function scheduleTopbarReserve() {
+  if (sidebarResizeActive.value) return
   if (topbarReserveRaf) return
   topbarReserveRaf = requestAnimationFrame(() => {
     topbarReserveRaf = 0
@@ -571,6 +647,7 @@ function scheduleTopbarReserve() {
 }
 
 function syncTopbarReserve() {
+  if (sidebarResizeActive.value) return
   const main = mainRef.value
   const cluster = topbarRightRef.value
   if (!main || !cluster) return
@@ -792,15 +869,8 @@ const sidebarSections = computed((): SidebarSection[] => {
   }))
 })
 
-let hoverLeaveTimer: ReturnType<typeof setTimeout> | null = null
 let sessionRefreshTimer: ReturnType<typeof setTimeout> | null = null
 let rpcUnsubSessionsChanged: (() => void) | null = null
-
-function syncMobileSidebar() {
-  if (window.innerWidth <= 768 && appStore.sidebarOpen) {
-    appStore.setSidebarOpen(false)
-  }
-}
 
 // Hide the bottom tab bar while the on-screen keyboard owns the bottom edge.
 // A visual-viewport shrink well beyond browser-chrome changes (>140px) is the
@@ -812,18 +882,112 @@ function syncMobileKeyboard() {
   mobileKeyboardOpen.value = window.innerWidth <= 768 && window.innerHeight - viewport.height > 140
 }
 
-function toggleDock() {
+type SidebarToggleSource = 'sidebar-button' | 'topbar-button' | 'shortcut'
+
+function toggleDock(source: SidebarToggleSource) {
+  sidebarResizerRef.value?.cancel()
+  const wasOpen = appStore.sidebarOpen
+  const focusWasInsideSidebar = Boolean(
+    sidebarRef.value && document.activeElement && sidebarRef.value.contains(document.activeElement),
+  )
+  const focusWasOnResizer = document.activeElement instanceof HTMLElement
+    && document.activeElement.matches('.sidebar-resizer')
   appStore.toggleSidebar()
+  if (!wasOpen && (source === 'topbar-button' || isSidebarDrawer.value)) {
+    void nextTick(() => sidebarDockToggleRef.value?.focus())
+  } else if (wasOpen && (source === 'sidebar-button' || focusWasInsideSidebar || focusWasOnResizer)) {
+    void nextTick(() => topbarSidebarToggleRef.value?.focus())
+  }
 }
 
 function handleNavClick() {
-  if (appStore.sidebarHovered) {
-    appStore.setSidebarHovered(false)
-  }
-  if (window.innerWidth <= 768 && appStore.sidebarOpen) {
-    appStore.setSidebarOpen(false)
+  if (isSidebarDrawer.value && appStore.sidebarOpen) {
+    closeSidebarDrawer()
   }
 }
+
+function openSidebarDrawer() {
+  if (appStore.sidebarOpen) return
+  toggleDock('topbar-button')
+}
+
+function closeSidebarDrawer() {
+  if (!appStore.sidebarOpen || !isSidebarDrawer.value) return
+  sidebarResizerRef.value?.cancel()
+  appStore.setSidebarOpen(false)
+  void nextTick(() => topbarSidebarToggleRef.value?.focus())
+}
+
+function handleSidebarResizeStart() {
+  sidebarResizeActive.value = true
+  if (topbarReserveRaf) {
+    cancelAnimationFrame(topbarReserveRaf)
+    topbarReserveRaf = 0
+  }
+}
+
+function applySidebarPreview(width: number) {
+  setSidebarCssWidth(width)
+}
+
+function commitSidebarWidth(width: number) {
+  const preference: SidebarWidthPreference = {
+    version: 1,
+    width,
+    source: 'custom',
+  }
+  appStore.setSidebarWidthPreference(preference)
+}
+
+function resetSidebarWidth() {
+  appStore.resetSidebarWidthPreference()
+}
+
+function collapseSidebarFromResize() {
+  appStore.setSidebarOpen(false)
+  // The collapse gesture never overwrites the saved preference. Reset the root
+  // variable now so the next explicit open restores that preference immediately.
+  setSidebarCssWidth(sidebarEffectiveWidth.value)
+  void nextTick(() => topbarSidebarToggleRef.value?.focus())
+}
+
+function handleSidebarResizeEnd() {
+  sidebarResizeActive.value = false
+  setSidebarCssWidth(sidebarEffectiveWidth.value)
+  void nextTick(syncTopbarReserve)
+}
+
+// Layout mode is a single state machine shared with Settings. Entering a drawer
+// force-closes the persistent dock; returning to desktop intentionally leaves it
+// closed until the user reopens it. Compact mode keeps the current open state.
+watch(sidebarLayoutMode, (nextMode, previousMode) => {
+  const focusWasOnResizer = document.activeElement instanceof HTMLElement
+    && document.activeElement.matches('.sidebar-resizer')
+  sidebarResizerRef.value?.cancel()
+  sidebarResizeActive.value = false
+  setSidebarCssWidth(sidebarEffectiveWidth.value)
+
+  if (nextMode === 'drawer' && appStore.sidebarOpen) {
+    const focusWasInsideSidebar = Boolean(
+      sidebarRef.value && document.activeElement && sidebarRef.value.contains(document.activeElement),
+    )
+    appStore.setSidebarOpen(false)
+    if (focusWasOnResizer || focusWasInsideSidebar) {
+      void nextTick(() => topbarSidebarToggleRef.value?.focus())
+    }
+  } else if (previousMode === 'resizable' && focusWasOnResizer) {
+    void nextTick(() => sidebarDockToggleRef.value?.focus())
+  }
+  void nextTick(syncTopbarReserve)
+}, { immediate: true })
+
+watch(sidebarDynamicMaximum, () => {
+  if (!sidebarResizeActive.value) return
+  sidebarResizerRef.value?.cancel()
+  sidebarResizeActive.value = false
+  setSidebarCssWidth(sidebarEffectiveWidth.value)
+  void nextTick(syncTopbarReserve)
+})
 
 function preferredAgentId(): string {
   if (currentSessionKey.value) {
@@ -878,9 +1042,6 @@ function switchToSession(key: string, source = 'app.switchToSession') {
     to: key,
   })
   router.push({ path: '/chat', query: { session: key } })
-  if (appStore.sidebarHovered) {
-    appStore.setSidebarHovered(false)
-  }
 }
 
 // Optimistic rename: show the new title immediately, then persist via
@@ -1014,22 +1175,6 @@ function openConnectionSettings() {
   router.push('/settings/connection')
 }
 
-function onHoverEnter() {
-  if (appStore.sidebarOpen) return
-  if (hoverLeaveTimer) {
-    clearTimeout(hoverLeaveTimer)
-    hoverLeaveTimer = null
-  }
-  appStore.setSidebarHovered(true)
-}
-
-function onHoverLeave() {
-  if (appStore.sidebarOpen) return
-  hoverLeaveTimer = setTimeout(() => {
-    appStore.setSidebarHovered(false)
-  }, 250)
-}
-
 function scheduleSessionRefresh() {
   if (sessionRefreshTimer) clearTimeout(sessionRefreshTimer)
   sessionRefreshTimer = setTimeout(() => {
@@ -1056,6 +1201,13 @@ function handleKeydown(e: KeyboardEvent) {
   // the settingsOverlay guard so the browser never sees the chord.
   const paletteBinding = shortcutsStore.effectiveBinding('command-palette')
   const newChatBinding = shortcutsStore.effectiveBinding('new-chat')
+  const toggleSidebarBinding = shortcutsStore.effectiveBinding('toggle-sidebar')
+  if (bindingMatches(e, toggleSidebarBinding, isMac)) {
+    e.preventDefault()
+    if (e.repeat || settingsOverlayOpen.value) return
+    toggleDock('shortcut')
+    return
+  }
   if (bindingMatches(e, newChatBinding, isMac)) {
     e.preventDefault()
     if (settingsOverlayOpen.value) return
@@ -1089,8 +1241,8 @@ function handleKeydown(e: KeyboardEvent) {
   // it. Because those overlays run after this handler (see above), this
   // mobile-only gate — not the defaultPrevented check — is what prevents that
   // collision; keep it. The settings overlay owns Escape while open and is excluded.
-  if (e.key === 'Escape' && appStore.sidebarOpen && !settingsOverlayOpen.value && window.innerWidth <= 768) {
-    appStore.setSidebarOpen(false)
+  if (e.key === 'Escape' && appStore.sidebarOpen && !settingsOverlayOpen.value && isSidebarDrawer.value) {
+    closeSidebarDrawer()
   }
 }
 
@@ -1236,8 +1388,6 @@ watch(() => appStore.approvalCount, count => {
 useDocumentEvent('keydown', handleKeydown)
 
 onMounted(() => {
-  syncMobileSidebar()
-  window.addEventListener('resize', syncMobileSidebar)
   window.visualViewport?.addEventListener('resize', syncMobileKeyboard)
   // Re-measure the topbar reserve whenever the panel or the cluster itself
   // changes size (window resize, sidebar dock, approval button, font swap).
@@ -1270,7 +1420,6 @@ onUnmounted(() => {
   }
   window.removeEventListener('resize', scheduleTopbarReserve)
   window.removeEventListener(LOCAL_SESSIONS_DELETED_EVENT, handleLocalSessionsDeleted)
-  if (hoverLeaveTimer) clearTimeout(hoverLeaveTimer)
   if (sessionRefreshTimer) clearTimeout(sessionRefreshTimer)
   if (rpcUnsubSessionsChanged) rpcUnsubSessionsChanged()
   unsubscribeApprovals()
@@ -1279,7 +1428,6 @@ onUnmounted(() => {
     titleDebounce = null
   }
   document.title = BASE_TITLE
-  window.removeEventListener('resize', syncMobileSidebar)
   window.visualViewport?.removeEventListener('resize', syncMobileKeyboard)
 })
 

@@ -317,7 +317,7 @@ opensquilla agent --permissions restricted -m "Read the repo and summarize it"
 opensquilla agent --permissions full -m "Make a local patch and run tests"
 ```
 
-Linux sandbox defaults can be stated explicitly as:
+Sandbox defaults can be stated explicitly as:
 
 ```toml
 [sandbox]
@@ -333,10 +333,22 @@ denied_read_roots = []
 denied_read_globs = []
 ```
 
-With these defaults, `/` is readable subject to the gateway user's OS
-permissions; the workspace, `/tmp`, and `$TMPDIR` are writable. Writes outside
-those roots use exact one-shot elevation review. The model-visible permission
-modes are only `use_default` and `require_escalated`.
+With the sandbox enabled, shell commands and direct filesystem tools use the
+same filesystem permission profile. Linux and macOS expose the host filesystem
+read-only except for explicit denied reads and normal OS permission failures.
+Windows follows Codex's restricted-account projection: Windows and Program
+Files roots, ProgramData, non-sensitive direct USERPROFILE children, the
+operation working directory, helper runtime roots, and declared writable roots.
+
+Only declared writable roots are writable without review. A write outside those
+roots returns elevation_required. require_escalated submits the exact action to
+Guardian; an allow executes that fingerprint once. A changed command, path,
+content, create, or delete is a separate approval decision.
+
+On Linux and macOS, `/tmp` and `$TMPDIR` are writable by default. Windows does
+not expose every volume or excluded profile directory as globally readable.
+The model-visible permission modes are only `use_default` and
+`require_escalated`.
 
 `denied_read_roots` and `denied_read_globs` are optional explicit exceptions
 to global read visibility. Relative entries are resolved from the active

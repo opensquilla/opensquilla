@@ -101,6 +101,18 @@ opensquilla gateway restart
 
 ### Sandboxed read and write boundaries
 
+With the sandbox enabled, shell commands and direct filesystem tools use the
+same filesystem permission profile. Linux and macOS expose the host filesystem
+read-only except for explicit denied reads and normal OS permission failures.
+Windows follows Codex's restricted-account projection: Windows and Program
+Files roots, ProgramData, non-sensitive direct USERPROFILE children, the
+operation working directory, helper runtime roots, and declared writable roots.
+
+Only declared writable roots are writable without review. A write outside those
+roots returns elevation_required. require_escalated submits the exact action to
+Guardian; an allow executes that fingerprint once. A changed command, path,
+content, create, or delete is a separate approval decision.
+
 On Linux with the Bubblewrap backend, the default sandbox exposes the host
 filesystem root (`/`) read-only. The workspace, configured scratch directory,
 `/tmp`, `$TMPDIR`, and explicit writable mounts are overlaid as writable. The
@@ -109,11 +121,17 @@ re-applied read-only. Direct filesystem and patch tools resolve the same
 profile, so they cannot bypass the subprocess mount policy.
 
 There is no built-in credential-path denylist while the sandbox is enabled.
-Normal host paths, including `/home`, `/etc`, `~/.ssh`, and `~/.aws`, are
-eligible for reads. The gateway process's operating-system permissions remain
-authoritative: a file such as `/etc/shadow` is still unreadable when the
-gateway user cannot read it. Explicit denied-read policy is enforced across
-tools and disables unsandboxed escalation that would discard the deny.
+On Linux and macOS, normal host paths, including `/home`, `/etc`, `~/.ssh`, and
+`~/.aws`, are eligible for reads. The gateway process's operating-system
+permissions remain authoritative: a file such as `/etc/shadow` is still
+unreadable when the gateway user cannot read it. Explicit denied-read policy is
+enforced across tools and disables unsandboxed escalation that would discard
+the deny.
+
+Windows does not expose every volume or excluded profile directory globally.
+Its Codex projection excludes `.ssh`, `.tsh`, `.brev`, `.gnupg`, `.aws`,
+`.azure`, `.kube`, `.docker`, `.config`, `.npm`, `.pki`, and `.terraform.d`
+when those names are direct children of `USERPROFILE`.
 
 An ordinary tool call cannot write outside those writable roots. Shell,
 filesystem, patch, and Python tools first return `elevation_required`; they do

@@ -8,18 +8,26 @@ from pathlib import Path
 import pytest
 
 from opensquilla.sandbox.backend.windows_default import WindowsDefaultBackend
+from opensquilla.sandbox.config import SandboxSettings
+from opensquilla.sandbox.operation_runtime import SandboxOperation
+from opensquilla.sandbox.path_validation import decide_path_access
+from opensquilla.sandbox.policy import build_policy
 from opensquilla.sandbox.run_mode import RunMode
 from opensquilla.sandbox.types import (
     NetworkMode,
     ResourceLimits,
+    SandboxBackendError,
     SandboxPolicy,
     SandboxRequest,
     SecurityLevel,
 )
 
 pytestmark = pytest.mark.skipif(
-    os.environ.get("OPENSQUILLA_RUN_WINDOWS_NATIVE_SMOKE") != "1",
-    reason="set OPENSQUILLA_RUN_WINDOWS_NATIVE_SMOKE=1 to run native Windows sandbox smoke tests",
+    not sys.platform.startswith("win")
+    or os.environ.get("OPENSQUILLA_RUN_WINDOWS_NATIVE_SMOKE") != "1",
+    reason=(
+        "native Windows sandbox and OPENSQUILLA_RUN_WINDOWS_NATIVE_SMOKE=1 are required"
+    ),
 )
 
 
@@ -186,3 +194,105 @@ async def test_windows_default_proxy_allowlist_without_proxy_fails_closed(
 
     assert result.returncode != 0
     assert "requires network_proxy endpoint" in result.stderr
+
+
+@pytest.mark.asyncio
+async def test_windows_shell_and_worker_share_codex_projection(tmp_path: Path) -> None:
+    backend = WindowsDefaultBackend()
+    if not backend.available():
+        pytest.skip("Windows native sandbox setup is unavailable")
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    policy = build_policy(
+        SecurityLevel.STANDARD,
+        "shell.exec",
+        workspace,
+        SandboxSettings(),
+    )
+    assert policy.file_system is not None
+    targets = (
+        Path(os.environ["SystemRoot"]),
+        Path(os.environ["USERPROFILE"]) / "Documents",
+        workspace,
+    )
+
+    for target in targets:
+        if not target.exists():
+            continue
+        worker = await backend.run_operation(
+            SandboxOperation.filesystem(
+                kind="list_dir",
+                workspace=workspace,
+                run_mode="standard",
+                path=target,
+                paths=(target,),
+                display_path=str(target),
+                file_system_profile=policy.file_system,
+            )
+        )
+        shell = await backend.run(
+            SandboxRequest(
+                argv=("cmd.exe", "/d", "/c", "dir", str(target)),
+                cwd=workspace,
+                action_kind="shell.exec",
+                policy=policy,
+                run_mode="standard",
+            )
+        )
+
+        assert worker.message
+        assert shell.returncode == 0
+
+
+@pytest.mark.asyncio
+async def test_windows_explicit_deny_blocks_worker_direct_and_shell_reads(
+    tmp_path: Path,
+) -> None:
+    backend = WindowsDefaultBackend()
+    if not backend.available():
+        pytest.skip("Windows native sandbox setup is unavailable")
+    workspace = tmp_path / "workspace"
+    denied = tmp_path / "denied"
+    workspace.mkdir()
+    denied.mkdir()
+    sentinel = denied / "sentinel.txt"
+    sentinel.write_text("must-not-appear", encoding="utf-8")
+    policy = build_policy(
+        SecurityLevel.STANDARD,
+        "shell.exec",
+        workspace,
+        SandboxSettings(denied_read_roots=[str(denied)]),
+    )
+    assert policy.file_system is not None
+
+    direct = decide_path_access(
+        sentinel,
+        workspace=workspace,
+        profile=policy.file_system,
+    )
+    with pytest.raises(SandboxBackendError, match="filesystem worker failed"):
+        await backend.run_operation(
+            SandboxOperation.filesystem(
+                kind="read_file",
+                workspace=workspace,
+                run_mode="standard",
+                path=sentinel,
+                paths=(sentinel,),
+                display_path=str(sentinel),
+                file_system_profile=policy.file_system,
+            )
+        )
+    shell = await backend.run(
+        SandboxRequest(
+            argv=("cmd.exe", "/d", "/c", "type", str(sentinel)),
+            cwd=workspace,
+            action_kind="shell.exec",
+            policy=policy,
+            run_mode="standard",
+        )
+    )
+
+    assert direct.status == "blocked"
+    assert direct.reason == "denied_read"
+    assert shell.returncode != 0
+    assert "must-not-appear" not in shell.stdout

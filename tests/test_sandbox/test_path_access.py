@@ -644,6 +644,77 @@ async def test_filesystem_write_outside_workspace_requires_explicit_elevation(
 
 
 @pytest.mark.asyncio
+async def test_direct_and_shell_external_writes_share_elevation_required(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(exist_ok=True)
+    outside = tmp_path / "outside" / "notes.txt"
+    backend_calls: list[object] = []
+
+    async def fail_backend(request: object, *, runtime: object = None) -> object:
+        backend_calls.append(request)
+        raise AssertionError("external writes must stop before backend execution")
+
+    monkeypatch.setattr(shell, "run_under_backend", fail_backend)
+    monkeypatch.setattr(
+        shell,
+        "check_safe_bin",
+        lambda command: SimpleNamespace(allowed=True, needs_approval=False, reason=""),
+    )
+
+    with tool_context(workspace):
+        direct = json.loads(await fs.write_file(str(outside), "outside body\n"))
+        command = json.loads(await shell.exec_command(f"printf test > {outside}"))
+
+    assert direct["status"] == "elevation_required"
+    assert command["status"] == "elevation_required"
+    assert direct["path"] == str(outside.resolve(strict=False))
+    assert command["target"] == str(outside.resolve(strict=False))
+    assert backend_calls == []
+    assert not outside.exists()
+
+
+@pytest.mark.asyncio
+async def test_direct_and_shell_explicit_denies_share_blocked_category(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(exist_ok=True)
+    denied = tmp_path / "denied"
+    denied.mkdir()
+    sentinel = denied / "sentinel.txt"
+    sentinel.write_text("must-not-appear", encoding="utf-8")
+    runtime = get_runtime()
+    assert runtime is not None
+    runtime.settings.denied_read_roots = [str(denied)]
+    backend_calls: list[object] = []
+
+    async def fail_backend(request: object, *, runtime: object = None) -> object:
+        backend_calls.append(request)
+        raise AssertionError("explicit denies must stop before backend execution")
+
+    monkeypatch.setattr(shell, "run_under_backend", fail_backend)
+    monkeypatch.setattr(
+        shell,
+        "check_safe_bin",
+        lambda command: SimpleNamespace(allowed=True, needs_approval=False, reason=""),
+    )
+
+    with tool_context(workspace):
+        direct = json.loads(await fs.read_file(str(sentinel)))
+        command = json.loads(await shell.exec_command(f"cat {sentinel}"))
+
+    assert direct["status"] == "blocked"
+    assert command["status"] == "blocked"
+    assert direct["reason"] == "denied_read"
+    assert command["reason"] == "denied_read"
+    assert backend_calls == []
+
+
+@pytest.mark.asyncio
 async def test_default_profile_allows_direct_filesystem_write_under_slash_tmp(
     tmp_path: Path,
 ) -> None:

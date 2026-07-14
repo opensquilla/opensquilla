@@ -102,14 +102,26 @@ opensquilla agent \
 `--workspace-lockdown` is intended for automation where writes must stay inside
 the workspace or scratch directory.
 
+With the sandbox enabled, shell commands and direct filesystem tools use the
+same filesystem permission profile. Linux and macOS expose the host filesystem
+read-only except for explicit denied reads and normal OS permission failures.
+Windows follows Codex's restricted-account projection: Windows and Program
+Files roots, ProgramData, non-sensitive direct USERPROFILE children, the
+operation working directory, helper runtime roots, and declared writable roots.
+
+Only declared writable roots are writable without review. A write outside those
+roots returns elevation_required. require_escalated submits the exact action to
+Guardian; an allow executes that fingerprint once. A changed command, path,
+content, create, or delete is a separate approval decision.
+
 On Linux Bubblewrap, host `/` is mounted read-only by default. The workspace,
 `/tmp`, `$TMPDIR`, and configured writable roots are overlaid read-write, with
-top-level `.git`, `.agents`, and `.codex` carved back to read-only. This makes
-every host file readable by the gateway's OS user eligible for tool reads;
-there is no default sensitive-path name blacklist in sandbox-on mode. Explicit
-denied-read policy remains authoritative and prevents an unsandboxed override.
-Out-of-root mutation never creates a silent broad mount; it requires an exact
-elevation action.
+top-level `.git`, `.agents`, and `.codex` carved back to read-only. There is no
+default sensitive-path name blacklist in sandbox-on mode. Explicit denied-read
+policy remains authoritative and prevents an unsandboxed override. On Windows,
+the projection does not make every volume globally readable and excludes Codex's
+sensitive profile children, including `.ssh`, `.gnupg`, `.aws`, `.azure`,
+`.kube`, `.docker`, and `.config`.
 
 ## Sandbox Commands
 

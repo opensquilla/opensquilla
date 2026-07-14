@@ -92,6 +92,28 @@ def test_duplicate_pending_elevation_reuses_approval(tmp_path: Path) -> None:
         queue.close()
 
 
+def test_create_and_delete_receive_distinct_one_shot_approvals(tmp_path: Path) -> None:
+    queue = ApprovalQueue(db_path=str(tmp_path / "approvals.sqlite"))
+    target = tmp_path / "outside" / "probe.txt"
+    create = replace(
+        _shell_action(f"mkdir -p {target.parent} && printf test > {target}"),
+        target_paths=((str(target.parent), "write"), (str(target), "write")),
+    )
+    delete = replace(
+        _shell_action(f"rm {target} && rmdir {target.parent}"),
+        target_paths=((str(target), "write"), (str(target.parent), "write")),
+    )
+    try:
+        create_pending = request_elevation(queue, create, session_key="session-1")
+        delete_pending = request_elevation(queue, delete, session_key="session-1")
+
+        assert create.fingerprint() != delete.fingerprint()
+        assert create_pending.approval_id != delete_pending.approval_id
+        assert len(queue.list_pending("exec")) == 2
+    finally:
+        queue.close()
+
+
 def test_elevation_request_persists_internal_retry_metadata(tmp_path: Path) -> None:
     queue = ApprovalQueue(db_path=str(tmp_path / "approvals.sqlite"))
     action = _shell_action("touch /mnt/desktop/probe")

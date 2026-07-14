@@ -632,7 +632,7 @@ def _path_access_denied_message(workspace_root: Path | None) -> str:
 def _path_access_blocked_envelope(decision: MountDecision) -> dict[str, object]:
     return {
         "status": "blocked",
-        "reason": "sensitive_path",
+        "reason": decision.reason,
         "path": decision.normalized_path,
         "message": decision.reason,
     }

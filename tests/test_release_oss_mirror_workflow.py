@@ -27,8 +27,6 @@ def test_aliyun_oss_release_mirror_workflow_contract() -> None:
     assert "OSS_ENDPOINT" in workflow
     assert "OSS_ADDRESSING_STYLE" in workflow
     assert "ALIYUN_OSS_PREFIX_NORMALIZED" in workflow
-    assert "ALIYUN_OSS_PUBLIC_BASE_URL" in workflow
-    assert "OSS_PUBLIC_BASE_URL_NORMALIZED" in workflow
     assert "OSS_ADDRESSING_STYLE_NORMALIZED" in workflow
     assert "--addressing-style" in workflow
     assert (
@@ -37,10 +35,9 @@ def test_aliyun_oss_release_mirror_workflow_contract() -> None:
     ) in workflow
     assert 'ossutil cp --force --addressing-style' in workflow
     assert 'upload_asset "release-assets/SHA256SUMS" "SHA256SUMS"' in workflow
-    assert "Build latest download page" in workflow
-    assert 'release-assets/latest.html' in workflow
-    assert '--content-type "text/html; charset=utf-8"' in workflow
-    assert '--content-disposition "inline"' in workflow
-    assert '--cache-control "no-cache"' in workflow
-    assert "--meta" not in workflow
-    assert '"${mirror_root}/latest.html"' in workflow
+    assert "Build stable installer aliases" in workflow
+    assert 'make_alias "OpenSquilla-*-mac-arm64.dmg" "OpenSquilla-mac-arm64.dmg"' in workflow
+    assert 'make_alias "OpenSquilla-*-win-x64.exe" "OpenSquilla-win-x64.exe"' in workflow
+    assert 'latest_prefix="${mirror_root}/latest"' in workflow
+    assert 'upload_asset "release-assets/${name}" "${name}" "${latest_prefix}"' in workflow
+    assert "latest.html" not in workflow

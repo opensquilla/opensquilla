@@ -20,6 +20,7 @@ import re
 import shutil
 import signal
 import sys
+import sysconfig
 import tempfile
 import time
 from dataclasses import dataclass
@@ -54,6 +55,16 @@ log = logging.getLogger(__name__)
 _SANDBOX_EXEC_NAME = "sandbox-exec"
 _SANDBOX_EXEC_SYSTEM_PATH = Path("/usr/bin/sandbox-exec")
 _FILESYSTEM_WORKER_MODULE = "opensquilla.sandbox.filesystem_worker"
+_FILESYSTEM_PATH_OPERATION_KINDS = frozenset(
+    {
+        "read_file",
+        "list_dir",
+        "glob_search",
+        "grep_search",
+        "write_text",
+        "edit_text",
+    }
+)
 _OUTPUT_BYTE_CAP = 1_048_576
 _TERMINATE_GRACE_S = 2.0
 
@@ -255,6 +266,10 @@ def _protected_metadata_regex(root: Path, name: str) -> str:
 
 def _seatbelt_path(path: PurePath) -> Path:
     candidate = Path(str(path))
+    if any(character in str(candidate) for character in ("\n", "\r", "\t")):
+        raise SandboxBackendError(
+            f"filesystem profile path contains a control character: {candidate!r}"
+        )
     _validate_mount_path(candidate, kind="filesystem profile")
     return candidate
 
@@ -281,10 +296,10 @@ def _seatbelt_access_rule(
         raise ValueError(f"unsupported Seatbelt filesystem action: {action!r}")
     root = _seatbelt_path(root)
     excluded = _unique_seatbelt_paths(excluded)
-    clauses = [
-        _subpath(root),
-        *(f"(require-not {_subpath(path)})" for path in excluded),
-    ]
+    clauses = [_subpath(root)]
+    for path in excluded:
+        clauses.append(f"(require-not {_literal(path)})")
+        clauses.append(f"(require-not {_subpath(path)})")
     if action == "file-write*":
         for name in _PROTECTED_SUBPATH_NAMES:
             regex = _regex_string(_protected_metadata_regex(root, name))
@@ -524,6 +539,66 @@ def _filesystem_request(operation: SandboxOperation) -> FilesystemOperationReque
     return operation.request
 
 
+def _canonical_filesystem_target(path: Path, *, kind: str) -> Path:
+    if any(character in str(path) for character in ("\n", "\r", "\t")):
+        raise SandboxBackendError(
+            f"{kind} path contains a control character: {path!r}"
+        )
+    _validate_mount_path(path, kind=kind)
+    try:
+        return path.expanduser().resolve(strict=False)
+    except OSError as exc:
+        raise SandboxBackendError(f"could not canonicalize {kind} path {path}: {exc}") from exc
+
+
+def _filesystem_operation_targets(
+    operation: SandboxOperation,
+    request: FilesystemOperationRequest,
+) -> tuple[Path, ...]:
+    targets: tuple[Path, ...]
+    if operation.kind in _FILESYSTEM_PATH_OPERATION_KINDS:
+        if request.path is None:
+            raise SandboxBackendError(
+                f"filesystem operation {operation.kind} requires path"
+            )
+        targets = (
+            _canonical_filesystem_target(request.path, kind="filesystem target"),
+        )
+    elif operation.kind == "apply_patch":
+        if request.root is None:
+            raise SandboxBackendError("filesystem operation apply_patch requires root")
+        root = _canonical_filesystem_target(request.root, kind="apply_patch root")
+        try:
+            from opensquilla.tools.builtin import patch as patch_tool
+
+            targets = tuple(
+                dict.fromkeys(
+                    patch_tool._validate_path(patch_op.path, root)
+                    for patch_op in patch_tool._parse_patch(request.patch)
+                )
+            )
+        except Exception as exc:
+            raise SandboxBackendError(f"invalid apply_patch targets: {exc}") from exc
+    else:
+        raise SandboxBackendError(
+            f"unsupported filesystem operation: {operation.kind!r}"
+        )
+
+    declared = tuple(
+        dict.fromkeys(
+            _canonical_filesystem_target(path, kind="declared filesystem target")
+            for path in request.paths
+        )
+    )
+    if set(declared) != set(targets):
+        raise SandboxBackendError(
+            "declared filesystem paths do not match derived operation targets: "
+            f"declared={tuple(str(path) for path in declared)!r}, "
+            f"derived={tuple(str(path) for path in targets)!r}"
+        )
+    return targets
+
+
 def _filesystem_operation_payload_path(workspace: Path) -> Path:
     return workspace / ".opensquilla-cache" / "fs-worker" / f"{time.monotonic_ns()}.json"
 
@@ -534,14 +609,33 @@ def _filesystem_operation_request(
 ) -> SandboxRequest:
     if operation.workspace is None:
         raise SandboxBackendError("filesystem operation is missing workspace")
-    _filesystem_request(operation)
+    workspace = _canonical_filesystem_target(operation.workspace, kind="workspace")
+    if not workspace.exists():
+        raise SandboxBackendError(f"filesystem operation workspace is missing: {workspace}")
+    if not workspace.is_dir():
+        raise NotADirectoryError(f"filesystem operation workspace is not a directory: {workspace}")
+    request = _filesystem_request(operation)
+    if operation.file_system_profile is None:
+        raise ValueError("filesystem operation is missing resolved filesystem profile")
+    payload_path = _canonical_filesystem_target(payload_path, kind="worker payload")
     worker_root = payload_path.parent
-    worker_root.mkdir(parents=True, exist_ok=True)
-    _validate_filesystem_operation_targets(operation)
+    targets = _filesystem_operation_targets(operation, request)
+    runtime_roots = _runtime_readonly_roots()
+    _validate_filesystem_operation_targets(
+        operation,
+        request,
+        targets,
+        runtime_roots,
+    )
+    _validate_filesystem_private_transport_roots(
+        operation.file_system_profile,
+        worker_root,
+        runtime_roots,
+    )
     policy = build_filesystem_worker_policy(
         operation,
         private_rw_roots=(worker_root, payload_path.parent),
-        private_ro_roots=_runtime_readonly_roots(),
+        private_ro_roots=runtime_roots,
         env_allowlist=(
             "PATH",
             "PYTHONPATH",
@@ -575,40 +669,52 @@ def _filesystem_operation_request(
     )
 
 
-def _validate_filesystem_operation_targets(operation: SandboxOperation) -> None:
-    request = _filesystem_request(operation)
-    if operation.kind == "read_file" and request.path is not None:
-        display = request.display_path or str(request.path)
-        if not request.path.exists():
+def _validate_filesystem_operation_targets(
+    operation: SandboxOperation,
+    request: FilesystemOperationRequest,
+    targets: tuple[Path, ...],
+    runtime_roots: tuple[Path, ...],
+) -> None:
+    target = targets[0] if targets else None
+    if operation.kind == "read_file" and target is not None:
+        display = request.display_path or str(target)
+        if not target.exists():
             raise FileNotFoundError(f"File not found: {display}")
-        if not request.path.is_file():
+        if not target.is_file():
             raise IsADirectoryError(f"Path is a directory: {display}")
-    elif operation.kind == "list_dir" and request.path is not None:
-        display = request.display_path or str(request.path)
-        if not request.path.exists():
+    elif operation.kind == "list_dir" and target is not None:
+        display = request.display_path or str(target)
+        if not target.exists():
             raise FileNotFoundError(f"Path not found: {display}")
-        if not request.path.is_dir():
+        if not target.is_dir():
             raise NotADirectoryError(f"Not a directory: {display}")
+    elif operation.kind in {"glob_search", "grep_search"} and target is not None:
+        if not target.exists():
+            raise FileNotFoundError(f"Path not found: {target}")
+    elif operation.kind == "edit_text" and target is not None:
+        if not target.exists():
+            raise FileNotFoundError(f"File not found: {target}")
+        if not target.is_file():
+            raise IsADirectoryError(f"Path is a directory: {target}")
     if operation.kind in SANDBOX_FILESYSTEM_WRITE_KINDS:
-        readonly_roots = _runtime_readonly_roots()
-        for path in request.paths:
-            for root in readonly_roots:
-                if _is_relative_to_casefold(path, root):
+        for path in targets:
+            for root in runtime_roots:
+                if _is_relative_to(path, root):
                     raise SandboxBackendError(
                         f"seatbelt denied read-only runtime filesystem target: {path}"
                     )
-    _validate_filesystem_operation_profile_targets(operation, request)
+    _validate_filesystem_operation_profile_targets(operation, targets)
 
 
 def _validate_filesystem_operation_profile_targets(
     operation: SandboxOperation,
-    request: FilesystemOperationRequest,
+    targets: tuple[Path, ...],
 ) -> None:
     profile = operation.file_system_profile
     if profile is None:
         return
     write_required = operation.kind in SANDBOX_FILESYSTEM_WRITE_KINDS
-    for path in request.paths:
+    for path in targets:
         access = profile.resolve(path)
         if write_required and access is not FileSystemAccess.WRITE:
             raise SandboxBackendError(
@@ -622,8 +728,49 @@ def _validate_filesystem_operation_profile_targets(
             )
 
 
+def _validate_filesystem_private_transport_roots(
+    profile: FileSystemPermissionProfile,
+    worker_root: Path,
+    runtime_roots: tuple[Path, ...],
+) -> None:
+    denied = frozenset({FileSystemAccess.DENY})
+    for root in (*runtime_roots, worker_root):
+        _private_transport_exclusions(profile, root, denied)
+    _private_transport_exclusions(
+        profile,
+        worker_root,
+        frozenset({FileSystemAccess.READ, FileSystemAccess.DENY}),
+    )
+
+
 def _runtime_readonly_roots() -> tuple[Path, ...]:
-    return tuple(dict.fromkeys(root for root in _opensquilla_import_roots() if root))
+    executable = _python_executable().expanduser()
+    prefix = Path(sys.prefix).expanduser().resolve(strict=False)
+    base_prefix = Path(sys.base_prefix).expanduser().resolve(strict=False)
+    configured = sysconfig.get_paths()
+    candidates = [
+        executable.parent,
+        executable.resolve(strict=False).parent,
+        *((prefix,) if prefix != base_prefix else ()),
+        *(
+            Path(configured[name])
+            for name in ("stdlib", "platstdlib", "purelib", "platlib")
+            if configured.get(name)
+        ),
+        *_opensquilla_import_roots(),
+    ]
+    roots: list[Path] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        root = candidate.expanduser().resolve(strict=False)
+        if root == Path(root.anchor) or not root.exists():
+            continue
+        key = str(root)
+        if key in seen:
+            continue
+        seen.add(key)
+        roots.append(root)
+    return tuple(roots)
 
 
 def _opensquilla_import_roots() -> tuple[Path, ...]:
@@ -656,10 +803,15 @@ def _worker_home_env(worker_root: Path) -> dict[str, str]:
     }
 
 
-def _is_relative_to_casefold(candidate: Path, root: Path) -> bool:
-    c = str(candidate).replace("\\", "/").rstrip("/").lower()
-    r = str(root).replace("\\", "/").rstrip("/").lower()
-    return c == r or c.startswith(r + "/")
+def _is_relative_to(candidate: Path, root: Path) -> bool:
+    try:
+        canonical_candidate = candidate.expanduser().resolve(strict=False)
+        canonical_root = root.expanduser().resolve(strict=False)
+    except OSError as exc:
+        raise SandboxBackendError(
+            f"seatbelt could not canonicalize filesystem target {candidate}: {exc}"
+        ) from exc
+    return canonical_candidate.is_relative_to(canonical_root)
 
 
 class SeatbeltBackend(Backend):
@@ -690,13 +842,13 @@ class SeatbeltBackend(Backend):
             raise SandboxBackendError("filesystem operation is missing workspace")
         _filesystem_request(operation)
         payload_path = _filesystem_operation_payload_path(operation.workspace)
+        request = _filesystem_operation_request(operation, payload_path)
         payload_path.parent.mkdir(parents=True, exist_ok=True)
-        payload_path.write_text(
-            json.dumps(operation.to_payload(), ensure_ascii=False),
-            encoding="utf-8",
-        )
         try:
-            request = _filesystem_operation_request(operation, payload_path)
+            payload_path.write_text(
+                json.dumps(operation.to_payload(), ensure_ascii=False),
+                encoding="utf-8",
+            )
             result = await self.run(request)
         finally:
             with contextlib.suppress(FileNotFoundError):

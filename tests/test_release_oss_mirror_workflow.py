@@ -42,7 +42,10 @@ def test_aliyun_oss_release_mirror_workflow_contract() -> None:
     assert 'latest_prefix="${mirror_root}/latest"' in workflow
     assert 'backup_prefix="${mirror_root}/.latest-backups/${GITHUB_RUN_ID}"' in workflow
     assert "rollback_latest_aliases" in workflow
-    assert 'upload_asset "release-assets/${name}" "${name}" "${latest_prefix}" "no-cache"' in workflow
+    assert (
+        'upload_asset "release-assets/${name}" "${name}" "${latest_prefix}" "no-cache"'
+        in workflow
+    )
     assert '"${mirror_root}/latest.html"' in workflow
     assert workflow.index(
         'upload_asset "release-assets/${name}" "${name}" "${latest_prefix}" "no-cache"'

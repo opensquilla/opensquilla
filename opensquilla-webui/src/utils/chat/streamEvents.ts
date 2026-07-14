@@ -9,6 +9,11 @@ export type NormalizeRunStatus = (status: string) => string
 
 export const PENDING_STREAM_TASK_ID = '__opensquilla_pending_stream_task__'
 export const STOPPED_STREAM_TASK_ID = '__opensquilla_stopped_stream_task__'
+// Tombstone left after a terminal event closes the live turn. Unlike an empty
+// task id (which deliberately keeps legacy/untagged events lenient), this makes
+// late task-tagged heartbeats/state changes fail the identity guard instead of
+// reopening an empty work card after the answer has already completed.
+export const FINISHED_STREAM_TASK_ID = '__opensquilla_finished_stream_task__'
 
 export function payloadSessionKey(payload: SessionEventPayload | null | undefined): string {
   return payload?.key || payload?.session_key || payload?.sessionKey || ''
@@ -103,6 +108,13 @@ export function taskTerminalStatus(event: string): string {
 }
 
 export function taskTerminalAsSessionEvent(event: string, payload: SessionEventPayload | null | undefined) {
+  // session.event.done is the rich terminal receipt (final text + usage), but
+  // TaskRuntime also emits task.succeeded after its handler returns. Treat that
+  // lifecycle event as a terminal fallback so a missing done frame cannot leave
+  // the client spinning forever on an otherwise completed turn.
+  if (event === 'task.succeeded') {
+    return { event: 'session.event.done', payload: { ...(payload || {}), reason: 'completed' } }
+  }
   if (event === 'task.cancelled') {
     return { event: 'session.event.done', payload: { ...(payload || {}), reason: 'aborted' } }
   }

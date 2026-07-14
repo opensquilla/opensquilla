@@ -21,6 +21,7 @@ import type { ChatRpcSubscriptionHandlers } from '@/composables/chat/useChatRpcS
 import type { FrameInput } from '@/types/turnlog'
 import type { FoldLiveTurnMode } from '@/composables/chat/useChatTurnLog'
 import {
+  FINISHED_STREAM_TASK_ID,
   PENDING_STREAM_TASK_ID,
   STOPPED_STREAM_TASK_ID,
   acceptStreamSeq as decideStreamSeq,
@@ -350,6 +351,7 @@ export function useChatRpcEventHandlers(options: UseChatRpcEventHandlersOptions)
     } else {
       options.schedulePendingDrainAfterTerminal()
     }
+    activeStreamTaskId.value = FINISHED_STREAM_TASK_ID
     return true
   }
 
@@ -403,6 +405,7 @@ export function useChatRpcEventHandlers(options: UseChatRpcEventHandlersOptions)
   function handleRpcStateChange(payload: SessionEventPayload) {
     if (isStaleEpoch(payload)) return
     if (!payload || aborted.value) return
+    if (!isCurrentTaskPayload(payload)) return
     if (!acceptStreamSeq(payload)) return
     stream.resetStreamIdleTimer()
     const to = payload.to_state || payload.toState || ''
@@ -428,6 +431,7 @@ export function useChatRpcEventHandlers(options: UseChatRpcEventHandlersOptions)
   function handleRpcRunHeartbeat(payload: SessionEventPayload) {
     if (isStaleEpoch(payload)) return
     if (aborted.value) return
+    if (!isCurrentTaskPayload(payload)) return
     if (!acceptStreamSeq(payload)) return
     if (!stream.isStreaming.value) stream.startStreaming()
     stream.resetStreamIdleTimer()
@@ -524,12 +528,14 @@ export function useChatRpcEventHandlers(options: UseChatRpcEventHandlersOptions)
 
   function handleRpcRouterDecision(payload: RouterDecisionPayload) {
     if (isStaleEpoch(payload)) return
+    if (!isCurrentTaskPayload(payload)) return
     if (!acceptStreamSeq(payload)) return
     options.queueRouterDecision(payload)
   }
 
   function handleRpcEnsembleProgress(payload: EnsembleProgressPayload) {
     if (isStaleEpoch(payload)) return
+    if (!isCurrentTaskPayload(payload)) return
     if (!acceptStreamSeq(payload)) return
     if (!stream.isStreaming.value) stream.startStreaming()
     // A lifecycle frame is a real gateway event. Keep the hard no-event timer
@@ -541,12 +547,14 @@ export function useChatRpcEventHandlers(options: UseChatRpcEventHandlersOptions)
   function handleRpcRouterControlReplay(payload: SessionEventPayload) {
     if (isStaleEpoch(payload)) return
     if (aborted.value) return
+    if (!isCurrentTaskPayload(payload)) return
     if (!acceptStreamSeq(payload)) return
     options.handleRouterControlReplay()
   }
 
   function handleRpcAny(rawEvent: string, rawPayload: unknown) {
     const payloadObj = (rawPayload && typeof rawPayload === 'object' ? rawPayload : {}) as SessionEventPayload
+    const taskSucceededFallback = rawEvent === 'task.succeeded'
     const terminalStatus = eventTaskTerminalStatus(rawEvent)
     const rawStatus = payloadObj.run_status || payloadObj.runStatus || payloadObj.status || ''
     const normalizedStatus = options.normalizeRunStatus(String(rawStatus))
@@ -581,7 +589,10 @@ export function useChatRpcEventHandlers(options: UseChatRpcEventHandlersOptions)
 
     const normalized = normalizeTaskTerminalEvent(rawEvent, payloadObj)
     if (normalized && isStaleEpoch(payloadObj)) return
-    if (normalized && !stream.isStreaming.value) return
+    if (normalized && !stream.isStreaming.value) {
+      activeStreamTaskId.value = FINISHED_STREAM_TASK_ID
+      return
+    }
 
     const event = normalized ? normalized.event : rawEvent
     const payload = normalized ? normalized.payload : payloadObj
@@ -645,7 +656,9 @@ export function useChatRpcEventHandlers(options: UseChatRpcEventHandlersOptions)
         ? completedMessage
         : null
       if (completedAssistant && payload?.reason !== 'aborted') {
-        completedAssistant.usage = doneUsagePayload(donePayload)
+        // task.succeeded is a lifecycle-only fallback when the richer done
+        // receipt went missing; do not mislabel its task metadata as usage.
+        if (!taskSucceededFallback) completedAssistant.usage = doneUsagePayload(donePayload)
         if (u.model) completedAssistant.model = u.model
         if (u.input_tokens) completedAssistant.input_tokens = u.input_tokens
         if (u.output_tokens) completedAssistant.output_tokens = u.output_tokens
@@ -670,6 +683,7 @@ export function useChatRpcEventHandlers(options: UseChatRpcEventHandlersOptions)
       if (pendingQueue.value.length > 0 && payload?.reason !== 'aborted') {
         options.schedulePendingDrainAfterTerminal()
       }
+      activeStreamTaskId.value = FINISHED_STREAM_TASK_ID
     } else if (event.endsWith('.error')) {
       options.clearPendingRouterDecision()
       clearLiveThinking()
@@ -683,6 +697,7 @@ export function useChatRpcEventHandlers(options: UseChatRpcEventHandlersOptions)
       } else {
         options.applySessionRunState({ run_status: 'failed', last_task: { ...(payload || {}), status: 'failed' } })
       }
+      activeStreamTaskId.value = FINISHED_STREAM_TASK_ID
     }
   }
 

@@ -430,6 +430,7 @@ def test_draco_runner_explicit_groups_preserve_runtime_defaults() -> None:
     assert args.judge_concurrency == 1
     assert args.judge_max_attempts == 3
     assert args.generation_max_attempts == 3
+    assert args.generation_max_tokens == 0
     assert args.generation_retry_backoff == 2.0
     assert not hasattr(args, "generation_thinking")
     assert args.runner_mode == "agent_loop"
@@ -1802,7 +1803,27 @@ def test_draco_runner_generation_chat_config_uses_xhigh_by_default() -> None:
     assert config.thinking is True
     assert str(config.thinking_level) == "xhigh"
     assert config.thinking_budget_tokens == 50_000
+    assert config.max_tokens == 16_384
     assert config.temperature == 0.0
+
+
+def test_draco_runner_generation_max_tokens_override_is_explicit() -> None:
+    args = build_parser().parse_args([
+        "--input",
+        "draco.jsonl",
+        "--groups",
+        "B12",
+        "--generation-max-tokens",
+        "65536",
+    ])
+
+    policy = generation_thinking_policy(args)
+    config = generation_chat_config(policy, model="openai/gpt-5.6-sol")
+
+    assert policy["max_tokens"] == 65_536
+    assert policy["max_tokens_overridden"] is True
+    assert config.max_tokens == 65_536
+    assert str(config.thinking_level) == "max"
 
 
 def test_draco_runner_generation_chat_config_uses_model_specific_max() -> None:

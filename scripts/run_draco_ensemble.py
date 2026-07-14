@@ -149,6 +149,7 @@ DEFAULT_OPENROUTER_FUSION_TEMPERATURE = 0.0
 GENERATION_THINKING_MODEL_MAX = "model_max"
 DEFAULT_GENERATION_THINKING = GENERATION_THINKING_MODEL_MAX
 DEFAULT_GENERATION_THINKING_FALLBACK = "xhigh"
+DEFAULT_GENERATION_MAX_TOKENS_OVERRIDE = 0
 DEFAULT_MODEL_MAX_GENERATION_THINKING: dict[str, str] = {
     "anthropic/claude-fable-5": "max",
     "anthropic/claude-opus-4.8": "max",
@@ -1165,9 +1166,19 @@ def build_benchmark_tool_context(
 
 
 def generation_thinking_policy(args: argparse.Namespace | None = None) -> dict[str, Any]:
-    _ = args
     mode = DEFAULT_GENERATION_THINKING
     fallback_level = ThinkingLevel(DEFAULT_GENERATION_THINKING_FALLBACK)
+    max_tokens_override = max(
+        0,
+        int(
+            getattr(
+                args,
+                "generation_max_tokens",
+                DEFAULT_GENERATION_MAX_TOKENS_OVERRIDE,
+            )
+            or DEFAULT_GENERATION_MAX_TOKENS_OVERRIDE
+        ),
+    )
     return {
         "generation_thinking": mode,
         "temperature": DEFAULT_GENERATION_TEMPERATURE,
@@ -1176,6 +1187,8 @@ def generation_thinking_policy(args: argparse.Namespace | None = None) -> dict[s
         "default_thinking_level": fallback_level.value,
         "thinking_budget_tokens": "model-specific",
         "max_thinking_budget_tokens": THINKING_BUDGETS[ThinkingLevel.MAX],
+        "max_tokens": max_tokens_override or ChatConfig().max_tokens,
+        "max_tokens_overridden": max_tokens_override > 0,
         "model_thinking_levels": dict(DEFAULT_MODEL_MAX_GENERATION_THINKING),
         "applies_to": "single baselines and ensemble members",
     }
@@ -1214,6 +1227,7 @@ def generation_chat_config(
     mode = generation_thinking_for_model(model, policy)
     level = ThinkingLevel(mode)
     return ChatConfig(
+        max_tokens=int(policy.get("max_tokens") or ChatConfig().max_tokens),
         temperature=DEFAULT_GENERATION_TEMPERATURE,
         thinking=True,
         thinking_level=level,
@@ -1235,6 +1249,8 @@ def apply_generation_policy_to_profile(profile: Any, policy: dict[str, Any]) -> 
         }
         if preserve_temperature and getattr(member, "temperature", None) is not None:
             update.pop("temperature", None)
+        if policy.get("max_tokens_overridden"):
+            update["max_tokens"] = int(policy["max_tokens"])
         return member.model_copy(update=update)
 
     proposers = [
@@ -3697,6 +3713,7 @@ def manifest_args(args: argparse.Namespace) -> dict[str, Any]:
         "judge_max_attempts",
         "judge_candidates",
         "generation_max_attempts",
+        "generation_max_tokens",
         "generation_retry_backoff",
         "tool_mode",
         "contamination_blocked_domains",
@@ -3809,7 +3826,7 @@ def write_manifest(
     command: dict[str, Any] | None = None,
 ) -> None:
     policy = tool_policy or benchmark_tool_policy(args)
-    generation_policy = generation_thinking_policy()
+    generation_policy = generation_thinking_policy(args)
     payload: dict[str, Any] = {
         "benchmark": "DRACO",
         "runner": "scripts/run_draco_ensemble.py",
@@ -3881,7 +3898,7 @@ async def amain(args: argparse.Namespace) -> int:
             "--tool-mode=local_web_tools, or use --runner-mode=provider for "
             "OpenRouter server-side tools."
         )
-    generation_policy = generation_thinking_policy()
+    generation_policy = generation_thinking_policy(args)
     config = GatewayConfig.load(args.config)
     sandbox_runtime = configure_benchmark_sandbox_runtime(config, tool_policy)
     search_runtime = configure_local_web_search_runtime(config, tool_policy)
@@ -4157,6 +4174,15 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=GENERATION_MAX_ATTEMPTS,
         help="Maximum answer-generation attempts per row; capped at 3.",
+    )
+    parser.add_argument(
+        "--generation-max-tokens",
+        type=int,
+        default=DEFAULT_GENERATION_MAX_TOKENS_OVERRIDE,
+        help=(
+            "Override max completion tokens for generation and ensemble members; "
+            "0 preserves the existing 16384-token/default profile behavior."
+        ),
     )
     parser.add_argument(
         "--generation-retry-backoff",

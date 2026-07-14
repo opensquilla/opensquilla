@@ -643,10 +643,18 @@ def test_all_readmes_default_install_paths_to_the_current_preview() -> None:
         Path("README.es.md"),
     ]
 
+    oss_latest_assets = (
+        "https://opensquilla-releases.oss-cn-beijing.aliyuncs.com/releases/latest/"
+        "OpenSquilla-mac-arm64.dmg",
+        "https://opensquilla-releases.oss-cn-beijing.aliyuncs.com/releases/latest/"
+        "OpenSquilla-win-x64.exe",
+    )
+
     for path in readmes:
         text = path.read_text(encoding="utf-8")
         assert f"OpenSquilla-{CURRENT_DESKTOP_VERSION}-mac-arm64.dmg" in text, path
         assert f"OpenSquilla-{CURRENT_DESKTOP_VERSION}-win-x64.exe" in text, path
+        assert all(url in text for url in oss_latest_assets), path
         assert wheel_url in text, path
         assert "ghcr.io/opensquilla/opensquilla:latest" in text, path
         assert "0.5.0-Preview-2-Desktop" not in text, path

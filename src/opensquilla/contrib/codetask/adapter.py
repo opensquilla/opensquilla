@@ -79,6 +79,25 @@ _PROFILE_SCOPED_CHILD_ENV = frozenset(
 )
 
 
+def _agent_access_arguments(bundle: AgentConfigBundle) -> list[str]:
+    """Return child CLI access flags matching the effective sandbox run mode."""
+
+    from opensquilla.gateway.config import GatewayConfig
+    from opensquilla.sandbox.run_mode import RunMode, config_run_mode
+
+    config = GatewayConfig(**copy.deepcopy(bundle.payload))
+    run_mode = config_run_mode(config)
+    if run_mode is RunMode.FULL:
+        return ["--no-workspace-strict", "--permissions", "full"]
+    permission_profile = "restricted" if run_mode is RunMode.STANDARD else "bypass"
+    return [
+        "--workspace-strict",
+        "--workspace-lockdown",
+        "--permissions",
+        permission_profile,
+    ]
+
+
 class LocalAdapter:
     """Drives the host ``opensquilla agent`` CLI and returns a structured result."""
 
@@ -128,6 +147,7 @@ class LocalAdapter:
         if not usage_path.exists():
             usage_path.write_text("{}", encoding="utf-8")
 
+        bundle = self.agent_config or load_agent_config_bundle()
         argv: list[str] = [
             "opensquilla",
             "agent",
@@ -135,10 +155,7 @@ class LocalAdapter:
             prompt,
             "--workspace",
             str(repo),
-            # Read containment to the repo (codex review #9: explicit, not default).
-            "--workspace-strict",
-            # Write containment: writes must stay under workspace or scratch.
-            "--workspace-lockdown",
+            *_agent_access_arguments(bundle),
             "--scratch-dir",
             str(scratch_dir),
             "--stateless",
@@ -159,8 +176,6 @@ class LocalAdapter:
             str(transcript_path),
             "--usage-path",
             str(usage_path),
-            "--permissions",
-            "bypass",
         ]
         if self.model:
             argv += ["--model", self.model]
@@ -193,7 +208,6 @@ class LocalAdapter:
         # media_root_from_config(); tool_result_store_dir = media_root/tool-results.
         run_media_root = scratch_dir.expanduser().resolve() / "media"
         per_run_config = artifact_dir / "agent-config.toml"
-        bundle = self.agent_config or load_agent_config_bundle()
         _cfg = copy.deepcopy(bundle.payload)
         _attachments = _cfg.setdefault("attachments", {})
         if not isinstance(_attachments, dict):

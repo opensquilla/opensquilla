@@ -98,6 +98,7 @@ def test_worker_policy_rejects_operation_without_resolved_profile(
 
 def test_worker_payload_does_not_serialize_resolved_profile(tmp_path: Path) -> None:
     profile = FileSystemPermissionProfile.workspace(workspace=tmp_path)
+    other_profile = FileSystemPermissionProfile.full_access()
     operation = SandboxOperation.filesystem(
         kind="list_dir",
         workspace=tmp_path,
@@ -105,10 +106,22 @@ def test_worker_payload_does_not_serialize_resolved_profile(tmp_path: Path) -> N
         path=tmp_path,
         file_system_profile=profile,
     )
+    operation_with_other_profile = SandboxOperation.filesystem(
+        kind="list_dir",
+        workspace=tmp_path,
+        run_mode="trusted",
+        path=tmp_path,
+        file_system_profile=other_profile,
+    )
 
     payload = operation.to_payload()
+    operation_repr = repr(operation)
 
     assert operation.file_system_profile is profile
+    assert profile != other_profile
+    assert operation == operation_with_other_profile
+    assert "file_system_profile" not in operation_repr
+    assert repr(profile) not in operation_repr
     assert "file_system_profile" not in payload
     assert "fileSystemProfile" not in payload
     json.dumps(payload)

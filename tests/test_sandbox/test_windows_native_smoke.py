@@ -23,11 +23,8 @@ from opensquilla.sandbox.types import (
 )
 
 pytestmark = pytest.mark.skipif(
-    not sys.platform.startswith("win")
-    or os.environ.get("OPENSQUILLA_RUN_WINDOWS_NATIVE_SMOKE") != "1",
-    reason=(
-        "native Windows sandbox and OPENSQUILLA_RUN_WINDOWS_NATIVE_SMOKE=1 are required"
-    ),
+    not sys.platform.startswith("win"),
+    reason="native Windows sandbox required",
 )
 
 

@@ -127,6 +127,12 @@ l'environnement d'exécution de la passerelle dans une enveloppe Electron.
 - macOS Apple Silicon : <https://github.com/opensquilla/opensquilla/releases/download/v0.5.0rc4/OpenSquilla-0.5.0-rc4-mac-arm64.dmg>
 - Windows x64 : <https://github.com/opensquilla/opensquilla/releases/download/v0.5.0rc4/OpenSquilla-0.5.0-rc4-win-x64.exe>
 
+Pour des téléchargements plus rapides depuis la Chine continentale, utilisez les alias de téléchargement direct OSS :
+- macOS Apple Silicon : <https://opensquilla-releases.oss-cn-beijing.aliyuncs.com/releases/latest/OpenSquilla-mac-arm64.dmg>
+- Windows x64 : <https://opensquilla-releases.oss-cn-beijing.aliyuncs.com/releases/latest/OpenSquilla-win-x64.exe>
+
+Ces liens fixes sont mis à jour après chaque miroir de release réussi. Utilisez les liens GitHub Release versionnés ci-dessus si vous avez besoin d'une version précise.
+
 Quittez toute application de bureau OpenSquilla en cours d'exécution avant la mise à
 niveau. Le profil Desktop existant dans le répertoire de données d'application de la
 plateforme est réutilisé. Le `~/.opensquilla` de l'installation terminal est un profil

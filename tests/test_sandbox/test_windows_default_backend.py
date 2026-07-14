@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
+import subprocess
 from dataclasses import replace
 from pathlib import Path, PureWindowsPath
 
@@ -115,11 +117,10 @@ def test_windows_acl_plan_preserves_lexical_and_canonical_denied_paths(
     lexical = tmp_path / "configured-secret"
     target.mkdir()
     lexical.symlink_to(target, target_is_directory=True)
-    profile = FileSystemPermissionProfile(
-        entries=(
-            FileSystemPermissionEntry(tmp_path, FileSystemAccess.READ),
-            FileSystemPermissionEntry(lexical, FileSystemAccess.DENY),
-        )
+    profile = FileSystemPermissionProfile.read_only(
+        readable_roots=(tmp_path,),
+        denied_read_roots=(lexical,),
+        host_root_readonly=False,
     )
     request = _request(tmp_path).with_policy(replace(_policy(), file_system=profile))
     monkeypatch.setattr(
@@ -135,6 +136,32 @@ def test_windows_acl_plan_preserves_lexical_and_canonical_denied_paths(
     plan = mod._acl_plan_payload(request)
 
     assert set(plan["denyReadPaths"]) == {str(lexical), str(target)}
+
+
+@pytest.mark.skipif(os.name != "nt", reason="requires native Windows junctions")
+def test_windows_acl_plan_protects_junction_and_canonical_target(
+    tmp_path: Path,
+) -> None:
+    from opensquilla.sandbox.backend import windows_default as mod
+
+    target = tmp_path / "target-secret"
+    junction = tmp_path / "configured-secret"
+    target.mkdir()
+    result = subprocess.run(
+        ["cmd.exe", "/d", "/c", "mklink", "/J", str(junction), str(target)],
+        capture_output=True,
+        check=False,
+        text=True,
+    )
+    if result.returncode != 0:
+        pytest.skip(f"could not create junction: {result.stderr or result.stdout}")
+    profile = FileSystemPermissionProfile.read_only(
+        readable_roots=(tmp_path,),
+        denied_read_roots=(junction,),
+        host_root_readonly=False,
+    )
+
+    assert set(mod._profile_denied_read_paths(profile)) == {junction, target}
 
 
 def test_windows_acl_plan_requests_access_namespaced_capability_sids(

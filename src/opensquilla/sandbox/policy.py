@@ -248,7 +248,7 @@ def _configured_denied_read_roots(
         path = Path(raw).expanduser()
         if not path.is_absolute():
             path = workspace / path
-        roots.append(path.resolve(strict=False))
+        roots.append(path.absolute())
     return tuple(roots)
 
 
@@ -327,9 +327,9 @@ def build_policy(
             platform_context=platform_context,
         )
     else:
-        readable_roots = [mount.host_path for mount in mounts]
+        readonly_mount_roots = [mount.host_path for mount in mounts]
         file_system = FileSystemPermissionProfile.read_only(
-            readable_roots=readable_roots,
+            readable_roots=readonly_mount_roots,
             denied_read_roots=denied_read_roots,
             denied_read_globs=denied_read_globs,
             host_root_readonly=settings.host_root_readonly,

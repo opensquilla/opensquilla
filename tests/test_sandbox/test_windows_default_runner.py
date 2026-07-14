@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import io
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -77,7 +78,9 @@ def test_parse_payload_accepts_payload_from_environment(
     assert parsed.offline_child is True
 
 
-def test_parse_payload_accepts_payload_from_file(tmp_path) -> None:
+def test_parse_payload_accepts_payload_from_stdin(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     from opensquilla.sandbox.backend import windows_default_runner as mod
 
     payload = {
@@ -94,10 +97,10 @@ def test_parse_payload_accepts_payload_from_file(tmp_path) -> None:
         "timeout": 5,
         "offlineChild": True,
     }
-    payload_path = tmp_path / "payload.json"
-    payload_path.write_text(json.dumps(payload), encoding="utf-8")
+    stdin = SimpleNamespace(buffer=io.BytesIO(json.dumps(payload).encode("utf-8")))
+    monkeypatch.setattr(mod.sys, "stdin", stdin)
 
-    parsed = mod._parse_payload(["--payload-file", str(payload_path)])
+    parsed = mod._parse_payload(["--payload-stdin"])
 
     assert parsed.argv == ("cmd", "/c", "echo ok")
     assert parsed.offline_child is True
@@ -425,6 +428,27 @@ def test_windows_acl_plan_rejects_invalid_deny_read_paths() -> None:
         )
 
 
+def test_windows_acl_plan_rejects_untrusted_deny_acl_state_path(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from opensquilla.sandbox.backend import windows_default_runner as mod
+
+    trusted = tmp_path / "trusted" / "deny_acl_state.json"
+    monkeypatch.setattr(mod, "_default_deny_acl_state_path", lambda: trusted)
+
+    with pytest.raises(SystemExit, match="denyAclStatePath is not trusted"):
+        mod._windows_acl_plan(
+            {
+                "windowsAclPlan": {
+                    "autoGrants": [],
+                    "capabilitySids": [],
+                    "denyAclStatePath": str(tmp_path / "attacker-controlled.json"),
+                }
+            }
+        )
+
+
 def test_deny_masks_require_all_requested_bits() -> None:
     from opensquilla.sandbox.backend import windows_default_runner as mod
 
@@ -600,7 +624,7 @@ def test_acl_refresh_does_not_apply_deny_write_to_unrelated_capability_sids(
     assert denies == []
 
 
-def test_apply_acl_refresh_applies_deny_read_to_covering_sid(
+def test_apply_acl_refresh_never_applies_deny_read_to_capability_sid(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -609,7 +633,7 @@ def test_apply_acl_refresh_applies_deny_read_to_covering_sid(
     readable = tmp_path / "readable"
     denied = readable / "secret"
     denied.mkdir(parents=True)
-    calls = []
+    calls: list[tuple[Path, str]] = []
     monkeypatch.setattr(mod, "_grant_path_to_sid", lambda *args: None)
     monkeypatch.setattr(
         mod,
@@ -634,10 +658,10 @@ def test_apply_acl_refresh_applies_deny_read_to_covering_sid(
         }
     )
 
-    assert calls == [(denied, "S-1-test")]
+    assert calls == []
 
 
-def test_acl_refresh_fails_closed_when_deny_read_has_no_covering_grant(
+def test_runner_fails_before_acl_mutation_when_deny_read_has_no_offline_identity(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -645,38 +669,73 @@ def test_acl_refresh_fails_closed_when_deny_read_has_no_covering_grant(
 
     denied = tmp_path / "secret"
     denied.mkdir()
-    monkeypatch.setattr(mod, "_grant_path_to_sid", lambda *args: None)
-
-    with pytest.raises(SystemExit, match="no covering read grant"):
-        mod._apply_acl_refresh(
-            {
+    calls: list[str] = []
+    payload = mod.HelperPayload(
+        argv=("cmd",),
+        cwd=tmp_path,
+        env={},
+        policy={
+            "network": "none",
+            "windowsAclPlan": {
                 "autoGrants": [],
-                "capabilitySids": ["S-1-unrelated"],
+                "capabilitySids": [],
                 "denyWritePaths": [],
                 "denyReadPaths": [str(denied)],
-            }
-        )
+            },
+        },
+        run_mode="trusted",
+        timeout=5,
+    )
+    monkeypatch.setattr(mod, "_apply_acl_refresh", lambda *_args, **_kwargs: calls.append("acl"))
+    monkeypatch.setattr(
+        mod,
+        "_run_restricted_process_native",
+        lambda *_args: calls.append("run") or 0,
+    )
+
+    with pytest.raises(SystemExit, match="deny-read requires the offline identity"):
+        mod._run_windows_default(payload)
+
+    assert calls == []
 
 
-@pytest.mark.parametrize("deny_key", ["denyWritePaths", "denyReadPaths"])
-def test_acl_refresh_skips_deny_target_that_raced_away(
+def test_acl_refresh_materializes_missing_deny_write_target(
     tmp_path: Path,
-    deny_key: str,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from opensquilla.sandbox.backend import windows_default_runner as mod
 
+    missing = tmp_path / "missing" / "nested"
+    observed: list[bool] = []
     monkeypatch.setattr(mod, "_grant_path_to_sid", lambda *args: None)
+    monkeypatch.setattr(
+        mod,
+        "_sync_deny_acl_state",
+        lambda _state, _sid, desired: observed.append(
+            all(path.exists() for path in desired)
+        ),
+        raising=False,
+    )
 
     mod._apply_acl_refresh(
         {
-            "autoGrants": [],
-            "capabilitySids": [],
-            "denyWritePaths": [],
+            "autoGrants": [
+                {
+                    "path": str(tmp_path),
+                    "access": "RWX",
+                    "kind": "required",
+                    "capabilitySid": "S-1-write",
+                }
+            ],
+            "capabilitySids": ["S-1-write"],
+            "denyWritePaths": [str(missing)],
             "denyReadPaths": [],
-            deny_key: [str(tmp_path / "missing")],
+            "denyAclStatePath": str(tmp_path / "state.json"),
         }
     )
+
+    assert missing.is_dir()
+    assert observed == [True]
 
 
 def test_deny_write_capability_sids_prefer_overlapping_write_roots(tmp_path) -> None:
@@ -738,33 +797,6 @@ def test_deny_write_capability_sids_preserve_writable_grandchild_reopen(tmp_path
     ) == ("workspace-sid",)
 
 
-def test_deny_read_capability_sids_preserve_readable_grandchild_reopen(tmp_path) -> None:
-    from opensquilla.sandbox.backend import windows_default_runner as mod
-
-    readable = tmp_path / "readable"
-    denied = readable / "secret"
-    readable_reopen = denied / "public"
-
-    assert mod._deny_read_capability_sids_for_path(
-        {
-            "autoGrants": [
-                {
-                    "path": str(readable),
-                    "access": "RX",
-                    "capabilitySid": "readable-sid",
-                },
-                {
-                    "path": str(readable_reopen),
-                    "access": "RX",
-                    "capabilitySid": "reopen-sid",
-                },
-            ],
-            "capabilitySids": ["readable-sid", "reopen-sid"],
-        },
-        denied,
-    ) == ("readable-sid",)
-
-
 def test_grant_acl_plan_to_sid_does_not_apply_deny_write_paths_to_offline_user(
     tmp_path, monkeypatch
 ) -> None:
@@ -808,7 +840,7 @@ def test_grant_acl_plan_to_sid_does_not_apply_deny_write_paths_to_offline_user(
     assert denies == []
 
 
-def test_offline_identity_launch_cleans_stale_offline_user_denies(
+def test_offline_identity_launch_syncs_read_and_write_denies_to_actual_identity(
     monkeypatch: pytest.MonkeyPatch, tmp_path
 ) -> None:
     from opensquilla.sandbox.backend import windows_default_runner as mod
@@ -842,13 +874,17 @@ def test_offline_identity_launch_cleans_stale_offline_user_denies(
         run_mode="trusted",
         timeout=5,
     )
-    revokes: list[tuple[Path, str]] = []
+    state_path = tmp_path / "state" / "deny_acl_state.json"
+    payload.policy["windowsAclPlan"]["denyAclStatePath"] = str(state_path)
+    syncs: list[tuple[Path, str, dict[Path, int]]] = []
 
+    monkeypatch.setattr(mod, "_default_deny_acl_state_path", lambda: state_path)
     monkeypatch.setattr(mod, "_offline_helper_runtime_roots", lambda: (runtime_root,))
     monkeypatch.setattr(
         mod,
-        "_revoke_path_for_sid",
-        lambda path, sid: revokes.append((path, sid)),
+        "_sync_deny_acl_state",
+        lambda state, sid, desired: syncs.append((state, sid, desired)),
+        raising=False,
     )
     monkeypatch.setattr(mod, "_grant_path_to_sid", lambda *_args: None)
     import opensquilla.sandbox.backend.windows_default_identity as identity_mod
@@ -862,24 +898,32 @@ def test_offline_identity_launch_cleans_stale_offline_user_denies(
 
     assert mod._run_payload_as_offline_identity(payload) == 9
 
-    assert (runtime_root, "S-1-5-21-100-200-300-400") in revokes
-    assert (readonly_mount, "S-1-5-21-100-200-300-400") in revokes
-    assert (denied_read, "S-1-5-21-100-200-300-400") in revokes
+    assert syncs == [
+        (
+            state_path,
+            "S-1-5-21-100-200-300-400",
+            {
+                readonly_mount: mod.FILE_MUTATION_DENY_MASK,
+                denied_read: mod.FILE_READ_DENY_MASK,
+            },
+        )
+    ]
 
 
-def test_offline_identity_launch_applies_runtime_write_denies_to_offline_user(
+def test_offline_identity_launch_combines_read_and_write_denies_for_same_path(
     monkeypatch: pytest.MonkeyPatch, tmp_path
 ) -> None:
     from opensquilla.sandbox.backend import windows_default_runner as mod
 
     runtime = tmp_path / "runtime"
     runtime.mkdir()
-    denies: list[tuple[Path, str]] = []
+    desired_entries: list[dict[Path, int]] = []
 
     monkeypatch.setattr(
         mod,
-        "_deny_file_mutation_path_to_sid",
-        lambda path, sid: denies.append((path, sid)),
+        "_sync_deny_acl_state",
+        lambda _state, _sid, desired: desired_entries.append(desired),
+        raising=False,
     )
 
     payload = mod.HelperPayload(
@@ -891,6 +935,7 @@ def test_offline_identity_launch_applies_runtime_write_denies_to_offline_user(
             "windowsAclPlan": {
                 "autoGrants": [],
                 "denyWritePaths": [str(runtime)],
+                "denyReadPaths": [str(runtime)],
                 "capabilitySids": [],
             },
             "windowsNetworkBoundary": {
@@ -906,7 +951,6 @@ def test_offline_identity_launch_applies_runtime_write_denies_to_offline_user(
     )
 
     monkeypatch.setattr(mod, "_offline_helper_runtime_roots", lambda: (), raising=False)
-    monkeypatch.setattr(mod, "_revoke_path_for_sid", lambda *_args: None)
     monkeypatch.setattr(mod, "_grant_path_to_sid", lambda *_args: None)
     import opensquilla.sandbox.backend.windows_default_identity as identity_mod
 
@@ -919,7 +963,129 @@ def test_offline_identity_launch_applies_runtime_write_denies_to_offline_user(
 
     assert mod._run_payload_as_offline_identity(payload) == 9
 
-    assert denies == [(runtime, "S-1-5-21-100-200-300-400")]
+    assert desired_entries == [
+        {runtime: mod.FILE_MUTATION_DENY_MASK | mod.FILE_READ_DENY_MASK}
+    ]
+
+
+def test_deny_acl_state_sync_materializes_desired_and_removes_stale(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from opensquilla.sandbox.backend import windows_default_runner as mod
+
+    state_path = tmp_path / "state" / "deny_acl_state.json"
+    stale = tmp_path / "stale"
+    desired = tmp_path / "missing" / "nested"
+    stale.mkdir()
+    state_path.parent.mkdir()
+    state_path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "principals": {
+                    "S-1-test": [
+                        {"path": str(stale), "mask": mod.FILE_READ_DENY_MASK}
+                    ]
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    calls: list[tuple[str, Path, int | None]] = []
+
+    def deny(path: Path, sid: str, *, mask: int, label: str) -> None:
+        assert desired.is_dir()
+        calls.append((f"deny:{sid}:{label}", path, mask))
+
+    monkeypatch.setattr(mod, "_deny_path_to_sid", deny)
+    monkeypatch.setattr(
+        mod,
+        "_revoke_path_for_sid",
+        lambda path, sid: calls.append((f"revoke:{sid}", path, None)),
+    )
+
+    mod._sync_deny_acl_state(
+        state_path,
+        "S-1-test",
+        {desired: mod.FILE_MUTATION_DENY_MASK},
+    )
+
+    assert calls == [
+        (
+            "deny:S-1-test:desired-state",
+            desired,
+            mod.FILE_MUTATION_DENY_MASK,
+        ),
+        ("revoke:S-1-test", stale, None),
+    ]
+    persisted = json.loads(state_path.read_text(encoding="utf-8"))
+    assert persisted["principals"]["S-1-test"] == [
+        {"mask": mod.FILE_MUTATION_DENY_MASK, "path": str(desired)}
+    ]
+
+
+def test_deny_acl_state_sync_rolls_back_acl_when_state_write_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from opensquilla.sandbox.backend import windows_default_runner as mod
+
+    state_path = tmp_path / "state" / "deny_acl_state.json"
+    previous = tmp_path / "previous"
+    desired = tmp_path / "desired"
+    previous.mkdir()
+    desired.mkdir()
+    state_path.parent.mkdir()
+    original = {
+        "version": 1,
+        "principals": {
+            "S-1-test": [
+                {"path": str(previous), "mask": mod.FILE_READ_DENY_MASK}
+            ]
+        },
+    }
+    state_path.write_text(json.dumps(original), encoding="utf-8")
+    calls: list[tuple[str, Path, int | None]] = []
+    monkeypatch.setattr(
+        mod,
+        "_deny_path_to_sid",
+        lambda path, sid, *, mask, label: calls.append(("deny", path, mask)),
+    )
+    monkeypatch.setattr(
+        mod,
+        "_revoke_path_for_sid",
+        lambda path, sid: calls.append(("revoke", path, None)),
+    )
+    monkeypatch.setattr(
+        mod,
+        "_write_deny_acl_state",
+        lambda *_args: (_ for _ in ()).throw(OSError("disk full")),
+        raising=False,
+    )
+
+    with pytest.raises(SystemExit, match="state sync failed"):
+        mod._sync_deny_acl_state(
+            state_path,
+            "S-1-test",
+            {desired: mod.FILE_MUTATION_DENY_MASK},
+        )
+
+    assert calls == [
+        ("deny", desired, mod.FILE_MUTATION_DENY_MASK),
+        ("revoke", previous, None),
+        ("revoke", desired, None),
+        ("revoke", previous, None),
+        ("deny", previous, mod.FILE_READ_DENY_MASK),
+    ]
+    assert json.loads(state_path.read_text(encoding="utf-8")) == original
+
+
+def test_managed_deny_mask_includes_read_and_write_denies() -> None:
+    from opensquilla.sandbox.backend import windows_default_runner as mod
+
+    assert mod.MANAGED_DENY_MASK & mod.FILE_READ_DENY_MASK
+    assert mod.MANAGED_DENY_MASK & mod.FILE_WRITE_DENY_MASK
 
 
 def test_runner_rejects_missing_acl_plan(tmp_path) -> None:
@@ -1072,11 +1238,20 @@ def test_proxy_allowlist_reexecs_helper_under_offline_identity(
     )
     calls: list[mod.HelperPayload] = []
 
+    monkeypatch.setattr(
+        mod,
+        "_resolve_offline_launch_credentials",
+        lambda _payload: mod.OfflineLaunchCredentials(
+            sid="S-1-test",
+            username="OpenSquillaSandbox",
+            password="plain",
+        ),
+    )
     monkeypatch.setattr(mod, "_apply_acl_refresh", lambda _plan, **_kwargs: None)
     monkeypatch.setattr(
         mod,
         "_run_payload_as_offline_identity",
-        lambda request: calls.append(request) or 7,
+        lambda request, **_kwargs: calls.append(request) or 7,
         raising=False,
     )
     monkeypatch.setattr(
@@ -1087,6 +1262,72 @@ def test_proxy_allowlist_reexecs_helper_under_offline_identity(
 
     assert mod._run_windows_default(payload) == 7
     assert calls == [payload]
+
+
+@pytest.mark.parametrize("failure_stage", ["identity", "decrypt"])
+def test_offline_identity_preflight_fails_before_any_acl_mutation(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    failure_stage: str,
+) -> None:
+    import opensquilla.sandbox.backend.windows_default_identity as identity_mod
+    from opensquilla.sandbox.backend import windows_default_runner as mod
+
+    payload = mod.HelperPayload(
+        argv=("cmd",),
+        cwd=tmp_path,
+        env={},
+        policy={
+            "network": "none",
+            "windowsAclPlan": {"autoGrants": [], "capabilitySids": []},
+            "windowsNetworkBoundary": {
+                "offlineUserSid": "S-1-5-21-100-200-300-400",
+                "offlineUsername": "OpenSquillaSandbox",
+                "protectedPassword": "invalid",
+                "allowedProxyPorts": [48123],
+                "allowLocalBinding": False,
+            },
+        },
+        run_mode="trusted",
+        timeout=5,
+    )
+    calls: list[str] = []
+    if failure_stage == "identity":
+        monkeypatch.setattr(
+            identity_mod,
+            "offline_identity_from_boundary",
+            lambda _boundary: (_ for _ in ()).throw(OSError("identity unavailable")),
+        )
+    else:
+        monkeypatch.setattr(
+            identity_mod,
+            "offline_identity_from_boundary",
+            lambda _boundary: SimpleNamespace(
+                sid="S-1-test",
+                username="OpenSquillaSandbox",
+                protected_password="invalid",
+            ),
+        )
+        monkeypatch.setattr(
+            identity_mod,
+            "unprotect_password",
+            lambda _protected: (_ for _ in ()).throw(OSError("identity unavailable")),
+        )
+    monkeypatch.setattr(
+        mod,
+        "_apply_acl_refresh",
+        lambda *_args, **_kwargs: calls.append("acl"),
+    )
+    monkeypatch.setattr(
+        mod,
+        "_run_payload_as_offline_identity_native",
+        lambda *_args, **_kwargs: calls.append("run") or 0,
+    )
+
+    with pytest.raises(OSError, match="identity unavailable"):
+        mod._run_windows_default(payload)
+
+    assert calls == []
 
 
 def test_offline_identity_launch_grants_helper_runtime_rx(
@@ -1291,6 +1532,11 @@ def test_offline_identity_native_launch_sets_all_stdio_handles(
         code._obj.value = 0
         return 1
 
+    def _write_file(_handle, data, size, written, _overlapped):
+        captured["payload_stdin"] = bytes(data[:size])
+        written._obj.value = size
+        return 1
+
     class FakeAdvapi32:
         def __init__(self):
             self.CreateProcessWithLogonW = FakeFunction(_create_process_with_logon)
@@ -1303,6 +1549,7 @@ def test_offline_identity_native_launch_sets_all_stdio_handles(
             self.WaitForSingleObject = FakeFunction(lambda *_args: 0)
             self.TerminateProcess = FakeFunction(lambda *_args: 1)
             self.GetExitCodeProcess = FakeFunction(_get_exit_code_process)
+            self.WriteFile = FakeFunction(_write_file)
             self.SetErrorMode = FakeFunction(lambda *_args: 0)
 
     fake_advapi32 = FakeAdvapi32()
@@ -1332,9 +1579,11 @@ def test_offline_identity_native_launch_sets_all_stdio_handles(
     assert captured["stdin"]
     assert captured["stdout"]
     assert captured["stderr"]
-    assert "--payload-file" in captured["command_line"]
+    assert "--payload-stdin" in captured["command_line"]
+    assert "--payload-file" not in captured["command_line"]
     assert "--payload-env" not in captured["command_line"]
     assert mod.OFFLINE_PAYLOAD_ENV not in captured["env_block"]
+    assert json.loads(captured["payload_stdin"])["offlineChild"] is False
 
 
 def test_offline_reexecuted_helper_uses_current_token(monkeypatch, tmp_path) -> None:

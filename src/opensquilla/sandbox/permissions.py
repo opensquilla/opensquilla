@@ -111,7 +111,7 @@ class FileSystemPermissionProfile:
                 for name in PROTECTED_METADATA_NAMES
             )
         entries.extend(
-            FileSystemPermissionEntry(_canonical(path), FileSystemAccess.DENY)
+            FileSystemPermissionEntry(_lexical_absolute(path), FileSystemAccess.DENY)
             for path in denied_read_roots
         )
         return cls(
@@ -130,7 +130,7 @@ class FileSystemPermissionProfile:
         platform_context: FileSystemPlatformContext | None = None,
     ) -> FileSystemPermissionProfile:
         context = platform_context or current_platform_context(cwd=Path.cwd())
-        entries = []
+        entries: list[FileSystemPermissionEntry] = []
         if host_root_readonly:
             entries.extend(
                 FileSystemPermissionEntry(
@@ -144,7 +144,7 @@ class FileSystemPermissionProfile:
             for path in readable_roots
         )
         entries.extend(
-            FileSystemPermissionEntry(_canonical(path), FileSystemAccess.DENY)
+            FileSystemPermissionEntry(_lexical_absolute(path), FileSystemAccess.DENY)
             for path in denied_read_roots
         )
         return cls(tuple(entries), tuple(str(pattern) for pattern in denied_read_globs))
@@ -294,6 +294,12 @@ class FileSystemPermissionProfile:
 def _canonical(path: PurePath) -> PurePath:
     if isinstance(path, Path):
         return path.expanduser().resolve(strict=False)
+    return path
+
+
+def _lexical_absolute(path: PurePath) -> PurePath:
+    if isinstance(path, Path):
+        return path.expanduser().absolute()
     return path
 
 

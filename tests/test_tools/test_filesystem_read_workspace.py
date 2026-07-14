@@ -675,8 +675,8 @@ async def test_list_dir_survives_broken_symlink(tmp_path: Path) -> None:
     with tool_context(tmp_path):
         output = await fs.list_dir(str(tmp_path))
 
-    assert "ok.txt" in output
-    assert "dangling" in output
+    assert "[file] ok.txt (6 bytes)" in output
+    assert "[link] dangling (broken symlink)" in output
 
 
 @pytest.mark.asyncio

@@ -131,10 +131,25 @@ def _list_dir(payload: dict[str, Any]) -> dict[str, object]:
     dirs: list[str] = []
     files: list[str] = []
     for entry in sorted(path.iterdir(), key=lambda item: item.name):
-        if entry.is_dir():
-            dirs.append(f"[dir]  {entry.name}/")
-        else:
-            files.append(f"[file] {entry.name} ({entry.stat().st_size} bytes)")
+        try:
+            if entry.is_symlink():
+                try:
+                    size = entry.stat().st_size
+                except OSError:
+                    files.append(f"[link] {entry.name} (broken symlink)")
+                else:
+                    files.append(f"[link] {entry.name} ({size} bytes target)")
+            elif entry.is_dir():
+                dirs.append(f"[dir]  {entry.name}/")
+            else:
+                try:
+                    size = entry.stat().st_size
+                except OSError:
+                    files.append(f"[file] {entry.name} (size unavailable)")
+                else:
+                    files.append(f"[file] {entry.name} ({size} bytes)")
+        except OSError:
+            files.append(f"[file] {entry.name} (metadata unavailable)")
     entries = dirs + files
     return {"message": "\n".join(entries) if entries else f"{display_path}: (empty directory)"}
 

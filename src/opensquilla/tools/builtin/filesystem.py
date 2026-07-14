@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any
 from xml.etree import ElementTree as ET
 
+from opensquilla.sandbox.directory_listing import format_directory_entry
 from opensquilla.sandbox.elevation import ElevationAction, gate_elevated_action
 from opensquilla.sandbox.escalation import (
     build_path_approval_params,
@@ -2743,34 +2744,26 @@ async def list_dir(path: str, approval_id: str | None = None) -> str:
         files: list[str] = []
         blocked_entries: list[str] = []
         for entry in sorted(p.iterdir(), key=lambda e: e.name):
-            marker = _workspace_strict_candidate_marker(
-                "list_dir",
-                entry,
-                strict_roots=strict_roots,
-            )
-            if marker is not None:
-                blocked_entries.append(marker)
-                continue
-            if _is_sensitive_access_path(entry.resolve(strict=False), workspace=workspace_root):
-                continue
-            if entry.is_dir():
-                dirs.append(f"[dir]  {entry.name}/")
-            else:
-                # A broken symlink (or a race deleting the entry) makes stat()
-                # raise; catching it keeps one bad entry from aborting the whole
-                # listing. Fall back to lstat (does not follow the link) and
-                # mark it, or show the size as unavailable.
-                try:
-                    size = entry.stat().st_size
-                    files.append(f"[file] {entry.name} ({size} bytes)")
-                except OSError:
-                    try:
-                        if entry.is_symlink():
-                            files.append(f"[link] {entry.name} (broken symlink)")
-                        else:
-                            files.append(f"[file] {entry.name} (size unavailable)")
-                    except OSError:
-                        files.append(f"[file] {entry.name} (size unavailable)")
+            try:
+                marker = _workspace_strict_candidate_marker(
+                    "list_dir",
+                    entry,
+                    strict_roots=strict_roots,
+                )
+                if marker is not None:
+                    blocked_entries.append(marker)
+                    continue
+                if _is_sensitive_access_path(
+                    entry.resolve(strict=False),
+                    workspace=workspace_root,
+                ):
+                    continue
+            except (OSError, RuntimeError):
+                # Failure to resolve one child must not hide its listable siblings.
+                # The shared formatter still classifies what can be observed safely.
+                pass
+            is_directory, line = format_directory_entry(entry)
+            (dirs if is_directory else files).append(line)
         return dirs + files + blocked_entries
 
     # _list reads the current tool context (run mode / full-host access) via

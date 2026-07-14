@@ -1,12 +1,20 @@
 from __future__ import annotations
 
 import json
+import os
 from io import StringIO
 from pathlib import Path
 
 import pytest
 
 from opensquilla.sandbox import filesystem_worker
+
+
+def _make_symlink(link: Path, target: Path) -> None:
+    try:
+        os.symlink(target, link)
+    except (OSError, NotImplementedError) as exc:
+        pytest.skip(f"symlink unsupported/unavailable: {exc}")
 
 
 def test_load_payload_reads_json_object_from_stdin(
@@ -49,7 +57,7 @@ def test_load_payload_retains_path_compatibility(tmp_path: Path) -> None:
 
 def test_list_dir_keeps_siblings_when_symlink_target_is_missing(tmp_path: Path) -> None:
     (tmp_path / "ok.txt").write_text("hello", encoding="utf-8")
-    (tmp_path / "dangling").symlink_to(tmp_path / "missing-target")
+    _make_symlink(tmp_path / "dangling", tmp_path / "missing-target")
 
     result = filesystem_worker._list_dir(
         {"path": str(tmp_path), "displayPath": str(tmp_path)}
@@ -59,7 +67,7 @@ def test_list_dir_keeps_siblings_when_symlink_target_is_missing(tmp_path: Path) 
     assert "[link] dangling (broken symlink)" in result["message"]
 
 
-def test_list_dir_keeps_siblings_when_one_stat_raises(
+def test_list_dir_keeps_siblings_when_regular_file_size_stat_raises(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -69,7 +77,7 @@ def test_list_dir_keeps_siblings_when_one_stat_raises(
     original_stat = Path.stat
 
     def selective_stat(path: Path, *args: object, **kwargs: object):
-        if path == blocked:
+        if path == blocked and kwargs.get("follow_symlinks", True):
             raise PermissionError("blocked for test")
         return original_stat(path, *args, **kwargs)
 
@@ -78,7 +86,54 @@ def test_list_dir_keeps_siblings_when_one_stat_raises(
     result = filesystem_worker._list_dir({"path": str(tmp_path)})
 
     assert "ok.txt" in result["message"]
+    assert "[file] blocked.txt (size unavailable)" in result["message"]
+
+
+def test_list_dir_keeps_siblings_when_child_metadata_is_unavailable(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    (tmp_path / "ok.txt").write_text("hello", encoding="utf-8")
+    blocked = tmp_path / "blocked.txt"
+    blocked.write_text("secret", encoding="utf-8")
+    original_lstat = Path.lstat
+
+    def selective_lstat(path: Path):
+        if path == blocked:
+            raise PermissionError("blocked for test")
+        return original_lstat(path)
+
+    monkeypatch.setattr(Path, "lstat", selective_lstat)
+
+    result = filesystem_worker._list_dir({"path": str(tmp_path)})
+
+    assert "[file] ok.txt (5 bytes)" in result["message"]
     assert "[file] blocked.txt (metadata unavailable)" in result["message"]
+
+
+def test_list_dir_distinguishes_unreadable_symlink_target_from_broken_link(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    (tmp_path / "ok.txt").write_text("hello", encoding="utf-8")
+    target = tmp_path / "target.txt"
+    target.write_text("secret", encoding="utf-8")
+    link = tmp_path / "protected-link"
+    _make_symlink(link, target)
+    original_stat = Path.stat
+
+    def selective_stat(path: Path, *args: object, **kwargs: object):
+        if path == link and kwargs.get("follow_symlinks", True):
+            raise PermissionError("target blocked for test")
+        return original_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", selective_stat)
+
+    result = filesystem_worker._list_dir({"path": str(tmp_path)})
+
+    assert "[file] ok.txt (5 bytes)" in result["message"]
+    assert "[link] protected-link (target metadata unavailable)" in result["message"]
+    assert "[link] protected-link (broken symlink)" not in result["message"]
 
 
 def test_list_dir_preserves_requested_directory_permission_error(

@@ -11,7 +11,7 @@ import pytest
 
 from opensquilla.attachment_refs import write_transcript_material
 from opensquilla.engine.types import ToolCall
-from opensquilla.sandbox import sensitive_paths
+from opensquilla.sandbox import filesystem_worker, sensitive_paths
 from opensquilla.sandbox.config import SandboxSettings
 from opensquilla.sandbox.integration import configure_runtime, reset_runtime
 from opensquilla.sandbox.permissions import FileSystemPermissionProfile
@@ -677,6 +677,90 @@ async def test_list_dir_survives_broken_symlink(tmp_path: Path) -> None:
 
     assert "[file] ok.txt (6 bytes)" in output
     assert "[link] dangling (broken symlink)" in output
+
+
+@pytest.mark.asyncio
+async def test_list_dir_host_fallback_keeps_siblings_when_child_is_dir_raises(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    (tmp_path / "ok.txt").write_text("hello", encoding="utf-8")
+    blocked = tmp_path / "blocked.txt"
+    blocked.write_text("secret", encoding="utf-8")
+    original_is_dir = Path.is_dir
+
+    def selective_is_dir(path: Path) -> bool:
+        if path == blocked:
+            raise PermissionError("child denied for test")
+        return original_is_dir(path)
+
+    monkeypatch.setattr(Path, "is_dir", selective_is_dir)
+
+    with tool_context(tmp_path):
+        output = await fs.list_dir(str(tmp_path))
+
+    assert "[file] ok.txt (5 bytes)" in output
+    assert "blocked.txt" in output
+
+
+@pytest.mark.asyncio
+async def test_list_dir_host_fallback_preserves_directory_iterdir_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original_iterdir = Path.iterdir
+
+    def selective_iterdir(path: Path):
+        if path == tmp_path:
+            raise PermissionError("directory denied for test")
+        return original_iterdir(path)
+
+    monkeypatch.setattr(Path, "iterdir", selective_iterdir)
+
+    with tool_context(tmp_path):
+        with pytest.raises(PermissionError, match="directory denied for test"):
+            await fs.list_dir(str(tmp_path))
+
+
+@pytest.mark.asyncio
+async def test_list_dir_valid_symlink_matches_worker_output(tmp_path: Path) -> None:
+    target = tmp_path / "target.txt"
+    target.write_text("target", encoding="utf-8")
+    link = tmp_path / "valid-link"
+    _make_symlink(link, target)
+
+    worker_result = filesystem_worker._list_dir({"path": str(tmp_path)})
+    with tool_context(tmp_path):
+        host_output = await fs.list_dir(str(tmp_path))
+
+    expected = "[link] valid-link (6 bytes target)"
+    assert expected in worker_result["message"]
+    assert expected in host_output
+
+
+@pytest.mark.asyncio
+async def test_list_dir_host_fallback_distinguishes_unreadable_symlink_target(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target = tmp_path / "target.txt"
+    target.write_text("secret", encoding="utf-8")
+    link = tmp_path / "protected-link"
+    _make_symlink(link, target)
+    original_stat = Path.stat
+
+    def selective_stat(path: Path, *args: object, **kwargs: object):
+        if path == link and kwargs.get("follow_symlinks", True):
+            raise PermissionError("target blocked for test")
+        return original_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", selective_stat)
+
+    with tool_context(tmp_path):
+        output = await fs.list_dir(str(tmp_path))
+
+    assert "[link] protected-link (target metadata unavailable)" in output
+    assert "[link] protected-link (broken symlink)" not in output
 
 
 @pytest.mark.asyncio

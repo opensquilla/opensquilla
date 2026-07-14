@@ -1028,6 +1028,7 @@ def test_payload_adds_runtime_readonly_roots_as_deny_write_paths(
         "_runtime_readonly_roots",
         lambda: (runtime_scripts, source_root),
     )
+    monkeypatch.setattr(mod, "_protected_opensquilla_state_roots", lambda: ())
 
     payload = mod._payload_for_request(_request(tmp_path))
 
@@ -1077,6 +1078,7 @@ def test_payload_adds_readonly_private_mounts_as_deny_write_paths(
     monkeypatch.setattr(mod, "_support_ready", lambda: True)
     monkeypatch.setattr(mod, "_capability_store_path", lambda: tmp_path / "cap_sids.json")
     monkeypatch.setattr(mod, "_runtime_readonly_roots", lambda: ())
+    monkeypatch.setattr(mod, "_protected_opensquilla_state_roots", lambda: ())
 
     payload = mod._payload_for_request(
         request,

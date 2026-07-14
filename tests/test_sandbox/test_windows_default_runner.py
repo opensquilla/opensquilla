@@ -383,13 +383,53 @@ def test_deny_write_path_to_sid_uses_native_acl_writer(tmp_path, monkeypatch) ->
     monkeypatch.setattr(mod.subprocess, "run", fail_subprocess)
     monkeypatch.setattr(
         mod,
-        "_deny_write_path_to_sid_native",
-        lambda path, sid: calls.append((path, sid)),
+        "_deny_path_to_sid_native",
+        lambda path, sid, *, mask: calls.append((path, sid, mask)),
     )
 
     mod._deny_write_path_to_sid(tmp_path, "S-1-5-21-100-101-102-103")
 
-    assert calls == [(tmp_path, "S-1-5-21-100-101-102-103")]
+    assert calls == [
+        (tmp_path, "S-1-5-21-100-101-102-103", mod.FILE_WRITE_DENY_MASK)
+    ]
+
+
+def test_deny_read_path_to_sid_uses_shared_native_acl_writer(tmp_path, monkeypatch) -> None:
+    from opensquilla.sandbox.backend import windows_default_runner as mod
+
+    calls = []
+    monkeypatch.setattr(
+        mod,
+        "_deny_path_to_sid_native",
+        lambda path, sid, *, mask: calls.append((path, sid, mask)),
+        raising=False,
+    )
+
+    mod._deny_read_path_to_sid(tmp_path, "S-1-5-21-read")
+
+    assert calls == [(tmp_path, "S-1-5-21-read", mod.FILE_READ_DENY_MASK)]
+
+
+def test_windows_acl_plan_rejects_invalid_deny_read_paths() -> None:
+    from opensquilla.sandbox.backend import windows_default_runner as mod
+
+    with pytest.raises(SystemExit, match="denyReadPaths must be a string list"):
+        mod._windows_acl_plan(
+            {
+                "windowsAclPlan": {
+                    "autoGrants": [],
+                    "capabilitySids": [],
+                    "denyReadPaths": [1],
+                }
+            }
+        )
+
+
+def test_deny_masks_require_all_requested_bits() -> None:
+    from opensquilla.sandbox.backend import windows_default_runner as mod
+
+    assert not mod._ace_mask_covers(mod.FILE_WRITE_DENY_MASK, mod.FILE_READ_DENY_MASK)
+    assert mod._ace_mask_covers(mod.FILE_READ_DENY_MASK, mod.FILE_READ_DENY_MASK)
 
 
 def test_acl_refresh_skips_missing_expansion_grants(tmp_path, monkeypatch) -> None:
@@ -502,7 +542,7 @@ def test_acl_refresh_skips_missing_policy_grants(
     assert calls == []
 
 
-def test_acl_refresh_applies_deny_write_paths_to_write_root_capability_sids(
+def test_acl_refresh_does_not_apply_deny_write_to_unrelated_capability_sids(
     tmp_path,
     monkeypatch,
 ) -> None:
@@ -557,7 +597,86 @@ def test_acl_refresh_applies_deny_write_paths_to_write_root_capability_sids(
         (workspace, "RWX", "S-1-5-21-100-101-102-103"),
         (runtime_rx, "RX", "S-1-5-21-100-101-102-104"),
     ]
-    assert denies == [(runtime, "S-1-5-21-100-101-102-103")]
+    assert denies == []
+
+
+def test_apply_acl_refresh_applies_deny_read_to_covering_sid(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from opensquilla.sandbox.backend import windows_default_runner as mod
+
+    readable = tmp_path / "readable"
+    denied = readable / "secret"
+    denied.mkdir(parents=True)
+    calls = []
+    monkeypatch.setattr(mod, "_grant_path_to_sid", lambda *args: None)
+    monkeypatch.setattr(
+        mod,
+        "_deny_read_path_to_sid",
+        lambda path, sid: calls.append((path, sid)),
+        raising=False,
+    )
+
+    mod._apply_acl_refresh(
+        {
+            "autoGrants": [
+                {
+                    "path": str(readable),
+                    "access": "RX",
+                    "kind": "policy",
+                    "capabilitySid": "S-1-test",
+                }
+            ],
+            "capabilitySids": ["S-1-test"],
+            "denyWritePaths": [],
+            "denyReadPaths": [str(denied)],
+        }
+    )
+
+    assert calls == [(denied, "S-1-test")]
+
+
+def test_acl_refresh_fails_closed_when_deny_read_has_no_covering_grant(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from opensquilla.sandbox.backend import windows_default_runner as mod
+
+    denied = tmp_path / "secret"
+    denied.mkdir()
+    monkeypatch.setattr(mod, "_grant_path_to_sid", lambda *args: None)
+
+    with pytest.raises(SystemExit, match="no covering read grant"):
+        mod._apply_acl_refresh(
+            {
+                "autoGrants": [],
+                "capabilitySids": ["S-1-unrelated"],
+                "denyWritePaths": [],
+                "denyReadPaths": [str(denied)],
+            }
+        )
+
+
+@pytest.mark.parametrize("deny_key", ["denyWritePaths", "denyReadPaths"])
+def test_acl_refresh_skips_deny_target_that_raced_away(
+    tmp_path: Path,
+    deny_key: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from opensquilla.sandbox.backend import windows_default_runner as mod
+
+    monkeypatch.setattr(mod, "_grant_path_to_sid", lambda *args: None)
+
+    mod._apply_acl_refresh(
+        {
+            "autoGrants": [],
+            "capabilitySids": [],
+            "denyWritePaths": [],
+            "denyReadPaths": [],
+            deny_key: [str(tmp_path / "missing")],
+        }
+    )
 
 
 def test_deny_write_capability_sids_prefer_overlapping_write_roots(tmp_path) -> None:
@@ -590,6 +709,60 @@ def test_deny_write_capability_sids_prefer_overlapping_write_roots(tmp_path) -> 
         },
         protected,
     ) == ("workspace-sid", "nested-sid")
+
+
+def test_deny_write_capability_sids_preserve_writable_grandchild_reopen(tmp_path) -> None:
+    from opensquilla.sandbox.backend import windows_default_runner as mod
+
+    workspace = tmp_path / "workspace"
+    readonly = workspace / ".git"
+    writable_reopen = readonly / "objects"
+
+    assert mod._deny_write_capability_sids_for_path(
+        {
+            "autoGrants": [
+                {
+                    "path": str(workspace),
+                    "access": "RWX",
+                    "capabilitySid": "workspace-sid",
+                },
+                {
+                    "path": str(writable_reopen),
+                    "access": "RWX",
+                    "capabilitySid": "reopen-sid",
+                },
+            ],
+            "capabilitySids": ["workspace-sid", "reopen-sid"],
+        },
+        readonly,
+    ) == ("workspace-sid",)
+
+
+def test_deny_read_capability_sids_preserve_readable_grandchild_reopen(tmp_path) -> None:
+    from opensquilla.sandbox.backend import windows_default_runner as mod
+
+    readable = tmp_path / "readable"
+    denied = readable / "secret"
+    readable_reopen = denied / "public"
+
+    assert mod._deny_read_capability_sids_for_path(
+        {
+            "autoGrants": [
+                {
+                    "path": str(readable),
+                    "access": "RX",
+                    "capabilitySid": "readable-sid",
+                },
+                {
+                    "path": str(readable_reopen),
+                    "access": "RX",
+                    "capabilitySid": "reopen-sid",
+                },
+            ],
+            "capabilitySids": ["readable-sid", "reopen-sid"],
+        },
+        denied,
+    ) == ("readable-sid",)
 
 
 def test_grant_acl_plan_to_sid_does_not_apply_deny_write_paths_to_offline_user(
@@ -642,8 +815,10 @@ def test_offline_identity_launch_cleans_stale_offline_user_denies(
 
     runtime_root = tmp_path / "runtime"
     readonly_mount = tmp_path / "readonly"
+    denied_read = tmp_path / "secret"
     runtime_root.mkdir()
     readonly_mount.mkdir()
+    denied_read.mkdir()
     payload = mod.HelperPayload(
         argv=("cmd",),
         cwd=tmp_path,
@@ -653,6 +828,7 @@ def test_offline_identity_launch_cleans_stale_offline_user_denies(
             "windowsAclPlan": {
                 "autoGrants": [],
                 "denyWritePaths": [str(readonly_mount)],
+                "denyReadPaths": [str(denied_read)],
                 "capabilitySids": [],
             },
             "windowsNetworkBoundary": {
@@ -688,6 +864,7 @@ def test_offline_identity_launch_cleans_stale_offline_user_denies(
 
     assert (runtime_root, "S-1-5-21-100-200-300-400") in revokes
     assert (readonly_mount, "S-1-5-21-100-200-300-400") in revokes
+    assert (denied_read, "S-1-5-21-100-200-300-400") in revokes
 
 
 def test_offline_identity_launch_applies_runtime_write_denies_to_offline_user(

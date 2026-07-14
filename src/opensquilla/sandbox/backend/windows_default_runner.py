@@ -24,14 +24,27 @@ LUA_TOKEN = 0x04
 WRITE_RESTRICTED = 0x08
 RESTRICTED_TOKEN_FLAGS = DISABLE_MAX_PRIVILEGE | LUA_TOKEN | WRITE_RESTRICTED
 GENERIC_ALL = 0x10000000
+GENERIC_READ = 0x80000000
 GENERIC_WRITE = 0x40000000
 DELETE = 0x00010000
 FILE_DELETE_CHILD = 0x00000040
 FILE_APPEND_DATA = 0x00000004
+FILE_GENERIC_READ = 0x00120089
 FILE_GENERIC_WRITE = 0x00120116
+FILE_GENERIC_EXECUTE = 0x001200A0
 FILE_WRITE_ATTRIBUTES = 0x00000100
 FILE_WRITE_DATA = 0x00000002
 FILE_WRITE_EA = 0x00000010
+FILE_MUTATION_DENY_MASK = (
+    FILE_WRITE_DATA
+    | FILE_APPEND_DATA
+    | FILE_WRITE_EA
+    | FILE_WRITE_ATTRIBUTES
+    | DELETE
+    | FILE_DELETE_CHILD
+)
+FILE_WRITE_DENY_MASK = FILE_MUTATION_DENY_MASK | FILE_GENERIC_WRITE | GENERIC_WRITE
+FILE_READ_DENY_MASK = FILE_GENERIC_READ | FILE_GENERIC_EXECUTE | GENERIC_READ
 TOKEN_ASSIGN_PRIMARY = 0x0001
 TOKEN_DUPLICATE = 0x0002
 TOKEN_QUERY = 0x0008
@@ -335,12 +348,18 @@ def _windows_acl_plan(policy: dict[str, Any]) -> dict[str, Any]:
         isinstance(path, str) for path in deny_write_paths
     ):
         raise SystemExit("invalid windows_default policy: denyWritePaths must be a string list")
+    deny_read_paths = plan.get("denyReadPaths", [])
+    if not isinstance(deny_read_paths, list) or not all(
+        isinstance(path, str) for path in deny_read_paths
+    ):
+        raise SystemExit("invalid windows_default policy: denyReadPaths must be a string list")
     grant_current_user_access = plan.get("grantCurrentUserAccess", False)
     if not isinstance(grant_current_user_access, bool):
         raise SystemExit("invalid windows_default policy: grantCurrentUserAccess must be boolean")
     return {
         **plan,
         "denyWritePaths": deny_write_paths,
+        "denyReadPaths": deny_read_paths,
         "grantCurrentUserAccess": grant_current_user_access,
     }
 
@@ -373,15 +392,13 @@ def _apply_acl_refresh(plan: dict[str, Any], *, apply_deny_write: bool = True) -
             normal_access_seen.add(key)
             _grant_path_to_sid(grant_path, "HOST_RWX", normal_access_sid)
     deny_write_paths = plan.get("denyWritePaths", []) if apply_deny_write else []
-    if deny_write_paths and not plan.get("capabilitySids"):
-        raise SystemExit("invalid windows_default ACL plan: denyWritePaths require capabilitySids")
     seen: set[tuple[str, str]] = set()
     for raw_path in deny_write_paths:
         if not isinstance(raw_path, str):
             raise SystemExit("invalid windows_default ACL deny-write path")
         deny_path = Path(raw_path)
         if not deny_path.exists():
-            raise SystemExit(f"windows_default ACL deny-write target does not exist: {deny_path}")
+            continue
         path_key = str(deny_path.resolve(strict=False)).casefold()
         for sid in _deny_write_capability_sids_for_path(plan, deny_path):
             key = (path_key, sid)
@@ -389,6 +406,27 @@ def _apply_acl_refresh(plan: dict[str, Any], *, apply_deny_write: bool = True) -
                 continue
             seen.add(key)
             _deny_write_path_to_sid(deny_path, sid)
+    deny_read_paths = plan.get("denyReadPaths", [])
+    read_seen: set[tuple[str, str]] = set()
+    for raw_path in deny_read_paths:
+        if not isinstance(raw_path, str):
+            raise SystemExit("invalid windows_default ACL deny-read path")
+        deny_path = Path(raw_path)
+        if not deny_path.exists():
+            continue
+        matching = _deny_read_capability_sids_for_path(plan, deny_path)
+        if not matching:
+            raise SystemExit(
+                "windows_default ACL deny-read target has no covering read grant: "
+                f"{deny_path}"
+            )
+        path_key = str(deny_path.resolve(strict=False)).casefold()
+        for sid in matching:
+            key = (path_key, sid)
+            if key in read_seen:
+                continue
+            read_seen.add(key)
+            _deny_read_path_to_sid(deny_path, sid)
 
 
 def _deny_write_capability_sids_for_path(plan: dict[str, Any], deny_path: Path) -> tuple[str, ...]:
@@ -403,22 +441,41 @@ def _deny_write_capability_sids_for_path(plan: dict[str, Any], deny_path: Path) 
     matching = [
         sid
         for root, sid in write_grants
-        if _paths_overlap_casefold(root.resolve(strict=False), deny_path.resolve(strict=False))
+        if _path_contains_casefold(
+            root.resolve(strict=False), deny_path.resolve(strict=False)
+        )
     ]
-    selected = matching or [sid for _root, sid in write_grants]
-    if not selected:
-        selected = [str(sid) for sid in plan.get("capabilitySids", [])[:1]]
-    return tuple(dict.fromkeys(selected))
+    return tuple(dict.fromkeys(matching))
 
 
-def _paths_overlap_casefold(left: Path, right: Path) -> bool:
-    return _path_contains_casefold(left, right) or _path_contains_casefold(right, left)
+def _deny_read_capability_sids_for_path(
+    plan: dict[str, Any],
+    deny_path: Path,
+) -> tuple[str, ...]:
+    matching = []
+    for grant in plan.get("autoGrants", []):
+        if not isinstance(grant, dict) or grant.get("access") not in {"RX", "RWX"}:
+            continue
+        raw_root = grant.get("path")
+        sid = grant.get("capabilitySid")
+        if not isinstance(raw_root, str) or not isinstance(sid, str):
+            continue
+        if _path_contains_casefold(
+            Path(raw_root).resolve(strict=False),
+            deny_path.resolve(strict=False),
+        ):
+            matching.append(sid)
+    return tuple(dict.fromkeys(matching))
 
 
 def _path_contains_casefold(root: Path, candidate: Path) -> bool:
     root_text = str(root).replace("\\", "/").rstrip("/").casefold()
     candidate_text = str(candidate).replace("\\", "/").rstrip("/").casefold()
     return candidate_text == root_text or candidate_text.startswith(root_text + "/")
+
+
+def _ace_mask_covers(existing_mask: int, required_mask: int) -> bool:
+    return existing_mask & required_mask == required_mask
 
 
 def _network_boundary(policy: dict[str, Any]) -> dict[str, object] | None:
@@ -950,27 +1007,44 @@ def _revoke_path_for_sid_native(path: Path, sid: str) -> None:
                 kernel32.LocalFree(pointer)
 
 
+def _deny_read_path_to_sid(path: Path, sid: str) -> None:
+    _deny_path_to_sid(
+        path,
+        sid,
+        mask=FILE_READ_DENY_MASK,
+        label="deny-read",
+    )
+
+
 def _deny_write_path_to_sid(
     path: Path,
     sid: str,
     *,
     include_read_control: bool = True,
 ) -> None:
+    _deny_path_to_sid(
+        path,
+        sid,
+        mask=(
+            FILE_WRITE_DENY_MASK
+            if include_read_control
+            else FILE_MUTATION_DENY_MASK
+        ),
+        label="deny-write",
+    )
+
+
+def _deny_path_to_sid(path: Path, sid: str, *, mask: int, label: str) -> None:
     if not path.exists():
-        raise SystemExit(f"windows_default ACL deny-write target does not exist: {path}")
+        raise SystemExit(f"windows_default ACL {label} target does not exist: {path}")
     try:
-        if include_read_control:
-            _deny_write_path_to_sid_native(path, sid)
-        else:
-            _deny_write_path_to_sid_native(path, sid, include_read_control=False)
+        _deny_path_to_sid_native(path, sid, mask=mask)
     except AttributeError:
         if os.name != "nt":
             return
         raise
     except OSError as exc:
-        raise SystemExit(
-            f"windows_default ACL deny-write failed for {path}: {exc}"
-        ) from exc
+        raise SystemExit(f"windows_default ACL {label} failed for {path}: {exc}") from exc
 
 
 def _deny_file_mutation_path_to_sid(path: Path, sid: str) -> None:
@@ -979,11 +1053,11 @@ def _deny_file_mutation_path_to_sid(path: Path, sid: str) -> None:
     _deny_write_path_to_sid(path, sid, include_read_control=False)
 
 
-def _deny_write_path_to_sid_native(
+def _deny_path_to_sid_native(
     path: Path,
     sid: str,
     *,
-    include_read_control: bool = True,
+    mask: int,
 ) -> None:
     import ctypes
     from ctypes import wintypes
@@ -1082,22 +1156,11 @@ def _deny_write_path_to_sid_native(
     INHERIT_ONLY_ACE = 0x08
     OBJECT_INHERIT_ACE = 0x1
     CONTAINER_INHERIT_ACE = 0x2
-    deny_mask = (
-        FILE_WRITE_DATA
-        | FILE_APPEND_DATA
-        | FILE_WRITE_EA
-        | FILE_WRITE_ATTRIBUTES
-        | DELETE
-        | FILE_DELETE_CHILD
-    )
-    if include_read_control:
-        deny_mask |= FILE_GENERIC_WRITE | GENERIC_WRITE
-
     def win32_error(label: str, code: int | None = None) -> OSError:
         error_code = ctypes.get_last_error() if code is None else code
         return OSError(error_code, f"{label} failed: {ctypes.FormatError(error_code)}")
 
-    def dacl_has_write_deny_for_sid(dacl: object, sid_to_check: object) -> bool:
+    def dacl_has_deny_for_sid(dacl: object, sid_to_check: object) -> bool:
         if not dacl:
             return False
         info = ACL_SIZE_INFORMATION()
@@ -1120,7 +1183,9 @@ def _deny_write_path_to_sid_native(
             ace = ctypes.cast(ace_ptr, ctypes.POINTER(ACCESS_DENIED_ACE)).contents
             sid_ptr_value = int(ace_ptr.value) + ctypes.sizeof(ACE_HEADER) + ctypes.sizeof(DWORD)
             ace_sid = LPVOID(sid_ptr_value)
-            if advapi32.EqualSid(ace_sid, sid_to_check) and (ace.Mask & deny_mask):
+            if advapi32.EqualSid(ace_sid, sid_to_check) and _ace_mask_covers(
+                int(ace.Mask), mask
+            ):
                 return True
         return False
 
@@ -1145,11 +1210,11 @@ def _deny_write_path_to_sid_native(
         )
         if code != ERROR_SUCCESS:
             raise win32_error("GetNamedSecurityInfoW", code)
-        if dacl_has_write_deny_for_sid(old_dacl, sid_ptr):
+        if dacl_has_deny_for_sid(old_dacl, sid_ptr):
             return
 
         explicit = EXPLICIT_ACCESS_W()
-        explicit.grfAccessPermissions = deny_mask
+        explicit.grfAccessPermissions = mask
         explicit.grfAccessMode = DENY_ACCESS
         explicit.grfInheritance = OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE
         explicit.Trustee.pMultipleTrustee = None
@@ -1287,9 +1352,10 @@ def _cleanup_offline_identity_launch_acl(sid: str, plan: dict[str, Any]) -> None
     paths: list[Path] = []
     for root in _offline_helper_runtime_roots():
         paths.extend(_path_and_parents(root))
-    for raw_path in plan.get("denyWritePaths", []):
-        if isinstance(raw_path, str):
-            paths.extend(_path_and_parents(Path(raw_path)))
+    for key in ("denyWritePaths", "denyReadPaths"):
+        for raw_path in plan.get(key, []):
+            if isinstance(raw_path, str):
+                paths.extend(_path_and_parents(Path(raw_path)))
 
     seen: set[str] = set()
     for path in paths:

@@ -21,6 +21,11 @@ _ALLOWED_BACKEND_ERROR_CODES = frozenset(
         "no_retrieval_profile_available", "settings_persist_failed",
     }
 )
+_RUNTIME_OWNED_STATUS_FIELDS = (
+    "connectionState",
+    "capabilitiesStale",
+    "capabilitiesFetchedAt",
+)
 
 
 def _manager(ctx: RpcContext) -> KnowledgeBackend:
@@ -128,7 +133,13 @@ async def _handle_knowledge_settings_patch(
     if snapshot is None:
         raise _rpc_unknown_backend_error()
     status = snapshot.to_status_wire()
-    return {**response, **status}
+    result = {**status, **response}
+    for field in _RUNTIME_OWNED_STATUS_FIELDS:
+        if field in status:
+            result[field] = status[field]
+        else:
+            result.pop(field, None)
+    return result
 
 
 @_d.method("knowledge.status", scope="operator.read")

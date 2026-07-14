@@ -230,7 +230,22 @@ async def test_knowledge_settings_patch_sends_only_profile_then_refreshes() -> N
         def to_status_wire(self) -> dict[str, object]:
             return {
                 "connectionState": "READY",
+                "capabilitiesStale": False,
+                "capabilitiesFetchedAt": 2_000,
+                "capabilitiesVersion": "aaaaaaaaaaaaaaaa",
                 "configuredDefaultRetrievalProfile": "hybrid",
+                "effectiveDefaultRetrievalProfile": "hybrid",
+                "defaultRetrievalProfile": "hybrid",
+                "defaultFallbackReason": None,
+                "retrievalProfiles": [
+                    {
+                        "id": "hybrid",
+                        "label": "Hybrid",
+                        "kind": "hybrid",
+                        "available": True,
+                    }
+                ],
+                "documentsIndexed": 4,
             }
 
     class Runtime:
@@ -274,8 +289,139 @@ async def test_knowledge_settings_patch_sends_only_profile_then_refreshes() -> N
         "ok": True,
         "persisted": True,
         "connectionState": "READY",
+        "capabilitiesStale": False,
+        "capabilitiesFetchedAt": 2_000,
+        "capabilitiesVersion": "aaaaaaaaaaaaaaaa",
         "configuredDefaultRetrievalProfile": "hybrid",
+        "effectiveDefaultRetrievalProfile": "hybrid",
+        "defaultRetrievalProfile": "hybrid",
+        "defaultFallbackReason": None,
+        "retrievalProfiles": [
+            {
+                "id": "hybrid",
+                "label": "Hybrid",
+                "kind": "hybrid",
+                "available": True,
+            }
+        ],
+        "documentsIndexed": 4,
     }
+
+
+@pytest.mark.asyncio
+async def test_knowledge_settings_patch_preserves_patch_snapshot_after_confirmation() -> None:
+    patch_profiles = [
+        {
+            "id": "sqlite_fts5_default",
+            "label": "SQLite FTS5",
+            "kind": "lexical",
+            "available": True,
+            "reason": None,
+        },
+        {
+            "id": "vector_bge_m3_1024",
+            "label": "Vector bge-m3 (1024)",
+            "kind": "vector",
+            "available": False,
+            "reason": "configured_profile_missing",
+            "model": "baai/bge-m3",
+            "dimensions": 1024,
+        },
+    ]
+    confirmed_profiles = [
+        {
+            "id": "sqlite_fts5_default",
+            "label": "SQLite FTS5",
+            "kind": "lexical",
+            "available": True,
+            "reason": None,
+        },
+        {
+            "id": "vector_bge_m3_768",
+            "label": "Vector bge-m3 (768)",
+            "kind": "vector",
+            "available": True,
+            "reason": None,
+            "model": "baai/bge-m3",
+            "dimensions": 768,
+        },
+    ]
+    patch_response = {
+        "revision": 7,
+        "updatedAt": 7_000,
+        "capabilitiesVersion": "aaaaaaaaaaaaaaaa",
+        "configuredDefaultRetrievalProfile": "vector_bge_m3_1024",
+        "effectiveDefaultRetrievalProfile": "sqlite_fts5_default",
+        "defaultRetrievalProfile": "sqlite_fts5_default",
+        "defaultFallbackReason": "configured_default_unavailable",
+        "retrievalProfiles": patch_profiles,
+        "persisted": True,
+        "connectionState": "UNAVAILABLE",
+        "capabilitiesStale": True,
+        "capabilitiesFetchedAt": -1,
+    }
+
+    class Backend:
+        def update_settings(self, payload: dict[str, object]) -> dict[str, object]:
+            assert payload == {"defaultRetrievalProfile": "vector_bge_m3_1024"}
+            return patch_response
+
+    class Snapshot:
+        def to_status_wire(self) -> dict[str, object]:
+            return {
+                "revision": 8,
+                "updatedAt": 8_000,
+                "capabilitiesVersion": "bbbbbbbbbbbbbbbb",
+                "configuredDefaultRetrievalProfile": "vector_bge_m3_768",
+                "effectiveDefaultRetrievalProfile": "vector_bge_m3_768",
+                "defaultRetrievalProfile": "vector_bge_m3_768",
+                "defaultFallbackReason": None,
+                "retrievalProfiles": confirmed_profiles,
+                "connectionState": "READY",
+                "capabilitiesStale": False,
+                "capabilitiesFetchedAt": 8_100,
+                "documentsIndexed": 17,
+            }
+
+    class Runtime:
+        def current_backend(self) -> Backend:
+            return Backend()
+
+        def invalidate(self, reason: str) -> None:
+            assert reason == "settings_updated"
+
+        async def refresh(self, **kwargs: bool) -> Snapshot:
+            return Snapshot()
+
+    result = await get_dispatcher().dispatch(
+        "settings-linearized-response",
+        "knowledge.settings.patch",
+        {"defaultRetrievalProfile": "vector_bge_m3_1024"},
+        RpcContext(
+            conn_id="test",
+            config=SimpleNamespace(),
+            knowledge_runtime=Runtime(),
+        ),
+    )
+
+    assert result.ok is True
+    assert result.payload is not None
+    for field in (
+        "revision",
+        "updatedAt",
+        "capabilitiesVersion",
+        "configuredDefaultRetrievalProfile",
+        "effectiveDefaultRetrievalProfile",
+        "defaultRetrievalProfile",
+        "defaultFallbackReason",
+        "retrievalProfiles",
+    ):
+        assert result.payload[field] == patch_response[field]
+    assert result.payload["connectionState"] == "READY"
+    assert result.payload["capabilitiesStale"] is False
+    assert result.payload["capabilitiesFetchedAt"] == 8_100
+    assert result.payload["documentsIndexed"] == 17
+    assert result.payload["persisted"] is True
 
 
 @pytest.mark.asyncio

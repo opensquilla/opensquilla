@@ -162,6 +162,44 @@ def _full_status(**overrides: Any) -> dict[str, Any]:
     return status
 
 
+def _tombstone_status() -> dict[str, Any]:
+    return {
+        "capabilitiesVersion": "2222222222222222",
+        "configuredDefaultRetrievalProfile": "vector_bge_m3_1024",
+        "effectiveDefaultRetrievalProfile": "sqlite_fts5_default",
+        "defaultRetrievalProfile": "sqlite_fts5_default",
+        "defaultFallbackReason": "configured_default_unavailable",
+        "retrievalProfiles": [
+            {
+                "id": "sqlite_fts5_default",
+                "label": "SQLite FTS5",
+                "kind": "lexical",
+                "available": True,
+                "reason": None,
+            },
+            {
+                "id": "vector_bge_m3_768",
+                "label": "Vector bge-m3 (768)",
+                "kind": "vector",
+                "available": True,
+                "reason": None,
+                "model": "baai/bge-m3",
+                "dimensions": 768,
+            },
+            {
+                "id": "vector_bge_m3_1024",
+                "label": "Vector bge-m3 (1024)",
+                "kind": "vector",
+                "available": False,
+                "reason": "configured_profile_missing",
+                "model": "baai/bge-m3",
+                "dimensions": 1024,
+            },
+        ],
+        "documentsIndexed": 3,
+    }
+
+
 def _assert_invalid(status: Any, *, fetched_at_ms: Any = 1234) -> None:
     with pytest.raises(ValueError) as raised:
         parse_capability_snapshot(status, fetched_at_ms=fetched_at_ms)
@@ -196,6 +234,29 @@ def test_parse_capability_snapshot_returns_complete_ready_snapshot() -> None:
     )
     assert snapshot.to_status_wire()["connectionState"] == "READY"
     assert snapshot.to_status_wire()["documentsIndexed"] == 3
+
+
+def test_parse_capability_snapshot_accepts_configured_tombstone() -> None:
+    snapshot = parse_capability_snapshot(_tombstone_status(), fetched_at_ms=2_000)
+
+    assert snapshot.state is KnowledgeConnectionState.READY
+    assert snapshot.stale is False
+    assert snapshot.configured_default == "vector_bge_m3_1024"
+    assert snapshot.effective_default == "sqlite_fts5_default"
+    assert snapshot.fallback_reason == "configured_default_unavailable"
+    assert snapshot.available_profile_ids == (
+        "sqlite_fts5_default",
+        "vector_bge_m3_768",
+    )
+    assert snapshot.profiles[-1] == RetrievalProfileCapability(
+        id="vector_bge_m3_1024",
+        label="Vector bge-m3 (1024)",
+        kind="vector",
+        available=False,
+        reason="configured_profile_missing",
+        model="baai/bge-m3",
+        dimensions=1024,
+    )
 
 
 def test_snapshot_copies_top_level_status_and_exposes_immutable_values() -> None:
@@ -517,6 +578,52 @@ async def test_refresh_uses_ready_snapshot_until_ttl_expires() -> None:
     assert backend.calls == 2
     assert refreshed is not None
     assert refreshed.fetched_at_ms == 62_000
+
+
+@pytest.mark.asyncio
+async def test_refresh_from_old_vector_to_current_vector_with_tombstone_stays_ready() -> None:
+    old_status = _tombstone_status()
+    old_status.update(
+        {
+            "capabilitiesVersion": "1111111111111111",
+            "configuredDefaultRetrievalProfile": "vector_bge_m3_1024",
+            "effectiveDefaultRetrievalProfile": "vector_bge_m3_1024",
+            "defaultRetrievalProfile": "vector_bge_m3_1024",
+            "defaultFallbackReason": None,
+        }
+    )
+    old_profiles = cast(list[dict[str, Any]], old_status["retrievalProfiles"])
+    old_status["retrievalProfiles"] = [
+        profile
+        for profile in old_profiles
+        if profile["id"] != "vector_bge_m3_768"
+    ]
+    old_vector = cast(list[dict[str, Any]], old_status["retrievalProfiles"])[-1]
+    old_vector["available"] = True
+    old_vector["reason"] = None
+    backend = _RecordingBackend(old_status, _tombstone_status())
+    runtime = _runtime(backend)
+
+    before = await runtime.refresh(force=True, raise_on_error=True)
+    after = await runtime.refresh(force=True, raise_on_error=True)
+
+    assert before is not None
+    assert before.state is KnowledgeConnectionState.READY
+    assert before.available_profile_ids == (
+        "sqlite_fts5_default",
+        "vector_bge_m3_1024",
+    )
+    assert after is not None
+    assert after.state is KnowledgeConnectionState.READY
+    assert after.stale is False
+    assert after.configured_default == "vector_bge_m3_1024"
+    assert after.effective_default == "sqlite_fts5_default"
+    assert after.available_profile_ids == (
+        "sqlite_fts5_default",
+        "vector_bge_m3_768",
+    )
+    assert runtime.status_payload()["connectionState"] == "READY"
+    assert runtime.status_payload()["capabilitiesStale"] is False
 
 
 @pytest.mark.asyncio

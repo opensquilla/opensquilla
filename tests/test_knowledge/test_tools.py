@@ -54,6 +54,43 @@ def _snapshot(
     )
 
 
+def _tombstone_snapshot() -> KnowledgeCapabilitySnapshot:
+    return KnowledgeCapabilitySnapshot(
+        state=KnowledgeConnectionState.READY,
+        capabilities_version="2222222222222222",
+        profiles=(
+            RetrievalProfileCapability(
+                id="sqlite_fts5_default",
+                label="SQLite FTS5",
+                kind="lexical",
+                available=True,
+            ),
+            RetrievalProfileCapability(
+                id="vector_bge_m3_768",
+                label="Vector bge-m3 (768)",
+                kind="vector",
+                available=True,
+                model="baai/bge-m3",
+                dimensions=768,
+            ),
+            RetrievalProfileCapability(
+                id="vector_bge_m3_1024",
+                label="Vector bge-m3 (1024)",
+                kind="vector",
+                available=False,
+                reason="configured_profile_missing",
+                model="baai/bge-m3",
+                dimensions=1024,
+            ),
+        ),
+        configured_default="vector_bge_m3_1024",
+        effective_default="sqlite_fts5_default",
+        fallback_reason="configured_default_unavailable",
+        fetched_at_ms=2_000,
+        service_status={},
+    )
+
+
 async def _call_with_snapshot(
     handler: Any,
     snapshot: KnowledgeCapabilitySnapshot | None,
@@ -259,6 +296,59 @@ class _RecordingRuntime:
     async def call_with_capability_retry(self, operation: Any) -> dict[str, Any]:
         self.search_calls += 1
         return operation(self.current_backend())
+
+
+def test_knowledge_search_schema_excludes_configured_tombstone() -> None:
+    registry = ToolRegistry()
+    create_knowledge_tools(
+        manager=object(),  # type: ignore[arg-type]
+        registry=registry,
+    )
+
+    definitions = registry.to_tool_definitions(
+        ToolContext(knowledge_capability_snapshot=_tombstone_snapshot())
+    )
+    search = next(
+        definition for definition in definitions if definition.name == "knowledge_search"
+    )
+
+    assert search.input_schema.properties["retrieval_profile"]["enum"] == [
+        "sqlite_fts5_default",
+        "vector_bge_m3_768",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_knowledge_search_rejects_tombstone_but_default_still_succeeds() -> None:
+    backend = _RecordingSearchBackend()
+    runtime = _RecordingRuntime(backend)
+    registry = ToolRegistry()
+    create_knowledge_tools(runtime=runtime, registry=registry)
+    search_tool = registry.get("knowledge_search")
+    assert search_tool is not None
+    snapshot = _tombstone_snapshot()
+
+    with pytest.raises(ToolError, match="retrieval_profile_unavailable"):
+        await _call_with_snapshot(
+            search_tool.handler,
+            snapshot,
+            query="revenue",
+            retrieval_profile="vector_bge_m3_1024",
+        )
+
+    payload = json.loads(
+        await _call_with_snapshot(
+            search_tool.handler,
+            snapshot,
+            query="revenue",
+        )
+    )
+
+    assert payload["count"] == 0
+    assert runtime.search_calls == 1
+    assert backend.search_calls == [
+        {"query": "revenue", "top_k": 8, "filters": {}},
+    ]
 
 
 def test_knowledge_tool_definitions_are_runtime_side_effect_free() -> None:

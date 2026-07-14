@@ -851,6 +851,38 @@ const SERVICE_PROFILES = [
   },
 ]
 
+const CURRENT_768_PROFILES = [
+  {
+    id: 'sqlite_fts5_default',
+    label: 'SQLite FTS5',
+    kind: 'lexical' as const,
+    available: true,
+    reason: null,
+  },
+  {
+    id: 'vector_bge_m3_768',
+    label: 'Vector bge-m3 (768)',
+    kind: 'vector' as const,
+    available: true,
+    reason: null,
+    model: 'baai/bge-m3',
+    dimensions: 768,
+  },
+]
+
+const TOMBSTONE_PROFILES = [
+  ...CURRENT_768_PROFILES,
+  {
+    id: 'vector_bge_m3_1024',
+    label: 'Vector bge-m3 (1024)',
+    kind: 'vector' as const,
+    available: false,
+    reason: 'configured_profile_missing',
+    model: 'baai/bge-m3',
+    dimensions: 1024,
+  },
+]
+
 function statusPayload(overrides: Record<string, unknown> = {}) {
   return {
     connectionState: 'READY',
@@ -1105,6 +1137,77 @@ describe('KnowledgeView retrieval UI wiring', () => {
     expect(byTestId(el, 'knowledge-fallback-warning').hidden).toBe(true)
     expect(el.textContent).toContain('0123456789abcdef')
     expect(el.querySelector('.rag-source-panel select')).toBeNull()
+  })
+
+  it('renders a configured tombstone disabled without exposing it as a query override', async () => {
+    const { el } = await mountKnowledgeView({
+      status: {
+        capabilitiesVersion: '2222222222222222',
+        configuredDefaultRetrievalProfile: 'vector_bge_m3_1024',
+        effectiveDefaultRetrievalProfile: 'sqlite_fts5_default',
+        defaultRetrievalProfile: 'sqlite_fts5_default',
+        defaultFallbackReason: 'configured_default_unavailable',
+        retrievalProfiles: TOMBSTONE_PROFILES,
+      },
+    })
+
+    const defaultSelect = byTestId<HTMLSelectElement>(el, 'knowledge-default-profile')
+    const querySelect = byTestId<HTMLSelectElement>(el, 'knowledge-query-profile')
+    expect(defaultSelect.value).toBe('vector_bge_m3_1024')
+    expect(Array.from(defaultSelect.options).map((option) => ({
+      value: option.value,
+      disabled: option.disabled,
+    }))).toEqual([
+      { value: 'sqlite_fts5_default', disabled: false },
+      { value: 'vector_bge_m3_768', disabled: false },
+      { value: 'vector_bge_m3_1024', disabled: true },
+    ])
+    expect(Array.from(querySelect.options).map((option) => option.value)).toEqual([
+      '',
+      'sqlite_fts5_default',
+      'vector_bge_m3_768',
+    ])
+    const warning = byTestId(el, 'knowledge-fallback-warning')
+    expect(warning.hidden).toBe(false)
+    expect(warning.textContent).toContain('Vector bge-m3 (1024)')
+    expect(warning.textContent).toContain('SQLite FTS5')
+  })
+
+  it.each([
+    'vector_bge_m3_768',
+    'sqlite_fts5_default',
+  ])('repairs a configured tombstone by saving %s', async (profileId) => {
+    const confirmedStatus = statusPayload({
+      capabilitiesVersion: '3333333333333333',
+      configuredDefaultRetrievalProfile: profileId,
+      effectiveDefaultRetrievalProfile: profileId,
+      defaultRetrievalProfile: profileId,
+      defaultFallbackReason: null,
+      retrievalProfiles: CURRENT_768_PROFILES,
+    })
+    const { el } = await mountKnowledgeView({
+      status: {
+        capabilitiesVersion: '2222222222222222',
+        configuredDefaultRetrievalProfile: 'vector_bge_m3_1024',
+        effectiveDefaultRetrievalProfile: 'sqlite_fts5_default',
+        defaultRetrievalProfile: 'sqlite_fts5_default',
+        defaultFallbackReason: 'configured_default_unavailable',
+        retrievalProfiles: TOMBSTONE_PROFILES,
+      },
+      settingsPatch: confirmedStatus,
+    })
+    const defaultSelect = byTestId<HTMLSelectElement>(el, 'knowledge-default-profile')
+    setInputValue(defaultSelect, profileId)
+    await flushUi()
+
+    byTestId<HTMLButtonElement>(el, 'knowledge-save-default').click()
+    await flushUi()
+
+    expect(rpcCall('knowledge.settings.patch')?.[1]).toEqual({
+      defaultRetrievalProfile: profileId,
+    })
+    expect(defaultSelect.value).toBe(profileId)
+    expect(byTestId(el, 'knowledge-fallback-warning').hidden).toBe(true)
   })
 
   it('accepts READY runtime wire profiles with nullable lexical metadata', async () => {

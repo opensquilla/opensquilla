@@ -412,6 +412,119 @@ def test_profile_process_local_tmp_is_private_readwrite_transport(
     assert _access_rule(rendered, "file-write*", private_tmp)
 
 
+def test_profile_private_runtime_read_preserves_denied_descendant(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    runtime_root = tmp_path / "runtime"
+    denied = runtime_root / "secret"
+    workspace.mkdir()
+    denied.mkdir(parents=True)
+    file_system = FileSystemPermissionProfile(
+        entries=(
+            FileSystemPermissionEntry(workspace, FileSystemAccess.WRITE),
+            FileSystemPermissionEntry(denied, FileSystemAccess.DENY),
+        )
+    )
+    policy = replace(
+        _policy(workspace),
+        mounts=(
+            MountSpec(
+                host_path=runtime_root,
+                sandbox_path=runtime_root,
+                mode="ro",
+                required=True,
+            ),
+        ),
+        file_system=file_system,
+    )
+    request = replace(
+        _request(policy, workspace),
+        action_kind="fs.worker.list_dir",
+    )
+
+    rendered = render_seatbelt_profile(request)
+
+    runtime_read = _access_rule(rendered, "file-read*", runtime_root)
+    assert f'(require-not (subpath "{denied}"))' in runtime_read
+
+
+def test_profile_private_runtime_fails_closed_below_explicit_denied_ancestor(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    denied_parent = tmp_path / "denied"
+    runtime_root = denied_parent / "runtime"
+    workspace.mkdir()
+    runtime_root.mkdir(parents=True)
+    file_system = FileSystemPermissionProfile(
+        entries=(
+            FileSystemPermissionEntry(workspace, FileSystemAccess.WRITE),
+            FileSystemPermissionEntry(denied_parent, FileSystemAccess.DENY),
+        )
+    )
+    policy = replace(
+        _policy(workspace),
+        mounts=(
+            MountSpec(
+                host_path=runtime_root,
+                sandbox_path=runtime_root,
+                mode="ro",
+                required=True,
+            ),
+        ),
+        file_system=file_system,
+    )
+    request = replace(
+        _request(policy, workspace),
+        action_kind="fs.worker.list_dir",
+    )
+
+    with pytest.raises(SandboxBackendError, match="private.*explicitly denied"):
+        render_seatbelt_profile(request)
+
+
+def test_profile_private_worker_write_preserves_read_and_deny_carveouts(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    worker_root = tmp_path / "worker"
+    readonly = worker_root / "readonly"
+    denied = worker_root / "secret"
+    workspace.mkdir()
+    readonly.mkdir(parents=True)
+    denied.mkdir()
+    file_system = FileSystemPermissionProfile(
+        entries=(
+            FileSystemPermissionEntry(workspace, FileSystemAccess.WRITE),
+            FileSystemPermissionEntry(readonly, FileSystemAccess.READ),
+            FileSystemPermissionEntry(denied, FileSystemAccess.DENY),
+        )
+    )
+    policy = replace(
+        _policy(workspace),
+        mounts=(
+            MountSpec(
+                host_path=worker_root,
+                sandbox_path=worker_root,
+                mode="rw",
+                required=True,
+            ),
+        ),
+        file_system=file_system,
+    )
+    request = replace(
+        _request(policy, workspace),
+        action_kind="fs.worker.write_text",
+    )
+
+    rendered = render_seatbelt_profile(request)
+
+    worker_write = _access_rule(rendered, "file-write*", worker_root)
+    assert f'(require-not (subpath "{readonly}"))' in worker_write
+    assert f'(require-not (subpath "{denied}"))' in worker_write
+
+
 def test_profile_rejects_non_loopback_proxy_endpoint(tmp_path: Path) -> None:
     policy = _policy(
         tmp_path,
@@ -1209,3 +1322,113 @@ def test_filesystem_operation_validates_list_target_type(tmp_path: Path) -> None
             operation,
             workspace / ".opensquilla-cache" / "fs-worker" / "payload.json",
         )
+
+
+def test_filesystem_operation_rejects_denied_read_target_in_private_runtime(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    runtime_root = tmp_path / "runtime"
+    target = runtime_root / "secret.txt"
+    workspace.mkdir()
+    runtime_root.mkdir()
+    target.write_text("secret", encoding="utf-8")
+    monkeypatch.setattr(
+        seatbelt_mod,
+        "_runtime_readonly_roots",
+        lambda: (runtime_root,),
+    )
+    profile = FileSystemPermissionProfile(
+        entries=(
+            FileSystemPermissionEntry(Path("/"), FileSystemAccess.READ),
+            FileSystemPermissionEntry(target, FileSystemAccess.DENY),
+        )
+    )
+    operation = SandboxOperation.filesystem(
+        kind="read_file",
+        workspace=workspace,
+        run_mode="trusted",
+        path=target,
+        file_system_profile=profile,
+    )
+
+    with pytest.raises(SandboxBackendError, match="profile denies read access"):
+        seatbelt_mod._filesystem_operation_request(
+            operation,
+            workspace / ".opensquilla-cache" / "fs-worker" / "payload.json",
+        )
+
+
+def test_filesystem_operation_rejects_readonly_write_target_in_private_worker_root(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    worker_root = workspace / ".opensquilla-cache" / "fs-worker"
+    target = worker_root / "notes.txt"
+    workspace.mkdir()
+    profile = FileSystemPermissionProfile.read_only()
+    operation = SandboxOperation.filesystem(
+        kind="write_text",
+        workspace=workspace,
+        run_mode="trusted",
+        path=target,
+        content="hello",
+        file_system_profile=profile,
+    )
+
+    with pytest.raises(SandboxBackendError, match="profile requires write access"):
+        seatbelt_mod._filesystem_operation_request(
+            operation,
+            worker_root / "payload.json",
+        )
+
+
+def test_filesystem_operation_allows_profile_write_target_in_private_worker_root(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    worker_root = workspace / ".opensquilla-cache" / "fs-worker"
+    target = worker_root / "notes.txt"
+    workspace.mkdir()
+    profile = FileSystemPermissionProfile(
+        entries=(
+            FileSystemPermissionEntry(Path("/"), FileSystemAccess.READ),
+            FileSystemPermissionEntry(worker_root, FileSystemAccess.WRITE),
+        )
+    )
+    operation = SandboxOperation.filesystem(
+        kind="write_text",
+        workspace=workspace,
+        run_mode="trusted",
+        path=target,
+        content="hello",
+        file_system_profile=profile,
+    )
+
+    request = seatbelt_mod._filesystem_operation_request(
+        operation,
+        worker_root / "payload.json",
+    )
+
+    assert request.policy.file_system is profile
+
+
+def test_filesystem_operation_allows_etc_with_root_read_profile(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    profile = FileSystemPermissionProfile.read_only()
+    operation = SandboxOperation.filesystem(
+        kind="list_dir",
+        workspace=workspace,
+        run_mode="trusted",
+        path=Path("/etc"),
+        file_system_profile=profile,
+    )
+
+    request = seatbelt_mod._filesystem_operation_request(
+        operation,
+        workspace / ".opensquilla-cache" / "fs-worker" / "payload.json",
+    )
+
+    assert request.policy.file_system is profile

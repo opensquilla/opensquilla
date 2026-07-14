@@ -349,6 +349,18 @@ def _profile_exclusions(
     return _unique_seatbelt_paths(tuple(excluded))
 
 
+def _private_transport_exclusions(
+    profile: FileSystemPermissionProfile,
+    root: Path,
+    accesses: frozenset[FileSystemAccess],
+) -> tuple[Path, ...]:
+    if profile.is_explicitly_denied(root):
+        raise SandboxBackendError(
+            f"seatbelt private transport root is explicitly denied by filesystem profile: {root}"
+        )
+    return _profile_exclusions(profile, root, accesses)
+
+
 def _profile_read_rules(profile: FileSystemPermissionProfile) -> list[str]:
     read_roots = list(
         _profile_roots(
@@ -436,9 +448,22 @@ def render_seatbelt_profile(
     if tmp_dir is not None:
         private_read_roots = _unique_seatbelt_paths((*private_read_roots, tmp_dir))
         private_write_roots = _unique_seatbelt_paths((*private_write_roots, tmp_dir))
-    lines.extend(_seatbelt_access_rule("file-read*", root, ()) for root in private_read_roots)
+    denied = frozenset({FileSystemAccess.DENY})
     lines.extend(
-        _seatbelt_access_rule("file-write*", root, ())
+        _seatbelt_access_rule(
+            "file-read*",
+            root,
+            _private_transport_exclusions(file_system, root, denied),
+        )
+        for root in private_read_roots
+    )
+    carveouts = frozenset({FileSystemAccess.READ, FileSystemAccess.DENY})
+    lines.extend(
+        _seatbelt_access_rule(
+            "file-write*",
+            root,
+            _private_transport_exclusions(file_system, root, carveouts),
+        )
         for root in private_write_roots
     )
 
@@ -558,23 +583,43 @@ def _validate_filesystem_operation_targets(operation: SandboxOperation) -> None:
             raise FileNotFoundError(f"File not found: {display}")
         if not request.path.is_file():
             raise IsADirectoryError(f"Path is a directory: {display}")
-        return
-    if operation.kind == "list_dir" and request.path is not None:
+    elif operation.kind == "list_dir" and request.path is not None:
         display = request.display_path or str(request.path)
         if not request.path.exists():
             raise FileNotFoundError(f"Path not found: {display}")
         if not request.path.is_dir():
             raise NotADirectoryError(f"Not a directory: {display}")
+    if operation.kind in SANDBOX_FILESYSTEM_WRITE_KINDS:
+        readonly_roots = _runtime_readonly_roots()
+        for path in request.paths:
+            for root in readonly_roots:
+                if _is_relative_to_casefold(path, root):
+                    raise SandboxBackendError(
+                        f"seatbelt denied read-only runtime filesystem target: {path}"
+                    )
+    _validate_filesystem_operation_profile_targets(operation, request)
+
+
+def _validate_filesystem_operation_profile_targets(
+    operation: SandboxOperation,
+    request: FilesystemOperationRequest,
+) -> None:
+    profile = operation.file_system_profile
+    if profile is None:
         return
-    if operation.kind not in SANDBOX_FILESYSTEM_WRITE_KINDS:
-        return
-    readonly_roots = _runtime_readonly_roots()
+    write_required = operation.kind in SANDBOX_FILESYSTEM_WRITE_KINDS
     for path in request.paths:
-        for root in readonly_roots:
-            if _is_relative_to_casefold(path, root):
-                raise SandboxBackendError(
-                    f"seatbelt denied read-only runtime filesystem target: {path}"
-                )
+        access = profile.resolve(path)
+        if write_required and access is not FileSystemAccess.WRITE:
+            raise SandboxBackendError(
+                "seatbelt filesystem profile requires write access for "
+                f"{operation.kind} target: {path} (resolved {access.value})"
+            )
+        if not write_required and access is FileSystemAccess.DENY:
+            raise SandboxBackendError(
+                "seatbelt filesystem profile denies read access for "
+                f"{operation.kind} target: {path}"
+            )
 
 
 def _runtime_readonly_roots() -> tuple[Path, ...]:

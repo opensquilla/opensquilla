@@ -13,11 +13,14 @@ def format_directory_entry(
     entry: Path,
     *,
     follow_target: bool = True,
+    symlink_target_is_broken: bool = False,
 ) -> tuple[bool, str]:
     """Return ``(is_directory, display_line)`` without failing on child metadata.
 
     ``follow_target=False`` is the fail-closed form for callers whose path-policy
     resolution failed. It uses only ``lstat`` metadata and never follows a link.
+    ``symlink_target_is_broken`` lets a caller preserve an already-confirmed
+    symlink-loop result without following the target again.
     """
 
     try:
@@ -27,6 +30,8 @@ def format_directory_entry(
     mode = metadata.st_mode
 
     if stat.S_ISLNK(mode):
+        if symlink_target_is_broken:
+            return False, f"[link] {entry.name} (broken symlink)"
         if not follow_target:
             return False, f"[link] {entry.name} (target metadata unavailable)"
         try:

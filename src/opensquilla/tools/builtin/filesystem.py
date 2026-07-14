@@ -2767,7 +2767,11 @@ async def list_dir(path: str, approval_id: str | None = None) -> str:
             except RuntimeError as exc:
                 if not _is_pathlib_symlink_loop_error(exc):
                     raise
-                is_directory, line = format_directory_entry(entry, follow_target=False)
+                is_directory, line = format_directory_entry(
+                    entry,
+                    follow_target=False,
+                    symlink_target_is_broken=True,
+                )
                 (dirs if is_directory else files).append(line)
                 continue
             marker = _workspace_strict_candidate_marker(

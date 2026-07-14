@@ -792,6 +792,20 @@ async def test_list_dir_valid_symlink_matches_worker_output(tmp_path: Path) -> N
 
 
 @pytest.mark.asyncio
+async def test_list_dir_symlink_loop_matches_worker_output(tmp_path: Path) -> None:
+    loop = tmp_path / "loop"
+    _make_symlink(loop, loop)
+
+    worker_result = filesystem_worker._list_dir({"path": str(tmp_path)})
+    with tool_context(tmp_path):
+        host_output = await fs.list_dir(str(tmp_path))
+
+    expected = "[link] loop (broken symlink)"
+    assert expected in worker_result["message"]
+    assert expected in host_output
+
+
+@pytest.mark.asyncio
 async def test_list_dir_host_fallback_distinguishes_unreadable_symlink_target(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

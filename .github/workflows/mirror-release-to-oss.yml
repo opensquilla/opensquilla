@@ -172,11 +172,11 @@ jobs:
         run: |
           set -euo pipefail
           root="release-assets"
-          shopt -s nullglob
           make_alias() {
             local pattern="$1"
             local alias="$2"
-            local matches=("${root}"/${pattern})
+            local -a matches=()
+            mapfile -t matches < <(compgen -G "${root}/${pattern}" || true)
             if (( ${#matches[@]} != 1 )); then
               echo "Expected exactly one release asset matching ${pattern}; found ${#matches[@]}" >&2
               exit 1

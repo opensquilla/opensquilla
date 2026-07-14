@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import ctypes
 import errno
 import hashlib
@@ -45,6 +46,17 @@ from opensquilla.recovery.locking import (
     acquire_legacy_gateway_locks,
     user_state_dir,
 )
+
+
+def _create_windows_junction(link: Path, target: Path) -> None:
+    completed = subprocess.run(
+        ["cmd", "/c", "mklink", "/J", str(link), str(target)],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if completed.returncode != 0:
+        pytest.skip(f"junction creation is unavailable: {completed.stderr}")
 
 
 def _contend_for_lock(home: str, state_root: str, queue: multiprocessing.Queue) -> None:
@@ -640,13 +652,7 @@ def test_windows_native_move_rejects_real_junction_in_source_tree(tmp_path: Path
     destination = tmp_path / "destination"
     source.mkdir()
     outside.mkdir()
-    completed = subprocess.run(
-        ["cmd", "/c", "mklink", "/J", str(source / "junction"), str(outside)],
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-    assert completed.returncode == 0, completed.stderr or completed.stdout
+    _create_windows_junction(source / "junction", outside)
     assert os.path.isjunction(source / "junction")
 
     with pytest.raises(UnsafePathError):
@@ -655,6 +661,61 @@ def test_windows_native_move_rejects_real_junction_in_source_tree(tmp_path: Path
     assert source.is_dir()
     assert outside.is_dir()
     assert not destination.exists()
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="requires real Windows junctions")
+def test_windows_profile_manifest_records_junction_tag_and_target(tmp_path: Path) -> None:
+    profile = tmp_path / "profile"
+    workspace = profile / "workspace"
+    outside = tmp_path / "outside"
+    workspace.mkdir(parents=True)
+    outside.mkdir()
+    _create_windows_junction(workspace / "junction", outside)
+
+    manifest = profile_no_follow_manifest(profile)
+
+    identity = manifest["workspace/junction"]
+    assert identity.reparse_tag == 0xA0000003
+    assert identity.link_target == os.readlink(workspace / "junction")
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="requires real Windows junctions")
+def test_windows_native_move_detects_junction_target_swap_after_rename(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source"
+    destination = tmp_path / "destination"
+    workspace = source / "workspace"
+    outside_a = tmp_path / "outside-a"
+    outside_b = tmp_path / "outside-b"
+    workspace.mkdir(parents=True)
+    outside_a.mkdir()
+    outside_b.mkdir()
+    (outside_a / "sentinel.txt").write_text("a\n", encoding="utf-8")
+    (outside_b / "sentinel.txt").write_text("b\n", encoding="utf-8")
+    _create_windows_junction(workspace / "junction", outside_a)
+    original_target = os.readlink(workspace / "junction")
+
+    @contextlib.contextmanager
+    def swap_after_native_rename():
+        yield
+        moved = destination / "workspace" / "junction"
+        moved.rmdir()
+        _create_windows_junction(moved, outside_b)
+
+    with pytest.raises(AtomicStateUnknownError):
+        native_move_no_replace(
+            source,
+            destination,
+            _mutation_guard=swap_after_native_rename,
+            _use_profile_manifest_policy=True,
+        )
+
+    assert not source.exists()
+    assert os.path.isjunction(destination / "workspace" / "junction")
+    assert os.readlink(destination / "workspace" / "junction") != original_target
+    assert (outside_a / "sentinel.txt").read_text(encoding="utf-8") == "a\n"
+    assert (outside_b / "sentinel.txt").read_text(encoding="utf-8") == "b\n"
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="requires real Windows junctions")
@@ -677,14 +738,7 @@ def test_windows_profile_move_preserves_workspace_and_code_task_junctions(
         (workspace / "junction", workspace_outside),
         (code_task / "junction", code_task_outside),
     ):
-        completed = subprocess.run(
-            ["cmd", "/c", "mklink", "/J", str(link), str(target)],
-            check=False,
-            capture_output=True,
-            text=True,
-        )
-        if completed.returncode != 0:
-            pytest.skip(f"junction creation is unavailable: {completed.stderr}")
+        _create_windows_junction(link, target)
 
     move_profile_no_replace(source, destination)
 

@@ -2148,6 +2148,91 @@ def test_code_task_bytes_are_excluded_from_disk_preflight(tmp_path: Path) -> Non
     ]
 
 
+@pytest.mark.parametrize("root_name", ["state", "workspace", "media"])
+@pytest.mark.parametrize("descendant", [False, True], ids=["exact", "descendant"])
+def test_configured_data_root_inside_source_code_task_blocks_import(
+    tmp_path: Path,
+    root_name: str,
+    descendant: bool,
+) -> None:
+    source = _build_source_home(tmp_path)
+    configured = source / "code-task"
+    if descendant:
+        configured = configured / "selected-subdir"
+    configured.mkdir(parents=True)
+    (configured / "must-not-migrate.txt").write_text("local run data\n", encoding="utf-8")
+    payload = tomllib.loads((source / "config.toml").read_text(encoding="utf-8"))
+    if root_name == "media":
+        payload.setdefault("attachments", {})["media_root"] = str(configured)
+    else:
+        payload[f"{root_name}_dir"] = str(configured)
+    (source / "config.toml").write_text(tomli_w.dumps(payload), encoding="utf-8")
+
+    preview = _run(source, tmp_path / f"target-preview-{root_name}-{descendant}")
+    applied_target = tmp_path / f"target-apply-{root_name}-{descendant}"
+    applied = _run(source, applied_target, apply=True)
+
+    for report in (preview, applied):
+        data_root_errors = [
+            item
+            for item in _errors(report)
+            if item["kind"] == "preflight/data-root"
+            and item["source"] == str(configured)
+        ]
+        assert data_root_errors
+        assert "inside source code-task" in data_root_errors[0]["reason"]
+        assert data_root_errors[0]["details"]["stable_code"] == "configured_code_task_root"
+    assert not applied_target.exists()
+
+
+def test_dotenv_data_root_inside_source_code_task_blocks_import(tmp_path: Path) -> None:
+    source = _build_source_home(tmp_path)
+    configured = source / "code-task"
+    configured.mkdir()
+    (configured / "must-not-migrate.txt").write_text("local run data\n", encoding="utf-8")
+    (source / ".env").write_text(
+        "OPENROUTER_API_KEY=dummy\n"
+        f"OPENSQUILLA_GATEWAY_WORKSPACE_DIR={configured}\n",
+        encoding="utf-8",
+    )
+    target = tmp_path / "target-home"
+
+    report = _run(source, target, apply=True)
+
+    data_root_errors = [
+        item
+        for item in _errors(report)
+        if item["kind"] == "preflight/data-root" and item["source"] == str(configured)
+    ]
+    assert data_root_errors
+    assert "inside source code-task" in data_root_errors[0]["reason"]
+    assert data_root_errors[0]["details"]["stable_code"] == "configured_code_task_root"
+    assert not target.exists()
+
+
+def test_agent_workspace_inside_source_code_task_blocks_import(tmp_path: Path) -> None:
+    source = _build_source_home(tmp_path)
+    configured = source / "code-task" / "agent-run"
+    configured.mkdir(parents=True)
+    (configured / "must-not-migrate.txt").write_text("local run data\n", encoding="utf-8")
+    payload = tomllib.loads((source / "config.toml").read_text(encoding="utf-8"))
+    payload["agents"] = [{"id": "research", "workspace": str(configured)}]
+    (source / "config.toml").write_text(tomli_w.dumps(payload), encoding="utf-8")
+    target = tmp_path / "target-home"
+
+    report = _run(source, target, apply=True)
+
+    data_root_errors = [
+        item
+        for item in _errors(report)
+        if item["kind"] == "preflight/data-root" and item["source"] == str(configured)
+    ]
+    assert data_root_errors
+    assert "inside source code-task" in data_root_errors[0]["reason"]
+    assert data_root_errors[0]["details"]["stable_code"] == "configured_code_task_root"
+    assert not target.exists()
+
+
 def test_other_excluded_profile_trees_do_not_block_or_inflate_import(
     tmp_path: Path,
 ) -> None:

@@ -33,6 +33,11 @@ _WINDOWS_ERROR_INVALID_PARAMETER = 87
 _WINDOWS_ERROR_CALL_NOT_IMPLEMENTED = 120
 _FILE_ATTRIBUTE_REPARSE_POINT = 0x400
 _FILE_ATTRIBUTE_DIRECTORY = 0x10
+_IO_REPARSE_TAG_MOUNT_POINT = 0xA0000003
+_IO_REPARSE_TAG_SYMLINK = 0xA000000C
+_ALLOWED_LINK_REPARSE_TAGS = frozenset(
+    {_IO_REPARSE_TAG_MOUNT_POINT, _IO_REPARSE_TAG_SYMLINK}
+)
 _WINDOWS_DELETE_ACCESS = 0x00010000
 _WINDOWS_FILE_TRAVERSE = 0x00000020
 _WINDOWS_FILE_READ_ATTRIBUTES = 0x00000080
@@ -101,23 +106,42 @@ class PathIdentity:
     mode: int
     size: int
     modified_at_ns: int
+    reparse_tag: int | None = None
+    link_target: str | None = None
 
     @classmethod
-    def from_stat(cls, value: os.stat_result) -> PathIdentity:
+    def from_stat(
+        cls,
+        value: os.stat_result,
+        *,
+        reparse_tag: int | None = None,
+        link_target: str | None = None,
+    ) -> PathIdentity:
+        observed_tag = int(getattr(value, "st_reparse_tag", 0)) or None
         return cls(
             device=int(value.st_dev),
             inode=int(value.st_ino),
             mode=int(value.st_mode),
             size=int(value.st_size),
             modified_at_ns=int(value.st_mtime_ns),
+            reparse_tag=reparse_tag if reparse_tag is not None else observed_tag,
+            link_target=link_target,
         )
 
     @property
     def token(self) -> str:
         return f"{self.device}:{self.inode}"
 
-    def metadata_tuple(self) -> tuple[int, int, int, int, int]:
-        return (self.device, self.inode, self.mode, self.size, self.modified_at_ns)
+    def metadata_tuple(self) -> tuple[int, int, int, int, int, int | None, str | None]:
+        return (
+            self.device,
+            self.inode,
+            self.mode,
+            self.size,
+            self.modified_at_ns,
+            self.reparse_tag,
+            self.link_target,
+        )
 
 
 def _is_reparse_point(value: os.stat_result) -> bool:
@@ -132,7 +156,22 @@ def _is_link_or_reparse(value: os.stat_result) -> bool:
 def path_identity(path: str | Path, *, follow_symlinks: bool = False) -> PathIdentity:
     candidate = Path(path)
     value = candidate.stat() if follow_symlinks else candidate.lstat()
-    return PathIdentity.from_stat(value)
+    if follow_symlinks or not _is_link_or_reparse(value):
+        return PathIdentity.from_stat(value)
+    return _link_leaf_identity(candidate, value)
+
+
+def _link_leaf_identity(path: Path, value: os.stat_result) -> PathIdentity:
+    """Return no-follow identity for an approved link/reparse manifest leaf."""
+
+    tag = int(getattr(value, "st_reparse_tag", 0)) or None
+    if tag is not None and tag not in _ALLOWED_LINK_REPARSE_TAGS:
+        raise UnsafePathError(f"unsupported reparse point in recovery source: {path}")
+    try:
+        target = os.readlink(path)
+    except OSError as exc:
+        raise UnsafePathError(f"cannot inspect recovery link target: {path}") from exc
+    return PathIdentity.from_stat(value, reparse_tag=tag, link_target=target)
 
 
 def _assert_plain_directory(path: Path, *, label: str) -> os.stat_result:
@@ -197,8 +236,9 @@ def no_follow_manifest(
         for entry in entries:
             child_relative = relative / entry.name
             child_key = child_relative.as_posix()
+            child_path = Path(entry.path)
             try:
-                value = entry.stat(follow_symlinks=False)
+                value = child_path.lstat()
             except OSError as exc:
                 raise UnsafePathError(f"cannot inspect recovery source: {entry.path}") from exc
             if _is_link_or_reparse(value):
@@ -210,7 +250,7 @@ def no_follow_manifest(
                     raise UnsafePathError(
                         f"automatic operations refuse links or reparse points: {entry.path}"
                     )
-                result[child_key] = PathIdentity.from_stat(value)
+                result[child_key] = _link_leaf_identity(child_path, value)
                 continue
             if not (stat.S_ISDIR(value.st_mode) or stat.S_ISREG(value.st_mode)):
                 raise UnsafePathError(f"automatic operations refuse special files: {entry.path}")
@@ -275,11 +315,15 @@ def _manifest_matches_after_move(
             current.inode,
             current.mode,
             current.size,
+            current.reparse_tag,
+            current.link_target,
         ) != (
             expected.device,
             expected.inode,
             expected.mode,
             expected.size,
+            expected.reparse_tag,
+            expected.link_target,
         ):
             return False
     return True
@@ -300,7 +344,15 @@ def _manifest_difference_summary(
         counts["removed_entries"] = len(removed)
     if added:
         counts["added_entries"] = len(added)
-    fields = ("device", "inode", "mode", "size", "modified_at_ns")
+    fields = (
+        "device",
+        "inode",
+        "mode",
+        "size",
+        "modified_at_ns",
+        "reparse_tag",
+        "link_target",
+    )
     for relative in before.keys() & after.keys():
         expected = before[relative]
         current = after[relative]

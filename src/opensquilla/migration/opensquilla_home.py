@@ -261,6 +261,17 @@ def _paths_overlap(first: Path, second: Path) -> bool:
     )
 
 
+def _path_is_relative_to_lexical(path: Path, root: Path) -> bool:
+    """Return whether ``path`` is equal to or below ``root`` without following links."""
+
+    path_value = os.path.normcase(os.path.normpath(str(path.expanduser().absolute())))
+    root_value = os.path.normcase(os.path.normpath(str(root.expanduser().absolute())))
+    try:
+        return os.path.commonpath([path_value, root_value]) == root_value
+    except ValueError:
+        return False
+
+
 def is_valid_opensquilla_home(path: Path) -> bool:
     """Return True when ``path`` plausibly holds an OpenSquilla home."""
     try:
@@ -4937,6 +4948,18 @@ class OpenSquillaHomeMigrator:
                 if resolved in seen:
                     continue
                 seen.add(resolved)
+                if _path_is_relative_to_lexical(root, source / "code-task"):
+                    self._record(
+                        "preflight/data-root",
+                        root,
+                        self.target / name,
+                        "error",
+                        f"configured {name} root points inside source code-task; "
+                        "machine-local code-task runs are not portable",
+                        {"stable_code": "configured_code_task_root"},
+                    )
+                    self._blocked = True
+                    continue
                 # Target overlap is the publication hazard with the narrowest,
                 # most actionable diagnosis. A broad configured root can contain
                 # both source and target; report the target hazard first instead
@@ -5078,6 +5101,18 @@ class OpenSquillaHomeMigrator:
                         self.target / "workspace" / "agents" / agent_id,
                         "error",
                         f"configured workspace for agent {agent_id} is missing or unreadable",
+                    )
+                    self._blocked = True
+                    continue
+                if _path_is_relative_to_lexical(configured_workspace, source / "code-task"):
+                    self._record(
+                        "preflight/data-root",
+                        configured_workspace,
+                        self.target / "workspace" / "agents" / agent_id,
+                        "error",
+                        f"configured workspace for agent {agent_id} points inside "
+                        "source code-task; machine-local code-task runs are not portable",
+                        {"stable_code": "configured_code_task_root"},
                     )
                     self._blocked = True
                     continue

@@ -237,9 +237,10 @@ export function useChatRenderedMessages(options: UseChatRenderedMessagesOptions)
       const sameGroup = collapsible && displayRole === prevRole && day === prevDay && day !== ''
       if (collapsible) prevRole = displayRole
 
-      const ownerKey = msg.messageId || `${msg.role}-${i}`
+      const ownerKey = msg.messageId || msg.clientId || `${msg.role}-${i}`
       const rendered: ChatRenderedMessage = {
         id: `${msg.role}-${i}`,
+        ...(msg.clientId ? { clientId: msg.clientId } : {}),
         sourceIndex: i,
         role: msg.role,
         displayRole,

@@ -11,7 +11,7 @@ import { bindingsEqual, type Binding } from '@/utils/keychord'
 // Persistence mirrors the theme preference: a browser-local localStorage value,
 // applied instantly, never part of the settings dirty bar.
 
-export type ShortcutId = 'command-palette' | 'new-chat'
+export type ShortcutId = 'command-palette' | 'new-chat' | 'toggle-sidebar'
 
 export interface ShortcutDef {
   id: ShortcutId
@@ -32,6 +32,13 @@ export interface ShortcutState {
 // read, so consumers (the Keyboard settings panel) re-render on a language
 // switch without the def list itself becoming reactive state.
 export const SHORTCUT_DEFS: readonly ShortcutDef[] = [
+  {
+    id: 'toggle-sidebar',
+    get label() { return i18n.global.t('shared.shortcuts.toggleSidebar.label') },
+    get description() { return i18n.global.t('shared.shortcuts.toggleSidebar.description') },
+    defaultBinding: { primary: true, key: 'b' },
+    defaultEnabled: true,
+  },
   {
     id: 'command-palette',
     get label() { return i18n.global.t('shared.shortcuts.commandPalette.label') },

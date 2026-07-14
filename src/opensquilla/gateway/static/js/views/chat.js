@@ -1397,6 +1397,7 @@ const ChatView = (() => {
   /* ── Toolbar Pills (feature toggles) ────────────────────────────────── */
 
   function _shouldAutofocusComposer() {
+    if (document.visibilityState !== 'visible' || !document.hasFocus()) return false;
     try {
       if (window.matchMedia('(max-width: 768px)').matches) return false;
       if (window.matchMedia('(pointer: coarse)').matches) return false;

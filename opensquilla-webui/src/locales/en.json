@@ -70,6 +70,13 @@
     "more": "More",
     "moreDestinations": "More destinations",
     "expandSidebar": "Expand sidebar",
+    "collapseSidebar": "Collapse sidebar",
+    "toggleSidebar": "Toggle sidebar",
+    "resizeSidebar": "Resize sidebar",
+    "sidebarWidthValue": "Sidebar width: {width}px, {preset}",
+    "sidebarWidthLimitedValue": "Sidebar width: {width}px, {preset}; limited by this window (preferred {preference}px)",
+    "releaseToCollapseSidebar": "Release to collapse sidebar",
+    "sidebarCollapseCanceled": "Sidebar collapse canceled",
     "openBlockedSession": "Open the blocked session",
     "approvalRequired": "Approval required",
     "manageConnection": "Manage gateway connection",
@@ -102,13 +109,32 @@
   "settings": {
     "appearance": {
       "title": "Appearance",
-      "desc": "Theme and language for this browser. Changes apply instantly — no save needed.",
+      "desc": "Theme, language, and browser-local interface preferences. Presets apply instantly; custom widths use Apply.",
       "themeLabel": "Theme",
       "themeDesc": "Follow your system, or force light or dark. The sidebar toggle is a shortcut to this same setting.",
       "languageLabel": "Language",
       "languageDesc": "Display language for the interface. Applies instantly to this browser.",
       "bgmLabel": "Background music",
-      "bgmDesc": "Show the background-music control in the top bar. Off by default; also toggleable from the command palette."
+      "bgmDesc": "Show the background-music control in the top bar. Off by default; also toggleable from the command palette.",
+      "sidebarWidthLabel": "Sidebar width",
+      "sidebarWidthDesc": "Choose the desktop sidebar width. Compact and drawer layouts use a fixed width.",
+      "sidebarWidthCompact": "Compact",
+      "sidebarWidthDefault": "Default",
+      "sidebarWidthWide": "Wide",
+      "sidebarWidthCustom": "Custom",
+      "sidebarWidthCustomLabel": "Custom width",
+      "sidebarWidthCustomHint": "Use the minus and plus buttons or enter a value, then apply it.",
+      "sidebarWidthDecrease": "Decrease sidebar width",
+      "sidebarWidthIncrease": "Increase sidebar width",
+      "sidebarWidthApply": "Apply",
+      "sidebarWidthRange": "Enter a whole number from {min} to {max}.",
+      "sidebarWidthModeResizable": "Resizable",
+      "sidebarWidthModeCompact": "Compact layout",
+      "sidebarWidthModeDrawer": "Drawer layout",
+      "sidebarWidthResizableStatus": "Current desktop width: {current}px.",
+      "sidebarWidthClampedStatus": "Saved {saved}px; this window currently uses {current}px.",
+      "sidebarWidthCompactStatus": "Compact layout uses {current}px. Your desktop preference of {saved}px is preserved.",
+      "sidebarWidthDrawerStatus": "Drawer layout uses {current}px. Your desktop preference of {saved}px is preserved."
     },
     "dialog": {
       "title": "Settings",
@@ -1824,6 +1850,14 @@
     "steerModeHint": "Steer: the message sends now and redirects the response in progress",
     "deliveryModeLabel": "Delivery mode while the agent is responding",
     "conversation": "Chat conversation",
+    "historyNavigatorLabel": "Conversation history, {count} prompts",
+    "historyNavigatorLoadedLabel": "Loaded conversation history, {count} prompts; earlier messages available",
+    "historyTurnLabel": "Prompt {number} of {total}: {preview}",
+    "historyTurnLoadedLabel": "Loaded prompt {number} of {total}: {preview}",
+    "historyTurnCount": "Prompt {number} of {total}",
+    "historyTurnLoadedCount": "Loaded prompt {number} of {total}",
+    "historyAttachmentOnly": "Attachment-only message",
+    "historyAttachmentCount": "Attachments: {count}",
     "noMessagesYet": "No messages yet.",
     "newChat": "New chat",
     "chatWithSuffix": "Chat {suffix}",
@@ -2223,6 +2257,10 @@
       "copyCommand": "Copy data transfer command"
     },
     "shortcuts": {
+      "toggleSidebar": {
+        "label": "Toggle sidebar",
+        "description": "Show or hide the primary sidebar."
+      },
       "commandPalette": {
         "label": "Search / command palette",
         "description": "Open the search-and-go-to palette to jump to any page, action, or conversation."

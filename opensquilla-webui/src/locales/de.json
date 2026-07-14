@@ -70,6 +70,13 @@
     "more": "Mehr",
     "moreDestinations": "Weitere Ziele",
     "expandSidebar": "Seitenleiste erweitern",
+    "collapseSidebar": "Seitenleiste einklappen",
+    "toggleSidebar": "Seitenleiste umschalten",
+    "resizeSidebar": "Breite der Seitenleiste ändern",
+    "sidebarWidthValue": "Seitenleistenbreite: {width}px, {preset}",
+    "sidebarWidthLimitedValue": "Seitenleistenbreite: {width}px, {preset}; durch dieses Fenster begrenzt (bevorzugt: {preference}px)",
+    "releaseToCollapseSidebar": "Loslassen, um die Seitenleiste einzuklappen",
+    "sidebarCollapseCanceled": "Einklappen der Seitenleiste abgebrochen",
     "openBlockedSession": "Blockierte Sitzung öffnen",
     "approvalRequired": "Genehmigung erforderlich",
     "manageConnection": "Gateway-Verbindung verwalten",
@@ -102,13 +109,32 @@
   "settings": {
     "appearance": {
       "title": "Darstellung",
-      "desc": "Design und Sprache für diesen Browser. Änderungen werden sofort übernommen — kein Speichern nötig.",
+      "desc": "Design, Sprache und lokale Oberflächeneinstellungen für diesen Browser. Voreinstellungen werden sofort übernommen; eine benutzerdefinierte Breite wird mit Anwenden bestätigt.",
       "themeLabel": "Design",
       "themeDesc": "Dem System folgen oder hell bzw. dunkel erzwingen. Der Schalter in der Seitenleiste ist eine Verknüpfung zu dieser Einstellung.",
       "languageLabel": "Sprache",
       "languageDesc": "Anzeigesprache der Oberfläche. Wird sofort in diesem Browser übernommen.",
       "bgmLabel": "Hintergrundmusik",
-      "bgmDesc": "Zeigt das Hintergrundmusik-Element in der oberen Leiste. Standardmäßig aus; auch über die Befehlspalette umschaltbar."
+      "bgmDesc": "Zeigt das Hintergrundmusik-Element in der oberen Leiste. Standardmäßig aus; auch über die Befehlspalette umschaltbar.",
+      "sidebarWidthLabel": "Seitenleistenbreite",
+      "sidebarWidthDesc": "Wähle die Breite der Seitenleiste auf dem Desktop. Kompakte und Schubladenlayouts verwenden eine feste Breite.",
+      "sidebarWidthCompact": "Kompakt",
+      "sidebarWidthDefault": "Standard",
+      "sidebarWidthWide": "Breit",
+      "sidebarWidthCustom": "Benutzerdefiniert",
+      "sidebarWidthCustomLabel": "Benutzerdefinierte Breite",
+      "sidebarWidthCustomHint": "Verwende die Minus- und Plustaste oder gib einen Wert ein und wende ihn an.",
+      "sidebarWidthDecrease": "Seitenleiste schmaler machen",
+      "sidebarWidthIncrease": "Seitenleiste breiter machen",
+      "sidebarWidthApply": "Anwenden",
+      "sidebarWidthRange": "Gib eine ganze Zahl zwischen {min} und {max} ein.",
+      "sidebarWidthModeResizable": "Größe veränderbar",
+      "sidebarWidthModeCompact": "Kompaktes Layout",
+      "sidebarWidthModeDrawer": "Schubladenlayout",
+      "sidebarWidthResizableStatus": "Aktuelle Desktop-Breite: {current}px.",
+      "sidebarWidthClampedStatus": "Gespeichert sind {saved}px; dieses Fenster verwendet derzeit {current}px.",
+      "sidebarWidthCompactStatus": "Das kompakte Layout verwendet {current}px. Deine Desktop-Einstellung von {saved}px bleibt erhalten.",
+      "sidebarWidthDrawerStatus": "Das Schubladenlayout verwendet {current}px. Deine Desktop-Einstellung von {saved}px bleibt erhalten."
     },
     "dialog": {
       "title": "Einstellungen",
@@ -1824,6 +1850,14 @@
     "steerModeHint": "Lenken: Die Nachricht wird jetzt gesendet und lenkt die laufende Antwort um",
     "deliveryModeLabel": "Zustellmodus, während der Agent antwortet",
     "conversation": "Chat-Unterhaltung",
+    "historyNavigatorLabel": "Gesprächsverlauf, {count} Eingaben",
+    "historyNavigatorLoadedLabel": "Geladener Gesprächsverlauf, {count} Eingaben; frühere Nachrichten sind verfügbar",
+    "historyTurnLabel": "Eingabe {number} von {total}: {preview}",
+    "historyTurnLoadedLabel": "Geladene Eingabe {number} von {total}: {preview}",
+    "historyTurnCount": "Eingabe {number} von {total}",
+    "historyTurnLoadedCount": "Geladene Eingabe {number} von {total}",
+    "historyAttachmentOnly": "Nachricht nur mit Anhang",
+    "historyAttachmentCount": "Anhänge: {count}",
     "noMessagesYet": "Noch keine Nachrichten.",
     "newChat": "Neuer Chat",
     "chatWithSuffix": "Chat {suffix}",
@@ -2223,6 +2257,10 @@
       "copyCommand": "Befehl zur Datenübertragung kopieren"
     },
     "shortcuts": {
+      "toggleSidebar": {
+        "label": "Seitenleiste umschalten",
+        "description": "Blendet die primäre Seitenleiste ein oder aus."
+      },
       "commandPalette": {
         "label": "Suche / Befehlspalette",
         "description": "Öffnen Sie die Suchen-und-springen-Palette, um zu einer beliebigen Seite, Aktion oder Unterhaltung zu springen."

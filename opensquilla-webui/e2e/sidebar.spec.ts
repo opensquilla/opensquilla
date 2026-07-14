@@ -16,6 +16,284 @@ async function openControl(page: Page, path = '') {
 }
 
 test.describe('Sidebar', () => {
+  test('desktop separator resizes, persists, and collapses only on pointer release', async ({ page }) => {
+    await page.addInitScript(() => {
+      if (sessionStorage.getItem('sidebar-resize-e2e-seeded')) return
+      localStorage.removeItem('opensquilla.sidebar.width.v1')
+      sessionStorage.setItem('sidebar-resize-e2e-seeded', '1')
+    })
+    await page.setViewportSize({ width: 1440, height: 900 })
+    await openControl(page)
+
+    const sidebar = page.locator('.sidebar')
+    const main = page.locator('#app-main')
+    const resizer = page.getByTestId('sidebar-resizer')
+    await expect(resizer).toBeVisible()
+    await expect(resizer).toHaveAttribute('role', 'separator')
+    await expect(resizer).toHaveAttribute('aria-controls', 'sidebar-nav app-main')
+
+    const assertDockGeometry = async (expectedWidth: number) => {
+      await expect.poll(async () => {
+        const [sidebarBox, mainBox] = await Promise.all([sidebar.boundingBox(), main.boundingBox()])
+        if (!sidebarBox || !mainBox) return null
+        return {
+          width: Math.round(sidebarBox.width),
+          edgeDelta: Math.round(Math.abs(sidebarBox.x + sidebarBox.width - mainBox.x)),
+        }
+      }).toEqual({ width: expectedWidth, edgeDelta: 0 })
+    }
+
+    await assertDockGeometry(260)
+    const initialHandle = await resizer.boundingBox()
+    expect(initialHandle).not.toBeNull()
+    await page.mouse.move(initialHandle!.x + 1, 420)
+    await page.mouse.down()
+    await page.mouse.move(initialHandle!.x + 101, 420, { steps: 8 })
+    await page.mouse.up()
+    await assertDockGeometry(360)
+    await expect.poll(() => page.evaluate(() => JSON.parse(
+      localStorage.getItem('opensquilla.sidebar.width.v1') || '{}',
+    ))).toMatchObject({ version: 1, width: 360, source: 'custom' })
+
+    // Crossing the raw 200px threshold only arms collapse. The expanded layout
+    // remains at its 240px floor until the mouse is released.
+    const resizedHandle = await resizer.boundingBox()
+    await page.mouse.move(resizedHandle!.x + 1, 420)
+    await page.mouse.down()
+    await page.mouse.move(196, 420, { steps: 10 })
+    await expect(page.locator('.sidebar-resizer__collapse-cue')).toBeVisible()
+    await assertDockGeometry(240)
+    await expect(sidebar).toHaveClass(/docked/)
+    await page.mouse.up()
+
+    await expect(sidebar).not.toHaveClass(/docked/)
+    await expect(page.getByTestId('sidebar-toggle-collapsed')).toBeFocused()
+    await expect.poll(() => page.evaluate(() => JSON.parse(
+      localStorage.getItem('opensquilla.sidebar.width.v1') || '{}',
+    ))).toMatchObject({ width: 360, source: 'custom' })
+
+    await page.getByTestId('sidebar-toggle-collapsed').click()
+    await assertDockGeometry(360)
+    await page.reload()
+    await expect(resizer).toBeVisible()
+    await assertDockGeometry(360)
+
+    await resizer.dblclick()
+    await assertDockGeometry(260)
+    await expect(resizer).toHaveAttribute('aria-valuetext', /Default/)
+    await expect.poll(() => page.evaluate(() => (
+      localStorage.getItem('opensquilla.sidebar.width.v1')
+    ))).toBeNull()
+  })
+
+  test('compact and resizable breakpoints preserve the desktop preference without a 959px jump', async ({ page }) => {
+    await page.addInitScript(() => localStorage.setItem(
+      'opensquilla.sidebar.width.v1',
+      JSON.stringify({ version: 1, width: 360, source: 'wide' }),
+    ))
+    await page.setViewportSize({ width: 959, height: 900 })
+    await openControl(page)
+
+    const sidebar = page.locator('.sidebar')
+    const width = async () => Math.round((await sidebar.boundingBox())?.width || 0)
+    await expect(page.getByTestId('sidebar-resizer')).toHaveCount(0)
+    await expect.poll(width).toBe(260)
+
+    await page.setViewportSize({ width: 960, height: 900 })
+    await expect(page.getByTestId('sidebar-resizer')).toBeVisible()
+    await expect.poll(width).toBe(260)
+
+    await page.setViewportSize({ width: 1024, height: 768 })
+    await expect.poll(width).toBe(324)
+    await expect.poll(() => page.evaluate(() => JSON.parse(
+      localStorage.getItem('opensquilla.sidebar.width.v1') || '{}',
+    ).width)).toBe(360)
+
+    const constrainedHandle = await page.getByTestId('sidebar-resizer').boundingBox()
+    const startX = constrainedHandle!.x + 1
+    await page.mouse.move(startX, 420)
+    await page.mouse.down()
+    await page.mouse.move(startX - 40, 420, { steps: 5 })
+    await page.mouse.move(startX, 420, { steps: 5 })
+    await page.mouse.up()
+    await expect.poll(width).toBe(324)
+    await expect.poll(() => page.evaluate(() => JSON.parse(
+      localStorage.getItem('opensquilla.sidebar.width.v1') || '{}',
+    ))).toMatchObject({ width: 360, source: 'wide' })
+
+    await page.getByTestId('sidebar-resizer').focus()
+    await page.setViewportSize({ width: 959, height: 900 })
+    await expect(page.getByTestId('sidebar-resizer')).toHaveCount(0)
+    await expect(page.getByTestId('sidebar-toggle-expanded')).toBeFocused()
+
+    await page.setViewportSize({ width: 768, height: 900 })
+    await expect(sidebar).not.toHaveClass(/docked/)
+    await expect(page.getByTestId('sidebar-toggle-collapsed')).toBeFocused()
+    await page.setViewportSize({ width: 1024, height: 768 })
+    await expect(sidebar).not.toHaveClass(/docked/)
+    await expect(page.getByTestId('sidebar-resizer')).toHaveCount(0)
+  })
+
+  test('touch phone landscape uses a fixed drawer with no resize handle', async ({ browser }) => {
+    const context = await browser.newContext({
+      baseURL: process.env.OPENSQUILLA_WEBUI_BASE_URL || 'http://127.0.0.1:18791',
+      viewport: { width: 844, height: 390 },
+      hasTouch: true,
+      isMobile: true,
+    })
+    const page = await context.newPage()
+    await page.goto(CONTROL_URL)
+    await page.waitForSelector('.conn-pill', { timeout: 10000 })
+
+    const sidebar = page.locator('.sidebar')
+    await expect(sidebar).not.toHaveClass(/docked/)
+    await expect(page.getByTestId('sidebar-resizer')).toHaveCount(0)
+    await expect(page.getByTestId('sidebar-toggle-collapsed')).toHaveCSS('width', '44px')
+    await expect(page.getByTestId('sidebar-toggle-collapsed')).toHaveCSS('height', '44px')
+    await page.getByTestId('sidebar-toggle-collapsed').click()
+    await expect(sidebar).toHaveClass(/sidebar--drawer/)
+    await expect(page.locator('.sidebar-scrim')).toBeVisible()
+    await expect(page.locator('#app-main')).toHaveAttribute('inert', '')
+    await expect.poll(async () => Math.round((await sidebar.boundingBox())?.width || 0)).toBe(280)
+    await expect.poll(async () => {
+      const box = await page.locator('#app-main').boundingBox()
+      return box ? Math.round(box.x) : -1
+    }).toBe(0)
+    await expect(page.getByTestId('sidebar-toggle-expanded')).toHaveCSS('width', '44px')
+
+    await page.keyboard.press('Escape')
+    await expect(sidebar).not.toHaveClass(/docked/)
+    await expect(page.getByTestId('sidebar-toggle-collapsed')).toBeFocused()
+
+    await page.getByTestId('sidebar-toggle-collapsed').click()
+    await page.locator('.sidebar-scrim').click({ position: { x: 300, y: 200 } })
+    await expect(sidebar).not.toHaveClass(/docked/)
+    await expect(page.getByTestId('sidebar-toggle-collapsed')).toBeFocused()
+
+    await page.getByTestId('sidebar-toggle-collapsed').click()
+    await page.locator('.sidebar-brand-link').click()
+    await expect(sidebar).not.toHaveClass(/docked/)
+    await expect(page.getByTestId('sidebar-toggle-collapsed')).toBeFocused()
+
+    const drawerShortcut = await page.getByTestId('sidebar-toggle-collapsed').getAttribute('aria-keyshortcuts')
+    const drawerPrimary = drawerShortcut?.startsWith('Meta') ? 'Meta' : 'Control'
+    await page.keyboard.press(`${drawerPrimary}+b`)
+    await expect(sidebar).toHaveClass(/docked/)
+    await expect(page.getByTestId('sidebar-toggle-expanded')).toBeFocused()
+    await context.close()
+  })
+
+  test('phone portrait drawers fit 320px and 390px viewports without page overflow', async ({ browser }) => {
+    for (const viewport of [
+      { width: 320, height: 568 },
+      { width: 390, height: 844 },
+    ]) {
+      const context = await browser.newContext({
+        baseURL: process.env.OPENSQUILLA_WEBUI_BASE_URL || 'http://127.0.0.1:18791',
+        viewport,
+        hasTouch: true,
+        isMobile: true,
+      })
+      const page = await context.newPage()
+      await page.goto(CONTROL_URL)
+      await page.waitForSelector('.conn-pill', { timeout: 10000 })
+      await page.getByTestId('sidebar-toggle-collapsed').click()
+
+      await expect(page.getByTestId('sidebar-resizer')).toHaveCount(0)
+      await expect.poll(async () => Math.round((await page.locator('.sidebar').boundingBox())?.width || 0)).toBe(280)
+      await expect.poll(() => page.evaluate(() => ({
+        viewportWidth: window.innerWidth,
+        pageWidth: document.documentElement.scrollWidth,
+      }))).toEqual({ viewportWidth: viewport.width, pageWidth: viewport.width })
+      await context.close()
+    }
+  })
+
+  test('separator keeps a real focus outline and removes motion in accessibility media modes', async ({ page }) => {
+    await page.emulateMedia({ reducedMotion: 'reduce', forcedColors: 'active' })
+    await page.setViewportSize({ width: 1440, height: 900 })
+    await openControl(page)
+
+    const resizer = page.getByTestId('sidebar-resizer')
+    await resizer.focus()
+    await expect(resizer).toBeFocused()
+    await expect.poll(() => resizer.evaluate(element => getComputedStyle(element).outlineStyle)).toBe('solid')
+    await expect.poll(() => resizer.evaluate((element) => {
+      const line = getComputedStyle(element, '::before')
+      return Math.max(
+        ...line.transitionDuration.split(',').map(value => Number.parseFloat(value) || 0),
+      )
+    })).toBeLessThanOrEqual(0.00001)
+
+    await openControl(page, 'settings/appearance')
+    const wide = page.getByTestId('settings-sidebar-width-wide')
+    await wide.locator('..').click()
+    await page.getByRole('dialog').getByRole('button', { name: 'Close' }).focus()
+    await expect.poll(() => wide.locator('..').evaluate((element) => {
+      const style = getComputedStyle(element)
+      return { style: style.outlineStyle, width: style.outlineWidth }
+    })).toEqual({ style: 'solid', width: '2px' })
+  })
+
+  test('Appearance provides a click-only alternative for preset, custom width, and collapse', async ({ page }) => {
+    await page.addInitScript(() => localStorage.removeItem('opensquilla.sidebar.width.v1'))
+    await page.setViewportSize({ width: 1440, height: 900 })
+    await openControl(page, 'settings/appearance')
+
+    const sidebar = page.locator('.sidebar')
+    const sidebarWidth = async () => Math.round((await sidebar.boundingBox())?.width || 0)
+    await expect(page.getByTestId('settings-sidebar-width-group')).toBeVisible()
+
+    await page.getByTestId('settings-sidebar-width-wide').locator('..').click()
+    await expect.poll(sidebarWidth).toBe(360)
+
+    await page.getByTestId('settings-sidebar-width-custom').locator('..').click()
+    const increase = page.getByTestId('settings-sidebar-width-increase')
+    for (let index = 0; index < 52; index += 1) await increase.click()
+    await expect(page.getByTestId('settings-sidebar-width-value')).toHaveValue('312')
+    await page.getByTestId('settings-sidebar-width-apply').click()
+    await expect.poll(sidebarWidth).toBe(312)
+
+    await page.getByRole('dialog').getByRole('button', { name: 'Close' }).click()
+    await expect(page.getByRole('dialog')).toHaveCount(0)
+    await page.getByTestId('sidebar-toggle-expanded').click()
+    await expect(sidebar).not.toHaveClass(/docked/)
+    await expect(page.getByTestId('sidebar-toggle-collapsed')).toBeFocused()
+  })
+
+  test('desktop sidebar uses explicit toggles and the primary+B shortcut', async ({ page }) => {
+    await openControl(page)
+
+    const sidebar = page.locator('.sidebar')
+    const expandedToggle = page.getByTestId('sidebar-toggle-expanded')
+    await expect(sidebar).toHaveClass(/docked/)
+    await expect(expandedToggle).toHaveAttribute('aria-expanded', 'true')
+    await expect(expandedToggle).toHaveAttribute('aria-keyshortcuts', /^(Meta|Control)\+B$/)
+
+    await expandedToggle.click()
+    await expect(sidebar).not.toHaveClass(/docked/)
+    const collapsedToggle = page.getByTestId('sidebar-toggle-collapsed')
+    await expect(collapsedToggle).toBeFocused()
+    await expect(collapsedToggle).toHaveAttribute('aria-expanded', 'false')
+
+    // The former invisible edge hot zone is gone: approaching the history rail
+    // can no longer reveal a 260px overlay above it.
+    await expect(page.locator('.sidebar-hover-trigger, .sidebar-shadow')).toHaveCount(0)
+    await page.mouse.move(1, 400)
+    await page.waitForTimeout(350)
+    await expect(sidebar).not.toHaveClass(/docked|hovered/)
+
+    // Follow the app's rendered platform-relative chord. navigator.platform is
+    // intentionally not used by the app and can disagree with the emulated UA.
+    const primary = (await expandedToggle.getAttribute('aria-keyshortcuts'))?.startsWith('Meta')
+      ? 'Meta'
+      : 'Control'
+    await page.keyboard.press(`${primary}+b`)
+    await expect(sidebar).toHaveClass(/docked/)
+    await page.keyboard.press(`${primary}+b`)
+    await expect(sidebar).not.toHaveClass(/docked/)
+  })
+
   test('Recents renders collapsible family groups (or onboarding when empty)', async ({ page }) => {
     await openControl(page)
 

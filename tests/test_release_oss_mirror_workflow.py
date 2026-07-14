@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 import textwrap
@@ -16,6 +17,25 @@ def _upload_step_script() -> str:
     )
     steps = workflow["jobs"]["mirror-release-assets"]["steps"]
     return next(step["run"] for step in steps if step["name"] == "Upload release assets to OSS")
+
+
+def _bash_executable() -> str:
+    if os.name != "nt":
+        return "bash"
+
+    candidates: list[Path] = []
+    git = shutil.which("git")
+    if git is not None:
+        for parent in Path(git).resolve().parents:
+            candidates.extend((parent / "bin" / "bash.exe", parent / "usr" / "bin" / "bash.exe"))
+    program_files = os.environ.get("ProgramFiles")
+    if program_files:
+        git_root = Path(program_files) / "Git"
+        candidates.extend((git_root / "bin" / "bash.exe", git_root / "usr" / "bin" / "bash.exe"))
+    for candidate in candidates:
+        if candidate.is_file():
+            return str(candidate)
+    raise RuntimeError("Git for Windows bash.exe is required for this workflow contract test")
 
 
 def _install_fake_ossutil(tmp_path: Path) -> tuple[Path, Path, Path]:
@@ -147,7 +167,7 @@ def _run_upload_step(
     # than the Windows Store ``python3.exe`` app-execution alias.
     script = 'python3() { "$FAKE_OSS_PYTHON" "$@"; }\n' + _upload_step_script()
     return subprocess.run(
-        ["bash", "-c", script],
+        [_bash_executable(), "-c", script],
         cwd=tmp_path,
         env=env,
         capture_output=True,

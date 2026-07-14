@@ -1,13 +1,16 @@
 from __future__ import annotations
 
+import errno
 import json
 import os
+import stat
 from io import StringIO
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
-from opensquilla.sandbox import filesystem_worker
+from opensquilla.sandbox import directory_listing, filesystem_worker
 
 
 def _make_symlink(link: Path, target: Path) -> None:
@@ -15,6 +18,12 @@ def _make_symlink(link: Path, target: Path) -> None:
         os.symlink(target, link)
     except (OSError, NotImplementedError) as exc:
         pytest.skip(f"symlink unsupported/unavailable: {exc}")
+
+
+def _windows_cannot_resolve_filename_error() -> OSError:
+    error = OSError(errno.EINVAL, "cannot resolve filename")
+    error.winerror = 1921  # type: ignore[attr-defined]
+    return error
 
 
 def test_load_payload_reads_json_object_from_stdin(
@@ -134,6 +143,54 @@ def test_list_dir_distinguishes_unreadable_symlink_target_from_broken_link(
     assert "[file] ok.txt (5 bytes)" in result["message"]
     assert "[link] protected-link (target metadata unavailable)" in result["message"]
     assert "[link] protected-link (broken symlink)" not in result["message"]
+
+
+@pytest.mark.parametrize(
+    ("mode", "target_error", "expected"),
+    (
+        (
+            stat.S_IFLNK,
+            _windows_cannot_resolve_filename_error(),
+            "[link] loop (broken symlink)",
+        ),
+        (
+            stat.S_IFLNK,
+            OSError(errno.EINVAL, "ordinary invalid argument"),
+            "[link] loop (target metadata unavailable)",
+        ),
+        (
+            stat.S_IFLNK,
+            PermissionError(errno.EACCES, "target denied"),
+            "[link] loop (target metadata unavailable)",
+        ),
+        (
+            stat.S_IFREG,
+            _windows_cannot_resolve_filename_error(),
+            "[file] loop (size unavailable)",
+        ),
+    ),
+)
+def test_directory_entry_classifies_target_errors_without_native_symlink(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mode: int,
+    target_error: OSError,
+    expected: str,
+) -> None:
+    entry = tmp_path / "loop"
+
+    monkeypatch.setattr(
+        Path,
+        "lstat",
+        lambda _path: SimpleNamespace(st_mode=mode),
+    )
+
+    def fail_target_stat(_path: Path, *args: object, **kwargs: object):
+        raise target_error
+
+    monkeypatch.setattr(Path, "stat", fail_target_stat)
+
+    assert directory_listing.format_directory_entry(entry) == (False, expected)
 
 
 def test_list_dir_preserves_requested_directory_permission_error(

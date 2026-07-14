@@ -7,6 +7,14 @@ import stat
 from pathlib import Path
 
 _BROKEN_SYMLINK_ERRNOS = frozenset({errno.ENOENT, errno.ENOTDIR, errno.ELOOP})
+_WINDOWS_ERROR_CANT_RESOLVE_FILENAME = 1921
+
+
+def _is_broken_symlink_target_error(exc: OSError) -> bool:
+    return (
+        exc.errno in _BROKEN_SYMLINK_ERRNOS
+        or getattr(exc, "winerror", None) == _WINDOWS_ERROR_CANT_RESOLVE_FILENAME
+    )
 
 
 def format_directory_entry(
@@ -37,7 +45,7 @@ def format_directory_entry(
         try:
             size = entry.stat().st_size
         except OSError as exc:
-            if exc.errno in _BROKEN_SYMLINK_ERRNOS:
+            if _is_broken_symlink_target_error(exc):
                 return False, f"[link] {entry.name} (broken symlink)"
             return False, f"[link] {entry.name} (target metadata unavailable)"
         return False, f"[link] {entry.name} ({size} bytes target)"

@@ -11,6 +11,7 @@ def test_aliyun_oss_release_mirror_workflow_contract() -> None:
     assert "name: Mirror Release Assets to Aliyun OSS" in workflow
     assert "release:\n    types: [published]" in workflow
     assert "workflow_dispatch:" in workflow
+    assert "group: oss-release-mirror-latest-aliases" in workflow
     assert "MANUAL_RELEASE_TAG: ${{ inputs.tag }}" in workflow
     assert 'tag="${MANUAL_RELEASE_TAG}"' in workflow
     assert 'tag="${{ inputs.tag }}"' not in workflow

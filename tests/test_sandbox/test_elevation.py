@@ -92,7 +92,10 @@ def test_duplicate_pending_elevation_reuses_approval(tmp_path: Path) -> None:
         queue.close()
 
 
-def test_create_and_delete_receive_distinct_one_shot_approvals(tmp_path: Path) -> None:
+def test_create_and_delete_have_independent_consumed_one_shot_audit_sequences(
+    tmp_path: Path,
+) -> None:
+    """Complement real shell/direct execution tests with the delete grant lifecycle."""
     queue = ApprovalQueue(db_path=str(tmp_path / "approvals.sqlite"))
     target = tmp_path / "outside" / "probe.txt"
     create = replace(
@@ -107,9 +110,54 @@ def test_create_and_delete_receive_distinct_one_shot_approvals(tmp_path: Path) -
         create_pending = request_elevation(queue, create, session_key="session-1")
         delete_pending = request_elevation(queue, delete, session_key="session-1")
 
+        assert create_pending.status == "approval_required"
+        assert delete_pending.status == "approval_required"
         assert create.fingerprint() != delete.fingerprint()
         assert create_pending.approval_id != delete_pending.approval_id
         assert len(queue.list_pending("exec")) == 2
+
+        create_id = create_pending.approval_id or ""
+        delete_id = delete_pending.approval_id or ""
+        assert queue.get(create_id).params["fingerprint"] == create.fingerprint()
+        assert queue.get(delete_id).params["fingerprint"] == delete.fingerprint()
+        queue.resolve(create_id, True)
+
+        cross_action = consume_approved_elevation(queue, create_id, delete)
+        changed_action = consume_approved_elevation(
+            queue,
+            create_id,
+            replace(create, argv=("sh", "-lc", f"printf changed > {target}")),
+        )
+
+        assert cross_action.status == "approval_action_mismatch"
+        assert changed_action.status == "approval_action_mismatch"
+        assert queue.get(create_id).resolved is True
+        assert queue.get(create_id).approved is True
+        assert queue.get(create_id).consumed is False
+
+        create_allowed = consume_approved_elevation(queue, create_id, create)
+
+        assert create_allowed.allowed is True
+        assert create_allowed.status == "approved"
+        assert queue.get(create_id).consumed is True
+        with pytest.raises(ValueError, match="already consumed"):
+            consume_approved_elevation(queue, create_id, create)
+
+        wrong_delete_grant = consume_approved_elevation(queue, delete_id, create)
+
+        assert wrong_delete_grant.status == "approval_action_mismatch"
+        assert queue.get(delete_id).resolved is False
+        assert queue.get(delete_id).consumed is False
+
+        queue.resolve(delete_id, True)
+        delete_allowed = consume_approved_elevation(queue, delete_id, delete)
+
+        assert delete_allowed.allowed is True
+        assert delete_allowed.status == "approved"
+        assert queue.get(delete_id).approved is True
+        assert queue.get(delete_id).consumed is True
+        with pytest.raises(ValueError, match="already consumed"):
+            consume_approved_elevation(queue, delete_id, delete)
     finally:
         queue.close()
 

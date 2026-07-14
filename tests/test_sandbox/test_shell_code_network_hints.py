@@ -354,6 +354,128 @@ async def test_shell_exact_elevation_grant_runs_host_once(
 
 
 @pytest.mark.asyncio
+async def test_shell_create_then_delete_uses_two_one_shot_elevation_audits(
+    managed_runtime: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from opensquilla.tools.builtin import shell
+
+    outside = managed_runtime.parent / "outside-create-delete"
+    target = outside / "probe.txt"
+    create = f"mkdir -p {outside} && printf test > {target}"
+    delete = f"rm {target} && rmdir {outside}"
+    host_calls: list[str] = []
+
+    async def _fake_host(command: str, **kwargs: object) -> str:
+        host_calls.append(command)
+        if command == create:
+            outside.mkdir()
+            target.write_text("test", encoding="utf-8")
+            return "exit_code=0\ncreated\n"
+        if command == delete:
+            target.unlink()
+            outside.rmdir()
+            return "exit_code=0\ndeleted\n"
+        raise AssertionError(f"unexpected elevated command: {command}")
+
+    monkeypatch.setattr(shell, "_run_host_shell_command", _fake_host)
+    monkeypatch.setattr(
+        shell,
+        "check_safe_bin",
+        lambda command: SimpleNamespace(allowed=True, needs_approval=False, reason=""),
+    )
+    token = current_tool_context.set(
+        ToolContext(
+            is_owner=True,
+            caller_kind=CallerKind.CLI,
+            workspace_dir=str(managed_runtime),
+            session_key="shell-create-delete",
+            run_mode="trusted",
+        )
+    )
+    kwargs = {"workdir": str(managed_runtime)}
+    try:
+        create_preflight = json.loads(await shell.exec_command(create, **kwargs))
+        create_pending = json.loads(
+            await shell.exec_command(
+                create,
+                sandbox_permissions="require_escalated",
+                justification="Create the exact requested probe.",
+                **kwargs,
+            )
+        )
+        create_id = str(create_pending["approval_id"])
+        get_approval_queue().resolve(create_id, True)
+        create_result = await shell.exec_command(
+            create,
+            sandbox_permissions="require_escalated",
+            justification="Create the exact requested probe.",
+            approval_id=create_id,
+            **kwargs,
+        )
+        create_replay = json.loads(
+            await shell.exec_command(
+                create,
+                sandbox_permissions="require_escalated",
+                justification="Create the exact requested probe.",
+                approval_id=create_id,
+                **kwargs,
+            )
+        )
+
+        delete_preflight = json.loads(await shell.exec_command(delete, **kwargs))
+        delete_pending = json.loads(
+            await shell.exec_command(
+                delete,
+                sandbox_permissions="require_escalated",
+                justification="Delete the exact probe and its empty directory.",
+                **kwargs,
+            )
+        )
+        delete_id = str(delete_pending["approval_id"])
+        get_approval_queue().resolve(delete_id, True)
+        delete_result = await shell.exec_command(
+            delete,
+            sandbox_permissions="require_escalated",
+            justification="Delete the exact probe and its empty directory.",
+            approval_id=delete_id,
+            **kwargs,
+        )
+        delete_replay = json.loads(
+            await shell.exec_command(
+                delete,
+                sandbox_permissions="require_escalated",
+                justification="Delete the exact probe and its empty directory.",
+                approval_id=delete_id,
+                **kwargs,
+            )
+        )
+    finally:
+        current_tool_context.reset(token)
+        target.unlink(missing_ok=True)
+        if outside.exists():
+            outside.rmdir()
+
+    create_entry = get_approval_queue().get(create_id)
+    delete_entry = get_approval_queue().get(delete_id)
+    assert create_preflight["status"] == "elevation_required"
+    assert delete_preflight["status"] == "elevation_required"
+    assert create_pending["status"] == "approval_required"
+    assert delete_pending["status"] == "approval_required"
+    assert create_id != delete_id
+    assert create_entry.params["fingerprint"] != delete_entry.params["fingerprint"]
+    assert create_entry.consumed is True
+    assert delete_entry.consumed is True
+    assert create_result == "exit_code=0\ncreated\n"
+    assert delete_result == "exit_code=0\ndeleted\n"
+    assert host_calls == [create, delete]
+    assert create_replay["status"] == "approval_invalid"
+    assert delete_replay["status"] == "approval_invalid"
+    assert not target.exists()
+    assert not outside.exists()
+
+
+@pytest.mark.asyncio
 async def test_shell_changed_command_cannot_consume_elevation_grant(
     managed_runtime: Path,
     monkeypatch: pytest.MonkeyPatch,

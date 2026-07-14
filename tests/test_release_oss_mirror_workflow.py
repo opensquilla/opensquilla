@@ -65,9 +65,21 @@ def _install_fake_ossutil(tmp_path: Path) -> tuple[Path, Path, Path]:
 
             remote_root = Path(os.environ["FAKE_OSS_ROOT"])
 
+            def native_path(value: str) -> Path:
+                if (
+                    os.name == "nt"
+                    and len(value) >= 3
+                    and value[0] == "/"
+                    and value[1].isascii()
+                    and value[1].isalpha()
+                    and value[2] == "/"
+                ):
+                    value = f"{value[1]}:{value[2:]}"
+                return Path(value)
+
             def mapped(value: str) -> Path:
                 if not value.startswith("oss://"):
-                    return Path(value)
+                    return native_path(value)
                 bucket_and_key = value.removeprefix("oss://")
                 bucket, _, key = bucket_and_key.partition("/")
                 return remote_root / bucket / key
@@ -88,7 +100,7 @@ def _install_fake_ossutil(tmp_path: Path) -> tuple[Path, Path, Path]:
                 if destination.exists():
                     raise SystemExit(9)
                 destination.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copyfile(source_url.removeprefix("file://"), destination)
+                shutil.copyfile(native_path(source_url.removeprefix("file://")), destination)
                 raise SystemExit(0)
 
             if args[0] == "cp":

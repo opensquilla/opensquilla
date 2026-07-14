@@ -28,9 +28,11 @@ Configure these GitHub repository variables:
   upload domain; the workflow also auto-selects `cname` when the endpoint host
   does not end in `aliyuncs.com`.
 
-Use a dedicated RAM user or role scoped to the release mirror bucket/prefix. The
-workflow needs to upload objects and list destination prefixes. Do not use a
-full-access account key.
+Use a dedicated RAM user or role scoped to the release mirror bucket/prefix. It
+needs `oss:ListObjects`, `oss:GetObject`, `oss:PutObject`, and
+`oss:DeleteObject`: the workflow lists aliases, copies existing aliases to a
+short-lived backup, uploads versioned assets and aliases, and removes backups
+and legacy `latest.html`. Do not use a full-access account key.
 
 ## Destination layout
 

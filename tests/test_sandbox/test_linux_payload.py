@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from pathlib import Path
 
 from opensquilla.sandbox.backend import linux_helper
@@ -15,7 +16,11 @@ from opensquilla.sandbox.backend.linux_payload import (
 )
 from opensquilla.sandbox.config import SandboxSettings
 from opensquilla.sandbox.operation_runtime import SandboxOperation
-from opensquilla.sandbox.permissions import FileSystemAccess
+from opensquilla.sandbox.permissions import (
+    FileSystemAccess,
+    FileSystemPermissionEntry,
+    FileSystemPermissionProfile,
+)
 from opensquilla.sandbox.policy import build_policy
 from opensquilla.sandbox.types import (
     MountSpec,
@@ -178,12 +183,61 @@ def test_process_payload_preserves_canonical_filesystem_profile(tmp_path: Path) 
         policy=policy,
     )
 
-    payload = build_process_helper_payload(request)
+    payload = decode_payload(encode_payload(build_process_helper_payload(request)))
     restored = linux_helper._policy_from_payload(payload.policy)
 
     assert restored.file_system is not None
     assert restored.file_system.resolve(Path("/etc/hosts")) is FileSystemAccess.READ
     assert restored.file_system.resolve(Path("/tmp/probe")) is FileSystemAccess.WRITE
+
+
+def test_process_payload_round_trips_complete_filesystem_profile(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    profile = FileSystemPermissionProfile(
+        entries=(
+            FileSystemPermissionEntry(Path("/"), FileSystemAccess.READ),
+            FileSystemPermissionEntry(workspace, FileSystemAccess.WRITE),
+            FileSystemPermissionEntry(workspace / "readonly", FileSystemAccess.READ),
+            FileSystemPermissionEntry(workspace / "secret", FileSystemAccess.DENY),
+        ),
+        denied_read_globs=(str(workspace / "**" / ".env"),),
+    )
+    request = SandboxRequest(
+        argv=("/bin/true",),
+        cwd=tmp_path,
+        action_kind="shell.exec",
+        policy=replace(_policy(tmp_path), file_system=profile),
+    )
+
+    payload = decode_payload(encode_payload(build_process_helper_payload(request)))
+    restored = linux_helper._policy_from_payload(payload.policy)
+
+    assert payload.policy["fileSystem"] == {
+        "entries": [
+            {"path": str(entry.path), "access": entry.access.value}
+            for entry in profile.entries
+        ],
+        "deniedReadGlobs": list(profile.denied_read_globs),
+        "defaultAccess": "deny",
+    }
+    assert restored.file_system == profile
+    assert restored.file_system.unsandboxed_execution_allowed is False
+
+
+def test_process_payload_round_trips_full_access_default_write(tmp_path: Path) -> None:
+    profile = FileSystemPermissionProfile.full_access()
+    request = SandboxRequest(
+        argv=("/bin/true",),
+        cwd=tmp_path,
+        action_kind="shell.exec",
+        policy=replace(_policy(tmp_path), file_system=profile),
+    )
+
+    payload = decode_payload(encode_payload(build_process_helper_payload(request)))
+    restored = linux_helper._policy_from_payload(payload.policy)
+
+    assert payload.policy["fileSystem"]["defaultAccess"] == "write"
+    assert restored.file_system == profile
 
 
 def test_build_process_helper_payload_filters_env_allowlist(tmp_path: Path) -> None:

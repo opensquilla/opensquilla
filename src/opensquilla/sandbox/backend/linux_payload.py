@@ -225,6 +225,7 @@ def _policy_payload(policy: SandboxPolicy) -> dict[str, Any]:
                     for entry in policy.file_system.entries
                 ],
                 "deniedReadGlobs": list(policy.file_system.denied_read_globs),
+                "defaultAccess": policy.file_system.default_access.value,
             }
             if policy.file_system is not None
             else None

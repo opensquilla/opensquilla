@@ -328,9 +328,16 @@ def _filesystem_profile_from_payload(
     raw_globs = raw_profile.get("deniedReadGlobs", [])
     if not isinstance(raw_globs, list):
         raise ValueError("linux helper denied-read globs are invalid")
+    try:
+        default_access = FileSystemAccess(
+            str(raw_profile.get("defaultAccess", FileSystemAccess.DENY.value))
+        )
+    except ValueError as exc:
+        raise ValueError("linux helper filesystem profile default access is invalid") from exc
     return FileSystemPermissionProfile(
         entries=tuple(entries),
         denied_read_globs=tuple(str(item) for item in raw_globs),
+        default_access=default_access,
     )
 
 

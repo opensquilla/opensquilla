@@ -5,6 +5,8 @@ from pathlib import Path
 
 import pytest
 
+from opensquilla.sandbox.backend import bubblewrap as bubblewrap_mod
+from opensquilla.sandbox.backend.bubblewrap import BubblewrapBackend
 from opensquilla.sandbox.backend.linux_bwrap import (
     HOST_RUNTIME_READONLY_PATHS,
     BwrapOptions,
@@ -17,6 +19,8 @@ from opensquilla.sandbox.backend.linux_permissions import (
     compile_linux_permissions,
 )
 from opensquilla.sandbox.config import SandboxSettings
+from opensquilla.sandbox.operation_runtime import SandboxOperation
+from opensquilla.sandbox.permissions import FileSystemPermissionProfile
 from opensquilla.sandbox.policy import build_policy
 from opensquilla.sandbox.types import NetworkMode, SandboxBackendError, SecurityLevel
 
@@ -37,6 +41,48 @@ def _permissions(tmp_path: Path, *, network: NetworkMode = NetworkMode.NONE) -> 
         tmp_writable=True,
         wall_timeout_s=30,
     )
+
+
+@pytest.mark.asyncio
+async def test_filesystem_operation_carries_profile_without_mounting_target(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    profile = FileSystemPermissionProfile.workspace(workspace=workspace)
+    captured: dict[str, object] = {}
+
+    async def fake_run_helper(payload: object) -> dict[str, object]:
+        captured["payload"] = payload
+        return {"message": "listed"}
+
+    monkeypatch.setattr(bubblewrap_mod, "_run_linux_helper_payload", fake_run_helper)
+
+    result = await BubblewrapBackend().run_operation(
+        SandboxOperation.filesystem(
+            kind="list_dir",
+            workspace=workspace,
+            run_mode="trusted",
+            path=Path("/etc"),
+            paths=(Path("/etc"),),
+            file_system_profile=profile,
+        )
+    )
+
+    assert result.message == "listed"
+    payload = captured["payload"]
+    assert isinstance(payload, bubblewrap_mod.HelperPayload)
+    file_system = payload.policy["fileSystem"]
+    assert isinstance(file_system, dict)
+    entries = {entry["path"]: entry["access"] for entry in file_system["entries"]}
+    assert entries["/"] == "read"
+    assert entries[str(workspace)] == "write"
+    mounts = payload.policy["mounts"]
+    assert all(mount["host"] != "/etc" and mount["sandbox"] != "/etc" for mount in mounts)
+    assert payload.filesystem is not None
+    assert "file_system_profile" not in payload.filesystem.worker_payload
+    assert "fileSystemProfile" not in payload.filesystem.worker_payload
 
 
 def test_bwrap_argv_uses_readonly_baseline_and_write_layers(tmp_path: Path) -> None:
@@ -121,6 +167,47 @@ def test_default_workspace_profile_binds_host_tmp_writable(tmp_path: Path) -> No
     pairs = [argv[index : index + 2] for index in range(len(argv) - 1)]
     assert ["--bind", "/tmp", "/tmp"] in triples
     assert ["--tmpfs", "/tmp"] not in pairs
+
+
+def test_compiled_workspace_profile_orders_read_baseline_write_and_protection(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    protected = workspace / ".git"
+    protected.mkdir(parents=True)
+    (protected / "HEAD").write_text("ref: refs/heads/main\n", encoding="utf-8")
+    policy = build_policy(
+        SecurityLevel.STANDARD,
+        "shell.exec",
+        workspace,
+        SandboxSettings(),
+    )
+
+    argv = build_bwrap_argv(
+        command=["/bin/true"],
+        command_cwd=workspace,
+        permissions=compile_linux_permissions(policy),
+        options=BwrapOptions(bwrap_path="bwrap", mount_proc=True),
+    )
+
+    root_bind_index = next(
+        index
+        for index in range(len(argv) - 2)
+        if argv[index : index + 3] == ["--ro-bind", "/", "/"]
+    )
+    workspace_bind_index = next(
+        index
+        for index in range(len(argv) - 2)
+        if argv[index : index + 3] == ["--bind", str(workspace), str(workspace)]
+    )
+    protected_bind_indices = [
+        index
+        for index in range(len(argv) - 2)
+        if argv[index : index + 3]
+        == ["--ro-bind", str(protected), str(protected)]
+    ]
+
+    assert root_bind_index < workspace_bind_index < max(protected_bind_indices)
 
 
 def test_readonly_root_skips_redundant_identity_mounts(tmp_path: Path) -> None:

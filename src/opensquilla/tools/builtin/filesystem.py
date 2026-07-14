@@ -14,6 +14,7 @@ import re
 import sys
 import zipfile
 from collections.abc import Mapping
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 from xml.etree import ElementTree as ET
@@ -709,6 +710,10 @@ async def _run_sandbox_operation_if_required(
     *,
     host_execution_active: bool = False,
 ) -> object | None:
+    if operation.domain == "filesystem" and operation.file_system_profile is None:
+        profile = active_file_system_profile(_workspace_root())
+        if profile is not None:
+            operation = replace(operation, file_system_profile=profile)
     return await SandboxOperationRuntime(
         get_runtime(),
         host_execution_active=full_host_access_active() or host_execution_active,

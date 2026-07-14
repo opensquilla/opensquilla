@@ -14,6 +14,7 @@ from opensquilla.engine.types import ToolCall
 from opensquilla.sandbox import sensitive_paths
 from opensquilla.sandbox.config import SandboxSettings
 from opensquilla.sandbox.integration import configure_runtime, reset_runtime
+from opensquilla.sandbox.permissions import FileSystemPermissionProfile
 from opensquilla.tools.builtin import filesystem as fs
 from opensquilla.tools.dispatch import build_tool_handler
 from opensquilla.tools.registry import get_default_registry
@@ -87,6 +88,144 @@ async def test_read_file_invalid_utf8_before_selected_window_errors(tmp_path: Pa
     target.write_bytes(b"ok\n\xff\nlater\n")
     with pytest.raises(ToolError, match="not valid UTF-8"):
         await fs.read_file(str(target), offset=3, limit=1)
+
+
+@pytest.mark.asyncio
+async def test_filesystem_sandbox_boundary_attaches_guardian_profile_once(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    profile = FileSystemPermissionProfile.read_only(readable_roots=(tmp_path,))
+    operation = fs.SandboxOperation.filesystem(
+        kind="list_dir",
+        workspace=tmp_path,
+        run_mode="trusted",
+        path=Path("/etc"),
+    )
+    runtime = object()
+    result_sentinel = object()
+    profile_lookups: list[Path | None] = []
+    seen_operations: list[fs.SandboxOperation] = []
+    seen_runtime_args: list[tuple[object, bool]] = []
+    active_profile = fs.active_file_system_profile
+
+    def lookup_profile(workspace: Path | None) -> FileSystemPermissionProfile | None:
+        profile_lookups.append(workspace)
+        return active_profile(workspace)
+
+    class _RecordingRuntime:
+        def __init__(
+            self,
+            actual_runtime: object,
+            *,
+            host_execution_active: bool,
+        ) -> None:
+            seen_runtime_args.append((actual_runtime, host_execution_active))
+
+        async def run(self, actual_operation: fs.SandboxOperation) -> object:
+            seen_operations.append(actual_operation)
+            return result_sentinel
+
+    monkeypatch.setattr(fs, "active_file_system_profile", lookup_profile)
+    monkeypatch.setattr(fs, "get_runtime", lambda: runtime)
+    monkeypatch.setattr(fs, "full_host_access_active", lambda: False)
+    monkeypatch.setattr(fs, "SandboxOperationRuntime", _RecordingRuntime)
+
+    with tool_context(tmp_path):
+        context = current_tool_context.get()
+        assert context is not None
+        context.sandbox_file_system_profile = profile
+        result = await fs._run_sandbox_operation_if_required(operation)
+
+    assert result is result_sentinel
+    assert profile_lookups == [tmp_path]
+    assert operation.file_system_profile is None
+    assert len(seen_operations) == 1
+    assert seen_operations[0] is not operation
+    assert seen_operations[0].file_system_profile is profile
+    assert seen_runtime_args == [(runtime, False)]
+
+
+@pytest.mark.asyncio
+async def test_filesystem_sandbox_boundary_preserves_existing_profile(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    profile = FileSystemPermissionProfile.workspace(workspace=tmp_path)
+    operation = fs.SandboxOperation.filesystem(
+        kind="list_dir",
+        workspace=tmp_path,
+        run_mode="trusted",
+        path=tmp_path,
+        file_system_profile=profile,
+    )
+    seen_operations: list[fs.SandboxOperation] = []
+
+    class _RecordingRuntime:
+        def __init__(self, _runtime: object, *, host_execution_active: bool) -> None:
+            assert host_execution_active is False
+
+        async def run(self, actual_operation: fs.SandboxOperation) -> None:
+            seen_operations.append(actual_operation)
+
+    def unexpected_lookup(_workspace: Path | None) -> FileSystemPermissionProfile | None:
+        raise AssertionError("existing filesystem profile must not be replaced")
+
+    monkeypatch.setattr(fs, "active_file_system_profile", unexpected_lookup)
+    monkeypatch.setattr(fs, "get_runtime", object)
+    monkeypatch.setattr(fs, "full_host_access_active", lambda: False)
+    monkeypatch.setattr(fs, "SandboxOperationRuntime", _RecordingRuntime)
+
+    await fs._run_sandbox_operation_if_required(operation)
+
+    assert seen_operations == [operation]
+    assert seen_operations[0] is operation
+    assert seen_operations[0].file_system_profile is profile
+
+
+@pytest.mark.parametrize(
+    ("full_host_access", "explicit_host_execution", "expected"),
+    (
+        (False, False, False),
+        (False, True, True),
+        (True, False, True),
+    ),
+)
+@pytest.mark.asyncio
+async def test_filesystem_sandbox_boundary_preserves_host_execution_flag(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    full_host_access: bool,
+    explicit_host_execution: bool,
+    expected: bool,
+) -> None:
+    profile = FileSystemPermissionProfile.workspace(workspace=tmp_path)
+    operation = fs.SandboxOperation.filesystem(
+        kind="list_dir",
+        workspace=tmp_path,
+        run_mode="trusted",
+        path=tmp_path,
+        file_system_profile=profile,
+    )
+    seen_flags: list[bool] = []
+
+    class _RecordingRuntime:
+        def __init__(self, _runtime: object, *, host_execution_active: bool) -> None:
+            seen_flags.append(host_execution_active)
+
+        async def run(self, _operation: fs.SandboxOperation) -> None:
+            return None
+
+    monkeypatch.setattr(fs, "get_runtime", object)
+    monkeypatch.setattr(fs, "full_host_access_active", lambda: full_host_access)
+    monkeypatch.setattr(fs, "SandboxOperationRuntime", _RecordingRuntime)
+
+    await fs._run_sandbox_operation_if_required(
+        operation,
+        host_execution_active=explicit_host_execution,
+    )
+
+    assert seen_flags == [expected]
 
 
 @pytest.mark.asyncio

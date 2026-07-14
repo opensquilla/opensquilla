@@ -90,6 +90,12 @@ Los instaladores de escritorio de 0.5.0 Preview 4 empaquetan la consola de contr
 - macOS Apple Silicon: <https://github.com/opensquilla/opensquilla/releases/download/v0.5.0rc4/OpenSquilla-0.5.0-rc4-mac-arm64.dmg>
 - Windows x64: <https://github.com/opensquilla/opensquilla/releases/download/v0.5.0rc4/OpenSquilla-0.5.0-rc4-win-x64.exe>
 
+Para descargas más rápidas desde China continental, usa los alias de descarga directa de OSS:
+- macOS Apple Silicon: <https://opensquilla-releases.oss-cn-beijing.aliyuncs.com/releases/latest/OpenSquilla-mac-arm64.dmg>
+- Windows x64: <https://opensquilla-releases.oss-cn-beijing.aliyuncs.com/releases/latest/OpenSquilla-win-x64.exe>
+
+Estos enlaces fijos se actualizan tras cada réplica de release correcta. Usa los enlaces versionados de GitHub Release indicados arriba si necesitas una versión concreta.
+
 Cierra cualquier aplicación de escritorio de OpenSquilla en ejecución antes de actualizar. Se reutiliza el perfil Desktop existente en el directorio de datos de aplicaciones de la plataforma. El `~/.opensquilla` de la instalación de terminal es un perfil distinto; transfiérelo explícitamente desde Ajustes si es necesario.
 
 Al actualizar la aplicación de escritorio de Windows de RC3 a RC4 o una versión

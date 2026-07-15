@@ -133,3 +133,37 @@ async def test_listener_skips_non_dict_frame(monkeypatch: pytest.MonkeyPatch) ->
     # mentions "malformed".
     assert client._connection_error is not None  # noqa: SLF001
     assert "malformed" not in str(client._connection_error).lower()  # noqa: SLF001
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "res_frame",
+    [
+        {"type": "res", "ok": True},  # id missing entirely
+        {"type": "res", "id": 42, "ok": True},  # non-string id
+        {"type": "res", "id": None, "ok": True},  # null id
+    ],
+)
+async def test_listener_fails_pending_on_res_frame_without_valid_id(
+    res_frame: dict,
+) -> None:
+    """A ``res`` frame with a missing/non-string id can never be matched
+    to its pending request. Silently skipping it would leave the
+    matching ``_call()`` future pending forever — the listener must
+    treat it as a protocol error and fail all in-flight RPCs."""
+
+    ws = _FakeWebSocket([json.dumps(res_frame)])
+    client = GatewayClient()
+    client._ws = ws  # noqa: SLF001
+
+    loop = asyncio.get_running_loop()
+    fut: asyncio.Future[dict] = loop.create_future()
+    client._pending["req-1"] = fut  # noqa: SLF001
+
+    await client._listen()  # noqa: SLF001
+
+    assert client._connection_error is not None  # noqa: SLF001
+    assert fut.done(), "pending RPC future must not be left hanging"
+    with pytest.raises(ConnectionError):
+        fut.result()
+    assert not client._pending  # noqa: SLF001

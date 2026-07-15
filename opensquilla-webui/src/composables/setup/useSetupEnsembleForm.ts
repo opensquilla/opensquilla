@@ -557,8 +557,12 @@ export function useSetupEnsembleForm() {
     clampQuorumToLineup()
   }
 
-  function importTierCandidates(tierCandidates: readonly EnsembleTierCandidate[]) {
+  function importTierCandidates(
+    tierCandidates: readonly EnsembleTierCandidate[],
+    providerRestriction?: unknown,
+  ) {
     ensureCustomMode()
+    const allowedProvider = normalizeProvider(providerRestriction)
     const existing = new Set(
       enabledProposerConfigs.value.map(entry => `${entry.provider}\n${entry.model}`),
     )
@@ -569,6 +573,7 @@ export function useSetupEnsembleForm() {
       const provider = normalizeProvider(row.provider)
       const model = normalizeModel(row.model)
       if (!provider || !model) continue
+      if (allowedProvider && provider !== allowedProvider) continue
       const key = `${provider}\n${model}`
       if (existing.has(key)) continue
       existing.add(key)
@@ -632,7 +637,7 @@ export function useSetupEnsembleForm() {
     }
     selectionMode.value = CUSTOM_B5_SELECTION_MODE
     if (!candidates.value.some(candidate => candidate.enabled !== false)) {
-      importTierCandidates(tierCandidates)
+      importTierCandidates(tierCandidates, provider)
     }
   }
 

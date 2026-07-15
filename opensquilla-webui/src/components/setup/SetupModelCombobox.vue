@@ -29,6 +29,9 @@ const props = defineProps<{
   // aria-label. Default (false) renders the full settings-row layout unchanged.
   cell?: boolean
   disabled?: boolean
+  // Embedded form rows can opt into the shared input chrome without changing
+  // compact tier-table cells that already provide their own styling.
+  inputClass?: string
 }>()
 
 const emit = defineEmits<{
@@ -289,7 +292,7 @@ function onKeydown(event: KeyboardEvent) {
       <input
         :id="fieldId"
         ref="inputEl"
-        :class="cell ? undefined : 'control-input'"
+        :class="[cell ? undefined : 'control-input', inputClass]"
         :name="fieldName"
         type="text"
         :role="catalogAvailable ? 'combobox' : undefined"

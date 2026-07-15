@@ -51,6 +51,8 @@ function panel(overrides: Record<string, unknown> = {}) {
     credentialPanel: {
       providerLabel: 'OpenAI',
       providerSelected: true,
+      acceptsApiKey: true,
+      requiresApiKey: true,
       available: true,
       source: 'explicit',
       envKey: 'OPENAI_API_KEY',
@@ -61,6 +63,8 @@ function panel(overrides: Record<string, unknown> = {}) {
       replacing: false,
       apiKeyValue: '',
       apiKeyEnvValue: '',
+      probeReady: true,
+      probeDisabledReason: '',
       connection: connection(),
       onReveal: vi.fn(),
       onReplace: vi.fn(),
@@ -150,6 +154,26 @@ describe('SetupProviderPanel — test connection', () => {
     probing.app.unmount()
   })
 
+  it('does not emit a probe while required provider fields are missing', async () => {
+    const onProbeConnection = vi.fn()
+    const reason = 'Complete required fields before testing: Model, Base URL.'
+    const { app, el } = await mountPanel({
+      credentialPanel: {
+        ...(panel().credentialPanel as Record<string, unknown>),
+        probeReady: false,
+        probeDisabledReason: reason,
+      },
+    }, { onProbeConnection })
+
+    const button = testButton(el)
+    expect(button?.disabled).toBe(true)
+    expect(button?.title).toBe(reason)
+    button?.click()
+    expect(onProbeConnection).not.toHaveBeenCalled()
+    expect(el.textContent).toContain(reason)
+    app.unmount()
+  })
+
   it('shows the Connected pill when verified', async () => {
     const { app, el } = await mountPanel({ connection: connection({ phase: 'verified' }) })
     const pill = el.querySelector('.setup-connection__actions .control-pill.control-pill--ok')
@@ -217,7 +241,7 @@ describe('SetupProviderPanel — model field', () => {
 
     expect(el.querySelector('[data-name="api_key"]')).toBeNull()
     expect(el.querySelector('[data-name="api_key_env"]')).toBeNull()
-    expect(el.textContent).toContain('OpenAI credential')
+    expect(el.textContent).toContain('OpenAI authentication')
 
     app.unmount()
   })

@@ -1158,7 +1158,7 @@
       "copyDiagnostics": "診断 JSON をコピー",
       "copiedDiagnostics": "診断 JSON をコピーしました",
       "diagnoseWithAgent": "エージェントで診断",
-      "diagnosePrompt": "以下の doctor レポートをもとに、この OpenSquilla 設定の問題を調査してください。根本原因と最小限の修正手順を提案し、破壊的なコマンドは実行しないでください。",
+      "diagnosePrompt": "以下のクライアントコンテキストと doctor レポートをもとに、この OpenSquilla 設定を診断してください。利用可能なアプリ内 Settings を優先し、hasTerminalWorkflow が false の場合は裸の opensquilla コマンドを提案しないでください。Desktop が所有する gateway はアプリが管理します。データ転送はバックアップ後の全体置換であり、マージではありません。任意の移行項目は障害ではなく、転送後も表示される場合があります。説明と案内だけを行い、移行、gateway の再起動、設定の書き込み、変更を実行したとの主張はしないでください。",
       "environment": "環境",
       "latency": "レイテンシ"
     }

@@ -1158,7 +1158,7 @@
       "copyDiagnostics": "Copiar el JSON de diagnóstico",
       "copiedDiagnostics": "JSON de diagnóstico copiado",
       "diagnoseWithAgent": "Diagnosticar con el agente",
-      "diagnosePrompt": "Diagnostica esta configuración de OpenSquilla usando el informe de doctor a continuación; propón la causa raíz y los pasos mínimos de corrección; no ejecutes comandos destructivos.",
+      "diagnosePrompt": "Diagnostica esta configuración de OpenSquilla usando el contexto del cliente y el informe de doctor siguientes. Da prioridad a los ajustes aplicables dentro de la app. Cuando hasTerminalWorkflow sea false, no sugieras comandos opensquilla sin adaptar; un gateway propio de Desktop lo gestiona la app. La transferencia de datos implica copia de seguridad y sustitución completa, nunca fusión. Una migración opcional no es un fallo y puede seguir visible después. Limítate a explicar y orientar: no migres datos, reinicies el gateway, escribas ajustes ni afirmes haber realizado cambios.",
       "environment": "Entorno",
       "latency": "Latencia"
     }

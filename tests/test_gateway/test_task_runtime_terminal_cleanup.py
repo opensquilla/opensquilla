@@ -14,6 +14,7 @@ import asyncio
 import gc
 import tracemalloc
 from collections.abc import Awaitable, Callable
+from dataclasses import replace
 from typing import Any
 from unittest.mock import MagicMock
 
@@ -23,6 +24,7 @@ from opensquilla.gateway import task_runtime
 from opensquilla.gateway.routing import RouteEnvelope, SourceKind
 from opensquilla.gateway.task_runtime import TaskRuntime
 from opensquilla.session.models import AgentTaskRecord
+from opensquilla.session.turn_context import current_turn_context
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -60,10 +62,22 @@ def _make_storage() -> Any:
     async def list_tasks(**_: Any) -> list[AgentTaskRecord]:
         return list(task_db.values())
 
+    turn_context_updates: list[tuple[str, str, dict[str, Any]]] = []
+
+    async def update_turn_context(
+        session_key: str,
+        message_id: str,
+        context: dict[str, Any],
+    ) -> bool:
+        turn_context_updates.append((session_key, message_id, dict(context)))
+        return True
+
     storage.create_agent_task = create
     storage.update_agent_task = update
     storage.get_agent_task = get
     storage.list_agent_tasks = list_tasks
+    storage.update_transcript_turn_context = update_turn_context
+    storage.turn_context_updates = turn_context_updates
     return storage
 
 
@@ -106,6 +120,280 @@ async def test_terminal_clears_all_dicts() -> None:
     # _session_locks is intentionally retained: never pop while _execute may
     # still hold the lock; prevents split-brain on rapid re-enqueue.
     assert sk not in rt._last_envelope_by_session
+
+
+@pytest.mark.asyncio
+async def test_preallocated_turn_identity_is_propagated_to_handler() -> None:
+    observed: list[dict[str, Any] | None] = []
+
+    async def _handler(_run: Any) -> None:
+        observed.append(current_turn_context())
+
+    rt = _make_runtime(turn_handler=_handler)
+    env = _make_envelope("agent-1::identity")
+    env = replace(
+        env,
+        metadata={
+            "client_message_id": "client-1",
+            "surface_id": "tui:test",
+        },
+    )
+    handle = await rt.enqueue(env, "hello", task_id="turn-preallocated")
+    await rt.wait(handle.task_id, timeout=2.0)
+
+    assert handle.task_id == "turn-preallocated"
+    assert observed == [
+        {
+            "turn_id": "turn-preallocated",
+            "client_message_id": "client-1",
+            "surface_id": "tui:test",
+            "intent": "send",
+            "disposition": "applied",
+            "revision": 1,
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_identity_aware_turn_emits_applied_input_disposition() -> None:
+    events: list[tuple[str, str, dict[str, Any]]] = []
+
+    async def _emit(session_key: str, name: str, payload: dict[str, Any]) -> None:
+        events.append((session_key, name, payload))
+
+    async def _handler(_run: Any) -> None:
+        return None
+
+    rt = TaskRuntime(
+        storage=_make_storage(),
+        turn_handler=_handler,
+        event_emitter=_emit,
+    )
+    env = replace(
+        _make_envelope("agent-1::identity-event"),
+        metadata={
+            "client_message_id": "client-1",
+            "surface_id": "tui:test",
+        },
+    )
+    handle = await rt.enqueue(
+        env,
+        "hello",
+        task_id="turn-preallocated",
+        persisted_user_message_id="message-1",
+    )
+    await rt.wait(handle.task_id, timeout=2.0)
+
+    disposition_events = [
+        event for event in events if event[1] == "session.event.input_disposition"
+    ]
+    assert disposition_events == [
+        (
+            env.session_key,
+            "session.event.input_disposition",
+            {
+                "session_key": env.session_key,
+                "user_message_id": "message-1",
+                "turn_id": "turn-preallocated",
+                "client_message_id": "client-1",
+                "surface_id": "tui:test",
+                "intent": "send",
+                "disposition": "applied",
+                "revision": 1,
+            },
+        )
+    ]
+
+
+@pytest.mark.asyncio
+async def test_steer_is_drained_by_running_turn_provider() -> None:
+    started = asyncio.Event()
+    release = asyncio.Event()
+    drained: list[str] = []
+
+    async def _handler(run: Any) -> None:
+        started.set()
+        await release.wait()
+        drained.extend(run.pending_input_provider.drain_pending())
+
+    rt = _make_runtime(turn_handler=_handler)
+    env = _make_envelope("agent-1::steer-drain")
+    handle = await rt.enqueue(env, "first")
+    await started.wait()
+
+    assert await rt.active_task_id(env.session_key) == handle.task_id
+    accepted = await rt.steer(
+        env.session_key,
+        "change direction",
+        persisted_user_message_id="msg-steer",
+    )
+    assert accepted == handle.task_id
+
+    release.set()
+    await rt.wait(handle.task_id, timeout=2.0)
+    assert drained == ["change direction"]
+    applied = [
+        context
+        for _session, message_id, context in rt._storage.turn_context_updates
+        if message_id == "msg-steer" and context.get("disposition") == "applied"
+    ]
+    assert applied == [
+        {
+            "turn_id": handle.task_id,
+            "client_message_id": None,
+            "surface_id": None,
+            "intent": "steer",
+            "disposition": "applied",
+            "target_turn_id": handle.task_id,
+            "revision": 2,
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_undrained_late_steer_is_promoted_to_followup() -> None:
+    first_started = asyncio.Event()
+    release_first = asyncio.Event()
+    followup_seen = asyncio.Event()
+    runs: list[str] = []
+
+    async def _handler(run: Any) -> None:
+        runs.append(run.message)
+        if run.message == "first":
+            first_started.set()
+            await release_first.wait()
+            return
+        followup_seen.set()
+
+    rt = _make_runtime(turn_handler=_handler)
+    env = _make_envelope("agent-1::steer-fallback")
+    handle = await rt.enqueue(env, "first")
+    await first_started.wait()
+    assert await rt.steer(
+        env.session_key,
+        "too late for a tool boundary",
+        persisted_user_message_id="msg-late",
+    ) == handle.task_id
+
+    release_first.set()
+    await rt.wait(handle.task_id, timeout=2.0)
+    await asyncio.wait_for(followup_seen.wait(), timeout=2.0)
+    assert runs == ["first", "too late for a tool boundary"]
+    promoted = [
+        context
+        for _session, message_id, context in rt._storage.turn_context_updates
+        if message_id == "msg-late" and context.get("disposition") == "promoted"
+    ]
+    assert len(promoted) == 1
+    assert promoted[0]["turn_id"] != handle.task_id
+    assert promoted[0]["promoted_from_turn_id"] == handle.task_id
+
+
+@pytest.mark.asyncio
+async def test_undrained_steer_survives_failed_active_turn_as_followup() -> None:
+    first_started = asyncio.Event()
+    fail_first = asyncio.Event()
+    followup_seen = asyncio.Event()
+    runs: list[str] = []
+
+    async def _handler(run: Any) -> None:
+        runs.append(run.message)
+        if run.message == "first":
+            first_started.set()
+            await fail_first.wait()
+            raise RuntimeError("provider failed after accepting steer")
+        followup_seen.set()
+
+    rt = _make_runtime(turn_handler=_handler)
+    env = _make_envelope("agent-1::steer-error-fallback")
+    handle = await rt.enqueue(env, "first")
+    await first_started.wait()
+    assert await rt.steer(
+        env.session_key,
+        "continue despite provider failure",
+        persisted_user_message_id="msg-after-error",
+    ) == handle.task_id
+
+    fail_first.set()
+    await rt.wait(handle.task_id, timeout=2.0)
+    await asyncio.wait_for(followup_seen.wait(), timeout=2.0)
+    assert runs == ["first", "continue despite provider failure"]
+
+
+@pytest.mark.asyncio
+async def test_failed_late_steer_promotion_is_durable_and_emits_recovery_state() -> None:
+    first_started = asyncio.Event()
+    release_first = asyncio.Event()
+    release_queued = asyncio.Event()
+    rejected_seen = asyncio.Event()
+    events: list[tuple[str, str, dict[str, Any]]] = []
+
+    async def _handler(run: Any) -> None:
+        if run.message == "first":
+            first_started.set()
+            await release_first.wait()
+            return
+        await release_queued.wait()
+
+    async def _emit(session_key: str, name: str, payload: dict[str, Any]) -> None:
+        events.append((session_key, name, payload))
+        if (
+            name == "session.event.input_disposition"
+            and payload.get("failure_code") == "STEER_PROMOTION_QUEUE_FULL"
+        ):
+            rejected_seen.set()
+
+    storage = _make_storage()
+    rt = TaskRuntime(
+        storage=storage,
+        turn_handler=_handler,
+        event_emitter=_emit,
+        max_concurrency=1,
+        max_pending_per_session=1,
+    )
+    env = _make_envelope("agent-1::steer-promotion-full")
+    first = await rt.enqueue(env, "first")
+    await first_started.wait()
+    queued = await rt.enqueue(env, "already queued")
+    assert await rt.steer(
+        env.session_key,
+        "accepted but cannot promote",
+        persisted_user_message_id="msg-rejected",
+        client_message_id="client-rejected",
+        surface_id="tui:test",
+    ) == first.task_id
+
+    release_first.set()
+    await asyncio.wait_for(rejected_seen.wait(), timeout=2.0)
+
+    rejected = [
+        context
+        for _session, message_id, context in storage.turn_context_updates
+        if message_id == "msg-rejected" and context.get("disposition") == "rejected"
+    ]
+    assert rejected == [
+        {
+            "turn_id": first.task_id,
+            "client_message_id": "client-rejected",
+            "surface_id": "tui:test",
+            "intent": "steer",
+            "disposition": "rejected",
+            "target_turn_id": first.task_id,
+            "revision": 2,
+            "promoted_from_turn_id": first.task_id,
+        }
+    ]
+    failure_event = next(
+        payload
+        for _session, name, payload in events
+        if name == "session.event.input_disposition"
+        and payload.get("failure_code") == "STEER_PROMOTION_QUEUE_FULL"
+    )
+    assert failure_event["retryable"] is True
+    assert failure_event["recovery"] == "resend_after_queue_drains"
+
+    release_queued.set()
+    await rt.wait(queued.task_id, timeout=2.0)
 
 
 # ---------------------------------------------------------------------------

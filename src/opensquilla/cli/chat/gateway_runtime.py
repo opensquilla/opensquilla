@@ -8,6 +8,7 @@ compatibility wiring.
 from __future__ import annotations
 
 import asyncio
+import inspect
 from collections import deque
 from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine
 from contextlib import suppress
@@ -19,6 +20,11 @@ from opensquilla.cli.chat.output import ChatOutputHandle
 from opensquilla.cli.chat.session_context import GatewayRuntimeScope, GatewaySessionContext
 from opensquilla.cli.chat.session_state import ChatSessionState
 from opensquilla.cli.chat.turn import TurnResult
+from opensquilla.cli.tui.opentui.context import (
+    send_context_patch,
+    send_context_update,
+    send_model_routing_state,
+)
 
 GatewayRuntimeNoticeKind = Literal[
     "created",
@@ -125,6 +131,8 @@ class GatewayClientLike(Protocol):
 
     async def abort_session(self, key: str) -> dict[str, Any]: ...
 
+    async def steer_session(self, key: str, message: str) -> dict[str, Any]: ...
+
 
 class GatewayRunInputLoop(Protocol):
     async def __call__(
@@ -133,6 +141,7 @@ class GatewayRunInputLoop(Protocol):
         scope: GatewayRuntimeScope,
         dispatch: Callable[[str], Coroutine[Any, Any, bool]],
         abort_active_turn: Callable[[], Awaitable[None]] | None = None,
+        steer_active_turn: Callable[[str], Awaitable[bool]] | None = None,
     ) -> None: ...
 
 
@@ -179,6 +188,7 @@ _APPROVAL_EVENTS = frozenset(
         "plugin.approval.resolved",
     }
 )
+_MODEL_ROUTING_EVENTS = frozenset({"models.routing.changed"})
 
 
 def _flatten_event_frame(frame: dict[str, Any]) -> dict[str, Any]:
@@ -268,6 +278,15 @@ class _ExternalTurnClient:
         elevated: str | None = None,
     ) -> AsyncIterator[dict[str, Any]]:
         del session_key, message, attachments, elevated
+        if self._client_message_id is not None:
+            from opensquilla.cli.tui.backend.input_identity import (
+                notify_tui_turn_identity,
+            )
+
+            await notify_tui_turn_identity(
+                self._turn_id,
+                self._client_message_id,
+            )
         active_groups: set[str] = set()
         first: dict[str, Any] | None = self._first_frame
         while True:
@@ -407,6 +426,23 @@ async def _watch_approval_events(
             cancel_pending()
 
 
+async def _watch_model_routing_events(
+    subscription: Any,
+    *,
+    deps: GatewayRuntimeDependencies,
+    scope: GatewayRuntimeScope,
+) -> None:
+    """Mirror WebUI or another TUI's global strategy write immediately."""
+
+    async for frame in subscription:
+        if str(frame.get("event") or "") != "models.routing.changed":
+            continue
+        payload = frame.get("payload")
+        snapshot = payload if isinstance(payload, dict) else {}
+        output = await _wait_for_output(deps, scope)
+        await send_model_routing_state(output, snapshot)
+
+
 async def _mirror_external_turns(
     subscription: Any,
     *,
@@ -489,7 +525,13 @@ async def _mirror_external_turns(
                 )
                 send = getattr(output, "send_message", None)
                 if callable(send):
-                    await send("prompt.echo", {"text": prompt})
+                    await send(
+                        "prompt.echo",
+                        {
+                            "text": prompt,
+                            "client_message_id": item.client_message_id,
+                        },
+                    )
                 external_client = _ExternalTurnClient(
                     client,
                     item.subscription,
@@ -497,19 +539,25 @@ async def _mirror_external_turns(
                     turn_id=item.turn_id,
                     client_message_id=item.client_message_id,
                 )
-                result = await deps.stream_response(
-                    cast(GatewayClientLike, external_client),
-                    session_key,
-                    prompt,
-                    elevated_state,
-                    tui_output=output,
+                from opensquilla.cli.tui.backend.input_identity import (
+                    tui_input_identity_scope,
                 )
+
+                with tui_input_identity_scope(item.client_message_id):
+                    result = await deps.stream_response(
+                        cast(GatewayClientLike, external_client),
+                        session_key,
+                        prompt,
+                        elevated_state,
+                        tui_output=output,
+                    )
                 if session_context.session_key == session_key:
                     session_context.state.model = result.model_after or session_context.model
                     session_context.state.transcript.add("user", prompt)
                     session_context.state.transcript.add("assistant", result.text)
                     session_context.state.usage.apply(result.usage)
                     session_context.sync_from_state()
+                    await send_context_patch(output, model=session_context.model or "default")
             finally:
                 completed.add(item.turn_id)
                 turn_subscription = open_turn_subscriptions.pop(item.turn_id, None)
@@ -561,6 +609,8 @@ async def run_gateway_chat(
     session_observer_task: asyncio.Task[None] | None = None
     approval_subscription: Any | None = None
     approval_observer_task: asyncio.Task[None] | None = None
+    routing_subscription: Any | None = None
+    routing_observer_task: asyncio.Task[None] | None = None
     local_turn_idle = asyncio.Event()
     local_turn_idle.set()
     external_turn_idle = asyncio.Event()
@@ -569,21 +619,26 @@ async def run_gateway_chat(
         if session_id:
             session_key = session_id
             final_session_key = session_key
-            deps.notify(GatewayRuntimeNotice(kind="resumed", session_key=session_key))
-            if model:
-                deps.notify(GatewayRuntimeNotice(kind="resume_model_ignored"))
         else:
             session_key = await client.create_session(model=model)
             final_session_key = session_key
-            deps.notify(GatewayRuntimeNotice(kind="created", session_key=session_key))
-            if model:
-                deps.notify(GatewayRuntimeNotice(kind="model", model=model))
         # Bootstrap before the alternate-screen surface opens so the first
         # input frame can never race ahead of canonical durable history.
         snapshot = await client.bootstrap_session(
             session_key,
             limit=HISTORY_BOOTSTRAP_LIMIT,
         )
+        # Announce a created/resumed session only after Gateway canonical state
+        # proves that the key exists. An explicit missing ``--session`` must not
+        # first claim that it is being resumed and then fail.
+        if session_id:
+            deps.notify(GatewayRuntimeNotice(kind="resumed", session_key=session_key))
+            if model:
+                deps.notify(GatewayRuntimeNotice(kind="resume_model_ignored"))
+        else:
+            deps.notify(GatewayRuntimeNotice(kind="created", session_key=session_key))
+            if model:
+                deps.notify(GatewayRuntimeNotice(kind="model", model=model))
         history_replace = history_replace_from_bootstrap(
             snapshot,
             fallback_session_key=session_key,
@@ -668,6 +723,13 @@ async def run_gateway_chat(
                     output = deps.get_tui_output(session_context.scope)
                     if output is not None:
                         await replace_tui_history(output, gap_history)
+                        await send_context_update(
+                            output,
+                            gap_snapshot,
+                            model=session_context.model,
+                            session_id=session_context.session_key,
+                            permission=elevated_state.get("mode"),
+                        )
             session_observer_task = asyncio.create_task(
                 _mirror_external_turns(
                     session_subscription,
@@ -696,6 +758,20 @@ async def run_gateway_chat(
                     scope=session_context.scope,
                 )
             )
+            # Routing control is additive. Older clients and narrow test
+            # doubles may expose approval subscriptions only.
+            try:
+                routing_subscription = subscribe_global(_MODEL_ROUTING_EVENTS)
+            except Exception:
+                routing_subscription = None
+            if routing_subscription is not None:
+                routing_observer_task = asyncio.create_task(
+                    _watch_model_routing_events(
+                        routing_subscription,
+                        deps=deps,
+                        scope=session_context.scope,
+                    )
+                )
 
         deps.notify(GatewayRuntimeNotice(kind="welcome"))
 
@@ -733,6 +809,7 @@ async def run_gateway_chat(
                             session_context.session_key,
                             limit=1,
                         )
+                        session_context.scope["bootstrap"] = switch_snapshot
                         raw_switch_session = switch_snapshot.get("session")
                         switch_session = (
                             raw_switch_session if isinstance(raw_switch_session, dict) else {}
@@ -742,6 +819,18 @@ async def run_gateway_chat(
                             session_context.scope["workspace_label"] = switch_workspace
                         else:
                             session_context.scope.pop("workspace_label", None)
+                        await send_context_update(
+                            deps.get_tui_output(session_context.scope),
+                            switch_snapshot,
+                            model=session_context.model,
+                            session_id=session_context.session_key,
+                            workspace_label=(
+                                switch_workspace
+                                if isinstance(switch_workspace, str)
+                                else None
+                            ),
+                            permission=elevated_state.get("mode"),
+                        )
                         switch_cursor = switch_snapshot.get("stream_cursor")
                         await _start_session_observer(
                             session_context.session_key,
@@ -777,6 +866,10 @@ async def run_gateway_chat(
             session_context.state.transcript.add("assistant", result.text)
             session_context.state.usage.apply(result.usage)
             session_context.sync_from_state()
+            await send_context_patch(
+                deps.get_tui_output(session_context.scope),
+                model=session_context.model or "default",
+            )
             return True
 
         def _abort_active_turn() -> Awaitable[None]:
@@ -791,14 +884,33 @@ async def run_gateway_chat(
 
             return _abort_captured_turn()
 
+        async def _steer_active_turn(text: str) -> bool:
+            turn_session_key = active_turn_session_key
+            if turn_session_key is None:
+                return False
+            result = await client.steer_session(turn_session_key, text)
+            return bool(result.get("accepted"))
+
         from opensquilla.cli.tui.opentui.host_runtime import HostRuntimeError
 
         try:
-            await deps.run_input_loop(
-                scope=session_context.scope,
-                dispatch=_dispatch_input,
-                abort_active_turn=_abort_active_turn,
-            )
+            input_loop_kwargs: dict[str, Any] = {
+                "scope": session_context.scope,
+                "dispatch": _dispatch_input,
+                "abort_active_turn": _abort_active_turn,
+            }
+            # Additive adapter compatibility: third-party/native input loops
+            # compiled against the older callback contract keep working; the
+            # OpenTUI bridge advertises the new keyword explicitly.
+            with suppress(TypeError, ValueError):
+                parameters = inspect.signature(deps.run_input_loop).parameters.values()
+                if any(
+                    parameter.name == "steer_active_turn"
+                    or parameter.kind is inspect.Parameter.VAR_KEYWORD
+                    for parameter in parameters
+                ):
+                    input_loop_kwargs["steer_active_turn"] = _steer_active_turn
+            await deps.run_input_loop(**input_loop_kwargs)
         except ConnectionError:
             exit_reason = "gateway_disconnect"
         except HostRuntimeError:
@@ -880,4 +992,12 @@ async def run_gateway_chat(
         if callable(close_approval_subscription):
             with suppress(Exception):
                 await close_approval_subscription()
+        if routing_observer_task is not None:
+            routing_observer_task.cancel()
+            with suppress(asyncio.CancelledError, Exception):
+                await routing_observer_task
+        close_routing_subscription = getattr(routing_subscription, "close", None)
+        if callable(close_routing_subscription):
+            with suppress(Exception):
+                await close_routing_subscription()
         await client.close()

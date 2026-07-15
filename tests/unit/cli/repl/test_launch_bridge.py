@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from io import StringIO
 from pathlib import Path
 from types import SimpleNamespace
@@ -26,6 +27,83 @@ class FakeConsole:
 class FakeTerminalStream(StringIO):
     def isatty(self) -> bool:
         return True
+
+
+def test_bare_chat_preflight_selects_opentui(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from opensquilla.cli.tui.adapters import launch_bridge
+    from opensquilla.cli.tui.opentui import bridge as opentui_bridge
+    from opensquilla.cli.tui.renderers.selection import (
+        OPENSQUILLA_TUI_BACKEND_ENV,
+        RendererBackendAvailability,
+    )
+
+    original_backend = os.environ.pop(OPENSQUILLA_TUI_BACKEND_ENV, None)
+    monkeypatch.setattr(
+        opentui_bridge.OpenTuiRendererBackend,
+        "is_available",
+        lambda self: RendererBackendAvailability(available=True),
+    )
+
+    try:
+        backend_id = launch_bridge.validate_tui_backend_or_exit()
+
+        assert backend_id == "opentui"
+        assert os.environ[OPENSQUILLA_TUI_BACKEND_ENV] == "opentui"
+    finally:
+        os.environ.pop(OPENSQUILLA_TUI_BACKEND_ENV, None)
+        if original_backend is not None:
+            os.environ[OPENSQUILLA_TUI_BACKEND_ENV] = original_backend
+
+
+def test_bare_chat_falls_back_to_plain_before_terminal_preparation(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from opensquilla.cli.tui.adapters import launch_bridge
+    from opensquilla.cli.tui.opentui import bridge as opentui_bridge
+    from opensquilla.cli.tui.renderers.selection import (
+        OPENSQUILLA_TUI_BACKEND_ENV,
+        RendererBackendAvailability,
+    )
+
+    original_backend = os.environ.pop(OPENSQUILLA_TUI_BACKEND_ENV, None)
+    monkeypatch.setattr(
+        opentui_bridge.OpenTuiRendererBackend,
+        "is_available",
+        lambda self: RendererBackendAvailability(available=False, reason="host missing"),
+    )
+    prepared: list[bool] = []
+    monkeypatch.setattr(launch_bridge, "preflight_gateway_chat_or_exit", lambda: None)
+    monkeypatch.setattr(
+        launch_bridge,
+        "prepare_interactive_chat",
+        lambda **_kwargs: prepared.append(True),
+    )
+
+    async def fake_gateway(**_kwargs: Any) -> None:
+        return None
+
+    try:
+        launch_bridge.launch_chat(
+            model="",
+            session_id="",
+            standalone=False,
+            workspace="",
+            workspace_strict=None,
+            timeout=None,
+            standalone_runner=None,
+            gateway_runner=fake_gateway,
+        )
+
+        assert prepared == [True]
+        assert os.environ[OPENSQUILLA_TUI_BACKEND_ENV] == "native"
+        assert "OpenTUI unavailable; using plain mode: host missing" in capsys.readouterr().err
+    finally:
+        os.environ.pop(OPENSQUILLA_TUI_BACKEND_ENV, None)
+        if original_backend is not None:
+            os.environ[OPENSQUILLA_TUI_BACKEND_ENV] = original_backend
 
 
 def test_launch_bridge_prepares_terminal_and_quiets_logs(

@@ -25,7 +25,17 @@ export async function connectIpc({ host, port, token, protocol = HOST_PROTOCOL_V
       lines.off("line", onLine);
       socket.off("error", onError);
       socket.off("close", onClose);
-      if (error) reject(error); else resolve();
+      if (error) {
+        reject(error);
+      } else {
+        // Keep the authenticated stream paused until createIpc.start() has
+        // installed the product dispatcher. Python can send canonical
+        // bootstrap frames immediately after HostReady; a flowing readline
+        // interface with no line listener silently discards that whole first
+        // screen in the tiny send-ready -> start gap.
+        lines.pause();
+        resolve();
+      }
     };
     const onError = (error) => finish(error);
     const onClose = () => finish(new Error("OpenTUI IPC closed during authentication"));
@@ -114,6 +124,9 @@ export function createIpc({ socket, lines = readline.createInterface({ input: so
       }
     });
     lines.on("close", close);
+    // connectIpc pauses after authentication specifically so product frames
+    // received before this handler exists remain in the socket buffer.
+    lines.resume();
   }
   return { send, start };
 }
@@ -125,6 +138,7 @@ export function createDispatcher(h) {
       case "turn.begin": return h.turnBegin(m);
       case "turn.end": return h.turnEnd(m);
       case "turn.status": return h.turnStatus(m);
+      case "prompt.state": return h.promptState?.(m);
       case "composer.set": return h.composerSet(m);
       case "attachment.add": return h.attachmentAdd?.(m);
       case "attachment.update": return h.attachmentUpdate?.(m);
@@ -133,7 +147,10 @@ export function createDispatcher(h) {
       case "history.replace": return h.historyReplace?.(m);
       case "completion.context": return h.completionContext?.(m);
       case "completion.response": return h.completionResponse?.(m);
+      case "context.update": return h.contextUpdate?.(m);
       case "router.update": return h.routerUpdate(m);
+      case "model.routing.state": return h.modelRoutingState?.(m);
+      case "model.routing.picker": return h.modelRoutingPicker?.(m);
       case "block.begin": return h.blockBegin(m);
       case "block.append": return h.blockAppend(m);
       case "block.update": return h.blockUpdate(m);
@@ -144,6 +161,7 @@ export function createDispatcher(h) {
       case "notice.write": return h.notice?.(m);
       case "theme.set": return h.themeSet?.(m);
       case "theme.pick": return h.themePick?.(m);
+      case "session.pick": return h.sessionPick?.(m);
       case "approval.request": return h.approvalRequest?.(m);
       case "approval.dismiss": return h.approvalDismiss?.(m);
       case "shutdown": return h.shutdown(m);

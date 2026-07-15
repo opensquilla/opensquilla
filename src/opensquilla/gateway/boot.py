@@ -1021,7 +1021,8 @@ async def dispatch_task_runtime_turn(
             session_model=getattr(session, "model", None),
         ),
     )
-    raw_stream = turn_runner.run(run.message, run.session_key, **run_kwargs)
+    from opensquilla.engine.runtime import accepted_turn_config_scope
+
     raw_stream_idle_timeout = effective_agent_stream_idle_timeout_seconds(config)
     stream_idle_timeout: float | None = (
         raw_stream_idle_timeout if raw_stream_idle_timeout > 0 else None
@@ -1030,19 +1031,23 @@ async def dispatch_task_runtime_turn(
         config, "agent_stream_heartbeat_interval_seconds", 15.0
     )
     try:
-        await _emit_task_runtime_stream_events(
-            raw_stream,
-            run.session_key,
-            event_emitter,
-            idle_timeout=stream_idle_timeout,
-            heartbeat_interval=heartbeat_interval,
-            stream_event_sink=getattr(run, "stream_event_sink", None),
-            task_id=getattr(run, "task_id", None),
-            session_id=getattr(run.envelope, "session_id", None),
-            client_message_id=getattr(run.envelope, "metadata", {}).get("client_message_id"),
-            user_message_id=getattr(run, "persisted_user_message_id", None),
-            surface_id=getattr(run.envelope, "metadata", {}).get("surface_id"),
-        )
+        with accepted_turn_config_scope(getattr(run, "accepted_config", None)):
+            raw_stream = turn_runner.run(run.message, run.session_key, **run_kwargs)
+            await _emit_task_runtime_stream_events(
+                raw_stream,
+                run.session_key,
+                event_emitter,
+                idle_timeout=stream_idle_timeout,
+                heartbeat_interval=heartbeat_interval,
+                stream_event_sink=getattr(run, "stream_event_sink", None),
+                task_id=getattr(run, "task_id", None),
+                session_id=getattr(run.envelope, "session_id", None),
+                client_message_id=getattr(run.envelope, "metadata", {}).get(
+                    "client_message_id"
+                ),
+                user_message_id=getattr(run, "persisted_user_message_id", None),
+                surface_id=getattr(run.envelope, "metadata", {}).get("surface_id"),
+            )
     except TaskRuntimeStreamError as exc:
         if exc.code in {
             "provider_request_budget_exhausted",
@@ -1136,6 +1141,7 @@ def build_task_runtime_run_kwargs(
         "no_memory_capture": run.no_memory_capture,
         "fresh_user_session": bool(getattr(run, "fresh_user_session", False)),
         "ingress_pipeline_steps": ingress_steps,
+        "pending_input_provider": getattr(run, "pending_input_provider", None),
     }
     if run.semantic_message is not None:
         # Prefetch query shape: channels carry the raw user text
@@ -2983,6 +2989,7 @@ async def start_gateway_server(
 
     from opensquilla.gateway.background_completion import BackgroundCompletionManager
     from opensquilla.gateway.event_bridge import EventBridge
+    from opensquilla.gateway.model_routing import capture_model_routing_config
     from opensquilla.gateway.subagent_announce import set_background_completion_manager
     from opensquilla.gateway.task_runtime import TaskRun, TaskRuntime
 
@@ -3070,6 +3077,7 @@ async def start_gateway_server(
             getattr(getattr(config, "subagents", None), "subagent_reserved_slots", 0)
         ),
         turn_hard_deadline_s=_task_runtime_turn_hard_deadline_s(config),
+        accepted_config_provider=lambda: capture_model_routing_config(config),
         pending_overflow_policy=getattr(
             config.task_runtime, "pending_overflow_policy", "reject_newest"
         ),

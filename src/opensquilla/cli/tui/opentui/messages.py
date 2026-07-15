@@ -6,6 +6,8 @@ import json
 from dataclasses import asdict, dataclass, is_dataclass
 from typing import Any
 
+OPENTUI_SCREEN_MODE = "alternate-screen"
+
 
 class HostToPythonMessageError(ValueError):
     """Raised when the OpenTUI host emits an invalid control message."""
@@ -28,8 +30,42 @@ class RouterPluginState:
 
 
 @dataclass(frozen=True)
+class ContextUpdate:
+    """Canonical task identity and runtime context projected into the host.
+
+    This is intentionally a small display contract.  It never carries raw
+    identity documents, attachment bytes, credentials, or full workspace
+    paths; those remain owned by the Gateway/runtime.
+    """
+
+    agent: dict[str, str | None]
+    task: str
+    surface: str
+    gateway: str
+    model: str
+    permission: str
+    workspace: str
+    queue: str
+    context: str = ""
+
+
+@dataclass(frozen=True)
+class ModelRoutingState:
+    """Canonical Gateway-owned strategy projected into the host."""
+
+    mode: str
+    router_enabled: bool = False
+    ensemble_enabled: bool = False
+    selection_mode: str = ""
+    rollout_phase: str = "observe"
+    applies_to: str = "next_accepted_turn"
+    busy: bool = False
+
+
+@dataclass(frozen=True)
 class TurnBegin:
     id: str
+    client_message_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -41,6 +77,14 @@ class TurnEnd:
 @dataclass(frozen=True)
 class PromptEcho:
     text: str
+    client_message_id: str | None = None
+
+
+@dataclass(frozen=True)
+class PromptState:
+    turn_id: str
+    client_message_id: str
+    disposition: str = "accepted"
 
 
 @dataclass(frozen=True)
@@ -120,6 +164,7 @@ class HistoryMessage:
     artifacts: tuple[dict[str, Any], ...] = ()
     tool_calls: tuple[dict[str, Any], ...] = ()
     usage: dict[str, Any] | None = None
+    turn_context: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -195,12 +240,17 @@ class HostReady:
     platform: str = "unknown"
     arch: str = "unknown"
     build_id: str = "source"
+    # Static compatibility/diagnostic field. OpenTUI has one supported terminal
+    # lifecycle; this is not a user-selectable renderer mode.
+    screen_mode: str = OPENTUI_SCREEN_MODE
     capabilities: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
 class HostInputSubmit:
     text: str
+    intent: str = "auto"
+    client_message_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -275,6 +325,7 @@ PYTHON_TO_HOST_TYPES: dict[str, type | None] = {
     "turn.begin": TurnBegin,
     "turn.end": TurnEnd,
     "turn.status": TurnStatusState,
+    "prompt.state": PromptState,
     "composer.set": ComposerState,
     "attachment.add": AttachmentState,
     "attachment.update": AttachmentUpdate,
@@ -283,7 +334,10 @@ PYTHON_TO_HOST_TYPES: dict[str, type | None] = {
     "history.replace": HistoryReplace,
     "completion.context": CompletionContext,
     "completion.response": None,
+    "context.update": ContextUpdate,
     "router.update": RouterPluginState,
+    "model.routing.state": ModelRoutingState,
+    "model.routing.picker": None,
     "block.begin": BlockBegin,
     "block.append": BlockAppend,
     "block.update": BlockUpdate,
@@ -294,6 +348,7 @@ PYTHON_TO_HOST_TYPES: dict[str, type | None] = {
     "notice.write": NoticeWrite,
     "theme.set": None,
     "theme.pick": None,
+    "session.pick": None,
     "approval.request": None,
     "approval.dismiss": ApprovalDismiss,
     "shutdown": None,
@@ -343,10 +398,20 @@ def host_message_from_json(raw: str) -> HostToPythonMessage:
             platform=_optional_str(payload, "platform") or "unknown",
             arch=_optional_str(payload, "arch") or "unknown",
             build_id=_optional_str(payload, "buildId") or "source",
+            screen_mode=_optional_str(payload, "screenMode") or OPENTUI_SCREEN_MODE,
             capabilities=_optional_str_tuple(payload, "capabilities"),
         )
     if message_type == "input.submit":
-        return HostInputSubmit(text=_required_str(payload, "input.submit.text", "text"))
+        intent = _optional_str(payload, "intent") or "auto"
+        if intent not in {"auto", "steer", "queue", "control"}:
+            raise HostToPythonMessageError(
+                "OpenTUI input.submit.intent must be auto, steer, queue, or control"
+            )
+        return HostInputSubmit(
+            text=_required_str(payload, "input.submit.text", "text"),
+            intent=intent,
+            client_message_id=_optional_str(payload, "clientMessageId"),
+        )
     if message_type == "input.cancel":
         return HostInputCancel()
     if message_type == "input.eof":

@@ -28,12 +28,43 @@ def test_native_backend_is_internal_plain_renderer() -> None:
     assert set(renderer_backends()) == {"native", "opentui"}
 
 
-def test_supported_rc_keeps_bare_chat_plain_until_rollout_gate() -> None:
+def test_bare_chat_auto_selects_opentui_when_host_is_available(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from opensquilla.cli.tui.opentui import bridge as opentui_bridge
+    from opensquilla.cli.tui.renderers.selection import RendererBackendAvailability
+
+    monkeypatch.setattr(
+        opentui_bridge.OpenTuiRendererBackend,
+        "is_available",
+        lambda self: RendererBackendAvailability(available=True),
+    )
+
     selection = select_chat_ui_backend(None, env={})
 
-    assert DEFAULT_CHAT_UI_MODE == "plain"
-    assert selection.requested_mode == "plain"
+    assert DEFAULT_CHAT_UI_MODE == "auto"
+    assert selection.requested_mode == "auto"
+    assert selection.backend.backend_id == "opentui"
+    assert selection.fallback_reason is None
+
+
+def test_bare_chat_auto_falls_back_to_plain_when_host_is_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from opensquilla.cli.tui.opentui import bridge as opentui_bridge
+    from opensquilla.cli.tui.renderers.selection import RendererBackendAvailability
+
+    monkeypatch.setattr(
+        opentui_bridge.OpenTuiRendererBackend,
+        "is_available",
+        lambda self: RendererBackendAvailability(available=False, reason="host missing"),
+    )
+
+    selection = select_chat_ui_backend(None, env={})
+
+    assert selection.requested_mode == "auto"
     assert selection.backend.backend_id == "native"
+    assert selection.fallback_reason == "host missing"
 
 
 def test_renderer_backend_lookup_rejects_unknown_ids() -> None:
@@ -101,6 +132,25 @@ def test_public_chat_ui_plain_selects_native() -> None:
 
     assert selection.requested_mode == "plain"
     assert selection.backend.backend_id == "native"
+    assert selection.fallback_reason is None
+
+
+def test_public_chat_ui_tui_selects_opentui_when_host_is_available(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from opensquilla.cli.tui.opentui import bridge as opentui_bridge
+    from opensquilla.cli.tui.renderers.selection import RendererBackendAvailability
+
+    monkeypatch.setattr(
+        opentui_bridge.OpenTuiRendererBackend,
+        "is_available",
+        lambda self: RendererBackendAvailability(available=True),
+    )
+
+    selection = select_chat_ui_backend("tui", env={})
+
+    assert selection.requested_mode == "tui"
+    assert selection.backend.backend_id == "opentui"
     assert selection.fallback_reason is None
 
 

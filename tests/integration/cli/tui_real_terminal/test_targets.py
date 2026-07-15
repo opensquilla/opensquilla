@@ -62,7 +62,8 @@ def test_live_opentui_target_builds_real_cli_command(tmp_path: Path) -> None:
     assert target.backend_id == "live-opentui"
     assert target.command[:3] == [sys.executable, "-u", "-m"]
     assert target.command[3:6] == ["opensquilla.cli.main", "chat", "--standalone"]
-    assert target.command[6:8] == ["--ui", "tui"]
+    assert "--ui" not in target.command
+    assert target.command[6] == "--workspace"
     assert "--workspace" in target.command
     assert str(Path.cwd()) in target.command
     assert "--workspace-strict" in target.command

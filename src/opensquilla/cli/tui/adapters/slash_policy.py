@@ -50,6 +50,9 @@ class SlashCategory(Enum):
     # Host-only UI command (e.g. /theme): side-effect-free, runs immediately and
     # out-of-band — it is never echoed as a prompt and never queued behind a turn.
     LOCAL = "local"
+    # Shared Gateway control-plane state. These commands execute out-of-band
+    # during a live turn, without becoming transcript input or queued work.
+    CONTROL = "control"
 
 
 # Destructive commands clear pending work AND cancel the active turn before
@@ -72,6 +75,11 @@ EXIT_SLASH_WORDS: frozenset[str] = frozenset({"/exit", "/quit"})
 # (it writes to the shared scrollback); /model, /new, /clear are excluded (they
 # mutate session state under a live stream).
 LOCAL_SLASH_WORDS: frozenset[str] = frozenset({"/theme"})
+
+# Gateway-owned model-strategy controls. Their writes apply to the next
+# accepted turn, so it is both safe and necessary to dispatch them immediately
+# while the current turn continues with its captured strategy snapshot.
+CONTROL_SLASH_WORDS: frozenset[str] = frozenset({"/router", "/ensemble"})
 
 # Pure-info commands. Both pure-info and state-mutation enqueue identically;
 # this set exists so the classifier can return a more specific category for
@@ -147,6 +155,8 @@ def classify(input_text: str) -> SlashCategory:
         return SlashCategory.NON_SLASH
     if head in LOCAL_SLASH_WORDS:
         return SlashCategory.LOCAL
+    if head in CONTROL_SLASH_WORDS:
+        return SlashCategory.CONTROL
     if stripped in DESTRUCTIVE_SLASH_WORDS:
         return SlashCategory.DESTRUCTIVE
     if stripped in EXIT_SLASH_WORDS:
@@ -162,6 +172,7 @@ def classify(input_text: str) -> SlashCategory:
 
 __all__ = [
     "DESTRUCTIVE_SLASH_WORDS",
+    "CONTROL_SLASH_WORDS",
     "EXIT_SLASH_WORDS",
     "LOCAL_SLASH_WORDS",
     "PURE_INFO_SLASH_WORDS",

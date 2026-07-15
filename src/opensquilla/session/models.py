@@ -180,6 +180,9 @@ class TranscriptEntry(SQLModel, table=True):
     tool_call_id: str | None = None
     reasoning_content: str | None = None
     turn_usage: dict[str, Any] | None = Field(default=None, sa_column=Column(JSON))
+    # Gateway-owned causal identity shared by every durable row in one turn.
+    # Additive JSON keeps older readers and pre-identity transcript rows valid.
+    turn_context: dict[str, Any] | None = Field(default=None, sa_column=Column(JSON))
     created_at: int = Field(default_factory=_now_ms)
     token_count: int | None = None
 

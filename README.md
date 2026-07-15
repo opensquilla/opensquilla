@@ -25,7 +25,7 @@
 
 ## News
 
-- 📢 **2026-07-03** — Our technical report **[Agentic Routing: The Harness-Native Data Flywheel](docs/releases/agentic_routing_v0.pdf)** (preview) is out, released alongside OpenSquilla **0.5.0 Preview 1**. It details how the harness-native router turns everyday agent traffic into a self-improving data flywheel.
+- 📢 **2026-07-14** — Our technical report **[Agentic Routing: The Harness-Native Data Flywheel](https://arxiv.org/abs/2607.11399)** is now on arXiv. It shows how the harness-native router turns everyday agent traffic into a self-improving data flywheel, and how **multi-model ensemble routing surpasses Fable 5**.
 
 ---
 
@@ -62,10 +62,10 @@ Develop from source — build **from a Git checkout** (`git clone` + Git LFS).
 
 Release install commands use published GitHub release assets.
 Python wheel installs use versioned wheel filenames because installers
-validate the version embedded in the wheel filename. On macOS and Linux, the
-terminal installer pairs that core wheel with the same-version,
-architecture-specific `opensquilla-tui-host` companion; it does not install
-Bun, require a source checkout, or download a host on first launch.
+validate the version embedded in the wheel filename. Starting with Preview 5,
+the macOS/Linux installer also pairs a same-version, architecture-specific
+`opensquilla-tui-host` companion when that release contains one. Preview 4
+remains core-only.
 
 For 0.5.0 Preview 4 desktop use, prefer the packaged desktop installers from
 the GitHub Release: `OpenSquilla-0.5.0-rc4-mac-arm64.dmg` on macOS and
@@ -119,10 +119,20 @@ gateway runtime in an Electron shell.
 - macOS Apple Silicon: <https://github.com/opensquilla/opensquilla/releases/download/v0.5.0rc4/OpenSquilla-0.5.0-rc4-mac-arm64.dmg>
 - Windows x64: <https://github.com/opensquilla/opensquilla/releases/download/v0.5.0rc4/OpenSquilla-0.5.0-rc4-win-x64.exe>
 
+For faster Mainland China downloads, use the OSS direct-download aliases:
+- macOS Apple Silicon: <https://opensquilla-releases.oss-cn-beijing.aliyuncs.com/releases/latest/OpenSquilla-mac-arm64.dmg>
+- Windows x64: <https://opensquilla-releases.oss-cn-beijing.aliyuncs.com/releases/latest/OpenSquilla-win-x64.exe>
+
+These fixed links advance only after a newer eligible release passes mirror
+verification. Use the versioned GitHub Release links above when you need a
+specific release.
+
 Quit any running OpenSquilla desktop app before upgrading. On macOS, drag the
 app from the DMG into Applications for installation or updates, eject the DMG,
-then open the Applications copy. Existing `~/.opensquilla/config.toml` and
-session data are reused.
+then open the Applications copy. The existing Desktop profile in the platform
+application-data directory is reused. A terminal installation's
+`~/.opensquilla` is a separate profile; transfer it explicitly from Settings
+only if needed.
 
 When upgrading the Windows Desktop from RC3 to RC4 or later, run the new
 installer directly over the existing installation. Do **not** uninstall RC3
@@ -171,33 +181,22 @@ On macOS and Linux, the release installer selects the platform assets and runs
 curl -LsSf https://opensquilla.ai/install.sh | bash
 ```
 
-On Apple Silicon macOS, the equivalent fully pinned command is:
+The currently published Preview 4 release predates the packaged TUI companion,
+so its fully pinned terminal install remains core-only:
 
 ```sh
 uv tool install --python 3.12 \
-  --with "opensquilla-tui-host @ https://github.com/opensquilla/opensquilla/releases/download/v0.5.0rc4/opensquilla_tui_host-0.5.0rc4-py3-none-macosx_11_0_arm64.whl" \
   "opensquilla[recommended] @ https://github.com/opensquilla/opensquilla/releases/download/v0.5.0rc4/opensquilla-0.5.0rc4-py3-none-any.whl"
 ```
 
-Intel macOS uses the sibling
-`opensquilla_tui_host-0.5.0rc4-py3-none-macosx_11_0_x86_64.whl` asset. On Linux
-x86_64, the equivalent fully pinned command is:
+Packaged arm64/x86_64 macOS and Linux hosts begin with the next Preview 5
+release. The installer only pairs a companion after resolving a release that
+actually contains it; Preview 4 therefore remains installable and uses the
+plain renderer. Native Windows TUI remains a separate platform release.
 
-```sh
-uv tool install --python 3.12 \
-  --with "opensquilla-tui-host @ https://github.com/opensquilla/opensquilla/releases/download/v0.5.0rc4/opensquilla_tui_host-0.5.0rc4-py3-none-manylinux_2_28_x86_64.whl" \
-  "opensquilla[recommended] @ https://github.com/opensquilla/opensquilla/releases/download/v0.5.0rc4/opensquilla-0.5.0rc4-py3-none-any.whl"
-```
-
-Linux arm64 uses the sibling
-`opensquilla_tui_host-0.5.0rc4-py3-none-manylinux_2_28_aarch64.whl` asset.
-The packaged Linux host targets glibc 2.28 or newer; native musl/Alpine is not
-part of this RC. WSL follows the Linux path.
-Native Windows currently installs the platform-neutral core wheel; its ConPTY
-TUI host remains a separate Windows platform release.
-
-The installer installs core and companion into one isolated tool environment,
-then lets `uv` download the dependencies declared by the selected extras. The
+When a release includes a companion, the installer places core and host in one
+isolated tool environment. `uv` then downloads the dependencies declared by
+the selected extras. The
 default `recommended` extra includes SquillaRouter runtime dependencies
 such as ONNX Runtime, LightGBM, NumPy, and tokenizers, so a first install
 needs network access unless those wheels are already cached. `uv` does
@@ -386,8 +385,9 @@ full reference.
 OpenSquilla uses anonymous installation telemetry to estimate install counts,
 version adoption, and runtime compatibility. Data is sent on first gateway
 startup and once per OpenSquilla version. OpenSquilla may also make passive
-update checks, including desktop startup auto-update checks. Uploads use a
-short timeout and never block startup.
+update checks, including automatic desktop update checks at startup and, while
+the app remains open, at most once per day. Uploads use a short timeout and
+never block startup.
 
 See [`PRIVACY.md`](PRIVACY.md) for the full privacy policy covering local data,
 provider requests, network observability, logs, release downloads, and deletion.
@@ -427,9 +427,11 @@ disable_network_observability = true
 ```
 
 That unified switch covers automatic install telemetry, passive update checks,
-and desktop startup auto-update checks. Manual user-initiated actions may still
-contact network services after user intent, including manual release, download,
-or update checks and configured providers, search, or channels.
+and automatic desktop update checks at startup and during long-running app
+sessions. Explicit update-availability checks remain disabled while the unified
+or legacy opt-out is active. Other user-initiated actions may still contact
+network services after user intent, including release downloads and configured
+providers, search, or channels.
 
 Legacy opt-out environment variables remain honored:
 
@@ -530,15 +532,16 @@ handling.
 ```sh
 opensquilla gateway run                # foreground, 127.0.0.1:18791
 opensquilla gateway start --json       # background + health wait
-opensquilla chat                       # interactive REPL
+opensquilla chat                       # full-screen terminal chat
 opensquilla agent -m "your prompt"     # one-shot, automation-friendly
 ```
 
-> **Terminal UI.** During the supported macOS and Linux RC, use
-> `opensquilla chat --ui tui` to enter the packaged OpenTUI host. Bare
-> `opensquilla chat` temporarily remains on `plain` until the RC release gate
-> and seven-day observation pass; `--ui auto` can exercise the final startup
-> policy now. Both renderers use the same Gateway session runtime. Release
+> **Terminal UI.** On supported macOS and Linux installs, bare
+> `opensquilla chat` uses `auto`: it starts the packaged, full-screen OpenTUI
+> host and may fall back to `plain` only if startup fails before entering the
+> alternate screen. Use `--ui tui` when the full-screen host is required and
+> startup must fail rather than fall back; use `--ui plain` as the minimal
+> rescue renderer. Both renderers use the same Gateway session runtime. Release
 > installers pair the platform-neutral OpenSquilla package with the matching
 > macOS or Linux host, so normal use does not require Bun, Node, a source
 > checkout, or a first-run download. Native Windows TUI support remains an
@@ -643,34 +646,23 @@ settings live in `opensquilla.toml.example`.
 
 ## What's New in 0.5.0 Preview 4
 
-OpenSquilla 0.5.0 Preview 4 is a broad preview update for migration, routing,
-desktop, runtime, and deployment:
+OpenSquilla 0.5.0 Preview 4 focuses on safe upgrades and existing user data:
 
-- **Supported opt-in macOS and Linux TUI** - packaged arm64 and x86_64
-  companion wheels, shared Gateway sessions and approvals, attachment
-  composition, and terminal recovery are available through
-  `opensquilla chat --ui tui`; bare chat remains on the plain rescue renderer
-  during this RC.
-- **Safe profile recovery and imports** - Desktop guards writable startup when
-  a profile is uncertain or interrupted, offers verified recovery/rollback,
-  and supports an explicit whole-profile copy from another CLI/Desktop profile
-  or historical Windows Portable data without changing or syncing the source.
-- **Legacy-home migration** - detect and transactionally import older CLI,
-  desktop, portable, relocated, restored, and Docker-volume homes.
-- **Providers and routing** - support expands across TokenRhythm, Tencent
-  TokenHub and Token Plan, and IQS, with live model discovery, probe and context
-  diagnostics, verified coding presets, richer ensemble configuration, and an
-  opt-in router self-learning loop.
-- **Desktop, terminal, and Control UI** - improved updater behavior, onboarding,
-  terminal interaction, diagnostics, themes, attachments, chat navigation, and
-  desktop platform integration.
-- **Runtime and safety hardening** - stronger persistence, MCP, session, tool,
-  sandbox, secret-redaction, same-origin, and provider retry contracts.
-- **Container images** - prebuilt `linux/amd64` and `linux/arm64` gateway images
-  are published as `v0.5.0rc4` and `latest` on GHCR.
-- **Simplified release assets** - releases publish Electron installers,
-  updater metadata, the versioned Python wheel, macOS and Linux TUI host
-  companion wheels, and checksums; Windows portable archives remain retired.
+- **Profile recovery** - validates the active workspace before any empty
+  workspace or chat database can be created, preserving identity, memory,
+  settings, and chats when upgrading RC2 or RC3 Desktop to RC4.
+- **Windows Portable transfer** - a fresh Windows Desktop can explicitly copy
+  an old Portable profile without modifying its source. Normal upgrades do not
+  show the transfer flow, and separate profiles are never silently merged.
+- **Desktop data protection** - normal uninstall now preserves profile data;
+  cleanup actions state exactly what they remove, and provider key changes
+  remain effective after restart.
+- **Updates and reliability** - long-running Desktop sessions can discover
+  later previews, while Model Ensemble progress, provider limits, WeCom
+  connectivity, SQLite, process, and checkpoint handling are more robust.
+- **Download options** - versioned GitHub assets, multi-architecture GHCR
+  images, and an Alibaba Cloud OSS mirror provide release download options.
+  Windows Portable archives remain retired.
 
 Full notes: [`CHANGELOG.md`](CHANGELOG.md) ·
 [`docs/releases/0.5.0rc4.md`](docs/releases/0.5.0rc4.md).

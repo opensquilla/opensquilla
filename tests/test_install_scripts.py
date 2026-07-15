@@ -12,6 +12,8 @@ SOURCE_PS1 = ROOT / "scripts" / "install_source.ps1"
 SOURCE_SH = ROOT / "scripts" / "install_source.sh"
 CURRENT_RELEASE_TAG = "v0.5.0rc4"
 CURRENT_RELEASE_VERSION = CURRENT_RELEASE_TAG.removeprefix("v")
+FIRST_TUI_HOST_RELEASE_TAG = "v0.5.0rc5"
+FIRST_TUI_HOST_RELEASE_VERSION = FIRST_TUI_HOST_RELEASE_TAG.removeprefix("v")
 
 
 def _run_posix_release_installer(
@@ -140,7 +142,7 @@ def test_release_sh_installs_same_version_macos_tui_companion(
     env["PATH"] = f"{fake_bin}:{env['PATH']}"
     env["OPENSQUILLA_INSTALL_DRY_RUN"] = "1"
     result = subprocess.run(
-        ["bash", str(RELEASE_SH), "--version", CURRENT_RELEASE_TAG],
+        ["bash", str(RELEASE_SH), "--version", FIRST_TUI_HOST_RELEASE_TAG],
         cwd=ROOT,
         env=env,
         capture_output=True,
@@ -153,9 +155,9 @@ def test_release_sh_installs_same_version_macos_tui_companion(
     assert "--reinstall-package opensquilla " in result.stdout.replace("\\ ", " ")
     assert "--reinstall-package opensquilla-tui-host" in result.stdout.replace("\\ ", " ")
     assert (
-        f"opensquilla_tui_host-{CURRENT_RELEASE_VERSION}-py3-none-{wheel_tag}.whl"
+        f"opensquilla_tui_host-{FIRST_TUI_HOST_RELEASE_VERSION}-py3-none-{wheel_tag}.whl"
     ) in result.stdout
-    assert f"opensquilla-{CURRENT_RELEASE_VERSION}-py3-none-any.whl" in result.stdout
+    assert f"opensquilla-{FIRST_TUI_HOST_RELEASE_VERSION}-py3-none-any.whl" in result.stdout
 
 
 @pytest.mark.parametrize(
@@ -185,7 +187,7 @@ def test_release_sh_resolves_latest_before_pairing_macos_companion(
     uname.chmod(0o755)
     curl = fake_bin / "curl"
     curl.write_text(
-        f"#!/bin/sh\nprintf '%s\\n' '{{\"tag_name\":\"{CURRENT_RELEASE_TAG}\"}}'\n",
+        f"#!/bin/sh\nprintf '%s\\n' '{{\"tag_name\":\"{FIRST_TUI_HOST_RELEASE_TAG}\"}}'\n",
         encoding="utf-8",
     )
     curl.chmod(0o755)
@@ -202,17 +204,17 @@ def test_release_sh_resolves_latest_before_pairing_macos_companion(
     )
 
     assert result.returncode == 0, result.stderr
-    assert f"releases/download/{CURRENT_RELEASE_TAG}/" in result.stdout
+    assert f"releases/download/{FIRST_TUI_HOST_RELEASE_TAG}/" in result.stdout
     assert (
-        f"opensquilla_tui_host-{CURRENT_RELEASE_VERSION}-py3-none-{wheel_tag}.whl"
+        f"opensquilla_tui_host-{FIRST_TUI_HOST_RELEASE_VERSION}-py3-none-{wheel_tag}.whl"
     ) in result.stdout
     normalized = result.stdout.replace("\\ ", " ")
     assert "--reinstall-package opensquilla " in normalized
     assert "--reinstall-package opensquilla-tui-host" in normalized
-    assert (f"opensquilla-{CURRENT_RELEASE_VERSION}-py3-none-any.whl") in result.stdout
+    assert (f"opensquilla-{FIRST_TUI_HOST_RELEASE_VERSION}-py3-none-any.whl") in result.stdout
 
 
-@pytest.mark.parametrize("release_tag", ["v0.5.0rc3", "v0.5.0b9", "v0.4.1"])
+@pytest.mark.parametrize("release_tag", ["v0.5.0rc4", "v0.5.0rc3", "v0.5.0b9", "v0.4.1"])
 def test_release_sh_rolls_back_before_macos_companion_as_core_only(
     tmp_path: Path,
     release_tag: str,
@@ -244,7 +246,7 @@ def test_release_sh_rolls_back_before_macos_companion_as_core_only(
 
     assert result.returncode == 0, result.stderr
     normalized = result.stdout.replace("\\ ", " ")
-    assert "macOS TUI companions start at v0.5.0rc4" in result.stdout
+    assert "macOS TUI companions start at v0.5.0rc5" in result.stdout
     assert f"{release_tag} installs core only" in result.stdout
     assert "--with" not in result.stdout
     assert "--reinstall-package opensquilla " in normalized
@@ -306,7 +308,12 @@ def test_release_sh_installs_same_version_linux_tui_companion(
     machine: str,
     wheel_tag: str,
 ) -> None:
-    result = _run_posix_release_installer(tmp_path, system="Linux", machine=machine)
+    result = _run_posix_release_installer(
+        tmp_path,
+        system="Linux",
+        machine=machine,
+        release_tag=FIRST_TUI_HOST_RELEASE_TAG,
+    )
 
     assert result.returncode == 0, result.stderr
     normalized = result.stdout.replace("\\ ", " ")
@@ -314,12 +321,13 @@ def test_release_sh_installs_same_version_linux_tui_companion(
     assert "--reinstall-package opensquilla " in normalized
     assert "--reinstall-package opensquilla-tui-host" in normalized
     assert (
-        f"opensquilla_tui_host-{CURRENT_RELEASE_VERSION}-py3-none-{wheel_tag}.whl" in result.stdout
+        f"opensquilla_tui_host-{FIRST_TUI_HOST_RELEASE_VERSION}-py3-none-{wheel_tag}.whl"
+        in result.stdout
     )
-    assert f"opensquilla-{CURRENT_RELEASE_VERSION}-py3-none-any.whl" in result.stdout
+    assert f"opensquilla-{FIRST_TUI_HOST_RELEASE_VERSION}-py3-none-any.whl" in result.stdout
 
 
-@pytest.mark.parametrize("release_tag", ["v0.5.0rc3", "v0.5.0b9", "v0.4.1"])
+@pytest.mark.parametrize("release_tag", ["v0.5.0rc4", "v0.5.0rc3", "v0.5.0b9", "v0.4.1"])
 def test_release_sh_rolls_back_before_linux_companion_as_core_only(
     tmp_path: Path,
     release_tag: str,
@@ -333,7 +341,7 @@ def test_release_sh_rolls_back_before_linux_companion_as_core_only(
 
     assert result.returncode == 0, result.stderr
     normalized = result.stdout.replace("\\ ", " ")
-    assert "Linux TUI companions start at v0.5.0rc4" in result.stdout
+    assert "Linux TUI companions start at v0.5.0rc5" in result.stdout
     assert f"{release_tag} installs core only" in result.stdout
     assert "--with" not in result.stdout
     assert "--reinstall-package opensquilla " in normalized
@@ -342,7 +350,12 @@ def test_release_sh_rolls_back_before_linux_companion_as_core_only(
 
 
 def test_release_sh_rejects_unsupported_linux_arch_for_paired_release(tmp_path: Path) -> None:
-    result = _run_posix_release_installer(tmp_path, system="Linux", machine="riscv64")
+    result = _run_posix_release_installer(
+        tmp_path,
+        system="Linux",
+        machine="riscv64",
+        release_tag=FIRST_TUI_HOST_RELEASE_TAG,
+    )
 
     assert result.returncode != 0
     assert "this Linux architecture does not have a TUI host release asset" in result.stderr
@@ -379,13 +392,16 @@ def test_release_sh_completion_receipt_invites_paired_tui(
         tmp_path,
         system=system,
         machine=machine,
+        release_tag=FIRST_TUI_HOST_RELEASE_TAG,
         dry_run=False,
     )
 
     assert result.returncode == 0, result.stderr
-    assert "opensquilla chat --ui tui" in result.stdout
+    assert "  opensquilla chat\n" in result.stdout
     assert f"TUI companion: installed for {platform_label}." in result.stdout
-    assert "opensquilla chat --ui plain" not in result.stdout
+    assert "Bare chat automatically starts the packaged full-screen TUI." in result.stdout
+    assert "Use 'opensquilla chat --ui tui' to require it." in result.stdout
+    assert "Use 'opensquilla chat --ui plain' for the minimal rescue renderer." in result.stdout
     assert "Windows" not in result.stdout
 
 

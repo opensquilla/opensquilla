@@ -832,7 +832,23 @@ async def _handle_config_patch_safe(params: dict | None, ctx: RpcContext) -> dic
     if unsafe_paths:
         raise ValueError(f"Path is not safe for operator.write: {unsafe_paths[0]}")
 
-    return cast(dict[str, Any], await _handle_config_patch(params, ctx))
+    response = cast(dict[str, Any], await _handle_config_patch(params, ctx))
+    routing_paths = {
+        "llm_ensemble.enabled",
+        "llm_ensemble.selection_mode",
+        "squilla_router.enabled",
+        "squilla_router.rollout_phase",
+    }
+    if routing_paths.intersection(dot_patches):
+        from opensquilla.gateway.model_routing import (
+            broadcast_model_routing_changed,
+        )
+
+        response["model_routing"] = await broadcast_model_routing_changed(
+            ctx,
+            source="config.patch.safe",
+        )
+    return response
 
 
 @_d.method("config.apply", scope="operator.admin")

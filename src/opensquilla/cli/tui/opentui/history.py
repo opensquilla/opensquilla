@@ -148,6 +148,11 @@ def _history_message(row: dict[str, Any], *, ordinal: int) -> HistoryMessage:
         artifacts=_dict_tuple(row.get("artifacts")),
         tool_calls=_dict_tuple(row.get("tool_calls")),
         usage=usage,
+        turn_context=(
+            dict(row["turn_context"])
+            if isinstance(row.get("turn_context"), dict)
+            else None
+        ),
     )
 
 

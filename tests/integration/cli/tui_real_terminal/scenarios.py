@@ -17,6 +17,7 @@ from tui_real_terminal.evidence import (
     ScenarioFailure,
     ScenarioResult,
 )
+from tui_real_terminal.framebuffer import assert_opentui_framebuffer
 from tui_real_terminal.visual import blocking, build_visual_verdict
 
 ScenarioFamily = Literal[
@@ -118,12 +119,28 @@ def all_scenarios() -> tuple[TuiScenario, ...]:
         TuiScenario(
             scenario_id="long_streaming",
             family="long_streaming_output",
-            initial_size=TerminalSize(cols=100, rows=30),
+            initial_size=TerminalSize(cols=140, rows=36),
             steps=(
                 ScenarioStep("wait-ready", "wait_text", "OPEN_SQUILLA_TUI_READY", "ready"),
                 ScenarioStep("send-message", "send_text", "stream please", "after-input"),
                 ScenarioStep(
-                    "wait-stream",
+                    "wait-stream-wide",
+                    "wait_text",
+                    "stream-token-010",
+                    "during-stream-wide",
+                    timeout_s=10.0,
+                ),
+                ScenarioStep("resize-stream-narrow", "resize", "72x24", "during-stream-narrow"),
+                ScenarioStep(
+                    "wait-stream-narrow",
+                    "wait_text",
+                    "stream-token-035",
+                    "after-stream-narrow",
+                    timeout_s=10.0,
+                ),
+                ScenarioStep("resize-stream-wide", "resize", "140x34", "stream-restored-wide"),
+                ScenarioStep(
+                    "wait-stream-complete",
                     "wait_text",
                     "stream-token-079",
                     "after-stream",
@@ -138,6 +155,7 @@ def all_scenarios() -> tuple[TuiScenario, ...]:
                 ),
             ),
             expected_text=("stream-token-079",),
+            requires_tmux=True,
         ),
         TuiScenario(
             scenario_id="complex_ui_state",
@@ -152,6 +170,20 @@ def all_scenarios() -> tuple[TuiScenario, ...]:
                     "after-input",
                 ),
                 ScenarioStep(
+                    "wait-ensemble",
+                    "wait_text",
+                    "Ensemble · 0/2 complete",
+                    "during-ensemble",
+                    timeout_s=10.0,
+                ),
+                ScenarioStep(
+                    "wait-reasoning",
+                    "wait_text",
+                    "reasoning-process-streams-live",
+                    "during-reasoning",
+                    timeout_s=10.0,
+                ),
+                ScenarioStep(
                     "wait-intermediate",
                     "wait_text",
                     "intermediate-before-tool",
@@ -159,17 +191,33 @@ def all_scenarios() -> tuple[TuiScenario, ...]:
                     timeout_s=10.0,
                 ),
                 ScenarioStep(
-                    "wait-tool",
+                    "wait-answer",
                     "wait_text",
                     "complex-state-complete",
-                    "after-complex",
+                    "during-answer",
                     timeout_s=10.0,
+                ),
+                ScenarioStep(
+                    "wait-usage",
+                    "wait_text",
+                    "think 436",
+                    "after-usage",
+                    timeout_s=10.0,
+                ),
+                ScenarioStep(
+                    "settle-final-frame",
+                    "capture",
+                    "",
+                    "after-complex",
+                    timeout_s=0.3,
                 ),
             ),
             expected_text=(
                 "route standard",
+                "Ensemble",
                 "fake_tool",
                 "complex-state-complete",
+                "think 436",
             ),
         ),
         TuiScenario(
@@ -226,6 +274,13 @@ def all_scenarios() -> tuple[TuiScenario, ...]:
                     timeout_s=10.0,
                 ),
                 ScenarioStep("resize-wide", "resize", "120x34", "after-wide"),
+                ScenarioStep(
+                    "settle-wide",
+                    "capture",
+                    "",
+                    "after-wide-settled",
+                    timeout_s=0.5,
+                ),
                 ScenarioStep("ctrl-c", "key", "C-c", "after-ctrl-c"),
             ),
             expected_text=(
@@ -357,7 +412,7 @@ def all_scenarios() -> tuple[TuiScenario, ...]:
                 ScenarioStep(
                     "wait-turn-complete",
                     "wait_any_text",
-                    " · \nThe task timed out before it could finish.",
+                    "╰ in \nThe task timed out before it could finish.",
                     "after-turn-complete",
                     timeout_s=180.0,
                 ),
@@ -408,13 +463,31 @@ def run_scenario(
             assertions.assert_no_traceback(last_frame)
             assertions.assert_no_raw_ansi_leakage(last_frame)
             assertions.assert_no_inline_prompt_chrome_collision(last_frame)
+            assertions.assert_no_duplicate_fixed_chrome(last_frame)
+            if _requires_styled_framebuffer_gate(scenario, last_frame.checkpoint):
+                if not session.alternate_screen_active():
+                    raise AssertionError(f"{last_frame.checkpoint}: TUI left alternate-screen mode")
+                framebuffer = session.capture_framebuffer(last_frame.checkpoint)
+                if framebuffer is None:
+                    raise AssertionError(
+                        f"{last_frame.checkpoint}: terminal driver cannot capture "
+                        "a styled cell framebuffer"
+                    )
+                evidence.record_framebuffer(framebuffer)
+                assert_opentui_framebuffer(framebuffer)
             if not session.is_alive() and step.action != "key":
                 raise AssertionError(f"{step.step_id}: terminal process exited unexpectedly")
+        # Keep one styled, exact-cell framebuffer for visual review in addition
+        # to the structural alternate-screen gates above.
+        final_framebuffer = session.capture_framebuffer("visual-final")
+        if final_framebuffer is not None:
+            evidence.record_framebuffer(final_framebuffer)
+        scrollback = session.capture_scrollback_text("scrollback")
         for expected in scenario.expected_text:
             assertions.assert_visible_text(last_frame, expected)
         if scenario.requires_prompt_ready:
             assertions.assert_prompt_ready(last_frame)
-        evidence.write_scrollback(session.capture_scrollback_text("scrollback"))
+        evidence.write_scrollback(scrollback)
         result = ScenarioResult(
             scenario_id=scenario.scenario_id,
             backend_id=backend_id,
@@ -458,7 +531,10 @@ def run_scenario(
         session.terminate()
 
 
-def _run_step(session: RealTerminalSession, step: ScenarioStep) -> TerminalFrame:
+def _run_step(
+    session: RealTerminalSession,
+    step: ScenarioStep,
+) -> TerminalFrame:
     checkpoint = step.checkpoint or step.step_id
     if step.action == "wait_text":
         timeout_s = step.timeout_s
@@ -468,18 +544,11 @@ def _run_step(session: RealTerminalSession, step: ScenarioStep) -> TerminalFrame
             # renderer's own ready timeout unchanged while avoiding a harness
             # race on the first scenario of a fresh release runner.
             timeout_s = max(timeout_s, 15.0)
-        return session.wait_for_text(
-            step.value,
-            timeout_s=timeout_s,
-            checkpoint=checkpoint,
-        )
+        return session.wait_for_text(step.value, timeout_s=timeout_s, checkpoint=checkpoint)
     if step.action == "wait_any_text":
         needles = tuple(item for item in step.value.splitlines() if item)
         return _wait_for_any_text(
-            session,
-            needles,
-            timeout_s=step.timeout_s,
-            checkpoint=checkpoint,
+            session, needles, timeout_s=step.timeout_s, checkpoint=checkpoint
         )
     if step.action == "send_text":
         session.send_text(step.value)
@@ -535,7 +604,18 @@ def _capture_stable_resize_frame(
 
 
 def _has_duplicate_inline_prompt(frame: TerminalFrame) -> bool:
-    return any(line.count("send a massage") > 1 for line in frame.text.splitlines())
+    placeholders = ("send a message", "send a massage")
+    return sum(frame.text.count(placeholder) for placeholder in placeholders) > 1
+
+
+def _requires_styled_framebuffer_gate(
+    scenario: TuiScenario,
+    checkpoint: str,
+) -> bool:
+    return scenario.scenario_id == "long_streaming" and checkpoint in {
+        "after-stream-narrow",
+        "stream-restored-wide",
+    }
 
 
 def _write_visual_verdict(

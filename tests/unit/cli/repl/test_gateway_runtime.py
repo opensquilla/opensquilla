@@ -125,6 +125,54 @@ async def test_gateway_runtime_connects_to_configured_gateway_target(
 
 
 @pytest.mark.asyncio
+async def test_gateway_runtime_does_not_announce_resume_before_bootstrap_succeeds(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from opensquilla.cli.gateway_client import GatewayRPCError
+    from opensquilla.cli.repl import gateway_runtime
+
+    class _MissingSessionGatewayClient:
+        closed = False
+
+        async def connect(self, _url: str, *, token: str | None = None) -> None:
+            return None
+
+        async def bootstrap_session(self, key: str, *, limit: int = 200) -> dict[str, Any]:
+            raise GatewayRPCError(
+                "sessions.bootstrap",
+                code="NOT_FOUND",
+                message=f"Session not found: {key}",
+            )
+
+        async def close(self) -> None:
+            type(self).closed = True
+
+    monkeypatch.setattr(
+        "opensquilla.cli.gateway_client.GatewayClient",
+        _MissingSessionGatewayClient,
+    )
+    notices: list[gateway_runtime.GatewayRuntimeNotice] = []
+    deps = gateway_runtime.GatewayRuntimeDependencies(
+        stream_response=cast(Any, None),
+        handle_slash_command=cast(Any, None),
+        run_input_loop=cast(Any, None),
+        get_tui_output=lambda _scope: None,
+        is_exit_command=lambda _value: False,
+        notify=notices.append,
+    )
+
+    with pytest.raises(GatewayRPCError, match="Session not found: main"):
+        await gateway_runtime.run_gateway_chat(
+            model=None,
+            session_id="main",
+            deps=deps,
+        )
+
+    assert notices == []
+    assert _MissingSessionGatewayClient.closed is True
+
+
+@pytest.mark.asyncio
 async def test_gateway_runtime_dispatches_messages_slash_commands_and_exit(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -409,6 +457,10 @@ async def test_gateway_runtime_projects_external_turn_and_converges_approval(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from opensquilla.cli.repl import gateway_runtime
+    from opensquilla.cli.tui.backend.input_identity import (
+        current_tui_client_message_id,
+        tui_turn_identity_sink_scope,
+    )
 
     class _Subscription:
         def __init__(self) -> None:
@@ -527,6 +579,7 @@ async def test_gateway_runtime_projects_external_turn_and_converges_approval(
     output = _Output()
     projected = asyncio.Event()
     captured_events: list[dict[str, Any]] = []
+    bound_identities: list[tuple[str, str]] = []
 
     async def stream_response(
         client: object,
@@ -540,7 +593,15 @@ async def test_gateway_runtime_projects_external_turn_and_converges_approval(
         assert client is not _Client.instances[-1]
         assert session_key == "agent:main:shared"
         assert message == "hello from web"
-        captured_events.extend([event async for event in client.send_message(session_key, message)])
+        assert current_tui_client_message_id() == "client-message-web"
+
+        async def _bind(turn_id: str, client_message_id: str) -> None:
+            bound_identities.append((turn_id, client_message_id))
+
+        with tui_turn_identity_sink_scope(_bind):
+            captured_events.extend(
+                [event async for event in client.send_message(session_key, message)]
+            )
         projected.set()
         return TurnResult(text="web answer", model_after="gateway/model")
 
@@ -605,7 +666,14 @@ async def test_gateway_runtime_projects_external_turn_and_converges_approval(
         "session.event.text_delta",
         "session.event.done",
     ]
-    assert output.messages[0] == ("prompt.echo", {"text": "hello from web"})
+    assert output.messages[0] == (
+        "prompt.echo",
+        {
+            "text": "hello from web",
+            "client_message_id": "client-message-web",
+        },
+    )
+    assert bound_identities == [("turn-web", "client-message-web")]
     assert output.presented[0]["id"] == "approval-web"
     assert output.resolved == [("approval-web", True, "approved")]
 
@@ -1001,6 +1069,7 @@ async def test_replay_gap_bootstraps_and_hydrates_existing_surface_once(
         "composer.set",
         "history.replace",
         "composer.set",
+        "context.update",
     ]
     assert summary.session_key == "agent:main:gap"
 

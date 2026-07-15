@@ -24,8 +24,8 @@ class FakeNode {
     this.children.push(node);
     return this.children.length;
   }
-  remove(id) {
-    this.children = this.children.filter((child) => child.id !== id);
+  remove(node) {
+    this.children = this.children.filter((child) => child !== node);
   }
   getChildren() {
     return this.children;
@@ -257,11 +257,10 @@ test("Ctrl+C keeps its cancel path while the overlay is open", () => {
   expect(findDeep(overlayLayer, "approval-overlay")).not.toBeNull();
 });
 
-test("the overlay survives footer re-renders (pulse ticks) instead of flashing away", () => {
+test("the overlay survives ordinary footer re-renders instead of flashing away", () => {
   const { composer, overlayLayer } = makeHarness();
   composer.openApprovalOverlay(request({ choices: CHOICES }));
 
-  composer.tickPulse(1);
   composer.rerender();
 
   const overlays = overlayLayer

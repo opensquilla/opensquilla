@@ -78,7 +78,16 @@ class _StubGatewayClient:
         self.bootstrap_payloads: dict[str, dict[str, Any]] = {}
         self.history: list[dict[str, Any]] = []
         self.raise_map: dict[str, Exception] = {}
+        self.session_rows: list[dict[str, Any]] = []
         self._counter = 0
+        self.model_routing: dict[str, Any] = {
+            "mode": "direct",
+            "router_enabled": False,
+            "ensemble_enabled": False,
+            "rollout_phase": "observe",
+            "selection_mode": "router_dynamic",
+            "applies_to": "next_accepted_turn",
+        }
 
     def _maybe_raise(self, method: str) -> None:
         exc = self.raise_map.get(method)
@@ -106,7 +115,7 @@ class _StubGatewayClient:
 
     async def list_sessions(self, limit: int = 50) -> dict[str, Any]:
         self._maybe_raise("list_sessions")
-        return {"sessions": []}
+        return {"sessions": list(self.session_rows[:limit])}
 
     async def resolve_session(self, key: str) -> dict[str, Any]:
         self._maybe_raise("resolve_session")
@@ -216,6 +225,22 @@ class _StubGatewayClient:
         self.calls.append(("set_approval_mode", mode))
         return {"ok": True}
 
+    async def get_model_routing(self) -> dict[str, Any]:
+        self._maybe_raise("get_model_routing")
+        self.calls.append(("get_model_routing", None))
+        return dict(self.model_routing)
+
+    async def set_model_routing(self, mode: str) -> dict[str, Any]:
+        self._maybe_raise("set_model_routing")
+        self.calls.append(("set_model_routing", mode))
+        self.model_routing.update(
+            mode=mode,
+            router_enabled=mode == "router",
+            ensemble_enabled=mode == "ensemble",
+            rollout_phase="full" if mode != "direct" else "observe",
+        )
+        return dict(self.model_routing)
+
 
 def _gateway_context(
     client: _StubGatewayClient | None = None,
@@ -243,6 +268,10 @@ class _StructuredOutput:
 
     async def send_message(self, message_type: str, payload: dict[str, Any]) -> None:
         self.messages.append((message_type, payload))
+
+    @property
+    def supports_send_message(self) -> bool:
+        return True
 
     async def add_attachment(
         self,
@@ -658,10 +687,65 @@ async def test_gateway_resume_hydrates_canonical_history_atomically(
     assert [message_type for message_type, _payload in output.messages] == [
         "composer.set",
         "history.replace",
+        "context.update",
         "composer.set",
     ]
+    context_payload = output.messages[2][1]
+    assert context_payload["task"] == "Session"
+    assert context_payload["model"] == "openai/resumed"
+    assert target not in repr(context_payload)
     assert output.messages[1][1]["history_scope"] == "latest_window"
     assert [item["id"] for item in output.messages[1][1]["messages"]] == ["m1", "m2"]
+
+
+async def test_gateway_resume_without_id_opens_searchable_session_picker(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_gateway_io(monkeypatch)
+    client = _StubGatewayClient()
+    client.session_rows = [
+        {
+            "key": "agent:main:one",
+            "display_name": "Daily coding",
+            "model": "router/default",
+            "status": "running",
+            "message_count": 12,
+        },
+        {
+            "session_key": "agent:main:malformed-count",
+            "title": "Recoverable row",
+            "entry_count": "unknown",
+        },
+        {"title": "missing key is ignored"},
+    ]
+    output = _StructuredOutput()
+    context = _gateway_context(client, tui_output=output)
+
+    assert await handle_gateway_slash_command("/resume", context) is True
+    assert output.messages == [
+        (
+            "session.pick",
+            {
+                "current_key": "agent:main:test:0",
+                "sessions": [
+                    {
+                        "key": "agent:main:one",
+                        "title": "Daily coding",
+                        "status": "running",
+                        "model": "router/default",
+                        "message_count": 12,
+                    },
+                    {
+                        "key": "agent:main:malformed-count",
+                        "title": "Recoverable row",
+                        "status": "",
+                        "model": "",
+                        "message_count": 0,
+                    },
+                ],
+            },
+        )
+    ]
 
 
 async def test_gateway_reset_replaces_transcript_with_empty_snapshot(
@@ -946,6 +1030,109 @@ def test_classify_exit_variants_enqueue_for_runtime_interception(command: str) -
     assert category is not SlashCategory.EXIT
     assert category is not SlashCategory.DESTRUCTIVE
     assert category is not SlashCategory.NON_SLASH
+
+
+@pytest.mark.parametrize(
+    "command",
+    ["/router", "/router on", "/router status", "/ensemble", "/ensemble off"],
+)
+def test_classify_model_strategy_as_immediate_control(command: str) -> None:
+    assert classify(command) is SlashCategory.CONTROL
+
+
+async def test_gateway_model_strategy_bare_command_opens_shared_picker() -> None:
+    client = _StubGatewayClient()
+    output = _StructuredOutput()
+
+    handled = await handle_gateway_slash_command(
+        "/router",
+        _gateway_context(client, tui_output=output),
+    )
+
+    assert handled is True
+    assert output.messages == [
+        (
+            "model.routing.picker",
+            {
+                "current": "direct",
+                "options": ["direct", "router", "ensemble"],
+            },
+        )
+    ]
+    assert ("set_model_routing", "router") not in client.calls
+
+
+@pytest.mark.parametrize(
+    ("command", "expected"),
+    [
+        ("/router on", "router"),
+        ("/router off", "direct"),
+        ("/ensemble on", "ensemble"),
+        ("/ensemble off", "direct"),
+    ],
+)
+async def test_gateway_model_strategy_command_sets_canonical_mode(
+    command: str,
+    expected: str,
+) -> None:
+    client = _StubGatewayClient()
+    output = _StructuredOutput()
+
+    handled = await handle_gateway_slash_command(
+        command,
+        _gateway_context(client, tui_output=output),
+    )
+
+    assert handled is True
+    assert ("set_model_routing", expected) in client.calls
+    assert output.messages[-1][0] == "model.routing.state"
+    assert output.messages[-1][1]["mode"] == expected
+
+
+async def test_gateway_model_strategy_missing_control_rpc_is_explicit_read_only(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    recorder = _patch_gateway_io(monkeypatch)
+    client = _StubGatewayClient()
+    client.raise_map["get_model_routing"] = RuntimeError("METHOD_NOT_FOUND")
+
+    handled = await handle_gateway_slash_command(
+        "/router on",
+        _gateway_context(client, tui_output=_StructuredOutput()),
+    )
+
+    assert handled is True
+    assert "read-only" in recorder.text()
+    assert ("set_model_routing", "router") not in client.calls
+
+
+async def test_gateway_model_strategy_failed_write_reprojects_canonical_state(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    recorder = _patch_gateway_io(monkeypatch)
+    client = _StubGatewayClient()
+    client.raise_map["set_model_routing"] = RuntimeError("operator.write required")
+    output = _StructuredOutput()
+
+    handled = await handle_gateway_slash_command(
+        "/ensemble on",
+        _gateway_context(client, tui_output=output),
+    )
+
+    assert handled is True
+    assert "strategy remains direct" in recorder.text()
+    assert output.messages[-1] == (
+        "model.routing.state",
+        {
+            "mode": "direct",
+            "router_enabled": False,
+            "ensemble_enabled": False,
+            "selection_mode": "router_dynamic",
+            "rollout_phase": "observe",
+            "applies_to": "next_accepted_turn",
+            "busy": False,
+        },
+    )
 
 
 # --------------------------------------------------------------------------- #

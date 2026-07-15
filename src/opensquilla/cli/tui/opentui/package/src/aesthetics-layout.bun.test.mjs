@@ -15,10 +15,14 @@ import { BoxRenderable, ScrollBoxRenderable, TextRenderable } from "@opentui/cor
 
 import { shouldFollowBottom } from "./main.mjs";
 import { createTurnView } from "./turnView.mjs";
-import { applyTheme } from "./theme.mjs";
+import { applyTheme, THEME } from "./theme.mjs";
 
 const frameText = (frame) => frame.lines.map((l) => l.spans.map((s) => s.text).join("")).join("\n");
 const rgb = (c) => [Math.round(c.r * 255), Math.round(c.g * 255), Math.round(c.b * 255)];
+const hexRgb = (hex) => {
+  const value = Number.parseInt(String(hex).replace("#", ""), 16);
+  return [(value >> 16) & 255, (value >> 8) & 255, value & 255];
+};
 
 async function makeTurnHarness({ width = 60, height = 14 } = {}) {
   const setup = await createTestRenderer({ width, height });
@@ -75,6 +79,35 @@ test("turns are separated by a blank line of vertical rhythm", async () => {
   // At least one fully-blank row separates the end of turn A from turn B.
   const between = [...Array(bRow - aRow).keys()].map((i) => row(aRow + 1 + i));
   expect(between.some((line) => line.trim() === "")).toBe(true);
+  renderer.destroy?.();
+});
+
+test("a prompt is an explicit user-role surface, not a dim transcript line", async () => {
+  applyTheme("opensquilla-dark");
+  const { renderer, renderOnce, captureSpans, turn } = await makeTurnHarness({ width: 60, height: 12 });
+  turn.begin("p", "prompt", { text: "first user line\nsecond user line" });
+  await renderOnce();
+
+  const frame = captureSpans();
+  const rows = frame.lines.map((line) => ({
+    text: line.spans.map((span) => span.text).join(""),
+    spans: line.spans,
+  }));
+  const first = rows.find((row) => row.text.includes("first user line"));
+  const second = rows.find((row) => row.text.includes("second user line"));
+  expect(first).toBeTruthy();
+  expect(second).toBeTruthy();
+  expect(first.text).toContain("you");
+  expect(second.text).not.toContain("you");
+
+  const role = first.spans.find((span) => span.text.includes("you"));
+  const firstText = first.spans.find((span) => span.text.includes("first user line"));
+  const secondText = second.spans.find((span) => span.text.includes("second user line"));
+  expect(rgb(role.fg)).toEqual(hexRgb(THEME.promptAccent));
+  expect(rgb(firstText.fg)).toEqual(hexRgb(THEME.promptText));
+  expect(rgb(secondText.fg)).toEqual(hexRgb(THEME.promptText));
+  expect(rgb(firstText.bg)).toEqual(hexRgb(THEME.promptSurface));
+  expect(rgb(secondText.bg)).toEqual(hexRgb(THEME.promptSurface));
   renderer.destroy?.();
 });
 
@@ -154,6 +187,30 @@ test("relayout skips entirely when the terminal width is unchanged", async () =>
   renderer.destroy?.();
 });
 
+test("a height-only resize recomputes the active reasoning peek", async () => {
+  const { renderer, renderOnce, captureSpans, resize, turn } = await makeTurnHarness({
+    width: 80,
+    height: 40,
+  });
+  turn.begin("r", "reasoning", {});
+  turn.append("r", Array.from({ length: 12 }, (_, index) => `line-${index}`).join("\n"));
+  await renderOnce();
+  const before = frameText(captureSpans());
+  expect(before).toContain("line-11");
+  expect(before).toContain("line-4"); // 40 rows => the maximum eight-line live peek
+
+  const doResize = resize || ((w, h) => renderer.resize(w, h));
+  await doResize(80, 15);
+  turn.relayout();
+  await renderOnce();
+
+  const after = frameText(captureSpans());
+  expect(after).toContain("line-11");
+  expect(after).toContain("… 9 earlier lines"); // 15 rows => the minimum three-line peek
+  expect(after).not.toContain("line-4");
+  renderer.destroy?.();
+});
+
 test("a turn cancelled during reasoning keeps the Thought record in its card", async () => {
   // Cancel during extended thinking: the reasoning block collapses to its
   // "Thought for Ns" record, so the card keeps a real body and closes into a
@@ -210,7 +267,10 @@ test("turn.end with cancelled=true appends a warning cancel marker; a normal fin
   const line = frame.lines.find((l) => l.spans.map((s) => s.text).join("").includes("cancelled"));
   expect(line).toBeTruthy();
   const span = line.spans.find((s) => s.text.includes("cancelled"));
-  expect(rgb(span.fg)).toEqual([232, 178, 58]); // dark THEME.warning #E8B23A
+  const warningProbe = new TextRenderable(renderer, { id: "warning-probe", content: " ", fg: THEME.warning });
+  // Assert the semantic warning token in the active color mode. In NO_COLOR /
+  // TERM=dumb the same token intentionally quantizes to monochrome.
+  expect(rgb(span.fg)).toEqual(rgb(warningProbe.fg));
   renderer.destroy?.();
 });
 
@@ -236,10 +296,10 @@ test("a prompt block never seals an open card; only usage closes it", async () =
   renderer.destroy?.();
 });
 
-test("scrollbox flags manual scrolls and clears the flag on snap-to-bottom", async () => {
-  // main.mjs's bottom-follow gates on _hasManualScroll: a wheel-up mid-stream
-  // must pause following (no yank back on the next append), and snapping to
-  // the bottom must resume it. Pin the engine contract those rules rely on.
+test("scrollbox public geometry preserves history and resumes bottom-follow", async () => {
+  // Verify the user-visible sticky-scroll behavior without pinning OpenTUI's
+  // private manual-scroll fields, which legitimately changed between 0.3 and
+  // 0.4. The app-level scroller owns the held/following product contract.
   const { renderer, renderOnce } = await createTestRenderer({ width: 40, height: 10 });
   const scrollBox = new ScrollBoxRenderable(renderer, {
     id: "conv",
@@ -260,11 +320,21 @@ test("scrollbox flags manual scrolls and clears the flag on snap-to-bottom", asy
   }
   await renderOnce();
 
-  expect(scrollBox._hasManualScroll).toBe(false); // following by default
-  scrollBox.scrollTop = 0; // the user scrolls up to read history
-  expect(scrollBox._hasManualScroll).toBe(true); // following pauses
-  scrollBox.scrollTop = scrollBox.scrollHeight; // snap back to the bottom
-  expect(scrollBox._hasManualScroll).toBe(false); // following resumes
+  expect(shouldFollowBottom(scrollBox)).toBe(true);
+  scrollBox.scrollTop = 0;
+  expect(shouldFollowBottom(scrollBox)).toBe(false);
+
+  // Growing content while held must not yank the viewport away from history.
+  scrollBox.add(new TextRenderable(renderer, { id: "held-append", content: "held append" }));
+  await renderOnce();
+  expect(scrollBox.scrollTop).toBe(0);
+
+  // Returning to the public bottom position re-enables sticky following.
+  scrollBox.scrollTop = scrollBox.scrollHeight;
+  expect(shouldFollowBottom(scrollBox)).toBe(true);
+  scrollBox.add(new TextRenderable(renderer, { id: "follow-append", content: "follow append" }));
+  await renderOnce();
+  expect(shouldFollowBottom(scrollBox)).toBe(true);
 
   // focusable=false keeps a click from focusing the transcript scroller, so
   // arrows/j/k can never double-drive it alongside the composer.
@@ -274,13 +344,8 @@ test("scrollbox flags manual scrolls and clears the flag on snap-to-bottom", asy
 });
 
 test("wheel-scrolling back to the bottom re-engages bottom-follow for the next append", async () => {
-  // The engine flags EVERY wheel event in _hasManualScroll — including the
-  // wheel-down that lands exactly on the bottom row — and its own reengage
-  // check only clears the flag when a layout pass grows content by at most
-  // one row. Multi-row mutations (a tool block's gap+row, batched stream
-  // deltas, a wrapped paragraph) miss that point, so trusting the stale flag
-  // would stream the rest of the turn below the fold. shouldFollowBottom
-  // must treat a verified at-bottom position as re-consent to follow.
+  // A return to the public bottom position is re-consent to follow regardless
+  // of how a particular OpenTUI release represents sticky state internally.
   const { renderer, renderOnce } = await createTestRenderer({ width: 40, height: 10 });
   const scrollBox = new ScrollBoxRenderable(renderer, {
     id: "conv",
@@ -307,17 +372,11 @@ test("wheel-scrolling back to the bottom re-engages bottom-follow for the next a
 
   // Wheel up mid-stream: the hold sticks — appends must not yank back down.
   wheel("up", 3);
-  expect(scrollBox._hasManualScroll).toBe(true);
   expect(shouldFollowBottom(scrollBox)).toBe(false);
-  expect(scrollBox._hasManualScroll).toBe(true); // the hold survives the check
 
-  // Wheel back down to the bottom: the engine re-flags the manual scroll even
-  // though the user landed exactly on the bottom row…
+  // Wheel back down to the bottom using only public geometry.
   wheel("down", 30);
-  expect(scrollBox._hasManualScroll).toBe(true); // the engine quirk guarded against
-  // …but being verifiably at the bottom re-consents to following,
   expect(shouldFollowBottom(scrollBox)).toBe(true);
-  expect(scrollBox._hasManualScroll).toBe(false); // and re-arms the engine's stickiness.
 
   // So a multi-row append right after the return still snaps to the new bottom.
   const pinned = shouldFollowBottom(scrollBox);

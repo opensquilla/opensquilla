@@ -97,6 +97,69 @@ test("connectIpc authenticates before product frames", async () => {
   server.close();
 });
 
+test("connectIpc retains bootstrap frames received before start installs its dispatcher", async () => {
+  const token = "bootstrap-race-secret";
+  let peer = null;
+  let resolveBootstrapSent;
+  const bootstrapSent = new Promise((resolve) => { resolveBootstrapSent = resolve; });
+  const server = net.createServer((socket) => {
+    peer = socket;
+    let data = "";
+    socket.on("data", (chunk) => {
+      data += chunk.toString("utf8");
+      const lines = data.split("\n");
+      data = lines.pop() ?? "";
+      for (const line of lines.filter(Boolean)) {
+        const message = JSON.parse(line);
+        if (message.type === "auth") {
+          socket.write(`{"type":"auth.ok","protocol":${HOST_PROTOCOL_VERSION}}\n`);
+        } else if (message.type === "ready") {
+          // Python begins canonical bootstrap as soon as it sees HostReady,
+          // while main.mjs has not quite called ipc.start(). These complete
+          // lines must stay buffered across that authentication/start gap.
+          socket.write(
+            '{"type":"router.update","model":"bootstrap-model"}\n'
+            + '{"type":"context.update","agent":{"name":"Mira"}}\n',
+          );
+          resolveBootstrapSent();
+        }
+      }
+    });
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+
+  const ipc = await connectIpc({
+    host: "127.0.0.1",
+    port: server.address().port,
+    token,
+  });
+  ipc.send({ type: "ready" });
+  await bootstrapSent;
+  // Give readline a chance to expose the exact pre-start loss seen in the
+  // repeated real-terminal launch gate.
+  await new Promise((resolve) => setTimeout(resolve, 20));
+
+  const seen = [];
+  const delivered = new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error("bootstrap frames were dropped")), 500);
+    ipc.start((message) => {
+      seen.push(message);
+      if (seen.length === 2) {
+        clearTimeout(timer);
+        resolve();
+      }
+    }, () => {});
+  });
+  await delivered;
+  assert.deepEqual(seen, [
+    { type: "router.update", model: "bootstrap-model" },
+    { type: "context.update", agent: { name: "Mira" } },
+  ]);
+
+  peer?.destroy();
+  server.close();
+});
+
 test("connectIpc rejects a failed authentication response", async () => {
   const server = net.createServer((socket) => {
     socket.once("data", () => socket.write('{"type":"auth.error","message":"denied"}\n'));

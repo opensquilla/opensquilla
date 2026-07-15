@@ -438,11 +438,14 @@ class GatewayClient:
         res = await fut
         if not res.get("ok"):
             err = res.get("error", {})
+            raw_details = err.get("data")
+            if not isinstance(raw_details, dict):
+                raw_details = err.get("details")
             raise GatewayRPCError(
                 method,
                 code=err.get("code"),
                 message=err.get("message") or "RPC failed",
-                data=err.get("data") if isinstance(err.get("data"), dict) else None,
+                data=raw_details if isinstance(raw_details, dict) else None,
             )
         payload = res.get("payload")
         return {} if payload is None else payload
@@ -514,6 +517,34 @@ class GatewayClient:
     async def abort_session(self, key: str) -> dict[str, Any]:
         return cast(dict[str, Any], await self._call("sessions.abort", {"key": key}))
 
+    async def steer_session(self, key: str, message: str) -> dict[str, Any]:
+        from opensquilla.cli.tui.backend.input_identity import (
+            current_tui_client_message_id,
+        )
+
+        client_message_id = current_tui_client_message_id() or uuid.uuid4().hex
+        return cast(
+            dict[str, Any],
+            await self._call(
+                "sessions.steer",
+                {
+                    "key": key,
+                    "message": message,
+                    "client_message_id": client_message_id,
+                    "surface_id": self.surface_id,
+                    "_source": {
+                        "caller_kind": "cli",
+                        "channel_kind": "cli",
+                        "channel_id": "cli:chat",
+                        "source_kind": "cli",
+                        "source_name": "chat",
+                        "client_message_id": client_message_id,
+                        "surface_id": self.surface_id,
+                    },
+                },
+            ),
+        )
+
     async def patch_session(self, key: str, **fields: Any) -> dict[str, Any]:
         params: dict[str, Any] = {"key": key, **fields}
         return cast(dict[str, Any], await self._call("sessions.patch", params))
@@ -530,6 +561,14 @@ class GatewayClient:
         if isinstance(result, list):
             return cast(list[dict[str, Any]], result)
         return cast(list[dict[str, Any]], list(result.get("models", [])))
+
+    async def get_model_routing(self) -> dict[str, Any]:
+        result = await self._call("models.routing.get", {})
+        return result if isinstance(result, dict) else {}
+
+    async def set_model_routing(self, mode: str) -> dict[str, Any]:
+        result = await self._call("models.routing.set", {"mode": mode})
+        return result if isinstance(result, dict) else {}
 
     async def usage_status(self) -> dict[str, Any]:
         return cast(dict[str, Any], await self._call("usage.status", {}))
@@ -752,7 +791,16 @@ class GatewayClient:
         # to every matching subscriber; this iterator can no longer consume an
         # approval or another session's turn from one shared queue.
         subscription = await self.subscribe_session_events(session_key)
-        client_message_id = uuid.uuid4().hex
+        # OpenTUI allocates this identity when the composer value is accepted,
+        # before the optimistic prompt is drawn.  Preserve it across the RPC so
+        # the Gateway can bind that exact card to its durable turn.  Plain/Web
+        # callers have no TUI identity scope and retain the historical UUID
+        # allocation here.
+        from opensquilla.cli.tui.backend.input_identity import (
+            current_tui_client_message_id,
+        )
+
+        client_message_id = current_tui_client_message_id() or uuid.uuid4().hex
 
         params: dict[str, Any] = {
             "key": session_key,
@@ -785,6 +833,20 @@ class GatewayClient:
             client_message_id=_optional_identity(accepted_payload, "client_message_id")
             or client_message_id,
         )
+        accepted_turn_id = _optional_identity(accepted_payload, "turn_id", "task_id")
+        accepted_client_message_id = (
+            _optional_identity(accepted_payload, "client_message_id")
+            or client_message_id
+        )
+        if accepted_turn_id is not None:
+            from opensquilla.cli.tui.backend.input_identity import (
+                notify_tui_turn_identity,
+            )
+
+            await notify_tui_turn_identity(
+                accepted_turn_id,
+                accepted_client_message_id,
+            )
 
         active_task_groups: set[str] = set()
         legacy_event_source = self._listener_task is None and not self._recv_queue.empty()

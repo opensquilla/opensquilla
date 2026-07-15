@@ -112,6 +112,7 @@ METHOD_SCOPES: dict[str, str] = {
     "logs.tail": READ_SCOPE,
     "logs.trace": READ_SCOPE,
     "models.list": READ_SCOPE,
+    "models.routing.get": READ_SCOPE,
     "providers.status": READ_SCOPE,
     # OpenSquilla-only; non-consuming peek at a session's router-control hold
     # plus the valid target menu (see rpc_routing.py).
@@ -174,11 +175,13 @@ METHOD_SCOPES: dict[str, str] = {
     "sessions.create": WRITE_SCOPE,
     "sessions.fork": WRITE_SCOPE,
     "sessions.send": WRITE_SCOPE,
+    "sessions.steer": WRITE_SCOPE,
     "sessions.abort": WRITE_SCOPE,
     "sessions.reset": WRITE_SCOPE,
     "sessions.contextCompact": WRITE_SCOPE,
     "sessions.compact": WRITE_SCOPE,
     "sessions.truncate": WRITE_SCOPE,
+    "models.routing.set": WRITE_SCOPE,
     # Deleting a session is a routine, per-user write op like reset/truncate above,
     # so it is write-scoped rather than admin-gated. Admin-gating it broke deletion
     # for every no-auth operator on a non-loopback bind — notably the default Docker

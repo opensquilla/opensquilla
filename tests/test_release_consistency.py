@@ -113,6 +113,14 @@ def test_release_workflow_builds_desktop_installers() -> None:
     assert 'gh release upload "${TAG}" dist/* --clobber' in workflow
 
 
+def test_tui_ci_uses_the_same_pinned_bun_as_release_builds() -> None:
+    workflow = Path(".github/workflows/ci.yml").read_text(encoding="utf-8")
+    version_file = "src/opensquilla/cli/tui/opentui/package/.bun-version"
+
+    assert "bun-version: latest" not in workflow
+    assert workflow.count(f"bun-version-file: {version_file}") == 2
+
+
 def test_release_workflow_builds_and_gates_native_linux_tui_hosts() -> None:
     path = Path(".github/workflows/wheelhouse-release.yml")
     workflow_text = path.read_text(encoding="utf-8")
@@ -599,7 +607,7 @@ def test_release_docs_warn_rc3_users_to_upgrade_in_place() -> None:
     assert "must install the\nnew version directly over the existing installation" in releases
     assert "must not uninstall RC3\nfirst" in releases
     assert "deleteAppDataOnUninstall=false" in releases
-    assert "Do not uninstall Preview 3" in current_notes
+    assert "uninstall Preview 3 first" in current_notes
 
 
 def test_privacy_docs_describe_network_observability_controls() -> None:
@@ -720,9 +728,9 @@ def test_readme_release_install_uses_latest_assets_and_pinned_alternative() -> N
 
     assert f"OpenSquilla-{CURRENT_DESKTOP_VERSION}-mac-arm64.dmg" in readme
     assert f"OpenSquilla-{CURRENT_DESKTOP_VERSION}-win-x64.exe" in readme
-    assert "Simplified release assets" in readme
-    assert "Electron installers" in readme
-    assert "versioned Python wheel" in readme
+    assert "versioned GitHub assets" in readme
+    assert "Alibaba Cloud OSS mirror" in readme
+    assert "Portable archives remain retired" in readme
     assert "releases/latest/download/OpenSquilla-windows-x64-portable.zip" not in readme
     assert (
         f"releases/download/{CURRENT_TAG}/opensquilla-{CURRENT_VERSION}-py3-none-any.whl" in readme
@@ -743,10 +751,18 @@ def test_all_readmes_default_install_paths_to_the_current_preview() -> None:
         Path("README.es.md"),
     ]
 
+    oss_latest_assets = (
+        "https://opensquilla-releases.oss-cn-beijing.aliyuncs.com/releases/latest/"
+        "OpenSquilla-mac-arm64.dmg",
+        "https://opensquilla-releases.oss-cn-beijing.aliyuncs.com/releases/latest/"
+        "OpenSquilla-win-x64.exe",
+    )
+
     for path in readmes:
         text = path.read_text(encoding="utf-8")
         assert f"OpenSquilla-{CURRENT_DESKTOP_VERSION}-mac-arm64.dmg" in text, path
         assert f"OpenSquilla-{CURRENT_DESKTOP_VERSION}-win-x64.exe" in text, path
+        assert all(url in text for url in oss_latest_assets), path
         assert wheel_url in text, path
         assert "ghcr.io/opensquilla/opensquilla:latest" in text, path
         assert "0.5.0-Preview-2-Desktop" not in text, path
@@ -780,10 +796,8 @@ def test_user_facing_install_docs_use_current_release_wheel() -> None:
             assert match.group("file_version") == CURRENT_VERSION
 
 
-def test_macos_tui_install_docs_use_current_companion_assets() -> None:
-    arm_filename = f"opensquilla_tui_host-{CURRENT_VERSION}-py3-none-macosx_11_0_arm64.whl"
-    x86_filename = f"opensquilla_tui_host-{CURRENT_VERSION}-py3-none-macosx_11_0_x86_64.whl"
-    arm_url = f"releases/download/{CURRENT_TAG}/{arm_filename}"
+def test_published_rc4_docs_do_not_claim_unpublished_tui_companions() -> None:
+    unpublished_prefix = f"opensquilla_tui_host-{CURRENT_VERSION}-"
 
     for path in [
         Path("README.md"),
@@ -792,15 +806,10 @@ def test_macos_tui_install_docs_use_current_companion_assets() -> None:
         Path(f"docs/releases/{CURRENT_VERSION}.md"),
         Path("RELEASES.md"),
     ]:
-        text = path.read_text(encoding="utf-8")
-        assert arm_url in text, path
+        assert unpublished_prefix not in path.read_text(encoding="utf-8"), path
 
-    for path in [
-        Path("README.md"),
-        Path(f"docs/releases/{CURRENT_VERSION}.md"),
-        Path("RELEASES.md"),
-    ]:
-        assert x86_filename in path.read_text(encoding="utf-8"), path
+    installer = Path("install.sh").read_text(encoding="utf-8")
+    assert "TUI companions start at v0.5.0rc5" in installer
 
 
 def test_release_installers_default_to_current_tag() -> None:
@@ -858,41 +867,57 @@ def test_historical_040_release_notes_remain_available() -> None:
     assert "OpenSquilla-0.4.0-mac-arm64.dmg" in notes
 
 
-def test_current_release_notes_cover_supported_tui_upgrade_and_containers() -> None:
+def test_current_release_notes_cover_recovery_transfer_upgrade_and_containers() -> None:
     notes = Path(f"docs/releases/{CURRENT_VERSION}.md").read_text(encoding="utf-8")
 
-    assert notes.startswith(f"# {CURRENT_RELEASE_TITLE}\n")
     assert "## Downloads" in notes
     assert f"OpenSquilla-{CURRENT_DESKTOP_VERSION}-mac-arm64.dmg" in notes
     assert f"OpenSquilla-{CURRENT_DESKTOP_VERSION}-mac-arm64.zip" in notes
     assert f"OpenSquilla-{CURRENT_DESKTOP_VERSION}-win-x64.exe" in notes
     assert f"opensquilla-{CURRENT_VERSION}-py3-none-any.whl" in notes
-    assert f"opensquilla_tui_host-{CURRENT_VERSION}-py3-none-macosx_11_0_arm64.whl" in notes
-    assert f"opensquilla_tui_host-{CURRENT_VERSION}-py3-none-macosx_11_0_x86_64.whl" in notes
-    assert f"opensquilla_tui_host-{CURRENT_VERSION}-py3-none-manylinux_2_28_aarch64.whl" in notes
-    assert f"opensquilla_tui_host-{CURRENT_VERSION}-py3-none-manylinux_2_28_x86_64.whl" in notes
-    assert (
-        notes.index("### Supported opt-in macOS TUI and Linux TUI")
-        < notes.index("### Shared Gateway sessions")
-        < notes.index("### Packaging and recovery")
+    assert f"opensquilla_tui_host-{CURRENT_VERSION}-" not in notes
+    assert notes.index("### Profile recovery and upgrade safety") < notes.index(
+        "### Windows Portable transfer"
     )
-    assert "requires glibc 2.28 or newer" in notes
-    assert "Native Windows TUI remains a separate follow-up release" in notes
-    assert "No Windows portable assets are published for 0.5.0 preview releases" in notes
-    assert f"{CURRENT_VERSION} portable zip" in notes
-    assert "## Upgrading from Preview 3" in notes
-    assert "does not reuse or move the" in notes
-    assert "`v0.5.0rc3` tag" in notes
-    assert f"ghcr.io/opensquilla/opensquilla:{CURRENT_TAG}" in notes
-    assert "Docker `latest` follows the most recently pushed release tag" in notes
-    normalized_notes = " ".join(notes.split())
-    assert (
-        "Configuration formats from every released OpenSquilla version remain supported"
-        in normalized_notes
+    assert notes.index("### Windows Portable transfer") < notes.index(
+        "### Desktop cleanup, credentials, and updates"
     )
+    assert notes.index("### Model Ensemble, providers, and Control UI") < notes.index(
+        "### Runtime and channel reliability"
+    )
+    assert notes.index("### Runtime and channel reliability") < notes.index(
+        "### Downloads and deployment"
+    )
+    assert "Normal version upgrades do not require a data transfer" in notes
+    assert "not silently overwritten, deleted, or merged" in notes
+    assert "never silently merged" in notes
+    assert "automatic sync" in notes
+    assert "No Windows Portable assets are published for 0.5.0 preview releases" in notes
+    assert "0.5.0rc4 Portable zip" in notes
+    assert "## Upgrading from Preview 3, earlier previews, or 0.4.1" in notes
+    assert "uninstall Preview 3 first" in notes
+    assert r"%APPDATA%\OpenSquilla" in notes
+    assert "ghcr.io/opensquilla/opensquilla:v0.5.0rc4" in notes
+    assert "`latest` tag follows the most recently verified release tag" in notes
+    assert (
+        "https://opensquilla-releases.oss-cn-beijing.aliyuncs.com/releases/latest/"
+        "OpenSquilla-mac-arm64.dmg" in notes
+    )
+    assert (
+        "https://opensquilla-releases.oss-cn-beijing.aliyuncs.com/releases/latest/"
+        "OpenSquilla-win-x64.exe" in notes
+    )
+    assert "releases/latest.html" not in notes
     assert "Synthetic fixtures" not in notes
     assert "release gate" not in notes
     assert "## Acknowledgements" in notes
+    for login in [
+        "@HuaXiawithMoon",
+        "@ab2ence",
+        "@nice-code-la",
+        "@nankingjing",
+    ]:
+        assert login in notes
     assert "CONTRIBUTORS.md" in notes
 
 

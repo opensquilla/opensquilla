@@ -43,6 +43,7 @@ async def run_native_chat_runtime(
     queue_max_size: int,
     surface_factory: Callable[[], AbstractAsyncContextManager[TuiSurface]],
     abort_active_turn: ChatAbortTurn | None = None,
+    steer_active_turn: Callable[[str], Awaitable[bool]] | None = None,
 ) -> None:
     """Compose a Python-native terminal surface with the TUI backend runtime."""
     # Strong references to in-flight notice writes: the event loop only holds
@@ -98,6 +99,11 @@ async def run_native_chat_runtime(
                 clear_current_cancel=clear_current_cancel,
                 notice=_notice,
                 on_cancel_active_turn=context.abort_turn,
+                on_steer_active_turn=(
+                    steer_active_turn
+                    if steer_active_turn is not None
+                    else TuiRuntimeHooks().on_steer_active_turn
+                ),
                 expose_surface=context.expose_surface,
                 clear_exposed_surface=context.clear_output,
             ),

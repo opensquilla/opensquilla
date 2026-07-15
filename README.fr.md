@@ -70,10 +70,7 @@ construisent **à partir d'un dépôt Git** (`git clone` + Git LFS).
 Les commandes d'installation de la version publiée utilisent les ressources de release
 GitHub publiées. Les installations de wheel Python utilisent des noms de fichier de
 wheel versionnés, car les installateurs valident la version intégrée au nom de
-fichier du wheel. Sous macOS et Linux, l'installateur en terminal associe ce wheel
-principal au companion `opensquilla-tui-host` de même version et adapté à
-l'architecture ; il ne nécessite ni Bun, ni dépôt source, ni téléchargement du host
-au premier démarrage.
+fichier du wheel.
 
 Pour un usage bureau en 0.5.0 Preview 4, préférez les installateurs de bureau empaquetés issus de la
 Release GitHub : `OpenSquilla-0.5.0-rc4-mac-arm64.dmg` sous macOS et
@@ -130,9 +127,16 @@ l'environnement d'exécution de la passerelle dans une enveloppe Electron.
 - macOS Apple Silicon : <https://github.com/opensquilla/opensquilla/releases/download/v0.5.0rc4/OpenSquilla-0.5.0-rc4-mac-arm64.dmg>
 - Windows x64 : <https://github.com/opensquilla/opensquilla/releases/download/v0.5.0rc4/OpenSquilla-0.5.0-rc4-win-x64.exe>
 
+Pour des téléchargements plus rapides depuis la Chine continentale, utilisez les alias de téléchargement direct OSS :
+- macOS Apple Silicon : <https://opensquilla-releases.oss-cn-beijing.aliyuncs.com/releases/latest/OpenSquilla-mac-arm64.dmg>
+- Windows x64 : <https://opensquilla-releases.oss-cn-beijing.aliyuncs.com/releases/latest/OpenSquilla-win-x64.exe>
+
+Ces liens fixes n'avancent qu'après qu'une release éligible plus récente a réussi la vérification du miroir. Utilisez les liens GitHub Release versionnés ci-dessus si vous avez besoin d'une version précise.
+
 Quittez toute application de bureau OpenSquilla en cours d'exécution avant la mise à
-niveau. Les fichiers `~/.opensquilla/config.toml` et les données de session existants
-sont réutilisés.
+niveau. Le profil Desktop existant dans le répertoire de données d'application de la
+plateforme est réutilisé. Le `~/.opensquilla` de l'installation terminal est un profil
+distinct ; transférez-le explicitement depuis les Paramètres si nécessaire.
 
 Pour mettre à niveau l'application de bureau Windows de RC3 vers RC4 ou une version
 ultérieure, exécutez le nouvel installateur directement sur l'installation existante.
@@ -167,63 +171,35 @@ powershell -c "irm https://astral.sh/uv/install.ps1 | iex"
 $env:Path = "$env:USERPROFILE\.local\bin;" + $env:Path
 ```
 
-**2. Installer OpenSquilla.**
-
-Sous macOS et Linux, l'installateur de la release sélectionne les ressources de la
-plateforme et exécute `uv tool install` pour vous :
+**2. Installer OpenSquilla** — la même commande sur toutes les plateformes.
 
 ```sh
-curl -LsSf https://opensquilla.ai/install.sh | bash
+uv tool install --python 3.12 "opensquilla[recommended] @ https://github.com/opensquilla/opensquilla/releases/download/v0.5.0rc4/opensquilla-0.5.0rc4-py3-none-any.whl"
 ```
 
-Sous macOS, cette commande installe ensemble le wheel principal et le host TUI
-adapté à l'architecture depuis la même release. La commande entièrement épinglée
-équivalente pour Apple Silicon est :
-
-```sh
-uv tool install --python 3.12 \
-  --with "opensquilla-tui-host @ https://github.com/opensquilla/opensquilla/releases/download/v0.5.0rc4/opensquilla_tui_host-0.5.0rc4-py3-none-macosx_11_0_arm64.whl" \
-  "opensquilla[recommended] @ https://github.com/opensquilla/opensquilla/releases/download/v0.5.0rc4/opensquilla-0.5.0rc4-py3-none-any.whl"
-```
-
-Les Mac Intel utilisent la ressource sœur
-`opensquilla_tui_host-0.5.0rc4-py3-none-macosx_11_0_x86_64.whl`. Linux utilise
-`opensquilla_tui_host-0.5.0rc4-py3-none-manylinux_2_28_x86_64.whl` ou
-`opensquilla_tui_host-0.5.0rc4-py3-none-manylinux_2_28_aarch64.whl`, selon
-l'architecture. Le host TUI Windows natif suivra dans une release de plateforme
-distincte.
-
-L'installateur place le paquet principal et le companion dans le même environnement
-d'outil isolé, puis laisse `uv` télécharger les dépendances déclarées par les extras
-sélectionnés. L'extra `recommended` par défaut inclut les dépendances d'exécution de
-SquillaRouter telles que ONNX Runtime, LightGBM, NumPy et tokenizers ; une première
-installation nécessite donc un accès réseau, à moins que ces wheels ne soient déjà
-en cache. `uv` n'installe pas les environnements d'exécution natifs du système,
-comme `libomp` sous macOS ou le Visual C++ Redistributable sous Windows ; consultez
-le [Dépannage](#troubleshooting) si l'environnement d'exécution du routeur signale
-une erreur de chargement de bibliothèque native.
+Cela installe le wheel OpenSquilla depuis l'URL de release, puis laisse `uv`
+télécharger les dépendances déclarées par les extras sélectionnés. L'extra
+`recommended` par défaut inclut les dépendances d'exécution de SquillaRouter telles
+que ONNX Runtime, LightGBM, NumPy et tokenizers ; une première installation nécessite
+donc un accès réseau, à moins que ces wheels ne soient déjà en cache. `uv` n'installe
+pas les environnements d'exécution natifs du système, comme `libomp` sous macOS ou le
+Visual C++ Redistributable sous Windows ; consultez le [Dépannage](#troubleshooting)
+si l'environnement d'exécution du routeur signale une erreur de chargement de
+bibliothèque native.
 
 **3. Configurer et exécuter.**
 
 ```sh
 opensquilla onboard
 opensquilla gateway run
-opensquilla chat --ui tui
 ```
-
-Pendant cette RC macOS et Linux, `opensquilla chat --ui tui` ouvre la TUI plein
-écran. La commande nue `opensquilla chat` conserve le renderer de secours
-`plain` ; `--ui auto` préfère la TUI mais ne peut revenir à `plain` qu'avant le
-plein écran. Installation, mise à niveau, réinstallation et retour arrière
-gardent le paquet principal et le companion à la même version.
 
 > [!NOTE]
 > Si `opensquilla` est introuvable juste après une installation `uv` neuve, ouvrez un
 > nouveau terminal, ou réexécutez la ligne PATH de l'étape 1.
 
-Pour une installation macOS ou Linux entièrement épinglée, conservez les URL du wheel
-principal et du companion sur la même étiquette de release. L'installateur de la
-release s'en charge automatiquement et refuse les versions incompatibles.
+Pour une installation entièrement épinglée, utilisez l'URL de wheel versionnée :
+`https://github.com/opensquilla/opensquilla/releases/download/v0.5.0rc4/opensquilla-0.5.0rc4-py3-none-any.whl`.
 
 <a id="install-from-source"></a>
 

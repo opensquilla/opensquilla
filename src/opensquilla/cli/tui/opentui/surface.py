@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import os
 import re
+import uuid
 from collections.abc import AsyncIterator, Callable
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import dataclass
@@ -13,13 +14,13 @@ from typing import Protocol
 
 import structlog
 
-from opensquilla.cli.tui.backend.contracts import TuiSurface
-from opensquilla.cli.tui.backend.render_summary import sanitize_terminal_text
+from opensquilla.cli.tui.backend.contracts import TuiSubmittedInput, TuiSurface
 from opensquilla.cli.tui.opentui.bridge import OpenTuiBridge
 from opensquilla.cli.tui.opentui.completion import (
     build_completion_context,
     enumerate_workspace_files,
 )
+from opensquilla.cli.tui.opentui.context import context_update_from_bootstrap
 from opensquilla.cli.tui.opentui.messages import (
     ApprovalDismiss,
     AttachmentClear,
@@ -28,6 +29,7 @@ from opensquilla.cli.tui.opentui.messages import (
     AttachmentUpdate,
     CompletionContext,
     ComposerState,
+    ContextUpdate,
     HistoryReplace,
     HostApprovalResponse,
     HostCompletionRequest,
@@ -418,7 +420,7 @@ class OpenTuiSurface:
             approval_surface=approval_surface,
         )
 
-    async def next_line(self) -> str | None:
+    async def next_line(self) -> TuiSubmittedInput | None:
         if self._eof_emitted:
             return None
         while True:
@@ -443,7 +445,11 @@ class OpenTuiSurface:
                 continue
             self._consecutive_host_errors = 0
             if isinstance(message, HostInputSubmit):
-                return message.text
+                return TuiSubmittedInput(
+                    text=message.text,
+                    intent=message.intent,
+                    client_message_id=message.client_message_id or uuid.uuid4().hex,
+                )
             if isinstance(message, HostApprovalResponse):
                 # An overlay decision resolves its waiter and the loop keeps
                 # pumping — it is never surfaced as chat input.
@@ -603,6 +609,7 @@ async def open_opentui_surface(
     workspace_dir: Path | str | None = None,
     workspace_label: str | None = None,
     history_replace: HistoryReplace | None = None,
+    context_update: ContextUpdate | None = None,
 ) -> AsyncIterator[TuiSurface]:
     active_bridge = bridge or OpenTuiBridge()
     active_workspace_dir = _normalize_workspace_dir(workspace_dir) or _workspace_dir()
@@ -641,24 +648,25 @@ async def open_opentui_surface(
             ),
         )
         await active_bridge.send(
+            "context.update",
+            context_update
+            if context_update is not None
+            else context_update_from_bootstrap(
+                None,
+                surface=surface,
+                model=model,
+                session_id=session_id,
+                workspace_label=(
+                    workspace_label
+                    or (str(active_workspace_dir) if active_workspace_dir is not None else None)
+                ),
+            ),
+        )
+        await active_bridge.send(
             "completion.context",
             completion_context
             if completion_context is not None
             else build_completion_context(surface, workspace_dir=active_workspace_dir),
-        )
-        await active_bridge.send(
-            "scrollback.write",
-            ScrollbackWrite(
-                text=_startup_context_line(
-                    surface=surface,
-                    model=model,
-                    session_id=session_id,
-                    workspace=(
-                        workspace_label
-                        or (str(active_workspace_dir) if active_workspace_dir is not None else None)
-                    ),
-                )
-            ),
         )
         if print_ready_marker and marker:
             await active_bridge.send("scrollback.write", ScrollbackWrite(text=f"{marker}\n"))
@@ -676,28 +684,6 @@ def _workspace_dir() -> Path | None:
     if not workspace:
         return None
     return Path(workspace)
-
-
-def _startup_context_line(
-    *,
-    surface: Surface,
-    model: str | None,
-    session_id: str | None,
-    workspace: str | None,
-) -> str:
-    """One terminal-safe first-screen receipt with real resolved context."""
-
-    def _field(value: str | None, fallback: str) -> str:
-        clean = sanitize_terminal_text(str(value or fallback)).replace("\n", " ").strip()
-        return clean[:160] or fallback
-
-    mode = "gateway" if surface is Surface.CLI_GATEWAY else "standalone"
-    gateway = "ready" if surface is Surface.CLI_GATEWAY else "isolated"
-    return (
-        f"OpenSquilla · model {_field(model, 'default')} · "
-        f"session {_field(session_id, 'new')} · workspace {_field(workspace, 'gateway-managed')} · "
-        f"mode {mode} · gateway {gateway} · Enter send / Ctrl+C cancel / Ctrl+D exit / /help\n"
-    )
 
 
 def _normalize_workspace_dir(workspace_dir: Path | str | None) -> Path | None:

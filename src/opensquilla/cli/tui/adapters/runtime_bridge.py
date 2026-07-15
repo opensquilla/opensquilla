@@ -9,7 +9,7 @@ or standalone runtime dependencies.
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable, Coroutine, Mapping
-from typing import TYPE_CHECKING, Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol, cast
 from urllib.parse import quote, urlsplit, urlunsplit
 
 import typer
@@ -65,6 +65,7 @@ class GatewayTerminalReplRunner(Protocol):
         scope: GatewayRuntimeScope,
         dispatch: Callable[[str], Coroutine[Any, Any, bool]] | Callable[[str], Awaitable[bool]],
         abort_active_turn: Callable[[], Awaitable[None]] | None = None,
+        steer_active_turn: Callable[[str], Awaitable[bool]] | None = None,
         queue_max_size: int | None = None,
     ) -> None: ...
 
@@ -75,14 +76,24 @@ async def run_concurrent_repl(
     scope: GatewayRuntimeScope | StandaloneRuntimeScope,
     dispatch: Callable[[str], Coroutine[Any, Any, bool]] | Callable[[str], Awaitable[bool]],
     abort_active_turn: Callable[[], Awaitable[None]] | None = None,
+    steer_active_turn: Callable[[str], Awaitable[bool]] | None = None,
     queue_max_size: int | None = None,
 ) -> None:
+    kwargs: dict[str, Any] = {
+        "surface": surface,
+        "scope": scope,
+        "dispatch": dispatch,
+        "queue_max_size": (
+            PENDING_QUEUE_MAX_SIZE if queue_max_size is None else queue_max_size
+        ),
+        "abort_active_turn": abort_active_turn,
+    }
+    # Additive compatibility: third-party/older bridges do not accept the
+    # steering callback. Omit it when Gateway steering is not wired.
+    if steer_active_turn is not None:
+        kwargs["steer_active_turn"] = steer_active_turn
     await _runtime_bridge_for_selected_backend().run_concurrent_repl(
-        surface=surface,
-        scope=scope,
-        dispatch=dispatch,
-        queue_max_size=PENDING_QUEUE_MAX_SIZE if queue_max_size is None else queue_max_size,
-        abort_active_turn=abort_active_turn,
+        **kwargs,
     )
 
 
@@ -135,7 +146,10 @@ def _turn_stream_dependencies() -> Any:
 
 
 async def stream_response_gateway(
-    client: GatewayClientLike,
+    # This bridge is shared by the runtime and slash adapters, whose client
+    # protocols intentionally expose different method subsets.  The concrete
+    # GatewayClient satisfies both; the downstream turn bridge is structural.
+    client: Any,
     session_key: str,
     message: str,
     elevated_state: dict[str, str | None] | None = None,
@@ -182,12 +196,14 @@ def _gateway_input_loop_for(
         scope: GatewayRuntimeScope,
         dispatch: Callable[[str], Coroutine[Any, Any, bool]],
         abort_active_turn: Callable[[], Awaitable[None]] | None = None,
+        steer_active_turn: Callable[[str], Awaitable[bool]] | None = None,
     ) -> None:
         await repl_runner(
             surface=Surface.CLI_GATEWAY,
             scope=scope,
             dispatch=dispatch,
             abort_active_turn=abort_active_turn,
+            steer_active_turn=steer_active_turn,
         )
 
     return _run_gateway_input_loop
@@ -305,6 +321,9 @@ async def run_gateway_chat(
     output_console: Any | None = None,
     error_panel_factory: Callable[[str], Any] | None = None,
 ) -> _gateway_runtime.SessionExitSummary | None:
+    from opensquilla.cli.gateway_client import GatewayRPCError
+    from opensquilla.cli.gateway_rpc import rpc_error_exit_code
+
     repl_runner = (
         globals()["run_concurrent_repl"] if run_concurrent_repl is None else run_concurrent_repl
     )
@@ -330,7 +349,10 @@ async def run_gateway_chat(
                     client,
                     elevated_state,
                     tui_output=tui_output,
-                    stream_response=active_stream_response,
+                    stream_response=cast(
+                        _slash_bridge.GatewayStreamResponse,
+                        active_stream_response,
+                    ),
                     output_console=active_console,
                     error_panel_factory=active_error_panel,
                 )
@@ -358,6 +380,20 @@ async def run_gateway_chat(
     except _gateway_runtime.SessionExitError as exc:
         _print_session_exit_receipt(active_console, exc.summary)
         raise typer.Exit(code=1) from None
+    except GatewayRPCError as exc:
+        if (
+            session_id
+            and (exc.code or "").upper() == "NOT_FOUND"
+            and exc.method in {"sessions.bootstrap", "sessions.resolve"}
+        ):
+            message = (
+                f"Session '{session_id}' was not found. Run `opensquilla sessions list` "
+                "to find a resumable key, or omit `--session` to create a new session."
+            )
+        else:
+            message = str(exc)
+        active_console.print(active_error_panel(message))
+        raise typer.Exit(code=rpc_error_exit_code(exc.code)) from None
     if summary is not None:
         _print_session_exit_receipt(active_console, summary)
     return summary

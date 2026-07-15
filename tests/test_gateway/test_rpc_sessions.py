@@ -192,6 +192,7 @@ class FakeSessionManager:
         self._storage = FakeStorage(sessions)
         self.created_messages: list[tuple[str, str, str]] = []
         self.removed_messages: list[tuple[str, str]] = []
+        self.updated_turn_contexts: list[tuple[str, str, dict[str, Any]]] = []
         self.applied_intents: list[tuple[str, str]] = []
         self.truncate_calls: list[tuple[str, int]] = []
         self.compact_calls: list[tuple[str, int, object | None]] = []
@@ -211,6 +212,15 @@ class FakeSessionManager:
 
     async def remove_message(self, key: str, message_id: str) -> bool:
         self.removed_messages.append((key, message_id))
+        return True
+
+    async def update_message_turn_context(
+        self,
+        key: str,
+        message_id: str,
+        context: dict[str, Any],
+    ) -> bool:
+        self.updated_turn_contexts.append((key, message_id, dict(context)))
         return True
 
     async def create(
@@ -1317,11 +1327,13 @@ class TestSessionsSend:
         class RecordingTaskRuntime:
             def __init__(self) -> None:
                 self.envelope = None
+                self.turn_id = None
 
             async def enqueue(self, envelope, message: str, **kwargs: Any):
                 self.envelope = envelope
+                self.turn_id = kwargs["task_id"]
                 return SimpleNamespace(
-                    task_id="task-identity",
+                    task_id=self.turn_id,
                     session_key=envelope.session_key,
                     status="queued",
                 )
@@ -1348,14 +1360,15 @@ class TestSessionsSend:
             "key": session.session_key,
             "session_key": session.session_key,
             "session_id": session.session_id,
-            "task_id": "task-identity",
-            "turn_id": "task-identity",
+            "task_id": runtime.turn_id,
+            "turn_id": runtime.turn_id,
             "client_message_id": "client-msg-1",
             "user_message_id": "msg-1",
             "surface_id": "tui:process-1",
         }
         assert runtime.envelope.metadata["client_message_id"] == "client-msg-1"
         assert runtime.envelope.metadata["surface_id"] == "tui:process-1"
+        assert isinstance(runtime.turn_id, str) and runtime.turn_id
 
     @pytest.mark.asyncio
     async def test_send_marks_empty_transcript_as_fresh_user_session(self, dispatcher, session):
@@ -2753,6 +2766,128 @@ class TestSessionsSend:
         assert res.ok is True
         assert runner.run_calls[0]["model"] == "agent/default"
         assert runner.run_calls[0]["tool_context"].workspace_dir == str(agent_workspace)
+
+
+class TestSessionsSteer:
+    @pytest.mark.asyncio
+    async def test_steer_persists_and_injects_into_active_task(
+        self,
+        dispatcher,
+        session,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        calls: list[dict[str, Any]] = []
+
+        class Runtime:
+            async def active_task_id(self, key: str) -> str | None:
+                assert key == session.session_key
+                return "turn-running"
+
+            async def steer(self, key: str, message: str, **kwargs: Any) -> str | None:
+                calls.append({"key": key, "message": message, **kwargs})
+                return "turn-running"
+
+        emitted = _capture_compaction_emits(monkeypatch)
+        manager = FakeSessionManager([session])
+        ctx = make_ctx(session_manager=manager, task_runtime=Runtime())
+        res = await dispatcher.dispatch(
+            "r-steer",
+            "sessions.steer",
+            {
+                "key": session.session_key,
+                "message": "change direction",
+                "clientMessageId": "client-steer",
+                "surfaceId": "tui:test",
+            },
+            ctx,
+        )
+
+        assert res.ok is True
+        assert res.payload["accepted"] is True
+        assert res.payload["turn_id"] == "turn-running"
+        assert manager.created_messages == [
+            (session.session_key, "user", "change direction")
+        ]
+        assert calls[0]["persisted_user_message_id"] == "msg-1"
+        assert calls[0]["client_message_id"] == "client-steer"
+        assert manager.updated_turn_contexts[0][2]["disposition"] == "steering"
+        assert manager.updated_turn_contexts[0][2]["turn_id"] == "turn-running"
+        assert emitted[0][1] == "session.event.steer"
+
+    @pytest.mark.asyncio
+    async def test_steer_race_rolls_back_and_reports_idle(self, dispatcher, session) -> None:
+        class Runtime:
+            async def active_task_id(self, _key: str) -> str | None:
+                return "turn-ending"
+
+            async def steer(self, _key: str, _message: str, **_kwargs: Any) -> None:
+                return None
+
+        manager = FakeSessionManager([session])
+        ctx = make_ctx(session_manager=manager, task_runtime=Runtime())
+        res = await dispatcher.dispatch(
+            "r-steer-race",
+            "sessions.steer",
+            {"key": session.session_key, "message": "late"},
+            ctx,
+        )
+
+        assert res.ok is True
+        assert res.payload == {
+            "status": "idle",
+            "accepted": False,
+            "key": session.session_key,
+        }
+        assert manager.removed_messages == [(session.session_key, "msg-1")]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("rollback_failure", ["missing", "exception"])
+    async def test_steer_race_dirty_rollback_fails_closed_without_duplicate_fallback(
+        self,
+        dispatcher,
+        session,
+        rollback_failure: str,
+    ) -> None:
+        class Runtime:
+            async def active_task_id(self, _key: str) -> str | None:
+                return "turn-ending"
+
+            async def steer(self, _key: str, _message: str, **_kwargs: Any) -> None:
+                return None
+
+        class DirtyManager(FakeSessionManager):
+            async def remove_message(self, key: str, message_id: str) -> bool:
+                self.removed_messages.append((key, message_id))
+                if rollback_failure == "exception":
+                    raise OSError("storage unavailable")
+                return False
+
+        manager = DirtyManager([session])
+        ctx = make_ctx(session_manager=manager, task_runtime=Runtime())
+        res = await dispatcher.dispatch(
+            "r-steer-race-dirty",
+            "sessions.steer",
+            {
+                "key": session.session_key,
+                "message": "late but durable",
+                "clientMessageId": "client-dirty-steer",
+            },
+            ctx,
+        )
+
+        assert res.ok is False
+        assert res.error.code == "STEER_RACE_DIRTY"
+        assert res.error.retryable is False
+        assert res.error.details["fallback_safe"] is False
+        assert res.error.details["orphan_message_id"] == "msg-1"
+        assert manager.created_messages == [
+            (session.session_key, "user", "late but durable")
+        ]
+        assert manager.removed_messages == [(session.session_key, "msg-1")]
+        assert manager.updated_turn_contexts[-1][2]["disposition"] == "rejected"
+        assert manager.updated_turn_contexts[-1][2]["client_message_id"] == (
+            "client-dirty-steer"
+        )
 
 
 class TestSessionsAbort:
@@ -4947,6 +5082,12 @@ class TestSessionsBootstrap:
         assert res.payload["session"]["model"] == "provider/model"
         assert res.payload["session"]["effective_model"] == "provider/model"
         assert res.payload["session"]["workspace"] == str(workspace)
+        assert res.payload["agent_identity"] == {
+            "agent_id": "main",
+            "name": "main",
+            "emoji": None,
+            "theme": None,
+        }
         assert res.payload["history"]["messages"][0]["message_id"] == "msg-1"
         assert res.payload["history"]["history_scope"] == "complete"
         assert res.payload["active_task"]["turn_id"] == "task-1"
@@ -4956,8 +5097,52 @@ class TestSessionsBootstrap:
             "queued_count": 1,
             "running_count": 0,
         }
+        assert res.payload["runtime"]["model_routing"]["mode"] == "router"
         assert res.payload["epoch"] == 3
         assert res.payload["stream_cursor"] == stream["stream_seq"]
+
+    @pytest.mark.asyncio
+    async def test_bootstrap_includes_only_sanitized_agent_identity_display_fields(
+        self, dispatcher, session, tmp_path
+    ):
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        (workspace / "IDENTITY.md").write_text(
+            "\n".join(
+                [
+                    "Name:  Mira\x1b[31m\tOperator  ",
+                    "Emoji:  🦐  ",
+                    "Theme:  ember\t dark  ",
+                    "Avatar: /private/agent.png",
+                    "Soul: must not cross bootstrap",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        config = GatewayConfig(workspace_dir=str(workspace))
+        registry = AgentRegistry(config, persist_changes=False)
+        ctx = make_ctx(
+            session_manager=FakeSessionManager([session]),
+            config=config,
+            agent_registry=registry,
+        )
+
+        res = await dispatcher.dispatch(
+            "r1",
+            "sessions.bootstrap",
+            {"key": session.session_key},
+            ctx,
+        )
+
+        assert res.ok is True
+        assert res.payload["agent_identity"] == {
+            "agent_id": "main",
+            "name": "Mira Operator",
+            "emoji": "🦐",
+            "theme": "ember dark",
+        }
+        assert "avatar" not in res.payload["agent_identity"]
+        assert "soul" not in res.payload["agent_identity"]
 
     @pytest.mark.asyncio
     async def test_bootstrap_is_read_scoped(self, dispatcher, session):

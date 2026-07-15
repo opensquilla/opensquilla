@@ -76,6 +76,48 @@ test("Tab on the /theme suggestion completes without submitting", async () => {
   renderer.destroy?.();
 });
 
+test("busy Enter requests steer while busy Tab explicitly queues", async () => {
+  const first = await setupComposer();
+  first.composer.setTurnActive({ active: true });
+  type(first.renderer, "adjust the current approach");
+  press(first.renderer, "return");
+  expect(first.sent.find((m) => m.type === "input.submit")).toEqual({
+    type: "input.submit",
+    text: "adjust the current approach",
+    intent: "steer",
+  });
+  first.renderer.destroy?.();
+
+  const second = await setupComposer();
+  second.composer.setTurnActive({ active: true });
+  type(second.renderer, "run this afterward");
+  press(second.renderer, "tab");
+  expect(second.sent.find((m) => m.type === "input.submit")).toEqual({
+    type: "input.submit",
+    text: "run this afterward",
+    intent: "queue",
+  });
+  second.renderer.destroy?.();
+});
+
+test("session picker filters canonical rows and resumes the selection", async () => {
+  const { renderer, composer, sent } = await setupComposer();
+  composer.openSessionPicker({
+    current_key: "agent:main:first",
+    sessions: [
+      { key: "agent:main:first", title: "First task", model: "m1", status: "idle" },
+      { key: "agent:main:second", title: "Second task", model: "m2", status: "done" },
+    ],
+  });
+  type(renderer, "second");
+  press(renderer, "return");
+  expect(sent.find((m) => m.type === "input.submit")).toEqual({
+    type: "input.submit",
+    text: "/resume agent:main:second",
+  });
+  renderer.destroy?.();
+});
+
 test("Enter on a skill suggestion completes the prefix without submitting it", async () => {
   const { renderer, sent } = await setupComposer();
   type(renderer, "/html");

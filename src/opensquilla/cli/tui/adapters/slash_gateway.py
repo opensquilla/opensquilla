@@ -38,6 +38,11 @@ from opensquilla.cli.tui.adapters.slash_common import (
     slash_parts_any as _slash_parts_any,
 )
 from opensquilla.cli.tui.backend.contracts import TuiOutputHandle
+from opensquilla.cli.tui.opentui.context import (
+    send_context_patch,
+    send_context_update,
+    send_model_routing_state,
+)
 from opensquilla.cli.tui.opentui.history import (
     HISTORY_BOOTSTRAP_LIMIT,
     apply_bootstrap_to_state,
@@ -121,6 +126,10 @@ class GatewayClientLike(Protocol):
     async def approvals_snapshot(self) -> dict[str, Any]: ...
 
     async def set_approval_mode(self, mode: str) -> dict[str, Any]: ...
+
+    async def get_model_routing(self) -> dict[str, Any]: ...
+
+    async def set_model_routing(self, mode: str) -> dict[str, Any]: ...
 
 
 class GatewayStreamResponse(Protocol):
@@ -236,6 +245,13 @@ async def _activate_session_from_bootstrap(
             manage_composer=False,
         )
         apply_bootstrap_to_state(context.state, snapshot, history)
+        await send_context_update(
+            context.tui_output,
+            snapshot,
+            model=context.state.model,
+            session_id=context.state.session_key,
+            permission=context.elevated_state.get("mode"),
+        )
         return snapshot
     finally:
         await set_tui_history_loading(context.tui_output, loading=False)
@@ -312,6 +328,70 @@ async def _dispatch_gateway_slash_command(
         await dispatch_theme_command(cmd, tui_output)
         return True
 
+    if parts := _slash_parts_any(cmd, "/router", "/ensemble"):
+        command = parts[0].lower()
+        argument = parts[1].strip().lower() if len(parts) > 1 else ""
+        if argument not in {"", "on", "off", "status"}:
+            console.print(f"[red]Usage: {command} [on|off|status][/red]")
+            return True
+
+        try:
+            snapshot = await client.get_model_routing()
+        except Exception as exc:
+            # Older/read-only Gateways may project the last known strategy in
+            # bootstrap but lack the canonical control RPC. Never reinterpret
+            # the command as a model prompt or silently fall back to raw config
+            # mutation: leave the displayed state read-only and explain why.
+            console.print(
+                "[yellow]Model routing controls are unavailable on this Gateway; "
+                "the displayed strategy is read-only.[/yellow] "
+                f"[dim]{exc}[/dim]"
+            )
+            return True
+        if not argument:
+            send = getattr(tui_output, "send_message", None)
+            if bool(getattr(tui_output, "supports_send_message", False)) and callable(send):
+                await send(
+                    "model.routing.picker",
+                    {
+                        "current": snapshot.get("mode", "direct"),
+                        "options": ["direct", "router", "ensemble"],
+                    },
+                )
+                return True
+            console.print(
+                "[yellow]The three-state strategy picker is unavailable on this "
+                "surface; showing read-only status.[/yellow]"
+            )
+            argument = "status"
+
+        try:
+            if argument == "on":
+                requested = "router" if command == "/router" else "ensemble"
+                snapshot = await client.set_model_routing(requested)
+            elif argument == "off":
+                snapshot = await client.set_model_routing("direct")
+        except Exception as exc:
+            # Re-project the canonical pre-write snapshot so a failed control
+            # request cannot leave an optimistic "next …" strategy in the host.
+            await send_model_routing_state(tui_output, snapshot)
+            console.print(
+                "[red]Model routing change failed; strategy remains "
+                f"{snapshot.get('mode', 'direct')}.[/red] [dim]{exc}[/dim]"
+            )
+            return True
+
+        mode = str(snapshot.get("mode") or "direct")
+        await send_model_routing_state(tui_output, snapshot)
+        if argument == "status":
+            console.print(f"[dim]strategy[/dim] [bold]{mode}[/bold]")
+        else:
+            console.print(
+                f"[green]strategy:[/green] {mode} "
+                "[dim](applies to the next accepted turn)[/dim]"
+            )
+        return True
+
     if parts := _slash_parts(cmd, "/new"):
         title = parts[1].strip() if len(parts) > 1 else None
         requested_model = await _requested_session_model(context)
@@ -338,12 +418,35 @@ async def _dispatch_gateway_slash_command(
                 console.print("[red]Usage: /sessions [limit][/red]")
                 return True
         payload = await client.list_sessions(limit=limit)
-        _print_sessions_table(payload.get("sessions", []))
+        rows = payload.get("sessions", [])
+        send = getattr(tui_output, "send_message", None)
+        if bool(getattr(tui_output, "supports_send_message", False)) and callable(send):
+            await send(
+                "session.pick",
+                {
+                    "current_key": state.session_key,
+                    "sessions": _session_picker_rows(rows),
+                },
+            )
+        else:
+            _print_sessions_table(rows)
         return True
 
     if parts := _slash_parts(cmd, "/resume"):
         if len(parts) == 1 or not parts[1].strip():
-            console.print("[red]Usage: /resume <id>[/red]")
+            payload = await client.list_sessions(limit=50)
+            rows = payload.get("sessions", [])
+            send = getattr(tui_output, "send_message", None)
+            if bool(getattr(tui_output, "supports_send_message", False)) and callable(send):
+                await send(
+                    "session.pick",
+                    {
+                        "current_key": state.session_key,
+                        "sessions": _session_picker_rows(rows),
+                    },
+                )
+            else:
+                _print_sessions_table(rows)
             return True
         target = cmd.split(maxsplit=1)[1].strip()
         await _activate_session_from_bootstrap(context, target)
@@ -423,6 +526,7 @@ async def _dispatch_gateway_slash_command(
             await client.patch_session(state.session_key, model=new_model)
             state.model = new_model
             context.requested_model = new_model
+            await send_context_patch(tui_output, model=new_model)
             console.print(f"[green]model:[/green] {new_model}")
         return True
 
@@ -608,6 +712,7 @@ async def _dispatch_gateway_slash_command(
     if _slash_parts_any(cmd, "/permissions", "/elevated"):
         await _handle_elevated_command(cmd, elevated_state, client)
         state.elevated = elevated_state.get("mode")
+        await send_context_patch(tui_output, permission=state.elevated or "normal")
         return True
 
     if cmd == "/forget" or cmd.startswith("/forget "):
@@ -619,6 +724,40 @@ async def _dispatch_gateway_slash_command(
         return True
 
     return False
+
+
+def _session_picker_rows(rows: Any) -> list[dict[str, Any]]:
+    """Normalize Gateway rows without letting one malformed count close the picker."""
+
+    if not isinstance(rows, list):
+        return []
+    normalized: list[dict[str, Any]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        key = row.get("key") or row.get("session_key")
+        if not key:
+            continue
+        raw_count = row.get("message_count") or row.get("entry_count") or 0
+        try:
+            message_count = max(0, int(raw_count))
+        except (TypeError, ValueError):
+            message_count = 0
+        normalized.append(
+            {
+                "key": str(key),
+                "title": str(
+                    row.get("display_name")
+                    or row.get("displayName")
+                    or row.get("title")
+                    or ""
+                ),
+                "status": str(row.get("status") or ""),
+                "model": str(row.get("model") or ""),
+                "message_count": message_count,
+            }
+        )
+    return normalized
 
 
 def _print_sessions_table(rows: list[dict[str, Any]]) -> None:

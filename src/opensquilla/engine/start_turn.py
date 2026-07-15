@@ -35,6 +35,7 @@ async def start_turn_via_runtime(
     persisted_user_message_id: str | None = None,
     fresh_user_session: bool | None = None,
     stream_event_sink: Callable[[Any], Awaitable[None]] | None = None,
+    turn_id: str | None = None,
 ) -> TaskHandle:
     """Enqueue a turn. Exceptions propagate — recovery is surface-specific.
 
@@ -69,4 +70,6 @@ async def start_turn_via_runtime(
         kwargs["fresh_user_session"] = fresh_user_session
     if stream_event_sink is not None:
         kwargs["stream_event_sink"] = stream_event_sink
+    if turn_id is not None:
+        kwargs["task_id"] = turn_id
     return await runtime.enqueue(envelope, message, **kwargs)

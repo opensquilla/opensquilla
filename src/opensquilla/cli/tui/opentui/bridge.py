@@ -25,6 +25,7 @@ from opensquilla.cli.tui.opentui.host_runtime import (
     source_host_requested,
 )
 from opensquilla.cli.tui.opentui.messages import (
+    OPENTUI_SCREEN_MODE,
     HostError,
     HostReady,
     HostToPythonMessage,
@@ -51,6 +52,18 @@ _MAX_CONSECUTIVE_MALFORMED_LINES = 64
 # far faster than Python produces, so hitting this bound means the host stopped
 # reading; erroring beats growing the queue without limit.
 _WRITE_QUEUE_MAX_FRAMES = 8192
+# These capabilities are semantic product contracts, not decorative handshake
+# metadata. An older host may render basic text but cannot safely preserve turn
+# identity/scroll anchors or expose the shared routing controls. Refuse that
+# mixed-version surface explicitly instead of silently presenting a partially
+# writable TUI.
+REQUIRED_INTERACTIVE_HOST_CAPABILITIES = frozenset(
+    {
+        "turn.identity.v2",
+        "scroll.anchor.v1",
+        "model.routing.control.v1",
+    }
+)
 # Best-effort tty sanity reset for an abnormally dead host: leave the alternate
 # screen, disable mouse tracking (incl. SGR mode) and bracketed paste, show the
 # cursor, and clear attributes. Every sequence is a no-op when already off.
@@ -79,6 +92,35 @@ class OpenTuiHostPaths:
     @property
     def opentui_core_dir(self) -> Path:
         return self.package_dir / "node_modules" / "@opentui" / "core"
+
+
+def _host_handshake_mismatches(
+    artifact: HostArtifact,
+    message: HostReady,
+) -> list[str]:
+    mismatches: list[str] = []
+    if message.protocol != artifact.protocol_version:
+        mismatches.append(
+            f"protocol expected={artifact.protocol_version!r} got={message.protocol!r}"
+        )
+    for label, expected, actual in (
+        ("product", artifact.product_version, message.product_version),
+        ("host", artifact.host_version, message.host_version),
+        ("platform", artifact.platform, message.platform),
+        ("arch", artifact.arch, message.arch),
+        ("build", artifact.build_id, message.build_id),
+        ("screen", OPENTUI_SCREEN_MODE, message.screen_mode),
+    ):
+        if actual != expected:
+            mismatches.append(f"{label} expected={expected!r} got={actual!r}")
+    missing_capabilities = sorted(
+        REQUIRED_INTERACTIVE_HOST_CAPABILITIES.difference(message.capabilities)
+    )
+    if missing_capabilities:
+        mismatches.append(
+            "required interactive capabilities missing=" + ",".join(missing_capabilities)
+        )
+    return mismatches
 
 
 def check_opentui_host_available(
@@ -176,8 +218,8 @@ class OpenTuiBridge:
         env["OPENSQUILLA_OPENTUI_HOST_ARCH"] = artifact.arch
 
         # The host owns the shared tty (raw mode, alternate screen, mouse
-        # tracking). Snapshot the current termios now so an abnormal host death
-        # can restore a usable shell.
+        # tracking). Snapshot termios now so an abnormal host death can restore
+        # a usable shell.
         self._save_terminal_state()
 
         try:
@@ -219,20 +261,7 @@ class OpenTuiBridge:
             await self.close()
             raise
         if isinstance(message, HostReady):
-            mismatches: list[str] = []
-            if message.protocol != artifact.protocol_version:
-                mismatches.append(
-                    f"protocol expected={artifact.protocol_version!r} got={message.protocol!r}"
-                )
-            for label, expected, actual in (
-                ("product", artifact.product_version, message.product_version),
-                ("host", artifact.host_version, message.host_version),
-                ("platform", artifact.platform, message.platform),
-                ("arch", artifact.arch, message.arch),
-                ("build", artifact.build_id, message.build_id),
-            ):
-                if actual != expected:
-                    mismatches.append(f"{label} expected={expected!r} got={actual!r}")
+            mismatches = _host_handshake_mismatches(artifact, message)
             if mismatches:
                 await self.close()
                 raise OpenTuiBridgeError(
@@ -297,6 +326,7 @@ class OpenTuiBridge:
             host_source=artifact.source,
             host_version=artifact.host_version,
             host_build_id=artifact.build_id,
+            screen_mode=OPENTUI_SCREEN_MODE,
         )
 
     async def send(self, message_type: str, payload: object | None = None) -> None:

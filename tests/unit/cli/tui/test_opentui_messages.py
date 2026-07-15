@@ -154,13 +154,20 @@ def test_host_message_from_json_parses_ready_and_submit() -> None:
     assert host_message_from_json(
         '{"type":"input.submit","text":"中文 prompt"}'
     ) == HostInputSubmit(text="中文 prompt")
+    assert host_message_from_json(
+        '{"type":"input.submit","text":"adjust","intent":"steer"}'
+    ) == HostInputSubmit(text="adjust", intent="steer")
+    assert host_message_from_json(
+        '{"type":"input.submit","text":"/router on","intent":"control"}'
+    ) == HostInputSubmit(text="/router on", intent="control")
 
 
 def test_host_message_from_json_parses_versioned_ready_metadata() -> None:
     parsed = host_message_from_json(
         '{"type":"ready","protocol":1,"productVersion":"0.5.0",'
         '"hostVersion":"0.5.0","platform":"darwin","arch":"arm64",'
-        '"buildId":"release","capabilities":["jsonl","authenticated"]}'
+        '"buildId":"release","screenMode":"alternate-screen",'
+        '"capabilities":["jsonl","authenticated"]}'
     )
     assert parsed == HostReady(
         protocol=1,
@@ -169,6 +176,7 @@ def test_host_message_from_json_parses_versioned_ready_metadata() -> None:
         platform="darwin",
         arch="arm64",
         build_id="release",
+        screen_mode="alternate-screen",
         capabilities=("jsonl", "authenticated"),
     )
 
@@ -190,6 +198,11 @@ def test_host_message_rejects_malformed_control_payloads() -> None:
 
     with pytest.raises(HostToPythonMessageError, match="Unknown OpenTUI host"):
         host_message_from_json('{"type":"surprise"}')
+
+    with pytest.raises(HostToPythonMessageError, match="input.submit.intent"):
+        host_message_from_json(
+            '{"type":"input.submit","text":"hello","intent":"interrupt"}'
+        )
 
 
 def test_host_message_from_json_parses_protocol_unknown() -> None:
@@ -372,12 +385,27 @@ def test_js_snake_case_payload_reads_match_python_dataclass_fields() -> None:
             "items",
             "name",
             "cost_usd",
+            "billed_cost",
+            # Host-local semantic scroll anchors intentionally use the public
+            # scroll.anchor.v1 wire spelling even though they are not fields on
+            # a Python->host payload dataclass.
+            "block_id",
+            "elapsed_ms",
+            "ensemble_trace",
             "execution_status",
+            "fallback_reason",
+            "fallback_used",
             "input_tokens",
             "is_error",
+            "model_usage_breakdown",
             "output_tokens",
+            "proposer_index",
+            "reasoning_tokens",
+            "row_within_block",
+            "sample_index",
             "tool_name",
             "tool_use_id",
+            "total_candidates",
         }
     )
     stale = reads - allowed

@@ -271,6 +271,8 @@ class TestChatCommand:
         assert "--model" in result.output
         assert "--session" in result.output
         assert "--ui" in result.output
+        assert "default: auto" in result.output
+        assert "RC default: plain" not in result.output
 
     def test_chat_invokes_run_chat(self) -> None:
         """Default chat calls run_chat with correct defaults."""

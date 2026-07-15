@@ -65,15 +65,12 @@ opensquilla chat --session <session-key>
 opensquilla chat --standalone --workspace /path/to/project
 ```
 
-The supported macOS and Linux RC keeps the omitted `--ui` policy on `plain`;
-use `--ui tui` to opt into the same-version packaged OpenTUI host. `--ui auto`
-exercises the final startup policy and may fall back to `plain` only before the
-alternate screen starts. `--ui tui` is strict and `--ui plain` is the minimal
-rescue renderer. After the RC gate and seven-day observation, a dedicated
-rollout release changes the omitted policy to `auto`. Normal installed use does
-not require Bun, Node, OpenTUI modules, a source checkout, or a first-run host
-download. Native Windows TUI support follows separately. Source-host
-development is explicit:
+The omitted `--ui` policy is `auto`. On supported macOS and Linux installs it
+prefers the same-version packaged OpenTUI host and may fall back to `plain` only
+before the alternate screen starts. `--ui tui` is strict and `--ui plain` is
+the minimal rescue renderer. Normal installed use does not require Bun, Node,
+OpenTUI modules, a source checkout, or a first-run host download. Native
+Windows TUI support follows separately. Source-host development is explicit:
 
 ```sh
 bun install --frozen-lockfile --cwd=src/opensquilla/cli/tui/opentui/package

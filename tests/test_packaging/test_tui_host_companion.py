@@ -43,6 +43,8 @@ def test_companion_version_and_bun_are_exactly_pinned() -> None:
     assert 'MACOS_SIGNING_IDENTIFIER = "ai.opensquilla.tui-host"' in source
     assert '("linux", "x64"): "bun-linux-x64-baseline"' in source
     assert '("win32", "x64"): "bun-windows-x64-baseline"' in source
+    assert 'build_env["OPENTUI_LIBC"] = "glibc"' in source
+    assert 'build_flags.append("--env=OPENTUI_LIBC*")' in source
     entitlements = (COMPANION / "macos-entitlements.plist").read_text(encoding="utf-8")
     assert "com.apple.security.cs.allow-jit" in entitlements
     assert "com.apple.security.cs.disable-library-validation" in entitlements
@@ -265,6 +267,10 @@ def test_staged_companion_targets_keep_linux_and_windows_artifacts_isolated(
         ("win32", "arm64"): "bun-windows-arm64",
     }.get((target_platform, target_arch), f"bun-{target_platform}-{target_arch}")
     assert metadata["bun_target"] == expected_bun_target
+    if target_platform == "linux":
+        assert metadata["libc"] == "glibc"
+    else:
+        assert "libc" not in metadata
     assert f"Tag: py3-none-{wheel_tag}" in wheel_text
     assert f"opensquilla_tui_host/bin/{executable_name}" in names
 

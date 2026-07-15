@@ -145,6 +145,8 @@ def map_slash_category(category: SlashCategory) -> TuiInputKind:
     """Map REPL slash policy into runtime-owned input kinds."""
     if category is SlashCategory.LOCAL:
         return TuiInputKind.LOCAL
+    if category is SlashCategory.CONTROL:
+        return TuiInputKind.CONTROL
     if category is SlashCategory.DESTRUCTIVE:
         return TuiInputKind.DESTRUCTIVE
     if category is SlashCategory.EXIT:

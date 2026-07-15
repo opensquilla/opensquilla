@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import re
 import time
 import uuid
 from dataclasses import asdict, replace
@@ -534,6 +535,59 @@ def _effective_agent_id_for_session(session: Any | None, session_key: str) -> st
     if parsed != "main":
         return parsed
     return stored
+
+
+def _bootstrap_identity_text(value: Any, *, limit: int) -> str | None:
+    """Return one terminal-safe display field for bootstrap consumers.
+
+    ``sessions.bootstrap`` is consumed by several surfaces, so the identity
+    snapshot must stay presentation-only: no source documents, avatar paths,
+    or control sequences cross this contract.
+    """
+
+    if not isinstance(value, str):
+        return None
+    without_ansi = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", value)
+    normalized = without_ansi.replace("\r", " ").replace("\n", " ").replace("\t", " ")
+    clean = "".join(
+        char
+        for char in normalized
+        if ord(char) >= 32 and ord(char) != 127
+    )
+    clean = " ".join(clean.split()).strip()
+    return clean[:limit] or None
+
+
+async def _bootstrap_agent_identity(ctx: RpcContext, agent_id: str) -> dict[str, str | None]:
+    """Resolve a small, additive identity snapshot without making bootstrap fragile."""
+
+    payload: dict[str, str | None] = {
+        "agent_id": agent_id,
+        "name": agent_id,
+        "emoji": None,
+        "theme": None,
+    }
+    registry = getattr(ctx, "agent_registry", None)
+    getter = getattr(registry, "get_identity", None)
+    if not callable(getter):
+        return payload
+    try:
+        raw = getter(agent_id)
+        if inspect.isawaitable(raw):
+            raw = await raw
+    except Exception:  # noqa: BLE001 - identity decoration must not block session access
+        log.warning("sessions.bootstrap.identity_lookup_failed", agent_id=agent_id)
+        return payload
+    if not isinstance(raw, dict):
+        return payload
+    nested = raw.get("identity")
+    identity = nested if isinstance(nested, dict) else raw
+    payload["name"] = (
+        _bootstrap_identity_text(identity.get("name"), limit=80) or agent_id
+    )
+    payload["emoji"] = _bootstrap_identity_text(identity.get("emoji"), limit=16)
+    payload["theme"] = _bootstrap_identity_text(identity.get("theme"), limit=48)
+    return payload
 
 
 def _context_window_tokens(params: dict | None, ctx: RpcContext) -> int:
@@ -1587,6 +1641,33 @@ async def _handle_sessions_send(params: dict | None, ctx: RpcContext) -> dict:
         )
     run_kind = capture_controls["run_kind"] or "session_turn"
 
+    # Allocate the durable causal identity before persistence.  The same id is
+    # handed to TaskRuntime, live events, bootstrap history, and every transcript
+    # row produced by this turn.
+    turn_id = uuid.uuid4().hex
+    client_message_id = requested_client_message_id or uuid.uuid4().hex
+    surface_id = (
+        requested_surface_id
+        or getattr(route_envelope, "channel_id", None)
+        or str(getattr(route_envelope, "source_kind", "unknown"))
+    )
+    route_envelope = replace(
+        route_envelope,
+        metadata={
+            **route_envelope.metadata,
+            "client_message_id": client_message_id,
+            "surface_id": surface_id,
+        },
+    )
+    ingress_turn_context = {
+        "turn_id": turn_id,
+        "client_message_id": client_message_id,
+        "surface_id": surface_id,
+        "intent": "send",
+        "disposition": "queued" if getattr(ctx, "task_runtime", None) is not None else "applied",
+        "revision": 1,
+    }
+
     # 1. Persist user message to transcript (include attachment metadata).
     # Hold the per-session lock used by /reset so a concurrent reset cannot
     # tear the append and leak an orphan user turn into the cleared transcript.
@@ -1596,6 +1677,8 @@ async def _handle_sessions_send(params: dict | None, ctx: RpcContext) -> dict:
 
     async def _persist_user_message() -> None:
         nonlocal message_text, persisted_entry, fresh_user_session
+        from opensquilla.session.turn_context import turn_context_scope
+
         get_transcript = getattr(ctx.session_manager, "get_transcript", None)
         if callable(get_transcript):
             fresh_user_session = not bool(await get_transcript(key))
@@ -1619,13 +1702,19 @@ async def _handle_sessions_send(params: dict | None, ctx: RpcContext) -> dict:
                 persist_enabled=persist_enabled,
                 disk_budget_bytes=disk_budget if isinstance(disk_budget, int) else None,
             )
-            persisted_entry = await ctx.session_manager.append_message(
-                key, role="user", content=persist_content
-            )
+            with turn_context_scope(ingress_turn_context):
+                persisted_entry = await ctx.session_manager.append_message(
+                    key,
+                    role="user",
+                    content=persist_content,
+                )
         else:
-            persisted_entry = await ctx.session_manager.append_message(
-                key, role="user", content=message_text
-            )
+            with turn_context_scope(ingress_turn_context):
+                persisted_entry = await ctx.session_manager.append_message(
+                    key,
+                    role="user",
+                    content=message_text,
+                )
             if persisted_entry is not None and isinstance(persisted_entry.content, str):
                 message_text = persisted_entry.content
 
@@ -1635,25 +1724,7 @@ async def _handle_sessions_send(params: dict | None, ctx: RpcContext) -> dict:
         async with _persist_lock:
             await _persist_user_message()
 
-    client_message_id = (
-        requested_client_message_id
-        or getattr(persisted_entry, "message_id", None)
-        or uuid.uuid4().hex
-    )
     user_message_id = getattr(persisted_entry, "message_id", None)
-    surface_id = (
-        requested_surface_id
-        or getattr(route_envelope, "channel_id", None)
-        or str(getattr(route_envelope, "source_kind", "unknown"))
-    )
-    route_envelope = replace(
-        route_envelope,
-        metadata={
-            **route_envelope.metadata,
-            "client_message_id": client_message_id,
-            "surface_id": surface_id,
-        },
-    )
 
     async def _rollback_persisted_user_message(reason: str) -> tuple[str | None, bool]:
         message_id = getattr(persisted_entry, "message_id", None)
@@ -1700,6 +1771,7 @@ async def _handle_sessions_send(params: dict | None, ctx: RpcContext) -> dict:
                 semantic_message=semantic_message_text,
                 persisted_user_message_id=getattr(persisted_entry, "message_id", None),
                 fresh_user_session=fresh_user_session,
+                turn_id=turn_id,
             )
         except Exception as exc:
             # Ensure the uuid eviction does NOT fire on this
@@ -1765,21 +1837,29 @@ async def _handle_sessions_send(params: dict | None, ctx: RpcContext) -> dict:
             semantic_message_text or message_text,
             enabled=generate_title,
         )
+        await _emit_to_subscribers(
+            ctx,
+            key,
+            "session.event.input_disposition",
+            {
+                "session_key": key,
+                "user_message_id": user_message_id,
+                **ingress_turn_context,
+            },
+        )
         return {
             "status": "accepted",
             "key": key,
             "session_key": key,
             "session_id": session_id,
             "task_id": handle.task_id,
-            "turn_id": handle.task_id,
+            "turn_id": turn_id,
             "client_message_id": client_message_id,
             "user_message_id": user_message_id,
             "surface_id": surface_id,
         }
 
     # 2. Run agent turn in background via TurnRunner
-    turn_id = uuid.uuid4().hex
-
     def _turn_event_payload(payload: dict[str, Any]) -> dict[str, Any]:
         enriched = dict(payload)
         enriched.setdefault("session_id", session_id)
@@ -1822,6 +1902,15 @@ async def _handle_sessions_send(params: dict | None, ctx: RpcContext) -> dict:
 
         try:
             _mark_started()
+            from opensquilla.session.turn_context import turn_context_scope
+
+            turn_scope = turn_context_scope(
+                {
+                    **ingress_turn_context,
+                    "disposition": "applied",
+                }
+            )
+            turn_scope.__enter__()
             if ctx.turn_runner is None:
                 log.error("sessions.send.no_turn_runner", session_key=key)
                 await ctx.session_manager.append_message(
@@ -1938,6 +2027,8 @@ async def _handle_sessions_send(params: dict | None, ctx: RpcContext) -> dict:
                 {"message": error_message, "code": event_code},
             )
         finally:
+            if "turn_scope" in locals():
+                turn_scope.__exit__(None, None, None)
             if not _terminal_emitted:
                 try:
                     await _emit_terminal_once(
@@ -1951,6 +2042,16 @@ async def _handle_sessions_send(params: dict | None, ctx: RpcContext) -> dict:
     setattr(task, "_opensquilla_started", False)
     setattr(task, "_opensquilla_terminal_emitted", False)
     get_agent_task_registry().register(key, task)
+    await _emit_to_subscribers(
+        ctx,
+        key,
+        "session.event.input_disposition",
+        {
+            "session_key": key,
+            "user_message_id": user_message_id,
+            **ingress_turn_context,
+        },
+    )
     # Same eviction semantic as the task_runtime success path: the turn was
     # accepted into a background TurnRunner task, so consumed uuids can be
     # evicted from the upload store rather than waiting out the TTL window.
@@ -1978,6 +2079,263 @@ async def _handle_sessions_send(params: dict | None, ctx: RpcContext) -> dict:
         "client_message_id": client_message_id,
         "user_message_id": user_message_id,
         "surface_id": surface_id,
+    }
+
+
+@_d.method("sessions.steer", scope="operator.write")
+async def _handle_sessions_steer(params: dict | None, ctx: RpcContext) -> dict:
+    """Inject text into the active turn, with a durable follow-up fallback."""
+
+    key = _require_key(params)
+    if not isinstance(params, dict) or not isinstance(params.get("message"), str):
+        raise ValueError("params.message is required")
+    raw_message = params["message"]
+    if not raw_message.strip():
+        raise ValueError("params.message must not be blank")
+    if ctx.session_manager is None:
+        raise KeyError("No session manager available")
+    storage = get_session_storage(ctx.session_manager)
+    if storage is None:
+        raise KeyError("No session storage available")
+    session = await storage.get_session(key)
+    if session is None:
+        raise KeyError(f"Session not found: {key}")
+
+    task_runtime = getattr(ctx, "task_runtime", None)
+    active_task_id = getattr(task_runtime, "active_task_id", None)
+    steer = getattr(task_runtime, "steer", None)
+    if not callable(active_task_id) or not callable(steer):
+        return {"status": "unavailable", "accepted": False, "key": key}
+    current_turn_id = await active_task_id(key)
+    if not current_turn_id:
+        return {"status": "idle", "accepted": False, "key": key}
+
+    source_hint = _normalize_session_send_source_hint(params)
+    normalized = normalize_incoming_text(raw_message, source_hint=source_hint, attachments=[])
+    if normalized.generated_attachments:
+        raise ValueError("Steering does not support generated attachments")
+    message_text = normalized.message_text
+    semantic_message = normalized.semantic_message
+    client_message_id = _optional_string_param(
+        params, "client_message_id", "clientMessageId"
+    ) or uuid.uuid4().hex
+    surface_id = _optional_string_param(params, "surface_id", "surfaceId") or str(
+        source_hint.get("channel_id") or f"web:{ctx.conn_id}"
+    )
+
+    persisted_entry: Any = None
+
+    async def _persist() -> None:
+        nonlocal persisted_entry, message_text
+        from opensquilla.session.turn_context import turn_context_scope
+
+        with turn_context_scope(
+            {
+                "turn_id": current_turn_id,
+                "client_message_id": client_message_id,
+                "surface_id": surface_id,
+                "intent": "steer",
+                "disposition": "steering",
+                "target_turn_id": current_turn_id,
+                "revision": 1,
+            }
+        ):
+            persisted_entry = await ctx.session_manager.append_message(
+                key,
+                role="user",
+                content=message_text,
+            )
+        if persisted_entry is not None and isinstance(persisted_entry.content, str):
+            message_text = persisted_entry.content
+
+    persist_lock = get_session_lock(ctx.turn_runner, key)
+    if persist_lock is None:
+        await _persist()
+    else:
+        async with persist_lock:
+            await _persist()
+    user_message_id = getattr(persisted_entry, "message_id", None)
+
+    accepted_turn_id = await steer(
+        key,
+        message_text,
+        semantic_message=semantic_message,
+        persisted_user_message_id=user_message_id,
+        client_message_id=client_message_id,
+        surface_id=surface_id,
+    )
+    if not accepted_turn_id:
+        # The turn crossed its terminal boundary between the optimistic active
+        # check and the append. Roll back so the caller can honestly queue the
+        # text through sessions.send without leaving a duplicate transcript row.
+        remove_message = getattr(ctx.session_manager, "remove_message", None)
+        removed = False
+        rollback_error: str | None = None
+        if user_message_id and callable(remove_message):
+            try:
+                removed = bool(await remove_message(key, user_message_id))
+            except Exception as exc:  # noqa: BLE001 - classify dirty rollback
+                rollback_error = str(exc)
+        if removed:
+            return {
+                "status": "idle",
+                "accepted": False,
+                "key": key,
+            }
+
+        # The durable row still exists.  Returning the ordinary idle response
+        # would make TUI enqueue the same text through sessions.send and create
+        # a duplicate.  Mark the orphan explicitly, emit the causal failure,
+        # and fail closed with the same dirty-rollback semantics used by
+        # sessions.send's QUEUE_FULL_DIRTY path.
+        rejected_context = {
+            "turn_id": current_turn_id,
+            "client_message_id": client_message_id,
+            "surface_id": surface_id,
+            "intent": "steer",
+            "disposition": "rejected",
+            "target_turn_id": current_turn_id,
+            "revision": 2,
+        }
+        update_turn_context = getattr(
+            ctx.session_manager,
+            "update_message_turn_context",
+            None,
+        )
+        if user_message_id and callable(update_turn_context):
+            try:
+                updated = bool(
+                    await update_turn_context(
+                        key,
+                        user_message_id,
+                        rejected_context,
+                    )
+                )
+                if not updated:
+                    log.warning(
+                        "sessions.steer.dirty_context_update_missed",
+                        session_key=key,
+                        message_id=user_message_id,
+                    )
+            except Exception:  # noqa: BLE001 - RPC error below remains authoritative
+                log.warning(
+                    "sessions.steer.dirty_context_update_failed",
+                    session_key=key,
+                    message_id=user_message_id,
+                    exc_info=True,
+                )
+        try:
+            await _emit_to_subscribers(
+                ctx,
+                key,
+                "session.event.input_disposition",
+                {
+                    "session_key": key,
+                    "user_message_id": user_message_id,
+                    **rejected_context,
+                    "failure_code": "STEER_RACE_DIRTY",
+                    "retryable": False,
+                    "fallback_safe": False,
+                },
+            )
+        except Exception:  # noqa: BLE001 - explicit RPC error still reaches caller
+            log.warning(
+                "sessions.steer.dirty_disposition_emit_failed",
+                session_key=key,
+                message_id=user_message_id,
+                exc_info=True,
+            )
+        log.warning(
+            "sessions.steer.rollback_failed",
+            session_key=key,
+            message_id=user_message_id,
+            error=rollback_error,
+        )
+        raise RpcHandlerError(
+            "STEER_RACE_DIRTY",
+            (
+                "The active turn ended and the just-appended steer input could "
+                "not be rolled back. The transcript contains a rejected orphan; "
+                "automatic queue fallback is disabled to prevent duplication."
+            ),
+            details={
+                "session_key": key,
+                "orphan_message_id": user_message_id,
+                "target_turn_id": current_turn_id,
+                "fallback_safe": False,
+                "remediation": "dedup by orphan_message_id before resending",
+            },
+            retryable=False,
+        )
+
+    accepted_context = {
+        "turn_id": accepted_turn_id,
+        "client_message_id": client_message_id,
+        "surface_id": surface_id,
+        "intent": "steer",
+        # Acceptance reserves the input for the next safe boundary.  The task
+        # runtime advances this to ``applied`` only after the engine drains it,
+        # or to ``promoted``/``rejected`` if the turn ends first.
+        "disposition": "steering",
+        "target_turn_id": accepted_turn_id,
+        "revision": 1,
+    }
+    update_turn_context = getattr(
+        ctx.session_manager,
+        "update_message_turn_context",
+        None,
+    )
+    if user_message_id and callable(update_turn_context):
+        try:
+            await update_turn_context(key, user_message_id, accepted_context)
+        except Exception:  # noqa: BLE001 - steer is already accepted in runtime
+            log.warning(
+                "sessions.steer.context_update_failed",
+                session_key=key,
+                message_id=user_message_id,
+                exc_info=True,
+            )
+
+    try:
+        await _emit_to_subscribers(
+            ctx,
+            key,
+            "session.event.steer",
+            {
+                "session_key": key,
+                "turn_id": accepted_turn_id,
+                "client_message_id": client_message_id,
+                "user_message_id": user_message_id,
+                "surface_id": surface_id,
+                "disposition": "next_safe_boundary",
+            },
+        )
+        await _emit_to_subscribers(
+            ctx,
+            key,
+            "session.event.input_disposition",
+            {
+                "session_key": key,
+                "user_message_id": user_message_id,
+                **accepted_context,
+            },
+        )
+    except Exception:  # noqa: BLE001 - runtime acceptance is authoritative
+        log.warning(
+            "sessions.steer.accepted_event_emit_failed",
+            session_key=key,
+            message_id=user_message_id,
+            exc_info=True,
+        )
+    return {
+        "status": "accepted",
+        "accepted": True,
+        "key": key,
+        "turn_id": accepted_turn_id,
+        "client_message_id": client_message_id,
+        "user_message_id": user_message_id,
+        "surface_id": surface_id,
+        "disposition": "next_safe_boundary",
     }
 
 
@@ -3211,11 +3569,13 @@ async def _handle_sessions_bootstrap(params: dict | None, ctx: RpcContext) -> di
         1 for row in task_rows if _enum_value(getattr(row, "status", None)) == "running"
     )
     agent_id = _effective_agent_id_for_session(session, session_key)
+    agent_identity = await _bootstrap_agent_identity(ctx, agent_id)
     effective_model = _session_turn_model(ctx, session, agent_id)
     from opensquilla.agents.scope import resolve_agent_workspace_dir
 
     workspace_path = resolve_agent_workspace_dir(agent_id, ctx.config)
     workspace = str(workspace_path) if workspace_path is not None else None
+    from opensquilla.gateway.model_routing import model_routing_snapshot
 
     metadata = {
         "session_key": session_key,
@@ -3233,12 +3593,16 @@ async def _handle_sessions_bootstrap(params: dict | None, ctx: RpcContext) -> di
     }
     return {
         "session": metadata,
+        "agent_identity": agent_identity,
         "history": history,
         **task_state,
         "queue": {
             "mode": getattr(session, "queue_mode", None) or "followup",
             "queued_count": queued_count,
             "running_count": running_count,
+        },
+        "runtime": {
+            "model_routing": model_routing_snapshot(ctx.config),
         },
         "epoch": epoch,
         "stream_cursor": stream_cursor,

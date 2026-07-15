@@ -45,6 +45,74 @@ async def test_transcript_entry_turn_usage_round_trips() -> None:
         await storage.close()
 
 
+@pytest.mark.asyncio
+async def test_transcript_entry_turn_context_round_trips() -> None:
+    storage = SessionStorage(":memory:")
+    await storage.connect()
+    try:
+        node = SessionNode(session_key="agent:main:webchat:identity", session_id="sid-identity")
+        await storage.upsert_session(node)
+        expected = {
+            "turn_id": "turn-1",
+            "client_message_id": "client-1",
+            "surface_id": "tui:test",
+            "intent": "send",
+            "disposition": "applied",
+            "revision": 1,
+        }
+        await storage.append_transcript_entry(
+            TranscriptEntry(
+                session_id=node.session_id,
+                session_key=node.session_key,
+                role="assistant",
+                content="done",
+                turn_context=expected,
+            )
+        )
+
+        entries = await storage.get_transcript(node.session_id)
+
+        assert entries[0].turn_context == expected
+    finally:
+        await storage.close()
+
+
+@pytest.mark.asyncio
+async def test_transcript_turn_context_disposition_can_be_rebound() -> None:
+    storage = SessionStorage(":memory:")
+    await storage.connect()
+    try:
+        node = SessionNode(session_key="agent:main:webchat:rebind", session_id="sid-rebind")
+        await storage.upsert_session(node)
+        entry = TranscriptEntry(
+            session_id=node.session_id,
+            session_key=node.session_key,
+            role="user",
+            content="late steer",
+            turn_context={"turn_id": "old", "disposition": "steering"},
+        )
+        await storage.append_transcript_entry(entry)
+
+        promoted = {
+            "turn_id": "new",
+            "intent": "steer",
+            "disposition": "promoted",
+            "target_turn_id": "old",
+            "promoted_from_turn_id": "old",
+            "revision": 2,
+        }
+        assert await storage.update_transcript_turn_context(
+            node.session_key,
+            entry.message_id,
+            promoted,
+        )
+
+        rows = await storage.get_transcript(node.session_id)
+        assert rows[0].turn_context == promoted
+    finally:
+        await storage.close()
+
+
 def test_v010_adds_transcript_turn_usage_column() -> None:
     migration_path = (
         Path(__file__).resolve().parents[2]

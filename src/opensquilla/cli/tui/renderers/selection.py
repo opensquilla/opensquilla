@@ -9,11 +9,11 @@ from typing import Any, Protocol
 
 OPENSQUILLA_TUI_BACKEND_ENV = "OPENSQUILLA_TUI_BACKEND"
 DEFAULT_TUI_BACKEND_ID = "native"
-# macOS supported RC rollout: install the companion for every user, but keep
-# the full-screen surface opt-in until the release gate has observed it for at
-# least seven days.  The follow-up rollout PR changes this one policy default
-# to ``auto``; ``--ui auto`` is already supported and fully exercised.
-DEFAULT_CHAT_UI_MODE = "plain"
+# The promoted product contract prefers the full-screen OpenTUI surface when
+# its host is available.  ``auto`` is deliberately resolved before terminal
+# setup, so a missing host can still fall back to the plain rescue renderer
+# without entering the alternate screen.
+DEFAULT_CHAT_UI_MODE = "auto"
 CHAT_UI_MODES = frozenset({"auto", "tui", "plain"})
 
 

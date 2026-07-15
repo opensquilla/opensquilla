@@ -199,6 +199,41 @@ async def test_gateway_runtime_bridge_prints_failure_receipt_once(
 
 
 @pytest.mark.asyncio
+async def test_gateway_runtime_bridge_formats_missing_resume_without_traceback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from opensquilla.cli.gateway_client import GatewayRPCError
+    from opensquilla.cli.repl import runtime_bridge
+
+    output_console = _RecordingConsole()
+
+    async def fake_run_gateway_chat(**_kwargs: Any) -> gateway_runtime.SessionExitSummary:
+        raise GatewayRPCError(
+            "sessions.bootstrap",
+            code="NOT_FOUND",
+            message="Session not found: main",
+        )
+
+    monkeypatch.setattr(gateway_runtime, "run_gateway_chat", fake_run_gateway_chat)
+
+    with pytest.raises(typer.Exit) as caught:
+        await runtime_bridge.run_gateway_chat(
+            model=None,
+            session_id="main",
+            output_console=output_console,
+            error_panel_factory=_fake_error_panel,
+        )
+
+    assert caught.value.exit_code == 2
+    assert len(output_console.printed) == 1
+    panel = cast(Panel, output_console.printed[0])
+    assert panel.renderable == (
+        "Session 'main' was not found. Run `opensquilla sessions list` to find "
+        "a resumable key, or omit `--session` to create a new session."
+    )
+
+
+@pytest.mark.asyncio
 async def test_gateway_runtime_bridge_assembles_gateway_dependencies(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

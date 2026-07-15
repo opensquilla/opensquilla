@@ -264,6 +264,31 @@ _COMMANDS: tuple[CommandDef, ...] = (
         execution={_T: _local("theme.set"), _S: _local("theme.set")},
     ),
     CommandDef(
+        name="/router",
+        usage="/router [on|off|status]",
+        description="Inspect or switch the shared model strategy.",
+        execution={_T: _local("model.routing.router"), _S: _local("model.routing.router")},
+        argument_choices=(
+            ArgumentChoice("on", "Use Squilla Router from the next turn."),
+            ArgumentChoice("off", "Switch to direct model selection."),
+            ArgumentChoice("status", "Show the canonical Gateway strategy."),
+        ),
+    ),
+    CommandDef(
+        name="/ensemble",
+        usage="/ensemble [on|off|status]",
+        description="Inspect or switch the shared model strategy.",
+        execution={
+            _T: _local("model.routing.ensemble"),
+            _S: _local("model.routing.ensemble"),
+        },
+        argument_choices=(
+            ArgumentChoice("on", "Use Model Ensemble from the next turn."),
+            ArgumentChoice("off", "Switch to direct model selection."),
+            ArgumentChoice("status", "Show the canonical Gateway strategy."),
+        ),
+    ),
+    CommandDef(
         name="/status",
         usage="/status",
         description="Show current session, model, and mode.",

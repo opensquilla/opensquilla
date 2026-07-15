@@ -536,6 +536,13 @@ async def handle_standalone_slash_command(
         await dispatch_theme_command(cmd, context.tui_output)
         return True
 
+    if _slash_parts(cmd, "/router") or _slash_parts(cmd, "/ensemble"):
+        console.print(
+            "[yellow]Model strategy controls require Gateway mode; "
+            "restart without --standalone.[/yellow]"
+        )
+        return True
+
     if parts := _slash_parts(cmd, "/new"):
         title = parts[1].strip() if len(parts) > 1 else None
         await _replace_with_new_session(context, title=title)

@@ -29,6 +29,7 @@ from opensquilla.cli.tui.opentui.host_runtime import (
 )
 from opensquilla.cli.tui.opentui.messages import (
     HostInputSubmit,
+    HostReady,
     HostToPythonMessageError,
     ScrollbackWrite,
 )
@@ -106,6 +107,30 @@ def test_companion_version_mismatch_has_stable_failure_reason(tmp_path) -> None:
 
     assert exc_info.value.reason is HostFailureReason.VERSION_MISMATCH
     assert "version mismatch" in str(exc_info.value)
+
+
+def test_host_handshake_rejects_missing_interactive_capabilities(tmp_path) -> None:
+    artifact = HostArtifactResolver(
+        package_dir=tmp_path,
+        main_script=tmp_path / "main.mjs",
+        companion_module=_fake_companion((sys.executable,)),
+    ).resolve()
+    ready = HostReady(
+        protocol=artifact.protocol_version,
+        product_version=artifact.product_version,
+        host_version=artifact.host_version,
+        platform=artifact.platform,
+        arch=artifact.arch,
+        build_id=artifact.build_id,
+        capabilities=("jsonl", "turn.identity.v2"),
+    )
+
+    mismatches = bridge_module._host_handshake_mismatches(artifact, ready)
+
+    assert mismatches == [
+        "required interactive capabilities missing="
+        "model.routing.control.v1,scroll.anchor.v1"
+    ]
 
 
 async def _attach_exited_process(bridge: OpenTuiBridge, *, code: int, stderr: str) -> None:
@@ -259,7 +284,15 @@ async def test_start_uses_authenticated_loopback_and_reads_versioned_ready(
                 "platform": os.environ["OPENSQUILLA_OPENTUI_HOST_PLATFORM"],
                 "arch": os.environ["OPENSQUILLA_OPENTUI_HOST_ARCH"],
                 "buildId": os.environ["OPENSQUILLA_OPENTUI_BUILD_ID"],
-                "capabilities": ["jsonl", "loopback", "authenticated"],
+                "screenMode": "alternate-screen",
+                "capabilities": [
+                    "jsonl",
+                    "loopback",
+                    "authenticated",
+                    "turn.identity.v2",
+                    "scroll.anchor.v1",
+                    "model.routing.control.v1",
+                ],
             }
             stream.write((json.dumps(ready) + "\\n").encode())
             for line in stream:

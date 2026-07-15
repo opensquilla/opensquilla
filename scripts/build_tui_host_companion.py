@@ -90,17 +90,30 @@ def main(argv: list[str] | None = None) -> int:
                 )
             _run([bun, "install", "--frozen-lockfile"], cwd=HOST_SOURCE)
             bun_target = _bun_compile_target(target_platform, target_arch)
+            build_env = None
+            build_flags: list[str] = []
+            if target_platform == "linux":
+                # Release Linux wheels are manylinux/glibc artifacts. OpenTUI
+                # 0.4 also publishes musl packages and selects between them via
+                # OPENTUI_LIBC at runtime; inline the release choice so a user
+                # environment cannot steer a manylinux binary onto the wrong
+                # native loader branch.
+                build_env = os.environ.copy()
+                build_env["OPENTUI_LIBC"] = "glibc"
+                build_flags.append("--env=OPENTUI_LIBC*")
             _run(
                 [
                     bun,
                     "build",
                     "--compile",
                     "--minify",
+                    *build_flags,
                     f"--target={bun_target}",
                     str(HOST_SOURCE / "src" / "main.mjs"),
                     f"--outfile={executable}",
                 ],
                 cwd=HOST_SOURCE,
+                env=build_env,
             )
 
         if not executable.is_file():
@@ -128,6 +141,8 @@ def main(argv: list[str] | None = None) -> int:
             "bun_version": bun_version,
             "bun_target": _bun_compile_target(target_platform, target_arch),
         }
+        if target_platform == "linux":
+            metadata["libc"] = "glibc"
         (package_dir / "_host_metadata.json").write_text(
             json.dumps(metadata, indent=2, sort_keys=True) + "\n",
             encoding="utf-8",

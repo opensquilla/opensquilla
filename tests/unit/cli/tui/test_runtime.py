@@ -11,6 +11,7 @@ from opensquilla.cli.tui.backend.contracts import (
     TuiInputKind,
     TuiRuntimeConfig,
     TuiRuntimeHooks,
+    TuiSubmittedInput,
 )
 from opensquilla.cli.tui.backend.runtime import run_tui_runtime
 from opensquilla.cli.tui.backend.state import TuiRuntimeState
@@ -677,6 +678,155 @@ async def test_runtime_notifies_when_input_is_queued_mid_turn() -> None:
 
 
 @pytest.mark.asyncio
+async def test_runtime_steers_enter_without_adding_fifo_item() -> None:
+    from opensquilla.cli.tui.backend.input_identity import current_tui_client_message_id
+
+    inputs: asyncio.Queue[Any] = asyncio.Queue()
+    surface = _FakeSurface(inputs)
+    state = TuiRuntimeState()
+    first_started = asyncio.Event()
+    steered: list[str] = []
+    steer_identities: list[str | None] = []
+    notices: list[str] = []
+
+    async def _dispatch(user_input: str) -> bool:
+        if user_input == "first":
+            first_started.set()
+            await asyncio.sleep(5)
+        return True
+
+    async def _steer(text: str) -> bool:
+        steered.append(text)
+        steer_identities.append(current_tui_client_message_id())
+        return True
+
+    task = asyncio.create_task(
+        run_tui_runtime(
+            dispatch=_dispatch,
+            surface_factory=_surface_factory(surface),
+            config=_runtime_config(state=state),
+            hooks=_runtime_hooks(
+                notice=notices.append,
+                on_steer_active_turn=_steer,
+            ),
+        )
+    )
+    await inputs.put("first")
+    await first_started.wait()
+    await inputs.put(
+        TuiSubmittedInput(
+            "change direction",
+            intent="steer",
+            client_message_id="client-steer-1",
+        )
+    )
+    await _wait_until(lambda: steered == ["change direction"])
+
+    assert state.pending_items == ()
+    assert steer_identities == ["client-steer-1"]
+    assert "echo:change direction" in surface.writes
+    assert any("Steering the running turn" in notice for notice in notices)
+
+    active_cb = next(cb for cb in reversed(surface.cancel_callbacks) if cb is not None)
+    active_cb()
+    await inputs.put(None)
+    await asyncio.wait_for(task, timeout=2.0)
+
+
+@pytest.mark.asyncio
+async def test_runtime_late_steer_falls_back_to_visible_queue() -> None:
+    inputs: asyncio.Queue[Any] = asyncio.Queue()
+    surface = _FakeSurface(inputs)
+    state = TuiRuntimeState()
+    first_started = asyncio.Event()
+    notices: list[str] = []
+
+    async def _dispatch(user_input: str) -> bool:
+        if user_input == "first":
+            first_started.set()
+            await asyncio.sleep(5)
+        return True
+
+    async def _unavailable(_text: str) -> bool:
+        return False
+
+    task = asyncio.create_task(
+        run_tui_runtime(
+            dispatch=_dispatch,
+            surface_factory=_surface_factory(surface),
+            config=_runtime_config(state=state),
+            hooks=_runtime_hooks(
+                notice=notices.append,
+                on_steer_active_turn=_unavailable,
+            ),
+        )
+    )
+    await inputs.put("first")
+    await first_started.wait()
+    await inputs.put(TuiSubmittedInput("run next", intent="steer"))
+    await _wait_until(lambda: state.pending_items == ("run next",))
+
+    assert any("Steer unavailable; queued (#1)" in notice for notice in notices)
+
+    active_cb = next(cb for cb in reversed(surface.cancel_callbacks) if cb is not None)
+    active_cb()
+    await inputs.put(None)
+    await asyncio.wait_for(task, timeout=2.0)
+
+
+@pytest.mark.asyncio
+async def test_runtime_dirty_steer_failure_does_not_duplicate_into_local_queue() -> None:
+    inputs: asyncio.Queue[Any] = asyncio.Queue()
+    surface = _FakeSurface(inputs)
+    state = TuiRuntimeState()
+    first_started = asyncio.Event()
+    notices: list[str] = []
+
+    class DirtySteerError(RuntimeError):
+        data = {"fallback_safe": False, "orphan_message_id": "message-orphan"}
+
+    async def _dispatch(user_input: str) -> bool:
+        if user_input == "first":
+            first_started.set()
+            await asyncio.sleep(5)
+        return True
+
+    async def _dirty(_text: str) -> bool:
+        raise DirtySteerError("steer rollback left a durable orphan")
+
+    task = asyncio.create_task(
+        run_tui_runtime(
+            dispatch=_dispatch,
+            surface_factory=_surface_factory(surface),
+            config=_runtime_config(state=state),
+            hooks=_runtime_hooks(
+                notice=notices.append,
+                on_steer_active_turn=_dirty,
+            ),
+        )
+    )
+    await inputs.put("first")
+    await first_started.wait()
+    await inputs.put(
+        TuiSubmittedInput(
+            "must not duplicate",
+            intent="steer",
+            client_message_id="client-dirty",
+        )
+    )
+    await _wait_until(lambda: any("Steer failed" in notice for notice in notices))
+
+    assert state.pending_items == ()
+    assert "echo:must not duplicate" not in surface.writes
+    assert not any("queued" in notice.lower() for notice in notices)
+
+    active_cb = next(cb for cb in reversed(surface.cancel_callbacks) if cb is not None)
+    active_cb()
+    await inputs.put(None)
+    await asyncio.wait_for(task, timeout=2.0)
+
+
+@pytest.mark.asyncio
 async def test_runtime_full_queue_rejects_message_without_echoing_it() -> None:
     inputs: asyncio.Queue[str | None] = asyncio.Queue()
     surface = _FakeSurface(inputs)
@@ -901,3 +1051,55 @@ async def test_runtime_runs_local_command_inline_without_echo_or_queue() -> None
     await inputs.put(None)
     await asyncio.wait_for(task, timeout=2.0)
     assert dispatched == ["hi", "/theme"]
+
+
+@pytest.mark.asyncio
+async def test_runtime_runs_control_command_inline_without_echo_steer_or_queue() -> None:
+    inputs: asyncio.Queue[str | None] = asyncio.Queue()
+    surface = _FakeSurface(inputs)
+    dispatched: list[str] = []
+    echoed: list[str] = []
+    steered: list[str] = []
+    turn_running = asyncio.Event()
+    release_turn = asyncio.Event()
+
+    async def _dispatch(user_input: str) -> bool:
+        dispatched.append(user_input)
+        if user_input == "hi":
+            turn_running.set()
+            await release_turn.wait()
+        return True
+
+    async def _echo(_surface: Any, text: str) -> None:
+        echoed.append(text)
+
+    async def _steer(text: str) -> bool:
+        steered.append(text)
+        return True
+
+    def _classify(text: str) -> TuiInputKind:
+        if text.startswith(("/router", "/ensemble")):
+            return TuiInputKind.CONTROL
+        return TuiInputKind.NORMAL
+
+    task = asyncio.ensure_future(
+        run_tui_runtime(
+            dispatch=_dispatch,
+            surface_factory=_surface_factory(surface),
+            config=_runtime_config(concurrent_input_during_turn=True, classify_input=_classify),
+            hooks=TuiRuntimeHooks(on_user_input_echo=_echo, on_steer_active_turn=_steer),
+        )
+    )
+    await inputs.put("hi")
+    await turn_running.wait()
+    await inputs.put(TuiSubmittedInput("/ensemble on", intent="control"))
+    await _wait_until(lambda: "/ensemble on" in dispatched)
+
+    assert echoed == ["hi"]
+    assert steered == []
+    assert task.done() is False
+
+    release_turn.set()
+    await inputs.put(None)
+    await asyncio.wait_for(task, timeout=2.0)
+    assert dispatched == ["hi", "/ensemble on"]

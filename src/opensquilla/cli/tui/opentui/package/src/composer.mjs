@@ -1,5 +1,11 @@
-import { THEME, THEME_NAMES, STATUS_PULSE_FRAMES, applyTheme, activeThemeName } from "./theme.mjs";
+import { THEME, THEME_NAMES, applyTheme, activeThemeName } from "./theme.mjs";
 import { cellWidth, clampFooterHeight, clipToCells, stripTerminalControls, textWidth } from "./primitives.mjs";
+import {
+  compactContextItems,
+  emptyContextState,
+  normalizeContextUpdate,
+} from "./contextView.mjs";
+import { destroyChildren, destroyRenderable } from "./renderableLifecycle.mjs";
 
 const COMPLETION_MENU_LEFT = 1;
 const COMPLETION_MENU_RIGHT = 34;
@@ -23,6 +29,19 @@ export function themePickerKeyAction(picker, keyName) {
   if (keyName === "return" || keyName === "tab") return { handled: true, action: "confirm", selected: sel };
   if (keyName === "escape") return { handled: true, action: "cancel", selected: sel };
   // Modal: swallow every other key so it never leaks into the input while open.
+  return { handled: true, action: "none", selected: sel };
+}
+
+// Router and Ensemble are views over one Gateway-owned three-state strategy.
+// The picker does not preview writes: only Enter commits shared state.
+export function routingPickerKeyAction(picker, keyName) {
+  if (!picker?.active) return { handled: false, action: "pass", selected: 0 };
+  const max = Math.max(0, (picker.options?.length ?? 0) - 1);
+  const sel = clamp(Number(picker.selected) || 0, 0, max);
+  if (keyName === "up") return { handled: true, action: "navigate", selected: clamp(sel - 1, 0, max) };
+  if (keyName === "down") return { handled: true, action: "navigate", selected: clamp(sel + 1, 0, max) };
+  if (keyName === "return" || keyName === "tab") return { handled: true, action: "confirm", selected: sel };
+  if (keyName === "escape") return { handled: true, action: "cancel", selected: sel };
   return { handled: true, action: "none", selected: sel };
 }
 
@@ -69,16 +88,6 @@ export function formatRouterModelValue(model, baselineModel) {
     return `↓ ${modelShort}`;
   }
   return modelShort || model;
-}
-
-// Status pill text: "<icon> <label>" plus a live " · Ns" elapsed counter once
-// a turn has been running a moment — the counter (advanced by the 180ms pulse
-// re-render) is what makes a long silent model-thinking stretch read as
-// working instead of stuck. Short turns skip it to avoid a flicker.
-export function statusPillText(icon, label, elapsedMs) {
-  const base = `${icon} ${label}`;
-  if (!Number.isFinite(elapsedMs) || elapsedMs < 2000) return base;
-  return `${base} · ${Math.floor(elapsedMs / 1000)}s`;
 }
 
 // Router strip value cell: whitespace collapsed and clipped to a fixed 18
@@ -465,7 +474,22 @@ function fileCompletionItems(paths) {
 // (renderer, renderable classes, boxes, footer height, host writer) are injected
 // via `deps`.
 export function createComposer(deps) {
-  const { renderer, BoxRenderable, TextRenderable, conversationBox, inputBox, overlayLayer, footerHeight, sendHostMessage } = deps;
+  const {
+    renderer,
+    BoxRenderable,
+    TextRenderable,
+    conversationBox,
+    inputBox,
+    overlayLayer,
+    footerHeight,
+    sendHostMessage,
+    onContextUpdate,
+    onRouterUpdate,
+    onFullRedraw,
+    onJumpToLatest,
+    onTranscriptScroll,
+    isTranscriptHeld,
+  } = deps;
 
   // `footerHeight` is the DESIRED footer height (e.g. 6). On a very short
   // terminal main.mjs clamps the actual inputBox height with clampFooterHeight,
@@ -473,6 +497,21 @@ export function createComposer(deps) {
   // same clamped value or it overflows a 3–5 row pane. Recomputed each use so it
   // tracks live resizes.
   const effFooterHeight = () => clampFooterHeight(footerHeight, renderer.terminalHeight ?? 24);
+
+  // inputBox.right is the single source of truth for space reserved by the
+  // optional context rail. Composer wrapping, overlays, and the hardware caret
+  // all use the same effective surface so none can paint beneath the rail.
+  function terminalWidth() {
+    return Math.max(1, Number(renderer?.terminalWidth ?? renderer?.width) || 80);
+  }
+
+  function footerRightInset() {
+    return clamp(Number(inputBox?.right) || 0, 0, Math.max(0, terminalWidth() - 1));
+  }
+
+  function footerSurfaceWidth() {
+    return Math.max(1, terminalWidth() - footerRightInset());
+  }
 
   let inputText = "";
   // Caret position as a code-point index into Array.from(inputText), range
@@ -485,9 +524,6 @@ export function createComposer(deps) {
   // short line keeps the original column — and reset to null by any other caret
   // motion (see the keypress handler). null means "recompute from the caret".
   let desiredVisualCol = null;
-  // Pulse FRAME COUNTER is owned by main.mjs; tickPulse(frame) updates this copy
-  // so the status pill glyph advances.
-  let pulseFrame = 0;
   // Input history (newest last). historyIndex === history.length means "current
   // draft" (not browsing history); 0..length-1 selects a recalled entry.
   const inputHistory = [];
@@ -499,15 +535,16 @@ export function createComposer(deps) {
   // edited RECALL, not the draft, so re-entering browse must not overwrite a
   // saved draft with it (the draft would be unrecoverable).
   let historyEditedRecall = false;
+  // Busy-turn input stays editable. Enter is an explicit steer request while
+  // Tab is an explicit FIFO follow-up; Python/Gateway remain authoritative and
+  // may downgrade a late steer to queue with a visible notice.
+  let turnActive = false;
   // Last text removed by a kill command (Ctrl+U/K/W, Alt+Backspace, Alt+D);
   // Ctrl+Y yanks it back so a mistyped kill is recoverable.
   let killBuffer = "";
   // Trigger token dismissed with Escape: the menu stays closed while the caret
   // remains on that same token, instead of reopening on the next keystroke.
   let menuDismissed = null;
-  // Last hardware-cursor cell emitted, so pulse-driven re-renders can skip
-  // re-asserting an unchanged position (see syncTerminalCursorToCaret).
-  let lastCursorCell = null;
   // Guard against install() binding the keypress/paste listeners more than once.
   let installed = false;
 
@@ -530,12 +567,24 @@ export function createComposer(deps) {
     io: "", // last turn's in/out token pair ("34.6k/548"); empty before any turn
   };
 
-  const turnStatus = {
-    phase: "idle",
-    label: "ready",
-    active: false,
-    activeSince: null, // epoch ms when active flipped on (elapsed counter base)
+  const modelRoutingState = {
+    current: "direct",
+    next: null,
+    busy: false,
   };
+
+  // Canonical task/agent context arrives through the additive context.update
+  // frame. It intentionally starts empty: older Python parents keep the proven
+  // router-only strip, while a newer parent progressively enriches the same UI.
+  let contextState = emptyContextState();
+
+  function notifyContextObserver() {
+    try { onContextUpdate?.({ ...contextState }); } catch { /* presentation observers are non-fatal */ }
+  }
+
+  function notifyRouterObserver() {
+    try { onRouterUpdate?.({ ...routerState }); } catch { /* presentation observers are non-fatal */ }
+  }
 
   const completionContext = {
     catalog: [],
@@ -554,12 +603,6 @@ export function createComposer(deps) {
   };
   let fileDebounce = null;
 
-  function statusIcon() {
-    if (!turnStatus.active) return "✓";
-    const frames = STATUS_PULSE_FRAMES[turnStatus.phase] ?? STATUS_PULSE_FRAMES.thinking;
-    return frames[pulseFrame % frames.length];
-  }
-
   function startCursorBlink() {
     // Intentionally a no-op. The caret is the real hardware terminal cursor now
     // (caretGlyph renders a blank cell; syncTerminalCursorToCaret shows it via
@@ -573,6 +616,18 @@ export function createComposer(deps) {
 
   function routerModelValue() {
     return formatRouterModelValue(routerState.model, routerState.baselineModel);
+  }
+
+  function modelStrategyLabel() {
+    const mode = modelRoutingState.next ?? modelRoutingState.current;
+    return `${modelRoutingState.next ? "next " : ""}${mode}${modelRoutingState.busy ? " …" : ""}`;
+  }
+
+  function modelStrategyColor() {
+    if (modelRoutingState.next || modelRoutingState.busy) return THEME.warning;
+    if (modelRoutingState.current === "ensemble") return THEME.metricPositive;
+    if (modelRoutingState.current === "router") return THEME.routeText;
+    return THEME.text;
   }
 
   // Router route row: tag the route when it is not a normal applied decision so
@@ -722,28 +777,31 @@ export function createComposer(deps) {
   // wider than the box: the clip width must always equal the box inner width,
   // or over-wide rows wrap inside the fixed-height box and corrupt its layout.
   function completionMenuRightInset() {
-    const terminalWidth = Number(renderer?.terminalWidth) || 100;
-    return clamp(
-      terminalWidth - COMPLETION_MENU_LEFT - COMPLETION_MENU_CHROME_CELLS - MIN_COMPLETION_ROW_CELLS,
+    const surfaceWidth = footerSurfaceWidth();
+    const localRight = clamp(
+      surfaceWidth - COMPLETION_MENU_LEFT - COMPLETION_MENU_CHROME_CELLS - MIN_COMPLETION_ROW_CELLS,
       0,
       COMPLETION_MENU_RIGHT,
     );
+    return footerRightInset() + localRight;
   }
 
   function completionMenuRowCells() {
-    const terminalWidth = Number(renderer?.terminalWidth) || 100;
+    const localRight = completionMenuRightInset() - footerRightInset();
     return Math.max(
       1,
-      terminalWidth - COMPLETION_MENU_LEFT - completionMenuRightInset() - COMPLETION_MENU_CHROME_CELLS,
+      footerSurfaceWidth() - COMPLETION_MENU_LEFT - localRight - COMPLETION_MENU_CHROME_CELLS,
     );
   }
 
   // Remove any previously mounted completion menu from the overlay layer so a
   // shrinking menu never leaves a stale node behind and re-renders don't stack.
   function clearOverlay() {
-    overlayLayer?.remove?.("completion-menu");
-    overlayLayer?.remove?.("theme-picker");
-    overlayLayer?.remove?.("approval-overlay");
+    destroyRenderable(overlayLayer, "completion-menu");
+    destroyRenderable(overlayLayer, "theme-picker");
+    destroyRenderable(overlayLayer, "approval-overlay");
+    destroyRenderable(overlayLayer, "session-picker");
+    destroyRenderable(overlayLayer, "model-routing-picker");
     // Hide the layer again so it stops intercepting wheel events — otherwise a
     // permanently-visible full-screen overlay blocks conversation scrolling.
     if (overlayLayer) overlayLayer.visible = false;
@@ -804,8 +862,19 @@ export function createComposer(deps) {
   // that was active when the picker opened. Rendering here (not console output)
   // is why it looks like a panel instead of stray scrollback text.
   const THEME_PICKER_WIDTH = 34;
-  const THEME_PICKER_INNER = THEME_PICKER_WIDTH - COMPLETION_MENU_CHROME_CELLS;
   let themePicker = null;
+  const SESSION_PICKER_WIDTH = 72;
+  let sessionPicker = null;
+  const MODEL_ROUTING_PICKER_WIDTH = 46;
+  let modelRoutingPicker = null;
+
+  function overlayPanelGeometry(preferredWidth) {
+    const width = Math.max(
+      1,
+      Math.min(preferredWidth, footerSurfaceWidth() - COMPLETION_MENU_LEFT - 1),
+    );
+    return { width, inner: Math.max(1, width - COMPLETION_MENU_CHROME_CELLS) };
+  }
 
   function applyHostTheme(name) {
     applyTheme(name);
@@ -819,14 +888,15 @@ export function createComposer(deps) {
 
   function renderThemePicker() {
     if (!themePicker?.active) return;
-    overlayLayer?.remove?.("theme-picker");
+    destroyRenderable(overlayLayer, "theme-picker");
     const names = themePicker.names;
+    const geometry = overlayPanelGeometry(THEME_PICKER_WIDTH);
     const maxRows = Math.max(1, (renderer.terminalHeight ?? 24) - effFooterHeight() - 1);
     const node = new BoxRenderable(renderer, {
       id: "theme-picker",
       position: "absolute",
       left: COMPLETION_MENU_LEFT,
-      width: THEME_PICKER_WIDTH,
+      width: geometry.width,
       bottom: effFooterHeight(),
       height: Math.min(names.length + 3, maxRows),
       borderStyle: "rounded",
@@ -842,13 +912,13 @@ export function createComposer(deps) {
       const active = index === themePicker.selected;
       node.add(new TextRenderable(renderer, {
         id: `theme-picker-row-${index}`,
-        content: clipToCells(`${active ? "› " : "  "}${name}`, THEME_PICKER_INNER),
+        content: clipToCells(`${active ? "› " : "  "}${name}`, geometry.inner),
         fg: active ? THEME.brandAccentSoft : THEME.muted,
       }));
     });
     node.add(new TextRenderable(renderer, {
       id: "theme-picker-hint",
-      content: clipToCells("↑↓ preview · enter keep · esc", THEME_PICKER_INNER),
+      content: clipToCells("↑↓ preview · enter keep · esc", geometry.inner),
       fg: THEME.detailText,
     }));
     overlayLayer.add(node);
@@ -856,6 +926,8 @@ export function createComposer(deps) {
   }
 
   function openThemePicker() {
+    if (sessionPicker?.active) closeSessionPicker();
+    if (modelRoutingPicker?.active) closeModelRoutingPicker();
     resetMenu(); // close the completion menu if it was open
     const names = THEME_NAMES;
     let selected = names.indexOf(activeThemeName());
@@ -887,6 +959,261 @@ export function createComposer(deps) {
     return true;
   }
 
+  // ---- Session picker ------------------------------------------------------
+  // Gateway owns the canonical rows; the host only filters and returns a
+  // normal /resume command, keeping session mutation in the existing Python
+  // command path instead of inventing a second owner.
+  function filteredSessions() {
+    if (!sessionPicker?.active) return [];
+    const query = String(sessionPicker.query ?? "").trim().toLowerCase();
+    if (!query) return sessionPicker.sessions;
+    return sessionPicker.sessions.filter((item) =>
+      `${item.title} ${item.key} ${item.model} ${item.status}`.toLowerCase().includes(query));
+  }
+
+  function renderSessionPicker() {
+    if (!sessionPicker?.active) return;
+    destroyRenderable(overlayLayer, "session-picker");
+    const geometry = overlayPanelGeometry(SESSION_PICKER_WIDTH);
+    const available = Math.max(4, (renderer.terminalHeight ?? 24) - effFooterHeight() - 1);
+    const rows = filteredSessions();
+    sessionPicker.selected = clamp(sessionPicker.selected, 0, Math.max(0, rows.length - 1));
+    const visible = Math.max(1, Math.min(rows.length || 1, available - 4, 8));
+    let start = Math.max(0, sessionPicker.selected - Math.floor(visible / 2));
+    start = Math.min(start, Math.max(0, rows.length - visible));
+    const node = new BoxRenderable(renderer, {
+      id: "session-picker",
+      position: "absolute",
+      left: COMPLETION_MENU_LEFT,
+      width: geometry.width,
+      bottom: effFooterHeight(),
+      height: Math.min(available, visible + 4),
+      borderStyle: "rounded",
+      borderColor: THEME.brandAccent,
+      backgroundColor: THEME.overlayBg,
+      title: " sessions ",
+      titleAlignment: "left",
+      flexDirection: "column",
+      paddingLeft: 1,
+      paddingRight: 1,
+    });
+    node.add(new TextRenderable(renderer, {
+      id: "session-picker-query",
+      content: clipToCells(`search: ${sessionPicker.query || "_"}`, geometry.inner),
+      fg: THEME.text,
+      wrapMode: "none",
+    }));
+    if (rows.length === 0) {
+      node.add(new TextRenderable(renderer, {
+        id: "session-picker-empty",
+        content: "  no matching sessions",
+        fg: THEME.muted,
+      }));
+    } else {
+      rows.slice(start, start + visible).forEach((item, offset) => {
+        const index = start + offset;
+        const current = item.key === sessionPicker.currentKey ? "●" : " ";
+        const label = item.title || item.key;
+        const meta = [item.model, item.status, `${item.messageCount} msgs`]
+          .filter(Boolean).join(" · ");
+        node.add(new TextRenderable(renderer, {
+          id: `session-picker-row-${index}`,
+          content: clipToCells(
+            `${index === sessionPicker.selected ? "›" : " "} ${current} ${label}${meta ? `  ${meta}` : ""}`,
+            geometry.inner,
+          ),
+          fg: index === sessionPicker.selected ? THEME.brandAccentSoft : THEME.muted,
+          wrapMode: "none",
+        }));
+      });
+    }
+    node.add(new TextRenderable(renderer, {
+      id: "session-picker-hint",
+      content: clipToCells("type to filter · ↑↓ choose · enter resume · esc", geometry.inner),
+      fg: THEME.detailText,
+      wrapMode: "none",
+    }));
+    overlayLayer.add(node);
+    overlayLayer.visible = true;
+  }
+
+  function closeSessionPicker() {
+    sessionPicker = null;
+    clearOverlay();
+  }
+
+  function openSessionPicker(message) {
+    if (themePicker?.active) handleThemePickerKey("escape");
+    if (modelRoutingPicker?.active) closeModelRoutingPicker();
+    resetMenu();
+    const sessions = (Array.isArray(message?.sessions) ? message.sessions : [])
+      .map((item) => ({
+        key: String(item?.key ?? ""),
+        title: String(item?.title ?? ""),
+        model: String(item?.model ?? ""),
+        status: String(item?.status ?? ""),
+        messageCount: Number(item?.message_count ?? 0) || 0,
+      }))
+      .filter((item) => item.key);
+    sessionPicker = {
+      active: true,
+      currentKey: String(message?.current_key ?? ""),
+      sessions,
+      query: "",
+      selected: Math.max(0, sessions.findIndex(
+        (item) => item.key === String(message?.current_key ?? ""),
+      )),
+    };
+    renderSessionPicker();
+    renderer.requestRender?.();
+  }
+
+  function handleSessionPickerKey(key) {
+    if (!sessionPicker?.active) return false;
+    if (key.name === "escape" || (key.ctrl && key.name === "c")) {
+      closeSessionPicker();
+      rerenderInputRegion();
+      return true;
+    }
+    const rows = filteredSessions();
+    if (key.name === "up" || key.name === "down") {
+      const delta = key.name === "up" ? -1 : 1;
+      sessionPicker.selected = clamp(
+        sessionPicker.selected + delta,
+        0,
+        Math.max(0, rows.length - 1),
+      );
+      renderSessionPicker();
+      renderer.requestRender?.();
+      return true;
+    }
+    if (key.name === "return") {
+      const selected = rows[sessionPicker.selected];
+      if (!selected) return true;
+      closeSessionPicker();
+      sendHostMessage({ type: "input.submit", text: `/resume ${selected.key}` });
+      rerenderInputRegion();
+      return true;
+    }
+    if (key.name === "backspace") {
+      sessionPicker.query = Array.from(sessionPicker.query).slice(0, -1).join("");
+      sessionPicker.selected = 0;
+      renderSessionPicker();
+      renderer.requestRender?.();
+      return true;
+    }
+    const printable = !key.ctrl && !key.meta && !key.alt && !key.option
+      && typeof key.sequence === "string"
+      && !/[\u0000-\u001f\u007f]/u.test(key.sequence);
+    if (printable) {
+      sessionPicker.query += key.sequence;
+      sessionPicker.selected = 0;
+      renderSessionPicker();
+      renderer.requestRender?.();
+    }
+    return true;
+  }
+
+  // ---- Model-routing picker -----------------------------------------------
+  const MODEL_ROUTING_LABELS = Object.freeze({
+    direct: ["Direct", "Use the selected/default model"],
+    router: ["Squilla Router", "Route by cost and capability"],
+    ensemble: ["Model Ensemble", "Run candidates and synthesize"],
+  });
+
+  function renderModelRoutingPicker() {
+    if (!modelRoutingPicker?.active) return;
+    destroyRenderable(overlayLayer, "model-routing-picker");
+    const geometry = overlayPanelGeometry(MODEL_ROUTING_PICKER_WIDTH);
+    const available = Math.max(4, (renderer.terminalHeight ?? 24) - effFooterHeight() - 1);
+    const node = new BoxRenderable(renderer, {
+      id: "model-routing-picker",
+      position: "absolute",
+      left: COMPLETION_MENU_LEFT,
+      width: geometry.width,
+      bottom: effFooterHeight(),
+      height: Math.min(available, modelRoutingPicker.options.length + 3),
+      borderStyle: "rounded",
+      borderColor: THEME.brandAccent,
+      backgroundColor: THEME.overlayBg,
+      title: " model strategy ",
+      titleAlignment: "left",
+      flexDirection: "column",
+      paddingLeft: 1,
+      paddingRight: 1,
+    });
+    modelRoutingPicker.options.forEach((mode, index) => {
+      const [label, detail] = MODEL_ROUTING_LABELS[mode] ?? [mode, ""];
+      const selected = index === modelRoutingPicker.selected;
+      const current = mode === modelRoutingPicker.current ? "●" : " ";
+      node.add(new TextRenderable(renderer, {
+        id: `model-routing-picker-row-${mode}`,
+        content: clipToCells(
+          `${selected ? "›" : " "} ${current} ${label}${detail ? `  ${detail}` : ""}`,
+          geometry.inner,
+        ),
+        fg: selected ? THEME.brandAccentSoft : THEME.muted,
+        wrapMode: "none",
+      }));
+    });
+    node.add(new TextRenderable(renderer, {
+      id: "model-routing-picker-hint",
+      content: clipToCells("↑↓ choose · enter apply next turn · esc", geometry.inner),
+      fg: THEME.detailText,
+      wrapMode: "none",
+    }));
+    overlayLayer.add(node);
+    overlayLayer.visible = true;
+  }
+
+  function closeModelRoutingPicker() {
+    modelRoutingPicker = null;
+    clearOverlay();
+  }
+
+  function openModelRoutingPicker(message) {
+    if (themePicker?.active) handleThemePickerKey("escape");
+    if (sessionPicker?.active) closeSessionPicker();
+    if (modelRoutingPicker?.active) closeModelRoutingPicker();
+    resetMenu();
+    const supplied = Array.isArray(message?.options) ? message.options : [];
+    const options = supplied
+      .map((item) => String(item ?? "").toLowerCase())
+      .filter((item) => Object.hasOwn(MODEL_ROUTING_LABELS, item));
+    const canonical = options.length ? [...new Set(options)] : ["direct", "router", "ensemble"];
+    const current = String(message?.current ?? modelRoutingState.current ?? "direct");
+    modelRoutingPicker = {
+      active: true,
+      options: canonical,
+      current,
+      selected: Math.max(0, canonical.indexOf(current)),
+    };
+    renderModelRoutingPicker();
+    renderer.requestRender?.();
+  }
+
+  function handleModelRoutingPickerKey(keyName) {
+    const result = routingPickerKeyAction(modelRoutingPicker, keyName);
+    if (!result.handled) return false;
+    if (result.action === "navigate") {
+      modelRoutingPicker.selected = result.selected;
+      renderModelRoutingPicker();
+      renderer.requestRender?.();
+    } else if (result.action === "cancel") {
+      closeModelRoutingPicker();
+      rerenderInputRegion();
+    } else if (result.action === "confirm") {
+      const mode = modelRoutingPicker.options[result.selected] ?? "direct";
+      closeModelRoutingPicker();
+      const command = mode === "ensemble"
+        ? "/ensemble on"
+        : mode === "router" ? "/router on" : "/router off";
+      sendHostMessage({ type: "input.submit", text: command, intent: "control" });
+      rerenderInputRegion();
+    }
+    return true;
+  }
+
   // ---- Tool-approval overlay ------------------------------------------------
   // A modal confirm panel mounted on the overlay layer (like the theme picker),
   // opened by the Python side's approval.request frame while a turn is waiting
@@ -896,7 +1223,6 @@ export function createComposer(deps) {
   // treats silence (timeout, teardown) as a deny, so the overlay never has to
   // guarantee delivery.
   const APPROVAL_OVERLAY_WIDTH = 48;
-  const APPROVAL_OVERLAY_INNER = APPROVAL_OVERLAY_WIDTH - COMPLETION_MENU_CHROME_CELLS;
   let approvalOverlay = null;
 
   function approvalChoiceLabel(choice) {
@@ -905,15 +1231,16 @@ export function createComposer(deps) {
 
   function renderApprovalOverlay() {
     if (!approvalOverlay?.active) return;
-    overlayLayer?.remove?.("approval-overlay");
+    destroyRenderable(overlayLayer, "approval-overlay");
     const choices = approvalOverlay.choices;
+    const geometry = overlayPanelGeometry(APPROVAL_OVERLAY_WIDTH);
     const maxRows = Math.max(1, (renderer.terminalHeight ?? 24) - effFooterHeight() - 1);
     const bodyRows = 2 + choices.length + (approvalOverlay.summary ? 1 : 0);
     const node = new BoxRenderable(renderer, {
       id: "approval-overlay",
       position: "absolute",
       left: COMPLETION_MENU_LEFT,
-      width: APPROVAL_OVERLAY_WIDTH,
+      width: geometry.width,
       bottom: effFooterHeight(),
       height: Math.min(bodyRows + 2, maxRows),
       borderStyle: "rounded",
@@ -927,13 +1254,13 @@ export function createComposer(deps) {
     });
     node.add(new TextRenderable(renderer, {
       id: "approval-overlay-tool",
-      content: clipToCells(approvalOverlay.tool, APPROVAL_OVERLAY_INNER),
+      content: clipToCells(approvalOverlay.tool, geometry.inner),
       fg: THEME.text,
     }));
     if (approvalOverlay.summary) {
       node.add(new TextRenderable(renderer, {
         id: "approval-overlay-summary",
-        content: clipToCells(approvalOverlay.summary, APPROVAL_OVERLAY_INNER),
+        content: clipToCells(approvalOverlay.summary, geometry.inner),
         fg: THEME.muted,
       }));
     }
@@ -943,7 +1270,7 @@ export function createComposer(deps) {
         id: `approval-overlay-choice-${index}`,
         content: clipToCells(
           `${active ? "› " : "  "}${approvalChoiceLabel(choice)}`,
-          APPROVAL_OVERLAY_INNER,
+          geometry.inner,
         ),
         fg: active ? THEME.brandAccentSoft : THEME.muted,
       }));
@@ -954,7 +1281,7 @@ export function createComposer(deps) {
         choices.length > 0
           ? "↑↓ choose · enter confirm · y/n · esc deny"
           : "y/enter approve · n/esc deny",
-        APPROVAL_OVERLAY_INNER,
+        geometry.inner,
       ),
       fg: THEME.detailText,
     }));
@@ -968,6 +1295,7 @@ export function createComposer(deps) {
     // The approval takes the overlay layer: close the theme picker (reverting
     // its live preview, exactly like Escape) and any completion menu first.
     if (themePicker?.active) handleThemePickerKey("escape");
+    if (sessionPicker?.active) closeSessionPicker();
     resetMenu();
     approvalOverlay = {
       active: true,
@@ -1026,8 +1354,7 @@ export function createComposer(deps) {
   // math so the two can never disagree. The box spans the full width minus the
   // COMPOSER_LEFT margins; border + padding eat 2 more cells per side.
   function composerContentWidth() {
-    const terminalWidth = Number(renderer?.terminalWidth ?? renderer?.width) || 80;
-    return Math.max(1, terminalWidth - COMPOSER_LEFT * 2 - 4);
+    return Math.max(1, footerSurfaceWidth() - COMPOSER_LEFT * 2 - 4);
   }
 
   // Content rows inside the composer box: box height (effFooterHeight - 1,
@@ -1060,8 +1387,11 @@ export function createComposer(deps) {
   function composerViewport() {
     if (Array.from(inputText).length === 0) {
       // Empty: caret sits before the muted placeholder.
+      const placeholder = turnActive
+        ? "steer current turn · Tab queues"
+        : composer.placeholder;
       return {
-        lines: [{ text: `${caretGlyph()}${composer.placeholder}`, muted: true }],
+        lines: [{ text: `${caretGlyph()}${placeholder}`, muted: true }],
         caretRow: 0,
         caretCol: 0,
         scrollRowOffset: 0,
@@ -1081,10 +1411,11 @@ export function createComposer(deps) {
     };
   }
 
-  function rerenderInputRegion(options = {}) {
+  function rerenderInputRegion() {
     if (!inputBox) return;
-    for (const child of inputBox.getChildren?.() ?? []) inputBox.remove?.(child.id);
+    destroyChildren(inputBox);
     const viewport = composerViewport();
+    const width = terminalWidth();
     const composerNode = new BoxRenderable(renderer, {
       id: "composer-box",
       position: "absolute",
@@ -1094,8 +1425,6 @@ export function createComposer(deps) {
       height: Math.max(1, effFooterHeight() - 1), // the router strip takes the top row
       borderStyle: "rounded",
       borderColor: composer.disabled ? THEME.composerDisabledBorder : THEME.composerBorder,
-      bottomTitle: ` ${statusPillText(statusIcon(), turnStatus.label, turnStatus.activeSince === null ? null : Date.now() - turnStatus.activeSince)} `,
-      bottomTitleAlignment: "left",
       paddingLeft: 1,
       paddingRight: 1,
       flexDirection: "column",
@@ -1140,7 +1469,7 @@ export function createComposer(deps) {
       backgroundColor: THEME.footerBg,
     });
     const chip = (suffix, content, fg) =>
-      routerStrip.add(new TextRenderable(renderer, { id: `router-${suffix}`, content, fg }));
+      routerStrip.add(new TextRenderable(renderer, { id: `router-${suffix}`, content, fg, wrapMode: "none" }));
     // A quiet "router" label, dim field labels, and each VALUE in its semantic
     // color, with fields separated by a dim middot — matching the usage footnote
     // (value-forward hierarchy: data pops, labels recede).
@@ -1158,29 +1487,51 @@ export function createComposer(deps) {
       : routerState.style === "error" ? THEME.error
       : routerState.style === "dim" ? THEME.detailText
       : null;
-    chip("label", "router", THEME.muted);
-    field("model", "model", routerModelValue(), styleFg ?? THEME.text);
-    field("route", "route", routerRouteValue(), styleFg ?? THEME.routeText);
-    field("saving", "save", routerState.saving, styleFg ?? THEME.metricPositive);
-    field("context", "ctx", routerState.context, styleFg ?? THEME.warning);
-    // Token traffic is its own field so "ctx" can stay a pure pressure value —
-    // "ctx 34.6k/548" read like a fraction of a 548-token window.
-    if (routerState.io) field("io", "io", routerState.io, styleFg ?? THEME.detailText);
+    const strategyLabel = modelStrategyLabel();
+    chip("strategy", strategyLabel, modelStrategyColor());
+    const compact = footerRightInset() > 0
+      ? []
+      : compactContextItems(
+        contextState,
+        routerState,
+        Math.max(40, width - textWidth(strategyLabel) - 3),
+      );
+    if (compact.length > 0) {
+      // Below the rail breakpoint, task identity and runtime safety collapse into one
+      // display-cell-fitted strip. The helper already applied priority and
+      // clipping, so no trailing high-priority field disappears off-screen.
+      compact.forEach((item, index) => {
+        chip(`context-sep-${index}`, " · ", THEME.detailText);
+        chip(`${item.key}-value`, item.content, THEME[item.token] ?? THEME.text);
+      });
+    } else {
+      // Wide layouts have the expanded context rail; older parents (which never
+      // send context.update) also retain this exact router-only fallback.
+      field("model", "model", routerModelValue(), styleFg ?? THEME.text);
+      field("route", "route", routerRouteValue(), styleFg ?? THEME.routeText);
+      field("saving", "save", routerState.saving, styleFg ?? THEME.metricPositive);
+      field("context", "ctx", routerState.context, styleFg ?? THEME.warning);
+      // Token traffic is its own field so "ctx" can stay a pure pressure value —
+      // "ctx 34.6k/548" read like a fraction of a 548-token window.
+      if (routerState.io) field("io", "io", routerState.io, styleFg ?? THEME.detailText);
+    }
     inputBox.add(routerStrip);
     renderCompletionMenu();
-    // The theme picker shares the overlay layer, so a footer re-render (pulse
-    // tick while a turn streams, router update, keystroke) clears it via
+    // The theme picker shares the overlay layer, so a footer re-render (router
+    // update or keystroke) clears it via
     // renderCompletionMenu's clearOverlay. Re-mount it whenever it is open so it
     // never "flashes" away and gets stuck modally swallowing keys while invisible.
     if (themePicker?.active) renderThemePicker();
-    // Same for the approval overlay: it stays mounted across pulse-driven
-    // footer re-renders while the turn waits on the user's decision.
+    // Same for the approval overlay: it stays mounted across footer re-renders
+    // while the turn waits on the user's decision.
     if (approvalOverlay?.active) renderApprovalOverlay();
-    syncTerminalCursorToCaret(viewport, options.cursorOnlyIfMoved === true);
+    if (sessionPicker?.active) renderSessionPicker();
+    if (modelRoutingPicker?.active) renderModelRoutingPicker();
+    syncTerminalCursorToCaret(viewport);
     renderer.requestRender?.();
   }
 
-  function submitInput() {
+  function submitInput(intent = null) {
     const text = inputText;
     // A staged attachment is not sendable until Python marks it ready. This
     // also blocks a second slash submit while the first file is being read or
@@ -1204,7 +1555,10 @@ export function createComposer(deps) {
     composer.text = "";
     menuDismissed = null; // resetting the input ends the dismissal scope
     resetMenu();
-    sendHostMessage({ type: "input.submit", text });
+    const effectiveIntent = intent ?? (turnActive ? "steer" : "auto");
+    const payload = { type: "input.submit", text };
+    if (effectiveIntent !== "auto") payload.intent = effectiveIntent;
+    sendHostMessage(payload);
     rerenderInputRegion();
   }
 
@@ -1269,10 +1623,9 @@ export function createComposer(deps) {
     return { line, col: textWidth(lineText) };
   }
 
-  function syncTerminalCursorToCaret(viewport, onlyIfMoved = false) {
+  function syncTerminalCursorToCaret(viewport) {
     const setCursorPosition = renderer?.setCursorPosition;
     if (typeof setCursorPosition !== "function") return;
-    const terminalWidth = Number(renderer?.terminalWidth ?? renderer?.width) || 80;
     const terminalHeight = Number(renderer?.terminalHeight ?? renderer?.height) || 24;
     const fh = effFooterHeight();
     const footerTop = Math.max(0, terminalHeight - fh);
@@ -1280,7 +1633,7 @@ export function createComposer(deps) {
     // composer just rendered, so the hardware cursor lands on the exact cell
     // the caret occupies even on soft-wrapped or scrolled drafts.
     const screenRow = viewport.caretRow - viewport.scrollRowOffset;
-    const maxX = Math.max(COMPOSER_CONTENT_LEFT, terminalWidth - COMPOSER_CONTENT_LEFT - 1);
+    const maxX = Math.max(COMPOSER_CONTENT_LEFT, footerSurfaceWidth() - COMPOSER_CONTENT_LEFT - 1);
     const maxY = Math.max(footerTop, footerTop + fh - 2);
     const x = clamp(COMPOSER_CONTENT_LEFT + viewport.caretCol, COMPOSER_CONTENT_LEFT, maxX);
     const contentTop = COMPOSER_CONTENT_TOP_OFFSET + attachmentRowCount();
@@ -1289,14 +1642,6 @@ export function createComposer(deps) {
       footerTop + contentTop,
       maxY,
     );
-    // Pulse-driven re-renders (the 180ms status glyph tick while a turn runs)
-    // skip re-asserting an unchanged cursor cell: repeated CUP re-assertions
-    // with no keystrokes are exactly what disrupted macOS IME marked-text
-    // handling before (see startCursorBlink).
-    if (onlyIfMoved && lastCursorCell && lastCursorCell.x === x && lastCursorCell.y === y) {
-      return;
-    }
-    lastCursorCell = { x, y };
     // visible:true is REQUIRED for IME anchoring. OpenTUI's native renderer only
     // emits a CUP move (and shows the hardware cursor) when visible is true; with
     // false it keeps the hardware cursor hidden at home, so macOS terminals
@@ -1476,6 +1821,14 @@ export function createComposer(deps) {
         handleThemePickerKey(key.name);
         return;
       }
+      if (sessionPicker?.active) {
+        handleSessionPickerKey(key);
+        return;
+      }
+      if (modelRoutingPicker?.active) {
+        handleModelRoutingPickerKey(key.name);
+        return;
+      }
       // Modified Enter is the newline chord — it must reach the newline branch
       // below even while a menu is open, or Alt+Enter would accept (and, for a
       // slash menu, accept AND submit) the highlighted completion instead.
@@ -1484,6 +1837,12 @@ export function createComposer(deps) {
       if (menu.active && !newlineChord) {
         const menuResult = menuKeyAction(menu, key.name);
         if (applyMenuKeyResult(menuResult, key.name)) return;
+      }
+      // Completion owns Tab whenever its menu is open. Outside a menu, Tab on
+      // a busy turn is the unambiguous "run next" chord; idle Tab stays inert.
+      if (key.name === "tab" && turnActive) {
+        submitInput("queue");
+        return;
       }
       if (key.ctrl && key.name === "c") {
         // With text: clear the input. Empty: interrupt the in-flight turn.
@@ -1502,6 +1861,22 @@ export function createComposer(deps) {
       }
       if (key.ctrl && key.name === "d") {
         sendHostMessage({ type: "input.eof" });
+        return;
+      }
+      if (key.ctrl && key.name === "l") {
+        onFullRedraw?.();
+        return;
+      }
+      if ((key.ctrl && key.name === "end") || (key.ctrl && key.name === "g")) {
+        onJumpToLatest?.();
+        return;
+      }
+      if (
+        key.name === "end"
+        && !key.ctrl && !key.meta && !key.alt && !key.option
+        && isTranscriptHeld?.()
+      ) {
+        onJumpToLatest?.();
         return;
       }
       // Standard readline-style line editing. Caret motion re-derives the menu
@@ -1623,12 +1998,14 @@ export function createComposer(deps) {
         return;
       }
       if (key.name === "pageup") {
-        conversationBox?.scrollBy({ x: 0, y: -10 });
+        if (onTranscriptScroll) onTranscriptScroll(-10);
+        else conversationBox?.scrollBy({ x: 0, y: -10 });
         renderer.requestRender?.();
         return;
       }
       if (key.name === "pagedown") {
-        conversationBox?.scrollBy({ x: 0, y: 10 });
+        if (onTranscriptScroll) onTranscriptScroll(10);
+        else conversationBox?.scrollBy({ x: 0, y: 10 });
         renderer.requestRender?.();
         return;
       }
@@ -1691,7 +2068,7 @@ export function createComposer(deps) {
       // The theme picker is modal for keypresses; paste must not slip past it
       // and mutate the draft underneath the overlay. The approval overlay is
       // modal the same way.
-      if (themePicker?.active || approvalOverlay?.active) return;
+      if (themePicker?.active || approvalOverlay?.active || modelRoutingPicker?.active) return;
       // Sanitize pasted text: real terminals (and tmux paste-buffer) transmit
       // pasted newlines as bare CR, so normalize CRLF/CR to LF FIRST — the
       // control-byte strip below removes CR and would otherwise concatenate
@@ -1718,6 +2095,8 @@ export function createComposer(deps) {
     installed = true;
     installKeyboardHandlers();
     startCursorBlink();
+    notifyContextObserver();
+    notifyRouterObserver();
     rerenderInputRegion();
   }
 
@@ -1736,6 +2115,28 @@ export function createComposer(deps) {
       // sync (caret lands at the end of any prefilled text instead of drifting).
       setInput(composer.text);
       updateMenuFromInput();
+    }
+    rerenderInputRegion();
+  }
+
+  function setTurnActive(message) {
+    turnActive = Boolean(message?.active);
+    if (!turnActive && modelRoutingState.next) {
+      modelRoutingState.current = modelRoutingState.next;
+      modelRoutingState.next = null;
+    }
+    rerenderInputRegion();
+  }
+
+  function setModelRoutingState(message) {
+    const mode = String(message?.mode ?? "").toLowerCase();
+    if (!["direct", "router", "ensemble"].includes(mode)) return;
+    modelRoutingState.busy = Boolean(message?.busy ?? false);
+    if (turnActive && mode !== modelRoutingState.current) {
+      modelRoutingState.next = mode;
+    } else {
+      modelRoutingState.current = mode;
+      modelRoutingState.next = null;
     }
     rerenderInputRegion();
   }
@@ -1785,18 +2186,13 @@ export function createComposer(deps) {
       rolloutPhase: String(message.rollout_phase ?? routerState.rolloutPhase),
       io: String(message.io ?? routerState.io),
     });
+    notifyRouterObserver();
     rerenderInputRegion();
   }
 
-  function setTurnStatus(message) {
-    const wasActive = turnStatus.active;
-    Object.assign(turnStatus, {
-      phase: String(message.phase ?? turnStatus.phase),
-      label: String(message.label ?? turnStatus.label),
-      active: Boolean(message.active ?? turnStatus.active),
-    });
-    if (turnStatus.active && !wasActive) turnStatus.activeSince = Date.now();
-    if (!turnStatus.active) turnStatus.activeSince = null;
+  function setContextState(message) {
+    contextState = normalizeContextUpdate(message, contextState);
+    notifyContextObserver();
     rerenderInputRegion();
   }
 
@@ -1829,37 +2225,39 @@ export function createComposer(deps) {
     rerenderInputRegion();
   }
 
-  // main.mjs owns the pulse timer; it calls tickPulse(frame) each tick so the
-  // status pill glyph advances. This replaces the old syncPulseTimer's per-tick
-  // rerenderInputRegion(). The cursorOnlyIfMoved flag keeps the tick from
-  // re-asserting an unchanged hardware-cursor cell every 180ms — repeated CUP
-  // re-assertions while the user is mid-IME-composition corrupt marked text.
-  function tickPulse(frame) {
-    pulseFrame = frame;
-    rerenderInputRegion({ cursorOnlyIfMoved: true });
-  }
-
   // Composer-relevant resize work: re-render the footer. (conversationBox height
   // resize stays in main.mjs.)
   function onResize() {
     rerenderInputRegion();
   }
 
+  // Root overlays and transcript-only stream frames can repaint after the
+  // footer without rebuilding it. Reassert the hardware caret from the same
+  // wrapped composer viewport so the terminal cursor cannot be stranded on
+  // the last transcript/overlay cell that happened to change.
+  function syncCursor() {
+    syncTerminalCursorToCaret(composerViewport());
+  }
+
   return {
     install,
     rerender: rerenderInputRegion,
     setComposerState,
+    setTurnActive,
     addAttachmentState,
     updateAttachmentState,
     removeAttachmentState,
     clearAttachmentStates,
+    setContextState,
     setRouterState,
-    setTurnStatus,
+    setModelRoutingState,
     setCompletionContext,
     applyCompletionResponse,
     onResize,
-    tickPulse,
+    syncCursor,
     openThemePicker,
+    openSessionPicker,
+    openModelRoutingPicker,
     openApprovalOverlay,
     dismissApprovalOverlay,
     applyHostTheme,

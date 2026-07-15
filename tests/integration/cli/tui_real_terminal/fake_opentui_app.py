@@ -12,6 +12,9 @@ else:
     from replay import replay_architecture_prompt
 
 from opensquilla.cli.chat.turn import UsageSummary  # type: ignore[import-untyped]
+from opensquilla.cli.tui.opentui.history import (  # type: ignore[import-untyped]
+    history_replace_from_bootstrap,
+)
 from opensquilla.cli.tui.opentui.renderer import (
     OpenTuiStreamRenderer,  # type: ignore[import-untyped]
 )
@@ -49,24 +52,139 @@ async def _render_response(
     renderer = OpenTuiStreamRenderer(title="squilla", output_handle=output)
     usage = UsageSummary(model="fake-terminal", input_tokens=1, output_tokens=2)
     _write_log("dispatch", {"input": user_input, "scenario_id": scenario_id})
+    if scenario_id == "alternate_screen_mode_loss":
+        # Test-only fault injection: simulate an embedded terminal remount that
+        # forgets DECSET 1049 while both Python and the Bun Host still believe
+        # they own the alternate screen. os.write bypasses notice capture and
+        # reaches the shared PTY exactly like an external terminal reset.
+        os.write(
+            1,
+            (b"\x1b[?1049l\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1004l\x1b[?1006l\x1b[?2004l"),
+        )
+        _write_log("surface_mode_reset")
+        await asyncio.sleep(3.0)
+        return True
     if scenario_id == "long_streaming":
+        stream_delay_s = max(
+            0.001,
+            min(
+                0.25,
+                float(os.environ.get("OPENSQUILLA_TUI_FAKE_STREAM_DELAY_S", "0.015")),
+            ),
+        )
         for index in range(80):
             await renderer.aappend_text(f"stream-token-{index:03d} ")
-            if index % 20 == 0:
-                await asyncio.sleep(0)
+            # Keep the turn live long enough for the real-terminal scenario to
+            # resize narrow and wide while the same answer block is mutating.
+            await asyncio.sleep(stream_delay_s)
+    elif scenario_id == "same_size_stream_framebuffer_recovery":
+        for index in range(80):
+            cjk_probe = "推理中 " if index % 8 == 0 else ""
+            await renderer.aappend_reasoning(f"stream-token-{index:03d} {cjk_probe}")
+            # Keep real provider-style reasoning deltas live while the terminal
+            # surface disappears and remounts at the same geometry.
+            await asyncio.sleep(0.015)
     elif scenario_id == "complex_ui_state":
+        usage = UsageSummary(
+            model="fake-terminal",
+            input_tokens=36_060,
+            output_tokens=1_047,
+            reasoning_tokens=436,
+            model_usage_breakdown=[
+                {
+                    "role": "proposer",
+                    "label": "fast",
+                    "provider": "openrouter",
+                    "model": "candidate-fast",
+                    "input_tokens": 120,
+                    "output_tokens": 40,
+                    "request_count": 1,
+                },
+                {
+                    "role": "proposer",
+                    "label": "critic",
+                    "provider": "openrouter",
+                    "model": "candidate-critic",
+                    "input_tokens": 118,
+                    "output_tokens": 35,
+                    "request_count": 1,
+                },
+                {
+                    "role": "aggregator",
+                    "label": "judge",
+                    "provider": "openrouter",
+                    "model": "fake-terminal",
+                    "input_tokens": 200,
+                    "output_tokens": 80,
+                    "request_count": 1,
+                },
+            ],
+            ensemble_trace={
+                "total_candidates": 2,
+                "successful_proposers": 2,
+                "fallback_used": False,
+            },
+        )
+        await renderer.aturn_started()
         _set_toolbar(output, "router_hud", "route standard -> fake-terminal 99% save 42%")
         _set_toolbar(output, "router_hud_style", "normal")
         _invalidate(output)
         await renderer.astatus("router route standard -> fake-terminal 99% save 42%")
-        # Mirror the real turn shape so the harness exercises all three block
-        # kinds:
-        #   1. reasoning — the model's extended-thinking PROCESS, collapsed to a
-        #      transient "Thinking…" marker, its verbatim text never shown.
-        await renderer.aappend_reasoning(
-            "reasoning-process-should-stay-hidden "
-            + "ABCDEFGHIJKLMNOPQRSTUVWXYZ" * 6
+        await renderer.aensemble_progress(
+            {
+                "event_type": "proposer_start",
+                "proposer_index": 0,
+                "proposer_label": "fast",
+                "proposer_provider": "openrouter",
+                "proposer_model": "candidate-fast",
+            }
         )
+        await renderer.aensemble_progress(
+            {
+                "event_type": "proposer_start",
+                "proposer_index": 1,
+                "proposer_label": "critic",
+                "proposer_provider": "openrouter",
+                "proposer_model": "candidate-critic",
+            }
+        )
+        # Hold one real framebuffer with both candidates visibly running.
+        await asyncio.sleep(0.25)
+        await renderer.aensemble_progress(
+            {
+                "event_type": "proposer_finish",
+                "proposer_index": 0,
+                "proposer_label": "fast",
+                "proposer_provider": "openrouter",
+                "proposer_model": "candidate-fast",
+                "elapsed_ms": 180,
+                "input_tokens": 120,
+                "output_tokens": 40,
+            }
+        )
+        await renderer.aensemble_progress(
+            {
+                "event_type": "proposer_finish",
+                "proposer_index": 1,
+                "proposer_label": "critic",
+                "proposer_provider": "openrouter",
+                "proposer_model": "candidate-critic",
+                "elapsed_ms": 210,
+                "input_tokens": 118,
+                "output_tokens": 35,
+            }
+        )
+        # Mirror the real turn shape so the harness exercises the live
+        # ensemble plus all three existing process/output block kinds:
+        #   1. reasoning — the model's extended-thinking PROCESS. Exact safe
+        #      deltas stream live, then fold behind Ctrl+O when the model moves
+        #      on to assistant narration.
+        await renderer.aappend_reasoning(
+            "reasoning-process-streams-live " + "ABCDEFGHIJKLMNOPQRSTUVWXYZ" * 6
+        )
+        # Give the real-terminal driver a deterministic live frame before the
+        # next assistant-text block closes and folds the reasoning block.
+        await asyncio.sleep(0.25)
         #   2. assistant text the model speaks before a tool call — streams into
         #      a purple intermediate narration block.
         await renderer.aappend_text(
@@ -75,8 +193,25 @@ async def _render_response(
             + "\nsecond-intermediate-line tail",
             presentation="intermediate",
         )
-        await renderer.atool_start("fake_tool", {"path": "fixture.txt"}, "tool-1")
-        await renderer.atool_finished("tool-1", success=True, elapsed=0.01)
+        await renderer.atool_start(
+            "fake_tool",
+            {
+                "path": "fixture.txt",
+                "include": ["thinking", "tool arguments", "tool results"],
+            },
+            "tool-1",
+        )
+        await renderer.atool_finished(
+            "tool-1",
+            success=True,
+            elapsed=0.01,
+            result=(
+                "inspected fixture.txt\n"
+                "thinking retained\n"
+                "tool arguments retained\n"
+                "tool results retained"
+            ),
+        )
         await renderer.astatus("approval requested: allow fake_tool fixture.txt")
         #   3. final answer — the cyan answer card.
         await renderer.aappend_text(
@@ -122,6 +257,79 @@ async def _run() -> None:
         "model": "fake-terminal",
         "session_key": f"fake:{scenario_id}",
     }
+    if scenario_id in {
+        "gateway_empty_bootstrap_startup",
+        "gateway_resumed_bootstrap_startup",
+    }:
+        # Mirror run_gateway_chat's first-screen contract exactly: a real
+        # Gateway always supplies a canonical history.replace frame, even for a
+        # newly-created session whose durable history is empty.  The ordinary
+        # fake-provider scenarios omit this frame, so they cannot catch startup
+        # regressions caused by history replacement immediately before the
+        # initial context.update.
+        scope["workspace_label"] = str(Path.cwd())
+        resumed = scenario_id == "gateway_resumed_bootstrap_startup"
+        messages = (
+            [
+                {
+                    "message_id": "bootstrap-user-1",
+                    "role": "user",
+                    "text": "BOOTSTRAP_USER_HISTORY",
+                },
+                {
+                    "message_id": "bootstrap-assistant-1",
+                    "role": "assistant",
+                    "text": "BOOTSTRAP_ASSISTANT_HISTORY",
+                },
+            ]
+            if resumed
+            else []
+        )
+        scope["bootstrap"] = {
+            "agent_identity": {
+                "agent_id": "main",
+                "name": "Mira",
+                "emoji": "🦐",
+                "theme": "ember",
+            },
+            "session": {
+                "session_key": scope["session_key"],
+                "display_name": ("Resumed Gateway session" if resumed else "Fresh Gateway session"),
+                "effective_model": "fake-terminal",
+                "workspace": str(Path.cwd()),
+            },
+            "history": {
+                "history_scope": "complete",
+                "has_more": False,
+                "loaded_count": len(messages),
+                "canonical_available": True,
+                "messages": messages,
+                "compaction_summaries": [],
+            },
+            "queue": {"running_count": 0, "queued_count": 0},
+            "stream_cursor": 0,
+        }
+        scope["history_replace"] = history_replace_from_bootstrap(
+            scope["bootstrap"],
+            fallback_session_key=str(scope["session_key"]),
+        )
+    if scenario_id == "complex_ui_state":
+        scope["workspace_label"] = str(Path.cwd())
+        scope["bootstrap"] = {
+            "agent_identity": {
+                "agent_id": "main",
+                "name": "Mira",
+                "emoji": "🦐",
+                "theme": "ember",
+            },
+            "session": {
+                "session_key": scope["session_key"],
+                "display_name": "TUI output fidelity",
+                "effective_model": "fake-terminal",
+                "workspace": str(Path.cwd()),
+            },
+            "queue": {"running_count": 0, "queued_count": 0},
+        }
     _write_log("ready", {"scenario_id": scenario_id})
     await run_opentui_chat_runtime(
         surface=Surface.CLI_GATEWAY,

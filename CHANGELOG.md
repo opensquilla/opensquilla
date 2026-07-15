@@ -6,43 +6,67 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Added
+
+- macOS and Linux terminal distributions can ship a same-version,
+  architecture-specific `opensquilla-tui-host` companion. The self-contained
+  host does not require Bun, Node, a source checkout, or a first-run download.
+- The full-screen TUI hydrates canonical Gateway history, resumes shared
+  sessions, follows cross-surface turn and approval state, composes attachments,
+  and exposes Gateway-owned Direct/Router/Ensemble strategy controls.
+
+### Changed
+
+- `opensquilla chat` selects `auto`: it prefers the packaged TUI when a
+  compatible host is installed and otherwise keeps the shared Gateway runtime
+  on the plain rescue renderer. Explicit `--ui tui` remains strict.
+- Future packaged macOS/Linux releases pair core and host during install,
+  upgrade, reinstall, and rollback. The published v0.5.0rc4 remains core-only;
+  companion assets begin with v0.5.0rc5.
+
+### Fixed
+
+- Full-screen startup, resize, scrolling, and shutdown use one guarded terminal
+  surface and restoration path, preventing stale frames and returning a usable
+  shell after normal exit, interruption, host failure, or Gateway disconnect.
+
 ## [0.5.0rc4] - 2026-07-13
 
 ### Added
 
-- macOS and Linux terminal installs now include a same-version,
-  architecture-specific `opensquilla-tui-host` companion. During this
-  supported opt-in RC,
-  `opensquilla chat --ui tui` launches the packaged full-screen TUI without
-  requiring Bun, Node, a source checkout, or a first-run binary download.
-- The TUI can hydrate canonical Gateway history, resume shared sessions, follow
-  cross-surface turn and approval state, and compose file and image attachments
-  through the same Gateway-owned session model as the Web UI.
-- Desktop startup now blocks unsafe writes when a profile is interrupted or
-  uncertain, and offers explicit recovery from a verified profile or recorded
-  backup. Users can also copy a complete CLI/Desktop or historical Windows
-  Portable profile; the source remains unchanged and imported scheduler jobs
-  remain paused.
+- Desktop profile recovery now validates the active workspace before any
+  identity, memory, or chat state can be initialized. Ambiguous profiles keep
+  their original data and can open a persistent recovery profile.
+- Fresh Windows Desktop installations can explicitly copy a retired Portable
+  profile during setup. The source remains unchanged, and other CLI or Desktop
+  profiles stay behind the deliberate Settings transfer flow.
+- Release downloads are mirrored to Alibaba Cloud OSS, including a stable
+  browser download page for users who cannot reliably reach GitHub assets.
 
 ### Changed
 
-- macOS and Linux upgrades, reinstalls, and rollbacks pair the platform-neutral
-  core wheel with the matching arm64 or x86_64 companion wheel. Version or
-  protocol mismatches fail before full-screen startup; rolling back to a
-  core-only release removes the newer host instead of mixing versions.
-- Bare `opensquilla chat` remains on the plain rescue renderer for this RC;
-  `--ui auto` remains available for explicit evaluation before the later
-  default-switch review.
-- Profile imports are explicit whole-profile operations: existing targets are
-  kept as-is or backed up before replacement, never silently merged per chat or
-  file. Interrupted settings/import transactions can resume, roll back, or
-  complete after verification.
+- Normal RC2/RC3 upgrades no longer present a generic data-import decision.
+  Complete profile transfers use stable snapshots, full backups, and
+  all-or-nothing replacement instead of file-level merging.
+- Desktop uninstall preserves profile data by default and distinguishes setup
+  reset, current-profile deletion, and deletion of all user data.
+- Long-running Desktop sessions can discover later 0.5 previews or the final
+  0.5.0 release while retaining the installed release channel.
+- Official TokenRhythm and OpenRouter API requests now include OpenSquilla's
+  public application-attribution headers; custom compatible hosts remain
+  unchanged.
 
 ### Fixed
 
-- Full-screen startup and shutdown now use one terminal-restoration path for
-  normal exit, interrupt, host failure, and Gateway disconnect, with a concise
-  session receipt after control returns to the shell.
+- Provider API-key changes remain effective after restart instead of being
+  replaced by an older stored value.
+- Model Ensemble progress, stall handling, usage accounting, message limits,
+  and budget handoff are more reliable for slow and multi-model turns.
+- WeCom heartbeat handling, transport and child-process cleanup, SQLite
+  extension loading, and checkpoint recovery fail more predictably without
+  discarding valid state.
+- The Control UI more reliably preserves chat scroll position and exposes full
+  tool results and trustworthy model choices.
 
 ## [0.5.0rc3] - 2026-07-10
 

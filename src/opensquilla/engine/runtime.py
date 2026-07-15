@@ -438,6 +438,28 @@ _SESSION_LOCK_BYPASS_ONLY: contextvars.ContextVar[set[int] | None] = contextvars
     "_session_lock_bypass_only",
     default=None,
 )
+# Gateway TaskRuntime installs the routing config captured when a turn is
+# accepted.  ContextVar keeps concurrent sessions isolated without mutating the
+# shared TurnRunner or GatewayConfig instances. Standalone/direct callers never
+# set it and continue to read the runner's live config exactly as before.
+_ACCEPTED_TURN_CONFIG: contextvars.ContextVar[Any | None] = contextvars.ContextVar(
+    "_accepted_turn_config",
+    default=None,
+)
+
+
+@contextlib.contextmanager
+def accepted_turn_config_scope(config: Any | None) -> Any:
+    """Use one acceptance-time routing snapshot for the enclosed turn."""
+
+    if config is None:
+        yield
+        return
+    token = _ACCEPTED_TURN_CONFIG.set(config)
+    try:
+        yield
+    finally:
+        _ACCEPTED_TURN_CONFIG.reset(token)
 
 
 def _compute_route_input_savings_usd(
@@ -2398,6 +2420,11 @@ class TurnRunner:
             turn_error_persist=_TurnRunnerTurnErrorPersistAdapter(self),
         )
 
+    def _turn_config(self) -> Any:
+        """Return this turn's acceptance snapshot, or the live config elsewhere."""
+
+        return _ACCEPTED_TURN_CONFIG.get() or self._config
+
     @property
     def router_control_hold_store(self) -> RouterControlHoldStore:
         """Session-keyed router-control hold store consulted by the router step.
@@ -2740,7 +2767,7 @@ class TurnRunner:
             tool_context,
             session_key=session_key,
             tool_run_budget_key=f"{session_key}:{uuid.uuid4().hex}",
-            router_control_config=getattr(self._config, "squilla_router", None),
+            router_control_config=getattr(self._turn_config(), "squilla_router", None),
             router_control_hold_store=self._router_control_hold_store,
             router_control_replay_depth=router_control_replay_depth,
             router_control_turn_hold_applied=False,
@@ -3057,7 +3084,7 @@ class TurnRunner:
             )
             if tool_context is not None:
                 tool_context.router_control_config = getattr(
-                    self._config, "squilla_router", None
+                    self._turn_config(), "squilla_router", None
                 )
                 tool_context.router_control_hold_store = self._router_control_hold_store
                 tool_context.router_control_replay_depth = router_control_replay_depth
@@ -3212,7 +3239,7 @@ class TurnRunner:
                 run_kind=run_kind,
                 heartbeat_ack_max_chars=heartbeat_ack_max_chars,
                 bootstrap_context_mode=bootstrap_context_mode,
-                router_cfg=getattr(self._config, "squilla_router", None),
+                router_cfg=getattr(self._turn_config(), "squilla_router", None),
                 session_manager_present=self._session_manager is not None,
                 state=stream_state,
                 tool_context=tool_context,
@@ -4305,7 +4332,7 @@ class TurnRunner:
             ctx = apply_tool_policy_from_config(
                 ctx,
                 available_tools=self._tool_registry.list_names(),
-                config=self._config,
+                config=self._turn_config(),
             )
             if ctx.tool_policy:
                 from opensquilla.tools.policy import apply_tool_policy_layer
@@ -4759,7 +4786,7 @@ class TurnRunner:
             dynamic_blocks.append(volatile_block)
         if tool_defs and any(getattr(td, "name", "") == "router_control" for td in tool_defs):
             router_block = render_router_control_prompt_block(
-                getattr(self._config, "squilla_router", None)
+                getattr(self._turn_config(), "squilla_router", None)
             )
             if router_block:
                 dynamic_blocks.append(f"## Router Control\n\n{router_block}")
@@ -4869,7 +4896,7 @@ class TurnRunner:
         )
 
     def _resolve_vision_followup_gate_model(self) -> str | None:
-        router_cfg = getattr(self._config, "squilla_router", None)
+        router_cfg = getattr(self._turn_config(), "squilla_router", None)
         if router_cfg is None:
             return None
         configured_model = str(
@@ -4980,7 +5007,7 @@ class TurnRunner:
             commit_deferred_router_history,
         )
 
-        router_cfg = getattr(self._config, "squilla_router", None)
+        router_cfg = getattr(self._turn_config(), "squilla_router", None)
         router_timeout = float(getattr(router_cfg, "routing_timeout_seconds", 5.0) or 5.0)
 
         def _copy_router_turn(turn: TurnContext) -> TurnContext:
@@ -5141,7 +5168,7 @@ class TurnRunner:
         turn = TurnContext(
             message=message,
             session_key=session_key,
-            config=self._config,
+            config=self._turn_config(),
             provider=provider,
             model="",
             tool_defs=tool_defs,
@@ -5180,7 +5207,7 @@ class TurnRunner:
                 turn_metadata=turn.metadata,
                 realign_routed_model=False,
                 tier_provider_config=cross_provider_tier_config(
-                    self._config,
+                    self._turn_config(),
                     turn.metadata,
                     turn.model,
                     active_provider_id=getattr(cloned_selector, "active_provider_id", ""),
@@ -5188,7 +5215,7 @@ class TurnRunner:
                 ),
             )
 
-        ensemble_cfg = getattr(self._config, "llm_ensemble", None)
+        ensemble_cfg = getattr(self._turn_config(), "llm_ensemble", None)
         if provider is not None and getattr(ensemble_cfg, "enabled", False):
             from opensquilla.provider.ensemble import (
                 CUSTOM_B5_SELECTION_MODE,
@@ -5207,7 +5234,7 @@ class TurnRunner:
             # Gate against the same inherited config the builder will use, so
             # the readiness check can never disagree with the actual members.
             custom_b5_ready, custom_b5_reason = (
-                custom_b5_lineup_ready(self._config, current_provider_config)
+                custom_b5_lineup_ready(self._turn_config(), current_provider_config)
                 if selection_mode == CUSTOM_B5_SELECTION_MODE
                 and current_provider_config is not None
                 else (True, "")
@@ -5228,7 +5255,7 @@ class TurnRunner:
                 )
             elif static_b5_profile(selection_mode) is not None and not (
                 static_b5_credential_available(
-                    self._config,
+                    self._turn_config(),
                     current_provider_config,
                     selection_mode,
                 )
@@ -5261,7 +5288,7 @@ class TurnRunner:
                     turn.model or getattr(current_provider_config, "model", "")
                 )
                 provider = build_ensemble_provider_from_config(
-                    config=self._config,
+                    config=self._turn_config(),
                     inherited_provider_config=current_provider_config,
                     fallback_provider=provider,
                     turn_metadata=turn.metadata,
@@ -5325,7 +5352,7 @@ class TurnRunner:
         context: dict[str, Any] = {}
         if user_texts:
             context["history_user_texts"] = user_texts[-_ROUTER_HISTORY_USER_MAX_TURNS:]
-        router_cfg = getattr(self._config, "squilla_router", None)
+        router_cfg = getattr(self._turn_config(), "squilla_router", None)
         lookback = int(
             getattr(
                 router_cfg,
@@ -5558,7 +5585,7 @@ class TurnRunner:
             savings_telemetry = SavingsTelemetry()
             if turn_obj is not None:
                 metadata = turn_obj.metadata
-                router_cfg = getattr(self._config, "squilla_router", None)
+                router_cfg = getattr(self._turn_config(), "squilla_router", None)
                 squilla_router_tiers = getattr(router_cfg, "tiers", {})
 
                 # Squilla router
@@ -5850,7 +5877,7 @@ class TurnRunner:
         try:
             if turn_obj is None:
                 return
-            router_cfg = getattr(self._config, "squilla_router", None)
+            router_cfg = getattr(self._turn_config(), "squilla_router", None)
             sl = getattr(router_cfg, "self_learning", None)
             if sl is None or not getattr(sl, "enabled", False):
                 return
@@ -5893,7 +5920,7 @@ class TurnRunner:
         routes, flush failures that may still fall back to generic preflight,
         and compact failures that should trip the circuit without retrying.
         """
-        router_cfg = getattr(self._config, "squilla_router", None)
+        router_cfg = getattr(self._turn_config(), "squilla_router", None)
         upgrade_compaction_enabled = getattr(
             router_cfg,
             "upgrade_to_c3_compaction_enabled",
@@ -7057,7 +7084,7 @@ class TurnRunner:
         )
         lookback = int(
             getattr(
-                getattr(self._config, "squilla_router", None),
+                getattr(self._turn_config(), "squilla_router", None),
                 "vision_history_lookback_turns",
                 3,
             )

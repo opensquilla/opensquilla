@@ -130,8 +130,8 @@ test("a footer without backgroundColor is transparent (contrast case)", async ()
   expect(bg.a).toBe(0);
 });
 
-test("composer is one full-width box with the router strip on its own row above", async () => {
-  // The router is a single-line status strip on the TOP footer row; the composer
+test("composer is one full-width box with the strategy strip on its own row above", async () => {
+  // Model strategy is a single-line status strip on the TOP footer row; the composer
   // is one full-width box below it. Nothing shares the composer's (caret's) rows
   // — that adjacency is what corrupted the router under a macOS IME overlay, and
   // removing it is the fix (mirrors opencode on the same @opentui/core engine).
@@ -139,8 +139,9 @@ test("composer is one full-width box with the router strip on its own row above"
     const frame = await renderFooter({ width });
     const stripRow = rowText(frame, HEIGHT - FOOTER_HEIGHT);
     const boxTopRow = rowText(frame, HEIGHT - FOOTER_HEIGHT + 1);
-    // The strip carries the router fields and is NOT a box (no corner glyphs).
-    expect(stripRow).toContain("router");
+    // The canonical direct/router/ensemble strategy and model live on the
+    // strip; the default fixture is direct. The strip is NOT a box.
+    expect(stripRow).toContain("direct");
     expect(stripRow).toContain("model");
     expect(stripRow.includes("╭")).toBe(false);
     // Exactly ONE box on the composer's rows: a single ╭…╮ pair, no second box.

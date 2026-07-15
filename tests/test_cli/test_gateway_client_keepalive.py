@@ -11,6 +11,7 @@ import pytest
 
 from opensquilla.cli.gateway_client import (
     GatewayClient,
+    GatewayRPCError,
     _normalize_session_error_payload,
     _task_terminal_as_session_event,
 )
@@ -232,6 +233,40 @@ async def test_call_after_send_failure_raises_clear_connection_error() -> None:
 
 
 @pytest.mark.asyncio
+async def test_call_preserves_gateway_error_details_for_safe_fallback_decisions() -> None:
+    ws = _FakeWebSocket()
+    client = GatewayClient()
+    client._ws = ws  # noqa: SLF001
+
+    call_task = asyncio.create_task(
+        client._call("sessions.steer", {"key": "agent:main:x"})  # noqa: SLF001
+    )
+    await _wait_for(lambda: bool(ws.sent))
+    request_id = json.loads(ws.sent[0])["id"]
+    client._pending[request_id].set_result(  # noqa: SLF001
+        {
+            "ok": False,
+            "error": {
+                "code": "STEER_RACE_DIRTY",
+                "message": "rollback failed",
+                "details": {
+                    "fallback_safe": False,
+                    "orphan_message_id": "message-orphan",
+                },
+            },
+        }
+    )
+
+    with pytest.raises(GatewayRPCError) as raised:
+        await call_task
+    assert raised.value.code == "STEER_RACE_DIRTY"
+    assert raised.value.data == {
+        "fallback_safe": False,
+        "orphan_message_id": "message-orphan",
+    }
+
+
+@pytest.mark.asyncio
 async def test_bootstrap_session_uses_additive_snapshot_rpc(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -361,6 +396,59 @@ async def test_send_message_filters_local_identity_without_dropping_external_or_
     assert (await approvals.get())["payload"]["approval_id"] == "approval-web"
     await idle.close()
     await approvals.close()
+
+
+@pytest.mark.asyncio
+async def test_send_message_preserves_tui_client_message_identity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from opensquilla.cli.tui.backend.input_identity import (
+        tui_input_identity_scope,
+        tui_turn_identity_sink_scope,
+    )
+
+    client = GatewayClient()
+    session_key = "agent:main:tui-identity"
+    sent_params: dict[str, Any] = {}
+    bound: list[tuple[str, str]] = []
+
+    async def call(method: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
+        if method == "sessions.messages.subscribe":
+            return {"replay_complete": True, "current_stream_seq": 0}
+        if method == "sessions.send":
+            assert params is not None
+            sent_params.update(params)
+            client._publish_event(  # noqa: SLF001
+                {
+                    "type": "event",
+                    "event": "session.event.done",
+                    "payload": {
+                        "session_key": session_key,
+                        "turn_id": "turn-durable",
+                        "client_message_id": params["client_message_id"],
+                        "surface_id": client.surface_id,
+                    },
+                }
+            )
+            return {
+                "turn_id": "turn-durable",
+                "client_message_id": params["client_message_id"],
+                "surface_id": client.surface_id,
+            }
+        return {}
+
+    async def bind(turn_id: str, client_message_id: str) -> None:
+        bound.append((turn_id, client_message_id))
+
+    monkeypatch.setattr(client, "_call", call)
+    with tui_input_identity_scope("client-from-composer"):
+        with tui_turn_identity_sink_scope(bind):
+            events = [event async for event in client.send_message(session_key, "hello")]
+
+    assert [event["event"] for event in events] == ["session.event.done"]
+    assert sent_params["client_message_id"] == "client-from-composer"
+    assert sent_params["_source"]["client_message_id"] == "client-from-composer"
+    assert bound == [("turn-durable", "client-from-composer")]
 
 
 @pytest.mark.asyncio

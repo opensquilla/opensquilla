@@ -95,6 +95,13 @@ Manual lab:
 uv run python scripts/tui_real_terminal_lab.py --scenario long_streaming --backend opentui
 ```
 
+Run the architecture scenario through the supported full-screen renderer:
+
+```bash
+uv run --extra dev python scripts/tui_real_terminal_lab.py \
+  --scenario architecture_prompt --backend opentui --driver tmux
+```
+
 OpenTUI backend path:
 
 ```bash
@@ -114,8 +121,8 @@ OPENSQUILLA_TUI_LIVE_REAL=1 uv run python scripts/tui_real_terminal_lab.py \
   --scenario live_opentui_architecture_prompt --backend live-opentui
 ```
 
-The live smoke launches `opensquilla chat --standalone --ui tui`, drives it
-through tmux, sends a real prompt,
+The live smoke launches bare `opensquilla chat --standalone`, drives the
+default `auto` policy through tmux, sends a real prompt,
 and captures text evidence. Use it deliberately because it may hit the
 configured live provider.
 

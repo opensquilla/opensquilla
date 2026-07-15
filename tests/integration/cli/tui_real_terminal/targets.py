@@ -89,6 +89,22 @@ def _opentui_target(context: TargetContext) -> TuiTarget:
             "OPENSQUILLA_TUI_BACKEND": "opentui",
         }
     )
+    if context.scenario_id in {
+        "alternate_screen_mode_loss",
+        "long_streaming",
+        "same_size_eventless_framebuffer_recovery",
+        "same_size_framebuffer_recovery",
+        "same_size_stream_framebuffer_recovery",
+    }:
+        # Styled framebuffer assertions use the canonical surface colors as a
+        # cell-level contract. Do not inherit a developer's local theme or
+        # NO_COLOR setting into this deterministic release gate.
+        env.update(
+            {
+                "OPENSQUILLA_TUI_THEME": "opensquilla-dark",
+                "OPENSQUILLA_TUI_COLOR": "truecolor",
+            }
+        )
     return TuiTarget(
         backend_id="opentui",
         command=[sys.executable, "-u", str(app_path)],
@@ -102,8 +118,10 @@ def _opentui_target(context: TargetContext) -> TuiTarget:
 
 def _live_opentui_target(context: TargetContext) -> TuiTarget:
     env = _base_env(context, isolate_state=False)
-    # Exercise the public CLI policy, even when the parent test process has a
-    # compatibility backend override from another launch-contract test.
+    # Exercise the *default* public CLI policy, even when the parent test
+    # process has a compatibility backend override from another launch-contract
+    # test. Explicit ``--ui tui`` remains covered by the launch/selection suite;
+    # this real-terminal target is the rollout gate for bare ``opensquilla chat``.
     env.pop("OPENSQUILLA_TUI_BACKEND", None)
     env.update(
         {
@@ -124,8 +142,6 @@ def _live_opentui_target(context: TargetContext) -> TuiTarget:
             "opensquilla.cli.main",
             "chat",
             "--standalone",
-            "--ui",
-            "tui",
             "--workspace",
             str(context.project_root),
             "--workspace-strict",

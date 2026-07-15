@@ -541,24 +541,26 @@ async def test_open_opentui_surface_sends_completion_context_on_startup() -> Non
             },
         ),
         (
+            "context.update",
+            {
+                "agent": {"id": "main", "name": "main", "emoji": None},
+                "task": "New session",
+                "surface": "Web + TUI",
+                "gateway": "connected",
+                "model": "default",
+                "permission": "normal",
+                "workspace": "",
+                "queue": "idle",
+                "context": "",
+            },
+        ),
+        (
             "completion.context",
             {
                 "catalog": (),
                 "files": (),
                 "filters_sensitive_paths": True,
             },
-        ),
-        (
-            "scrollback.write",
-            asdict(
-                ScrollbackWrite(
-                    text=(
-                        "OpenSquilla · model default · session new · workspace gateway-managed · "
-                        "mode gateway · gateway ready · Enter send / Ctrl+C cancel / "
-                        "Ctrl+D exit / /help\n"
-                    )
-                )
-            ),
         ),
     ]
 
@@ -578,8 +580,8 @@ async def test_open_opentui_surface_marks_ready_after_completion_context() -> No
     assert [message_type for message_type, _payload in bridge.sent] == [
         "composer.set",
         "router.update",
+        "context.update",
         "completion.context",
-        "scrollback.write",
         "scrollback.write",
     ]
     assert bridge.sent[-1] == (
@@ -607,8 +609,8 @@ async def test_open_opentui_surface_omits_ready_marker_by_default(
     assert [message_type for message_type, _payload in bridge.sent] == [
         "composer.set",
         "router.update",
+        "context.update",
         "completion.context",
-        "scrollback.write",
     ]
 
 
@@ -650,12 +652,12 @@ async def test_open_opentui_surface_seeds_real_model_session_and_mode() -> None:
     assert router_message["route"] == "gateway"
     assert router_message["source"] == "agent:main:existing"
     assert router_message["context"] == "ready"
-    startup_message = next(
-        payload["text"] for kind, payload in bridge.sent if kind == "scrollback.write"
-    )
-    assert "model openai/gpt-test" in startup_message
-    assert "session agent:main:existing" in startup_message
-    assert "mode gateway · gateway ready" in startup_message
+    context_message = next(payload for kind, payload in bridge.sent if kind == "context.update")
+    assert context_message["model"] == "openai/gpt-test"
+    assert context_message["task"] == "Session"
+    assert context_message["surface"] == "Web + TUI"
+    assert context_message["gateway"] == "connected"
+    assert "agent:main:existing" not in repr(context_message)
 
 
 @pytest.mark.asyncio
@@ -846,7 +848,7 @@ async def test_open_opentui_surface_uses_explicit_workspace_for_completion_conte
         "surface": Surface.CLI_STANDALONE,
         "workspace_dir": tmp_path,
     }
-    assert bridge.sent[-2] == (
+    assert bridge.sent[-1] == (
         "completion.context",
         {
             "catalog": (),
@@ -854,8 +856,11 @@ async def test_open_opentui_surface_uses_explicit_workspace_for_completion_conte
             "filters_sensitive_paths": True,
         },
     )
-    assert str(tmp_path) in bridge.sent[-1][1]["text"]
-    assert "mode standalone · gateway isolated" in bridge.sent[-1][1]["text"]
+    context_message = next(payload for kind, payload in bridge.sent if kind == "context.update")
+    assert context_message["workspace"] == tmp_path.name
+    assert str(tmp_path.parent) not in repr(context_message)
+    assert context_message["surface"] == "TUI"
+    assert context_message["gateway"] == "isolated"
 
 
 def test_opentui_output_toolbar_invalidates_router_plugin() -> None:

@@ -26,10 +26,7 @@ from tui_real_terminal.evidence import (  # noqa: E402
     EvidenceBundle,
     ScenarioResult,
 )
-from tui_real_terminal.scenarios import (  # noqa: E402
-    all_scenarios,
-    scenario_by_id,
-)
+from tui_real_terminal.scenarios import all_scenarios, scenario_by_id  # noqa: E402
 from tui_real_terminal.visual import build_visual_verdict  # noqa: E402
 
 
@@ -86,10 +83,16 @@ def test_launch_scenario_serializes_to_json(tmp_path: Path) -> None:
 
 def test_complex_ui_state_captures_intermediate_frame_before_final_state() -> None:
     scenario = scenario_by_id("complex_ui_state")
+    reasoning_steps = [
+        step for step in scenario.steps if step.checkpoint == "during-reasoning"
+    ]
     intermediate_steps = [
         step for step in scenario.steps if step.checkpoint == "during-intermediate"
     ]
 
+    assert len(reasoning_steps) == 1
+    assert reasoning_steps[0].action == "wait_text"
+    assert reasoning_steps[0].value == "reasoning-process-streams-live"
     assert len(intermediate_steps) == 1
     assert intermediate_steps[0].action == "wait_text"
     assert intermediate_steps[0].value == "intermediate-before-tool"

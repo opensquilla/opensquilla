@@ -1068,7 +1068,7 @@ def chat(
     ui: str | None = typer.Option(
         None,
         "--ui",
-        help="Chat UI: auto, tui, or plain (RC default: plain)",
+        help="Chat UI: auto, tui, or plain (default: auto)",
     ),
     standalone: bool = typer.Option(False, "--standalone", help="Direct Agent without gateway"),
     workspace: str = typer.Option("", "--workspace", help="Workspace root for standalone tools"),

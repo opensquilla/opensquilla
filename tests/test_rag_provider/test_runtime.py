@@ -5,7 +5,11 @@ from dataclasses import dataclass
 import pytest
 
 from opensquilla.gateway.rag_provider_runtime import RagProviderRuntime, RagProviderState
-from opensquilla.rag_provider.protocol import ProviderIncompatible, validate_capabilities
+from opensquilla.rag_provider.protocol import (
+    ProviderIncompatible,
+    ValidatedSearchResponse,
+    validate_capabilities,
+)
 from opensquilla.tools.registry import ToolRegistry
 
 from .test_protocol import capabilities
@@ -33,6 +37,7 @@ class FakeClient:
         self.closed = False
         self.capability_calls = 0
         self.incompatible = False
+        self.search_calls: list[dict[str, object]] = []
 
     async def capabilities(self):
         self.capability_calls += 1
@@ -40,7 +45,28 @@ class FakeClient:
             raise ProviderIncompatible("unsupported major")
         if self.fail:
             raise RuntimeError("offline")
-        return validate_capabilities(capabilities(get=self.get))
+        payload = capabilities(get=self.get)
+        payload["searchOptions"] = {
+            "supportsCollectionScope": False,
+            "retrievalProfiles": [
+                {"id": "vector", "label": "Vector"},
+                {"id": "hybrid", "label": "Hybrid"},
+            ],
+            "defaultRetrievalProfile": "hybrid",
+        }
+        return validate_capabilities(payload)
+
+    async def search(self, **kwargs):
+        self.search_calls.append(dict(kwargs))
+        return ValidatedSearchResponse(
+            {
+                "returnedCount": 0,
+                "totalMatched": 0,
+                "resultsTruncated": False,
+                "results": [],
+            },
+            provider_budget_violation=False,
+        )
 
     async def close(self) -> None:
         self.closed = True
@@ -149,3 +175,18 @@ async def test_configured_collection_scope_is_never_silently_dropped() -> None:
 
     with pytest.raises(RuntimeError, match="collection_scope_unsupported"):
         await runtime.search(query="NAND", limit=8)
+
+
+@pytest.mark.asyncio
+async def test_profile_override_hot_apply_changes_only_future_searches() -> None:
+    client = FakeClient()
+    runtime = RagProviderRuntime(Config(), client, ToolRegistry())
+    await runtime.start(start_probe_loop=False)
+
+    runtime.apply_retrieval_profile_override("vector")
+    await runtime.search(query="NAND", limit=8)
+    runtime.apply_retrieval_profile_override(None)
+    await runtime.search(query="DRAM", limit=8)
+
+    assert client.search_calls[0]["retrieval_profile"] == "vector"
+    assert client.search_calls[1]["retrieval_profile"] is None

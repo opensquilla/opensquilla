@@ -121,6 +121,10 @@ class RagProviderRuntime:
     def snapshot(self) -> RuntimeSnapshot:
         return self._snapshot
 
+    def apply_retrieval_profile_override(self, profile: str | None) -> None:
+        """Apply the persisted OpenSquilla search override to future calls."""
+        self.config.retrieval_profile_override = profile
+
     async def start(self, *, start_probe_loop: bool = True) -> None:
         if not bool(self.config.enabled):
             self._snapshot = RuntimeSnapshot(RagProviderState.DISABLED)

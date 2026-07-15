@@ -119,8 +119,9 @@ For faster Mainland China downloads, use the OSS direct-download aliases:
 - macOS Apple Silicon: <https://opensquilla-releases.oss-cn-beijing.aliyuncs.com/releases/latest/OpenSquilla-mac-arm64.dmg>
 - Windows x64: <https://opensquilla-releases.oss-cn-beijing.aliyuncs.com/releases/latest/OpenSquilla-win-x64.exe>
 
-These fixed links are updated after each successful release mirror. Use the
-versioned GitHub Release links above when you need a specific release.
+These fixed links advance only after a newer eligible release passes mirror
+verification. Use the versioned GitHub Release links above when you need a
+specific release.
 
 Quit any running OpenSquilla desktop app before upgrading. On macOS, drag the
 app from the DMG into Applications for installation or updates, eject the DMG,

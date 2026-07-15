@@ -119,16 +119,26 @@ workflow details.
 
 ## Updates And Downloads
 
-OpenSquilla release downloads are hosted on GitHub Releases. Downloading release
-assets may expose standard request metadata, such as IP address and user agent,
-to GitHub and network intermediaries. Release checksums are published in
-`SHA256SUMS` when release assets are generated.
+OpenSquilla release metadata and downloads are hosted on GitHub Releases and an
+Alibaba Cloud OSS mirror. Desktop channel discovery currently reads a small OSS
+manifest; the selected versioned update feed or asset may then come from GitHub
+or OSS. These requests may expose standard request metadata, such as IP address
+and user agent, to those hosts and network intermediaries. Desktop updater
+requests override electron-updater's per-install staging header with one fixed,
+non-user-specific value; OpenSquilla
+does not use that header for device identification or staged rollout. Release
+checksums are published in `SHA256SUMS` when release assets are generated. For
+unsigned Windows builds, OpenSquilla fetches the canonical `SHA256SUMS` from the
+matching GitHub Release, streams the installer from the selected source into an
+application-owned directory, and reveals it only after SHA-256 verification.
+The app does not automatically execute that installer.
 
 The unified network observability switch disables passive update checks and
 automatic desktop update checks at startup and during long-running app sessions.
 Explicit update-availability checks remain disabled while this switch (or a
 legacy update opt-out) is active. Opening a release page or downloading an asset
-is a separate user-initiated action and may still contact GitHub.
+is a separate user-initiated action and may still contact GitHub or the OSS
+mirror.
 
 ## Deletion
 

@@ -369,10 +369,7 @@ def test_desktop_onboarding_defaults_to_tokenrhythm_with_trusted_registration_ct
     main_ts = _read("desktop/electron/src/main.ts")
     html = _section(main_ts, "function onboardingHtml", "async function runOnboarding")
 
-    assert (
-        "const TOKENRHYTHM_REGISTER_URL = 'https://tokenrhythm.studio/register'"
-        in main_ts
-    )
+    assert "const TOKENRHYTHM_REGISTER_URL = 'https://tokenrhythm.studio/register'" in main_ts
     assert '<input id="provider" type="hidden" value="tokenrhythm" />' in html
     assert 'id="tokenrhythmRegister"' in html
     assert 'href="${TOKENRHYTHM_REGISTER_URL}"' in html
@@ -602,7 +599,7 @@ def test_stop_gateway_sigkill_fallback_uses_real_child_exit_state() -> None:
     stop = _section(
         main_ts,
         "function stopGateway(): void",
-        "// ── Auto-update",
+        "// ── Desktop updates",
     )
     hard_terminate = _section(
         main_ts,
@@ -681,7 +678,28 @@ def test_desktop_update_state_bridge_exposes_nonblocking_renderer_api() -> None:
     assert "desktop:update:state-changed" in preload
 
 
-def test_native_update_events_publish_state_without_startup_dialogs() -> None:
+def test_desktop_update_dismiss_and_persistence_cover_errors_and_source_memory() -> None:
+    main_ts = _read("desktop/electron/src/main.ts")
+    persist = _section(
+        main_ts,
+        "function persistDesktopUpdateState",
+        "function activeDesktopUpdateSnoozeFor",
+    )
+    dismiss = _section(
+        main_ts,
+        "async function dismissDesktopUpdate",
+        "// macOS Squirrel",
+    )
+
+    assert "desktopUpdatePersistenceWrite.then" in persist
+    assert "atomicWriteFile" in persist
+    assert "lastSuccessfulSource" in persist
+    assert "!latestVersion && desktopUpdateStatus === 'error'" in dismiss
+    assert "status: 'idle'" in dismiss
+    assert "errorCode: null" in dismiss
+
+
+def test_native_update_provider_events_do_not_publish_unvalidated_availability() -> None:
     main_ts = _read("desktop/electron/src/main.ts")
     update_available = _section(
         main_ts,
@@ -694,8 +712,8 @@ def test_native_update_events_publish_state_without_startup_dialogs() -> None:
         "autoUpdater.on('error'",
     )
 
-    assert "setDesktopUpdateState" in update_available
-    assert "status: 'available'" in update_available
+    assert "setDesktopUpdateState" not in update_available
+    assert "provider reports update available" in update_available
     assert "showUpdateDialog" not in update_available
     assert "downloadUpdate" not in update_available
 
@@ -797,16 +815,15 @@ def test_desktop_update_actions_are_guarded_against_reentry() -> None:
         "// Lets the gateway-served Control UI",
     )
 
-    reentry_guard = (
-        "if (updateDownloadInProgress || updateApplying || "
-        "desktopUpdateStatus === 'downloaded')"
-    )
-    assert reentry_guard in download_update
-    assert download_update.index("updateDownloadInProgress || updateApplying") < (
+    assert "updateDownloadInProgress" in download_update
+    assert "manualInstallerActionInProgress" in download_update
+    assert "updateApplying" in download_update
+    assert "desktopUpdateStatus === 'downloaded'" in download_update
+    assert download_update.index("updateDownloadInProgress") < (
         download_update.index("const mockVersion = mockUpdateVersion()")
     )
     assert "if (!desktopUpdateCheckAllowed()) return" in check_update
-    assert "downloading: updateDownloadInProgress" in check_allowed
+    assert "downloading: updateDownloadInProgress ||" in check_allowed
     assert "applying: updateApplying" in check_allowed
     assert "downloaded: downloadedUpdateVersion !== null" in check_allowed
     assert "if (!mockDownloadedUpdate && !downloadedUpdateVersion) return" in apply_update
@@ -855,8 +872,8 @@ def test_desktop_mock_update_flow_has_automated_e2e_script() -> None:
     assert "OPENSQUILLA_DESKTOP_MOCK_UPDATE_DIALOG_RESPONSES" in script
     assert "window.opensquillaDesktop.isAutoUpdateEnabled()" in script
     assert "window.opensquillaDesktop.getUpdateState" in script
-    assert "data-testid=\"desktop-update-download\"" in script
-    assert "data-testid=\"update-banner\"" in script
+    assert 'data-testid="desktop-update-download"' in script
+    assert 'data-testid="update-banner"' in script
     assert "Menu.getApplicationMenu()" in script
     assert "Relaunch to Update" in script
 
@@ -916,6 +933,8 @@ def test_silent_startup_update_error_is_not_published_as_visible_error() -> None
         "updateDownloadInProgress"
     ) in show_error
     assert "if (!shouldNotify)" in show_error
+    assert "desktopUpdateCandidate = silentFallback.candidate" in show_error
+    assert "status: silentFallback.state.status" in show_error
     assert "status: downloadedUpdateVersion ? 'downloaded' : 'idle'" in show_error
     assert "error: null" in show_error
     assert show_error.index("if (!shouldNotify)") < show_error.index("status: 'error'")
@@ -960,8 +979,7 @@ def test_apply_downloaded_update_timeout_restores_retry_state_before_returning()
         "autoUpdater.quitAndInstall(false, true)",
     )
     assert (
-        "restoreDownloadedUpdateRetryState(pendingVersion, updateWriterAdmission)"
-        in timeout_branch
+        "restoreDownloadedUpdateRetryState(pendingVersion, updateWriterAdmission)" in timeout_branch
     )
     assert "return" in timeout_branch
     assert timeout_branch.index("return") < apply_update.index(
@@ -994,8 +1012,7 @@ def test_apply_downloaded_update_handoff_error_restores_retry_state() -> None:
         "}\n}",
     )
     assert (
-        "restoreDownloadedUpdateRetryState(pendingVersion, updateWriterAdmission)"
-        in handoff_error
+        "restoreDownloadedUpdateRetryState(pendingVersion, updateWriterAdmission)" in handoff_error
     )
     assert "showUpdateDialog" in handoff_error
 
@@ -1073,8 +1090,7 @@ def test_desktop_persists_network_observability_privacy_setting() -> None:
     ) in main_ts
     assert (
         "`disable_network_observability = "
-        "${credential.disableNetworkObservability ? 'true' : 'false'}`"
-        in main_ts
+        "${credential.disableNetworkObservability ? 'true' : 'false'}`" in main_ts
     )
 
 
@@ -1092,8 +1108,7 @@ def test_desktop_credential_save_preserves_config_privacy_without_payload_settin
     )
 
     assert (
-        "const configDisableNetworkObservability = "
-        "readDesktopConfigNetworkObservabilitySetting()"
+        "const configDisableNetworkObservability = readDesktopConfigNetworkObservabilitySetting()"
     ) in save
     assert (
         ": configDisableNetworkObservability ?? existing?.disableNetworkObservability ?? false"
@@ -1122,17 +1137,16 @@ def test_desktop_config_writer_does_not_emit_new_privacy_section_by_default() ->
     assert "if (!desktopConfigShouldWritePrivacySection(credential)) return []" in privacy_lines
     assert (
         "credential.disableNetworkObservability || "
-        "readDesktopConfigNetworkObservabilitySetting() !== null"
-        in main_ts
+        "readDesktopConfigNetworkObservabilitySetting() !== null" in main_ts
     )
 
 
 def test_desktop_network_observability_disable_gates_native_update_and_gateway_env() -> None:
     main_ts = _read("desktop/electron/src/main.ts")
-    auto_supported = _section(
+    update_managed = _section(
         main_ts,
-        "function autoUpdateSupported(): boolean",
-        "function nativeAutoUpdateEnabled",
+        "function desktopUpdateManaged(): boolean",
+        "function autoUpdateSupported",
     )
     startup = _section(main_ts, "void app.whenReady().then", "})\n}")
     start = _section(main_ts, "async function startGateway", "async function loadControlUi")
@@ -1171,17 +1185,16 @@ def test_desktop_network_observability_disable_gates_native_update_and_gateway_e
     assert "desktopConfigNetworkObservabilityDisabled()" in main_ts
     assert (
         "return desktopPersistedNetworkObservabilityDisabled() || "
-        "desktopConfigNetworkObservabilityDisabled()"
-        in network_gate
+        "desktopConfigNetworkObservabilityDisabled()" in network_gate
     )
     assert "OPENSQUILLA_PRIVACY_DISABLE_NETWORK_OBSERVABILITY" in main_ts
     assert "OPENSQUILLA_TELEMETRY_DISABLED" in main_ts
     assert "OPENSQUILLA_UPDATE_CHECK_DISABLED" in main_ts
-    assert "if (desktopNetworkObservabilityDisabled()) return false" in auto_supported
-    assert auto_supported.index("desktopNetworkObservabilityDisabled()") < auto_supported.index(
+    assert "if (desktopNetworkObservabilityDisabled()) return false" in update_managed
+    assert update_managed.index("desktopNetworkObservabilityDisabled()") < update_managed.index(
         "process.env.OPENSQUILLA_DESKTOP_DISABLE_AUTO_UPDATE"
     )
-    assert "if (autoUpdateSupported())" in startup
+    assert "else if (desktopUpdateManaged())" in startup
     assert "desktopUpdateCheckScheduler.start(UPDATE_CHECK_INITIAL_DELAY_MS)" in startup
     assert "connection.disableNetworkObservability" in start
     assert "OPENSQUILLA_PRIVACY_DISABLE_NETWORK_OBSERVABILITY: '1'" in start
@@ -1229,6 +1242,7 @@ def test_package_verifier_hard_fails_stale_runtime_and_boot_contract() -> None:
         "process.exit(1)",
     ]:
         assert expected in verifier
+
 
 def test_desktop_gateway_build_and_verifier_cover_runtime_capabilities() -> None:
     build_gateway = _read("desktop/electron/scripts/build-gateway.mjs")
@@ -1408,43 +1422,105 @@ def test_desktop_windows_quit_drains_gateway_before_exit() -> None:
     assert "windowsQuitDrainDone" in before_quit
 
 
-def test_desktop_macos_prerelease_update_resolver_wires_generic_feed() -> None:
-    # Issue #485: PEP440 rc git tags (v0.5.0rc2) are not npm-semver, so
-    # electron-updater's GitHub provider skips them and a packaged prerelease
-    # discovers no updates. A resolver selects the candidate release and points a
-    # generic feed at its latest-mac.yml; stable tags keep the default provider.
+def test_desktop_dual_source_update_resolver_wires_static_channels() -> None:
+    # Stable and same-base preview discovery uses a rate-limit-free static OSS
+    # manifest. Versioned assets then use a strict OSS/GitHub generic feed with
+    # runtime fallback; unsigned Windows verifies an exact versioned installer
+    # against the canonical GitHub checksum before revealing it.
     main_ts = _read("desktop/electron/src/main.ts")
-    resolver = _read("desktop/electron/src/update-feed-resolver.ts")
+    resolver = _read("desktop/electron/src/update-channel.ts")
+    verification = _read("desktop/electron/src/update-verification.ts")
     package_json = json.loads(_read("desktop/electron/package.json"))
     check = _section(
         main_ts,
         "async function runDesktopUpdateCheck",
         "function gatewayProcessForUpdateInstall",
     )
+    native_check = _section(
+        main_ts,
+        "async function checkNativeDesktopUpdate",
+        "async function downloadNativeDesktopUpdateWithFallback",
+    )
+    native_download = _section(
+        main_ts,
+        "async function downloadNativeDesktopUpdateWithFallback",
+        "function desktopUpdateCheckAllowed",
+    )
+    verified_windows_download = _section(
+        main_ts,
+        "async function downloadVerifiedWindowsInstallerWithFallback",
+        "function alternateDesktopUpdateSource",
+    )
+    manual_download = _section(
+        main_ts,
+        "if (desktopUpdateInstallMode() === 'manual')",
+        "if (!autoUpdateSupported())",
+    )
 
-    assert "export function parseOpenSquillaReleaseTag" in resolver
-    assert "export function selectMacPrereleaseCandidate" in resolver
+    assert "export function updateChannelPathForVersion" in resolver
+    assert "'stable.json'" in resolver
+    assert "`preview/${parsed.base}.json`" in resolver
     assert "latest-mac.yml" in resolver
-    # Only same-base upgrades; a different base is not crossed automatically.
-    assert "parsed.base !== current.base" in resolver
+    assert "candidate.base !== current.base" in resolver
+    assert "platform assets do not match the release version" in resolver
+    assert "UPDATE_OSS_RELEASE_ROOT" in resolver
+    assert "UPDATE_GITHUB_RELEASE_ROOT" in resolver
 
-    assert "async function configureDesktopUpdateFeed()" in main_ts
-    assert "if (process.platform !== 'darwin' || !app.isPackaged) return 'default'" in main_ts
-    assert "provider: 'generic', url: candidate.feedUrl, channel: 'latest'" in main_ts
+    assert "function configureDesktopUpdateFeed(resolved: ResolvedDesktopUpdate)" in main_ts
+    assert "provider: 'generic'" in main_ts
+    assert "url: updateFeedBaseUrl(resolved.candidate, resolved.source)" in main_ts
     # Numeric rc order can disagree with electron-updater's string-based semver
     # gate (0.5.0-rc10 sorts below rc9), so the resolved-candidate path allows the
     # "downgrade"; the default path forbids it so stable users never regress.
     resolver_feed = _section(
         main_ts,
-        "async function configureDesktopUpdateFeed()",
-        "async function runDesktopUpdateCheck",
+        "function configureDesktopUpdateFeed(resolved: ResolvedDesktopUpdate)",
+        "async function checkNativeDesktopUpdate",
     )
     assert "autoUpdater.allowDowngrade = false" in resolver_feed
-    assert "autoUpdater.allowDowngrade = true" in resolver_feed
-    # checkForUpdates consults the resolver and reports up-to-date without a
-    # spurious GitHub-provider error when no newer same-base release exists.
-    assert "const feed = await configureDesktopUpdateFeed()" in check
-    assert "if (feed === 'up-to-date')" in check
+    assert "current?.rc !== null" in resolver_feed
+    assert "const resolved = await resolveDesktopUpdate()" in check
+    assert "await checkNativeDesktopUpdate(resolved)" in check
+    assert "result?.isUpdateAvailable !== true" in native_check
+    assert "result?.isUpdateAvailable !== true" in native_download
+    assert "nativeUpdateReady = null" in native_check
+    assert "nativeUpdateReadyFor(readyCandidate)" in native_download
+    assert "nativeUpdateReadyFor(candidate)" in main_ts
+    assert "manualInstallerActionInProgress = true" in manual_download
+    assert "manualInstallerActionInProgress = false" in manual_download
+    assert "desktopUpdateStatus === 'checking'" in manual_download
+    assert "await checkForUpdates(true)" in manual_download
+    assert "desktopUpdateStatus !== 'available'" in manual_download
+    assert "desktopUpdateErrorMessage('source_unreachable')" in manual_download
+    assert "'install_failed'" in manual_download
+    assert "manualInstall" in check
+    assert "updateAssetUrl(resolved.candidate, resolved.source)" in check
+    assert "updateAssetUrl(candidate, 'github', 'SHA256SUMS')" in main_ts
+    assert "await fetchCanonicalWindowsInstallerDigest(candidate)" in manual_download
+    assert "await downloadVerifiedWindowsInstallerWithFallback(" in manual_download
+    assert "alternateDesktopUpdateSource(chosen.source)" in verified_windows_download
+    assert (
+        "err.code === 'download_failed' || err.code === 'integrity_failed'"
+        in verified_windows_download
+    )
+    assert "source: verified.source" in manual_download
+    assert "fallbackUsed: verified.fallbackUsed" in manual_download
+    assert "rememberSuccessfulUpdateSource(verified.source)" in manual_download
+    assert "shell.showItemInFolder(verified.path)" in manual_download
+    assert "shell.openExternal(installerUrl)" not in manual_download
+    manual_discovery = _section(
+        main_ts,
+        "if (manualInstall) {",
+        "await checkNativeDesktopUpdate(resolved)",
+    )
+    assert "rememberSuccessfulUpdateSource" not in manual_discovery
+    assert "parseSha256SumsForAsset" in verification
+    assert "streamResponseToVerifiedFile" in verification
+    assert "actual !== expected" in verification
+    assert "await rm(temporaryPath, { force: true })" in verification
+    assert "received !== totalBytes" in verification
+    assert "ipcMain.handle('desktop:update:managed'" in main_ts
+    assert "'x-user-staging-id': '00000000-0000-4000-8000-000000000000'" in main_ts
 
     assert package_json["scripts"]["test:update-resolver"] == (
         "npm run build && node scripts/test-update-resolver.mjs"
@@ -1678,12 +1754,8 @@ def test_desktop_migration_run_quiesces_then_restarts_without_forcing_onboarding
     assert "if (!exited)" in run
     assert run.index("stopGateway()") < run.index("await runMigrateCli(")
     assert "A gateway is still serving this profile" in run
-    assert run.index("(!gatewayProcess || !gatewayState.owned)") < run.index(
-        "isQuitting = true"
-    )
-    assert run.index("A gateway is still serving this profile") < run.index(
-        "await runMigrateCli("
-    )
+    assert run.index("(!gatewayProcess || !gatewayState.owned)") < run.index("isQuitting = true")
+    assert run.index("A gateway is still serving this profile") < run.index("await runMigrateCli(")
     assert "'--apply'" in run
     assert "'--replace-target'" in run
     assert "'--confirm-replace-target', primaryDesktopHome()" in run
@@ -2025,7 +2097,7 @@ def test_onboarding_route_prepends_portable_copy_only_when_policy_allows() -> No
     assert "migration.source.cli" not in _section(
         html,
         '${migrationStepEnabled ? `<section class="setup-card active" data-screen="5">',
-        '<section class="setup-card${migrationStepEnabled ? \'\' : \' active\'}" data-screen="0">',
+        "<section class=\"setup-card${migrationStepEnabled ? '' : ' active'}\" data-screen=\"0\">",
     )
     assert "return migrationStepEnabled ? [5, ...base] : base;" in route
     assert 'data-screen="5"' in html

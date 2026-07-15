@@ -135,7 +135,7 @@ Für schnellere Downloads in Festlandchina verwende die direkten OSS-Download-Al
 - macOS Apple Silicon: <https://opensquilla-releases.oss-cn-beijing.aliyuncs.com/releases/latest/OpenSquilla-mac-arm64.dmg>
 - Windows x64: <https://opensquilla-releases.oss-cn-beijing.aliyuncs.com/releases/latest/OpenSquilla-win-x64.exe>
 
-Diese festen Links werden nach jeder erfolgreichen Release-Spiegelung aktualisiert. Verwende die oben stehenden versionierten GitHub-Release-Links, wenn du eine bestimmte Version benötigst.
+Diese festen Links werden nur weitergeschaltet, wenn ein neueres geeignetes Release die Spiegelprüfung bestanden hat. Verwende die oben stehenden versionierten GitHub-Release-Links, wenn du eine bestimmte Version benötigst.
 
 Beende vor dem Upgrade jede laufende OpenSquilla-Desktop-App. Das vorhandene
 Desktop-Profil im Anwendungsdatenverzeichnis der Plattform wird weiterverwendet.

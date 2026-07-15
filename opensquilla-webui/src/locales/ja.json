@@ -1999,6 +1999,9 @@
     "identityReady": "{label} · 準備完了",
     "loadEarlier": "以前のメッセージを読み込む",
     "loadingEllipsis": "読み込み中...",
+    "loadingEarlier": "以前のメッセージを読み込んでいます…",
+    "loadEarlierFailedRetry": "以前のメッセージを読み込めませんでした · 再試行",
+    "legacyHistoryUnavailable": "以前のバージョンでは古い元メッセージが保存されていません。",
     "scopeCompacted": "古い内容はセッションの要約で表されています。",
     "scopeLatestWindow": "最新のメッセージウィンドウを表示しています。",
     "status": {

@@ -44,6 +44,56 @@ export function reconcileHistoryMessages(prev: ChatMessage[], incoming: ChatMess
   })
 }
 
+// A background history sync returns only the newest server window. Keep any
+// canonical pages the reader already loaded before that window, then replace
+// the overlapping suffix with the fresh server rows. This keeps a 200-message
+// sync from collapsing a longer transcript back to 200 rows while retaining
+// the server-authoritative behavior inside the refreshed window.
+export function historyWindowsOverlap(prev: ChatMessage[], incoming: ChatMessage[]): boolean {
+  const previousIds = new Set(
+    prev
+      .filter(message => message.restoredFromHistory === true)
+      .map(message => message.messageId)
+      .filter(Boolean),
+  )
+  return incoming.some(message => Boolean(message.messageId && previousIds.has(message.messageId)))
+}
+
+export function reconcileHistoryWindow(prev: ChatMessage[], incoming: ChatMessage[]): ChatMessage[] {
+  if (prev.length === 0) return incoming
+  if (incoming.length === 0) return prev.filter(message => message.restoredFromHistory === true)
+
+  const previousIndexById = new Map<string, number>()
+  prev.forEach((message, index) => {
+    if (message.restoredFromHistory === true && message.messageId) {
+      previousIndexById.set(message.messageId, index)
+    }
+  })
+
+  let overlapIndex = -1
+  for (const message of incoming) {
+    if (!message.messageId) continue
+    const index = previousIndexById.get(message.messageId)
+    if (index !== undefined) {
+      overlapIndex = index
+      break
+    }
+  }
+
+  if (overlapIndex >= 0) {
+    return [
+      ...prev.slice(0, overlapIndex),
+      ...reconcileHistoryMessages(prev.slice(overlapIndex), incoming),
+    ]
+  }
+
+  // With no shared message id there is no proof that these windows are
+  // adjacent. Reset to the authoritative latest window instead of silently
+  // rendering an omitted middle range as one continuous transcript. Callers
+  // can page backwards again from the latest window's oldest cursor.
+  return incoming
+}
+
 function fallbackMessageKey(msg: ChatMessage): string {
   return `${msg.role}:${msg.ts || ''}:${msg.text || ''}`
 }

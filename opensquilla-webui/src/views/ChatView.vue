@@ -115,6 +115,7 @@
           ref="threadRef"
           class="chat-thread"
           role="region"
+          tabindex="0"
           :aria-label="t('chat.conversation')"
           :aria-busy="isStreaming"
           @scroll="onThreadScroll"
@@ -178,10 +179,19 @@
           </div>
         </template>
         <div v-else-if="messages.length === 0 && !isStreaming" class="chat-empty">{{ t('chat.noMessagesYet') }}</div>
-        <ChatHistoryScopeRow
+        <HistoryLoadSentinel
           v-if="!isNewChatLanding"
-          :state="historyState"
+          :scroll-container="threadRef"
+          :has-more="historyState.hasMore"
+          :loading="historyState.loadingEarlier"
+          :blocked="historyState.loading"
+          :error="historyState.loadEarlierError"
+          :canonical-available="historyState.canonicalAvailable"
+          :canonical-complete="historyState.canonicalComplete"
+          :cursor="historyState.oldestCursor"
+          :session-key="sessionKey"
           @load-earlier="loadEarlierHistory"
+          @retry="retryHistory"
         />
 
         <ChatMessageList
@@ -383,10 +393,8 @@
           :strip-time-prefix="stripTimePrefix"
           :session-key="sessionKey"
           :history-has-more="historyState.hasMore"
-          :history-loading="historyState.loading"
           @navigate="onHistoryNavigate"
           @navigate-end="onHistoryNavigateEnd"
-          @load-earlier="loadEarlierHistory"
         />
       </div>
     </div>
@@ -548,7 +556,6 @@ import ApprovalCard from '@/components/chat/ApprovalCard.vue'
 import ChatArtifactList from '@/components/chat/ChatArtifactList.vue'
 import DeliverablesDrawer from '@/components/chat/DeliverablesDrawer.vue'
 import ChatComposer from '@/components/chat/ChatComposer.vue'
-import ChatHistoryScopeRow from '@/components/chat/ChatHistoryScopeRow.vue'
 import ChatMessageList from '@/components/chat/ChatMessageList.vue'
 import ChatStallNotice from '@/components/chat/ChatStallNotice.vue'
 import ClarifyCard from '@/components/chat/ClarifyCard.vue'
@@ -564,6 +571,7 @@ import SharePreviewModal from '@/components/chat/SharePreviewModal.vue'
 import ToolCallTimeline from '@/components/chat/ToolCallTimeline.vue'
 import ToolResultModal from '@/components/chat/ToolResultModal.vue'
 import Icon from '@/components/Icon.vue'
+import HistoryLoadSentinel from '@/components/HistoryLoadSentinel.vue'
 import { useChatApprovals } from '@/composables/chat/useChatApprovals'
 import { useChatAttachments } from '@/composables/chat/useChatAttachments'
 import { useChatCompaction } from '@/composables/chat/useChatCompaction'
@@ -1169,7 +1177,9 @@ const {
   historyState,
   loadHistory,
   loadEarlierHistory,
+  retryHistory,
   scheduleHistorySync,
+  cancelAnchorStabilization,
   cleanup: cleanupHistory,
 } = chatHistory
 
@@ -2004,6 +2014,7 @@ function onThreadScroll() {
 }
 
 function onHistoryNavigate() {
+  cancelAnchorStabilization()
   historyNavigationScrollLock.start()
 }
 
@@ -2019,6 +2030,7 @@ function onHistoryNavigateEnd() {
 // Re-pinning autoScroll lets the stream resume following the bottom.
 const showJumpToLatest = computed(() => !autoScroll.value && messages.value.length > 0)
 function jumpToLatest() {
+  cancelAnchorStabilization()
   historyNavigationScrollLock.finish()
   autoScroll.value = true
   scrollToBottom()

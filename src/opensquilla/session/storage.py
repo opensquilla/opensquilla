@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import functools
 import json
 import logging
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Concatenate
 
 from opensquilla.compat import aiosqlite
 from opensquilla.session.keys import canonicalize_session_key, normalize_agent_id
@@ -26,9 +29,17 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 
-
 class StaleEpochError(Exception):
     """Raised when a write is rejected because the session epoch has advanced."""
+
+
+@dataclass(frozen=True, slots=True)
+class CanonicalTranscriptCoverage:
+    """Canonical archive coverage and its session metadata snapshot."""
+
+    canonical_complete: bool
+    compaction_count: int
+    inherited_compactions: bool
 
 
 # Bumped whenever the schema is widened or narrowed via migration.
@@ -39,6 +50,12 @@ class StaleEpochError(Exception):
 # Version 7 added archived transcript rows for canonical recovery after compaction.
 # Version 8 added the derived_title column for LLM-generated session titles.
 SCHEMA_VERSION = 8
+
+# Session rows at or above this semantic version were created by fork logic
+# that records enough existing metadata for canonical coverage to be checked
+# without guessing about legacy prefix forks. This reuses the persisted row
+# version and does not widen or rewrite the database schema.
+CANONICAL_FORK_PROOF_SCHEMA_VERSION = 2
 
 # SQLite CREATE statements derived from SQLModel metadata
 _CREATE_SESSIONS = """
@@ -136,6 +153,10 @@ _CREATE_IDX_TRANSCRIPT_SESSION = (
 _CREATE_IDX_TRANSCRIPT_KEY = (
     "CREATE INDEX IF NOT EXISTS idx_transcript_session_key ON transcript_entries(session_key)"
 )
+_CREATE_IDX_TRANSCRIPT_CURSOR = """
+CREATE INDEX IF NOT EXISTS idx_transcript_session_cursor
+ON transcript_entries(session_id, created_at, id)
+"""
 
 _CREATE_COMPACTED_TRANSCRIPT = """
 CREATE TABLE IF NOT EXISTS compacted_transcript_entries (
@@ -172,6 +193,15 @@ ON compacted_transcript_entries(session_id)
 _CREATE_IDX_COMPACTED_TRANSCRIPT_KEY = """
 CREATE INDEX IF NOT EXISTS idx_compacted_transcript_session_key
 ON compacted_transcript_entries(session_key)
+"""
+_CREATE_IDX_COMPACTED_TRANSCRIPT_CURSOR = """
+CREATE INDEX IF NOT EXISTS idx_compacted_transcript_session_cursor
+ON compacted_transcript_entries(session_id, created_at, original_entry_id, id)
+"""
+
+_CREATE_IDX_COMPACTED_TRANSCRIPT_COMPACTION = """
+CREATE INDEX IF NOT EXISTS idx_compacted_transcript_session_compaction
+ON compacted_transcript_entries(session_id, compaction_id)
 """
 
 # FTS5 full-text search on transcript content
@@ -400,6 +430,32 @@ def _py_lower(value: Any) -> Any:
     return value.lower() if isinstance(value, str) else value
 
 
+def _serialize_connection_operation[**P, R](
+    method: Callable[Concatenate[SessionStorage, P], Awaitable[R]],
+) -> Callable[Concatenate[SessionStorage, P], Awaitable[R]]:
+    """Run one storage operation under the shared connection mutex."""
+
+    @functools.wraps(method)
+    async def wrapped(self: SessionStorage, *args: P.args, **kwargs: P.kwargs) -> R:
+        async with self._connection_operation():
+            return await method(self, *args, **kwargs)
+
+    return wrapped
+
+
+def _serialize_connection_write[**P, R](
+    method: Callable[Concatenate[SessionStorage, P], Awaitable[R]],
+) -> Callable[Concatenate[SessionStorage, P], Awaitable[R]]:
+    """Run one complete SQLite write unit under the shared connection mutex."""
+
+    @functools.wraps(method)
+    async def wrapped(self: SessionStorage, *args: P.args, **kwargs: P.kwargs) -> R:
+        async with self._connection_write():
+            return await method(self, *args, **kwargs)
+
+    return wrapped
+
+
 class SessionStorage:
     """Low-level async SQLite operations for session persistence."""
 
@@ -412,7 +468,55 @@ class SessionStorage:
         self._db_path = db_path
         self._conn: Any | None = None
         self._meta_run_writer = meta_run_writer
+        self._connection_lock = asyncio.Lock()
+        self._connection_lock_owner: asyncio.Task[Any] | None = None
+        self._connection_lock_depth = 0
 
+    @contextlib.asynccontextmanager
+    async def _connection_operation(self):
+        """Serialize access that must not overlap a transaction on this connection.
+
+        The lock is task-reentrant because schema initialization invokes guarded
+        migration/write helpers. Task identity is used instead of a ContextVar so
+        a child task never inherits permission to enter its parent's transaction.
+        """
+        task = asyncio.current_task()
+        if task is None:
+            raise RuntimeError("Session storage operations require an asyncio task")
+        if self._connection_lock_owner is task:
+            self._connection_lock_depth += 1
+            try:
+                yield
+            finally:
+                self._connection_lock_depth -= 1
+            return
+
+        await self._connection_lock.acquire()
+        self._connection_lock_owner = task
+        self._connection_lock_depth = 1
+        try:
+            yield
+        finally:
+            self._connection_lock_owner = None
+            self._connection_lock_depth = 0
+            self._connection_lock.release()
+
+    @contextlib.asynccontextmanager
+    async def _connection_write(self):
+        """Hold the connection mutex from the first write through commit/rollback."""
+        async with self._connection_operation():
+            try:
+                yield
+            except BaseException:
+                if self._conn is not None and self._conn.in_transaction:
+                    with contextlib.suppress(Exception):
+                        await self._conn.rollback()
+                raise
+            if self._conn is not None and self._conn.in_transaction:
+                await self._conn.rollback()
+                raise RuntimeError("Connection write operation exited without commit")
+
+    @_serialize_connection_operation
     async def connect(self) -> None:
         self._conn = await aiosqlite.connect(self._db_path)
         self._conn.row_factory = aiosqlite.Row
@@ -431,20 +535,25 @@ class SessionStorage:
         await storage.connect()
         return storage
 
+    @_serialize_connection_operation
     async def close(self) -> None:
         if self._conn:
             await self._conn.close()
             self._conn = None
 
+    @_serialize_connection_write
     async def _initialize_schema(self) -> None:
         assert self._conn is not None
         await self._conn.execute(_CREATE_SESSIONS)
         await self._conn.execute(_CREATE_TRANSCRIPT)
         await self._conn.execute(_CREATE_IDX_TRANSCRIPT_SESSION)
         await self._conn.execute(_CREATE_IDX_TRANSCRIPT_KEY)
+        await self._conn.execute(_CREATE_IDX_TRANSCRIPT_CURSOR)
         await self._conn.execute(_CREATE_COMPACTED_TRANSCRIPT)
         await self._conn.execute(_CREATE_IDX_COMPACTED_TRANSCRIPT_SESSION)
         await self._conn.execute(_CREATE_IDX_COMPACTED_TRANSCRIPT_KEY)
+        await self._conn.execute(_CREATE_IDX_COMPACTED_TRANSCRIPT_CURSOR)
+        await self._conn.execute(_CREATE_IDX_COMPACTED_TRANSCRIPT_COMPACTION)
         await self._conn.execute(_CREATE_SUMMARIES)
         await self._conn.execute(_CREATE_IDX_SUMMARIES)
         await self._conn.execute(_CREATE_CONTEXT_STATES)
@@ -481,6 +590,7 @@ class SessionStorage:
         await self._conn.commit()
         await self.mark_abandoned_agent_tasks()
 
+    @_serialize_connection_write
     async def _migrate_epoch_column(self) -> None:
         """Idempotently add the epoch column to an existing sessions table.
 
@@ -508,6 +618,7 @@ class SessionStorage:
             )
             await self._conn.commit()
 
+    @_serialize_connection_write
     async def _migrate_derived_title_column(self) -> None:
         """Idempotently add the derived_title column to an existing sessions table.
 
@@ -524,6 +635,7 @@ class SessionStorage:
             )
             await self._conn.commit()
 
+    @_serialize_connection_write
     async def _migrate_transcript_reasoning_content_column(self) -> None:
         """Idempotently add assistant reasoning replay storage to transcripts."""
         assert self._conn is not None
@@ -535,6 +647,7 @@ class SessionStorage:
             )
             await self._conn.commit()
 
+    @_serialize_connection_write
     async def _migrate_transcript_turn_usage_column(self) -> None:
         """Idempotently add per-turn usage metadata storage to transcripts."""
         assert self._conn is not None
@@ -546,6 +659,7 @@ class SessionStorage:
             )
             await self._conn.commit()
 
+    @_serialize_connection_write
     async def _migrate_summary_metadata_columns(self) -> None:
         """Idempotently add structured compaction summary metadata columns."""
         assert self._conn is not None
@@ -598,6 +712,7 @@ class SessionStorage:
         if changed:
             await self._conn.commit()
 
+    @_serialize_connection_write
     async def _migrate_memory_durable_receipt_coverage_columns(self) -> None:
         """Idempotently add deterministic checkpoint coverage metadata columns."""
         assert self._conn is not None
@@ -630,6 +745,7 @@ class SessionStorage:
 
     # ── Session CRUD ────────────────────────────────────────────────────────
 
+    @_serialize_connection_write
     async def upsert_session(self, node: SessionNode) -> None:
         node.session_key = canonicalize_session_key(node.session_key)
         node.agent_id = normalize_agent_id(node.agent_id)
@@ -722,24 +838,27 @@ class SessionStorage:
         session = await self.get_session(session_key)
         if session is None:
             return
-        await self.conn.execute(
-            "DELETE FROM transcript_entries WHERE session_id = ?",
-            (session.session_id,),
-        )
-        await self.conn.execute(
-            "DELETE FROM compacted_transcript_entries WHERE session_id = ?",
-            (session.session_id,),
-        )
-        await self.conn.execute(
-            "DELETE FROM session_summaries WHERE session_id = ?",
-            (session.session_id,),
-        )
-        await self.conn.execute(
-            "DELETE FROM session_context_states WHERE session_id = ?",
-            (session.session_id,),
-        )
-        await self.conn.execute("DELETE FROM sessions WHERE session_key = ?", (session_key,))
-        await self.conn.commit()
+        async with self._connection_write():
+            await self.conn.execute(
+                "DELETE FROM transcript_entries WHERE session_id = ?",
+                (session.session_id,),
+            )
+            await self.conn.execute(
+                "DELETE FROM compacted_transcript_entries WHERE session_id = ?",
+                (session.session_id,),
+            )
+            await self.conn.execute(
+                "DELETE FROM session_summaries WHERE session_id = ?",
+                (session.session_id,),
+            )
+            await self.conn.execute(
+                "DELETE FROM session_context_states WHERE session_id = ?",
+                (session.session_id,),
+            )
+            await self.conn.execute(
+                "DELETE FROM sessions WHERE session_key = ?", (session_key,)
+            )
+            await self.conn.commit()
 
         # Cascade the on-disk session material (transcript media + workspace
         # attachment copies). DB-only deletion otherwise leaks both stores until
@@ -766,32 +885,35 @@ class SessionStorage:
         # connection, best-effort; the table is absent on :memory: DBs that
         # never ran migrations.
         try:
-            async with self.conn.execute(
-                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='router_decisions'"
-            ) as cur:
-                has_router_decisions = await cur.fetchone() is not None
-            if has_router_decisions:
-                await self.conn.execute(
-                    "DELETE FROM router_decisions WHERE session_key = ?",
-                    (session_key,),
-                )
-                await self.conn.commit()
+            async with self._connection_write():
+                async with self.conn.execute(
+                    "SELECT 1 FROM sqlite_master "
+                    "WHERE type='table' AND name='router_decisions'"
+                ) as cur:
+                    has_router_decisions = await cur.fetchone() is not None
+                if has_router_decisions:
+                    await self.conn.execute(
+                        "DELETE FROM router_decisions WHERE session_key = ?",
+                        (session_key,),
+                    )
+                    await self.conn.commit()
         except Exception as exc:  # noqa: BLE001
             log.warning("session_delete.purge_router_decisions_failed: %s", exc)
 
         # Turn error records (V019 turn_errors) — same yoyo-owned-table purge
         # as router_decisions above; the table is absent on :memory: DBs.
         try:
-            async with self.conn.execute(
-                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='turn_errors'"
-            ) as cur:
-                has_turn_errors = await cur.fetchone() is not None
-            if has_turn_errors:
-                await self.conn.execute(
-                    "DELETE FROM turn_errors WHERE session_key = ?",
-                    (session_key,),
-                )
-                await self.conn.commit()
+            async with self._connection_write():
+                async with self.conn.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name='turn_errors'"
+                ) as cur:
+                    has_turn_errors = await cur.fetchone() is not None
+                if has_turn_errors:
+                    await self.conn.execute(
+                        "DELETE FROM turn_errors WHERE session_key = ?",
+                        (session_key,),
+                    )
+                    await self.conn.commit()
         except Exception as exc:  # noqa: BLE001
             log.warning("session_delete.purge_turn_errors_failed: %s", exc)
 
@@ -801,11 +923,12 @@ class SessionStorage:
         # a recreated session sharing the same key. Purge both, best-effort.
         for table in ("agent_tasks", "memory_durable_receipts"):
             try:
-                await self.conn.execute(
-                    f"DELETE FROM {table} WHERE session_key = ?",  # noqa: S608 - fixed literals
-                    (session_key,),
-                )
-                await self.conn.commit()
+                async with self._connection_write():
+                    await self.conn.execute(
+                        f"DELETE FROM {table} WHERE session_key = ?",  # noqa: S608
+                        (session_key,),
+                    )
+                    await self.conn.commit()
             except Exception as exc:  # noqa: BLE001
                 log.warning("session_delete.purge_%s_failed: %s", table, exc)
 
@@ -826,6 +949,7 @@ class SessionStorage:
             row = await cur.fetchone()
         return row[0] if row else 0
 
+    @_serialize_connection_write
     async def increment_epoch(self, session_key: str) -> int:
         """Atomically increment the epoch counter for a session.
 
@@ -856,6 +980,7 @@ class SessionStorage:
 
     # ── AgentTask ledger CRUD ───────────────────────────────────────────────
 
+    @_serialize_connection_write
     async def create_agent_task(self, task: AgentTaskRecord) -> AgentTaskRecord:
         task.session_key = canonicalize_session_key(task.session_key)
         task.agent_id = normalize_agent_id(task.agent_id)
@@ -878,6 +1003,7 @@ class SessionStorage:
             return None
         return AgentTaskRecord(**_deserialize_row(dict(row)))
 
+    @_serialize_connection_write
     async def update_agent_task(self, task_id: str, **fields: Any) -> AgentTaskRecord:
         if not fields:
             existing = await self.get_agent_task(task_id)
@@ -928,6 +1054,7 @@ class SessionStorage:
             rows = await cur.fetchall()
         return [AgentTaskRecord(**_deserialize_row(dict(row))) for row in rows]
 
+    @_serialize_connection_write
     async def upsert_memory_durable_receipt(
         self,
         receipt: MemoryDurableReceipt,
@@ -1011,6 +1138,7 @@ class SessionStorage:
             rows = await cur.fetchall()
         return [MemoryDurableReceipt(**_deserialize_row(dict(row))) for row in rows]
 
+    @_serialize_connection_write
     async def update_memory_durable_receipt(
         self,
         receipt_id: str,
@@ -1069,6 +1197,7 @@ class SessionStorage:
                     bucket.append(task)
         return grouped
 
+    @_serialize_connection_write
     async def mark_abandoned_agent_tasks(self, now_ms: int | None = None) -> int:
         """Mark non-terminal persisted tasks as abandoned after process restart."""
         ts = now_ms or _now_ms()
@@ -1095,6 +1224,7 @@ class SessionStorage:
 
     # ── Transcript CRUD ──────────────────────────────────────────────────────
 
+    @_serialize_connection_write
     async def append_transcript_entry(
         self, entry: TranscriptEntry, *, expected_epoch: int | None = None
     ) -> None:
@@ -1161,6 +1291,7 @@ class SessionStorage:
             rows = await cur.fetchall()
         return [TranscriptEntry(**_deserialize_row(dict(r))) for r in rows]
 
+    @_serialize_connection_operation
     async def get_canonical_transcript(
         self, session_id: str, limit: int | None = None, offset: int = 0
     ) -> list[TranscriptEntry]:
@@ -1224,6 +1355,253 @@ class SessionStorage:
             rows = await cur.fetchall()
         return [TranscriptEntry(**_deserialize_row(dict(r))) for r in rows]
 
+    async def _canonical_transcript_cursor_exists(
+        self,
+        session_id: str,
+        cursor: tuple[int, int],
+    ) -> bool:
+        created_at, entry_id = cursor
+        sql = """
+            SELECT 1
+            FROM transcript_entries
+            WHERE session_id = ? AND created_at = ? AND id = ?
+            UNION ALL
+            SELECT 1
+            FROM compacted_transcript_entries
+            WHERE session_id = ? AND created_at = ? AND original_entry_id = ?
+            LIMIT 1
+        """
+        async with self.conn.execute(
+            sql,
+            (session_id, created_at, entry_id, session_id, created_at, entry_id),
+        ) as cur:
+            return await cur.fetchone() is not None
+
+    @_serialize_connection_operation
+    async def get_canonical_transcript_page(
+        self,
+        session_id: str,
+        *,
+        limit: int,
+        before: tuple[int, int] | None = None,
+        after: tuple[int, int] | None = None,
+    ) -> tuple[list[TranscriptEntry], bool]:
+        """Return one keyset page across archived and active transcript rows.
+
+        Each source CTE is bounded to ``limit + 1`` rows and both are merged in
+        one SQLite read snapshot. ``before`` keeps its historical precedence
+        over ``after`` when both cursors exist; an unknown cursor is ignored,
+        matching the legacy list-pagination path.
+        """
+        page_size = max(1, int(limit))
+        fetch_size = page_size + 1
+
+        resolved_before = before
+        if resolved_before is not None and not await self._canonical_transcript_cursor_exists(
+            session_id,
+            resolved_before,
+        ):
+            resolved_before = None
+
+        resolved_after = None
+        if resolved_before is None and after is not None:
+            if await self._canonical_transcript_cursor_exists(session_id, after):
+                resolved_after = after
+
+        cursor = resolved_before or resolved_after
+        ascending = resolved_after is not None
+        comparator = ">" if ascending else "<"
+        direction = "ASC" if ascending else "DESC"
+
+        active_params: list[Any] = [session_id]
+        active_cursor_clause = ""
+        if cursor is not None:
+            created_at, entry_id = cursor
+            active_cursor_clause = (
+                f"AND (created_at {comparator} ? "
+                f"OR (created_at = ? AND id {comparator} ?))"
+            )
+            active_params.extend((created_at, created_at, entry_id))
+        active_params.append(fetch_size)
+        archived_params: list[Any] = [session_id]
+        archived_cursor_clause = ""
+        if cursor is not None:
+            created_at, entry_id = cursor
+            archived_cursor_clause = (
+                f"AND (created_at {comparator} ? "
+                f"OR (created_at = ? AND original_entry_id {comparator} ?))"
+            )
+            archived_params.extend((created_at, created_at, entry_id))
+        archived_params.append(fetch_size)
+        sql = f"""
+            WITH active_page AS (
+                SELECT
+                    id,
+                    session_id,
+                    session_key,
+                    message_id,
+                    role,
+                    content,
+                    tool_calls,
+                    tool_call_id,
+                    reasoning_content,
+                    turn_usage,
+                    created_at,
+                    token_count,
+                    provenance_kind,
+                    provenance_origin_session_id,
+                    provenance_source_session_key,
+                    provenance_source_channel,
+                    provenance_source_tool,
+                    schema_version
+                FROM transcript_entries
+                WHERE session_id = ?
+                  {active_cursor_clause}
+                ORDER BY created_at {direction}, id {direction}
+                LIMIT ?
+            ),
+            archived_page AS (
+                SELECT
+                    original_entry_id AS id,
+                    session_id,
+                    session_key,
+                    message_id,
+                    role,
+                    content,
+                    tool_calls,
+                    tool_call_id,
+                    reasoning_content,
+                    turn_usage,
+                    created_at,
+                    token_count,
+                    provenance_kind,
+                    provenance_origin_session_id,
+                    provenance_source_session_key,
+                    provenance_source_channel,
+                    provenance_source_tool,
+                    schema_version
+                FROM compacted_transcript_entries
+                WHERE session_id = ?
+                  {archived_cursor_clause}
+                ORDER BY
+                    created_at {direction},
+                    original_entry_id {direction},
+                    id {direction}
+                LIMIT ?
+            ),
+            merged AS (
+                SELECT * FROM active_page
+                UNION ALL
+                SELECT * FROM archived_page
+            )
+            SELECT *
+            FROM merged
+            ORDER BY created_at {direction}, id {direction}
+            LIMIT ?
+        """
+
+        # Both sources must be read by one SQLite statement. A compaction moves
+        # rows from transcript_entries into compacted_transcript_entries inside
+        # one transaction; separate SELECT statements could otherwise observe
+        # opposite sides of that move and duplicate or omit canonical rows.
+        params = [*active_params, *archived_params, fetch_size]
+        async with self.conn.execute(sql, params) as cur:
+            rows = await cur.fetchall()
+
+        entries = [TranscriptEntry(**_deserialize_row(dict(row))) for row in rows]
+        has_more = len(entries) > page_size
+        entries = entries[:page_size]
+        if not ascending:
+            entries.reverse()
+        return entries, has_more
+
+    @_serialize_connection_operation
+    async def get_canonical_transcript_coverage(
+        self,
+        session_id: str,
+    ) -> CanonicalTranscriptCoverage:
+        """Read canonical coverage and current session metadata in one snapshot."""
+        sql = """
+            SELECT
+                session.compaction_count,
+                session.forked_from_parent,
+                session.schema_version,
+                (SELECT COUNT(*)
+                 FROM session_summaries
+                 WHERE session_id = session.session_id) AS summary_count,
+                (SELECT COALESCE(SUM(removed_count), 0)
+                 FROM session_summaries
+                 WHERE session_id = session.session_id) AS removed_count,
+                (SELECT COUNT(*)
+                 FROM compacted_transcript_entries
+                 WHERE session_id = session.session_id) AS archived_count,
+                (SELECT COUNT(*)
+                 FROM compacted_transcript_entries
+                 WHERE session_id = session.session_id
+                   AND original_entry_id IS NULL) AS missing_ids,
+                (SELECT COUNT(*)
+                 FROM session_summaries AS summary
+                 WHERE summary.session_id = session.session_id
+                   AND (
+                     summary.compaction_id IS NULL
+                     OR (summary.removed_count = 0 AND summary.covered_through_id > 0)
+                     OR COALESCE((
+                       SELECT COUNT(*)
+                       FROM compacted_transcript_entries AS archived
+                       WHERE archived.session_id = summary.session_id
+                         AND archived.compaction_id = summary.compaction_id
+                     ), 0) != summary.removed_count
+                   )) AS mismatched_summaries
+            FROM sessions AS session
+            WHERE session.session_id = ?
+            LIMIT 1
+        """
+        async with self.conn.execute(sql, (session_id,)) as cur:
+            row = await cur.fetchone()
+        if row is None:
+            return CanonicalTranscriptCoverage(
+                canonical_complete=False,
+                compaction_count=0,
+                inherited_compactions=False,
+            )
+        summary_count = int(row["summary_count"] or 0)
+        expected_compactions = max(0, int(row["compaction_count"] or 0))
+        inherited_compactions = bool(row["forked_from_parent"])
+        archived_count = int(row["archived_count"] or 0)
+        fork_coverage_proven = not inherited_compactions
+        if inherited_compactions:
+            # A legacy fork stored only a reusable parent session key, not the
+            # fork-time parent identity or coverage. Never let the parent's
+            # current row—or the child's later compactions—retroactively prove
+            # that an ambiguous inherited prefix retained every original row.
+            fork_coverage_proven = (
+                int(row["schema_version"] or 0)
+                >= CANONICAL_FORK_PROOF_SCHEMA_VERSION
+            )
+        compaction_count_matches = (
+            summary_count >= expected_compactions
+            if inherited_compactions
+            else summary_count == expected_compactions
+        )
+        canonical_complete = (
+            fork_coverage_proven
+            and compaction_count_matches
+            and int(row["removed_count"] or 0) == archived_count
+            and int(row["missing_ids"] or 0) == 0
+            and int(row["mismatched_summaries"] or 0) == 0
+        )
+        return CanonicalTranscriptCoverage(
+            canonical_complete=canonical_complete,
+            compaction_count=expected_compactions,
+            inherited_compactions=inherited_compactions,
+        )
+
+    async def is_canonical_transcript_complete(self, session_id: str) -> bool:
+        """Return whether every current compaction has a complete raw archive."""
+        coverage = await self.get_canonical_transcript_coverage(session_id)
+        return coverage.canonical_complete
+
+    @_serialize_connection_write
     async def copy_compacted_transcript_entries(
         self,
         *,
@@ -1370,6 +1748,7 @@ class SessionStorage:
                     result.setdefault(sid, []).append(content)
         return result
 
+    @_serialize_connection_write
     async def delete_transcript(self, session_id: str) -> None:
         await self.conn.execute(
             "DELETE FROM transcript_entries WHERE session_id = ?", (session_id,)
@@ -1380,6 +1759,7 @@ class SessionStorage:
         )
         await self.conn.commit()
 
+    @_serialize_connection_write
     async def delete_transcript_entry(self, session_id: str, message_id: str) -> bool:
         """Delete a single transcript entry by ``message_id``.
 
@@ -1396,6 +1776,7 @@ class SessionStorage:
         await self.conn.commit()
         return removed > 0
 
+    @_serialize_connection_write
     async def delete_summaries(self, session_id: str) -> None:
         await self.conn.execute("DELETE FROM session_summaries WHERE session_id = ?", (session_id,))
         await self.conn.commit()
@@ -1412,6 +1793,7 @@ class SessionStorage:
 
     # ── SessionSummary CRUD ──────────────────────────────────────────────────
 
+    @_serialize_connection_write
     async def save_summary(self, summary: SessionSummary) -> SessionSummary:
         """Persist a compaction summary. Sets compaction_index automatically."""
         _next_idx_sql = (
@@ -1467,6 +1849,7 @@ class SessionStorage:
                 values,
             )
 
+    @_serialize_connection_write
     async def rewrite_compacted_session(
         self,
         *,
@@ -1642,6 +2025,7 @@ class SessionStorage:
             rows = await cur.fetchall()
         return [TranscriptEntry(**_deserialize_row(dict(r))) for r in rows]
 
+    @_serialize_connection_write
     async def update_summary_flush_receipt_status(
         self,
         summary_id: int,
@@ -1653,6 +2037,7 @@ class SessionStorage:
         )
         await self.conn.commit()
 
+    @_serialize_connection_write
     async def update_summary_flush_receipt_status_by_compaction(
         self,
         *,
@@ -1673,6 +2058,7 @@ class SessionStorage:
 
     # ── SessionContextState CRUD ─────────────────────────────────────────────
 
+    @_serialize_connection_write
     async def save_context_state(
         self, state: SessionContextState
     ) -> SessionContextState:
@@ -1719,6 +2105,7 @@ class SessionStorage:
             rows = await cur.fetchall()
         return [SessionContextState(**_deserialize_row(dict(row))) for row in rows]
 
+    @_serialize_connection_write
     async def invalidate_context_states(
         self,
         session_key: str,

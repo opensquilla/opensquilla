@@ -465,6 +465,12 @@ async def test_task_runtime_rolls_back_persisted_user_on_provider_budget_error()
             return True
 
     class ProviderBudgetErrorRunner:
+        def __init__(self) -> None:
+            self.lock = asyncio.Lock()
+
+        def _get_session_lock(self, session_key: str) -> asyncio.Lock:  # noqa: ARG002
+            return self.lock
+
         async def run(self, message: str, session_key: str, **kwargs: Any):  # noqa: ARG002
             yield ErrorEvent(
                 message='{"fallback_reason":"provider_request_budget_exhausted"}',

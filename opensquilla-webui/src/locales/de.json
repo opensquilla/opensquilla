@@ -1999,6 +1999,9 @@
     "identityReady": "{label} · bereit",
     "loadEarlier": "Frühere Nachrichten laden",
     "loadingEllipsis": "Wird geladen...",
+    "loadingEarlier": "Frühere Nachrichten werden geladen…",
+    "loadEarlierFailedRetry": "Frühere Nachrichten konnten nicht geladen werden · Erneut versuchen",
+    "legacyHistoryUnavailable": "Frühere Originalnachrichten wurden von der älteren Version nicht gespeichert.",
     "scopeCompacted": "Älterer Inhalt wird durch Sitzungszusammenfassungen dargestellt.",
     "scopeLatestWindow": "Es wird das neueste Nachrichtenfenster angezeigt.",
     "status": {

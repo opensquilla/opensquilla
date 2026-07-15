@@ -13,6 +13,7 @@ from opensquilla.chat.source import chat_source_metadata
 from opensquilla.gateway.config import GatewayConfig
 from opensquilla.gateway.context_overflow import apply_context_overflow_policy
 from opensquilla.gateway.rpc import RpcContext, RpcUnavailableError, get_dispatcher
+from opensquilla.gateway.session_services import get_session_lock
 from opensquilla.session.compaction import build_compaction_config_from_provider
 from opensquilla.session.keys import build_webchat_key, canonicalize_session_key, parse_agent_id
 
@@ -74,6 +75,10 @@ def _empty_chat_history_payload(limit: int) -> dict[str, Any]:
         "loaded_count": 0,
         "page_size": limit,
         "canonical_available": False,
+        # A missing WebChat key has an empty but complete transcript. Keep
+        # canonical_available's compatibility meaning while distinguishing this
+        # normal state from a temporary reader failure or lost legacy archive.
+        "canonical_complete": True,
         "compaction_summaries": [],
     }
 
@@ -106,6 +111,17 @@ def _chat_history_cursor_index(entries: list[object], cursor: object) -> int | N
         if _chat_history_cursor(entry) == raw:
             return idx
     return None
+
+
+def _chat_history_cursor_key(cursor: object) -> tuple[int, int] | None:
+    raw = str(cursor or "").strip()
+    if not raw or "|" not in raw:
+        return None
+    created_at, stable_id = raw.split("|", 1)
+    try:
+        return int(created_at), int(stable_id)
+    except ValueError:
+        return None
 
 
 def _chat_history_page(
@@ -177,24 +193,72 @@ def _annotate_transcript_attachment_downloads(
     return messages
 
 
-async def _chat_history_transcript(
+def _canonical_page_parts(page: object) -> tuple[list[object], bool, bool]:
+    if isinstance(page, dict):
+        entries = page.get("entries")
+        has_more = page.get("has_more", False)
+        canonical_complete = page.get("canonical_complete", True)
+    elif isinstance(page, tuple):
+        entries = page[0] if page else None
+        has_more = page[1] if len(page) > 1 else False
+        canonical_complete = page[2] if len(page) > 2 else True
+    else:
+        entries = getattr(page, "entries", None)
+        has_more = getattr(page, "has_more", False)
+        canonical_complete = getattr(page, "canonical_complete", True)
+    if entries is None:
+        raise TypeError("canonical transcript page is missing entries")
+    return list(entries), bool(has_more), bool(canonical_complete)
+
+
+async def _load_chat_history_page(
     mgr: object,
     session_key: str,
     *,
+    limit: int,
+    before: object = None,
+    after: object = None,
     include_canonical: bool,
-) -> tuple[list[object], bool]:
+) -> tuple[list[object], bool, bool, bool]:
     if include_canonical:
-        getter = getattr(mgr, "get_canonical_transcript", None)
-        if callable(getter):
+        page_getter = getattr(mgr, "get_canonical_transcript_page", None)
+        if callable(page_getter):
             try:
-                return list(await getter(session_key)), True
+                page = await page_getter(
+                    session_key,
+                    limit=limit,
+                    before=_chat_history_cursor_key(before),
+                    after=_chat_history_cursor_key(after),
+                )
+                entries, has_more, canonical_complete = _canonical_page_parts(page)
+                return entries, has_more, True, canonical_complete
             except Exception:  # noqa: BLE001 - fall back to active transcript
                 pass
+        else:
+            getter = getattr(mgr, "get_canonical_transcript", None)
+            if callable(getter):
+                try:
+                    transcript = list(await getter(session_key))
+                    entries, has_more = _chat_history_page(
+                        transcript,
+                        limit=limit,
+                        before=before,
+                        after=after,
+                    )
+                    return entries, has_more, True, True
+                except Exception:  # noqa: BLE001 - fall back to active transcript
+                    pass
     transcript_getter = getattr(mgr, "get_transcript", None)
     if not callable(transcript_getter):
-        return [], False
+        return [], False, False, False
     transcript = await transcript_getter(session_key)
-    return list(transcript or []), False
+    entries, has_more = _chat_history_page(
+        list(transcript or []),
+        limit=limit,
+        before=before,
+        after=after,
+    )
+    return entries, has_more, False, False
 
 
 async def _chat_history_summaries(
@@ -472,22 +536,37 @@ async def _handle_chat_history(params: dict | None, ctx: RpcContext) -> dict:
 
     mgr = _require_chat_session_manager(ctx)
 
-    try:
-        transcript, canonical_available = await _chat_history_transcript(
+    async def _load_page() -> tuple[list[object], bool, bool, bool]:
+        return await _load_chat_history_page(
             mgr,
             session_key,
+            limit=limit,
+            before=before,
+            after=after,
             include_canonical=include_canonical,
         )
+
+    try:
+        history_lock = get_session_lock(ctx.turn_runner, session_key)
+        if history_lock is None:
+            page_entries, has_more, canonical_available, canonical_complete = (
+                await _load_page()
+            )
+        else:
+            # Canonical reads and compaction rewrites share one aiosqlite
+            # connection.  SQLite statements are snapshots, but a statement on
+            # that same connection can still observe the connection's own
+            # uncommitted archive/delete/reinsert work.  Use the short session
+            # mutation lock so the page and its coverage metadata are read only
+            # before or after a rewrite, never from its intermediate state.
+            async with history_lock:
+                page_entries, has_more, canonical_available, canonical_complete = (
+                    await _load_page()
+                )
     except KeyError:
         if _is_webchat_session_key(session_key):
             return _empty_chat_history_payload(limit)
         raise
-    page_entries, has_more = _chat_history_page(
-        transcript,
-        limit=limit,
-        before=before,
-        after=after,
-    )
     summaries = await _chat_history_summaries(
         mgr,
         session_key,
@@ -513,6 +592,7 @@ async def _handle_chat_history(params: dict | None, ctx: RpcContext) -> dict:
         "loaded_count": len(page_entries),
         "page_size": limit,
         "canonical_available": canonical_available,
+        "canonical_complete": canonical_complete,
         "compaction_summaries": summaries,
     }
 

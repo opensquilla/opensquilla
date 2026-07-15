@@ -51,7 +51,7 @@ from opensquilla.gateway.session_lifecycle import (
     apply_task_lifecycle_to_session,
     session_status_for_task_status,
 )
-from opensquilla.gateway.session_services import get_session_storage
+from opensquilla.gateway.session_services import get_session_lock, get_session_storage
 from opensquilla.gateway.session_streams import get_session_streams
 from opensquilla.gateway.websocket import get_registry
 from opensquilla.paths import default_opensquilla_home
@@ -1059,9 +1059,19 @@ async def dispatch_task_runtime_turn(
             remove_message = getattr(session_manager, "remove_message", None)
             if isinstance(message_id, str) and message_id and callable(remove_message):
                 try:
-                    removed = remove_message(run.session_key, message_id)
-                    if inspect.isawaitable(removed):
-                        removed = await removed
+                    rollback_lock = get_session_lock(turn_runner, run.session_key)
+
+                    async def _remove_persisted_message() -> Any:
+                        removed_result = remove_message(run.session_key, message_id)
+                        if inspect.isawaitable(removed_result):
+                            removed_result = await removed_result
+                        return removed_result
+
+                    if rollback_lock is None:
+                        removed = await _remove_persisted_message()
+                    else:
+                        async with rollback_lock:
+                            removed = await _remove_persisted_message()
                     if removed:
                         log.info(
                             "task_runtime.user_message_rolled_back",

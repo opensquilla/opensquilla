@@ -310,6 +310,10 @@ export interface ChatHistoryResponse {
   newestCursor?: string | number | null
   history_scope?: string
   historyScope?: string
+  canonical_available?: boolean
+  canonicalAvailable?: boolean
+  canonical_complete?: boolean
+  canonicalComplete?: boolean
   limit?: number
   returned?: number
 }

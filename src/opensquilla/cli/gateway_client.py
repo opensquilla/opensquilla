@@ -6,7 +6,7 @@ import asyncio
 import ipaddress
 import json
 import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import Any, cast
 from urllib.parse import urlparse
 
@@ -33,6 +33,142 @@ class GatewayRPCError(Exception):
     def __str__(self) -> str:
         code = f"{self.code}: " if self.code else ""
         return f"{self.method} failed: {code}{self.message}"
+
+
+def _history_message_identity(message: dict[str, Any]) -> tuple[str, str] | None:
+    """Return the stable identity shared by paginated history responses."""
+
+    message_id = message.get("message_id") or message.get("id")
+    if message_id not in (None, ""):
+        return ("message", str(message_id))
+    transcript_id = message.get("transcript_id")
+    if transcript_id not in (None, ""):
+        return ("transcript", str(transcript_id))
+    return None
+
+
+def _history_cursor_key(value: object) -> tuple[int, int] | None:
+    """Parse the stable numeric key returned by canonical history pages."""
+
+    raw = str(value or "").strip()
+    if not raw or "|" not in raw:
+        return None
+    created_at, transcript_id = raw.split("|", 1)
+    try:
+        return int(created_at), int(transcript_id)
+    except ValueError:
+        return None
+
+
+async def session_history_all(
+    session_history: Callable[..., Awaitable[dict[str, Any]]],
+    session_key: str,
+    *,
+    page_size: int = 200,
+) -> dict[str, Any]:
+    """Read every canonical history page without silently exporting a partial session.
+
+    ``chat.history`` returns the newest page first. Older pages are addressed by
+    the response's exclusive ``oldest_cursor``. Anonymous legacy messages are
+    retained; only messages with a stable gateway identity are deduplicated.
+    """
+
+    limit = max(1, min(int(page_size), 200))
+    before: str | None = None
+    seen_cursors: set[str] = set()
+    pages: list[list[dict[str, Any]]] = []
+    newest_response: dict[str, Any] | None = None
+    oldest_response: dict[str, Any] | None = None
+
+    while True:
+        response = await session_history(
+            session_key,
+            limit=limit,
+            before=before,
+            include_canonical=True,
+            include_summaries=False,
+        )
+        if not isinstance(response, dict):
+            raise GatewayRPCError(
+                "chat.history",
+                code="INVALID_HISTORY_PAGE",
+                message="gateway returned a non-object history page",
+            )
+        if response.get("canonical_available") is False:
+            raise GatewayRPCError(
+                "chat.history",
+                code="CANONICAL_HISTORY_UNAVAILABLE",
+                message=(
+                    "complete canonical history is temporarily unavailable; "
+                    "export was cancelled"
+                ),
+            )
+        if response.get("canonical_complete") is False:
+            raise GatewayRPCError(
+                "chat.history",
+                code="CANONICAL_HISTORY_INCOMPLETE",
+                message="older original messages were not preserved; export was cancelled",
+            )
+        raw_messages = response.get("messages")
+        if not isinstance(raw_messages, list):
+            raise GatewayRPCError(
+                "chat.history",
+                code="INVALID_HISTORY_PAGE",
+                message="gateway history page did not contain a messages list",
+            )
+        has_more = bool(response.get("has_more"))
+        next_before: str | None = None
+        if has_more:
+            raw_cursor = response.get("oldest_cursor")
+            next_before = str(raw_cursor).strip() if raw_cursor is not None else ""
+            if not next_before or next_before == before or next_before in seen_cursors:
+                raise GatewayRPCError(
+                    "chat.history",
+                    code="HISTORY_PAGINATION_STALLED",
+                    message="gateway history cursor did not advance; export was cancelled",
+                )
+        if before is not None:
+            requested_key = _history_cursor_key(before)
+            newest_key = _history_cursor_key(response.get("newest_cursor"))
+            if requested_key is None or newest_key is None or newest_key >= requested_key:
+                raise GatewayRPCError(
+                    "chat.history",
+                    code="HISTORY_CURSOR_INVALIDATED",
+                    message=(
+                        "gateway history no longer precedes the requested cursor; "
+                        "the session may have changed and export was cancelled"
+                    ),
+                )
+        pages.append([message for message in raw_messages if isinstance(message, dict)])
+        newest_response = newest_response or response
+        oldest_response = response
+
+        if not has_more:
+            break
+
+        assert next_before is not None
+        seen_cursors.add(next_before)
+        before = next_before
+
+    merged: list[dict[str, Any]] = []
+    seen_messages: set[tuple[str, str]] = set()
+    for page in reversed(pages):
+        for message in page:
+            identity = _history_message_identity(message)
+            if identity is not None:
+                if identity in seen_messages:
+                    continue
+                seen_messages.add(identity)
+            merged.append(message)
+
+    result = dict(oldest_response or newest_response or {})
+    result["messages"] = merged
+    result["has_more"] = False
+    result["loaded_count"] = len(merged)
+    result["page_size"] = limit
+    if newest_response is not None:
+        result["newest_cursor"] = newest_response.get("newest_cursor")
+    return result
 
 
 def gateway_base_is_local(base_url: str | None) -> bool:
@@ -390,10 +526,28 @@ class GatewayClient:
     async def delete_sessions(self, keys: list[str]) -> dict[str, Any]:
         return cast(dict[str, Any], await self._call("sessions.delete", {"keys": keys}))
 
-    async def session_history(self, session_key: str, limit: int = 1000) -> dict[str, Any]:
+    async def session_history(
+        self,
+        session_key: str,
+        limit: int = 1000,
+        *,
+        before: str | None = None,
+        after: str | None = None,
+        include_canonical: bool | None = None,
+        include_summaries: bool | None = None,
+    ) -> dict[str, Any]:
+        params: dict[str, Any] = {"sessionKey": session_key, "limit": limit}
+        if before is not None:
+            params["before"] = before
+        if after is not None:
+            params["after"] = after
+        if include_canonical is not None:
+            params["includeCanonical"] = include_canonical
+        if include_summaries is not None:
+            params["includeSummaries"] = include_summaries
         return cast(
             dict[str, Any],
-            await self._call("chat.history", {"sessionKey": session_key, "limit": limit}),
+            await self._call("chat.history", params),
         )
 
     async def abort_session(self, key: str) -> dict[str, Any]:

@@ -1270,6 +1270,36 @@ class TestSessionsSend:
         ]
 
     @pytest.mark.asyncio
+    async def test_send_apply_intent_waits_for_session_lock(self, dispatcher, session):
+        manager = FakeSessionManager([session])
+        turn_runner = _RecordingTurnRunner()
+        lock = turn_runner._get_session_lock(session.session_key)
+        await lock.acquire()
+        ctx = make_ctx(session_manager=manager, turn_runner=turn_runner)
+
+        send_task = asyncio.create_task(
+            dispatcher.dispatch(
+                "r1",
+                "sessions.send",
+                {"key": session.session_key, "message": "hello"},
+                ctx,
+            )
+        )
+        await asyncio.sleep(0)
+
+        assert manager.applied_intents == []
+        assert send_task.done() is False
+
+        lock.release()
+        res = await send_task
+        background = get_agent_task_registry().get(session.session_key)
+        if background is not None:
+            await background
+
+        assert res.ok is True
+        assert manager.applied_intents == [(session.session_key, "continue")]
+
+    @pytest.mark.asyncio
     async def test_send_preserves_persisted_message_on_context_budget_terminal_error(
         self, dispatcher, session
     ):
@@ -3281,6 +3311,62 @@ class TestSessionsDelete:
         assert res.ok is True
         assert res.payload["deleted"] == []
         assert len(res.payload["errors"]) == 1
+
+    @pytest.mark.asyncio
+    async def test_delete_waits_for_session_lock(self, dispatcher, session):
+        manager = FakeSessionManager([session])
+        turn_runner = _RecordingTurnRunner()
+        lock = turn_runner._get_session_lock(session.session_key)
+        await lock.acquire()
+        ctx = make_ctx(session_manager=manager, turn_runner=turn_runner)
+
+        delete_task = asyncio.create_task(
+            dispatcher.dispatch(
+                "r1",
+                "sessions.delete",
+                {"key": session.session_key},
+                ctx,
+            )
+        )
+        await asyncio.sleep(0)
+
+        assert await manager._storage.get_session(session.session_key) is session
+        assert delete_task.done() is False
+
+        lock.release()
+        res = await delete_task
+
+        assert res.ok is True
+        assert await manager._storage.get_session(session.session_key) is None
+
+    @pytest.mark.asyncio
+    async def test_delete_legacy_alias_uses_canonical_session_lock(self, dispatcher):
+        session = FakeSession(session_key="agent:main:webchat:default")
+        manager = FakeSessionManager([session])
+        turn_runner = _RecordingTurnRunner()
+        canonical_lock = turn_runner._get_session_lock(session.session_key)
+        await canonical_lock.acquire()
+        ctx = make_ctx(session_manager=manager, turn_runner=turn_runner)
+
+        delete_task = asyncio.create_task(
+            dispatcher.dispatch(
+                "r1",
+                "sessions.delete",
+                {"key": "webchat:default"},
+                ctx,
+            )
+        )
+        await asyncio.sleep(0)
+
+        assert delete_task.done() is False
+        assert await manager._storage.get_session(session.session_key) is session
+
+        canonical_lock.release()
+        res = await delete_task
+
+        assert res.ok is True
+        assert res.payload["deleted"] == ["webchat:default"]
+        assert await manager._storage.get_session(session.session_key) is None
 
 
 class TestSessionsCompact:

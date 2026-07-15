@@ -1999,6 +1999,9 @@
     "identityReady": "{label} · prêt",
     "loadEarlier": "Charger les messages précédents",
     "loadingEllipsis": "Chargement...",
+    "loadingEarlier": "Chargement des messages précédents…",
+    "loadEarlierFailedRetry": "Échec du chargement des messages précédents · Réessayer",
+    "legacyHistoryUnavailable": "Les messages originaux précédents n’ont pas été enregistrés par l’ancienne version.",
     "scopeCompacted": "Le contenu plus ancien est représenté par des résumés de session.",
     "scopeLatestWindow": "Affichage de la fenêtre de messages la plus récente.",
     "status": {

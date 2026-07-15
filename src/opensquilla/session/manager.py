@@ -9,7 +9,7 @@ import os
 import re
 import uuid
 from collections.abc import AsyncIterator, Callable
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -38,8 +38,20 @@ from opensquilla.session.models import (
     SessionSummary,
     TranscriptEntry,
 )
-from opensquilla.session.storage import SessionStorage
+from opensquilla.session.storage import (
+    CANONICAL_FORK_PROOF_SCHEMA_VERSION,
+    SessionStorage,
+)
 from opensquilla.session.tokenizer import estimate_tokens
+
+
+@dataclass(frozen=True, slots=True)
+class CanonicalTranscriptPage:
+    """Bounded user-visible transcript page and archive coverage metadata."""
+
+    entries: list[TranscriptEntry]
+    has_more: bool
+    canonical_complete: bool
 
 
 def _validate_iana_name(name: str) -> str | None:
@@ -532,6 +544,11 @@ class SessionManager:
         node.cache_write = 0
         node.context_tokens = None
         node.compaction_count = 0
+        if node.forked_from_parent:
+            node.schema_version = max(
+                node.schema_version,
+                CANONICAL_FORK_PROOF_SCHEMA_VERSION,
+            )
         await self._storage.upsert_session(node)
         return node
 
@@ -657,6 +674,28 @@ class SessionManager:
         max_fork_tokens: int | None = None,
         status: SessionStatus | str = SessionStatus.RUNNING,
         fork_before_message_id: str | None = None,
+        *,
+        mutation_context: Callable[[], contextlib.AbstractAsyncContextManager[None]] | None = None,
+    ) -> SessionNode:
+        """Create a child while optionally holding the parent's mutation lock."""
+        async with _session_mutation_context(mutation_context):
+            return await self._branch_locked(
+                parent_session_key,
+                new_session_key,
+                fork_transcript=fork_transcript,
+                max_fork_tokens=max_fork_tokens,
+                status=status,
+                fork_before_message_id=fork_before_message_id,
+            )
+
+    async def _branch_locked(
+        self,
+        parent_session_key: str,
+        new_session_key: str,
+        fork_transcript: bool = False,
+        max_fork_tokens: int | None = None,
+        status: SessionStatus | str = SessionStatus.RUNNING,
+        fork_before_message_id: str | None = None,
     ) -> SessionNode:
         """
         Create a child session branched from parent.
@@ -694,6 +733,11 @@ class SessionManager:
 
         if fork_transcript:
             is_prefix_fork = bool(fork_before_message_id)
+            parent_coverage = await self._storage.get_canonical_transcript_coverage(
+                parent.session_id
+            )
+            parent_canonical_complete = parent_coverage.canonical_complete
+            parent_compaction_count = parent_coverage.compaction_count
             if fork_before_message_id:
                 canonical_entries = await self._storage.get_canonical_transcript(parent.session_id)
                 fork_index = next(
@@ -721,6 +765,31 @@ class SessionManager:
             )
             parent_tokens = sum(e.token_count or 0 for e in parent_entries) + summary_tokens
             if max_fork_tokens is None or parent_tokens <= max_fork_tokens:
+                if is_prefix_fork:
+                    # A prefix fork rewrites every copied canonical row as active raw
+                    # transcript, so a complete parent needs no inherited compaction
+                    # evidence. If the parent's canonical archive is incomplete, keep
+                    # a durable unmatched count so this child cannot claim completeness
+                    # after the missing rows have already been discarded.
+                    child.compaction_count = (
+                        0
+                        if parent_canonical_complete
+                        else max(1, parent_compaction_count)
+                    )
+                else:
+                    # Full forks copy summaries and compacted rows verbatim. Preserve
+                    # the parent's count. If its incomplete legacy lineage has no
+                    # count of its own, persist an unmatched count so the new fork's
+                    # semantic version cannot accidentally certify missing history.
+                    child.compaction_count = (
+                        parent_compaction_count
+                        if parent_canonical_complete
+                        else max(1, parent_compaction_count)
+                    )
+                child.schema_version = max(
+                    child.schema_version,
+                    CANONICAL_FORK_PROOF_SCHEMA_VERSION,
+                )
                 # Copy entries into child session
                 if not is_prefix_fork:
                     await self._storage.copy_compacted_transcript_entries(
@@ -1031,6 +1100,32 @@ class SessionManager:
         if node is None:
             raise KeyError(f"Session not found: {session_key}")
         return await self._storage.get_canonical_transcript(node.session_id, limit=limit)
+
+    async def get_canonical_transcript_page(
+        self,
+        session_key: str,
+        *,
+        limit: int,
+        before: tuple[int, int] | None = None,
+        after: tuple[int, int] | None = None,
+    ) -> CanonicalTranscriptPage:
+        """Return a bounded canonical page without changing provider replay."""
+        session_key = canonicalize_session_key(session_key)
+        node = await self._storage.get_session(session_key)
+        if node is None:
+            raise KeyError(f"Session not found: {session_key}")
+        entries, has_more = await self._storage.get_canonical_transcript_page(
+            node.session_id,
+            limit=limit,
+            before=before,
+            after=after,
+        )
+        canonical_complete = await self._storage.is_canonical_transcript_complete(node.session_id)
+        return CanonicalTranscriptPage(
+            entries=entries,
+            has_more=has_more,
+            canonical_complete=canonical_complete,
+        )
 
     async def get_summaries(self, session_key: str) -> list[SessionSummary]:
         """Return durable compaction summaries for a session key."""

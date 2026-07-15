@@ -18,6 +18,7 @@ from rich.table import Table
 import opensquilla.cli.tui.adapters.input_bridge as _input_bridge
 from opensquilla.cli.chat.session_state import ChatSessionState, messages_to_markdown
 from opensquilla.cli.chat.turn import TurnResult
+from opensquilla.cli.gateway_client import GatewayRPCError, session_history_all
 from opensquilla.cli.tui.adapters.commands import render_help_table
 from opensquilla.cli.tui.adapters.slash_common import (
     compact_skipped_line,
@@ -99,7 +100,16 @@ class GatewayClientLike(Protocol):
 
     async def abort_session(self, key: str) -> dict[str, Any]: ...
 
-    async def session_history(self, session_key: str, limit: int = 1000) -> dict[str, Any]: ...
+    async def session_history(
+        self,
+        session_key: str,
+        limit: int = 1000,
+        *,
+        before: str | None = None,
+        after: str | None = None,
+        include_canonical: bool | None = None,
+        include_summaries: bool | None = None,
+    ) -> dict[str, Any]: ...
 
     async def forget_approvals(self, target: str | None = None) -> dict[str, Any]: ...
 
@@ -544,7 +554,11 @@ async def _save_gateway_transcript_command(
     cmd: str, state: ChatSessionState, client: GatewayClientLike
 ) -> None:
     target = resolve_transcript_target(cmd, state.session_key)
-    history = await client.session_history(state.session_key, limit=1000)
+    try:
+        history = await session_history_all(client.session_history, state.session_key)
+    except GatewayRPCError as exc:
+        console.print(error_panel(str(exc), title="Could not save transcript"))
+        return
     messages = history.get("messages") or []
     markdown = messages_to_markdown(messages) if isinstance(messages, list) else ""
     if not markdown.strip():

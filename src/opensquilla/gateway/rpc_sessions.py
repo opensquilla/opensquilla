@@ -99,6 +99,31 @@ def _accepts_keyword_arg(func: Any, name: str) -> bool:
     )
 
 
+async def _branch_with_session_mutation_lock(
+    session_manager: Any,
+    turn_runner: Any,
+    parent_key: str,
+    child_key: str,
+    **kwargs: Any,
+) -> Any:
+    """Fork against the same parent write lock used by turns and compaction."""
+    branch = session_manager.branch
+    lock = get_session_lock(turn_runner, parent_key)
+    if lock is None:
+        return await branch(parent_key, child_key, **kwargs)
+    if _accepts_keyword_arg(branch, "mutation_context"):
+        return await branch(
+            parent_key,
+            child_key,
+            mutation_context=lambda: lock,
+            **kwargs,
+        )
+    # Preserve compatibility with older manager-like implementations that do
+    # not yet expose the mutation-context seam.
+    async with lock:
+        return await branch(parent_key, child_key, **kwargs)
+
+
 def _clean_cancel_source(value: Any, default: str) -> str:
     text = str(value or "").strip()
     if not text:
@@ -1262,7 +1287,9 @@ async def _handle_sessions_fork(params: dict | None, ctx: RpcContext) -> dict:
 
     agent_id = _effective_agent_id_for_session(parent, key)
     child_key = _create_session_key(agent_id, "webchat")
-    child = await ctx.session_manager.branch(
+    child = await _branch_with_session_mutation_lock(
+        ctx.session_manager,
+        ctx.turn_runner,
         key,
         child_key,
         fork_transcript=True,
@@ -1369,25 +1396,39 @@ async def _handle_sessions_send(params: dict | None, ctx: RpcContext) -> dict:
     if storage is None:
         raise KeyError("No session storage available")
 
-    session = await storage.get_session(key)
-    if session is None and session_intent is SessionIntent.CONTINUE:
-        raise KeyError(f"Session not found: {key}")
+    intent_lock = get_session_lock(ctx.turn_runner, key)
 
-    if "apply_intent" in dir(ctx.session_manager):
-        session, _intent_applied = await ctx.session_manager.apply_intent(
-            key,
-            session_intent,
-            agent_id=_effective_agent_id_for_session(session, key),
-        )
-    elif session_intent is not SessionIntent.CONTINUE:
-        raise RuntimeError("Session intent handling requires SessionManager.apply_intent")
+    async def _load_and_apply_intent() -> tuple[Any, bool]:
+        current_session = await storage.get_session(key)
+        if current_session is None and session_intent is SessionIntent.CONTINUE:
+            raise KeyError(f"Session not found: {key}")
+        if "apply_intent" in dir(ctx.session_manager):
+            return cast(
+                tuple[Any, bool],
+                await ctx.session_manager.apply_intent(
+                    key,
+                    session_intent,
+                    agent_id=_effective_agent_id_for_session(current_session, key),
+                ),
+            )
+        if session_intent is not SessionIntent.CONTINUE:
+            raise RuntimeError("Session intent handling requires SessionManager.apply_intent")
+        return current_session, False
+
+    if intent_lock is None:
+        session, _intent_applied = await _load_and_apply_intent()
+    else:
+        async with intent_lock:
+            session, _intent_applied = await _load_and_apply_intent()
 
     if fork_before_message_id is not None:
         parent_key = key
         parent_display_name = getattr(session, "display_name", None)
         agent_id = _effective_agent_id_for_session(session, parent_key)
         child_key = _create_session_key(agent_id, "webchat")
-        session = await ctx.session_manager.branch(
+        session = await _branch_with_session_mutation_lock(
+            ctx.session_manager,
+            ctx.turn_runner,
             parent_key,
             child_key,
             fork_transcript=True,
@@ -1623,7 +1664,11 @@ async def _handle_sessions_send(params: dict | None, ctx: RpcContext) -> dict:
         if not message_id or not hasattr(ctx.session_manager, "remove_message"):
             return message_id, False
         try:
-            removed = await ctx.session_manager.remove_message(key, message_id)
+            if _persist_lock is None:
+                removed = await ctx.session_manager.remove_message(key, message_id)
+            else:
+                async with _persist_lock:
+                    removed = await ctx.session_manager.remove_message(key, message_id)
         except Exception as rb_exc:  # noqa: BLE001 — rollback is best-effort
             log.warning(
                 "sessions.send.rollback_failed",
@@ -2393,7 +2438,13 @@ async def _handle_sessions_delete(params: dict | None, ctx: RpcContext) -> dict:
     errors: list[str] = []
     for k in keys:
         try:
-            await storage.delete_session(k)
+            canonical_key = canonicalize_session_key(k)
+            lock = get_session_lock(ctx.turn_runner, canonical_key)
+            if lock is None:
+                await storage.delete_session(canonical_key)
+            else:
+                async with lock:
+                    await storage.delete_session(canonical_key)
             deleted.append(k)
         except Exception as exc:
             errors.append(f"{k}: {exc}")

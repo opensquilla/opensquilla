@@ -1999,6 +1999,9 @@
     "identityReady": "{label} · ready",
     "loadEarlier": "Load earlier messages",
     "loadingEllipsis": "Loading...",
+    "loadingEarlier": "Loading earlier messages…",
+    "loadEarlierFailedRetry": "Earlier messages failed to load · Retry",
+    "legacyHistoryUnavailable": "Earlier original messages were not saved by the older version.",
     "scopeCompacted": "Older content is represented by session summaries.",
     "scopeLatestWindow": "Showing the latest message window.",
     "status": {

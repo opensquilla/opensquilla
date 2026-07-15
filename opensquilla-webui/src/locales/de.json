@@ -1963,6 +1963,7 @@
     "aiModelRouter": "AI-Modell-Router",
     "aiModelEnsembleRouter": "AI-Modell-Ensemble-Router",
     "routerFx": {
+      "selectedModel": "Router hat {model} ausgewählt",
       "ensembleSelecting": "AI-Modell-Ensemble-Router · Kandidaten werden gewählt",
       "ensembleHandedOff": "AI-Modell-Ensemble-Router · an Agent übergeben",
       "ensembleRunning": "AI-Modell-Ensemble-Router · {count} Kandidaten werden synthetisiert",

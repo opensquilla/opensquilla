@@ -1963,6 +1963,7 @@
     "aiModelRouter": "Routeur de modèle IA",
     "aiModelEnsembleRouter": "Routeur agrégé de modèles IA",
     "routerFx": {
+      "selectedModel": "Le routeur a sélectionné {model}",
       "ensembleSelecting": "Routeur agrégé de modèles IA · sélection des candidats",
       "ensembleHandedOff": "Routeur agrégé de modèles IA · transmis à l'agent",
       "ensembleRunning": "Routeur agrégé de modèles IA · {count} candidats en synthèse",

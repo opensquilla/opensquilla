@@ -1963,6 +1963,7 @@
     "aiModelRouter": "AI model router",
     "aiModelEnsembleRouter": "AI model ensemble router",
     "routerFx": {
+      "selectedModel": "Router selected {model}",
       "ensembleSelecting": "AI model ensemble router · selecting candidates",
       "ensembleHandedOff": "AI model ensemble router · handed off to agent",
       "ensembleRunning": "AI model ensemble router · {count} candidates synthesizing",

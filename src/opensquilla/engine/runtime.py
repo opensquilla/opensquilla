@@ -387,6 +387,13 @@ _FEISHU_READ_ONLY_TOOL_NAMES: frozenset[str] = frozenset(
 
 _MUTEX_TOOL_POLICY = _ToolConcurrencyPolicy(mode="mutex")
 _CONCURRENT_TOOL_POLICY = _ToolConcurrencyPolicy(mode="concurrent")
+# Image analysis crosses a provider boundary. Keep slide-thumbnail bursts below
+# the generic safe-tool cap so compatible vision endpoints are not saturated.
+_IMAGE_ANALYSIS_TOOL_POLICY = _ToolConcurrencyPolicy(
+    mode="concurrent",
+    max_inflight=2,
+    limit_key=("media", "image_analysis"),
+)
 _FEISHU_READ_TOOL_POLICY = _ToolConcurrencyPolicy(
     mode="concurrent",
     max_inflight=4,
@@ -400,6 +407,8 @@ def _get_tool_concurrency_policy(
     *,
     parent_session_key: str | None = None,
 ) -> _ToolConcurrencyPolicy:
+    if tool_name == "image":
+        return _IMAGE_ANALYSIS_TOOL_POLICY
     if tool_name in _SAFE_TOOL_NAMES:
         return _CONCURRENT_TOOL_POLICY
     if tool_name in _FEISHU_READ_ONLY_TOOL_NAMES:

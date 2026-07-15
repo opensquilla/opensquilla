@@ -1158,7 +1158,7 @@
       "copyDiagnostics": "复制诊断 JSON",
       "copiedDiagnostics": "诊断 JSON 已复制",
       "diagnoseWithAgent": "让 Agent 排查",
-      "diagnosePrompt": "请根据下方的 doctor 报告排查此 OpenSquilla 配置：给出根本原因和最小修复步骤；不要执行破坏性命令。",
+      "diagnosePrompt": "请根据下方的客户端上下文和 doctor 报告排查此 OpenSquilla 配置。优先使用适用的 App 内设置；hasTerminalWorkflow 为 false 时，不得建议裸 opensquilla 命令，Desktop 自有 gateway 由 App 管理。数据转移是先备份再整体替换，绝不合并。可选迁移项不代表故障，转移后也可能继续显示。只解释和引导：不得迁移数据、重启 gateway、写入设置或声称已经执行了更改。",
       "environment": "环境",
       "latency": "延迟"
     }

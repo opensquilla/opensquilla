@@ -1158,7 +1158,7 @@
       "copyDiagnostics": "Diagnose-JSON kopieren",
       "copiedDiagnostics": "Diagnose-JSON kopiert",
       "diagnoseWithAgent": "Mit dem Agenten diagnostizieren",
-      "diagnosePrompt": "Bitte analysieren Sie diese OpenSquilla-Konfiguration anhand des folgenden doctor-Berichts; nennen Sie die Grundursache und minimale Korrekturschritte; führen Sie keine destruktiven Befehle aus.",
+      "diagnosePrompt": "Bitte analysieren Sie diese OpenSquilla-Konfiguration anhand des folgenden Client-Kontexts und doctor-Berichts. Bevorzugen Sie passende Einstellungen in der App. Wenn hasTerminalWorkflow false ist, schlagen Sie keine bloßen opensquilla-Befehle vor; ein eigener Desktop-Gateway wird von der App verwaltet. Eine Datenübertragung bedeutet Sicherung und anschließenden vollständigen Ersatz, niemals Zusammenführung. Ein optionaler Migrationseintrag ist kein Fehler und kann nach der Übertragung sichtbar bleiben. Erklären und leiten Sie nur an: Migrieren Sie keine Daten, starten Sie den Gateway nicht neu, schreiben Sie keine Einstellungen und behaupten Sie nicht, Änderungen ausgeführt zu haben.",
       "environment": "Umgebung",
       "latency": "Latenz"
     }

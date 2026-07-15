@@ -1158,7 +1158,7 @@
       "copyDiagnostics": "Copy diagnostics JSON",
       "copiedDiagnostics": "Diagnostics JSON copied",
       "diagnoseWithAgent": "Diagnose with agent",
-      "diagnosePrompt": "Please troubleshoot this OpenSquilla configuration using the doctor report below; propose the root cause and minimal fix steps; do not run destructive commands.",
+      "diagnosePrompt": "Please troubleshoot this OpenSquilla configuration using the client context and doctor report below. Prefer applicable in-app Settings. When hasTerminalWorkflow is false, do not suggest bare opensquilla commands; an owned Desktop gateway is managed by the app. Data transfer means backup followed by whole-data replacement, never a merge. An optional migration item is not a fault and may remain visible after transfer. Explain and guide only: do not migrate data, restart the gateway, write settings, or claim changes were performed.",
       "environment": "Environment",
       "latency": "Latency"
     }

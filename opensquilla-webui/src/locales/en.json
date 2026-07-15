@@ -1257,6 +1257,75 @@
       "hintConfiguredInactive": "Configured on disk but not active in this gateway process — restart the gateway to load it."
     }
   },
+  "rag": {
+    "title": "Knowledge search",
+    "subtitle": "Search the connected RAG provider and read citable source text.",
+    "refresh": "Refresh",
+    "refreshing": "Refreshing",
+    "management": "Provider management",
+    "managementLocalOnly": "The provider exposed a local-only management path.",
+    "status": {
+      "ready": "Ready",
+      "degraded": "Temporarily unavailable",
+      "unavailable": "Unavailable",
+      "incompatible": "Incompatible",
+      "connecting": "Connecting",
+      "disabled": "Disabled",
+      "legacy": "Compatibility mode"
+    },
+    "profile": {
+      "title": "Default retrieval method",
+      "description": "Controls future knowledge_search calls from this OpenSquilla instance.",
+      "current": "Currently effective",
+      "providerDefault": "Provider default",
+      "followProvider": "Follow provider default",
+      "notDeclared": "No provider default declared",
+      "providerDefaultBadge": "Provider default",
+      "activeBadge": "In use",
+      "unsaved": "Unsaved changes",
+      "unavailable": "The saved retrieval method is no longer available.",
+      "save": "Set as OpenSquilla default",
+      "saving": "Saving"
+    },
+    "search": {
+      "title": "Search knowledge",
+      "placeholder": "Enter a question, topic, company, product, or event…",
+      "advanced": "Advanced options",
+      "limit": "Results to return",
+      "submit": "Search",
+      "searching": "Searching"
+    },
+    "results": {
+      "title": "Results",
+      "returned": "{count} returned",
+      "matched": "{count} matched",
+      "truncated": "Results truncated",
+      "budgetTrimmed": "Trimmed to the OpenSquilla budget",
+      "snippetTruncated": "Snippet truncated",
+      "empty": "Search the knowledge base to see citable evidence."
+    },
+    "reader": {
+      "title": "Source reader",
+      "empty": "Select a result to read its source text.",
+      "loading": "Loading source text",
+      "backToResults": "Back to results",
+      "previous": "Previous segment",
+      "next": "Next segment",
+      "legacyLimited": "Compatibility mode only guarantees text near the matched chunk, not the complete document."
+    },
+    "details": {
+      "title": "Provider connection and protocol details",
+      "connection": "Connection",
+      "protocol": "Protocol capabilities",
+      "budgets": "Response budgets"
+    },
+    "errors": {
+      "invalidStatusResponse": "Invalid RAG provider status response",
+      "invalidProfileResponse": "Invalid retrieval profile response",
+      "invalidSearchResponse": "Invalid RAG search response",
+      "invalidGetResponse": "Invalid RAG source response"
+    }
+  },
   "cronSkills": {
     "view": {
       "title": "Cron Jobs",

@@ -1257,6 +1257,75 @@
       "hintConfiguredInactive": "已在磁盘上配置，但在当前网关进程中未激活——请重启网关以加载它。"
     }
   },
+  "rag": {
+    "title": "知识检索",
+    "subtitle": "通过已连接的 RAG Provider 检索外部知识，并查看可引用原文。",
+    "refresh": "刷新",
+    "refreshing": "刷新中",
+    "management": "Provider 管理",
+    "managementLocalOnly": "Provider 提供了仅本机可用的管理入口。",
+    "status": {
+      "ready": "就绪",
+      "degraded": "暂时不可用",
+      "unavailable": "不可用",
+      "incompatible": "不兼容",
+      "connecting": "连接中",
+      "disabled": "已禁用",
+      "legacy": "兼容模式"
+    },
+    "profile": {
+      "title": "默认检索方式",
+      "description": "控制此 OpenSquilla 实例后续的 knowledge_search 调用。",
+      "current": "当前生效",
+      "providerDefault": "Provider 默认",
+      "followProvider": "跟随 Provider 默认",
+      "notDeclared": "Provider 未声明默认值",
+      "providerDefaultBadge": "Provider 默认",
+      "activeBadge": "使用中",
+      "unsaved": "有未保存的更改",
+      "unavailable": "已保存的检索方式已不可用。",
+      "save": "设为 OpenSquilla 默认",
+      "saving": "保存中"
+    },
+    "search": {
+      "title": "检索知识",
+      "placeholder": "输入问题、主题、公司、产品或事件…",
+      "advanced": "高级选项",
+      "limit": "返回结果数",
+      "submit": "检索",
+      "searching": "检索中"
+    },
+    "results": {
+      "title": "结果",
+      "returned": "返回 {count} 条",
+      "matched": "匹配 {count} 条",
+      "truncated": "结果已截断",
+      "budgetTrimmed": "OpenSquilla 已按预算裁剪",
+      "snippetTruncated": "片段已截断",
+      "empty": "检索知识库以查看可引用证据。"
+    },
+    "reader": {
+      "title": "原文阅读器",
+      "empty": "选择一条结果以查看其原文。",
+      "loading": "正在加载原文",
+      "backToResults": "返回结果",
+      "previous": "上一段",
+      "next": "下一段",
+      "legacyLimited": "兼容模式仅保证匹配片段附近的文本，不代表完整文档。"
+    },
+    "details": {
+      "title": "Provider 连接与协议详情",
+      "connection": "连接",
+      "protocol": "协议能力",
+      "budgets": "响应预算"
+    },
+    "errors": {
+      "invalidStatusResponse": "RAG Provider 状态响应无效",
+      "invalidProfileResponse": "检索 Profile 响应无效",
+      "invalidSearchResponse": "RAG 检索响应无效",
+      "invalidGetResponse": "RAG 原文响应无效"
+    }
+  },
   "cronSkills": {
     "view": {
       "title": "定时任务",

@@ -1257,6 +1257,75 @@
       "hintConfiguredInactive": "Configurado en disco pero no activo en este proceso de la puerta de enlace; reinicia la puerta de enlace para cargarlo."
     }
   },
+  "rag": {
+    "title": "Búsqueda de conocimiento",
+    "subtitle": "Busca en el proveedor RAG conectado y consulta texto fuente apto para citar.",
+    "refresh": "Actualizar",
+    "refreshing": "Actualizando…",
+    "management": "Gestión del proveedor",
+    "managementLocalOnly": "El proveedor ofrece una ruta de gestión accesible solo desde el equipo local.",
+    "status": {
+      "ready": "Listo",
+      "degraded": "Temporalmente no disponible",
+      "unavailable": "No disponible",
+      "incompatible": "No compatible",
+      "connecting": "Conectando…",
+      "disabled": "Desactivado",
+      "legacy": "Modo de compatibilidad"
+    },
+    "profile": {
+      "title": "Método de recuperación predeterminado",
+      "description": "Controla las futuras llamadas a knowledge_search de esta instancia de OpenSquilla.",
+      "current": "Activo actualmente",
+      "providerDefault": "Valor predeterminado del proveedor",
+      "followProvider": "Seguir el valor predeterminado del proveedor",
+      "notDeclared": "El proveedor no ha declarado un valor predeterminado",
+      "providerDefaultBadge": "Definido por el proveedor",
+      "activeBadge": "En uso",
+      "unsaved": "Cambios sin guardar",
+      "unavailable": "El método de recuperación guardado ya no está disponible.",
+      "save": "Usar como predeterminado en OpenSquilla",
+      "saving": "Guardando…"
+    },
+    "search": {
+      "title": "Buscar conocimiento",
+      "placeholder": "Introduce una pregunta, un tema, una empresa, un producto o un evento…",
+      "advanced": "Opciones avanzadas",
+      "limit": "Número de resultados",
+      "submit": "Buscar",
+      "searching": "Buscando…"
+    },
+    "results": {
+      "title": "Resultados",
+      "returned": "Resultados devueltos: {count}",
+      "matched": "Coincidencias: {count}",
+      "truncated": "Resultados truncados",
+      "budgetTrimmed": "Ajustados al presupuesto de OpenSquilla",
+      "snippetTruncated": "Fragmento truncado",
+      "empty": "Busca en la base de conocimiento para ver evidencias citables."
+    },
+    "reader": {
+      "title": "Lector de fuentes",
+      "empty": "Selecciona un resultado para leer su texto fuente.",
+      "loading": "Cargando texto fuente",
+      "backToResults": "Volver a los resultados",
+      "previous": "Segmento anterior",
+      "next": "Segmento siguiente",
+      "legacyLimited": "El modo de compatibilidad solo garantiza el texto cercano al fragmento coincidente, no el documento completo."
+    },
+    "details": {
+      "title": "Detalles de conexión y protocolo del proveedor",
+      "connection": "Conexión",
+      "protocol": "Capacidades del protocolo",
+      "budgets": "Presupuestos de respuesta"
+    },
+    "errors": {
+      "invalidStatusResponse": "Respuesta de estado del proveedor RAG no válida",
+      "invalidProfileResponse": "Respuesta del perfil de recuperación no válida",
+      "invalidSearchResponse": "Respuesta de búsqueda RAG no válida",
+      "invalidGetResponse": "Respuesta de fuente RAG no válida"
+    }
+  },
   "cronSkills": {
     "view": {
       "title": "Tareas cron",

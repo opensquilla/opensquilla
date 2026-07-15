@@ -1257,6 +1257,75 @@
       "hintConfiguredInactive": "ディスク上に設定されていますが、このゲートウェイプロセスではアクティブではありません — ゲートウェイを再起動して読み込んでください。"
     }
   },
+  "rag": {
+    "title": "ナレッジ検索",
+    "subtitle": "接続済みの RAG プロバイダーで検索し、引用可能な原文を閲覧します。",
+    "refresh": "更新",
+    "refreshing": "更新中",
+    "management": "プロバイダー管理",
+    "managementLocalOnly": "プロバイダーから、ローカル環境でのみ利用できる管理パスが提供されています。",
+    "status": {
+      "ready": "利用可能",
+      "degraded": "一時的に利用できません",
+      "unavailable": "利用不可",
+      "incompatible": "互換性なし",
+      "connecting": "接続中",
+      "disabled": "無効",
+      "legacy": "互換モード"
+    },
+    "profile": {
+      "title": "既定の検索方式",
+      "description": "この OpenSquilla インスタンスから今後行われる knowledge_search 呼び出しを制御します。",
+      "current": "現在有効",
+      "providerDefault": "プロバイダーの既定値",
+      "followProvider": "プロバイダーの既定値に従う",
+      "notDeclared": "プロバイダーの既定値は宣言されていません",
+      "providerDefaultBadge": "プロバイダーの既定値",
+      "activeBadge": "使用中",
+      "unsaved": "未保存の変更",
+      "unavailable": "保存済みの検索方式は利用できなくなりました。",
+      "save": "OpenSquilla の既定値に設定",
+      "saving": "保存中"
+    },
+    "search": {
+      "title": "ナレッジを検索",
+      "placeholder": "質問、トピック、企業、製品、イベントを入力…",
+      "advanced": "詳細オプション",
+      "limit": "取得する結果数",
+      "submit": "検索",
+      "searching": "検索中"
+    },
+    "results": {
+      "title": "結果",
+      "returned": "{count} 件を返しました",
+      "matched": "{count} 件が一致",
+      "truncated": "結果は切り詰められました",
+      "budgetTrimmed": "OpenSquilla の上限に合わせて短縮",
+      "snippetTruncated": "スニペットは切り詰められました",
+      "empty": "ナレッジベースを検索すると、引用可能な根拠が表示されます。"
+    },
+    "reader": {
+      "title": "原文ビューア",
+      "empty": "結果を選択すると原文を表示します。",
+      "loading": "原文を読み込み中",
+      "backToResults": "結果に戻る",
+      "previous": "前のセグメント",
+      "next": "次のセグメント",
+      "legacyLimited": "互換モードでは、文書全体ではなく、一致したチャンク付近のテキストのみが保証されます。"
+    },
+    "details": {
+      "title": "プロバイダー接続とプロトコルの詳細",
+      "connection": "接続",
+      "protocol": "プロトコル機能",
+      "budgets": "レスポンス上限"
+    },
+    "errors": {
+      "invalidStatusResponse": "RAG プロバイダーのステータス応答が無効です",
+      "invalidProfileResponse": "検索プロファイルの応答が無効です",
+      "invalidSearchResponse": "RAG 検索の応答が無効です",
+      "invalidGetResponse": "RAG 原文の応答が無効です"
+    }
+  },
   "cronSkills": {
     "view": {
       "title": "スケジュールジョブ",

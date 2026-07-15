@@ -1257,6 +1257,75 @@
       "hintConfiguredInactive": "Auf der Festplatte konfiguriert, aber in diesem Gateway-Prozess nicht aktiv — starten Sie das Gateway neu, um ihn zu laden."
     }
   },
+  "rag": {
+    "title": "Wissenssuche",
+    "subtitle": "Den verbundenen RAG-Anbieter nach Wissen durchsuchen und zitierfähigen Quellentext lesen.",
+    "refresh": "Aktualisieren",
+    "refreshing": "Wird aktualisiert…",
+    "management": "Anbieterverwaltung",
+    "managementLocalOnly": "Der Anbieter stellt einen Verwaltungspfad bereit, der nur lokal erreichbar ist.",
+    "status": {
+      "ready": "Bereit",
+      "degraded": "Vorübergehend nicht verfügbar",
+      "unavailable": "Nicht verfügbar",
+      "incompatible": "Inkompatibel",
+      "connecting": "Verbindung wird hergestellt…",
+      "disabled": "Deaktiviert",
+      "legacy": "Kompatibilitätsmodus"
+    },
+    "profile": {
+      "title": "Standard-Abrufmethode",
+      "description": "Steuert zukünftige knowledge_search-Aufrufe dieser OpenSquilla-Instanz.",
+      "current": "Derzeit aktiv",
+      "providerDefault": "Anbieterstandard",
+      "followProvider": "Anbieterstandard verwenden",
+      "notDeclared": "Kein Anbieterstandard angegeben",
+      "providerDefaultBadge": "Anbieterstandard",
+      "activeBadge": "In Verwendung",
+      "unsaved": "Nicht gespeicherte Änderungen",
+      "unavailable": "Die gespeicherte Abrufmethode ist nicht mehr verfügbar.",
+      "save": "OpenSquilla-Standard setzen",
+      "saving": "Wird gespeichert…"
+    },
+    "search": {
+      "title": "Wissen durchsuchen",
+      "placeholder": "Frage, Thema, Unternehmen, Produkt oder Ereignis eingeben…",
+      "advanced": "Erweiterte Optionen",
+      "limit": "Anzahl der Ergebnisse",
+      "submit": "Suchen",
+      "searching": "Suche läuft…"
+    },
+    "results": {
+      "title": "Ergebnisse",
+      "returned": "{count} zurückgegeben",
+      "matched": "{count} Treffer",
+      "truncated": "Ergebnisse gekürzt",
+      "budgetTrimmed": "Auf das OpenSquilla-Budget gekürzt",
+      "snippetTruncated": "Textauszug gekürzt",
+      "empty": "Die Wissensdatenbank durchsuchen, um zitierfähige Belege anzuzeigen."
+    },
+    "reader": {
+      "title": "Quellenansicht",
+      "empty": "Ein Ergebnis auswählen, um den Quellentext zu lesen.",
+      "loading": "Quellentext wird geladen",
+      "backToResults": "Zurück zu den Ergebnissen",
+      "previous": "Vorheriger Abschnitt",
+      "next": "Nächster Abschnitt",
+      "legacyLimited": "Der Kompatibilitätsmodus garantiert nur Text in der Nähe des übereinstimmenden Abschnitts, nicht das vollständige Dokument."
+    },
+    "details": {
+      "title": "Anbieterverbindung und Protokolldetails",
+      "connection": "Verbindung",
+      "protocol": "Protokollfunktionen",
+      "budgets": "Antwortbudgets"
+    },
+    "errors": {
+      "invalidStatusResponse": "Ungültige Statusantwort des RAG-Anbieters",
+      "invalidProfileResponse": "Ungültige Antwort zum Abrufprofil",
+      "invalidSearchResponse": "Ungültige RAG-Suchantwort",
+      "invalidGetResponse": "Ungültige RAG-Quellantwort"
+    }
+  },
   "cronSkills": {
     "view": {
       "title": "Cron-Jobs",

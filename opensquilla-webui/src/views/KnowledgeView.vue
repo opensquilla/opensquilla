@@ -2,138 +2,102 @@
   <div class="rag-provider control-stage control-stage--spacious">
     <header class="control-stage__header">
       <div class="control-stage__title-block">
-        <h1 class="control-stage__title">RAG Provider</h1>
-        <p class="control-stage__subtitle">外部知识检索连接状态、协议能力与合同测试</p>
+        <h1 class="control-stage__title">{{ t('rag.title') }}</h1>
+        <p class="control-stage__subtitle">{{ t('rag.subtitle') }}</p>
       </div>
-      <button class="btn btn--ghost" type="button" :disabled="loading" @click="loadStatus">
-        {{ loading ? '刷新中' : '刷新状态' }}
+      <button
+        data-testid="rag-refresh"
+        class="btn btn--ghost"
+        type="button"
+        :disabled="loadingStatus"
+        @click="refreshStatus"
+      >
+        {{ loadingStatus ? t('rag.refreshing') : t('rag.refresh') }}
       </button>
     </header>
 
-    <p v-if="error" class="rag-provider__error" role="alert">{{ error }}</p>
-
-    <section class="control-stat-grid control-stat-grid--fixed" style="--control-stat-columns: 4">
-      <article class="control-stat control-stat--static">
-        <span class="control-stat__label">连接状态</span>
-        <strong data-testid="rag-state" class="control-stat__value">{{ status?.connectionState || '—' }}</strong>
-        <span class="control-stat__hint">{{ stateHint }}</span>
-      </article>
-      <article class="control-stat control-stat--static">
-        <span class="control-stat__label">Provider</span>
-        <strong class="control-stat__value">{{ status?.provider?.name || '—' }}</strong>
-        <span class="control-stat__hint">{{ providerIdentity }}</span>
-      </article>
-      <article class="control-stat control-stat--static">
-        <span class="control-stat__label">协议</span>
-        <strong class="control-stat__value">{{ status?.protocolVersion || '—' }}</strong>
-        <span class="control-stat__hint">search {{ capabilityLabel(status?.capabilities?.search) }} · get {{ capabilityLabel(status?.capabilities?.get) }}</span>
-      </article>
-      <article class="control-stat control-stat--static">
-        <span class="control-stat__label">上次成功</span>
-        <strong class="control-stat__value">{{ lastSuccess }}</strong>
-        <span class="control-stat__hint">失败计数 {{ status?.consecutiveFailures ?? 0 }}</span>
-      </article>
+    <section class="rag-provider__status-line control-panel" aria-live="polite">
+      <span
+        data-testid="rag-state"
+        class="control-pill"
+        :class="statusToneClass"
+      >
+        {{ statusLabel }}
+      </span>
+      <strong data-testid="rag-provider-name">{{ status?.provider?.name || '—' }}</strong>
+      <span v-if="status?.protocolVersion">{{ status.protocolVersion }}</span>
+      <a
+        v-if="managementUrl"
+        class="btn btn--ghost"
+        :href="managementUrl"
+        target="_blank"
+        rel="noopener noreferrer"
+      >
+        {{ t('rag.management') }}
+      </a>
+      <span v-else-if="hasLocalManagementHint" class="rag-provider__hint">
+        {{ t('rag.managementLocalOnly') }}
+      </span>
     </section>
 
-    <section v-if="status?.warning" class="control-panel rag-provider__warning" role="status">
+    <p v-if="statusError" class="rag-provider__error" role="alert">
+      {{ statusError }}
+    </p>
+    <p v-if="status?.warning" class="rag-provider__warning" role="status">
       {{ status.warning }}
-    </section>
+    </p>
 
-    <div class="rag-provider__grid">
-      <section class="control-panel">
-        <div class="control-panel__head">
-          <div>
-            <span class="control-panel__eyebrow">Capabilities</span>
-            <h2 class="control-panel__title">生效能力与预算</h2>
-          </div>
-          <a
-            v-if="status?.links.management"
-            class="btn btn--ghost"
-            :href="status.links.management"
-            target="_blank"
-            rel="noopener noreferrer"
-          >打开 Provider 管理页面</a>
-        </div>
-        <dl class="rag-provider__details">
-          <div><dt>Search 数量</dt><dd>{{ status?.effectiveLimits?.maxSearchResults ?? '—' }}</dd></div>
-          <div><dt>Snippet 字符</dt><dd>{{ status?.effectiveLimits?.maxSnippetChars ?? '—' }}</dd></div>
-          <div><dt>Search 总字符</dt><dd>{{ status?.effectiveLimits?.maxSearchResponseChars ?? '—' }}</dd></div>
-          <div><dt>Get 正文字符</dt><dd>{{ status?.effectiveLimits?.maxGetContentChars ?? '—' }}</dd></div>
-          <div><dt>Collection scope</dt><dd>{{ scopeLabel }}</dd></div>
-          <div><dt>Profile override</dt><dd>{{ status?.retrievalProfileOverride || 'Provider 默认' }}</dd></div>
-          <div><dt>Provider 默认 profile</dt><dd>{{ status?.searchOptions?.defaultRetrievalProfile || '—' }}</dd></div>
-          <div><dt>最近错误</dt><dd>{{ status?.lastErrorCode || '无' }}</dd></div>
-        </dl>
-      </section>
+    <KnowledgeProfileSelector
+      :profiles="status?.searchOptions?.retrievalProfiles ?? []"
+      :provider-default="status?.searchOptions?.defaultRetrievalProfile ?? null"
+      :saved-override="savedOverride"
+      :draft="profileDraft"
+      :saving="savingProfile"
+      :disabled="profileDisabled"
+      :error="profileError"
+      @change="profileDraft = $event"
+      @save="saveProfile"
+    />
 
-      <section class="control-panel">
-        <div class="control-panel__head">
-          <div>
-            <span class="control-panel__eyebrow">Contract test</span>
-            <h2 class="control-panel__title">测试检索</h2>
-          </div>
-        </div>
-        <form class="rag-provider__search" @submit.prevent="search">
-          <textarea
-            v-model="query"
-            data-testid="rag-query"
-            class="control-input"
-            rows="3"
-            placeholder="输入要发送给 knowledge.search 的查询"
-          />
-          <label>
-            <span>Limit</span>
-            <input v-model.number="limit" class="control-input" type="number" min="1" max="20" />
-          </label>
-          <button
-            data-testid="rag-search"
-            class="btn btn--primary"
-            type="submit"
-            :disabled="searching || !canSearch || !query.trim()"
-          >{{ searching ? '检索中' : '执行检索' }}</button>
-        </form>
-        <p v-if="searchResponse" class="rag-provider__summary">
-          返回 {{ searchResponse.returnedCount }} 条
-          <template v-if="searchResponse.totalMatched !== null"> · 匹配 {{ searchResponse.totalMatched }} 条</template>
-          <template v-if="searchResponse.resultsTruncated"> · Provider 已截断</template>
-          <template v-if="searchResponse.providerBudgetViolation"> · OpenSquilla 已执行预算裁剪</template>
-        </p>
-        <div class="rag-provider__results">
-          <article v-for="item in searchResponse?.results || []" :key="item.evidenceId" class="control-card">
-            <strong>{{ item.citation.title }}</strong>
-            <small>{{ item.citation.source || item.citation.locator || item.evidenceId }}</small>
-            <p>{{ item.snippet }}<span v-if="item.snippetTruncated">…</span></p>
-            <button class="btn btn--ghost" type="button" :disabled="reading || !status?.capabilities?.get" @click="readEvidence(item.evidenceId, null)">
-              读取原文
-            </button>
-          </article>
-        </div>
-      </section>
-    </div>
+    <KnowledgeSearchWorkspace
+      v-model:query="query"
+      v-model:limit="limit"
+      :can-search="canSearch"
+      :searching="searching"
+      :search-error="searchError"
+      :search-response="searchResponse"
+      :selected-evidence-id="selectedEvidenceId"
+      :get-response="getResponse"
+      :reading="reading"
+      :read-error="readError"
+      :mobile-reader-open="mobileReaderOpen"
+      @search="search"
+      @select="selectEvidence"
+      @page="readEvidence"
+      @close-reader="closeMobileReader"
+    />
 
-    <section v-if="getResponse" class="control-panel rag-provider__reader">
-      <div class="control-panel__head">
-        <div>
-          <span class="control-panel__eyebrow">Evidence</span>
-          <h2 class="control-panel__title">{{ getResponse.document.title }}</h2>
-        </div>
-        <span>{{ getResponse.citation.locator || getResponse.document.source }}</span>
-      </div>
-      <p v-if="getResponse.legacyLimitedGet" class="rag-provider__warning">Legacy 模式只保证旧 chunk 内容，不代表完整全文。</p>
-      <pre data-testid="rag-content" class="rag-provider__content">{{ getResponse.content }}</pre>
-      <div class="rag-provider__pager">
-        <button class="btn btn--ghost" type="button" :disabled="reading || !getResponse.previousCursor" @click="readEvidence(getResponse.evidenceId, getResponse.previousCursor)">上一页</button>
-        <button class="btn btn--ghost" type="button" :disabled="reading || !getResponse.nextCursor" @click="readEvidence(getResponse.evidenceId, getResponse.nextCursor)">下一页</button>
-      </div>
-    </section>
+    <KnowledgeProviderDetails :status="status" />
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import {
+  computed,
+  onActivated,
+  onDeactivated,
+  onUnmounted,
+  ref,
+} from 'vue'
+import { useI18n } from 'vue-i18n'
+import KnowledgeProfileSelector from '@/components/knowledge/KnowledgeProfileSelector.vue'
+import KnowledgeProviderDetails from '@/components/knowledge/KnowledgeProviderDetails.vue'
+import KnowledgeSearchWorkspace from '@/components/knowledge/KnowledgeSearchWorkspace.vue'
 import { useRpcStore } from '@/stores/rpc'
 import {
+  browserManagementLink,
   normalizeRagGetResponse,
+  normalizeRagProfileSetResponse,
   normalizeRagProviderStatus,
   normalizeRagSearchResponse,
   type RagGetResponse,
@@ -141,120 +105,262 @@ import {
   type RagSearchResponse,
 } from './ragProvider'
 
+interface LoadStatusOptions {
+  preserveDraft?: boolean
+}
+
+const MOBILE_READER_QUERY = '(max-width: 900px)'
 const rpc = useRpcStore()
+const { t } = useI18n()
+
 const status = ref<RagProviderStatus | null>(null)
-const searchResponse = ref<RagSearchResponse | null>(null)
-const getResponse = ref<RagGetResponse | null>(null)
-const loading = ref(false)
-const searching = ref(false)
-const reading = ref(false)
-const error = ref('')
+const savedOverride = ref<string | null>(null)
+const profileDraft = ref<string | null>(null)
 const query = ref('')
 const limit = ref(8)
+const searchResponse = ref<RagSearchResponse | null>(null)
+const selectedEvidenceId = ref<string | null>(null)
+const getResponse = ref<RagGetResponse | null>(null)
 
-const canSearch = computed(() => status.value?.connectionState === 'READY' || status.value?.connectionState === 'LEGACY')
-const providerIdentity = computed(() => {
-  const provider = status.value?.provider
-  return provider ? `${provider.version} · ${provider.instanceId}` : '尚未发现兼容 Provider'
-})
-const scopeLabel = computed(() => status.value?.collectionScope.length ? status.value.collectionScope.join(', ') : '未限制')
-const lastSuccess = computed(() => {
-  const value = status.value?.lastSuccessAt
-  return value ? new Date(value * 1000).toLocaleString() : '—'
-})
-const stateHint = computed(() => {
-  switch (status.value?.connectionState) {
-    case 'READY': return '标准协议可用，工具已注册'
-    case 'DEGRADED': return '短暂故障，工具保留但调用会安全失败'
-    case 'UNAVAILABLE': return 'Provider 不可用，工具已注销'
-    case 'INCOMPATIBLE': return '协议主版本不兼容'
-    case 'CONNECTING': return '正在发现能力'
-    case 'LEGACY': return '显式旧版兼容模式'
-    default: return '默认关闭，不建立网络连接'
+const loadingStatus = ref(false)
+const savingProfile = ref(false)
+const searching = ref(false)
+const reading = ref(false)
+
+const statusError = ref('')
+const profileError = ref('')
+const searchError = ref('')
+const readError = ref('')
+const mobileReaderOpen = ref(false)
+
+let statusRequestId = 0
+
+const profileDirty = computed(() => profileDraft.value !== savedOverride.value)
+const profileDisabled = computed(() => status.value?.searchOptions === null || !status.value)
+const canSearch = computed(
+  () => status.value?.connectionState === 'READY' || status.value?.connectionState === 'LEGACY',
+)
+const managementUrl = computed(
+  () => browserManagementLink(status.value?.links.management),
+)
+const hasLocalManagementHint = computed(
+  () => Boolean(status.value?.links.management) && !managementUrl.value,
+)
+const statusLabel = computed(() => {
+  if (!status.value) {
+    return t(loadingStatus.value ? 'rag.status.connecting' : 'rag.status.disabled')
   }
+  return t(`rag.status.${status.value.connectionState.toLowerCase()}`)
 })
-
-function capabilityLabel(value: boolean | undefined): string {
-  return value === true ? '可用' : '不可用'
-}
+const statusToneClass = computed(() => ({
+  'control-pill--ok': status.value?.connectionState === 'READY',
+  'control-pill--warn': ['DEGRADED', 'INCOMPATIBLE', 'UNAVAILABLE'].includes(
+    status.value?.connectionState ?? '',
+  ),
+}))
 
 function message(value: unknown): string {
   return value instanceof Error ? value.message : String(value)
 }
 
-async function loadStatus() {
-  loading.value = true
-  error.value = ''
+function isMobileViewport(): boolean {
+  return window.matchMedia(MOBILE_READER_QUERY).matches
+}
+
+function readerMarker(state: unknown): string | null {
+  if (!state || typeof state !== 'object' || Array.isArray(state)) return null
+  const value = (state as Record<string, unknown>).ragReader
+  return typeof value === 'string' && value.trim() ? value : null
+}
+
+function currentHistoryState(): Record<string, unknown> {
+  const value = window.history.state
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {}
+}
+
+function openMobileReader(evidenceId: string) {
+  if (!isMobileViewport()) return
+  const nextState = { ...currentHistoryState(), ragReader: evidenceId }
+  if (mobileReaderOpen.value) window.history.replaceState(nextState, '')
+  else window.history.pushState(nextState, '')
+  mobileReaderOpen.value = true
+}
+
+function consumeMobileReaderMarker() {
+  const hasMarker = readerMarker(window.history.state) !== null
+  mobileReaderOpen.value = false
+  if (hasMarker) window.history.back()
+}
+
+function syncMobileReader(state: unknown) {
+  mobileReaderOpen.value = isMobileViewport() && readerMarker(state) !== null
+}
+
+async function loadStatus({ preserveDraft = true }: LoadStatusOptions = {}) {
+  const requestId = ++statusRequestId
+  loadingStatus.value = true
+  statusError.value = ''
   try {
     await rpc.waitForConnection()
     const normalized = normalizeRagProviderStatus(await rpc.call('knowledge.status', {}))
-    if (!normalized) throw new Error('Invalid RAG Provider status response')
+    if (!normalized) throw new Error(t('rag.errors.invalidStatusResponse'))
+    if (requestId !== statusRequestId) return
+
+    const keepDirtyDraft = preserveDraft && profileDirty.value
     status.value = normalized
+    savedOverride.value = normalized.retrievalProfileOverride
+    if (!keepDirtyDraft) profileDraft.value = normalized.retrievalProfileOverride
   } catch (value) {
-    status.value = null
-    error.value = message(value)
+    if (requestId !== statusRequestId) return
+    statusError.value = message(value)
   } finally {
-    loading.value = false
+    if (requestId === statusRequestId) loadingStatus.value = false
+  }
+}
+
+function refreshStatus() {
+  void loadStatus({ preserveDraft: true })
+}
+
+async function saveProfile() {
+  if (savingProfile.value || !profileDirty.value) return
+  savingProfile.value = true
+  profileError.value = ''
+  try {
+    const normalized = normalizeRagProfileSetResponse(
+      await rpc.call('knowledge.profile.set', {
+        retrievalProfileOverride: profileDraft.value,
+      }),
+    )
+    if (!normalized) throw new Error(t('rag.errors.invalidProfileResponse'))
+    savedOverride.value = normalized.retrievalProfileOverride
+    profileDraft.value = normalized.retrievalProfileOverride
+    await loadStatus({ preserveDraft: false })
+  } catch (value) {
+    profileError.value = message(value)
+  } finally {
+    savingProfile.value = false
   }
 }
 
 async function search() {
   const clean = query.value.trim()
-  if (!clean || !canSearch.value) return
+  if (!clean || !canSearch.value || searching.value) return
   searching.value = true
-  error.value = ''
+  searchError.value = ''
   try {
     const boundedLimit = Math.min(20, Math.max(1, Number(limit.value) || 8))
     const normalized = normalizeRagSearchResponse(
       await rpc.call('knowledge.search', { query: clean, limit: boundedLimit }),
     )
-    if (!normalized) throw new Error('Invalid RAG Provider search response')
+    if (!normalized) throw new Error(t('rag.errors.invalidSearchResponse'))
     searchResponse.value = normalized
+    selectedEvidenceId.value = null
     getResponse.value = null
+    consumeMobileReaderMarker()
   } catch (value) {
-    error.value = message(value)
+    searchError.value = message(value)
   } finally {
     searching.value = false
   }
 }
 
+async function selectEvidence(evidenceId: string) {
+  selectedEvidenceId.value = evidenceId
+  openMobileReader(evidenceId)
+  await readEvidence(evidenceId, null)
+}
+
 async function readEvidence(evidenceId: string, cursor: string | null) {
   reading.value = true
-  error.value = ''
+  readError.value = ''
   try {
     const params: { evidenceId: string; cursor?: string } = { evidenceId }
     if (cursor) params.cursor = cursor
     const normalized = normalizeRagGetResponse(await rpc.call('knowledge.get', params))
-    if (!normalized) throw new Error('Invalid RAG Provider get response')
+    if (!normalized) throw new Error(t('rag.errors.invalidGetResponse'))
     getResponse.value = normalized
   } catch (value) {
-    error.value = message(value)
+    readError.value = message(value)
   } finally {
     reading.value = false
   }
 }
 
-onMounted(loadStatus)
+function closeMobileReader() {
+  if (!mobileReaderOpen.value) return
+  mobileReaderOpen.value = false
+  if (readerMarker(window.history.state)) window.history.back()
+}
+
+function onPopState(event: PopStateEvent) {
+  const evidenceId = isMobileViewport() ? readerMarker(event.state) : null
+  mobileReaderOpen.value = evidenceId !== null
+  if (!evidenceId) return
+  selectedEvidenceId.value = evidenceId
+  if (getResponse.value?.evidenceId !== evidenceId) void readEvidence(evidenceId, null)
+}
+
+function teardownPage() {
+  window.removeEventListener('popstate', onPopState)
+}
+
+onActivated(() => {
+  teardownPage()
+  window.addEventListener('popstate', onPopState)
+  syncMobileReader(window.history.state)
+  void loadStatus({ preserveDraft: true })
+})
+
+onDeactivated(() => {
+  teardownPage()
+  statusRequestId += 1
+  loadingStatus.value = false
+  mobileReaderOpen.value = false
+})
+
+onUnmounted(() => {
+  teardownPage()
+  statusRequestId += 1
+})
 </script>
 
 <style scoped>
-.rag-provider { display: grid; gap: var(--space-4); }
-.rag-provider__grid { display: grid; grid-template-columns: minmax(0, 0.8fr) minmax(0, 1.2fr); gap: var(--space-4); }
-.rag-provider__details { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-3); margin: 0; }
-.rag-provider__details div { padding: var(--space-3); border: 1px solid var(--border); border-radius: var(--radius-md); }
-.rag-provider__details dt { color: var(--text-muted); font-size: var(--font-size-xs); }
-.rag-provider__details dd { margin: var(--space-1) 0 0; overflow-wrap: anywhere; }
-.rag-provider__search { display: grid; grid-template-columns: minmax(0, 1fr) 6rem auto; align-items: end; gap: var(--space-3); }
-.rag-provider__search label { display: grid; gap: var(--space-1); }
-.rag-provider__results { display: grid; gap: var(--space-3); margin-top: var(--space-3); }
-.rag-provider__results article { display: grid; gap: var(--space-2); }
-.rag-provider__results small, .rag-provider__summary { color: var(--text-muted); }
-.rag-provider__content { max-height: 32rem; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
-.rag-provider__pager { display: flex; justify-content: flex-end; gap: var(--space-2); }
-.rag-provider__error, .rag-provider__warning { color: var(--status-warning-text); }
+.rag-provider {
+  display: grid;
+  gap: var(--sp-4);
+}
+
+.rag-provider__status-line {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-3);
+}
+
+.rag-provider__status-line .btn {
+  margin-left: auto;
+}
+
+.rag-provider__hint {
+  color: var(--text-muted);
+}
+
+.rag-provider__error,
+.rag-provider__warning {
+  color: var(--warn);
+  margin: 0;
+}
+
+:deep(.rag-profile-selector__footer) {
+  flex-wrap: wrap;
+}
+
 @media (max-width: 900px) {
-  .rag-provider__grid { grid-template-columns: 1fr; }
-  .rag-provider__search { grid-template-columns: 1fr; }
-  .rag-provider__details { grid-template-columns: 1fr; }
+  .rag-provider__status-line .btn {
+    margin-left: 0;
+  }
 }
 </style>

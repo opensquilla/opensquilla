@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { execFile } from 'node:child_process'
 import { mkdir, mkdtemp, readdir, rm, writeFile } from 'node:fs/promises'
 import net from 'node:net'
 import { tmpdir } from 'node:os'
@@ -72,6 +73,24 @@ async function waitForControlUi(app) {
   const page = await app.firstWindow({ timeout: 60_000 })
   await waitFor(() => page.url().includes('/control/'), 'Desktop Control UI', 60_000)
   return page
+}
+
+async function stopExitedElectronChildrenOnWindows(parentPid) {
+  if (process.platform !== 'win32') return
+  await new Promise((resolveStop, rejectStop) => {
+    const command = [
+      `Get-CimInstance Win32_Process -Filter \"ParentProcessId = ${parentPid}\"`,
+      "| Where-Object { $_.Name -ieq 'electron.exe' }",
+      '| ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }',
+    ].join(' ')
+    execFile(
+      'powershell.exe',
+      ['-NoProfile', '-NonInteractive', '-Command', command],
+      { windowsHide: true },
+      (error) => error ? rejectStop(error) : resolveStop(),
+    )
+  })
+  await delay(250)
 }
 
 async function removeSyntheticProfile(root) {
@@ -158,10 +177,16 @@ try {
   // Simulate a hard Electron crash. The detached dev Gateway must survive with
   // its profile lock and ownership record, reproducing the real orphan case.
   const firstMain = firstApp.process()
+  const firstMainPid = firstMain.pid
+  assert.ok(firstMainPid)
   const firstMainExit = new Promise((resolveExit) => firstMain.once('exit', resolveExit))
   firstMain.kill('SIGKILL')
   await firstMainExit
   firstApp = null
+  // Windows process termination does not reliably reap Chromium child
+  // processes.  Target only Electron children; the detached Python Gateway is
+  // intentionally left alive and verified below.
+  await stopExitedElectronChildrenOnWindows(firstMainPid)
   assert.equal(await verifyDesktopGatewayOwnership(firstRecord), true)
 
   secondApp = await launchDesktop()

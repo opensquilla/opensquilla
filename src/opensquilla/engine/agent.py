@@ -34,6 +34,7 @@ from opensquilla.engine.cache_break_monitor import (
     notify_compaction,
     record_prompt_state,
 )
+from opensquilla.engine.elevation_triage import local_elevation_assessment
 from opensquilla.engine.fallback import FallbackPolicy, backoff_sleep
 from opensquilla.engine.final_diff_contract import (
     FinalDiffContractObservation,
@@ -1082,25 +1083,31 @@ async def _review_pending_elevation_if_configured(
         },
     )
 
-    if circuit.is_open:
-        assessment = GuardianAssessment(
-            risk_level="high",
-            user_authorization="unknown",
-            outcome="deny",
-            rationale=(
-                "Automatic elevation review stopped after three denied requests in "
-                "this turn. Explain the risk and obtain a new explicit user instruction."
-            ),
-            status="failed_closed",
-        )
-    else:
-        try:
-            raw_action = params.get("action")
-            if not isinstance(raw_action, dict):
-                raise ValueError("missing_canonical_elevation_action")
-            action = ElevationAction.from_canonical_payload(raw_action)
-            if action.fingerprint() != fingerprint:
-                raise ValueError("elevation_action_fingerprint_mismatch")
+    review_source = "guardian"
+    try:
+        raw_action = params.get("action")
+        if not isinstance(raw_action, dict):
+            raise ValueError("missing_canonical_elevation_action")
+        action = ElevationAction.from_canonical_payload(raw_action)
+        if action.fingerprint() != fingerprint:
+            raise ValueError("elevation_action_fingerprint_mismatch")
+        local_assessment = local_elevation_assessment(action, transcript)
+        if local_assessment is not None:
+            review_source = "local"
+            assessment = local_assessment
+        elif circuit.is_open:
+            review_source = "circuit_breaker"
+            assessment = GuardianAssessment(
+                risk_level="high",
+                user_authorization="unknown",
+                outcome="deny",
+                rationale=(
+                    "Automatic elevation review stopped after three denied requests in "
+                    "this turn. Explain the risk and obtain a new explicit user instruction."
+                ),
+                status="failed_closed",
+            )
+        else:
             runtime = get_runtime()
             settings = runtime.settings if runtime is not None else SandboxSettings()
             assessment = await GuardianReviewer(
@@ -1109,19 +1116,21 @@ async def _review_pending_elevation_if_configured(
                 max_attempts=settings.approval_review_max_attempts,
                 session=guardian_session,
             ).review(suspended_action or action, transcript)
-        except Exception as exc:
-            assessment = GuardianAssessment(
-                risk_level="high",
-                user_authorization="unknown",
-                outcome="deny",
-                rationale=(
-                    "Automatic approval review could not validate the exact action and "
-                    f"failed closed: {str(exc) or type(exc).__name__}"
-                ),
-                status="failed_closed",
-            )
+    except Exception as exc:
+        review_source = "failed_closed"
+        assessment = GuardianAssessment(
+            risk_level="high",
+            user_authorization="unknown",
+            outcome="deny",
+            rationale=(
+                "Automatic approval review could not validate the exact action and "
+                f"failed closed: {str(exc) or type(exc).__name__}"
+            ),
+            status="failed_closed",
+        )
 
     updated_params = dict(params)
+    requires_human_confirmation = assessment.risk_level == "critical"
     updated_params.update(
         {
             "reviewRiskLevel": assessment.risk_level,
@@ -1129,11 +1138,22 @@ async def _review_pending_elevation_if_configured(
             "reviewOutcome": assessment.outcome,
             "reviewStatus": assessment.status,
             "reviewRationale": assessment.rationale,
+            "reviewSource": review_source,
         }
     )
+    if requires_human_confirmation:
+        updated_params.update(
+            {
+                "reviewer": "user",
+                "humanActionable": True,
+                "modelReviewOutcome": assessment.outcome,
+                "reviewStatus": "human_confirmation_required",
+            }
+        )
     try:
         queue.update_params(approval_id, updated_params)
-        queue.resolve(approval_id, assessment.outcome == "allow")
+        if not requires_human_confirmation:
+            queue.resolve(approval_id, assessment.outcome == "allow")
     except ValueError:
         # Another resolver won the race. Never override an existing decision.
         return None
@@ -1160,6 +1180,8 @@ async def _review_pending_elevation_if_configured(
             "rationale": assessment.rationale,
             "attempt": assessment.attempt_count,
             "latency_ms": assessment.latency_ms,
+            "human_confirmation_required": requires_human_confirmation,
+            "review_source": review_source,
         },
     )
     if circuit_interrupted:
@@ -1180,9 +1202,14 @@ async def _review_pending_elevation_if_configured(
         risk_level=assessment.risk_level,
         authorization=assessment.user_authorization,
         outcome=assessment.outcome,
-        status=assessment.status,
+        source=review_source,
+        status=(
+            "human_confirmation_required"
+            if requires_human_confirmation
+            else assessment.status
+        ),
     )
-    return assessment
+    return None if requires_human_confirmation else assessment
 
 
 @functools.lru_cache(maxsize=4096)

@@ -203,6 +203,7 @@
     "tests/test_engine/test_cost_estimate.py": 0.01,
     "tests/test_engine/test_done_event_session_totals.py": 0.01,
     "tests/test_engine/test_done_text_snapshot_consumers.py": 0.01,
+    "tests/test_engine/test_elevation_triage.py": 0.01,
     "tests/test_engine/test_ensemble_progress_forwarding.py": 0.01,
     "tests/test_engine/test_execution_status_carrier_chain.py": 0.01,
     "tests/test_engine/test_final_diff_contract.py": 0.014,

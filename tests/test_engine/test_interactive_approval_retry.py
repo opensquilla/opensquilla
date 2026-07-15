@@ -8,6 +8,7 @@ from typing import Any
 import pytest
 
 from opensquilla.engine import Agent, AgentConfig, ToolResult
+from opensquilla.engine.agent import _review_pending_elevation_if_configured
 from opensquilla.engine.guardian_review import (
     GUARDIAN_POLICY,
     GuardianAssessment,
@@ -241,16 +242,28 @@ def _auto_review_action() -> ElevationAction:
     )
 
 
+def _unapproved_install_action() -> ElevationAction:
+    return ElevationAction(
+        tool_name="exec_command",
+        action_kind="shell.exec",
+        argv=("/bin/sh", "-c", "python -m pip install requests"),
+        cwd="/workspace/opensquilla",
+        sandbox_permissions="require_escalated",
+        justification="Install a package that was not requested by the user.",
+        risk_markers=("package_install",),
+    )
+
+
 @pytest.mark.asyncio
-async def test_auto_review_allows_and_retries_the_exact_tool_call() -> None:
+async def test_local_low_risk_review_allows_without_guardian_call() -> None:
     reset_approval_queue()
     provider = _AutoReviewProvider(
         json.dumps(
             {
-                "risk_level": "low",
-                "user_authorization": "medium",
-                "outcome": "allow",
-                "rationale": "The requested fixed-file write is narrow.",
+                "risk_level": "critical",
+                "user_authorization": "unknown",
+                "outcome": "deny",
+                "rationale": "This response must not be requested for a local allow.",
             }
         )
     )
@@ -308,15 +321,69 @@ async def test_auto_review_allows_and_retries_the_exact_tool_call() -> None:
         ]
         assert tool_call_objects[0] is tool_call_objects[1]
         assert executed is True
-        assert provider.guardian_calls == 1
+        assert provider.guardian_calls == 0
         assert len(set(approval_ids)) == 1
-        assert get_approval_queue().get(approval_ids[0]).consumed is True
+        entry = get_approval_queue().get(approval_ids[0])
+        assert entry.consumed is True
+        assert entry.params["reviewSource"] == "local"
     finally:
         reset_approval_queue()
 
 
 @pytest.mark.asyncio
-async def test_auto_review_denial_returns_rationale_without_side_effect() -> None:
+async def test_critical_review_calls_guardian_then_requires_human_confirmation() -> None:
+    reset_approval_queue()
+    provider = _AutoReviewProvider(
+        json.dumps(
+            {
+                "risk_level": "critical",
+                "user_authorization": "high",
+                "outcome": "allow",
+                "rationale": "The user explicitly requested it, but the impact is catastrophic.",
+            }
+        )
+    )
+    action = ElevationAction(
+        tool_name="exec_command",
+        action_kind="shell.exec",
+        argv=("/bin/sh", "-c", "rm -rf /"),
+        cwd="/workspace/opensquilla",
+        sandbox_permissions="require_escalated",
+        justification="The user explicitly requested this destructive operation.",
+        target_paths=(("/", "delete"),),
+    )
+    pending = gate_elevated_action(
+        action,
+        approval_id=None,
+        session_key="session-critical",
+        queue=get_approval_queue(),
+        reviewer="auto_review",
+    )
+
+    try:
+        assessment = await _review_pending_elevation_if_configured(
+            pending.to_envelope(),
+            provider=provider,
+            transcript=[Message(role="user", content="我明确授权执行 rm -rf /")],
+            circuit=GuardianCircuitBreaker(),
+            runtime_events_path=None,
+        )
+
+        entry = get_approval_queue().get(pending.approval_id or "")
+        assert assessment is None
+        assert provider.guardian_calls == 1
+        assert entry.resolved is False
+        assert entry.params["reviewer"] == "user"
+        assert entry.params["humanActionable"] is True
+        assert entry.params["reviewRiskLevel"] == "critical"
+        assert entry.params["reviewSource"] == "guardian"
+        assert "catastrophic" in str(entry.params["reviewRationale"])
+    finally:
+        reset_approval_queue()
+
+
+@pytest.mark.asyncio
+async def test_unapproved_high_risk_action_uses_guardian_and_returns_denial() -> None:
     reset_approval_queue()
     provider = _AutoReviewProvider(
         json.dumps(
@@ -335,7 +402,7 @@ async def test_auto_review_denial_returns_rationale_without_side_effect() -> Non
         nonlocal executed
         tool_calls.append(dict(call.arguments))
         gate = gate_elevated_action(
-            _auto_review_action(),
+            _unapproved_install_action(),
             approval_id=_continuation_approval_id(call),
             session_key="session-deny",
             queue=get_approval_queue(),
@@ -360,6 +427,7 @@ async def test_auto_review_denial_returns_rationale_without_side_effect() -> Non
 
         assert executed is False
         assert len(tool_calls) == 1
+        assert provider.guardian_calls == 1
         result_blocks = [
             block
             for message in provider.main_calls[-1]
@@ -373,7 +441,7 @@ async def test_auto_review_denial_returns_rationale_without_side_effect() -> Non
 
 
 @pytest.mark.asyncio
-async def test_agent_guardian_reviews_inflight_network_approval_once(tmp_path) -> None:
+async def test_explicit_named_network_approval_skips_guardian(tmp_path) -> None:
     reset_approval_queue()
     provider = _AutoReviewProvider(
         json.dumps(
@@ -456,7 +524,7 @@ async def test_agent_guardian_reviews_inflight_network_approval_once(tmp_path) -
         _ = [event async for event in agent.run_turn("Fetch the exact unknown.test URL")]
 
         assert decisions == ["allow"]
-        assert provider.guardian_calls == 1
+        assert provider.guardian_calls == 0
         assert len(approval_ids) == 1
         entry = get_approval_queue().get(approval_ids[0])
         assert entry.approved is True

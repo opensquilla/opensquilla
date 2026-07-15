@@ -9,6 +9,13 @@ import i18n, {
 } from '@/i18n'
 import { getManifest, isValueThemeId, normalizeThemeId, themePickerOptions } from '@/themes/registry'
 import { ensureThemeWorld } from '@/themes/apply'
+import {
+  SIDEBAR_WIDTH_PRESETS,
+  SIDEBAR_WIDTH_STORAGE_KEY,
+  normalizeSidebarWidthPreference,
+  parseSidebarWidthPreference,
+  type SidebarWidthPreference,
+} from '@/utils/sidebarLayout'
 
 // 'system' or any registered value-theme id. The string branch keeps custom
 // themes typeable while preserving autocomplete for the built-ins.
@@ -16,6 +23,14 @@ export type ThemeMode = 'light' | 'dark' | 'system' | (string & {})
 
 type FeatureWindow = Window & {
   OPENSQUILLA_FEATURES?: Record<string, boolean>
+}
+
+function hydrateSidebarWidthPreference(): SidebarWidthPreference {
+  try {
+    return parseSidebarWidthPreference(localStorage.getItem(SIDEBAR_WIDTH_STORAGE_KEY))
+  } catch {
+    return { ...SIDEBAR_WIDTH_PRESETS.default }
+  }
 }
 
 /** One pending approval, ordered oldest-first (closest to timeout). */
@@ -34,7 +49,10 @@ export const useAppStore = defineStore('app', () => {
   // Language row both write through setLocale, so they can never drift.
   const locale = ref<LocaleCode>('en')
   const sidebarOpen = ref(true)
-  const sidebarHovered = ref(false)
+  // Browser-local layout preference, hydrated synchronously so the first
+  // mounted frame uses the saved width. Viewport clamping is intentionally a
+  // consumer concern: zooming or rotating must not overwrite this preference.
+  const sidebarWidthPreference = ref<SidebarWidthPreference>(hydrateSidebarWidthPreference())
   // App-wide pending approvals, kept live by the gateway push events and a
   // reconnect seed fetch (App.vue). Ordered oldest-first. `approvalCount` is
   // derived from this list once it becomes the source, but `setApprovalCount`
@@ -201,16 +219,29 @@ export const useAppStore = defineStore('app', () => {
 
   function setSidebarOpen(open: boolean) {
     sidebarOpen.value = open
-    if (!open) sidebarHovered.value = false
   }
 
   function toggleSidebar() {
     sidebarOpen.value = !sidebarOpen.value
-    sidebarHovered.value = false
   }
 
-  function setSidebarHovered(hovered: boolean) {
-    sidebarHovered.value = hovered
+  function setSidebarWidthPreference(preference: SidebarWidthPreference) {
+    const normalized = normalizeSidebarWidthPreference(preference)
+    sidebarWidthPreference.value = normalized
+    try {
+      localStorage.setItem(SIDEBAR_WIDTH_STORAGE_KEY, JSON.stringify(normalized))
+    } catch {
+      // Ignore unavailable browser storage; the in-memory preference still applies.
+    }
+  }
+
+  function resetSidebarWidthPreference() {
+    sidebarWidthPreference.value = { ...SIDEBAR_WIDTH_PRESETS.default }
+    try {
+      localStorage.removeItem(SIDEBAR_WIDTH_STORAGE_KEY)
+    } catch {
+      // Ignore unavailable browser storage.
+    }
   }
 
   function setApprovalCount(count: number) {
@@ -260,7 +291,7 @@ export const useAppStore = defineStore('app', () => {
     locale,
     resolvedTheme,
     sidebarOpen,
-    sidebarHovered,
+    sidebarWidthPreference,
     approvalCount,
     pendingApprovals,
     oldestPendingWithSession,
@@ -273,7 +304,8 @@ export const useAppStore = defineStore('app', () => {
     setLocale,
     setSidebarOpen,
     toggleSidebar,
-    setSidebarHovered,
+    setSidebarWidthPreference,
+    resetSidebarWidthPreference,
     setApprovalCount,
     setPendingApprovals,
     upsertPendingApproval,

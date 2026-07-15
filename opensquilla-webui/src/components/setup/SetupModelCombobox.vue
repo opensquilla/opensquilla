@@ -29,6 +29,9 @@ const props = defineProps<{
   // aria-label. Default (false) renders the full settings-row layout unchanged.
   cell?: boolean
   disabled?: boolean
+  // Embedded form rows can opt into the shared input chrome without changing
+  // compact tier-table cells that already provide their own styling.
+  inputClass?: string
 }>()
 
 const emit = defineEmits<{
@@ -130,6 +133,10 @@ function rowMeta(model: DiscoveredModel): string {
   const parts: string[] = []
   const ctx = compactTokens(model.contextWindow)
   if (ctx) parts.push(ctx)
+  const maxOutput = compactTokens(model.maxOutputTokens)
+  if (maxOutput) {
+    parts.push(t('setup.provider.modelMaxOutput', { tokens: maxOutput }))
+  }
   parts.push(...model.capabilities.filter(cap => cap !== 'chat').slice(0, 3))
   return parts.join(' · ')
 }
@@ -289,7 +296,7 @@ function onKeydown(event: KeyboardEvent) {
       <input
         :id="fieldId"
         ref="inputEl"
-        :class="cell ? undefined : 'control-input'"
+        :class="[cell ? undefined : 'control-input', inputClass]"
         :name="fieldName"
         type="text"
         :role="catalogAvailable ? 'combobox' : undefined"

@@ -25,6 +25,7 @@ declare global {
   interface OpenSquillaDesktopApi {
     getOsLocale: () => Promise<string | undefined>
     isAutoUpdateEnabled: () => Promise<boolean>
+    isDesktopUpdateManaged?: () => Promise<boolean>
     getUpdateState?: () => Promise<DesktopUpdateState>
     checkForUpdates?: () => Promise<DesktopUpdateState>
     downloadUpdate?: () => Promise<DesktopUpdateState>

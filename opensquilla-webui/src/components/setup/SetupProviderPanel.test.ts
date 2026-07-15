@@ -51,6 +51,8 @@ function panel(overrides: Record<string, unknown> = {}) {
     credentialPanel: {
       providerLabel: 'OpenAI',
       providerSelected: true,
+      acceptsApiKey: true,
+      requiresApiKey: true,
       available: true,
       source: 'explicit',
       envKey: 'OPENAI_API_KEY',
@@ -61,6 +63,8 @@ function panel(overrides: Record<string, unknown> = {}) {
       replacing: false,
       apiKeyValue: '',
       apiKeyEnvValue: '',
+      probeReady: true,
+      probeDisabledReason: '',
       connection: connection(),
       onReveal: vi.fn(),
       onReplace: vi.fn(),
@@ -73,6 +77,7 @@ function panel(overrides: Record<string, unknown> = {}) {
     llmTimeoutSeconds: 120,
     contextWindowTokens: '',
     contextWindowGlobal: null,
+    effectiveMaxTokens: null,
     providerIsLocal: false,
     connection: connection(),
     providerFieldValue: () => '',
@@ -150,6 +155,26 @@ describe('SetupProviderPanel — test connection', () => {
     probing.app.unmount()
   })
 
+  it('does not emit a probe while required provider fields are missing', async () => {
+    const onProbeConnection = vi.fn()
+    const reason = 'Complete required fields before testing: Model, Base URL.'
+    const { app, el } = await mountPanel({
+      credentialPanel: {
+        ...(panel().credentialPanel as Record<string, unknown>),
+        probeReady: false,
+        probeDisabledReason: reason,
+      },
+    }, { onProbeConnection })
+
+    const button = testButton(el)
+    expect(button?.disabled).toBe(true)
+    expect(button?.title).toBe(reason)
+    button?.click()
+    expect(onProbeConnection).not.toHaveBeenCalled()
+    expect(el.textContent).toContain(reason)
+    app.unmount()
+  })
+
   it('shows the Connected pill when verified', async () => {
     const { app, el } = await mountPanel({ connection: connection({ phase: 'verified' }) })
     const pill = el.querySelector('.setup-connection__actions .control-pill.control-pill--ok')
@@ -217,7 +242,7 @@ describe('SetupProviderPanel — model field', () => {
 
     expect(el.querySelector('[data-name="api_key"]')).toBeNull()
     expect(el.querySelector('[data-name="api_key_env"]')).toBeNull()
-    expect(el.textContent).toContain('OpenAI credential')
+    expect(el.textContent).toContain('OpenAI authentication')
 
     app.unmount()
   })
@@ -461,6 +486,29 @@ describe('SetupProviderPanel — TokenRhythm recommendation', () => {
     ])
     expect(card?.querySelector('a')?.textContent?.trim()).toBe('注册并获取 API Key')
     expect(card?.querySelector('a')?.getAttribute('aria-label')).toContain('在新标签页中打开')
+    app.unmount()
+  })
+})
+
+describe('SetupProviderPanel — effective output limit', () => {
+  it('shows the exact effective limit and its catalog source', async () => {
+    const { app, el } = await mountPanel({
+      effectiveMaxTokens: { value: 131072, source: 'catalog' },
+    })
+
+    const readout = el.querySelector('[data-testid="setup-effective-max-tokens"]')
+    expect(readout?.textContent).toContain('131,072 tokens')
+    expect(readout?.textContent).toContain('model catalog')
+    expect(readout?.getAttribute('aria-live')).toBe('polite')
+
+    app.unmount()
+  })
+
+  it('hides the readout when no identity-matched effective value is supplied', async () => {
+    const { app, el } = await mountPanel({ effectiveMaxTokens: null })
+
+    expect(el.querySelector('[data-testid="setup-effective-max-tokens"]')).toBeNull()
+
     app.unmount()
   })
 })

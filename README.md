@@ -25,7 +25,7 @@
 
 ## News
 
-- 📢 **2026-07-03** — Our technical report **[Agentic Routing: The Harness-Native Data Flywheel](docs/releases/agentic_routing_v0.pdf)** (preview) is out, released alongside OpenSquilla **0.5.0 Preview 1**. It details how the harness-native router turns everyday agent traffic into a self-improving data flywheel.
+- 📢 **2026-07-14** — Our technical report **[Agentic Routing: The Harness-Native Data Flywheel](https://arxiv.org/abs/2607.11399)** is now on arXiv. It shows how the harness-native router turns everyday agent traffic into a self-improving data flywheel, and how **multi-model ensemble routing surpasses Fable 5**.
 
 ---
 
@@ -115,7 +115,13 @@ gateway runtime in an Electron shell.
 - macOS Apple Silicon: <https://github.com/opensquilla/opensquilla/releases/download/v0.5.0rc4/OpenSquilla-0.5.0-rc4-mac-arm64.dmg>
 - Windows x64: <https://github.com/opensquilla/opensquilla/releases/download/v0.5.0rc4/OpenSquilla-0.5.0-rc4-win-x64.exe>
 
-For faster Mainland China downloads, use the [China download mirror](https://opensquilla-releases.oss-cn-beijing.aliyuncs.com/releases/latest.html). It always lists the newest mirrored release; the GitHub Release links above remain the global fallback.
+For faster Mainland China downloads, use the OSS direct-download aliases:
+- macOS Apple Silicon: <https://opensquilla-releases.oss-cn-beijing.aliyuncs.com/releases/latest/OpenSquilla-mac-arm64.dmg>
+- Windows x64: <https://opensquilla-releases.oss-cn-beijing.aliyuncs.com/releases/latest/OpenSquilla-win-x64.exe>
+
+These fixed links advance only after a newer eligible release passes mirror
+verification. Use the versioned GitHub Release links above when you need a
+specific release.
 
 Quit any running OpenSquilla desktop app before upgrading. On macOS, drag the
 app from the DMG into Applications for installation or updates, eject the DMG,

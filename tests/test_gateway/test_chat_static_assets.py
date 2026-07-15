@@ -205,10 +205,12 @@ def test_chat_session_controls_mount_in_topbar_center_slot() -> None:
         assert "flex-shrink: 0" in rule
 
 
-def test_chat_composer_autofocus_is_desktop_only() -> None:
+def test_chat_composer_autofocus_requires_an_active_desktop_page() -> None:
     source = _read_chat_js()
 
     assert "function _shouldAutofocusComposer()" in source
+    assert "document.visibilityState !== 'visible'" in source
+    assert "!document.hasFocus()" in source
     assert "window.matchMedia('(max-width: 768px)')" in source
     assert "window.matchMedia('(pointer: coarse)')" in source
     assert "if (_textarea && _shouldAutofocusComposer()) _textarea.focus();" in source

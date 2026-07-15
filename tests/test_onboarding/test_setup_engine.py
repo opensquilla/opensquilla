@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import tomllib
 
+from opensquilla.gateway.config import GatewayConfig
 from opensquilla.onboarding.config_store import load_config
 from opensquilla.onboarding.setup_engine import SetupEngine
 
@@ -30,6 +31,43 @@ def test_setup_engine_applies_provider_and_router_without_persisting_secret(tmp_
     assert "api_key" not in data["llm"]
     assert data["squilla_router"]["tier_profile"] == "deepseek"
     assert "tiers" not in data["squilla_router"]
+
+
+def test_setup_engine_optional_key_preservation_is_explicit_and_legacy_safe():
+    def configured_engine() -> SetupEngine:
+        return SetupEngine(
+            config=GatewayConfig(
+                llm={
+                    "provider": "custom",
+                    "model": "model-a",
+                    "api_key": "sk-optional",
+                    "base_url": "https://llm.example.test/v1",
+                }
+            )
+        )
+
+    legacy = configured_engine()
+    legacy.apply(
+        "provider",
+        {
+            "providerId": "custom",
+            "model": "model-b",
+            "baseUrl": "https://llm.example.test/v1",
+        },
+    )
+    assert legacy.config.llm.api_key == ""
+
+    preserving = configured_engine()
+    preserving.apply(
+        "provider",
+        {
+            "providerId": "custom",
+            "model": "model-b",
+            "baseUrl": "https://llm.example.test/v1",
+            "preserveApiKey": True,
+        },
+    )
+    assert preserving.config.llm.api_key == "sk-optional"
 
 
 def test_setup_engine_can_derive_provider_model_from_router_default_tier(tmp_path):

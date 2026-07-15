@@ -401,15 +401,20 @@ describe('SetupModelStrategyPanel', () => {
     await nextTick()
     expect(onSetEnsembleCandidateRole.mock.calls[0]?.[1]).toBe('critic')
 
-    const provider = el.querySelector<HTMLInputElement>('input[name="setup_model_strategy_add_candidate_provider"]')
-    provider!.value = 'anthropic'
-    provider!.dispatchEvent(new Event('input', { bubbles: true }))
-    const model = el.querySelector<HTMLInputElement>('input[name="setup_model_strategy_add_candidate_model"]')
+    const provider = el.querySelector<HTMLElement>('[aria-label="Candidate provider"]')
+    expect(provider?.getAttribute('aria-readonly')).toBe('true')
+    expect(provider?.textContent).toContain('OpenRouter')
+    const add = el.querySelector<HTMLButtonElement>('[data-testid="setup-model-strategy-add-candidate"]')
+    expect(add?.disabled).toBe(true)
+
+    const model = el.querySelector<HTMLInputElement>('input[name="setup_provider_ensemble_candidate_model"]')
     model!.value = 'claude-opus'
     model!.dispatchEvent(new Event('input', { bubbles: true }))
-    el.querySelector<HTMLButtonElement>('[data-testid="setup-model-strategy-add-candidate"]')?.click()
     await nextTick()
-    expect(onAddEnsembleCandidate).toHaveBeenCalledWith('anthropic', 'claude-opus', '')
+    expect(add?.disabled).toBe(false)
+    add?.click()
+    await nextTick()
+    expect(onAddEnsembleCandidate).toHaveBeenCalledWith('openrouter', 'claude-opus', '')
 
     el.querySelector<HTMLButtonElement>('[data-testid="setup-model-strategy-import-tiers"]')?.click()
     await nextTick()
@@ -485,7 +490,7 @@ describe('SetupModelStrategyPanel', () => {
     await nextTick()
     expect(onUpdateEnsembleScheme).toHaveBeenCalledWith('custom')
     expect(el.textContent).not.toContain('legacy OpenRouter candidate template')
-    expect(el.querySelector('input[name="setup_model_strategy_add_candidate_provider"]')).toBeNull()
+    expect(el.querySelector('.setup-model-strategy__candidate-provider-lock')).toBeNull()
 
     app.unmount()
   })
@@ -522,6 +527,7 @@ describe('SetupModelStrategyPanel', () => {
       activeStrategy: 'ensemble',
       ensemble: {
         enabled: true,
+        activeProvider: 'deepseek',
         scheme: 'custom',
         schemeCardsAvailable: false,
         custom: customLineup({ inheritedAggregatorProvider: 'deepseek', inheritedAggregatorModel: 'deepseek-v4-pro' }),
@@ -531,7 +537,44 @@ describe('SetupModelStrategyPanel', () => {
     expect(el.querySelector('[data-testid="ensemble-scheme-preset"]')).toBeNull()
     expect(el.textContent).not.toContain('OpenRouter fixed ensemble')
     expect(el.textContent).toContain('Proposer models')
-    expect(el.querySelector('input[name="setup_model_strategy_add_candidate_provider"]')).toBeTruthy()
+    const provider = el.querySelector<HTMLElement>('.setup-model-strategy__candidate-provider-lock')
+    expect(provider?.textContent).toContain('DeepSeek')
+    expect(el.querySelector('input[name="setup_model_strategy_add_candidate_provider"]')).toBeNull()
+
+    app.unmount()
+  })
+
+  it('uses the active provider live catalog for new ensemble candidates', async () => {
+    const { app, el } = await mountPanel({
+      activeStrategy: 'ensemble',
+      router: {
+        discoveredModelsByProvider: {
+          openrouter: {
+            source: 'live',
+            models: [{
+              id: 'anthropic/claude-sonnet',
+              name: 'Claude Sonnet',
+              contextWindow: 200000,
+              maxOutputTokens: 8192,
+              capabilities: ['chat', 'tools'],
+              pricing: null,
+              capabilitySource: 'provider',
+            }],
+          },
+        },
+      },
+      ensemble: {
+        enabled: true,
+        scheme: 'custom',
+      },
+    })
+
+    const model = el.querySelector<HTMLInputElement>('input[name="setup_provider_ensemble_candidate_model"]')
+    expect(model?.getAttribute('role')).toBe('combobox')
+    expect(model?.classList.contains('control-input')).toBe(true)
+    model?.dispatchEvent(new Event('focus'))
+    await nextTick()
+    expect(document.body.textContent).toContain('anthropic/claude-sonnet')
 
     app.unmount()
   })

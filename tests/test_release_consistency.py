@@ -74,9 +74,9 @@ def test_release_workflow_builds_desktop_installers() -> None:
     assert "OpenSquilla-{desktop_version}-win-x64.exe" in workflow
     assert "latest-mac.yml" in workflow
     assert "latest.yml" in workflow
-    assert "NOTES_FILE=\"docs/releases/${TAG#v}.md\"" in workflow
-    assert "--notes-file \"${NOTES_FILE}\"" in workflow
-    assert "gh release upload \"${TAG}\" dist/* --clobber" in workflow
+    assert 'NOTES_FILE="docs/releases/${TAG#v}.md"' in workflow
+    assert '--notes-file "${NOTES_FILE}"' in workflow
+    assert 'gh release upload "${TAG}" dist/* --clobber' in workflow
 
 
 def _release_upload_script() -> str:
@@ -122,8 +122,7 @@ fi
             "GH_REPO": "opensquilla/opensquilla",
             "GH_TOKEN": "synthetic-test-token",
             "PATH": (
-                f"{fake_bin}{os.pathsep}{Path(sys.executable).parent}"
-                f"{os.pathsep}{env['PATH']}"
+                f"{fake_bin}{os.pathsep}{Path(sys.executable).parent}{os.pathsep}{env['PATH']}"
             ),
             "TAG": tag,
         }
@@ -243,9 +242,7 @@ def test_release_profile_preservation_probe_covers_identity_config_and_chat_db(
 
 def test_release_workflow_gates_built_and_downloaded_installers_on_profile_retention() -> None:
     workflow = Path(".github/workflows/wheelhouse-release.yml").read_text(encoding="utf-8")
-    mac_helper = Path(".github/scripts/verify-release-macos-upgrade.sh").read_text(
-        encoding="utf-8"
-    )
+    mac_helper = Path(".github/scripts/verify-release-macos-upgrade.sh").read_text(encoding="utf-8")
     windows_helper = Path(".github/scripts/verify-release-windows-upgrade.ps1").read_text(
         encoding="utf-8"
     )
@@ -257,9 +254,7 @@ def test_release_workflow_gates_built_and_downloaded_installers_on_profile_reten
     )
 
     mac_build = workflow[
-        workflow.index("  build-desktop-macos:") : workflow.index(
-            "  build-desktop-windows:"
-        )
+        workflow.index("  build-desktop-macos:") : workflow.index("  build-desktop-windows:")
     ]
     windows_build = workflow[
         workflow.index("  build-desktop-windows:") : workflow.index("  publish-release:")
@@ -298,6 +293,9 @@ def test_release_workflow_gates_built_and_downloaded_installers_on_profile_reten
         "if ($VerifyLongRunningUpdateBanner)"
     )
     assert "OPENSQUILLA_UPDATE_CHECK_ENDPOINT" in update_banner_smoke
+    assert "schemaVersion: 1" in update_banner_smoke
+    assert "baseVersion" in update_banner_smoke
+    assert "tag_name" not in update_banner_smoke
     assert "visibilitychange" in update_banner_smoke
     assert "requestCount, 1" in update_banner_smoke
     assert "OPENSQUILLA_PRIVACY_DISABLE_NETWORK_OBSERVABILITY" in update_banner_smoke
@@ -305,9 +303,7 @@ def test_release_workflow_gates_built_and_downloaded_installers_on_profile_reten
     assert "writeSyntheticCanonicalWorkspace(privacyUserDataDir)" in update_banner_smoke
     assert update_banner_smoke.index(
         "writeSyntheticCanonicalWorkspace(privacyUserDataDir)"
-    ) < update_banner_smoke.index(
-        "privacyApp = await launchCandidate("
-    )
+    ) < update_banner_smoke.index("privacyApp = await launchCandidate(")
     assert "GITHUB_ACTIONS: '0'" in update_banner_smoke
 
     mac_audit = workflow[
@@ -338,9 +334,7 @@ def test_manual_release_workflow_without_a_tag_only_uploads_aggregate_artifacts(
     )
     publish_steps = workflow["jobs"]["publish-release"]["steps"]
     aggregate = next(
-        step
-        for step in publish_steps
-        if step["name"] == "Upload aggregate workflow artifact"
+        step for step in publish_steps if step["name"] == "Upload aggregate workflow artifact"
     )
     github_upload = next(
         step for step in publish_steps if step["name"] == "Upload to GitHub Release"
@@ -588,9 +582,9 @@ def test_releases_md_exists_and_references_current_and_preview_tags() -> None:
     assert releases.is_file(), "RELEASES.md must exist at the repository root"
     text = releases.read_text(encoding="utf-8")
     assert CURRENT_TAG in text, f"RELEASES.md must reference the tag '{CURRENT_TAG}'"
-    assert (
-        HISTORICAL_PREVIEW_TAG in text
-    ), f"RELEASES.md must retain the historical tag '{HISTORICAL_PREVIEW_TAG}'"
+    assert HISTORICAL_PREVIEW_TAG in text, (
+        f"RELEASES.md must retain the historical tag '{HISTORICAL_PREVIEW_TAG}'"
+    )
     assert f"OpenSquilla-{CURRENT_DESKTOP_VERSION}-mac-arm64.dmg" in text
     assert f"OpenSquilla-{CURRENT_DESKTOP_VERSION}-win-x64.exe" in text
     assert "do not publish Windows portable zips" in text
@@ -606,9 +600,9 @@ def test_changelog_has_current_release_section_and_unreleased() -> None:
     changelog = Path("CHANGELOG.md")
     assert changelog.is_file(), "CHANGELOG.md must exist at the repository root"
     text = changelog.read_text(encoding="utf-8")
-    assert (
-        f"[{CURRENT_VERSION}]" in text
-    ), f"CHANGELOG.md must contain a [{CURRENT_VERSION}] section"
+    assert f"[{CURRENT_VERSION}]" in text, (
+        f"CHANGELOG.md must contain a [{CURRENT_VERSION}] section"
+    )
     assert "[Unreleased]" in text, "CHANGELOG.md must retain an [Unreleased] section"
 
 
@@ -622,8 +616,7 @@ def test_readme_release_install_uses_latest_assets_and_pinned_alternative() -> N
     assert "Portable archives remain retired" in readme
     assert "releases/latest/download/OpenSquilla-windows-x64-portable.zip" not in readme
     assert (
-        f"releases/download/{CURRENT_TAG}/opensquilla-{CURRENT_VERSION}-py3-none-any.whl"
-        in readme
+        f"releases/download/{CURRENT_TAG}/opensquilla-{CURRENT_VERSION}-py3-none-any.whl" in readme
     )
     assert "opensquilla-latest-py3-none-any.whl" not in readme
     assert "Python wheel installs use versioned wheel filenames" in readme
@@ -631,9 +624,7 @@ def test_readme_release_install_uses_latest_assets_and_pinned_alternative() -> N
 
 
 def test_all_readmes_default_install_paths_to_the_current_preview() -> None:
-    wheel_url = (
-        f"releases/download/{CURRENT_TAG}/opensquilla-{CURRENT_VERSION}-py3-none-any.whl"
-    )
+    wheel_url = f"releases/download/{CURRENT_TAG}/opensquilla-{CURRENT_VERSION}-py3-none-any.whl"
     readmes = [
         Path("README.md"),
         Path("README.zh-Hans.md"),
@@ -643,10 +634,18 @@ def test_all_readmes_default_install_paths_to_the_current_preview() -> None:
         Path("README.es.md"),
     ]
 
+    oss_latest_assets = (
+        "https://opensquilla-releases.oss-cn-beijing.aliyuncs.com/releases/latest/"
+        "OpenSquilla-mac-arm64.dmg",
+        "https://opensquilla-releases.oss-cn-beijing.aliyuncs.com/releases/latest/"
+        "OpenSquilla-win-x64.exe",
+    )
+
     for path in readmes:
         text = path.read_text(encoding="utf-8")
         assert f"OpenSquilla-{CURRENT_DESKTOP_VERSION}-mac-arm64.dmg" in text, path
         assert f"OpenSquilla-{CURRENT_DESKTOP_VERSION}-win-x64.exe" in text, path
+        assert all(url in text for url in oss_latest_assets), path
         assert wheel_url in text, path
         assert "ghcr.io/opensquilla/opensquilla:latest" in text, path
         assert "0.5.0-Preview-2-Desktop" not in text, path
@@ -767,9 +766,14 @@ def test_current_release_notes_cover_recovery_transfer_upgrade_and_containers() 
     assert "ghcr.io/opensquilla/opensquilla:v0.5.0rc4" in notes
     assert "`latest` tag follows the most recently verified release tag" in notes
     assert (
-        "https://opensquilla-releases.oss-cn-beijing.aliyuncs.com/releases/latest.html"
-        in notes
+        "https://opensquilla-releases.oss-cn-beijing.aliyuncs.com/releases/latest/"
+        "OpenSquilla-mac-arm64.dmg" in notes
     )
+    assert (
+        "https://opensquilla-releases.oss-cn-beijing.aliyuncs.com/releases/latest/"
+        "OpenSquilla-win-x64.exe" in notes
+    )
+    assert "releases/latest.html" not in notes
     assert "Synthetic fixtures" not in notes
     assert "release gate" not in notes
     assert "## Acknowledgements" in notes
@@ -792,9 +796,7 @@ def test_docs_index_links_current_release_notes() -> None:
 
 def test_current_contributor_ledger_records_050rc4_attribution() -> None:
     ledger = Path("CONTRIBUTORS.md").read_text(encoding="utf-8")
-    section = ledger.split("## OpenSquilla 0.5.0rc4", 1)[1].split(
-        "## OpenSquilla 0.5.0rc3", 1
-    )[0]
+    section = ledger.split("## OpenSquilla 0.5.0rc4", 1)[1].split("## OpenSquilla 0.5.0rc3", 1)[0]
 
     expected = {
         "@HuaXiawithMoon": "#582",

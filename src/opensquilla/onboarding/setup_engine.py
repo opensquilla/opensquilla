@@ -84,6 +84,15 @@ def _optional_bool(value: Any) -> bool | None:
     return None if value is None else bool(value)
 
 
+def _strict_bool(value: Any, *, field: str, default: bool = False) -> bool:
+    """Parse an additive boolean intent without accepting truthy strings."""
+    if value is None:
+        return default
+    if not isinstance(value, bool):
+        raise ValueError(f"{field} must be a boolean")
+    return value
+
+
 class SetupEngine:
     """Apply onboarding sections against one in-memory config before persisting."""
 
@@ -117,6 +126,10 @@ class SetupEngine:
                 model=_optional_str(payload.get("model")),
                 api_key=str(payload.get("apiKey") or ""),
                 api_key_env=str(payload.get("apiKeyEnv") or ""),
+                preserve_api_key=_strict_bool(
+                    payload.get("preserveApiKey"),
+                    field="preserveApiKey",
+                ),
                 base_url=_optional_str(payload.get("baseUrl")),
                 proxy=_optional_str(payload.get("proxy")),
                 preset_id=str(payload.get("presetId") or ""),

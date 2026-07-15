@@ -1,5 +1,5 @@
 {
-  "description": "Median per-file pytest testcase seconds from three successful Windows full-shard executions, with post-optimization testcase totals substituted for the seven tests changed in this patch. Files excluded by the offline CI markers intentionally remain unweighted.",
+  "description": "Median per-file pytest testcase seconds from three successful Windows full-shard executions, with post-optimization testcase totals substituted for the seven tests changed in that patch. Newly added active files use the 0.01s provisional floor until the next three-run refresh. Files excluded by the offline CI markers intentionally remain unweighted.",
   "schema_version": 1,
   "source_runs": [
     {
@@ -779,6 +779,7 @@
     "tests/test_scripts/test_meta_skill_validation_matrix.py": 0.034,
     "tests/test_scripts/test_meta_trigger_accuracy_script.py": 0.012,
     "tests/test_scripts/test_refresh_models_dev_snapshot.py": 0.011,
+    "tests/test_scripts/test_release_channel_manifest.py": 0.01,
     "tests/test_scripts/test_replay_finalize_gate.py": 0.069,
     "tests/test_scripts/test_router_live_script_defaults.py": 0.038,
     "tests/test_search/test_bocha_provider.py": 0.025,

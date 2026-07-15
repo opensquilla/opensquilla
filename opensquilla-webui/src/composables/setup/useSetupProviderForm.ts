@@ -49,6 +49,7 @@ interface ProviderPanelContext {
   llmTimeoutSeconds: Ref<number>
   contextWindowTokens: Ref<string>
   contextWindowGlobal: ComputedRef<number | null>
+  effectiveMaxTokens: ComputedRef<EffectiveMaxTokens | null>
   providerIsLocal: ComputedRef<boolean>
 }
 
@@ -98,6 +99,11 @@ export interface DiscoveredModelCatalog {
   source: 'live' | 'none'
 }
 
+export interface EffectiveMaxTokens {
+  value: number
+  source: 'config' | 'catalog' | 'default'
+}
+
 /** Provider ids are normalized before they become catalog keys. */
 export type DiscoveredModelsByProvider = Record<string, DiscoveredModelCatalog>
 
@@ -115,6 +121,8 @@ export interface ConnectionState {
 export interface ProviderCredentialPanelState {
   providerLabel: string
   providerSelected: boolean
+  acceptsApiKey: boolean
+  requiresApiKey: boolean
   source: string
   available: boolean
   envKey: string
@@ -125,6 +133,8 @@ export interface ProviderCredentialPanelState {
   replacing: boolean
   apiKeyValue: string
   apiKeyEnvValue: string
+  probeReady: boolean
+  probeDisabledReason: string
   connection: ConnectionState
   onReveal?: () => void
   onReplace?: () => void
@@ -474,6 +484,7 @@ export function useSetupProviderForm() {
       delete values.api_key_env // a real pasted key wins
     } else {
       delete values.api_key // blank/whitespace paste is not a credential, keep env reference
+      if (!isNonEmpty(values.api_key_env)) delete values.api_key_env
     }
     return buildProviderPayload(providerSelected.value, values)
   }
@@ -497,6 +508,7 @@ export function useSetupProviderForm() {
       llmTimeoutSeconds: context.llmTimeoutSeconds.value,
       contextWindowTokens: context.contextWindowTokens.value,
       contextWindowGlobal: context.contextWindowGlobal.value,
+      effectiveMaxTokens: context.effectiveMaxTokens.value,
       providerIsLocal: context.providerIsLocal.value,
       connection: connection.value,
       providerFieldValue: (field: ProviderField) => fieldValue(field, context.currentConfig.value),

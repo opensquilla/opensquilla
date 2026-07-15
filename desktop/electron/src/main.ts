@@ -40,13 +40,23 @@ import {
   type TrustedDesktopCleanupPreview,
 } from './desktop-cleanup.js'
 import { secretStorageBackendForPolicy, shouldUseChromiumMockKeychainForPolicy } from './secret-storage-policy.js'
+import { parseOpenSquillaReleaseTag } from './update-feed-resolver.js'
 import {
-  GITHUB_UPDATE_OWNER,
-  GITHUB_UPDATE_REPO,
-  parseOpenSquillaReleaseTag,
-  selectMacPrereleaseCandidate,
-  type ReleaseSummary,
-} from './update-feed-resolver.js'
+  candidateFromUpdateChannel,
+  orderedUpdateSources,
+  updateAssetUrl,
+  updateChannelManifestUrl,
+  updateFeedBaseUrl,
+  UpdateChannelError,
+  type DesktopUpdateCandidate,
+  type DesktopUpdatePlatform,
+  type DesktopUpdateSource,
+} from './update-channel.js'
+import {
+  parseSha256SumsForAsset,
+  readResponseTextWithLimit,
+  streamResponseToVerifiedFile,
+} from './update-verification.js'
 import { isUpdateCheckAllowed, UpdateCheckScheduler } from './update-check-scheduler.js'
 
 interface GatewayState {
@@ -979,6 +989,28 @@ const PROVIDER_CATALOG: ProviderCatalogEntry[] = [
     routerSupported: true,
     deployment: 'cloud',
     note: 'Qwen tier profile for Mainland-friendly access.',
+  },
+  {
+    id: 'bailian_coding_cn',
+    label: 'Bailian Coding (Mainland China)',
+    model: 'qwen3.7-plus',
+    baseUrl: 'https://coding.dashscope.aliyuncs.com/v1',
+    apiKeyEnv: 'BAILIAN_API_KEY',
+    requiresApiKey: true,
+    routerSupported: false,
+    deployment: 'cloud',
+    note: 'Mainland China Coding Plan. Requires a dedicated sk-sp- API key.',
+  },
+  {
+    id: 'bailian_coding',
+    label: 'Bailian Coding (International)',
+    model: 'qwen3.7-plus',
+    baseUrl: 'https://coding-intl.dashscope.aliyuncs.com/v1',
+    apiKeyEnv: 'BAILIAN_API_KEY',
+    requiresApiKey: true,
+    routerSupported: false,
+    deployment: 'cloud',
+    note: 'International Coding Plan. Requires a dedicated sk-sp- API key.',
   },
   {
     id: 'deepseek',
@@ -2537,6 +2569,12 @@ const DESKTOP_MESSAGES: Record<DesktopLocale, Record<string, string>> = {
     'update.upToDateTitle': "You're up to date",
     'update.upToDateDetail': 'OpenSquilla {version} is the latest version.',
     'update.errorTitle': 'Update check failed',
+    'update.manifestInvalid': 'The update information is invalid. Please try again later.',
+    'update.sourceUnavailable': 'The update service is temporarily unavailable. Please try again later.',
+    'update.checksumUnavailable': 'The installer cannot be verified because the canonical GitHub checksum is unavailable. No installer was opened.',
+    'update.integrityFailed': 'The downloaded installer failed integrity verification and was deleted.',
+    'update.downloadFailed': 'The update could not be downloaded. Please try again.',
+    'update.installFailed': 'The update installer could not be opened. Please try again.',
     'update.moveToApplications': 'Move OpenSquilla to your Applications folder to enable automatic updates, then try again.',
     'update.gatewayShutdownTimeout': 'OpenSquilla could not stop the local runtime. Try relaunching to update again.',
     'update.mockInstallTitle': 'Mock update restart',
@@ -2688,6 +2726,12 @@ const DESKTOP_MESSAGES: Record<DesktopLocale, Record<string, string>> = {
     'update.upToDateTitle': '已是最新版本',
     'update.upToDateDetail': 'OpenSquilla {version} 已是最新版本。',
     'update.errorTitle': '检查更新失败',
+    'update.manifestInvalid': '更新信息无效，请稍后重试。',
+    'update.sourceUnavailable': '更新服务暂时不可用，请稍后重试。',
+    'update.checksumUnavailable': '无法获取 GitHub 官方校验和，因此不能验证安装包；未打开任何安装包。',
+    'update.integrityFailed': '下载的安装包未通过完整性校验，已将其删除。',
+    'update.downloadFailed': '更新下载安装失败，请重试。',
+    'update.installFailed': '无法打开更新安装包，请重试。',
     'update.moveToApplications': '请先将 OpenSquilla 移动到"应用程序"文件夹以启用自动更新，然后重试。',
     'update.gatewayShutdownTimeout': 'OpenSquilla 无法停止本地运行时。请再次尝试重启以更新。',
     'update.mockInstallTitle': '模拟重启更新',
@@ -2839,6 +2883,12 @@ const DESKTOP_MESSAGES: Record<DesktopLocale, Record<string, string>> = {
     'update.upToDateTitle': '最新の状態です',
     'update.upToDateDetail': 'OpenSquilla {version} が最新バージョンです。',
     'update.errorTitle': 'アップデートの確認に失敗しました',
+    'update.manifestInvalid': 'アップデート情報が無効です。しばらくしてから再試行してください。',
+    'update.sourceUnavailable': 'アップデートサービスを一時的に利用できません。後でもう一度お試しください。',
+    'update.checksumUnavailable': 'GitHub の正規チェックサムを取得できないため、インストーラを検証できません。インストーラは開かれていません。',
+    'update.integrityFailed': 'ダウンロードしたインストーラは整合性検証に失敗したため削除されました。',
+    'update.downloadFailed': 'アップデートをダウンロードできませんでした。もう一度お試しください。',
+    'update.installFailed': 'アップデートインストーラを開けませんでした。もう一度お試しください。',
     'update.moveToApplications': '自動アップデートを有効にするには、OpenSquilla を「アプリケーション」フォルダに移動してから再試行してください。',
     'update.gatewayShutdownTimeout': 'ローカルランタイムを停止できませんでした。もう一度、再起動してアップデートをお試しください。',
     'uninstall.confirmTitle': 'ローカルの OpenSquilla デスクトップデータを削除しますか？',
@@ -2988,6 +3038,12 @@ const DESKTOP_MESSAGES: Record<DesktopLocale, Record<string, string>> = {
     'update.upToDateTitle': 'Vous êtes à jour',
     'update.upToDateDetail': 'OpenSquilla {version} est la dernière version.',
     'update.errorTitle': 'Échec de la recherche de mises à jour',
+    'update.manifestInvalid': 'Les informations de mise à jour sont invalides. Réessayez plus tard.',
+    'update.sourceUnavailable': 'Le service de mise à jour est temporairement indisponible. Réessayez plus tard.',
+    'update.checksumUnavailable': 'Le programme d’installation ne peut pas être vérifié car la somme de contrôle GitHub officielle est indisponible. Aucun programme n’a été ouvert.',
+    'update.integrityFailed': 'Le programme d’installation téléchargé a échoué au contrôle d’intégrité et a été supprimé.',
+    'update.downloadFailed': 'Impossible de télécharger la mise à jour. Réessayez.',
+    'update.installFailed': 'Impossible d’ouvrir le programme d’installation. Réessayez.',
     'update.moveToApplications': 'Déplacez OpenSquilla dans votre dossier Applications pour activer les mises à jour automatiques, puis réessayez.',
     'update.gatewayShutdownTimeout': 'OpenSquilla n\'a pas pu arrêter le runtime local. Réessayez de relancer la mise à jour.',
     'uninstall.confirmTitle': 'Supprimer les données locales du bureau OpenSquilla ?',
@@ -3137,6 +3193,12 @@ const DESKTOP_MESSAGES: Record<DesktopLocale, Record<string, string>> = {
     'update.upToDateTitle': 'Sie sind auf dem neuesten Stand',
     'update.upToDateDetail': 'OpenSquilla {version} ist die neueste Version.',
     'update.errorTitle': 'Update-Prüfung fehlgeschlagen',
+    'update.manifestInvalid': 'Die Update-Informationen sind ungültig. Versuchen Sie es später erneut.',
+    'update.sourceUnavailable': 'Der Update-Dienst ist vorübergehend nicht verfügbar. Versuchen Sie es später erneut.',
+    'update.checksumUnavailable': 'Das Installationsprogramm kann nicht geprüft werden, weil die offizielle GitHub-Prüfsumme nicht verfügbar ist. Es wurde nichts geöffnet.',
+    'update.integrityFailed': 'Das heruntergeladene Installationsprogramm hat die Integritätsprüfung nicht bestanden und wurde gelöscht.',
+    'update.downloadFailed': 'Das Update konnte nicht heruntergeladen werden. Versuchen Sie es erneut.',
+    'update.installFailed': 'Das Update-Installationsprogramm konnte nicht geöffnet werden. Versuchen Sie es erneut.',
     'update.moveToApplications': 'Verschieben Sie OpenSquilla in Ihren Programme-Ordner, um automatische Updates zu aktivieren, und versuchen Sie es erneut.',
     'update.gatewayShutdownTimeout': 'OpenSquilla konnte die lokale Laufzeitumgebung nicht stoppen. Versuchen Sie erneut, zum Aktualisieren neu zu starten.',
     'uninstall.confirmTitle': 'Lokale OpenSquilla-Desktop-Daten löschen?',
@@ -3286,6 +3348,12 @@ const DESKTOP_MESSAGES: Record<DesktopLocale, Record<string, string>> = {
     'update.upToDateTitle': 'Estás al día',
     'update.upToDateDetail': 'OpenSquilla {version} es la última versión.',
     'update.errorTitle': 'Error al buscar actualizaciones',
+    'update.manifestInvalid': 'La información de actualización no es válida. Inténtalo más tarde.',
+    'update.sourceUnavailable': 'El servicio de actualizaciones no está disponible temporalmente. Inténtalo más tarde.',
+    'update.checksumUnavailable': 'No se puede verificar el instalador porque la suma de comprobación oficial de GitHub no está disponible. No se abrió ningún instalador.',
+    'update.integrityFailed': 'El instalador descargado no superó la verificación de integridad y se eliminó.',
+    'update.downloadFailed': 'No se pudo descargar la actualización. Inténtalo de nuevo.',
+    'update.installFailed': 'No se pudo abrir el instalador de la actualización. Inténtalo de nuevo.',
     'update.moveToApplications': 'Mueve OpenSquilla a tu carpeta de Aplicaciones para habilitar las actualizaciones automáticas e inténtalo de nuevo.',
     'update.gatewayShutdownTimeout': 'OpenSquilla no pudo detener el runtime local. Intenta reiniciar para actualizar de nuevo.',
     'uninstall.confirmTitle': '¿Eliminar los datos locales de escritorio de OpenSquilla?',
@@ -7187,20 +7255,22 @@ function stopGateway(): void {
   hardTerminateGatewayProcess(child, GATEWAY_SHUTDOWN_KILL_AFTER_MS)
 }
 
-// ── Auto-update (electron-updater) ──────────────────────────────────────────
-// Phase 1 scope is macOS only. macOS release builds are Developer-ID signed +
-// notarized and ship the zip + latest-mac.yml feed that Squirrel.Mac consumes,
-// so in-place auto-update is safe. Windows builds are currently UNSIGNED, which
-// would make silent NSIS updates trip SmartScreen/UAC — so Windows stays on the
-// manual-download path (the in-app web notice) until a code-signing certificate
-// is in place. OPENSQUILLA_DESKTOP_ENABLE_WIN_UPDATE=1 opts in for local testing
-// only; OPENSQUILLA_DESKTOP_DISABLE_AUTO_UPDATE=1 turns the feature off entirely.
+// ── Desktop updates ──────────────────────────────────────────────────────────
+// macOS release builds are Developer-ID signed + notarized and ship the zip +
+// latest-mac.yml feed that Squirrel.Mac consumes, so in-place auto-update is
+// safe. Windows builds are currently unsigned, so the desktop shell discovers
+// the release but opens its exact versioned NSIS installer for an explicit
+// manual install. OPENSQUILLA_DESKTOP_ENABLE_WIN_UPDATE=1 opts in to native
+// Windows updating for local tests only; OPENSQUILLA_DESKTOP_DISABLE_AUTO_UPDATE
+// disables all shell-managed discovery.
 const { autoUpdater } = electronUpdater
 
 let autoUpdaterReady = false
 let updateDownloadInProgress = false
+let manualInstallerActionInProgress = false
 let updateApplying = false
 let downloadedUpdateVersion: string | null = null
+let verifiedManualInstallerPath: string | null = null
 let updateGatewayShutdownProcess: ChildProcessWithoutNullStreams | null = null
 let mockDownloadedUpdate = false
 let mockUpdatePromptActive = false
@@ -7219,6 +7289,16 @@ type DesktopUpdateStatus =
   | 'error'
   | 'applying'
 
+type DesktopUpdateInstallMode = 'native' | 'manual' | 'unsupported'
+type DesktopUpdateErrorCode =
+  | 'source_unreachable'
+  | 'manifest_invalid'
+  | 'checksum_unavailable'
+  | 'integrity_failed'
+  | 'download_failed'
+  | 'install_failed'
+  | null
+
 interface DesktopUpdateState {
   status: DesktopUpdateStatus
   currentVersion: string
@@ -7226,29 +7306,57 @@ interface DesktopUpdateState {
   progress: number | null
   checkedAt: string | null
   error: string | null
+  errorCode: DesktopUpdateErrorCode
   snoozedUntil: string | null
+  canCheck: boolean
   canNativeInstall: boolean
+  installMode: DesktopUpdateInstallMode
   releaseUrl: string | null
+  source: DesktopUpdateSource | null
+  fallbackUsed: boolean
+}
+
+interface DesktopUpdateFailureFallback {
+  state: DesktopUpdateState
+  candidate: DesktopUpdateCandidate | null
+}
+
+interface NativeUpdateReady {
+  tag: string
+  version: string
+  source: DesktopUpdateSource
 }
 
 interface DesktopUpdatePersistedState {
   snoozedVersion?: string
   snoozedUntil?: string
+  lastSuccessfulSource?: DesktopUpdateSource
 }
 
 const UPDATE_SNOOZE_MS = 24 * 60 * 60 * 1000
 const UPDATE_CHECK_INITIAL_DELAY_MS = 12_000
 const MOCK_UPDATE_CHECK_INITIAL_DELAY_MS = 1_000
 const UPDATE_CHECK_REPEAT_DELAY_MS = 24 * 60 * 60 * 1000
+const UPDATE_CHECKSUM_MAX_BYTES = 1024 * 1024
+const UPDATE_INSTALLER_MAX_BYTES = 4 * 1024 * 1024 * 1024
+const UPDATE_INSTALLER_DOWNLOAD_TIMEOUT_MS = 60 * 60 * 1000
 
 let desktopUpdateStatus: DesktopUpdateStatus = 'idle'
 let desktopUpdateLatestVersion: string | null = null
 let desktopUpdateProgress: number | null = null
 let desktopUpdateCheckedAt: string | null = null
 let desktopUpdateError: string | null = null
+let desktopUpdateErrorCode: DesktopUpdateErrorCode = null
+let desktopUpdateReleaseUrl: string | null = null
+let desktopUpdateSource: DesktopUpdateSource | null = null
+let desktopUpdateFallbackUsed = false
+let desktopUpdateCandidate: DesktopUpdateCandidate | null = null
+let nativeUpdateReady: NativeUpdateReady | null = null
+let lastSuccessfulUpdateSource: DesktopUpdateSource | null = null
 let desktopUpdateSnoozedVersion: string | null = null
 let desktopUpdateSnoozedUntil: string | null = null
 let desktopUpdatePersistenceLoaded = false
+let desktopUpdatePersistenceWrite: Promise<void> = Promise.resolve()
 
 const NETWORK_OBSERVABILITY_DISABLE_ENV_KEYS = [
   'OPENSQUILLA_PRIVACY_DISABLE_NETWORK_OBSERVABILITY',
@@ -7331,13 +7439,19 @@ function mockUpdateVersion(): string | null {
 }
 
 function desktopUpdateMenuEnabled(): boolean {
-  return autoUpdateSupported() || mockUpdateVersion() !== null
+  return desktopUpdateManaged() || mockUpdateVersion() !== null
 }
 
-function autoUpdateSupported(): boolean {
+function desktopUpdateManaged(): boolean {
   if (!app.isPackaged) return false
   if (desktopNetworkObservabilityDisabled()) return false
   if (process.env.OPENSQUILLA_DESKTOP_DISABLE_AUTO_UPDATE === '1') return false
+  return process.platform === 'darwin' || process.platform === 'win32'
+}
+
+function autoUpdateSupported(): boolean {
+  if (desktopNetworkObservabilityDisabled()) return false
+  if (!desktopUpdateManaged()) return false
   if (process.platform === 'darwin') return true
   if (process.platform === 'win32' && process.env.OPENSQUILLA_DESKTOP_ENABLE_WIN_UPDATE === '1') {
     return true
@@ -7347,6 +7461,12 @@ function autoUpdateSupported(): boolean {
 
 function nativeAutoUpdateEnabled(): boolean {
   return mockUpdateVersion() !== null || (autoUpdateSupported() && macUpdateLocationOk())
+}
+
+function desktopUpdateInstallMode(): DesktopUpdateInstallMode {
+  if (nativeAutoUpdateEnabled()) return 'native'
+  if (desktopUpdateManaged() && process.platform === 'win32') return 'manual'
+  return 'unsupported'
 }
 
 function desktopUpdateStatePath(): string {
@@ -7362,6 +7482,9 @@ function loadDesktopUpdatePersistence(): void {
     const path = desktopUpdateStatePath()
     if (!existsSync(path)) return
     const parsed = JSON.parse(readFileSync(path, 'utf8')) as DesktopUpdatePersistedState
+    if (parsed.lastSuccessfulSource === 'oss' || parsed.lastSuccessfulSource === 'github') {
+      lastSuccessfulUpdateSource = parsed.lastSuccessfulSource
+    }
     const snoozedVersion = String(parsed.snoozedVersion || '').trim()
     const snoozedUntil = String(parsed.snoozedUntil || '').trim()
     if (!snoozedVersion || !snoozedUntil) return
@@ -7374,24 +7497,28 @@ function loadDesktopUpdatePersistence(): void {
   }
 }
 
-async function persistDesktopUpdateSnooze(): Promise<void> {
-  try {
-    mkdirSync(app.getPath('userData'), { recursive: true })
-    await writeFile(
-      desktopUpdateStatePath(),
-      JSON.stringify(
-        {
-          snoozedVersion: desktopUpdateSnoozedVersion || undefined,
-          snoozedUntil: desktopUpdateSnoozedUntil || undefined,
-        },
-        null,
-        2,
-      ),
-      { mode: 0o600 },
-    )
-  } catch (err) {
-    console.warn('[updater] failed to persist update snooze', err)
-  }
+function persistDesktopUpdateState(): Promise<void> {
+  desktopUpdatePersistenceWrite = desktopUpdatePersistenceWrite.then(async () => {
+    try {
+      mkdirSync(app.getPath('userData'), { recursive: true })
+      await atomicWriteFile(
+        desktopUpdateStatePath(),
+        JSON.stringify(
+          {
+            snoozedVersion: desktopUpdateSnoozedVersion || undefined,
+            snoozedUntil: desktopUpdateSnoozedUntil || undefined,
+            lastSuccessfulSource: lastSuccessfulUpdateSource || undefined,
+          },
+          null,
+          2,
+        ),
+        0o600,
+      )
+    } catch (err) {
+      console.warn('[updater] failed to persist update state', err)
+    }
+  })
+  return desktopUpdatePersistenceWrite
 }
 
 function activeDesktopUpdateSnoozeFor(version: string | null): string | null {
@@ -7401,7 +7528,7 @@ function activeDesktopUpdateSnoozeFor(version: string | null): string | null {
   if (Date.parse(desktopUpdateSnoozedUntil) <= Date.now()) {
     desktopUpdateSnoozedVersion = null
     desktopUpdateSnoozedUntil = null
-    void persistDesktopUpdateSnooze()
+    void persistDesktopUpdateState()
     return null
   }
   return desktopUpdateSnoozedUntil
@@ -7412,11 +7539,12 @@ function clearDesktopUpdateSnoozeIfVersionChanged(version: string | null): void 
   if (!version || !desktopUpdateSnoozedVersion || desktopUpdateSnoozedVersion === version) return
   desktopUpdateSnoozedVersion = null
   desktopUpdateSnoozedUntil = null
-  void persistDesktopUpdateSnooze()
+  void persistDesktopUpdateState()
 }
 
 function desktopUpdateSnapshot(): DesktopUpdateState {
   const latestVersion = desktopUpdateLatestVersion || downloadedUpdateVersion
+  const installMode = desktopUpdateInstallMode()
   return {
     status: desktopUpdateStatus,
     currentVersion: app.getVersion(),
@@ -7424,9 +7552,14 @@ function desktopUpdateSnapshot(): DesktopUpdateState {
     progress: desktopUpdateProgress,
     checkedAt: desktopUpdateCheckedAt,
     error: desktopUpdateError,
+    errorCode: desktopUpdateErrorCode,
     snoozedUntil: activeDesktopUpdateSnoozeFor(latestVersion),
-    canNativeInstall: nativeAutoUpdateEnabled(),
-    releaseUrl: null,
+    canCheck: desktopUpdateManaged() || mockUpdateVersion() !== null,
+    canNativeInstall: installMode === 'native',
+    installMode,
+    releaseUrl: desktopUpdateReleaseUrl,
+    source: desktopUpdateSource,
+    fallbackUsed: desktopUpdateFallbackUsed,
   }
 }
 
@@ -7443,17 +7576,35 @@ function setDesktopUpdateState(patch: Partial<DesktopUpdateState>): DesktopUpdat
   if ('latestVersion' in patch) desktopUpdateLatestVersion = patch.latestVersion ?? null
   if ('progress' in patch) desktopUpdateProgress = patch.progress ?? null
   if ('checkedAt' in patch) desktopUpdateCheckedAt = patch.checkedAt ?? null
-  if ('error' in patch) desktopUpdateError = patch.error ?? null
+  if ('error' in patch) {
+    desktopUpdateError = patch.error ?? null
+    if (patch.error == null && !('errorCode' in patch)) desktopUpdateErrorCode = null
+  }
+  if ('errorCode' in patch) desktopUpdateErrorCode = patch.errorCode ?? null
+  if ('releaseUrl' in patch) desktopUpdateReleaseUrl = patch.releaseUrl ?? null
+  if ('source' in patch) desktopUpdateSource = patch.source ?? null
+  if ('fallbackUsed' in patch) desktopUpdateFallbackUsed = patch.fallbackUsed ?? false
   clearDesktopUpdateSnoozeIfVersionChanged(desktopUpdateLatestVersion || downloadedUpdateVersion)
   return publishDesktopUpdateState()
 }
 
 async function dismissDesktopUpdate(): Promise<DesktopUpdateState> {
   const latestVersion = desktopUpdateLatestVersion || downloadedUpdateVersion
+  if (!latestVersion && desktopUpdateStatus === 'error') {
+    return setDesktopUpdateState({
+      status: 'idle',
+      progress: null,
+      error: null,
+      errorCode: null,
+      releaseUrl: null,
+      source: null,
+      fallbackUsed: false,
+    })
+  }
   if (latestVersion) {
     desktopUpdateSnoozedVersion = latestVersion
     desktopUpdateSnoozedUntil = new Date(Date.now() + UPDATE_SNOOZE_MS).toISOString()
-    await persistDesktopUpdateSnooze()
+    await persistDesktopUpdateState()
   }
   return publishDesktopUpdateState()
 }
@@ -7498,22 +7649,57 @@ function showUpdateDialog(
   return win ? dialog.showMessageBox(win, options) : dialog.showMessageBox(options)
 }
 
-function showUpdateError(err: unknown): void {
+function classifyDesktopUpdateError(err: unknown): Exclude<DesktopUpdateErrorCode, null> {
+  if (err instanceof UpdateChannelError) {
+    if (err.code === 'manifest_invalid' || err.code === 'current_version_invalid') return 'manifest_invalid'
+    if (err.code === 'checksum_unavailable') return 'checksum_unavailable'
+    if (err.code === 'integrity_failed') return 'integrity_failed'
+    if (err.code === 'download_failed') return 'download_failed'
+    if (err.code === 'install_failed') return 'install_failed'
+    return 'source_unreachable'
+  }
+  return updateDownloadInProgress ? 'download_failed' : 'source_unreachable'
+}
+
+function desktopUpdateErrorMessage(code: Exclude<DesktopUpdateErrorCode, null>): string {
+  if (code === 'manifest_invalid') return desktopT('update.manifestInvalid')
+  if (code === 'checksum_unavailable') return desktopT('update.checksumUnavailable')
+  if (code === 'integrity_failed') return desktopT('update.integrityFailed')
+  if (code === 'download_failed') return desktopT('update.downloadFailed')
+  if (code === 'install_failed') return desktopT('update.installFailed')
+  return desktopT('update.sourceUnavailable')
+}
+
+function showUpdateError(
+  err: unknown,
+  silentFallback: DesktopUpdateFailureFallback | null = null,
+): void {
   const shouldNotify = desktopUpdateCheckScheduler.consumeManualRequest() || updateDownloadInProgress
+  const errorCode = classifyDesktopUpdateError(err)
   updateDownloadInProgress = false
   if (!shouldNotify) {
-    // electron-updater delivers each failure twice (it emits 'error' AND rejects
-    // the promise our try/catch awaits). The first delivery publishes the visible
-    // error and clears the notify flags; without this guard the second, now-silent
-    // delivery would clobber that error back to idle and wipe the known
-    // latestVersion. Leave an already-published error in place.
-    if (desktopUpdateStatus === 'error') return
+    if (silentFallback && !['checking', 'downloading', 'applying'].includes(silentFallback.state.status)) {
+      desktopUpdateCandidate = silentFallback.candidate
+      setDesktopUpdateState({
+        status: silentFallback.state.status,
+        latestVersion: silentFallback.state.latestVersion,
+        progress: silentFallback.state.progress,
+        checkedAt: silentFallback.state.checkedAt,
+        error: silentFallback.state.error,
+        errorCode: silentFallback.state.errorCode,
+        releaseUrl: silentFallback.state.releaseUrl,
+        source: silentFallback.state.source,
+        fallbackUsed: silentFallback.state.fallbackUsed,
+      })
+      return
+    }
     setDesktopUpdateState({
       status: downloadedUpdateVersion ? 'downloaded' : 'idle',
       latestVersion: downloadedUpdateVersion,
       progress: downloadedUpdateVersion ? 100 : null,
       checkedAt: new Date().toISOString(),
       error: null,
+      errorCode: null,
     })
     return
   }
@@ -7521,7 +7707,8 @@ function showUpdateError(err: unknown): void {
     status: 'error',
     progress: null,
     checkedAt: new Date().toISOString(),
-    error: String(err instanceof Error ? err.message : err ?? ''),
+    error: desktopUpdateErrorMessage(errorCode),
+    errorCode,
   })
 }
 
@@ -7553,7 +7740,30 @@ async function runMockUpdateFlow(version: string): Promise<void> {
 }
 
 async function downloadDesktopUpdate(): Promise<DesktopUpdateState> {
-  if (updateDownloadInProgress || updateApplying || desktopUpdateStatus === 'downloaded') {
+  if (
+    desktopUpdateInstallMode() === 'manual'
+    && desktopUpdateStatus === 'downloaded'
+    && verifiedManualInstallerPath
+  ) {
+    try {
+      shell.showItemInFolder(verifiedManualInstallerPath)
+    } catch (err) {
+      console.error('[updater] failed to reveal verified manual installer', err)
+      return setDesktopUpdateState({
+        status: 'error',
+        progress: null,
+        error: desktopUpdateErrorMessage('install_failed'),
+        errorCode: 'install_failed',
+      })
+    }
+    return desktopUpdateSnapshot()
+  }
+  if (
+    updateDownloadInProgress
+    || manualInstallerActionInProgress
+    || updateApplying
+    || desktopUpdateStatus === 'downloaded'
+  ) {
     return desktopUpdateSnapshot()
   }
 
@@ -7582,27 +7792,108 @@ async function downloadDesktopUpdate(): Promise<DesktopUpdateState> {
     })
   }
 
+  if (desktopUpdateInstallMode() === 'manual') {
+    manualInstallerActionInProgress = true
+    try {
+      if (desktopUpdateStatus === 'checking') await checkForUpdates(true)
+      if (!desktopUpdateCandidate) await checkForUpdates(true)
+      const candidate = desktopUpdateCandidate
+      if (!candidate || desktopUpdateStatus !== 'available') return desktopUpdateSnapshot()
+      updateDownloadInProgress = true
+      verifiedManualInstallerPath = null
+
+      let chosen: { source: DesktopUpdateSource; fallbackUsed: boolean }
+      try {
+        chosen = await chooseDesktopUpdateSource(candidate, candidate.installer)
+      } catch (err) {
+        console.error('[updater] manual installer sources are unreachable', err)
+        return setDesktopUpdateState({
+          status: 'error',
+          progress: null,
+          checkedAt: new Date().toISOString(),
+          error: desktopUpdateErrorMessage('source_unreachable'),
+          errorCode: 'source_unreachable',
+        })
+      }
+
+      const installerUrl = updateAssetUrl(candidate, chosen.source)
+      setDesktopUpdateState({
+        status: 'downloading',
+        latestVersion: candidate.version,
+        progress: 0,
+        releaseUrl: installerUrl,
+        source: chosen.source,
+        fallbackUsed: chosen.fallbackUsed,
+        error: null,
+        errorCode: null,
+      })
+      try {
+        const expectedSha256 = await fetchCanonicalWindowsInstallerDigest(candidate)
+        const verified = await downloadVerifiedWindowsInstallerWithFallback(
+          candidate,
+          chosen,
+          expectedSha256,
+        )
+        verifiedManualInstallerPath = verified.path
+        rememberSuccessfulUpdateSource(verified.source)
+        setDesktopUpdateState({
+          status: 'downloaded',
+          latestVersion: candidate.version,
+          progress: 100,
+          checkedAt: new Date().toISOString(),
+          releaseUrl: updateAssetUrl(candidate, verified.source),
+          source: verified.source,
+          fallbackUsed: verified.fallbackUsed,
+          error: null,
+          errorCode: null,
+        })
+        try {
+          shell.showItemInFolder(verified.path)
+        } catch (err) {
+          throw new UpdateChannelError(
+            'install_failed',
+            `The verified installer could not be shown: ${String(err instanceof Error ? err.message : err)}`,
+          )
+        }
+      } catch (err) {
+        console.error('[updater] failed to prepare verified manual installer', err)
+        showUpdateError(err)
+        return desktopUpdateSnapshot()
+      }
+      return desktopUpdateSnapshot()
+    } finally {
+      updateDownloadInProgress = false
+      manualInstallerActionInProgress = false
+    }
+  }
+
   if (!autoUpdateSupported()) return desktopUpdateSnapshot()
   if (!macUpdateLocationOk()) {
     return setDesktopUpdateState({
       status: 'error',
       progress: null,
       error: desktopT('update.moveToApplications'),
+      errorCode: null,
     })
   }
 
   initAutoUpdater()
-  if (!desktopUpdateLatestVersion) await checkForUpdates(true)
-  if (!desktopUpdateLatestVersion) return desktopUpdateSnapshot()
+  let candidate = desktopUpdateCandidate
+  if (!candidate || !nativeUpdateReadyFor(candidate)) {
+    await checkForUpdates(true)
+    candidate = desktopUpdateCandidate
+  }
+  if (!candidate || !nativeUpdateReadyFor(candidate)) return desktopUpdateSnapshot()
 
   updateDownloadInProgress = true
   setDesktopUpdateState({
     status: 'downloading',
+    latestVersion: candidate.version,
     progress: 0,
     error: null,
   })
   try {
-    await autoUpdater.downloadUpdate()
+    await downloadNativeDesktopUpdateWithFallback()
   } catch (err) {
     console.error('[updater] download failed', err)
     showUpdateError(err)
@@ -7619,6 +7910,13 @@ function initAutoUpdater(): void {
   // restart path so applyDownloadedUpdate() can drain the owned gateway first.
   autoUpdater.autoDownload = false
   autoUpdater.autoInstallOnAppQuit = false
+  // electron-updater generates a persistent per-install staging UUID even
+  // when no staged rollout is configured. Override the outbound header with a
+  // fixed, non-user-specific value; OpenSquilla channels do not use rollout
+  // bucketing and update checks should not add a cross-request identifier.
+  autoUpdater.requestHeaders = {
+    'x-user-staging-id': '00000000-0000-4000-8000-000000000000',
+  }
   autoUpdater.logger = {
     info: (m: unknown) => console.log('[updater]', m),
     warn: (m: unknown) => console.warn('[updater]', m),
@@ -7627,26 +7925,11 @@ function initAutoUpdater(): void {
   }
 
   autoUpdater.on('update-available', (info) => {
-    const version = String(info?.version ?? '')
-    updateDownloadInProgress = false
-    setDesktopUpdateState({
-      status: 'available',
-      latestVersion: version || null,
-      progress: null,
-      checkedAt: new Date().toISOString(),
-      error: null,
-    })
+    console.log('[updater] provider reports update available', String(info?.version ?? ''))
   })
 
-  autoUpdater.on('update-not-available', () => {
-    updateDownloadInProgress = false
-    setDesktopUpdateState({
-      status: 'not-available',
-      latestVersion: app.getVersion(),
-      progress: null,
-      checkedAt: new Date().toISOString(),
-      error: null,
-    })
+  autoUpdater.on('update-not-available', (info) => {
+    console.log('[updater] provider reports no update', String(info?.version ?? ''))
   })
 
   autoUpdater.on('download-progress', (progress) => {
@@ -7675,59 +7958,430 @@ function initAutoUpdater(): void {
 
   autoUpdater.on('error', (err) => {
     console.error('[updater] error', err)
-    showUpdateError(err)
+    // electron-updater also rejects the active check/download promise. The
+    // promise owner performs source fallback and publishes at most one final
+    // error after both sources have failed.
   })
 }
 
-// ── macOS prerelease update discovery ───────────────────────────────────────
-// The tag-parsing + candidate-selection logic lives in ./update-feed-resolver so
-// it can be unit-tested without Electron; the pieces below are the Electron-bound
-// glue (current version, GitHub fetch, feed wiring).
+// ── Static release-channel discovery and regional source selection ─────────
+// GitHub Release remains the source of truth, but clients discover the moving
+// stable / same-base preview channel from a small OSS JSON manifest. Once the
+// strict tag is known, metadata and installers can come from either the OSS
+// version directory or the matching GitHub Release without using the anonymous
+// GitHub Releases API.
 
-// The running app version if it is a prerelease we can resolve upgrades for.
-function currentPrereleaseReleaseTarget(): { base: string; rc: number } | null {
-  const parsed = parseOpenSquillaReleaseTag(app.getVersion())
-  return parsed && parsed.rc !== null ? { base: parsed.base, rc: parsed.rc } : null
+interface ResolvedDesktopUpdate {
+  candidate: DesktopUpdateCandidate
+  source: DesktopUpdateSource
+  fallbackUsed: boolean
 }
 
-async function fetchGithubReleaseSummaries(): Promise<ReleaseSummary[]> {
-  const url = `https://api.github.com/repos/${GITHUB_UPDATE_OWNER}/${GITHUB_UPDATE_REPO}/releases?per_page=50`
-  const response = await fetch(url, {
-    headers: { Accept: 'application/vnd.github+json', 'User-Agent': 'OpenSquilla-Desktop' },
-    signal: AbortSignal.timeout(8000),
-  })
-  if (!response.ok) throw new Error(`GitHub releases request failed: ${response.status}`)
-  const data = await response.json()
-  return Array.isArray(data) ? (data as ReleaseSummary[]) : []
+function desktopUpdatePlatform(): DesktopUpdatePlatform | null {
+  if (process.platform === 'darwin' && process.arch === 'arm64') return 'darwin-arm64'
+  if (process.platform === 'win32' && process.arch === 'x64') return 'win32-x64'
+  return null
 }
 
-// Returns 'default' to leave the built-in GitHub provider in place (stable
-// builds, non-macOS, dev), 'configured' after pointing a generic feed at the
-// resolved candidate, or 'up-to-date' when no newer same-base release exists.
-async function configureDesktopUpdateFeed(): Promise<'default' | 'configured' | 'up-to-date'> {
-  // Default (stable builds, GitHub provider path): never silently downgrade.
+function desktopUpdateLocaleTags(): string[] {
+  const preferred = typeof app.getPreferredSystemLanguages === 'function'
+    ? app.getPreferredSystemLanguages()
+    : []
+  return [...preferred, app.getLocale()]
+}
+
+async function fetchDesktopUpdateChannel(): Promise<unknown> {
+  const rootOverride = (process.env.OPENSQUILLA_DESKTOP_UPDATE_CHANNEL_ROOT || '').trim()
+  const url = updateChannelManifestUrl(app.getVersion(), rootOverride || undefined)
+  if (!url) {
+    throw new UpdateChannelError('manifest_invalid', 'The installed version has no supported update channel.')
+  }
+  let response: Response
+  try {
+    response = await fetch(url, {
+      headers: { Accept: 'application/json', 'User-Agent': 'OpenSquilla-Desktop' },
+      signal: AbortSignal.timeout(8000),
+      cache: 'no-store',
+    })
+  } catch (err) {
+    throw new UpdateChannelError(
+      'source_unreachable',
+      `The update channel is temporarily unreachable: ${String(err instanceof Error ? err.message : err)}`,
+    )
+  }
+  if (!response.ok) {
+    throw new UpdateChannelError('source_unreachable', 'The update channel is temporarily unavailable.')
+  }
+  try {
+    return await response.json()
+  } catch {
+    throw new UpdateChannelError('manifest_invalid', 'The update channel returned invalid JSON.')
+  }
+}
+
+async function probeDesktopUpdateSource(
+  candidate: DesktopUpdateCandidate,
+  source: DesktopUpdateSource,
+  asset = candidate.feed,
+): Promise<void> {
+  const url = updateAssetUrl(candidate, source, asset)
+  let response: Response
+  try {
+    response = await fetch(url, {
+      headers: { Accept: 'application/octet-stream', Range: 'bytes=0-0', 'User-Agent': 'OpenSquilla-Desktop' },
+      signal: AbortSignal.timeout(5000),
+      cache: 'no-store',
+    })
+  } catch (err) {
+    throw new UpdateChannelError(
+      'source_unreachable',
+      `${source} update source is unreachable: ${String(err instanceof Error ? err.message : err)}`,
+    )
+  }
+  if (!response.ok) {
+    throw new UpdateChannelError('source_unreachable', `${source} update source is unavailable.`)
+  }
+  await response.body?.cancel().catch(() => {})
+}
+
+async function chooseDesktopUpdateSource(
+  candidate: DesktopUpdateCandidate,
+  asset = candidate.feed,
+): Promise<{ source: DesktopUpdateSource; fallbackUsed: boolean }> {
+  loadDesktopUpdatePersistence()
+  const order = orderedUpdateSources(
+    desktopUpdateLocaleTags(),
+    lastSuccessfulUpdateSource,
+    process.env.OPENSQUILLA_DESKTOP_UPDATE_SOURCE,
+  )
+  let lastError: unknown = null
+  for (let index = 0; index < order.length; index += 1) {
+    const source = order[index]
+    try {
+      await probeDesktopUpdateSource(candidate, source, asset)
+      return { source, fallbackUsed: index > 0 }
+    } catch (err) {
+      lastError = err
+      desktopLog('update_source_probe_failed', {
+        source,
+        error: String(err instanceof Error ? err.message : err),
+      })
+    }
+  }
+  if (lastError instanceof UpdateChannelError) throw lastError
+  throw new UpdateChannelError('source_unreachable', 'No desktop update source is reachable.')
+}
+
+function rememberSuccessfulUpdateSource(source: DesktopUpdateSource): void {
+  if (lastSuccessfulUpdateSource === source) return
+  lastSuccessfulUpdateSource = source
+  void persistDesktopUpdateState()
+}
+
+async function fetchCanonicalWindowsInstallerDigest(
+  candidate: DesktopUpdateCandidate,
+): Promise<string> {
+  const checksumUrl = updateAssetUrl(candidate, 'github', 'SHA256SUMS')
+  let response: Response
+  try {
+    response = await fetch(checksumUrl, {
+      headers: { Accept: 'text/plain', 'User-Agent': 'OpenSquilla-Desktop' },
+      signal: AbortSignal.timeout(10_000),
+      cache: 'no-store',
+    })
+  } catch (err) {
+    throw new UpdateChannelError(
+      'checksum_unavailable',
+      `The canonical GitHub checksum is unreachable: ${String(err instanceof Error ? err.message : err)}`,
+    )
+  }
+  if (!response.ok) {
+    await response.body?.cancel().catch(() => {})
+    throw new UpdateChannelError(
+      'checksum_unavailable',
+      `The canonical GitHub checksum returned HTTP ${response.status}.`,
+    )
+  }
+  try {
+    const contents = await readResponseTextWithLimit(response, UPDATE_CHECKSUM_MAX_BYTES)
+    return parseSha256SumsForAsset(contents, candidate.installer)
+  } catch (err) {
+    if (err instanceof UpdateChannelError) throw err
+    throw new UpdateChannelError(
+      'integrity_failed',
+      `The canonical GitHub checksum could not be parsed: ${String(err instanceof Error ? err.message : err)}`,
+    )
+  }
+}
+
+async function downloadVerifiedWindowsInstaller(
+  candidate: DesktopUpdateCandidate,
+  source: DesktopUpdateSource,
+  expectedSha256: string,
+): Promise<string> {
+  const installerUrl = updateAssetUrl(candidate, source)
+  let response: Response
+  try {
+    response = await fetch(installerUrl, {
+      headers: { Accept: 'application/octet-stream', 'User-Agent': 'OpenSquilla-Desktop' },
+      signal: AbortSignal.timeout(UPDATE_INSTALLER_DOWNLOAD_TIMEOUT_MS),
+      cache: 'no-store',
+    })
+  } catch (err) {
+    throw new UpdateChannelError(
+      'download_failed',
+      `The installer download failed: ${String(err instanceof Error ? err.message : err)}`,
+    )
+  }
+  if (!response.ok) {
+    await response.body?.cancel().catch(() => {})
+    throw new UpdateChannelError('download_failed', `The installer returned HTTP ${response.status}.`)
+  }
+
+  const destinationPath = join(
+    app.getPath('userData'),
+    'update-downloads',
+    candidate.installer,
+  )
+  let lastProgress = -1
+  let reportedUnknownLength = false
+  try {
+    const result = await streamResponseToVerifiedFile(
+      response,
+      destinationPath,
+      expectedSha256,
+      {
+        maxBytes: UPDATE_INSTALLER_MAX_BYTES,
+        onProgress(receivedBytes, totalBytes) {
+          if (totalBytes === null || totalBytes <= 0) {
+            if (reportedUnknownLength) return
+            reportedUnknownLength = true
+            setDesktopUpdateState({ status: 'downloading', progress: null, error: null })
+            return
+          }
+          const progress = Math.max(0, Math.min(100, Math.floor((receivedBytes / totalBytes) * 100)))
+          if (progress === lastProgress) return
+          lastProgress = progress
+          setDesktopUpdateState({ status: 'downloading', progress, error: null })
+        },
+      },
+    )
+    return result.path
+  } catch (err) {
+    if (err instanceof UpdateChannelError) throw err
+    throw new UpdateChannelError(
+      'download_failed',
+      `The installer download could not be saved: ${String(err instanceof Error ? err.message : err)}`,
+    )
+  }
+}
+
+interface VerifiedManualInstaller {
+  path: string
+  source: DesktopUpdateSource
+  fallbackUsed: boolean
+}
+
+async function downloadVerifiedWindowsInstallerWithFallback(
+  candidate: DesktopUpdateCandidate,
+  chosen: { source: DesktopUpdateSource; fallbackUsed: boolean },
+  expectedSha256: string,
+): Promise<VerifiedManualInstaller> {
+  const attempts: DesktopUpdateSource[] = [
+    chosen.source,
+    alternateDesktopUpdateSource(chosen.source),
+  ]
+  let lastError: unknown = null
+  let integrityError: UpdateChannelError | null = null
+  for (let index = 0; index < attempts.length; index += 1) {
+    const source = attempts[index]
+    const fallbackUsed = chosen.fallbackUsed || index > 0
+    setDesktopUpdateState({
+      status: 'downloading',
+      progress: 0,
+      releaseUrl: updateAssetUrl(candidate, source),
+      source,
+      fallbackUsed,
+      error: null,
+      errorCode: null,
+    })
+    try {
+      const path = await downloadVerifiedWindowsInstaller(candidate, source, expectedSha256)
+      return { path, source, fallbackUsed }
+    } catch (err) {
+      lastError = err
+      if (err instanceof UpdateChannelError && err.code === 'integrity_failed') {
+        integrityError = err
+      }
+      const retryable = err instanceof UpdateChannelError
+        && (err.code === 'download_failed' || err.code === 'integrity_failed')
+      desktopLog('update_manual_download_failed', {
+        source,
+        retrying: retryable && index + 1 < attempts.length,
+        error: String(err instanceof Error ? err.message : err),
+      })
+      if (!retryable) throw err
+    }
+  }
+  if (integrityError) throw integrityError
+  if (lastError instanceof Error) throw lastError
+  throw new UpdateChannelError('download_failed', 'No verified Windows installer source is reachable.')
+}
+
+function alternateDesktopUpdateSource(source: DesktopUpdateSource): DesktopUpdateSource {
+  return source === 'oss' ? 'github' : 'oss'
+}
+
+function nativeUpdateReadyFor(candidate: DesktopUpdateCandidate): boolean {
+  return nativeUpdateReady?.tag === candidate.tag
+    && nativeUpdateReady.version === candidate.version
+    && nativeUpdateReady.source === desktopUpdateSource
+}
+
+async function resolveDesktopUpdate(): Promise<ResolvedDesktopUpdate | null> {
+  const platform = desktopUpdatePlatform()
+  if (!platform) {
+    throw new UpdateChannelError('manifest_invalid', 'This desktop architecture has no update feed.')
+  }
+  const manifest = await fetchDesktopUpdateChannel()
+  const candidate = candidateFromUpdateChannel(app.getVersion(), manifest, platform)
+  if (!candidate) return null
+  const chosen = await chooseDesktopUpdateSource(candidate)
+  return { candidate, ...chosen }
+}
+
+function configureDesktopUpdateFeed(resolved: ResolvedDesktopUpdate): void {
   autoUpdater.allowDowngrade = false
-  if (process.platform !== 'darwin' || !app.isPackaged) return 'default'
-  const current = currentPrereleaseReleaseTarget()
-  if (!current) return 'default'
-  const candidate = selectMacPrereleaseCandidate(current, await fetchGithubReleaseSummaries())
-  if (!candidate) return 'up-to-date'
-  // Generic provider + channel 'latest' fetches latest-mac.yml from this exact
-  // release; the yml's version is then gated by electron-updater's isUpdateAvailable.
-  autoUpdater.setFeedURL({ provider: 'generic', url: candidate.feedUrl, channel: 'latest' })
-  // The resolver already decided this candidate is the correct forward move by
-  // NUMERIC rc order. electron-updater's gate uses semver.gt, which sorts rc
-  // identifiers as strings — so 0.5.0-rc10 ranks BELOW 0.5.0-rc9/rc2 and the
-  // update would be wrongly rejected. Allow the "downgrade": we only ever point
-  // the feed at a genuinely newer release, never an older one.
-  autoUpdater.allowDowngrade = true
-  desktopLog('update_feed_resolved', { tag: candidate.tag, version: candidate.version })
-  return 'configured'
+  autoUpdater.setFeedURL({
+    provider: 'generic',
+    url: updateFeedBaseUrl(resolved.candidate, resolved.source),
+    channel: 'latest',
+  })
+  // The strict manifest resolver already proved a same-base RC is a forward
+  // move. electron-updater compares identifiers such as rc9/rc10 lexically, so
+  // allow its apparent "downgrade" only for that validated prerelease path.
+  const current = parseOpenSquillaReleaseTag(app.getVersion())
+  autoUpdater.allowDowngrade = current?.rc !== null && current?.rc !== undefined
+  desktopLog('update_feed_resolved', {
+    tag: resolved.candidate.tag,
+    version: resolved.candidate.version,
+    source: resolved.source,
+    fallbackUsed: resolved.fallbackUsed,
+  })
+}
+
+async function checkNativeDesktopUpdate(resolved: ResolvedDesktopUpdate): Promise<void> {
+  nativeUpdateReady = null
+  const attempts: ResolvedDesktopUpdate[] = [
+    resolved,
+    {
+      candidate: resolved.candidate,
+      source: alternateDesktopUpdateSource(resolved.source),
+      fallbackUsed: true,
+    },
+  ]
+  let lastError: unknown = null
+  for (let index = 0; index < attempts.length; index += 1) {
+    const attempt = attempts[index]
+    try {
+      if (index > 0) await probeDesktopUpdateSource(attempt.candidate, attempt.source)
+      configureDesktopUpdateFeed(attempt)
+      const result = await autoUpdater.checkForUpdates()
+      const feedVersion = String(result?.updateInfo?.version ?? '').trim()
+      if (result?.isUpdateAvailable !== true || feedVersion !== attempt.candidate.version) {
+        throw new UpdateChannelError(
+          'manifest_invalid',
+          `Update feed did not offer the expected version ${attempt.candidate.version} (received ${feedVersion || '<missing>'}).`,
+        )
+      }
+      rememberSuccessfulUpdateSource(attempt.source)
+      desktopUpdateCandidate = attempt.candidate
+      nativeUpdateReady = {
+        tag: attempt.candidate.tag,
+        version: attempt.candidate.version,
+        source: attempt.source,
+      }
+      setDesktopUpdateState({
+        status: 'available',
+        latestVersion: attempt.candidate.version,
+        progress: null,
+        checkedAt: new Date().toISOString(),
+        releaseUrl: attempt.candidate.releaseUrl,
+        source: attempt.source,
+        fallbackUsed: resolved.fallbackUsed || attempt.fallbackUsed,
+        error: null,
+        errorCode: null,
+      })
+      return
+    } catch (err) {
+      lastError = err
+      desktopLog('update_native_check_failed', {
+        source: attempt.source,
+        error: String(err instanceof Error ? err.message : err),
+      })
+    }
+  }
+  throw lastError ?? new UpdateChannelError('source_unreachable', 'No desktop update source is reachable.')
+}
+
+async function downloadNativeDesktopUpdateWithFallback(): Promise<void> {
+  const readyCandidate = desktopUpdateCandidate
+  if (!readyCandidate || !nativeUpdateReadyFor(readyCandidate)) {
+    throw new UpdateChannelError('manifest_invalid', 'The selected native update feed is not verified.')
+  }
+  try {
+    await autoUpdater.downloadUpdate()
+    return
+  } catch (firstError) {
+    const candidate = desktopUpdateCandidate
+    const currentSource = desktopUpdateSource
+    if (!candidate || !currentSource) throw firstError
+    nativeUpdateReady = null
+
+    const fallback: ResolvedDesktopUpdate = {
+      candidate,
+      source: alternateDesktopUpdateSource(currentSource),
+      fallbackUsed: true,
+    }
+    desktopLog('update_native_download_retry', {
+      from: currentSource,
+      to: fallback.source,
+      error: String(firstError instanceof Error ? firstError.message : firstError),
+    })
+    await probeDesktopUpdateSource(candidate, fallback.source)
+    configureDesktopUpdateFeed(fallback)
+    const result = await autoUpdater.checkForUpdates()
+    const feedVersion = String(result?.updateInfo?.version ?? '').trim()
+    if (result?.isUpdateAvailable !== true || feedVersion !== candidate.version) {
+      throw new UpdateChannelError(
+        'manifest_invalid',
+        `Fallback update feed did not offer ${candidate.version} (received ${feedVersion || '<missing>'}).`,
+      )
+    }
+    rememberSuccessfulUpdateSource(fallback.source)
+    nativeUpdateReady = {
+      tag: candidate.tag,
+      version: candidate.version,
+      source: fallback.source,
+    }
+    updateDownloadInProgress = true
+    setDesktopUpdateState({
+      status: 'downloading',
+      latestVersion: candidate.version,
+      progress: 0,
+      source: fallback.source,
+      fallbackUsed: true,
+      releaseUrl: candidate.releaseUrl,
+      error: null,
+      errorCode: null,
+    })
+    await autoUpdater.downloadUpdate()
+  }
 }
 
 function desktopUpdateCheckAllowed(): boolean {
   return isUpdateCheckAllowed({
-    downloading: updateDownloadInProgress,
+    downloading: updateDownloadInProgress || (manualInstallerActionInProgress && desktopUpdateCandidate !== null),
     applying: updateApplying,
     downloaded: downloadedUpdateVersion !== null || desktopUpdateStatus === 'downloaded',
   })
@@ -7751,55 +8405,84 @@ async function runDesktopUpdateCheck(): Promise<void> {
     return
   }
 
-  if (!autoUpdateSupported()) {
+  if (!desktopUpdateManaged()) {
     if (desktopUpdateCheckScheduler.manualRequestPending) {
       setDesktopUpdateState({
         status: 'error',
         progress: null,
         checkedAt: new Date().toISOString(),
         error: desktopT('update.errorTitle'),
+        errorCode: 'source_unreachable',
       })
     }
     return
   }
 
   // Guide the user to /Applications first, otherwise the in-place swap fails.
-  if (!macUpdateLocationOk()) {
+  if (process.platform === 'darwin' && !macUpdateLocationOk()) {
     setDesktopUpdateState({
       status: 'error',
       progress: null,
       checkedAt: new Date().toISOString(),
       error: desktopT('update.moveToApplications'),
+      errorCode: null,
     })
     return
   }
 
-  initAutoUpdater()
+  if (nativeAutoUpdateEnabled()) initAutoUpdater()
+  const failureFallback: DesktopUpdateFailureFallback = {
+    state: desktopUpdateSnapshot(),
+    candidate: desktopUpdateCandidate,
+  }
+  if (desktopUpdateInstallMode() === 'native') nativeUpdateReady = null
   setDesktopUpdateState({
     status: 'checking',
     progress: null,
     checkedAt: new Date().toISOString(),
     error: null,
+    errorCode: null,
   })
   try {
-    const feed = await configureDesktopUpdateFeed()
-    if (feed === 'up-to-date') {
-      // A packaged macOS prerelease with no newer same-base release. Report
-      // up-to-date directly — the default GitHub provider would find nothing
-      // (the rc tags are PEP440, not npm semver) and raise a spurious error.
+    const resolved = await resolveDesktopUpdate()
+    if (!resolved) {
+      desktopUpdateCandidate = null
+      nativeUpdateReady = null
+      verifiedManualInstallerPath = null
       setDesktopUpdateState({
         status: 'not-available',
         latestVersion: app.getVersion(),
         progress: null,
         checkedAt: new Date().toISOString(),
         error: null,
+        errorCode: null,
+        releaseUrl: null,
+        source: null,
+        fallbackUsed: false,
       })
       return
     }
-    await autoUpdater.checkForUpdates()
+    const manualInstall = desktopUpdateInstallMode() === 'manual'
+    if (manualInstall) {
+      verifiedManualInstallerPath = null
+      desktopUpdateCandidate = resolved.candidate
+      setDesktopUpdateState({
+        status: 'available',
+        latestVersion: resolved.candidate.version,
+        progress: null,
+        checkedAt: new Date().toISOString(),
+        releaseUrl: updateAssetUrl(resolved.candidate, resolved.source),
+        source: resolved.source,
+        fallbackUsed: resolved.fallbackUsed,
+        error: null,
+        errorCode: null,
+      })
+      return
+    }
+    await checkNativeDesktopUpdate(resolved)
   } catch (err) {
     console.error('[updater] checkForUpdates failed', err)
-    showUpdateError(err)
+    showUpdateError(err, failureFallback)
   }
 }
 
@@ -7958,11 +8641,11 @@ async function applyDownloadedUpdate(): Promise<void> {
   }
 }
 
-// Lets the gateway-served Control UI know whether THIS desktop runtime can
-// apply updates natively right now. The web "a newer version is available"
-// banner suppresses itself only when this is true, so unsupported platforms
-// (e.g. unsigned Windows, or macOS running outside /Applications) still show
-// the passive notice.
+// Lets the gateway-served Control UI know whether this desktop owns update
+// discovery. Discovery ownership and native installation are deliberately separate:
+// unsigned Windows builds use the managed exact-installer flow, while macOS
+// can install the verified archive in place.
+ipcMain.handle('desktop:update:managed', () => desktopUpdateManaged() || mockUpdateVersion() !== null)
 ipcMain.handle('desktop:update:supported', () => nativeAutoUpdateEnabled())
 ipcMain.handle('desktop:update:state', () => desktopUpdateSnapshot())
 ipcMain.handle('desktop:update:check', async () => {
@@ -10571,7 +11254,7 @@ if (!gotSingleInstanceLock) {
     initAutoUpdater()
     if (mockUpdateVersion() !== null) {
       desktopUpdateCheckScheduler.start(MOCK_UPDATE_CHECK_INITIAL_DELAY_MS)
-    } else if (autoUpdateSupported()) {
+    } else if (desktopUpdateManaged()) {
       // Delay the silent startup check so it doesn't compete with gateway boot.
       desktopUpdateCheckScheduler.start(UPDATE_CHECK_INITIAL_DELAY_MS)
     }

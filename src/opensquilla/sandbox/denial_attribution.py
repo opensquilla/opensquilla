@@ -34,7 +34,8 @@ def is_likely_sandbox_denied(result: SandboxResult) -> bool:
         return True
     if result.returncode in _QUICK_REJECT_EXIT_CODES:
         return False
-    return result.returncode == 128 + signal.SIGSYS
+    sigsys = getattr(signal, "SIGSYS", None)
+    return sigsys is not None and result.returncode == 128 + int(sigsys)
 
 
 __all__ = ["is_likely_sandbox_denied"]

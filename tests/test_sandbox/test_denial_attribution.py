@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import signal
+
 import pytest
 
+from opensquilla.sandbox import denial_attribution
 from opensquilla.sandbox.denial_attribution import is_likely_sandbox_denied
 from opensquilla.sandbox.types import SandboxResult
 
@@ -54,8 +57,19 @@ def test_quick_reject_without_denial_evidence_is_not_attributed(returncode: int)
     assert is_likely_sandbox_denied(_result(returncode=returncode)) is False
 
 
+@pytest.mark.skipif(not hasattr(signal, "SIGSYS"), reason="SIGSYS is unavailable")
 def test_linux_sigsys_is_attributed() -> None:
-    assert is_likely_sandbox_denied(_result(returncode=128 + 31)) is True
+    assert is_likely_sandbox_denied(
+        _result(returncode=128 + int(signal.SIGSYS))
+    ) is True
+
+
+def test_platform_without_sigsys_does_not_raise(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delattr(denial_attribution.signal, "SIGSYS", raising=False)
+
+    assert is_likely_sandbox_denied(_result(returncode=1)) is False
 
 
 def test_generic_nonzero_exit_is_never_escalated() -> None:

@@ -187,15 +187,14 @@ def test_process_payload_preserves_canonical_filesystem_profile(tmp_path: Path) 
     restored = linux_helper._policy_from_payload(payload.policy)
 
     assert restored.file_system is not None
-    assert restored.file_system.resolve(Path("/etc/hosts")) is FileSystemAccess.READ
-    assert restored.file_system.resolve(Path("/tmp/probe")) is FileSystemAccess.WRITE
+    assert restored.file_system == policy.file_system
 
 
 def test_process_payload_round_trips_complete_filesystem_profile(tmp_path: Path) -> None:
     workspace = tmp_path / "workspace"
     profile = FileSystemPermissionProfile(
         entries=(
-            FileSystemPermissionEntry(Path("/"), FileSystemAccess.READ),
+            FileSystemPermissionEntry(Path(tmp_path.anchor), FileSystemAccess.READ),
             FileSystemPermissionEntry(workspace, FileSystemAccess.WRITE),
             FileSystemPermissionEntry(workspace / "readonly", FileSystemAccess.READ),
             FileSystemPermissionEntry(workspace / "secret", FileSystemAccess.DENY),

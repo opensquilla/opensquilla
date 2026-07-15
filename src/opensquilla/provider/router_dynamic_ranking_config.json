@@ -1,0 +1,286 @@
+{
+  "schema_version": "step2-ranking-config-v2",
+  "config_version": "step2-ranking-2026-07-14.2",
+  "validation": {
+    "weight_sum_tolerance": 1e-9
+  },
+  "trace": {
+    "profile_decimal_places": 5,
+    "score_decimal_places": 6,
+    "session_nonzero_epsilon": 1e-12
+  },
+  "routing_tiers": {
+    "default_router_tier": "c1",
+    "mapping": {
+      "c0": 1,
+      "c1": 2,
+      "c2": 3,
+      "c3": 4
+    }
+  },
+  "context": {
+    "bucket_min_tokens": {
+      "short": 0,
+      "medium": 8000,
+      "long": 32000,
+      "extra_long": 128000
+    },
+    "default_bucket": "short",
+    "request_limits": {
+      "role_max_chars": 32,
+      "max_recent_turns": 6,
+      "fallback_history_max_turns": 4,
+      "turn_max_chars": 2000,
+      "summary_max_chars": 4000,
+      "state_max_items": 32,
+      "item_max_chars": 512,
+      "tool_summary_max_chars": 4000,
+      "test_results_max_chars": 2000,
+      "intermediate_max_items": 8,
+      "intermediate_max_chars": 2000,
+      "attachment_max_items": 32,
+      "last_route_max_models": 8,
+      "max_scanned_items_multiplier": 4
+    },
+    "token_estimation": {
+      "utf8_bytes_per_token": 4,
+      "candidate_chars_per_token": 1
+    },
+    "output_budget": {
+      "default_tokens": 8192,
+      "minimum_tokens": 1
+    }
+  },
+  "task_profile_schema": {
+    "constraint_values": {
+      "cost": ["low", "medium", "high", "hard_limit"],
+      "latency": ["interactive", "normal", "batch", "hard_timeout"],
+      "risk": ["low", "medium", "high"]
+    },
+    "session_intents": ["new_task", "continue", "redo"],
+    "default_session_intent": "new_task"
+  },
+  "task_analyzer": {
+    "timeout_seconds": 20.0,
+    "input_max_chars": 24000,
+    "response_max_chars": 48000,
+    "max_output_tokens": 1200,
+    "temperature": 0.0,
+    "thinking": false,
+    "default_confidence": 0.80,
+    "truncation_head_fraction": 0.50
+  },
+  "fallback_task_profile": {
+    "capability_dist": {
+      "reasoning": 0.50,
+      "writing": 0.25,
+      "format_following": 0.25
+    },
+    "domain_dist": {"general": 1.0},
+    "constraints": {
+      "cost": "medium",
+      "latency": "normal"
+    },
+    "risk_by_tier": {
+      "1": "low",
+      "2": "low",
+      "3": "medium",
+      "4": "high"
+    },
+    "session_intent": {
+      "type": "new_task",
+      "confidence": 0.0
+    }
+  },
+  "mock_user_profile": {
+    "profile_version": "mock-global-default-2026-07-14.1",
+    "profile_source": "mock_global_default",
+    "permission": {
+      "allow_models": [],
+      "deny_models": [],
+      "allow_tools": [
+        "code_execution",
+        "web_search",
+        "retrieval",
+        "database",
+        "file_system",
+        "calculator",
+        "browser",
+        "api_call"
+      ],
+      "risk_allowlist": ["low", "medium", "high"]
+    },
+    "preference": {
+      "quality_latency_tradeoff": "balanced",
+      "cost_sensitivity": "medium",
+      "preferred_formats": []
+    },
+    "history": {
+      "capability_prior": {},
+      "positive_model_ids": [],
+      "negative_model_ids": [],
+      "feedback_count": 0,
+      "last_updated_at": "2026-07-14"
+    }
+  },
+  "synthetic_model": {
+    "family_name_parts": 2,
+    "thinking": "xhigh",
+    "version": "runtime-unknown",
+    "status": "enabled",
+    "context_window": 128000,
+    "effective_context_bucket": "long",
+    "price_input_per_million": 8.0,
+    "price_output_per_million": 16.0,
+    "latency_p50_ms": 3000,
+    "latency_p95_ms": 10000,
+    "quota": "available",
+    "rate_limit": "available",
+    "health": "healthy",
+    "base_strength_by_tier": {
+      "1": 0.55,
+      "2": 0.65,
+      "3": 0.74,
+      "4": 0.82
+    },
+    "tier_strength_penalty_per_level": 0.08,
+    "aggregator_role_fit_minimum": 0.45,
+    "aggregator_role_fit_penalty": 0.05
+  },
+  "hard_filter": {
+    "eligible_statuses": ["enabled", "canary"],
+    "unavailable_health_states": [
+      "unavailable",
+      "failed",
+      "unhealthy",
+      "disabled"
+    ],
+    "unavailable_quota_states": ["unavailable", "exhausted", "none"],
+    "unavailable_rate_limit_states": [
+      "limited",
+      "blocked",
+      "exhausted",
+      "unavailable"
+    ],
+    "default_health": "healthy",
+    "default_quota": "available",
+    "default_rate_limit": "available",
+    "default_required_modalities": ["text"]
+  },
+  "exploration": {
+    "enabled": false,
+    "decision_propensity": 1.0
+  },
+  "normalization": {
+    "price_reference_usd_per_million": 40.0,
+    "latency_reference_ms": 30000.0,
+    "price_input_weight": 0.30,
+    "price_output_weight": 0.70
+  },
+  "task_match": {
+    "capability_weight": 0.45,
+    "domain_weight": 0.25,
+    "tier_weight": 0.30,
+    "proposer_task_weight": 0.82,
+    "proposer_role_fit_weight": 0.18,
+    "context_underqualified_multiplier": 0.90,
+    "format_base_multiplier": 0.92,
+    "format_strength_multiplier": 0.08,
+    "missing_strength_default": 0.35,
+    "missing_role_fit_default": 0.40
+  },
+  "user_score": {
+    "neutral_score": 0.50,
+    "history_signal_weight": 0.50,
+    "feedback_saturation_count": 20,
+    "preferred_format_bonus": 0.05
+  },
+  "quality": {
+    "task_match_weight": 0.85,
+    "user_score_weight": 0.15
+  },
+  "penalties": {
+    "task_cost_weights": {
+      "low": 0.20,
+      "medium": 0.10,
+      "high": 0.04,
+      "hard_limit": 0.28
+    },
+    "task_latency_weights": {
+      "interactive": 0.22,
+      "normal": 0.08,
+      "batch": 0.03,
+      "hard_timeout": 0.28
+    },
+    "user_cost_sensitivity_weights": {
+      "low": 0.04,
+      "medium": 0.10,
+      "high": 0.20,
+      "hard_limit": 0.28
+    },
+    "default_cost_weight": 0.10,
+    "default_latency_weight": 0.08,
+    "latency_first_adjustment": 0.08,
+    "quality_first_latency_reduction": 0.04,
+    "quality_first_cost_reduction": 0.03,
+    "quality_first_minimum_weight": 0.02
+  },
+  "session": {
+    "intent_confidence_threshold": 0.60,
+    "score_delta": 0.10,
+    "max_escalation_level": 2,
+    "default_quality_feedback": 0.50,
+    "route_cache_max_entries": 1024
+  },
+  "proposer_count": {
+    "effective_tier_rounding_offset": 0.50,
+    "by_tier": {
+      "1": {"min": 1, "max": 1},
+      "2": {"min": 1, "max": 2},
+      "3": {"min": 2, "max": 3},
+      "4": {"min": 3, "max": 5}
+    },
+    "high_risk": {"min": 4, "max": 5},
+    "constrained_max": 2,
+    "constrained_cost_values": ["low", "hard_limit"],
+    "constrained_latency_values": ["interactive", "hard_timeout"],
+    "constrained_user_cost_values": ["high", "hard_limit"],
+    "constrained_user_tradeoffs": ["latency_first"]
+  },
+  "rerank": {
+    "top_l_min": 8,
+    "top_l_multiplier": 2,
+    "quality_floor_margin_by_risk": {
+      "low": 0.28,
+      "medium": 0.20,
+      "high": 0.12
+    },
+    "default_quality_floor_margin": 0.20,
+    "quality_weight": 0.55,
+    "coverage_gain_weight": 0.30,
+    "error_complementarity_weight": 0.10,
+    "similarity_penalty_weight": 0.25,
+    "stop_threshold": 0.0,
+    "trace_top_candidates": 3,
+    "similarity": {
+      "capability_weight": 0.50,
+      "lineage_weight": 0.50,
+      "same_family_score": 1.0,
+      "same_vendor_score": 0.50,
+      "unrelated_score": 0.0
+    },
+    "error_dimensions": [
+      "hallucination",
+      "omission",
+      "format_error",
+      "tool_error",
+      "timeout"
+    ]
+  },
+  "aggregator": {
+    "task_match_weight": 0.78,
+    "role_fit_weight": 0.22,
+    "same_model_penalty": 0.08,
+    "same_family_or_vendor_penalty": 0.05
+  }
+}

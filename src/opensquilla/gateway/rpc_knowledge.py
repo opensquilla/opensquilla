@@ -118,6 +118,75 @@ async def _handle_knowledge_search(
     return payload
 
 
+async def _persist_profile_override(
+    profile: str | None,
+    ctx: RpcContext,
+) -> dict[str, Any]:
+    from opensquilla.gateway.rpc_config import _handle_config_patch_safe
+
+    return await _handle_config_patch_safe(
+        {
+            "patches": {
+                "knowledge.retrieval_profile_override": profile,
+            }
+        },
+        ctx,
+    )
+
+
+@_d.method("knowledge.profile.set", scope="operator.write")
+async def _handle_knowledge_profile_set(
+    params: dict | None,
+    ctx: RpcContext,
+) -> dict[str, Any]:
+    if not isinstance(params, dict):
+        raise ValueError("params must be an object")
+    _require_only(params, {"retrievalProfileOverride"})
+    if "retrievalProfileOverride" not in params:
+        raise ValueError("params.retrievalProfileOverride is required")
+
+    raw_profile = params["retrievalProfileOverride"]
+    if raw_profile is None:
+        profile = None
+    elif isinstance(raw_profile, str) and raw_profile.strip():
+        profile = raw_profile.strip()
+    else:
+        raise ValueError(
+            "params.retrievalProfileOverride must be a non-empty string or null"
+        )
+
+    runtime = _runtime(ctx)
+    snapshot = runtime.snapshot()
+    capabilities = snapshot.capabilities
+
+    if profile is not None:
+        if snapshot.state.value not in {"READY", "LEGACY"} or capabilities is None:
+            raise RpcHandlerError(
+                "KNOWLEDGE_PROVIDER_UNAVAILABLE",
+                "knowledge provider capabilities are not currently available",
+                retryable=True,
+            )
+        available = {item[0] for item in capabilities.retrieval_profiles}
+        if profile not in available:
+            raise RpcHandlerError(
+                "KNOWLEDGE_RETRIEVAL_PROFILE_UNAVAILABLE",
+                "the selected retrieval profile is not advertised by the provider",
+            )
+
+    await _persist_profile_override(profile, ctx)
+    runtime.apply_retrieval_profile_override(profile)
+
+    provider_default = (
+        capabilities.default_retrieval_profile if capabilities is not None else None
+    )
+    return {
+        "retrievalProfileOverride": profile,
+        "providerDefaultRetrievalProfile": provider_default,
+        "effectiveRetrievalProfile": profile or provider_default,
+        "restartRequired": False,
+    }
+
+
 @_d.method("knowledge.get", scope="operator.read")
 async def _handle_knowledge_get(
     params: dict | None,

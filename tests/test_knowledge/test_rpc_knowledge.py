@@ -1,24 +1,53 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
 from opensquilla.gateway.config import GatewayConfig
 from opensquilla.gateway.rpc import RpcContext, RpcHandlerError, get_dispatcher
 from opensquilla.gateway.rpc_knowledge import (
     _handle_knowledge_get,
+    _handle_knowledge_profile_set,
     _handle_knowledge_search,
     _handle_knowledge_status,
 )
+from opensquilla.gateway.rag_provider_runtime import RagProviderState
 from opensquilla.rag_provider.protocol import ValidatedSearchResponse
 
 
 class Snapshot:
+    state = RagProviderState.READY
+    capabilities = SimpleNamespace(
+        retrieval_profiles=(("vector", "Vector"), ("hybrid", "Hybrid")),
+        default_retrieval_profile="hybrid",
+    )
+
     def to_wire(self) -> dict[str, object]:
         return {
             "connectionState": "READY",
             "provider": {"name": "provider", "version": "1", "instanceId": "instance"},
             "protocolVersion": "1.0",
             "capabilities": {"search": True, "get": True},
+            "effectiveLimits": {
+                "maxSearchResults": 20,
+                "maxSnippetChars": 800,
+                "maxSearchResponseChars": 12000,
+                "maxGetContentChars": 8000,
+            },
+            "searchOptions": {
+                "supportsCollectionScope": True,
+                "retrievalProfiles": [
+                    {"id": "vector", "label": "Vector"},
+                    {"id": "hybrid", "label": "Hybrid"},
+                ],
+                "defaultRetrievalProfile": "hybrid",
+            },
+            "links": {},
+            "lastSuccessAt": None,
+            "lastErrorCode": None,
+            "consecutiveFailures": 0,
+            "warning": None,
         }
 
 
@@ -26,6 +55,7 @@ class Runtime:
     def __init__(self) -> None:
         self.search_args: dict[str, object] | None = None
         self.get_args: dict[str, object] | None = None
+        self.applied_profiles: list[str | None] = []
 
     def snapshot(self) -> Snapshot:
         return Snapshot()
@@ -45,6 +75,9 @@ class Runtime:
     async def get(self, *, evidence_id: str, cursor: str | None) -> dict[str, object]:
         self.get_args = {"evidence_id": evidence_id, "cursor": cursor}
         return {"evidenceId": evidence_id, "content": "source"}
+
+    def apply_retrieval_profile_override(self, profile: str | None) -> None:
+        self.applied_profiles.append(profile)
 
 
 def _ctx(runtime: Runtime | None, config: GatewayConfig | None = None) -> RpcContext:
@@ -114,10 +147,149 @@ async def test_calls_are_unavailable_when_provider_is_disabled() -> None:
     assert error.value.retryable is True
 
 
+@pytest.mark.asyncio
+async def test_profile_set_persists_and_hot_applies(tmp_path) -> None:
+    runtime = Runtime()
+    config = GatewayConfig.model_validate(
+        {
+            "config_path": str(tmp_path / "config.toml"),
+            "knowledge": {"enabled": True},
+        }
+    )
+    ctx = _ctx(runtime, config)
+
+    result = await _handle_knowledge_profile_set(
+        {"retrievalProfileOverride": "vector"},
+        ctx,
+    )
+
+    assert config.knowledge.retrieval_profile_override == "vector"
+    assert runtime.applied_profiles == ["vector"]
+    assert result == {
+        "retrievalProfileOverride": "vector",
+        "providerDefaultRetrievalProfile": "hybrid",
+        "effectiveRetrievalProfile": "vector",
+        "restartRequired": False,
+    }
+
+    cleared = await _handle_knowledge_profile_set(
+        {"retrievalProfileOverride": None},
+        ctx,
+    )
+    assert runtime.applied_profiles[-1] is None
+    assert cleared["effectiveRetrievalProfile"] == "hybrid"
+
+
+@pytest.mark.asyncio
+async def test_profile_set_rejects_unadvertised_profile_without_mutation(
+    tmp_path,
+) -> None:
+    runtime = Runtime()
+    config = GatewayConfig.model_validate(
+        {
+            "config_path": str(tmp_path / "config.toml"),
+            "knowledge": {"enabled": True},
+        }
+    )
+
+    with pytest.raises(RpcHandlerError) as error:
+        await _handle_knowledge_profile_set(
+            {"retrievalProfileOverride": "missing"},
+            _ctx(runtime, config),
+        )
+
+    assert error.value.code == "KNOWLEDGE_RETRIEVAL_PROFILE_UNAVAILABLE"
+    assert config.knowledge.retrieval_profile_override is None
+    assert runtime.applied_profiles == []
+
+
+@pytest.mark.parametrize(
+    "params",
+    [
+        None,
+        [],
+        {},
+        {"retrievalProfileOverride": ""},
+        {"retrievalProfileOverride": True},
+        {"retrievalProfileOverride": "hybrid", "extra": 1},
+    ],
+)
+@pytest.mark.asyncio
+async def test_profile_set_rejects_invalid_params(params) -> None:
+    with pytest.raises(ValueError):
+        await _handle_knowledge_profile_set(params, _ctx(Runtime()))
+
+
+@pytest.mark.asyncio
+async def test_profile_set_persist_failure_does_not_change_runtime(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime = Runtime()
+    config = GatewayConfig.model_validate(
+        {
+            "config_path": str(tmp_path / "config.toml"),
+            "knowledge": {"enabled": True},
+        }
+    )
+
+    import opensquilla.onboarding.config_store as config_store
+
+    def fail_replace(*args, **kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(config_store.os, "replace", fail_replace)
+
+    with pytest.raises(OSError, match="disk full"):
+        await _handle_knowledge_profile_set(
+            {"retrievalProfileOverride": "vector"},
+            _ctx(runtime, config),
+        )
+
+    assert runtime.applied_profiles == []
+    assert config.knowledge.retrieval_profile_override is None
+
+
+@pytest.mark.asyncio
+async def test_profile_clear_is_allowed_while_provider_is_unavailable(tmp_path) -> None:
+    runtime = Runtime()
+    runtime.snapshot = lambda: SimpleNamespace(
+        state=RagProviderState.UNAVAILABLE,
+        capabilities=None,
+    )
+    config = GatewayConfig.model_validate(
+        {
+            "config_path": str(tmp_path / "config.toml"),
+            "knowledge": {
+                "enabled": True,
+                "retrieval_profile_override": "vector",
+            },
+        }
+    )
+
+    result = await _handle_knowledge_profile_set(
+        {"retrievalProfileOverride": None},
+        _ctx(runtime, config),
+    )
+
+    assert config.knowledge.retrieval_profile_override is None
+    assert runtime.applied_profiles == [None]
+    assert result == {
+        "retrievalProfileOverride": None,
+        "providerDefaultRetrievalProfile": None,
+        "effectiveRetrievalProfile": None,
+        "restartRequired": False,
+    }
+
+
 def test_old_provider_management_rpc_methods_are_not_registered() -> None:
     methods = set(get_dispatcher().methods())
 
-    assert {"knowledge.status", "knowledge.search", "knowledge.get"}.issubset(methods)
+    assert {
+        "knowledge.status",
+        "knowledge.search",
+        "knowledge.get",
+        "knowledge.profile.set",
+    }.issubset(methods)
     assert methods.isdisjoint(
         {
             "knowledge.settings.get",

@@ -704,6 +704,325 @@ describe('useSetupCatalog provider credential reveal', () => {
   })
 })
 
+describe('useSetupCatalog optional provider credentials', () => {
+  function mockSavedProviderForSave(options: {
+    providerId?: string
+    acceptsApiKey?: boolean
+    requiresApiKey?: boolean
+    additionalProviderId?: string
+    baseUrl?: string
+  } = {}) {
+    const providerId = options.providerId || 'custom'
+    const acceptsApiKey = options.acceptsApiKey ?? true
+    const requiresApiKey = options.requiresApiKey ?? false
+    rpcCall.mockImplementation(async (method: string) => {
+      if (method === 'onboarding.catalog') {
+        return {
+          providers: [
+            {
+              providerId,
+              label: providerId === 'custom' ? 'Custom OpenAI-compatible endpoint' : 'Test provider',
+              runtimeSupported: true,
+              acceptsApiKey,
+              requiresApiKey,
+              envKey: `${providerId.toUpperCase()}_API_KEY`,
+              fields: [
+                { name: 'model', label: 'Model', required: true },
+                { name: 'api_key', label: 'API key', secret: true },
+                { name: 'api_key_env', label: 'API key environment variable' },
+                ...(options.baseUrl
+                  ? [{ name: 'base_url', label: 'Base URL', required: true }]
+                  : []),
+              ],
+            },
+            ...(options.additionalProviderId
+              ? [{
+                  providerId: options.additionalProviderId,
+                  label: 'Other optional provider',
+                  runtimeSupported: true,
+                  acceptsApiKey: true,
+                  requiresApiKey: false,
+                  envKey: `${options.additionalProviderId.toUpperCase()}_API_KEY`,
+                  fields: [{ name: 'model', label: 'Model', required: true }],
+                }]
+              : []),
+          ],
+        }
+      }
+      if (method === 'onboarding.status') {
+        return {
+          hasConfig: true,
+          llmConfigured: true,
+          llmSource: 'explicit',
+          llmCredentialStatus: {
+            provider: providerId,
+            available: true,
+            source: 'explicit',
+            envKey: `${providerId.toUpperCase()}_API_KEY`,
+            masked: 'sk-••••1234',
+            revealAllowed: true,
+          },
+        }
+      }
+      if (method === 'channels.status') return { channels: [] }
+      if (method === 'config.get') {
+        return {
+          llm: {
+            provider: providerId,
+            model: 'test-model',
+            ...(options.baseUrl ? { base_url: options.baseUrl } : {}),
+          },
+        }
+      }
+      if (method === 'onboarding.provider.configure') return {}
+      throw new Error(`Unexpected RPC method: ${method}`)
+    })
+  }
+
+  it('exposes an optional custom key and blocks probes until required fields exist', async () => {
+    rpcCall.mockImplementation(async (method: string) => {
+      if (method === 'onboarding.catalog') {
+        return {
+          providers: [
+            {
+              providerId: 'custom',
+              label: 'Custom OpenAI-compatible endpoint',
+              runtimeSupported: true,
+              acceptsApiKey: true,
+              requiresApiKey: false,
+              envKey: 'CUSTOM_LLM_API_KEY',
+              fields: [
+                { name: 'model', label: 'Model id', required: true, default: '' },
+                { name: 'api_key', label: 'API key', required: false, secret: true },
+                { name: 'base_url', label: 'Base URL', required: true, default: '' },
+              ],
+            },
+          ],
+        }
+      }
+      if (method === 'onboarding.status') {
+        return { hasConfig: false, llmConfigured: false, llmCredentialStatus: {} }
+      }
+      if (method === 'channels.status') return { channels: [] }
+      if (method === 'config.get') return {}
+      if (method === 'onboarding.provider.probe') {
+        return { ok: false, failureKind: 'transport_transient', message: 'offline' }
+      }
+      throw new Error(`Unexpected RPC method: ${method}`)
+    })
+    const { api, app } = await mountCatalog()
+
+    api.selectProvider('custom')
+    api.onProviderChange()
+
+    let credential = api.providerPanel.value.credentialPanel
+    expect(credential).toMatchObject({
+      acceptsApiKey: true,
+      requiresApiKey: false,
+      source: 'not_required',
+      probeReady: false,
+    })
+    expect(credential?.probeDisabledReason).toBe(
+      'Complete required fields before testing: Model, Base URL.',
+    )
+
+    api.probeProviderConnection()
+    expect(rpcCall.mock.calls.some(call => call[0] === 'onboarding.provider.probe')).toBe(false)
+
+    api.updateProviderField('model', 'test-model')
+    api.updateProviderField('base_url', 'https://custom.example.test/v1')
+    credential = api.providerPanel.value.credentialPanel
+    expect(credential?.probeReady).toBe(true)
+    expect(credential?.probeDisabledReason).toBe('')
+
+    api.probeProviderConnection()
+    await Promise.resolve()
+    expect(rpcCall).toHaveBeenCalledWith('onboarding.provider.probe', {
+      providerId: 'custom',
+      baseUrl: 'https://custom.example.test/v1',
+      model: 'test-model',
+    })
+    app.unmount()
+  })
+
+  it('falls back conservatively to requiresApiKey when an older gateway omits acceptsApiKey', async () => {
+    rpcCall.mockImplementation(async (method: string) => {
+      if (method === 'onboarding.catalog') {
+        return {
+          providers: [
+            {
+              providerId: 'custom',
+              label: 'Custom endpoint',
+              runtimeSupported: true,
+              requiresApiKey: false,
+              fields: [{ name: 'model', label: 'Model' }],
+            },
+            {
+              providerId: 'openrouter',
+              label: 'OpenRouter',
+              runtimeSupported: true,
+              requiresApiKey: true,
+              fields: [{ name: 'model', label: 'Model' }],
+            },
+          ],
+        }
+      }
+      if (method === 'onboarding.status') {
+        return {
+          hasConfig: true,
+          llmConfigured: true,
+          llmSource: 'not_required',
+          llmCredentialStatus: {
+            provider: 'custom',
+            available: true,
+            source: 'not_required',
+          },
+        }
+      }
+      if (method === 'channels.status') return { channels: [] }
+      if (method === 'config.get') return { llm: { provider: 'custom', model: 'test-model' } }
+      throw new Error(`Unexpected RPC method: ${method}`)
+    })
+    const { api, app } = await mountCatalog()
+
+    expect(api.providerPanel.value.credentialPanel).toMatchObject({
+      acceptsApiKey: false,
+      requiresApiKey: false,
+    })
+
+    api.selectProvider('openrouter')
+    api.onProviderChange()
+    expect(api.providerPanel.value.credentialPanel).toMatchObject({
+      acceptsApiKey: true,
+      requiresApiKey: true,
+    })
+    app.unmount()
+  })
+
+  it('sends preserveApiKey only for the active saved explicit optional credential', async () => {
+    mockSavedProviderForSave()
+    const { api, app } = await mountCatalog()
+
+    await api.saveProvider()
+
+    expect(rpcCall).toHaveBeenCalledWith('onboarding.provider.configure', {
+      providerId: 'custom',
+      model: 'test-model',
+      preserveApiKey: true,
+    })
+    app.unmount()
+  })
+
+  it('reuses the same preservation intent when applying a provider preset', async () => {
+    mockSavedProviderForSave()
+    const { api, app } = await mountCatalog()
+
+    await api.applyProviderPreset()
+
+    expect(rpcCall).toHaveBeenCalledWith('onboarding.provider.configure', {
+      providerId: 'custom',
+      model: 'test-model',
+      preserveApiKey: true,
+      presetId: 'custom',
+    })
+    app.unmount()
+  })
+
+  it('preserves an optional key for a same-origin endpoint path change', async () => {
+    mockSavedProviderForSave({ baseUrl: 'https://llm.example.test/v1' })
+    const { api, app } = await mountCatalog()
+
+    api.updateProviderField('base_url', 'https://llm.example.test/openai/v1')
+    await api.saveProvider()
+
+    const configureCall = rpcCall.mock.calls.find(call => call[0] === 'onboarding.provider.configure')
+    expect(configureCall?.[1]).toMatchObject({
+      baseUrl: 'https://llm.example.test/openai/v1',
+      preserveApiKey: true,
+    })
+    app.unmount()
+  })
+
+  it('does not preserve an optional key across endpoint origins', async () => {
+    mockSavedProviderForSave({ baseUrl: 'https://llm-a.example.test/v1' })
+    const { api, app } = await mountCatalog()
+
+    api.updateProviderField('base_url', 'https://llm-b.example.test/v1')
+    await api.saveProvider()
+
+    const configureCall = rpcCall.mock.calls.find(call => call[0] === 'onboarding.provider.configure')
+    const payload = configureCall?.[1] as Record<string, unknown>
+    expect(payload).toMatchObject({ baseUrl: 'https://llm-b.example.test/v1' })
+    expect(payload).not.toHaveProperty('preserveApiKey')
+    app.unmount()
+  })
+
+  it.each([
+    ['api_key', 'sk-replacement', 'apiKey'],
+    ['api_key_env', 'CUSTOM_REPLACEMENT_KEY', 'apiKeyEnv'],
+  ])('does not send preserveApiKey with an explicit %s replacement', async (field, value, wireField) => {
+    mockSavedProviderForSave()
+    const { api, app } = await mountCatalog()
+
+    api.updateProviderField(field, value)
+    await api.saveProvider()
+
+    const configureCall = rpcCall.mock.calls.find(call => call[0] === 'onboarding.provider.configure')
+    const payload = configureCall?.[1] as Record<string, unknown>
+    expect(payload).toMatchObject({ providerId: 'custom', model: 'test-model', [wireField]: value })
+    expect(payload).not.toHaveProperty('preserveApiKey')
+    app.unmount()
+  })
+
+  it.each(['api_key', 'api_key_env'])(
+    'treats whitespace-only %s input as unchanged when preserving an optional key',
+    async field => {
+      mockSavedProviderForSave()
+      const { api, app } = await mountCatalog()
+
+      api.updateProviderField(field, '   ')
+      await api.saveProvider()
+
+      const configureCall = rpcCall.mock.calls.find(call => call[0] === 'onboarding.provider.configure')
+      expect(configureCall?.[1]).toEqual({
+        providerId: 'custom',
+        model: 'test-model',
+        preserveApiKey: true,
+      })
+      app.unmount()
+    },
+  )
+
+  it('does not send preserveApiKey for a provider whose key is required', async () => {
+    mockSavedProviderForSave({ providerId: 'deepseek', requiresApiKey: true })
+    const { api, app } = await mountCatalog()
+
+    await api.saveProvider()
+
+    const configureCall = rpcCall.mock.calls.find(call => call[0] === 'onboarding.provider.configure')
+    const payload = configureCall?.[1] as Record<string, unknown>
+    expect(payload).toMatchObject({ providerId: 'deepseek', model: 'test-model' })
+    expect(payload).not.toHaveProperty('preserveApiKey')
+    app.unmount()
+  })
+
+  it('does not carry preserveApiKey across a provider switch', async () => {
+    mockSavedProviderForSave({ additionalProviderId: 'custom-alt' })
+    const { api, app } = await mountCatalog()
+
+    api.selectProvider('custom-alt')
+    api.onProviderChange()
+    api.updateProviderField('model', 'other-model')
+    await api.saveProvider()
+
+    const configureCall = rpcCall.mock.calls.find(call => call[0] === 'onboarding.provider.configure')
+    const payload = configureCall?.[1] as Record<string, unknown>
+    expect(payload).toMatchObject({ providerId: 'custom-alt', model: 'other-model' })
+    expect(payload).not.toHaveProperty('preserveApiKey')
+    app.unmount()
+  })
+})
+
 describe('useSetupCatalog context-window override', () => {
   const CATALOG = {
     providers: [

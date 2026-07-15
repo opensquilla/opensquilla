@@ -359,6 +359,32 @@ def _param(params: Any, key: str, default: Any) -> Any:
     return default if value is None else value
 
 
+def _bool_param(params: Any, key: str, default: bool = False) -> bool:
+    value = _param(params, key, default)
+    if not isinstance(value, bool):
+        raise ValueError(f"params.{key} must be a boolean")
+    return value
+
+
+def _provider_candidate_identity(
+    cfg: Any,
+    provider_id: str,
+    candidate_base_url: str,
+) -> tuple[bool, bool]:
+    """Return ``(same_provider, stored_credentials_may_be_reused)``."""
+    from opensquilla.onboarding.endpoint_identity import (
+        base_url_allows_credential_reuse,
+    )
+
+    active_provider = str(getattr(cfg.llm, "provider", "") or "").strip().lower()
+    requested_provider = str(provider_id or "").strip().lower()
+    same_provider = active_provider == requested_provider
+    return same_provider, same_provider and base_url_allows_credential_reuse(
+        str(getattr(cfg.llm, "base_url", "") or ""),
+        candidate_base_url,
+    )
+
+
 @_d.method("onboarding.provider.configure", scope="operator.admin")
 async def _provider_configure(params: Any, ctx: RpcContext) -> dict[str, Any]:
     from opensquilla.onboarding.mutations import upsert_llm_provider
@@ -375,6 +401,7 @@ async def _provider_configure(params: Any, ctx: RpcContext) -> dict[str, Any]:
             model=model,
             api_key=_param(params, "apiKey", ""),
             api_key_env=_param(params, "apiKeyEnv", ""),
+            preserve_api_key=_bool_param(params, "preserveApiKey"),
             base_url=_param(params, "baseUrl", ""),
             proxy=_param(params, "proxy", ""),
             # Explicit-user-action only (D18): a preset is applied exactly when
@@ -408,10 +435,16 @@ async def _provider_probe(params: Any, ctx: RpcContext) -> dict[str, Any]:
     api_key_env = str(p.get("apiKeyEnv", "") or "")
     base_url = str(p.get("baseUrl", "") or "")
     proxy = str(p.get("proxy", "") or "")
-    # Keep-current fallback: blank secret/url on the same provider reuses the
-    # stored config (mirrors upsert_llm_provider's password-field affordance).
-    if str(getattr(cfg.llm, "provider", "") or "") == str(provider_id):
-        if not api_key and not api_key_env:
+    # A provider id is not an endpoint identity for configurable providers.
+    # Stored credentials may follow an omitted URL or a same-origin path
+    # change, but never a scheme/host/effective-port change.
+    same_provider, reuse_stored_credentials = _provider_candidate_identity(
+        cfg,
+        str(provider_id),
+        base_url,
+    )
+    if same_provider:
+        if not api_key and not api_key_env and reuse_stored_credentials:
             api_key = str(getattr(cfg.llm, "api_key", "") or "")
             api_key_env = str(getattr(cfg.llm, "api_key_env", "") or "")
         if not base_url:
@@ -426,6 +459,9 @@ async def _provider_probe(params: Any, ctx: RpcContext) -> dict[str, Any]:
             api_key_env=api_key_env,
             base_url=base_url,
             proxy=proxy,
+            allow_default_api_key_env=(
+                not same_provider or reuse_stored_credentials
+            ),
         )
     return result.to_payload()
 
@@ -449,8 +485,9 @@ async def _models_discover(params: Any, ctx: RpcContext) -> dict[str, Any]:
     remain manual-entry surfaces; raw CLI diagnostics retain their broader
     endpoint-probing behavior.
 
-    Blank credentials fall back to the stored config's, mirroring
-    ``upsert_llm_provider``'s keep semantics.
+    Blank credentials fall back to the stored config's only while a supplied
+    candidate Base URL remains same-origin; omitted Base URLs reuse the stored
+    endpoint.
     """
     from opensquilla.onboarding.probe import discover_selectable_provider_models
 
@@ -461,10 +498,13 @@ async def _models_discover(params: Any, ctx: RpcContext) -> dict[str, Any]:
     api_key_env = str(p.get("apiKeyEnv", "") or "")
     base_url = str(p.get("baseUrl", "") or "")
     proxy = str(p.get("proxy", "") or "")
-    # Keep-current fallback: blank secret/url on the same provider reuses the
-    # stored config (mirrors upsert_llm_provider's password-field affordance).
-    if str(getattr(cfg.llm, "provider", "") or "") == str(provider_id):
-        if not api_key and not api_key_env:
+    same_provider, reuse_stored_credentials = _provider_candidate_identity(
+        cfg,
+        str(provider_id),
+        base_url,
+    )
+    if same_provider:
+        if not api_key and not api_key_env and reuse_stored_credentials:
             api_key = str(getattr(cfg.llm, "api_key", "") or "")
             api_key_env = str(getattr(cfg.llm, "api_key_env", "") or "")
         if not base_url:
@@ -478,6 +518,9 @@ async def _models_discover(params: Any, ctx: RpcContext) -> dict[str, Any]:
             api_key_env=api_key_env,
             base_url=base_url,
             proxy=proxy,
+            allow_default_api_key_env=(
+                not same_provider or reuse_stored_credentials
+            ),
         )
     return result.to_payload()
 

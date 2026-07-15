@@ -37,6 +37,7 @@ class ProviderSetupSpec:
     verification: Verification
     env_key: str
     default_base_url: str
+    accepts_api_key: bool
     requires_api_key: bool
     requires_base_url: bool
     router_supported: bool
@@ -328,6 +329,12 @@ def _to_setup_spec(spec: ProviderSpec) -> ProviderSetupSpec:
         verification=verification,
         env_key=spec.env_key,
         default_base_url=spec.default_base_url,
+        # ``requires_api_key`` answers whether setup is blocked without a
+        # key; it does not answer whether the transport accepts an optional
+        # Bearer credential.  Local/custom OpenAI-compatible endpoints often
+        # support both authenticated and unauthenticated deployments.  OAuth
+        # is the one registry credential mode that is not an API-key field.
+        accepts_api_key=spec.env_key != "OAuth",
         requires_api_key=spec.requires_api_key(),
         requires_base_url=spec.requires_base_url(),
         router_supported=_is_router_supported_provider(spec.provider_id),
@@ -405,6 +412,7 @@ def _provider_entry_payload(s: ProviderSetupSpec) -> dict[str, Any]:
         "verification": s.verification,
         "envKey": s.env_key,
         "defaultBaseUrl": s.default_base_url,
+        "acceptsApiKey": s.accepts_api_key,
         "requiresApiKey": s.requires_api_key,
         "requiresBaseUrl": s.requires_base_url,
         "routerSupported": s.router_supported,

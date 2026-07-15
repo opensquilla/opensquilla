@@ -266,6 +266,88 @@ def test_llm_credential_status_treats_runtime_secret_cache_as_env(cfg, monkeypat
     assert cred["revealAllowed"] is False
 
 
+@pytest.mark.parametrize(
+    ("provider", "base_url"),
+    [
+        ("custom", "https://custom.example.test/v1"),
+        ("ollama", "http://localhost:11434"),
+        ("lm_studio", "http://localhost:1234/v1"),
+        ("ovms", "http://localhost:8000/v3"),
+        ("vllm", "http://localhost:8000/v1"),
+    ],
+)
+def test_optional_llm_credential_status_reports_explicit_key(
+    cfg, monkeypatch, provider, base_url
+):
+    monkeypatch.delenv("CUSTOM_LLM_API_KEY", raising=False)
+    monkeypatch.delenv("OLLAMA_API_KEY", raising=False)
+    cfg.llm = LlmProviderConfig(
+        provider=provider,
+        model="test-model",
+        api_key="sk-optional-secret-123456",
+        base_url=base_url,
+    )
+
+    cred = get_onboarding_status(cfg).llm_credential_status
+
+    assert cred["available"] is True
+    assert cred["source"] == "explicit"
+    assert cred["masked"] != "sk-optional-secret-123456"
+    assert cred["masked"].endswith("3456")
+
+
+def test_optional_llm_credential_status_uses_visible_default_env(cfg, monkeypatch):
+    monkeypatch.setenv("CUSTOM_LLM_API_KEY", "sk-custom-env-654321")
+    cfg.llm = LlmProviderConfig(
+        provider="custom",
+        model="test-model",
+        api_key="",
+        api_key_env="",
+        base_url="https://custom.example.test/v1",
+    )
+
+    cred = get_onboarding_status(cfg).llm_credential_status
+
+    assert cred["available"] is True
+    assert cred["source"] == "env"
+    assert cred["envKey"] == "CUSTOM_LLM_API_KEY"
+    assert cred["masked"].endswith("4321")
+
+
+def test_optional_llm_credential_status_without_key_is_not_required(cfg, monkeypatch):
+    monkeypatch.delenv("CUSTOM_LLM_API_KEY", raising=False)
+    cfg.llm = LlmProviderConfig(
+        provider="custom",
+        model="test-model",
+        api_key="",
+        api_key_env="",
+        base_url="https://custom.example.test/v1",
+    )
+
+    cred = get_onboarding_status(cfg).llm_credential_status
+
+    assert cred["available"] is True
+    assert cred["source"] == "not_required"
+    assert cred["masked"] == ""
+
+
+def test_optional_llm_credential_status_reports_configured_missing_env(cfg, monkeypatch):
+    monkeypatch.delenv("PRIVATE_CUSTOM_KEY", raising=False)
+    cfg.llm = LlmProviderConfig(
+        provider="custom",
+        model="test-model",
+        api_key="",
+        api_key_env="PRIVATE_CUSTOM_KEY",
+        base_url="https://custom.example.test/v1",
+    )
+
+    cred = get_onboarding_status(cfg).llm_credential_status
+
+    assert cred["available"] is False
+    assert cred["source"] == "missing_env"
+    assert cred["envKey"] == "PRIVATE_CUSTOM_KEY"
+
+
 # ── search ──────────────────────────────────────────────────────────────────
 
 def test_search_unset_is_optional(cfg, monkeypatch):

@@ -72,6 +72,7 @@ interface ProviderSpec {
   fields?: FieldSpec[]
   whatYouNeed?: string[]
   envKey?: string
+  acceptsApiKey?: boolean
   requiresApiKey?: boolean
   defaultBaseUrl?: string
   defaultModel?: string
@@ -622,6 +623,21 @@ const audioBadgeLabel = computed(() => {
 })
 const audioKeyPlaceholder = computed(() => promotedForm.audioKeyConfigured.value ? t('setup.common.leaveBlankKeep') : t('setup.audio.pasteKey'))
 
+const providerProbeMissingFields = computed(() => {
+  if (!providerForm.selectedProvider.value) return []
+  return providerFields.value
+    .filter(field => field.required === true && !isProviderCredentialField(field))
+    .filter(field => !String(providerForm.fieldValue(field, currentProviderConfig.value) ?? '').trim())
+    .map(providerProbeFieldLabel)
+})
+
+const providerProbeDisabledReason = computed(() => {
+  if (providerProbeMissingFields.value.length === 0) return ''
+  return t('setup.provider.probeMissingRequired', {
+    fields: providerProbeMissingFields.value.join(t('setup.provider.requiredFieldJoiner')),
+  })
+})
+
 const providerCredentialPanel = computed(() => {
   if (!providerSpec.value) return null
   const selectedProviderId = String(providerForm.selectedProvider.value || '').trim().toLowerCase()
@@ -629,10 +645,19 @@ const providerCredentialPanel = computed(() => {
   const savedProviderId = String(savedCredential.provider || '').trim().toLowerCase()
   const savedMatchesSelected = selectedProviderId !== '' && savedProviderId === selectedProviderId
   const requiresApiKey = providerSpec.value.requiresApiKey !== false
+  const acceptsApiKey = providerSpec.value.acceptsApiKey !== undefined
+    ? providerSpec.value.acceptsApiKey === true
+    // Older gateways do not publish acceptsApiKey. Fall back conservatively:
+    // a provider that requires a key necessarily accepts one, while an
+    // optional/keyless provider stays keyless instead of exposing a control
+    // whose semantics that gateway never advertised.
+    : requiresApiKey
 
   return {
     providerLabel: providerSpec.value.label || providerForm.selectedProvider.value,
     providerSelected: Boolean(providerForm.selectedProvider.value),
+    acceptsApiKey,
+    requiresApiKey,
     available: savedMatchesSelected ? savedCredential.available === true : !requiresApiKey,
     source: savedMatchesSelected
       ? String(savedCredential.source || 'none')
@@ -648,8 +673,10 @@ const providerCredentialPanel = computed(() => {
     apiKeyValue: String(providerForm.providerFieldValues.value.api_key || ''),
     apiKeyEnvValue: providerForm.fieldValue(
       { name: 'api_key_env', label: t('setup.common.apiKeyEnv'), default: providerSpec.value.envKey || '' },
-      config.value.llm || {},
+      savedMatchesSelected ? (config.value.llm || {}) : {},
     ),
+    probeReady: Boolean(providerForm.selectedProvider.value) && providerProbeMissingFields.value.length === 0,
+    probeDisabledReason: providerProbeDisabledReason.value,
     connection: providerForm.connection.value,
     onReveal: revealProviderCredential,
     onReplace: providerForm.startCredentialReplace,
@@ -1131,6 +1158,12 @@ function isProviderCredentialField(field: FieldSpec): boolean {
   return field.name === 'api_key' || field.name === 'api_key_env'
 }
 
+function providerProbeFieldLabel(field: FieldSpec): string {
+  if (field.name === 'model') return t('setup.common.model')
+  if (field.name === 'base_url') return t('setup.common.baseUrl')
+  return field.label
+}
+
 function selectProvider(value: string) {
   providerForm.selectProvider(value)
 }
@@ -1186,6 +1219,7 @@ async function revealProviderCredential() {
 // form values. Never gates saving. The probe RPC requires a model id, so an
 // empty model field falls back to the catalog's default for the provider.
 function probeProviderConnection() {
+  if (providerProbeMissingFields.value.length > 0) return
   void providerForm.probeConnection({ defaultModel: providerSpec.value?.defaultModel || '' })
 }
 
@@ -1441,6 +1475,43 @@ function capabilitySaveButtonClass(name: string): string {
 // Save actions
 // ---------------------------------------------------------------------------
 
+function sameEndpointOrigin(candidateValue: unknown, storedValue: unknown): boolean {
+  const candidate = String(candidateValue || '').trim()
+  if (!candidate) return true
+  const stored = String(storedValue || '').trim()
+  if (!stored) return false
+  if (candidate === stored) return true
+  try {
+    const candidateOrigin = new URL(candidate).origin
+    const storedOrigin = new URL(stored).origin
+    return candidateOrigin !== 'null' && candidateOrigin === storedOrigin
+  } catch {
+    return false
+  }
+}
+
+function providerConfigurePayload(): Record<string, unknown> {
+  const payload = providerForm.payload()
+  const selectedProviderId = String(providerForm.selectedProvider.value || '').trim().toLowerCase()
+  const savedCredential = status.value.llmCredentialStatus || {}
+  const savedProviderId = String(savedCredential.provider || '').trim().toLowerCase()
+  const credentialPanel = providerCredentialPanel.value
+  const hasReplacement = payload.apiKey !== undefined || payload.apiKeyEnv !== undefined
+  const endpointMatches = sameEndpointOrigin(payload.baseUrl, config.value.llm?.base_url)
+  if (
+    credentialPanel?.acceptsApiKey === true
+    && credentialPanel.requiresApiKey === false
+    && savedCredential.source === 'explicit'
+    && selectedProviderId !== ''
+    && selectedProviderId === savedProviderId
+    && !hasReplacement
+    && endpointMatches
+  ) {
+    payload.preserveApiKey = true
+  }
+  return payload
+}
+
 async function patchConfig(patches: Record<string, unknown>): Promise<boolean> {
   if (!Object.keys(patches).length) return false
   const res = await rpc.call<{ restartRequired?: boolean }>('config.patch', { patches })
@@ -1469,7 +1540,7 @@ async function saveProvider() {
     return
   }
   try {
-    const payload = providerForm.payload()
+    const payload = providerConfigurePayload()
     await rpc.call('onboarding.provider.configure', payload)
     const restart = await patchConfig(promotedForm.providerPatches())
     // The per-model context-window override rides the deep-merge patch form. Key
@@ -1608,7 +1679,7 @@ async function applyProviderPreset() {
   }
   const presetId = selectedPreset.value?.presetId || providerForm.selectedProvider.value
   try {
-    await rpc.call('onboarding.provider.configure', { ...providerForm.payload(), presetId })
+    await rpc.call('onboarding.provider.configure', { ...providerConfigurePayload(), presetId })
     const restart = await patchConfig(promotedForm.providerPatches())
     await loadData()
     if (providerEnvMissing.value) {

@@ -149,6 +149,7 @@ def test_bailian_coding_regions_are_explicit_provider_choices():
 
 def test_ollama_does_not_require_api_key_in_setup_spec():
     spec = get_provider_setup_spec("ollama")
+    assert spec.accepts_api_key is True
     assert spec.requires_api_key is False
     api_field = next(f for f in spec.fields if f.name == "api_key")
     assert api_field.required is False
@@ -268,6 +269,7 @@ def test_custom_provider_is_a_first_class_self_hosted_endpoint():
     base_field = next(f for f in spec.fields if f.name == "base_url")
     assert base_field.required is True
 
+    assert spec.accepts_api_key is True
     assert spec.requires_api_key is False
     assert spec.env_key == "CUSTOM_LLM_API_KEY"
     api_field = next(f for f in spec.fields if f.name == "api_key")
@@ -283,6 +285,7 @@ def test_custom_provider_catalog_payload_semantics():
     )
 
     assert row["runtimeSupported"] is True
+    assert row["acceptsApiKey"] is True
     assert row["requiresApiKey"] is False
     assert row["requiresBaseUrl"] is True
     assert row["envKey"] == "CUSTOM_LLM_API_KEY"
@@ -290,6 +293,14 @@ def test_custom_provider_catalog_payload_semantics():
     fields = {f["name"]: f for f in row["fields"]}
     assert fields["base_url"]["required"] is True
     assert fields["api_key"]["required"] is False
+
+
+def test_oauth_provider_does_not_accept_an_api_key():
+    spec = get_provider_setup_spec("openai_codex")
+
+    assert spec.env_key == "OAuth"
+    assert spec.accepts_api_key is False
+    assert spec.requires_api_key is False
 
 
 def test_unknown_provider_raises():

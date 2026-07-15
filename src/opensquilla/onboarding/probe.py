@@ -86,6 +86,7 @@ async def probe_llm_provider(
     api_key_env: str = "",
     base_url: str = "",
     proxy: str = "",
+    allow_default_api_key_env: bool = True,
     timeout: float = _PROBE_TIMEOUT_SECONDS,
 ) -> ProviderProbeResult:
     """Run a one-token live chat against the candidate provider config.
@@ -93,6 +94,8 @@ async def probe_llm_provider(
     Raises ``ValueError`` for validation-level problems (unknown provider id,
     missing model) so callers surface those as typed input errors; runtime
     reachability/credential failures come back as a not-ok result.
+    ``allow_default_api_key_env=False`` lets RPC callers suppress the registry
+    env fallback when testing a different endpoint origin.
     """
     provider_id = (provider_id or "").strip()
     model = (model or "").strip()
@@ -102,9 +105,14 @@ async def probe_llm_provider(
     if not spec.runtime_supported:
         raise ValueError(f"Provider '{provider_id}' has no runtime support to probe.")
 
-    resolved_key, key_source = _resolve_probe_api_key(api_key, api_key_env, spec.env_key)
+    default_env_key = spec.env_key if allow_default_api_key_env else ""
+    resolved_key, key_source = _resolve_probe_api_key(
+        api_key,
+        api_key_env,
+        default_env_key,
+    )
     if spec.requires_api_key() and not resolved_key:
-        checked = key_source or (spec.env_key and f"${spec.env_key}") or "no env key"
+        checked = key_source or (default_env_key and f"${default_env_key}") or "no env key"
         return ProviderProbeResult(
             ok=False,
             provider_id=provider_id,
@@ -301,6 +309,7 @@ async def discover_provider_models(
     api_key_env: str = "",
     base_url: str = "",
     proxy: str = "",
+    allow_default_api_key_env: bool = True,
 ) -> ProviderModelsDiscoverResult:
     """List a candidate provider's live models without persisting anything.
 
@@ -311,15 +320,22 @@ async def discover_provider_models(
 
     Raises ``ValueError`` for validation-level problems (unknown provider id,
     no runtime support) so callers surface those as typed input errors.
+    ``allow_default_api_key_env=False`` suppresses the registry env fallback
+    for a candidate endpoint that must not inherit the active endpoint's key.
     """
     provider_id = (provider_id or "").strip()
     spec = get_provider_spec(provider_id)  # raises UnknownProviderError(ValueError)
     if not spec.runtime_supported:
         raise ValueError(f"Provider '{provider_id}' has no runtime support to discover.")
 
-    resolved_key, key_source = _resolve_probe_api_key(api_key, api_key_env, spec.env_key)
+    default_env_key = spec.env_key if allow_default_api_key_env else ""
+    resolved_key, key_source = _resolve_probe_api_key(
+        api_key,
+        api_key_env,
+        default_env_key,
+    )
     if spec.requires_api_key() and not resolved_key:
-        checked = key_source or (spec.env_key and f"${spec.env_key}") or "no env key"
+        checked = key_source or (default_env_key and f"${default_env_key}") or "no env key"
         return ProviderModelsDiscoverResult(
             ok=False,
             provider_id=provider_id,
@@ -390,6 +406,7 @@ async def discover_selectable_provider_models(
     api_key_env: str = "",
     base_url: str = "",
     proxy: str = "",
+    allow_default_api_key_env: bool = True,
 ) -> ProviderModelsDiscoverResult:
     """Return only verified live catalogs suitable for a model picker.
 
@@ -425,10 +442,13 @@ async def discover_selectable_provider_models(
     ):
         return ProviderModelsDiscoverResult(ok=True, provider_id=provider_id)
 
-    return await discover_provider_models(
-        provider_id=provider_id,
-        api_key=api_key,
-        api_key_env=api_key_env,
-        base_url=base_url.strip(),
-        proxy=proxy,
-    )
+    discover_kwargs: dict[str, Any] = {
+        "provider_id": provider_id,
+        "api_key": api_key,
+        "api_key_env": api_key_env,
+        "base_url": base_url.strip(),
+        "proxy": proxy,
+    }
+    if not allow_default_api_key_env:
+        discover_kwargs["allow_default_api_key_env"] = False
+    return await discover_provider_models(**discover_kwargs)

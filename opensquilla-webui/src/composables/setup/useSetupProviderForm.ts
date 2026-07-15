@@ -115,6 +115,8 @@ export interface ConnectionState {
 export interface ProviderCredentialPanelState {
   providerLabel: string
   providerSelected: boolean
+  acceptsApiKey: boolean
+  requiresApiKey: boolean
   source: string
   available: boolean
   envKey: string
@@ -125,6 +127,8 @@ export interface ProviderCredentialPanelState {
   replacing: boolean
   apiKeyValue: string
   apiKeyEnvValue: string
+  probeReady: boolean
+  probeDisabledReason: string
   connection: ConnectionState
   onReveal?: () => void
   onReplace?: () => void
@@ -474,6 +478,7 @@ export function useSetupProviderForm() {
       delete values.api_key_env // a real pasted key wins
     } else {
       delete values.api_key // blank/whitespace paste is not a credential, keep env reference
+      if (!isNonEmpty(values.api_key_env)) delete values.api_key_env
     }
     return buildProviderPayload(providerSelected.value, values)
   }

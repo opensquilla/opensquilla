@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 import sqlite3
 from pathlib import Path
 
@@ -23,11 +24,21 @@ from opensquilla.skills.meta.types import (
 )
 
 
-@pytest.fixture
-def writer(tmp_path: Path) -> MetaRunWriter:
-    db = tmp_path / "test.sqlite"
+@pytest.fixture(scope="session")
+def _migrated_writer_template(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    db = tmp_path_factory.mktemp("meta-resume-template") / "template.sqlite"
     backend = get_backend(f"sqlite:///{db}")
-    backend.apply_migrations(read_migrations("migrations"))
+    try:
+        backend.apply_migrations(read_migrations("migrations"))
+    finally:
+        backend.connection.close()
+    return db
+
+
+@pytest.fixture
+def writer(tmp_path: Path, _migrated_writer_template: Path) -> MetaRunWriter:
+    db = tmp_path / "test.sqlite"
+    shutil.copyfile(_migrated_writer_template, db)
     conn = sqlite3.connect(db, check_same_thread=False)
     conn.row_factory = sqlite3.Row
     return MetaRunWriter(conn)

@@ -23,6 +23,7 @@ def _base_env() -> dict[str, str]:
         "RESULT_TUI": "skipped",
         "RESULT_DESKTOP": "skipped",
         "RESULT_UBUNTU": "skipped",
+        "RESULT_UBUNTU_FULL": "skipped",
         "RESULT_WINDOWS_SMOKE": "skipped",
         "RESULT_WINDOWS_FULL": "skipped",
         "RESULT_MACOS_RECOVERY": "skipped",
@@ -76,6 +77,25 @@ def test_ci_result_gate_rejects_required_windows_matrix_skip() -> None:
     errors = check_ci_results(env)
 
     assert any("Windows high-risk matrix" in error and "skipped" in error for error in errors)
+
+
+def test_ci_result_gate_requires_ubuntu_full_matrix_only_for_full_ci() -> None:
+    targeted = _base_env()
+    targeted[_flag_env("docs_only")] = "false"
+    targeted[_flag_env("runtime_changed")] = "true"
+    targeted[_flag_env("python_changed")] = "true"
+    targeted[_flag_env("build_wheel_required")] = "true"
+    targeted["RESULT_UBUNTU"] = "success"
+    targeted["RESULT_WINDOWS_SMOKE"] = "success"
+    assert check_ci_results(targeted) == []
+
+    for result in ("skipped", "failure", "cancelled", ""):
+        env = _full_env()
+        env["RESULT_UBUNTU_FULL"] = result
+
+        errors = check_ci_results(env)
+
+        assert any("Ubuntu full test matrix" in error for error in errors)
 
 
 def test_ci_result_gate_rejects_failure_cancellation_and_missing_results() -> None:
@@ -135,6 +155,22 @@ def test_ci_result_gate_requires_desktop_recovery_e2e_for_desktop_changes() -> N
     env["RESULT_WINDOWS_SMOKE"] = "success"
     env["RESULT_WINDOWS_FULL"] = "success"
     env["RESULT_MACOS_RECOVERY"] = "success"
+
+    errors = check_ci_results(env)
+
+    assert any("Desktop recovery E2E matrix" in error and "skipped" in error for error in errors)
+
+
+def test_ci_result_gate_requires_desktop_recovery_e2e_for_frontend_changes() -> None:
+    env = _base_env()
+    env[_flag_env("docs_only")] = "false"
+    env[_flag_env("runtime_changed")] = "true"
+    env[_flag_env("frontend_changed")] = "true"
+    env[_flag_env("python_changed")] = "true"
+    env[_flag_env("build_wheel_required")] = "true"
+    env["RESULT_FRONTEND"] = "success"
+    env["RESULT_UBUNTU"] = "success"
+    env["RESULT_WINDOWS_SMOKE"] = "success"
 
     errors = check_ci_results(env)
 

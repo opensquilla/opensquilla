@@ -237,9 +237,10 @@ export function useChatRenderedMessages(options: UseChatRenderedMessagesOptions)
       const sameGroup = collapsible && displayRole === prevRole && day === prevDay && day !== ''
       if (collapsible) prevRole = displayRole
 
-      const ownerKey = msg.messageId || `${msg.role}-${i}`
+      const ownerKey = msg.messageId || msg.clientId || `${msg.role}-${i}`
       const rendered: ChatRenderedMessage = {
         id: `${msg.role}-${i}`,
+        ...(msg.clientId ? { clientId: msg.clientId } : {}),
         sourceIndex: i,
         role: msg.role,
         displayRole,
@@ -469,6 +470,7 @@ export function useChatRenderedMessages(options: UseChatRenderedMessagesOptions)
       input: numeric(row.input_tokens ?? row.inputTokens),
       output: numeric(row.output_tokens ?? row.outputTokens),
       costUsd: numeric(row.cost_usd ?? row.costUsd ?? row.billed_cost ?? row.billedCost),
+      elapsedMs: Math.max(0, numeric(row.elapsed_ms ?? row.elapsedMs)),
     }
   }
 

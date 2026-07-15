@@ -18,6 +18,7 @@ import {
   type ChatRpcStreamApi,
   type UseChatRpcEventHandlersOptions,
 } from './useChatRpcEventHandlers'
+import { FINISHED_STREAM_TASK_ID } from '@/utils/chat/streamEvents'
 
 const SESSION = 'agent:main:webchat:issue344'
 
@@ -130,6 +131,70 @@ describe('issue #344 — live stream is bound to a single task', () => {
     })
     expect(stream.endStreaming).not.toHaveBeenCalled()
     expect(messages.value.some((m) => m.role === 'error')).toBe(false)
+  })
+
+  it("does not let a stale task's heartbeat open a new work card", () => {
+    const { api, stream } = makeHarness('task-B')
+    stream.isStreaming.value = false
+
+    api.handlers.onRunHeartbeat({
+      task_id: 'task-A',
+      session_key: SESSION,
+      stream_seq: 1,
+    })
+
+    expect(stream.startStreaming).not.toHaveBeenCalled()
+  })
+
+  it("does not let a stale task's router replay reopen the live turn", () => {
+    const { api, options } = makeHarness('task-B')
+
+    api.handlers.onRouterControlReplay({
+      task_id: 'task-A',
+      session_key: SESSION,
+      stream_seq: 1,
+    })
+
+    expect(options.handleRouterControlReplay).not.toHaveBeenCalled()
+  })
+
+  it('does not reopen a completed task when a same-task heartbeat arrives after done', () => {
+    const { api, stream, activeTaskId } = makeHarness('task-B')
+    vi.mocked(stream.endStreaming).mockImplementation(() => {
+      stream.isStreaming.value = false
+    })
+
+    api.handlers.onAny('session.event.done', {
+      task_id: 'task-B',
+      session_key: SESSION,
+      stream_seq: 1,
+      text: 'finished answer',
+    })
+    api.handlers.onRunHeartbeat({
+      task_id: 'task-B',
+      session_key: SESSION,
+      stream_seq: 2,
+    })
+
+    expect(activeTaskId.value).toBe(FINISHED_STREAM_TASK_ID)
+    expect(stream.startStreaming).not.toHaveBeenCalled()
+  })
+
+  it('uses task.succeeded as a fallback when the rich done frame is missing', () => {
+    const { api, stream, messages, activeTaskId } = makeHarness('task-B')
+    vi.mocked(stream.endStreaming).mockImplementation(() => {
+      messages.value.push({ role: 'assistant', text: 'finished answer', ts: 'now' })
+    })
+
+    api.handlers.onAny('task.succeeded', {
+      task_id: 'task-B',
+      session_key: SESSION,
+      terminal_reason: 'completed',
+    })
+
+    expect(stream.endStreaming).toHaveBeenCalledTimes(1)
+    expect(activeTaskId.value).toBe(FINISHED_STREAM_TASK_ID)
+    expect(messages.value[0]?.usage).toBeUndefined()
   })
 
   it("does not end the current stream on a stale task's terminal sessions.changed", () => {

@@ -133,6 +133,14 @@ boundary. Work happens in an isolated run directory under the OpenSquilla state
 tree; the source repo is updated only after the workflow collects and verifies a
 productive change.
 
+The bundled trusted-repository policy runs the child agent in Full Host Access:
+read-side file tools, write-side file tools, patches, and shell commands all use
+the same sandbox-off posture. A custom CodeTask agent configuration that selects
+Standard-Sandbox or Managed Execution keeps strict reads and workspace/scratch
+write containment. In every posture, the disposable clone remains the intended
+working directory and the verified-change workflow controls when the source repo
+is updated.
+
 `--verification-mode red-green` is the default for existing repositories.
 `--verification-mode build` is for app or artifact delivery checks.
 `--verification-mode scratch` creates an empty throwaway repo and must not be

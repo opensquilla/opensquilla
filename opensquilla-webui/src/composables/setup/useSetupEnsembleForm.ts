@@ -805,6 +805,12 @@ export function useSetupEnsembleForm() {
 
       return {
         enabled: enabled.value,
+        // The provider-level model is the ensemble fallback (and the current
+        // model used by single-model mode). Keep it separate from the
+        // router's default tier: those can intentionally point at different
+        // models, especially while ensemble routing has disabled the router.
+        activeProvider,
+        activeModel,
         selectionMode: selectionMode.value,
         scheme,
         schemeCardsAvailable: providerStaticMode !== null,

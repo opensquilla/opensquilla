@@ -355,7 +355,7 @@ async def run_tui_runtime(
                         )
                         if hooks.notice is not None:
                             hooks.notice(
-                                "[cyan]Steering the running turn at its next safe boundary.[/cyan]"
+                                "[bold]Steering the running turn at its next safe boundary.[/bold]"
                             )
                         continue
                     steer_fell_back = True

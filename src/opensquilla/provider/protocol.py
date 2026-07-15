@@ -6,7 +6,15 @@ from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
-from .types import ChatConfig, Message, ModelInfo, QuotaStatus, StreamEvent, ToolDefinition
+from .types import (
+    ChatConfig,
+    Message,
+    ModelInfo,
+    ProviderMessageCountProjection,
+    QuotaStatus,
+    StreamEvent,
+    ToolDefinition,
+)
 
 if TYPE_CHECKING:
     from .selector import ProviderConfig, SelectorConfig
@@ -43,6 +51,21 @@ class ProviderMetadataProvider(Protocol):
 class ProviderConnectionConfigProvider(Protocol):
     def provider_connection_config(self) -> ProviderConnectionConfig:
         """Return internal connection fields for provider-owned runtime calls."""
+        ...
+
+
+@runtime_checkable
+class ProviderMessageCountProjector(Protocol):
+    """Optional, side-effect-free wire-message cardinality projection."""
+
+    def project_message_count(
+        self,
+        messages: list[Message],
+        config: ChatConfig | None = None,
+        *,
+        additional_messages: int = 0,
+    ) -> ProviderMessageCountProjection:
+        """Project the adapter's final wire count without issuing a request."""
         ...
 
 
@@ -101,6 +124,36 @@ def provider_connection_config(provider: object | None) -> ProviderConnectionCon
         api_key=api_key,
         base_url=metadata.base_url,
     )
+
+
+def project_provider_message_count(
+    provider: object | None,
+    messages: list[Message],
+    config: ChatConfig | None = None,
+    *,
+    additional_messages: int = 0,
+) -> ProviderMessageCountProjection | None:
+    """Return an optional provider projection without broadening ``LLMProvider``.
+
+    Projection is a recovery aid, never a prerequisite for a normal provider
+    call.  A missing, invalid, or failing optional implementation therefore
+    resolves to ``None`` rather than changing the established chat contract.
+    """
+
+    if provider is None:
+        return None
+    projection_fn = getattr(provider, "project_message_count", None)
+    if not callable(projection_fn):
+        return None
+    try:
+        projection = projection_fn(
+            messages,
+            config,
+            additional_messages=additional_messages,
+        )
+    except Exception:  # noqa: BLE001 - optional capability must stay best-effort
+        return None
+    return projection if isinstance(projection, ProviderMessageCountProjection) else None
 
 
 @runtime_checkable

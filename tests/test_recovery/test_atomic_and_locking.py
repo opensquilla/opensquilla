@@ -213,6 +213,20 @@ def test_config_snapshot_rejects_windows_reparse_attribute_before_open(
     assert not opened
 
 
+def test_no_follow_manifest_can_keep_runtime_sandbox_opaque(tmp_path: Path) -> None:
+    from opensquilla.recovery.atomic import no_follow_manifest
+
+    root = tmp_path / "profile"
+    sandbox = root / "sandbox"
+    sandbox.mkdir(parents=True)
+    (sandbox / "runtime-owned.txt").write_text("opaque\n", encoding="utf-8")
+
+    manifest = no_follow_manifest(root, opaque_directories=frozenset({"sandbox"}))
+
+    assert "sandbox" in manifest
+    assert "sandbox/runtime-owned.txt" not in manifest
+
+
 def test_native_move_never_replaces_existing_destination(tmp_path: Path) -> None:
     source = tmp_path / "source"
     destination = tmp_path / "destination"
@@ -305,12 +319,16 @@ def test_native_move_treats_unsafe_post_move_manifest_as_unknown(
     original_manifest = atomic.no_follow_manifest
     calls = 0
 
-    def fail_post_move_manifest(path: str | Path):
+    def fail_post_move_manifest(
+        path: str | Path,
+        *,
+        opaque_directories: frozenset[str] = frozenset(),
+    ):
         nonlocal calls
         calls += 1
         if calls == 2:
             raise UnsafePathError("synthetic unsafe post-move tree")
-        return original_manifest(path)
+        return original_manifest(path, opaque_directories=opaque_directories)
 
     monkeypatch.setattr(atomic, "no_follow_manifest", fail_post_move_manifest)
 
@@ -1087,6 +1105,7 @@ def test_windows_handoff_keeps_external_state_lock_open(
             assert _move_options["_allowed_manifest_mtime_changes"] == frozenset(
                 {"state/gateway.pid.lock"}
             )
+            assert _move_options["_opaque_manifest_directories"] == frozenset({"sandbox"})
             with _mutation_guard():
                 assert external_claim.fd == external_fd
                 source_path.rename(destination_path)

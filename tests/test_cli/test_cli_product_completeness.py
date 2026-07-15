@@ -98,9 +98,15 @@ def test_catalog_list_json_surfaces(tmp_path: Path, monkeypatch):
     runner.invoke(
         app,
         [
-            "channels", "add", "slack",
-            "--name", "w", "--token", "supersecret",
-            "--field", "signing_secret=ss",
+            "channels",
+            "add",
+            "slack",
+            "--name",
+            "w",
+            "--token",
+            "supersecret",
+            "--field",
+            "signing_secret=ss",
         ],
     )
 
@@ -169,8 +175,7 @@ def test_models_list_table_warns_about_provider_listing_errors(monkeypatch):
 def test_config_get_honors_env_path_and_redacts(tmp_path: Path, monkeypatch):
     target = tmp_path / "opensquilla.toml"
     target.write_text(
-        "search_api_key = \"secret\"\n"
-        "[llm]\nprovider = \"openrouter\"\nmodel = \"test/model\"\n",
+        'search_api_key = "secret"\n[llm]\nprovider = "openrouter"\nmodel = "test/model"\n',
         encoding="utf-8",
     )
     monkeypatch.setenv("OPENSQUILLA_GATEWAY_CONFIG_PATH", str(target))
@@ -191,7 +196,7 @@ def test_config_get_honors_env_path_and_redacts(tmp_path: Path, monkeypatch):
 
 def test_config_get_explicit_config_path_wins(tmp_path: Path):
     target = tmp_path / "explicit.toml"
-    target.write_text("[llm]\nmodel = \"explicit/model\"\n", encoding="utf-8")
+    target.write_text('[llm]\nmodel = "explicit/model"\n', encoding="utf-8")
 
     result = runner.invoke(app, ["config", "get", "llm.model", "--config", str(target)])
 
@@ -278,6 +283,58 @@ def test_version_check_honors_config_privacy_network_observability(
     assert payload["error"] is None
 
 
+def test_version_check_on_rc_uses_rc_channel_and_keeps_json_contract(
+    tmp_path: Path,
+    monkeypatch,
+):
+    import opensquilla
+    from opensquilla.observability import network_policy, update_check
+
+    target = tmp_path / "config.toml"
+    target.write_text(
+        f"state_dir = {json.dumps(str(tmp_path / 'state'))}\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("OPENSQUILLA_GATEWAY_CONFIG_PATH", str(target))
+    for name in (
+        network_policy.NETWORK_OBSERVABILITY_DISABLED_ENV,
+        update_check.UPDATE_CHECK_DISABLED_ENV,
+        update_check.TELEMETRY_DISABLED_ENV,
+        "GITHUB_ACTIONS",
+        "PYTEST_CURRENT_TEST",
+        update_check.TELEMETRY_TESTING_ENV,
+    ):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setattr(opensquilla, "__version__", "0.5.0rc4")
+    monkeypatch.setattr(update_check, "_CACHED_INFO", {})
+    calls: list[tuple[str, str]] = []
+
+    def fake_fetch(endpoint: str, current_version: str, *, timeout: float):
+        calls.append((endpoint, current_version))
+        assert timeout == update_check.DEFAULT_TIMEOUT_SECONDS
+        return (
+            "0.5.0rc5",
+            "https://github.com/opensquilla/opensquilla/releases/tag/v0.5.0rc5",
+            None,
+        )
+
+    monkeypatch.setattr(update_check, "_fetch_latest_release", fake_fetch)
+
+    result = runner.invoke(app, ["version", "--check", "--json"])
+
+    assert result.exit_code == 0, result.stdout
+    payload = json.loads(result.stdout)
+    assert payload == {
+        "current": "0.5.0rc4",
+        "latest": "0.5.0rc5",
+        "updateAvailable": True,
+        "releaseUrl": "https://github.com/opensquilla/opensquilla/releases/tag/v0.5.0rc5",
+        "disabled": False,
+        "error": None,
+    }
+    assert calls == [(update_check._channel_for("0.5.0rc4").endpoint, "0.5.0rc4")]
+
+
 def test_gateway_json_errors_go_to_stderr(monkeypatch):
     _install_fake_gateway(monkeypatch, FailingConnectGatewayClient)
 
@@ -298,9 +355,7 @@ def test_skills_view_and_update_use_gateway_rpc(monkeypatch):
             "description": "Plan work",
             "content": "skill body",
         },
-        "skills.update": {
-            "results": [{"success": True, "name": "planner", "message": "updated"}]
-        },
+        "skills.update": {"results": [{"success": True, "name": "planner", "message": "updated"}]},
     }
 
     view = runner.invoke(app, ["skills", "view", "planner", "--json"])
@@ -970,9 +1025,7 @@ def test_channels_status_table_shows_channel_diagnostic(monkeypatch):
     assert ("channels.status", {}) in fake.calls
 
 
-def test_runtime_diagnostics_commands_can_target_configured_gateway(
-    tmp_path: Path, monkeypatch
-):
+def test_runtime_diagnostics_commands_can_target_configured_gateway(tmp_path: Path, monkeypatch):
     fake = _install_fake_gateway(monkeypatch)
     target = tmp_path / "custom.toml"
     target.write_text('host = "0.0.0.0"\nport = 19999\n', encoding="utf-8")
@@ -996,9 +1049,7 @@ def test_runtime_diagnostics_commands_can_target_configured_gateway(
     )
     providers = runner.invoke(app, ["providers", "status", "--json", "--config", str(target)])
     search = runner.invoke(app, ["search", "status", "--json", "--config", str(target)])
-    diagnostics = runner.invoke(
-        app, ["diagnostics", "status", "--json", "--config", str(target)]
-    )
+    diagnostics = runner.invoke(app, ["diagnostics", "status", "--json", "--config", str(target)])
     memory = runner.invoke(app, ["memory", "status", "--json", "--config", str(target)])
 
     assert channels.exit_code == 0, channels.stdout
@@ -1010,9 +1061,7 @@ def test_runtime_diagnostics_commands_can_target_configured_gateway(
     assert connected_urls == ["ws://127.0.0.1:19999/ws"] * 5
 
 
-def test_runtime_diagnostics_commands_use_gateway_config_env_path(
-    tmp_path: Path, monkeypatch
-):
+def test_runtime_diagnostics_commands_use_gateway_config_env_path(tmp_path: Path, monkeypatch):
     fake = _install_fake_gateway(monkeypatch)
     target = tmp_path / "env-config.toml"
     target.write_text('host = "127.0.0.1"\nport = 20001\n', encoding="utf-8")

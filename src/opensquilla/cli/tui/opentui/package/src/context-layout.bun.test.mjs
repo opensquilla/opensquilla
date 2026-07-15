@@ -35,7 +35,7 @@ test("context.update is sanitized, partial, and explicitly clearable", () => {
     agent: { name: "Mi\x1b[31mra", emoji: "🦐", id: "main" },
     task: "TUI\npolish",
     model: "openai/gpt-5.4",
-    workspace: "/Users/me/opensquilla",
+    workspace: "/workspace/opensquilla",
     permission: "workspace_write",
   });
   expect(first.agent).toBe("Mira");
@@ -183,7 +183,7 @@ async function makeRailHarness(width, height = 30) {
     gateway: "connected",
     model: "openai/gpt-5.4",
     permission: "workspace-write",
-    workspace: "/Users/me/opensquilla",
+    workspace: "/workspace/opensquilla",
     queue: "idle",
     context: "34%",
   });

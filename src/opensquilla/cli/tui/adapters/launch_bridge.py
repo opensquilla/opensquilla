@@ -144,7 +144,24 @@ def prepare_interactive_chat(
     *,
     input_stream: Any | None = None,
     output_console: Any | None = None,
+    validated: bool = False,
 ) -> None:
+    active_console = console if output_console is None else output_console
+    if not validated:
+        validate_interactive_chat(
+            input_stream=input_stream,
+            output_console=active_console,
+        )
+    quiet_logs_for_interactive_chat()
+    clear_screen_for_interactive_chat(output_console=active_console)
+
+
+def validate_interactive_chat(
+    *,
+    input_stream: Any | None = None,
+    output_console: Any | None = None,
+) -> None:
+    """Reject non-interactive use before Gateway probing or terminal mutation."""
     stream = sys.stdin if input_stream is None else input_stream
     active_console = console if output_console is None else output_console
     if not stream.isatty() or not active_console.is_terminal:
@@ -153,8 +170,6 @@ def prepare_interactive_chat(
             err=True,
         )
         raise typer.Exit(2)
-    quiet_logs_for_interactive_chat()
-    clear_screen_for_interactive_chat(output_console=active_console)
 
 
 def preflight_gateway_chat_or_exit() -> None:
@@ -186,11 +201,16 @@ def launch_chat(
 ) -> None:
     active_console = console if output_console is None else output_console
     backend_id = validate_tui_backend_or_exit() if ui is None else validate_tui_backend_or_exit(ui)
+    validate_interactive_chat(
+        input_stream=input_stream,
+        output_console=active_console,
+    )
     if not standalone:
         preflight_gateway_chat_or_exit()
     prepare_interactive_chat(
         input_stream=input_stream,
         output_console=active_console,
+        validated=True,
     )
     if standalone:
         if standalone_runner is None:

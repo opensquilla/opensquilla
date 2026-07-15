@@ -188,8 +188,9 @@ core 与 companion 始终保持同一版本。
 > 如果在全新 `uv` 安装后立即找不到 `opensquilla`，请打开一个新终端，或重新执行第 1 步中的
 > PATH 设置命令。
 
-如需在 macOS 或 Linux 上完全锁定版本，请确保 core wheel 和 companion 的 URL 使用同一个 release
-tag。release 安装器会自动保证这一点，并拒绝不兼容的版本。
+如需完全锁定 Preview 4，请使用上面的带版本号 core wheel 命令。对于包含 macOS 或 Linux
+companion 的 release，请确保 core wheel 和 companion 的 URL 使用同一个 release tag。
+release 安装器会自动保证这一点，并拒绝不兼容的版本。
 
 <a id="install-from-source"></a>
 

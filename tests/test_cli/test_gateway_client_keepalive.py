@@ -5,7 +5,7 @@ import json
 import sys
 from types import SimpleNamespace
 from typing import Any
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, call
 
 import pytest
 
@@ -280,6 +280,76 @@ async def test_bootstrap_session_uses_additive_snapshot_rpc(
     call.assert_awaited_once_with(
         "sessions.bootstrap",
         {"key": "agent:main:x", "limit": 75},
+    )
+
+
+@pytest.mark.asyncio
+async def test_bootstrap_session_composes_preview4_read_only_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = GatewayClient()
+    rpc_call = AsyncMock(
+        side_effect=[
+            GatewayRPCError(
+                "sessions.bootstrap",
+                code="METHOD_NOT_FOUND",
+                message="Method not found: sessions.bootstrap",
+            ),
+            {
+                "session_key": "agent:main:canonical",
+                "session_id": "canonical",
+                "model": "openai/test",
+            },
+            {
+                "messages": [{"role": "user", "content": "hello"}],
+                "history_scope": "complete",
+                "canonical_available": True,
+            },
+        ]
+    )
+    monkeypatch.setattr(client, "_call", rpc_call)
+
+    result = await client.bootstrap_session("canonical", limit=75)
+
+    assert result["session"]["session_key"] == "agent:main:canonical"
+    assert result["history"]["messages"][0]["content"] == "hello"
+    assert result["queue"] == {
+        "mode": "followup",
+        "queued_count": 0,
+        "running_count": 0,
+    }
+    assert result["stream_cursor"] is None
+    assert result["compatibility"] == {"bootstrap": "legacy_gateway"}
+    assert rpc_call.await_args_list == [
+        call("sessions.bootstrap", {"key": "canonical", "limit": 75}),
+        call("sessions.resolve", {"key": "canonical"}),
+        call(
+            "chat.history",
+            {"sessionKey": "agent:main:canonical", "limit": 75},
+        ),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_bootstrap_session_does_not_mask_non_capability_errors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = GatewayClient()
+    error = GatewayRPCError(
+        "sessions.bootstrap",
+        code="NOT_FOUND",
+        message="Session not found",
+    )
+    rpc_call = AsyncMock(side_effect=error)
+    monkeypatch.setattr(client, "_call", rpc_call)
+
+    with pytest.raises(GatewayRPCError) as raised:
+        await client.bootstrap_session("missing")
+
+    assert raised.value is error
+    rpc_call.assert_awaited_once_with(
+        "sessions.bootstrap",
+        {"key": "missing", "limit": 200},
     )
 
 

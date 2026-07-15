@@ -765,7 +765,16 @@ def test_excluded_source_gateway_authority_change_blocks_publication(
     ) -> None:
         original_write_env(migrator, staging)
         try:
-            authority.write_bytes(changed)
+            if initial is None:
+                authority.write_bytes(changed)
+            else:
+                # Avoid Path.write_bytes(): it truncates before the Windows
+                # byte-range lock rejects the write, making the test fixture
+                # itself mutate the source even though publication is blocked.
+                with authority.open("r+b") as stream:
+                    stream.seek(0)
+                    stream.write(changed)
+                    stream.truncate()
         except OSError as exc:
             mutation_errors.append(exc)
             raise
@@ -1032,6 +1041,14 @@ def test_enumerate_portable_homes_orders_and_era_hints(tmp_path: Path) -> None:
     assert candidates[0].last_used > candidates[1].last_used
     assert all(candidate.size_bytes > 0 for candidate in candidates)
     assert all(candidate.previously_imported is False for candidate in candidates)
+
+
+def test_rc_update_cache_is_a_portable_home_era_hint(tmp_path: Path) -> None:
+    home = tmp_path / "portable-home"
+    (home / "state").mkdir(parents=True)
+    (home / "state" / "update_check_rc.json").write_text("{}", encoding="utf-8")
+
+    assert migration_module._era_hint(home) == "0.5.0rc2+"
 
 
 def test_candidate_metadata_is_privacy_narrow_stable_and_read_only(tmp_path: Path) -> None:
@@ -1350,6 +1367,41 @@ def test_every_published_portable_release_completes_full_profile_apply(
 # ---------------------------------------------------------------------------
 # 9. WAL sidecars
 # ---------------------------------------------------------------------------
+
+
+def test_source_snapshot_ignores_shm_but_keeps_db_and_wal(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source-snapshot"
+    state = source / "state"
+    state.mkdir(parents=True)
+    (state / "sessions.db").write_bytes(b"database")
+    (state / "sessions.db-wal").write_bytes(b"durable-wal")
+    shm = state / "sessions.db-shm"
+    shm.write_bytes(b"transient-one")
+
+    first = migration_module._scan_source_tree(
+        source,
+        destination_prefix=Path(),
+        role="test",
+        excluded_leaf_suffixes=("-shm",),
+    )
+    shm.unlink()
+    shm.write_bytes(b"transient-two")
+    second = migration_module._scan_source_tree(
+        source,
+        destination_prefix=Path(),
+        role="test",
+        excluded_leaf_suffixes=first.excluded_leaf_suffixes,
+    )
+
+    files = {
+        entry.relative.as_posix()
+        for entry in first.entries
+        if entry.entry_type == "file"
+    }
+    assert files == {"state/sessions.db", "state/sessions.db-wal"}
+    assert migration_module._source_snapshots_match(second, first)
 
 
 def test_sqlite_snapshot_normalizes_empty_wal_sidecar(tmp_path: Path) -> None:
@@ -2203,6 +2255,29 @@ def test_source_gateway_appearing_during_published_validation_rolls_back(
     assert not list(tmp_path.glob("target-home.backup.*"))
     assert not list(tmp_path.glob(".target-home.profile-staging.*"))
     assert not (tmp_path / ".target-home.profile-replace.json").exists()
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows lock snapshot regression")
+def test_apply_error_is_not_misclassified_as_source_authority_change_on_windows(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = _build_source_home(tmp_path / "source-root")
+    target = tmp_path / "target-home"
+    lock_path = source / "state" / "gateway.pid.lock"
+    lock_path.write_bytes(b"stable legacy gateway lock\n")
+
+    def fail_commit(*_args: Any, **_kwargs: Any) -> None:
+        raise OSError("synthetic apply failure")
+
+    monkeypatch.setattr(OpenSquillaHomeMigrator, "_commit", fail_commit)
+
+    report = _run(source, target, apply=True)
+
+    reasons = [item["reason"] for item in _errors(report)]
+    assert any("synthetic apply failure" in reason for reason in reasons)
+    assert not any("source legacy gateway authority changed" in reason for reason in reasons)
+    assert not target.exists()
 
 
 def test_source_authority_files_are_never_copied_or_modified(tmp_path: Path) -> None:
@@ -3585,6 +3660,63 @@ def test_committed_import_verifier_returns_only_locked_protocol_metadata(
     assert excluded["outcome"] == "not_found"
     assert excluded["matching_transaction_ids"] == []
     assert excluded["report"] is None
+
+
+def test_committed_import_verifier_treats_proven_missing_target_as_not_found(
+    tmp_path: Path,
+) -> None:
+    source = _build_source_home(tmp_path)
+    target = tmp_path / "missing-target-home"
+
+    verified = migration_module.verify_committed_profile_import(
+        source,
+        target,
+        source_kind="windows-portable",
+    )
+
+    assert verified["outcome"] == "not_found"
+    assert verified["stable_code"] == "profile_import_receipt_not_found"
+    assert verified["matching_transaction_ids"] == []
+    assert verified["report"] is None
+    assert not target.exists()
+
+
+@pytest.mark.parametrize("unsafe_source", ["missing", "file"])
+def test_committed_import_verifier_rejects_unsafe_source_with_missing_target(
+    tmp_path: Path,
+    unsafe_source: str,
+) -> None:
+    source = tmp_path / "source-home"
+    if unsafe_source == "file":
+        source.write_text("not a profile directory", encoding="utf-8")
+    target = tmp_path / "missing-target-home"
+
+    verified = migration_module.verify_committed_profile_import(
+        source,
+        target,
+        source_kind="windows-portable",
+    )
+
+    assert verified["outcome"] == "unsafe"
+    assert verified["stable_code"] == "profile_import_receipt_path_unsafe"
+    assert not target.exists()
+
+
+def test_committed_import_verifier_rejects_existing_non_directory_target(
+    tmp_path: Path,
+) -> None:
+    source = _build_source_home(tmp_path)
+    target = tmp_path / "target-home"
+    target.write_text("not a profile directory", encoding="utf-8")
+
+    verified = migration_module.verify_committed_profile_import(
+        source,
+        target,
+        source_kind="windows-portable",
+    )
+
+    assert verified["outcome"] == "unsafe"
+    assert verified["stable_code"] == "profile_import_receipt_path_unsafe"
 
 
 def test_committed_import_verifier_never_emits_private_provider_url(

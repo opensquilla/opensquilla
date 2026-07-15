@@ -506,6 +506,41 @@ def test_ci_change_classifier_keeps_webui_only_changes_off_windows_full(
     assert outputs == _expected_classifier_outputs(frontend_changed="true")
 
 
+def test_ci_change_classifier_treats_committed_webui_dist_as_portable_runtime(
+    tmp_path: Path,
+) -> None:
+    outputs = _classify_changed_files(
+        tmp_path,
+        ["src/opensquilla/gateway/static/dist/assets/index-example.js"],
+    )
+
+    assert outputs == _expected_classifier_outputs(
+        runtime_changed="true",
+        frontend_changed="true",
+        python_changed="true",
+        build_wheel_required="true",
+    )
+
+
+def test_ci_change_classifier_keeps_source_and_dist_webui_changes_portable(
+    tmp_path: Path,
+) -> None:
+    outputs = _classify_changed_files(
+        tmp_path,
+        [
+            "opensquilla-webui/src/views/ChatView.vue",
+            "src/opensquilla/gateway/static/dist/assets/index-example.js",
+        ],
+    )
+
+    assert outputs == _expected_classifier_outputs(
+        runtime_changed="true",
+        frontend_changed="true",
+        python_changed="true",
+        build_wheel_required="true",
+    )
+
+
 def test_ci_change_classifier_tracks_ci_dependency_and_release_changes(tmp_path: Path) -> None:
     outputs = _classify_changed_files(
         tmp_path,
@@ -858,15 +893,18 @@ def test_default_ci_uses_layered_job_conditions() -> None:
     assert "tui_changed == 'true'" in jobs["tui-check"]["if"]
     assert "desktop_changed == 'true'" in jobs["desktop-check"]["if"]
     assert "python_changed == 'true'" in jobs["ubuntu-quality"]["if"]
+    assert "full_required == 'true'" in jobs["ubuntu-full"]["if"]
     assert "platform_sensitive_changed == 'true'" in jobs["windows-compat"]["if"]
     assert "windows_full_required == 'true'" in jobs["windows-full"]["if"]
     assert "platform_sensitive_changed == 'true'" in jobs["macos-recovery"]["if"]
     assert "desktop_changed == 'true'" in jobs["macos-recovery"]["if"]
+    assert "frontend_changed == 'true'" in jobs["desktop-recovery-e2e"]["if"]
     assert "platform_sensitive_changed == 'true'" in jobs["desktop-recovery-e2e"]["if"]
     assert "desktop_changed == 'true'" in jobs["desktop-recovery-e2e"]["if"]
     assert "release_changed == 'true'" in jobs["release-packaging"]["if"]
     assert "tui-check" in jobs["ci-result"]["needs"]
     assert "desktop-check" in jobs["ci-result"]["needs"]
+    assert "ubuntu-full" in jobs["ci-result"]["needs"]
     assert "macos-recovery" in jobs["ci-result"]["needs"]
     assert "desktop-recovery-e2e" in jobs["ci-result"]["needs"]
 
@@ -889,6 +927,7 @@ def test_ci_result_gate_covers_every_conditional_job_and_classifier_flag() -> No
         "tui-check",
         "desktop-check",
         "ubuntu-quality",
+        "ubuntu-full",
         "windows-compat",
         "windows-full",
         "macos-recovery",
@@ -896,6 +935,7 @@ def test_ci_result_gate_covers_every_conditional_job_and_classifier_flag() -> No
         "release-packaging",
     }
     assert gate_step["run"] == "python .github/scripts/check_ci_results.py"
+    assert gate_step["env"]["RESULT_UBUNTU_FULL"] == "${{ needs.ubuntu-full.result }}"
     assert gate_step["env"]["RESULT_MACOS_RECOVERY"] == (
         "${{ needs.macos-recovery.result }}"
     )
@@ -986,7 +1026,7 @@ def test_windows_high_risk_job_runs_parallel_reported_shards() -> None:
         },
     }
     checkout = next(step for step in steps if step.get("name") == "Check out repository")
-    assert checkout["with"]["lfs"] == "${{ matrix.shard == 'core' }}"
+    assert checkout["with"]["lfs"] is True
     bun_step = next(step for step in steps if step.get("name") == "Set up Bun")
     assert bun_step["if"] == "${{ matrix.shard == 'core' }}"
     assert steps[0]["name"] == "Prepare diagnostic report"
@@ -1083,6 +1123,9 @@ def test_macos_recovery_runs_native_contracts_and_cannot_wash_failures_green() -
     assert "tests/test_migration/test_opensquilla_home_migration.py" in test_step["run"]
     assert "tests/test_desktop/test_electron_startup_contract.py" in test_step["run"]
     assert "set -euo pipefail" in test_step["run"]
+    assert "pytest_args=(" in test_step["run"]
+    assert 'uv run pytest "${pytest_args[@]}"' in test_step["run"]
+    assert "maxfail_args" not in test_step["run"]
     assert "--maxfail=3" in test_step["run"]
     assert '--junitxml="${CI_REPORT_DIR}/junit.xml"' in test_step["run"]
     assert 'tee "${CI_REPORT_DIR}/pytest.log"' in test_step["run"]
@@ -1097,21 +1140,46 @@ def test_macos_recovery_runs_native_contracts_and_cannot_wash_failures_green() -
     assert "|| true" not in test_step["run"]
 
 
-def test_ubuntu_quality_only_fetches_lfs_for_full_ci() -> None:
+def test_ubuntu_quality_keeps_targeted_pr_tests_and_full_ci_uses_balanced_matrix() -> None:
     data = _workflow("ci.yml")
     ubuntu_steps = data["jobs"]["ubuntu-quality"]["steps"]
     checkout = ubuntu_steps[0]
-    test_step = next(step for step in ubuntu_steps if step.get("name") == "Test")
+    test_step = next(
+        step for step in ubuntu_steps if step.get("name") == "Test targeted PR suite"
+    )
+    ubuntu_full = data["jobs"]["ubuntu-full"]
+    full_test_step = next(
+        step for step in ubuntu_full["steps"] if step.get("name") == "Test Ubuntu full shard"
+    )
 
     assert checkout["uses"] == "actions/checkout@v4"
     assert checkout["with"]["lfs"] == (
         "${{ needs.classify-changes.outputs.full_required == 'true' }}"
     )
-    assert "uv run pytest tests -q" in test_step["run"]
+    assert test_step["if"] == (
+        "${{ needs.classify-changes.outputs.full_required != 'true' }}"
+    )
+    assert "uv run pytest" in test_step["run"]
     assert "tests/test_artifacts.py" not in test_step["run"]
     assert "--ignore=tests/test_ci/test_router_artifact_manifest.py" in test_step["run"]
     assert "tests/test_recovery" in test_step["run"]
     assert "tests/test_migration/test_opensquilla_home_migration.py" in test_step["run"]
+    assert ubuntu_full["strategy"] == {
+        "fail-fast": False,
+        "matrix": {
+            "shard": [
+                "core",
+                "gateway-sqlite",
+                "recovery-migration",
+                "desktop-installer-contracts",
+            ]
+        },
+    }
+    assert ubuntu_full["timeout-minutes"] == 20
+    assert ".github/scripts/windows_test_shards.py run" in full_test_step["run"]
+    assert "--maxfail" not in full_test_step["run"]
+    assert "--reruns" not in json.dumps(ubuntu_full, sort_keys=True)
+    assert all("continue-on-error" not in step for step in ubuntu_full["steps"])
 
 
 def test_manual_workflows_reference_existing_test_files() -> None:

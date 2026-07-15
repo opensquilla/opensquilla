@@ -1674,34 +1674,21 @@ def test_turn_runner_preserves_joined_system_prompt_when_cache_disabled() -> Non
 
 
 def test_agent_adjusts_request_context_indexes_after_compaction() -> None:
-    entries = [
-        {"role": "user", "content": "old question"},
-        {"role": "assistant", "content": "old answer"},
-        {"role": "user", "content": "[Available skills for this turn]\nskill"},
-        {"role": "user", "content": "current question"},
-    ]
-    kept_entries = [
-        {"role": "assistant", "content": "old answer"},
-        {"role": "user", "content": "current question"},
-    ]
-
-    request_idx = Agent._adjust_compacted_insert_index(
-        entries,
-        kept_entries,
+    request_idx = Agent._adjust_index_after_prefix_compaction(
+        2,
         2,
         summary_present=True,
     )
-    runtime_idx = Agent._adjust_compacted_insert_index(
-        entries,
-        kept_entries,
+    runtime_idx = Agent._adjust_index_after_prefix_compaction(
         3,
+        2,
         summary_present=True,
     )
 
     compacted_messages = [
         Message(role="user", content="[Context summary]\nsummary"),
         Message(role="assistant", content="Understood. Continuing from summary."),
-        Message(role="assistant", content="old answer"),
+        Message(role="user", content="[Available skills for this turn]\nskill"),
         Message(role="user", content="current question"),
     ]
     request_context = Message(role="user", content="[Request context for this turn]\nvolatile")
@@ -1718,8 +1705,8 @@ def test_agent_adjusts_request_context_indexes_after_compaction() -> None:
     assert [message.content for message in request_messages] == [
         "[Context summary]\nsummary",
         "Understood. Continuing from summary.",
-        "old answer",
         "[Request context for this turn]\nvolatile",
+        "[Available skills for this turn]\nskill",
         "current question\n\n[Runtime context for this turn]\nnow",
     ]
 

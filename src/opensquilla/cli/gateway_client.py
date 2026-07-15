@@ -492,12 +492,48 @@ class GatewayClient:
         *,
         limit: int = 200,
     ) -> dict[str, Any]:
-        """Return one consistent session/history/task/stream startup snapshot."""
+        """Return a session startup snapshot, including an rc4-daemon fallback.
 
-        return cast(
-            dict[str, Any],
-            await self._call("sessions.bootstrap", {"key": key, "limit": limit}),
+        ``sessions.bootstrap`` is additive.  A user can upgrade the CLI while
+        an older Gateway process is still serving the same profile, so a
+        method-missing response must not break either the plain rescue renderer
+        or the TUI before the user has a chance to restart that daemon.  The
+        legacy composition deliberately stays read-only and uses only RPCs
+        already present in Preview 4.
+        """
+
+        try:
+            return cast(
+                dict[str, Any],
+                await self._call("sessions.bootstrap", {"key": key, "limit": limit}),
+            )
+        except GatewayRPCError as exc:
+            if str(exc.code or "").upper() != "METHOD_NOT_FOUND":
+                raise
+
+        resolved = await self.resolve_session(key)
+        session_key = str(
+            resolved.get("session_key")
+            or resolved.get("sessionKey")
+            or resolved.get("key")
+            or key
         )
+        history = await self.session_history(session_key, limit=limit)
+        session = dict(resolved)
+        session["session_key"] = session_key
+        return {
+            "session": session,
+            "history": history,
+            "queue": {
+                "mode": session.get("queue_mode") or "followup",
+                "queued_count": 0,
+                "running_count": 0,
+            },
+            "runtime": {},
+            "epoch": 0,
+            "stream_cursor": None,
+            "compatibility": {"bootstrap": "legacy_gateway"},
+        }
 
     async def reset_session(self, key: str) -> dict[str, Any]:
         return cast(dict[str, Any], await self._call("sessions.reset", {"key": key}))

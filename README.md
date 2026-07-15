@@ -215,10 +215,11 @@ opensquilla gateway run
 > If `opensquilla` is not found right after a fresh `uv` install, open
 > a new terminal, or re-run the PATH line from step 1.
 
-For a fully pinned macOS or Linux install, keep the core and companion wheel
-URLs on the same release tag and version. Upgrade, reinstall, and rollback must
-replace them as a pair; a core/host version mismatch is rejected at TUI
-startup.
+For a fully pinned Preview 4 install, use the versioned core-wheel command
+above. For a release that includes a macOS or Linux companion, keep the core
+and companion wheel URLs on the same release tag and version. Upgrade,
+reinstall, and rollback must replace them as a pair; a core/host version
+mismatch is rejected at TUI startup.
 
 ### Install from source
 
@@ -660,9 +661,10 @@ OpenSquilla 0.5.0 Preview 4 focuses on safe upgrades and existing user data:
 - **Updates and reliability** - long-running Desktop sessions can discover
   later previews, while Model Ensemble progress, provider limits, WeCom
   connectivity, SQLite, process, and checkpoint handling are more robust.
-- **Download options** - versioned GitHub assets, multi-architecture GHCR
-  images, and an Alibaba Cloud OSS mirror provide release download options.
-  Windows Portable archives remain retired.
+- **Download options** - versioned GitHub assets,
+  multi-architecture GHCR images, and
+  an Alibaba Cloud OSS mirror provide release download options. Windows
+  Portable archives remain retired.
 
 Full notes: [`CHANGELOG.md`](CHANGELOG.md) ·
 [`docs/releases/0.5.0rc4.md`](docs/releases/0.5.0rc4.md).

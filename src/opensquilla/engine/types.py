@@ -382,6 +382,7 @@ class CompactionOutcome:
     compaction_id: str | None = None
     request_context_insert_index: int | None = None
     runtime_context_insert_index: int | None = None
+    protected_turn_start_index: int | None = None
 
 
 AgentEvent = (

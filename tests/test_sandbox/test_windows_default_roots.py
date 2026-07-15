@@ -104,6 +104,22 @@ def test_opensquilla_state_protected_roots_are_sensitive(tmp_path: Path) -> None
     )
 
 
+def test_active_profile_sandbox_state_is_sensitive(monkeypatch, tmp_path: Path) -> None:
+    from opensquilla.sandbox.backend.windows_default_roots import windows_sensitive_marker
+
+    profile_home = tmp_path / "desktop-profile"
+    monkeypatch.setenv("OPENSQUILLA_STATE_DIR", str(profile_home))
+
+    assert (
+        windows_sensitive_marker(profile_home / "sandbox" / "setup_marker.json")
+        == "opensquilla_sandbox_state"
+    )
+    assert (
+        windows_sensitive_marker(profile_home / "sandbox-secrets" / "secret.json")
+        == "opensquilla_sandbox_state"
+    )
+
+
 def test_windows_user_secret_roots_are_sensitive(tmp_path: Path) -> None:
     from opensquilla.sandbox.backend.windows_default_roots import windows_sensitive_marker
 

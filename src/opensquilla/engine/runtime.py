@@ -157,7 +157,6 @@ from opensquilla.engine.types import (
     AgentConfig,
     AgentEvent,
     DoneEvent,
-    EnsembleProgressEvent,
     ErrorEvent,
     RouterControlReplayEvent,
     ThinkingLevel,
@@ -186,6 +185,7 @@ from opensquilla.provider import (
     ErrorEvent as ProviderErrorEvent,
 )
 from opensquilla.provider import (
+    ProviderHeartbeatEvent,
     ProviderRecoveryAction,
     classify_provider_error,
     decide_recovery_action,
@@ -579,6 +579,13 @@ def _restored_output_side_tokens(
     return actual_output_side_tokens / (1.0 - rate)
 
 
+def _turn_used_ensemble(event: DoneEvent, metadata: Mapping[str, Any]) -> bool:
+    """True when any part of the turn ran through the ensemble provider."""
+    if metadata.get("ensemble_enabled"):
+        return True
+    return getattr(event, "ensemble_trace", None) is not None
+
+
 def _compute_comprehensive_turn_savings(
     event: DoneEvent,
     metadata: Mapping[str, Any],
@@ -588,6 +595,12 @@ def _compute_comprehensive_turn_savings(
     estimated_output_savings_pct: float = 0.03,
 ) -> _ComprehensiveTurnSavings:
     """Estimate per-turn savings from token counts and model prices only."""
+    if _turn_used_ensemble(event, metadata):
+        # Ensemble turns have no single-model counterfactual: the turn's token
+        # totals are multiplied by the member fan-out while the routed-model
+        # price covers only one member, so the formula below would report a
+        # large saving on a turn that deliberately spends more for quality.
+        return _ComprehensiveTurnSavings()
     actual_input_tokens = _non_negative_int(event.input_tokens)
     actual_output_side_tokens = _non_negative_int(event.output_tokens) + _non_negative_int(
         event.reasoning_tokens
@@ -1446,8 +1459,12 @@ class _SelectorFallbackProvider:
             return drained
 
         async for event in self._provider.chat(messages, tools=tools, config=config):
-            if isinstance(event, ProviderEnsembleProgressEvent):
-                yield _provider_ensemble_progress_to_engine_event(event)
+            # Provider control events must cross this provider-domain wrapper
+            # unchanged and in real time.  Agent is the sole Provider→Engine
+            # normalization boundary.  Neither event counts as user-visible
+            # content, so a later pre-content error may still select fallback.
+            if isinstance(event, (ProviderHeartbeatEvent, ProviderEnsembleProgressEvent)):
+                yield event
                 continue
             if isinstance(event, ProviderErrorEvent):
                 _report_credential_pool_failure(
@@ -1480,9 +1497,6 @@ class _SelectorFallbackProvider:
                     tools=tools,
                     config=config,
                 ):
-                    if isinstance(fallback_event, ProviderEnsembleProgressEvent):
-                        yield _provider_ensemble_progress_to_engine_event(fallback_event)
-                        continue
                     yield fallback_event
                 return
 
@@ -1518,24 +1532,6 @@ class _SelectorFallbackProvider:
 def _is_non_empty_provider_text_delta(event: Any) -> bool:
     """Return True only once a provider event carries user-visible text."""
     return getattr(event, "kind", "") == "text_delta" and bool(getattr(event, "text", ""))
-
-
-def _provider_ensemble_progress_to_engine_event(
-    event: ProviderEnsembleProgressEvent,
-) -> EnsembleProgressEvent:
-    return EnsembleProgressEvent(
-        event_type=event.event_type,
-        proposer_index=event.proposer_index,
-        proposer_label=event.proposer_label,
-        proposer_model=event.proposer_model,
-        proposer_provider=event.proposer_provider,
-        sample_index=event.sample_index,
-        elapsed_ms=event.elapsed_ms,
-        input_tokens=event.input_tokens,
-        output_tokens=event.output_tokens,
-        cost_usd=event.cost_usd,
-        error=event.error,
-    )
 
 
 @dataclass
@@ -5292,6 +5288,11 @@ class TurnRunner:
                     inherited_provider_config=current_provider_config,
                     fallback_provider=provider,
                     turn_metadata=turn.metadata,
+                    _enable_member_request_budget_rebinding=True,
+                    _model_catalog=self._model_catalog,
+                    _context_overflow_threshold=(
+                        AgentConfig().context_overflow_threshold
+                    ),
                 )
 
         return turn, provider

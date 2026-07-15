@@ -79,6 +79,185 @@ async def test_no_compaction_needed_small_context():
     assert result.kept_entries == entries
     assert result.summary_source == "skipped"
     assert result.skip_reason == "within_compaction_budget"
+    assert result.kept_start_index == 0
+
+
+@pytest.mark.asyncio
+async def test_message_count_compaction_uses_exact_forced_prefix_within_token_budget(
+    monkeypatch,
+):
+    calls: list[str] = []
+
+    async def fake_llm(**kwargs):
+        calls.append(kwargs["chunk_text"])
+        # Deliberately larger than the removed entries. Message-count recovery
+        # is still useful as long as the replacement fits the token window.
+        return "count recovery summary " * 40
+
+    monkeypatch.setattr("opensquilla.session.compaction.call_compaction_llm", fake_llm)
+    entries = [
+        {"role": "user", "content": "old user 0", "token_count": 5},
+        {"role": "assistant", "content": "old assistant 1", "token_count": 5},
+        {"role": "user", "content": "protected current request", "token_count": 5},
+        {"role": "assistant", "content": "protected current answer", "token_count": 5},
+    ]
+
+    result = await compact_context(
+        CompactionRequest(
+            session_id="message-count",
+            entries=entries,
+            context_window_tokens=2_000,
+            config=CompactionConfig(
+                model="test/model",
+                api_key="test-key",
+                safety_margin=1.0,
+                protected_recent_messages=2,
+            ),
+            forced_prefix_cut=2,
+            trigger="message_count",
+            reason="provider_messages_limit",
+        )
+    )
+
+    assert calls
+    assert "old user 0" in "\n".join(calls)
+    assert "old assistant 1" in "\n".join(calls)
+    assert "protected current request" not in "\n".join(calls)
+    assert result.removed_count == 2
+    assert result.kept_start_index == 2
+    assert result.kept_entries == entries[2:]
+    assert result.kept_entries[0] is entries[2]
+    assert result.kept_entries[1] is entries[3]
+    assert result.tokens_after >= result.tokens_before
+    assert result.quality_report["fits_context_window"] is True
+    assert result.quality_report["passes_structural_gate"] is True
+
+
+@pytest.mark.asyncio
+async def test_message_count_compaction_summarizes_large_prefix_with_one_llm_call(
+    monkeypatch,
+):
+    calls: list[str] = []
+
+    async def fake_llm(**kwargs):
+        calls.append(kwargs["chunk_text"])
+        return "one bounded historical summary"
+
+    monkeypatch.setattr("opensquilla.session.compaction.call_compaction_llm", fake_llm)
+    entries = _make_entries(104, tokens_each=1)
+
+    result = await compact_context(
+        CompactionRequest(
+            session_id="message-count-large-prefix",
+            entries=entries,
+            context_window_tokens=128_000,
+            config=CompactionConfig(
+                model="test/model",
+                api_key="test-key",
+                protected_recent_messages=86,
+            ),
+            forced_prefix_cut=18,
+            trigger="message_count",
+            reason="provider_request_message_limit",
+        )
+    )
+
+    assert len(calls) == 1
+    assert "message 0" in calls[0]
+    assert "message 17" in calls[0]
+    assert "message 18" not in calls[0]
+    assert result.chunks_processed == 1
+    assert result.removed_count == 18
+    assert result.kept_start_index == 18
+    assert result.kept_entries == entries[18:]
+
+
+@pytest.mark.asyncio
+async def test_token_trigger_still_rejects_forced_summary_that_does_not_reduce_tokens(
+    monkeypatch,
+):
+    async def fake_llm(**kwargs):
+        return "larger replacement summary " * 40
+
+    monkeypatch.setattr("opensquilla.session.compaction.call_compaction_llm", fake_llm)
+    entries = _make_entries(4, tokens_each=5)
+
+    result = await compact_context(
+        CompactionRequest(
+            session_id="token-trigger",
+            entries=entries,
+            context_window_tokens=2_000,
+            config=CompactionConfig(
+                model="test/model",
+                api_key="test-key",
+                safety_margin=1.0,
+            ),
+            forced_prefix_cut=2,
+        )
+    )
+
+    assert result.removed_count == 0
+    assert result.kept_start_index == 0
+    assert result.kept_entries == entries
+    assert result.skip_reason == "quality_gate_failed"
+    assert result.quality_report["fits_context_window"] is True
+    assert result.quality_report["passes_structural_gate"] is False
+
+
+@pytest.mark.asyncio
+async def test_forced_prefix_cut_refuses_protected_tail_overlap():
+    entries = _make_entries(4, tokens_each=5)
+
+    result = await compact_context(
+        CompactionRequest(
+            session_id="protected-tail",
+            entries=entries,
+            context_window_tokens=2_000,
+            config=CompactionConfig(protected_recent_messages=2),
+            forced_prefix_cut=3,
+            trigger="message_count",
+        )
+    )
+
+    assert result.removed_count == 0
+    assert result.kept_start_index == 0
+    assert result.kept_entries == entries
+    assert result.skip_reason == "forced_prefix_cut_overlaps_protected_tail"
+
+
+@pytest.mark.asyncio
+async def test_forced_prefix_cut_refuses_split_tool_segment():
+    entries = [
+        {"role": "user", "content": "old context", "token_count": 5},
+        {
+            "role": "assistant",
+            "content": "calling tool",
+            "tool_calls": [{"id": "call_1", "type": "function"}],
+            "token_count": 5,
+        },
+        {
+            "role": "tool",
+            "content": "tool result",
+            "tool_call_id": "call_1",
+            "token_count": 5,
+        },
+        {"role": "user", "content": "current request", "token_count": 5},
+    ]
+
+    result = await compact_context(
+        CompactionRequest(
+            session_id="tool-boundary",
+            entries=entries,
+            context_window_tokens=2_000,
+            forced_prefix_cut=2,
+            trigger="message_count",
+        )
+    )
+
+    assert result.removed_count == 0
+    assert result.kept_start_index == 0
+    assert result.kept_entries == entries
+    assert result.skip_reason == "forced_prefix_cut_splits_tool_segment"
 
 
 @pytest.mark.asyncio

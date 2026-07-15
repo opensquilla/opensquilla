@@ -230,6 +230,8 @@ export interface ChatEnsembleUsageRow {
   costUsd?: number
   cost_source?: string
   costSource?: string
+  elapsed_ms?: number
+  elapsedMs?: number
   [key: string]: unknown
 }
 
@@ -255,9 +257,10 @@ export interface ChatEnsembleMetaModel {
   input: number
   output: number
   costUsd: number
-  // Live per-member lifecycle during streaming: 'running' while the proposer is
-  // still generating, 'done' once it finishes. Absent for settled/history rows.
-  status?: 'running' | 'done'
+  // Live per-member lifecycle during streaming. Absent for settled/history rows.
+  status?: 'running' | 'done' | 'failed'
+  elapsedMs?: number
+  error?: string
 }
 
 export interface ChatEnsembleMeta {
@@ -283,6 +286,8 @@ export interface ChatMessage {
   role: ChatRole
   text: string
   ts: string | number | null
+  /** Stable client-only identity for optimistic rows before the backend assigns messageId. */
+  clientId?: string
   reasoning?: ChatReasoning
   routerDecision?: import('./rpc').RouterDecisionPayload | null
   artifacts?: ArtifactPayload[]
@@ -333,6 +338,7 @@ export interface ChatMessageMeta {
 
 export interface ChatRenderedMessage {
   id?: string
+  clientId?: string
   sourceIndex?: number
   role: string
   displayRole: string

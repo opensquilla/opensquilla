@@ -76,6 +76,7 @@ def test_bare_chat_falls_back_to_plain_before_terminal_preparation(
     )
     prepared: list[bool] = []
     monkeypatch.setattr(launch_bridge, "preflight_gateway_chat_or_exit", lambda: None)
+    monkeypatch.setattr(launch_bridge, "validate_interactive_chat", lambda **_kwargs: None)
     monkeypatch.setattr(
         launch_bridge,
         "prepare_interactive_chat",
@@ -212,6 +213,7 @@ def test_launch_bridge_prints_standalone_banner_and_runs_standalone(
 
     monkeypatch.setattr(launch_bridge, "prepare_interactive_chat", lambda **_kwargs: None)
     monkeypatch.setattr(launch_bridge, "validate_tui_backend_or_exit", lambda: "native")
+    monkeypatch.setattr(launch_bridge, "validate_interactive_chat", lambda **_kwargs: None)
 
     launch_bridge.launch_chat(
         model="openai/test",
@@ -255,6 +257,7 @@ def test_launch_bridge_suppresses_native_banner_for_opentui_backend(
 
     monkeypatch.setattr(launch_bridge, "prepare_interactive_chat", lambda **_kwargs: None)
     monkeypatch.setattr(launch_bridge, "validate_tui_backend_or_exit", lambda: "opentui")
+    monkeypatch.setattr(launch_bridge, "validate_interactive_chat", lambda **_kwargs: None)
 
     launch_bridge.launch_chat(
         model="openai/test",
@@ -287,6 +290,7 @@ def test_launch_bridge_warns_gateway_workspace_options_without_forwarding(
 
     monkeypatch.setattr(launch_bridge, "prepare_interactive_chat", lambda **_kwargs: None)
     monkeypatch.setattr(launch_bridge, "preflight_gateway_chat_or_exit", lambda: None)
+    monkeypatch.setattr(launch_bridge, "validate_interactive_chat", lambda **_kwargs: None)
 
     launch_bridge.launch_chat(
         model="",
@@ -303,6 +307,41 @@ def test_launch_bridge_warns_gateway_workspace_options_without_forwarding(
     assert calls == [{"model": None, "session_id": None}]
     assert len(console.prints) == 1
     assert "--workspace only affects --standalone chat" in str(console.prints[0])
+
+
+def test_launch_bridge_rejects_non_tty_before_gateway_preflight(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from opensquilla.cli.tui.adapters import launch_bridge
+
+    class FakeStdin:
+        def isatty(self) -> bool:
+            return False
+
+    preflight_calls: list[bool] = []
+    monkeypatch.setattr(launch_bridge, "validate_tui_backend_or_exit", lambda: "native")
+    monkeypatch.setattr(
+        launch_bridge,
+        "preflight_gateway_chat_or_exit",
+        lambda: preflight_calls.append(True),
+    )
+
+    with pytest.raises(typer.Exit) as exc_info:
+        launch_bridge.launch_chat(
+            model="",
+            session_id="",
+            standalone=False,
+            workspace="",
+            workspace_strict=None,
+            timeout=None,
+            standalone_runner=None,
+            gateway_runner=None,
+            input_stream=FakeStdin(),
+            output_console=FakeConsole(is_terminal=True),
+        )
+
+    assert exc_info.value.exit_code == 2
+    assert preflight_calls == []
 
 
 def test_launch_chat_command_uses_typed_overrides() -> None:

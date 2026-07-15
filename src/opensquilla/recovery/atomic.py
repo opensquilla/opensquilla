@@ -159,7 +159,11 @@ def _assert_bound_directory(
         raise UnsafePathError(f"{label} identity changed before native move")
 
 
-def no_follow_manifest(root: str | Path) -> dict[str, PathIdentity]:
+def no_follow_manifest(
+    root: str | Path,
+    *,
+    opaque_directories: frozenset[str] = frozenset(),
+) -> dict[str, PathIdentity]:
     """Enumerate a regular file/directory tree without following links.
 
     The manifest intentionally contains metadata only. Recovery diagnostics and
@@ -195,7 +199,10 @@ def no_follow_manifest(root: str | Path) -> dict[str, PathIdentity]:
             if not (stat.S_ISDIR(value.st_mode) or stat.S_ISREG(value.st_mode)):
                 raise UnsafePathError(f"automatic operations refuse special files: {entry.path}")
             result[child_relative.as_posix()] = PathIdentity.from_stat(value)
-            if stat.S_ISDIR(value.st_mode):
+            if (
+                stat.S_ISDIR(value.st_mode)
+                and child_relative.as_posix() not in opaque_directories
+            ):
                 visit(Path(entry.path), child_relative)
 
     visit(root_path, Path())
@@ -715,6 +722,7 @@ def native_move_no_replace(
     *,
     _mutation_guard: Callable[[], contextlib.AbstractContextManager[None]] | None = None,
     _allowed_manifest_mtime_changes: frozenset[str] = frozenset(),
+    _opaque_manifest_directories: frozenset[str] = frozenset(),
 ) -> None:
     """Atomically move ``source`` without ever replacing ``destination``.
 
@@ -743,7 +751,10 @@ def native_move_no_replace(
     else:
         raise DestinationExistsError(f"destination already exists: {destination_path}")
 
-    manifest_before = no_follow_manifest(source_path)
+    manifest_before = no_follow_manifest(
+        source_path,
+        opaque_directories=_opaque_manifest_directories,
+    )
     if sys.platform.startswith("linux"):
         _linux_rename_no_replace(
             source_path,
@@ -773,7 +784,10 @@ def native_move_no_replace(
     try:
         source_parent_after = path_identity(source_path.parent)
         destination_parent_after = path_identity(destination_path.parent)
-        manifest_after = no_follow_manifest(destination_path)
+        manifest_after = no_follow_manifest(
+            destination_path,
+            opaque_directories=_opaque_manifest_directories,
+        )
     except AtomicStateUnknownError:
         raise
     except (OSError, RecoveryError) as exc:

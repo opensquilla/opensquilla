@@ -25,7 +25,7 @@ def test_context_update_uses_canonical_identity_and_hides_opaque_paths() -> None
                 "session_key": "agent:main:secret-session-id",
                 "displayName": " TUI\nPolish ",
                 "effective_model": "openai/gpt-5.4",
-                "workspace": "/Users/example/Developer/opensquilla",
+                "workspace": "/workspace/Developer/opensquilla",
             },
             "queue": {"running_count": 1, "queued_count": 2},
         },
@@ -46,7 +46,7 @@ def test_context_update_uses_canonical_identity_and_hides_opaque_paths() -> None
     }
     rendered = repr(asdict(update))
     assert "secret-session-id" not in rendered
-    assert "/Users/example" not in rendered
+    assert "/workspace/Developer" not in rendered
     assert "avatar" not in rendered
 
 

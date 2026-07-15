@@ -121,7 +121,9 @@ describe('SidebarSetupBanner legacy advisory', () => {
     })
     const banner = el.querySelector('[data-testid="legacy-data-banner"]')
     expect(banner).toBeTruthy()
-    expect(banner?.textContent).toContain('Another OpenSquilla profile is available')
+    expect(banner?.textContent).toContain('Another OpenSquilla installation was found')
+    expect(banner?.textContent).toContain('Your current data is already in use')
+    expect(banner?.textContent).toContain('no action is required')
     expect(banner?.textContent).toContain('/tmp/legacy-home')
     expect(banner?.textContent).toContain(
       'opensquilla migrate opensquilla --home /tmp/legacy-home',
@@ -140,7 +142,7 @@ describe('SidebarSetupBanner legacy advisory', () => {
     app.unmount()
   })
 
-  it('points at Settings → Runtime instead of the CLI command on desktop', async () => {
+  it('does not repeat the optional transfer prompt in the desktop sidebar', async () => {
     const { app, el } = await mountBanner(
       {
         legacyData: {
@@ -151,17 +153,7 @@ describe('SidebarSetupBanner legacy advisory', () => {
       },
       { desktop: true },
     )
-    const banner = el.querySelector('[data-testid="legacy-data-banner"]')
-    expect(banner).toBeTruthy()
-    expect(banner?.textContent).toContain('C:/OpenSquilla/data')
-    expect(banner?.textContent).toContain('Import from another OpenSquilla installation')
-    expect(banner?.textContent).not.toContain('opensquilla migrate')
-
-    const cta = el.querySelector<HTMLButtonElement>('[data-testid="legacy-data-open-settings"]')
-    expect(cta).toBeTruthy()
-    cta?.click()
-    await settle()
-    expect(routerPush).toHaveBeenCalledWith('/settings/runtime')
+    expect(el.querySelector('[data-testid="legacy-data-banner"]')).toBeNull()
     app.unmount()
   })
 })

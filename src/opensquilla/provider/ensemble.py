@@ -900,7 +900,18 @@ class EnsembleProvider:
                 update={"timeout": self.aggregator_timeout_seconds}
             )
         proposer_rows = _candidate_usage_rows(candidates, profile=self.profile_name)
-        aggregator_messages = self._build_aggregator_messages(messages, successful)
+        candidate_order_seed = (
+            random.SystemRandom().getrandbits(64) if self.shuffle_candidates else None
+        )
+        ordered_candidates = self._ordered_candidates(
+            successful,
+            candidate_order_seed=candidate_order_seed,
+        )
+        aggregator_messages = self._build_aggregator_messages(
+            messages,
+            successful,
+            candidate_order_seed=candidate_order_seed,
+        )
         trace = self._trace_payload(
             candidates,
             successful_count=len(successful),
@@ -913,6 +924,8 @@ class EnsembleProvider:
             final_request_tools=tools,
             final_request_messages=aggregator_messages,
             final_request_timeout_seconds=self.aggregator_timeout_seconds,
+            candidate_order_seed=candidate_order_seed,
+            candidate_display_order=[candidate.index for candidate in ordered_candidates],
         )
         if not self.aggregator.ready:
             cfg = self.aggregator.provider_config
@@ -1297,14 +1310,33 @@ class EnsembleProvider:
             result.error_code = "stream_incomplete"
         return result
 
+    def _ordered_candidates(
+        self,
+        candidates: Sequence[_CandidateResult],
+        *,
+        candidate_order_seed: int | None,
+    ) -> list[_CandidateResult]:
+        ordered = list(candidates)
+        if self.shuffle_candidates:
+            seed = (
+                candidate_order_seed
+                if candidate_order_seed is not None
+                else random.SystemRandom().getrandbits(64)
+            )
+            random.Random(seed).shuffle(ordered)
+        return ordered
+
     def _build_aggregator_messages(
         self,
         messages: list[Message],
         candidates: Sequence[_CandidateResult],
+        *,
+        candidate_order_seed: int | None = None,
     ) -> list[Message]:
-        ordered = list(candidates)
-        if self.shuffle_candidates:
-            random.shuffle(ordered)
+        ordered = self._ordered_candidates(
+            candidates,
+            candidate_order_seed=candidate_order_seed,
+        )
         lines = [
             "You are the aggregator in a multi-model B5 fusion experiment.",
             "Synthesize the best answer or next tool call from the original "
@@ -1337,6 +1369,8 @@ class EnsembleProvider:
         final_request_tools: list[ToolDefinition] | None = None,
         final_request_messages: Sequence[Message] | None = None,
         final_request_timeout_seconds: float | None = None,
+        candidate_order_seed: int | None = None,
+        candidate_display_order: Sequence[int] | None = None,
     ) -> dict[str, Any]:
         selected = list(selected_candidates or [])
         trace = {
@@ -1360,6 +1394,8 @@ class EnsembleProvider:
             ),
             "selected_candidate_count": len(selected),
             "selected_candidate_indexes": [candidate.index for candidate in selected],
+            "candidate_order_seed": candidate_order_seed,
+            "candidate_display_order": list(candidate_display_order or []),
             "candidates": [
                 candidate.trace_row(
                     include_text=self.record_candidates,
@@ -2271,7 +2307,7 @@ _DYNAMIC_MODEL_CATALOG: dict[str, dict[str, Any]] = {
 
 
 @dataclass(frozen=True)
-class _DynamicModelRef:
+class _EnsembleModelRef:
     provider: str
     model: str
     api_key_env: str = ""
@@ -2305,13 +2341,11 @@ class _DynamicCandidate:
 
 def _normalize_dynamic_tier(value: Any) -> str | None:
     raw = str(value or "").strip().lower()
-    if not raw:
-        return None
-    if raw in _TEXT_TIER_INDEX:
+    if raw in {"c0", "c1", "c2", "c3"}:
         return raw
     if raw.startswith("t") and raw[1:].isdigit():
-        converted = f"c{raw[1:]}"
-        if converted in _TEXT_TIER_INDEX:
+        converted = f"c{int(raw[1:]) - 1}"
+        if converted in {"c0", "c1", "c2", "c3"}:
             return converted
     return None
 
@@ -2736,7 +2770,7 @@ def _dynamic_member_from_candidate(
     session_key: str = "",
 ) -> EnsembleMemberConfig:
     return _member_from_ref(
-        _DynamicModelRef(
+        _EnsembleModelRef(
             provider=candidate.provider,
             model=candidate.model,
             thinking=candidate.thinking,
@@ -2749,7 +2783,7 @@ def _dynamic_member_from_candidate(
     )
 
 
-def _build_router_dynamic_members(
+def _build_router_dynamic_members_legacy(
     *,
     config: Any,
     inherited_provider_config: ProviderConfig,
@@ -2861,8 +2895,191 @@ def _build_router_dynamic_members(
     return f"router_dynamic/{routed_tier}", proposers, aggregator, plan
 
 
-def _static_b5_ref(provider_id: str, model: str) -> _DynamicModelRef:
-    return _DynamicModelRef(provider=provider_id, model=model, thinking=None)
+def _build_router_dynamic_members(
+    *,
+    config: Any,
+    inherited_provider_config: ProviderConfig,
+    turn_metadata: Mapping[str, Any] | None,
+    ranking_inputs: Mapping[str, Any] | None = None,
+    credential_pool_acquirer: CredentialPoolAcquirer | None = None,
+    session_key: str = "",
+) -> tuple[str, list[EnsembleMemberConfig], EnsembleMemberConfig, dict[str, Any]]:
+    """Build members from the profile-driven Step2 ranking decision."""
+
+    from .ranking_router import (
+        TaskAnalysisResult,
+        build_model_registry_snapshot,
+        build_request_context,
+        dynamic_output_token_budgets,
+        fallback_task_profile,
+        mock_user_profile,
+        rank_models,
+        ranking_config_snapshot,
+    )
+
+    metadata = dict(turn_metadata or {})
+    extra = metadata.get("routing_extra")
+    extra_map = extra if isinstance(extra, Mapping) else {}
+    routed_tier = (
+        _normalize_dynamic_tier(metadata.get("routed_tier"))
+        or _normalize_dynamic_tier(extra_map.get("final_tier"))
+        or _normalize_dynamic_tier(extra_map.get("base_tier"))
+        or "c1"
+    )
+    try:
+        routing_confidence = float(metadata.get("routing_confidence") or 0.0)
+    except (TypeError, ValueError):
+        routing_confidence = 0.0
+
+    inputs = dict(ranking_inputs or {})
+    ranking_config = inputs.get("ranking_config")
+    if not isinstance(ranking_config, Mapping):
+        ranking_config = ranking_config_snapshot()
+    ensemble_cfg = getattr(config, "llm_ensemble", None)
+    llm_cfg = getattr(config, "llm", None)
+    configured_output_tokens = int(getattr(llm_cfg, "max_tokens", 0) or 0)
+    candidate_max_chars = int(
+        getattr(ensemble_cfg, "candidate_max_chars", 24_000) or 0
+    )
+    candidate_output_tokens, aggregator_output_tokens = dynamic_output_token_budgets(
+        configured_output_tokens=configured_output_tokens,
+        candidate_max_chars=candidate_max_chars,
+        ranking_config=ranking_config,
+    )
+    request_context = inputs.get("request_context")
+    if not isinstance(request_context, Mapping):
+        request_context = build_request_context(
+            message=str(metadata.get("router_dynamic_task_text") or ""),
+            turn_metadata=metadata,
+            attachments=[],
+            candidate_output_tokens=candidate_output_tokens,
+            aggregator_output_tokens=aggregator_output_tokens,
+            ranking_config=ranking_config,
+        )
+    user_profile = inputs.get("user_profile")
+    if not isinstance(user_profile, Mapping):
+        user_profile = mock_user_profile(ranking_config)
+    task_analysis = inputs.get("task_analysis")
+    if not isinstance(task_analysis, TaskAnalysisResult):
+        fallback_profile = fallback_task_profile(
+            routed_tier=routed_tier,
+            request_context=request_context,
+            ranking_config=ranking_config,
+        )
+        task_analysis = TaskAnalysisResult(
+            profile=fallback_profile,
+            source="router_fallback",
+            schema_valid=False,
+            confidence=max(0.0, min(1.0, routing_confidence)),
+            fallback_reason="task_analysis_not_supplied",
+        )
+
+    operator_candidates = [
+        {
+            "provider": str(getattr(candidate, "provider", "") or ""),
+            "model": str(getattr(candidate, "model", "") or ""),
+            "source": str(getattr(candidate, "source", "") or "custom"),
+            "enabled": bool(getattr(candidate, "enabled", True)),
+            "role": str(getattr(candidate, "role", "") or ""),
+        }
+        for candidate in getattr(ensemble_cfg, "candidates", []) or []
+    ]
+    legacy_model_options = list(getattr(ensemble_cfg, "model_options", []) or [])
+    if tuple(legacy_model_options) == _LEGACY_OPENROUTER_MODEL_OPTIONS:
+        legacy_model_options = []
+    router_cfg = getattr(config, "squilla_router", None)
+    router_tiers = getattr(router_cfg, "tiers", {}) or {}
+    anchor_modalities = ["text"]
+    try:
+        anchor_member = _member_from_ref(
+            _EnsembleModelRef(
+                provider=inherited_provider_config.provider,
+                model=inherited_provider_config.model,
+                thinking=None,
+            ),
+            config=config,
+            inherited=inherited_provider_config,
+            label="router_anchor_capability_probe",
+            credential_pool_acquirer=credential_pool_acquirer,
+            session_key=session_key,
+        )
+        if _member_model_capabilities(anchor_member).supports_vision:
+            anchor_modalities.append("image")
+    except Exception:  # noqa: BLE001 - availability is recorded below
+        pass
+    snapshot = build_model_registry_snapshot(
+        inherited_provider=inherited_provider_config.provider,
+        inherited_model=inherited_provider_config.model,
+        routed_tier=routed_tier,
+        anchor_modalities=anchor_modalities,
+        operator_candidates=operator_candidates,
+        legacy_model_options=legacy_model_options,
+        router_tiers=router_tiers if isinstance(router_tiers, Mapping) else {},
+        ranking_config=ranking_config,
+    )
+
+    # Keep every deployment in the replay snapshot. The ranking hard filter
+    # removes deployments that the shared resolver says cannot execute.
+    for row in snapshot["models"]:
+        facts = row.get("registry_facts")
+        if not isinstance(facts, dict):
+            continue
+        provider_id = str(facts.get("provider") or "")
+        model_id = str(facts.get("model_id") or "")
+        try:
+            credential_available = _resolve_member_deployment(
+                _EnsembleModelRef(provider=provider_id, model=model_id),
+                inherited_provider_config,
+                config=config,
+                credential_pool_acquirer=credential_pool_acquirer,
+                session_key=session_key,
+            ).ready
+        except Exception:  # noqa: BLE001 - invalid deployments stay traceable
+            credential_available = False
+        facts["credential_available"] = credential_available
+
+    decision = rank_models(
+        task_analysis=task_analysis,
+        user_profile=user_profile,
+        request_context=request_context,
+        registry_snapshot=snapshot,
+        routed_tier=routed_tier,
+        routing_confidence=routing_confidence,
+        ranking_config=ranking_config,
+    )
+    proposers = [
+        _member_from_ref(
+            _EnsembleModelRef(
+                provider=model.provider,
+                model=model.model_id,
+                thinking=model.thinking,
+            ),
+            config=config,
+            inherited=inherited_provider_config,
+            label=f"proposer_{index + 1}",
+            credential_pool_acquirer=credential_pool_acquirer,
+            session_key=session_key,
+        )
+        for index, model in enumerate(decision.proposers)
+    ]
+    aggregator = _member_from_ref(
+        _EnsembleModelRef(
+            provider=decision.aggregator.provider,
+            model=decision.aggregator.model_id,
+            thinking=decision.aggregator.thinking,
+        ),
+        config=config,
+        inherited=inherited_provider_config,
+        label="aggregator",
+        credential_pool_acquirer=credential_pool_acquirer,
+        session_key=session_key,
+    )
+    profile_tier = f"c{decision.effective_tier - 1}"
+    return f"router_dynamic/{profile_tier}", proposers, aggregator, decision.trace
+
+
+def _static_b5_ref(provider_id: str, model: str) -> _EnsembleModelRef:
+    return _EnsembleModelRef(provider=provider_id, model=model, thinking=None)
 
 
 def _static_default_if_legacy(
@@ -2968,7 +3185,7 @@ def _build_custom_b5_members(
         raise ValueError("llm_ensemble custom_b5 lineup has no enabled proposers")
     proposers = [
         _member_from_ref(
-            _DynamicModelRef(provider=row.provider, model=row.model, thinking=None),
+            _EnsembleModelRef(provider=row.provider, model=row.model, thinking=None),
             config=config,
             inherited=inherited_provider_config,
             label=row.role or f"proposer_{index + 1}",
@@ -2988,7 +3205,7 @@ def _build_custom_b5_members(
         )
         aggregator_source = "inherited_model"
     aggregator = _member_from_ref(
-        _DynamicModelRef(
+        _EnsembleModelRef(
             provider=aggregator_row.provider,
             model=aggregator_row.model,
             thinking=None,
@@ -3263,6 +3480,7 @@ def build_ensemble_provider_from_config(
     inherited_provider_config: ProviderConfig,
     fallback_provider: LLMProvider | None,
     turn_metadata: Mapping[str, Any] | None = None,
+    ranking_inputs: Mapping[str, Any] | None = None,
     _enable_member_request_budget_rebinding: bool = False,
     _model_catalog: Any | None = None,
     _context_overflow_threshold: float = 0.85,
@@ -3296,6 +3514,7 @@ def build_ensemble_provider_from_config(
             config=config,
             inherited_provider_config=inherited_provider_config,
             turn_metadata=turn_metadata,
+            ranking_inputs=ranking_inputs,
             credential_pool_acquirer=_credential_pool_acquirer,
             session_key=_session_key,
         )
@@ -3319,6 +3538,11 @@ def build_ensemble_provider_from_config(
             if is_custom_b5
             else _STATIC_B5_DEFAULT_MIN_SUCCESSFUL_PROPOSERS
         )
+    elif (
+        selection_mode == "router_dynamic"
+        and configured_min_success == _LEGACY_ENSEMBLE_MIN_SUCCESSFUL_PROPOSERS
+    ):
+        requested_min_success = int(selection_plan.get("N_min") or 1)
     min_successful_proposers = min(requested_min_success, max(1, len(proposers)))
     configured_proposer_timeout_seconds = float(
         getattr(ensemble_cfg, "proposer_timeout_seconds", _LEGACY_ENSEMBLE_TIMEOUT_SECONDS)
@@ -3347,6 +3571,10 @@ def build_ensemble_provider_from_config(
         and configured_shuffle_candidates == _LEGACY_ENSEMBLE_SHUFFLE_CANDIDATES
     ):
         shuffle_candidates = _STATIC_B5_DEFAULT_SHUFFLE_CANDIDATES
+    if selection_mode == "router_dynamic" and bool(
+        (selection_plan.get("aggregator") or {}).get("requires_order_randomization")
+    ):
+        shuffle_candidates = True
     quorum_grace_seconds = _STATIC_B5_QUORUM_GRACE_SECONDS if is_static_b5 else 0.0
     selection_plan["configured_min_successful_proposers"] = configured_min_success
     selection_plan["effective_min_successful_proposers"] = min_successful_proposers

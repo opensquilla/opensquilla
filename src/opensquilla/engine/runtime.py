@@ -2560,6 +2560,10 @@ class TurnRunner:
         self._turn_compacted_sessions: set[str] = set()
         self._active_pre_compaction_flush_tasks: dict[str, asyncio.Task] = {}
         self._emergency_compaction_overrides: dict[str, _EmergencyCompactionOverride] = {}
+        # Bounded, non-persistent continuity state for Step2 session intent.
+        # It stores route identifiers only; prompt and candidate content never
+        # enter this cache.
+        self._router_dynamic_last_routes: dict[str, dict[str, Any]] = {}
         # TurnRunner stage decomposition InputStage instance. Holds no per-turn state;
         # constructed once. Active unconditionally as of.
         self._input_stage = InputStage(extra_ctx=_TurnRunnerExtraContextAdapter())
@@ -2680,6 +2684,134 @@ class TurnRunner:
     def clear_compaction_turn_state(self, session_key: str) -> None:
         self._turn_compaction_attempted_sessions.discard(session_key)
         self._turn_compacted_sessions.discard(session_key)
+
+    def _previous_router_dynamic_route(self, session_key: str) -> dict[str, Any] | None:
+        route = self._router_dynamic_last_routes.pop(session_key, None)
+        if route is None:
+            return None
+        self._router_dynamic_last_routes[session_key] = route
+        return copy.deepcopy(route)
+
+    def _router_dynamic_task_analyzer_provider(
+        self,
+        inherited_provider_config: Any,
+        *,
+        session_key: str,
+    ) -> Any | None:
+        """Build the fixed Opus task analyzer without reusing the routed model."""
+
+        from opensquilla.engine.selector_override import resolve_tier_provider_config
+        from opensquilla.provider.ranking_router import (
+            TASK_ANALYZER_MODEL_ID,
+            TASK_ANALYZER_PROVIDER_ID,
+        )
+        from opensquilla.provider.registry import get_provider_spec
+        from opensquilla.provider.selector import ProviderConfig, build_provider
+
+        try:
+            spec = get_provider_spec(TASK_ANALYZER_PROVIDER_ID)
+            turn_config = self._turn_config()
+            inherited_provider = str(
+                getattr(inherited_provider_config, "provider", "") or ""
+            ).strip().lower()
+            analyzer_config: ProviderConfig | None = None
+            if inherited_provider == TASK_ANALYZER_PROVIDER_ID:
+                inherited_api_key = str(
+                    getattr(inherited_provider_config, "api_key", "") or ""
+                ).strip() or os.environ.get(spec.env_key, "").strip()
+                analyzer_config = replace(
+                    inherited_provider_config,
+                    model=TASK_ANALYZER_MODEL_ID,
+                    api_key=inherited_api_key,
+                    base_url=str(
+                        getattr(inherited_provider_config, "base_url", "") or ""
+                    ).strip()
+                    or spec.default_base_url,
+                    replay_provider_state=False,
+                )
+            else:
+                primary = getattr(turn_config, "llm", None)
+                primary_provider = str(
+                    getattr(primary, "provider", "") or ""
+                ).strip().lower()
+                if primary_provider == TASK_ANALYZER_PROVIDER_ID:
+                    api_key = str(getattr(primary, "api_key", "") or "").strip()
+                    if not api_key:
+                        env_name = str(
+                            getattr(primary, "api_key_env", "") or ""
+                        ).strip()
+                        api_key = os.environ.get(env_name or spec.env_key, "").strip()
+                    analyzer_config = ProviderConfig(
+                        provider=TASK_ANALYZER_PROVIDER_ID,
+                        model=TASK_ANALYZER_MODEL_ID,
+                        api_key=api_key,
+                        base_url=str(getattr(primary, "base_url", "") or "").strip()
+                        or spec.default_base_url,
+                        proxy=str(getattr(primary, "proxy", "") or "").strip(),
+                        provider_routing=dict(
+                            getattr(primary, "provider_routing", {}) or {}
+                        ),
+                        replay_provider_state=False,
+                    )
+                else:
+                    analyzer_config = resolve_tier_provider_config(
+                        turn_config,
+                        TASK_ANALYZER_PROVIDER_ID,
+                        TASK_ANALYZER_MODEL_ID,
+                        session_key=session_key,
+                    )
+
+            if analyzer_config is None or (
+                spec.requires_api_key() and not analyzer_config.api_key.strip()
+            ):
+                log.warning(
+                    "llm_ensemble.router_dynamic.task_analyzer_provider_unavailable",
+                    provider=TASK_ANALYZER_PROVIDER_ID,
+                    model=TASK_ANALYZER_MODEL_ID,
+                    reason="credential_unavailable",
+                )
+                return None
+            return build_provider(
+                provider=analyzer_config.provider,
+                model=analyzer_config.model,
+                api_key=analyzer_config.api_key,
+                base_url=analyzer_config.base_url,
+                org_id=analyzer_config.org_id,
+                proxy=analyzer_config.proxy,
+            )
+        except Exception as exc:  # noqa: BLE001 - task analysis has a local fallback
+            log.warning(
+                "llm_ensemble.router_dynamic.task_analyzer_provider_unavailable",
+                provider=TASK_ANALYZER_PROVIDER_ID,
+                model=TASK_ANALYZER_MODEL_ID,
+                reason=type(exc).__name__,
+            )
+            return None
+
+    def _remember_router_dynamic_route(
+        self, session_key: str, selection_plan: Mapping[str, Any]
+    ) -> None:
+        from opensquilla.provider.ranking_router import (
+            default_session_quality_feedback,
+            router_dynamic_route_cache_max_entries,
+        )
+
+        session = selection_plan.get("session")
+        session_map = session if isinstance(session, Mapping) else {}
+        self._router_dynamic_last_routes.pop(session_key, None)
+        self._router_dynamic_last_routes[session_key] = {
+            "selected_P": list(selection_plan.get("selected_P") or []),
+            "selected_A": selection_plan.get("selected_A"),
+            "strategy_mode": "B5_fuse",
+            "quality_feedback": default_session_quality_feedback(),
+            "escalation_level": int(session_map.get("escalation_level") or 0),
+        }
+        while (
+            len(self._router_dynamic_last_routes)
+            > router_dynamic_route_cache_max_entries()
+        ):
+            oldest_session = next(iter(self._router_dynamic_last_routes))
+            self._router_dynamic_last_routes.pop(oldest_session, None)
 
     def refresh_memory_snapshot(self, agent_id: str) -> None:
         """Refresh frozen snapshots for all sessions of the given agent.
@@ -5686,7 +5818,8 @@ class TurnRunner:
                 ),
             )
 
-        ensemble_cfg = getattr(self._turn_config(), "llm_ensemble", None)
+        turn_config = self._turn_config()
+        ensemble_cfg = getattr(turn_config, "llm_ensemble", None)
         if provider is not None and getattr(ensemble_cfg, "enabled", False):
             from opensquilla.engine.selector_override import (
                 acquire_profile_credential,
@@ -5696,6 +5829,7 @@ class TurnRunner:
                 CUSTOM_B5_SELECTION_MODE,
                 build_ensemble_provider_from_config,
             )
+            from opensquilla.provider.ranking_router import DynamicRankingError
 
             current_provider_config = (
                 getattr(cloned_selector, "current_config", None)
@@ -5746,23 +5880,148 @@ class TurnRunner:
                 turn.metadata["routed_model_before_ensemble"] = (
                     turn.model or getattr(current_provider_config, "model", "")
                 )
-                provider = build_ensemble_provider_from_config(
-                    config=self._turn_config(),
-                    inherited_provider_config=current_provider_config,
-                    fallback_provider=provider,
-                    turn_metadata=turn.metadata,
-                    _enable_member_request_budget_rebinding=True,
-                    _model_catalog=self._model_catalog,
-                    _context_overflow_threshold=(
-                        AgentConfig().context_overflow_threshold
-                    ),
-                    _credential_pool_acquirer=acquire_profile_credential,
-                    _credential_pool_failure_reporter=(
-                        report_profile_credential_failure
-                    ),
-                    _session_key=turn.session_key,
-                    _fallback_selector=cloned_selector,
-                )
+                try:
+                    ranking_inputs: dict[str, Any] | None = None
+                    if selection_mode == "router_dynamic":
+                        from opensquilla.provider.ranking_router import (
+                            TASK_ANALYZER_MODEL_ID,
+                            TASK_ANALYZER_PROVIDER_ID,
+                            analyze_task_with_provider,
+                            build_request_context,
+                            dynamic_output_token_budgets,
+                            mock_user_profile,
+                            ranking_config_snapshot,
+                        )
+
+                        ranking_config = ranking_config_snapshot()
+                        routing_extra = turn.metadata.get("routing_extra")
+                        routing_extra_map = (
+                            routing_extra if isinstance(routing_extra, Mapping) else {}
+                        )
+                        routed_tier = str(
+                            turn.metadata.get("routed_tier")
+                            or routing_extra_map.get("final_tier")
+                            or routing_extra_map.get("base_tier")
+                            or "c1"
+                        )
+                        try:
+                            routing_confidence = float(
+                                turn.metadata.get("routing_confidence") or 0.0
+                            )
+                        except (TypeError, ValueError):
+                            routing_confidence = 0.0
+                        configured_output_tokens = int(
+                            getattr(
+                                getattr(turn_config, "llm", None), "max_tokens", 0
+                            )
+                            or 0
+                        )
+                        candidate_max_chars = int(
+                            getattr(ensemble_cfg, "candidate_max_chars", 24_000) or 0
+                        )
+                        (
+                            candidate_output_tokens,
+                            aggregator_output_tokens,
+                        ) = dynamic_output_token_budgets(
+                            configured_output_tokens=configured_output_tokens,
+                            candidate_max_chars=candidate_max_chars,
+                            ranking_config=ranking_config,
+                        )
+                        if "router_dynamic_last_route" not in turn.metadata:
+                            previous_route = self._previous_router_dynamic_route(
+                                turn.session_key
+                            )
+                            if previous_route is not None:
+                                turn.metadata["router_dynamic_last_route"] = previous_route
+                        request_context = build_request_context(
+                            message=turn.semantic_message,
+                            turn_metadata=turn.metadata,
+                            attachments=turn.attachments,
+                            candidate_output_tokens=candidate_output_tokens,
+                            aggregator_output_tokens=aggregator_output_tokens,
+                            ranking_config=ranking_config,
+                        )
+                        user_profile = mock_user_profile(ranking_config)
+                        analyzer_provider = self._router_dynamic_task_analyzer_provider(
+                            current_provider_config,
+                            session_key=turn.session_key,
+                        )
+                        task_analysis = await analyze_task_with_provider(
+                            provider=analyzer_provider,
+                            message=turn.semantic_message,
+                            user_profile=user_profile,
+                            request_context=request_context,
+                            routed_tier=routed_tier,
+                            routing_confidence=routing_confidence,
+                            usage_tracker=self._usage_tracker,
+                            session_key=turn.session_key,
+                            analyzer_provider_id=TASK_ANALYZER_PROVIDER_ID,
+                            analyzer_model_id=TASK_ANALYZER_MODEL_ID,
+                            ranking_config=ranking_config,
+                        )
+                        ranking_inputs = {
+                            "task_analysis": task_analysis,
+                            "user_profile": user_profile,
+                            "request_context": request_context,
+                            "ranking_config": ranking_config,
+                        }
+                        turn.metadata["router_dynamic_task_profile"] = (
+                            task_analysis.profile
+                        )
+                        turn.metadata["router_dynamic_task_analyzer"] = (
+                            task_analysis.trace(ranking_config)
+                        )
+                        turn.metadata["router_dynamic_request_context_hash"] = (
+                            request_context.get("snapshot_hash")
+                        )
+
+                    ensemble_provider = build_ensemble_provider_from_config(
+                        config=turn_config,
+                        inherited_provider_config=current_provider_config,
+                        fallback_provider=provider,
+                        turn_metadata=turn.metadata,
+                        ranking_inputs=ranking_inputs,
+                        _enable_member_request_budget_rebinding=True,
+                        _model_catalog=self._model_catalog,
+                        _context_overflow_threshold=(
+                            AgentConfig().context_overflow_threshold
+                        ),
+                        _credential_pool_acquirer=acquire_profile_credential,
+                        _credential_pool_failure_reporter=(
+                            report_profile_credential_failure
+                        ),
+                        _session_key=turn.session_key,
+                        _fallback_selector=cloned_selector,
+                    )
+                except DynamicRankingError as exc:
+                    log.warning(
+                        "llm_ensemble.wrap_skipped",
+                        reason="router_dynamic_ranking_unavailable",
+                        error=str(exc),
+                    )
+                    turn.metadata.pop("ensemble_enabled", None)
+                    turn.metadata["ensemble_wrap_skipped_reason"] = (
+                        "router_dynamic_ranking_unavailable"
+                    )
+                    turn.metadata["router_dynamic_ranking_error"] = str(exc)
+                else:
+                    provider = ensemble_provider
+                    if selection_mode == "router_dynamic":
+                        plan = ensemble_provider.selection_plan
+                        self._remember_router_dynamic_route(turn.session_key, plan)
+                        turn.metadata["router_dynamic_decision"] = {
+                            "ranking_version": plan.get("ranking_version"),
+                            "registry_snapshot_version": plan.get(
+                                "registry_snapshot_version"
+                            ),
+                            "registry_snapshot_hash": plan.get(
+                                "registry_snapshot_hash"
+                            ),
+                            "selected_P": list(plan.get("selected_P") or []),
+                            "selected_A": plan.get("selected_A"),
+                            "effective_tier": plan.get("effective_tier"),
+                            "session": dict(plan.get("session") or {}),
+                        }
 
         return turn, provider
 

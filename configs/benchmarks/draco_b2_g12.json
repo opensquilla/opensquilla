@@ -1,0 +1,164 @@
+{
+  "schema_version": 1,
+  "profile_id": "opensquilla_g12_20260630",
+  "group": "B2",
+  "reference": {
+    "repository": "opensquilla/opensquilla",
+    "source_commit": "153e5ff267950b0e285efcdb180cea8724c0471d",
+    "run_directory": "draco_mini_b0_b1_g8_g12_g16_g19_brave_20260630-124703",
+    "group": "G12",
+    "profile": "g12_k2_replace_gemini"
+  },
+  "benchmark_input": {
+    "name": "DRACO mini",
+    "sha256": "1eb4e618c8df8e7f68bded3d2b6f77a541744aa1072eb338835b776183188a8d",
+    "task_count": 10,
+    "task_ids": [
+      "0c2c668a-c3bf-41af-93c9-b5614ff63508",
+      "a78eed67-ebe3-425e-a467-d54ee8949c8b",
+      "ce522bc2-e8a2-436b-971f-dd4972f23d39",
+      "3b5505fb-dab6-44cb-9a14-746b1cd82d25",
+      "cd19ee22-ded0-4fee-b1a0-51f074d72b8b",
+      "ca0edd2d-c9b8-4b85-9b40-754f4865579a",
+      "f004b46b-c0e7-4e86-a072-c7491328d538",
+      "f6de7687-7cff-4f68-93ea-f632bf6266af",
+      "e1f2c310-d311-49da-b0e4-ee855603469d",
+      "aca95495-b0fe-4330-90fc-d2fd1e2c709e"
+    ],
+    "enforce_reference_input": true
+  },
+  "routing": {
+    "selection_mode": "static_openrouter_b5",
+    "skip_single_model_router": true
+  },
+  "ensemble": {
+    "profile_name": "g12_k2_replace_gemini",
+    "proposers": [
+      {
+        "label": "proposer_1",
+        "provider": "openrouter",
+        "model": "deepseek/deepseek-v4-pro",
+        "api_key_env": "OPENROUTER_API_KEY",
+        "base_url": "",
+        "temperature": 0.0,
+        "max_tokens": 16384,
+        "thinking": "xhigh",
+        "k": 1
+      },
+      {
+        "label": "proposer_2",
+        "provider": "openrouter",
+        "model": "z-ai/glm-5.2",
+        "api_key_env": "OPENROUTER_API_KEY",
+        "base_url": "",
+        "temperature": 0.0,
+        "max_tokens": 16384,
+        "thinking": "xhigh",
+        "k": 1
+      },
+      {
+        "label": "proposer_3",
+        "provider": "openrouter",
+        "model": "moonshotai/kimi-k2.7-code",
+        "api_key_env": "OPENROUTER_API_KEY",
+        "base_url": "",
+        "temperature": 0.0,
+        "max_tokens": 16384,
+        "thinking": "max",
+        "k": 1
+      },
+      {
+        "label": "proposer_4",
+        "provider": "openrouter",
+        "model": "qwen/qwen3.7-max",
+        "api_key_env": "OPENROUTER_API_KEY",
+        "base_url": "",
+        "temperature": 0.0,
+        "max_tokens": 16384,
+        "thinking": "xhigh",
+        "k": 1
+      }
+    ],
+    "aggregator": {
+      "label": "aggregator",
+      "provider": "openrouter",
+      "model": "z-ai/glm-5.2",
+      "api_key_env": "OPENROUTER_API_KEY",
+      "base_url": "",
+      "temperature": 0.0,
+      "max_tokens": 16384,
+      "thinking": "xhigh",
+      "k": 1
+    },
+    "min_successful_proposers": 1,
+    "all_failed_policy": "fallback_single",
+    "candidate_max_chars": 24000,
+    "shuffle_candidates": false,
+    "record_candidates": true,
+    "proposer_tools": false,
+    "aggregator_tools": true,
+    "wait_for_all_proposers": true,
+    "quorum_grace_seconds": 0.0
+  },
+  "timeouts": {
+    "task_seconds": 3600.0,
+    "proposer_seconds": 907.5,
+    "aggregator_seconds": 2662.5,
+    "task_margin_seconds": 30.0
+  },
+  "runner": {
+    "mode": "agent_loop",
+    "agent_max_iterations": 12,
+    "concurrency": 2
+  },
+  "generation": {
+    "thinking_enabled": true,
+    "thinking_budget_tokens": 50000,
+    "default_thinking_level": "xhigh",
+    "model_thinking_levels": {
+      "anthropic/claude-fable-5": "max",
+      "anthropic/claude-opus-4.8": "max",
+      "deepseek/deepseek-v4-pro": "xhigh",
+      "google/gemini-3.1-pro-preview": "high",
+      "z-ai/glm-5.2": "xhigh",
+      "moonshotai/kimi-k2.7-code": "max",
+      "openai/gpt-5.5-pro": "xhigh",
+      "openai/gpt-5.6-sol": "max",
+      "qwen/qwen3.7-max": "xhigh",
+      "sakana/fugu-ultra": "max"
+    },
+    "require_highest_thinking": true,
+    "temperature": 0.0,
+    "max_tokens": 16384,
+    "max_attempts": 3,
+    "retry_backoff_seconds": 2.0
+  },
+  "tools": {
+    "mode": "local_web_tools",
+    "contamination_blocked_domains": [
+      "hf.co",
+      "huggingface.co",
+      "datasets-server.huggingface.co",
+      "github.com",
+      "raw.githubusercontent.com",
+      "openrouter.ai",
+      "perplexity.ai",
+      "research.perplexity.ai"
+    ],
+    "web_search": {
+      "provider": "brave",
+      "api_key_env": "BRAVE_SEARCH_API_KEY",
+      "max_results": 5
+    },
+    "web_fetch": {
+      "max_content_tokens": 50000
+    }
+  },
+  "judge": {
+    "model": "google/gemini-3.1-pro-preview",
+    "repeats": 3,
+    "concurrency": 6,
+    "max_attempts": 3,
+    "judge_candidates": false
+  }
+}

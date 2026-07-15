@@ -64,9 +64,21 @@ from opensquilla.engine.types import (
 from opensquilla.engine.types import (
     WarningEvent as AgentWarningEvent,
 )
+from opensquilla.eval.draco_experiment_config import (
+    DracoEnsembleMemberConfig,
+    DracoExperimentConfig,
+    DracoExperimentConfigBundle,
+    load_draco_experiment_config,
+    validate_reference_input,
+)
 from opensquilla.gateway.config import GatewayConfig
 from opensquilla.gateway.llm_runtime import resolve_llm_runtime_config
-from opensquilla.provider.ensemble import build_ensemble_provider_from_config
+from opensquilla.provider.ensemble import (
+    EnsembleMemberConfig,
+    EnsembleProvider,
+    build_ensemble_provider_from_config,
+)
+from opensquilla.provider.registry import get_provider_spec
 from opensquilla.provider.selector import (
     ModelSelector,
     ProviderConfig,
@@ -92,7 +104,10 @@ from opensquilla.tools.dispatch import build_tool_handler
 from opensquilla.tools.registry import ToolRegistry
 from opensquilla.tools.types import CallerKind, InteractionMode, ToolContext, ToolSpec
 
-GROUP_SPECS: dict[str, dict[str, str]] = {
+DEFAULT_B2_EXPERIMENT_CONFIG_PATH = ROOT / "configs/benchmarks/draco_b2_g12.json"
+
+
+GROUP_SPECS: dict[str, dict[str, Any]] = {
     # B0/B1 remain the summary baselines, so the reference report's delta
     # columns compare every multi-model strategy against fixed Fable 5 and
     # SquillaRouter-selected single-model execution respectively.
@@ -105,7 +120,8 @@ GROUP_SPECS: dict[str, dict[str, str]] = {
     "B2": {
         "kind": "selection_mode",
         "selection_mode": "static_openrouter_b5",
-        "label": "static_openrouter_b5",
+        "label": "g12_aligned_static_openrouter_b5",
+        "experiment_config": "draco_b2_g12",
     },
     "B3": {
         "kind": "selection_mode",
@@ -188,6 +204,75 @@ GENERATION_MAX_ATTEMPTS = 3
 DEFAULT_GENERATION_RETRY_BACKOFF_SECONDS = 2.0
 GENERATION_EMPTY_OUTPUT_ERROR = "empty_generation_output"
 GENERATION_MISSING_DONE_ERROR = "generation_missing_done"
+
+
+def apply_b2_g12_argument_alignment(
+    args: argparse.Namespace,
+    groups: list[str],
+) -> dict[str, Any] | None:
+    """Load the composable JSON profile and apply its run-wide settings."""
+
+    uses_b2_config = any(GROUP_SPECS[group].get("experiment_config") for group in groups)
+    config_requested = bool(
+        getattr(args, "experiment_config", None)
+        or getattr(args, "experiment_config_override", None)
+        or getattr(args, "experiment_config_set", None)
+    )
+    if not uses_b2_config:
+        if config_requested:
+            raise ValueError("DRACO experiment config overrides currently require group B2")
+        return None
+
+    base_path = Path(getattr(args, "experiment_config", None) or DEFAULT_B2_EXPERIMENT_CONFIG_PATH)
+    bundle = load_draco_experiment_config(
+        base_path,
+        override_paths=list(getattr(args, "experiment_config_override", []) or []),
+        inline_sets=list(getattr(args, "experiment_config_set", []) or []),
+    )
+    config = bundle.config
+    overrides = {
+        "concurrency": config.runner.concurrency,
+        "timeout": config.timeouts.task_seconds,
+        "ensemble_proposer_timeout": config.timeouts.proposer_seconds,
+        "ensemble_aggregator_timeout": config.timeouts.aggregator_seconds,
+        "ensemble_proposer_early_stop_success_count": 0,
+        "ensemble_proposer_early_stop_after": 0.0,
+        "expand_ensemble_timeouts_to_task_timeout": False,
+        "runner_mode": config.runner.mode,
+        "agent_max_iterations": config.runner.agent_max_iterations,
+        "judge_model": config.judge.model,
+        "judge_repeats": config.judge.repeats,
+        "judge_concurrency": config.judge.concurrency,
+        "judge_max_attempts": config.judge.max_attempts,
+        "judge_candidates": config.judge.judge_candidates,
+        "generation_max_attempts": config.generation.max_attempts,
+        "generation_max_tokens": config.generation.max_tokens,
+        "generation_retry_backoff": config.generation.retry_backoff_seconds,
+        "tool_mode": config.tools.mode,
+        "contamination_blocked_domains": ",".join(config.tools.contamination_blocked_domains),
+        "local_web_search_provider": config.tools.web_search.provider,
+        "local_web_search_api_key_env": config.tools.web_search.api_key_env,
+        "openrouter_web_search_max_results": config.tools.web_search.max_results,
+        "openrouter_web_fetch_max_content_tokens": (config.tools.web_fetch.max_content_tokens),
+    }
+    requested = {key: getattr(args, key, None) for key in overrides}
+    for key, value in overrides.items():
+        setattr(args, key, value)
+    args.experiment_config = bundle.base_path
+    args._draco_experiment_config_bundle = bundle
+    record = {
+        "id": config.profile_id,
+        "reference": config.reference.model_dump(mode="json"),
+        "scope": "G12 execution configuration on the current runtime implementation",
+        "config_provenance": bundle.provenance(),
+        "effective_config": config.model_dump(mode="json"),
+        "requested_args": requested,
+        "effective_args": dict(overrides),
+    }
+    alignments = dict(getattr(args, "_benchmark_alignments", {}) or {})
+    alignments["B2"] = record
+    args._benchmark_alignments = alignments
+    return record
 
 
 def build_webresearch_tool_run_budget_policy(
@@ -290,68 +375,58 @@ class DryProvider:
 class DryEnsembleProvider:
     provider_name = "dry_ensemble"
 
-    def __init__(self, *, group: str, profile: str, model: str = "dry-aggregator") -> None:
+    def __init__(
+        self,
+        *,
+        group: str,
+        profile: str,
+        proposer_models: list[str] | None = None,
+        model: str = "dry-aggregator",
+    ) -> None:
         self.group = group
         self.profile = profile
         self.model = model
+        self.proposer_models = proposer_models or ["dry-proposer-a", "dry-proposer-b"]
 
     async def chat(self, messages: list[Message], tools=None, config=None):  # noqa: ANN001
         prompt = str(messages[-1].content if messages else "")
-        candidates = [
+        candidates: list[dict[str, Any]] = [
             {
-                "index": 0,
+                "index": index,
                 "sample_index": 0,
-                "label": "proposer_1",
+                "label": f"proposer_{index + 1}",
                 "provider": "dry",
-                "model": "dry-proposer-a",
+                "model": model,
                 "ok": True,
-                "text": f"Candidate A for {prompt[:80]}",
-                "input_tokens": 10,
+                "text": f"Candidate {index + 1} for {prompt[:80]}",
+                "input_tokens": 10 + index,
                 "output_tokens": 8,
                 "billed_cost": 0.0,
                 "cost_source": "none",
-            },
-            {
-                "index": 1,
-                "sample_index": 0,
-                "label": "proposer_2",
-                "provider": "dry",
-                "model": "dry-proposer-b",
-                "ok": True,
-                "text": f"Candidate B for {prompt[:80]}",
-                "input_tokens": 11,
-                "output_tokens": 8,
-                "billed_cost": 0.0,
-                "cost_source": "none",
-            },
+            }
+            for index, model in enumerate(self.proposer_models)
         ]
         text = f"[dry:{self.group}:{self.profile}] fused answer for {prompt[:120]}"
+        proposer_usage = [
+            {
+                "role": "proposer",
+                "model": candidate["model"],
+                "input_tokens": candidate["input_tokens"],
+                "output_tokens": candidate["output_tokens"],
+                "cached_tokens": 0,
+                "cache_write_tokens": 0,
+                "billed_cost": 0.0,
+                "cost_source": "none",
+            }
+            for candidate in candidates
+        ]
         yield TextDeltaEvent(text=text)
         yield DoneEvent(
-            input_tokens=42,
+            input_tokens=sum(int(candidate["input_tokens"]) for candidate in candidates) + 21,
             output_tokens=max(1, len(text) // 4),
             model=self.model,
             model_usage_breakdown=[
-                {
-                    "role": "proposer",
-                    "model": "dry-proposer-a",
-                    "input_tokens": 10,
-                    "output_tokens": 8,
-                    "cached_tokens": 0,
-                    "cache_write_tokens": 0,
-                    "billed_cost": 0.0,
-                    "cost_source": "none",
-                },
-                {
-                    "role": "proposer",
-                    "model": "dry-proposer-b",
-                    "input_tokens": 11,
-                    "output_tokens": 8,
-                    "cached_tokens": 0,
-                    "cache_write_tokens": 0,
-                    "billed_cost": 0.0,
-                    "cost_source": "none",
-                },
+                *proposer_usage,
                 {
                     "role": "aggregator",
                     "model": self.model,
@@ -366,13 +441,15 @@ class DryEnsembleProvider:
             ensemble_trace={
                 "mode": "b5_fusion",
                 "profile": self.profile,
-                "successful_proposers": 2,
-                "total_candidates": 2,
+                "successful_proposers": len(candidates),
+                "total_candidates": len(candidates),
                 "fallback_used": False,
                 "candidates": candidates,
                 "shuffle_candidates": False,
+                "proposer_tools": getattr(self, "proposer_tools", False),
+                "aggregator_tools": getattr(self, "aggregator_tools", True),
                 "final_request_role": "aggregator",
-                "llm_request_count": 3,
+                "llm_request_count": len(candidates) + 1,
             },
         )
 
@@ -942,6 +1019,8 @@ def bounded_tool_int(
 def configure_local_web_search_runtime(
     config: GatewayConfig,
     tool_policy: dict[str, Any],
+    *,
+    dry_run: bool = False,
 ) -> dict[str, Any]:
     if tool_policy.get("tool_mode") != TOOL_MODE_LOCAL_WEB_TOOLS:
         return {}
@@ -964,7 +1043,9 @@ def configure_local_web_search_runtime(
         raise ValueError(f"local web search provider is not runtime-supported: {provider}")
     api_key = ""
     api_key_source = ""
+    credential_status = "not_required"
     if spec.requires_api_key:
+        credential_status = "configured"
         api_key = str(getattr(config, "search_api_key", "") or "").strip()
         api_key_source = "config" if api_key else ""
         if not api_key:
@@ -975,10 +1056,12 @@ def configure_local_web_search_runtime(
                 api_key_source = f"env:{env_key}"
         if not api_key:
             env_hint = env_key or getattr(spec, "env_key", "") or "the provider API key env var"
-            raise ValueError(
-                f"local web search provider '{provider}' requires an API key; "
-                f"set {env_hint} or choose --local-web-search-provider duckduckgo"
-            )
+            if not dry_run:
+                raise ValueError(
+                    f"local web search provider '{provider}' requires an API key; "
+                    f"set {env_hint} or choose --local-web-search-provider duckduckgo"
+                )
+            credential_status = "missing_allowed_dry_run"
     else:
         env_key = ""
 
@@ -987,15 +1070,17 @@ def configure_local_web_search_runtime(
     fallback_policy = str(getattr(config, "search_fallback_policy", "off") or "off")
     diagnostics = bool(getattr(config, "search_diagnostics", False))
     use_env_proxy = bool(getattr(config, "search_use_env_proxy", False))
-    configure_search(
-        provider_name=provider,
-        max_results=runtime_max_results,
-        api_key=api_key,
-        proxy=proxy,
-        use_env_proxy=use_env_proxy,
-        fallback_policy=fallback_policy,
-        diagnostics=diagnostics,
-    )
+    runtime_configured = bool(api_key) or not spec.requires_api_key
+    if runtime_configured:
+        configure_search(
+            provider_name=provider,
+            max_results=runtime_max_results,
+            api_key=api_key,
+            proxy=proxy,
+            use_env_proxy=use_env_proxy,
+            fallback_policy=fallback_policy,
+            diagnostics=diagnostics,
+        )
     return {
         "configured_provider": configured_provider,
         "provider": provider,
@@ -1003,6 +1088,8 @@ def configure_local_web_search_runtime(
         "api_key_configured": bool(api_key),
         "api_key_source": api_key_source,
         "api_key_env": env_key,
+        "credential_status": credential_status,
+        "runtime_configured": runtime_configured,
         "proxy_configured": bool(proxy),
         "use_env_proxy": use_env_proxy,
         "fallback_policy": fallback_policy,
@@ -1221,7 +1308,14 @@ def build_benchmark_tool_context(
 
 def generation_thinking_policy(args: argparse.Namespace | None = None) -> dict[str, Any]:
     mode = DEFAULT_GENERATION_THINKING
-    fallback_level = ThinkingLevel(DEFAULT_GENERATION_THINKING_FALLBACK)
+    bundle = getattr(args, "_draco_experiment_config_bundle", None)
+    experiment = bundle.config if isinstance(bundle, DracoExperimentConfigBundle) else None
+    generation = experiment.generation if experiment is not None else None
+    fallback_level = str(
+        generation.default_thinking_level
+        if generation is not None
+        else DEFAULT_GENERATION_THINKING_FALLBACK
+    )
     max_tokens_override = max(
         0,
         int(
@@ -1235,15 +1329,30 @@ def generation_thinking_policy(args: argparse.Namespace | None = None) -> dict[s
     )
     return {
         "generation_thinking": mode,
-        "temperature": DEFAULT_GENERATION_TEMPERATURE,
-        "thinking_enabled": True,
+        "temperature": (
+            generation.temperature if generation is not None else DEFAULT_GENERATION_TEMPERATURE
+        ),
+        "thinking_enabled": (generation.thinking_enabled if generation is not None else True),
         "thinking_level": "model-specific",
-        "default_thinking_level": fallback_level.value,
-        "thinking_budget_tokens": "model-specific",
-        "max_thinking_budget_tokens": THINKING_BUDGETS[ThinkingLevel.XHIGH],
+        "default_thinking_level": fallback_level,
+        "thinking_budget_tokens": (
+            generation.thinking_budget_tokens if generation is not None else "model-specific"
+        ),
+        "max_thinking_budget_tokens": (
+            generation.thinking_budget_tokens
+            if generation is not None
+            else THINKING_BUDGETS[ThinkingLevel.XHIGH]
+        ),
         "max_tokens": max_tokens_override or ChatConfig().max_tokens,
         "max_tokens_overridden": max_tokens_override > 0,
-        "model_thinking_levels": dict(DEFAULT_MODEL_MAX_GENERATION_THINKING),
+        "model_thinking_levels": (
+            dict(generation.model_thinking_levels)
+            if generation is not None
+            else dict(DEFAULT_MODEL_MAX_GENERATION_THINKING)
+        ),
+        "require_highest_thinking": bool(
+            generation.require_highest_thinking if generation is not None else False
+        ),
         "applies_to": "single baselines and ensemble members",
     }
 
@@ -1278,17 +1387,170 @@ def generation_chat_config(
     tool_choice: Any | None = None,
 ) -> ChatConfig:
     mode = generation_thinking_for_model(model, policy)
-    # The reference branch names provider-native 50k effort "max". The
-    # current branch's equivalent top level is XHIGH with the same budget.
-    level = ThinkingLevel.XHIGH if mode == "max" else ThinkingLevel(mode)
+    budget_level = ThinkingLevel.XHIGH if mode == "max" else ThinkingLevel(mode)
+    thinking_level: ThinkingLevel | str = "max" if mode == "max" else budget_level
+    raw_budget = policy.get("thinking_budget_tokens")
+    thinking_budget = (
+        int(raw_budget)
+        if isinstance(raw_budget, int | float) and not isinstance(raw_budget, bool)
+        else THINKING_BUDGETS[budget_level]
+    )
     return ChatConfig(
         max_tokens=int(policy.get("max_tokens") or ChatConfig().max_tokens),
-        temperature=DEFAULT_GENERATION_TEMPERATURE,
-        thinking=True,
-        thinking_level=level,
-        thinking_budget_tokens=THINKING_BUDGETS[level],
+        temperature=policy.get("temperature"),
+        thinking=bool(policy.get("thinking_enabled", True)),
+        thinking_level=thinking_level,
+        thinking_budget_tokens=thinking_budget,
         tool_choice=tool_choice,
     )
+
+
+def _experiment_member_provider_config(
+    member: DracoEnsembleMemberConfig,
+    *,
+    templates: list[ProviderConfig],
+) -> ProviderConfig:
+    provider_id = member.provider.strip().lower()
+    template = next(
+        (item for item in templates if str(item.provider or "").strip().lower() == provider_id),
+        None,
+    )
+    api_key = str(os.environ.get(member.api_key_env, "") or "").strip()
+    if template is not None:
+        return replace(
+            template,
+            provider=provider_id,
+            model=member.model,
+            api_key=api_key or template.api_key,
+            base_url=member.base_url or template.base_url,
+        )
+    spec = get_provider_spec(provider_id)
+    env_name = member.api_key_env or spec.env_key
+    api_key = api_key or str(os.environ.get(env_name, "") or "").strip()
+    return ProviderConfig(
+        provider=provider_id,
+        model=member.model,
+        api_key=api_key,
+        base_url=member.base_url or spec.default_base_url,
+    )
+
+
+def align_b2_provider_to_g12(
+    provider: EnsembleProvider,
+    experiment: DracoExperimentConfig,
+) -> EnsembleProvider:
+    """Apply the effective member settings observed in the reference G12 run."""
+
+    ensemble = experiment.ensemble
+    templates = [
+        *(member.provider_config for member in provider.proposers),
+        provider.aggregator.provider_config,
+    ]
+
+    def _member(member: DracoEnsembleMemberConfig) -> EnsembleMemberConfig:
+        return EnsembleMemberConfig(
+            provider_config=_experiment_member_provider_config(
+                member,
+                templates=templates,
+            ),
+            label=member.label,
+            temperature=member.temperature,
+            max_tokens=member.max_tokens,
+            thinking=member.thinking,
+            k=member.k,
+        )
+
+    pre_alignment = {
+        "profile": provider.profile_name,
+        "min_successful_proposers": provider.min_successful_proposers,
+        "proposer_timeout_seconds": provider.proposer_timeout_seconds,
+        "aggregator_timeout_seconds": provider.aggregator_timeout_seconds,
+        "quorum_grace_seconds": provider.quorum_grace_seconds,
+        "selection_plan": dict(provider.selection_plan),
+    }
+    provider.proposers = [_member(member) for member in ensemble.proposers]
+    provider.aggregator = _member(ensemble.aggregator)
+    provider.profile_name = ensemble.profile_name
+    provider.min_successful_proposers = ensemble.min_successful_proposers
+    provider.proposer_timeout_seconds = experiment.timeouts.proposer_seconds
+    provider.aggregator_timeout_seconds = experiment.timeouts.aggregator_seconds
+    provider.candidate_max_chars = ensemble.candidate_max_chars
+    provider.shuffle_candidates = ensemble.shuffle_candidates
+    provider.record_candidates = ensemble.record_candidates
+    provider.proposer_tools = ensemble.proposer_tools
+    provider.aggregator_tools = ensemble.aggregator_tools
+    provider.quorum_grace_seconds = ensemble.quorum_grace_seconds
+    provider.all_failed_policy = ensemble.all_failed_policy
+    provider._member_request_budget_bindings = {}
+
+    member_generation = [
+        {
+            "role": "proposer",
+            "provider": member.provider_config.provider,
+            "model": member.provider_config.model,
+            "temperature": member.temperature,
+            "max_tokens": member.max_tokens,
+            "thinking": member.thinking,
+            "thinking_budget_tokens": experiment.generation.thinking_budget_tokens,
+            "k": member.k,
+        }
+        for member in provider.proposers
+    ]
+    member_generation.append(
+        {
+            "role": "aggregator",
+            "provider": provider.aggregator.provider_config.provider,
+            "model": provider.aggregator.provider_config.model,
+            "temperature": provider.aggregator.temperature,
+            "max_tokens": provider.aggregator.max_tokens,
+            "thinking": provider.aggregator.thinking,
+            "thinking_budget_tokens": experiment.generation.thinking_budget_tokens,
+            "k": provider.aggregator.k,
+        }
+    )
+    proposer_models = [member.provider_config.model for member in provider.proposers]
+    selected_proposers = [
+        f"{member.provider_config.provider}:{member.provider_config.model}"
+        for member in provider.proposers
+    ]
+    aggregator_model = provider.aggregator.provider_config.model
+    selected_aggregator = f"{provider.aggregator.provider_config.provider}:{aggregator_model}"
+    provider.selection_plan = {
+        "strategy": experiment.routing.selection_mode,
+        "selection_mode": experiment.routing.selection_mode,
+        "profile": provider.profile_name,
+        "proposer_models": proposer_models,
+        "aggregator_model": aggregator_model,
+        "proposer_count": len(provider.proposers),
+        "proposer_sample_count": sum(member.k for member in provider.proposers),
+        "selected_P": selected_proposers,
+        "selected_A": selected_aggregator,
+        "benchmark_alignment": {
+            "id": experiment.profile_id,
+            "reference_commit": experiment.reference.source_commit,
+            "reference_group": experiment.reference.group,
+            "reference_profile": experiment.reference.profile,
+        },
+        "pre_alignment": pre_alignment,
+        "configured_min_successful_proposers": provider.min_successful_proposers,
+        "effective_min_successful_proposers": provider.min_successful_proposers,
+        "configured_proposer_timeout_seconds": provider.proposer_timeout_seconds,
+        "effective_proposer_timeout_seconds": provider.proposer_timeout_seconds,
+        "configured_aggregator_timeout_seconds": provider.aggregator_timeout_seconds,
+        "effective_aggregator_timeout_seconds": provider.aggregator_timeout_seconds,
+        "configured_shuffle_candidates": provider.shuffle_candidates,
+        "effective_shuffle_candidates": provider.shuffle_candidates,
+        "quorum_grace_seconds": provider.quorum_grace_seconds,
+        "wait_for_all_proposers": ensemble.wait_for_all_proposers,
+        "all_failed_policy": provider.all_failed_policy,
+        "candidate_max_chars": provider.candidate_max_chars,
+        "proposer_tools": provider.proposer_tools,
+        "aggregator_tools": provider.aggregator_tools,
+        "record_candidates": provider.record_candidates,
+        "require_highest_thinking": experiment.generation.require_highest_thinking,
+        "member_generation": member_generation,
+    }
+    return provider
 
 
 def apply_generation_policy_to_profile(profile: Any, policy: dict[str, Any]) -> Any:
@@ -1296,7 +1558,7 @@ def apply_generation_policy_to_profile(profile: Any, policy: dict[str, Any]) -> 
 
     def _apply_member_policy(member: Any) -> Any:
         update: dict[str, Any] = {
-            "temperature": DEFAULT_GENERATION_TEMPERATURE,
+            "temperature": policy.get("temperature"),
             "thinking": generation_thinking_for_model(
                 str(getattr(member, "model", "") or ""),
                 policy,
@@ -1595,28 +1857,107 @@ async def build_experiment_provider(
     enable_proposer_tools: bool,
     ensemble_proposer_timeout: float | None,
     ensemble_aggregator_timeout: float | None,
+    experiment_config: DracoExperimentConfig | None = None,
 ) -> ProviderBuildResult:
     """Build one DRACO provider through the same routing primitives as runtime.py."""
 
     spec = GROUP_SPECS[group]
     started = time.monotonic()
     kind = spec["kind"]
+    b2_experiment = experiment_config if group == "B2" else None
     if dry_run:
         if kind in {"single", "router_single"}:
             model = spec.get("model") or "dry-routed-single"
-            provider = DryProvider(model=model, group=group)
+            dry_provider: Any = DryProvider(model=model, group=group)
         else:
-            provider = DryEnsembleProvider(
+            dry_provider = DryEnsembleProvider(
                 group=group,
-                profile=spec["selection_mode"],
+                profile=(
+                    b2_experiment.ensemble.profile_name
+                    if b2_experiment is not None
+                    else spec["selection_mode"]
+                ),
+                proposer_models=(
+                    [member.model for member in b2_experiment.ensemble.proposers]
+                    if b2_experiment is not None
+                    else None
+                ),
+                model=(
+                    b2_experiment.ensemble.aggregator.model
+                    if b2_experiment is not None
+                    else "dry-aggregator"
+                ),
+            )
+            if b2_experiment is not None:
+                dry_provider.min_successful_proposers = (
+                    b2_experiment.ensemble.min_successful_proposers
+                )
+                dry_provider.proposer_timeout_seconds = b2_experiment.timeouts.proposer_seconds
+                dry_provider.aggregator_timeout_seconds = b2_experiment.timeouts.aggregator_seconds
+                dry_provider.quorum_grace_seconds = b2_experiment.ensemble.quorum_grace_seconds
+                dry_provider.candidate_max_chars = b2_experiment.ensemble.candidate_max_chars
+                dry_provider.proposer_tools = b2_experiment.ensemble.proposer_tools
+                dry_provider.aggregator_tools = b2_experiment.ensemble.aggregator_tools
+        dry_routing_trace: dict[str, Any] = {
+            "dry_run": True,
+            "kind": kind,
+            **dict(spec),
+        }
+        if b2_experiment is not None:
+            proposer_models = [member.model for member in b2_experiment.ensemble.proposers]
+            selected_proposers = [
+                f"{member.provider.strip().lower()}:{member.model}"
+                for member in b2_experiment.ensemble.proposers
+            ]
+            aggregator = b2_experiment.ensemble.aggregator
+            member_generation = [
+                {"role": "proposer", **member.model_dump(mode="json")}
+                for member in b2_experiment.ensemble.proposers
+            ]
+            member_generation.append({"role": "aggregator", **aggregator.model_dump(mode="json")})
+            dry_routing_trace.update(
+                {
+                    "benchmark_alignment": b2_experiment.profile_id,
+                    "profile": b2_experiment.ensemble.profile_name,
+                    "selection_plan": {
+                        "strategy": b2_experiment.routing.selection_mode,
+                        "selection_mode": b2_experiment.routing.selection_mode,
+                        "profile": b2_experiment.ensemble.profile_name,
+                        "proposer_models": proposer_models,
+                        "aggregator_model": aggregator.model,
+                        "proposer_count": len(b2_experiment.ensemble.proposers),
+                        "proposer_sample_count": sum(
+                            member.k for member in b2_experiment.ensemble.proposers
+                        ),
+                        "selected_P": selected_proposers,
+                        "selected_A": f"{aggregator.provider.strip().lower()}:{aggregator.model}",
+                        "configured_min_successful_proposers": (
+                            b2_experiment.ensemble.min_successful_proposers
+                        ),
+                        "effective_min_successful_proposers": (
+                            b2_experiment.ensemble.min_successful_proposers
+                        ),
+                        "effective_proposer_timeout_seconds": (
+                            b2_experiment.timeouts.proposer_seconds
+                        ),
+                        "effective_aggregator_timeout_seconds": (
+                            b2_experiment.timeouts.aggregator_seconds
+                        ),
+                        "effective_shuffle_candidates": (b2_experiment.ensemble.shuffle_candidates),
+                        "proposer_tools": b2_experiment.ensemble.proposer_tools,
+                        "aggregator_tools": b2_experiment.ensemble.aggregator_tools,
+                        "wait_for_all_proposers": (b2_experiment.ensemble.wait_for_all_proposers),
+                        "member_generation": member_generation,
+                    },
+                }
             )
         result = ProviderBuildResult(
-            provider=provider,
+            provider=dry_provider,
             prompt=prompt,
             setup_latency_ms=int((time.monotonic() - started) * 1000),
-            routing_trace={"dry_run": True, "kind": kind, **dict(spec)},
+            routing_trace=dry_routing_trace,
         )
-        attach_provider_setup(provider, result)
+        attach_provider_setup(dry_provider, result)
         return result
 
     if kind == "single":
@@ -1659,24 +2000,38 @@ async def build_experiment_provider(
         metadata={},
         raw_message=prompt,
     )
-    turn = await run_pipeline(turn, [apply_squilla_router])
-    routed_provider = apply_model_override(
-        selector,
-        turn.model or inherited.model,
-        turn_metadata=turn.metadata,
-        realign_routed_model=False,
-    )
-    routed_config = selector.current_config
-    routing_trace: dict[str, Any] = {
-        "kind": kind,
-        "routed_tier": turn.metadata.get("routed_tier"),
-        "routed_model": turn.metadata.get("routed_model") or turn.model,
-        "applied_model": turn.model,
-        "routing_source": turn.metadata.get("routing_source"),
-        "routing_confidence": turn.metadata.get("routing_confidence"),
-        "routing_applied": turn.metadata.get("routing_applied"),
-        "rollout_phase": turn.metadata.get("rollout_phase"),
-    }
+    if b2_experiment is not None and b2_experiment.routing.skip_single_model_router:
+        # The reference G12 profile was fixed and did not run a single-model
+        # router first. Keep the inherited provider only as the failure fallback.
+        routed_provider = fallback_provider
+        routed_config = inherited
+        routing_trace: dict[str, Any] = {
+            "kind": kind,
+            "routing_applied": False,
+            "routing_source": "fixed_g12_alignment",
+            "routed_model": None,
+            "applied_model": None,
+            "benchmark_alignment": b2_experiment.profile_id,
+        }
+    else:
+        turn = await run_pipeline(turn, [apply_squilla_router])
+        routed_provider = apply_model_override(
+            selector,
+            turn.model or inherited.model,
+            turn_metadata=turn.metadata,
+            realign_routed_model=False,
+        )
+        routed_config = selector.current_config
+        routing_trace = {
+            "kind": kind,
+            "routed_tier": turn.metadata.get("routed_tier"),
+            "routed_model": turn.metadata.get("routed_model") or turn.model,
+            "applied_model": turn.model,
+            "routing_source": turn.metadata.get("routing_source"),
+            "routing_confidence": turn.metadata.get("routing_confidence"),
+            "routing_applied": turn.metadata.get("routing_applied"),
+            "rollout_phase": turn.metadata.get("rollout_phase"),
+        }
     if kind == "router_single":
         result = ProviderBuildResult(
             provider=routed_provider,
@@ -1687,13 +2042,28 @@ async def build_experiment_provider(
         attach_provider_setup(routed_provider, result)
         return result
 
-    selection_mode = spec["selection_mode"]
+    selection_mode = (
+        b2_experiment.routing.selection_mode
+        if b2_experiment is not None
+        else spec["selection_mode"]
+    )
     ensemble_cfg = group_config.llm_ensemble
     ensemble_cfg.enabled = True
     ensemble_cfg.selection_mode = selection_mode
-    ensemble_cfg.proposer_tools = bool(enable_proposer_tools)
-    ensemble_cfg.record_candidates = True
-    ensemble_cfg.shuffle_candidates = False
+    ensemble_cfg.proposer_tools = (
+        b2_experiment.ensemble.proposer_tools
+        if b2_experiment is not None
+        else bool(enable_proposer_tools)
+    )
+    ensemble_cfg.aggregator_tools = (
+        b2_experiment.ensemble.aggregator_tools if b2_experiment is not None else True
+    )
+    ensemble_cfg.record_candidates = (
+        b2_experiment.ensemble.record_candidates if b2_experiment is not None else True
+    )
+    ensemble_cfg.shuffle_candidates = (
+        b2_experiment.ensemble.shuffle_candidates if b2_experiment is not None else False
+    )
     if ensemble_proposer_timeout is not None:
         ensemble_cfg.proposer_timeout_seconds = float(ensemble_proposer_timeout)
     if ensemble_aggregator_timeout is not None:
@@ -1810,6 +2180,8 @@ async def build_experiment_provider(
         turn_metadata=turn.metadata,
         ranking_inputs=ranking_inputs,
     )
+    if b2_experiment is not None:
+        provider = align_b2_provider_to_g12(provider, b2_experiment)
     routing_trace.update(
         {
             "selection_mode": selection_mode,
@@ -3233,6 +3605,7 @@ async def run_one(
     expand_ensemble_timeouts_to_task_timeout: bool,
     tool_policy: dict[str, Any],
     generation_policy: dict[str, Any],
+    experiment_config: DracoExperimentConfig | None = None,
     runner_mode: str = RUNNER_MODE_PROVIDER,
     output_dir: Path | None = None,
     agent_max_iterations: int = DEFAULT_AGENT_MAX_ITERATIONS,
@@ -3272,6 +3645,7 @@ async def run_one(
             ),
             ensemble_proposer_timeout=ensemble_proposer_timeout,
             ensemble_aggregator_timeout=ensemble_aggregator_timeout,
+            experiment_config=experiment_config,
         )
         provider = build.provider
         effective_prompt = build.prompt
@@ -3305,6 +3679,18 @@ async def run_one(
     mark_retryable_generation_error(run, terminal_generation_reason)
     profile_proposer_timeout_s = getattr(provider, "proposer_timeout_seconds", None)
     profile_aggregator_timeout_s = getattr(provider, "aggregator_timeout_seconds", None)
+    profile_min_successful_proposers = getattr(
+        provider,
+        "min_successful_proposers",
+        None,
+    )
+    profile_quorum_grace_s = getattr(provider, "quorum_grace_seconds", None)
+    profile_candidate_max_chars = getattr(provider, "candidate_max_chars", None)
+    profile_proposer_tools = getattr(provider, "proposer_tools", None)
+    profile_aggregator_tools = getattr(provider, "aggregator_tools", None)
+    profile_wait_for_all_proposers = (
+        profile_quorum_grace_s is not None and float(profile_quorum_grace_s) <= 0
+    )
     profile_proposer_early_stop_success_count = getattr(
         provider,
         "proposer_early_stop_success_count",
@@ -3450,6 +3836,12 @@ async def run_one(
             "effective_timeout_s": effective_timeout,
             "profile_proposer_timeout_s": profile_proposer_timeout_s,
             "profile_aggregator_timeout_s": profile_aggregator_timeout_s,
+            "profile_min_successful_proposers": profile_min_successful_proposers,
+            "profile_quorum_grace_s": profile_quorum_grace_s,
+            "profile_wait_for_all_proposers": profile_wait_for_all_proposers,
+            "profile_candidate_max_chars": profile_candidate_max_chars,
+            "profile_proposer_tools": profile_proposer_tools,
+            "profile_aggregator_tools": profile_aggregator_tools,
             "profile_proposer_early_stop_success_count": (
                 profile_proposer_early_stop_success_count
             ),
@@ -4015,6 +4407,9 @@ def manifest_args(args: argparse.Namespace) -> dict[str, Any]:
     keys = [
         "input",
         "config",
+        "experiment_config",
+        "experiment_config_override",
+        "experiment_config_set",
         "output_dir",
         "groups",
         "max_tasks",
@@ -4054,10 +4449,17 @@ def manifest_args(args: argparse.Namespace) -> dict[str, Any]:
         "openrouter_fusion_reasoning_effort",
         "openrouter_fusion_temperature",
     ]
+
+    def _json_value(value: Any) -> Any:
+        if isinstance(value, Path):
+            return str(value)
+        if isinstance(value, list):
+            return [_json_value(item) for item in value]
+        return value
+
     payload: dict[str, Any] = {}
     for key in keys:
-        value = getattr(args, key, None)
-        payload[key] = str(value) if isinstance(value, Path) else value
+        payload[key] = _json_value(getattr(args, key, None))
     return payload
 
 
@@ -4069,6 +4471,9 @@ def reconstructed_cli_args(args: argparse.Namespace) -> list[str]:
         flag = f"--{key.replace('_', '-')}"
         if value is True:
             cli_args.append(flag)
+        elif isinstance(value, list):
+            for item in value:
+                cli_args.extend([flag, str(item)])
         else:
             cli_args.extend([flag, str(value)])
     return cli_args
@@ -4130,6 +4535,47 @@ def write_command_file(
     return payload
 
 
+def write_experiment_config_artifacts(
+    output_dir: Path,
+    *,
+    args: argparse.Namespace,
+    stamp: str,
+) -> dict[str, str]:
+    bundle = getattr(args, "_draco_experiment_config_bundle", None)
+    if not isinstance(bundle, DracoExperimentConfigBundle):
+        return {}
+
+    def _write(name: str, payload: Any) -> Path:
+        path = output_dir / f"draco_run_{stamp}.experiment-config.{name}.json"
+        path.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        return path
+
+    artifacts = {
+        "experiment_config_base_json": str(_write("base", bundle.base_document)),
+        "experiment_config_effective_json": str(
+            _write("effective", bundle.config.model_dump(mode="json"))
+        ),
+    }
+    for index, (_, document) in enumerate(bundle.override_documents, start=1):
+        key = f"experiment_config_override_{index:02d}_json"
+        artifacts[key] = str(_write(f"override-{index:02d}", document))
+    if bundle.inline_overrides:
+        artifacts["experiment_config_inline_overrides_json"] = str(
+            _write("inline-overrides", list(bundle.inline_overrides))
+        )
+    resolution = {
+        "profile_id": bundle.config.profile_id,
+        "provenance": bundle.provenance(),
+        "input_validation": getattr(args, "_draco_input_validation", None),
+        "artifact_keys": sorted([*artifacts, "experiment_config_resolution_json"]),
+    }
+    artifacts["experiment_config_resolution_json"] = str(_write("resolution", resolution))
+    return artifacts
+
+
 def write_manifest(
     path: Path,
     *,
@@ -4150,7 +4596,7 @@ def write_manifest(
     generation_policy = generation_thinking_policy(args)
     payload: dict[str, Any] = {
         "benchmark": "DRACO",
-        "runner": "scripts/run_draco_ensemble.py",
+        "runner": "scripts/run_draco_routing_experiment.py",
         "runner_mode": getattr(args, "runner_mode", DEFAULT_DRACO_RUNNER_MODE),
         "agent_max_iterations": getattr(
             args,
@@ -4172,6 +4618,12 @@ def write_manifest(
         "rows_written": rows_written,
         "artifacts": artifacts,
     }
+    benchmark_alignments = dict(getattr(args, "_benchmark_alignments", {}) or {})
+    if benchmark_alignments:
+        payload["benchmark_alignments"] = benchmark_alignments
+    input_validation = getattr(args, "_draco_input_validation", None)
+    if input_validation is not None:
+        payload["benchmark_input_validation"] = input_validation
     if command is not None:
         payload["command"] = command
     if summary is not None:
@@ -4180,8 +4632,33 @@ def write_manifest(
 
 
 async def amain(args: argparse.Namespace) -> int:
-    tasks = load_tasks(args.input, max_tasks=args.max_tasks)
     groups = parse_groups(args.groups)
+    alignment = apply_b2_g12_argument_alignment(args, groups)
+    bundle = getattr(args, "_draco_experiment_config_bundle", None)
+    experiment_config = bundle.config if isinstance(bundle, DracoExperimentConfigBundle) else None
+    if experiment_config is not None:
+        all_tasks = load_tasks(args.input, max_tasks=0)
+        input_validation = validate_reference_input(
+            args.input,
+            task_ids=[str(task["id"]) for task in all_tasks],
+            config=experiment_config.benchmark_input,
+        )
+        args._draco_input_validation = input_validation
+        if alignment is not None:
+            alignment["input_validation"] = input_validation
+        tasks = all_tasks[: args.max_tasks] if args.max_tasks > 0 else all_tasks
+    else:
+        tasks = load_tasks(args.input, max_tasks=args.max_tasks)
+    if alignment is not None:
+        effective = alignment["effective_args"]
+        print(
+            "B2 G12 alignment applied: "
+            f"concurrency={effective['concurrency']}, timeout={effective['timeout']}, "
+            f"web={effective['local_web_search_provider']}, "
+            f"judge={effective['judge_model']}",
+            file=sys.stderr,
+            flush=True,
+        )
     args.runner_mode = str(
         getattr(args, "runner_mode", DEFAULT_DRACO_RUNNER_MODE) or DEFAULT_DRACO_RUNNER_MODE
     ).strip()
@@ -4225,7 +4702,11 @@ async def amain(args: argparse.Namespace) -> int:
     if process_api_key:
         config.llm.api_key = process_api_key
     sandbox_runtime = configure_benchmark_sandbox_runtime(config, tool_policy)
-    search_runtime = configure_local_web_search_runtime(config, tool_policy)
+    search_runtime = configure_local_web_search_runtime(
+        config,
+        tool_policy,
+        dry_run=bool(getattr(args, "dry_run", False)),
+    )
     if search_runtime or sandbox_runtime:
         local_web_tools = dict(tool_policy.get("local_web_tools") or {})
         if search_runtime:
@@ -4287,6 +4768,7 @@ async def amain(args: argparse.Namespace) -> int:
         "summary_json": str(summary_json_path),
         "summary_markdown": str(jsonl_path.with_suffix(".md")),
     }
+    artifacts.update(write_experiment_config_artifacts(output_dir, args=args, stamp=stamp))
     command = write_command_file(command_path, args=args, stamp=stamp)
     write_manifest(
         manifest_path,
@@ -4336,6 +4818,7 @@ async def amain(args: argparse.Namespace) -> int:
                 ),
                 tool_policy=group_tool_policy,
                 generation_policy=generation_policy,
+                experiment_config=experiment_config if group == "B2" else None,
                 runner_mode=args.runner_mode,
                 output_dir=output_dir,
                 agent_max_iterations=args.agent_max_iterations,
@@ -4402,6 +4885,9 @@ async def amain(args: argparse.Namespace) -> int:
     print(f"wrote {command_path}")
     print(f"wrote {summary_json_path}")
     print(f"wrote {summary_path}")
+    for key, path in artifacts.items():
+        if key.startswith("experiment_config_"):
+            print(f"wrote {path}")
     return 0
 
 
@@ -4409,6 +4895,36 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--input", type=Path, required=True, help="DRACO JSONL input.")
     parser.add_argument("--config", type=Path, default=None, help="OpenSquilla TOML config.")
+    parser.add_argument(
+        "--experiment-config",
+        type=Path,
+        default=(
+            Path(os.environ["OPENSQUILLA_DRACO_EXPERIMENT_CONFIG"])
+            if os.environ.get("OPENSQUILLA_DRACO_EXPERIMENT_CONFIG")
+            else None
+        ),
+        help=(
+            "Base B2 experiment JSON. Defaults to the bundled G12-aligned profile; "
+            "OPENSQUILLA_DRACO_EXPERIMENT_CONFIG can inject another base file."
+        ),
+    )
+    parser.add_argument(
+        "--experiment-config-override",
+        type=Path,
+        action="append",
+        default=[],
+        help="JSON overlay applied after the base experiment config; repeatable.",
+    )
+    parser.add_argument(
+        "--experiment-config-set",
+        action="append",
+        default=[],
+        metavar="DOTTED.PATH=JSON_VALUE",
+        help=(
+            "Inline experiment-config override applied last; list indexes are supported "
+            "and the option is repeatable."
+        ),
+    )
     parser.add_argument("--output-dir", type=Path, default=Path("reports/draco"))
     parser.add_argument(
         "--groups",

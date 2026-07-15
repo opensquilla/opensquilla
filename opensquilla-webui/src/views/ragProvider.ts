@@ -243,8 +243,8 @@ export function normalizeRagProfileSetResponse(value: unknown): RagProfileSetRes
 
 export function effectiveRetrievalProfile(status: RagProviderStatus | null): string | null {
   return status?.retrievalProfileOverride
-    || status?.searchOptions?.defaultRetrievalProfile
-    || null
+    ?? status?.searchOptions?.defaultRetrievalProfile
+    ?? null
 }
 
 export function normalizeRagSearchResponse(value: unknown): RagSearchResponse | null {

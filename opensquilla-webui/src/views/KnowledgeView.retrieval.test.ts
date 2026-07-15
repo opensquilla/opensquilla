@@ -19,9 +19,10 @@ import {
   normalizeRagProfileSetResponse,
   normalizeRagProviderStatus,
   normalizeRagSearchResponse,
+  type RagProviderStatus,
 } from './ragProvider'
 
-const READY_STATUS = {
+const READY_STATUS: RagProviderStatus = {
   connectionState: 'READY',
   enabled: true,
   provider: { name: 'OpenSquilla-Knowledge', version: '1.0', instanceId: 'preview' },
@@ -47,6 +48,20 @@ const READY_STATUS = {
   legacyConfigPresent: false,
   legacyAdapterEnabled: false,
   warning: null,
+}
+
+const PROFILE_SET_RESPONSE = {
+  retrievalProfileOverride: 'vector',
+  providerDefaultRetrievalProfile: 'hybrid',
+  effectiveRetrievalProfile: 'vector',
+  restartRequired: false,
+}
+
+const NULL_PROFILE_SET_RESPONSE = {
+  retrievalProfileOverride: null,
+  providerDefaultRetrievalProfile: null,
+  effectiveRetrievalProfile: null,
+  restartRequired: false,
 }
 
 const SEARCH_RESPONSE = {
@@ -125,18 +140,30 @@ describe('RAG Provider response normalization', () => {
     })).toBe('vector')
   })
 
+  it('does not fall back when an invalid explicit profile is present', () => {
+    expect(effectiveRetrievalProfile({
+      ...READY_STATUS,
+      retrievalProfileOverride: '',
+    })).toBe('')
+  })
+
   it('normalizes profile set responses strictly', () => {
+    expect(normalizeRagProfileSetResponse(PROFILE_SET_RESPONSE)).toEqual(PROFILE_SET_RESPONSE)
+    expect(normalizeRagProfileSetResponse(NULL_PROFILE_SET_RESPONSE)).toEqual(NULL_PROFILE_SET_RESPONSE)
     expect(normalizeRagProfileSetResponse({
-      retrievalProfileOverride: 'vector',
-      providerDefaultRetrievalProfile: 'hybrid',
-      effectiveRetrievalProfile: 'vector',
-      restartRequired: false,
-    })?.effectiveRetrievalProfile).toBe('vector')
-    expect(normalizeRagProfileSetResponse({
-      retrievalProfileOverride: 'vector',
-      providerDefaultRetrievalProfile: 'hybrid',
-      effectiveRetrievalProfile: 'vector',
+      ...PROFILE_SET_RESPONSE,
       restartRequired: 'false',
+    })).toBeNull()
+  })
+
+  it.each([
+    ['retrievalProfileOverride', undefined],
+    ['providerDefaultRetrievalProfile', false],
+    ['effectiveRetrievalProfile', 1],
+  ] as const)('rejects an invalid nullable-string field: %s', (field, value) => {
+    expect(normalizeRagProfileSetResponse({
+      ...PROFILE_SET_RESPONSE,
+      [field]: value,
     })).toBeNull()
   })
 

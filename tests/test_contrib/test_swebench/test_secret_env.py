@@ -32,9 +32,11 @@ def test_write_secret_env_file_cleans_up_on_write_failure(monkeypatch, tmp_path)
     monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test-123")
 
     real_mkstemp = agent_mod.tempfile.mkstemp
+    mkstemp_fds: list[int] = []
 
     def patched_mkstemp(*args, **kwargs):  # type: ignore[no-untyped-def]
         fd, path = real_mkstemp(*args, dir=str(tmp_path), **kwargs)
+        mkstemp_fds.append(fd)
         return fd, path
 
     monkeypatch.setattr(agent_mod.tempfile, "mkstemp", patched_mkstemp)
@@ -49,39 +51,65 @@ def test_write_secret_env_file_cleans_up_on_write_failure(monkeypatch, tmp_path)
 
     monkeypatch.setattr(os, "close", spy_close)
 
-    def boom(*args, **kwargs):  # type: ignore[no-untyped-def]
-        raise RuntimeError("simulated write failure")
+    # Patching a ``write`` attribute onto the ``os.fdopen`` *function*
+    # would not affect the file object it returns — replace fdopen
+    # itself with a factory for a fake handle that (like the real one)
+    # takes ownership of the fd and raises from ``write``.
+    class _ExplodingHandle:
+        def __init__(self, fd):  # type: ignore[no-untyped-def]
+            self._fd = fd
 
-    monkeypatch.setattr(agent_mod.os.fdopen, "write", boom, raising=False)
+        def __enter__(self):  # type: ignore[no-untyped-def]
+            return self
 
-    with pytest.raises(RuntimeError):
+        def __exit__(self, *exc_info):  # type: ignore[no-untyped-def]
+            # The real fdopen handle closes the wrapped descriptor when
+            # the ``with`` block exits, even on error.
+            os.close(self._fd)
+            return False
+
+        def write(self, *args, **kwargs):  # type: ignore[no-untyped-def]
+            raise RuntimeError("simulated write failure")
+
+    def fake_fdopen(fd, *args, **kwargs):  # type: ignore[no-untyped-def]
+        return _ExplodingHandle(fd)
+
+    monkeypatch.setattr(agent_mod.os, "fdopen", fake_fdopen)
+
+    with pytest.raises(RuntimeError, match="simulated write failure"):
         agent_mod._write_secret_env_file()
 
     # The failed tmp file must have been unlinked — no half-written key
     # lying around for a later reader.
     leftovers = [p for p in tmp_path.iterdir() if p.name.startswith("opensquilla-swebench-")]
     assert leftovers == [], f"secret env-file leaked: {leftovers}"
-    # The mkstemp fd must have been closed either via fdopen's
-    # ownership transfer or, if fdopen never reached the write call,
-    # by the failure path's os.close.
-    assert any(fd in closed_descriptors for fd in closed_descriptors), (
+    # ``fdopen`` took ownership of the descriptor, so the handle (not
+    # the raw-fd fallback) must have closed the mkstemp fd.
+    assert mkstemp_fds, "mkstemp was never called"
+    assert all(fd in closed_descriptors for fd in mkstemp_fds), (
         "secret env-file fd was leaked on write failure"
     )
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="code-task Windows support is WIP")
-def test_write_secret_env_file_closes_raw_fd_when_chmod_fails(
+def test_write_secret_env_file_closes_raw_fd_when_fdopen_fails(
     monkeypatch, tmp_path
 ):
-    """If ``os.chmod`` raises before ``fdopen`` ever runs, the raw
-    descriptor from ``mkstemp`` must be closed rather than leaked."""
+    """If ``os.fdopen`` raises before taking ownership of the fd, the
+    raw descriptor from ``mkstemp`` must be closed rather than leaked.
+
+    (``os.chmod`` cannot be used to trigger this branch: the production
+    code deliberately suppresses ``OSError`` from that belt-and-braces
+    call and continues.)"""
 
     monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test-123")
 
     real_mkstemp = agent_mod.tempfile.mkstemp
+    mkstemp_fds: list[int] = []
 
     def patched_mkstemp(*args, **kwargs):  # type: ignore[no-untyped-def]
         fd, path = real_mkstemp(*args, dir=str(tmp_path), **kwargs)
+        mkstemp_fds.append(fd)
         return fd, path
 
     monkeypatch.setattr(agent_mod.tempfile, "mkstemp", patched_mkstemp)
@@ -96,23 +124,20 @@ def test_write_secret_env_file_closes_raw_fd_when_chmod_fails(
 
     monkeypatch.setattr(os, "close", spy_close)
 
-    # Force the chmod belt-and-braces call to raise so fdopen is never
-    # reached. The cleanup branch must release the raw mkstemp fd.
-    real_chmod = agent_mod.os.chmod
+    # Force fdopen to raise before it ever takes ownership of the fd.
+    # The cleanup branch must release the raw mkstemp descriptor.
+    def boom_fdopen(fd, *args, **kwargs):  # type: ignore[no-untyped-def]
+        raise OSError("simulated fdopen failure")
 
-    def boom_chmod(path, mode, *args, **kwargs):  # type: ignore[no-untyped-def]
-        if "opensquilla-swebench-" in str(path):
-            raise OSError("simulated chmod failure")
-        return real_chmod(path, mode, *args, **kwargs)
+    monkeypatch.setattr(agent_mod.os, "fdopen", boom_fdopen)
 
-    monkeypatch.setattr(agent_mod.os, "chmod", boom_chmod)
-
-    with pytest.raises(OSError, match="simulated chmod failure"):
+    with pytest.raises(OSError, match="simulated fdopen failure"):
         agent_mod._write_secret_env_file()
 
     # The raw mkstemp fd must have been closed by the cleanup path.
-    assert closed_descriptors, (
-        "mkstemp fd was leaked when chmod raised before fdopen ran"
+    assert mkstemp_fds, "mkstemp was never called"
+    assert all(fd in closed_descriptors for fd in mkstemp_fds), (
+        "mkstemp fd was leaked when fdopen raised before taking ownership"
     )
     leftovers = [p for p in tmp_path.iterdir() if p.name.startswith("opensquilla-swebench-")]
     assert leftovers == [], f"secret env-file leaked: {leftovers}"

@@ -75,7 +75,9 @@ PUBLIC_TOP_LEVEL_KEYS = frozenset(
 # Keys operators and the Web UI toggle inside these sections. selection_mode
 # is deliberately pinned: it is the new ensemble routing switch and must not
 # be renamed once shipped.
-LLM_ENSEMBLE_REQUIRED_KEYS = frozenset({"enabled", "selection_mode"})
+LLM_ENSEMBLE_REQUIRED_KEYS = frozenset(
+    {"enabled", "selection_mode", "ranking_user_profile_enabled"}
+)
 SQUILLA_ROUTER_REQUIRED_KEYS = frozenset(
     {"enabled", "tier_profile", "tiers", "default_tier", "visual_mode"}
 )

@@ -41,6 +41,7 @@ from opensquilla.onboarding.mutations import (
 CUSTOM_LLM_ENSEMBLE: dict[str, object] = {
     "enabled": False,
     "selection_mode": "router_dynamic",
+    "ranking_user_profile_enabled": False,
     "model_options": ["custom/model-a", "custom/model-b"],
 }
 
@@ -57,6 +58,7 @@ def _ensemble_subtree_bytes(cfg: GatewayConfig) -> bytes:
 def _assert_custom_values(cfg: GatewayConfig) -> None:
     assert cfg.llm_ensemble.enabled is False
     assert cfg.llm_ensemble.selection_mode == "router_dynamic"
+    assert cfg.llm_ensemble.ranking_user_profile_enabled is False
     assert cfg.llm_ensemble.model_options == ["custom/model-a", "custom/model-b"]
 
 

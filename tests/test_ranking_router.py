@@ -746,6 +746,41 @@ async def test_task_analyzer_uses_provider_interface_and_validates_json() -> Non
     analyzer_payload = json.loads(str(provider.calls[0][0][0].content))
     assert analyzer_payload["allowed_constraints"]["risk"] == ["low", "medium", "high"]
     assert analyzer_payload["allowed_session_intents"] == ["new_task", "continue", "redo"]
+    assert "user_profile" in analyzer_payload
+
+
+@pytest.mark.asyncio
+async def test_task_analyzer_omits_disabled_user_profile_and_correlates_logs() -> None:
+    provider = _AnalyzerProvider(json.dumps(_task_profile(tier=2)))
+
+    with structlog.testing.capture_logs() as captured:
+        result = await analyze_task_with_provider(
+            provider=provider,
+            message="implement a parser",
+            user_profile=None,
+            request_context=_context(),
+            routed_tier="c1",
+            routing_confidence=0.8,
+            decision_id="decision-without-profile",
+        )
+
+    assert result.source == "llm_provider"
+    analyzer_payload = json.loads(str(provider.calls[0][0][0].content))
+    assert "user_profile" not in analyzer_payload
+    analyzer_events = [
+        row
+        for row in captured
+        if str(row["event"]).startswith("llm_ensemble.router_dynamic.task_analyzer_")
+    ]
+    assert [row["event"] for row in analyzer_events] == [
+        "llm_ensemble.router_dynamic.task_analyzer_started",
+        "llm_ensemble.router_dynamic.task_analyzer_completed",
+    ]
+    assert all(
+        row["decision_id"] == "decision-without-profile"
+        for row in analyzer_events
+    )
+    assert all(row["user_profile_enabled"] is False for row in analyzer_events)
 
 
 @pytest.mark.asyncio
@@ -877,6 +912,68 @@ def test_hard_filter_records_availability_permission_modality_and_context_reason
     assert "modality_mismatch" in by_model["text-only"]["reasons"]
     assert "context_exceeded" in by_model["short-context"]["reasons"]
     assert decision.proposers[0].model_id == "eligible"
+
+
+def test_ranking_without_user_profile_bypasses_all_profile_effects() -> None:
+    preferred = _model("preferred", capability=0.95, aggregator_fit=0.95)
+    backup = _model("backup", capability=0.80, aggregator_fit=0.80)
+    contrast = _model("contrast", capability=0.70, aggregator_fit=0.70)
+    profile = mock_user_profile()
+    profile["permission"]["deny_models"] = ["preferred"]
+    profile["permission"]["risk_allowlist"] = ["medium"]
+    profile["preference"]["cost_sensitivity"] = "hard_limit"
+    profile["preference"]["quality_latency_tradeoff"] = "latency_first"
+
+    enabled = _decision(
+        preferred,
+        backup,
+        contrast,
+        analysis=_analysis(tier=3, risk="medium"),
+        user_profile=profile,
+    )
+    risk_blocked_profile = mock_user_profile()
+    risk_blocked_profile["permission"]["risk_allowlist"] = ["low"]
+    with pytest.raises(DynamicRankingError, match="no proposer"):
+        _decision(
+            preferred,
+            backup,
+            contrast,
+            analysis=_analysis(tier=3, risk="medium"),
+            user_profile=risk_blocked_profile,
+        )
+    disabled = rank_models(
+        task_analysis=_analysis(tier=3, risk="medium"),
+        user_profile=None,
+        request_context=_context(),
+        registry_snapshot=_snapshot(preferred, backup, contrast),
+        routed_tier="c2",
+        routing_confidence=0.9,
+        decision_id="ranking-without-profile",
+    )
+
+    assert enabled.trace["user_profile_enabled"] is True
+    assert enabled.trace["N_max"] == 2
+    assert disabled.trace["decision_id"] == "ranking-without-profile"
+    assert disabled.trace["user_profile_enabled"] is False
+    assert disabled.trace["user_profile_version"] == ""
+    assert disabled.trace["user_profile_source"] == ""
+    assert disabled.trace["N_max"] == 3
+    disabled_filters = [
+        *disabled.trace["hard_filter"]["proposer_results"],
+        *disabled.trace["hard_filter"]["aggregator_results"],
+    ]
+    assert all("no_permission" not in row["reasons"] for row in disabled_filters)
+    assert all("risk_not_allowed" not in row["reasons"] for row in disabled_filters)
+    assert {row["model"] for row in disabled.trace["model_scores"]} == {
+        "preferred",
+        "backup",
+        "contrast",
+    }
+    for row in disabled.trace["model_scores"]:
+        assert row["S_user"] == 0.0
+        assert row["S_qual_clean"] == row["S_match"]
+        assert row["cost_weight"] == pytest.approx(0.10)
+        assert row["latency_weight"] == pytest.approx(0.08)
 
 
 def test_availability_filter_covers_registry_health_quota_rate_and_role() -> None:
@@ -1337,10 +1434,17 @@ def test_ranking_is_deterministic_for_the_same_snapshot() -> None:
 
 def test_ranking_emits_the_required_debug_lifecycle_events() -> None:
     with structlog.testing.capture_logs() as captured:
-        _decision(
-            _model("a", provider="provider-a"),
-            _model("b", provider="provider-b"),
-            analysis=_analysis(tier=2),
+        rank_models(
+            task_analysis=_analysis(tier=2),
+            user_profile=mock_user_profile(),
+            request_context=_context(),
+            registry_snapshot=_snapshot(
+                _model("a", provider="provider-a"),
+                _model("b", provider="provider-b"),
+            ),
+            routed_tier="c1",
+            routing_confidence=0.9,
+            decision_id="ranking-log-decision",
         )
 
     event_names = {row["event"] for row in captured}
@@ -1351,3 +1455,9 @@ def test_ranking_emits_the_required_debug_lifecycle_events() -> None:
         "llm_ensemble.router_dynamic.aggregator_selection_recorded",
         "llm_ensemble.router_dynamic.router_decision_recorded",
     }.issubset(event_names)
+    lifecycle = [
+        row
+        for row in captured
+        if str(row["event"]).startswith("llm_ensemble.router_dynamic.")
+    ]
+    assert all(row["decision_id"] == "ranking-log-decision" for row in lifecycle)

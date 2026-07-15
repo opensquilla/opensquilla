@@ -471,8 +471,11 @@ Before ranking, runtime builds four replaceable inputs:
    timeout, provider errors, an omitted real input modality, an invalid schema,
    or an unavailable OpenRouter credential falls back to a conservative profile
    derived from SquillaRouter's `c0`-`c3` result.
-3. **User profile** — currently a versioned global mock with permissions,
-   cost/latency preference, and empty feedback priors.
+3. **User profile** — controlled by
+   `llm_ensemble.ranking_user_profile_enabled` (default `true`). When enabled,
+   the current implementation uses a versioned global mock with permissions,
+   cost/latency preference, and empty feedback priors. When disabled, runtime
+   does not build or send that mock and ranking receives no user profile.
 4. **Model registry snapshot** — composed from the routed model, enabled
    `llm_ensemble.candidates`, non-default legacy `model_options`, configured
    SquillaRouter tiers, and the packaged twenty-model mock registry. Unknown
@@ -494,7 +497,8 @@ it can be scored. A candidate is rejected for any of these reasons:
 
 - disabled/unhealthy deployment, missing credential, exhausted quota, or rate
   limit;
-- unsupported role, user model allow/deny policy, or disallowed task-risk level;
+- unsupported role; when user-profile integration is enabled, user model
+  allow/deny policy or a disallowed task-risk level;
 - missing any required input modality;
 - insufficient context window.
 
@@ -517,8 +521,9 @@ consume.
 ## 3.3 Base scoring
 
 For each eligible proposer, task match combines capability, domain, and tier
-profile expectations. It is blended with the mock user score, then adjusted by
-weak session continuity and normalized cost/latency penalties:
+profile expectations. With user-profile integration enabled, it is blended
+with the user score, then adjusted by weak session continuity and normalized
+cost/latency penalties:
 
 ```text
 S_match_raw  = 0.45 * capability + 0.25 * domain + 0.30 * tier
@@ -527,6 +532,11 @@ S_qual_clean = 0.85 * S_match + 0.15 * S_user
 S_qual       = clamp(S_qual_clean + S_session)
 S_base       = S_qual - w_cost * cost - w_latency * latency
 ```
+
+With `ranking_user_profile_enabled = false`, `S_user` is not evaluated,
+`S_qual_clean = S_match`, and cost/latency weights come only from task
+constraints. This renormalization avoids silently retaining the user-score
+weight as a zero-filled penalty.
 
 `S_user` starts at `0.50`; positive/negative model feedback contributes up to
 `+/-0.50`, with confidence saturated after 20 observations. Cost is
@@ -548,9 +558,11 @@ The effective tier is the rounded expectation of `tier_dist`:
 | 4 | `c3` | 3 | 5 |
 
 High-risk work raises the target to at least four proposers (maximum five).
-Hard cost/latency constraints cap the set at two; when filters or the candidate
-pool prevent `N_min`, ranking returns the best feasible set and records
-`coverage_shortfall=true` instead of violating a hard filter.
+Hard cost/latency constraints cap the set at two. User cost/latency preferences
+can apply the same cap only when user-profile integration is enabled. When
+filters or the candidate pool prevent `N_min`, ranking returns the best
+feasible set and records `coverage_shortfall=true` instead of violating a hard
+filter.
 
 ## 3.5 Greedy proposer selection
 
@@ -657,7 +669,17 @@ records `candidate_order_seed` and
 - `router_decision_recorded`.
 
 All use the `llm_ensemble.router_dynamic.` event prefix and omit raw user or
-candidate content.
+candidate content. In addition, every successful ensemble mode emits a unified,
+ordered decision stream under `llm_ensemble.routing.*`. One `decision_id`
+correlates the local-router input, task-analysis summary and proposer bounds
+(dynamic mode), every candidate, every hard-filter and score row (dynamic
+mode), every proposer/rerank step, every aggregator score, and the final
+selection. The tree baseline records every slot decision and aggregator
+candidate score; static and custom modes record each fixed lineup member.
+Selection failures end with `decision_failed`; readiness gates such as missing
+credentials end with `decision_skipped`. Every event has a monotonically
+increasing `sequence`, starting with `decision_started = 0`, and contains no
+prompt, candidate answer, or raw user-profile payload.
 
 ## 3.9 Configuration surface
 
@@ -665,7 +687,12 @@ candidate content.
 [llm_ensemble]
 enabled = true
 selection_mode = "router_dynamic"
+ranking_user_profile_enabled = true
 ```
+
+Set `ranking_user_profile_enabled = false` for a user-profile-free ranking
+ablation. The switch affects only `router_dynamic`; the four fixed/custom/tree
+modes do not consume a user profile.
 
 Operators can extend the deployment pool with `llm_ensemble.candidates`,
 non-default `llm_ensemble.model_options`, and `squilla_router.tiers`. All

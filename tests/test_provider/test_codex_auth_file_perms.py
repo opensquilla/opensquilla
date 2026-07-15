@@ -9,10 +9,11 @@ The original ``_persist_refreshed_tokens`` wrote the token via
 2. Between ``mkstemp`` and ``chmod`` a parallel reader could observe
    the file at the umask-derived (typically 0o644) perms.
 
-The fix re-opens the tmp file with explicit ``O_WRONLY | O_CREAT |
-O_TRUNC | O_NOFOLLOW`` and mode ``0o600`` before writing through the
-new fd, so the file is never observable at broader perms and the
-tightening is bound to the open fd (no path-based TOCTOU).
+The fix keeps writing through the fd ``mkstemp`` returned (created
+atomically with 0o600 on POSIX) and tightens it via ``os.fchmod`` on
+that same fd before any secret bytes are written — no close-and-reopen
+window, and the permission change is bound to the fd rather than to a
+path lookup (no path-based TOCTOU).
 """
 
 from __future__ import annotations
@@ -43,31 +44,50 @@ def test_persist_refreshed_tokens_writes_strict_0600(tmp_path: Path) -> None:
 def test_persist_refreshed_tokens_tmp_file_is_never_broad(tmp_path: Path, monkeypatch) -> None:
     """The tmp file that lives between mkstemp and replace must be 0o600.
 
-    We intercept ``os.open`` to capture the mode passed for the tmp
-    file (the second call, after the mkstemp fd is closed), and verify
-    the mode is 0o600 — not the default umask-derived value.
+    Two observations together prove the file is never visible at
+    broader perms:
+
+    * ``os.fchmod`` is called with 0o600 on the still-open mkstemp fd
+      before any secret bytes are written (fd-bound tightening — the
+      close-and-reopen approach silently ignored the mode because
+      ``os.open(..., O_CREAT, mode)`` does not apply ``mode`` to a
+      pre-existing file);
+    * at the moment ``os.replace`` renames the tmp file over
+      ``auth.json`` — after the full payload was written — the tmp
+      file still carries 0o600.
     """
 
     auth = tmp_path / "auth.json"
     auth.write_text(json.dumps({"tokens": {}}), encoding="utf-8")
 
-    captured_modes: list[int] = []
+    fchmod_modes: list[int] = []
+    real_fchmod = os.fchmod
 
-    real_open = os.open
+    def spy_fchmod(fd, mode):  # type: ignore[no-untyped-def]
+        fchmod_modes.append(mode)
+        return real_fchmod(fd, mode)
 
-    def spy_open(path, flags, *args, **kwargs):  # type: ignore[no-untyped-def]
-        # Only capture opens inside our tmp_path and with a numeric mode arg.
-        if args and isinstance(args[0], int) and "auth-" in str(path):
-            captured_modes.append(args[0])
-        return real_open(path, flags, *args, **kwargs)
+    monkeypatch.setattr(os, "fchmod", spy_fchmod)
 
-    monkeypatch.setattr(os, "open", spy_open)
+    replaced_modes: list[int] = []
+    real_replace = os.replace
+
+    def spy_replace(src, dst, *args, **kwargs):  # type: ignore[no-untyped-def]
+        if ".auth-" in str(src):
+            replaced_modes.append(stat.S_IMODE(os.stat(src).st_mode))
+        return real_replace(src, dst, *args, **kwargs)
+
+    monkeypatch.setattr(os, "replace", spy_replace)
 
     _persist_refreshed_tokens(auth, {"access_token": "tok-new"})
 
-    assert captured_modes, "expected os.open to be called with an explicit mode for the tmp file"
-    assert all((mode & 0o777) == 0o600 for mode in captured_modes), (
-        f"tmp file was opened with non-0o600 modes: {[oct(m) for m in captured_modes]}"
+    assert fchmod_modes, "expected fchmod on the open tmp fd before writing tokens"
+    assert all((mode & 0o777) == 0o600 for mode in fchmod_modes), (
+        f"tmp fd was tightened to non-0o600 modes: {[oct(m) for m in fchmod_modes]}"
+    )
+    assert replaced_modes, "expected os.replace to move a .auth- tmp file into place"
+    assert all(mode == 0o600 for mode in replaced_modes), (
+        f"tmp auth file was observable at non-0o600 modes: {[oct(m) for m in replaced_modes]}"
     )
 
     # The final persisted file is also 0o600.

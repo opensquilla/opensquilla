@@ -32,6 +32,7 @@ from opensquilla.gateway.origin_guard import (
     request_origin_allowed,
 )
 from opensquilla.gateway.rpc import RpcContext, get_dispatcher
+from opensquilla.gateway.scopes import is_loopback_address, is_loopback_bind
 from opensquilla.gateway.websocket import handle_ws_connection
 
 log = structlog.get_logger(__name__)
@@ -245,6 +246,69 @@ def create_gateway_app(
             )
         request_shutdown("api_shutdown")
         return JSONResponse({"status": "accepted"}, status_code=202)
+
+    def _desktop_gateway_owner(request: Request) -> tuple[Any | None, JSONResponse | None]:
+        """Resolve a Desktop ownership proof without exposing profile paths."""
+
+        owner = getattr(request.app.state, "desktop_gateway_ownership", None)
+        if owner is None:
+            return None, JSONResponse({"error": "not found"}, status_code=404)
+        peer_ip = request.client.host if request.client is not None else None
+        if not is_loopback_bind(config.host) or not is_loopback_address(peer_ip):
+            return None, JSONResponse(
+                {"error": "desktop owner privileges required"},
+                status_code=403,
+            )
+        return owner, None
+
+    async def api_desktop_identity(request: Request) -> JSONResponse:
+        """Prove that this listener is the Desktop instance recorded on disk."""
+
+        from opensquilla.gateway.desktop_ownership import valid_desktop_challenge
+
+        owner, error = _desktop_gateway_owner(request)
+        if error is not None:
+            return error
+        assert owner is not None
+        try:
+            body = await request.json()
+        except Exception:
+            body = None
+        challenge = body.get("challenge") if isinstance(body, dict) else None
+        if not valid_desktop_challenge(challenge):
+            return JSONResponse({"error": "invalid challenge"}, status_code=400)
+        response = JSONResponse(owner.identity_response(challenge))
+        response.headers["Cache-Control"] = "no-store"
+        response.headers["Pragma"] = "no-cache"
+        return response
+
+    async def api_desktop_shutdown(request: Request) -> JSONResponse:
+        """Shut down only after a nonce proof binds the request to this instance."""
+
+        owner, error = _desktop_gateway_owner(request)
+        if error is not None:
+            return error
+        assert owner is not None
+        try:
+            body = await request.json()
+        except Exception:
+            body = None
+        challenge = body.get("challenge") if isinstance(body, dict) else None
+        proof = body.get("proof") if isinstance(body, dict) else None
+        if not isinstance(challenge, str) or not isinstance(proof, str):
+            return JSONResponse({"error": "invalid ownership proof"}, status_code=403)
+        if not owner.verify_shutdown_proof(challenge, proof):
+            return JSONResponse({"error": "invalid ownership proof"}, status_code=403)
+        request_shutdown = getattr(request.app.state, "request_shutdown", None)
+        if request_shutdown is None:
+            return JSONResponse(
+                {"error": "graceful shutdown is not available in this mode"},
+                status_code=503,
+            )
+        request_shutdown("desktop_api_shutdown")
+        response = JSONResponse({"status": "accepted"}, status_code=202)
+        response.headers["Cache-Control"] = "no-store"
+        return response
 
     async def api_usage(request: Request) -> JSONResponse:
         ctx = _make_ctx(request)
@@ -566,6 +630,8 @@ def create_gateway_app(
         Route("/api/system/status", api_system_status, methods=["GET"]),
         Route("/api/system/update", api_system_update, methods=["GET"]),
         Route("/api/system/shutdown", _same_origin(api_system_shutdown), methods=["POST"]),
+        Route("/api/desktop/identity", _same_origin(api_desktop_identity), methods=["POST"]),
+        Route("/api/desktop/shutdown", _same_origin(api_desktop_shutdown), methods=["POST"]),
         Route("/api/usage", api_usage, methods=["GET"]),
         Route("/api/channels/status", api_channels_status, methods=["GET"]),
         Route("/api/channels/logout", _same_origin(api_channels_logout), methods=["POST"]),

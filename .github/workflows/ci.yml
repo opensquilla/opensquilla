@@ -211,6 +211,8 @@ jobs:
           node scripts/test-desktop-locale.mjs
           node scripts/test-desktop-profile-substrate.mjs
           node scripts/test-desktop-profile-context.mjs
+          node scripts/test-desktop-gateway-ownership.mjs
+          node scripts/test-desktop-gateway-lifecycle.mjs
           node scripts/test-desktop-cleanup-contract.mjs
 
   ubuntu-quality:
@@ -818,6 +820,7 @@ jobs:
             'profile-recovery-flow:scripts/test-profile-recovery-flow.mjs' \
             'profile-recovery-accessibility:scripts/test-profile-recovery-accessibility.mjs' \
             'profile-import-flow:scripts/test-profile-import-flow.mjs' \
+            'gateway-orphan-recovery-flow:scripts/test-desktop-gateway-orphan-recovery-flow.mjs' \
             'unsafe-profile-no-write:scripts/test-unsafe-profile-no-write.mjs'
           do
             name="${entry%%:*}"

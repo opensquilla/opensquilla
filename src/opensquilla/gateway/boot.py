@@ -933,6 +933,16 @@ def _gateway_home(config: GatewayConfig) -> Path:
     return default_opensquilla_home()
 
 
+def _desktop_ownership_profile_home(config: GatewayConfig) -> Path:
+    """Return the Desktop profile root independently of its runtime state override."""
+
+    config_path = _resolved_path(getattr(config, "config_path", None))
+    if config_path is not None:
+        return config_path.parent
+    default_home = default_opensquilla_home()
+    return _resolved_path(str(default_home)) or default_home.absolute()
+
+
 async def _ensure_sandbox_setup_on_boot(config: GatewayConfig) -> Any | None:
     """Run automatic sandbox setup when enabled."""
 
@@ -1527,6 +1537,28 @@ def _setup_file_logging(config: GatewayConfig | None = None) -> None:
         # The first warning fired before the file handler existed, so it only
         # reached the console; re-emit it so debug.log records it too.
         logging.getLogger(__name__).warning("structlog bridge disabled: %s", bridge_error)
+
+
+@dataclass
+class _GatewayShutdownRelay:
+    """Accept shutdown requests before the CLI runner installs its handler."""
+
+    _handler: Callable[[str], None] | None = field(default=None, repr=False)
+    _pending_reason: str | None = field(default=None, repr=False)
+
+    def __call__(self, reason: str) -> None:
+        handler = self._handler
+        if handler is not None:
+            handler(reason)
+        elif self._pending_reason is None:
+            self._pending_reason = reason
+
+    def install(self, handler: Callable[[str], None]) -> None:
+        self._handler = handler
+        pending_reason = self._pending_reason
+        self._pending_reason = None
+        if pending_reason is not None:
+            handler(pending_reason)
 
 
 @dataclass
@@ -2861,6 +2893,29 @@ async def start_gateway_server(
     _pid_lock = GatewayPidLock(_state_path(config, ""))
     _pid_lock.acquire()
 
+    # A Desktop child opts into a stronger, nonce-verifiable ownership record.
+    # Keep it separate from gateway.pid so legacy CLI/readers retain their
+    # exact schema. Electron supplies a separate userData control directory so
+    # an external or intentionally missing runtime state_dir remains untouched.
+    # Cleanup is deliberately owned by cli.main.gateway_run:
+    # that outer boundary removes the record only *after* the profile writer
+    # lock exits, so record disappearance is a safe restart signal.
+    _desktop_gateway_ownership = None
+    if run:
+        try:
+            from opensquilla.gateway.desktop_ownership import (
+                activate_desktop_gateway_ownership,
+            )
+
+            desktop_profile_home = _desktop_ownership_profile_home(config)
+            _desktop_gateway_ownership = activate_desktop_gateway_ownership(
+                profile_home=desktop_profile_home,
+                port=config.port,
+            )
+        except BaseException:
+            _pid_lock.release()
+            raise
+
     # Anonymous install telemetry is best-effort: it must never block gateway
     # startup. The built-in endpoint is intentionally empty until configured.
     try:
@@ -3612,6 +3667,15 @@ async def start_gateway_server(
         extra_routes=webhook_routes or None,
     )
     app.state.gateway_ready = False
+    app.state.desktop_gateway_ownership = _desktop_gateway_ownership
+    if run:
+        # Publish a shutdown trigger before uvicorn can expose the Desktop
+        # identity endpoint. cli.gateway_cmd installs the final event handler
+        # after this function returns; an early authenticated request is queued
+        # by the relay instead of transiently returning 503 and wedging recovery.
+        shutdown_relay = _GatewayShutdownRelay()
+        app.state.request_shutdown = shutdown_relay
+        app.state.install_shutdown_handler = shutdown_relay.install
 
     server_handle = GatewayServer(app=app, config=config)
     server_handle._pid_lock = _pid_lock

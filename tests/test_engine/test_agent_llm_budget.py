@@ -3274,11 +3274,15 @@ async def test_iteration_timeout_does_not_interrupt_active_tool_argument_stream(
             content="written",
         )
 
-    provider = _ActiveLongToolArgumentProvider(fragment_delay=0.02)
+    # Each provider event stays comfortably inside the per-event watchdog
+    # window, while the complete argument stream lasts longer than that
+    # window.  This proves that active tool-argument streaming resets the
+    # watchdog without depending on sub-10ms event-loop scheduling slack.
+    provider = _ActiveLongToolArgumentProvider(fragment_delay=0.06)
     agent = Agent(
         provider=provider,
         config=AgentConfig(
-            iteration_timeout=0.03,
+            iteration_timeout=0.15,
             timeout=1.0,
             max_provider_retries=0,
         ),

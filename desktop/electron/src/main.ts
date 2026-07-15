@@ -26,6 +26,21 @@ import {
   type DesktopProfilePaths,
 } from './desktop-profile-context.js'
 import { DesktopWriterAdmission } from './desktop-writer-admission.js'
+import {
+  createDesktopGatewayInstanceNonce,
+  desktopGatewayOwnershipMatchesLaunch,
+  desktopProfileFingerprint,
+  loadDesktopGatewayOwnershipRecord,
+  requestVerifiedDesktopGatewayShutdown,
+  sameDesktopGatewayOwnershipInstance,
+  verifyDesktopGatewayOwnership,
+  waitForDesktopGatewayOwnershipRelease,
+  type DesktopGatewayOwnershipRecord,
+} from './desktop-gateway-ownership.js'
+import {
+  lifecycleAllowsProcessSpawn,
+  stopAndJoinLifecycleProcesses,
+} from './gateway-lifecycle.js'
 import { buildCliInvocation } from './cli-invocation.js'
 import {
   cleanupSelectorArgs,
@@ -260,6 +275,16 @@ function applyDesktopNativeTheme(source: DesktopNativeThemeSource): { source: De
 let gatewayProcess: ChildProcessWithoutNullStreams | null = null
 let gatewayProfileKey: string | null = null
 let isQuitting = false
+// A child remains lifecycle-owned until its exit event, even after stopGateway
+// clears the current slot so a replacement cannot accidentally reuse it. Quit,
+// update, cleanup, and recovery all join this set before Electron may exit.
+const gatewayStoppingProcesses = new Set<ChildProcessWithoutNullStreams>()
+const gatewayProcessOwnershipContexts = new WeakMap<ChildProcessWithoutNullStreams, {
+  nonce: string
+  ownershipDir: string
+  profileFingerprint: string
+  port: number
+}>()
 // Opt stopGateway into the Windows HTTP graceful-drain path even while isQuitting
 // is set, for the update/uninstall flows that keep the main process alive and
 // await the child's exit (so the fire-and-forget drain is not racing app teardown).
@@ -407,6 +432,18 @@ function desktopConfigPath(): string {
 
 function desktopStateDir(): string {
   return join(desktopHome(), 'state')
+}
+
+function desktopGatewayOwnershipDir(profile = activeDesktopProfile()): string {
+  // Keep lifecycle control metadata out of the profile's data state directory.
+  // A config may intentionally point state_dir elsewhere, and creating a
+  // previously-missing H/state here would change legacy-lock exclusion during
+  // upgrades. userData is process-control state, keyed by the canonical profile.
+  return join(
+    app.getPath('userData'),
+    'gateway-ownership',
+    desktopProfileFingerprint(profile.home),
+  )
 }
 
 function credentialPath(): string {
@@ -6463,7 +6500,19 @@ function gatewayExitLooksLikePortInUse(output: string): boolean {
     || /:\d+\s+is already in use/i.test(output)
 }
 
+function gatewayExitLooksLikeProfileInUse(output: string): boolean {
+  return /OPENSQUILLA_PROFILE_IN_USE/i.test(output)
+}
+
 function classifyGatewayExitMessage(message: string, outputTail: string): string {
+  if (gatewayExitLooksLikeProfileInUse(outputTail)) {
+    return (
+      message +
+      '\n\nAnother OpenSquilla runtime is still using this profile. ' +
+      'Quit every OpenSquilla app or terminal using it, then try again. ' +
+      'If an older process will not exit, restart the computer. Do not delete profile lock files.'
+    )
+  }
   if (!gatewayExitLooksLikeNewerConfig(outputTail)) return message
   return (
     message +
@@ -6508,6 +6557,22 @@ function hasGatewayProcessExited(process: ChildProcessWithoutNullStreams | null)
   return Boolean(process && (process.exitCode !== null || process.signalCode !== null))
 }
 
+function trackStoppingGatewayProcess(child: ChildProcessWithoutNullStreams): void {
+  if (hasGatewayProcessExited(child) || gatewayStoppingProcesses.has(child)) return
+  gatewayStoppingProcesses.add(child)
+  child.once('exit', () => {
+    gatewayStoppingProcesses.delete(child)
+    if (updateGatewayShutdownProcess === child) updateGatewayShutdownProcess = null
+  })
+}
+
+function liveLifecycleOwnedGatewayProcesses(): ChildProcessWithoutNullStreams[] {
+  const children = new Set(gatewayStoppingProcesses)
+  if (gatewayProcess && gatewayState.owned) children.add(gatewayProcess)
+  if (updateGatewayShutdownProcess) children.add(updateGatewayShutdownProcess)
+  return [...children].filter((child) => !hasGatewayProcessExited(child))
+}
+
 async function reuseHealthyGatewayState(): Promise<GatewayState | null> {
   if (gatewayProfileKey !== desktopProfileKey()) return null
   if (!gatewayState.url) return null
@@ -6527,6 +6592,104 @@ async function reuseHealthyGatewayState(): Promise<GatewayState | null> {
   return null
 }
 
+const VERIFIED_ORPHAN_GATEWAY_RELEASE_TIMEOUT_MS = 80_000
+const VERIFIED_ORPHAN_IDENTITY_READY_TIMEOUT_MS = 45_000
+
+function verifiedOrphanGatewayError(detail: string): Error {
+  return new Error(
+    'OPENSQUILLA_PROFILE_IN_USE: ' + detail + ' ' +
+    'The existing Gateway was left by an earlier Desktop process. ' +
+    'Do not delete profile lock files; quit that Gateway and try again.',
+  )
+}
+
+function processIdMayStillBeAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch (error) {
+    // EPERM still proves that a process occupies the PID. Only ESRCH is a
+    // reliable negative across supported Node platforms.
+    return (error as NodeJS.ErrnoException).code !== 'ESRCH'
+  }
+}
+
+async function verifyDesktopGatewayOwnershipWhenReady(
+  ownershipDir: string,
+  record: DesktopGatewayOwnershipRecord,
+): Promise<boolean> {
+  const deadline = Date.now() + VERIFIED_ORPHAN_IDENTITY_READY_TIMEOUT_MS
+  do {
+    if (await verifyDesktopGatewayOwnership(record, { timeoutMs: 750 })) return true
+    const current = loadDesktopGatewayOwnershipRecord(ownershipDir)
+    if (
+      current.status !== 'valid'
+      || !sameDesktopGatewayOwnershipInstance(current.record, record)
+      || !processIdMayStillBeAlive(record.pid)
+    ) return false
+    if (Date.now() >= deadline) break
+    await new Promise((resolveWait) => setTimeout(resolveWait, 250))
+  } while (true)
+  return false
+}
+
+/**
+ * A fresh Electron process has no ChildProcess handle for a Gateway left by a
+ * crashed predecessor. Recover only when the profile-scoped record and the
+ * loopback HMAC challenge both identify that exact Desktop instance. A health
+ * check, occupied port, or PID by itself never grants stop authority.
+ */
+async function recoverVerifiedOrphanGatewayBeforeSpawn(
+  profile = activeDesktopProfile(),
+): Promise<void> {
+  const ownershipDir = desktopGatewayOwnershipDir(profile)
+  const loaded = loadDesktopGatewayOwnershipRecord(ownershipDir)
+  if (loaded.status !== 'valid') {
+    if (loaded.status === 'invalid') {
+      desktopLog('gateway_ownership_record_untrusted')
+    }
+    return
+  }
+
+  const record: DesktopGatewayOwnershipRecord = loaded.record
+  if (record.profile_fingerprint !== desktopProfileFingerprint(profile.home)) {
+    desktopLog('gateway_ownership_profile_mismatch', { pid: record.pid, port: record.port })
+    return
+  }
+  if (!await verifyDesktopGatewayOwnershipWhenReady(ownershipDir, record)) {
+    // A stale record after SIGKILL is harmless: the OS has already released the
+    // profile lock and the next admitted Gateway will replace the record. Do
+    // not unlink it or infer authority over whatever now owns the PID/port.
+    desktopLog('gateway_ownership_not_verified', { pid: record.pid, port: record.port })
+    return
+  }
+
+  desktopLog('gateway_orphan_verified', {
+    pid: record.pid,
+    port: record.port,
+    version: record.version,
+  })
+  const accepted = await requestVerifiedDesktopGatewayShutdown(record)
+  if (!accepted) {
+    // The verified process may have completed shutdown between the challenge
+    // and the authenticated request. The ownership record is removed only
+    // after its writer leases are released, so that disappearance is sufficient.
+    if (loadDesktopGatewayOwnershipRecord(ownershipDir).status === 'missing') return
+    throw verifiedOrphanGatewayError('The verified Gateway rejected the shutdown request.')
+  }
+  const released = await waitForDesktopGatewayOwnershipRelease(ownershipDir, record, {
+    timeoutMs: VERIFIED_ORPHAN_GATEWAY_RELEASE_TIMEOUT_MS,
+  })
+  desktopLog('gateway_orphan_shutdown_complete', {
+    pid: record.pid,
+    port: record.port,
+    released,
+  })
+  if (!released) {
+    throw verifiedOrphanGatewayError('The verified Gateway did not finish shutting down.')
+  }
+}
+
 async function startGateway(): Promise<GatewayState> {
   const reusableGateway = forceOnboardingOnNextStartup ? null : await reuseHealthyGatewayState()
   if (reusableGateway) return reusableGateway
@@ -6544,7 +6707,12 @@ async function startGateway(): Promise<GatewayState> {
       // fails with an unclassified error.
       const previousChild = gatewayProcess
       stopGateway()
-      await waitForGatewayProcessExit(previousChild)
+      const exited = await waitForGatewayProcessExit(previousChild)
+      if (!exited) {
+        throw new Error(
+          'OPENSQUILLA_PROFILE_IN_USE: The previous Desktop Gateway did not finish shutting down. Try again after it exits.',
+        )
+      }
     }
     gatewayState.status = 'stopped'
     gatewayState.error = undefined
@@ -6569,6 +6737,9 @@ async function startGateway(): Promise<GatewayState> {
     return gatewayState
   }
 
+  sendBootStatus('gateway-health')
+  await recoverVerifiedOrphanGatewayBeforeSpawn()
+
   sendBootStatus('profile')
   const connection = await runOnboarding()
   forceOnboardingOnNextStartup = false
@@ -6588,6 +6759,13 @@ async function startGateway(): Promise<GatewayState> {
   const runtime = await resolveGatewayRuntime()
 
   const port = await findGatewayPort()
+  // This is the final await before spawn. Update, quit, cleanup, and recovery
+  // close writer/lifecycle admission before draining current children; an
+  // in-flight start that had not published its child must not appear after an
+  // empty stop/join snapshot and race the installer or a profile write.
+  if (!lifecycleAllowsProcessSpawn(isQuitting, desktopWriters.closed)) {
+    throw new Error('Gateway startup was cancelled by an active lifecycle or profile operation.')
+  }
   const url = `http://127.0.0.1:${port}`
   const logDir = desktopLogsDir()
   mkdirSync(logDir, { recursive: true })
@@ -6615,12 +6793,17 @@ async function startGateway(): Promise<GatewayState> {
 
   const nodeBinCandidates = desktopNodeBinCandidates()
   const childPath = desktopChildPath(nodeBinCandidates)
+  const gatewayInstanceNonce = createDesktopGatewayInstanceNonce()
+  const gatewayOwnershipDir = desktopGatewayOwnershipDir(activeProfile)
+  const gatewayProfileFingerprint = desktopProfileFingerprint(activeProfile.home)
   const childEnv = desktopChildEnvironment(activeProfile, {
     PATH: childPath,
     ...(process.platform === 'win32' ? { Path: childPath } : {}),
     ...(connection.apiKeyEnv && apiKey ? { [connection.apiKeyEnv]: apiKey } : {}),
     ...(connection.searchApiKeyEnv && searchApiKey ? { [connection.searchApiKeyEnv]: searchApiKey } : {}),
     OPENSQUILLA_NODE_BIN_DIR: nodeBinCandidates.join(pathDelimiter()),
+    OPENSQUILLA_DESKTOP_GATEWAY_INSTANCE_NONCE: gatewayInstanceNonce,
+    OPENSQUILLA_DESKTOP_GATEWAY_OWNERSHIP_DIR: gatewayOwnershipDir,
     // desktopChildEnvironment pins OPENSQUILLA_STATE_DIR to H. RC4's Python
     // recovery engine has already validated/reconciled the historical nested
     // layout before this writer is admitted.
@@ -6643,6 +6826,12 @@ async function startGateway(): Promise<GatewayState> {
     }
   )
   gatewayProcess = child
+  gatewayProcessOwnershipContexts.set(child, {
+    nonce: gatewayInstanceNonce,
+    ownershipDir: gatewayOwnershipDir,
+    profileFingerprint: gatewayProfileFingerprint,
+    port,
+  })
   gatewayProfileKey = desktopProfileKey(activeProfile)
   desktopLog('gateway_spawned', {
     profileKind: activeProfile.kind,
@@ -6660,7 +6849,10 @@ async function startGateway(): Promise<GatewayState> {
   child.stderr.on('data', rememberGatewayOutput)
   child.stdout.pipe(logStream, { end: false })
   child.stderr.pipe(logStream, { end: false })
-  child.once('exit', (code, signal) => {
+  // Classify startup failures only after stdio has closed. Node may emit
+  // 'exit' before the final stdout/stderr chunks, which can otherwise drop the
+  // stable OPENSQUILLA_PROFILE_IN_USE marker printed immediately before exit.
+  child.once('close', (code, signal) => {
     const message = `gateway exited code=${code ?? 'null'} signal=${signal ?? 'null'}`
     const portConflictExit = gatewayExitLooksLikePortInUse(gatewayOutputTail)
     const exitMessage = portConflictExit ? `${message}\nGateway port is already in use.` : message
@@ -6914,17 +7106,9 @@ async function restoreMainWindowToBootPage(): Promise<void> {
 }
 
 async function stopOwnedGatewayAndWait(): Promise<void> {
-  const child = gatewayProcess && gatewayState.owned
-    ? gatewayProcess
-    : updateGatewayShutdownProcess
-  if (!child) {
-    clearReusableGatewayState()
-    return
-  }
-  if (gatewayProcess === child && gatewayState.owned) stopGateway()
-  const exited = await waitForGatewayProcessExit(child)
+  const exited = await stopAndJoinAllLifecycleOwnedGateways()
   if (!exited) throw new Error('The Desktop gateway did not stop before the recovery operation.')
-  if (updateGatewayShutdownProcess === child) updateGatewayShutdownProcess = null
+  updateGatewayShutdownProcess = null
   clearReusableGatewayState()
 }
 
@@ -6956,6 +7140,17 @@ async function inspectActiveProfileBeforeStartup(): Promise<boolean> {
   }
 
   const active = activeDesktopProfile()
+  // On a hard Electron crash, the Python Gateway can remain healthy and keep
+  // the profile writer lease. Prove and stop that exact prior Desktop instance
+  // before profile inspection; otherwise the inspector reports profile_lock_busy
+  // and strands startup on the manual recovery screen before startGateway() can
+  // run. Never apply this to a developer override or this process's own child.
+  const overrideUrl = active.kind === 'primary'
+    ? process.env.OPENSQUILLA_DESKTOP_GATEWAY_URL
+    : undefined
+  if (!overrideUrl && liveLifecycleOwnedGatewayProcesses().length === 0) {
+    await recoverVerifiedOrphanGatewayBeforeSpawn(active)
+  }
   recoveryOperationError = null
   let inspection = await inspectDesktopProfile(active)
   if (
@@ -7120,6 +7315,35 @@ async function requestGatewayShutdown(url: string): Promise<boolean> {
   }
 }
 
+// Prefer the instance-bound Desktop protocol so token-authenticated profiles can
+// still drain without exposing their API token to the Electron shell. The
+// nonce, PID, profile fingerprint, and port must all match the child we spawned;
+// a stale record or an unrelated healthy listener never grants stop authority.
+async function requestOwnedGatewayShutdown(
+  child: ChildProcessWithoutNullStreams,
+  url: string,
+): Promise<boolean> {
+  const context = gatewayProcessOwnershipContexts.get(child)
+  const loaded = context
+    ? loadDesktopGatewayOwnershipRecord(context.ownershipDir)
+    : { status: 'missing' as const, record: null }
+  if (
+    context
+    && loaded.status === 'valid'
+    && desktopGatewayOwnershipMatchesLaunch(loaded.record, {
+      instanceNonce: context.nonce,
+      profileFingerprint: context.profileFingerprint,
+      port: context.port,
+    })
+  ) {
+    if (await requestVerifiedDesktopGatewayShutdown(loaded.record)) return true
+  }
+  // Backward compatibility for a child from an older runtime that predates the
+  // Desktop ownership protocol. Failure falls back to signaling this exact
+  // ChildProcess handle, never to PID-file or port-based process discovery.
+  return await requestGatewayShutdown(url)
+}
+
 // Fetch a diagnostics bundle from the child gateway (loopback owner, no token
 // needed — same auth posture as requestGatewayShutdown) and save it where the
 // user chooses. Falls back to opening the logs folder when no gateway is up.
@@ -7218,6 +7442,7 @@ function stopGateway(): void {
   if (!gatewayProcess || !gatewayState.owned) return
   const child = gatewayProcess
   const url = gatewayState.url
+  trackStoppingGatewayProcess(child)
   gatewayProcess = null
 
   const hardTerminate = () => {
@@ -7239,7 +7464,7 @@ function stopGateway(): void {
     child.once('exit', () => {
       exited = true
     })
-    void requestGatewayShutdown(url).then((accepted) => {
+    void requestOwnedGatewayShutdown(child, url).then((accepted) => {
       if (!accepted && !exited) hardTerminate()
     })
     setTimeout(() => {
@@ -7269,6 +7494,11 @@ let autoUpdaterReady = false
 let updateDownloadInProgress = false
 let manualInstallerActionInProgress = false
 let updateApplying = false
+// A user/system quit that arrives while an update is still draining writers or
+// the gateway is deferred until that phase either fails safely or reaches the
+// updater-owned handoff. Only quitAndInstall may set handoff ready.
+let updateInstallHandoffReady = false
+let quitRequestedDuringUpdateDrain = false
 let downloadedUpdateVersion: string | null = null
 let verifiedManualInstallerPath: string | null = null
 let updateGatewayShutdownProcess: ChildProcessWithoutNullStreams | null = null
@@ -8496,14 +8726,6 @@ function checkForUpdates(manual: boolean): Promise<void> {
   return desktopUpdateCheckScheduler.request(manual)
 }
 
-function gatewayProcessForUpdateInstall(): ChildProcessWithoutNullStreams | null {
-  const child = gatewayProcess && gatewayState.owned ? gatewayProcess : updateGatewayShutdownProcess
-  if (!child) return null
-  if (!hasGatewayProcessExited(child)) return child
-  if (updateGatewayShutdownProcess === child) updateGatewayShutdownProcess = null
-  return null
-}
-
 async function waitForGatewayProcessExit(
   child: ChildProcessWithoutNullStreams,
   timeoutMs = UPDATE_GATEWAY_EXIT_TIMEOUT_MS,
@@ -8523,13 +8745,29 @@ async function waitForGatewayProcessExit(
   })
 }
 
+async function stopAndJoinAllLifecycleOwnedGateways(
+  stopCurrentProcess: (child: ChildProcessWithoutNullStreams) => void = () => stopGateway(),
+): Promise<boolean> {
+  return await stopAndJoinLifecycleProcesses({
+    currentProcess: () => (
+      gatewayProcess && gatewayState.owned && !hasGatewayProcessExited(gatewayProcess)
+        ? gatewayProcess
+        : null
+    ),
+    stopCurrentProcess,
+    liveProcesses: liveLifecycleOwnedGatewayProcesses,
+    waitForExit: (child) => waitForGatewayProcessExit(child),
+  })
+}
+
 function restoreDownloadedUpdateRetryState(
   pendingVersion: string | null,
   writerAdmissionToken: symbol | null = null,
-): void {
+): boolean {
   if (writerAdmissionToken) desktopWriters.reopen(writerAdmissionToken)
   downloadedUpdateVersion = pendingVersion
   updateApplying = false
+  updateInstallHandoffReady = false
   isQuitting = false
   createApplicationMenu()
   setDesktopUpdateState({
@@ -8537,6 +8775,10 @@ function restoreDownloadedUpdateRetryState(
     latestVersion: pendingVersion,
     progress: pendingVersion ? 100 : null,
   })
+  if (!quitRequestedDuringUpdateDrain) return false
+  quitRequestedDuringUpdateDrain = false
+  setImmediate(() => app.quit())
+  return true
 }
 
 // Stop the owned gateway child and WAIT for it to exit before handing control to
@@ -8545,6 +8787,7 @@ function restoreDownloadedUpdateRetryState(
 // orphaning it breaks the next launch. Mirrors the uninstall quiesce path.
 async function applyDownloadedUpdate(): Promise<void> {
   if (updateApplying) return
+  if (isQuitting || desktopWriters.closed) return
   if (!mockDownloadedUpdate && !downloadedUpdateVersion) return
 
   if (mockDownloadedUpdate) {
@@ -8574,6 +8817,10 @@ async function applyDownloadedUpdate(): Promise<void> {
         progress: 100,
         error: null,
       })
+      if (quitRequestedDuringUpdateDrain) {
+        quitRequestedDuringUpdateDrain = false
+        setImmediate(() => app.quit())
+      }
     }
     return
   }
@@ -8593,22 +8840,26 @@ async function applyDownloadedUpdate(): Promise<void> {
     error: null,
   })
   isQuitting = true
-  const child = gatewayProcessForUpdateInstall()
-  if (child) {
-    if (gatewayProcess === child && gatewayState.owned) {
-      updateGatewayShutdownProcess = child
-      // We stay alive and await the exit below, so let the gateway take its
-      // Windows HTTP graceful drain instead of an immediate TerminateProcess.
-      allowGracefulShutdownWhileQuitting = true
-      try {
-        stopGateway()
-      } finally {
-        allowGracefulShutdownWhileQuitting = false
-      }
+  const exited = await stopAndJoinAllLifecycleOwnedGateways((child) => {
+    updateGatewayShutdownProcess = child
+    // We stay alive and await the exit below, so let the gateway take its
+    // Windows HTTP graceful drain instead of an immediate TerminateProcess.
+    allowGracefulShutdownWhileQuitting = true
+    try {
+      stopGateway()
+    } finally {
+      allowGracefulShutdownWhileQuitting = false
     }
-    const exited = await waitForGatewayProcessExit(child)
-    if (!exited) {
-      restoreDownloadedUpdateRetryState(pendingVersion, updateWriterAdmission)
+  })
+  // Re-read the shared ownership set immediately before handoff. There is no
+  // await between this check and quitAndInstall, so a child already stopping
+  // for Retry/recovery cannot be skipped by the installer lifecycle.
+  if (!exited || liveLifecycleOwnedGatewayProcesses().length > 0) {
+    const quitResumed = restoreDownloadedUpdateRetryState(
+      pendingVersion,
+      updateWriterAdmission,
+    )
+    if (!quitResumed) {
       void showUpdateDialog({
         type: 'error',
         buttons: ['OK'],
@@ -8616,28 +8867,34 @@ async function applyDownloadedUpdate(): Promise<void> {
         message: desktopT('update.errorTitle'),
         detail: desktopT('update.gatewayShutdownTimeout'),
       })
-      return
     }
-    if (updateGatewayShutdownProcess === child) updateGatewayShutdownProcess = null
+    return
   }
+  updateGatewayShutdownProcess = null
   // isSilent=false (show the platform installer UI where applicable),
   // isForceRunAfter=true (relaunch after install).
   try {
+    updateInstallHandoffReady = true
     autoUpdater.quitAndInstall(false, true)
   } catch (err) {
-    restoreDownloadedUpdateRetryState(pendingVersion, updateWriterAdmission)
-    void showUpdateDialog({
-      type: 'error',
-      buttons: ['OK'],
-      title: desktopT('update.errorTitle'),
-      message: desktopT('update.errorTitle'),
-      detail: String(err instanceof Error ? err.message : err ?? ''),
-    })
+    const quitResumed = restoreDownloadedUpdateRetryState(
+      pendingVersion,
+      updateWriterAdmission,
+    )
+    if (!quitResumed) {
+      void showUpdateDialog({
+        type: 'error',
+        buttons: ['OK'],
+        title: desktopT('update.errorTitle'),
+        message: desktopT('update.errorTitle'),
+        detail: String(err instanceof Error ? err.message : err ?? ''),
+      })
+    }
     // The owned gateway was stopped for the (now-failed) handoff and its exit was
     // swallowed as intentional (isQuitting was true). restoreDownloadedUpdateRetryState
     // cleared isQuitting, so bring the runtime back up instead of leaving the
     // window stranded on the dead gateway's Control UI.
-    void openOrResumeDesktopApp()
+    if (!quitResumed) void openOrResumeDesktopApp()
   }
 }
 
@@ -11098,14 +11355,80 @@ ipcMain.handle('desktop:onboarding:migrate:apply', async (event) => {
   }
 })
 
-// Set once the Windows graceful-drain-on-quit sequence has run so the re-issued
-// quit (after app.exit is deferred) is not intercepted a second time.
-let windowsQuitDrainDone = false
+// Keep the normal app-quit gateway drain single-flight. Every supported
+// platform must keep Electron alive until its owned child has actually exited;
+// otherwise a slow POSIX SIGTERM drain can outlive the parent and retain the
+// profile writer lock across the next Desktop launch.
+let quitGatewayDrainPromise: Promise<boolean> | null = null
 let quitDeferredForDesktopWriters = false
 let quitWriterAdmission: symbol | null = null
 
+async function drainOwnedGatewayForQuit(
+  child: ChildProcessWithoutNullStreams,
+  url: string,
+  requestShutdown: boolean,
+): Promise<boolean> {
+  if (hasGatewayProcessExited(child)) return true
+  const accepted = requestShutdown ? await requestOwnedGatewayShutdown(child, url) : null
+  desktopLog('quit_gateway_shutdown_requested', { accepted, alreadyStopping: !requestShutdown })
+  let hardTerminated = false
+  let exited = false
+  if (accepted === null) {
+    // Another lifecycle operation already initiated the full graceful stop.
+    // Join it instead of issuing a second request against a possibly replaced
+    // ownership record or shortening its drain deadline.
+    exited = await waitForGatewayProcessExit(child)
+  } else if (!accepted) {
+    hardTerminated = true
+    // POSIX SIGTERM is itself the graceful shutdown trigger and must retain the
+    // full gateway drain budget. Windows TerminateProcess is immediate, so only
+    // that platform uses the short observation backstop here.
+    const signalBackstop = process.platform === 'win32'
+      ? GATEWAY_HARD_KILL_BACKSTOP_MS
+      : GATEWAY_SHUTDOWN_KILL_AFTER_MS
+    hardTerminateGatewayProcess(child, signalBackstop)
+    exited = await waitForGatewayProcessExit(child, signalBackstop + 1_000)
+    if (process.platform === 'win32') await clearKnownOwnedGatewayPidFile()
+  } else {
+    exited = await waitForGatewayProcessExit(child)
+    if (!exited) {
+      hardTerminated = true
+      hardTerminateGatewayProcess(child)
+      exited = await waitForGatewayProcessExit(
+        child,
+        GATEWAY_HARD_KILL_BACKSTOP_MS + 1_000,
+      )
+      if (process.platform === 'win32') await clearKnownOwnedGatewayPidFile()
+    }
+  }
+  // hardTerminateGatewayProcess schedules SIGKILL at the backstop. In case the
+  // exit event is delayed past that timer, issue one final tree-aware SIGKILL
+  // and wait again before allowing the Electron parent to disappear.
+  if (!exited && !hasGatewayProcessExited(child)) {
+    terminateGatewayProcess(child, 'SIGKILL')
+    exited = await waitForGatewayProcessExit(child, GATEWAY_HARD_KILL_BACKSTOP_MS)
+  }
+  desktopLog('quit_gateway_exit', { exited, hardTerminated })
+  return exited || hasGatewayProcessExited(child)
+}
+
 app.on('before-quit', (event) => {
   desktopUpdateCheckScheduler.stop()
+  // An updater drain owns the lifecycle until every writer and gateway has
+  // exited. A user Quit or repeated signal during this phase is remembered and
+  // resumed if the update cannot hand off. Only quitAndInstall's synchronous
+  // handoff is allowed through this guard.
+  if (updateApplying) {
+    if (updateInstallHandoffReady) return
+    event.preventDefault()
+    quitRequestedDuringUpdateDrain = true
+    desktopLog('quit_deferred_for_update_drain')
+    return
+  }
+  if (quitGatewayDrainPromise) {
+    event.preventDefault()
+    return
+  }
   if (desktopWriters.activeCount > 0 || quitDeferredForDesktopWriters) {
     event.preventDefault()
     if (!quitDeferredForDesktopWriters) {
@@ -11123,49 +11446,56 @@ app.on('before-quit', (event) => {
     return
   }
   quitWriterAdmission ??= desktopWriters.close('quit')
-  desktopLog('before_quit', { platform: process.platform, drained: windowsQuitDrainDone })
+  desktopLog('before_quit', {
+    platform: process.platform,
+    gatewayDrainInFlight: quitGatewayDrainPromise !== null,
+  })
   isQuitting = true
-  // On Windows there is no real SIGTERM, so the normal close path would
-  // TerminateProcess the gateway with no drain (unlike the update/uninstall
-  // paths which already wait for a graceful exit). Give the daily close path the
-  // same graceful drain: defer the quit once, ask the gateway to shut down over
-  // HTTP, wait for the child to exit (bounded), then exit for real. Fall back to
-  // a hard terminate on timeout via stopGateway's own backstop.
-  if (
-    process.platform === 'win32' &&
-    !windowsQuitDrainDone &&
-    gatewayProcess &&
-    gatewayState.owned &&
-    !hasGatewayProcessExited(gatewayProcess)
-  ) {
+  // Defer the normal quit on every platform until every lifecycle-owned child
+  // has exited. This includes a child already draining for restart, recovery,
+  // cleanup, or update after stopGateway cleared the current process slot.
+  const currentChild = gatewayProcess && gatewayState.owned
+    && !hasGatewayProcessExited(gatewayProcess)
+    ? gatewayProcess
+    : null
+  const children = liveLifecycleOwnedGatewayProcesses()
+  if (children.length > 0) {
     event.preventDefault()
-    const child = gatewayProcess
-    void (async () => {
-      try {
-        const accepted = await requestGatewayShutdown(gatewayState.url || '')
-        desktopLog('quit_gateway_shutdown_requested', { accepted })
-        let hardTerminated = false
-        let exited = false
-        if (!accepted) {
-          hardTerminated = true
-          hardTerminateGatewayProcess(child)
-          exited = await waitForGatewayProcessExit(child, GATEWAY_HARD_KILL_BACKSTOP_MS)
-          await clearKnownOwnedGatewayPidFile()
-        } else {
-          exited = await waitForGatewayProcessExit(child)
-          if (!exited) {
-            hardTerminated = true
-            hardTerminateGatewayProcess(child)
-            exited = await waitForGatewayProcessExit(child, GATEWAY_HARD_KILL_BACKSTOP_MS)
-            await clearKnownOwnedGatewayPidFile()
-          }
-        }
-        desktopLog('quit_gateway_exit', { exited, hardTerminated })
-      } finally {
-        windowsQuitDrainDone = true
+    const drain = Promise.all(children.map((child) => drainOwnedGatewayForQuit(
+      child,
+      currentChild === child ? gatewayState.url || '' : '',
+      currentChild === child,
+    )))
+      .then((results) => results.every(Boolean))
+      .catch((error) => {
+        desktopLog('quit_gateway_drain_failed', {
+          error: error instanceof Error ? error.message : String(error),
+        })
+        return false
+      })
+    quitGatewayDrainPromise = drain
+    void drain.then((exited) => {
+      if (exited) {
         app.exit(0)
+        return
       }
-    })()
+      // Fail closed: keep Electron alive while a child we own is still live.
+      // A later Quit retries the same exact handles; it never guesses via a PID
+      // file, occupied port, or health response.
+      quitGatewayDrainPromise = null
+      isQuitting = false
+      if (quitWriterAdmission) {
+        desktopWriters.reopen(quitWriterAdmission)
+        quitWriterAdmission = null
+      }
+      desktopLog('quit_gateway_still_running', {
+        pids: liveLifecycleOwnedGatewayProcesses().map((child) => child.pid),
+      })
+      dialog.showErrorBox(
+        'OpenSquilla could not quit safely',
+        'The local Gateway is still shutting down. OpenSquilla stayed open to avoid leaving a background process; try Quit again.',
+      )
+    })
     return
   }
   stopGateway()
@@ -11173,12 +11503,16 @@ app.on('before-quit', (event) => {
 
 function shutdownFromSignal(): void {
   isQuitting = true
-  stopGateway()
+  // before-quit owns the child handle until its single-flight drain finishes.
+  // Clearing it here would recreate the orphaned-gateway race on SIGINT/SIGTERM.
   app.quit()
 }
 
-process.once('SIGINT', shutdownFromSignal)
-process.once('SIGTERM', shutdownFromSignal)
+// Keep repeated signals inside the same idempotent before-quit drain. Using
+// once() would restore Node's default termination behavior after the first
+// signal and let a second Ctrl-C/SIGTERM orphan the Gateway.
+process.on('SIGINT', shutdownFromSignal)
+process.on('SIGTERM', shutdownFromSignal)
 
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit()

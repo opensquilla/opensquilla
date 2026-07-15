@@ -110,7 +110,8 @@ def _load_env_for_active_home() -> None:
 _preactivate_profile_from_argv(sys.argv)
 
 _RECOVERY_OFFLINE = (
-    os.environ.get("OPENSQUILLA_RECOVERY_OFFLINE", "").strip().lower() in {"1", "true", "yes", "on"}
+    os.environ.get("OPENSQUILLA_RECOVERY_OFFLINE", "").strip().lower()
+    in {"1", "true", "yes", "on"}
     or _top_level_command(sys.argv) == "recovery"
     or _is_offline_import_verification(sys.argv)
 )
@@ -181,7 +182,6 @@ def _main_callback(
     if not _RECOVERY_OFFLINE:
         _load_env_for_active_home()
         warn_if_proxy_ignored()
-
 
 # ── Sub-apps ─────────────────────────────────────────────────────────────────
 
@@ -321,7 +321,8 @@ def memory_index_cmd(
         print_json(payload)
         return
     console.print(
-        f"memory index agent={payload.get('agentId', agent_id)} force={bool(payload.get('force'))}"
+        f"memory index agent={payload.get('agentId', agent_id)} "
+        f"force={bool(payload.get('force'))}"
     )
 
 
@@ -1171,7 +1172,6 @@ def reset_cmd(
         typer.echo("  Flush mode: skipped (empty transcript)")
     else:
         typer.echo(f"  Flush mode: {mode}")
-
 
 @app.command("version")
 def version_cmd(
